@@ -88,6 +88,8 @@ pub const DARK: Palette = Palette {
         hex(0x4F6478),
         hex(0x8A5536),
     ],
+    // Issue #596: new with the focus mark, the drafts' colours as drawn.
+    priority: [hex(0x6B7079), hex(0xFFE08A), hex(0xFBBF24), hex(0xF97316), hex(0xE5342B)],
     chart_other: hex(0x5C6068),
     shadow: shadow(0.5),
     scrim: black(0.62),
@@ -146,6 +148,8 @@ pub const LIGHT: Palette = Palette {
         hex(0x4F6478),
         hex(0x8A5536),
     ],
+    // Issue #596: new with the focus mark, the drafts' colours darkened to 3:1 on white.
+    priority: [hex(0x8B9097), hex(0xAC8D2D), hex(0xC28412), hex(0xEA6A0A), hex(0xD42A2A)],
     chart_other: hex(0x50545B),
     shadow: shadow(0.12),
     scrim: black(0.3),

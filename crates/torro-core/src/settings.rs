@@ -63,6 +63,10 @@ pub struct Settings {
     /// [`ListOrder::Manual`] are stored.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub list_orders: BTreeMap<String, ListOrder>,
+    /// How many open tasks may ask for focus today (issue #596): 1 to 5, 3 unless changed. A value
+    /// out of range in the file reads as the default.
+    #[serde(default, skip_serializing_if = "FocusSlots::is_default", deserialize_with = "lenient")]
+    pub focus_slots: FocusSlots,
     /// "Quiet during busy events" (task E3.4): while a busy event of a shown calendar runs (not
     /// all-day, not marked free), only urgent inbox entries pop up; the rest is told in one
     /// message when it ends. On unless turned off.
@@ -815,6 +819,7 @@ impl Default for Settings {
             night: Night::default(),
             working_hours: WorkingHours::default(),
             list_orders: BTreeMap::new(),
+            focus_slots: FocusSlots::default(),
             quiet_when_busy: on(),
             contacts_show_hidden_books: false,
             design: standard_design(),
@@ -2226,6 +2231,64 @@ pub enum ListOrder {
     Manual,
 }
 
+/// How many open tasks due today or overdue may ask for focus at once (issue #596, setting
+/// `focus_slots`): a whole number from [`FocusSlots::MIN`] to [`FocusSlots::MAX`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "u8", into = "u8")]
+pub struct FocusSlots(u8);
+
+impl FocusSlots {
+    /// The fewest slots one can choose.
+    pub const MIN: u8 = 1;
+    /// The most slots one can choose: more would no longer be focus.
+    pub const MAX: u8 = 5;
+    /// Three, as the drafts show it.
+    pub const DEFAULT: FocusSlots = FocusSlots(3);
+
+    /// `n` slots, or `None` when `n` is out of range.
+    pub fn new(n: u8) -> Option<FocusSlots> {
+        (FocusSlots::MIN..=FocusSlots::MAX).contains(&n).then_some(FocusSlots(n))
+    }
+
+    /// The number of slots.
+    pub fn get(self) -> u8 {
+        self.0
+    }
+
+    /// The setting `focus_slots` from outside: a whole number in range, or why it is not one.
+    pub fn from_value(value: &serde_json::Value) -> Result<FocusSlots, String> {
+        value
+            .as_u64()
+            .and_then(|n| u8::try_from(n).ok())
+            .and_then(FocusSlots::new)
+            .ok_or_else(|| format!("{value} is not a number of focus slots: send a whole number from 1 to 5"))
+    }
+
+    fn is_default(&self) -> bool {
+        *self == FocusSlots::DEFAULT
+    }
+}
+
+impl Default for FocusSlots {
+    fn default() -> FocusSlots {
+        FocusSlots::DEFAULT
+    }
+}
+
+impl TryFrom<u8> for FocusSlots {
+    type Error = String;
+
+    fn try_from(n: u8) -> Result<FocusSlots, String> {
+        FocusSlots::new(n).ok_or_else(|| format!("{n} focus slots are out of range"))
+    }
+}
+
+impl From<FocusSlots> for u8 {
+    fn from(slots: FocusSlots) -> u8 {
+        slots.0
+    }
+}
+
 /// The `value` of the setting `list_order` (`settings.set_setting`, task P.3a): one task list and
 /// how it is to be ordered.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -2761,6 +2824,7 @@ mod tests {
             night: Night::DEFAULT,
             working_hours: WorkingHours::DEFAULT,
             list_orders: BTreeMap::new(),
+            focus_slots: FocusSlots::DEFAULT,
             quiet_when_busy: true,
             contacts_show_hidden_books: false,
             design: "torro".into(),
@@ -3034,6 +3098,7 @@ mod tests {
             night: Night { from: q(23, 30), to: q(7, 0) },
             working_hours: WorkingHours { from: q(7, 30), to: q(16, 0) },
             list_orders: BTreeMap::from([("work".to_string(), ListOrder::Manual)]),
+            focus_slots: FocusSlots::new(4).expect("in range"),
             quiet_when_busy: false,
             contacts_show_hidden_books: false,
             design: "comfort".into(),
@@ -3358,6 +3423,21 @@ mod tests {
         assert!(settings.list_orders.is_empty(), "the default is not stored");
         let json = serde_json::to_string(&settings).expect("serialize");
         assert!(!json.contains("listOrders"), "{json}");
+    }
+
+    #[test]
+    fn focus_slots_are_one_to_five_and_a_damaged_file_reads_three() {
+        assert_eq!(Settings::default().focus_slots.get(), 3);
+        assert_eq!(FocusSlots::from_value(&serde_json::json!(5)).map(FocusSlots::get), Ok(5));
+        for bad in [serde_json::json!(0), serde_json::json!(6), serde_json::json!(2.5), serde_json::json!("3")] {
+            assert!(FocusSlots::from_value(&bad).is_err(), "{bad}");
+        }
+        let read = |json: &str| serde_json::from_str::<Settings>(json).expect("settings").focus_slots.get();
+        assert_eq!(read(r#"{"focusSlots": 2}"#), 2);
+        assert_eq!(read(r#"{"focusSlots": 9}"#), 3, "out of range in the file is the default");
+        assert_eq!(read("{}"), 3);
+        let json = serde_json::to_value(Settings::default()).expect("json");
+        assert!(json.get("focusSlots").is_none(), "the default is not stored");
     }
 
     #[test]

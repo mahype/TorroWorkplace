@@ -1703,6 +1703,9 @@ impl Request {
             Request::SaveTodo { .. } => &SAVE_TODO,
             Request::DeleteTodo { .. } => &DELETE_TODO,
             Request::MoveTodo { .. } => &MOVE_TODO,
+            Request::SetFocus { .. } => &SET_FOCUS,
+            Request::PlanTodo { .. } => &PLAN_TODO,
+            Request::PostponeFocusPlan => &POSTPONE_FOCUS_PLAN,
             Request::CreateTodoFromMail { .. } => &CREATE_TODO_FROM_MAIL,
             Request::CreateTaskList { .. } => &CREATE_LIST,
             Request::CreateFilterList { .. } => &CREATE_FILTER_LIST,
@@ -2005,6 +2008,9 @@ pub static CATALOGUE: &[&Command] = &[
     &SAVE_TODO,
     &DELETE_TODO,
     &MOVE_TODO,
+    &SET_FOCUS,
+    &PLAN_TODO,
+    &POSTPONE_FOCUS_PLAN,
     &CREATE_TODO_FROM_MAIL,
     &CREATE_LIST,
     &CREATE_FILTER_LIST,
@@ -2586,10 +2592,11 @@ static SAVE_TODO: Command = Command {
     access: Access::Write,
     mcp: Mcp::Tool,
     description: "Creates a task (without `href`) or changes one (with `href` and `etag` from list_todos) on the \
-                  server and returns it as stored. Marking a task done is a change. Changing `collection` moves \
+                  server and returns it as stored. Marking a task done is a change. A change that gives an open task due today or overdue a focus \
+                  while today's focus slots are all taken is refused with conflict (see set_focus). Changing `collection` moves \
                   it to another calendar of the same account; moving to another account fails with \
                   `unsupported`. Pass the task with every field as list_todos returned it: a missing `url`, \
-                  `categories`, `sort_order` or `link` clears it, and of the link only its `id` is stored. Setting \
+                  `categories`, `sort_order`, `link` or `focus` clears it, and of the link only its `id` is stored. Setting \
                   or changing a `link` needs read access to `github` (else `forbidden`) and, for a key limited to \
                   some repositories, the item's repository (else `not-found`); a mail link \
                   (`mail:<address>:<Message-ID>`) needs read access to mail and that account (else `not-found`). Marking a GitHub issue in a filter \
@@ -2621,6 +2628,41 @@ static MOVE_TODO: Command = Command {
                   ordered among those with the same parent that are open or done like it, smaller `sort_order` \
                   first, tasks without one last; only tasks whose number must change are written and returned. \
                   If a write fails, the task has not moved yet: reload with list_todos and try again.",
+};
+
+static SET_FOCUS: Command = Command {
+    name: "tasks.set_focus",
+    area: Area::Tasks,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Sets how much focus a task (`href` and `etag` from list_todos) asks for: \"normal\", \"focus\" \
+                  or \"strong\" (stored as X-TORRO-FOCUS, kept when other apps edit the task). Open top-level tasks \
+                  with a focus that are due today or overdue in the lists you may write take one of the focus slots \
+                  (settings `focus_slots`, 3 unless changed); when all are taken a further one is refused with \
+                  conflict. Pass `release` \
+                  (another task's `href` and `etag`) to take that task's focus away first.",
+};
+
+static PLAN_TODO: Command = Command {
+    name: "tasks.plan_todo",
+    area: Area::Tasks,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Makes a task (`href` and `etag` from list_todos) due on `day` (YYYY-MM-DD; a due time stays) and \
+                  puts it right before the task `before` due that day, or last without it. The order of a day \
+                  spans all lists you may write; it is stored in `sort_order`, which also orders the task's list \
+                  in manual order and in Nextcloud Tasks. Only open tasks without parent; a task with a focus \
+                  moved onto today takes a focus slot.",
+};
+
+static POSTPONE_FOCUS_PLAN: Command = Command {
+    name: "tasks.postpone_focus_plan",
+    area: Area::Tasks,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Moves every open task with a focus that is due today or overdue to tomorrow, in its order and in \
+                  front of the tasks due tomorrow (due times stay). Returns the tasks written; empty when there \
+                  is nothing to move. Changes their `sort_order` like plan_todo.",
 };
 
 static CREATE_TODO_FROM_MAIL: Command = Command {
@@ -3420,6 +3462,8 @@ static SET_SETTING: Command = Command {
                   day, week, timeline and radar; the same time twice means no working hours) or \
                   `list_order` ({\"list\": \"<the id from tasks.list_lists>\", \"order\": \"manual\"} to order a \
                   task list by hand with tasks.move_todo, or \"due_date\" to group it by due date again) or \
+                  `focus_slots` (1 to 5, 3 unless changed: how many open top-level tasks due today or overdue may \
+                  ask for focus; tasks.set_focus refuses a further one with conflict) or \
                   `quiet_when_busy` (true, false; while on, only urgent inbox entries pop up during a busy event) \
                   or `design` (the spacing level from list_designs: \"torro\" for Standard, \"comfort\" or \
                   \"dense\"; it changes only spacing and the heights of rows and controls, never the font, the \
@@ -5755,6 +5799,7 @@ mod tests {
             categories: Vec::new(),
             sort_order: None,
             link: None,
+            focus: Default::default(),
         }
     }
 
@@ -5852,6 +5897,19 @@ mod tests {
             Request::SaveTodo { todo: todo() },
             Request::DeleteTodo { todo: todo() },
             Request::MoveTodo { href: "/tasks/home/t.ics".into(), etag: "\"1\"".into(), before: None },
+            Request::SetFocus {
+                href: "/tasks/home/t.ics".into(),
+                etag: "\"1\"".into(),
+                focus: torro_pim::Focus::Focus,
+                release: None,
+            },
+            Request::PlanTodo {
+                href: "/tasks/home/t.ics".into(),
+                etag: "\"1\"".into(),
+                day: chrono::NaiveDate::from_ymd_opt(2026, 11, 11).expect("a day"),
+                before: None,
+            },
+            Request::PostponeFocusPlan,
             Request::CreateTodoFromMail {
                 account: "mail:anna@mailbox.org".into(),
                 id: "m:0a1b2c3d".into(),
@@ -7759,6 +7817,7 @@ mod tests {
                 "night",
                 "working_hours",
                 "list_order",
+                "focus_slots",
                 "quiet_when_busy",
                 "contacts.show_hidden_books",
                 "design",

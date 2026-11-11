@@ -4,6 +4,7 @@
 #
 #   scripts/macos-dev-bundles.sh [out-dir]     default: target/debug/bundles
 #   scripts/macos-dev-bundles.sh ~/Applications/Torro\ Dev
+#   TORRO_PROGRAMS_DIR=target/release scripts/macos-dev-bundles.sh   programs from another folder (issue #629)
 #
 # Makes the bundles with packaging/macos/make-app.sh, named and laid out as torro_gui::source::bundle_program and
 # SERVICE_PROGRAM look for them (`<AppId::display_name>.app/Contents/MacOS/<AppId::program_file>`): the seven apps,
@@ -21,7 +22,7 @@ set -euo pipefail
 [ "$(uname -s)" = Darwin ] || { echo "macos-dev-bundles.sh: macOS only" >&2; exit 2; }
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-programs="$root/target/debug"
+programs="${TORRO_PROGRAMS_DIR:-$root/target/debug}"
 out="${1:-$programs/bundles}"
 make_app="$root/packaging/macos/make-app.sh"
 icons="$root/packaging/macos/icons"
@@ -51,7 +52,11 @@ for program in torroworkplace torroinbox torro-inbox-mail torro-inbox-notificati
     [ -x "$programs/$program" ] || missing="$missing $program"
 done
 if [ -n "$missing" ]; then
-    echo "macos-dev-bundles.sh: missing in target/debug:$missing (run cargo build --workspace)" >&2
+    case "$programs" in
+        */release) build="cargo build --release" ;;
+        *) build="cargo build --workspace" ;;
+    esac
+    echo "macos-dev-bundles.sh: missing in $programs:$missing (run $build)" >&2
     exit 1
 fi
 

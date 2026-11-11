@@ -1676,6 +1676,7 @@ mod tests {
                     categories: Vec::new(),
                     sort_order: None,
                     link: None,
+                    focus: Default::default(),
                 },
             },
             // Issue #120: the note must arrive; a task without one for `i2` is refused.
@@ -1696,6 +1697,7 @@ mod tests {
                         categories: Vec::new(),
                         sort_order: None,
                         link: None,
+                        focus: Default::default(),
                     },
                 }
             }
@@ -1761,6 +1763,7 @@ mod tests {
                     categories: Vec::new(),
                     sort_order: None,
                     link: Some(torro_pim::model::Link::mail(&account, "<budget@example.org>")),
+                    focus: Default::default(),
                 },
             },
             Request::CreateTodoFromMail { id, .. } if id == "m:bare" => {

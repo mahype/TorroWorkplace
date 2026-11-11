@@ -13,7 +13,8 @@ pub mod source;
 
 pub use account::{AccountState, PimAccount, combined_state};
 pub use model::{
-    Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Collection, CollectionKind, Event, EventTime, Todo, Transparency,
+    Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Collection, CollectionKind, Event, EventTime, Focus, Todo,
+    Transparency,
 };
 pub use provider::{Change, Provider, ProviderError, SyncToken};
 pub use source::PimSource;

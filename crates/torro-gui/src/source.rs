@@ -662,6 +662,28 @@ impl PimSource for Source {
         delegate!(self, s => s.move_todo(todo, before))
     }
 
+    async fn set_focus(
+        &self,
+        todo: Todo,
+        focus: torro_pim::Focus,
+        release: Option<Todo>,
+    ) -> Result<Vec<Todo>, ProviderError> {
+        delegate!(self, s => s.set_focus(todo, focus, release))
+    }
+
+    async fn plan_todo(
+        &self,
+        todo: Todo,
+        day: chrono::NaiveDate,
+        before: Option<Todo>,
+    ) -> Result<Vec<Todo>, ProviderError> {
+        delegate!(self, s => s.plan_todo(todo, day, before))
+    }
+
+    async fn postpone_focus_plan(&self) -> Result<Vec<Todo>, ProviderError> {
+        delegate!(self, s => s.postpone_focus_plan())
+    }
+
     async fn unpin_issue(&self, collection: String, item: String) -> Result<(), ProviderError> {
         delegate!(self, s => s.unpin_issue(collection, item))
     }

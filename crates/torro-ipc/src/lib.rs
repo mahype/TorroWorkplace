@@ -1262,6 +1262,64 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         before: Option<String>,
     },
+    /// Sets how much focus the task `href` asks for (issue #596): `focus` is `"normal"`,
+    /// `"focus"` or `"strong"` ([`torro_pim::Focus`], stored as `X-TORRO-FOCUS`). With `release`
+    /// the task named there is set back to `"normal"` first, to free one of today's focus slots.
+    /// Answered with [`Response::Todos`]: the tasks written, as stored (the released one first).
+    ///
+    /// Focus slots ([`SettingKey::FocusSlots`]) count the open top-level tasks with a focus that are due
+    /// today or overdue in the lists the caller may see and write; a task that would add one while all are
+    /// taken is refused with `conflict` and nothing is written (focus to strong focus adds none).
+    /// The released task is written first: when the second write fails, it has lost its focus
+    /// already. Codes: `not-found` when `href` or `release.href` is no listed task (also an item of a
+    /// GitHub filter list for a client); `conflict` when an etag is not the task's current version or
+    /// the slots are full (`message` says which); `unsupported` for a GitHub filter list; `error` for a
+    /// focus on a done task.
+    #[serde(rename = "tasks.set_focus")]
+    SetFocus {
+        /// `href` of the task, as `tasks.list_todos` returned it.
+        href: String,
+        /// `etag` of the task, as `tasks.list_todos` returned it.
+        etag: String,
+        /// The new level.
+        focus: torro_pim::Focus,
+        /// A task whose focus is taken away first (it becomes `"normal"`); leave out when a slot is free.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        release: Option<TodoRef>,
+    },
+    /// Makes the task `href` due on `day` and puts it right before the task `before` among the
+    /// open top-level tasks due that day, in any list the caller may see and write, or behind them
+    /// without `before` (issue #596): the order of the tasks app's view by due date, also "To
+    /// tomorrow". A due time stays (on the new day); a task without a due date becomes due on the
+    /// whole day. Answered with [`Response::Todos`]: the tasks written, as stored, the moved one last.
+    ///
+    /// Shares `X-APPLE-SORT-ORDER` with `tasks.move_todo`: moving a task in its day changes its
+    /// place in "Manual order" of its list too, and the order Nextcloud Tasks shows. A task with a
+    /// focus moved onto today or earlier takes a focus slot like `tasks.set_focus`. Codes:
+    /// `not-found` when `href` or `before` is no listed task; `conflict` when `etag` is not the
+    /// task's current version or the focus slots are full; `unsupported` for a GitHub filter list;
+    /// `error` for a subtask, a done task, or `before` not due on `day`. When one of several
+    /// writes fails, the ones before it stay and the task, written last, has not moved yet.
+    #[serde(rename = "tasks.plan_todo")]
+    PlanTodo {
+        /// `href` of the task to move, as `tasks.list_todos` returned it.
+        href: String,
+        /// `etag` of the task to move, as `tasks.list_todos` returned it.
+        etag: String,
+        /// The day it becomes due on, e.g. `2026-11-11`.
+        day: NaiveDate,
+        /// `href` of the task due on `day` it goes right before; leave out for the end of the day.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<String>,
+    },
+    /// Moves today's focus plan to tomorrow (issue #596): every open top-level task with a focus
+    /// that is due today or overdue, in the lists the caller may see and write, becomes due
+    /// tomorrow (a due time stays), in its order and in front of the tasks due tomorrow. Answered
+    /// with [`Response::Todos`]: the tasks written, as stored; empty when there is no such task.
+    /// Shares `X-APPLE-SORT-ORDER` with `tasks.move_todo` like `tasks.plan_todo`. When a write
+    /// fails, the ones before it stay: reload and send it again.
+    #[serde(rename = "tasks.postpone_focus_plan")]
+    PostponeFocusPlan,
     /// Makes a task of the mail `id` in the mail account `account`, in the task list `collection`
     /// (task E8.7a): for mail in any folder, also one that is no inbox entry. The mail itself is
     /// not changed (not marked read, not moved). Answered with [`Response::Todo`]: the new task as
@@ -4327,6 +4385,15 @@ impl VoiceStatus {
     }
 }
 
+/// A task named by its place and version, as `tasks.list_todos` returned it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TodoRef {
+    /// `href` of the task.
+    pub href: String,
+    /// `etag` of the task.
+    pub etag: String,
+}
+
 /// A setting [`Request::SetSetting`] can change, with the `value` it takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -4356,6 +4423,11 @@ pub enum SettingKey {
     /// comes from `tasks.list_lists`; one the core does not know is `not-found`
     /// (`torro_core::settings::ListOrderEntry`).
     ListOrder,
+    /// How many open tasks due today or overdue may ask for focus at once (issue #596): a whole
+    /// number from 1 to 5, 3 unless changed. `tasks.set_focus`, `tasks.save_todo` and
+    /// `tasks.plan_todo` refuse a further focus task with `conflict` while the slots are full. Open
+    /// task windows follow.
+    FocusSlots,
     /// "Quiet during busy events": `true` (the default) or `false`. While on, inbox entries pop
     /// up during a busy event of a shown calendar only when they are urgent; the others are
     /// told in one message when the event ends.

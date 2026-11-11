@@ -2,7 +2,7 @@
 //! redesign R.2 in `docs/tasks/design.md`, mock-up `docs/prototypes/tasks/redesign.html`).
 //!
 //! [`arrange`] picks and orders the tasks for a filter, [`grouped`] splits them into the groups
-//! the Display menu asks for ([`GroupBy`]: due date – Overdue, Today, Upcoming, No date,
+//! the Display menu asks for ([`GroupBy`]: due date – Overdue, Today, Tomorrow, Later, No date,
 //! Completed –, list, priority, GitHub repository – what a filter list starts with, task G.3 –,
 //! or none); [`view`] renders them:
 //!
@@ -17,8 +17,9 @@
 //!   colours ([`issue_check`], task G.5: ticking closes the issue; locked with a tooltip when the
 //!   account's token may not write issues), for a pull request of a filter list its type symbol
 //!   in the colour of its state (no check), for a link in a task list (issue or pull request, task
-//!   G.6) the same check as an issue of a filter list, always tickable –, the priority column (only filled when set; urgent is an
-//!   orange square with "!"), `repo#123` for GitHub items, the title on one line with "…", hints
+//!   G.6) the same check as an issue of a filter list, always tickable –, the mark of priority and
+//!   focus (issue #596, [`widgets::focus_mark`]: colour = priority, form = focus; a click cycles the
+//!   focus, `Message::CycleFocus`), `repo#123` for GitHub items, the title on one line with "…", hints
 //!   (sub-tasks "2/4", notes), and at the right the GitHub labels (two and "+n"), checks, a review
 //!   asked for, where the item comes from (list or repository as a pill) and the due date in
 //!   `META` tabular (overdue in the attention colour – never Torro red). Done: `text_3`, struck
@@ -35,6 +36,17 @@
 //!
 //! Empty → an empty state ("Nothing to do"; in a filter list "No matches"). A filter list
 //! ([`ListData::read_only`]) offers no "+" in its group heads.
+//!
+//! **Focus** (issue #596): a focus task with open subtasks gets a second line "Next: … · 2/5", a
+//! task with strong focus is a card (`raised`, its subtasks – three, two in a narrow list, "+n" –
+//! and a progress bar) that holds its subtasks instead of rows; rows are as high as
+//! [`row_height`] says. The head "Today" shows the focus slots taken ([`widgets::slot_dots`]) and
+//! "To tomorrow" (`tasks.postpone_focus_plan`).
+//!
+//! **Planning the days** (issue #596, [`plans_days`]): in the view by due date the open top-level
+//! tasks of writable lists have a grip; a task goes among the tasks of its own day or onto the heads
+//! "Tomorrow" and "Later" ([`day_places`]), and Alt+↑/↓ steps within its day and over its edge
+//! ([`day_step`]) – both `tasks.plan_todo`. The day's order is `sort_order` ([`compare`]).
 //!
 //! For the keyboard (T.3) [`order`] gives the visible order of the rows and [`row_span`] where a
 //! row lies in the scrolled content, so `app.rs` can step through the rows and keep the chosen
@@ -68,8 +80,8 @@ use torro_gui::theme::{self, Palette, palette, radius, size, space};
 use torro_gui::typo::{self, ellipsize, text_width};
 use torro_gui::{datetime, layout, style, widgets};
 use torro_pim::model::{ChecksState, GitHubDetails, GitHubKind, GitHubState, Link, ReviewState};
-use torro_pim::source::{manual_order, same_level};
-use torro_pim::{EventTime, Todo};
+use torro_pim::source::{day_order, focus_taken, manual_order, plannable, postpone_plan, same_level};
+use torro_pim::{EventTime, Focus, Todo};
 
 use crate::app::{Filter, Message};
 
@@ -113,9 +125,15 @@ pub struct ListData<'a> {
     /// dragged onto a list in the sidebar, but there is no order to drop them into here, so no
     /// marker shows. Where [`ListData::manual`] is set the grip is there anyway.
     pub grips: bool,
-    /// While a row is dragged by its grip: the task (index into `todos`) and the place in [`order`]
-    /// the marker stands above (`order.len()`: under the last row; `None` until the pointer moved).
+    /// While a row is dragged by its grip: the task (index into `todos`) and the place it would go,
+    /// `None` until the pointer moved – in manual order a place of [`drop_places`], in the view by
+    /// due date one of [`day_places`] (issue #596).
     pub drag: Option<(usize, Option<usize>)>,
+    /// The ids of the lists that take changes: their open top-level tasks can be planned in the
+    /// view by due date and their tasks focused (issue #596).
+    pub writable: HashSet<String>,
+    /// How many focus slots a day has (`focus_slots`, issue #596): the head "Today" shows them.
+    pub focus_slots: usize,
 }
 
 /// The tasks to show as `(index into todos, depth)`: `depth` 0 for top-level tasks, 1 for
@@ -143,7 +161,13 @@ pub fn arrange(data: &ListData<'_>) -> Vec<(usize, usize)> {
 
     // Sorting first means the roots and every children list come out in display order.
     let parents = Parents::of(shown.iter().map(|&i| &todos[i]));
-    let mut tree = Tree { todos, children: HashMap::new(), visited: vec![false; todos.len()], out: Vec::new() };
+    let mut tree = Tree {
+        todos,
+        children: HashMap::new(),
+        visited: vec![false; todos.len()],
+        out: Vec::new(),
+        cards: !data.manual,
+    };
     let mut roots = Vec::new();
     for &i in &shown {
         match parents.of_task(&todos[i]) {
@@ -197,6 +221,9 @@ struct Tree<'a> {
     children: HashMap<(&'a str, &'a str), Vec<usize>>,
     visited: Vec<bool>,
     out: Vec<(usize, usize)>,
+    /// Tasks with strong focus are cards holding their subtasks (not in manual order, where every
+    /// subtask is a row to move).
+    cards: bool,
 }
 
 impl Tree<'_> {
@@ -209,10 +236,29 @@ impl Tree<'_> {
         let todos = self.todos;
         let kids = self.children.get(&(todos[index].collection.as_str(), todos[index].uid.as_str()));
         let kids = kids.cloned().unwrap_or_default();
+        // A task with strong focus shows its subtasks in its card (issue #596), not as rows.
+        let carded = self.cards && shows_card(&todos[index]);
         for kid in kids {
-            self.push(kid, depth + 1);
+            if carded { self.hide(kid) } else { self.push(kid, depth + 1) }
         }
     }
+
+    /// Leaves `index` and its subtasks out, so they do not come up as rows of their own later.
+    fn hide(&mut self, index: usize) {
+        if std::mem::replace(&mut self.visited[index], true) {
+            return;
+        }
+        let todos = self.todos;
+        let kids = self.children.get(&(todos[index].collection.as_str(), todos[index].uid.as_str()));
+        for kid in kids.cloned().unwrap_or_default() {
+            self.hide(kid);
+        }
+    }
+}
+
+/// An open task with strong focus is drawn as a card holding its subtasks (issue #596).
+fn shows_card(todo: &Todo) -> bool {
+    todo.focus == Focus::Strong && !todo.completed
 }
 
 /// Whether the filter and the completed switch let the task through.
@@ -243,13 +289,14 @@ fn search_order(a: &Todo, b: &Todo) -> Ordering {
         .then_with(|| a.uid.cmp(&b.uid))
 }
 
-/// Open before done, then due (none last), priority (none last), title.
+/// Open before done, then the due day (none last), then the order of a day (issue #596,
+/// [`day_order`]): placed by hand (`sort_order`, none last), whole-day before timed and by time,
+/// priority, title – the order the core numbers a day's moves in.
 fn compare(a: &Todo, b: &Todo) -> Ordering {
     a.completed
         .cmp(&b.completed)
-        .then_with(|| cmp_none_last(a.due.map(due_local), b.due.map(due_local)))
-        .then_with(|| cmp_none_last(priority_rank(a.priority), priority_rank(b.priority)))
-        .then_with(|| a.summary.to_lowercase().cmp(&b.summary.to_lowercase()))
+        .then_with(|| cmp_none_last(a.due.map(due_date), b.due.map(due_date)))
+        .then_with(|| day_order(a, b))
 }
 
 fn cmp_none_last<T: Ord>(a: Option<T>, b: Option<T>) -> Ordering {
@@ -258,14 +305,6 @@ fn cmp_none_last<T: Ord>(a: Option<T>, b: Option<T>) -> Ordering {
         (Some(_), None) => Ordering::Less,
         (None, Some(_)) => Ordering::Greater,
         (None, None) => Ordering::Equal,
-    }
-}
-
-/// iCalendar priorities run 1 (highest) to 9 (lowest); 0 and anything else count as none.
-fn priority_rank(priority: Option<u8>) -> Option<u8> {
-    match priority {
-        Some(rank @ 1..=9) => Some(rank),
-        _ => None,
     }
 }
 
@@ -363,6 +402,18 @@ impl Prio {
         }
     }
 
+    /// The colour of the class in [`widgets::focus_mark`] and [`widgets::priority_dot`] (issue
+    /// #596): 0 none, 1 low, 2 medium, 3 high, 4 urgent.
+    pub fn index(self) -> usize {
+        match self {
+            Prio::None => 0,
+            Prio::Low => 1,
+            Prio::Medium => 2,
+            Prio::High => 3,
+            Prio::Urgent => 4,
+        }
+    }
+
     /// The iCalendar priority saved for this class: urgent 1, high 3 (inside 1–4, which clients
     /// that only know "high" read as high), medium 5, low 9; `None` saves none.
     /// `Prio::of(prio.ical()) == prio` for every class.
@@ -373,17 +424,6 @@ impl Prio {
             Prio::Medium => Some(5),
             Prio::Low => Some(9),
             Prio::None => None,
-        }
-    }
-
-    /// How many of the three bars are lit: high 3, medium 2, low 1, none 0. Urgent has a glyph of
-    /// its own ([`prio_glyph`]); counted as bars it is all three.
-    pub fn level(self) -> usize {
-        match self {
-            Prio::Urgent | Prio::High => 3,
-            Prio::Medium => 2,
-            Prio::Low => 1,
-            Prio::None => 0,
         }
     }
 
@@ -402,7 +442,7 @@ impl Prio {
 /// How the Display menu groups the rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GroupBy {
-    /// Overdue, Today, Upcoming, No date, Completed.
+    /// Overdue, Today, Tomorrow, Later, No date, Completed.
     #[default]
     Due,
     /// One group per task list, by name.
@@ -425,8 +465,10 @@ pub enum Group {
     Overdue,
     /// Open, due today.
     Today,
-    /// Open, due after today.
-    Upcoming,
+    /// Open, due tomorrow (issue #596).
+    Tomorrow,
+    /// Open, due after tomorrow.
+    Later,
     /// Open, without a due date.
     NoDate,
     /// Done.
@@ -463,7 +505,8 @@ impl Group {
         match todo.due.map(|due| due_date(due).cmp(&today)) {
             Some(Ordering::Less) => Group::Overdue,
             Some(Ordering::Equal) => Group::Today,
-            Some(Ordering::Greater) => Group::Upcoming,
+            Some(Ordering::Greater) if todo.due.map(due_date) == today.succ_opt() => Group::Tomorrow,
+            Some(Ordering::Greater) => Group::Later,
             None => Group::NoDate,
         }
     }
@@ -473,14 +516,15 @@ impl Group {
         match self {
             Group::Overdue => (0, String::new()),
             Group::Today => (1, String::new()),
-            Group::Upcoming => (2, String::new()),
-            Group::NoDate => (3, String::new()),
-            Group::Completed => (4, String::new()),
-            Group::List(id) => (5, names.get(id).map_or_else(|| id.clone(), |name| name.to_lowercase())),
-            Group::Priority(prio) => (6 + *prio as u8, String::new()),
+            Group::Tomorrow => (2, String::new()),
+            Group::Later => (3, String::new()),
+            Group::NoDate => (4, String::new()),
+            Group::Completed => (5, String::new()),
+            Group::List(id) => (6, names.get(id).map_or_else(|| id.clone(), |name| name.to_lowercase())),
+            Group::Priority(prio) => (7 + *prio as u8, String::new()),
             // After the five priorities; tasks without a repository last.
-            Group::Repo(repo) if repo.is_empty() => (12, String::new()),
-            Group::Repo(repo) => (11, repo.to_lowercase()),
+            Group::Repo(repo) if repo.is_empty() => (13, String::new()),
+            Group::Repo(repo) => (12, repo.to_lowercase()),
             Group::All => (u8::MAX, String::new()),
         }
     }
@@ -490,7 +534,8 @@ impl Group {
         match self {
             Group::Overdue => tr("Overdue").into(),
             Group::Today => tr("Today").into(),
-            Group::Upcoming => tr("Upcoming").into(),
+            Group::Tomorrow => tr("Tomorrow").into(),
+            Group::Later => tr("Later").into(),
             Group::NoDate => tr("No date").into(),
             Group::Completed => tr("Completed").into(),
             Group::List(id) => names.get(id).cloned().unwrap_or_else(|| tr("List").into()),
@@ -560,26 +605,135 @@ pub fn order(data: &ListData<'_>) -> Vec<usize> {
 /// Where `todos[index]` lies in the list's content as `(top, bottom)`. The first row of a group
 /// starts at its head, so scrolling up to it shows the head too. `None` if the row is not shown.
 pub fn row_span(data: &ListData<'_>, index: usize) -> Option<(f32, f32)> {
+    placed(data).into_iter().find(|row| row.index == index).map(|row| (row.reach, row.bottom))
+}
+
+/// One row of the list as [`view`] stacks it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Placed {
+    /// Index into `todos`.
+    index: usize,
+    depth: usize,
+    /// Where the row starts and ends in the content.
+    top: f32,
+    bottom: f32,
+    /// Where scrolling up to the row should start: its group's head for the first row of a group.
+    reach: f32,
+}
+
+/// The rows [`view`] shows, top to bottom, with where each lies: heads [`size::row_group()`] high
+/// (with a line between two that touch), rows as high as [`row_height`] says.
+fn placed(data: &ListData<'_>) -> Vec<Placed> {
+    placed_with_heads(data).0
+}
+
+/// [`placed`], and the heads as `(group, top, bottom)`.
+fn placed_with_heads(data: &ListData<'_>) -> (Vec<Placed>, Vec<(Group, f32, f32)>) {
+    let mut rows = Vec::new();
+    let mut heads = Vec::new();
     let mut y = 0.0;
     let mut after_head = false;
     for (group, items) in grouped(data) {
         let head = y;
         if group != Group::All {
-            y += if after_head { LINE } else { 0.0 } + size::row_group();
+            y += if after_head { LINE } else { 0.0 };
+            heads.push((group.clone(), y, y + size::row_group()));
+            y += size::row_group();
             after_head = true;
         }
         if data.collapsed.contains(&group) {
             continue;
         }
-        for (n, (row, _)) in items.into_iter().enumerate() {
-            if row == index {
-                return Some((if n == 0 { head } else { y }, y + size::row()));
-            }
-            y += size::row();
+        for (n, (index, depth)) in items.into_iter().enumerate() {
+            let height = row_height(data, index);
+            rows.push(Placed { index, depth, top: y, bottom: y + height, reach: if n == 0 { head } else { y } });
+            y += height;
             after_head = false;
         }
     }
-    None
+    (rows, heads)
+}
+
+/// The meta line under a title: the next step of a focus task, a subtask in a card (issue #596).
+fn meta_line() -> f32 {
+    typo::line_height(typo::meta())
+}
+
+/// What a task shows besides its line (issue #596): a focus task with open subtasks the next one,
+/// a task with strong focus a card with its subtasks and their progress.
+#[derive(Debug, Clone, PartialEq)]
+enum Weight {
+    /// Only its line.
+    Plain,
+    /// A second line "Next: … · 2/5".
+    Next { next: String, done: usize, total: usize },
+    /// A card: the next step, the first subtasks (indices into `todos`, at most [`card_subtasks`]),
+    /// how many more there are, and the progress.
+    Card { next: Option<String>, shown: Vec<usize>, more: usize, done: usize, total: usize },
+}
+
+/// How many subtasks a card lists: three, two in a narrow list.
+fn card_subtasks(data: &ListData<'_>) -> usize {
+    if RowParts::for_width(data.width).hints { 3 } else { 2 }
+}
+
+/// The [`Weight`] of `todos[index]`.
+fn weight_of(data: &ListData<'_>, index: usize) -> Weight {
+    let todo = &data.todos[index];
+    if todo.completed || todo.focus == Focus::Normal {
+        return Weight::Plain;
+    }
+    let mut subtasks: Vec<usize> = (0..data.todos.len())
+        .filter(|&i| {
+            let t = &data.todos[i];
+            t.parent.as_deref() == Some(todo.uid.as_str()) && t.collection == todo.collection
+        })
+        .collect();
+    subtasks.sort_by(|&a, &b| compare(&data.todos[a], &data.todos[b]));
+    let total = subtasks.len();
+    let done = subtasks.iter().filter(|&&i| data.todos[i].completed).count();
+    let next = subtasks.iter().find(|&&i| !data.todos[i].completed).map(|&i| data.todos[i].summary.clone());
+    match todo.focus {
+        // In manual order every subtask is a row of its own: no card, the next step only.
+        Focus::Strong if !data.manual => {
+            let shown: Vec<usize> = subtasks.iter().copied().take(card_subtasks(data)).collect();
+            let more = total - shown.len();
+            Weight::Card { next, shown, more, done, total }
+        }
+        _ => match next {
+            Some(next) => Weight::Next { next, done, total },
+            None => Weight::Plain,
+        },
+    }
+}
+
+/// The meta lines under the title of a card: the next step, the subtasks, "+n more", the progress.
+fn card_lines(next: bool, shown: usize, more: usize, total: usize) -> usize {
+    usize::from(next) + shown + usize::from(more > 0) + usize::from(total > 0)
+}
+
+/// How high the row of `todos[index]` is: [`size::row()`], one meta line more for a focus task with
+/// a next step, a card for strong focus (its first line as high as the focus mark, a meta line each,
+/// its padding, and [`space::s()`] above and below it).
+fn row_height(data: &ListData<'_>, index: usize) -> f32 {
+    match weight_of(data, index) {
+        Weight::Plain => size::row(),
+        Weight::Next { .. } => size::row() + meta_line(),
+        Weight::Card { next, shown, more, total, .. } => {
+            card_height(card_lines(next.is_some(), shown.len(), more, total)) + 2.0 * space::s()
+        }
+    }
+}
+
+/// The height of a card with `lines` meta lines under its title.
+fn card_height(lines: usize) -> f32 {
+    widgets::FOCUS_CELL + lines as f32 * (meta_line() + space::xs()) + 2.0 * card_padding()
+}
+
+/// The inner padding of a card, by which it reaches into the row's padding (its check stays on the
+/// axis of the other rows' checks).
+fn card_padding() -> f32 {
+    space::m()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -612,10 +766,149 @@ pub fn drop_places(data: &ListData<'_>, index: usize) -> Vec<(usize, Option<usiz
 }
 
 /// The place of `places` ([`drop_places`]) whose marker is nearest to `y`, the pointer's height in
-/// the list's content (rows are [`size::row()`] high; a list in manual order has no heads).
-pub fn nearest_place(places: &[(usize, Option<usize>)], y: f32) -> Option<(usize, Option<usize>)> {
-    let distance = |place: usize| (place as f32 * size::row() - y).abs();
+/// the list's content (rows as high as [`row_height`]; a list in manual order has no heads).
+pub fn nearest_place(data: &ListData<'_>, places: &[(usize, Option<usize>)], y: f32) -> Option<(usize, Option<usize>)> {
+    let tops = row_tops(data);
+    let distance = |place: usize| (tops.get(place).copied().unwrap_or(0.0) - y).abs();
     places.iter().copied().min_by(|a, b| distance(a.0).total_cmp(&distance(b.0)))
+}
+
+/// The top of each row of [`order`] in the content, and the bottom of the last one at the end.
+fn row_tops(data: &ListData<'_>) -> Vec<f32> {
+    let rows = placed(data);
+    let end = rows.last().map_or(0.0, |row| row.bottom);
+    rows.iter().map(|row| row.top).chain([end]).collect()
+}
+
+/// Where a task dragged in the view by due date goes (issue #596): due on `day`, right before
+/// `todos[before]`, or behind the tasks of that day with `None` (`tasks.plan_todo`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DayDrop {
+    pub day: NaiveDate,
+    pub before: Option<usize>,
+}
+
+/// The view by due date takes moves (issue #596): due date groups, not a list in manual order or a
+/// GitHub filter list.
+pub fn plans_days(data: &ListData<'_>) -> bool {
+    !data.manual && !data.read_only && data.group_by == GroupBy::Due
+}
+
+/// `todos[index]` can be planned: an open top-level task of a list that takes changes.
+pub fn plannable_row(data: &ListData<'_>, index: usize) -> bool {
+    data.todos.get(index).is_some_and(|todo| plannable(todo) && data.writable.contains(&todo.collection))
+}
+
+/// The day a task is due on, locally.
+pub fn due_day(todo: &Todo) -> Option<NaiveDate> {
+    todo.due.map(due_date)
+}
+
+/// Where `todos[index]` may go in the view by due date (issue #596), as `(marker height, drop)`,
+/// top to bottom: in front of each open top-level task due the same day as it (overdue ones too)
+/// and behind the last of them, and onto the heads "Tomorrow" (in front of tomorrow's tasks) and
+/// "Later" (in front of those due the day after tomorrow) – never into "Overdue", "No date" or
+/// "Completed" from another day. Empty when the task cannot be planned or is not shown.
+pub fn day_places(data: &ListData<'_>, index: usize) -> Vec<(f32, DayDrop)> {
+    if !plans_days(data) || !plannable_row(data, index) {
+        return Vec::new();
+    }
+    let (rows, heads) = placed_with_heads(data);
+    if !rows.iter().any(|row| row.index == index) {
+        return Vec::new();
+    }
+    let own = due_day(&data.todos[index]);
+    let mut places = Vec::new();
+    if let Some(day) = own {
+        let mut end = None;
+        for (n, row) in rows.iter().enumerate() {
+            let todo = &data.todos[row.index];
+            if row.depth == 0 && plannable_row(data, row.index) && due_day(todo) == Some(day) {
+                places.push((row.top, DayDrop { day, before: Some(row.index) }));
+                // The end of the day lies behind the subtasks of its last task.
+                let subtree = rows[n + 1..].iter().take_while(|r| r.depth > 0).last().unwrap_or(row);
+                end = Some(subtree.bottom);
+            }
+        }
+        places.extend(end.map(|end| (end, DayDrop { day, before: None })));
+    }
+    // The first task of a day, shown or not (its group may be folded).
+    let first_on = |day: NaiveDate| {
+        (0..data.todos.len())
+            .filter(|&i| plannable_row(data, i) && due_day(&data.todos[i]) == Some(day))
+            .min_by(|&a, &b| day_order(&data.todos[a], &data.todos[b]))
+    };
+    for (group, _, bottom) in heads {
+        let day = match group {
+            Group::Tomorrow => data.today.succ_opt(),
+            Group::Later => data.today.succ_opt().and_then(|d| d.succ_opt()),
+            _ => None,
+        };
+        if let Some(day) = day.filter(|day| Some(*day) != own) {
+            places.push((bottom, DayDrop { day, before: first_on(day).filter(|&i| i != index) }));
+        }
+    }
+    places.sort_by(|a, b| a.0.total_cmp(&b.0));
+    places
+}
+
+/// The place of `places` ([`day_places`]) nearest to `y`, the pointer's height in the content.
+pub fn nearest_day_place(places: &[(f32, DayDrop)], y: f32) -> Option<usize> {
+    (0..places.len()).min_by(|&a, &b| (places[a].0 - y).abs().total_cmp(&(places[b].0 - y).abs()))
+}
+
+/// Where Alt+↑ (`up`) or Alt+↓ takes `todos[index]` in the view by due date (issue #596): one step
+/// among the open top-level tasks of its day; at the first (↑) or last (↓) of the day into the
+/// neighbouring day – today, tomorrow, then each later day the view shows tasks on (the day after
+/// tomorrow while none is shown) – to its end going up, to its front going down. `None` at the
+/// edges (above today, below the last later day), for a task that cannot be planned, and for one
+/// without a due date or overdue.
+pub fn day_step(data: &ListData<'_>, index: usize, up: bool) -> Option<DayDrop> {
+    if !plannable_row(data, index) {
+        return None;
+    }
+    let day = due_day(&data.todos[index])?;
+    let rows = arrange(data);
+    let of_day = |day: NaiveDate| -> Vec<usize> {
+        rows.iter()
+            .filter(|&&(i, depth)| depth == 0 && plannable_row(data, i) && due_day(&data.todos[i]) == Some(day))
+            .map(|&(i, _)| i)
+            .collect()
+    };
+    let today = data.today;
+    let (tomorrow, later) = (today.succ_opt()?, today.succ_opt()?.succ_opt()?);
+    // The days a step over the edge may go to: today, tomorrow and every later day the view shows
+    // tasks on – the day after tomorrow too while none is shown (PR #625: "Later" steps day by day).
+    let mut days: Vec<NaiveDate> = rows
+        .iter()
+        .filter(|&&(i, depth)| depth == 0 && plannable_row(data, i))
+        .filter_map(|&(i, _)| due_day(&data.todos[i]))
+        .filter(|d| *d > tomorrow)
+        .collect();
+    if days.is_empty() {
+        days.push(later);
+    }
+    days.extend([today, tomorrow]);
+    days.sort();
+    days.dedup();
+    let neighbour = |up: bool| -> Option<NaiveDate> {
+        if day < today {
+            return None;
+        }
+        if up { days.iter().rev().find(|d| **d < day).copied() } else { days.iter().find(|d| **d > day).copied() }
+    };
+    let own = of_day(day);
+    let at = own.iter().position(|&i| i == index)?;
+    if up {
+        if at > 0 {
+            return Some(DayDrop { day, before: Some(own[at - 1]) });
+        }
+        return neighbour(true).map(|day| DayDrop { day, before: None });
+    }
+    if at + 1 < own.len() {
+        return Some(DayDrop { day, before: own.get(at + 2).copied() });
+    }
+    neighbour(false).map(|day| DayDrop { day, before: of_day(day).first().copied() })
 }
 
 /// Where Alt+↑ (`up`) or Alt+↓ takes `todos[index]` in a list in manual order: one step among the
@@ -710,13 +1003,15 @@ pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
         let under_today = group == Group::Today;
         for (index, depth) in items {
             let line = row_view(&data, index, depth, parts, &subtasks, under_today);
-            let grip = match (data.manual, data.grips) {
-                (true, _) => Some(tr("Drag to reorder")),
-                (false, true) => Some(tr("Drag to a list")),
-                (false, false) => None,
+            let plans = plans_days(&data) && depth == 0 && plannable_row(&data, index);
+            let grip = match (data.manual, plans, data.grips) {
+                (true, _, _) => Some(tr("Drag to reorder")),
+                (false, true, _) => Some(tr("Drag to plan")),
+                (false, false, true) => Some(tr("Drag to a list")),
+                (false, false, false) => None,
             };
             list = list.push(match grip {
-                Some(hint) => with_grip(line, index, held == Some(index), hint),
+                Some(hint) => with_grip(line, index, row_height(&data, index), held == Some(index), hint),
                 None => line,
             });
             if held == Some(index) {
@@ -726,7 +1021,8 @@ pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
             after_head = false;
         }
     }
-    let content = if data.manual { manual_content(list, &data, rows, held_depth) } else { list.into() };
+    let _ = rows;
+    let content = if data.manual || plans_days(&data) { marked_content(list, &data, held_depth) } else { list.into() };
     scrollable(content)
         .id(SCROLL)
         .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y, viewport.bounds().height))
@@ -741,9 +1037,16 @@ pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
 /// padding before the leading symbol ([`layout::row_padding`]), shown while the pointer is over the
 /// row (and always on the row being dragged, `held`), `hint` as its tooltip. Pressing it starts a
 /// drag ([`Message::DragStart`]); the press stays with the grip, so the row does not open.
-fn with_grip<'a>(line: Element<'a, Message>, index: usize, held: bool, hint: &'static str) -> Element<'a, Message> {
-    // The row's height without its hairline, in a design that draws one.
-    let height = size::row() - if layout::list().separators { LINE } else { 0.0 };
+fn with_grip<'a>(
+    line: Element<'a, Message>,
+    index: usize,
+    row: f32,
+    held: bool,
+    hint: &'static str,
+) -> Element<'a, Message> {
+    // The row's height without its hairline, in a design that draws one; the grip stands by the
+    // row's first line, as high as a plain row.
+    let height = size::row().min(row) - if layout::list().separators { LINE } else { 0.0 };
     let mark = container(toned(Icon::GripVertical, icon::SIZE_SM, Tone::Text3))
         .center_x(layout::row_padding().left)
         .center_y(height);
@@ -753,19 +1056,20 @@ fn with_grip<'a>(line: Element<'a, Message>, index: usize, held: bool, hint: &'s
     if held { stack![line, grip].into() } else { hover(line, grip) }
 }
 
-/// The rows of a list in manual order, with the marker over them where a dragged task would go.
-/// The pointer's height is reported ([`Message::DragMove`]) only while a row is dragged, so merely
-/// moving the pointer over the list costs nothing. The same widgets with and without a drag, so
-/// starting one keeps the rows' state.
-fn manual_content<'a>(
-    rows: Column<'a, Message>,
-    data: &ListData<'a>,
-    count: usize,
-    depth: usize,
-) -> Element<'a, Message> {
-    let marker = match data.drag {
-        Some((_, Some(place))) => drop_marker(place, count, depth),
-        _ => Space::new().into(),
+/// The rows of a list in manual order, or of the view by due date (issue #596), with the marker over
+/// them where a dragged task would go. The pointer's height is reported ([`Message::DragMove`]) only
+/// while a row is dragged, so merely moving the pointer over the list costs nothing. The same widgets
+/// with and without a drag, so starting one keeps the rows' state.
+fn marked_content<'a>(rows: Column<'a, Message>, data: &ListData<'a>, depth: usize) -> Element<'a, Message> {
+    let bottom = placed(data).last().map_or(0.0, |row| row.bottom);
+    let top = match data.drag {
+        Some((_, Some(place))) if data.manual => row_tops(data).get(place).copied(),
+        Some((index, Some(place))) => day_places(data, index).get(place).map(|&(y, _)| y),
+        _ => None,
+    };
+    let marker = match top {
+        Some(top) => drop_marker(top, bottom, if data.manual { depth } else { 0 }),
+        None => Space::new().into(),
     };
     let area = mouse_area(stack![rows, marker].width(Fill));
     match data.drag {
@@ -777,11 +1081,10 @@ fn manual_content<'a>(
 /// How thick the drop marker is.
 const MARKER: f32 = 2.0 * size::HAIRLINE;
 
-/// The drop marker: a 2-px line in `text_2` on the line above the row at `place` (under the last
-/// of `rows` at the end), from the indent of the dragged task's level (`depth`) to the right edge.
-fn drop_marker<'a>(place: usize, rows: usize, depth: usize) -> Element<'a, Message> {
-    let bottom = rows as f32 * size::row();
-    let top = (place as f32 * size::row() - MARKER / 2.0).clamp(0.0, (bottom - MARKER).max(0.0));
+/// The drop marker: a 2-px line in `text_2` at `top` in the content (kept inside the rows, which end
+/// at `bottom`), from the indent of the dragged task's level (`depth`) to the right edge.
+fn drop_marker<'a>(top: f32, bottom: f32, depth: usize) -> Element<'a, Message> {
+    let top = (top - MARKER / 2.0).clamp(0.0, (bottom - MARKER).max(0.0));
     let line = container(Space::new().width(Fill).height(MARKER)).style(|t: &Theme| container::Style {
         background: Some(Background::Color(palette(t).text_2)),
         border: border::rounded(MARKER / 2.0),
@@ -823,9 +1126,26 @@ fn group_head<'a>(group: &Group, data: &ListData<'a>, count: usize, folded: bool
         typo::text(typo::caption(), group.label(&data.names)).style(theme::text_2).wrapping(text::Wrapping::None),
         Space::new().width(space::s()),
         typo::text(typo::meta().tabular(), count.to_string()).style(theme::text_3),
-        Space::new().width(Fill),
     ]
     .align_y(Alignment::Center);
+    // Today's focus slots and the button that moves today's focus plan to tomorrow (issue #596).
+    // Counted as the core counts: the lists that take changes.
+    let writable: Vec<Todo> = data.todos.iter().filter(|t| data.writable.contains(&t.collection)).cloned().collect();
+    let taken = focus_taken(&writable, data.today, &chrono::Local);
+    let movable = !postpone_plan(&writable, data.today, &chrono::Local).is_empty();
+    if *group == Group::Today && plans_days(data) && (taken > 0 || data.focus_slots > 0) {
+        line = line
+            .push(Space::new().width(space::s()))
+            .push(typo::text(typo::caption(), tr("Focus")).style(theme::text_3).wrapping(text::Wrapping::None))
+            .push(Space::new().width(space::s()))
+            .push(widgets::slot_dots(taken, data.focus_slots));
+    }
+    line = line.push(Space::new().width(Fill));
+    if *group == Group::Today && plans_days(data) && movable {
+        let button =
+            widgets::text_button(None, tr("To tomorrow"), style::button::ghost, Some(Message::PostponeFocusPlan));
+        line = line.push(widgets::with_tooltip(button, tr("Move today's focus tasks to tomorrow (Shift+T)")));
+    }
     if group.can_add() && !data.read_only {
         let add = button(center(toned(Icon::Plus, icon::SIZE_SM, Tone::Text3)))
             .width(add_edge())
@@ -865,12 +1185,13 @@ fn group_mark<'a>(group: &Group, data: &ListData<'a>) -> Element<'a, Message> {
     match group {
         Group::Overdue => toned(Icon::CircleAlert, icon::SIZE_SM, Tone::Attention),
         Group::Today => toned(Icon::Sun, icon::SIZE_SM, Tone::Text3),
-        Group::Upcoming => toned(Icon::CalendarClock, icon::SIZE_SM, Tone::Text3),
+        Group::Tomorrow => toned(Icon::CalendarDays, icon::SIZE_SM, Tone::Text3),
+        Group::Later => toned(Icon::CalendarClock, icon::SIZE_SM, Tone::Text3),
         Group::NoDate => toned(Icon::Layers, icon::SIZE_SM, Tone::Text3),
         Group::Completed => toned(Icon::CircleCheck, icon::SIZE_SM, Tone::Text3),
         Group::List(id) => ring(colour_of(data, id)),
         Group::Priority(Prio::None) => toned(Icon::SignalHigh, icon::SIZE_SM, Tone::Text3),
-        Group::Priority(prio) => prio_glyph(*prio),
+        Group::Priority(prio) => container(prio_glyph(*prio)).center(icon::SIZE_SM).into(),
         Group::Repo(_) => toned(Icon::FolderGit2, icon::SIZE_SM, Tone::Text3),
         Group::All => Space::new().into(),
     }
@@ -990,10 +1311,17 @@ fn row_view<'a>(
         Some(may_close) => github.filter(|details| details.kind == GitHubKind::Issue).map(|_| *may_close),
         None => github.map(|_| true),
     };
+    // The mark of priority and focus (issue #596): a click cycles the focus where it can be stored.
+    let focusable = !todo.completed && data.writable.contains(&todo.collection);
+    let mark = widgets::focus_mark(
+        Prio::of(todo.priority).index(),
+        todo.focus,
+        focusable.then_some(Message::CycleFocus(index)),
+    );
     line = line
         .push(lead(todo, index, colour_of(data, &todo.collection), issue))
-        .push(Space::new().width(space::m()))
-        .push(container(prio_cell(todo.priority)).width(icon::SIZE_SM))
+        .push(Space::new().width(space::s()))
+        .push(mark)
         .push(Space::new().width(space::s()));
     if let Some((repo, number)) = todo.link.as_ref().and_then(Link::github_ref) {
         let name = repo.rsplit('/').next().unwrap_or(repo);
@@ -1007,7 +1335,102 @@ fn row_view<'a>(
     let selected = data.selected == Some(index);
     let filled = fills(layout::list(), selected);
     line = line.push(right_part(data, todo, github, parts, under_today, filled));
-    widgets::list_row(vec![line.width(Fill).into()], selected, Some(Message::Select(index)))
+    let line = line.width(Fill);
+    // The meta lines start under the title: behind the indent, the check and the mark.
+    let indent = depth as f32 * space::xl() + style::CHECK_SIZE + 2.0 * space::s() + widgets::FOCUS_CELL;
+    let height = row_height(data, index);
+    match weight_of(data, index) {
+        Weight::Plain => widgets::list_row(vec![line.into()], selected, Some(Message::Select(index))),
+        Weight::Next { next, done, total } => {
+            let content = column![line, row![Space::new().width(indent), next_step(next, Some((done, total)))]];
+            widgets::list_row_sized(content, height, 0.0, selected, Some(Message::Select(index)))
+        }
+        Weight::Card { next, shown, more, done, total } => {
+            let mut lines = column![line].spacing(space::xs());
+            // The count stands at the progress bar below, not again by the next step.
+            if let Some(next) = next {
+                lines = lines.push(row![Space::new().width(indent), next_step(next, None)]);
+            }
+            for sub in shown {
+                let subtask = &data.todos[sub];
+                let step = row![
+                    lead(subtask, sub, colour_of(data, &subtask.collection), None),
+                    Space::new().width(space::s()),
+                    container(row_title_meta(subtask.summary.clone(), subtask.completed)).width(Fill).clip(true),
+                ]
+                .align_y(Alignment::Center)
+                .height(meta_line());
+                lines = lines.push(row![Space::new().width(indent), step]);
+            }
+            if more > 0 {
+                let rest = trf("+{n} more", &[("n", &more)]);
+                lines = lines.push(row![
+                    Space::new().width(indent),
+                    typo::text(typo::meta(), rest).style(theme::text_3).wrapping(text::Wrapping::None)
+                ]);
+            }
+            if total > 0 {
+                let progress = row![
+                    widgets::progress_bar(done, total),
+                    typo::text(typo::meta().tabular(), format!("{done}/{total}")).style(theme::text_3)
+                ]
+                .spacing(space::s())
+                .align_y(Alignment::Center)
+                .height(meta_line());
+                lines = lines.push(row![Space::new().width(indent), progress]);
+            }
+            let card = container(lines).width(Fill).padding(card_padding()).style(|t: &Theme| {
+                let p = palette(t);
+                container::Style {
+                    background: Some(Background::Color(p.raised)),
+                    border: border::rounded(radius::sm()).color(p.line).width(LINE),
+                    ..container::Style::default()
+                }
+            });
+            widgets::list_row_sized(card, height, card_padding(), selected, Some(Message::Select(index)))
+        }
+    }
+}
+
+/// "Next: <step> · 2/5" under the title of a focus task (issue #596), in `META`: the step in
+/// `text_2`, the count (`done` of `total`, left out in a card, which shows it at its progress bar)
+/// in `text_3`, cut with "…" to its room.
+fn next_step<'a>(next: String, count: Option<(usize, usize)>) -> Element<'a, Message> {
+    let words = trf("Next: {step}", &[("step", &next)]);
+    let count = count.map(|(done, total)| format!(" · {done}/{total}")).unwrap_or_default();
+    responsive(move |room| {
+        let count_width = text_width(&count, typo::meta().tabular());
+        let room = (room.width - count_width).max(0.0);
+        row![
+            container(
+                typo::text(typo::meta(), ellipsize(&words, typo::meta(), room))
+                    .style(theme::text_2)
+                    .wrapping(text::Wrapping::None)
+            )
+            .max_width(room)
+            .clip(true),
+            typo::text(typo::meta().tabular(), count.clone()).style(theme::text_3).wrapping(text::Wrapping::None),
+        ]
+        .align_y(Alignment::Center)
+        .into()
+    })
+    .height(meta_line())
+    .into()
+}
+
+/// A subtask's title in a card, in `META`; a done one struck through in `text_3`.
+fn row_title_meta<'a>(title: String, done: bool) -> Element<'a, Message> {
+    let fragment: text::Span<'static, ()> = span(title).strikethrough(done);
+    rich_text(vec![fragment])
+        .size(typo::meta().size)
+        .line_height(typo::meta().line_height)
+        .font(typo::meta().font)
+        .wrapping(text::Wrapping::None)
+        .style(move |t: &Theme| {
+            let p = palette(t);
+            text::Style { color: Some(if done { p.text_3 } else { p.text_2 }) }
+        })
+        .into()
 }
 
 /// Whether a row that is `selected` or not is drawn in the accent colour in the list look `look`:
@@ -1245,40 +1668,10 @@ pub(crate) fn toned<'a, M: 'a>(which: Icon, edge: f32, tone: Tone) -> Element<'a
     icon::icon(which, edge).style(move |t, _| svg::Style { color: Some(tone.of(&palette(t))) }).into()
 }
 
-/// The priority column of a row: empty without a priority, the urgent square, or the bars.
-fn prio_cell<'a>(priority: Option<u8>) -> Element<'a, Message> {
-    match Prio::of(priority) {
-        Prio::None => Space::new().into(),
-        prio => prio_glyph(prio),
-    }
-}
-
-/// The glyph of a priority, 14 wide: urgent as an orange square with "!" ([`urgent_colours`]), the
-/// others as three bars (none: all dim).
+/// The priority as the dot of the focus mark (issue #596, [`widgets::priority_dot`]): for group
+/// heads, chips and menus, which say the priority in words beside it.
 pub(crate) fn prio_glyph<'a, M: 'a>(prio: Prio) -> Element<'a, M> {
-    match prio {
-        Prio::Urgent => container(
-            typo::text(typo::caption(), "!").style(|t: &Theme| text::Style { color: Some(urgent_colours(t).1) }),
-        )
-        .center(icon::SIZE_SM)
-        .style(|t: &Theme| container::Style {
-            background: Some(Background::Color(urgent_colours(t).0)),
-            border: border::rounded(radius::xs()),
-            ..container::Style::default()
-        })
-        .into(),
-        other => priority_view(other.level()),
-    }
-}
-
-/// The colours of the urgent square drawn in `t`, `(square, "!")`: `attention_text` with the "!" in
-/// `panel` – dark on the bright orange of dark mode, white on the darker orange of light mode. In a row
-/// drawn in the accent colour (Console's chosen row, [`fills`]; its cells are drawn in
-/// `theme::on_accent_theme`, which stays itself) the square is `on_accent` with the "!" in `accent`: a
-/// coloured mark on the accent would not read (issue #291, as the list's dot and the due date).
-fn urgent_colours(t: &Theme) -> (Color, Color) {
-    let p = palette(t);
-    if theme::on_accent_theme(t) == *t { (p.on_accent, p.accent) } else { (p.attention_text, p.panel) }
+    widgets::priority_dot(prio.index())
 }
 
 /// The title on one line; a done task struck through in `text_3`.
@@ -1294,47 +1687,6 @@ pub(crate) fn title_view<'a, M: 'a>(todo: &Todo) -> Element<'a, M> {
             let p = palette(t);
             text::Style { color: Some(if completed { p.text_3 } else { p.text }) }
         })
-        .into()
-}
-
-/// Width of one priority bar and the gap between the bars (the mock-up's `.prio`).
-// design-check: allow the priority glyph is drawn from boxes, its sizes are the mock-up's
-const BAR_WIDTH: f32 = 3.0;
-const BAR_GAP: f32 = 2.0;
-/// Heights of the three bars, rising; the tallest is the height of the glyph.
-const BAR_HEIGHTS: [f32; 3] = [5.0, 8.0, 12.0];
-const BAR_RADIUS: f32 = 1.0;
-
-/// The colour of a bar of the priority glyph that is not lit, drawn in `t`: `line_strong`, or in a row
-/// drawn in the accent colour – whose cells are drawn in `theme::on_accent_theme`, which stays itself –
-/// `on_accent` at the disabled opacity.
-fn unlit_bar(t: &Theme, p: &Palette) -> Color {
-    if theme::on_accent_theme(t) == *t { p.on_accent.scale_alpha(style::DISABLED_ALPHA) } else { p.line_strong }
-}
-
-/// Linear's priority glyph: three rising bars in a 14-wide cell, the first `level` in `text_2`,
-/// the rest in `line_strong`. Shape, not colour, carries the level. In a row drawn in the accent
-/// colour (Console's chosen row, [`fills`]) the lit bars are `on_accent` (its `text_2`) and the others
-/// `on_accent` at the disabled opacity: `line_strong` would not show on the accent.
-pub(crate) fn priority_view<'a, M: 'a>(level: usize) -> Element<'a, M> {
-    let bars = BAR_HEIGHTS.into_iter().enumerate().map(|(i, height)| {
-        let lit = i < level;
-        container(Space::new().width(BAR_WIDTH).height(height))
-            .style(move |t: &Theme| {
-                let p = palette(t);
-                container::Style {
-                    background: Some(Background::Color(if lit { p.text_2 } else { unlit_bar(t, &p) })),
-                    border: border::rounded(BAR_RADIUS),
-                    ..container::Style::default()
-                }
-            })
-            .into()
-    });
-    let glyph = BAR_HEIGHTS[2];
-    container(row(bars).spacing(BAR_GAP).align_y(Alignment::End))
-        .width(icon::SIZE_SM)
-        .height(glyph)
-        .align_bottom(glyph)
         .into()
 }
 
@@ -1368,6 +1720,7 @@ mod tests {
             categories: Vec::new(),
             sort_order: None,
             link: None,
+            focus: Default::default(),
         }
     }
 
@@ -1399,6 +1752,8 @@ mod tests {
             manual: false,
             grips: false,
             drag: None,
+            writable: ["work".to_string(), "home".to_string()].into(),
+            focus_slots: 3,
         }
     }
 
@@ -1579,8 +1934,8 @@ mod tests {
         let expected =
             [Prio::Urgent, Prio::High, Prio::High, Prio::Medium, Prio::Low, Prio::Low, Prio::None, Prio::None];
         assert_eq!(classes, expected, "1 is urgent, the square");
-        let levels: Vec<usize> = expected.iter().map(|prio| prio.level()).collect();
-        assert_eq!(levels, [3, 3, 3, 2, 1, 1, 0, 0]);
+        let colours: Vec<usize> = expected.iter().map(|prio| prio.index()).collect();
+        assert_eq!(colours, [4, 3, 3, 2, 1, 1, 0, 0], "urgent red, high orange … none grey");
     }
 
     #[test]
@@ -1604,7 +1959,8 @@ mod tests {
         let mut done = Todo { due: due(9), ..todo("d", "done") };
         done.completed = true;
         let todos = vec![
-            Todo { due: due(12), ..todo("u", "later") },
+            Todo { due: due(12), ..todo("m", "tomorrow") },
+            Todo { due: due(14), ..todo("u", "later") },
             Todo { due: due(11), ..todo("t", "today") },
             Todo { due: due(9), ..todo("o", "overdue") },
             // An undated subtask stays under its overdue parent instead of moving to "No date".
@@ -1618,7 +1974,8 @@ mod tests {
             [
                 (Group::Overdue, strings(&["overdue", "child"])),
                 (Group::Today, strings(&["today"])),
-                (Group::Upcoming, strings(&["later"])),
+                (Group::Tomorrow, strings(&["tomorrow"])),
+                (Group::Later, strings(&["later"])),
                 (Group::NoDate, strings(&["undated"])),
                 (Group::Completed, strings(&["done"])),
             ]
@@ -1770,18 +2127,102 @@ mod tests {
         assert_eq!(due_min(), size::axis_narrow(), "not the header's height");
     }
 
-    /// Issue #291 (review of the three designs): the urgent square keeps its orange with a "!" in the
-    /// panel's colour, but in the chosen row drawn in the accent (Console) it turns `on_accent` with
-    /// the "!" in `accent` – an orange square on red would not read; in light and dark mode.
+    // Focus and the order of a day (issue #596).
+
     #[test]
-    fn the_urgent_square_turns_on_accent_in_a_filled_row() {
-        for window in [theme::theme(), theme::light()] {
-            let p = palette(&window);
-            assert_eq!(urgent_colours(&window), (p.attention_text, p.panel), "elsewhere: orange with \"!\"");
-            let on = theme::on_accent_theme(&window);
-            assert_eq!(urgent_colours(&on), (p.on_accent, p.accent), "on the accent: on_accent with \"!\"");
-            assert!(p.accent.relative_contrast(p.on_accent) >= 4.5, "the \"!\" reads on its square");
-        }
+    fn focus_rows_grow_and_a_strong_focus_holds_its_subtasks_in_a_card() {
+        let todos = vec![
+            Todo { due: due(11), focus: Focus::Strong, ..todo("s", "offer") },
+            Todo { parent: Some("s".into()), completed: true, ..todo("s1", "services") },
+            Todo { parent: Some("s".into()), ..todo("s2", "prices") },
+            Todo { due: due(11), focus: Focus::Focus, ..todo("f", "sync bug") },
+            Todo { parent: Some("f".into()), ..todo("f1", "reproduce") },
+            Todo { due: due(11), focus: Focus::Focus, ..todo("n", "no steps") },
+            Todo { due: due(11), ..todo("p", "plain") },
+        ];
+        let filter = Filter::All;
+        let d = data(&todos, &filter, true);
+        let names: Vec<&str> = order(&d).into_iter().map(|i| todos[i].uid.as_str()).collect();
+        assert!(!names.contains(&"s1") && !names.contains(&"s2"), "the card holds them: {names:?}");
+        assert!(names.contains(&"f1"), "a focus task keeps its subtask rows");
+        let at = |uid: &str| todos.iter().position(|t| t.uid == uid).expect("task");
+        assert_eq!(row_height(&d, at("p")), size::row());
+        assert_eq!(row_height(&d, at("n")), size::row(), "no next step: a plain row");
+        assert_eq!(row_height(&d, at("f")), size::row() + meta_line());
+        assert_eq!(
+            weight_of(&d, at("s")),
+            Weight::Card { next: Some("prices".into()), shown: vec![at("s2"), at("s1")], more: 0, done: 1, total: 2 }
+        );
+        // Next, two subtasks and the progress under the title.
+        assert_eq!(row_height(&d, at("s")), card_height(4) + 2.0 * space::s());
+        let (top, bottom) = row_span(&d, at("p")).expect("shown");
+        assert_eq!(bottom - top, size::row());
+        let _ = view(d);
+        // In manual order every subtask stays a row.
+        let manual = ListData { manual: true, ..data(&todos, &filter, true) };
+        assert!(order(&manual).contains(&at("s1")));
+    }
+
+    #[test]
+    fn alt_arrows_step_day_by_day_through_later() {
+        let todos = vec![
+            Todo { due: due(12), ..todo("t", "tomorrow") },
+            Todo { due: due(15), ..todo("a", "fifteenth") },
+            Todo { due: due(17), ..todo("b", "seventeenth") },
+        ];
+        let filter = Filter::All;
+        let d = data(&todos, &filter, false);
+        let day = |d: u32| NaiveDate::from_ymd_opt(2026, 10, d).expect("a day");
+        assert_eq!(day_step(&d, 2, true), Some(DayDrop { day: day(15), before: None }), "the later day above");
+        assert_eq!(day_step(&d, 1, false), Some(DayDrop { day: day(17), before: Some(2) }), "the later day below");
+        assert_eq!(day_step(&d, 0, false), Some(DayDrop { day: day(15), before: Some(1) }), "tomorrow down");
+        assert_eq!(day_step(&d, 1, true), Some(DayDrop { day: day(12), before: None }));
+        assert_eq!(day_step(&d, 2, false), None);
+    }
+
+    #[test]
+    fn a_task_is_planned_within_its_day_and_onto_tomorrow_and_later() {
+        let todos = vec![
+            Todo { due: due(11), sort_order: Some(10), ..todo("a", "a") },
+            Todo { due: due(11), sort_order: Some(20), ..todo("b", "b") },
+            Todo { due: due(12), ..todo("t", "tomorrow") },
+            Todo { due: due(15), ..todo("l", "later") },
+            Todo { due: due(9), ..todo("o", "overdue") },
+            Todo { due: due(11), collection: "github:bugs".into(), ..todo("g", "issue") },
+            todo("n", "undated"),
+        ];
+        let filter = Filter::All;
+        let d = data(&todos, &filter, false);
+        let at = |uid: &str| Some(todos.iter().position(|t| t.uid == uid).expect("task"));
+        let drops: Vec<DayDrop> = day_places(&d, 1).into_iter().map(|(_, drop)| drop).collect();
+        let day = |d: u32| NaiveDate::from_ymd_opt(2026, 10, d).expect("a day");
+        assert_eq!(
+            drops,
+            [
+                DayDrop { day: day(11), before: at("a") },
+                DayDrop { day: day(11), before: at("b") },
+                DayDrop { day: day(11), before: None },
+                DayDrop { day: day(12), before: at("t") },
+                DayDrop { day: day(13), before: None },
+            ],
+            "today among its own (not the issue of another list), the heads of tomorrow and later"
+        );
+        assert!(day_places(&d, at("g").expect("g")).is_empty(), "a list that takes no changes");
+        let undated: Vec<NaiveDate> =
+            day_places(&d, at("n").expect("n")).into_iter().map(|(_, drop)| drop.day).collect();
+        assert_eq!(undated, [day(12), day(13)], "without a day only onto the heads");
+        assert_eq!(nearest_day_place(&day_places(&d, 1), 0.0), Some(0));
+
+        // Alt+↑/↓: within the day, then over its edge.
+        assert_eq!(day_step(&d, 1, true), Some(DayDrop { day: day(11), before: at("a") }));
+        assert_eq!(day_step(&d, 1, false), Some(DayDrop { day: day(12), before: at("t") }), "last of today: tomorrow");
+        assert_eq!(day_step(&d, 2, true), Some(DayDrop { day: day(11), before: None }), "first of tomorrow: today");
+        assert_eq!(day_step(&d, 0, true), None, "the top of today");
+        assert_eq!(day_step(&d, 3, true), Some(DayDrop { day: day(12), before: None }), "later up: tomorrow");
+        assert_eq!(day_step(&d, 3, false), None, "the last later day");
+        assert_eq!(day_step(&d, 4, true), None, "overdue stays");
+        let manual = ListData { manual: true, ..data(&todos, &filter, false) };
+        assert!(!plans_days(&manual) && day_places(&manual, 1).is_empty());
     }
 
     #[test]
@@ -2004,7 +2445,7 @@ mod tests {
         let all = Filter::All;
         let d = ListData { issue_lists: HashMap::new(), ..data(&todos, &all, true) };
         let rows: Vec<&str> = arrange(&d).into_iter().map(|(i, _)| todos[i].uid.as_str()).collect();
-        assert_eq!(rows, ["c", "a", "b", "d"], "by due date, then title");
+        assert_eq!(rows, ["c", "b", "a", "d"], "by due date, then the order of the day: placed by hand first");
     }
 
     #[test]
@@ -2101,10 +2542,10 @@ mod tests {
         assert!(drop_places(&ListData { manual: true, ..hidden }, index_of(&todos, "d")).is_empty());
 
         let places = drop_places(&d, index_of(&todos, "b"));
-        assert_eq!(nearest_place(&places, 0.0), Some((0, at("a"))));
-        assert_eq!(nearest_place(&places, 1.4 * size::row()), Some((0, at("a"))), "nearer a than b");
-        assert_eq!(nearest_place(&places, 4.6 * size::row()), Some((5, None)));
-        assert_eq!(nearest_place(&[], 10.0), None);
+        assert_eq!(nearest_place(&d, &places, 0.0), Some((0, at("a"))));
+        assert_eq!(nearest_place(&d, &places, 1.4 * size::row()), Some((0, at("a"))), "nearer a than b");
+        assert_eq!(nearest_place(&d, &places, 4.6 * size::row()), Some((5, None)));
+        assert_eq!(nearest_place(&d, &[], 10.0), None);
     }
 
     #[test]

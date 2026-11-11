@@ -56,8 +56,8 @@ use reqwest::{Method, StatusCode, Url};
 use roxmltree::Node;
 use torro_pim::model::{EventStatus, Repeat, RepeatEnd, SeriesScope};
 use torro_pim::{
-    Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Collection, CollectionKind, Event, EventTime, ProviderError, Todo,
-    Transparency,
+    Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Collection, CollectionKind, Event, EventTime, Focus, ProviderError,
+    Todo, Transparency,
 };
 
 use crate::CalDavClient;
@@ -1315,7 +1315,22 @@ fn todo_fields(todo: &Todo, before: Option<&Todo>, now: DateTime<Utc>) -> Vec<Fi
             differs(|a, b| link_id(a) == link_id(b)),
             link_id(todo).map(|id| text_line("X-TORRO-LINK", id)).into_iter().collect(),
         ),
+        // A normal task writes no line, so tasks other apps wrote stay as they were.
+        Field::new(
+            &["X-TORRO-FOCUS"],
+            differs(|a, b| a.focus == b.focus),
+            focus_line(todo.focus).into_iter().collect(),
+        ),
     ]
+}
+
+/// `X-TORRO-FOCUS:1` or `:2`; none for a normal task (as [`ical`] reads it back).
+fn focus_line(focus: Focus) -> Option<String> {
+    match focus {
+        Focus::Normal => None,
+        Focus::Focus => Some("X-TORRO-FOCUS:1".to_string()),
+        Focus::Strong => Some("X-TORRO-FOCUS:2".to_string()),
+    }
 }
 
 /// A URI value as it is written: without control characters (a line break would start a new
@@ -1850,6 +1865,7 @@ mod tests {
             categories: Vec::new(),
             sort_order: None,
             link: None,
+            focus: Default::default(),
         }
     }
 
@@ -2204,6 +2220,26 @@ mod tests {
         ];
         assert_rewritten(&stored, &written, &replaced, &stamps());
         assert_eq!(read_todo(&written), todo);
+    }
+
+    #[test]
+    fn focus_writes_its_line_and_a_nextcloud_task_keeps_the_rest() {
+        let mut task = read_todo(NEXTCLOUD_TODO);
+        assert_eq!(task.focus, Focus::Normal, "a task from another app has no focus");
+        task.focus = Focus::Strong;
+        let written = todo_onto(NEXTCLOUD_TODO, &task, later());
+        assert_rewritten(NEXTCLOUD_TODO, &written, &TODO_STAMPS, &with_stamps(&["X-TORRO-FOCUS:2"]));
+        assert_eq!(read_todo(&written), task, "the written task reads back as saved");
+
+        // From strong to focus replaces the line, back to normal removes it.
+        let mut focus = read_todo(&written);
+        focus.focus = Focus::Focus;
+        let again = todo_onto(&written, &focus, later());
+        assert!(unfolded_lines(&again).contains(&"X-TORRO-FOCUS:1".to_string()), "{again}");
+        focus.focus = Focus::Normal;
+        let normal = todo_onto(&again, &focus, later());
+        assert!(!normal.contains("X-TORRO-FOCUS"), "{normal}");
+        assert!(!todo_ics(&todo(), now()).contains("X-TORRO-FOCUS"), "a new normal task writes no focus line");
     }
 
     #[test]

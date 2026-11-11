@@ -13,6 +13,19 @@ here is a draft until the maintainer has created the repositories and secrets li
 | `homebrew/` | meta formula `torro-suite.rb` and `Brewfile` for the tap (the formulae of the seven programs come from `dist`; each app's formula depends on `torroworkplace`) | copy into `mahype/homebrew-torro` once |
 | `scoop/` | one Scoop manifest per app (its zip plus `torroworkplace`), `torroworkplace.json` for the main application, `torro-suite.json` for all (Windows, later) | copy into `mahype/scoop-torro` once |
 
+## Install locally
+
+`scripts/install-local.sh` builds the seven programs from the source tree (`cargo build --release`) and installs
+them for the current user (issue #629); run it again to update. `--help` lists the targets.
+
+- **Linux:** programs to `~/.local/bin`, the `.desktop` files and SVG icons of `linux/` to `~/.local/share`, and
+  the systemd user unit `torroworkplace.service` (with `ExecStart=%h/.local/bin/torroworkplace daemon`) to
+  `~/.config/systemd/user`, enabled and restarted. `~/.local/bin` must be in `PATH`, the `.desktop` files start
+  the programs by name.
+- **macOS:** the bundles of `scripts/macos-dev-bundles.sh`, made from `target/release`, to `~/Applications` (another
+  folder as the argument).
+- **Windows:** not supported yet, the tray service is missing there ([docs/release.md](../docs/release.md)).
+
 ## One entry per app
 
 Every app is a program of its own with its own launcher and icon (issue #279, [docs/lebenszyklus.md](../docs/lebenszyklus.md)).

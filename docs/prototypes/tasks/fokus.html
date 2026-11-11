@@ -1,0 +1,431 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Fokus und Priorität</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: oben Legende, dann Umschalter (Entwurf, Fenstergröße), ein Fenster im Torro-Stil, daneben die Erklärung.
+   Farben und Schrift aus dem Torro-Entwurf (docs/prototypes/linear/torro.css): fast schwarz, ruhige Grautöne, Inter. */
+:root{
+  --bg:#F4F5F6; --panel:#FFFFFF; --hover:#F0F1F3; --selected:#E9EAED; --raised:#F8F9FA;
+  --line:rgba(0,0,0,.07); --line-strong:rgba(0,0,0,.11);
+  --text:#18191B; --text2:#4F535A; --text3:#62666D;
+  --accent:#D50C0C; --focus:rgba(0,0,0,.5); --shadow:0 12px 32px rgba(0,0,0,.12);
+  --p0:#9AA0A8; --p1:#E2B93B; --p2:#F2A516; --p3:#EA6A0A; --p4:#D42A2A;
+  --font:Inter,"Inter Variable",system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#08090A; --panel:#0F1011; --hover:#16171A; --selected:#1C1E22; --raised:#141518;
+  --line:rgba(255,255,255,.06); --line-strong:rgba(255,255,255,.10);
+  --text:#EDEEF0; --text2:#B4B8BF; --text3:#8A8F98;
+  --focus:rgba(255,255,255,.35); --shadow:0 12px 32px rgba(0,0,0,.5);
+  --p0:#6B7079; --p1:#FFE08A; --p2:#FBBF24; --p3:#F97316; --p4:#E5342B; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#08090A; --panel:#0F1011; --hover:#16171A; --selected:#1C1E22; --raised:#141518;
+  --line:rgba(255,255,255,.06); --line-strong:rgba(255,255,255,.10);
+  --text:#EDEEF0; --text2:#B4B8BF; --text3:#8A8F98;
+  --focus:rgba(255,255,255,.35); --shadow:0 12px 32px rgba(0,0,0,.5);
+  --p0:#6B7079; --p1:#FFE08A; --p2:#FBBF24; --p3:#F97316; --p4:#E5342B; color-scheme:dark}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font:14px/1.45 var(--font);margin:0}
+.page{max-width:1280px;margin:0 auto;padding-block:28px 64px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:flex;flex-direction:column;gap:28px}
+h1{font-size:22px;font-weight:600;letter-spacing:-.01em;margin:0;text-wrap:balance}
+h2{font-size:15px;font-weight:600;margin:0}
+h3{font-size:13px;font-weight:600;margin:0}
+p{margin:0}
+.lead{color:var(--text2);max-width:68ch}
+.muted{color:var(--text3)}
+.tab{font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:4px}
+
+/* ---------- Legende ---------- */
+.legend{display:grid;grid-template-columns:auto repeat(5,minmax(0,1fr));gap:10px 8px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
+.legend .h{font-size:12px;color:var(--text3);text-align:center}
+.legend .rl{font-size:12px;color:var(--text2);padding-right:8px}
+.legend .c{display:grid;place-items:center;height:32px}
+@media (max-width:560px){.legend{grid-template-columns:auto repeat(5,minmax(0,1fr));padding:12px;gap:8px 2px}.legend .h{font-size:10.5px}}
+
+/* ---------- Umschalter ---------- */
+.bar{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center}
+.seg{display:inline-flex;background:var(--panel);border:1px solid var(--line-strong);border-radius:8px;padding:2px;gap:2px}
+.seg button{height:30px;padding:0 12px;border-radius:6px;font-size:13px;font-weight:500;color:var(--text2);white-space:nowrap}
+.seg button[aria-pressed="true"]{background:var(--selected);color:var(--text)}
+.seg button:hover{color:var(--text)}
+.grow{flex:1}
+.hint{font-size:12px;color:var(--text3)}
+kbd{font:500 11px var(--font);border:1px solid var(--line-strong);border-bottom-width:2px;border-radius:4px;padding:0 4px;background:var(--raised);color:var(--text2)}
+
+/* ---------- Bühne: Fenster + Erklärung ---------- */
+.stage{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:24px;align-items:start}
+@media (max-width:1000px){.stage{grid-template-columns:minmax(0,1fr)}}
+.scroller{overflow-x:auto;padding-bottom:4px}
+.win{background:var(--panel);border:1px solid var(--line-strong);border-radius:12px;box-shadow:var(--shadow);overflow:hidden;margin:0 auto;display:flex;flex-direction:column;transition:width .2s}
+.win.wide{width:860px}
+.win.narrow{width:400px;max-width:100%}
+.titlebar{display:flex;align-items:center;gap:10px;height:44px;padding:0 14px;border-bottom:1px solid var(--line)}
+.titlebar .t{font-weight:600}
+.titlebar .sub{color:var(--text3);font-size:12px}
+.titlebar .sp{flex:1}
+.chip{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 8px;border-radius:11px;background:var(--raised);border:1px solid var(--line);font-size:12px;color:var(--text2);white-space:nowrap}
+.content{padding:6px 0 14px;min-height:560px}
+
+.explain{display:flex;flex-direction:column;gap:14px}
+.explain .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:10px}
+.explain ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;color:var(--text2)}
+.explain .pro li::marker{color:#3FB984}
+.explain .con li::marker{color:var(--p3)}
+
+/* ---------- gemeinsame Bausteine ---------- */
+.sym{flex:none;display:grid;place-items:center;border-radius:50%}
+.sym svg{display:block}
+.handle{opacity:0;color:var(--text3);cursor:grab;width:14px;flex:none;display:grid;place-items:center;transition:opacity .12s}
+.item:hover .handle,.item:focus-within .handle{opacity:1}
+.item{position:relative}
+.item.dragging{opacity:.35}
+.dropline{height:2px;background:var(--accent);border-radius:1px;margin:0 14px;pointer-events:none}
+.meta{color:var(--text3);font-size:12px;white-space:nowrap}
+.ttl{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.link{color:var(--text3);font-size:12px}
+.sel{background:var(--selected)!important}
+.prog{height:3px;border-radius:2px;background:var(--line-strong);overflow:hidden}
+.prog i{display:block;height:100%;border-radius:2px}
+.subs{display:flex;flex-direction:column;gap:3px;margin-top:2px}
+.subs div{display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--text2)}
+.subs .bx{width:12px;height:12px;border-radius:3px;border:1.5px solid var(--text3);flex:none}
+.subs .done{color:var(--text3);text-decoration:line-through}
+.subs .done .bx{background:var(--text3);border-color:var(--text3)}
+
+/* ---------- Entwurf 1: Gewichtete Liste ---------- */
+.v1 .sec{display:flex;align-items:baseline;gap:10px;padding:14px 16px 6px}
+.v1 .sec h3{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--text2)}
+.v1 .sec .meta{margin-left:auto}
+.v1 .zone{display:flex;flex-direction:column;min-height:28px;padding:0 6px}
+.v1 .item{display:flex;gap:10px;align-items:flex-start;padding:6px 10px 6px 4px;border-radius:8px}
+.v1 .item:hover{background:var(--hover)}
+.v1 .col{width:30px;flex:none;display:grid;place-items:center;height:24px}
+.v1 .f2 .col,.v1 .f1 .col{height:28px}
+.v1 .body{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.v1 .row1{display:flex;gap:10px;align-items:center;min-height:24px}
+.v1 .row1 .ttl{flex:1}
+.v1 .handle{height:24px}
+.v1 .f1 .ttl{font-weight:500}
+.v1 .f2{background:var(--raised);border:1px solid var(--line);margin:4px 0;padding:12px 12px 12px 4px}
+.v1 .f2 .ttl{font-weight:600;font-size:15px;white-space:normal}
+.v1 .next{font-size:12.5px;color:var(--text2)}
+.v1 .next b{font-weight:500;color:var(--text3)}
+.v1 .f2 .prog{margin-top:6px;max-width:260px}
+.narrow .v1 .row1 .meta.opt{display:none}
+
+/* ---------- Entwurf 2: Perlenkette ---------- */
+.v2{position:relative;padding:4px 0 0}
+.v2 .zone{position:relative;display:flex;flex-direction:column}
+.v2 .zone::before{content:"";position:absolute;left:47px;top:0;bottom:0;width:2px;background:var(--line-strong);border-radius:1px}
+.v2 .day{display:flex;align-items:center;gap:12px;padding:16px 16px 8px 34px;position:relative}
+.v2 .day .node{width:28px;height:28px;border-radius:8px;background:var(--selected);border:1px solid var(--line-strong);display:grid;place-items:center;font-size:11px;font-weight:600;color:var(--text2);position:relative;z-index:1}
+.v2 .day h3{font-size:13px}
+.v2 .day .meta{margin-left:auto}
+.v2 .now{display:flex;align-items:center;gap:8px;padding:0 16px 0 41px;color:var(--accent);font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase}
+.v2 .now i{width:14px;height:14px;border-radius:50%;border:2px solid var(--accent);background:var(--panel);position:relative;z-index:1}
+.v2 .item{display:flex;gap:12px;padding:0 16px 0 4px;align-items:flex-start}
+.v2 .item:hover .txt{background:var(--hover)}
+.v2 .bead{width:58px;flex:none;display:flex;justify-content:center;position:relative;z-index:1;padding-top:6px}
+.v2 .bead .sym{background:var(--panel);box-shadow:0 0 0 4px var(--panel)}
+.v2 .txt{flex:1;min-width:0;border-radius:8px;padding:6px 10px;display:flex;flex-direction:column;gap:2px}
+.v2 .txt .r{display:flex;gap:10px;align-items:center}
+.v2 .txt .ttl{flex:1}
+.v2 .f1 .ttl{font-weight:500}
+.v2 .f2 .ttl{font-weight:600;font-size:15px;white-space:normal}
+.v2 .dur{font-size:12px;color:var(--text3)}
+.v2 .handle{height:24px;margin-top:6px}
+.v2 .gap{position:absolute;left:58px;font-size:10.5px;color:var(--text3);bottom:2px}
+.narrow .v2 .r .meta.opt{display:none}
+
+/* ---------- Entwurf 3: Fokus-Bühne ---------- */
+.v3 .zhead{display:flex;align-items:baseline;gap:10px;padding:14px 16px 8px}
+.v3 .zhead h3{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--text2)}
+.v3 .zhead .meta{margin-left:auto}
+.v3 .slots{display:flex;gap:4px;align-items:center}
+.v3 .slots i{width:8px;height:8px;border-radius:50%;border:1.5px solid var(--text3)}
+.v3 .slots i.on{background:var(--text2);border-color:var(--text2)}
+.v3 .stagez{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:0 14px;min-height:80px}
+.narrow .v3 .stagez{grid-template-columns:minmax(0,1fr)}
+.v3 .card{background:var(--raised);border:1px solid var(--line);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.v3 .card:hover{border-color:var(--line-strong)}
+.v3 .card.f2{grid-column:1/-1;flex-direction:row;gap:16px;padding:16px}
+.v3 .card .top{display:flex;gap:10px;align-items:center}
+.v3 .card .top .ttl{flex:1;font-weight:600;white-space:normal}
+.v3 .card.f2 .ttl{font-size:16px}
+.v3 .card .handle{height:20px}
+.v3 .card .big{flex:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding-top:2px}
+.v3 .card .main{flex:1;min-width:0;display:flex;flex-direction:column;gap:8px}
+.v3 .card .foot{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:auto}
+.v3 .startbtn{height:26px;padding:0 10px;border-radius:6px;background:var(--text);color:var(--panel);font-size:12px;font-weight:600;margin-left:auto}
+.v3 .empty{grid-column:1/-1;border:1.5px dashed var(--line-strong);border-radius:12px;padding:18px;text-align:center;color:var(--text3);font-size:12.5px}
+.v3 .side{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 12px;padding:0 8px;min-height:30px}
+.narrow .v3 .side{grid-template-columns:minmax(0,1fr)}
+.v3 .side .item{display:flex;align-items:center;gap:10px;height:34px;padding:0 8px 0 2px;border-radius:7px}
+.v3 .side .item:hover{background:var(--hover)}
+.v3 .side .item .ttl{flex:1}
+.v3 .later{padding:0 8px}
+.v3 .later .item{display:flex;align-items:center;gap:10px;height:30px;padding:0 8px 0 2px;border-radius:7px;color:var(--text2)}
+.v3 .later .item:hover{background:var(--hover)}
+.v3 .later .item .ttl{flex:1}
+
+/* ---------- Ideen ---------- */
+.ideas{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+@media (max-width:900px){.ideas{grid-template-columns:minmax(0,1fr)}}
+.idea{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:8px}
+.idea p{color:var(--text2);font-size:13px}
+.idea .demo{display:flex;gap:14px;align-items:center;min-height:34px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="page">
+  <header style="display:flex;flex-direction:column;gap:8px">
+    <h1>Fokus und Priorität in torrotasks</h1>
+    <p class="lead">Ein Symbol vorne an jeder Aufgabe: die <b>Farbe</b> zeigt die Priorität, die <b>Form</b> den Fokus. Drei Entwürfe mit denselben zehn Beispielaufgaben, ergänzend zu Issue #596. Alle drei sind bedienbar: Aufgaben am Griff ziehen, aufs Symbol klicken.</p>
+  </header>
+
+  <section class="legend" aria-label="Legende">
+    <div></div>
+    <div class="h">Keine</div><div class="h">Niedrig</div><div class="h">Mittel</div><div class="h">Hoch</div><div class="h">Kritisch</div>
+    <div class="rl">Normal</div><div class="c" data-l="0,0"></div><div class="c" data-l="1,0"></div><div class="c" data-l="2,0"></div><div class="c" data-l="3,0"></div><div class="c" data-l="4,0"></div>
+    <div class="rl">Fokus</div><div class="c" data-l="0,1"></div><div class="c" data-l="1,1"></div><div class="c" data-l="2,1"></div><div class="c" data-l="3,1"></div><div class="c" data-l="4,1"></div>
+    <div class="rl">Starker Fokus</div><div class="c" data-l="0,2"></div><div class="c" data-l="1,2"></div><div class="c" data-l="2,2"></div><div class="c" data-l="3,2"></div><div class="c" data-l="4,2"></div>
+  </section>
+
+  <div class="bar">
+    <div class="seg" role="group" aria-label="Entwurf">
+      <button id="b-v1" data-v="1" aria-pressed="true">1 · Gewichtete Liste</button>
+      <button id="b-v2" data-v="2" aria-pressed="false">2 · Perlenkette</button>
+      <button id="b-v3" data-v="3" aria-pressed="false">3 · Fokus-Bühne</button>
+    </div>
+    <div class="seg" role="group" aria-label="Fenstergröße">
+      <button id="b-wide" data-s="wide" aria-pressed="true">Breit</button>
+      <button id="b-narrow" data-s="narrow" aria-pressed="false">Schmal</button>
+    </div>
+    <div class="grow"></div>
+    <span class="hint">Symbol: Klick = Fokus · <kbd>Umschalt</kbd>+Klick = Priorität · Griff ziehen = verschieben</span>
+  </div>
+
+  <div class="stage">
+    <div class="scroller">
+      <div class="win wide" id="win">
+        <div class="titlebar"><span class="t">Aufgaben</span><span class="sub" id="wsub">Meine Aufgaben</span><span class="sp"></span><span class="chip tab" id="wchip"></span></div>
+        <div class="content" id="content"></div>
+      </div>
+    </div>
+    <aside class="explain" id="explain"></aside>
+  </div>
+
+  <section style="display:flex;flex-direction:column;gap:12px">
+    <h2>Weitere Ideen, für alle drei Entwürfe</h2>
+    <div class="ideas">
+      <div class="idea"><h3>Fortschritt im Ring</h3><div class="demo" id="d-prog"></div><p>Bei starkem Fokus füllt sich der Ring als Bogen, je mehr Teilaufgaben erledigt sind. Das Loch bleibt frei, die Farbe bleibt die Priorität.</p></div>
+      <div class="idea"><h3>Begrenzte Fokus-Plätze</h3><div class="demo"><span class="chip">Fokus heute ● ● ○</span></div><p>Höchstens drei Aufgaben mit Fokus pro Tag. Wer eine vierte setzt, wird gefragt, welche weichen soll. So bleibt der Fokus ehrlich.</p></div>
+      <div class="idea"><h3>Tastatur</h3><div class="demo"><kbd>F</kbd><kbd>1</kbd>–<kbd>4</kbd><kbd>Alt</kbd>+<kbd>↑</kbd><kbd>↓</kbd><kbd>T</kbd></div><p>F schaltet den Fokus weiter, 1 bis 4 setzen die Priorität, Alt+Pfeil verschiebt in der Reihenfolge, T schiebt auf morgen.</p></div>
+      <div class="idea"><h3>Auf einen Tag ziehen</h3><p>Eine Aufgabe auf die Überschrift „Morgen“ oder „Später“ ziehen ändert ihr Datum. Innerhalb eines Tages ändert Ziehen nur die Reihenfolge, gespeichert in der Sortierung, die Nextcloud schon kennt.</p></div>
+      <div class="idea"><h3>Tagesbudget</h3><p>Ist ein Aufwand geschätzt, zeigt der Tag die Summe der Fokuszeit („5 h Fokus“). Wird es mehr als ein Arbeitstag, färbt sich die Zahl.</p></div>
+      <div class="idea"><h3>Fokus starten</h3><p>Aus der großen Karte heraus einen passenden Arbeitsbereich öffnen und Benachrichtigungen stummschalten, bis die Aufgabe erledigt oder pausiert ist (spätere Stufe, aus #596).</p></div>
+    </div>
+  </section>
+</div>
+
+<script>
+const PR = ["Keine Priorität","Niedrig","Mittel","Hoch","Kritisch"];
+const FO = ["Normal","Fokus","Starker Fokus"];
+const DAYS = [{id:"today",name:"Heute",short:"Di"},{id:"tomorrow",name:"Morgen",short:"Mi"},{id:"later",name:"Später",short:"…"}];
+let tasks = [
+  {id:1,t:"Angebot Kunde Schmidt fertigstellen",p:4,f:2,day:"today",min:180,next:"Preise für die Wartung eintragen",subs:[["Leistungen beschreiben",1],["Zeitplan",1],["Preise Wartung",0],["Vertragsentwurf anhängen",0],["Gegenlesen lassen",0]]},
+  {id:2,t:"Überweisung an den Hoster freigeben",p:4,f:0,day:"today",min:5,due:"heute 12:00"},
+  {id:3,t:"Release 0.2 vorbereiten",p:3,f:2,day:"today",min:120,next:"Changelog schreiben",subs:[["Versionen anheben",1],["Changelog",0],["Pakete bauen",0],["Ankündigung",0]]},
+  {id:4,t:"PR #611 durchsehen",p:3,f:0,day:"today",min:20,link:"TorroWorkplace#611"},
+  {id:5,t:"Kalender-Sync-Fehler untersuchen",p:3,f:1,day:"today",min:90,link:"TorroWorkplace#612",next:"Fehler mit zwei Konten nachstellen",subs:[["Log sichern",1],["Nachstellen",0],["Ursache eingrenzen",0]]},
+  {id:6,t:"Zahnarzt anrufen",p:2,f:0,day:"today",min:5},
+  {id:7,t:"Mails von gestern beantworten",p:2,f:0,day:"today",min:30},
+  {id:8,t:"Blogartikel über Tiling-Workflows entwerfen",p:1,f:1,day:"tomorrow",min:120,next:"Gliederung aus den Notizen ziehen",subs:[["Notizen sammeln",1],["Gliederung",0],["Erster Entwurf",0]]},
+  {id:9,t:"Steuerunterlagen sortieren",p:2,f:1,day:"tomorrow",min:60,next:"Belege aus dem Mailordner exportieren",subs:[["Belege exportieren",0],["Ordner anlegen",0]]},
+  {id:10,t:"Einkaufsliste fürs Wochenende",p:0,f:0,day:"later",min:10},
+];
+let view=1, size="wide", selected=null;
+
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function sym(p,f,opts={}){
+  const c = `var(--p${p})`, box = opts.box||28;
+  let inner;
+  if(f===0) inner = `<circle cx="${box/2}" cy="${box/2}" r="4.5" fill="${c}"/>`;
+  else if(f===1) inner = `<circle cx="${box/2}" cy="${box/2}" r="7" fill="none" stroke="${c}" stroke-width="4"/>`;
+  else {
+    const r=11.25, sw=5.5;
+    if(opts.progress!=null){
+      const L=2*Math.PI*r, d=L*opts.progress;
+      inner = `<circle cx="${box/2}" cy="${box/2}" r="${r}" fill="none" stroke="${c}" stroke-opacity=".28" stroke-width="${sw}"/>
+               <circle cx="${box/2}" cy="${box/2}" r="${r}" fill="none" stroke="${c}" stroke-width="${sw}" stroke-dasharray="${d} ${L}" transform="rotate(-90 ${box/2} ${box/2})" stroke-linecap="${d>0?'round':'butt'}"/>`;
+    } else inner = `<circle cx="${box/2}" cy="${box/2}" r="${r}" fill="none" stroke="${c}" stroke-width="${sw}"/>`;
+  }
+  return `<svg width="${box}" height="${box}" viewBox="0 0 ${box} ${box}" aria-hidden="true">${inner}</svg>`;
+}
+function symBtn(t,box){
+  return `<button class="sym" data-sym="${t.id}" title="${PR[t.p]} · ${FO[t.f]} (Klick: Fokus, Umschalt+Klick: Priorität)" aria-label="${PR[t.p]}, ${FO[t.f]}" style="width:${box}px;height:${box}px">${sym(t.p,t.f,{box})}</button>`;
+}
+const grip = `<span class="handle" aria-hidden="true"><svg width="10" height="14" viewBox="0 0 10 14"><g fill="currentColor"><circle cx="3" cy="3" r="1.2"/><circle cx="7" cy="3" r="1.2"/><circle cx="3" cy="7" r="1.2"/><circle cx="7" cy="7" r="1.2"/><circle cx="3" cy="11" r="1.2"/><circle cx="7" cy="11" r="1.2"/></g></svg></span>`;
+const dur = m => m<60?`${m} min`:(m%60? `${(m/60).toFixed(1).replace('.',',')} h` : `${m/60} h`);
+const doneCount = t => (t.subs||[]).filter(s=>s[1]).length;
+const of = d => tasks.filter(t=>t.day===d);
+const focusMin = d => of(d).filter(t=>t.f>0).reduce((a,t)=>a+t.min,0);
+const esc = s => s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function subsHtml(t,max){
+  if(!t.subs) return "";
+  return `<div class="subs">${t.subs.slice(0,max).map(s=>`<div class="${s[1]?'done':''}"><span class="bx"></span>${esc(s[0])}</div>`).join("")}${t.subs.length>max?`<div class="muted">+ ${t.subs.length-max} weitere</div>`:""}</div>`;
+}
+function progHtml(t){
+  if(!t.subs) return "";
+  const pct = Math.round(doneCount(t)/t.subs.length*100);
+  return `<div class="prog"><i style="width:${pct}%;background:var(--p${t.p})"></i></div>`;
+}
+const itemAttrs = t => `class="item f${t.f} ${selected===t.id?'sel':''}" draggable="true" data-id="${t.id}" tabindex="0"`;
+
+/* ---------- Entwurf 1 ---------- */
+function v1(){
+  return `<div class="v1">${DAYS.map(d=>{
+    const list = of(d.id);
+    return `<div class="sec" data-dayhead="${d.id}"><h3>${d.name}</h3><span class="meta tab">${list.length} Aufgaben${focusMin(d.id)?` · ${dur(focusMin(d.id))} Fokus`:""}</span></div>
+    <div class="zone" data-zone="${d.id}">${list.map(t=>{
+      const meta = `${t.link?`<span class="link opt meta">${t.link}</span>`:""}${t.due?`<span class="meta" style="color:var(--p3)">${t.due}</span>`:""}<span class="meta tab opt">${dur(t.min)}</span>`;
+      if(t.f===0) return `<div ${itemAttrs(t)}>${grip}<div class="col">${symBtn(t,28)}</div><div class="body"><div class="row1"><span class="ttl">${esc(t.t)}</span>${meta}</div></div></div>`;
+      if(t.f===1) return `<div ${itemAttrs(t)}>${grip}<div class="col">${symBtn(t,28)}</div><div class="body"><div class="row1"><span class="ttl">${esc(t.t)}</span>${meta}</div>${t.next?`<div class="next"><b>Als Nächstes:</b> ${esc(t.next)} <span class="muted tab">· ${doneCount(t)}/${t.subs.length}</span></div>`:""}</div></div>`;
+      return `<div ${itemAttrs(t)}>${grip}<div class="col">${symBtn(t,28)}</div><div class="body"><div class="row1"><span class="ttl">${esc(t.t)}</span><span class="meta tab">${dur(t.min)}</span></div>${t.next?`<div class="next"><b>Als Nächstes:</b> ${esc(t.next)}</div>`:""}${subsHtml(t,size==="narrow"?2:3)}${progHtml(t)}</div></div>`;
+    }).join("")}</div>`;
+  }).join("")}</div>`;
+}
+
+/* ---------- Entwurf 2 ---------- */
+function v2(){
+  return `<div class="v2">${DAYS.map((d,i)=>{
+    const list = of(d.id);
+    return `<div class="day" data-dayhead="${d.id}"><span class="node">${d.short}</span><h3>${d.name}</h3><span class="meta tab">${focusMin(d.id)?`${dur(focusMin(d.id))} Fokus · `:""}${dur(list.reduce((a,t)=>a+t.min,0))} gesamt</span></div>
+    ${i===0?`<div class="now"><i></i>Jetzt</div>`:""}
+    <div class="zone" data-zone="${d.id}">${list.map(t=>{
+      // Abstand nach unten wächst mit dem Aufwand: ein grobes Gefühl für die Länge, keine Uhrzeiten.
+      const pad = Math.round(Math.min(110, 6 + t.min*0.45));
+      return `<div ${itemAttrs(t)} style="padding-bottom:${pad}px">${grip}<div class="bead">${symBtn(t,28)}</div>
+        <div class="txt"><div class="r"><span class="ttl">${esc(t.t)}</span>${t.link?`<span class="link meta opt">${t.link}</span>`:""}${t.due?`<span class="meta" style="color:var(--p3)">${t.due}</span>`:""}</div>
+        <span class="dur tab">${dur(t.min)}${t.subs?` · ${doneCount(t)}/${t.subs.length} Schritte`:""}${t.next&&t.f>0?` · als Nächstes: ${esc(t.next)}`:""}</span>
+        ${t.f===2?subsHtml(t,size==="narrow"?2:3):""}</div></div>`;
+    }).join("")}</div>`;
+  }).join("")}</div>`;
+}
+
+/* ---------- Entwurf 3 ---------- */
+function v3(){
+  const today = of("today"), stage = today.filter(t=>t.f>0), side = today.filter(t=>t.f===0);
+  const rest = tasks.filter(t=>t.day!=="today");
+  const slots = [0,1,2].map(i=>`<i class="${i<stage.length?'on':''}"></i>`).join("");
+  const card = t => t.f===2
+    ? `<div ${itemAttrs(t).replace('class="item','class="item card')}><div class="big">${symBtn(t,28)}${grip}</div><div class="main"><div class="top"><span class="ttl">${esc(t.t)}</span></div>${t.next?`<div class="next" style="font-size:12.5px;color:var(--text2)">Als Nächstes: ${esc(t.next)}</div>`:""}${subsHtml(t,size==="narrow"?2:4)}<div class="foot">${progHtml(t).replace('class="prog"','class="prog" style="flex:1;min-width:80px"')}<span class="meta tab">${doneCount(t)}/${(t.subs||[]).length} · ${dur(t.min)}</span><button class="startbtn" tabindex="-1">Fokus starten</button></div></div></div>`
+    : `<div ${itemAttrs(t).replace('class="item','class="item card')}><div class="top">${symBtn(t,28)}<span class="ttl">${esc(t.t)}</span>${grip}</div>${t.next?`<div style="font-size:12.5px;color:var(--text2)">Als Nächstes: ${esc(t.next)}</div>`:""}<div class="foot">${progHtml(t).replace('class="prog"','class="prog" style="flex:1;min-width:60px"')}<span class="meta tab">${t.subs?`${doneCount(t)}/${t.subs.length} · `:""}${dur(t.min)}</span></div></div>`;
+  return `<div class="v3">
+    <div class="zhead"><h3>Im Fokus</h3><span class="slots" title="${stage.length} von 3 Fokus-Plätzen">${slots}</span><span class="meta tab">${dur(focusMin("today"))} geplant</span></div>
+    <div class="stagez zone" data-zone="today" data-mode="stage">${stage.map(card).join("")||`<div class="empty">Aufgabe hierher ziehen, um sie heute in den Fokus zu nehmen</div>`}</div>
+    <div class="zhead"><h3>Nebenbei</h3><span class="meta tab">${side.length} kleine Aufgaben · ${dur(side.reduce((a,t)=>a+t.min,0))}</span></div>
+    <div class="side zone" data-zone="today" data-mode="side">${side.map(t=>`<div ${itemAttrs(t)}>${grip}${symBtn(t,24)}<span class="ttl">${esc(t.t)}</span>${t.due?`<span class="meta" style="color:var(--p3)">${t.due}</span>`:`<span class="meta tab">${dur(t.min)}</span>`}</div>`).join("")}</div>
+    ${DAYS.slice(1).map(d=>`<div class="zhead" data-dayhead="${d.id}"><h3>${d.name}</h3><span class="meta tab">${of(d.id).length} Aufgaben</span></div>
+      <div class="later zone" data-zone="${d.id}">${of(d.id).map(t=>`<div ${itemAttrs(t)}>${grip}${symBtn(t,24)}<span class="ttl">${esc(t.t)}</span><span class="meta tab">${dur(t.min)}</span></div>`).join("")}</div>`).join("")}
+  </div>`;
+}
+
+const EXPLAIN = {
+1:{name:"Gewichtete Liste",idea:"Die bekannte Liste bleibt, aber jede Fokus-Stufe gibt der Zeile mehr Raum. Das Symbol steht in einer festen Spalte, alle Mittelpunkte auf einer Achse.",
+  pro:["Am nächsten an der heutigen Liste, leicht umzusetzen","Fokus sieht man doppelt: am Ring und an der Größe der Zeile","Kleine Aufgaben bleiben dicht und schnell abzuhaken"],
+  con:["Viele starke Fokus-Aufgaben machen die Liste lang","Die Reihenfolge erzählt wenig über die Länge des Tages"]},
+2:{name:"Perlenkette",idea:"Der Tag als senkrechte Linie, die Symbole sitzen wie Perlen darauf. Der Abstand bis zur nächsten Perle wächst mit dem geschätzten Aufwand, ohne Uhrzeiten (Fokus-Fluss aus #596).",
+  pro:["Das Symbol wird zum Bild: große Ringe sind die großen Brocken des Tages","Man sieht, wie voll der Tag ist","Ziehen entlang der Linie fühlt sich wie Planen an"],
+  con:["Braucht einen geschätzten Aufwand, den es heute noch nicht gibt","Lange Aufgaben brauchen viel Höhe, die Obergrenze muss gut gewählt sein"]},
+3:{name:"Fokus-Bühne",idea:"Oben eine Bühne für die Fokus-Aufgaben des Tages, große Karten mit Schritten und Fortschritt. Darunter „Nebenbei“ als dichte Liste. Ziehen auf die Bühne setzt den Fokus, Ziehen herunter nimmt ihn weg.",
+  pro:["Die wichtigste Frage des Tages ist sofort beantwortet: woran arbeite ich?","Drei Fokus-Plätze machen die Grenze sichtbar","Platz für „Fokus starten“ und Arbeitsbereiche"],
+  con:["Weiter weg von der heutigen Liste, mehr Arbeit","Die Reihenfolge gilt je Bereich, nicht über den ganzen Tag"]}
+};
+function explain(){
+  const e = EXPLAIN[view];
+  document.getElementById("explain").innerHTML = `<div class="card"><h2>${view} · ${e.name}</h2><p class="muted" style="color:var(--text2)">${e.idea}</p></div>
+  <div class="card"><h3>Stärken</h3><ul class="pro">${e.pro.map(x=>`<li>${x}</li>`).join("")}</ul><h3>Schwächen</h3><ul class="con">${e.con.map(x=>`<li>${x}</li>`).join("")}</ul></div>`;
+}
+
+function render(){
+  const c = document.getElementById("content");
+  c.innerHTML = view===1?v1():view===2?v2():v3();
+  const n = of("today").length;
+  document.getElementById("wchip").textContent = `Heute ${n} · Fokus ${of("today").filter(t=>t.f>0).length}`;
+  document.getElementById("win").className = `win ${size}`;
+  explain();
+  if(selected){const el=c.querySelector(`[data-id="${selected}"]`); if(el && document.activeElement===document.body) el.focus({preventScroll:true});}
+}
+
+/* ---------- Bedienung ---------- */
+document.querySelectorAll("[data-v]").forEach(b=>b.onclick=()=>{view=+b.dataset.v;document.querySelectorAll("[data-v]").forEach(x=>x.setAttribute("aria-pressed",x===b));render();});
+document.querySelectorAll("[data-s]").forEach(b=>b.onclick=()=>{size=b.dataset.s;document.querySelectorAll("[data-s]").forEach(x=>x.setAttribute("aria-pressed",x===b));render();});
+
+const content = document.getElementById("content");
+content.addEventListener("click",e=>{
+  const s = e.target.closest("[data-sym]");
+  if(s){const t=tasks.find(x=>x.id==s.dataset.sym); if(e.shiftKey) t.p=(t.p+1)%5; else t.f=(t.f+1)%3; selected=t.id; render(); return;}
+  const it = e.target.closest(".item"); if(it){selected=+it.dataset.id; render(); content.querySelector(`[data-id="${selected}"]`)?.focus();}
+});
+function moveWithin(id,delta){
+  const t=tasks.find(x=>x.id===id), list=of(t.day), i=list.indexOf(t), j=i+delta;
+  if(j<0||j>=list.length){ // über den Rand des Tages hinaus: in den Nachbartag
+    const di=DAYS.findIndex(d=>d.id===t.day)+(delta>0?1:-1); if(di<0||di>=DAYS.length) return;
+    tasks.splice(tasks.indexOf(t),1); t.day=DAYS[di].id;
+    const nl=of(t.day); if(delta>0) tasks.splice(nl.length?tasks.indexOf(nl[0]):tasks.length,0,t); else tasks.splice(nl.length?tasks.indexOf(nl[nl.length-1])+1:tasks.length,0,t);
+  } else { const other=list[j]; const a=tasks.indexOf(t), b=tasks.indexOf(other); tasks[a]=other; tasks[b]=t; }
+  render();
+}
+content.addEventListener("keydown",e=>{
+  const it=e.target.closest(".item"); if(!it) return; const id=+it.dataset.id, t=tasks.find(x=>x.id===id); selected=id;
+  if(e.altKey&&(e.key==="ArrowUp"||e.key==="ArrowDown")){e.preventDefault();moveWithin(id,e.key==="ArrowUp"?-1:1);content.querySelector(`[data-id="${id}"]`)?.focus();return;}
+  if(e.key==="ArrowUp"||e.key==="ArrowDown"){e.preventDefault();const all=[...content.querySelectorAll(".item")];const k=all.indexOf(it)+(e.key==="ArrowUp"?-1:1);all[k]?.focus();if(all[k])selected=+all[k].dataset.id;return;}
+  if(e.key==="f"||e.key==="F"){t.f=(t.f+1)%3;render();content.querySelector(`[data-id="${id}"]`)?.focus();}
+  if(["0","1","2","3","4"].includes(e.key)){t.p=+e.key;render();content.querySelector(`[data-id="${id}"]`)?.focus();}
+  if(e.key==="t"||e.key==="T"){const di=Math.min(DAYS.length-1,DAYS.findIndex(d=>d.id===t.day)+1);tasks.splice(tasks.indexOf(t),1);t.day=DAYS[di].id;const nl=of(t.day);tasks.splice(nl.length?tasks.indexOf(nl[0]):tasks.length,0,t);render();}
+});
+
+/* Ziehen: HTML-Drag-and-Drop, Einfügeposition nach dem nächstgelegenen Element (auch im Raster der Bühne). */
+let dragId=null, drop=null;
+const line=document.createElement("div"); line.className="dropline";
+content.addEventListener("dragstart",e=>{const it=e.target.closest(".item"); if(!it) return; dragId=+it.dataset.id; it.classList.add("dragging"); e.dataTransfer.effectAllowed="move"; try{e.dataTransfer.setData("text/plain",String(dragId));}catch(_){}});
+content.addEventListener("dragend",()=>{dragId=null;line.remove();render();});
+content.addEventListener("dragover",e=>{
+  if(dragId==null) return;
+  const head=e.target.closest("[data-dayhead]");
+  const zone=e.target.closest(".zone");
+  if(!zone&&!head) return;
+  e.preventDefault();
+  if(head&&!zone){drop={day:head.dataset.dayhead,before:null,mode:null,head:true}; head.after(line); return;}
+  const items=[...zone.querySelectorAll(":scope > .item")].filter(x=>+x.dataset.id!==dragId);
+  let before=null, best=Infinity;
+  for(const el of items){const r=el.getBoundingClientRect(); const grid=zone.classList.contains("stagez")||zone.classList.contains("side");
+    const dy=e.clientY-(r.top+r.height/2), dx=grid?e.clientX-(r.left+r.width/2):0;
+    if(dy<0||(grid&&Math.abs(dy)<r.height/2&&dx<0)){const d=Math.hypot(dx,dy); if(d<best){best=d;before=el;}}}
+  drop={day:zone.dataset.zone,before:before?+before.dataset.id:null,mode:zone.dataset.mode||null};
+  if(before) zone.insertBefore(line,before); else zone.appendChild(line);
+});
+content.addEventListener("drop",e=>{
+  if(dragId==null||!drop) return; e.preventDefault();
+  const t=tasks.find(x=>x.id===dragId); tasks.splice(tasks.indexOf(t),1); t.day=drop.day;
+  if(drop.mode==="stage"&&t.f===0) t.f=1; if(drop.mode==="side") t.f=0;
+  let idx;
+  if(drop.before!=null) idx=tasks.findIndex(x=>x.id===drop.before);
+  else if(drop.head){const nl=of(t.day); idx=nl.length?tasks.indexOf(nl[0]):tasks.length;}
+  else {const nl=of(t.day).filter(x=>!drop.mode||(drop.mode==="stage"?x.f>0:x.f===0)); idx=nl.length?tasks.indexOf(nl[nl.length-1])+1:(()=>{const all=of(t.day);return all.length?tasks.indexOf(all[all.length-1])+1:tasks.length;})();}
+  tasks.splice(idx,0,t); selected=t.id; dragId=null; drop=null; line.remove(); render();
+});
+
+/* Legende und Ideen */
+document.querySelectorAll("[data-l]").forEach(el=>{const [p,f]=el.dataset.l.split(",").map(Number); el.innerHTML=sym(p,f,{box:28}); el.title=`${PR[p]} · ${FO[f]}`;});
+document.getElementById("d-prog").innerHTML=[0,.25,.6,1].map(x=>`<span title="${Math.round(x*100)} %">${sym(3,2,{box:28,progress:x})}</span>`).join("")+`<span class="meta">0 · 1/4 · 3/5 · fertig</span>`;
+render();
+</script>
+
+</body></html>
