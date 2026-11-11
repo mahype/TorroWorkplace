@@ -149,13 +149,15 @@ unverändert.
   Bezeichnung der Zeile mit dem Cursor wird kräftiger. Darunter das Papier randlos bis an die Kanten: der Text als ein
   Dokument ohne Rahmen und ohne Fokusrahmen um einzelne Absätze (nur der Cursor zeigt, wo man schreibt), höchstens in
   der Lesebreite, die Signatur leise unter „–“, Anhänge als Karten (neutrale Kachel mit der Dateiart, Name, Größe, ×).
-  Über der Fußleiste die Formatleiste (fett, kursiv, unterstrichen | Listen, Zitat | Link, Formatierung entfernen, ◐;
-  was in schmalen Kacheln nicht passt, steht von hinten im Menü „…“), mit „Aa“ ein- und ausklappbar; die Wahl bleibt
-  in `ui.json` (`flags` › `compose.format_bar`). Die Fußleiste: „Senden“ mit dem Tastenkürzel daneben (schmal nur das
-  Symbol), Aa, Anhang, Bild, bei eingeklappter Leiste ◐, rechts „Entwurf verwerfen“ (mit Rückfrage; ein gespeicherter
+  Alle Zeilen sind gleich hoch, ihr Inhalt mittig, die Werte stehen auf einer Achse; in den Zeilen gibt es keine
+  gerahmten Bedienelemente („Von“ ist Text mit Pfeil, das × eines Empfängers steht in seiner Pille). Über dem Papier
+  eine Zeile mit den Werkzeugen: „Aa“ blendet die Formate ein und aus (fett, kursiv, unterstrichen | Listen, Zitat |
+  Link, Formatierung entfernen; was in schmalen Kacheln nicht passt, steht von hinten im Menü „…“; die Wahl bleibt in
+  `ui.json`, `flags` › `compose.format_bar`), rechts Anhang, Bild und ◐. Die Fußleiste hat nur „Senden“ mit dem
+  Tastenkürzel daneben (schmal nur das Symbol) und rechts „Entwurf verwerfen“ (mit Rückfrage; ein gespeicherter
   Entwurf wandert in den Papierkorb). **Antworten** haben keine Zeile „Von“: Der Kopf heißt „Antwort an …“ und nennt
-  das Konto klein („von …“, bei mehreren Konten ein Knopf), der Betreff ist als Text eingeklappt (ein Klick macht ihn
-  bearbeitbar), der zitierte Verlauf unter „Verlauf anzeigen“; gesendet wird er immer. Beim Weiterleiten bleibt der
+  das Konto klein („von …“, bei mehreren Konten ein Knopf), der Betreff steht in normaler Schrift und wird kräftig,
+  sobald er den Fokus hat (Klick oder Tab), der zitierte Verlauf unter „Verlauf anzeigen“; gesendet wird er immer. Beim Weiterleiten bleibt der
   Verlauf offen, dort ist er der Inhalt. Empfänger werden Chips, Vorschläge kommen aus Adressbuch und Mails
   ([kontakte.md](kontakte.md), „Empfänger-Vorschläge“). Das **Papier** schaltet ◐ hell oder dunkel, unabhängig vom
   Fenster und von den Mailfarben des Lesers (Einstellung `compose_paper`, gemerkt); die gesendete Mail bleibt gleich.

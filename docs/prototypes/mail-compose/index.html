@@ -17,6 +17,9 @@
        Torro dem Nutzer und dem Senden-Knopf), nicht farbig wie im Artifact.
     3. Der Verlauf ist nur bei Antworten eingeklappt; beim Weiterleiten bleibt er offen.
   Ansicht 3 (Später senden, Auswahl-Leiste) gehört zu #630 und #632; Textbaustein und Signatur zu #631.
+  Nach der ersten Sichtprüfung im echten Fenster (#627): Werkzeuge (Aa, Formate, Anhang, Bild, ◐) als Zeile über dem
+  Papier statt über der Fußleiste, die Fußleiste nur mit Senden und Verwerfen; alle Zeilen gleich hoch, ohne gerahmte
+  Bedienelemente, das × eines Empfängers in seiner Pille.
   Beispieldaten erfunden.
 -->
 <style>
@@ -74,7 +77,7 @@
   .card .w span:first-child { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .card .w span:last-child { font-size:13px; line-height:18px; color:var(--p-text3); }
   .card .ib { color:var(--p-text3); }
-  .fmt { margin:8px 16px 0; padding:4px; display:flex; align-items:center; gap:4px; border-radius:4px; background:var(--raised); }
+  .fmt { min-height:38px; padding:0 16px; display:flex; align-items:center; gap:4px; border-bottom:1px solid var(--line); }
   .fmt .bar { width:1px; height:16px; background:var(--line2); margin:0 2px; }
   .foot { height:64px; flex:none; display:flex; align-items:center; gap:4px; padding:0 16px; }
   .send { display:inline-flex; align-items:center; gap:6px; height:36px; padding:0 12px; border:0; border-radius:4px; background:var(--acc); color:#fff; font:500 12px Inter, sans-serif; }
@@ -93,13 +96,13 @@
 <div class="wrap">
   <h1>Schreibfenster ohne Kästen</h1>
   <p class="lead">Issue #627: Von, An und Betreff als Zeilen mit Haarlinie, der Text als ein Dokument ohne Rahmen,
-    Formatleiste mit „Aa“ einklappbar, Senden unten links, Anhänge als Karten. Quelle:
+    Werkzeuge über dem Papier mit „Aa“, Senden unten links, Anhänge als Karten. Quelle:
     <a href="https://claude.ai/artifact/Qyo8AHLFczAQEMZZpFxizi">Artifact „Schreibfenster“</a>, hier in Torro-Werten.</p>
 
   <!-- ===================== Ansicht 1: neue Nachricht ===================== -->
   <section>
     <h2>1 · Neue Nachricht</h2>
-    <p>Dunkles Papier, Formatleiste offen, der Cursor im Text; die Bezeichnung „An“ wäre kräftig, solange der Cursor dort steht.</p>
+    <p>Dunkles Papier, Werkzeuge über dem Papier mit offenen Formaten, der Cursor im Text; die Bezeichnung „An“ wäre kräftig, solange der Cursor dort steht.</p>
     <div class="stage"><div class="frame">
       <div class="app">
         <div class="head">
@@ -108,11 +111,24 @@
           <span class="sp"></span>
           <button class="ib" aria-label="Schließen"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
         </div>
-        <div class="row"><span class="l">Von</span><span class="v">Sven Wagener <span class="meta">sven@example.org</span></span></div>
+        <div class="row"><span class="l">Von</span><span class="v">Sven Wagener <span class="meta">sven@example.org</span> <svg viewBox="0 0 24 24" style="width:12px;height:12px;color:var(--text3)"><path d="m6 9 6 6 6-6"/></svg></span></div>
         <div class="row"><span class="l">An</span>
-          <span class="v"><span class="chip">Lena Brandt</span><span class="chip">Buchhaltung · 4</span></span>
+          <span class="v"><span class="chip">Lena Brandt ×</span><span class="chip">Buchhaltung · 4 ×</span></span>
           <button class="tb">Cc</button><button class="tb">Bcc</button></div>
         <div class="row"><span class="l">Betreff</span><span class="v subj">Belege für Oktober</span></div>
+        <div class="fmt">
+          <button class="ib aa" aria-label="Formatierung ausblenden">Aa</button><span class="bar"></span>
+          <button class="ib" aria-label="Fett"><b>B</b></button><button class="ib" aria-label="Kursiv"><i>I</i></button><button class="ib" aria-label="Unterstrichen"><u>U</u></button>
+          <span class="bar"></span>
+          <button class="ib" aria-label="Liste"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg></button>
+          <button class="ib" aria-label="Nummerierte Liste"><svg viewBox="0 0 24 24"><path d="M10 6h10M10 12h10M10 18h10M4 4.5l1.5-.5v4"/></svg></button>
+          <button class="ib" aria-label="Zitat"><svg viewBox="0 0 24 24"><path d="M4 5v14M9 7h11M9 12h11M9 17h7"/></svg></button>
+          <span class="bar"></span>
+          <button class="ib" aria-label="Link"><svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg></button>
+          <button class="ib" aria-label="Formatierung entfernen"><svg viewBox="0 0 24 24"><path d="M5 5h11M10.5 5 7 19M14 14l6 6M20 14l-6 6"/></svg></button>
+          <span class="sp"></span>
+          <button class="ib" aria-label="Dateien anhängen"><svg viewBox="0 0 24 24"><path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l8.6-8.6A4 4 0 1 1 18 8.8l-8.6 8.6a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg></button><button class="ib" aria-label="Bild einfügen"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3-3a2 2 0 0 0-3 0L6 21"/></svg></button><button class="ib" aria-label="Papier hell oder dunkel"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/></svg></button>
+        </div>
         <div class="paper">
           <div class="text">
             <p>Hallo Lena,</p>
@@ -130,24 +146,9 @@
               <button class="ib" aria-label="Entfernen"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
           </div>
         </div>
-        <div class="fmt">
-          <button class="ib" aria-label="Fett"><b>B</b></button><button class="ib" aria-label="Kursiv"><i>I</i></button><button class="ib" aria-label="Unterstrichen"><u>U</u></button>
-          <span class="bar"></span>
-          <button class="ib" aria-label="Liste"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg></button>
-          <button class="ib" aria-label="Nummerierte Liste"><svg viewBox="0 0 24 24"><path d="M10 6h10M10 12h10M10 18h10M4 4.5l1.5-.5v4"/></svg></button>
-          <button class="ib" aria-label="Zitat"><svg viewBox="0 0 24 24"><path d="M4 5v14M9 7h11M9 12h11M9 17h7"/></svg></button>
-          <span class="bar"></span>
-          <button class="ib" aria-label="Link"><svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg></button>
-          <button class="ib" aria-label="Formatierung entfernen"><svg viewBox="0 0 24 24"><path d="M5 5h11M10.5 5 7 19M14 14l6 6M20 14l-6 6"/></svg></button>
-          <span class="sp"></span>
-          <button class="ib" aria-label="Papier hell oder dunkel"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/></svg></button>
-        </div>
         <div class="foot">
           <button class="send"><svg viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg>Senden</button>
           <span class="kbd">Strg+Enter</span>
-          <button class="ib on aa" aria-label="Formatierung" aria-pressed="true">Aa</button>
-          <button class="ib" aria-label="Dateien anhängen"><svg viewBox="0 0 24 24"><path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l8.6-8.6A4 4 0 1 1 18 8.8l-8.6 8.6a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg></button>
-          <button class="ib" aria-label="Bild einfügen"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3-3a2 2 0 0 0-3 0L6 21"/></svg></button>
           <span class="sp"></span>
           <button class="ib" aria-label="Entwurf verwerfen"><svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button>
         </div>
@@ -160,7 +161,7 @@
     <h2>2 · Antwort mit hellem Papier</h2>
     <p>Kein Feld „Von“: Der Kopf nennt die Person und das Konto („von …“, ein Klick wechselt es, wenn es mehrere gibt).
       Der Betreff ist eingeklappt als Text, der Verlauf unter „Verlauf anzeigen“; gesendet wird er trotzdem.
-      Das Papier reicht randlos bis an die Kanten. Die Formatleiste ist mit „Aa“ eingeklappt, ◐ steht dann in der Fußleiste.</p>
+      Das Papier reicht randlos bis an die Kanten. Die Formate sind mit „Aa“ ausgeblendet; Anhang, Bild und ◐ bleiben in der Werkzeugzeile.</p>
     <div class="stage"><div class="frame">
       <div class="app paper-light">
         <div class="head">
@@ -170,9 +171,14 @@
           <span class="sp"></span>
           <button class="ib" aria-label="Schließen"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
         </div>
-        <div class="row"><span class="l">An</span><span class="v"><span class="chip">Lena Brandt</span></span>
+        <div class="row"><span class="l">An</span><span class="v"><span class="chip">Lena Brandt ×</span></span>
           <button class="tb">Cc</button><button class="tb">Bcc</button></div>
         <div class="row"><span class="l">Betreff</span><span class="v folded">Re: Belege für Oktober</span></div>
+        <div class="fmt">
+          <button class="ib aa" aria-label="Formatierung einblenden">Aa</button>
+          <span class="sp"></span>
+          <button class="ib" aria-label="Dateien anhängen"><svg viewBox="0 0 24 24"><path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l8.6-8.6A4 4 0 1 1 18 8.8l-8.6 8.6a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg></button><button class="ib" aria-label="Bild einfügen"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3-3a2 2 0 0 0-3 0L6 21"/></svg></button><button class="ib" aria-label="Papier hell oder dunkel"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/></svg></button>
+        </div>
         <div class="paper">
           <div class="text">
             <p>Hallo Lena,</p>
@@ -191,10 +197,6 @@
         <div class="foot">
           <button class="send"><svg viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg>Senden</button>
           <span class="kbd">Strg+Enter</span>
-          <button class="ib aa" aria-label="Formatierung" aria-pressed="false">Aa</button>
-          <button class="ib" aria-label="Dateien anhängen"><svg viewBox="0 0 24 24"><path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l8.6-8.6A4 4 0 1 1 18 8.8l-8.6 8.6a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg></button>
-          <button class="ib" aria-label="Bild einfügen"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3-3a2 2 0 0 0-3 0L6 21"/></svg></button>
-          <button class="ib" aria-label="Papier hell oder dunkel"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/></svg></button>
           <span class="sp"></span>
           <button class="ib" aria-label="Entwurf verwerfen"><svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button>
         </div>
@@ -215,9 +217,14 @@
           <span class="sp"></span>
           <button class="ib" aria-label="Schließen"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
         </div>
-        <div class="row"><span class="l">An</span><span class="v"><span class="chip">Marek Kowalski</span></span>
+        <div class="row"><span class="l">An</span><span class="v"><span class="chip">Marek Kowalski ×</span></span>
           <button class="tb">Cc</button><button class="tb">Bcc</button></div>
         <div class="row"><span class="l">Betreff</span><span class="v subj">Angebot Webseite – nächste Schritte</span></div>
+        <div class="fmt">
+          <button class="ib aa" aria-label="Formatierung einblenden">Aa</button>
+          <span class="sp"></span>
+          <button class="ib" aria-label="Dateien anhängen"><svg viewBox="0 0 24 24"><path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l8.6-8.6A4 4 0 1 1 18 8.8l-8.6 8.6a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg></button><button class="ib" aria-label="Bild einfügen"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3-3a2 2 0 0 0-3 0L6 21"/></svg></button><button class="ib" aria-label="Papier hell oder dunkel"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/></svg></button>
+        </div>
         <div class="paper" style="position:relative">
           <div class="text">
             <p>Hallo Marek,</p>
@@ -240,9 +247,6 @@
         <div class="foot">
           <button class="send"><svg viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg>Senden <svg viewBox="0 0 24 24" style="width:12px;height:12px"><path d="m18 15-6-6-6 6"/></svg></button>
           <span class="kbd">Strg+Enter</span>
-          <button class="ib aa" aria-label="Formatierung" aria-pressed="false">Aa</button>
-          <button class="ib" aria-label="Dateien anhängen"><svg viewBox="0 0 24 24"><path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l8.6-8.6A4 4 0 1 1 18 8.8l-8.6 8.6a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg></button>
-          <button class="ib" aria-label="Bild einfügen"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3-3a2 2 0 0 0-3 0L6 21"/></svg></button>
           <button class="ib ghost" aria-label="Textbaustein (#631)"><svg viewBox="0 0 24 24"><path d="M12 2 22 7 12 12 2 7z"/><path d="m2 12 10 5 10-5M2 17l10 5 10-5"/></svg></button>
           <button class="ib ghost" aria-label="Signatur (#631)"><svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button>
           <span class="sp"></span>
