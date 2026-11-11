@@ -824,8 +824,9 @@ später gehen:
      `tools.open_file` bei einer geänderten Datei); geprüft
      vor der Freigabe und bei „Allow“ noch einmal.
    - `source: path` gibt es nur für den App-Schlüssel (Büroklammer, Ziehen), für Clients `forbidden`
-     (Entscheidung 20). Der Kern liest die Datei erst beim Senden vom Pfad und kopiert sie vorher nicht; er merkt sich
-     Größe und Änderungszeit, und hat sich die Datei bis dahin geändert, antwortet das Senden `conflict`.
+     (Entscheidung 20). `prepare_file` liest dabei nur den Anfang der Datei (für die Art) und bei Bildern so viel,
+     wie die Vorschau braucht; den ganzen Inhalt liest der Kern erst beim Senden und kopiert ihn vorher nicht. Er merkt
+     sich Größe und Änderungszeit, und hat sich die Datei bis dahin geändert, antwortet das Senden `conflict`.
    - Eine Quelle `clipboard` gibt es nicht: Die Oberfläche lädt Eingefügtes selbst mit `upload_file` hoch.
    - `upload_file` folgt `mail.upload_image` ([api.md](api.md), „Eingebettete Mail-Bilder“) und gibt mit `final`
      dieselbe vorbereitete Datei wie `prepare_file`: Base64 in Stücken von höchstens 256 KiB (das IPC-Limit von 1 MiB bleibt), Beginn ohne Kennung bei Offset 0, gleiche Wiederholungen
