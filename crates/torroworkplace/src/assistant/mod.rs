@@ -410,7 +410,8 @@ impl Assistant {
 
     /// What a request would be refused with anyway, checked before anyone is asked to approve it
     /// and again by [`answer_from`]: its limits, a conversation the core does not have (`not-found`),
-    /// for a message (also `bots.ask_bot`) an engine that does not answer ([`Assistant::engine`]),
+    /// for a message (also `bots.ask_bot`) an engine that does not answer ([`Assistant::engine`]) and for a
+    /// message about a mail what [`Assistant::about_for`] refuses (issue #605),
     /// a conversation that still answers (`busy`), a bot that is not there (`not-found`) or a
     /// conversation of another bot or of none ([`Assistant::bot_refusal`]), the window of a
     /// bot that is not there (`not-found`). `None` when it may run.
@@ -449,13 +450,47 @@ impl Assistant {
         }
         let actor = Actor::of(bot.as_ref());
         match (request, &bot) {
-            (Request::SendMessage { engine, .. }, _) => self.engine(ai, engine, &actor).await.err(),
+            (Request::SendMessage { .. }, _) => self.message_refusal(ai, request, bot.clone(), &actor).await,
             (Request::AskBot { .. }, Some(bot)) => self.engine(ai, &bot.engine, &actor).await.err(),
             (Request::OpenChatWindow { window: ChatWindow::Bot(id) }, _) if self.bots.get(id).await.is_none() => {
                 Some(crate::bots::no_bot(id))
             }
             _ => None,
         }
+    }
+
+    /// Why the `assistant.send_message` `request` would be refused anyway, checked before anyone is asked to approve
+    /// it: an engine that does not answer for `actor` ([`Assistant::engine`]), and for a chat about a mail (issue
+    /// #605) what [`Assistant::about_for`] refuses (the assistant's read access to the account, the data rule, a bot
+    /// or an agent, mail switched off, another mail than the conversation's). `bot`: the bot it names, as stored.
+    async fn message_refusal(
+        &self,
+        ai: &AiAccounts,
+        request: &Request,
+        bot: Option<Bot>,
+        actor: &Actor,
+    ) -> Option<Response> {
+        let Request::SendMessage { conversation, engine, model, effort, text, without, mode, about, .. } = request
+        else {
+            return None;
+        };
+        let kind = match self.engine(ai, engine, actor).await {
+            Ok(kind) => kind,
+            Err(refused) => return Some(refused),
+        };
+        let message = Message {
+            conversation: conversation.clone(),
+            engine: engine.clone(),
+            model: model.clone(),
+            effort: *effort,
+            text: text.clone(),
+            without: without.clone(),
+            mode: *mode,
+            bot,
+            on_behalf: None,
+            from: None,
+        };
+        self.about_for(&message, about.clone(), kind).await.err()
     }
 
     /// What drives `engine` for `actor`, or why it cannot answer: `not-found` for no engine of

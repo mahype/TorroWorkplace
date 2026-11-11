@@ -4526,6 +4526,11 @@ impl Core {
         if let Some(hidden) = self.about_hidden(&request, reach).await {
             return Ok(hidden);
         }
+        // Nor a new chat about a mail the client may not see; what the assistant may not read is refused with the
+        // assistant's other refusals below (issue #605).
+        if let Err(refused) = self.about_reach(&request, reach).await {
+            return Ok(refused);
+        }
         // What the assistant would refuse anyway is nothing to approve (task C.1): limits, an
         // unknown conversation or engine, a conversation that still answers, a bot's window; nor
         // what the bots would (task B.1): an unknown bot, too many bots.
@@ -33020,6 +33025,52 @@ mod tests {
             let bob = Rights { mail_accounts: Selection::Only(vec!["mail:bob@example.org".into()]), ..reading };
             assert!(core.held_suggestions(std::slice::from_ref(&card), Some(&bob)).await.is_empty(), "out of reach");
             assert!(core.held_suggestions(&[card], None).await.is_empty(), "no client");
+        }
+
+        /// Issue #605: a new chat about a mail is refused before anyone is asked to approve it, when the client
+        /// may not see the mail (`not-found`) and when the assistant may not read it (`forbidden`); only a chat
+        /// that may run waits for the person.
+        #[tokio::test]
+        async fn a_chat_about_a_mail_is_refused_before_anyone_is_asked() {
+            let Invited { _dir: dir, core, id, app_key, .. } = invited().await;
+            let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+            let core = Arc::new(core.with_assistant(assistant));
+            core.attach_assistant();
+            let mail = torro_ipc::assistant::MailRef { account: ANNA.into(), id: id.clone() };
+            let send = || Request::SendMessage {
+                conversation: None,
+                engine: torro_ipc::assistant::TEST_ENGINE.into(),
+                model: None,
+                effort: None,
+                text: "Is there a date in it?".into(),
+                without: Vec::new(),
+                mode: torro_ipc::assistant::Mode::Default,
+                bot: None,
+                about: Some(mail.clone()),
+            };
+            // Every change of these clients waits for the person.
+            let careful = |account: &str| {
+                let mut rights = RightsTemplate::ReadAndWrite.rights();
+                rights.areas.insert(Area::Assistant, AreaRights { level: Level::Full, admin: false });
+                rights.mail_accounts = Selection::Only(vec![account.into()]);
+                Rights { confirm: Confirm::OnEveryChange, ..rights }
+            };
+            let (_, stranger) = client(&core, careful("mail:bob@example.org")).await;
+            assert_eq!(code(&ask(&core, Some(&stranger), send()).await), "not-found", "the client cannot see it");
+            let (_, reader) = client(&core, careful(ANNA)).await;
+            assert_eq!(code(&ask(&core, Some(&reader), send()).await), "forbidden", "no assistant that reads it");
+            let approvals = |response: Response| match response {
+                Response::Approvals { approvals } => approvals,
+                other => panic!("expected approvals, got {other:?}"),
+            };
+            assert!(approvals(ask(&core, Some(&app_key), Request::ListApprovals).await).is_empty(), "nobody asked");
+
+            let mut reading = Rights::assistant();
+            reading.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+            reading.mail_accounts = Selection::Only(vec![ANNA.into()]);
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, reading).await.expect("added");
+            assert!(matches!(ask(&core, Some(&reader), send()).await, Response::Pending { .. }), "now it may run");
+            assert_eq!(approvals(ask(&core, Some(&app_key), Request::ListApprovals).await).len(), 1);
         }
 
         /// Issue #605, decided with the person: in a chat about a mail the assistant's read access to that
