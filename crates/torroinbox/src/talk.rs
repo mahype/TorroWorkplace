@@ -14,9 +14,8 @@
 //! **Without one** (no right to chat, or the account has no chat): the entry's last line and "Open
 //! in Talk", nothing else.
 //!
-//! "Open in Talk" opens the entry's own link in the browser, in both cases. "Open chat" (the chat
-//! window, `apps.open_app` with `chat:<id>`) waits for stage 3 of the concept: the core does not
-//! take that target yet.
+//! "Open in Talk" opens the entry's own link in the browser, in both cases. "Open chat" opens the
+//! conversation's chat window (`apps.open_app` with `chat:<id>`, stage 3 of the concept).
 //!
 //! Everything goes through requests: `chat.get_messages` and `chat.send_message` ([`Chat`]), the
 //! entry's own commands through the window. A failure shows as one quiet line in the panel with what
@@ -177,6 +176,8 @@ pub enum Event {
     DropReply,
     /// "Open in Talk".
     OpenInTalk,
+    /// "Open chat": the conversation's window in `torrochat`.
+    OpenChat,
     /// The answer for the conversation named, from [`Chat::run`]; an answer for another conversation
     /// than the one shown now is dropped.
     Answer(String, Answer),
@@ -191,6 +192,8 @@ pub enum Effect {
     Done,
     /// Open the entry's link in the browser ("Open in Talk").
     Open,
+    /// Open this conversation's chat window ("Open chat").
+    OpenChat(String),
     /// Put the cursor into the reply field ([`FIELD`]).
     Focus,
     /// Show the newest message: the first page is in, or new ones came ([`scroll_to_end`]).
@@ -314,6 +317,7 @@ impl Talk {
                 vec![Effect::Focus]
             }
             Event::OpenInTalk => vec![Effect::Open],
+            Event::OpenChat => vec![Effect::OpenChat(self.conversation.clone())],
             Event::Answer(conversation, _) if conversation != self.conversation => Vec::new(),
             Event::Answer(_, answer) => self.take(answer),
         }
@@ -596,9 +600,10 @@ pub fn panel<'a>(
         return panel::panel(path, detail::heading(item), bare_body(item), Message::CloseDetail).footer(vec![buttons]);
     };
     let open = widgets::icon_button(Icon::ExternalLink, tr("Open in Talk"), open_message(item));
+    let chat = widgets::icon_button(Icon::MessageCircle, tr("Open chat"), Some(Message::Talk(Event::OpenChat)));
     let foot = column![reply_block(talk), buttons].spacing(space::m()).width(Fill);
     panel::panel(path, detail::heading(item), panel::inset(history(talk, now)), Message::CloseDetail)
-        .actions(vec![open])
+        .actions(vec![chat, open])
         .footer(vec![foot.into()])
 }
 
@@ -906,6 +911,14 @@ mod tests {
         let divider = talk.divider().expect("a divider");
         assert_eq!(talk.messages[divider].number(), 23);
         assert_eq!(talk.messages.len() - divider, 2);
+    }
+
+    /// "Open chat" asks the window to open this conversation's chat window, "Open in Talk" the page.
+    #[test]
+    fn open_chat_names_the_conversation() {
+        let mut talk = Talk::new("demo-17".into(), LENA.into());
+        assert_eq!(talk.update(Event::OpenChat), [Effect::OpenChat(LENA.to_string())]);
+        assert_eq!(talk.update(Event::OpenInTalk), [Effect::Open]);
     }
 
     #[test]

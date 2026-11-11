@@ -9696,6 +9696,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     _ => Task::none(),
                 }
             }
+            // "Open chat": the core checks the conversation and starts its window (`chat:<id>`).
+            talk::Effect::OpenChat(conversation) => {
+                let target = format!("chat:{conversation}");
+                Task::perform(open_target(self.suite.clone(), AppId::CHAT.binary, target), Message::AppOpened)
+            }
             talk::Effect::Focus => operation::focus(talk::FIELD),
             talk::Effect::ScrollEnd => talk::scroll_to_end(),
         }
