@@ -31606,6 +31606,9 @@ mod tests {
         let mut expected = rights.clone();
         expected.areas.retain(|area, _| !matches!(area, Area::Mail | Area::Tasks));
         (expected.mail_accounts, expected.task_lists) = (Selection::Only(Vec::new()), Selection::Only(Vec::new()));
+        // Lent without chat: "all sources" becomes the sources the inbox holds, without Talk's
+        // (decision 6 in `docs/chat.md`); this inbox holds none.
+        expected.inbox_sources = Selection::Only(Vec::new());
         assert_eq!(access.rights, expected, "no mail account, no address");
         assert_eq!(access.engine.as_deref(), Some("claude-code"));
         assert_eq!((access.withheld, access.switched_off), (vec![Area::Mail], vec![Area::Tasks]));
