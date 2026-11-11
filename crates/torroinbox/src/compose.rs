@@ -3252,6 +3252,10 @@ impl<S: ComposeSource + 'static> Window<S> {
     /// Saves the draft, then does `after`. A save that is running takes `after` along when it is
     /// done; the fields are saved once more if they changed meanwhile.
     fn save(&mut self, after: After) -> Task<Message> {
+        // A draft on its way to the trash is not saved again (issue #627): it would come back.
+        if self.discarding {
+            return Task::none();
+        }
         self.after = self.after.max(after);
         if self.saving.is_some() || !self.ready() || self.body.pending() {
             return Task::none();
@@ -3499,8 +3503,10 @@ impl<S: ComposeSource + 'static> Window<S> {
             return Task::none();
         }
         self.asking = None;
-        // From here on nothing is edited, saved, sent or closed until the draft is gone or not.
+        // From here on nothing is edited, saved, sent or closed until the draft is gone or not; a close
+        // that waited for a save is given up with it.
         self.discarding = true;
+        self.after = After::Nothing;
         if self.saving.is_some() {
             self.discard_after_save = true;
             return Task::none();
@@ -7428,6 +7434,24 @@ mod tests {
         assert_eq!(window.notice.as_ref().map(|n| n.what.as_str()), Some(tr("The draft could not be discarded.")));
         let _ = window.update(Message::Discarded(Ok(())));
         assert!(exited(&window));
+    }
+
+    #[test]
+    fn discarding_drops_a_waiting_close_and_saves_nothing_more() {
+        let mut window = ready(&[]);
+        type_in(&mut window, "bob@example.org", "Lunch", "Shall we?");
+        let _ = window.update(Message::Tick(later()));
+        let _ = deliver_save(&mut window);
+        window.after = After::Close;
+        let _ = window.update(Message::Subject("Lunch?".into()));
+        let saves = window.calls.iter().filter(|call| matches!(call, Call::Save(_))).count();
+        let _ = window.update(Message::DiscardDraft);
+        let _ = window.update(Message::ConfirmDiscard);
+        assert_eq!(window.after, After::Nothing);
+        let _ = window.save(After::Nothing);
+        let _ = window.update(Message::Tick(later()));
+        let now = window.calls.iter().filter(|call| matches!(call, Call::Save(_))).count();
+        assert_eq!(now, saves, "the draft on its way to the trash is not saved again");
     }
 
     #[test]
