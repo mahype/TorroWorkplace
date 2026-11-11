@@ -72,36 +72,47 @@ async fn invoice_pdfs_round_trip_all_content_and_mark_every_page_as_a_copy() {
 }
 
 /// Opt-in local acceptance only. Private source and generated documents never enter test output or the repository.
-/// The directory holds `<name>.html` with the page's `<name>.css` and `<name>.js`. Only resource hosts, paths and
-/// script digests are printed, never invoice content.
+/// The directory holds `<name>.html` for each page and `res/` with every resource the pages name, under its file
+/// name. Only resource hosts, paths and script digests are printed, never invoice content.
 #[tokio::test]
-#[ignore = "requires the person's two private Paddle examples in a local temporary directory"]
+#[ignore = "requires the person's private Paddle examples in a local temporary directory"]
 async fn local_paddle_acceptance() {
     let _turn = invoice::TEST_TURN.lock().await;
     use sha2::{Digest, Sha256};
     let dir = std::env::var_os("TORRO_WORKFLOW_PADDLE_ACCEPTANCE").expect("explicit private temporary directory");
     let dir = std::path::PathBuf::from(dir);
-    let hosts = vec!["my.paddle.com".to_string(), "static.paddle.com".to_string()];
-    for name in ["august", "october"] {
+    let template = super::templates::get("paddle_setapp_invoice_copy").expect("bundled template").package;
+    let names = std::env::var("TORRO_WORKFLOW_PADDLE_NAMES").unwrap_or_else(|_| "august october".into());
+    for name in names.split_whitespace() {
         let bytes = std::fs::read(dir.join(format!("{name}.html"))).expect("local source");
-        let (source, references) = invoice::extract_profile_2(&bytes, Some(HTML)).expect("complete source profile");
+        let (source, presentation) = invoice::extract_profile_2(&bytes, Some(HTML)).expect("complete source profile");
+        for sha256 in &presentation.inline_scripts {
+            let pinned = template.binding.resources.iter().any(|pin| pin.inline && pin.sha256 == *sha256);
+            eprintln!("{name}: inline script {sha256} pinned={pinned}");
+        }
         let mut resources = Vec::new();
-        for reference in references {
-            let link = super::download::resource_link("my.paddle.com", &reference.href, &hosts)
+        for reference in presentation.references {
+            let link = super::download::resource_link("my.paddle.com", &reference.href, &template.hosts)
                 .expect("resource on a package host");
-            let path = match reference.kind {
-                ResourceKind::Stylesheet => dir.join(format!("{name}.css")),
-                ResourceKind::Script => dir.join(format!("{name}.js")),
-            };
-            let data = std::fs::read(&path).expect("local resource");
+            let file = link.path_and_query().rsplit('/').next().unwrap_or_default().to_owned();
+            let data = std::fs::read(dir.join("res").join(&file)).expect("local resource");
             let sha256: String = Sha256::digest(&data).iter().map(|byte| format!("{byte:02x}")).collect();
-            eprintln!("{name}: {:?} {} {} {sha256}", reference.kind, link.host(), link.path_and_query());
+            let pinned = template.binding.resources.iter().any(|pin| {
+                !pin.inline && pin.host == link.host() && pin.path == link.path_and_query() && pin.sha256 == sha256
+            });
+            eprintln!(
+                "{name}: {:?} {} {} {sha256} pinned={pinned}",
+                reference.kind,
+                link.host(),
+                link.path_and_query()
+            );
             let stylesheet = (reference.kind == ResourceKind::Stylesheet).then_some(data);
             resources.push(Loaded { reference, stylesheet });
         }
         let copy = invoice::convert(bytes, Some(HTML.into()), Some(resources), None).await.expect("complete PDF copy");
         std::fs::write(dir.join(format!("{name}.source.txt")), source.text()).expect("local comparison source");
         std::fs::write(dir.join(format!("{name}.pdf")), copy.bytes).expect("local PDF for all-page inspection");
+        eprintln!("{name}: {} page(s)", copy.pages);
         assert!(copy.pages > 0 && copy.pages <= 50);
     }
 }
@@ -114,9 +125,9 @@ async fn profile_two_copies_a_page_whose_checked_resources_match_its_head_exactl
         (OCTOBER, include_str!("../../tests/fixtures/workflows/paddle_october.expected.txt")),
     ] {
         let page = with_resources(html);
-        let (parsed, references) = invoice::extract_profile_2(page.as_bytes(), Some(HTML)).expect("profile 2");
+        let (parsed, presentation) = invoice::extract_profile_2(page.as_bytes(), Some(HTML)).expect("profile 2");
         assert_eq!(parsed.text(), expected.trim_end(), "the resources change nothing in the extracted invoice");
-        assert_eq!(references, loaded(CSS).into_iter().map(|loaded| loaded.reference).collect::<Vec<_>>());
+        assert_eq!(presentation.references, loaded(CSS).into_iter().map(|loaded| loaded.reference).collect::<Vec<_>>());
         let copy = invoice::convert(page.into_bytes(), Some(HTML.into()), Some(loaded(CSS)), None)
             .await
             .expect("complete copy");
@@ -136,7 +147,7 @@ async fn profile_two_copies_a_page_whose_checked_resources_match_its_head_exactl
     unloaded[0].stylesheet = None;
     assert!(invoice::convert(page.into_bytes(), Some(HTML.into()), Some(unloaded), None).await.is_err());
     // A page without resources stays valid under profile 2; its list is simply empty.
-    assert_eq!(invoice::extract_profile_2(AUGUST.as_bytes(), Some(HTML)).expect("plain page").1, Vec::new());
+    assert!(invoice::extract_profile_2(AUGUST.as_bytes(), Some(HTML)).expect("plain page").1.references.is_empty());
 }
 
 #[tokio::test]
@@ -159,12 +170,13 @@ async fn generated_or_hidden_invoice_content_in_the_stylesheet_is_refused() {
         ".receipt-table-tax { color: transparent; }",
         ".receipt-table-tax { color: rgba(0, 0, 0, 0); }",
         ".receipt-table-tax { --gone: none; display: var(--gone); }",
+        ".receipt-table-tax { color: var(--text); }",
         ".receipt-table-tax { clip: rect(0 0 0 0); }",
         ".receipt-table-tax { clip-path: inset(50%); }",
         ".receipt-table-tax { text-indent: -9999px; }",
         ".receipt-table-tax { position: absolute; left: -10000px; }",
         ".receipt-table-tax { unicode-bidi: bidi-override; direction: rtl; }",
-        "@keyframes gone { to { opacity: 0; } }",
+        ".receipt-table-tax { animation: gone 1s; }",
         "@namespace svg url(http://www.w3.org/2000/svg);",
         ".receipt-table { .receipt-table-total { display: none; } }",
         ".receipt-table-total { left: -99999px; }",
@@ -186,9 +198,26 @@ async fn generated_or_hidden_invoice_content_in_the_stylesheet_is_refused() {
         ".receipt-table-tax { list-style: 'VAT 19 % ' inside; }",
         ".receipt-table-tax { background-image: url(\"data:image/svg+xml,<svg><text>VAT</text></svg>\"); }",
         ".receipt-table-tax { background: url(data:image/png;base64,AAAA); }",
+        ".receipt-table-total { left: 99999px; }",
+        ".receipt-table-total { margin-left: 99999px; }",
+        ".receipt-table-total { transform: matrix(0, 0, 0, 0, 0, 0); }",
+        ".receipt-table-total { -webkit-transform: scale(0); }",
+        ".receipt-table-total { rotate: y 90deg; }",
+        ".receipt-table-total { zoom: 1%; }",
+        ".receipt-table-total { color: rgb(0 0 0 / 1%); }",
+        ".receipt-table-total { color: #ffffff0a; }",
+        ".receipt-table-total { font-size: 5%; }",
+        ".receipt-table-total { -webkit-mask-image: linear-gradient(transparent, transparent); }",
+        ".receipt-table-total { overflow: hidden; }",
+        ".receipt-table-total { max-height: 1.2em; overflow: hidden; }",
+        ".receipt-table-total { background-image: image-set(\"data:image/svg+xml,<svg/>\" 1x); }",
+        ".receipt-table-total { background: url(https://static.paddle.com/vat.png); }",
+        ".no-print ~ .receipt-table-total { display: none; }",
+        ":root { --z: 0; }",
+        "@font-face { font-family: x; src: url(data:font/woff2;base64,AAAA); }",
     ] {
         let css = format!("{CSS}\n{rule}\n");
-        assert!(invoice::check_stylesheet(css.as_bytes()).is_err(), "{rule}");
+        assert!(invoice::check_stylesheet(css.as_bytes(), page.as_bytes()).is_err(), "{rule}");
         assert!(
             invoice::convert(page.clone().into_bytes(), Some(HTML.into()), Some(loaded(&css)), None).await.is_err(),
             "{rule}"
@@ -204,29 +233,61 @@ async fn generated_or_hidden_invoice_content_in_the_stylesheet_is_refused() {
         ".receipt-table-total { margin: 0 auto -8px; font: 700 14px/1.4 sans-serif; color: #11663aff; }",
         "hr { height: 0; overflow: visible; }",
         "ul { list-style: none; }",
-        ".receipt-table-total { transform: translateY(-2px) scale(1.02); }",
+        ".no-print * { display: none; }",
+        ".c-header > .c-container { visibility: hidden; }",
+        // Rules that name a class, id or tag the page lacks cannot change it, whatever they do.
+        ".select2-hidden-accessible { clip: rect(0 0 0 0); position: absolute; overflow: hidden; }",
+        ".ui-helper-hidden { display: none; }",
+        "template, [hidden] template { display: none; }",
+        "#not-on-the-page::after { content: 'Additional VAT'; }",
+        "@keyframes gone { to { opacity: 0; } }",
+        // A skipped block is consumed: the next selector must not start inside it (seen on Paddle's stylesheet).
+        ".not-on-the-page { padding-top: 0 }.no-print, .no-print * { display: none }",
+        "@page { margin: 1cm }.c-header { display: none }",
+        ".receipt-table-total { margin-left: calc(2rem * 0.5 * -1); color: rgba(54, 71, 108, 0.9); }",
     ] {
         let css = format!("{CSS}\n{rule}\n");
-        assert!(invoice::check_stylesheet(css.as_bytes()).is_ok(), "{rule}");
+        assert!(invoice::check_stylesheet(css.as_bytes(), page.as_bytes()).is_ok(), "{rule}");
     }
-    assert!(invoice::check_stylesheet(CSS.as_bytes()).is_ok());
+    assert!(invoice::check_stylesheet(CSS.as_bytes(), page.as_bytes()).is_ok());
     let big = format!("{CSS}{}", ".a{color:red}".repeat(512 * 1024 / 13 + 1));
-    assert!(invoice::check_stylesheet(big.as_bytes()).is_err(), "over 512 KiB");
+    assert!(invoice::check_stylesheet(big.as_bytes(), page.as_bytes()).is_err(), "over 512 KiB");
     let many = ".a{color:red}".repeat(20_001);
-    assert!(invoice::check_stylesheet(many.as_bytes()).is_err(), "over 20,000 rules");
-    assert!(invoice::check_stylesheet(&[0xff, 0xfe]).is_err(), "not UTF-8");
+    assert!(invoice::check_stylesheet(many.as_bytes(), page.as_bytes()).is_err(), "over 20,000 rules");
+    assert!(invoice::check_stylesheet(&[0xff, 0xfe], page.as_bytes()).is_err(), "not UTF-8");
 }
 
-#[test]
-fn profile_two_accepts_only_plain_external_head_resources() {
+#[tokio::test]
+async fn profile_two_accepts_only_witnessed_page_code() {
+    let _turn = invoice::TEST_TURN.lock().await;
+    // Inline code is accepted structurally, then checked: styles by the stylesheet rules, scripts by their pin.
+    let page = AUGUST.replace(
+        "</head>",
+        "<link rel=\"icon\" href=\"/favicon.ico\"><meta name=\"robots\" content=\"noindex\">\
+         <style type=\"text/css\">@font-face { font-family: 'Graphik'; src: url('/f.woff') format('woff'); }</style>\
+         <script type=\"text/javascript\">void 0;</script></head>",
+    );
+    let (_, presentation) = invoice::extract_profile_2(page.as_bytes(), Some(HTML)).expect("witnessed page code");
+    assert!(presentation.references.is_empty());
+    assert_eq!(presentation.inline_scripts.len(), 1);
+    assert!(invoice::references(page.clone().into_bytes(), Some(HTML.into()), None).await.is_ok());
+    assert!(invoice::convert(page.into_bytes(), Some(HTML.into()), Some(Vec::new()), None).await.is_ok());
+    let hiding = AUGUST.replace("</head>", "<style>.receipt-table-total { display: none; }</style></head>");
+    assert!(invoice::references(hiding.clone().into_bytes(), Some(HTML.into()), None).await.is_err());
+    assert!(invoice::convert(hiding.into_bytes(), Some(HTML.into()), Some(Vec::new()), None).await.is_err());
+    let script = AUGUST.replace("</main>", "</main><script type=\"text/javascript\">void 0;</script>");
+    assert_eq!(invoice::extract_profile_2(script.as_bytes(), Some(HTML)).expect("outside").1.inline_scripts.len(), 1);
+    let inside = AUGUST.replace("<h4>Payment details</h4>", "<script>void 0;</script><h4>Payment details</h4>");
+    assert!(invoice::extract_profile_2(inside.as_bytes(), Some(HTML)).is_err(), "no script inside the invoice");
     for inserted in [
-        "<style>.receipt-table-total { color: red; }</style>",
-        "<script>document.body.append('Additional VAT: EUR 9.00')</script>",
         "<script src='https://static.paddle.com/a.js'>document.write('x')</script>",
+        "<script type='module'>import('x')</script>",
+        "<style media='print'>.a{}</style>",
+        "<meta http-equiv='refresh' content='0'>",
+        "<meta name='viewport' content='x'>",
         "<script type='module' src='https://static.paddle.com/a.js'></script>",
         "<script src='https://static.paddle.com/a.js' onload='x()'></script>",
         "<script src='https://static.paddle.com/a.js' integrity='sha256-x'></script>",
-        "<script></script>",
         "<link rel='stylesheet' href='https://static.paddle.com/a.css' media='print'>",
         "<link rel='preload' href='https://static.paddle.com/a.css'>",
         "<link rel='stylesheet'>",
@@ -236,7 +297,7 @@ fn profile_two_accepts_only_plain_external_head_resources() {
         assert!(invoice::extract_profile_2(html.as_bytes(), Some(HTML)).is_err(), "{inserted}");
     }
     let body = AUGUST.replace("</main>", &format!("</main><script src=\"{SCRIPT}\"></script>"));
-    assert!(invoice::extract_profile_2(body.as_bytes(), Some(HTML)).is_err(), "scripts outside the head");
+    assert!(invoice::extract_profile_2(body.as_bytes(), Some(HTML)).is_err(), "external scripts outside the head");
     let nine = (0..9).map(|n| format!("<script src=\"/{n}.js\"></script>")).collect::<String>();
     let html = AUGUST.replace("</head>", &format!("{nine}</head>"));
     assert!(invoice::extract_profile_2(html.as_bytes(), Some(HTML)).is_err(), "at most eight resources");

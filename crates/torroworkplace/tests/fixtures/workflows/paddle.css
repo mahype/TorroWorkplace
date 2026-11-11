@@ -5,9 +5,8 @@
   src: url("/assets/fonts/synthetic.woff2") format("woff2");
   font-display: swap;
 }
-:root { --brand: #3a4bd9; }
 html, body { margin: 0; font-family: "Synthetic Sans", sans-serif; color: #1f2430; background: #f4f5f8; }
-.c-header { position: fixed; top: 0; left: 0; right: 0; height: 64px; background: var(--brand); }
+.c-header { position: fixed; top: 0; left: 0; right: 0; height: 64px; background: #3a4bd9; }
 .c-main { padding-top: 80px; }
 .c-sheet { max-width: 860px; margin: 0 auto; padding: 40px; background: #fff; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12); }
 .g-row { display: flex; flex-wrap: wrap; }

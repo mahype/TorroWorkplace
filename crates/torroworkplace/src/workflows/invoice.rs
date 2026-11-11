@@ -3,6 +3,7 @@
 //! the page's stylesheet as data and refuses it when it could generate or hide invoice content.
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -138,6 +139,17 @@ pub struct Reference {
     pub href: String,
 }
 
+/// What profile 2 found in the page besides its text: resources to load, inline scripts to pin and inline
+/// styles and page facts for the stylesheet check.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Presentation {
+    pub references: Vec<Reference>,
+    /// SHA-256 of each inline script's text, in page order. Never executed.
+    pub inline_scripts: Vec<String>,
+    inline_styles: Vec<String>,
+    facts: PageFacts,
+}
+
 /// A loaded reference. Stylesheets carry their bytes for the rule check; scripts are only named, never run.
 pub struct Loaded {
     pub reference: Reference,
@@ -150,10 +162,17 @@ pub async fn references(
     bytes: Vec<u8>,
     content_type: Option<String>,
     cancel: Option<Arc<AtomicBool>>,
-) -> Result<Vec<Reference>, Error> {
+) -> Result<Presentation, Error> {
     let budget = Budget::new(cancel);
-    run_worker(move || extract_with(&bytes, content_type.as_deref(), &budget, 2).map(|(_, references)| references))
-        .await
+    run_worker(move || {
+        let (_, presentation) = extract_with(&bytes, content_type.as_deref(), &budget, 2)?;
+        // Inline styles are checked before anything is loaded; a refused page needs no resources.
+        for style in &presentation.inline_styles {
+            check_css(style.as_bytes(), &budget, &presentation.facts)?;
+        }
+        Ok(presentation)
+    })
+    .await
 }
 
 /// Admission moves into the actual blocking worker, not the cancelable async waiting future.
@@ -167,17 +186,21 @@ pub async fn convert(
     let budget = Budget::new(cancel);
     run_worker(move || {
         let profile = if loaded.is_some() { 2 } else { 1 };
-        let (invoice, references) = extract_with(&bytes, content_type.as_deref(), &budget, profile)?;
+        let (invoice, presentation) = extract_with(&bytes, content_type.as_deref(), &budget, profile)?;
         let loaded = loaded.unwrap_or_default();
+        let references = &presentation.references;
         // The PDF may only follow the exact resources that were loaded and checked for this page.
         if references.len() != loaded.len()
             || references.iter().zip(&loaded).any(|(reference, loaded)| *reference != loaded.reference)
         {
             return Err(Error::Unsupported);
         }
+        for style in &presentation.inline_styles {
+            check_css(style.as_bytes(), &budget, &presentation.facts)?;
+        }
         for loaded in &loaded {
             match (loaded.reference.kind, &loaded.stylesheet) {
-                (ResourceKind::Stylesheet, Some(css)) => check_css(css, &budget)?,
+                (ResourceKind::Stylesheet, Some(css)) => check_css(css, &budget, &presentation.facts)?,
                 (ResourceKind::Script, None) => {}
                 _ => return Err(Error::Unsupported),
             }
@@ -224,13 +247,15 @@ pub fn extract(bytes: &[u8], content_type: Option<&str>) -> Result<Invoice, Erro
 }
 
 #[cfg(test)]
-pub fn extract_profile_2(bytes: &[u8], content_type: Option<&str>) -> Result<(Invoice, Vec<Reference>), Error> {
+pub fn extract_profile_2(bytes: &[u8], content_type: Option<&str>) -> Result<(Invoice, Presentation), Error> {
     extract_with(bytes, content_type, &Budget::new(None), 2)
 }
 
+/// Checks a stylesheet against the facts of the given page, as the conversion does.
 #[cfg(test)]
-pub fn check_stylesheet(css: &[u8]) -> Result<(), Error> {
-    check_css(css, &Budget::new(None))
+pub fn check_stylesheet(css: &[u8], page: &[u8]) -> Result<(), Error> {
+    let (_, presentation) = extract_with(page, Some("text/html; charset=utf-8"), &Budget::new(None), 2)?;
+    check_css(css, &Budget::new(None), &presentation.facts)
 }
 
 #[derive(Default)]
@@ -494,7 +519,7 @@ fn extract_with(
     kind: Option<&str>,
     budget: &Budget,
     profile: u16,
-) -> Result<(Invoice, Vec<Reference>), Error> {
+) -> Result<(Invoice, Presentation), Error> {
     let (html, encoding) = decode(bytes, kind)?;
     preflight(&html, budget)?;
     let sink = Sink(RefCell::new(Tree {
@@ -528,7 +553,7 @@ fn extract_with(
     let roots: Vec<_> =
         tree.nodes.iter().enumerate().filter(|(_, node)| node.class("c-sheet")).map(|(index, _)| index).collect();
     let [root] = roots.as_slice() else { return Err(Error::Unsupported) };
-    let references = presentation(&tree, *root, profile)?;
+    let presentation = presentation(&tree, *root, profile)?;
     let mut invoice = Invoice { blocks: Vec::new() };
     collect(&tree, *root, &mut invoice.blocks, budget)?;
     let headings = tree
@@ -546,17 +571,19 @@ fn extract_with(
     if headings != 1 || tables != 1 || totals != 1 || invoice.blocks.is_empty() {
         return Err(Error::Unsupported);
     }
-    // No unaccounted visible text outside the invoice. Only witnessed navigation/editor/metadata is excluded.
+    // No unaccounted visible text outside the invoice. Only witnessed navigation/editor/metadata is excluded,
+    // and the text of the inline styles and scripts profile 2 has accepted, which is code, not visible text.
     for (index, node) in tree.nodes.iter().enumerate() {
         if node.tag.is_empty()
             && !normalize(&node.text).is_empty()
             && !beneath(&tree, index, *root)
             && !known_outside(&tree, index)
+            && !(profile == 2 && code_text(&tree, node))
         {
             return Err(Error::Unsupported);
         }
     }
-    Ok((invoice, references))
+    Ok((invoice, presentation))
 }
 
 fn beneath(tree: &Tree, mut node: usize, root: usize) -> bool {
@@ -576,6 +603,8 @@ fn known_outside(tree: &Tree, mut node: usize) -> bool {
         if held.tag == "head"
             || held.attr("id") == Some("customer-information-modal")
             || (held.tag == "header" && held.class("c-header") && held.class("no-print"))
+            // The provider's logo link below the invoice: an image without text.
+            || (held.tag == "a" && held.class("logo") && held.attrs.iter().all(|(key, _)| matches!(key.as_str(), "class" | "href" | "target")))
         {
             return true;
         }
@@ -585,62 +614,124 @@ fn known_outside(tree: &Tree, mut node: usize) -> bool {
     false
 }
 
-/// A head `<link rel=stylesheet>` or `<script src>` of profile 2, without inline content or further attributes.
-/// Module scripts are refused: their imports would be further, unpinned code.
-fn head_reference(tree: &Tree, node: &Node) -> Result<Reference, Error> {
+/// The text of a `<script>` or `<style>` element.
+fn code_text(tree: &Tree, node: &Node) -> bool {
+    node.parent
+        .and_then(|parent| tree.nodes.get(parent))
+        .is_some_and(|parent| matches!(parent.tag.as_str(), "script" | "style"))
+}
+
+/// The concatenated text children of an element; any child element refuses it.
+fn element_text(tree: &Tree, node: &Node) -> Result<String, Error> {
+    let mut text = String::new();
+    for child in &node.children {
+        let child = tree.nodes.get(*child).ok_or(Error::Unsupported)?;
+        if !child.tag.is_empty() {
+            return Err(Error::Unsupported);
+        }
+        text.push_str(&child.text);
+    }
+    Ok(text)
+}
+
+/// Accepts one witnessed profile-2 element of the page's code and metadata, or says it is not one.
+/// Head: `<link rel=stylesheet|icon>`, `<script src>`, `<style>`, `<meta name=robots>`. Anywhere outside the
+/// invoice: an inline `<script>`. Module scripts are refused: their imports would be further, unpinned code.
+fn profile_two(
+    tree: &Tree,
+    node: &Node,
+    in_head: bool,
+    outside: bool,
+    found: &mut Presentation,
+) -> Result<bool, Error> {
+    let only = |keys: &[&str]| node.attrs.iter().all(|(key, _)| keys.contains(&key.as_str()));
     let typed = |allowed: &[&str]| node.attr("type").is_none_or(|kind| allowed.contains(&kind.trim()));
-    let (kind, href) = match node.tag.as_str() {
+    let href = || {
+        node.attr("href")
+            .filter(|href| !href.is_empty() && href.len() <= 2048)
+            .map(String::from)
+            .ok_or(Error::Unsupported)
+    };
+    let scripts = ["text/javascript", "application/javascript"];
+    match node.tag.as_str() {
         "link"
-            if node.attrs.iter().all(|(key, _)| matches!(key.as_str(), "rel" | "href" | "type"))
-                && node.attr("rel").is_some_and(|rel| rel.trim().eq_ignore_ascii_case("stylesheet"))
-                && typed(&["text/css"]) =>
+            if in_head
+                && only(&["rel", "href", "type"])
+                && typed(&["text/css"])
+                && node.attr("rel").is_some_and(|rel| rel.trim().eq_ignore_ascii_case("stylesheet")) =>
         {
-            (ResourceKind::Stylesheet, node.attr("href"))
+            found.references.push(Reference { kind: ResourceKind::Stylesheet, href: href()? });
+        }
+        // The page's icon is never loaded and shows no invoice content.
+        "link"
+            if in_head
+                && only(&["rel", "href", "type", "sizes"])
+                && node.attr("rel").is_some_and(|rel| rel.trim().eq_ignore_ascii_case("icon")) =>
+        {
+            href()?;
+        }
+        "meta"
+            if in_head
+                && only(&["name", "content"])
+                && node.attr("name") == Some("robots")
+                && node.attr("content").is_some_and(|content| content.len() <= 256) => {}
+        "style" if in_head && only(&["type"]) && typed(&["text/css"]) => {
+            found.inline_styles.push(element_text(tree, node)?);
         }
         "script"
-            if node.attrs.iter().all(|(key, _)| matches!(key.as_str(), "src" | "defer" | "async" | "type"))
-                && typed(&["text/javascript", "application/javascript"])
-                && node.children.iter().all(|child| {
-                    tree.nodes
-                        .get(*child)
-                        .is_some_and(|child| child.tag.is_empty() && normalize(&child.text).is_empty())
-                }) =>
+            if node.attr("src").is_some() && in_head && only(&["src", "defer", "async", "type"]) && typed(&scripts) =>
         {
-            (ResourceKind::Script, node.attr("src"))
+            if !normalize(&element_text(tree, node)?).is_empty() {
+                return Err(Error::Unsupported);
+            }
+            found.references.push(Reference {
+                kind: ResourceKind::Script,
+                href: node
+                    .attr("src")
+                    .filter(|src| !src.is_empty() && src.len() <= 2048)
+                    .ok_or(Error::Unsupported)?
+                    .into(),
+            });
         }
-        _ => return Err(Error::Unsupported),
-    };
-    let href = href.filter(|href| !href.is_empty() && href.len() <= 2048).ok_or(Error::Unsupported)?;
-    Ok(Reference { kind, href: href.into() })
+        "script" if node.attr("src").is_none() && outside && only(&["type"]) && typed(&scripts) => {
+            let text = element_text(tree, node)?;
+            found
+                .inline_scripts
+                .push(Sha256::digest(text.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect());
+        }
+        _ => return Ok(false),
+    }
+    if found.references.len() > 8 || found.inline_scripts.len() > 4 || found.inline_styles.len() > 4 {
+        return Err(Error::Unsupported);
+    }
+    Ok(true)
 }
 
 /// No external or executable presentation influences are proven by profile 1. A mutable stylesheet
 /// URL is not a version pin: even a familiar provider URL can add generated invoice facts tomorrow.
 /// Refuse rather than compare a PDF against an extraction that has already lost those facts.
-/// Profile 2 returns the head's stylesheets and scripts instead; the caller loads and checks each one.
-fn presentation(tree: &Tree, root: usize, profile: u16) -> Result<Vec<Reference>, Error> {
+/// Profile 2 returns the page's resources, inline scripts and styles instead; the caller loads, checks and
+/// pins each one.
+fn presentation(tree: &Tree, root: usize, profile: u16) -> Result<Presentation, Error> {
     let heads: Vec<_> =
         tree.nodes.iter().enumerate().filter(|(_, node)| node.tag == "head").map(|(index, _)| index).collect();
     if heads.len() > 1 {
         return Err(Error::Unsupported);
     }
-    let mut references = Vec::new();
+    let mut found = Presentation::default();
     for (index, node) in tree.nodes.iter().enumerate() {
         let in_head = heads.first().is_some_and(|head| beneath(tree, index, *head));
-        if profile == 2 && in_head && matches!(node.tag.as_str(), "link" | "script") {
-            if node.attrs.iter().any(|(key, _)| key.starts_with("on")) || references.len() >= 8 {
+        if profile == 2 {
+            if node.attrs.iter().any(|(key, _)| key.starts_with("on")) {
                 return Err(Error::Unsupported);
             }
-            references.push(head_reference(tree, node)?);
-            continue;
-        }
-        if profile == 2
-            && in_head
-            && node.tag.is_empty()
-            && node.parent.and_then(|parent| tree.nodes.get(parent)).is_some_and(|parent| parent.tag == "script")
-        {
-            // Whitespace inside an external script element; head_reference has refused any other content.
-            continue;
+            if profile_two(tree, node, in_head, !beneath(tree, index, root), &mut found)? {
+                continue;
+            }
+            // Text of an accepted script or style element; profile_two refused any other content.
+            if node.tag.is_empty() && code_text(tree, node) {
+                continue;
+            }
         }
         if matches!(node.tag.as_str(), "script" | "style" | "link" | "base" | "iframe" | "object" | "embed")
             || node.attrs.iter().any(|(key, _)| key.starts_with("on"))
@@ -693,7 +784,10 @@ fn presentation(tree: &Tree, root: usize, profile: u16) -> Result<Vec<Reference>
             return Err(Error::Unsupported);
         }
     }
-    Ok(references)
+    if profile == 2 {
+        found.facts = PageFacts::of(tree);
+    }
+    Ok(found)
 }
 
 fn normalize(text: &str) -> String {
@@ -896,9 +990,35 @@ fn collect(tree: &Tree, index: usize, blocks: &mut Vec<Block>, budget: &Budget) 
     Ok(())
 }
 
-/// Reads a stylesheet as data under fixed rules. It refuses generated text (`content`), imports and any rule
-/// that could hide content, except on the witnessed navigation selectors. A colour or spacing change passes.
-fn check_css(bytes: &[u8], budget: &Budget) -> Result<(), Error> {
+/// Classes, ids and tags present anywhere in the page. A selector naming anything else matches nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PageFacts {
+    classes: BTreeSet<String>,
+    ids: BTreeSet<String>,
+    tags: BTreeSet<String>,
+}
+
+impl PageFacts {
+    fn of(tree: &Tree) -> Self {
+        let mut facts = Self::default();
+        for node in tree.nodes.iter().filter(|node| !node.tag.is_empty()) {
+            facts.tags.insert(node.tag.to_ascii_lowercase());
+            if let Some(id) = node.attr("id") {
+                facts.ids.insert(id.into());
+            }
+            for class in node.attr("class").unwrap_or("").split_ascii_whitespace() {
+                facts.classes.insert(class.into());
+            }
+        }
+        facts
+    }
+}
+
+/// Reads a stylesheet as data under a fixed allow list. A rule whose selectors name a class, id or tag the page
+/// does not have cannot change it and is skipped. Every other rule may only use known properties with values
+/// that neither generate nor hide text; hiding is allowed only beneath the witnessed navigation selectors.
+/// Anything unknown refuses the copy instead of passing silently.
+fn check_css(bytes: &[u8], budget: &Budget, facts: &PageFacts) -> Result<(), Error> {
     if bytes.len() > MAX_CSS {
         return Err(Error::Unsupported);
     }
@@ -906,7 +1026,7 @@ fn check_css(bytes: &[u8], budget: &Budget) -> Result<(), Error> {
         std::str::from_utf8(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)).map_err(|_| Error::Unsupported)?;
     let mut input = cssparser::ParserInput::new(text);
     let mut parser = cssparser::Parser::new(&mut input);
-    let mut walk = CssWalk { budget, tokens: 0, rules: 0 };
+    let mut walk = CssWalk { budget, facts, tokens: 0, rules: 0 };
     rule_list(&mut parser, &mut walk, 0).map_err(|error| match error.kind {
         cssparser::ParseErrorKind::Custom(error) => error,
         cssparser::ParseErrorKind::Basic(_) => Error::Unsupported,
@@ -915,6 +1035,7 @@ fn check_css(bytes: &[u8], budget: &Budget) -> Result<(), Error> {
 
 struct CssWalk<'b> {
     budget: &'b Budget,
+    facts: &'b PageFacts,
     tokens: usize,
     rules: usize,
 }
@@ -946,7 +1067,7 @@ impl CssWalk<'_> {
     }
 }
 
-/// A simplified declaration value: enough to recognize hiding, never to apply styles.
+/// A simplified declaration value: enough to check it against the allow list, never to apply styles.
 #[derive(Debug, Clone, PartialEq)]
 enum Value {
     Word(String),
@@ -992,27 +1113,117 @@ fn rule_list<'i>(
                     }
                 }
                 let prelude = parser.slice_from(start);
-                let prelude = prelude.strip_suffix('{').unwrap_or(prelude);
-                let may_hide = hide_allowed(prelude);
-                parser.parse_nested_block(|block| declarations(block, walk, may_hide))?;
+                let prelude = without_comments(prelude.strip_suffix('{').unwrap_or(prelude));
+                let selectors = split_top_level(&prelude);
+                // An unmatchable rule is skipped as a whole; the parser steps over its block.
+                if !selectors.iter().any(|selector| can_match(selector, walk.facts)) {
+                    skip_block(parser, walk)?;
+                } else {
+                    let may_hide = selectors.iter().all(|selector| beneath_navigation(selector));
+                    parser.parse_nested_block(|block| declarations(block, walk, may_hide))?;
+                }
             }
         }
     }
 }
 
-/// Every selector of the rule is one of the witnessed navigation selectors, ignoring comments and spacing.
-fn hide_allowed(prelude: &str) -> bool {
+fn without_comments(text: &str) -> String {
     let mut plain = String::new();
-    let mut rest = prelude;
+    let mut rest = text;
     while let Some(at) = rest.find("/*") {
         plain.push_str(&rest[..at]);
         match rest[at + 2..].find("*/") {
             Some(end) => rest = &rest[at + 2 + end + 2..],
-            None => return false,
+            None => return plain,
         }
     }
     plain.push_str(rest);
-    plain.split(',').all(|selector| HIDE_ALLOWED.contains(&normalize(selector).as_str()))
+    plain
+}
+
+/// Splits at commas outside parentheses and brackets.
+fn split_top_level(text: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let (mut depth, mut current) = (0usize, String::new());
+    for c in text.chars() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(normalize(&std::mem::take(&mut current)));
+                continue;
+            }
+            _ => {}
+        }
+        current.push(c);
+    }
+    parts.push(normalize(&current));
+    parts
+}
+
+/// Conservative: false only when a compound outside functional pseudo-classes names a class, id or tag the page
+/// lacks. Escapes and anything not understood count as a possible match.
+fn can_match(selector: &str, facts: &PageFacts) -> bool {
+    if selector.contains('\\') {
+        return true;
+    }
+    // Drop `(…)` and `[…]` contents: :not(), :is(), :has() and attribute tests only narrow or are unknown.
+    let mut plain = String::new();
+    let mut depth = 0usize;
+    for c in selector.chars() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => plain.push(c),
+            _ => {}
+        }
+    }
+    let plain = plain.replace(['>', '+', '~'], " ");
+    for compound in plain.split_ascii_whitespace() {
+        let mut rest = compound;
+        let tag_end = rest.find(['.', '#', ':']).unwrap_or(rest.len());
+        let tag = &rest[..tag_end];
+        if !tag.is_empty() && tag != "*" && tag != "&" && !facts.tags.contains(&tag.to_ascii_lowercase()) {
+            return false;
+        }
+        rest = &rest[tag_end..];
+        while let Some(marker) = rest.chars().next() {
+            let tail = &rest[1..];
+            let end = tail.find(['.', '#', ':']).unwrap_or(tail.len());
+            let name = &tail[..end];
+            let known = match marker {
+                '.' => facts.classes.contains(name),
+                '#' => facts.ids.contains(name),
+                _ => true,
+            };
+            if !known {
+                return false;
+            }
+            // A pseudo-element marker `::x` leaves an empty name before the second colon.
+            rest = &tail[end..];
+        }
+    }
+    true
+}
+
+/// The selector targets a witnessed navigation element or something beneath it, never a sibling.
+fn beneath_navigation(selector: &str) -> bool {
+    HIDE_ALLOWED.iter().any(|allowed| {
+        selector.strip_prefix(allowed).is_some_and(|rest| {
+            (rest.is_empty() || rest.starts_with(' ') || rest.starts_with('>'))
+                && !rest.contains(['+', '~', ',', '(', ':'])
+        })
+    })
+}
+
+/// Consumes a block that is not checked. Without this, the next rule's prelude would start inside the block.
+fn skip_block<'i>(parser: &mut cssparser::Parser<'i, '_>, walk: &mut CssWalk<'_>) -> Result<(), CssFail<'i>> {
+    parser.parse_nested_block(|block| {
+        while block.next_including_whitespace_and_comments().is_ok() {
+            walk.tick()?;
+        }
+        Ok(())
+    })
 }
 
 fn prelude_until_block<'i>(
@@ -1040,35 +1251,52 @@ fn at_rule<'i>(
     walk.rule()?;
     let block = prelude_until_block(parser, walk)?;
     match (name, block) {
-        ("charset", false) => Ok(()),
-        ("layer", false) => Ok(()),
+        ("charset", false) | ("layer", false) => Ok(()),
         ("media" | "supports" | "layer" | "container", true) => {
             parser.parse_nested_block(|nested| rule_list(nested, walk, depth + 1))
         }
-        // Font faces and page boxes hold descriptors, not selectors; they get the same declaration rules.
-        ("font-face" | "page", true) => parser.parse_nested_block(|nested| declarations(nested, walk, false)),
-        // Keyframe selectors (`from`, `50%`) are no allowed navigation selectors, so a hiding frame is refused.
-        ("keyframes" | "-webkit-keyframes" | "-moz-keyframes", true) => {
-            parser.parse_nested_block(|nested| rule_list(nested, walk, depth + 1))
-        }
+        ("font-face", true) => parser.parse_nested_block(|nested| font_face(nested, walk)),
+        // Keyframes act only through `animation`, which no checked rule may use; page boxes hold no text.
+        ("keyframes" | "-webkit-keyframes" | "-moz-keyframes" | "page", true) => skip_block(parser, walk),
         // `@import` loads further, unchecked CSS; every other at-rule is unwitnessed.
         _ => Err(refuse()),
     }
 }
 
+/// Font descriptors only. Fonts are never loaded by Torro, and an inline `data:` font is refused.
+fn font_face<'i>(parser: &mut cssparser::Parser<'i, '_>, walk: &mut CssWalk<'_>) -> Result<(), CssFail<'i>> {
+    use cssparser::Token;
+    loop {
+        walk.tick()?;
+        let name = match parser.next() {
+            Err(_) => return Ok(()),
+            Ok(Token::Semicolon) => continue,
+            Ok(Token::Ident(name)) => name.to_ascii_lowercase(),
+            Ok(_) => return Err(refuse()),
+        };
+        parser.expect_colon().map_err(|_| refuse())?;
+        let values = parser.parse_until_after(cssparser::Delimiter::Semicolon, |value| values(value, walk, 0))?;
+        if !matches!(
+            name.as_str(),
+            "font-family" | "src" | "font-weight" | "font-style" | "font-display" | "font-stretch" | "unicode-range"
+        ) || inline_data(&values)
+        {
+            return Err(refuse());
+        }
+    }
+}
+
+/// The checked declarations of a rule that can match the page.
 fn declarations<'i>(
     parser: &mut cssparser::Parser<'i, '_>,
     walk: &mut CssWalk<'_>,
     may_hide: bool,
 ) -> Result<(), CssFail<'i>> {
     use cssparser::Token;
-    let mut tiny_box = false;
-    let mut overflow_hidden = false;
-    let mut hides = false;
     loop {
         walk.tick()?;
         let name = match parser.next() {
-            Err(_) => break,
+            Err(_) => return Ok(()),
             Ok(Token::Semicolon) => continue,
             Ok(Token::Ident(name)) => name.to_ascii_lowercase(),
             // Nested rules and at-rules inside a declaration block are not part of the checked grammar.
@@ -1077,151 +1305,344 @@ fn declarations<'i>(
         parser.expect_colon().map_err(|_| refuse())?;
         let values = parser.parse_until_after(cssparser::Delimiter::Semicolon, |value| values(value, walk, 0))?;
         let values: Vec<_> = values.into_iter().filter(|value| *value != Value::Word("important".into())).collect();
-        // Inline images can draw text; they are refused wherever they appear, fonts included.
-        if inline_data(&values) {
+        if !allowed(&name, &values, may_hide) {
             return Err(refuse());
         }
-        let word = |wanted: &[&str]| {
-            values.iter().any(|value| matches!(value, Value::Word(word) if wanted.contains(&word.as_str())))
-        };
-        let pixels: Vec<f32> = values.iter().filter_map(px).collect();
-        let far_negative = pixels.iter().any(|n| *n < -999.0);
-        // `var()`, `calc()` and friends are resolved only by a browser; on a hiding property they count as hiding.
-        // Colour and transform functions are checked by their own rules below.
-        let dynamic = values.iter().any(|value| {
-            matches!(value, Value::Function(name, _) if !(matches!(name.as_str(), "rgb" | "rgba" | "hsl" | "hsla" | "opacity")
-                || ["scale", "translate", "rotate", "skew", "matrix", "perspective"].iter().any(|known| name.starts_with(known))))
-        });
-        if dynamic && sensitive(&name) {
-            hides = true;
-        }
-        match name.as_str() {
-            "content" => {
-                let empty = matches!(values.as_slice(), [Value::Word(word)] if matches!(word.as_str(), "none" | "normal"))
-                    || matches!(values.as_slice(), [Value::Text(text)] if text.is_empty());
-                if !empty {
-                    return Err(refuse());
-                }
-            }
-            // List markers are generated text as well, whether numbered or given as a string.
-            "display" if word(&["list-item"]) => return Err(refuse()),
-            "list-style" | "list-style-type" if values.iter().any(|value| matches!(value, Value::Text(_))) => {
-                return Err(refuse());
-            }
-            "display" => hides |= word(&["none"]),
-            "visibility" | "content-visibility" => hides |= word(&["hidden", "collapse"]),
-            "opacity" => hides |= faint(&values),
-            "filter" | "-webkit-filter" => {
-                hides |= values.iter().any(|value| match value {
-                    Value::Function(name, arguments) if name == "opacity" => faint(arguments),
-                    _ => false,
-                })
-            }
-            "font-size" => {
-                hides |= values.iter().any(|value| matches!(value, Value::Number(n) if *n == 0.0))
-                    || pixels.iter().any(|n| *n < 2.0)
-            }
-            // Unitless numbers in the shorthand are weights or line heights; a size always has a unit, except 0.
-            "font" => {
-                hides |= values.iter().any(|value| matches!(value, Value::Number(n) if *n == 0.0))
-                    || values
-                        .iter()
-                        .any(|value| matches!(value, Value::Length(..)) && px(value).is_some_and(|n| n < 2.0))
-            }
-            "color" | "-webkit-text-fill-color" => hides |= word(&["transparent"]) || transparent(&values),
-            "-webkit-text-security" => hides |= !word(&["none"]),
-            "clip" => hides |= !matches!(values.as_slice(), [Value::Word(word)] if word == "auto"),
-            "clip-path" | "-webkit-clip-path" => {
-                hides |= !matches!(values.as_slice(), [Value::Word(word)] if word == "none")
-            }
-            // A far negative offset, margin or indent moves content off the page, whatever its position.
-            "text-indent"
-            | "top"
-            | "left"
-            | "right"
-            | "bottom"
-            | "inset"
-            | "inset-inline"
-            | "inset-block"
-            | "inset-inline-start"
-            | "inset-inline-end"
-            | "inset-block-start"
-            | "inset-block-end"
-            | "margin"
-            | "margin-top"
-            | "margin-left"
-            | "margin-right"
-            | "margin-bottom"
-            | "margin-inline"
-            | "margin-block"
-            | "margin-inline-start"
-            | "margin-inline-end"
-            | "margin-block-start"
-            | "margin-block-end"
-            | "translate" => hides |= far_negative,
-            "transform" => {
-                hides |= values.iter().any(|value| match value {
-                    Value::Function(name, arguments) if name.starts_with("scale") => {
-                        arguments.iter().any(|value| matches!(value, Value::Number(n) if n.abs() <= 0.05))
-                            || arguments
-                                .iter()
-                                .any(|value| matches!(value, Value::Length(n, unit) if unit == "%" && n.abs() <= 5.0))
-                    }
-                    Value::Function(name, arguments) if name.starts_with("translate") => {
-                        arguments.iter().filter_map(px).any(|n| n < -999.0)
-                    }
-                    _ => false,
-                })
-            }
-            "scale" => hides |= values.iter().any(|value| matches!(value, Value::Number(n) if n.abs() <= 0.05)),
-            "height" | "max-height" | "width" | "max-width" => {
-                tiny_box |= values.iter().any(|value| matches!(value, Value::Number(n) if *n == 0.0))
-                    || pixels.iter().any(|n| *n < 2.0)
-            }
-            "overflow" | "overflow-x" | "overflow-y" => overflow_hidden |= word(&["hidden", "clip"]),
-            // Visual reordering of characters would let the page show other digits than its text.
-            "unicode-bidi" => hides |= word(&["bidi-override", "isolate-override"]),
-            _ => {}
-        }
     }
-    if (hides || (tiny_box && overflow_hidden)) && !may_hide {
-        return Err(refuse());
-    }
-    Ok(())
 }
 
-/// Properties whose browser-resolved values (`var()`, `calc()`) could hide content.
-fn sensitive(name: &str) -> bool {
-    matches!(
-        name,
-        "display"
-            | "visibility"
-            | "content-visibility"
-            | "opacity"
-            | "filter"
-            | "-webkit-filter"
-            | "font-size"
-            | "font"
-            | "color"
-            | "-webkit-text-fill-color"
-            | "text-indent"
-            | "top"
-            | "left"
-            | "right"
-            | "bottom"
-            | "inset"
-            | "margin"
-            | "margin-top"
-            | "margin-left"
-            | "margin-right"
-            | "margin-bottom"
-            | "transform"
-            | "translate"
-            | "scale"
-            | "height"
-            | "max-height"
-            | "unicode-bidi"
-    )
+/// The allow list, witnessed on Paddle's invoice stylesheets. Each entry names the values that cannot generate
+/// or hide text; everything else is refused.
+fn allowed(name: &str, values: &[Value], may_hide: bool) -> bool {
+    let words = |wanted: &[&str]| {
+        values.iter().all(|value| matches!(value, Value::Word(word) if wanted.contains(&word.as_str())))
+    };
+    let functions = |allowed: &[&str]| {
+        values.iter().all(|value| match value {
+            Value::Function(name, arguments) => {
+                allowed.contains(&name.as_str())
+                    && arguments.iter().all(|argument| !matches!(argument, Value::Function(..) | Value::Url(_)))
+            }
+            Value::Url(_) => false,
+            _ => true,
+        })
+    };
+    let colours = &["rgb", "rgba", "hsl", "hsla"];
+    let global = &["inherit", "initial", "unset", "revert"];
+    match name {
+        "content" => {
+            matches!(values, [Value::Word(word)] if matches!(word.as_str(), "none" | "normal"))
+                || matches!(values, [Value::Text(text)] if text.is_empty())
+        }
+        "display" => {
+            words(&[
+                "block",
+                "inline",
+                "inline-block",
+                "flex",
+                "inline-flex",
+                "-ms-flexbox",
+                "-ms-inline-flexbox",
+                "-webkit-box",
+                "grid",
+                "inline-grid",
+                "table",
+                "table-row",
+                "table-cell",
+                "table-row-group",
+                "table-header-group",
+                "table-footer-group",
+                "table-column",
+                "table-column-group",
+                "table-caption",
+                "flow-root",
+                "contents",
+                "inherit",
+                "initial",
+                "unset",
+            ]) || (may_hide && words(&["none"]))
+        }
+        "visibility" => words(&["visible", "inherit"]) || (may_hide && words(&["hidden", "collapse"])),
+        "position" => {
+            words(&["static", "relative", "sticky", "-webkit-sticky", "inherit"])
+                || (may_hide && words(&["absolute", "fixed"]))
+        }
+        "opacity" => {
+            may_hide
+                || values.iter().all(|value| match value {
+                    Value::Number(n) => *n >= 0.5,
+                    Value::Length(n, unit) => unit == "%" && *n >= 50.0,
+                    Value::Word(word) => global.contains(&word.as_str()),
+                    _ => false,
+                })
+        }
+        "color" | "-webkit-text-fill-color" => (may_hide || visible_colour(values)) && functions(colours),
+        "font-size" => values.len() == 1 && readable_size(&values[0]),
+        "font" => {
+            functions(&[])
+                && !values.iter().any(|value| matches!(value, Value::Number(n) if *n == 0.0))
+                && values.iter().filter(|value| matches!(value, Value::Length(..))).take(1).all(readable_size)
+        }
+        "line-height" => {
+            values.len() == 1
+                && match &values[0] {
+                    Value::Number(n) => *n >= 0.8,
+                    Value::Length(n, unit) if unit == "%" => *n >= 80.0,
+                    value @ Value::Length(..) => px(value).is_some_and(|n| n >= 8.0),
+                    Value::Word(word) => word == "normal" || global.contains(&word.as_str()),
+                    _ => false,
+                }
+        }
+        "letter-spacing" | "word-spacing" => {
+            values.len() == 1
+                && match &values[0] {
+                    Value::Word(word) => word == "normal" || global.contains(&word.as_str()),
+                    Value::Number(n) => *n == 0.0,
+                    value => px(value).is_some_and(|n| n.abs() <= 8.0),
+                }
+        }
+        "text-indent"
+        | "margin"
+        | "margin-top"
+        | "margin-right"
+        | "margin-bottom"
+        | "margin-left"
+        | "margin-inline"
+        | "margin-block"
+        | "margin-inline-start"
+        | "margin-inline-end"
+        | "margin-block-start"
+        | "margin-block-end"
+        | "top"
+        | "right"
+        | "bottom"
+        | "left"
+        | "inset" => {
+            may_hide
+                && !matches!(
+                    name,
+                    "text-indent" | "margin" | "margin-top" | "margin-right" | "margin-bottom" | "margin-left"
+                )
+                || (functions(&["calc"]) && bounded(values, 200.0))
+        }
+        "padding"
+        | "padding-top"
+        | "padding-right"
+        | "padding-bottom"
+        | "padding-left"
+        | "padding-inline"
+        | "padding-block"
+        | "width"
+        | "height"
+        | "min-width"
+        | "min-height"
+        | "max-width"
+        | "max-height"
+        | "flex-basis"
+        | "-ms-flex-preferred-size"
+        | "gap"
+        | "row-gap"
+        | "column-gap" => functions(&["calc"]),
+        "text-transform" => words(&["none", "uppercase", "lowercase", "capitalize", "inherit"]),
+        "unicode-bidi" => words(&["normal", "embed", "isolate", "inherit"]),
+        "direction" => words(&["ltr", "inherit"]),
+        "list-style" | "list-style-type" => {
+            !values.iter().any(|value| matches!(value, Value::Text(_))) && functions(&[])
+        }
+        "background" => functions(colours) && !values.iter().any(|value| matches!(value, Value::Url(_))),
+        "box-sizing"
+        | "-ms-flex"
+        | "-ms-flex-direction"
+        | "-ms-flex-pack"
+        | "-ms-flex-wrap"
+        | "-ms-flex-align"
+        | "-ms-flex-item-align"
+        | "-ms-flex-line-pack"
+        | "-ms-flex-positive"
+        | "-ms-flex-negative"
+        | "-ms-flex-order"
+        | "flex"
+        | "flex-direction"
+        | "flex-wrap"
+        | "flex-flow"
+        | "flex-grow"
+        | "flex-shrink"
+        | "justify-content"
+        | "align-items"
+        | "align-content"
+        | "align-self"
+        | "justify-items"
+        | "justify-self"
+        | "border"
+        | "border-top"
+        | "border-right"
+        | "border-bottom"
+        | "border-left"
+        | "border-width"
+        | "border-style"
+        | "border-color"
+        | "border-top-color"
+        | "border-right-color"
+        | "border-bottom-color"
+        | "border-left-color"
+        | "border-top-width"
+        | "border-right-width"
+        | "border-bottom-width"
+        | "border-left-width"
+        | "border-top-style"
+        | "border-right-style"
+        | "border-bottom-style"
+        | "border-left-style"
+        | "border-radius"
+        | "border-top-left-radius"
+        | "border-top-right-radius"
+        | "border-bottom-left-radius"
+        | "border-bottom-right-radius"
+        | "border-collapse"
+        | "border-spacing"
+        | "box-shadow"
+        | "outline"
+        | "outline-width"
+        | "outline-style"
+        | "outline-color"
+        | "outline-offset"
+        | "background-color"
+        | "vertical-align"
+        | "text-align"
+        | "text-decoration"
+        | "text-decoration-line"
+        | "text-decoration-color"
+        | "text-decoration-style"
+        | "-webkit-text-decoration-line"
+        | "-webkit-text-decoration-skip"
+        | "text-decoration-skip-ink"
+        | "text-underline-offset"
+        | "cursor"
+        | "z-index"
+        | "font-weight"
+        | "font-style"
+        | "font-family"
+        | "font-variant"
+        | "white-space"
+        | "word-break"
+        | "overflow-wrap"
+        | "word-wrap"
+        | "hyphens"
+        | "table-layout"
+        | "caption-side"
+        | "empty-cells"
+        | "transition"
+        | "transition-property"
+        | "transition-duration"
+        | "transition-timing-function"
+        | "transition-delay"
+        | "quotes"
+        | "-webkit-font-smoothing"
+        | "-moz-osx-font-smoothing"
+        | "text-rendering"
+        | "-webkit-text-size-adjust"
+        | "-ms-text-size-adjust"
+        | "text-size-adjust"
+        | "user-select"
+        | "-webkit-user-select"
+        | "-moz-user-select"
+        | "-ms-user-select"
+        | "pointer-events"
+        | "appearance"
+        | "-webkit-appearance"
+        | "-moz-appearance"
+        | "resize"
+        | "float"
+        | "clear"
+        | "caret-color"
+        | "accent-color"
+        | "tab-size"
+        | "-moz-tab-size"
+        | "-webkit-tap-highlight-color"
+        | "touch-action"
+        | "-ms-overflow-style"
+        | "font-kerning" => functions(&["rgb", "rgba", "hsl", "hsla", "cubic-bezier"]),
+        _ => false,
+    }
+}
+
+/// Text colour with at least 50 % alpha; `transparent` is refused.
+fn visible_colour(values: &[Value]) -> bool {
+    values.iter().all(|value| match value {
+        Value::Word(word) => word != "transparent",
+        Value::Hex(hex) => match hex.len() {
+            4 => u8::from_str_radix(&hex[3..4], 16).is_ok_and(|alpha| alpha >= 8),
+            8 => u8::from_str_radix(&hex[6..8], 16).is_ok_and(|alpha| alpha >= 0x80),
+            _ => true,
+        },
+        Value::Function(_, arguments) => {
+            let numbers: Vec<_> = arguments
+                .iter()
+                .filter_map(|value| match value {
+                    Value::Number(n) => Some(*n),
+                    Value::Length(n, unit) if unit == "%" => Some(*n / 100.0),
+                    Value::Length(n, _) => Some(*n),
+                    _ => None,
+                })
+                .collect();
+            arguments.iter().all(|value| !matches!(value, Value::Word(_)))
+                && (numbers.len() == 3 || numbers.last().is_some_and(|alpha| *alpha >= 0.5))
+        }
+        _ => false,
+    })
+}
+
+/// Font sizes from 8px: absolute units, at least half the parent size, or a keyword.
+fn readable_size(value: &Value) -> bool {
+    match value {
+        Value::Word(word) => matches!(
+            word.as_str(),
+            "xx-small"
+                | "x-small"
+                | "small"
+                | "medium"
+                | "large"
+                | "x-large"
+                | "xx-large"
+                | "xxx-large"
+                | "smaller"
+                | "larger"
+                | "inherit"
+                | "initial"
+                | "unset"
+        ),
+        Value::Length(n, unit) => match unit.as_str() {
+            "%" => *n >= 50.0,
+            "em" | "rem" => *n >= 0.5,
+            _ => px(value).is_some_and(|n| n >= 8.0),
+        },
+        _ => false,
+    }
+}
+
+/// Lengths and `calc()` whose magnitude stays within `limit` CSS pixels, counting every factor at full size.
+fn bounded(values: &[Value], limit: f32) -> bool {
+    fn size(value: &Value) -> Option<f32> {
+        match value {
+            Value::Word(word) => matches!(word.as_str(), "auto" | "inherit" | "initial" | "unset").then_some(0.0),
+            Value::Number(n) => Some(n.abs()),
+            Value::Length(..) => px(value).map(f32::abs),
+            Value::Function(name, arguments) if name == "calc" => {
+                let lengths = arguments.iter().filter(|argument| matches!(argument, Value::Length(..))).map(size);
+                let factors: f32 = arguments
+                    .iter()
+                    .filter_map(|argument| match argument {
+                        Value::Number(n) => Some(n.abs().max(1.0)),
+                        _ => None,
+                    })
+                    .product();
+                lengths.sum::<Option<f32>>().map(|sum| sum * factors)
+            }
+            Value::Other => Some(0.0),
+            _ => None,
+        }
+    }
+    values.iter().all(|value| size(value).is_some_and(|n| n <= limit))
 }
 
 /// An approximate length in CSS pixels, with font-relative units at 16px and viewport units at 1000px.
@@ -1242,46 +1663,11 @@ fn px(value: &Value) -> Option<f32> {
     Some(n * factor)
 }
 
-/// An opacity of at most 5 %, as number or percentage.
-fn faint(values: &[Value]) -> bool {
-    values.iter().any(|value| match value {
-        Value::Number(n) => *n <= 0.05,
-        Value::Length(n, unit) => unit == "%" && *n <= 5.0,
-        _ => false,
-    })
-}
-
-/// `url(data:…)` in any spelling, also nested in functions such as `image-set()`.
+/// `url(data:…)` in any spelling, also nested in functions.
 fn inline_data(values: &[Value]) -> bool {
     values.iter().any(|value| match value {
-        Value::Url(url) => url.trim_start().to_ascii_lowercase().starts_with("data:"),
-        Value::Function(name, arguments) => (name == "url" || name == "src")
-            && arguments.iter().any(
-                |value| matches!(value, Value::Text(url) if url.trim_start().to_ascii_lowercase().starts_with("data:")),
-            )
-            || inline_data(arguments),
-        _ => false,
-    })
-}
-
-/// `rgba(…, 0)`, `hsla(…, 0)`, the slash forms and `#rgba`/`#rrggbbaa` with a zero alpha.
-fn transparent(values: &[Value]) -> bool {
-    values.iter().any(|value| match value {
-        Value::Function(name, arguments) if matches!(name.as_str(), "rgb" | "rgba" | "hsl" | "hsla") => {
-            let numbers: Vec<_> = arguments
-                .iter()
-                .filter_map(|value| match value {
-                    Value::Number(n) | Value::Length(n, _) => Some(*n),
-                    _ => None,
-                })
-                .collect();
-            numbers.len() == 4 && numbers.last().is_some_and(|alpha| *alpha <= 0.05)
-        }
-        Value::Hex(hex) => match hex.len() {
-            4 => hex.ends_with('0'),
-            8 => hex.ends_with("00") || hex.ends_with("01") || hex.ends_with("02") || hex.ends_with("03"),
-            _ => false,
-        },
+        Value::Url(url) | Value::Text(url) => url.trim_start().to_ascii_lowercase().starts_with("data:"),
+        Value::Function(_, arguments) => inline_data(arguments),
         _ => false,
     })
 }
@@ -1313,13 +1699,21 @@ fn values<'i>(
             Token::Function(name) => {
                 let name = name.to_ascii_lowercase();
                 let arguments = parser.parse_nested_block(|nested| values(nested, walk, depth + 1))?;
-                Value::Function(name, arguments)
+                if name == "url" {
+                    let target = arguments.iter().find_map(|argument| match argument {
+                        Value::Text(text) => Some(text.clone()),
+                        _ => None,
+                    });
+                    Value::Url(target.unwrap_or_default())
+                } else {
+                    Value::Function(name, arguments)
+                }
             }
             Token::ParenthesisBlock | Token::SquareBracketBlock => {
                 Value::Function(String::new(), parser.parse_nested_block(|nested| values(nested, walk, depth + 1))?)
             }
             Token::CurlyBracketBlock | Token::BadUrl(_) | Token::BadString(_) => return Err(refuse()),
-            // `!important` changes no visible content; its marker is dropped with the keyword above.
+            // `!important` changes no visible content; its keyword is dropped by the caller.
             Token::Delim('!') => continue,
             _ => Value::Other,
         });
