@@ -1047,6 +1047,47 @@ pub fn split_file_chip<'a, M: Clone + 'a>(
     container(parts).height(size::control()).style(split_frame).into()
 }
 
+/// An attachment of the compose window as a card (issue #627): a [`source_tile`] with the kind of the
+/// file (`face`, neutral – colours belong to the person and the primary button), the name in `BODY`
+/// over the size in `META`/`text_3`, and at the right the ✕ that takes it out (`None` shows it off).
+/// `raised` without a border, radius [`radius::sm()`], padding [`space::s()`], [`size::props()`] wide; a
+/// name that does not fit ends in "…" and shows whole in the tooltip.
+///
+/// ```ignore
+/// widgets::file_card(TileFace::Icon(Icon::FileText), "invoice.pdf", "2.4 MB", Some(Msg::Remove(0)))
+/// ```
+pub fn file_card<'a, M: Clone + 'a>(
+    face: TileFace,
+    name: &str,
+    size_text: impl Into<String>,
+    on_remove: Option<M>,
+) -> Element<'a, M> {
+    let tile = source_tile(face, TileSize::Medium, None);
+    let room = size::props() - 2.0 * space::s() - TileSize::Medium.edge() - size::control_sm() - 2.0 * space::s();
+    let shown = typo::ellipsize(name, typo::body(), room);
+    let cut = shown != name;
+    let name_line: Element<'a, M> = typo::text(typo::body(), shown).wrapping(Wrapping::None).into();
+    let name_line = if cut { with_tooltip(name_line, name.to_owned()) } else { name_line };
+    let words =
+        column![name_line, typo::text(typo::meta(), size_text.into()).style(theme::text_3).wrapping(Wrapping::None),];
+    let remove = icon_button(Icon::X, tr("Remove"), on_remove);
+    let content =
+        row![tile, container(words).width(Fill).clip(true), remove].spacing(space::s()).align_y(Alignment::Center);
+    container(content)
+        .width(size::props())
+        .padding(space::s())
+        .style(|t: &Theme| {
+            let p = palette(t);
+            container::Style {
+                background: Some(Background::Color(p.raised)),
+                border: border::rounded(radius::sm()),
+                text_color: Some(p.text),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
 /// "Save all" and its menu as one ghost control (task M12.5): no surface and no frame, so it does
 /// not look like an attachment; the action with `which` (Download) and `label` in `text_2`, a quiet
 /// hairline and the triangle beside it as in [`split_file_chip`], with `menu_tip` as the triangle's
@@ -8927,6 +8968,14 @@ mod tests {
     }
 
     /// Task E11.1: the chips of attachments build on and off.
+    /// Issue #627: the attachment card builds with an icon or a letter, on and off, with a long name.
+    #[test]
+    fn the_file_card_builds_on_and_off() {
+        let _: Element<'_, Msg> = file_card(TileFace::Icon(Icon::FileText), "budget-q4.pdf", "3 KB", Some(Msg::Go));
+        let long = "a-name-far-too-long-for-the-card-of-an-attachment-in-the-compose-window.pdf";
+        let _: Element<'_, Msg> = file_card(TileFace::letter("zip"), long, "", None);
+    }
+
     #[test]
     fn the_attachment_chips_build_on_and_off() {
         let _: Element<'_, Msg> = file_chip("budget-q4.csv", "3 KB", Some(Msg::Go));
