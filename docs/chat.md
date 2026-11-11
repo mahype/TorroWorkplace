@@ -102,7 +102,7 @@ Server aussieht, steht in [chat-machbarkeit.md](chat-machbarkeit.md). Quellen:
 
 Punkte 1 bis 9, 11 und 12 stammen aus #201 (2026-10-15, dort 1 bis 11) und gelten weiter, angepasst an die
 Fenster und die Präsenz; 10, 13 bis 18 sind mit #470 (2026-11-06) dazugekommen, die Stufen (18) sind neu geschnitten.
-19 bis 22 kommen aus #636 (2026-11-11, Dateien und Medien); mit ihnen bekam Entscheidung 18 die neue Stufe 4, und die Stufen
+19 bis 23 kommen aus #636 (2026-11-11, Dateien und Medien); mit ihnen bekam Entscheidung 18 die neue Stufe 4, und die Stufen
 dahinter rückten um eins.
 
 1. **Name:** App `torrochat`, Bereich `chat`, MCP-Tools `chat_*`, Fensterklasse `torro-chat`. Der
@@ -317,6 +317,10 @@ dahinter rückten um eins.
     Nextcloud“ bleibt im Menü und ist der Weg für noch größere Videos. Kein
     GStreamer und kein FFmpeg in den Paketen; ein Player im Fenster wird ein eigenes Issue, wenn Videos im Alltag
     häufig sind.
+23. **Link-Karten fremder Seiten erst auf Klick** (entschieden vom Menschen am 2026-11-11, im Review von #636). Talk-Web
+    löst den ersten Link beim Anzeigen auf; dabei ruft der eigene Server die fremde URL ab, und wer eine eindeutige URL
+    schickt, erfährt, wann gelesen wurde. Darum bekommen nur Links auf den eigenen Nextcloud-Server ihre Karte von
+    selbst, alle anderen nach einem Klick auf „Show preview“ (`chat.show_card`, nur Menschen).
 
 ## Aufbau
 
@@ -509,7 +513,8 @@ Unterhaltung gemerkt werden können, siehe „Schweben“):
     Decoder): Zeile mit Symbol der Art, Name, Größe und Art, Knöpfe „Open“, „Download“, „Open in Nextcloud“
     (`hide-download`: nur „Open in Nextcloud“).
   - **Link-Karte** unter einer Nachricht mit Link: Bild vom eigenen Server, Titel, Domain; nur der erste Link einer
-    Nachricht, wie in Talk-Web. Ohne Karte bleibt der Link im Text.
+    Nachricht, wie in Talk-Web. Links auf den eigenen Nextcloud-Server bekommen sie von selbst, andere erst nach einem
+    Klick auf „Show preview“ unter dem Link (Entscheidung 23). Ohne Karte bleibt der Link im Text.
 - **Eingabe:** mehrzeilig, Enter sendet, Shift+Enter bricht um. `@` öffnet Vorschläge. Ein Zähler erscheint ab
   90 % der Höchstlänge. Im Menü „Send without notification“. Ab Stufe 4 links die Büroklammer („Attach file“, Dialog
   des Systems), Ziehen einer Datei auf das Fenster (die ganze Fläche wird zur Ablage, „Drop to send to Anna Berg“)
@@ -620,6 +625,7 @@ Bereich `chat`:
 | 4 | `chat.get_attachment { id, file }` (Datei einer Nachricht in den Anhangsordner des Chats, Pfad, Größe, Art; wie `mail.get_attachment`) | Read | `chat_get_attachment` |
 | 4 | `chat.save_attachment { id, file, to }` (`to`: `downloads`, `{ "target": … }`, `file` und `folder` **nur Menschen**) | Write | `chat_save_attachment` |
 | 4 | `chat.list_shared { conversation, kind?, before?, limit? }` (`kind`: `media`, `file`, `voice`, `link`, …; höchstens 100) | Read | `chat_list_shared` |
+| 4 | `chat.show_card { id }` (Link-Karte zum ersten Link der Nachricht holen, „Show preview“; der Server ruft dafür die fremde URL ab) | Write | `Never` (nur Menschen, siehe Vorschlag für `api.md`) |
 | 4 | `chat.get_messages` mit dem neuen Feld `cards` (Link-Karten aus dem Cache) und der Eingabe `around` (Nachrichten um eine Kennung, für „Show in chat“; Erweiterung) | Read | `chat_get_messages` (vorhanden) |
 | 5 | `chat.send_message` mit `items` und `fields` (Erweiterung, TL2) | Write + **nach außen** + Read der Inhalte | `chat_send_message` (vorhanden) |
 | 6 | `chat.get_call { conversation }` (läuft ein Anruf, klingelt es, seit wann, wie viele sind drin, ob der Mensch dabei ist; keine Namen, keine Geräte, kein Bild) | Read | `chat_get_call` |
@@ -802,6 +808,7 @@ auf dem Server), steht in [chat-machbarkeit.md](chat-machbarkeit.md#dateien-und-
 | Open, Download, Video öffnen | `chat.get_attachment`, `chat.save_attachment` | `chat_get_attachment`, `chat_save_attachment` (nur Downloads oder ein Ablageziel) |
 | Medien-Übersicht | `chat.list_shared` | `chat_list_shared` |
 | Link-Karten | Feld `cards` in `chat.get_messages` | `chat_get_messages` |
+| „Show preview“ an einem fremden Link | `chat.show_card` | keins: nur Menschen (Entscheidung 23) |
 | Sprachnachricht abspielen (Datei über `get_attachment`, Wellenform im Fenster), Video im Programm des Systems | Abspielen selbst ist nur Oberfläche, ohne Befehl (Entscheidungen 19, 22) | – |
 | „Show in chat“ aus der Medien-Übersicht | `chat.get_messages` mit `around` | `chat_get_messages` |
 
@@ -904,9 +911,12 @@ Nach der Entscheidung leert der Kern Dateinamen und Bytes wie den Text (Datensch
   `unsupported`), `kind: link` aus den Karten im Cache, weil Talk Links nicht als Art führt. Einträge tragen Kennung
   der Nachricht und der Datei, Name, Größe, Art, Autor und Zeit, alles `untrusted`.
 - **Link-Karten** stehen als Feld `cards` in `chat.get_messages` (Titel, Beschreibung, Domain, ob ein Bild da ist),
-  `untrusted`. Der Kern löst den ersten Link einer Nachricht über `references/resolve` auf, wenn er Nachrichten für
-  ein offenes Chatfenster lädt (App-Schlüssel), und hält das Ergebnis im Cache. Ein Read eines Clients löst kein
-  neues `resolve` aus, sonst könnte ein Agent den Server Links nachschlagen lassen. Das Bild der Karte kommt über
+  `untrusted`. Von selbst löst der Kern nur Links auf den Ursprung des eigenen Kontos über `references/resolve` auf
+  (Dateien, Deck, Talk), wenn er Nachrichten für ein offenes Chatfenster lädt (App-Schlüssel). Jeden anderen Link erst
+  mit `chat.show_card { id }` („Show preview“): Sonst riefe der eigene Server beim bloßen Anzeigen die fremde URL ab,
+  und wer eine eindeutige URL schickt, erführe, wann gelesen wurde (Entscheidung 23). Das Ergebnis hält der Kern im
+  Cache. Ein Read eines Clients löst kein neues `resolve` aus, sonst könnte ein Agent den Server Links nachschlagen
+  lassen. Das Bild der Karte kommt über
   `chat.get_preview` mit der Kennung der Nachricht und `card: true`.
 
 **Rechte.**
@@ -932,7 +942,9 @@ Nach der Entscheidung leert der Kern Dateinamen und Bytes wie den Text (Datensch
 („Anhänge von Mails ablegen“) kommt dazu, dass auch `chat.prepare_file` mit `source: path` und
 `chat.save_attachment` mit `to: file` oder `to: folder` nur mit dem App-Schlüssel gehen (`Request::kept_for_people`):
 Den Pfad wählt ein Mensch im Dialog des Systems bzw. durch Ziehen. Sonst gäbe ein Agent dem Kern einen Pfad, und eine
-Datei vom Rechner ginge mit nur einer Sende-Freigabe nach außen.
+Datei vom Rechner ginge mit nur einer Sende-Freigabe nach außen. Ebenso gibt es `chat.show_card` nur mit dem
+App-Schlüssel (`Mcp::Never`): Ob der Absender eines fremden Links erfährt, wann gelesen wurde, entscheidet der Mensch
+mit einem Klick, nicht ein Agent.
 
 **Fenster:** Verlauf, Eingabe, Bild groß und Medien-Übersicht unter [Fenster](#fenster). Neue Fenster (Bild groß in
 Fassung B, Medien-Übersicht als eigenes Fenster) schweben wie das Chatfenster (Entscheidung 16). Demo:

@@ -207,7 +207,7 @@
             <button class="ibtn" type="button" title="Play" data-only="video:inline"><svg data-i="play"></svg></button><button class="ibtn" type="button" title="Open in your video player" data-only="video:extern"><svg data-i="external"></svg></button><button class="ibtn" type="button" title="Download"><svg data-i="download"></svg></button><button class="ibtn" type="button" title="Open in Nextcloud"><svg data-i="cloud"></svg></button></div>
           <div class="filerow"><span class="ftile"><svg data-i="image"></svg></span><span class="fwho"><b class="ell">logo.svg</b><span class="tab">12 KB · Image · no preview</span></span>
             <button class="ibtn" type="button" title="Download"><svg data-i="download"></svg></button><button class="ibtn" type="button" title="Open in Nextcloud"><svg data-i="cloud"></svg></button></div>
-          <div class="filerow"><span class="ftile"><svg data-i="link"></svg></span><span class="fwho"><b class="ell">example.org/article</b><span>Link · no card</span></span></div>
+          <div class="filerow"><span class="ftile"><svg data-i="link"></svg></span><span class="fwho"><b class="ell">example.org/article</b><span>Link to another site · no card yet</span></span><button class="cbtn ghost" type="button" title="Your Nextcloud fetches the page; the site may see when">Show preview</button></div>
         </div>
       </div>
 
@@ -346,6 +346,7 @@
       <li><b>Video (entschieden am 2026-11-11: extern):</b> Ein Klick lädt die Datei und gibt sie dem Videoprogramm des Systems (Pfeil an der Dauer). „Im Fenster“ bleibt nur zum Vergleich stehen; dafür bräuchte es GStreamer. Die Dauer steht nur da, wenn der Kern sie kennt: Talk liefert sie nicht mit.</li>
       <li><b>Bild groß:</b> A legt sich über das Chatfenster (Esc schließt, ← → blättern durch die Bilder der Unterhaltung). B öffnet ein eigenes, schwebendes Fenster, das größer sein kann als der Chat.</li>
       <li><b>Hochladen:</b> Die Leiste hält das Antwortfeld frei und zeigt den Fortschritt dort, wo man schreibt. Der Dialog zeigt das Bild groß vor dem Senden und schützt vor einem versehentlich eingefügten Bildschirmfoto.</li>
+      <li><b>Link-Karten:</b> Links auf den eigenen Nextcloud-Server bekommen ihre Karte von selbst. Bei fremden Seiten erst nach „Show preview“, weil der Server die Seite dafür abruft und der Absender sonst sähe, wann gelesen wurde (Entscheidung 23). Die Karte im Chatfenster zeigt den Stand nach dem Klick.</li>
       <li><b>Medien-Übersicht:</b> Die Seitenleiste macht das Chatfenster breiter, das eigene Fenster lässt den Chat, wie er ist. Reiter wie in Talk: Medien, Dateien, Sprachnachrichten, Links.</li>
       <li>Ohne Vorschau (der Server macht keine Vorschaubilder von Videos, SVG zeigt die Suite nie) steht eine Datei-Zeile mit Symbol und Art. Aktive und ausführbare Arten wie SVG haben kein „Open“, nur „Download“ und „Open in Nextcloud“. Die Freigabe nennt nur Fakten aus dem Kern, nie Text des Agenten außer der Beschriftung.</li>
     </ul>
