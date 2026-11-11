@@ -68,7 +68,7 @@ Automatismus. Dieselbe Einrichtung ist unter Workflows über „New from templat
 |---|---|---|
 | `direct_pdf` | Rechnungs-PDF eines direkten Links | Genau ein eindeutiger PDF-Link; dessen exakter Host wird lokal an den Entwurf gebunden. Der Beispielhost im öffentlichen Paket ist kein Abrufziel. |
 | `stripe_invoice` | Originale Rechnungs-PDF | Nur der begrenzte Stripe-JSON-Resolver und sein gelieferter PDF-Link; keine Beleg-, Zahlungs-, Dashboard- oder Browserwege. |
-| `paddle_setapp_invoice_copy` | Lokal erzeugte Rechnungskopie | Profil 2: Hosts `my.paddle.com` und `static.paddle.com`. Stylesheet und Skript der Rechnungsseite werden nur als Daten geladen; das Stylesheet wird bei jedem Lauf nach festen Regeln geprüft, das Skript nie ausgeführt und nur mit bekannter Prüfsumme angenommen. |
+| `paddle_setapp_invoice_copy` | Lokal erzeugte Rechnungskopie | Profil 2: Hosts `my.paddle.com`, `static.paddle.com` und `cdn.paddle.com`. Stylesheets und Skripte der Rechnungsseite werden nur als Daten geladen; Stylesheets werden bei jedem Lauf gegen eine Erlaubnisliste geprüft, Skripte nie ausgeführt und nur mit bekannter Prüfsumme angenommen. |
 
 Die Vorlage nennt beide Domains schon in der Auswahl und in der lokalen Vorschau, also vor dem
 bestätigten Test. Sie bringt keinen neuen Befehl und kein neues MCP-Werkzeug mit: Paddle läuft über
@@ -279,42 +279,60 @@ Ereignishandler und ungeprüfte Darstellungseinflüsse werden nicht als harmlose
 
 ### Profil 2: geprüfte Ressourcen der echten Seiten (#598)
 
-Die echten Paddle-/Setapp-Seiten binden ein Stylesheet und ein Skript ein. Profil 2 nimmt im
-Dokumentkopf genau `<link rel="stylesheet" href>` und `<script src>` an, mit höchstens den
-Zusatzattributen `type`, `defer` und `async`; Modul-Skripte, Inline-Style und Inline-Skript,
-Ereignishandler, `<base>` und Ressourcen außerhalb des Kopfs bleiben abgewiesen, ebenso mehr als
-acht Ressourcen. Nach der vollständigen Strukturprüfung der Seite lädt der Dienst jede Ressource
-einzeln: nur über HTTPS, nur von den beiden Hosts des Pakets (auch nach Weiterleitungen), höchstens
-512 KiB, mit passendem Typ (`text/css` bzw. `application/javascript`/`text/javascript`), im
-GET-Budget des Laufs und mit erneuter Rechteprüfung vor jedem Abruf. Relative Pfade ohne
-führenden Schrägstrich werden abgewiesen.
+Die echten Paddle-/Setapp-Rechnungsseiten (geprüft an den Rechnungen vom 10.08., 10.10. und
+10.11.2026) binden drei Stylesheets von `static.paddle.com` (`Aristo.css`, `select2.min.css`,
+`invoice.css`), vier Skripte von `cdn.paddle.com` (jQuery, jQuery UI) und `static.paddle.com`
+(select2, `invoice.js`), ein Inline-`<style>` mit `@font-face` und ein Inline-Skript für das
+Adressformular ein. Profil 2 nimmt genau diese Formen an:
 
-**Stylesheet nach Regeln, nicht nach Prüfsumme.** Das Stylesheet wird bei jedem Lauf als Daten
-gelesen (`cssparser`, höchstens 512 KiB und 20.000 Regeln, im Zeitbudget des Konverters). Eine
-Prüfsumme würde schon bei jeder Farbänderung abbrechen. Abgewiesen wird:
+- im Kopf `<link rel="stylesheet" href>` und `<script src>` (Zusatzattribute nur `type`, `defer`,
+  `async`), `<style>` (nur `type="text/css"`), `<link rel="icon">` und `<meta name="robots">`; Icon und
+  Robots-Angabe werden nie geladen,
+- außerhalb der Rechnung ein Inline-`<script>` ohne `src`; in der Rechnung selbst kein Skript.
 
-- erzeugter Text: `content` mit einem anderen Wert als `none`, `normal` oder `""`, Listenzeichen
-  (`display: list-item`, Text in `list-style`) und eingebettete `data:`-Adressen, die Text zeichnen
-  könnten,
-- `@import` und alle nicht belegten At-Regeln (erlaubt sind `@charset`, `@media`, `@supports`,
-  `@layer`, `@container`, `@font-face`, `@page` und Keyframes),
-- Ausblenden: `display: none`, `visibility`/`content-visibility: hidden`, Deckkraft bis 5 % (auch
-  `filter: opacity()`), Schriftgröße unter 2 px (auch im `font`-Kurzschrieb), transparente Farbe
-  (`transparent`, Alpha 0 in Funktions- und Hex-Schreibweise), `-webkit-text-security`,
-  `clip`/`clip-path`, `transform`/`scale` gegen 0, Höhe oder Breite 0 mit `overflow: hidden`,
-  Verschieben um mehr als 999 px nach links oben (Versatz, Rand, Einzug, `translate`, in jeder
-  Längeneinheit, unabhängig von `position`) und `unicode-bidi: bidi-override`; ebenso `var()`,
-  `calc()` und andere erst im Browser aufgelöste Werte bei diesen Eigenschaften,
-- verschachtelte Regeln in Deklarationsblöcken.
+Modul-Skripte, Ereignishandler, `<base>`, externe Skripte außerhalb des Kopfs und mehr als acht
+Ressourcen, vier Inline-Skripte oder vier Inline-Styles bleiben abgewiesen. Das Paddle-Logo unter der
+Rechnung (`a.logo` mit Bild, ohne Text) gehört wie Kopfzeile und Bearbeiten-Dialog zur belegten
+Umgebung.
 
-Ausblenden ist nur für die Selektoren `.no-print` und `.c-header` erlaubt (auch in `@media print`):
-Das sind die belegte Navigation und das Bearbeitungssteuerelement, keine Rechnungsdaten. Farben,
-Abstände, Fonts und Layout ändern den Inhalt nicht und bleiben frei.
+Nach der vollständigen Strukturprüfung der Seite prüft der Dienst zuerst die Inline-Styles und die
+Prüfsummen der Inline-Skripte, dann lädt er jede Ressource einzeln: nur über HTTPS, nur von den drei
+Hosts des Pakets (auch nach Weiterleitungen), höchstens 512 KiB, mit passendem Typ (`text/css` bzw.
+`application/javascript`/`text/javascript`) und mit erneuter Rechteprüfung vor jedem Abruf. Das
+GET-Budget des Laufs wächst um die Zahl der Ressourcen, höchstens um acht; Zeit und Weiterleitungen
+bleiben gemeinsam begrenzt. Relative Pfade ohne führenden Schrägstrich werden abgewiesen.
 
-**Skript nie ausgeführt, nur mit Prüfsumme.** Skripte werden nie ausgeführt. Ihr SHA-256 steht mit
+**Stylesheets gegen eine Erlaubnisliste, nicht nach Prüfsumme.** Jedes Stylesheet und jedes
+Inline-`<style>` wird bei jedem Lauf als Daten gelesen (`cssparser`, höchstens 512 KiB und 20.000
+Regeln, im Zeitbudget des Konverters). Eine Prüfsumme würde schon bei jeder Farbänderung abbrechen.
+Die Prüfung hat zwei Stufen:
+
+1. **Kann die Regel die Seite treffen?** Nennt jeder Selektor einer Regel eine Klasse, eine ID oder
+   ein Tag, das auf der Seite nicht vorkommt, kann die Regel nichts verändern und wird übersprungen.
+   Inhalte von `:not()`, `:is()`, `:has()` und Attributtests zählen dabei nicht, Escapes gelten als
+   möglicher Treffer. So bleiben die Bibliotheksregeln für Datumswähler und Auswahllisten
+   (`Aristo.css`, `select2.min.css`) außen vor; keine ihrer Ausblende-Regeln trifft die Rechnung.
+2. **Erlaubnisliste für jede Regel, die treffen kann.** Erlaubt sind nur belegte Eigenschaften mit
+   geprüften Werten: Layout (Flexbox, Größen, `display` ohne `none` und `list-item`), Abstände (Ränder
+   und Versätze höchstens 200 px, `calc()` nur hier und bei Größen), Rahmen, Schatten,
+   Hintergrundfarben ohne Bilder, Textausrichtung und -dekoration, Schrift (Größe mindestens 8 px bzw.
+   50 %, Zeilenhöhe mindestens 0,8), Textfarben mit mindestens 50 % Deckkraft, Deckkraft ab 50 %,
+   `position: static|relative|sticky` und `content` nur als `none`, `normal` oder `""`. Alles
+   andere bricht ab, etwa `overflow`, `transform`, `clip`, `mask`, `filter`, `animation`, `var()`,
+   eigene Eigenschaften, Bild-Adressen, Text in `list-style`, verschachtelte Regeln, `@import` und
+   nicht belegte At-Regeln. `@font-face` darf nur Font-Angaben ohne `data:` enthalten;
+   `@keyframes` und `@page` wirken nicht auf die Rechnung und werden übersprungen.
+
+Ausblenden (`display: none`, `visibility: hidden`, `position: absolute|fixed`, Versätze) ist nur für
+Selektoren erlaubt, die mit `.no-print` oder `.c-header` beginnen und nur Nachfahren davon meinen,
+nie Geschwister: Das sind die belegte Navigation und das Bearbeitungssteuerelement, keine
+Rechnungsdaten.
+
+**Skripte nie ausgeführt, nur mit Prüfsumme.** Skripte werden nie ausgeführt. Ihr SHA-256 steht mit
 Host und Pfad als `binding.resources` im Paket (höchstens acht Einträge, nur auf den Paket-Hosts).
-Das Skript ist Teil der ausführbaren Bindung, weil es im Browser des Menschen die Seite verändern
-könnte.
+Ein Inline-Skript steht dort mit `inline: true`, dem Host der Seite und dem Pfad `/`. Die Vorlage
+bringt die Prüfsummen der fünf Skripte der echten Seiten mit. Skripte sind Teil der ausführbaren
+Bindung, weil sie im Browser des Menschen die Seite verändern könnten.
 
 **Reparatur, wenn Paddle die Seite ändert.** Lädt ein gespeicherter Ablauf ein Skript mit
 unbekannter Prüfsumme, endet der Lauf mit `provider_changed`: „Der Anbieter hat seine
@@ -323,17 +341,15 @@ wählt die Paddle-Vorlage neu, der bestätigte Test eines noch nicht gespeichert
 die beobachteten Skripte in derselben Transaktion als neue Fassung (neue Revision und Prüfsumme) und
 markiert genau diese Fassung als getestet. Danach speichert der Mensch den Ablauf und autorisiert ihn
 neu; die alte Autorisierung passt nicht mehr zur Prüfsumme. Eine KI gibt bei keinem Lauf still neue
-Seiteninhalte frei, und Läufe laufen gleich ab. Verstößt das Stylesheet gegen die Regeln, endet der
-Lauf mit `unsupported`.
+Seiteninhalte frei, und Läufe laufen gleich ab. Verstößt ein Stylesheet gegen die Erlaubnisliste,
+endet der Lauf mit `unsupported`.
 
-**Grenzen.** Die Regeln erkennen belegte Wege, Inhalte zu erzeugen oder auszublenden, sie
-interpretieren kein CSS und ordnen Selektoren keinen Elementen zu. Nicht erkannt werden: eigene Fonts
-(`@font-face`), die Zeichen im Browser anders darstellen, externe Hintergrundbilder mit Text,
-Kombinationen über mehrere Regeln für dasselbe Element und eine Überdeckung durch die erlaubte
-Kopfzeile auf dem Bildschirm. Die Kopie selbst hängt davon nicht ab: Sie setzt den Text der Seite mit
-den eingebetteten Fonts. Fonts, Bilder und andere im Stylesheet genannte Adressen werden nicht
-geladen. Ändert Paddle das Skript, scheitern auch automatische Läufe, bis der Mensch die Reparatur
-durchführt; das ist gewollt.
+**Grenzen.** Die Prüfung interpretiert kein CSS. Nicht erkannt werden: eigene Fonts (`@font-face`),
+die Zeichen im Browser anders darstellen, gleiche Text- und Hintergrundfarbe und eine Überdeckung
+durch die erlaubte Kopfzeile auf dem Bildschirm. Die Kopie selbst hängt davon nicht ab: Sie setzt
+den Text der Seite mit den eingebetteten Fonts. Fonts, Bilder und andere im Stylesheet genannte
+Adressen werden nicht geladen. Ändert Paddle ein Skript, scheitern auch automatische Läufe, bis der
+Mensch die Reparatur durchführt; das ist gewollt.
 
 Die Kopie wird mit den eingebetteten Standardfonts auf A4, mit 15 mm Rand und 11 pt gesetzt. Der
 Satz misst Umbrüche, Tabellenzellen und Seitengrenzen. Auf jeder Seite steht ausdrücklich, dass es
@@ -359,9 +375,10 @@ anderem Vollständigkeit, PDF-Rücklesen, mehrseitigen Satz, unsichere Eingaben,
 Konverterzulassung nach Abbruch.
 
 Für Profil 2 gibt es ein synthetisches Stylesheet und Skript (`paddle.css`, `paddle.js`). Die Tests
-prüfen die positive Kopie mit genau den geladenen Ressourcen, jede Regel des Stylesheets einzeln,
-fremde Hosts, falsche Typen, Größengrenzen, unbekannte Skripte (`provider_changed`), die Übernahme
-der Skripte im Entwurfstest und den Rechteentzug beim Ressourcenabruf.
+prüfen die positive Kopie mit genau den geladenen Ressourcen, Inline-Styles und -Skripte, die
+Erlaubnisliste und die Treffer-Prüfung Regel für Regel, fremde Hosts, falsche Typen, Größengrenzen,
+unbekannte Skripte (`provider_changed`), die Übernahme der Skripte im Entwurfstest und den
+Rechteentzug beim Ressourcenabruf.
 
 Für die ausdrücklich bereitgestellten echten Paddle-Beispiele gibt es einen separat ignorierten
 lokalen Abnahmetest:
@@ -370,12 +387,20 @@ lokalen Abnahmetest:
 TORRO_WORKFLOW_PADDLE_ACCEPTANCE=<ordner> cargo test -p torroworkplace local_paddle_acceptance -- --ignored
 ```
 
-Er liest nur ein ausdrücklich gesetztes privates temporäres Verzeichnis mit `august.html` und
-`october.html` samt `<name>.css` und `<name>.js` der jeweiligen Seite und schreibt nur dorthin
-(`<name>.source.txt`, `<name>.pdf`). Ausgegeben werden nur Host, Pfad und Prüfsumme der
-Ressourcen, nie Rechnungsinhalte oder private Links. Die erzeugten PDFs brauchen zusätzlich einen
-vollständigen Inhaltsvergleich mit `<name>.source.txt` und der Seite im Browser sowie eine Prüfung
-jeder Seite. Ein erfolgreicher HTML-Abruf allein ist keine Konvertierungsabnahme.
+Er liest nur ein ausdrücklich gesetztes privates temporäres Verzeichnis mit `<name>.html` je Seite
+(Standard `august` und `october`, andere Namen über `TORRO_WORKFLOW_PADDLE_NAMES`) und `res/` mit
+jeder genannten Ressource unter ihrem Dateinamen, und er schreibt nur dorthin (`<name>.source.txt`,
+`<name>.pdf`). Ausgegeben werden nur Host, Pfad und Prüfsumme der Ressourcen samt Abgleich mit den
+Prüfsummen der Vorlage, nie Rechnungsinhalte oder private Links. Die erzeugten PDFs brauchen
+zusätzlich einen vollständigen Inhaltsvergleich mit der Seite und eine Prüfung jeder Seite. Ein
+erfolgreicher HTML-Abruf allein ist keine Konvertierungsabnahme.
+
+**Abnahme am 11.11.2026:** Die Rechnungen vom 10.08., 10.10. und 10.11.2026 wurden ohne Browser per
+GET geladen und lokal konvertiert. Alle fünf Skripte passten zu den Prüfsummen der Vorlage, alle
+Stylesheets bestanden die Prüfung. Jede Kopie hat eine Seite mit Kopiehinweis; ihr Text stimmt Wort
+für Wort und in Reihenfolge mit einer unabhängigen Textextraktion der Rechnung aus dem HTML überein
+(`pdftotext` gegen Pythons HTML-Parser), ebenso `<name>.source.txt`. Rechnungsinhalte und Links
+liegen nicht im Repository.
 
 ## Aktueller Implementierungsstand
 
@@ -386,7 +411,6 @@ laufen über Profil 2 (#598); nicht belegte Anbietervarianten bleiben gesperrt.
 
 Die browserfreien Stripe-Voruntersuchungen aus der Ergänzung ersetzen keine Abnahme des fertigen
 Produktpfads mit zwei geeigneten Rechnungen einschließlich Rechnung statt Zahlungsbeleg und klarer
-Meldung eines abgelaufenen Links. Auch die echte Paddle-Abnahme (10.08./10.10.2026: sämtliche
-Rechnungstexte, Tabellenbeziehungen und jede PDF-Seite) sowie die DE/EN-Sicht-/Tastaturmatrix und
-die vollständigen lokalen Prüfungen sind gesondert zu belegen. Dieses Dokument behauptet keinen
-dieser Abschlüsse und keine echte Stripe-Produktabnahme.
+Meldung eines abgelaufenen Links. Die lokale Paddle-Abnahme ist oben belegt; der Lauf über die
+Oberfläche (Vorlage, Vorschau, bestätigter Test) und die DE/EN-Sicht-/Tastaturmatrix sind gesondert
+zu belegen. Dieses Dokument behauptet keine echte Stripe-Produktabnahme.

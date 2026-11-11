@@ -52,7 +52,7 @@ Programme, MCP-Server oder frei installierbaren Adapter. Eine Kopie braucht kein
 inaktiv, ungetestet und ohne Grants oder Regeln. Spätere Vorlagenupdates verändern bestehende
 Abläufe nicht; eine andere ausführbare Bindung erfordert einen neuen Test und für Automatik einen
 neuen menschlichen Dauergrant. Manuelle Läufe bleiben konkret bestätigte Einmalaufträge.
-Auch die Paddle-Kopie lädt Stylesheet und Skript der Rechnungsseite nur als Daten; Skripte werden
+Auch die Paddle-Kopie lädt Stylesheets und Skripte der Rechnungsseite nur als Daten; Skripte werden
 nie ausgeführt und sind mit ihrer Prüfsumme Teil der Bindung (#598).
 
 Der Dienst führt nur den begrenzten browserfreien Dokumentweg aus. Anmeldungen bei Portalen,
