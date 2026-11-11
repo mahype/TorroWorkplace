@@ -348,15 +348,24 @@ Stufen:
    `@page` nur Größe (ab 300 px) und Ränder (bis 128 px), keine Randboxen mit Text. `@keyframes` wirken nur über
    `animation` und werden übersprungen.
 
-3. **Layout-Prüfsumme.** Für jede Regel, die die Seite treffen kann, und für jedes `style`-Attribut
-   außerhalb der Rechnung gehen Kontext (`@media` usw.), Selektor und alle Layout-Angaben in eine
-   SHA-256-Prüfsumme (`binding.layout` im Paket): Position, Versätze, Ränder, Abstände, Größen,
-   `display`, Flexbox, `z-index`, Schrift- und Zeilengröße, Ausrichtung. Frei bleiben Farben,
-   Schriftfamilie und -stärke, Rahmenfarben und -stile, Rundungen, Schatten, Deckkraft und Übergänge.
-   Ein `style`-Attribut zählt mit seinem Platz in der Seite (Tags, Klassen und IDs bis zur Wurzel),
-   damit die Zahl der Rechnungszeilen die Prüfsumme nicht ändert. Weicht die Prüfsumme von der
-   gebundenen ab, gilt das wie ein geändertes Skript. Bei den echten Seiten ist sie für alle drei
-   Rechnungen gleich; die Vorlage bringt sie mit.
+3. **Layout-Prüfsumme.** In eine SHA-256-Prüfsumme (`binding.layout` im Paket) gehen ein:
+   - von **jeder** Regel aller Stylesheets und Inline-Styles Kontext (`@media` usw.), Selektor und alle
+     Layout-Angaben samt `!important` und den Rechenzeichen in `calc()`, auch von Regeln, die die
+     Seite nicht treffen (etwa für Elemente, die Skripte erst zur Laufzeit anlegen); eine Regel, die
+     sich nicht lesen lässt, geht mit ihrem Rohtext ein,
+   - `@layer`-Reihenfolgen und die Blöcke von `@font-face`, `@keyframes` und `@page`,
+   - jedes `style`-Attribut außerhalb der Rechnung mit seinem Platz in der Seite (Tags, Klassen und
+     IDs bis zur Wurzel),
+   - das Gerüst: die Reihenfolge von Stylesheets, Styles und Skripten im Kopf, der Pfad zur Rechnung
+     und jedes Element, das im Dokument vor ihr steht.
+
+   Layout ist alles außer Farben, Schriftfamilie, -stärke und -stil, Rahmenfarben, Rundungen,
+   Groß-/Kleinschreibung, Übergängen und ähnlichem; auch Deckkraft (ein eigener Stapelkontext),
+   Schatten, Rahmen- und Umriss-Stile und Textdekoration zählen zum Layout. Weil jede Regel unabhängig
+   davon eingeht, ob sie trifft, hängt die Prüfsumme nicht von der einzelnen Rechnung ab; Elemente nach
+   der Rechnung wie Meldungen im Bearbeiten-Dialog ändern sie nicht. Bei den echten Seiten ist sie für
+   alle drei Rechnungen gleich; die Vorlage bringt sie mit. Weicht sie ab, gilt das wie ein geändertes
+   Skript.
 
 Dadurch kann ein Stylesheet die Rechnung nicht verschieben oder überdecken, ohne dass der Lauf
 abbricht: Es gilt nur das Layout, das ein Mensch mit einem Test übernommen hat.
@@ -386,7 +395,9 @@ Rechnungsseite geändert.“ Repariert wird an derselben Mail über „Ablauf mi
 wählt die Paddle-Vorlage neu, der bestätigte Test eines noch nicht gespeicherten Entwurfs übernimmt
 die beobachteten Skripte und das Layout in derselben Transaktion als neue Fassung (neue Revision und Prüfsumme) und
 markiert genau diese Fassung als getestet. Danach speichert der Mensch den Ablauf und autorisiert ihn
-neu; die alte Autorisierung passt nicht mehr zur Prüfsumme. Eine KI gibt bei keinem Lauf still neue
+neu; die alte Autorisierung passt nicht mehr zur Prüfsumme. Wird der Entwurf gespeichert, während
+sein Test noch läuft, gilt die gespeicherte Fassung nicht als getestet, wenn der Test anderes gesehen
+hat. Eine KI gibt bei keinem Lauf still neue
 Seiteninhalte frei, und Läufe laufen gleich ab. Verstößt ein Stylesheet gegen die Erlaubnisliste,
 endet der Lauf mit `unsupported`.
 

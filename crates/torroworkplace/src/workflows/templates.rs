@@ -76,7 +76,7 @@ pub fn list() -> Result<Vec<WorkflowTemplate>, Error> {
 
 /// The layout fingerprint of the real Paddle/Setapp invoice pages (August to November 2026), identical on all of
 /// them. A draft test adopts a newer one; a saved workflow stops with `provider_changed`.
-const PADDLE_LAYOUT: &str = "38052a3603ee25885b3682c25fe7a5eb40a62fe49c04cc0a77dc9ecd58c9a882";
+const PADDLE_LAYOUT: &str = "a0b64d3f30a791c12a2f946ee4f7014ee67e9deb665037b36b9048e21ae80e50";
 
 /// The provider scripts witnessed on the real Paddle/Setapp invoice pages (August to November 2026): jQuery and
 /// jQuery UI from the CDN, select2 and the invoice script, and the inline address-form handler. A draft test
