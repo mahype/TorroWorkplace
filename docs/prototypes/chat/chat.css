@@ -116,7 +116,7 @@ kbd.k{font:500 11px/1 Inter,sans-serif;color:var(--text3);border:1px solid var(-
 .day{align-self:center;font-size:12px;line-height:16px;font-weight:500;color:var(--text3);margin:8px 0}
 .msg{max-width:78%;display:flex;flex-direction:column;gap:2px}
 .msg .bub{padding:8px 12px;border-radius:8px;background:var(--raised);border:1px solid var(--line)}
-.msg .meta{font:400 11px/14px "Inter Tabular",Inter,sans-serif;color:var(--text3);padding:0 4px;display:flex;gap:4px;align-items:center}
+.msg .meta,.media .meta{font:400 11px/14px "Inter Tabular",Inter,sans-serif;color:var(--text3);padding:0 4px;display:flex;gap:4px;align-items:center}
 .msg.mine{align-self:flex-end;align-items:flex-end}
 .msg.mine .bub{background:var(--selected);border-color:var(--line-strong)}
 .msg + .msg.mine,.msg.mine + .msg:not(.mine){margin-top:8px}
@@ -170,6 +170,88 @@ kbd.k{font:500 11px/1 Inter,sans-serif;color:var(--text3);border:1px solid var(-
 .switch .tg.on{background:var(--ok)}
 .switch .tg.on::after{left:14px;background:#fff}
 .dfoot{flex:none;display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--line)}
+
+/* ---------- Dateien und Medien (#636) ---------- */
+/* Platzhalter für Bilder: Verläufe aus den Kalenderfarben statt echter Fotos, damit die Seite nichts von außen lädt. */
+.ph{position:relative;display:grid;place-items:center;overflow:hidden;border-radius:6px;color:rgba(255,255,255,.85);background:linear-gradient(135deg,var(--c-work) 0%,var(--c-groceries) 55%,var(--c-birthday) 100%)}
+.ph.p2{background:linear-gradient(160deg,var(--c-personal) 0%,var(--c-work) 70%)}
+.ph.p3{background:linear-gradient(120deg,var(--c-family) 0%,var(--c-birthday) 100%)}
+.ph.p4{background:linear-gradient(200deg,var(--video) 0%,var(--video-2) 100%)}
+.ph .fade{position:absolute;inset:auto 0 0 0;height:40%;background:linear-gradient(transparent,rgba(0,0,0,.45))}
+.media{display:flex;flex-direction:column;gap:6px;max-width:78%}
+.msg.mine .media,.media.mine{align-self:flex-end;align-items:flex-end}
+.media .cap2{padding:0 4px;color:var(--text)}
+.thumb{width:200px;height:120px;cursor:zoom-in}
+.thumb.v{cursor:pointer}
+/* Abspielknopf: Kreis mit Dreieck, Kontrast über einem dunklen Kreis, nicht über der Farbe des Bildes. */
+.playdot{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:rgba(0,0,0,.55);color:#fff}
+.playdot svg{width:18px;height:18px;margin-left:2px}
+.dur{position:absolute;right:6px;bottom:6px;height:20px;padding:0 6px;border-radius:4px;background:rgba(0,0,0,.6);color:#fff;font:500 11px/20px "Inter Tabular",Inter,sans-serif;display:flex;align-items:center;gap:4px}
+.dur svg{width:12px;height:12px}
+/* Datei-Zeile und Rückfall ohne Vorschau: Symbol, Name, Größe, Knöpfe. */
+.filerow{display:flex;align-items:center;gap:10px;min-height:52px;padding:6px 6px 6px 10px;border-radius:8px;background:var(--raised);border:1px solid var(--line);max-width:100%}
+.filerow .ftile{width:32px;height:32px;border-radius:4px;flex:none;display:grid;place-items:center;background:var(--selected);border:1px solid var(--line-strong);color:var(--text)}
+.filerow .fwho{display:flex;flex-direction:column;min-width:0;flex:1}
+.filerow .fwho b{font-weight:500}
+.filerow .fwho span{font-size:13px;line-height:18px;color:var(--text3)}
+.filerow .ibtn{width:32px;height:32px}
+/* Sprachnachricht: Abspielknopf, Wellenform, Dauer. */
+.voice{display:flex;align-items:center;gap:10px;height:48px;padding:0 12px 0 6px;border-radius:8px;background:var(--raised);border:1px solid var(--line);width:240px}
+.voice .ibtn{width:36px;height:36px;border-radius:50%;background:var(--selected);color:var(--text)}
+.wave{flex:1;display:flex;align-items:center;gap:2px;height:24px}
+.wave i{flex:1;border-radius:1px;background:var(--text3)}
+.wave i.on{background:var(--text)}
+/* Link-Karte: Bild vom eigenen Server (Referenz-API), Titel, Quelle. */
+.lcard{display:flex;flex-direction:column;width:260px;border-radius:8px;overflow:hidden;background:var(--raised);border:1px solid var(--line)}
+.lcard .ph{border-radius:0;height:120px}
+.lcard .lt{display:flex;flex-direction:column;gap:2px;padding:8px 12px 10px}
+.lcard .lt b{font-weight:500}
+.lcard .lt span{font-size:13px;line-height:18px;color:var(--text3);display:flex;align-items:center;gap:6px}
+/* Hochladen: Leiste über dem Antwortfeld. */
+.upbar{flex:none;border-top:1px solid var(--line);padding:8px 12px;display:flex;flex-direction:column;gap:6px}
+.uprow{display:flex;align-items:center;gap:10px}
+.uprow .ph{width:40px;height:40px;flex:none;border-radius:4px}
+.uprow .fwho{display:flex;flex-direction:column;min-width:0;flex:1;gap:4px}
+.uprow .fwho span{font-size:13px;line-height:18px;color:var(--text3)}
+.track{height:4px;border-radius:2px;background:var(--line-strong);overflow:hidden}
+.track i{display:block;height:100%;background:var(--text2)}
+/* Ablagefläche beim Ziehen: deckt das ganze Fenster ab. */
+.drop{position:absolute;inset:40px 0 0 0;z-index:4;background:color-mix(in srgb,var(--panel) 88%,transparent);display:grid;place-items:center;padding:16px}
+.drop .zone{width:100%;height:100%;border:2px dashed var(--line-selected);border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;text-align:center}
+.drop .zone svg{width:32px;height:32px;color:var(--text2)}
+.drop .zone b{font-size:16px;line-height:26px;font-weight:500}
+.drop .zone span{color:var(--text3);font-size:13px;line-height:18px}
+/* Dialog vor dem Senden (Fassung „Dialog“) und Freigabe. */
+.dlg{background:var(--menu);border:1px solid var(--line-strong);border-radius:10px;box-shadow:var(--shadow);display:flex;flex-direction:column;overflow:hidden}
+.dlg .dh{display:flex;align-items:center;gap:8px;height:48px;padding:0 8px 0 16px;border-bottom:1px solid var(--line)}
+.dlg .dh b{font-weight:500}
+.dlg .db{padding:16px;display:flex;flex-direction:column;gap:12px}
+.dlg .df{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--line)}
+.facts{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:13px;line-height:18px}
+.facts dt{color:var(--text3)}
+.facts dd{margin:0;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.note{display:flex;gap:8px;align-items:flex-start;font-size:13px;line-height:18px;color:var(--text2)}
+.note svg{margin-top:1px;color:var(--attention)}
+/* Bild groß: Fläche abgedunkelt, Bild eingepasst. */
+.viewer{position:absolute;inset:0;z-index:5;background:var(--video);display:flex;flex-direction:column;color:#fff}
+.viewer .vh{height:48px;flex:none;display:flex;align-items:center;gap:6px;padding:0 8px 0 16px}
+.viewer .vh b{font-weight:500}
+.viewer .ibtn{color:rgba(255,255,255,.8)}
+.viewer .ibtn:hover{background:rgba(255,255,255,.1);color:#fff}
+.viewer .vbody{flex:1;display:grid;grid-template-columns:44px 1fr 44px;align-items:center;gap:8px;padding:0 8px;min-height:0}
+.viewer .vbody .ph{width:100%;height:auto;aspect-ratio:16/10;max-height:100%;border-radius:4px}
+.viewer .vf{height:40px;flex:none;display:flex;align-items:center;justify-content:center;font:400 13px/18px "Inter Tabular",Inter,sans-serif;color:rgba(255,255,255,.7)}
+.vctl{height:48px;flex:none;display:flex;align-items:center;gap:10px;padding:0 12px;font:400 12px/16px "Inter Tabular",Inter,sans-serif;color:rgba(255,255,255,.8)}
+.vctl .bar{flex:1;height:4px;border-radius:2px;background:rgba(255,255,255,.25);overflow:hidden}
+.vctl .bar i{display:block;height:100%;width:30%;background:#fff}
+/* Medien-Übersicht: Reiter, Raster der Vorschauen, Zeilen für Dateien. */
+.tabsrow{display:flex;gap:16px;padding:0 16px;border-bottom:1px solid var(--line);flex:none}
+.tabsrow span{height:40px;display:flex;align-items:center;gap:6px;color:var(--text2);border-bottom:2px solid transparent}
+.tabsrow span.on{color:var(--text);font-weight:500;border-color:var(--text)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(88px,1fr));gap:4px;padding:12px 16px}
+.grid .ph{aspect-ratio:1;border-radius:4px}
+.mgroup{font-size:12px;line-height:16px;font-weight:500;color:var(--text3);padding:12px 16px 0}
+.side{width:320px;flex:none;border-left:1px solid var(--line);display:flex;flex-direction:column;min-height:0;overflow:hidden}
 
 @media (prefers-reduced-motion:no-preference){.crow button,.cbtn,.ibtn{transition:background-color .12s ease-out}}
 @media (max-width:640px){.page h1{font-size:24px;line-height:30px}.controls{position:static}}

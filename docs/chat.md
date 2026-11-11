@@ -1,6 +1,6 @@
 # Chat: Kontaktliste, Chatfenster und Anrufe auf Nextcloud Talk
 
-Stand: 2026-11-06. **Konzept (#470), löst den Text-Chat-Plan aus #201 ab.** Machbarkeit:
+Stand: 2026-11-11. **Konzept (#470), löst den Text-Chat-Plan aus #201 ab; Dateien und Medien mit #636.** Machbarkeit:
 [chat-machbarkeit.md](chat-machbarkeit.md). Entwürfe: [prototypes/chat/](prototypes/chat/index.html). Recherche zu
 Status und Sichtbarkeit: [praesenz.md](praesenz.md). Aufgaben gibt es noch keine; die Umsetzung kommt als eigene
 Issues je Stufe. Beantwortet die Ideen „Chat (Nextcloud Talk)“ und „Präsenz“ aus dem
@@ -16,13 +16,15 @@ Ein leichter Chat der Suite auf **Nextcloud Talk**, schlicht wie früher ICQ, ke
 2. **Ein Chatfenster je Unterhaltung.** Ein Doppelklick auf einen Namen öffnet es; ist es schon offen, kommt es
    nach vorn. Darin Verlauf, Antwortfeld und die Knöpfe für Anrufe.
 3. **Anrufe zu zweit**, mit Bild oder nur Ton, mit eigener Wahl von Kamera, Mikrofon und Lautsprecher. Wie sie
-   technisch laufen, steht unter [Anrufe](#anrufe-stufe-5); die Entscheidung dazu unter
+   technisch laufen, steht unter [Anrufe](#anrufe-stufe-6); die Entscheidung dazu unter
    [Entscheidungen](#entscheidungen), Punkt 13.
 4. **Schnell antworten, wo die Nachricht ankommt.** Ungelesene Unterhaltungen stehen schon heute im Notification
    Hub (Eingangsquelle `talk:<login>@<host>`, Aufgabe E5.9). Dort kommen Verlauf und Antwortfeld dazu.
 
-Dazu kommt das **Teilen in einen Chat** ([teilen.md](teilen.md), TL2): Kontakte und später Notizen, Termine und
-Fotos als Karte mit Datei in eine Unterhaltung geben.
+Dazu kommen **Dateien und Medien** (Stufe 4, #636): Dateien schicken, Bilder und Videos im Verlauf sehen,
+Sprachnachrichten hören, Links als Karte, alles Geteilte einer Unterhaltung auf einen Blick. Darauf baut das **Teilen
+in einen Chat** auf (Stufe 5, [teilen.md](teilen.md), TL2): Kontakte und später Notizen, Termine und Fotos als Karte
+mit Datei in eine Unterhaltung geben.
 
 Wie jede Funktion gibt es den Chat dreimal: in der Oberfläche (Kontaktliste, Chatfenster, Notification Hub), über
 die API (Bereiche `chat` und `presence`) und über MCP (`chat_*`, `presence_*`). Ein Agent kann also „Was hat Anna
@@ -54,8 +56,14 @@ Server aussieht, steht in [chat-machbarkeit.md](chat-machbarkeit.md). Quellen:
 | Bearbeiten | `PUT /api/v1/chat/{token}/{id}`, nur 24 Stunden lang | `edit-messages` |
 | Löschen | `DELETE /api/v1/chat/{token}/{id}`, nur 6 Stunden lang | `delete-messages` |
 | Reaktionen | `POST`/`DELETE /api/v1/reaction/{token}/{id}` mit `reaction` | `reactions` |
-| Datei teilen | Datei per WebDAV in den Anhangsordner, dann `POST /ocs/v2.php/apps/files_sharing/api/v1/shares` mit `shareType=10`, `shareWith=<token>`, `path`, `talkMetaData={"caption": …}` | `media-caption` |
-| Anhangsordner | `spreed.config.attachments.folder` (je Nutzer, meist `/Talk`), `attachments.allowed` | – |
+| Datei teilen | Datei per WebDAV in den Anhangsordner, dann `POST /ocs/v2.php/apps/files_sharing/api/v1/shares` mit `shareType=10`, `shareWith=<token>`, `path`, `talkMetaData={"caption": …, "silent": …, "replyTo": …}` | `media-caption` |
+| Sprachnachricht teilen | wie Datei teilen, mit `talkMetaData.messageType: "voice-message"` (nur abspielen, Entscheidung 19) | `voice-message-sharing` |
+| Anhangsordner | `spreed.config.attachments.folder` (je Nutzer, meist `/Talk`), `attachments.allowed`; mit `attachments.conversation-subfolders` in `<ordner>/<Name>-<token>/<Anzeigename>-<user-id>/` | – |
+| Große Dateien | WebDAV-Chunking v2 unter `/remote.php/dav/uploads/<user-id>/<upload-id>`: `MKCOL`, `PUT` der Stücke `1` … `10000` (5 MB bis 5 GB, das letzte kleiner), `MOVE` von `.file`; Kopf `Destination` bei jedem Schritt | Nextcloud `files.chunked_upload.max_size`, `max_parallel_count` |
+| Datei in einer Nachricht | Objekt `file` in `messageParameters`: `id`, `name`, `size`, `mimetype`, `preview-available`, `hide-download`; nur bei Bildern `width`, `height`, `blurhash`; **keine Dauer** | – |
+| Vorschaubild | `GET /index.php/core/preview?fileId=…&x=…&y=…&a=1` (PNG, JPEG, GIF, WebP; Videos nur, wenn der Admin `OC\Preview\Movie` mit `ffmpeg` einschaltet) | – |
+| Geteilte Inhalte | `GET /api/v1/chat/{token}/share?objectType=…` (weiter über `X-Chat-Last-Given`) und `…/share/overview`; Arten `media`, `file`, `voice`, `audio`, `deckcard`, `location`, `other`, `recording` | `rich-object-list-media` |
+| Link-Karten | Referenz-API von Nextcloud: `GET /ocs/v2.php/references/resolve?reference=<url>`, Bild unter `/index.php/core/references/preview/<id>` auf dem eigenen Server | Nextcloud ab 25 (alle unterstützten) |
 | Höchstlänge | `spreed.config.chat.max-length` (heute 32.000 Zeichen) | – |
 | 1:1 anlegen | `POST /api/v4/room` mit `roomType=1`, `invite=<user-id>`; gibt die vorhandene zurück | – |
 | Status anderer | App User status: `GET /ocs/v2.php/apps/user_status/api/v1/statuses`, einzeln `…/statuses/{userId}` ([praesenz.md](praesenz.md)) | `user_status.enabled` |
@@ -93,7 +101,9 @@ Server aussieht, steht in [chat-machbarkeit.md](chat-machbarkeit.md). Quellen:
 ## Entscheidungen
 
 Punkte 1 bis 9, 11 und 12 stammen aus #201 (2026-10-15, dort 1 bis 11) und gelten weiter, angepasst an die
-Fenster und die Präsenz; die übrigen sind mit #470 (2026-11-06) dazugekommen, die Stufen (18) sind neu geschnitten.
+Fenster und die Präsenz; 10, 13 bis 18 sind mit #470 (2026-11-06) dazugekommen, die Stufen (18) sind neu geschnitten.
+19 bis 23 kommen aus #636 (2026-11-11, Dateien und Medien); mit ihnen bekam Entscheidung 18 die neue Stufe 4, und die Stufen
+dahinter rückten um eins.
 
 1. **Name:** App `torrochat`, Bereich `chat`, MCP-Tools `chat_*`, Fensterklasse `torro-chat`. Der
    Bereich ist neutral wie `contacts`: Talk ist der erste Anbieter, Matrix oder Slack
@@ -163,7 +173,10 @@ Fenster und die Präsenz; die übrigen sind mit #470 (2026-11-06) dazugekommen, 
    - Die Datenregel des Assistenten (`assistant/data_rule.rs`) hält Antworten der `chat.*`- und
      `presence.*`-Befehle für Modelle anderswo zurück, wie `mail.*`. Gebaut als Positivliste (Vorbild
      `MAIL_ANSWERS_ALLOWED`): Durch gehen nur Antworten ohne fremden Text (`ok`, die eigene Antwortart
-     `chat-sent` mit nur der Kennung der gesendeten Nachricht, Fehler); jeder spätere Befehl ist damit von selbst
+     `chat-sent` mit nur der Kennung der gesendeten Nachricht, ab Stufe 4 `chat-sending` mit nur der Kennung des
+     Sendens und die Antworten von `prepare_file`, `upload_file`, `release_files` und `get_upload`, die nur
+     Kennungen und die eigenen Angaben des Aufrufers tragen, sonst schickte ein Assistent mit einem Modell anderswo nie
+     eine Datei; Fehler); jeder spätere Befehl ist damit von selbst
      zurückgehalten.
    - Wer `chat.*` oder `presence.*` aufgerufen hat, hat fremden Text gelesen, wie bei Mail: `reads_mail` und
      `may_have_read_untrusted` kennen `chat.`, `presence.` bzw. `Area::Chat`, `Area::Presence`. So geht auch der
@@ -196,10 +209,10 @@ Fenster und die Präsenz; die übrigen sind mit #470 (2026-11-06) dazugekommen, 
    - **Klingeln** erkennt der Kern über die Benachrichtigungen des Kontos (Objekt `call`) und über `hasCall` in
      der Liste. Ein Klingeln endet nach 45 s; die 60-s-Schleife reicht dafür nicht. Darum fragt der Kern die
      Benachrichtigungen jedes Kontos mit Talk alle 10 s ab, auch wenn kein Fenster des Chats offen ist, solange
-     „Ring for incoming calls“ an ist (ab Stufe 5 ab Werk an; Schalter in den Einstellungen des Chats und in der
+     „Ring for incoming calls“ an ist (ab Stufe 6 ab Werk an; Schalter in den Einstellungen des Chats und in der
      Steuerzentrale unter General, Einstellung `chat_ring`); läuft `notify_push`, nutzt er das statt
      der Abfrage. Erst so kann er `torrochat` beim Klingeln starten. Wie schnell und wie teuer das wirklich ist,
-     misst der Versuch der Stufe 5.
+     misst der Versuch der Stufe 6.
    - **Status** holt der Kern im Takt der Nextcloud-Schleife (60 s), solange die Kontaktliste offen ist oder ein
      Programm in den letzten 5 Minuten `presence.list_people` gefragt hat, sonst gar nicht
      ([praesenz.md](praesenz.md), „Idee für den Aufbau“, Punkt 2). So beantwortet Stufe 2 „Ist Ben gerade da?“ auch
@@ -233,16 +246,16 @@ Fenster und die Präsenz; die übrigen sind mit #470 (2026-11-06) dazugekommen, 
     Talk-Eintrags bekommt den Knopf „Reply“. Er öffnet den Notification Hub beim Eintrag mit dem
     Cursor im Antwortfeld; ab Stufe 3 öffnet „Open chat“ das Chatfenster. Eine Antwort direkt in der
     Systembenachrichtigung braucht nativen Code je System und ist offen (siehe unten).
-12. **Teilen in einen Chat (TL2)** gehört zum Chat, Stufe 4. `chat.send_message` bekommt
-    `items` und `fields` wie `mail.save_draft` in TL1. Der Kern baut die Karte über `share::card_for` (aus TL1, noch nicht gebaut; Stufe 4 setzt TL1 voraus)
+12. **Teilen in einen Chat (TL2)** gehört zum Chat, Stufe 5. `chat.send_message` bekommt
+    `items` und `fields` wie `mail.save_draft` in TL1. Der Kern baut die Karte über `share::card_for` (aus TL1, noch nicht gebaut; Stufe 5 setzt TL1 voraus)
     mit den Rechten des Aufrufers, lädt die Datei in den Anhangsordner und teilt sie mit dem Text der
-    Karte als Beschriftung. Mehr unter [Teilen in einen Chat](#teilen-in-einen-chat-stufe-4).
+    Karte als Beschriftung. Mehr unter [Teilen in einen Chat](#teilen-in-einen-chat-stufe-5).
 13. **Anrufe werden selbst gebaut** (entschieden vom Menschen am 2026-11-06, nach
     [chat-machbarkeit.md](chat-machbarkeit.md); empfohlen war, sie zuerst im Browser zu öffnen). Ein eigenes
     Anruffenster im Torro-Design auf Linux, macOS und Windows, mit Googles libwebrtc über die Crates `libwebrtc` und
     `webrtc-sys` von LiveKit (ohne LiveKit-Server), eigenem Talk-Signaling und dem Bild in Iced. Zuerst nur Anrufe zu
-    zweit auf Servern mit internem Signaling (wie dem eigenen); HPB und Gruppenanrufe später. Stufe 5 beginnt mit
-    einem Versuch als eigenem Issue (Abschnitt [Anrufe](#anrufe-stufe-5)). Bis das Anruffenster auf einem System
+    zweit auf Servern mit internem Signaling (wie dem eigenen); HPB und Gruppenanrufe später. Stufe 6 beginnt mit
+    einem Versuch als eigenem Issue (Abschnitt [Anrufe](#anrufe-stufe-6)). Bis das Anruffenster auf einem System
     läuft, öffnet „Accept“ den Anruf im Browser (`<server>/call/<token>`); „Open in Talk“ bleibt auch danach im Menü.
 14. **Agenten rufen nicht an.** Anruf starten und annehmen, das Signaling eines Anrufs und die Wahl von Kamera und
     Mikrofon gibt es nur mit dem App-Schlüssel, also nur durch einen Menschen in der Oberfläche; Kamera und Mikrofon
@@ -251,7 +264,7 @@ Fenster und die Präsenz; die übrigen sind mit #470 (2026-11-06) dazugekommen, 
     jemanden anrufen oder unbemerkt mithören und mitsehen. Agenten sehen höchstens, ob in einer Unterhaltung ein
     Anruf läuft (`chat.get_call`, `Read`). Bild und Ton gehen auf keinem Weg über API oder MCP. Das ist ein
     **vorgeschlagener neuer Punkt 11** für „Was nie nach außen geht“ (Wortlaut unter [Befehle](#befehle)); `api.md`
-    nimmt den Teil zum Heartbeat mit der ersten Aufgabe der Stufe 2 auf, den Rest mit der ersten Aufgabe der Stufe 5. Ablehnen und Auflegen dürfen Agenten, weil beides nichts
+    nimmt den Teil zum Heartbeat mit der ersten Aufgabe der Stufe 2 auf, den Rest mit der ersten Aufgabe der Stufe 6. Ablehnen und Auflegen dürfen Agenten, weil beides nichts
     einschaltet.
 15. **Fenster wie ICQ.** Kontaktliste und Chat sind zwei getrennte Fenster, keine Ansicht der Kontakte-App und
     kein Fenster mit Liste und Verlauf nebeneinander (so noch in #201). Je Unterhaltung höchstens ein
@@ -260,23 +273,64 @@ Fenster und die Präsenz; die übrigen sind mit #470 (2026-11-06) dazugekommen, 
     jeder Doppelklick auf einen Namen teilte den Bildschirm neu auf. Die Kontaktliste selbst ist eine normale
     Kachel (sie läuft dauerhaft, oft in einer Workspace-Vorlage), Chat-, Klingel-, Anruf- und Gerätefenster
     schweben. Regeln je Fenster-Manager unter [Fenster](#fenster).
-17. **Gruppenchats: drei Fassungen, offen bis zur Wahl** beim Durchsehen der Entwürfe: (A) ein Abschnitt
-    „Groups“ unter den Personen, (B) ein Umschalter „People | Groups“ oben in der Liste, (C) ein Knopf „Group
-    chats…“ unten, damit die Liste rein aus Personen besteht. Ein Gruppenchat öffnet sich in jeder Fassung im
-    selben Chatfenster wie einer zu zweit. Gruppenanrufe kommen später.
+17. **Gruppenchats über einen Umschalter „People | Groups“ oben in der Liste** (Fassung B, gewählt vom Menschen am
+    2026-11-11 beim Durchsehen der Entwürfe, Entscheidung 24). Verworfen: (A) ein Abschnitt „Groups“ unter den
+    Personen, (C) ein Knopf „Group chats…“ unten. Ein Gruppenchat öffnet sich im selben Chatfenster wie einer zu
+    zweit. Gruppenanrufe kommen später.
 18. **Stufen** (neu geschnitten mit #470, ersetzen CH1 bis CH4 aus #201):
     - **Stufe 1 · Text im Kern:** Bereich `chat`, API, MCP und schnell antworten im Notification Hub.
     - **Stufe 2 · Präsenz:** Bereich `presence`, Status anderer, eigener Status, Heartbeat, Tray-Menü.
     - **Stufe 3 · Fenster:** die App `torrochat` mit Kontaktliste und Chatfenstern, Schweben je Fenster-Manager,
       neue Unterhaltung zu zweit.
-    - **Stufe 4 · Teilen in einen Chat** (TL2 aus [teilen.md](teilen.md)).
-    - **Stufe 5 · Anrufe zu zweit**, selbst gebaut: (a) Versuch, (b) Klingeln, Annehmen und Ablehnen in der Suite
+    - **Stufe 4 · Dateien und Medien** (#636): Dateien senden (Büroklammer, Ziehen, Einfügen), Bilder und Videos im
+      Verlauf, Sprachnachrichten abspielen, Link-Karten, Medien-Übersicht, Öffnen und Sichern von Anhängen.
+      Abschnitt [Dateien und Medien](#dateien-und-medien-stufe-4).
+    - **Stufe 5 · Teilen in einen Chat** (TL2 aus [teilen.md](teilen.md)); nimmt den Ablauf zum Senden aus Stufe 4.
+    - **Stufe 6 · Anrufe zu zweit**, selbst gebaut: (a) Versuch, (b) Klingeln, Annehmen und Ablehnen in der Suite
       (Anruf zunächst im Browser), (c) Anruffenster und Gerätewahl.
-    - **Stufe 6 · Pflege:** eigene Nachrichten bearbeiten und löschen, Reaktionen, Favoriten,
+    - **Stufe 7 · Pflege:** eigene Nachrichten bearbeiten und löschen, Reaktionen, Favoriten,
       Benachrichtigungsstufe, Suche in Nachrichten.
 
     Jede Stufe ist für sich nutzbar und über alle drei Wege erreichbar, soweit Entscheidung 14 nichts anderes
-    sagt.
+    sagt. Dateien und Medien stehen als eigene Stufe direkt nach dem Fenster, weil man sie dort zuerst vermisst und
+    das Teilen (Stufe 5) ihren Ablauf zum Senden nutzt; eine Stufe 7 am Ende ohne neue Nummern ist verworfen, weil die
+    Nummern sonst nichts mehr über die Reihenfolge sagten.
+19. **Sprachnachrichten: abspielen ja, aufnehmen später** (in der Planung von #636 entschieden). Der Verlauf spielt sie
+    mit Wellenform ab. Eine Sprachnachricht ist Inhalt wie Text: Ihre Datei bekommt, wer `chat` lesen darf, über
+    `chat.get_attachment`; das Chatfenster holt sie auf demselben Weg, spielt sie ab und rechnet die Wellenform aus
+    den Samples. Nur das Abspielen ist Oberfläche ohne Befehl. Aufnehmen
+    schaltet das Mikrofon ein und braucht dafür dieselbe Regel wie das Mikrofon des Assistenten
+    ([api.md](api.md), „Was nie nach außen geht“, Punkt 6); das kommt mit einem eigenen Plan (siehe Offen).
+20. **Agenten schicken nur Dateien, die sie selbst erzeugt oder hochgeladen haben** (in der Planung von #636
+    entschieden). Ein Client nimmt als Quelle nur eine eigene Datei aus dem Register des Kerns (etwa eine PDF aus
+    `tools.create_pdf`) oder lädt die Bytes selbst über `chat.upload_file` hoch, höchstens 25 MiB je Datei. Einen
+    freien Pfad auf dem Rechner (`source: path`) nennt nur der App-Schlüssel, also ein Mensch in der Oberfläche:
+    Sonst hieße „Send on my behalf“, dass ein Agent jede Datei, die er lesen kann, nach außen gibt. Senden mit Datei
+    wartet ab Werk auf die Freigabe (Entscheidung 4).
+21. **Vorschauen nur im Speicher**, wie der Verlauf (Entscheidung 7): höchstens 64 MiB je Konto, die ältesten gehen
+    zuerst. Ein Zwischenspeicher auf der Platte wäre schneller beim Öffnen, müsste aber bei Remote Wipe sicher
+    geleert werden und legte Bilder privater Chats auf den Rechner. Was ein Mensch öffnet oder sichert, liegt dagegen
+    als Datei vor (eigener Anhangsordner des Chats, nach einem Tag gelöscht; Downloads).
+22. **Videos öffnet das Programm des Systems** (entschieden vom Menschen am 2026-11-11, nach
+    [chat-machbarkeit.md](chat-machbarkeit.md#dateien-und-medien-636), wie empfohlen). Ein Klick auf das Video lädt die
+    Datei über den Kern (`chat.get_attachment`, für den App-Schlüssel bis 512 MiB) und öffnet sie dort; „Open in
+    Nextcloud“ bleibt im Menü und ist der Weg für noch größere Videos. Kein
+    GStreamer und kein FFmpeg in den Paketen; ein Player im Fenster wird ein eigenes Issue, wenn Videos im Alltag
+    häufig sind.
+23. **Link-Karten fremder Seiten erst auf Klick** (entschieden vom Menschen am 2026-11-11, im Review von #636). Talk-Web
+    löst den ersten Link beim Anzeigen auf; dabei ruft der eigene Server die fremde URL ab, und wer eine eindeutige URL
+    schickt, erfährt, wann gelesen wurde. Darum bekommen nur Links auf den eigenen Nextcloud-Server ihre Karte von
+    selbst, alle anderen nach einem Klick auf „Show preview“ (`chat.show_card`, nur Menschen).
+24. **Fassungen der Entwürfe gewählt** (vom Menschen am 2026-11-11, beim Durchsehen der Entwürfe zu #636):
+    - **Gruppenchats:** Umschalter „People | Groups“ oben in der Kontaktliste (Entscheidung 17).
+    - **Klingeln:** kleines Fenster mittig (`torro-chat-ring`), keine Benachrichtigung.
+    - **Anruffenster:** zu zweit Bild in Bild (A); mit mehr als zwei Personen nebeneinander (B), sobald
+      Gruppenanrufe kommen.
+    - **Bild groß:** eigenes, schwebendes Fenster (`torro-chat-viewer`, B).
+    - **Hochladen:** Leiste über dem Eingabefeld.
+    - **Medien-Übersicht:** Seitenleiste im Chatfenster.
+
+    Die verworfenen Fassungen bleiben in den Entwürfen zum Vergleich stehen.
 
 ## Aufbau
 
@@ -286,19 +340,21 @@ torrochat  (Kontaktliste, Chat-   ──┼─ IPC ─▶ torroworkplace (Kern)
             fenster, Anruffenster)  │          ├─ chat/service.rs   Befehle, Rechte-Filter, Freigabe-Fakten, Drossel
 torrocontacts (Teilen) ─────────────┘          ├─ chat/cache.rs     Unterhaltungen und Nachrichten im Speicher
    │                                           ├─ chat/live.rs      Long Polling der vorgemerkten Unterhaltungen, Klingeln
-   │ Medien (Stufe 5):                         ├─ chat/call.rs      Sitzung, Anruf beitreten/verlassen, Signaling (Stufe 5)
-   │ libwebrtc, Kamera, Ton,                   ├─ chat/share.rs     Karte → Datei hochladen → teilen (Stufe 4)
+   │ Medien (Stufe 6):                         ├─ chat/call.rs      Sitzung, Anruf beitreten/verlassen, Signaling (Stufe 6)
+   │ libwebrtc, Kamera, Ton,                   ├─ chat/media.rs     Dateien vorbereiten, senden, Vorschauen, Karten (Stufe 4)
+   │                                           ├─ chat/share.rs     Karte → Datei → Ablauf aus media.rs (Stufe 5)
    │ Bild in Iced                              ├─ presence/         Status anderer, eigener Status, Heartbeat (Stufe 2)
    │ (nur im Anruffenster)                     └─ sources/nextcloud.rs, sources/talk.rs  Liste alle 60 s (gibt es)
    ▼                                                    │
  Gegenstelle (Browser, Talk-App)        torro_chat::ChatProvider (Trait, Modell)
-   ◀──── WebRTC (Bild, Ton), STUN/TURN ────▶ └─ torro-nextcloud: talk.rs, user_status.rs, files.rs
+   ◀──── WebRTC (Bild, Ton), STUN/TURN ────▶ └─ torro-nextcloud: talk.rs, user_status.rs,
+                                                  files.rs (WebDAV, Chunking, Vorschau, Freigabe Art 10)
 ```
 
 Der Kern spricht mit Talk (Anmeldung, Sitzung, Signaling), die App nur mit dem Kern. Bild und Ton laufen dagegen
 direkt zwischen dem Anruffenster und der Gegenstelle: Kamera und Mikrofon gehören dem Fenster, in dem man sie
 sieht, und macOS fragt die Erlaubnis für genau dieses Programm ab. Das ist eine Ausnahme von „Oberflächen lesen und
-schreiben nichts selbst“ (CLAUDE.md, [api.md](api.md)); sie gilt erst, wenn der Mensch ihr zustimmt (Offen, Stufe 5),
+schreiben nichts selbst“ (CLAUDE.md, [api.md](api.md)); sie gilt erst, wenn der Mensch ihr zustimmt (Offen, Stufe 6),
 und steht dann in Punkt 11.
 
 **Kennungen:**
@@ -347,7 +403,10 @@ roh darin: Sie sind fremder Text und kämen sonst ungeprüft zu einem Agenten.
     Anfang kommen aus dem Cache bzw. frisch vom Server über die Kennung, nie aus dem Request des Clients, und fehlt
     die Nachricht, steht dort „unknown message“;
   - beim eigenen Status „Everyone on <server> sees: Do not disturb · In a meeting until 11:00“;
-  - bei Karten (Stufe 4) jede Karte wie bei Mail und dass eine Datei in den Talk-Ordner geladen wird.
+  - bei Dateien (Stufe 4) je Datei Name, Größe, Art, Herkunft („made by this agent“, „uploaded by this agent“) und
+    eine Vorschau, dazu „Uploads <name> to your Talk folder in Nextcloud“ (Abschnitt
+    [Dateien und Medien](#dateien-und-medien-stufe-4));
+  - bei Karten (Stufe 5) jede Karte wie bei Mail und dass eine Datei in den Talk-Ordner geladen wird.
 
   Namen gehen durch dieselbe Entschärfung wie in anderen Freigaben (eine Zeile, 60 Zeichen). Kennt
   der Cache eine Unterhaltung nicht mehr, steht dort „unknown conversation“.
@@ -355,7 +414,7 @@ roh darin: Sie sind fremder Text und kämen sonst ungeprüft zu einem Agenten.
   der Datei der Freigaben (0600). Das ist die einzige Stelle, an der Chat-Text auf die Platte kommt
   (Entscheidung 7). Heute hält der Kern entschiedene und abgelaufene Freigaben noch einen Tag samt
   Request; bei `chat.*` und `presence.set_own_status` leert er den Text darum sofort bei der Entscheidung oder
-  dem Ablauf.
+  dem Ablauf, ebenso die Dateinamen und Bytes einer Datei (Stufe 4).
 - **Drossel:** Ein Client (gezählt je Client-Kennung, damit geliehene Schlüssel des Assistenten sie
   nicht umgehen) führt höchstens 30 Nach-außen-Befehle in `chat` und `presence` je Stunde und 5 je Minute aus
   (Senden, Bearbeiten, Löschen, Reaktionen, neue Unterhaltung, eigener Status zusammen), sonst `busy`. Auch mit
@@ -364,10 +423,37 @@ roh darin: Sie sind fremder Text und kämen sonst ungeprüft zu einem Agenten.
 - **Links und Dateien:** Dateien in Nachrichten zeigt das Chatfenster mit Name, Größe und „Open in
   Nextcloud“. Der Link wird aus der Kennung der Datei auf dem Ursprung des Kontos gebaut
   (`<server>/f/<id>`), nie aus der Antwort übernommen (Regel 15 aus E5). Links im Text öffnen sich nur
-  nach einem Klick und nur mit `https`, `mailto`. Bilder lädt der Verlauf nicht (kein Verfolgen,
-  nur Text).
+  nach einem Klick und nur mit `https`, `mailto`.
+- **Bilder** (ersetzt mit #636 die Regel „Bilder lädt der Verlauf nicht“):
+  - **Nur vom Ursprung des Kontos.** Vorschauen holt der Kern über `/index.php/core/preview` mit der Kennung der
+    Datei, Bilder von Link-Karten über `/index.php/core/references/preview/<id>`, beides auf dem Ursprung des Kontos
+    gebaut. Nie über eine URL aus der Antwort von Talk oder aus `openGraphObject` (`thumb`, `link`): Ein Bild von
+    einem fremden Server verriete, wann und wo der Mensch die Nachricht liest. Gibt es kein Bild vom eigenen Server,
+    gibt es keins.
+  - **Nur im Speicher** (Entscheidung 21): höchstens 64 MiB Vorschauen je Konto. Geöffnete Anhänge liegen in einem
+    eigenen Ordner des Chats, `<cache>/chat-attachments/<konto>/` (Ordner 0700, Dateien 0600, nach einem Tag
+    gelöscht), nicht im Anhangsordner der Mail: `mail.save_draft` nimmt jede Datei aus jenem Ordner an und prüft nur
+    den Ort, ein Agent mit `mail`, aber ohne `chat`, hängte sonst Chat-Bilder an einen Entwurf. `mail.save_draft` nimmt
+    aus dem Ordner des Chats nichts an.
+  - **Kein SVG**, auch nicht als Anhang in der Vorschau (es kann Skripte und Verweise nach außen enthalten); Nextcloud
+    liefert Vorschauen ohnehin nur als Rasterbild, und der Kern schickt `mimeFallback` nie, das auf ein SVG-Symbol
+    umleiten würde. Bilder prüft der Kern wie `mail.upload_image` (PNG, JPEG, GIF, WebP, Größe und Kanten begrenzt).
+  - **Keine Dateinamen und keine WebDAV-Pfade** in Protokoll und Fehlern; Dateinamen sind fremder Text
+    (`untrusted`, Entscheidung 5). Keine Bytes in `Debug`, Protokoll oder der Hülle einer Freigabe (das Feld `base64`
+    von `upload_file` bekommt wie bei der Mail einen Typ mit geschwärztem `Debug`).
+  - **Föderierte Unterhaltungen:** Dort kommen die Parameter `file` vom fremden Server und könnten auf eine Datei im
+    eigenen Speicher zeigen. Der Kern nimmt Dateien einer Nachricht nur an, wenn sie zu den Freigaben der Unterhaltung
+    gehören (`…/share`). Weil auch diese Liste in föderierten Unterhaltungen vom fremden Server kommen kann (*vermutet*),
+    gilt bis zu einer Prüfung in Stufe 4: Dort zeigt die Oberfläche Dateien nur als Zeile mit „Open in Nextcloud“,
+    und `get_preview`, `get_attachment` und `save_attachment` antworten `unsupported`, für jeden Schlüssel.
+  - **Fremde Dateien nie ungeprüft starten.** „Open“ gibt es nicht für ausführbare und aktive Arten (Programme,
+    Skripte, `.app`, `.command`, `.desktop`, `.jar`, Installationspakete, HTML, SVG; erkannt an Endung **und** Bytes):
+    Sie bekommen nur „Download“ und „Open in Nextcloud“. Auf macOS setzt der Kern an jeder geholten Datei das Attribut
+    `com.apple.quarantine`, damit Gatekeeper fragt, wie bei einem Download im Browser.
 - **Konto weg oder Remote Wipe:** Cache und Status des Kontos werden geleert, laufende Long-Polling-Anfragen
-  und Anrufe werden beendet, das Konto fällt aus allen `chat_accounts` und `presence_accounts`.
+  und Anrufe werden beendet, das Konto fällt aus allen `chat_accounts` und `presence_accounts`. Ebenso werden
+  Vorschauen, vorbereitete Dateien und laufende Uploads des Kontos verworfen (halbe Uploads auf dem Server gelöscht,
+  soweit er erreichbar ist) und die geöffneten Anhänge des Kontos im Anhangsordner gelöscht.
 - **Anrufe** (ergänzt mit #470):
   - **Kein Mitschnitt.** Die Suite nimmt weder Bild noch Ton auf, auch nicht als Puffer auf der Platte, und
     bietet die Aufnahme von Talk (Recording-Server) nicht an.
@@ -379,7 +465,7 @@ roh darin: Sie sind fremder Text und kämen sonst ungeprüft zu einem Agenten.
     Sitzung; sie öffnen nur das TURN-Relay, nicht das Konto. Sie gehen an keinen Client, in kein MCP-Tool, in kein
     Protokoll und in keine Freigabe. libwebrtc im Anruffenster braucht sie aber selbst, und Punkt 1 von „Was nie nach
     außen geht“ sagt heute „auch nicht über den App-Schlüssel“. **Vorschlag, offen bis zur Zustimmung des Menschen
-    in der ersten Aufgabe der Stufe 5:** ein einmaliger Never-Befehl `chat.call_credentials { call }`, gültig nur für
+    in der ersten Aufgabe der Stufe 6:** ein einmaliger Never-Befehl `chat.call_credentials { call }`, gültig nur für
     den laufenden Anruf und nur mit der Kennung `call`, die allein das Fenster des Anrufs kennt; als eigener Typ
     (etwa `TurnCredential`, ohne `Debug`, eigene Angabe im Schema, nicht `Secret`, das nur für Eingaben gedacht ist);
     das Fenster hält sie nur im Speicher. Statt über IPC kann der Kern das Anruffenster auch selbst starten und sie
@@ -396,7 +482,7 @@ roh darin: Sie sind fremder Text und kämen sonst ungeprüft zu einem Agenten.
 ## Fenster
 
 Entwürfe: [prototypes/chat/](prototypes/chat/index.html) (alle Fenster in hell und dunkel, Fassungen
-umschaltbar). Alle Fenster gehören zur App `torrochat` und folgen dem Torro-Design
+umschaltbar; gewählt ist, was Entscheidung 24 nennt). Alle Fenster gehören zur App `torrochat` und folgen dem Torro-Design
 ([`torro-design`](../.claude/skills/torro-design/SKILL.md)): Inter, Tokens des aktiven Designs, Status nie nur über
 Farbe, Rot nur für den einen Primärknopf.
 
@@ -408,7 +494,7 @@ Farbe, Rot nur für den einen Primärknopf.
   einklappbar; „Offline“ ab Werk zugeklappt, sobald mehr als 20 Menschen darin stehen. In jeder Gruppe nach Name.
   Jede Zeile: Avatar mit Status-Marke (jede Marke mit eigener Form: Punkt, Mond, halber Kreis, Minus, Ring), Name, darunter die
   Statusnachricht oder „Last seen yesterday“, rechts die Zahl ungelesener Nachrichten.
-- **Gruppenchats** je nach gewählter Fassung (Entscheidung 17).
+- **Gruppenchats** über den Umschalter „People | Groups“ oben in der Liste (Entscheidung 17).
 - **Fuß:** eigener Status mit Avatar und Nachricht, ein Klick öffnet ein Menü mit den Status, „Set status
   message…“ (mit Ablauf: 30 min, 1 h, heute, diese Woche) und „Show others when I am online“.
 - **Bedienung:** Pfeiltasten wandern, Enter oder Doppelklick öffnet das Chatfenster, `⌘F`/`Ctrl+F` springt in die
@@ -424,12 +510,34 @@ Farbe, Rot nur für den einen Primärknopf.
 Unterhaltung gemerkt werden können, siehe „Schweben“):
 - **Kopf:** Avatar mit Status, Name, darunter Status und Statusnachricht (bei Gruppen die Zahl der Teilnehmer),
   rechts „Audio call“, „Video call“ und „…“ (Mark as unread, Notifications, Open in Talk, Show contact).
-- **Verlauf:** Nachrichten nach Tag gruppiert, eigene rechts. Zitat bei Antworten, Erwähnungen hervorgehoben,
-  Dateien als Zeile mit Symbol, Name, Größe und „Open“. Einfaches Markdown (fett, kursiv, Code, Links), keine
-  Bilder. Trenner „New“ beim Lesestand. Systemnachrichten klein in `TEXT_3`, verpasste Anrufe mit Icon. Nach oben
-  scrollen lädt ältere.
+- **Verlauf:** Nachrichten nach Tag gruppiert, eigene rechts. Zitat bei Antworten, Erwähnungen hervorgehoben.
+  Einfaches Markdown (fett, kursiv, Code, Links). Trenner „New“ beim Lesestand. Systemnachrichten klein in `TEXT_3`,
+  verpasste Anrufe mit Icon. Nach oben scrollen lädt ältere. Dateien je nach Art (Stufe 4, ab Stufe 3 alle als
+  Datei-Zeile):
+  - **Bild:** Vorschau (höchstens 220 × 220, Seitenverhältnis aus `width`/`height`, bis sie da ist ein ruhiger
+    Platzhalter in der Größe, damit nichts springt), darunter die Beschriftung. Ein Klick öffnet „Bild groß“.
+  - **Video:** Vorschaubild mit Abspielknopf, wenn der Server eins hat; die Dauer nur, wenn der Kern sie kennt
+    (Talk liefert keine). Ein Klick öffnet das Video im Programm des Systems (Entscheidung 22), der Tooltip sagt es.
+  - **Sprachnachricht:** Abspielknopf, Wellenform, Dauer; spielt im Chatfenster (Entscheidung 19).
+  - **Andere Datei** und jeder **Rückfall ohne Vorschau** (keine Vorschau, SVG, `hide-download`, Format ohne
+    Decoder): Zeile mit Symbol der Art, Name, Größe und Art, Knöpfe „Open“, „Download“, „Open in Nextcloud“
+    (`hide-download`: nur „Open in Nextcloud“).
+  - **Link-Karte** unter einer Nachricht mit Link: Bild vom eigenen Server, Titel, Domain; nur der erste Link einer
+    Nachricht, wie in Talk-Web. Links auf den eigenen Nextcloud-Server bekommen sie von selbst, andere erst nach einem
+    Klick auf „Show preview“ unter dem Link (Entscheidung 23). Ohne Karte bleibt der Link im Text.
 - **Eingabe:** mehrzeilig, Enter sendet, Shift+Enter bricht um. `@` öffnet Vorschläge. Ein Zähler erscheint ab
-  90 % der Höchstlänge. Im Menü „Send without notification“.
+  90 % der Höchstlänge. Im Menü „Send without notification“. Ab Stufe 4 links die Büroklammer („Attach file“, Dialog
+  des Systems), Ziehen einer Datei auf das Fenster (die ganze Fläche wird zur Ablage, „Drop to send to Anna Berg“)
+  und Einfügen eines Bildes aus der Zwischenablage. Der Text im Feld wird die Beschriftung. Vor dem Senden stehen
+  die Dateien als **Leiste über dem Feld** (Entscheidung 24); nach dem Senden zeigt dieselbe Stelle den Fortschritt mit ✕ („Cancel upload“). Zu groß, kein Platz auf
+  dem Server oder `attachments.allowed` aus: Meldung an der Datei, der Text bleibt im Feld.
+- **Bild groß** (Stufe 4): ein eigenes, schwebendes Fenster (Klasse `torro-chat-viewer`, Entscheidung 24). Bild eingepasst, oben Name, „Download“, „Open in Nextcloud“ und
+  Schließen (`Esc`), `←`/`→` blättern durch die Bilder der Unterhaltung, unten „2 / 5 · Anna Berg · 10:02“. Das große
+  Bild ist eine Vorschau in Fenstergröße, nicht das Original.
+- **Medien-Übersicht** (Stufe 4, Knopf „Shared media“ im Kopf): Reiter „Media“ (Raster der Bilder und Videos nach
+  Monat, neueste oben), „Files“, „Voice“ und „Links“ (die Link-Karten aus dem Cache); jede Zeile mit „Show in chat“.
+  Seitenleiste im Chatfenster (Entscheidung 24). Ohne
+  `rich-object-list-media` fehlt der Knopf.
 - **Gelesen:** Ist das Fenster im Vordergrund und die neueste Nachricht sichtbar, setzt die App den Lesestand.
 - **Tasten:** `Esc` bricht eine Antwort ab bzw. schließt das Fenster. Anrufe starten bewusst nur über die Knöpfe,
   ohne Taste: Eine Taste im Eingabefeld (etwa `Ctrl+Shift+V`, „ohne Formatierung einfügen“) schaltete sonst
@@ -437,13 +545,14 @@ Unterhaltung gemerkt werden können, siehe „Schweben“):
 - **Leer und Fehler:** Offline zeigt den Speicher mit „Offline“ im Kopf; eine verschwundene Unterhaltung „This
   conversation is no longer available“.
 
-**Eingehender Anruf:** zwei Fassungen zur Wahl, siehe Entwürfe: eine **Benachrichtigung** oben rechts (Decline,
-Audio only, Accept) oder ein **kleines Fenster** mittig (Klasse `torro-chat-ring`, schwebend, 340 × 360). „Accept“
+**Eingehender Anruf:** ein **kleines Fenster** mittig (Klasse `torro-chat-ring`, schwebend, 340 × 360) mit Decline,
+Audio only und Accept (Entscheidung 24; die Benachrichtigung oben rechts ist verworfen). „Accept“
 ist der Primärknopf. Bei „Do not disturb“ klingelt nichts; der Anruf steht danach als verpasst im Chat und im
 Notification Hub. Ein Klingeln endet nach 45 s oder wenn die Gegenseite auflegt.
 
-**Anruffenster** (Klasse `torro-chat-call`, schwebend, frei in der Größe, 760 × 500 gedacht): Fassung A Bild in
-Bild (die andere Person groß, das eigene Bild klein in einer Ecke, verschiebbar) oder B nebeneinander. Unten
+**Anruffenster** (Klasse `torro-chat-call`, schwebend, frei in der Größe, 760 × 500 gedacht): zu zweit Bild
+in Bild (die andere Person groß, das eigene Bild klein in einer Ecke, verschiebbar), mit mehr als zwei Personen
+nebeneinander, sobald Gruppenanrufe kommen (Entscheidung 24). Unten
 Mikrofon (`M`), Kamera (`V`), Geräte, Bildschirm teilen (ausgegraut, später) und „Leave call“ als Primärknopf.
 Oben Dauer und „Show chat“. Schließen beendet den Anruf.
 
@@ -485,11 +594,12 @@ unterscheidet sie vom Assistenten); der Hinweis an „Send on my behalf“
 nennt künftig Mail, Antworten auf Einladungen, Chat und den eigenen Status. Auf der Kontoseite stehen Talk und User
 status bei den Diensten. Unter General die Schalter „Show others when I am online“ und „Ring for incoming calls“.
 
-**Teilen-Blatt (Stufe 4):** Ziel „Chat“ mit den letzten Unterhaltungen und Suche, siehe unten.
+**Teilen-Blatt (Stufe 5):** Ziel „Chat“ mit den letzten Unterhaltungen und Suche, siehe unten.
 
 **Demo:** `torrochat --demo` mit sechs Menschen in allen Status, zwei Gruppen, drei Unterhaltungen mit Erwähnung,
-Datei, Systemnachricht und verpasstem Anruf; `--open contacts | chat | ring | call | devices` öffnet ein Fenster
-direkt (für die Sichtprüfung).
+Datei, Systemnachricht und verpasstem Anruf; ab Stufe 4 dazu Bild, Video mit und ohne Vorschau, Sprachnachricht und
+Link-Karte. `--open contacts | chat | ring | call | devices | media | viewer | upload` öffnet ein Fenster bzw. einen
+Zustand direkt (für die Sichtprüfung).
 
 ## Befehle
 
@@ -501,7 +611,7 @@ Bereich `chat`:
 
 | Stufe | Befehl | Zugriff | MCP |
 |---|---|---|---|
-| 1 | `chat.list_conversations { account?, unread_only?, query?, limit? }` (Name, Art, ungelesen, Erwähnung, letzte Nachricht, läuft ein Anruf; ab Stufe 5 auch: klingelt es) | Read | `chat_list_conversations` |
+| 1 | `chat.list_conversations { account?, unread_only?, query?, limit? }` (Name, Art, ungelesen, Erwähnung, letzte Nachricht, läuft ein Anruf; ab Stufe 6 auch: klingelt es) | Read | `chat_list_conversations` |
 | 1 | `chat.get_messages { conversation, before?, after?, limit? }` (höchstens 100, ändert keinen Lesestand) | Read | `chat_get_messages` |
 | 1 | `chat.send_message { conversation, text, reply_to?, silent? }` | Write + **nach außen** | `chat_send_message` |
 | 1 | `chat.mark_read { conversation, up_to? }` | Write | `chat_mark_read` |
@@ -514,23 +624,35 @@ Bereich `chat`:
 | 3 | `chat.create_conversation { account, with }` (1:1, gibt eine vorhandene zurück) | Write + **nach außen** | `chat_create_conversation` |
 | 3 | `apps.open_app` mit `target: "chat:<unterhaltung>"` bzw. `"chat:contacts"` (Chatfenster bzw. Kontaktliste; eine Unterhaltung außerhalb von `chat_accounts` ist `not-found`. Anders als andere Ziele, die immer ein neues Fenster starten, holt `chat:` ein offenes Chatfenster nach vorn (Entscheidung 15); wie der Kern das der laufenden App sagt, klärt Stufe 3 mit Rückfrage, weil `OpenApp` heute immer startet. Erweiterung) | Write (`apps`) | `apps_open_app` (vorhanden) |
 | 3 | `apps.open_app` mit `target: "contact:<id>"` („Show contact“: `torrocontacts` beim Kontakt; braucht Read in `contacts` und das Adressbuch in `address_books`, sonst `not-found`, Erweiterung) | Write (`apps`) | `apps_open_app` (vorhanden) |
-| 4 | `chat.send_message` mit `items` und `fields` (Erweiterung, TL2) | Write + **nach außen** + Read der Inhalte | `chat_send_message` (vorhanden) |
-| 5 | `chat.get_call { conversation }` (läuft ein Anruf, klingelt es, seit wann, wie viele sind drin, ob der Mensch dabei ist; keine Namen, keine Geräte, kein Bild) | Read | `chat_get_call` |
-| 5 | `chat.start_call { conversation, video }` (Anruffenster öffnen, beitreten, Gegenseite klingeln lassen) | Write + nach außen | `Never` (Punkt 11) |
-| 5 | `chat.answer_call { conversation, video }` (annehmen, mit Bild oder nur Ton) | Write + nach außen | `Never` (Punkt 11) |
-| 5 | `chat.decline_call { conversation }` (eigenes Klingeln beenden, die Gegenseite telefoniert weiter) | Write | `chat_decline_call` |
-| 5 | `chat.leave_call { conversation }` (auflegen, schließt das Anruffenster) | Write | `chat_leave_call` |
-| 5 | `chat.call_events { call, after? }` (Signaling-Nachrichten und Teilnehmer für das Anruffenster) | Read | `Never` (Punkt 11) |
-| 5 | `chat.call_signal { call, messages }` (Signaling-Nachrichten des Anruffensters an Talk) | Write | `Never` (Punkt 11) |
-| 5 | `chat.call_credentials { call }` (STUN/TURN für den laufenden Anruf, einmal je Anruf; nur nach Zustimmung zur Ausnahme, siehe Anrufe) | Read | `Never` (Punkte 1 und 11) |
-| 5 | `settings.set_setting` mit `chat_camera`, `chat_microphone`, `chat_speaker` (Kennung des Geräts) und `chat_join_camera_off` (Erweiterung) | Admin (`settings`); Geräte und `chat_join_camera_off: false` **nur Menschen** | `settings_set_setting` (vorhanden) |
-| 5 | `settings.set_setting` mit `chat_ring` („Ring for incoming calls“: Abfrage alle 10 s und Start von `torrochat` beim Klingeln; Erweiterung) | Admin (`settings`) | `settings_set_setting` (vorhanden) |
-| 6 | `chat.edit_message { id, text }` | **Delete** + **nach außen** | `chat_edit_message` |
-| 6 | `chat.delete_message { id }` | Delete + **nach außen** | `chat_delete_message` |
-| 6 | `chat.react { id, emoji, remove? }` | Write + **nach außen** | `chat_react` |
-| 6 | `chat.set_favorite { conversation, favorite }` | Write | `chat_set_favorite` |
-| 6 | `chat.set_notification_level { conversation, level }` (`default`, `always`, `mention`, `never`) | Write | `chat_set_notification_level` |
-| 6 | `chat.search_messages { query, account?, limit? }` (Unified Search von Talk) | Read | `chat_search_messages` |
+| 4 | `chat.prepare_file { account, source }` (`source`: `registered` mit der Kennung einer eigenen Datei aus dem Register oder `path`, **nur App-Schlüssel**; gibt Kennung, Name, Größe, Art, Maße und eine kleine Vorschau zurück; lagert nur im Kern) | Write | `chat_prepare_file` |
+| 4 | `chat.upload_file { account, upload?, offset, base64, name?, final? }` (Base64 in Stücken von höchstens 256 KiB; `final` gibt wie `prepare_file` eine vorbereitete Datei zurück, danach unveränderlich) | Write | `chat_upload_file` |
+| 4 | `chat.release_files { account, ids }` (eigene vorbereitete Dateien verwerfen; fremde und unbekannte werden übergangen) | Delete | `chat_release_files` |
+| 4 | `chat.send_message` mit `files` (Kennungen aus `prepare_file`, Erweiterung) | Write + **nach außen** | `chat_send_message` (vorhanden) |
+| 4 | `chat.get_upload { id }` (Fortschritt des Sendens: Bytes, Stand, Fehler) | Read | `chat_get_upload` |
+| 4 | `chat.cancel_upload { id }` (Senden abbrechen, die halbe Datei auf dem Server löschen) | Write | `chat_cancel_upload` |
+| 4 | `chat.get_preview { id, file?, card?, size }` (`id` die Nachricht, `file` eine Datei dieser Nachricht oder `card: true` das Bild ihrer Link-Karte, `size` `small` oder `large`; gibt ein Rasterbild zurück) | Read | `chat_get_preview` (liefert ein Bild) |
+| 4 | `chat.get_attachment { id, file }` (Datei einer Nachricht in den Anhangsordner des Chats, Pfad, Größe, Art; wie `mail.get_attachment`) | Read | `chat_get_attachment` |
+| 4 | `chat.save_attachment { id, file, to }` (`to`: `downloads`, `{ "target": … }`, `file` und `folder` **nur Menschen**) | Write | `chat_save_attachment` |
+| 4 | `chat.list_shared { conversation, kind?, before?, limit? }` (`kind`: `media`, `file`, `voice`, `link`, …; höchstens 100) | Read | `chat_list_shared` |
+| 4 | `chat.show_card { id }` (Link-Karte zum ersten Link der Nachricht holen, „Show preview“; der Server ruft dafür die fremde URL ab) | Write | `Never` (nur Menschen, siehe Vorschlag für `api.md`) |
+| 4 | `chat.get_messages` mit dem neuen Feld `cards` (Link-Karten aus dem Cache) und der Eingabe `around` (Nachrichten um eine Kennung, für „Show in chat“; Erweiterung) | Read | `chat_get_messages` (vorhanden) |
+| 5 | `chat.send_message` mit `items` und `fields` (Erweiterung, TL2) | Write + **nach außen** + Read der Inhalte | `chat_send_message` (vorhanden) |
+| 6 | `chat.get_call { conversation }` (läuft ein Anruf, klingelt es, seit wann, wie viele sind drin, ob der Mensch dabei ist; keine Namen, keine Geräte, kein Bild) | Read | `chat_get_call` |
+| 6 | `chat.start_call { conversation, video }` (Anruffenster öffnen, beitreten, Gegenseite klingeln lassen) | Write + nach außen | `Never` (Punkt 11) |
+| 6 | `chat.answer_call { conversation, video }` (annehmen, mit Bild oder nur Ton) | Write + nach außen | `Never` (Punkt 11) |
+| 6 | `chat.decline_call { conversation }` (eigenes Klingeln beenden, die Gegenseite telefoniert weiter) | Write | `chat_decline_call` |
+| 6 | `chat.leave_call { conversation }` (auflegen, schließt das Anruffenster) | Write | `chat_leave_call` |
+| 6 | `chat.call_events { call, after? }` (Signaling-Nachrichten und Teilnehmer für das Anruffenster) | Read | `Never` (Punkt 11) |
+| 6 | `chat.call_signal { call, messages }` (Signaling-Nachrichten des Anruffensters an Talk) | Write | `Never` (Punkt 11) |
+| 6 | `chat.call_credentials { call }` (STUN/TURN für den laufenden Anruf, einmal je Anruf; nur nach Zustimmung zur Ausnahme, siehe Anrufe) | Read | `Never` (Punkte 1 und 11) |
+| 6 | `settings.set_setting` mit `chat_camera`, `chat_microphone`, `chat_speaker` (Kennung des Geräts) und `chat_join_camera_off` (Erweiterung) | Admin (`settings`); Geräte und `chat_join_camera_off: false` **nur Menschen** | `settings_set_setting` (vorhanden) |
+| 6 | `settings.set_setting` mit `chat_ring` („Ring for incoming calls“: Abfrage alle 10 s und Start von `torrochat` beim Klingeln; Erweiterung) | Admin (`settings`) | `settings_set_setting` (vorhanden) |
+| 7 | `chat.edit_message { id, text }` | **Delete** + **nach außen** | `chat_edit_message` |
+| 7 | `chat.delete_message { id }` | Delete + **nach außen** | `chat_delete_message` |
+| 7 | `chat.react { id, emoji, remove? }` | Write + **nach außen** | `chat_react` |
+| 7 | `chat.set_favorite { conversation, favorite }` | Write | `chat_set_favorite` |
+| 7 | `chat.set_notification_level { conversation, level }` (`default`, `always`, `mention`, `never`) | Write | `chat_set_notification_level` |
+| 7 | `chat.search_messages { query, account?, limit? }` (Unified Search von Talk) | Read | `chat_search_messages` |
 
 Bereich `presence` (Rechte: Stufe in `presence` und eigene Auswahl `presence_accounts`, Entscheidung 3):
 
@@ -549,7 +671,7 @@ lassen. Eingeklappte Gruppen merkt die Kontaktliste in `ui.json` (`torro_gui::ui
 nicht (siehe Fenster, „Schweben“).
 
 **Vorgeschlagener Punkt 11 für [„Was nie nach außen geht“](api.md#was-nie-nach-außen-geht)** (`api.md` nimmt
-den Teil zum Heartbeat mit der ersten Aufgabe der Stufe 2 auf, den Rest mit der ersten Aufgabe der Stufe 5, samt Tests wie
+den Teil zum Heartbeat mit der ersten Aufgabe der Stufe 2 auf, den Rest mit der ersten Aufgabe der Stufe 6, samt Tests wie
 `the_microphone_is_switched_on_by_people_only` und den Never-Befehlen in `kept_back` von `names_follow_the_rules`):
 
 > 11. **Anrufe und Kamera:** nur mit dem App-Schlüssel, also nur durch einen Menschen in der Oberfläche
@@ -612,8 +734,13 @@ Erläuterungen:
   Stufe. Es ist `Write` wie `inbox.mute_item` für eine Unterhaltung.
 - **Mentions für Agenten:** Die Beschreibung von `send_message` sagt, dass Erwähnungen als
   `@"<mentionId>"` geschrieben werden und `suggest_mentions` die Kennungen liefert.
+- **Dateien und Medien (Stufe 4)** stehen mit ihren Regeln unter [Dateien und Medien](#dateien-und-medien-stufe-4).
+  Keiner dieser Befehle ist `Never`; was nur Menschen dürfen (`path`, frei gewähltes Ziel), entscheidet der Wert
+  (`Request::kept_for_people`). Abspielen von Sprachnachrichten und das Öffnen im Programm des Systems sind nur
+  Oberfläche: Die Datei bekommt ein Client über `get_attachment`, abgespielt wird nur im Chatfenster bzw. im
+  Programm des Systems.
 
-## Anrufe (Stufe 5)
+## Anrufe (Stufe 6)
 
 Entscheidung 13: selbst gebaut. Was die Machbarkeit dazu ergab, steht in
 [chat-machbarkeit.md](chat-machbarkeit.md); hier steht, wie es in die Suite passt.
@@ -623,8 +750,8 @@ Entscheidung 13: selbst gebaut. Was die Machbarkeit dazu ergab, steht in
    Unterhaltung mit einer eigenen Sitzung bei (`POST /room/{token}/participants/active`, Cookie im Speicher des
    Kerns), dann dem Anruf (`POST /call/{token}`, `flags` Ton und Bild); Talk lässt die Gegenseite klingeln. Das
    Anruffenster öffnet sich.
-2. **Klingeln:** Der Kern erkennt einen eingehenden Anruf (Entscheidung 9) und meldet ihn der App, die die
-   Benachrichtigung bzw. das kleine Fenster zeigt. Ist `torrochat` nicht offen, startet der Kern es (dafür die Abfrage alle 10 s aus Entscheidung 9).
+2. **Klingeln:** Der Kern erkennt einen eingehenden Anruf (Entscheidung 9) und meldet ihn der App, die das
+   kleine Fenster zeigt (Entscheidung 24). Ist `torrochat` nicht offen, startet der Kern es (dafür die Abfrage alle 10 s aus Entscheidung 9).
 3. **Annehmen:** `chat.answer_call` mit oder ohne Bild; der Kern vergibt die Kennung `call` und gibt sie nur dem
    Anruffenster. Ablehnen (`chat.decline_call`) beendet nur das eigene Klingeln (der Kern nimmt die Benachrichtigung `call`
    zurück; `notification-state` fragt nur ab, ob weiter geklingelt wird; den genauen Weg prüft der Versuch), nicht den
@@ -657,12 +784,12 @@ Entscheidung 13: selbst gebaut. Was die Machbarkeit dazu ergab, steht in
   Desktop-Apps, Linux braucht nur unter Flatpak das Kameraportal. Fehlt die Erlaubnis, zeigt die Gerätewahl den Weg
   zur Systemeinstellung.
 
-**Stufe 5 in drei Schritten:**
+**Stufe 6 in drei Schritten:**
 - **(a) Versuch** (eigenes Issue, Code unter `spikes/` wie M9.4): ein Anruf zu zweit zwischen einem kleinen
   Rust-Programm und Talk-Web im Browser auf dem eigenen Server, auf Linux und macOS, mit Ton in beide Richtungen ohne
   Echo und Bild. Misst Aufbauzeit, CPU-Last, Größe des Programms und prüft TURN. Ergebnis als Abschnitt in
   [research.md](research.md). Scheitert er, entscheidet der Mensch neu (Browser oder später).
-- **(b) Klingeln und Annehmen in der Suite:** Benachrichtigung bzw. kleines Fenster, `get_call`, `decline_call`;
+- **(b) Klingeln und Annehmen in der Suite:** kleines Fenster (Entscheidung 24), `get_call`, `decline_call`;
   „Accept“, „Audio call“ und „Video call“ öffnen das Gespräch zunächst im Browser (`<server>/call/<token>`). Der
   Kern tritt dann selbst keinem Anruf bei, sonst säße ein zweiter Teilnehmer ohne Bild und Ton darin; `start_call`
   und `answer_call` kommen erst mit (c).
@@ -673,9 +800,171 @@ Entscheidung 13: selbst gebaut. Was die Machbarkeit dazu ergab, steht in
 teilen, keine Aufnahme, keine Untertitel. Föderierte Unterhaltungen und Gäste ohne Konto erst, wenn der Versuch
 sie geprüft hat.
 
-## Teilen in einen Chat (Stufe 4)
+## Dateien und Medien (Stufe 4)
 
-Übernimmt TL2 aus [teilen.md](teilen.md):
+Mit #636. Was Talk und Nextcloud dafür bieten und was nicht (keine Dauer, Vorschaubilder von Videos nur mit `ffmpeg`
+auf dem Server), steht in [chat-machbarkeit.md](chat-machbarkeit.md#dateien-und-medien-636). Entwürfe:
+[prototypes/chat/](prototypes/chat/index.html#medien).
+
+**Jede Funktion dreimal:**
+
+| Oberfläche | API | MCP |
+|---|---|---|
+| Büroklammer, Ziehen, Einfügen, Beschriftung, ✕ vor dem Senden | `chat.prepare_file`, `chat.upload_file`, `chat.release_files` | `chat_prepare_file`, `chat_upload_file`, `chat_release_files` |
+| Senden mit Datei | `chat.send_message` mit `files` | `chat_send_message` |
+| Fortschritt, ✕ beim Senden | `chat.get_upload`, `chat.cancel_upload` | `chat_get_upload`, `chat_cancel_upload` |
+| Vorschau im Verlauf, Bild groß, Raster der Medien-Übersicht | `chat.get_preview` | `chat_get_preview` |
+| Open, Download, Video öffnen | `chat.get_attachment`, `chat.save_attachment` | `chat_get_attachment`, `chat_save_attachment` (nur Downloads oder ein Ablageziel) |
+| Medien-Übersicht | `chat.list_shared` | `chat_list_shared` |
+| Link-Karten | Feld `cards` in `chat.get_messages` | `chat_get_messages` |
+| „Show preview“ an einem fremden Link | `chat.show_card` | keins: nur Menschen (Entscheidung 23) |
+| Sprachnachricht abspielen (Datei über `get_attachment`, Wellenform im Fenster), Video im Programm des Systems | Abspielen selbst ist nur Oberfläche, ohne Befehl (Entscheidungen 19, 22) | – |
+| „Show in chat“ aus der Medien-Übersicht | `chat.get_messages` mit `around` | `chat_get_messages` |
+
+**Senden in zwei Schritten.** Vorbereiten und Senden sind getrennt, damit eine Freigabe genau die Bytes zeigt, die
+später gehen:
+1. **Vorbereiten:** `chat.prepare_file` bzw. `chat.upload_file` legen die Datei nur im Kern ab, als vorbereitete
+   Datei mit Kennung (Lease), Name, Größe, Art, Prüfsumme (SHA-256; bei `path` stattdessen Größe und Änderungszeit)
+   und kleiner Vorschau. Noch geht nichts zum Server.
+   - `source: registered` nimmt nur eigene Dateien aus dem Register des Kerns, mit derselben Regel wie Anhänge in
+     `mail.save_draft` ([api.md](api.md), Fußnote 22, „Eigene Werkzeuge“): ein Client nur solche, die er selbst
+     erzeugt hat (sonst `not-found`), nur solange das Werkzeug eingeschaltet ist (`Lack::ToolOff`), er es in
+     `Rights::tools` hat (`Lack::Tool`, beides `forbidden`) und die Datei unverändert ist (sonst `not-found`, wie
+     `tools.open_file` bei einer geänderten Datei); geprüft
+     vor der Freigabe und bei „Allow“ noch einmal.
+   - `source: path` gibt es nur für den App-Schlüssel (Büroklammer, Ziehen), für Clients `forbidden`
+     (Entscheidung 20). `prepare_file` liest dabei nur den Anfang der Datei (für die Art) und bei Bildern so viel,
+     wie die Vorschau braucht; den ganzen Inhalt liest der Kern erst beim Senden und kopiert ihn vorher nicht. Er merkt
+     sich Größe und Änderungszeit, und hat sich die Datei bis dahin geändert, antwortet das Senden `conflict`.
+   - Eine Quelle `clipboard` gibt es nicht: Die Oberfläche lädt Eingefügtes selbst mit `upload_file` hoch.
+   - `upload_file` folgt `mail.upload_image` ([api.md](api.md), „Eingebettete Mail-Bilder“) und gibt mit `final`
+     dieselbe vorbereitete Datei wie `prepare_file`: Base64 in Stücken von höchstens 256 KiB (das IPC-Limit von 1 MiB bleibt), Beginn ohne Kennung bei Offset 0, gleiche Wiederholungen
+     idempotent, andere `conflict`, nach `final` unveränderlich. Eine Art nimmt der Befehl nicht an, `name` ist Text
+     des Clients. Höchstens 25 MiB je Datei, auch für den App-Schlüssel (Einfügen ist meist ein Bildschirmfoto;
+     Größeres kommt über `path`), vier
+     unfertige Uploads je Aufrufer, dieselben gemeinsamen Budgets im Speicher (Mangel ist `busy`); unfertige laufen
+     nach 10 Minuten ab, fertige nach einer Stunde ohne Nutzung.
+   - **Grenze je Datei:** für Clients 25 MiB; für den App-Schlüssel die kleinere aus dem freien Platz des Kontos
+     (`quota.free` aus `GET /ocs/v2.php/cloud/user`; ein negativer Wert heißt unbegrenzt oder unbekannt, etwa bei
+     Object Storage, und setzt keine Grenze) und 512 MiB. Darüber antwortet `prepare_file` mit `error`, bevor etwas
+     hochgeladen wird, mit dem Grund, der greift: „This file is larger than {limit}.“ bzw. „There is not enough space
+     in your Nextcloud.“ (Größen mit `format_bytes`).
+   - **Die Art bestimmt der Kern** aus den ersten Bytes der Datei, nicht aus Name oder Angabe des Clients; nach ihr
+     richten sich Freigabe, Vorschau und das Recht „Bildinhalte“.
+   - `chat.release_files` verwirft eigene vorbereitete Dateien. Kennungen, die in einer wartenden Freigabe stehen,
+     ergeben `conflict`, damit ein Client nicht unter einer Freigabe die Datei austauscht.
+   - Dateien eines anderen Kontos als die Unterhaltung ergeben beim Senden `not-found`.
+2. **Senden:** `chat.send_message { conversation, text, files }` ist der Befehl, der nach außen geht und ab Werk auf
+   die Freigabe wartet. Erst bei seiner Ausführung, also nach „Allow“, lädt der Kern hoch und teilt:
+   1. Anhangsordner aus `attachments.folder`, mit `conversation-subfolders` der Unterordner der Unterhaltung; ist
+      `attachments.allowed` falsch, `unsupported`.
+   2. Bis `files.chunked_upload.max_size` als ein `PUT` mit `If-None-Match: *`, darüber in Stücken (Chunking v2,
+      nacheinander, je Stück `max_size`, aber mindestens 5 MiB und höchstens 5 GB, weil der Server kleinere Stücke
+      außer dem letzten ablehnt). `max_size` ≤ 0 heißt: kein Chunking, immer ein `PUT`. Das abschließende `MOVE`
+      trägt `Overwrite: F`, damit es eine vorhandene Datei nie ersetzt. Einen freien Namen („ (2)“, „ (3)“ … wie beim
+      Teilen) wählt der Kern vorher per `PROPFIND`, weil `Destination` beim Chunking schon mit `MKCOL` feststeht;
+      antwortet das `MOVE` trotzdem 412, prüft die erste Aufgabe der Stufe 4, ob ein neues Ziel geht oder der Upload
+      neu beginnt.
+   3. Freigabe Art 10 mit `talkMetaData`: `caption` = Text an genau einer Datei (an welcher, wie Talk-Web; prüft die
+      erste Aufgabe der Stufe 4 gegen spreed), `silent`, `replyTo`, und je Datei eine `referenceId`, damit eine
+      Wiederholung nach einem Abbruch der Verbindung nicht doppelt postet (ob Talk sie beim Teilen annimmt, prüft
+      ebenfalls Stufe 4; ohne sie fragt der Kern vor einer Wiederholung `…/share` ab). Ohne `media-caption` erst der
+      Text, dann die Dateien.
+   4. Schlägt das Teilen fehl, löscht der Kern die eben hochgeladene Datei wieder (`If-Match` mit dem ETag des
+      Uploads).
+   - Die Antwort ist `pending` (Freigabe) oder, sobald der Upload beginnt, `chat-sending` mit nur der Kennung des
+     Sendens, nie Name oder Pfad (Datenregel des Assistenten, Entscheidung 6). `chat.get_upload` mit dieser Kennung
+     nennt Bytes, Stand (`uploading`, `sharing`, `sent`, `cancelled`, `failed` mit Code) und am Ende die Kennungen
+     der entstandenen Nachrichten (je Datei eine). Ohne Dateien bleibt die Antwort `chat-sent` wie bisher.
+   - **Abbrechen** (`chat.cancel_upload`, ✕ in der Oberfläche) bricht den Upload ab und löscht nur die eigene halbe
+     Datei: den Upload-Ordner des Chunkings bzw. die Zieldatei mit `If-Match` auf den ETag, den der Kern selbst
+     bekommen hat. Im Stand `sharing` antwortet er `conflict`, weil das Teilen auf dem Server schon unterwegs ist
+     und sonst eine Nachricht mit gelöschter Datei entstünde. Was geteilt ist, bleibt; das ist dann Löschen einer
+     Nachricht (Stufe 7).
+   - Stufe 5 (Teilen) nimmt genau diesen Ablauf: Die Karte wird zu einer vorbereiteten Datei. Ebenso liefert
+     Send to ([#260](https://github.com/mahype/TorroWorkplace/issues/260)) Dateien nur über `prepare_file`, keine
+     eigene Tür in den Chat.
+
+**Freigabe einer Datei.** Die Freigabe hält Kennung und Prüfsumme jeder Datei; der Kern prüft beides bei „Allow“
+noch einmal, ebenso Rechte und Herkunft (`registered`). In `approvals.json` steht nur eine Hülle ohne Bytes, wie bei
+Bildern der Mail: Die Bytes bleiben im Speicher, nach einem Neustart ist die Freigabe abgelaufen. Ist die Lease einer
+Datei bis zur Entscheidung abgelaufen, antwortet die Ausführung `not-found`. Was die Freigabe zeigt, kommt aus
+`approvals::Facts`, nie aus dem Text des Clients: Unterhaltung, Name (entschärft, 60 Zeichen), Größe, Art, Herkunft
+(„made by this agent with the PDF tool“, „uploaded by this agent“), bei Bildern die Vorschau aus dem Kern, und
+„Uploads <name> to your Talk folder in Nextcloud“; dazu die Beschriftung wie jeder Text. Die Art bestimmt der Kern
+aus den Bytes. Ein Name aus `upload_file` ist Text des Clients und steht als solcher da („name given by this agent“).
+Nach der Entscheidung leert der Kern Dateinamen und Bytes wie den Text (Datenschutz, „Wartende Freigaben“).
+
+**Lesen und Öffnen.**
+- **Nur Dateien der Nachricht:** `get_preview`, `get_attachment` und `save_attachment` prüfen `file` gegen die
+  Dateien der Nachricht `id` im Cache des Kerns und antworten sonst `not-found`, bevor etwas geladen wird. Kennung
+  und Pfad auf dem Server kommen nur aus dem Cache. Sonst öffnete `/core/preview?fileId=` bzw. WebDAV jedem Client
+  mit `chat` den ganzen Speicher des Menschen (Test: fremde `fileId` → `not-found`).
+- `chat.get_preview` holt `/index.php/core/preview` mit der `fileId` aus dem Cache (nie eine URL aus der Antwort),
+  `small` 256 und `large` 1600 Pixel an der längeren Kante, `a=1`; mit `card: true` das Bild der Link-Karte über die
+  Referenz-ID aus dem Cache der Nachricht, nie aus der Eingabe. Ohne `preview-available`, ohne Bild oder bei SVG
+  `not-found`. Das MCP-Tool gibt das Bild als Bildinhalt zurück.
+- **`hide-download`** gilt für jeden Weg: Bei so geteilten Dateien antworten `get_attachment` und `save_attachment`
+  `forbidden`, für Clients wie für den App-Schlüssel; die Vorschau bleibt, „Open in Nextcloud“ auch.
+- `chat.get_attachment` wie `mail.get_attachment`: Datei in den Anhangsordner des Chats (oben, Datenschutz), nach
+  einem Tag gelöscht, Name bereinigt, Name und Inhalt `untrusted`; für Clients höchstens 50 MiB, für den
+  App-Schlüssel 512 MiB, damit auch große Videos öffnen. Die Oberfläche öffnet den Pfad danach selbst mit dem
+  Programm des Systems, wie `torroinbox` Mail-Anhänge (`xdg-open`, `open`); so öffnen auch Videos (Entscheidung 22).
+  Größeres öffnet „Open in Nextcloud“.
+- `chat.save_attachment` wie `mail.save_attachments`: `downloads` (Einstellung `mail_downloads_folder`, ein Ordner
+  für Mail und Chat) oder ein Ablageziel; `to: file` und `to: folder` („Save as…“) nur mit dem App-Schlüssel,
+  Clients `forbidden` (`kept_for_people`). Ein belegter Name wird nie überschrieben. Ablageziele kommen aus
+  `mail.list_save_targets`; `save_attachment` mit `target` prüft im Dienst selbst Read in `mail` (sonst `forbidden`),
+  nicht erst beim Nachschlagen der Kennung. Ein Client nur mit `chat` sichert nach `downloads`. Die
+  Beschreibung des Tools sagt das.
+- `chat.list_shared` liest `…/share` bzw. `…/share/overview` (Capability `rich-object-list-media`, sonst
+  `unsupported`), `kind: link` aus den Karten im Cache, weil Talk Links nicht als Art führt. Einträge tragen Kennung
+  der Nachricht und der Datei, Name, Größe, Art, Autor und Zeit, alles `untrusted`.
+- **Link-Karten** stehen als Feld `cards` in `chat.get_messages` (Titel, Beschreibung, Domain, ob ein Bild da ist),
+  `untrusted`. Von selbst löst der Kern nur Links auf den Ursprung des eigenen Kontos über `references/resolve` auf
+  (Dateien, Deck, Talk), wenn er Nachrichten für ein offenes Chatfenster lädt (App-Schlüssel). Jeden anderen Link erst
+  mit `chat.show_card { id }` („Show preview“): Sonst riefe der eigene Server beim bloßen Anzeigen die fremde URL ab,
+  und wer eine eindeutige URL schickt, erführe, wann gelesen wurde (Entscheidung 23). Das Ergebnis hält der Kern im
+  Cache. Ein Read eines Clients löst kein neues `resolve` aus, sonst könnte ein Agent den Server Links nachschlagen
+  lassen. Das Bild der Karte kommt über
+  `chat.get_preview` mit der Kennung der Nachricht und `card: true`.
+
+**Rechte.**
+- Alles gilt nur für Unterhaltungen in `chat_accounts`; fremde Kennungen (Nachricht, Datei, Upload, vorbereitete
+  Datei eines anderen Clients) sind `not-found`. Ausnahme wie bei `mail.release_images`: `release_files` übergeht
+  fremde und unbekannte Kennungen und antwortet `ok`, damit es nichts über fremde Dateien verrät.
+- **Bildinhalte:** Für Clients brauchen `get_preview`, Bilder von Karten, `get_attachment` und `save_attachment` bei
+  `image/*` und `video/*` zusätzlich `Rights.image_content` (aus dem Konzept der Fotos, [fotos.md](fotos.md),
+  Entscheidung 4, noch nicht gebaut; kommt mit der ersten Aufgabe der Stufe 4, falls Fotos es bis dahin nicht
+  gebracht haben), sonst `forbidden`. Sonst läse ein Agent ohne dieses Recht die Bilder einfach als Datei. Verlangt wird
+  das Recht, sobald `mimetype` vom Server **oder** die Bytes auf Bild bzw. Video deuten **oder** die Art unbekannt ist
+  (HEIC, RAW, ein fremder Container): Ein unbekanntes Format ist kein Weg am Recht vorbei. Geprüft wird im Dienst vor
+  dem Herausgeben, nicht in `Rights::allows_request`, weil die Art am Request nicht steht: nach den Angaben im Cache vor
+  dem Laden, nach den Bytes vor der Antwort. Ohne das Recht fehlt auch
+  `blurhash` (ein winziges Abbild) in `get_messages` und `list_shared`. Der App-Schlüssel hat es immer.
+- **Drossel:** Zu den 30 Nach-außen-Befehlen je Stunde (Datenschutz) kommen für Clients höchstens 20 Dateien und
+  100 MiB je Stunde, sonst `busy`.
+- **KI:** Antworten von `get_preview`, `get_attachment` und `list_shared` sind `chat.*` und gehen wie alles aus dem
+  Chat nicht an Modelle anderswo (Entscheidung 6).
+
+**Vorschlag für [api.md](api.md)**, wie beim vorgeschlagenen Punkt zu Anrufen (oben, Befehle), übernommen mit der ersten Aufgabe der Stufe 4 samt Test (Vorbild
+`only_people_choose_where_attachments_go`) und den Werten in `kept_back` von `names_follow_the_rules`: In Punkt 10
+(„Anhänge von Mails ablegen“) kommt dazu, dass auch `chat.prepare_file` mit `source: path` und
+`chat.save_attachment` mit `to: file` oder `to: folder` nur mit dem App-Schlüssel gehen (`Request::kept_for_people`):
+Den Pfad wählt ein Mensch im Dialog des Systems bzw. durch Ziehen. Sonst gäbe ein Agent dem Kern einen Pfad, und eine
+Datei vom Rechner ginge mit nur einer Sende-Freigabe nach außen. Ebenso gibt es `chat.show_card` nur mit dem
+App-Schlüssel (`Mcp::Never`): Ob der Absender eines fremden Links erfährt, wann gelesen wurde, entscheidet der Mensch
+mit einem Klick, nicht ein Agent.
+
+**Fenster:** Verlauf, Eingabe, Bild groß und Medien-Übersicht unter [Fenster](#fenster). Das neue Fenster
+„Bild groß“ (Entscheidung 24) schwebt wie das Chatfenster (Entscheidung 16); die Medien-Übersicht ist eine
+Seitenleiste im Chatfenster. Demo:
+`torrochat --demo --open media | viewer | upload`.
+
+## Teilen in einen Chat (Stufe 5)
+
+Übernimmt TL2 aus [teilen.md](teilen.md) und nutzt den Ablauf zum Senden aus
+[Dateien und Medien](#dateien-und-medien-stufe-4) (Stufe 4):
 - **Befehl:** `chat.send_message { conversation, text, items?, fields? }`. `items` sind
   `ShareItem`s einer Art, `fields` die Auswahl; ohne `fields` gilt die sparsame Voreinstellung. Der
   Kern holt die Karte über `share::card_for` mit den Rechten des Aufrufers. Ein Inhalt außerhalb
@@ -690,7 +979,7 @@ sie geprüft hat.
      `If-None-Match: *`. Bei 412 hängt der Kern „ (2)“, „ (3)“ … an. Die Benutzer-ID kommt aus
      `GET /ocs/v2.php/cloud/user`, nie aus dem Loginnamen.
   3. Freigabe Art 10 in die Unterhaltung, `talkMetaData` mit `caption` = Text des Menschen oder
-     Agenten, sonst der Text der Karte, und eine `referenceId` (ob Talk sie beim Teilen einer Datei annimmt, prüft Stufe 4), damit eine Wiederholung nicht doppelt
+     Agenten, sonst der Text der Karte, und eine `referenceId` (ob Talk sie beim Teilen einer Datei annimmt, prüft schon Stufe 4), damit eine Wiederholung nicht doppelt
      postet.
   4. Schlägt das Teilen fehl, löscht der Kern die eben hochgeladene Datei wieder (`If-Match`).
   - Ohne `media-caption` kommen zwei Nachrichten: erst der Text, dann die Datei.
@@ -706,13 +995,10 @@ sie geprüft hat.
 
 ## Offen (in der jeweiligen Stufe klären)
 
-- **Gruppenchats in der Kontaktliste:** Fassung A, B oder C (Entscheidung 17), zu wählen beim Durchsehen der
-  Entwürfe, spätestens vor Stufe 3.
-- **Klingeln als Benachrichtigung oder Fenster:** zu wählen beim Durchsehen, spätestens vor Stufe 5.
 - **Antwort direkt in der Systembenachrichtigung:** macOS kann ein Textfeld in der Mitteilung
   (`UNTextInputNotificationAction`), das braucht AppKit-Code in `torro-appkit`. KDE kennt eine
-  Erweiterung für Antworten in der Benachrichtigung, GNOME nicht. Eigener kleiner Plan nach Rückfrage. Dasselbe
-  gilt für „Accept“ und „Decline“ in der Benachrichtigung eines Anrufs.
+  Erweiterung für Antworten in der Benachrichtigung, GNOME nicht. Eigener kleiner Plan nach Rückfrage. Anrufe
+  brauchen das nicht: Sie klingeln in einem kleinen Fenster (Entscheidung 24).
 - **Lesestand über den Eingang:** `inbox.set_item_done` setzt an Talk-Einträgen schon heute den Lesestand in Talk,
   ohne Recht in `chat`. Vorschlag für Stufe 1: An Talk-Einträgen braucht es künftig auch Write in `chat` mit dem
   Konto in `chat_accounts`, wie Mail-Einträge Write in `mail` brauchen.
@@ -725,15 +1011,18 @@ sie geprüft hat.
 - **Teams als Gruppen in der Kontaktliste** (App `circles`) und eine Obergrenze für große Instanzen: Stufe 2.
 - **„Do not disturb“ an einen Fokus-Modus oder eine Workspace-Vorlage koppeln:** später.
 - **Gruppen anlegen, Teilnehmer, Unterhaltungen verlassen oder archivieren:** nicht in diesem Konzept.
-- **Gruppenanrufe, Bildschirm teilen, Hintergrund weichzeichnen:** später, nach Stufe 5.
-- **Bilder im Verlauf** (Vorschau über `/core/preview`) und **Dateien hochladen** außer über Teilen:
-  nicht in diesem Konzept, „nur Text“.
+- **Gruppenanrufe, Bildschirm teilen, Hintergrund weichzeichnen:** später, nach Stufe 6.
+- **Sprachnachrichten aufnehmen** (Entscheidung 19): schaltet das Mikrofon ein; eigener Plan mit derselben Regel wie
+  das Mikrofon des Assistenten ([api.md](api.md), „Was nie nach außen geht“, Punkt 6), nur Menschen.
+- **Dauer von Videos:** Talk liefert keine. Ob der Kern sie aus dem Anfang der Datei lesen soll (eine Anfrage je
+  Video), entscheidet Stufe 4 nach einem Blick auf die Kosten; bis dahin fehlt sie.
+- **Video im Fenster abspielen** (GStreamer): eigenes Issue, wenn Videos im Alltag häufig sind (Entscheidung 22).
 - **Tipp-Anzeige:** geht auch mit internem Signaling, kostet aber eine Sitzung und ein Long Polling je offenem
-  Chatfenster. Kommt nach Stufe 5, wenn das Signaling für Anrufe ohnehin steht; mit HPB billiger.
+  Chatfenster. Kommt nach Stufe 6, wenn das Signaling für Anrufe ohnehin steht; mit HPB billiger.
 - **TURN-Zugangsdaten im Anruffenster** (Datenschutz, Anrufe): Zustimmung des Menschen zur Ausnahme, erste Aufgabe
-  der Stufe 5.
+  der Stufe 6.
 - **Medien im Fenster statt über den Kern** (Aufbau, Punkt 11): Zustimmung des Menschen zur Ausnahme von
-  „Oberflächen lesen und schreiben nichts selbst“, erste Aufgabe der Stufe 5. Die Wahl „Selbst gebaut“ vom
+  „Oberflächen lesen und schreiben nichts selbst“, erste Aufgabe der Stufe 6. Die Wahl „Selbst gebaut“ vom
   2026-11-06 setzt sie voraus (ohne sie gibt es kein eigenes Anruffenster); festgeschrieben in `api.md` wird sie
   erst nach ausdrücklicher Bestätigung.
 - **Schweben unter AeroSpace und GlazeWM, Ort der Chatfenster unter Hyprland, ein Fenster je Unterhaltung über
