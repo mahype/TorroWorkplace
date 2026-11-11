@@ -124,8 +124,10 @@ use torro_ipc::{Request, Response, SettingKey};
 use torro_pim::account::{GITHUB_KIND, account_of, combined_state_for};
 use torro_pim::demo::DemoSource;
 use torro_pim::model::{GitHubFilter, GitHubKind, GitHubState, Link};
-use torro_pim::source::move_plan;
-use torro_pim::{AccountState, Collection, CollectionKind, EventTime, PimAccount, PimSource, ProviderError, Todo};
+use torro_pim::source::{day_move_plan, focus_taken, move_plan, postpone_plan, takes_slot};
+use torro_pim::{
+    AccountState, Collection, CollectionKind, EventTime, Focus, PimAccount, PimSource, ProviderError, Todo,
+};
 use torro_settings_ui::accounts::Group;
 use torro_settings_ui::{Backend as SettingsBackend, Host, Outcome, Page, Section, collections};
 
@@ -534,7 +536,7 @@ struct Moving {
 /// in every filter list that finds it, with the same uid; the cursor, the open detail and a drag
 /// must stay on the copy the user chose.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Key {
+pub struct Key {
     collection: String,
     uid: String,
 }
@@ -655,7 +657,7 @@ pub fn list_width(class: SizeClass, columns: Columns, content: f32) -> f32 {
 
 /// What quick add gives a new task when "+" of `group` was pressed (`None`: the quick add row
 /// itself): `(due, priority, list)`. A due group sets its day – yesterday for "Overdue", today,
-/// tomorrow for "Upcoming", none for "No date" –, a priority group its priority, a list group its
+/// tomorrow for "Tomorrow", the day after for "Later", none for "No date" –, a priority group its priority, a list group its
 /// list. Otherwise a task added under "Today" is due today, as before.
 pub fn quick_add_fields(
     group: Option<&list::Group>,
@@ -668,7 +670,8 @@ pub fn quick_add_fields(
     match group {
         Some(Group::Overdue) => (day(today.pred_opt()), None, None),
         Some(Group::Today) => (day(Some(today)), None, None),
-        Some(Group::Upcoming) => (day(today.succ_opt()), None, None),
+        Some(Group::Tomorrow) => (day(today.succ_opt()), None, None),
+        Some(Group::Later) => (day(today.succ_opt().and_then(|d| d.succ_opt())), None, None),
         Some(Group::NoDate) => (None, None, None),
         Some(Group::List(id)) => (by_filter, None, Some(id.clone())),
         Some(Group::Priority(prio)) => (by_filter, prio.ical(), None),
@@ -775,6 +778,17 @@ pub struct App {
     moving: Option<Moving>,
     /// The row being dragged by its grip, if any.
     drag: Option<Drag>,
+    /// How many focus slots a day has (`focus_slots`, issue #596): from the suite settings, three
+    /// until they are read; `--demo` keeps it in the process.
+    focus_slots: usize,
+    /// "Focus is full": a task that should get `focus` while every slot of today is taken, until the
+    /// person picks the task that gives its slot up or cancels (issue #596).
+    focus_full: Option<(Key, Focus)>,
+    /// With "Focus is full" for a plan (PR #625): the day the waiting task goes to and the task it
+    /// goes in front of; after the choice the slot is freed, then the task is planned.
+    focus_plan: Option<(NaiveDate, Option<Key>)>,
+    /// Changes of the focus slots on their way to the core; settings fetched meanwhile are older.
+    slots_saving: usize,
     /// The settings in the content area, while they are open (task S.19).
     settings: Option<SettingsPane>,
     /// What the settings showed when they last closed, for the next time they open (issue #394):
@@ -924,6 +938,23 @@ pub enum Message {
     /// A failed move, said again once the reload it started has come back (a reload clears the
     /// error line).
     MoveFailed(String),
+    /// The mark of `todos[index]` (or F): its focus goes one step on, normal → focus → strong →
+    /// normal (issue #596).
+    CycleFocus(usize),
+    /// "To tomorrow" in the head "Today" (or Shift+T): today's focus plan moves to tomorrow.
+    PostponeFocusPlan,
+    /// "Focus is full": this task gives its slot up for the one waiting.
+    ReleaseFocus(Key),
+    /// "Focus is full" closed without a choice.
+    CloseFocusFull,
+    /// The core's answer to a change of focus or a plan of the day: the tasks it wrote.
+    Planned(Result<Vec<Todo>, ProviderError>),
+    /// The suite settings' focus slots, read on start and every tick.
+    FocusSlotsRead(Result<u8, String>),
+    /// Display › Focus slots: a day has this many.
+    SetFocusSlots(u8),
+    /// The core's answer to storing the focus slots.
+    FocusSlotsSaved(Result<(), String>),
 }
 
 /// What a plain key does in the list.
@@ -947,6 +978,14 @@ pub enum Shortcut {
     MoveUp,
     /// Alt+↓: move it one step down.
     MoveDown,
+    /// F: the focus of the task under the cursor goes one step on (issue #596).
+    Focus,
+    /// 0–4: its priority, 0 none, 1 low … 4 urgent.
+    Priority(list::Prio),
+    /// T: it moves to tomorrow, in front of tomorrow's tasks.
+    Tomorrow,
+    /// Shift+T: today's focus plan moves to tomorrow.
+    PostponePlan,
 }
 
 /// Keyboard shortcuts of the list, like the calendar's: keys a widget already used (typing in a
@@ -978,6 +1017,14 @@ fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::wind
         Name::Named(Named::Space) => Shortcut::Toggle,
         Name::Character("n") => Shortcut::New,
         Name::Character("r") => Shortcut::Sync,
+        Name::Character("f") => Shortcut::Focus,
+        Name::Character("t" | "T") if modifiers.shift() => Shortcut::PostponePlan,
+        Name::Character("t" | "T") => Shortcut::Tomorrow,
+        Name::Character("0") => Shortcut::Priority(list::Prio::None),
+        Name::Character("1") => Shortcut::Priority(list::Prio::Low),
+        Name::Character("2") => Shortcut::Priority(list::Prio::Medium),
+        Name::Character("3") => Shortcut::Priority(list::Prio::High),
+        Name::Character("4") => Shortcut::Priority(list::Prio::Urgent),
         _ => return None,
     };
     Some(Message::Shortcut(shortcut))
@@ -1055,6 +1102,10 @@ impl App {
             orders_saving: 0,
             moving: None,
             drag: None,
+            focus_slots: usize::from(torro_core::settings::FocusSlots::DEFAULT.get()),
+            focus_full: None,
+            focus_plan: None,
+            slots_saving: 0,
             settings: None,
             settings_memory: torro_settings_ui::Memory::default(),
         };
@@ -1085,6 +1136,7 @@ impl App {
             },
             app.fetch_appearance(),
             app.fetch_list_orders(),
+            app.fetch_focus_slots(),
             app.zoom.fetch().map(Message::Zoom),
             app.design.fetch().map(Message::Design),
             iced::system::theme().map(Message::SystemMode),
@@ -1319,6 +1371,7 @@ impl App {
                     categories: Vec::new(),
                     sort_order: None,
                     link: None,
+                    focus: Default::default(),
                 };
                 return self.save(todo);
             }
@@ -1414,6 +1467,7 @@ impl App {
                 let appearance = Task::batch([
                     self.fetch_appearance(),
                     self.fetch_list_orders(),
+                    self.fetch_focus_slots(),
                     self.zoom.fetch().map(Message::Zoom),
                 ]);
                 // The accounts come with every tick: one may have been added or removed.
@@ -1494,6 +1548,7 @@ impl App {
             }
             // Escape drops the dragged row where it was.
             Message::Escape if self.drag.is_some() => self.drag = None,
+            Message::Escape if self.focus_full.is_some() => self.close_focus_full(),
             Message::Escape => {
                 // Innermost first: a menu or the drawer, then the settings (task S.19: its one
                 // section has no dialog or question of its own, so the host closes it directly),
@@ -1554,6 +1609,26 @@ impl App {
                     return self.fetch_list_orders();
                 }
             }
+            Message::CycleFocus(index) => {
+                if let Some(todo) = self.todos.get(index) {
+                    let (key, next) = (Key::of(todo), todo.focus.next());
+                    return self.set_focus(key, next);
+                }
+            }
+            Message::PostponeFocusPlan => return self.postpone_focus_plan(),
+            Message::ReleaseFocus(release) => return self.release_focus(release),
+            Message::CloseFocusFull => self.close_focus_full(),
+            Message::Planned(result) => return self.planned(result),
+            Message::FocusSlotsRead(Ok(slots)) if self.slots_saving == 0 => self.focus_slots = usize::from(slots),
+            Message::FocusSlotsRead(_) => {}
+            Message::SetFocusSlots(slots) => return self.set_focus_slots(slots),
+            Message::FocusSlotsSaved(result) => {
+                self.slots_saving = self.slots_saving.saturating_sub(1);
+                if let Err(err) = result {
+                    self.error = Some(trf("Couldn't save the focus slots: {error}", &[("error", &err)]));
+                    return self.fetch_focus_slots();
+                }
+            }
             Message::DragStart(index) => self.start_drag(index),
             Message::DragMove(y) => self.drag_to(y),
             Message::DragEnd => return self.drop_dragged(),
@@ -1600,6 +1675,19 @@ impl App {
             Shortcut::Sidebar => self.toggle_sidebar(),
             Shortcut::MoveUp => self.move_step(true),
             Shortcut::MoveDown => self.move_step(false),
+            Shortcut::Focus => match self.cursor_index() {
+                Some(index) => self.update(Message::CycleFocus(index)),
+                None => Task::none(),
+            },
+            Shortcut::Priority(prio) => match self.cursor_index() {
+                Some(index) => self.set_priority(index, prio),
+                None => Task::none(),
+            },
+            Shortcut::Tomorrow => match self.cursor_index() {
+                Some(index) => self.plan_for_tomorrow(index),
+                None => Task::none(),
+            },
+            Shortcut::PostponePlan => self.update(Message::PostponeFocusPlan),
         }
     }
 
@@ -1789,6 +1877,8 @@ impl App {
             issue_lists: self.issue_lists(),
             manual: self.manual(),
             grips: self.grips(),
+            writable: self.writable_lists().into_iter().map(|list| list.id).collect(),
+            focus_slots: self.focus_slots,
             // Over a list of the sidebar the drop goes there: no marker in the list meanwhile.
             drag: self.drag.as_ref().and_then(|drag| {
                 let place = drag.place.filter(|_| drag.over.is_none());
@@ -1857,7 +1947,11 @@ impl App {
     /// The window with the zoom badge over it. The shell brings its top row (issue #459); the views
     /// without it (signing in, the glance, a dialog that fills a narrow window) keep the band.
     pub fn view(&self) -> Element<'_, Message> {
-        let content = self.zoom.view(self.content());
+        let content = match self.focus_full_view() {
+            Some(dialog) => widgets::modal(self.content(), dialog, widgets::DIALOG_WIDTH, Message::CloseFocusFull),
+            None => self.content(),
+        };
+        let content = self.zoom.view(content);
         if self.has_top_row() {
             return widgets::ctrl_guard(content);
         }
@@ -2209,7 +2303,15 @@ impl App {
             Message::ShowCompleted(!self.show_completed),
         )]));
         sections.push(synced);
-        widgets::menu(sections)
+        if self.shown_filter_list().is_some() {
+            return widgets::menu(sections);
+        }
+        // Five values of one scale, equally wide (issue #596): how many tasks may ask for focus a day.
+        let options = (1..=5u8).map(|n| (n.to_string(), Message::SetFocusSlots(n)));
+        let active = self.focus_slots.clamp(1, 5) - 1;
+        let slots =
+            widgets::with_tooltip(widgets::segmented(options, active), tr("How many tasks may have focus a day"));
+        widgets::menu_with(sections, tr("Focus slots"), slots)
     }
 
     /// The "…" menu of the filter list shown: "Edit filter…" and "Delete list…".
@@ -2547,6 +2649,10 @@ impl App {
             }
             detail::Action::ToggleDone(uid) => match self.detail_index(&uid) {
                 Some(index) => self.update(Message::ToggleDone(index)),
+                None => Task::none(),
+            },
+            detail::Action::SetFocus(focus) => match self.detail.as_ref().map(|detail| Key::of(&detail.original)) {
+                Some(key) => self.set_focus(key, focus),
                 None => Task::none(),
             },
             detail::Action::Show(uid) => match self.detail_index(&uid) {
@@ -3234,30 +3340,47 @@ impl App {
     }
 
     /// Alt+↑ (`up`) or Alt+↓: moves the task under the cursor one step among the tasks it is
-    /// ordered with ([`list::step_target`]); nothing at the edge or outside manual order.
+    /// ordered with ([`list::step_target`]) in manual order, or among the tasks of its day in the
+    /// view by due date (issue #596, [`list::day_step`]); nothing at the edge.
     fn move_step(&mut self, up: bool) -> Task<Message> {
-        if !self.manual() {
+        let Some(index) = self.cursor_index() else { return Task::none() };
+        if self.manual() {
+            return match list::step_target(&self.list_data(), index, up) {
+                Some(before) => self.move_task(index, before),
+                None => Task::none(),
+            };
+        }
+        let data = self.list_data();
+        if !list::plans_days(&data) {
             return Task::none();
         }
-        let Some(index) = self.cursor_index() else { return Task::none() };
-        match list::step_target(&self.list_data(), index, up) {
-            Some(before) => self.move_task(index, before),
+        match list::day_step(&data, index, up) {
+            Some(drop) => self.plan(index, drop),
             None => Task::none(),
         }
     }
 
     /// The grip of `todos[index]` was pressed: it becomes the cursor row and is dragged.
     fn start_drag(&mut self, index: usize) {
-        let Some(key) = self.todos.get(index).map(Key::of).filter(|_| self.manual() || self.grips()) else { return };
+        let data = self.list_data();
+        let plans = list::plans_days(&data) && list::plannable_row(&data, index);
+        let Some(key) = self.todos.get(index).map(Key::of).filter(|_| self.manual() || self.grips() || plans) else {
+            return;
+        };
         self.cursor = Some(key.clone());
         self.drag = Some(Drag { key, place: None, over: None });
     }
 
     /// The pointer is at `y` in the list's content: the marker goes to the nearest place the
-    /// dragged task may go ([`list::drop_places`]).
+    /// dragged task may go ([`list::drop_places`] in manual order, [`list::day_places`] by due date).
     fn drag_to(&mut self, y: f32) {
         let Some(index) = self.drag.as_ref().and_then(|drag| self.key_index(&drag.key)) else { return };
-        let place = list::nearest_place(&list::drop_places(&self.list_data(), index), y).map(|(place, _)| place);
+        let data = self.list_data();
+        let place = if data.manual {
+            list::nearest_place(&data, &list::drop_places(&data, index), y).map(|(place, _)| place)
+        } else {
+            list::nearest_day_place(&list::day_places(&data, index), y)
+        };
         if let Some(drag) = self.drag.as_mut() {
             drag.place = place;
         }
@@ -3271,6 +3394,13 @@ impl App {
             return self.drop_on_list(index, list);
         }
         let (Some(index), Some(place)) = (self.key_index(&drag.key), drag.place) else { return Task::none() };
+        if !self.manual() {
+            let drop = list::day_places(&self.list_data(), index).get(place).map(|&(_, drop)| drop);
+            return match drop {
+                Some(drop) => self.plan(index, drop),
+                None => Task::none(),
+            };
+        }
         let places = list::drop_places(&self.list_data(), index);
         match places.into_iter().find(|&(at, _)| at == place) {
             Some((_, before)) => self.move_task(index, before),
@@ -3366,6 +3496,235 @@ impl App {
         let place = list::drop_places(&self.list_data(), first).get(2).map(|&(place, _)| place);
         self.cursor = Some(Key::of(&self.todos[first]));
         self.drag = Some(Drag { key: Key::of(&self.todos[first]), place, over: None });
+    }
+}
+
+/// Focus and the order of a day (issue #596).
+impl App {
+    /// The tasks a day is planned and focus slots are counted with: those of the lists that take
+    /// changes, as the core counts them.
+    fn plannable_todos(&self) -> Vec<Todo> {
+        let writable: HashSet<String> = self.writable_lists().into_iter().map(|list| list.id).collect();
+        self.todos.iter().filter(|t| writable.contains(&t.collection)).cloned().collect()
+    }
+
+    /// The focus of the task `key` names becomes `focus`: at once here, then through the core's
+    /// `tasks.set_focus`. When it would take a slot while every one of today's is taken, "Focus is
+    /// full" asks which task gives its slot up instead. Nothing for a done task or one of a list
+    /// that takes no changes.
+    fn set_focus(&mut self, key: Key, focus: Focus) -> Task<Message> {
+        let Some(todo) = self.todos.iter().find(|t| key.is(t)).cloned() else { return Task::none() };
+        let writable = self.writable_lists().iter().any(|list| list.id == todo.collection);
+        if !writable || todo.completed || todo.focus == focus {
+            return Task::none();
+        }
+        let after = Todo { focus, ..todo.clone() };
+        let takes = |t: &Todo| takes_slot(t, self.today, &Local);
+        if !takes(&todo)
+            && takes(&after)
+            && focus_taken(&self.plannable_todos(), self.today, &Local) >= self.focus_slots
+        {
+            self.close_menus();
+            self.focus_full = Some((key, focus));
+            return Task::none();
+        }
+        self.send_focus(todo, focus, None)
+    }
+
+    /// Shows `focus` on `todo` (and none on `release`) and asks the core to store it.
+    fn send_focus(&mut self, todo: Todo, focus: Focus, release: Option<Todo>) -> Task<Message> {
+        for shown in &mut self.todos {
+            if shown.href.is_some() && shown.href == todo.href {
+                shown.focus = focus;
+            } else if release.as_ref().is_some_and(|r| r.href.is_some() && r.href == shown.href) {
+                shown.focus = Focus::Normal;
+            }
+        }
+        let source = self.source.clone();
+        Task::perform(async move { source.set_focus(todo, focus, release).await }, Message::Planned)
+    }
+
+    /// "Focus is full" closed: nothing waits any more.
+    fn close_focus_full(&mut self) {
+        self.focus_full = None;
+        self.focus_plan = None;
+    }
+
+    /// "Focus is full": `release` gives its slot up, the waiting task takes it – its new focus, or
+    /// for a plan onto today (PR #625) its place there.
+    fn release_focus(&mut self, release: Key) -> Task<Message> {
+        let Some((key, focus)) = self.focus_full.take() else { return Task::none() };
+        let plan = self.focus_plan.take();
+        let find = |key: &Key| self.todos.iter().find(|t| key.is(t)).cloned();
+        let (Some(todo), Some(release)) = (find(&key), find(&release)) else { return Task::none() };
+        let Some((day, before)) = plan else { return self.send_focus(todo, focus, Some(release)) };
+        let before = before.and_then(|key| find(&key));
+        // Shown at once: the released task without focus, the waiting one in its place.
+        for shown in &mut self.todos {
+            if shown.href.is_some() && shown.href == release.href {
+                shown.focus = Focus::Normal;
+            }
+        }
+        if let Some(plan) = day_move_plan(&self.plannable_todos(), &todo, day, before.as_ref(), &Local) {
+            self.show_plan(plan);
+        }
+        let source = self.source.clone();
+        let freed = Todo { focus: release.focus, ..release };
+        Task::perform(
+            async move {
+                source.set_focus(freed, Focus::Normal, None).await?;
+                source.plan_todo(todo, day, before).await
+            },
+            Message::Planned,
+        )
+    }
+
+    /// The tasks taking today's focus slots, for "Focus is full".
+    fn focus_holders(&self) -> Vec<&Todo> {
+        let writable: HashSet<String> = self.writable_lists().into_iter().map(|list| list.id).collect();
+        self.todos.iter().filter(|t| writable.contains(&t.collection) && takes_slot(t, self.today, &Local)).collect()
+    }
+
+    /// "Focus is full" (issue #596): the task waiting for a slot, and one button per task holding
+    /// one, which gives it up. `None` while nothing waits.
+    fn focus_full_view(&self) -> Option<Element<'_, Message>> {
+        let (key, _) = self.focus_full.as_ref()?;
+        let waiting = self.todos.iter().find(|t| key.is(t))?;
+        let text = trf(
+            "All {n} focus slots of today are taken. Which task should give its slot to “{title}”?",
+            &[("n", &self.focus_slots), ("title", &waiting.summary)],
+        );
+        let words = typo::text(typo::body(), text).style(theme::text_2).wrapping(text::Wrapping::WordOrGlyph);
+        let holders = column(self.focus_holders().into_iter().map(|holder| {
+            let label = typo::ellipsize(&holder.summary, typo::caption(), size::form_max());
+            widgets::text_button(None, label, style::button::secondary, Some(Message::ReleaseFocus(Key::of(holder))))
+        }))
+        .spacing(space::s());
+        let cancel = widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CloseFocusFull));
+        let buttons = row![Space::new().width(Fill), cancel].align_y(Alignment::Center);
+        let card = column![typo::text(typo::title(), tr("Focus is full")), words, holders, buttons].spacing(space::l());
+        Some(container(card).width(Fill).padding(layout::panel_padding()).style(style::container::popover).into())
+    }
+
+    /// Makes `todos[index]` due on `drop.day` in front of `todos[drop.before]` (behind that day's
+    /// tasks without): at once here, numbered like the core ([`day_move_plan`]), then through the
+    /// core's `tasks.plan_todo`. A focus task that would take a slot while all are taken stays and
+    /// the error line says why. The cursor stays on the task.
+    fn plan(&mut self, index: usize, drop: list::DayDrop) -> Task<Message> {
+        let Some(todo) = self.todos.get(index).cloned() else { return Task::none() };
+        let before = drop.before.and_then(|i| self.todos.get(i)).cloned();
+        let todos = self.plannable_todos();
+        let Some(plan) = day_move_plan(&todos, &todo, drop.day, before.as_ref(), &Local) else { return Task::none() };
+        // The moved task by its place: it is not in the plan when only others are renumbered.
+        let moved = plan.iter().find(|t| t.href == todo.href).cloned();
+        let moved = moved.unwrap_or_else(|| torro_pim::source::due_on(&todo, drop.day, &Local));
+        let takes = |t: &Todo| takes_slot(t, self.today, &Local);
+        // Today's slots are taken: "Focus is full" asks which task gives its slot up, then plans.
+        if !takes(&todo) && takes(&moved) && focus_taken(&todos, self.today, &Local) >= self.focus_slots {
+            self.close_menus();
+            self.focus_full = Some((Key::of(&todo), todo.focus));
+            self.focus_plan = Some((drop.day, before.as_ref().map(Key::of)));
+            return Task::none();
+        }
+        self.show_plan(plan);
+        self.cursor = Some(Key::of(&todo));
+        let source = self.source.clone();
+        let task = Task::perform(async move { source.plan_todo(todo, drop.day, before).await }, Message::Planned);
+        Task::batch([task, self.reveal(index)])
+    }
+
+    /// Shows the tasks of `plan` as they will be stored: their numbers and due dates.
+    fn show_plan(&mut self, plan: Vec<Todo>) {
+        for planned in plan {
+            if let Some(shown) = self.todos.iter_mut().find(|t| t.href.is_some() && t.href == planned.href) {
+                shown.sort_order = planned.sort_order;
+                shown.due = planned.due;
+            }
+        }
+    }
+
+    /// T: `todos[index]` moves to tomorrow, in front of the tasks due then.
+    fn plan_for_tomorrow(&mut self, index: usize) -> Task<Message> {
+        let Some(tomorrow) = self.today.succ_opt() else { return Task::none() };
+        let data = self.list_data();
+        if !list::plannable_row(&data, index) {
+            return Task::none();
+        }
+        // In front of the first task of tomorrow, shown or not (the filter "Today" hides them).
+        let first = (0..self.todos.len())
+            .filter(|&i| i != index && list::plannable_row(&data, i) && list::due_day(&self.todos[i]) == Some(tomorrow))
+            .min_by(|&a, &b| torro_pim::source::day_order(&self.todos[a], &self.todos[b]));
+        self.plan(index, list::DayDrop { day: tomorrow, before: first })
+    }
+
+    /// "To tomorrow" and Shift+T: today's focus plan moves to tomorrow ([`postpone_plan`]), at once
+    /// here, then through the core's `tasks.postpone_focus_plan`.
+    fn postpone_focus_plan(&mut self) -> Task<Message> {
+        let plan = postpone_plan(&self.plannable_todos(), self.today, &Local);
+        if plan.is_empty() {
+            return Task::none();
+        }
+        self.show_plan(plan);
+        let source = self.source.clone();
+        Task::perform(async move { source.postpone_focus_plan().await }, Message::Planned)
+    }
+
+    /// 0–4: the priority of `todos[index]` becomes `prio`, saved like a change in the detail.
+    fn set_priority(&mut self, index: usize, prio: list::Prio) -> Task<Message> {
+        let Some(todo) = self.todos.get(index).cloned() else { return Task::none() };
+        let writable = self.writable_lists().iter().any(|list| list.id == todo.collection);
+        if !writable || list::Prio::of(todo.priority) == prio {
+            return Task::none();
+        }
+        let changed = Todo { priority: prio.ical(), ..todo };
+        if let Some(shown) = self.todos.get_mut(index) {
+            shown.priority = changed.priority;
+        }
+        self.save(changed)
+    }
+
+    /// The core's answer to a change of focus or a plan: the list is loaded again either way; an
+    /// error says what happened first (a `conflict`: changed elsewhere, or the slots were full).
+    fn planned(&mut self, result: Result<Vec<Todo>, ProviderError>) -> Task<Message> {
+        match result {
+            Ok(_) => self.load(),
+            Err(err) => {
+                let text = match err {
+                    ProviderError::Conflict { .. } => {
+                        tr("The task changed elsewhere, or today's focus slots are taken. The list was reloaded.")
+                            .to_string()
+                    }
+                    other => trf("Couldn't change the task: {error}", &[("error", &other)]),
+                };
+                self.error = Some(text.clone());
+                self.load().chain(Task::done(Message::MoveFailed(text)))
+            }
+        }
+    }
+
+    /// Asks the core for the focus slots, with the list orders on every tick.
+    fn fetch_focus_slots(&self) -> Task<Message> {
+        let Source::Core(client) = &self.source else { return Task::none() };
+        Task::perform(stored_focus_slots(client.socket.clone()), Message::FocusSlotsRead)
+    }
+
+    /// Display › Focus slots: a day has `slots` from now on, stored in the suite settings (`--demo`
+    /// keeps it in the process).
+    fn set_focus_slots(&mut self, slots: u8) -> Task<Message> {
+        self.focus_slots = usize::from(slots);
+        let Source::Core(client) = &self.source else { return Task::none() };
+        self.slots_saving += 1;
+        let request = Request::SetSetting { key: SettingKey::FocusSlots, value: serde_json::json!(slots) };
+        Task::perform(save_list_order(client.socket.clone(), request), Message::FocusSlotsSaved)
+    }
+}
+
+/// How many focus slots a day has, as the suite settings at the core `socket` say.
+async fn stored_focus_slots(socket: std::path::PathBuf) -> Result<u8, String> {
+    match torro_ipc::client::call(&socket, &Request::Settings).await {
+        Ok(Response::Settings { settings }) => Ok(settings.focus_slots.get()),
+        Ok(other) => Err(format!("unexpected answer: {other:?}")),
+        Err(err) => Err(err.to_string()),
     }
 }
 
@@ -4243,6 +4602,7 @@ mod tests {
             categories: Vec::new(),
             sort_order: None,
             link: None,
+            focus: Default::default(),
         }
     }
 
@@ -4682,7 +5042,8 @@ mod tests {
         assert_eq!(fields(None, Filter::All), (None, None, None));
         assert_eq!(fields(Some(Group::Overdue), Filter::All), (date(10), None, None));
         assert_eq!(fields(Some(Group::Today), Filter::All), (date(11), None, None));
-        assert_eq!(fields(Some(Group::Upcoming), Filter::Today), (date(12), None, None));
+        assert_eq!(fields(Some(Group::Tomorrow), Filter::Today), (date(12), None, None));
+        assert_eq!(fields(Some(Group::Later), Filter::Today), (date(13), None, None));
         assert_eq!(fields(Some(Group::NoDate), Filter::Today), (None, None, None));
         assert_eq!(fields(Some(Group::List("home".into())), Filter::All), (None, None, Some("home".into())));
         assert_eq!(fields(Some(Group::Priority(Prio::Urgent)), Filter::Today), (date(11), Some(1), None));
@@ -4698,8 +5059,8 @@ mod tests {
         assert_eq!(list::order(&app.list_data()).len(), rows - 2, "overdue and its subtask fold away");
         let _ = app.update(Message::ToggleGroup(Group::Overdue));
         assert_eq!(list::order(&app.list_data()).len(), rows);
-        assert!(app.update(Message::AddInGroup(Group::Upcoming)).units() > 0, "the quick add row gets the focus");
-        assert_eq!(app.quick_group, Some(Group::Upcoming));
+        assert!(app.update(Message::AddInGroup(Group::Later)).units() > 0, "the quick add row gets the focus");
+        assert_eq!(app.quick_group, Some(Group::Later));
         let _ = app.update(Message::ToggleGroup(Group::Today));
         let _ = app.update(Message::ToggleDisplay);
         let _ = app.update(Message::SetGroupBy(GroupBy::Priority));
@@ -4814,6 +5175,126 @@ mod tests {
         connected(&mut app);
         let _ = app.update(Message::Loaded(Ok((collections, todos))));
         app
+    }
+
+    // Focus and the order of a day (issue #596).
+
+    /// The demo with the tasks as its source stores them (with `href` and `etag`).
+    fn focus_app() -> App {
+        let mut app = launched(&["--demo"]);
+        app.todos = iced::futures::executor::block_on(app.source.todos()).expect("demo tasks");
+        app
+    }
+
+    fn index_of_uid(app: &App, uid: &str) -> usize {
+        app.todos.iter().position(|t| t.uid == uid).expect("a demo task")
+    }
+
+    #[test]
+    fn a_focus_beyond_the_slots_asks_which_task_gives_its_slot_up() {
+        let mut app = focus_app();
+        // The overdue tax documents hold the one slot.
+        app.focus_slots = 1;
+        let invoices = index_of_uid(&app, "invoices@torro-demo");
+        assert_eq!(app.update(Message::CycleFocus(invoices)).units(), 0, "nothing is sent yet");
+        assert!(app.focus_full.is_some() && app.focus_full_view().is_some(), "Focus is full");
+        let _ = app.view();
+        let _ = app.update(Message::Escape);
+        assert!(app.focus_full.is_none(), "Escape closes it");
+
+        let _ = app.update(Message::CycleFocus(invoices));
+        let holder = Key::of(&app.todos[index_of_uid(&app, "tax-documents@torro-demo")]);
+        assert!(app.update(Message::ReleaseFocus(holder)).units() > 0, "the core is asked");
+        assert_eq!(app.todos[invoices].focus, Focus::Focus);
+        assert_eq!(app.todos[index_of_uid(&app, "tax-documents@torro-demo")].focus, Focus::Normal);
+        assert!(app.focus_full.is_none());
+
+        // With room, F goes one step on at once.
+        app.focus_slots = 5;
+        put_cursor(&mut app, "invoices@torro-demo");
+        assert!(press(&mut app, Shortcut::Focus).units() > 0);
+        assert_eq!(app.todos[invoices].focus, Focus::Strong);
+    }
+
+    #[test]
+    fn planning_a_focus_task_onto_a_full_today_asks_which_gives_its_slot_up() {
+        let mut app = focus_app();
+        app.filter = Filter::All;
+        app.focus_slots = 1;
+        // "Prepare vacation" (focus, due tomorrow) goes to the end of today, whose slot the tax
+        // documents hold.
+        let vacation = index_of_uid(&app, "prepare-vacation@torro-demo");
+        let drop = list::DayDrop { day: app.today, before: None };
+        assert_eq!(app.plan(vacation, drop).units(), 0, "nothing is sent yet");
+        assert!(app.focus_full.is_some() && app.focus_plan.is_some(), "Focus is full");
+        let holder = Key::of(&app.todos[index_of_uid(&app, "tax-documents@torro-demo")]);
+        assert!(app.update(Message::ReleaseFocus(holder)).units() > 0, "freed, then planned");
+        assert_eq!(list::due_day(&app.todos[vacation]), Some(app.today));
+        assert_eq!(app.todos[index_of_uid(&app, "tax-documents@torro-demo")].focus, Focus::Normal);
+        assert!(app.focus_full.is_none() && app.focus_plan.is_none());
+    }
+
+    #[test]
+    fn t_plans_a_task_for_tomorrow_and_shift_t_moves_the_focus_plan() {
+        let mut app = focus_app();
+        app.filter = Filter::All;
+        let tomorrow = app.today.succ_opt().expect("a day");
+        put_cursor(&mut app, "invoices@torro-demo");
+        assert!(press(&mut app, Shortcut::Tomorrow).units() > 0, "the core is asked");
+        let invoices = &app.todos[index_of_uid(&app, "invoices@torro-demo")];
+        assert_eq!(list::due_day(invoices), Some(tomorrow));
+        // It stands in front of what was due tomorrow before.
+        let data = app.list_data();
+        let tomorrows: Vec<&str> = list::order(&data)
+            .into_iter()
+            .filter(|&i| list::due_day(&app.todos[i]) == Some(tomorrow) && app.todos[i].parent.is_none())
+            .map(|i| app.todos[i].uid.as_str())
+            .collect();
+        assert_eq!(tomorrows.first(), Some(&"invoices@torro-demo"), "{tomorrows:?}");
+
+        assert!(press(&mut app, Shortcut::PostponePlan).units() > 0);
+        let taxes = &app.todos[index_of_uid(&app, "tax-documents@torro-demo")];
+        assert_eq!(list::due_day(taxes), Some(tomorrow), "the overdue focus task too");
+        assert_eq!(press(&mut app, Shortcut::PostponePlan).units(), 0, "nothing left today");
+    }
+
+    #[test]
+    fn number_keys_set_the_priority_and_the_display_menu_the_slots() {
+        let mut app = focus_app();
+        put_cursor(&mut app, "bike@torro-demo");
+        assert!(press(&mut app, Shortcut::Priority(list::Prio::Urgent)).units() > 0, "saved");
+        assert_eq!(app.todos[index_of_uid(&app, "bike@torro-demo")].priority, Some(1));
+        assert_eq!(press(&mut app, Shortcut::Priority(list::Prio::Urgent)).units(), 0, "unchanged: nothing");
+        let _ = app.update(Message::ToggleDisplay);
+        let _ = app.view();
+        let _ = app.update(Message::SetFocusSlots(2));
+        assert_eq!(app.focus_slots, 2);
+        assert_eq!(app.list_data().focus_slots, 2);
+    }
+
+    #[test]
+    fn alt_arrows_and_dragging_plan_the_day_in_the_view_by_due_date() {
+        let mut app = focus_app();
+        app.filter = Filter::All;
+        let data = app.list_data();
+        assert!(list::plans_days(&data));
+        let invoices = index_of_uid(&app, "invoices@torro-demo");
+        let places = list::day_places(&data, invoices);
+        assert!(!places.is_empty(), "its own day and the heads of tomorrow and later");
+        drop(data);
+        let _ = app.update(Message::DragStart(invoices));
+        assert!(app.drag.is_some());
+        let last = list::day_places(&app.list_data(), invoices).last().map(|&(y, _)| y).expect("a place");
+        let _ = app.update(Message::DragMove(last));
+        assert!(app.update(Message::DragEnd).units() > 0, "planned where it was dropped");
+        // Alt+↑ from the first of tomorrow goes to the end of today.
+        let tomorrow = app.today.succ_opt().expect("a day");
+        put_cursor(&mut app, "invoices@torro-demo");
+        let _ = press(&mut app, Shortcut::Tomorrow);
+        let index = index_of_uid(&app, "invoices@torro-demo");
+        assert_eq!(list::due_day(&app.todos[index]), Some(tomorrow));
+        assert!(press(&mut app, Shortcut::MoveUp).units() > 0);
+        assert_eq!(list::due_day(&app.todos[index]), Some(app.today));
     }
 
     /// Issue #459: the window shows the shell with its top row – panel button and the settings in
@@ -5582,8 +6063,10 @@ mod tests {
         assert!(app.drop_targets(&tasks).is_empty());
         let _ = app.update(Message::SetFilter(Filter::List(tasks)));
         assert!(!app.grips());
+        // The view by due date still plans the row's day by its grip (issue #596).
         let _ = app.update(Message::DragStart(first_row(&app)));
-        assert!(app.drag.is_none(), "nothing to drag to");
+        assert!(app.drag.is_some(), "a drag within the days");
+        let _ = app.update(Message::Escape);
         let _ = app.update(Message::SetFilter(Filter::Today));
         assert!(!app.grips());
     }

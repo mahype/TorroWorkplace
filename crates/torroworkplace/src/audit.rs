@@ -259,6 +259,14 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::MoveTodo { href, before, .. } => {
             [item(&Some(href.clone())), item(before)].into_iter().flatten().collect()
         }
+        // The tasks only, hashed (issue #596): never a title or the day planned.
+        Request::SetFocus { href, release, .. } => {
+            [item(&Some(href.clone())), item(&release.as_ref().map(|r| r.href.clone()))].into_iter().flatten().collect()
+        }
+        Request::PlanTodo { href, before, .. } => {
+            [item(&Some(href.clone())), item(before)].into_iter().flatten().collect()
+        }
+        Request::PostponeFocusPlan => Vec::new(),
         // The list only (task E8.7a): never the mail account, the mail's id or its Message-ID,
         // not even hashed – together they would tell which mail a person turned into a task.
         Request::CreateTodoFromMail { collection: list, .. } => vec![collection(list)],

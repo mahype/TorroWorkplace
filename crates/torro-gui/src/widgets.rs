@@ -158,6 +158,18 @@ const STATE_PILL_HEIGHT: f32 = 22.0;
 /// bar fits beside its words.
 pub const PROGRESS_WIDTH: f32 = 64.0;
 const PROGRESS_HEIGHT: f32 = 4.0;
+/// The cell of a [`focus_mark`] and its three forms (issue #596, `docs/prototypes/tasks/fokus.html`):
+/// a dot 9 across, a ring 18 across with a stroke of 4, a ring 28 across with a stroke of 5.5. The
+/// cell is as big as the largest ring, so every mark of a list sits on one axis.
+pub const FOCUS_CELL: f32 = 28.0;
+const FOCUS_DOT: f32 = 9.0;
+const FOCUS_RING: (f32, f32) = (18.0, 4.0);
+const FOCUS_RING_STRONG: (f32, f32) = (28.0, 5.5);
+/// The [`focus_mark_small`]: a cell as wide as an icon, a dot 8, a ring 14 with a stroke of 2.5, a
+/// ring 16 with a stroke of 3.5 – the three forms at the size of the icons beside them.
+const FOCUS_SMALL: (f32, (f32, f32), (f32, f32)) = (8.0, (14.0, 2.5), (16.0, 3.5));
+/// A dot of [`slot_dots`], as small as the dots of a pager.
+const SLOT_DOT: f32 = 6.0;
 
 // ---------------------------------------------------------------------------------------------
 // Marks and trailing details, shared by sidebar rows, menu items, chips and property rows.
@@ -1513,6 +1525,21 @@ impl RowParts {
     }
 }
 
+/// A [`list_row`] `height` high instead of [`size::row()`], with `content` as its one cell, its sides
+/// `inset` narrower than the rows' padding (issue #596: the taller rows of focus tasks, and the card of
+/// a task with strong focus, which reaches into the padding by its own padding so its check stays on
+/// the axis of the other rows' checks). The hairline, the chosen row and the hover are drawn as in
+/// [`list_row`]; the content is centred in the height.
+pub fn list_row_sized<'a, M: Clone + 'a>(
+    content: impl Into<Element<'a, M>>,
+    height: f32,
+    inset: f32,
+    selected: bool,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    list_row_with(layout::list(), vec![content.into()], (height, inset), selected, on_press)
+}
+
 /// [`list_row`] in the list look `look`.
 fn list_row_in<'a, M: Clone + 'a>(
     look: ListLook,
@@ -1520,13 +1547,25 @@ fn list_row_in<'a, M: Clone + 'a>(
     selected: bool,
     on_press: Option<M>,
 ) -> Element<'a, M> {
+    list_row_with(look, cells, (size::row(), 0.0), selected, on_press)
+}
+
+/// [`list_row`] in the list look `look`, `(height, inset)` as for [`list_row_sized`].
+fn list_row_with<'a, M: Clone + 'a>(
+    look: ListLook,
+    cells: Vec<Element<'a, M>>,
+    (row_height, inset): (f32, f32),
+    selected: bool,
+    on_press: Option<M>,
+) -> Element<'a, M> {
     let parts = RowParts::of(look, selected);
     let content = row(cells).spacing(ROW_GAP).align_y(Alignment::Center);
     let content = if parts.on_accent { themed::on_accent(content) } else { content.into() };
     let pad = layout::row_padding();
+    let pad = Padding { left: (pad.left - inset).max(0.0), right: (pad.right - inset).max(0.0), ..pad };
     // The bar takes its width from the padding, so the cells do not move when the row is chosen.
-    let left = if parts.bar { pad.left - SELECTED_BAR } else { pad.left };
-    let height = size::row() - if parts.line { LINE } else { 0.0 };
+    let left = if parts.bar { (pad.left - SELECTED_BAR).max(0.0) } else { pad.left };
+    let height = row_height - if parts.line { LINE } else { 0.0 };
     let body = button(container(content).center_y(Fill))
         .width(Fill)
         .height(height)
@@ -2596,6 +2635,21 @@ pub fn menu_wide<'a, M: Clone + 'a>(sections: Vec<MenuSection<'a, M>>, width: f3
 }
 
 /// The rows of a menu card: each section's title and entries, a line between sections.
+/// A [`menu`] whose last section holds `extra` instead of entries, under its `title` (issue #596:
+/// the focus slots of the tasks app as chips in its Display menu, five choices side by side).
+pub fn menu_with<'a, M: Clone + 'a>(
+    sections: Vec<MenuSection<'a, M>>,
+    title: impl IntoFragment<'a>,
+    extra: impl Into<Element<'a, M>>,
+) -> Element<'a, M> {
+    let mut rows = menu_rows(sections);
+    rows.push(container(rule::horizontal(LINE).style(style::rule)).padding([space::xs(), 0.0]).into());
+    let label = typo::text(typo::caption(), title).style(theme::text_3);
+    rows.push(container(label).padding(Padding::new(space::s()).bottom(space::xs())).into());
+    rows.push(container(extra).padding(Padding::new(space::s()).top(0.0)).into());
+    container(column(rows)).width(menu_width()).padding(style::MENU_INSET).style(style::container::menu).into()
+}
+
 fn menu_rows<'a, M: Clone + 'a>(sections: Vec<MenuSection<'a, M>>) -> Vec<Element<'a, M>> {
     let mut rows: Vec<Element<'a, M>> = Vec::new();
     for (i, section) in sections.into_iter().enumerate() {
@@ -5164,6 +5218,132 @@ pub fn progress_bar<'a, M: 'a>(done: usize, total: usize) -> Element<'a, M> {
             ..container::Style::default()
         })
         .into()
+}
+
+/// The word of priority class `prio` of a [`focus_mark`] (0 none … 4 urgent), the same words the
+/// tasks app shows in its menu and properties.
+pub fn priority_word(prio: usize) -> &'static str {
+    match prio {
+        1 => tr("Low"),
+        2 => tr("Medium"),
+        3 => tr("High"),
+        4 => tr("Urgent"),
+        _ => tr("No priority"),
+    }
+}
+
+/// The word of a focus level (issue #596): "Normal", "Focus", "Strong focus".
+pub fn focus_word(focus: torro_pim::Focus) -> &'static str {
+    match focus {
+        torro_pim::Focus::Normal => tr("Normal"),
+        torro_pim::Focus::Focus => tr("Focus"),
+        torro_pim::Focus::Strong => tr("Strong focus"),
+    }
+}
+
+/// The mark in front of a task (issue #596): its **colour** is the priority, `prio` 0 (none, grey)
+/// to 4 (urgent, red) from [`Palette::priority`]; its **form** is the focus – a dot, a ring, a big
+/// ring ([`FOCUS_CELL`]). The tooltip says both in words ("High · Focus"), so neither rests on
+/// colour alone. With `on_press` it is a button (the tasks app cycles the focus with it), 28 × 28.
+/// In a row drawn in the accent colour the mark is `on_accent`, as every coloured mark there.
+///
+/// ```ignore
+/// widgets::focus_mark(3, torro_pim::Focus::Strong, Some(Message::CycleFocus(href)))
+/// ```
+pub fn focus_mark<'a, M: Clone + 'a>(prio: usize, focus: torro_pim::Focus, on_press: Option<M>) -> Element<'a, M> {
+    let prio = prio.min(4);
+    let colour = move |t: &Theme| {
+        let p = palette(t);
+        if theme::on_accent_theme(t) == *t { p.on_accent } else { p.priority[prio] }
+    };
+    let mark = match focus {
+        torro_pim::Focus::Normal => {
+            container(blank().width(FOCUS_DOT).height(FOCUS_DOT)).style(move |t| container::Style {
+                background: Some(Background::Color(colour(t))),
+                border: border::rounded(FOCUS_DOT / 2.0),
+                ..container::Style::default()
+            })
+        }
+        torro_pim::Focus::Focus | torro_pim::Focus::Strong => {
+            let (edge, stroke) = if focus == torro_pim::Focus::Strong { FOCUS_RING_STRONG } else { FOCUS_RING };
+            container(blank().width(edge).height(edge)).style(move |t| container::Style {
+                border: border::rounded(edge / 2.0).color(colour(t)).width(stroke),
+                ..container::Style::default()
+            })
+        }
+    };
+    let cell = container(mark).center(FOCUS_CELL);
+    let label = format!("{} · {}", priority_word(prio), focus_word(focus));
+    let content: Element<'a, M> = match on_press {
+        Some(message) => button(cell).padding(0).style(style::button::icon).on_press(message).into(),
+        None => cell.into(),
+    };
+    with_tooltip(content, label)
+}
+
+/// The [`focus_mark`] at the size of an icon (issue #596): in the icon column of a property line, a
+/// chip or a menu entry, where a word beside it names the focus. No tooltip, no button.
+pub fn focus_mark_small<'a, M: 'a>(prio: usize, focus: torro_pim::Focus) -> Element<'a, M> {
+    let prio = prio.min(4);
+    let (dot, ring, strong) = FOCUS_SMALL;
+    let colour = move |t: &Theme| {
+        let p = palette(t);
+        if theme::on_accent_theme(t) == *t { p.on_accent } else { p.priority[prio] }
+    };
+    let mark = match focus {
+        torro_pim::Focus::Normal => container(blank().width(dot).height(dot)).style(move |t| container::Style {
+            background: Some(Background::Color(colour(t))),
+            border: border::rounded(dot / 2.0),
+            ..container::Style::default()
+        }),
+        torro_pim::Focus::Focus | torro_pim::Focus::Strong => {
+            let (edge, stroke) = if focus == torro_pim::Focus::Strong { strong } else { ring };
+            container(blank().width(edge).height(edge)).style(move |t| container::Style {
+                border: border::rounded(edge / 2.0).color(colour(t)).width(stroke),
+                ..container::Style::default()
+            })
+        }
+    };
+    container(mark).center(icon::SIZE).into()
+}
+
+/// The priority as a dot of the [`focus_mark`] alone, 9 across in [`Palette::priority`], without
+/// cell or tooltip: for a group head, a chip or a menu entry, which name the priority in words beside
+/// it (issue #596). `prio` 0 (none) … 4 (urgent).
+pub fn priority_dot<'a, M: 'a>(prio: usize) -> Element<'a, M> {
+    let prio = prio.min(4);
+    container(blank().width(FOCUS_DOT).height(FOCUS_DOT))
+        .style(move |t| {
+            let p = palette(t);
+            let colour = if theme::on_accent_theme(t) == *t { p.on_accent } else { p.priority[prio] };
+            container::Style {
+                background: Some(Background::Color(colour)),
+                border: border::rounded(FOCUS_DOT / 2.0),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// The focus slots of a day (issue #596, "Today 5 · Focus ●●○"): `total` small dots, the first
+/// `taken` filled in `text_2`, the free ones as rings in `text_3`; more taken than there are slots
+/// fill them all. The tooltip says it in words ("2 of 3 focus slots taken").
+pub fn slot_dots<'a, M: 'a>(taken: usize, total: usize) -> Element<'a, M> {
+    let dot = |filled: bool| -> Element<'a, M> {
+        container(blank().width(SLOT_DOT).height(SLOT_DOT))
+            .style(move |t| {
+                let p = palette(t);
+                container::Style {
+                    background: filled.then_some(Background::Color(p.text_2)),
+                    border: border::rounded(SLOT_DOT / 2.0).color(if filled { p.text_2 } else { p.text_3 }).width(LINE),
+                    ..container::Style::default()
+                }
+            })
+            .into()
+    };
+    let dots = row((0..total).map(|n| dot(n < taken))).spacing(space::xs()).align_y(Alignment::Center);
+    let label = trf("{taken} of {total} focus slots taken", &[("taken", &taken.min(total)), ("total", &total)]);
+    with_tooltip(dots, label)
 }
 
 /// A progress line across the whole width (issue #454): the track of [`progress_bar`] – 4 high,

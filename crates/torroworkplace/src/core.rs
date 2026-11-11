@@ -602,6 +602,7 @@ fn task_from_entry(
                 github_link(entry).unwrap_or_else(|| torro_pim::model::Link::new(format!("{INBOX_LINK}{}", entry.id)))
             }
         }),
+        focus: Default::default(),
     }
 }
 
@@ -838,6 +839,7 @@ fn task_from_mail(
         categories: Vec::new(),
         sort_order: None,
         link: Some(origin.link),
+        focus: Default::default(),
     }
 }
 
@@ -5340,6 +5342,13 @@ impl Core {
                         facts.issue = None;
                     }
                 }
+                // The tasks the focus plan moves, only from the lists the client sees (issue #596).
+                // The plan is pinned: a run on another day or over other tasks is refused.
+                if let Request::PostponeFocusPlan = &request {
+                    let (titles, pinned) = self.pim.postpone_approval(Reach::Client(rights)).await;
+                    facts.tasks = titles;
+                    fingerprint = Some((pinned, crate::approvals::details(&request, &facts)));
+                }
                 // What a target shows (task E8.7a): the subject or title the core holds, looked up
                 // as the client may see it – for a file of the tools (task WZ.8) the register's title.
                 if let Request::OpenApp { app, target: Some(target) } = &request {
@@ -5774,6 +5783,15 @@ impl Core {
         let reach = Reach::Client(rights);
         if let Some(outside) = self.out_of_reach(reach, &request).await {
             return not_reached(&request, &outside);
+        }
+        // Today's focus plan runs only as the person was shown it (issue #596).
+        if let Request::PostponeFocusPlan = request
+            && fingerprint != Some(self.pim.postpone_fingerprint(reach).await.as_str())
+        {
+            return Response::Error {
+                code: "conflict".into(),
+                message: "today's focus plan changed after the approval was asked for; nothing ran, ask again".into(),
+            };
         }
         // A save that removes events of a series still needs the right to delete (task TE.4).
         if let Some(delete) = delete_operation(&request)
@@ -6370,8 +6388,14 @@ impl Core {
                 let api = self.filter_list_api(&todo.collection).await;
                 self.pim.save_filter_todo(todo, api.as_ref(), reach).await
             }
-            // A task of a writable list; ticking a link to an issue closes it too (task G.6).
+            // A task of a writable list; ticking a link to an issue closes it too (task G.6). A save
+            // that would take a focus slot while all are taken is refused first (issue #596).
             Request::SaveTodo { todo } => {
+                let slots = usize::from(self.settings.current().focus_slots.get());
+                let today = chrono::Local::now().date_naive();
+                if let Some(refused) = self.pim.focus_refusal(reach, &todo, slots, today).await {
+                    return refused;
+                }
                 let api = link_api(&self.github).await;
                 self.pim.save_link_todo(todo, api.as_ref(), reach).await
             }
@@ -6422,6 +6446,12 @@ impl Core {
             | Request::DeleteEvent { .. }
             | Request::DeleteTodo { .. }
             | Request::MoveTodo { .. }) => Box::pin(self.pim.handle_within(pim, reach)).await,
+            // A day's order and the focus slots (issue #596), counted for the local day.
+            plan @ (Request::SetFocus { .. } | Request::PlanTodo { .. } | Request::PostponeFocusPlan) => {
+                let slots = usize::from(self.settings.current().focus_slots.get());
+                let today = chrono::Local::now().date_naive();
+                Box::pin(self.pim.plan_request(plan, reach, slots, today)).await
+            }
             // Reminders (task ER1.3); a client's preview comes through `handle_client` with its name.
             request @ (Request::ListReminders { .. }
             | Request::SnoozeReminder { .. }
@@ -22224,6 +22254,7 @@ mod tests {
             categories: Vec::new(),
             sort_order: Some(5),
             link: Some(torro_pim::model::Link::github(repo, number)),
+            focus: Default::default(),
         }
     }
 
@@ -26770,6 +26801,7 @@ mod tests {
                 categories: Vec::new(),
                 sort_order: None,
                 link: Some(Link::mail(ANNA, OFFER_ID)),
+                focus: Default::default(),
             };
             let suite = || async {
                 let request = Request::ListItems {

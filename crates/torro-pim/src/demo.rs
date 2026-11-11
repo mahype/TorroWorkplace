@@ -35,7 +35,10 @@ use crate::model::{
     Attendee, AttendeeRole, ChecksState, EventStatus, GitHubDetails, GitHubFilter, GitHubKind, GitHubLabel,
     GitHubState, Link, PartStat, Repeat, RepeatDay, RepeatEnd, RepeatFreq, ReviewState, SeriesScope, Weekday,
 };
-use crate::source::{FilterDefinition, FilterPreview, GitHubRepo, GitHubRepoDetails, PimSource, move_plan};
+use crate::source::{
+    FilterDefinition, FilterPreview, GitHubRepo, GitHubRepoDetails, PimSource, day_move_plan, move_plan, plannable,
+    postpone_plan, takes_slot,
+};
 use crate::{
     AccountState, Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Collection, CollectionKind, Event, EventTime,
     PimAccount, ProviderError, Todo,
@@ -47,9 +50,64 @@ struct Data {
     events: Vec<Event>,
     todos: Vec<Todo>,
     next_id: u64,
+    /// The day the sample is built around: "today" of the focus slots.
+    today: NaiveDate,
+    /// Focus slots other than [`DEMO_FOCUS_SLOTS`], for tests.
+    focus_slots: Option<usize>,
 }
 
+/// Focus slots of the demo data: the most one can choose. The demo has no settings of its own; the
+/// app counts with the number chosen in its Display menu and asks before it sends.
+const DEMO_FOCUS_SLOTS: usize = 5;
+
 impl Data {
+    /// Stores the tasks of `plan` in order, each with a new etag, and returns them as stored.
+    fn store(&mut self, plan: Vec<Todo>) -> Vec<Todo> {
+        let mut written = Vec::with_capacity(plan.len());
+        for mut task in plan {
+            self.next_id += 1;
+            task.etag = Some(format!("\"demo-{}\"", self.next_id));
+            if let Some(slot) = self.todos.iter_mut().find(|t| t.href == task.href) {
+                *slot = task.clone();
+            }
+            written.push(task);
+        }
+        written
+    }
+
+    /// The stored task `todo` names, if its etag is still the current one.
+    fn current(&self, todo: &Todo) -> Result<Todo, ProviderError> {
+        let found = self.todos.iter().find(|t| todo.href.is_some() && t.href == todo.href).cloned();
+        let Some(found) = found else { return Err(ProviderError::Other("No such task".into())) };
+        if found.etag != todo.etag {
+            return Err(ProviderError::Conflict { uid: todo.uid.clone() });
+        }
+        if self.read_only(&found.collection) {
+            return Err(ProviderError::Other(READ_ONLY.into()));
+        }
+        Ok(found)
+    }
+
+    /// The tasks of lists that take changes: those a day is planned with.
+    fn writable_todos(&self) -> Vec<Todo> {
+        self.todos.iter().filter(|t| !self.read_only(&t.collection)).cloned().collect()
+    }
+
+    /// Refuses `after` (the task as it would be stored) when it takes a new focus slot while all
+    /// are taken, counted without `freed`.
+    fn check_slots(&self, before: &Todo, after: &Todo, freed: Option<&str>) -> Result<(), ProviderError> {
+        let takes = |t: &Todo| takes_slot(t, self.today, &Local);
+        if takes(before) || !takes(after) {
+            return Ok(());
+        }
+        let writable = |t: &&Todo| !self.read_only(&t.collection);
+        let taken = self.todos.iter().filter(writable).filter(|t| takes(t) && t.href.as_deref() != freed).count();
+        if taken >= self.focus_slots.unwrap_or(DEMO_FOCUS_SLOTS) {
+            return Err(ProviderError::Conflict { uid: after.uid.clone() });
+        }
+        Ok(())
+    }
+
     /// Every occurrence of the object at `href` gets the version `version`, as a server gives the
     /// whole object a new ETag.
     fn new_version(&mut self, href: &str, version: &str) {
@@ -312,7 +370,7 @@ impl DemoSource {
     /// Sample calendars, events and tasks around `today`.
     pub fn new(today: chrono::NaiveDate) -> DemoSource {
         let (collections, events, todos) = sample(today);
-        DemoSource { data: Mutex::new(Data { collections, events, todos, next_id: 0 }) }
+        DemoSource { data: Mutex::new(Data { collections, events, todos, next_id: 0, today, focus_slots: None }) }
     }
 
     fn lock(&self) -> MutexGuard<'_, Data> {
@@ -509,6 +567,7 @@ fn todo(collection: &str, uid: &str, summary: &str, due: Option<EventTime>) -> T
         categories: Vec::new(),
         sort_order: None,
         link: None,
+        focus: Default::default(),
     }
 }
 
@@ -946,6 +1005,7 @@ fn sample_todos(today: NaiveDate) -> Vec<Todo> {
             priority: Some(1),
             description: Some("Sort receipts for 2025 by category, keep trade invoices separate.".into()),
             categories: vec!["Finance".into(), "Paperwork".into()],
+            focus: crate::Focus::Focus,
             ..todo(TASKS, "tax-documents@torro-demo", "Sort tax documents", Some(at(before(4), 18, 0)))
         },
         Todo {
@@ -959,6 +1019,7 @@ fn sample_todos(today: NaiveDate) -> Vec<Todo> {
         Todo {
             priority: Some(5),
             description: Some("Outline is done, figures still missing.".into()),
+            focus: crate::Focus::Strong,
             ..todo(TASKS, QUARTERLY, "Write quarterly report", Some(EventTime::Date(after(9))))
         },
         Todo {
@@ -990,6 +1051,7 @@ fn sample_todos(today: NaiveDate) -> Vec<Todo> {
         Todo {
             priority: Some(5),
             description: Some("Sort everything out before the holiday house.".into()),
+            focus: crate::Focus::Focus,
             ..todo(FAMILY, VACATION, "Prepare vacation", Some(EventTime::Date(after(1))))
         },
         Todo {
@@ -1291,6 +1353,60 @@ impl PimSource for DemoSource {
             written.push(task);
         }
         Ok(written)
+    }
+
+    /// Like the core: the released task first, then `todo`; the slots counted as the core counts.
+    async fn set_focus(
+        &self,
+        todo: Todo,
+        focus: crate::Focus,
+        release: Option<Todo>,
+    ) -> Result<Vec<Todo>, ProviderError> {
+        let mut data = self.lock();
+        let current = data.current(&todo)?;
+        let released = release.map(|r| data.current(&r)).transpose()?;
+        let after = Todo { focus, ..current.clone() };
+        data.check_slots(&current, &after, released.as_ref().and_then(|r| r.href.as_deref()))?;
+        let mut plan: Vec<Todo> = released
+            .filter(|r| r.href != current.href && r.focus.is_focus())
+            .map(|r| Todo { focus: crate::Focus::Normal, ..r })
+            .into_iter()
+            .collect();
+        if current.focus != focus {
+            plan.push(after);
+        }
+        Ok(data.store(plan))
+    }
+
+    /// Plans like the core ([`day_move_plan`]) over the lists that take changes.
+    async fn plan_todo(&self, todo: Todo, day: NaiveDate, before: Option<Todo>) -> Result<Vec<Todo>, ProviderError> {
+        let mut data = self.lock();
+        let current = data.current(&todo)?;
+        if !plannable(&current) {
+            return Err(ProviderError::Other("Only open tasks without a parent can be planned".into()));
+        }
+        // `before` is looked up by its place alone: its version does not matter here.
+        let todos = data.writable_todos();
+        let before = match before {
+            Some(b) => match todos.iter().find(|t| b.href.is_some() && t.href == b.href) {
+                Some(found) => Some(found.clone()),
+                None => return Err(ProviderError::Other("No such task".into())),
+            },
+            None => None,
+        };
+        let plan = day_move_plan(&todos, &current, day, before.as_ref(), &Local)
+            .ok_or_else(|| ProviderError::Other("That task is not due on this day".into()))?;
+        let moved = plan.iter().find(|t| t.href == current.href).cloned();
+        let moved = moved.unwrap_or_else(|| crate::source::due_on(&current, day, &Local));
+        data.check_slots(&current, &moved, None)?;
+        Ok(data.store(plan))
+    }
+
+    /// Postpones like the core ([`postpone_plan`]) over the lists that take changes.
+    async fn postpone_focus_plan(&self) -> Result<Vec<Todo>, ProviderError> {
+        let mut data = self.lock();
+        let plan = postpone_plan(&data.writable_todos(), data.today, &Local);
+        Ok(data.store(plan))
     }
 
     /// Takes the pin out of the list's definition. The sample's searches find none of the pinned
@@ -1897,6 +2013,49 @@ mod tests {
             let children = todos.iter().filter(|t| t.parent.as_deref() == Some(parent)).count();
             assert!((2..=3).contains(&children), "{parent} has {children} subtasks");
         }
+    }
+
+    #[tokio::test]
+    async fn focus_is_capped_and_a_day_is_planned_in_memory() {
+        use crate::Focus;
+        let today = sunday();
+        let source = DemoSource::new(today);
+        source.lock().focus_slots = Some(3);
+        let todos = source.todos().await.expect("tasks");
+        let find = |todos: &[Todo], uid: &str| todos.iter().find(|t| t.uid == uid).cloned().expect(uid);
+        // The sample has one focus task due until today (the overdue tax documents): two slots left.
+        let free: Vec<Todo> = todos
+            .iter()
+            .filter(|t| plannable(t) && !t.focus.is_focus() && !source.lock().read_only(&t.collection))
+            .filter(|t| t.due.is_some_and(|due| local_date(due) <= today))
+            .take(3)
+            .cloned()
+            .collect();
+        assert_eq!(free.len(), 3, "three open tasks due until today without focus");
+        for task in &free[..2] {
+            source.set_focus(task.clone(), Focus::Focus, None).await.expect("a slot is free");
+        }
+        let full = source.set_focus(free[2].clone(), Focus::Focus, None).await;
+        assert!(matches!(full, Err(ProviderError::Conflict { .. })), "{full:?}");
+        let now = source.todos().await.expect("tasks");
+        let released = find(&now, &free[0].uid);
+        let written = source.set_focus(free[2].clone(), Focus::Strong, Some(released)).await.expect("released");
+        assert_eq!(written.iter().map(|t| t.focus).collect::<Vec<_>>(), [Focus::Normal, Focus::Strong]);
+
+        // To tomorrow, in front of what is due then.
+        let now = source.todos().await.expect("tasks");
+        let tomorrow = today.succ_opt().expect("a day");
+        let moved = find(&now, &free[1].uid);
+        let first = now
+            .iter()
+            .filter(|t| plannable(t) && t.due.is_some_and(|due| local_date(due) == tomorrow) && t.href != moved.href)
+            .min_by(|a, b| crate::source::day_order(a, b))
+            .cloned();
+        let written = source.plan_todo(moved, tomorrow, first).await.expect("planned");
+        let last = written.last().expect("the moved task");
+        assert_eq!(last.due.map(local_date), Some(tomorrow));
+        let plan = source.postpone_focus_plan().await.expect("postponed");
+        assert!(plan.iter().all(|t| t.due.is_some_and(|due| local_date(due) == tomorrow)), "{plan:?}");
     }
 
     #[test]

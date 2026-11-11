@@ -466,6 +466,36 @@ pub enum AttendeeRole {
     NonParticipant,
 }
 
+/// How much concentration or time a task asks for (`X-TORRO-FOCUS`). Not the same as its
+/// priority: a critical task can take five minutes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Focus {
+    /// An ordinary task, also when the task says nothing.
+    #[default]
+    Normal,
+    /// Asks for focus (`X-TORRO-FOCUS:1`).
+    Focus,
+    /// Asks for strong focus, a big piece of work (`X-TORRO-FOCUS:2`).
+    Strong,
+}
+
+impl Focus {
+    /// The next step when cycling through the levels: normal → focus → strong → normal.
+    pub fn next(self) -> Focus {
+        match self {
+            Focus::Normal => Focus::Focus,
+            Focus::Focus => Focus::Strong,
+            Focus::Strong => Focus::Normal,
+        }
+    }
+
+    /// Whether the task takes one of the focus slots (any level but [`Focus::Normal`]).
+    pub fn is_focus(self) -> bool {
+        self != Focus::Normal
+    }
+}
+
 /// A task (VTODO).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Todo {
@@ -506,6 +536,10 @@ pub struct Todo {
     /// Only [`Link::id`] is stored with the task; the core fills in the rest when it reads.
     #[serde(default)]
     pub link: Option<Link>,
+    /// How much concentration the task asks for (`X-TORRO-FOCUS`), kept with the task and
+    /// synced. [`Focus::Normal`] when the task says nothing.
+    #[serde(default)]
+    pub focus: Focus,
 }
 
 /// A task's link to an item of another service: a GitHub issue or pull request, or a mail.
@@ -876,6 +910,7 @@ mod tests {
             "due":null,"priority":null,"completed":false,"parent":null,"description":null}"#;
         let todo: Todo = serde_json::from_str(json).expect("old task");
         assert_eq!((todo.url, todo.categories, todo.sort_order, todo.link), (None, Vec::new(), None, None));
+        assert_eq!(todo.focus, Focus::Normal, "older clients send no focus");
     }
 
     #[test]

@@ -299,6 +299,10 @@ pub struct Facts {
     /// `assistant.list_engines` lists it (task C.1). `None` when the core does not know it: the
     /// summary then shows the engine's id. The conversation's title is [`Facts::name`].
     pub engine: Option<String>,
+    /// The titles of further tasks a request writes, as the core caches them (issue #596): for
+    /// `tasks.set_focus` the task released, for `tasks.postpone_focus_plan` every task it moves
+    /// (only from the lists the client sees). Empty for everything else.
+    pub tasks: Vec<String>,
     /// For the `bots.*` commands and `assistant.send_message` with a bot (task B.1): the bot's name
     /// as it is stored, looked up by its id. `None` when the core does not have it: the summary
     /// then says "an unknown bot". A new bot (`bots.save_bot` without `id`) has none yet; its name
@@ -1708,6 +1712,26 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             None => trf("Delete an unknown task from \"{list}\"", &[("list", &named(&todo.collection))]),
         },
         Request::SaveTodo { todo } => todo_saved(todo, facts),
+        Request::SetFocus { focus, release, .. } => focus_set(*focus, release.is_some(), facts),
+        Request::PlanTodo { day, .. } => match &facts.item {
+            Some(item) => trf(
+                "Move task \"{title}\" to {day}",
+                &[("title", &quote(&item.title)), ("day", &format_short_date(*day, today))],
+            ),
+            None => tr("Move an unknown task").to_string(),
+        },
+        Request::PostponeFocusPlan => match facts.tasks.as_slice() {
+            [] => tr("Move today's focus tasks to tomorrow (none right now)").to_string(),
+            // At most three titles in the summary; the details list them all.
+            titles => {
+                let mut shown: Vec<String> = titles.iter().take(3).map(|t| format!("\"{}\"", quote(t))).collect();
+                if titles.len() > 3 {
+                    shown.push(trf("{n} more", &[("n", &(titles.len() - 3))]));
+                }
+                let n = titles.len().to_string();
+                trf("Move {n} focus tasks to tomorrow: {titles}", &[("n", &n), ("titles", &shown.join(", "))])
+            }
+        },
         Request::MoveTodo { .. } => match (&facts.item, &facts.name) {
             (Some(item), Some(list)) => {
                 trf("Reorder task \"{title}\" in \"{list}\"", &[("title", &quote(&item.title)), ("list", &quote(list))])
@@ -3797,6 +3821,26 @@ fn when(start: &EventTime, today: chrono::NaiveDate) -> String {
     }
 }
 
+/// The summary of `tasks.set_focus` (issue #596): the task and the level by the cache, and the task
+/// whose focus is taken away when there is one.
+fn focus_set(focus: torro_pim::Focus, releases: bool, facts: &Facts) -> String {
+    let level = match focus {
+        torro_pim::Focus::Normal => tr("no focus"),
+        torro_pim::Focus::Focus => tr("focus"),
+        torro_pim::Focus::Strong => tr("strong focus"),
+    };
+    let task =
+        facts.item.as_ref().map_or_else(|| tr("an unknown task").to_string(), |i| format!("\"{}\"", quote(&i.title)));
+    let text = trf("Set {task} to {level}", &[("task", &task), ("level", &level)]);
+    match (releases, facts.tasks.first()) {
+        (false, _) => text,
+        (true, Some(other)) => {
+            trf("{text}, taking the focus from \"{other}\"", &[("text", &text), ("other", &quote(other))])
+        }
+        (true, None) => trf("{text}, taking the focus from an unknown task", &[("text", &text)]),
+    }
+}
+
 /// What `accounts.update_mail_account` changes, in words, for its summary (task M2.1): each field
 /// given, new names and the start of a new signature quoted, the services by what is switched on
 /// (switching one on widens what agents see), each folder role with the path it gets
@@ -4027,6 +4071,11 @@ fn workflow_detail(value: &str) -> String {
 /// `name: value` (the value as compact JSON), whole ([`whole`]): the summary cuts them at
 /// [`ARGUMENTS_MAX`] characters, the person deciding sees all of them here.
 pub fn details(request: &Request, facts: &Facts) -> Vec<String> {
+    // Every focus task the plan moves to tomorrow, as the core holds it (issue #596); tasks of tomorrow
+    // only renumbered behind them are not listed.
+    if let Request::PostponeFocusPlan = request {
+        return facts.tasks.iter().map(|title| format!("\"{}\"", quote(title))).collect();
+    }
     if let Some(workflow) = &facts.workflow {
         let mut lines = Vec::new();
         if let Some(revision) = workflow.revision {
@@ -5483,6 +5532,7 @@ pub(crate) mod tests {
             categories: Vec::new(),
             sort_order: None,
             link: None,
+            focus: Default::default(),
         }
     }
 
@@ -5617,6 +5667,33 @@ pub(crate) mod tests {
         let sneaky = summary(&set(&format!("system:Evil\u{202E}{}", "x".repeat(200))), &Facts::default());
         assert!(!sneaky.contains('\u{202E}') && sneaky.contains('…'), "{sneaky}");
         assert!(sneaky.chars().count() < 200, "{sneaky}");
+    }
+
+    #[test]
+    fn focus_and_planning_name_the_cached_tasks() {
+        let set = |release: bool| Request::SetFocus {
+            href: "/tasks/offer.ics".into(),
+            etag: "1".into(),
+            focus: torro_pim::Focus::Strong,
+            release: release.then(|| torro_ipc::TodoRef { href: "/tasks/blog.ics".into(), etag: "2".into() }),
+        };
+        let real =
+            Facts { tasks: vec!["Write the blog post".into()], ..facts(cached("Finish the offer", None), "Work") };
+        let text = trf("Set {task} to {level}", &[("task", &"\"Finish the offer\""), ("level", &tr("strong focus"))]);
+        assert_eq!(summary(&set(false), &real), text);
+        assert_eq!(
+            summary(&set(true), &real),
+            trf("{text}, taking the focus from \"{other}\"", &[("text", &text), ("other", &"Write the blog post")])
+        );
+        let today = Local::now().date_naive();
+        let plan = Request::PlanTodo { href: "/tasks/offer.ics".into(), etag: "1".into(), day: today, before: None };
+        assert!(summary(&plan, &real).contains("Finish the offer"));
+        assert_eq!(summary(&plan, &Facts::default()), tr("Move an unknown task"));
+        let moved = Facts { tasks: vec!["A".into(), "B".into()], ..Facts::default() };
+        assert_eq!(
+            summary(&Request::PostponeFocusPlan, &moved),
+            trf("Move {n} focus tasks to tomorrow: {titles}", &[("n", &"2"), ("titles", &"\"A\", \"B\"")])
+        );
     }
 
     #[test]

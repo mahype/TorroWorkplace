@@ -116,7 +116,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use chrono::{DateTime, Duration as Span, Local, Utc};
+use chrono::{DateTime, Duration as Span, Local, NaiveDate, Utc};
 use tokio::sync::{Mutex, RwLock};
 use torro_core::account::{AccountKind, Secret};
 use torro_core::{AppId, paths::AppPaths};
@@ -125,7 +125,9 @@ use torro_ipc::{AccountInfo, Request, Response, ServerService};
 use torro_mail_imap::tls::{Seen, Trust, client_config};
 use torro_pim::account::{collection_id, local_id};
 use torro_pim::model::{GitHubKind, GitHubState, Link, SeriesScope};
-use torro_pim::source::{GitHubRepo, GitHubRepoDetails, move_plan};
+use torro_pim::source::{
+    GitHubRepo, GitHubRepoDetails, day_move_plan, move_plan, plannable, postpone_plan, takes_slot,
+};
 use torro_pim::{
     AccountState, Collection, CollectionKind, Event, EventTime, PimAccount, ProviderError, Todo, combined_state,
 };
@@ -1240,6 +1242,30 @@ impl PimService {
             // Both tasks name their list only through the cache; one it does not hold, or one in a
             // list the client may not see, is `not-found`. The tasks renumbered with them are in
             // the same list (`move_todo` refuses `before` in another one).
+            // A day's order and the focus slots span the lists the client sees; the tasks named
+            // must be in one of them, the others counted and renumbered are filtered by the handler
+            // (`PimService::plannable_within`).
+            Request::SetFocus { href, release, .. } => {
+                let seen = ids(self.seen(reach, Role::TaskList).await);
+                let state = self.state.read().await;
+                let list_of = |href: &str| cached_todo(&state, href).map(|todo| todo.collection.clone());
+                return [Some(href.as_str()), release.as_ref().map(|r| r.href.as_str())]
+                    .into_iter()
+                    .flatten()
+                    .find(|href| !list_of(href).is_some_and(|list| seen.contains(&list)))
+                    .map(str::to_string);
+            }
+            Request::PlanTodo { href, before, .. } => {
+                let seen = ids(self.seen(reach, Role::TaskList).await);
+                let state = self.state.read().await;
+                let list_of = |href: &str| cached_todo(&state, href).map(|todo| todo.collection.clone());
+                return [Some(href.as_str()), before.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .find(|href| !list_of(href).is_some_and(|list| seen.contains(&list)))
+                    .map(str::to_string);
+            }
+            Request::PostponeFocusPlan => return None,
             Request::MoveTodo { href, before, .. } => {
                 let seen = ids(self.seen(reach, Role::TaskList).await);
                 let state = self.state.read().await;
@@ -2676,6 +2702,205 @@ impl PimService {
         Ok(written)
     }
 
+    /// `tasks.set_focus`, `tasks.plan_todo` and `tasks.postpone_focus_plan` (issue #596), with the
+    /// number of focus slots and the local day the core counts them for.
+    pub async fn plan_request(&self, request: Request, reach: Reach<'_>, slots: usize, today: NaiveDate) -> Response {
+        let planned = match request {
+            Request::SetFocus { href, etag, focus, release } => {
+                let release = release.map(|r| (r.href, r.etag));
+                self.set_focus(reach, (&href, &etag), focus, release, slots, today).await
+            }
+            Request::PlanTodo { href, etag, day, before } => {
+                self.plan_todo(reach, (&href, &etag), day, before.as_deref(), slots, today).await
+            }
+            Request::PostponeFocusPlan => self.postpone_focus_plan(reach, today).await,
+            _ => return error("error", "not a planning request".into()),
+        };
+        match planned {
+            Ok(todos) => Response::Todos { todos },
+            Err(err) => self.write_failed(err).await,
+        }
+    }
+
+    /// The tasks a day is planned and focus slots are counted with: those of the writable task
+    /// lists `reach` sees (filter lists take no changes), as cached.
+    async fn plannable_within(&self, reach: Reach<'_>) -> Vec<Todo> {
+        let lists: Vec<String> =
+            self.seen(reach, Role::TaskList).await.into_iter().filter(|c| c.writable).map(|c| c.id).collect();
+        let state = self.state.read().await;
+        state.accounts.iter().flat_map(|slot| &slot.todos).filter(|t| lists.contains(&t.collection)).cloned().collect()
+    }
+
+    /// The task at `href` among `todos` with the version `etag`: `unsupported` for an item of a
+    /// GitHub filter list, `not-found` for none, `conflict` for another version.
+    async fn planned_task(&self, todos: &[Todo], href: &str, etag: &str) -> Result<Todo, WriteError> {
+        let Some(todo) = todos.iter().find(|t| t.href.as_deref() == Some(href)) else {
+            let state = self.state.read().await;
+            let filtered = state.filters.iter().flat_map(|slot| &slot.lists).flat_map(|list| &list.todos);
+            if filtered.into_iter().any(|t| t.href.as_deref() == Some(href)) {
+                return Err(refused("unsupported", "items of GitHub filter lists cannot be planned or focused".into()));
+            }
+            return Err(refused("not-found", format!("no task {href:?}: reload the tasks")));
+        };
+        if todo.etag.as_deref() != Some(etag) {
+            return Err(Failed { account: None, err: ProviderError::Conflict { uid: todo.uid.clone() } }.into());
+        }
+        Ok(todo.clone())
+    }
+
+    /// `conflict` when `after` (a task as it would be stored, `before` as it is) takes a new focus
+    /// slot while all `slots` are taken by `todos`, not counting the task at `freed`.
+    fn check_slots(
+        todos: &[Todo],
+        (before, after): (&Todo, &Todo),
+        freed: Option<&str>,
+        slots: usize,
+        today: NaiveDate,
+    ) -> Result<(), WriteError> {
+        let takes = |t: &Todo| takes_slot(t, today, &Local);
+        if takes(before) || !takes(after) {
+            return Ok(());
+        }
+        let others = |t: &&Todo| t.href != after.href && t.href.as_deref() != freed;
+        let taken = todos.iter().filter(others).filter(|t| takes(t)).count();
+        if taken >= slots {
+            return Err(refused(
+                "conflict",
+                format!("all {slots} focus slots of today are taken: release one first (`release`)"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `tasks.save_todo` of a writable list that would take a new focus slot while all are taken
+    /// (issue #596): the answer that refuses it, before anything is written.
+    pub async fn focus_refusal(
+        &self,
+        reach: Reach<'_>,
+        todo: &Todo,
+        slots: usize,
+        today: NaiveDate,
+    ) -> Option<Response> {
+        let todos = self.plannable_within(reach).await;
+        let held = todo.href.as_deref().and_then(|href| todos.iter().find(|t| t.href.as_deref() == Some(href)));
+        let before = held.cloned().unwrap_or_else(|| Todo { focus: torro_pim::Focus::Normal, ..todo.clone() });
+        match PimService::check_slots(&todos, (&before, todo), None, slots, today) {
+            Ok(()) => None,
+            Err(WriteError::Refused { code, message }) => Some(error(code, message)),
+            Err(WriteError::Provider(failed)) => Some(provider_error(&failed.err)),
+        }
+    }
+
+    /// Sets the focus of the cached task `task` (`href`, `etag`), releasing the task `release`
+    /// first (`Request::SetFocus`). Writes like [`PimService::move_todo`]: one after the other,
+    /// the released task first, stopping at the first failure.
+    async fn set_focus(
+        &self,
+        reach: Reach<'_>,
+        (href, etag): (&str, &str),
+        focus: torro_pim::Focus,
+        release: Option<(String, String)>,
+        slots: usize,
+        today: NaiveDate,
+    ) -> Result<Vec<Todo>, WriteError> {
+        let todos = self.plannable_within(reach).await;
+        let todo = self.planned_task(&todos, href, etag).await?;
+        let released = match &release {
+            Some((href, etag)) => Some(self.planned_task(&todos, href, etag).await?),
+            None => None,
+        };
+        if todo.completed && focus.is_focus() {
+            return Err(refused("error", "a done task takes no focus".into()));
+        }
+        let after = Todo { focus, ..todo.clone() };
+        let freed = released.as_ref().and_then(|r| r.href.as_deref());
+        PimService::check_slots(&todos, (&todo, &after), freed, slots, today)?;
+        let mut plan: Vec<Todo> = released
+            .filter(|r| r.href != todo.href && r.focus.is_focus())
+            .map(|r| Todo { focus: torro_pim::Focus::Normal, ..r })
+            .into_iter()
+            .collect();
+        if todo.focus != focus {
+            plan.push(after);
+        }
+        let mut written = Vec::with_capacity(plan.len());
+        for todo in plan {
+            written.push(self.save_todo(todo).await?);
+        }
+        Ok(written)
+    }
+
+    /// Makes the cached task `href` due on `day` before the task `before` of that day
+    /// (`Request::PlanTodo`), numbered by [`day_move_plan`] over the tasks `reach` may write and
+    /// written like [`PimService::move_todo`], the moved task last.
+    async fn plan_todo(
+        &self,
+        reach: Reach<'_>,
+        (href, etag): (&str, &str),
+        day: NaiveDate,
+        before: Option<&str>,
+        slots: usize,
+        today: NaiveDate,
+    ) -> Result<Vec<Todo>, WriteError> {
+        let todos = self.plannable_within(reach).await;
+        let todo = self.planned_task(&todos, href, etag).await?;
+        if !plannable(&todo) {
+            return Err(refused("error", "only open tasks without a parent can be planned".into()));
+        }
+        let before = match before {
+            Some(href) => match todos.iter().find(|t| t.href.as_deref() == Some(href)) {
+                Some(found) => Some(found.clone()),
+                None => return Err(refused("not-found", format!("no task {href:?}: reload the tasks"))),
+            },
+            None => None,
+        };
+        let plan = day_move_plan(&todos, &todo, day, before.as_ref(), &Local)
+            .ok_or_else(|| refused("error", format!("`before` is no open top-level task due on {day}")))?;
+        // The moved task by its place: it is not in the plan when only others are renumbered.
+        let moved = plan.iter().find(|t| t.href == todo.href).cloned();
+        let moved = moved.unwrap_or_else(|| torro_pim::source::due_on(&todo, day, &Local));
+        PimService::check_slots(&todos, (&todo, &moved), None, slots, today)?;
+        let mut written = Vec::with_capacity(plan.len());
+        for todo in plan {
+            written.push(self.save_todo(todo).await?);
+        }
+        Ok(written)
+    }
+
+    /// What an approval of `tasks.postpone_focus_plan` for `reach` pins (issue #596): the day and
+    /// every task the plan would write with its version. A run whose plan differs from what the
+    /// person was shown (another day, focus tasks added, a task changed) is refused.
+    pub async fn postpone_fingerprint(&self, reach: Reach<'_>) -> String {
+        self.postpone_approval(reach).await.1
+    }
+
+    /// The titles of the focus tasks the plan moves and its fingerprint, from one reading of the
+    /// cache, so the person sees what the approval pins ([`PimService::postpone_fingerprint`]).
+    pub async fn postpone_approval(&self, reach: Reach<'_>) -> (Vec<String>, String) {
+        let todos = self.plannable_within(reach).await;
+        let today = Local::now().date_naive();
+        let plan = postpone_plan(&todos, today, &Local);
+        let version = |href: &Option<String>| todos.iter().find(|t| t.href == *href).and_then(|t| t.etag.clone());
+        let parts: Vec<String> = plan
+            .iter()
+            .map(|t| format!("{}@{}", t.href.as_deref().unwrap_or_default(), version(&t.href).unwrap_or_default()))
+            .collect();
+        let titles = plan.iter().filter(|t| t.focus.is_focus()).map(|t| t.summary.clone()).collect();
+        (titles, format!("postpone:{today}:{}", parts.join(";")))
+    }
+
+    /// Moves today's focus plan of the tasks `reach` may write to tomorrow
+    /// (`Request::PostponeFocusPlan`, [`postpone_plan`]), written one after the other.
+    async fn postpone_focus_plan(&self, reach: Reach<'_>, today: NaiveDate) -> Result<Vec<Todo>, WriteError> {
+        let todos = self.plannable_within(reach).await;
+        let plan = postpone_plan(&todos, today, &Local);
+        let mut written = Vec::with_capacity(plan.len());
+        for todo in plan {
+            written.push(self.save_todo(todo).await?);
+        }
+        Ok(written)
+    }
+
     /// `tasks.create_list` (task G.7): a new task list named `name` in `color` on the server of
     /// the Nextcloud account `account` ([`CalDavClient::create_task_list`]), answered with the list
     /// as `tasks.list_lists` lists it from now on.
@@ -2968,6 +3193,26 @@ impl PimService {
             Request::AddLink { collection, .. } => {
                 Facts { pins: state.filter(collection).is_some(), ..named(collection) }
             }
+            // The task by its `href`, the released one by its own (issue #596).
+            Request::SetFocus { href, release, .. } => match cached_todo(&state, href) {
+                Some(todo) => Facts {
+                    item: Some(Known { title: todo.summary.clone(), start: None }),
+                    tasks: release
+                        .as_ref()
+                        .and_then(|r| cached_todo(&state, &r.href))
+                        .map(|r| r.summary.clone())
+                        .into_iter()
+                        .collect(),
+                    ..named(&todo.collection)
+                },
+                None => Facts::default(),
+            },
+            Request::PlanTodo { href, .. } => match cached_todo(&state, href) {
+                Some(todo) => {
+                    Facts { item: Some(Known { title: todo.summary.clone(), start: None }), ..named(&todo.collection) }
+                }
+                None => Facts::default(),
+            },
             Request::MoveTodo { href, .. } => match cached_todo(&state, href) {
                 Some(todo) => {
                     Facts { item: Some(Known { title: todo.summary.clone(), start: None }), ..named(&todo.collection) }
@@ -3742,6 +3987,7 @@ impl PimService {
             categories: Vec::new(),
             sort_order: None,
             link: Some(Link::github(item.repo(), item.id.number)),
+            focus: Default::default(),
         };
         match self.save_todo(todo).await {
             Ok(saved) => Response::Todo { todo: reach.with_details(saved, &self.state.read().await.links) },
@@ -4652,6 +4898,7 @@ pub(crate) mod tests {
             categories: Vec::new(),
             sort_order: None,
             link: None,
+            focus: Default::default(),
         }
     }
 
@@ -6598,6 +6845,169 @@ pub(crate) mod tests {
         assert_eq!(code_of(&ask(move_request(&b, Some(&unknown))).await), "not-found", "no such before");
         assert_eq!(code_of(&ask(move_request(&b, Some(&child))).await), "error", "another parent");
         assert!(lines(&record).is_empty(), "nothing reached the server: {:?}", lines(&record));
+    }
+
+    // Focus and the order of a day (issue #596).
+
+    /// The cached task `uid` in `path`, due on the whole local day `day`, with `focus`.
+    fn day_task(base: &str, path: &str, uid: &str, day: NaiveDate, focus: torro_pim::Focus) -> Todo {
+        Todo { due: Some(EventTime::Date(day)), focus, ..cached_task(base, path, uid, None) }
+    }
+
+    fn today() -> NaiveDate {
+        Local::now().date_naive()
+    }
+
+    fn set_focus(task: &Todo, focus: torro_pim::Focus, release: Option<&Todo>) -> Request {
+        Request::SetFocus {
+            href: task.href.clone().expect("href"),
+            etag: task.etag.clone().expect("etag"),
+            focus,
+            release: release.map(|r| torro_ipc::TodoRef {
+                href: r.href.clone().expect("href"),
+                etag: r.etag.clone().expect("etag"),
+            }),
+        }
+    }
+
+    fn puts(record: &std::sync::Mutex<Vec<Seen>>) -> Vec<String> {
+        lines(record).into_iter().filter(|line| line.starts_with("PUT")).collect()
+    }
+
+    #[tokio::test]
+    async fn a_focus_beyond_the_slots_is_refused_and_a_release_makes_room() {
+        use torro_pim::Focus;
+        let (base, record) = fake_server(server_holding(TASK)).await;
+        let a = day_task(&base, WORK, "a", today(), Focus::Focus);
+        let b = day_task(&base, WORK, "b", today() - chrono::Days::new(3), Focus::Strong);
+        let c = day_task(&base, WORK, "c", today(), Focus::Normal);
+        let later = day_task(&base, WORK, "later", today() + chrono::Days::new(2), Focus::Focus);
+        let service = service_with_tasks(&base, vec![a.clone(), b.clone(), c.clone(), later.clone()]).await;
+        let ask = |request| {
+            let service = Arc::clone(&service);
+            async move { service.plan_request(request, Reach::Suite, 2, today()).await }
+        };
+
+        let full = ask(set_focus(&c, Focus::Focus, None)).await;
+        assert_eq!(code_of(&full), "conflict", "a and the overdue b take both slots: {full:?}");
+        assert!(lines(&record).is_empty(), "nothing written: {:?}", lines(&record));
+        // Strong focus to focus adds none; a task due later takes none.
+        assert_eq!(code_of(&ask(set_focus(&b, Focus::Focus, None)).await), "ok");
+        assert_eq!(code_of(&ask(set_focus(&later, Focus::Strong, None)).await), "ok");
+
+        let response = ask(set_focus(&c, Focus::Focus, Some(&a))).await;
+        let Response::Todos { todos } = response else { panic!("the written tasks, got {response:?}") };
+        let written: Vec<(&str, Focus)> = todos.iter().map(|t| (t.uid.as_str(), t.focus)).collect();
+        assert_eq!(written, [("a", Focus::Normal), ("c", Focus::Focus)], "the released task first");
+        assert_eq!(puts(&record).last(), Some(&format!("PUT {WORK}c.ics If-Match \"1\"")));
+
+        // A save that would take a slot is refused the same way.
+        let d = Todo { focus: Focus::Focus, ..c.clone() };
+        let refused = service.focus_refusal(Reach::Suite, &Todo { href: None, ..d }, 2, today()).await;
+        assert!(refused.is_some_and(|r| code_of(&r) == "conflict"));
+    }
+
+    #[tokio::test]
+    async fn a_day_is_planned_over_the_lists_and_tomorrow_takes_the_focus_plan() {
+        use torro_pim::Focus;
+        let (base, record) = fake_server(server_holding(TASK)).await;
+        let tomorrow = today() + chrono::Days::new(1);
+        let w1 = Todo { sort_order: Some(100), ..day_task(&base, WORK, "w1", today(), Focus::Normal) };
+        let h1 = Todo { sort_order: Some(200), ..day_task(&base, HOME, "h1", today(), Focus::Focus) };
+        let w2 = day_task(&base, WORK, "w2", tomorrow, Focus::Normal);
+        let child = Todo { parent: Some("w1".into()), ..day_task(&base, WORK, "child", today(), Focus::Normal) };
+        let service = service_with_tasks(&base, vec![w1.clone(), h1.clone(), w2.clone(), child.clone()]).await;
+        let plan = |task: &Todo, day: NaiveDate, before: Option<&Todo>| Request::PlanTodo {
+            href: task.href.clone().expect("href"),
+            etag: task.etag.clone().expect("etag"),
+            day,
+            before: before.and_then(|b| b.href.clone()),
+        };
+
+        let response = service.plan_request(plan(&w2, today(), Some(&h1)), Reach::Suite, 3, today()).await;
+        let Response::Todos { todos } = response else { panic!("the written tasks, got {response:?}") };
+        assert_eq!(todos.iter().map(|t| (t.uid.as_str(), t.sort_order)).collect::<Vec<_>>(), [("w2", Some(150))]);
+        assert_eq!(todos[0].due, Some(EventTime::Date(today())), "due today now");
+        let refused = service.plan_request(plan(&child, tomorrow, None), Reach::Suite, 3, today()).await;
+        assert_eq!(code_of(&refused), "error", "a subtask has no place of its own: {refused:?}");
+
+        // Tomorrow takes the focus plan: h1 is the only focus task.
+        let response = service.plan_request(Request::PostponeFocusPlan, Reach::Suite, 3, today()).await;
+        let Response::Todos { todos } = response else { panic!("the written tasks, got {response:?}") };
+        assert_eq!(todos.iter().map(|t| t.uid.as_str()).collect::<Vec<_>>(), ["h1"]);
+        assert_eq!(todos[0].due, Some(EventTime::Date(tomorrow)));
+        assert!(puts(&record).iter().all(|line| !line.contains("w1.ics")), "{:?}", puts(&record));
+    }
+
+    #[tokio::test]
+    async fn renumbering_others_with_full_slots_is_no_false_alarm() {
+        use torro_pim::Focus;
+        let (base, record) = fake_server(server_holding(TASK)).await;
+        let x = Todo { sort_order: Some(1024), ..day_task(&base, WORK, "x", today(), Focus::Normal) };
+        let a = day_task(&base, WORK, "a", today(), Focus::Focus);
+        let service = service_with_tasks(&base, vec![x.clone(), a.clone()]).await;
+        // X behind A: only A gets a number, X keeps its own; the one slot is A's already.
+        let request = Request::PlanTodo {
+            href: x.href.clone().expect("href"),
+            etag: x.etag.clone().expect("etag"),
+            day: today(),
+            before: None,
+        };
+        let response = service.plan_request(request, Reach::Suite, 1, today()).await;
+        let Response::Todos { todos } = response else { panic!("the written tasks, got {response:?}") };
+        assert_eq!(todos.iter().map(|t| (t.uid.as_str(), t.sort_order)).collect::<Vec<_>>(), [("a", Some(0))]);
+        assert_eq!(puts(&record).len(), 1);
+        // A done task takes no focus.
+        let done = Todo { completed: true, ..day_task(&base, HOME, "d", today(), Focus::Normal) };
+        let service = service_with_tasks(&base, vec![done.clone()]).await;
+        let response = service.plan_request(set_focus(&done, Focus::Focus, None), Reach::Suite, 3, today()).await;
+        assert_eq!(code_of(&response), "error", "{response:?}");
+    }
+
+    #[tokio::test]
+    async fn a_hidden_list_on_the_same_day_is_left_alone_and_takes_no_slot() {
+        use torro_ipc::api::{RightsTemplate, Selection};
+        use torro_pim::Focus;
+        let (base, record) = fake_server(server_holding(TASK)).await;
+        let (work, _) = on_server(&base, WORK, "");
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.task_lists = Selection::Only(vec![work]);
+        let client = Reach::Client(&rights);
+        let hidden: Vec<Todo> = ["h1", "h2"]
+            .iter()
+            .enumerate()
+            .map(|(i, uid)| Todo { sort_order: Some(i as i64), ..day_task(&base, HOME, uid, today(), Focus::Strong) })
+            .collect();
+        let w1 = Todo { sort_order: Some(5), ..day_task(&base, WORK, "w1", today(), Focus::Normal) };
+        let w2 = day_task(&base, WORK, "w2", today() + chrono::Days::new(1), Focus::Normal);
+        let mut tasks = hidden.clone();
+        tasks.extend([w1.clone(), w2.clone()]);
+        let service = service_with_tasks(&base, tasks).await;
+
+        // Planned to the end of today: after w1 alone, the hidden tasks keep their numbers.
+        let request = Request::PlanTodo {
+            href: w2.href.clone().expect("href"),
+            etag: w2.etag.clone().expect("etag"),
+            day: today(),
+            before: None,
+        };
+        let response = service.plan_request(request, client, 3, today()).await;
+        let Response::Todos { todos } = response else { panic!("the written tasks, got {response:?}") };
+        assert_eq!(
+            todos.iter().map(|t| (t.uid.as_str(), t.sort_order)).collect::<Vec<_>>(),
+            [("w2", Some(5 + torro_pim::source::GAP))]
+        );
+        // Postponing leaves the hidden focus tasks where they are: the client has none of its own.
+        let response = service.plan_request(Request::PostponeFocusPlan, client, 3, today()).await;
+        assert_eq!(response, Response::Todos { todos: vec![] });
+        assert!(service.postpone_approval(client).await.0.is_empty());
+        assert!(puts(&record).iter().all(|line| !line.contains(HOME)), "{:?}", puts(&record));
+        // Naming a hidden task is out of reach.
+        let named = set_focus(&w1, Focus::Normal, Some(&hidden[0]));
+        assert_eq!(service.out_of_reach(client, &named).await, hidden[0].href.clone());
+        // Two slots, both taken in the hidden list: the client may still focus its own task.
+        let response = service.plan_request(set_focus(&w1, Focus::Focus, None), client, 2, today()).await;
+        assert_eq!(code_of(&response), "ok", "{response:?}");
     }
 
     #[tokio::test]
