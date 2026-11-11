@@ -280,14 +280,18 @@ pub struct ExecutionBinding {
 #[serde(deny_unknown_fields)]
 pub struct ResourcePin {
     pub host: String,
-    /// Absolute path, optionally with its query, without scheme or host.
+    /// Absolute path, optionally with its query, without scheme or host. An inline script has the path `/`.
     pub path: String,
     pub sha256: String,
+    /// A script written into the page itself, pinned by the hash of its text; `host` is the page's host.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inline: bool,
 }
 
 impl ResourcePin {
     fn valid(&self, hosts: &[String]) -> bool {
         hosts.contains(&self.host)
+            && (!self.inline || self.path == "/")
             && self.path.starts_with('/')
             && !self.path.starts_with("//")
             && self.path.len() <= 1024
@@ -429,7 +433,8 @@ impl Package {
                 }
                 (2, Step::RenderInvoiceCopy { profile: InvoiceProfile::PaddleSetapp, version })
                     if ((*version == 1 && self.hosts == ["my.paddle.com"])
-                        || (*version == 2 && self.hosts == ["my.paddle.com", "static.paddle.com"]))
+                        || (*version == 2
+                            && self.hosts == ["my.paddle.com", "static.paddle.com", "cdn.paddle.com"]))
                         && self.binding.typesetter == 1
                         && self.binding.fonts_digest.len() == 64
                         && self.binding.fonts_digest.bytes().all(|b| b.is_ascii_hexdigit()) =>
@@ -720,7 +725,7 @@ mod tests {
 
     fn paddle(version: u16) -> Package {
         let mut package = Package::direct_pdf("my.paddle.com");
-        package.hosts = vec!["my.paddle.com".into(), "static.paddle.com".into()];
+        package.hosts = vec!["my.paddle.com".into(), "static.paddle.com".into(), "cdn.paddle.com".into()];
         package.binding.typesetter = 1;
         package.binding.fonts_digest = "a".repeat(64);
         package.steps = vec![
@@ -739,6 +744,7 @@ mod tests {
             host: "static.paddle.com".into(),
             path: "/assets/js/customer/invoice.js?v=1".into(),
             sha256: "0".repeat(64),
+            inline: false,
         };
         let mut package = paddle(2);
         assert!(package.validate().is_ok(), "no pins yet: a draft test adopts the witnessed scripts");
@@ -763,6 +769,14 @@ mod tests {
             invalid.binding.resources = vec![broken];
             assert!(invalid.validate().is_err());
         }
+        let inline =
+            ResourcePin { host: "my.paddle.com".into(), path: "/".into(), sha256: "1".repeat(64), inline: true };
+        let mut with_inline = package.clone();
+        with_inline.binding.resources.push(inline.clone());
+        assert!(with_inline.validate().is_ok());
+        assert!(serde_json::to_string(&with_inline).expect("wire").contains("\"inline\":true"));
+        with_inline.binding.resources[1].path = "/inline.js".into();
+        assert!(with_inline.validate().is_err(), "an inline pin has no path of its own");
         let mut duplicate = package.clone();
         duplicate.binding.resources = vec![pin.clone(), pin.clone()];
         assert!(duplicate.validate().is_err());
@@ -770,9 +784,9 @@ mod tests {
         many.binding.resources = (0..9).map(|n| ResourcePin { path: format!("/{n}.js"), ..pin.clone() }).collect();
         assert!(many.validate().is_err());
         let mut one_host = package.clone();
-        one_host.hosts = vec!["my.paddle.com".into()];
+        one_host.hosts = vec!["my.paddle.com".into(), "static.paddle.com".into()];
         one_host.binding.resources.clear();
-        assert!(one_host.validate().is_err(), "profile 2 binds exactly both Paddle hosts");
+        assert!(one_host.validate().is_err(), "profile 2 binds exactly the three Paddle hosts");
         let mut first = paddle(1);
         assert!(first.validate().is_err(), "profile 1 never loads from the static host");
         first.hosts = vec!["my.paddle.com".into()];
