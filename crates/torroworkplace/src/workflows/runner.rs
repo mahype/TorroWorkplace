@@ -47,7 +47,7 @@ struct RunRecord {
     mail_header_hash: Option<String>,
     /// Scripts a test of an unsaved draft witnessed. Journaled with the reservation, so recovery adopts them too.
     #[serde(default)]
-    observed_resources: Option<Vec<wire::ResourcePin>>,
+    observed: Option<Witnessed>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -398,7 +398,7 @@ impl Service {
                 target_fingerprint: fingerprint, raw_hash: hash, dedup: dedup.clone(), due: Utc::now(), reservation: None,
                 execution_epoch: workflow.execution_epoch,
                 rule_binding: event.map(|(_, rule)| (rule.rule.id.clone(), rule.rule.revision, rule.state_revision)),
-                event: event.map(|(id, _)| id.to_string()), one_time, verified_sender, mail_header_hash: Some(source_hash), observed_resources: None };
+                event: event.map(|(id, _)| id.to_string()), one_time, verified_sender, mail_header_hash: Some(source_hash), observed: None };
             put_run(tx, &record, "queued")?;
             store::put(tx, "dedup", &dedup, record.scope.owner(), &account, "", &Dedup { run: run.id.clone(), generation })?;
             Ok(run)
@@ -660,7 +660,7 @@ impl Service {
                         one_time: false,
                         verified_sender: None,
                         mail_header_hash: None,
-                        observed_resources: None,
+                        observed: None,
                     };
                     let too_old =
                         event.received_at.is_some_and(|received| received < Utc::now() - chrono::Duration::days(7));
@@ -1042,7 +1042,7 @@ impl Service {
                     changed: false,
                 });
                 job.reservation = Some(reservation.clone());
-                job.observed_resources = output.observed.clone();
+                job.observed = output.observed.clone();
                 put_run(tx, job, "committing")?;
                 Ok(reservation)
             })
@@ -1190,7 +1190,14 @@ struct Output {
     source_host: String,
     profile_version: Option<u16>,
     /// The scripts witnessed on a profile-2 page; `None` when no page was read, e.g. a link that served a PDF.
-    observed: Option<Vec<wire::ResourcePin>>,
+    observed: Option<Witnessed>,
+}
+
+/// What a profile-2 run saw on the provider's page: its scripts and its layout fingerprint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Witnessed {
+    resources: Vec<wire::ResourcePin>,
+    layout: Option<String>,
 }
 
 /// A successful test of an unsaved draft takes over exactly the scripts it witnessed, as a new revision with a new
@@ -1203,16 +1210,17 @@ fn adopt_resources(record: &mut WorkflowRecord, job: &RunRecord) -> Result<(), E
     {
         return Ok(());
     }
-    let Some(observed) = &job.observed_resources else { return Ok(()) };
+    let Some(observed) = &job.observed else { return Ok(()) };
     // The same scripts in another page order are no change and keep the revision and its authorization.
     let mut known = package.binding.resources.clone();
-    let mut seen = observed.clone();
+    let mut seen = observed.resources.clone();
     known.sort();
     seen.sort();
-    if known == seen {
+    if known == seen && package.binding.layout == observed.layout {
         return Ok(());
     }
-    package.binding.resources = observed.clone();
+    package.binding.resources = observed.resources.clone();
+    package.binding.layout = observed.layout.clone();
     package.validate().map_err(|_| Error::Unsupported)?;
     let encoded = serde_json::to_vec(&record.workflow.spec).map_err(|_| Error::Blocked)?;
     record.workflow.digest = digest(&encoded);
@@ -1342,7 +1350,7 @@ async fn retrieve(
                     let loaded = if *version == 2 {
                         let (loaded, witnessed) =
                             load_resources(package, &source, downloader, &mut budget, allow, &cancelled, adopt).await?;
-                        observed = Some(witnessed);
+                        observed = Some(Witnessed { resources: witnessed, layout: None });
                         Some(loaded)
                     } else {
                         None
@@ -1354,6 +1362,15 @@ async fn retrieve(
                             .map_err(|_| failure(RunReason::Unsupported))?;
                     if copy.pages == 0 || copy.pages > 50 {
                         return Err(failure(RunReason::Unsupported));
+                    }
+                    // A changed layout is a provider change like a changed script, found before anything is saved.
+                    if *version == 2 {
+                        if !adopt && copy.layout != package.binding.layout {
+                            return Err(failure(RunReason::ProviderChanged));
+                        }
+                        if let Some(witnessed) = observed.as_mut() {
+                            witnessed.layout = copy.layout.clone();
+                        }
                     }
                     body = Some(download::Body {
                         bytes: copy.bytes,
@@ -2171,6 +2188,10 @@ mod tests {
 
     /// A synthetic Paddle server: the page with its head resources, the checked stylesheet and the script.
     async fn paddle_server(script: &'static [u8]) -> httpmock::MockServer {
+        paddle_server_with(script, include_str!("../../tests/fixtures/workflows/paddle.css").into()).await
+    }
+
+    async fn paddle_server_with(script: &'static [u8], css: String) -> httpmock::MockServer {
         let server = httpmock::MockServer::start_async().await;
         let page =
             super::super::tests::with_resources(include_str!("../../tests/fixtures/workflows/paddle_august.html"));
@@ -2183,9 +2204,7 @@ mod tests {
         server
             .mock_async(|when, then| {
                 when.method(httpmock::Method::GET).path("/static.paddle.com/assets/css/customer/invoice.css");
-                then.status(200)
-                    .header("content-type", "text/css")
-                    .body(include_str!("../../tests/fixtures/workflows/paddle.css"));
+                then.status(200).header("content-type", "text/css").body(css);
             })
             .await;
         server
@@ -2218,6 +2237,9 @@ mod tests {
         assert_eq!(adopted.revision, env.workflow.revision + 1);
         assert_ne!(adopted.digest, env.workflow.digest);
         assert!(adopted.tested, "the test belongs to the new revision with the adopted script");
+        let template = super::super::templates::get("paddle_setapp_invoice_copy").expect("template").package;
+        assert!(adopted.spec.package.binding.layout.is_some());
+        assert_ne!(adopted.spec.package.binding.layout, template.binding.layout, "the synthetic page's own layout");
         let Response::Workflow { workflow } = env
             .service
             .answer(
@@ -2248,8 +2270,9 @@ mod tests {
         let witnessed = retrieve(&pinned, &html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false)), true)
             .await
             .expect("a draft test witnesses the new script");
-        assert_eq!(witnessed.observed.as_ref().map(Vec::len), Some(1));
-        assert_ne!(witnessed.observed, Some(vec![witnessed_script()]));
+        let seen = witnessed.observed.as_ref().map(|seen| seen.resources.clone());
+        assert_eq!(seen.as_ref().map(Vec::len), Some(1));
+        assert_ne!(seen, Some(vec![witnessed_script()]));
 
         // A witnessed script the package could not hold stops before any file is written.
         let odd = httpmock::MockServer::start_async().await;
@@ -2280,10 +2303,39 @@ mod tests {
 
         let server = paddle_server(PADDLE_JS).await;
         let downloader = download::Downloader::for_test(&server.base_url());
+        let refused = retrieve(&pinned, &html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false)), false)
+            .await
+            .err()
+            .expect("the bundled template pins the real pages' layout, not this synthetic one");
+        assert_eq!(refused.reason, RunReason::ProviderChanged);
+        let mut pinned = pinned;
+        pinned.binding.layout =
+            retrieve(&pinned, &html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false)), true)
+                .await
+                .expect("a draft test witnesses the layout")
+                .observed
+                .and_then(|seen| seen.layout);
         let copy = retrieve(&pinned, &html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false)), false)
             .await
-            .expect("the pinned script passes unchanged");
-        assert_eq!(copy.observed, Some(vec![witnessed_script()]));
+            .expect("the pinned script and layout pass unchanged");
+        assert_eq!(copy.observed.map(|seen| seen.resources), Some(vec![witnessed_script()]));
+        // A new colour keeps the layout; a moved box is a provider change, found before anything is saved.
+        let css = include_str!("../../tests/fixtures/workflows/paddle.css");
+        for (changed, kept) in [
+            (css.replace("color: #1f2430", "color: #000000"), true),
+            (css.replace(".c-main { padding-top: 80px; }", ".c-main { padding-top: 96px; }"), false),
+            (format!("{css}\n.receipt-table-total {{ margin-top: 4px; }}\n"), false),
+        ] {
+            assert_ne!(changed, css);
+            let server = paddle_server_with(PADDLE_JS, changed).await;
+            let downloader = download::Downloader::for_test(&server.base_url());
+            let result =
+                retrieve(&pinned, &html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false)), false).await;
+            match kept {
+                true => assert!(result.is_ok(), "colours stay free"),
+                false => assert_eq!(result.err().map(|failure| failure.reason), Some(RunReason::ProviderChanged)),
+            }
+        }
         // Revoked between the page and its resources: nothing more is loaded and the run reports the revocation.
         let page = download::Body {
             bytes: super::super::tests::with_resources(include_str!(
@@ -2334,12 +2386,14 @@ mod tests {
             let output = retrieve(&package, &html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false)), false)
                 .await
                 .unwrap_or_else(|failure| panic!("{name}: {:?}", failure.reason));
-            let mut witnessed = output.observed.clone().expect("a page was read");
+            let seen = output.observed.clone().expect("a page was read");
+            let layout_matches = seen.layout == package.binding.layout;
+            let mut witnessed = seen.resources;
             let mut pinned = package.binding.resources.clone();
             witnessed.sort();
             pinned.sort();
             eprintln!(
-                "{name}: {:?} profile {:?}, {} bytes, scripts match the template: {}",
+                "{name}: {:?} profile {:?}, {} bytes, scripts match the template: {}, layout matches: {layout_matches}",
                 output.provenance,
                 output.profile_version,
                 output.bytes.len(),
@@ -2347,6 +2401,7 @@ mod tests {
             );
             assert_eq!((output.provenance, output.profile_version), (wire::Provenance::HtmlCopy, Some(2)));
             assert_eq!(witnessed, pinned);
+            assert!(layout_matches);
             std::fs::write(dir.join(format!("{name}.live.pdf")), output.bytes).expect("local live copy");
         }
     }
