@@ -7,10 +7,15 @@
 <!--
   Entwürfe für den Chat der Suite (Issue #470, Konzept docs/chat.md, Machbarkeit docs/chat-machbarkeit.md):
   Kontaktliste, Chatfenster, eingehender Anruf, laufender Videoanruf und Gerätewahl, wie bei ICQ als
-  getrennte Fenster. Fassungen zur Wahl:
-    Gruppen        A · Abschnitt unter den Personen   B · Umschalter oben   C · Knopf „Group chats…“
-    Klingeln       Benachrichtigung · kleines Fenster
-    Anruf          A · Bild in Bild                   B · Nebeneinander
+  getrennte Fenster. Dazu Dateien, Bilder und Videos im Chat (Issue #636, Abschnitt #medien). Fassungen, gewählt vom Menschen am 2026-11-11 (chat.md Entscheidung 24); die
+  verworfenen bleiben zum Vergleich:
+    Gruppen        B · Umschalter oben (gewählt) · A · Abschnitt unter den Personen · C · Knopf „Group chats…“
+    Video          extern öffnen (entschieden 2026-11-11, chat.md Entscheidung 22) · im Fenster (verworfen, zum Vergleich)
+    Bild groß      B · eigenes Fenster (gewählt) · A · im Chatfenster
+    Hochladen      Leiste über dem Feld (gewählt) · kleiner Dialog
+    Medien         Seitenleiste (gewählt) · eigenes Fenster
+    Klingeln       kleines Fenster (gewählt) · Benachrichtigung
+    Anruf          A · Bild in Bild zu zweit (gewählt) · B · Nebeneinander ab drei Personen (gewählt, mit Gruppenanrufen)
   Farben und Schrift aus ../linear/torro.css, Maße nach dem Standard-Design (torro-design), Icons aus Lucide
   0.469.0. Oberfläche englisch wie in der App, Beschriftung der Seite deutsch. Beispieldaten erfunden.
 -->
@@ -21,17 +26,25 @@
 <main class="page">
   <h1>Chat wie ICQ: Kontaktliste, Chatfenster, Anrufe</h1>
   <p class="lead">Entwürfe zu #470. Die Kontaktliste ist ein eigenes, schmales Fenster. Ein Doppelklick auf einen Namen öffnet ein eigenes Chatfenster, aus dem ein Anruf startet. Chat- und Anruffenster schweben über den Kacheln, damit ein Doppelklick den Bildschirm nicht neu aufteilt.</p>
-  <p>Oben die Fassungen umschalten. Die Wahl zu Gruppen und Klingeln trifft der Mensch beim Durchsehen; das Konzept übernimmt sie danach.</p>
+  <p>Oben die Fassungen umschalten. Alle sind entschieden (2026-11-11, Konzept Entscheidungen 22 und 24): Gruppen als Umschalter, Klingeln als kleines Fenster, Anruf zu zweit Bild in Bild und ab drei Personen nebeneinander, Video extern, Bild groß als eigenes Fenster, Hochladen als Leiste, Medien-Übersicht als Seitenleiste. Die verworfenen Fassungen bleiben zum Vergleich.</p>
 
   <div class="controls" role="group" aria-label="Fassungen">
     <div class="crow" data-ctl="theme"><span class="olbl">Darstellung</span>
       <button type="button" id="t-dark" data-v="dark">Dunkel</button><button type="button" id="t-light" data-v="light">Hell</button></div>
     <div class="crow" data-ctl="groups"><span class="olbl">Gruppen</span>
-      <button type="button" id="g-a" data-v="a">A · Abschnitt</button><button type="button" id="g-b" data-v="b">B · Umschalter</button><button type="button" id="g-c" data-v="c">C · Knopf</button></div>
+      <button type="button" id="g-a" data-v="a">A · Abschnitt (verworfen)</button><button type="button" id="g-b" data-v="b">B · Umschalter (gewählt)</button><button type="button" id="g-c" data-v="c">C · Knopf (verworfen)</button></div>
     <div class="crow" data-ctl="ring"><span class="olbl">Klingeln</span>
-      <button type="button" id="r-n" data-v="notif">Benachrichtigung</button><button type="button" id="r-w" data-v="window">Kleines Fenster</button></div>
+      <button type="button" id="r-n" data-v="notif">Benachrichtigung (verworfen)</button><button type="button" id="r-w" data-v="window">Kleines Fenster (gewählt)</button></div>
     <div class="crow" data-ctl="call"><span class="olbl">Anruf</span>
-      <button type="button" id="c-a" data-v="a">A · Bild in Bild</button><button type="button" id="c-b" data-v="b">B · Nebeneinander</button></div>
+      <button type="button" id="c-a" data-v="a">A · Bild in Bild (zu zweit)</button><button type="button" id="c-b" data-v="b">B · Nebeneinander (ab drei)</button></div>
+    <div class="crow" data-ctl="video"><span class="olbl">Video</span>
+        <button type="button" data-v="extern">Extern öffnen (entschieden)</button><button type="button" data-v="inline">Im Fenster (verworfen)</button></div>
+    <div class="crow" data-ctl="viewer"><span class="olbl">Bild groß</span>
+        <button type="button" data-v="a">A · Im Chatfenster (verworfen)</button><button type="button" data-v="b">B · Eigenes Fenster (gewählt)</button></div>
+    <div class="crow" data-ctl="upload"><span class="olbl">Hochladen</span>
+        <button type="button" data-v="bar">Leiste über dem Feld (gewählt)</button><button type="button" data-v="dialog">Kleiner Dialog (verworfen)</button></div>
+    <div class="crow" data-ctl="media"><span class="olbl">Medien</span>
+        <button type="button" data-v="side">Seitenleiste (gewählt)</button><button type="button" data-v="window">Eigenes Fenster (verworfen)</button></div>
   </div>
 
   <!-- 1 · Kontaktliste und Chatfenster -->
@@ -97,6 +110,7 @@
             <div class="msg"><div class="bub">I would like to show you the new start page before the meeting.</div><span class="meta tab">10:02</span></div>
           </div>
           <div class="compose">
+            <button class="ibtn" type="button" title="Attach file"><svg data-i="clip"></svg></button>
             <div class="input typed">Sure, call me in five minutes|</div>
             <button class="ibtn" type="button" title="Send (Enter)"><svg data-i="send"></svg></button>
           </div>
@@ -104,7 +118,7 @@
       </div>
 
       <div data-only="groups:c">
-        <p class="cap">Fassung C · Menü am Knopf „Group chats…“</p>
+        <p class="cap">Fassung C · Menü am Knopf „Group chats…“ (verworfen)</p>
         <div class="pop" style="position:relative;width:300px" aria-label="Group chats menu">
           <div class="mlabel">Group chats</div>
           <div>
@@ -116,7 +130,7 @@
       </div>
 
       <div data-only="groups:b">
-        <p class="cap">Fassung B · Reiter „Groups“</p>
+        <p class="cap">Fassung B · Reiter „Groups“ (gewählt)</p>
         <div class="win" style="width:300px;height:250px" aria-label="Groups tab">
           <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">Contacts</b></div>
           <div style="padding:8px 8px 0"><div class="seg"><span>People</span><span class="on">Groups <span class="tab">3</span></span></div></div>
@@ -129,19 +143,223 @@
       </div>
     </div>
     <ul class="notes">
-      <li>A zeigt alles in einer Liste, wird aber bei vielen Gruppen lang. B trennt sauber, versteckt aber ungelesene Gruppen hinter dem Reiter (Zahl am Reiter). C hält die Liste rein bei Personen wie ICQ; Gruppen sind einen Klick weiter, der Knopf zeigt die ungelesenen.</li>
+      <li><b>Gewählt am 2026-11-11: B.</b> A zeigt alles in einer Liste, wird aber bei vielen Gruppen lang. B trennt sauber, versteckt aber ungelesene Gruppen hinter dem Reiter (Zahl am Reiter). C hält die Liste rein bei Personen wie ICQ; Gruppen sind einen Klick weiter, der Knopf zeigt die ungelesenen.</li>
       <li>Ein Gruppenchat öffnet sich in jeder Fassung im selben Chatfenster wie ein Chat zu zweit, mit der Zahl der Teilnehmer statt des Status im Kopf.</li>
       <li>Eine Tipp-Anzeige („Anna is typing…“) fehlt in der ersten Fassung: Ohne High-Performance-Backend (so auf dem eigenen Server) kostet sie eine eigene Verbindung je offenem Chat; sie kommt später.</li>
     </ul>
   </section>
 
-  <!-- 2 · Eingehender Anruf -->
+  <!-- 2 · Dateien und Medien (#636) -->
+  <section id="medien">
+    <h2>Dateien, Bilder und Videos</h2>
+    <p>Stufe 4 des Chats (#636). Bilder zeigt der Verlauf als Vorschau vom eigenen Nextcloud-Server, Videos mit Abspielknopf, Sprachnachrichten mit Wellenform, andere Dateien als Zeile mit „Open“, „Download“ und „Open in Nextcloud“. Links bekommen eine Karte, deren Bild ebenfalls vom eigenen Server kommt; fremde Server fragt das Fenster nie an. Senden geht über die Büroklammer, durch Ziehen ins Fenster und durch Einfügen aus der Zwischenablage.</p>
+    <div class="stage">
+      <div>
+        <p class="cap">Chatfenster mit Medien · 440 breit, hier höher als üblich, damit jede Art zu sehen ist</p>
+        <div class="win" style="width:440px;height:960px" aria-label="Chat window with media">
+          <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">Anna Berg</b></div>
+          <div class="chead">
+            <span class="av" style="--c:#5B8CFF">AB<span class="st"></span></span>
+            <span class="who grow"><b class="ell">Anna Berg</b><span><span class="st inl"></span>Online</span></span>
+            <button class="ibtn" type="button" title="Audio call"><svg data-i="phone"></svg></button>
+            <button class="ibtn" type="button" title="Video call"><svg data-i="video"></svg></button>
+            <button class="ibtn" type="button" title="Shared media"><svg data-i="grid"></svg></button>
+            <button class="ibtn" type="button" title="More"><svg data-i="more"></svg></button>
+          </div>
+          <div class="msgs" style="gap:6px">
+            <span class="day">Today</span>
+            <div class="media">
+              <div class="ph thumb" title="screenshot.png · click to enlarge" role="img" aria-label="Image preview: screenshot.png"></div>
+              <span class="cap2">Start page, draft 2</span><span class="meta tab">10:02</span>
+            </div>
+            <div class="media mine">
+              <div class="ph p2 thumb v" role="img" aria-label="Video: demo.mp4" data-only="video:inline" title="Play (Space)"><span class="fade"></span><span class="playdot"><svg data-i="play"></svg></span><span class="dur">0:42</span></div>
+              <div class="ph p2 thumb v" role="img" aria-label="Video: demo.mp4" data-only="video:extern" title="Opens in your video player"><span class="fade"></span><span class="playdot"><svg data-i="play"></svg></span><span class="dur"><svg data-i="external"></svg>0:42</span></div>
+              <span class="cap2">Short demo</span><span class="meta tab">10:05</span>
+            </div>
+            <div class="media">
+              <div class="voice"><button class="ibtn" type="button" title="Play voice message"><svg data-i="play"></svg></button><span class="wave" aria-hidden="true"><i class="on" style="height:30%"></i><i class="on" style="height:70%"></i><i class="on" style="height:50%"></i><i class="on" style="height:90%"></i><i style="height:40%"></i><i style="height:65%"></i><i style="height:25%"></i><i style="height:80%"></i><i style="height:55%"></i><i style="height:35%"></i><i style="height:60%"></i><i style="height:20%"></i></span><span class="tab" style="font-size:12px;color:var(--text3)">0:12</span></div>
+              <span class="meta tab">Voice message · 10:07</span>
+            </div>
+            <div class="media" style="max-width:92%">
+              <div class="filerow"><span class="ftile"><svg data-i="file"></svg></span><span class="fwho"><b class="ell">Offer.pdf</b><span class="tab">1.2 MB · PDF</span></span>
+                <button class="ibtn" type="button" title="Open"><svg data-i="external"></svg></button><button class="ibtn" type="button" title="Download"><svg data-i="download"></svg></button><button class="ibtn" type="button" title="Open in Nextcloud"><svg data-i="cloud"></svg></button></div>
+            </div>
+            <div class="media">
+              <div class="lcard"><div class="ph p3" role="img" aria-label="Preview image from your Nextcloud"><span class="playdot"><svg data-i="play"></svg></span></div><div class="lt"><b class="ell">Relaunch walkthrough</b><span><svg data-i="link" class="s14"></svg>youtube.com</span></div></div>
+              <span class="meta tab">10:09</span>
+            </div>
+          </div>
+          <div class="upbar" data-only="upload:bar">
+            <div class="uprow"><span class="ph p4"></span><span class="fwho"><b class="ell" style="font-weight:500">screenshot.png</b><span class="track"><i style="width:70%"></i></span></span><span class="tab" style="font-size:12px;color:var(--text3)">70%</span><button class="ibtn" type="button" title="Cancel upload"><svg data-i="x"></svg></button></div>
+          </div>
+          <div class="compose">
+            <button class="ibtn" type="button" title="Attach file"><svg data-i="clip"></svg></button>
+            <div class="input">Write a message…</div>
+            <button class="ibtn" type="button" title="Send (Enter)"><svg data-i="send"></svg></button>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <p class="cap">Ohne Vorschau · Rückfall</p>
+        <div class="win" style="width:360px;height:auto;padding:12px 16px;gap:8px" aria-label="Fallbacks without preview">
+          <div class="filerow"><span class="ftile"><svg data-i="video"></svg></span><span class="fwho"><b class="ell">site-tour.mov</b><span class="tab">86 MB · Video · no preview</span></span>
+            <button class="ibtn" type="button" title="Play" data-only="video:inline"><svg data-i="play"></svg></button><button class="ibtn" type="button" title="Open in your video player" data-only="video:extern"><svg data-i="external"></svg></button><button class="ibtn" type="button" title="Download"><svg data-i="download"></svg></button><button class="ibtn" type="button" title="Open in Nextcloud"><svg data-i="cloud"></svg></button></div>
+          <div class="filerow"><span class="ftile"><svg data-i="image"></svg></span><span class="fwho"><b class="ell">logo.svg</b><span class="tab">12 KB · Image · no preview</span></span>
+            <button class="ibtn" type="button" title="Download"><svg data-i="download"></svg></button><button class="ibtn" type="button" title="Open in Nextcloud"><svg data-i="cloud"></svg></button></div>
+          <div class="filerow"><span class="ftile"><svg data-i="link"></svg></span><span class="fwho"><b class="ell">example.org/article</b><span>Link to another site · no card yet</span></span><button class="cbtn ghost" type="button" title="Your Nextcloud fetches the page; the site may see when">Show preview</button></div>
+        </div>
+      </div>
+
+      <div>
+        <p class="cap">Beim Ziehen · ganze Fläche</p>
+        <div class="win" style="width:440px;height:360px" aria-label="Drop target">
+          <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">Anna Berg</b></div>
+          <div class="msgs"><div class="msg"><div class="bub">Can you send me the photos?</div></div></div>
+          <div class="drop"><div class="zone"><svg data-i="upload"></svg><b>Drop to send to Anna Berg</b><span>Up to 512 MB · files go to your Talk folder in Nextcloud</span></div></div>
+        </div>
+      </div>
+
+      <div data-only="upload:bar">
+        <p class="cap">Fassung „Leiste“ · eingefügtes Bild vor dem Senden (gewählt)</p>
+        <div class="win" style="width:440px;height:auto" aria-label="Pasted image in the bar">
+          <div class="upbar" style="border-top:0">
+            <div class="uprow"><span class="ph"></span><span class="fwho"><b class="ell" style="font-weight:500">Pasted image.png</b><span class="tab">1440 × 900 · 412 KB</span></span><button class="ibtn" type="button" title="Remove"><svg data-i="x"></svg></button></div>
+          </div>
+          <div class="compose">
+            <button class="ibtn" type="button" title="Attach file"><svg data-i="clip"></svg></button>
+            <div class="input typed">Here is the new header|</div>
+            <button class="ibtn" type="button" title="Send (Enter)"><svg data-i="send"></svg></button>
+          </div>
+        </div>
+        <ul class="notes" style="margin-top:8px"><li>Der Text im Feld wird die Beschriftung der Datei. Senden lädt hoch; die Leiste zeigt dann den Fortschritt mit ✕ (Chatfenster links).</li></ul>
+      </div>
+
+      <div data-only="upload:dialog">
+        <p class="cap">Fassung „Dialog“ · eingefügtes Bild vor dem Senden · 380 breit (verworfen)</p>
+        <div class="dlg" style="width:380px" aria-label="Send file dialog">
+          <div class="dh"><b class="grow ell">Send to Anna Berg</b><button class="ibtn" type="button" title="Close (Esc)"><svg data-i="x"></svg></button></div>
+          <div class="db">
+            <div class="ph" style="height:180px"></div>
+            <div class="tab" style="font-size:13px;line-height:18px;color:var(--text3)">Pasted image.png · 1440 × 900 · 412 KB</div>
+            <div class="field" style="color:var(--text)">Here is the new header|</div>
+          </div>
+          <div class="df"><button class="cbtn ghost" type="button">Cancel</button><button class="cbtn primary" type="button"><svg data-i="send" class="s14"></svg>Send</button></div>
+        </div>
+        <p class="cap" style="margin-top:16px">Fortschritt danach im Verlauf</p>
+        <div class="win" style="width:380px;height:auto;padding:12px 16px" aria-label="Upload progress in the history">
+          <div class="media mine" style="max-width:100%">
+            <div class="filerow" style="width:300px"><span class="ph p4" style="width:32px;height:32px;border-radius:4px"></span><span class="fwho" style="gap:4px"><b class="ell">Pasted image.png</b><span class="track"><i style="width:70%"></i></span></span><button class="ibtn" type="button" title="Cancel upload"><svg data-i="x"></svg></button></div>
+            <span class="meta tab">Sending · 70%</span>
+          </div>
+        </div>
+      </div>
+
+      <div data-only="viewer:a">
+        <p class="cap">Fassung A · Bild groß im Chatfenster · 440 × 680 (verworfen)</p>
+        <div class="win" style="width:440px;height:680px" aria-label="Image viewer inside the chat window">
+          <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">Anna Berg</b></div>
+          <div class="viewer" style="top:40px">
+            <div class="vh"><b class="grow ell">screenshot.png</b><button class="ibtn" type="button" title="Download"><svg data-i="download"></svg></button><button class="ibtn" type="button" title="Open in Nextcloud"><svg data-i="cloud"></svg></button><button class="ibtn" type="button" title="Close (Esc)"><svg data-i="x"></svg></button></div>
+            <div class="vbody"><button class="ibtn" type="button" title="Previous (←)"><svg data-i="left"></svg></button><div class="ph" role="img" aria-label="screenshot.png"></div><button class="ibtn" type="button" title="Next (→)"><svg data-i="right"></svg></button></div>
+            <div class="vf">2 / 5 · Anna Berg · 10:02</div>
+          </div>
+        </div>
+      </div>
+
+      <div data-only="viewer:b">
+        <p class="cap">Fassung B · Bild groß als eigenes Fenster · 900 × 620, schwebend (gewählt)</p>
+        <div class="win" style="width:900px;height:620px" aria-label="Image viewer window">
+          <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">screenshot.png</b><button class="ibtn" type="button" title="Download"><svg data-i="download"></svg></button><button class="ibtn" type="button" title="Open in Nextcloud"><svg data-i="cloud"></svg></button></div>
+          <div class="viewer" style="top:40px;position:absolute">
+            <div class="vbody" style="padding-top:12px"><button class="ibtn" type="button" title="Previous (←)"><svg data-i="left"></svg></button><div class="ph" role="img" aria-label="screenshot.png"></div><button class="ibtn" type="button" title="Next (→)"><svg data-i="right"></svg></button></div>
+            <div class="vf">2 / 5 · Anna Berg · 10:02</div>
+          </div>
+        </div>
+      </div>
+
+      <div data-only="video:inline">
+        <p class="cap">Verworfen · Video im Fenster, wie „Bild groß“ mit Leiste zum Abspielen</p>
+        <div class="win" style="width:440px;height:340px" aria-label="Video player">
+          <div class="viewer" style="position:absolute">
+            <div class="vh"><b class="grow ell">demo.mp4</b><button class="ibtn" type="button" title="Download"><svg data-i="download"></svg></button><button class="ibtn" type="button" title="Close (Esc)"><svg data-i="x"></svg></button></div>
+            <div class="vbody" style="grid-template-columns:1fr"><div class="ph p2" role="img" aria-label="Video demo.mp4"></div></div>
+            <div class="vctl"><button class="ibtn" type="button" title="Pause (Space)"><svg data-i="pause"></svg></button><span class="tab">0:12</span><span class="bar"><i></i></span><span class="tab">0:42</span><button class="ibtn" type="button" title="Mute (M)"><svg data-i="volume"></svg></button></div>
+          </div>
+        </div>
+      </div>
+
+      <div data-only="media:side">
+        <p class="cap">Medien-Übersicht · Seitenleiste im Chatfenster · 760 × 680 (gewählt)</p>
+        <div class="win" style="width:760px;height:680px" aria-label="Chat window with shared media">
+          <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">Anna Berg</b></div>
+          <div style="flex:1;display:flex;min-height:0">
+            <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+              <div class="chead"><span class="av" style="--c:#5B8CFF">AB<span class="st"></span></span><span class="who grow"><b class="ell">Anna Berg</b><span>Online</span></span><button class="ibtn on" type="button" title="Hide shared media"><svg data-i="grid"></svg></button></div>
+              <div class="msgs"><span class="day">Today</span><div class="media"><div class="ph thumb"></div><span class="meta tab">10:02</span></div></div>
+            </div>
+            <div class="side">
+              <div class="chead" style="height:48px"><b class="grow">Shared</b><button class="ibtn" type="button" title="Close"><svg data-i="x"></svg></button></div>
+              <div class="tabsrow"><span class="on">Media</span><span>Files</span><span>Voice</span><span>Links</span></div>
+              <div class="mgroup">November</div>
+              <div class="grid"><div class="ph"></div><div class="ph p2"></div><div class="ph p3"></div><div class="ph p4"></div><div class="ph p2"></div><div class="ph"></div></div>
+              <div class="mgroup">October</div>
+              <div class="grid"><div class="ph p3"></div><div class="ph"></div><div class="ph p4"></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div data-only="media:window">
+        <p class="cap">Medien-Übersicht · eigenes Fenster · 560 × 600, schwebend (verworfen)</p>
+        <div class="win" style="width:560px;height:600px" aria-label="Shared media window">
+          <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">Shared with Anna Berg</b></div>
+          <div class="tabsrow"><span>Media</span><span class="on">Files <span class="tab" style="color:var(--text3);font-weight:400">3</span></span><span>Voice</span><span>Links</span></div>
+          <div style="padding:12px 16px;display:flex;flex-direction:column;gap:6px">
+            <div class="filerow"><span class="ftile"><svg data-i="file"></svg></span><span class="fwho"><b class="ell">Offer.pdf</b><span class="tab">1.2 MB · Anna Berg · Today</span></span><button class="ibtn" type="button" title="Open"><svg data-i="external"></svg></button><button class="ibtn" type="button" title="Download"><svg data-i="download"></svg></button><button class="ibtn" type="button" title="Show in chat"><svg data-i="chat"></svg></button></div>
+            <div class="filerow"><span class="ftile"><svg data-i="file"></svg></span><span class="fwho"><b class="ell">Sitemap.xlsx</b><span class="tab">84 KB · You · Yesterday</span></span><button class="ibtn" type="button" title="Open"><svg data-i="external"></svg></button><button class="ibtn" type="button" title="Download"><svg data-i="download"></svg></button><button class="ibtn" type="button" title="Show in chat"><svg data-i="chat"></svg></button></div>
+            <div class="filerow"><span class="ftile"><svg data-i="file"></svg></span><span class="fwho"><b class="ell">Briefing v3.docx</b><span class="tab">240 KB · Anna Berg · 28 Oct</span></span><button class="ibtn" type="button" title="Open"><svg data-i="external"></svg></button><button class="ibtn" type="button" title="Download"><svg data-i="download"></svg></button><button class="ibtn" type="button" title="Show in chat"><svg data-i="chat"></svg></button></div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <p class="cap">Freigabe · ein Agent will eine Datei schicken · 400 breit</p>
+        <div class="dlg" style="width:400px" aria-label="Approval for sending a file">
+          <div class="dh"><b class="grow ell">Claude Code wants to send a file</b></div>
+          <div class="db">
+            <dl class="facts">
+              <dt>To</dt><dd>Direct chat with Anna Berg</dd>
+              <dt>File</dt><dd>weekly-report.pdf</dd>
+              <dt>Size</dt><dd class="tab">2.4 MB · PDF</dd>
+              <dt>Made by</dt><dd>this agent (PDF tool)</dd>
+              <dt>Caption</dt><dd>Here is this week's report.</dd>
+            </dl>
+            <div class="filerow"><span class="ftile"><svg data-i="file"></svg></span><span class="fwho"><b class="ell">weekly-report.pdf</b><span>Preview</span></span><button class="ibtn" type="button" title="Open"><svg data-i="external"></svg></button></div>
+            <div class="note"><svg data-i="upload" class="s14"></svg><span>Uploads weekly-report.pdf to your Talk folder in Nextcloud and shares it with this conversation.</span></div>
+          </div>
+          <div class="df"><button class="cbtn" type="button">Deny</button><button class="cbtn primary" type="button">Allow</button></div>
+        </div>
+      </div>
+    </div>
+    <ul class="notes">
+      <li><b>Video (entschieden am 2026-11-11: extern):</b> Ein Klick lädt die Datei und gibt sie dem Videoprogramm des Systems (Pfeil an der Dauer). „Im Fenster“ bleibt nur zum Vergleich stehen; dafür bräuchte es GStreamer. Die Dauer steht nur da, wenn der Kern sie kennt: Talk liefert sie nicht mit.</li>
+      <li><b>Bild groß (gewählt am 2026-11-11: B):</b> A legt sich über das Chatfenster (Esc schließt, ← → blättern durch die Bilder der Unterhaltung). B öffnet ein eigenes, schwebendes Fenster, das größer sein kann als der Chat.</li>
+      <li><b>Hochladen (gewählt am 2026-11-11: Leiste):</b> Die Leiste hält das Antwortfeld frei und zeigt den Fortschritt dort, wo man schreibt. Der Dialog zeigt das Bild groß vor dem Senden und schützt vor einem versehentlich eingefügten Bildschirmfoto.</li>
+      <li><b>Link-Karten:</b> Links auf den eigenen Nextcloud-Server bekommen ihre Karte von selbst. Bei fremden Seiten erst nach „Show preview“, weil der Server die Seite dafür abruft und der Absender sonst sähe, wann gelesen wurde (Entscheidung 23). Die Karte im Chatfenster zeigt den Stand nach dem Klick.</li>
+      <li><b>Medien-Übersicht (gewählt am 2026-11-11: Seitenleiste):</b> Die Seitenleiste macht das Chatfenster breiter, das eigene Fenster lässt den Chat, wie er ist. Reiter wie in Talk: Medien, Dateien, Sprachnachrichten, Links.</li>
+      <li>Ohne Vorschau (der Server macht keine Vorschaubilder von Videos, SVG zeigt die Suite nie) steht eine Datei-Zeile mit Symbol und Art. Aktive und ausführbare Arten wie SVG haben kein „Open“, nur „Download“ und „Open in Nextcloud“. Die Freigabe nennt nur Fakten aus dem Kern, nie Text des Agenten außer der Beschriftung.</li>
+    </ul>
+  </section>
+
+  <!-- 3 · Eingehender Anruf -->
   <section id="klingeln">
     <h2>Eingehender Anruf</h2>
     <p>Klingelt es, kommt eine Meldung, auch wenn kein Chatfenster offen ist. „Accept“ ist der Primärknopf; „Decline“ lehnt ab, ohne die Gegenseite zu beenden, wie in Talk.</p>
     <div class="stage">
       <div data-only="ring:notif">
-        <p class="cap">Als Benachrichtigung oben rechts · 360 breit</p>
+        <p class="cap">Als Benachrichtigung oben rechts · 360 breit (verworfen)</p>
         <div class="desk" style="width:440px;height:200px">
           <div class="notif" style="position:absolute;top:16px;right:16px" aria-label="Incoming call notification">
             <div class="row"><span class="av lg pulse" style="--c:#5B8CFF">AB</span>
@@ -152,7 +370,7 @@
         </div>
       </div>
       <div data-only="ring:window">
-        <p class="cap">Als kleines Fenster in der Mitte · 340 × 360</p>
+        <p class="cap">Als kleines Fenster in der Mitte · 340 × 360 (gewählt)</p>
         <div class="win" style="width:340px;height:360px" aria-label="Incoming call window">
           <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">Incoming call</b></div>
           <div class="ringing">
@@ -165,20 +383,20 @@
       </div>
     </div>
     <ul class="notes">
-      <li>Benachrichtigung: stört am wenigsten, braucht aber eigene Knöpfe in der Systembenachrichtigung (macOS kann das, Linux je nach Desktop). Wo das fehlt, öffnet ein Klick das Chatfenster mit dem Klingeln oben.</li>
+      <li><b>Gewählt am 2026-11-11: kleines Fenster.</b> Benachrichtigung: stört am wenigsten, braucht aber eigene Knöpfe in der Systembenachrichtigung (macOS kann das, Linux je nach Desktop). Wo das fehlt, öffnet ein Klick das Chatfenster mit dem Klingeln oben.</li>
       <li>Kleines Fenster: auf jedem System gleich und unübersehbar, schwebt mittig über den Kacheln, kommt aber in den Vordergrund.</li>
       <li>Bei „Do not disturb“ klingelt nichts; der Anruf steht danach als „Missed video call“ im Chat und im Notification Hub.</li>
     </ul>
   </section>
 
-  <!-- 3 · Laufender Anruf -->
+  <!-- 4 · Laufender Anruf -->
   <section id="anruf">
     <h2>Laufender Videoanruf</h2>
     <p>Anrufe werden selbst gebaut (entschieden am 2026-11-06). Ein eigenes Fenster je Anruf, schwebend, frei in der Größe. Unten Mikrofon, Kamera, Geräte und Auflegen; die Tasten zeigen ihren Zustand mit Icon und Tooltip, nicht nur mit Farbe. Das Chatfenster bleibt daneben offen.</p>
     <div class="stage">
       <div>
-        <p class="cap" data-only="call:a">Fassung A · Bild in Bild · 760 × 500</p>
-        <p class="cap" data-only="call:b">Fassung B · Nebeneinander · 760 × 500</p>
+        <p class="cap" data-only="call:a">Fassung A · Bild in Bild · 760 × 500 (gewählt für Anrufe zu zweit)</p>
+        <p class="cap" data-only="call:b">Fassung B · Nebeneinander · 760 × 500 (gewählt ab drei Personen, mit Gruppenanrufen)</p>
         <div class="win" style="width:760px;height:500px" aria-label="Call window">
           <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="ell">Call with Anna Berg</b><span class="faint tab" style="font-size:13px">· 04:12</span><span class="grow"></span>
             <button class="ibtn" type="button" title="Show chat"><svg data-i="chat"></svg></button></div>
@@ -204,13 +422,13 @@
       </div>
     </div>
     <ul class="notes">
-      <li>A gibt der anderen Person den meisten Platz, das eigene Bild lässt sich in jede Ecke ziehen. B passt zu breiten, flachen Fenstern und zeigt beide gleich groß.</li>
+      <li><b>Gewählt am 2026-11-11:</b> A zu zweit, B ab drei Personen, sobald Gruppenanrufe kommen. A gibt der anderen Person den meisten Platz, das eigene Bild lässt sich in jede Ecke ziehen. B passt zu breiten, flachen Fenstern und zeigt beide gleich groß.</li>
       <li>Das Mikrofon ist hier stumm (gefüllte Taste, durchgestrichenes Icon, „You“ mit Symbol). Bildschirm teilen steht ausgegraut für später.</li>
       <li>Ein Gruppenanruf (später) setzt die Bilder als Raster; die Leiste bleibt gleich.</li>
     </ul>
   </section>
 
-  <!-- 4 · Gerätewahl -->
+  <!-- 5 · Gerätewahl -->
   <section id="geraete">
     <h2>Gerätewahl</h2>
     <p>Aus dem Anruffenster („Devices“) und aus den Einstellungen des Chats. Die Vorschau zeigt das eigene Bild nur auf diesem Rechner; nichts davon wird gespeichert oder verschickt.</p>
@@ -259,12 +477,26 @@ const I = {
   volume:'<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/>',
   screen:'<path d="m9 10 3-3 3 3"/><path d="M12 13V7"/><rect width="20" height="14" x="2" y="3" rx="2"/><path d="M12 17v4"/><path d="M8 21h8"/>',
   lock:'<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  clip:'<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
+  play:'<polygon points="6 3 20 12 6 21 6 3"/>',
+  pause:'<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>',
+  download:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>',
+  upload:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/>',
+  file:'<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
+  image:'<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>',
+  x:'<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  external:'<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  cloud:'<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>',
+  link:'<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+  grid:'<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/>',
+  left:'<path d="m15 18-6-6 6-6"/>',
+  right:'<path d="m9 18 6-6-6-6"/>',
   belloff:'<path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742"/><path d="m2 2 20 20"/><path d="M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05"/>'
 };
 document.querySelectorAll('svg[data-i]').forEach(s => { s.setAttribute('viewBox','0 0 24 24'); s.setAttribute('aria-hidden','true'); s.innerHTML = I[s.dataset.i] || ''; });
 
 /* Fassungen: data-only="schalter:wert" zeigt ein Teil nur bei dieser Wahl. */
-const state = { theme: null, groups: 'a', ring: 'notif', call: 'a' };
+const state = { theme: null, groups: 'b', ring: 'window', call: 'a', video: 'extern', viewer: 'b', upload: 'bar', media: 'side' };
 function apply() {
   if (state.theme) document.documentElement.setAttribute('data-theme', state.theme);
   document.querySelectorAll('[data-only]').forEach(el => {
