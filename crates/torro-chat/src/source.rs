@@ -9,7 +9,7 @@ use std::future::Future;
 
 use chrono::{DateTime, Utc};
 
-use crate::model::{Conversation, Mention, MessagePage, OwnStatus, Person, Status};
+use crate::model::{Conversation, Mention, MessagePage, NotifyLevel, OwnStatus, Person, SearchHit, Status};
 
 /// Why a call failed, in the terms the core answers with (`docs/chat.md`, "Fehler").
 ///
@@ -112,6 +112,57 @@ pub trait ChatSource: Send + Sync {
         conversation: String,
         query: String,
     ) -> impl Future<Output = Result<Vec<Mention>, ChatError>> + Send;
+
+    /// `chat.edit_message`: replaces the text of one of the person's own messages (`id` is
+    /// `<conversation>/<number>`); the old text is gone and the message counts as edited.
+    ///
+    /// Must fail with [`ChatError::NotFound`] for an unknown message and with
+    /// [`ChatError::Unsupported`] (a sentence for people) for a message of someone else, one that
+    /// was deleted or is no message of a person, and one older than the provider allows (24 hours
+    /// on Talk). `text` goes out as it is: mentions written as `@"<id>"`.
+    fn edit_message(&self, id: String, text: String) -> impl Future<Output = Result<(), ChatError>> + Send;
+
+    /// `chat.delete_message`: deletes one of the person's own messages for everyone; it cannot be
+    /// restored. Afterwards the message is still there with [`crate::MessageKind::Deleted`], an
+    /// empty text and neither files nor reactions.
+    ///
+    /// Errors as [`ChatSource::edit_message`] (6 hours on Talk).
+    fn delete_message(&self, id: String) -> impl Future<Output = Result<(), ChatError>> + Send;
+
+    /// `chat.react`: gives the reaction `emoji` (one emoji) to the message `id`, or with `remove`
+    /// takes the person's own back. Giving one the person gave already, or taking back one they did
+    /// not give, changes nothing and is no error.
+    ///
+    /// Must fail with [`ChatError::NotFound`] for an unknown message and [`ChatError::Unsupported`]
+    /// for a message nobody can react to (deleted, written by the provider).
+    fn react(&self, id: String, emoji: String, remove: bool) -> impl Future<Output = Result<(), ChatError>> + Send;
+
+    /// `chat.set_favorite`: makes the conversation a favourite or no longer one; lists show
+    /// favourites first. [`ChatError::NotFound`] for an unknown conversation.
+    fn set_favorite(&self, conversation: String, favorite: bool) -> impl Future<Output = Result<(), ChatError>> + Send;
+
+    /// `chat.set_notification_level`: when the person hears of the conversation; it also decides
+    /// where its messages land in the inbox. [`ChatError::NotFound`] for an unknown conversation.
+    fn set_notification_level(
+        &self,
+        conversation: String,
+        level: NotifyLevel,
+    ) -> impl Future<Output = Result<(), ChatError>> + Send;
+
+    /// `chat.search_messages`: messages of one account or all that hold `query`, the newest first,
+    /// at most `limit` (1 to 50, 20 when `None`). Each hit names its message by id, so the
+    /// conversation is the part before the last `/` ([`crate::split_message`]); its title names the
+    /// author and the conversation ("Dana Erb in Team Alpha").
+    ///
+    /// Must fail with [`ChatError::Other`] for a query under two characters (after trimming),
+    /// [`ChatError::NotFound`] for an unknown account and [`ChatError::Unsupported`] when the
+    /// server cannot search. Deleted messages and messages of the provider are never found.
+    fn search_messages(
+        &self,
+        query: String,
+        account: Option<String>,
+        limit: Option<u32>,
+    ) -> impl Future<Output = Result<Vec<SearchHit>, ChatError>> + Send;
 
     /// `chat.create_conversation`: the direct chat with the person `with` (`<account>/<user id>`),
     /// the existing one when there is one.

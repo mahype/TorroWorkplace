@@ -10,7 +10,8 @@ pub use files::*;
 use std::path::PathBuf;
 
 use torro_chat::{
-    ChatError, ChatSource, Conversation, Mention, MessagePage, Outgoing, OwnStatus, Person, StatusChange,
+    ChatError, ChatSource, Conversation, Mention, MessagePage, NotifyLevel, Outgoing, OwnStatus, Person, SearchHit,
+    StatusChange,
 };
 
 use crate::{Request, Response};
@@ -141,6 +142,38 @@ impl ChatSource for ChatClient {
         }
     }
 
+    async fn edit_message(&self, id: String, text: String) -> Result<(), ChatError> {
+        self.ok(Request::ChatEditMessage { id, text }).await
+    }
+
+    async fn delete_message(&self, id: String) -> Result<(), ChatError> {
+        self.ok(Request::ChatDeleteMessage { id }).await
+    }
+
+    async fn react(&self, id: String, emoji: String, remove: bool) -> Result<(), ChatError> {
+        self.ok(Request::ChatReact { id, emoji, remove }).await
+    }
+
+    async fn set_favorite(&self, conversation: String, favorite: bool) -> Result<(), ChatError> {
+        self.ok(Request::ChatSetFavorite { conversation, favorite }).await
+    }
+
+    async fn set_notification_level(&self, conversation: String, level: NotifyLevel) -> Result<(), ChatError> {
+        self.ok(Request::ChatSetNotificationLevel { conversation, level }).await
+    }
+
+    async fn search_messages(
+        &self,
+        query: String,
+        account: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<Vec<SearchHit>, ChatError> {
+        match self.ask(Request::ChatSearchMessages { query, account, limit }).await? {
+            Response::ChatFound { hits } => Ok(hits),
+            other => Err(unexpected(other)),
+        }
+    }
+
     async fn create_conversation(&self, account: String, with: String) -> Result<Conversation, ChatError> {
         match self.ask(Request::ChatCreateConversation { account, with }).await? {
             Response::ChatConversation { conversation } => Ok(*conversation),
@@ -226,6 +259,18 @@ mod tests {
             Request::ChatSuggestMentions { conversation, query, .. } => {
                 demo.suggest_mentions(conversation, query).await.map(|mentions| Response::ChatMentions { mentions })
             }
+            Request::ChatEditMessage { id, text } => done(demo.edit_message(id, text).await),
+            Request::ChatDeleteMessage { id } => done(demo.delete_message(id).await),
+            Request::ChatReact { id, emoji, remove } => done(demo.react(id, emoji, remove).await),
+            Request::ChatSetFavorite { conversation, favorite } => {
+                done(demo.set_favorite(conversation, favorite).await)
+            }
+            Request::ChatSetNotificationLevel { conversation, level } => {
+                done(demo.set_notification_level(conversation, level).await)
+            }
+            Request::ChatSearchMessages { query, account, limit } => {
+                demo.search_messages(query, account, limit).await.map(|hits| Response::ChatFound { hits })
+            }
             Request::ChatCreateConversation { account, with } => demo
                 .create_conversation(account, with)
                 .await
@@ -295,6 +340,36 @@ mod tests {
         let change = StatusChange { status: Some(Status::Away), ..StatusChange::default() };
         chat.set_own_status(ACCOUNT.into(), change).await.expect("status set");
         assert_eq!(chat.own_status(ACCOUNT.into()).await.expect("own status").status, Status::Away);
+        serving.abort();
+    }
+
+    /// Stage 7: each method is one request, and the core's answer comes back as the demo gave it.
+    #[tokio::test]
+    async fn the_windows_change_messages_and_conversations_over_the_socket() {
+        let (chat, serving, _dir) = core().await;
+        let team = torro_chat::demo::TEAM;
+        let own = torro_chat::message_id(team, 4);
+        chat.edit_message(own.clone(), "Tomorrow at nine.".into()).await.expect("edited");
+        chat.react(torro_chat::message_id(team, 3), "🎉".into(), false).await.expect("reacted");
+        chat.react(torro_chat::message_id(team, 3), "👍".into(), true).await.expect("taken back");
+        let page = chat.messages(team.into(), None, None, None).await.expect("messages");
+        let edited = page.messages.iter().find(|message| message.id == own).expect("the own message");
+        assert_eq!((edited.text.as_str(), edited.edited), ("Tomorrow at nine.", true));
+        let cem = page.messages.iter().find(|message| message.number() == 3).expect("Cem's message");
+        assert_eq!(cem.own_reactions, ["🎉"]);
+        let old = chat.edit_message(torro_chat::message_id(BEN, 2), "x".into()).await;
+        assert!(matches!(old, Err(ChatError::Unsupported(text)) if !text.is_empty()), "the reason comes along");
+        chat.delete_message(own).await.expect("deleted");
+
+        chat.set_favorite(BEN.into(), true).await.expect("favourite");
+        chat.set_notification_level(BEN.into(), NotifyLevel::Never).await.expect("level");
+        let ben = chat.conversations(None).await.expect("list").into_iter().find(|c| c.id == BEN).expect("Ben");
+        assert_eq!((ben.favorite, ben.notify), (true, NotifyLevel::Never));
+
+        let hits = chat.search_messages("release".into(), None, None).await.expect("hits");
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].untrusted);
+        assert!(matches!(chat.search_messages("r".into(), None, None).await, Err(ChatError::Other(_))));
         serving.abort();
     }
 

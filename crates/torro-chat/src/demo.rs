@@ -2,7 +2,12 @@
 //! server (`torrochat --demo`, the Notification Hub's demo). Changes live until the app closes.
 //!
 //! One Nextcloud account with six people in every status, two groups and three direct chats: one
-//! with a mention, a file, a system message and a missed call (`docs/chat.md`, "Demo").
+//! with a mention, a file, a system message and a missed call (`docs/chat.md`, "Demo"). For stage 7:
+//! reactions (one of them the person's own), an edited message, two favourites ("Team Alpha" and
+//! the chat with Gesa) and a message of the person's that is too old to change.
+//!
+//! Editing and deleting follow Talk's limits ([`EDIT_FOR`], [`DELETE_FOR`]), measured from the
+//! sample's "now" or the clock, whichever is later, so tests on a fixed time stay the same.
 //!
 //! The sample content is data, not text of the suite, so it is not translated (as in
 //! `torro_pim::demo`).
@@ -14,7 +19,8 @@ use chrono::{DateTime, Duration, Utc};
 
 use crate::model::{
     Author, Conversation, ConversationKind, FileRef, Mention, Message, MessageKind, MessagePage, NotifyLevel,
-    OwnStatus, Person, Preview, Quote, Status, conversation_id, message_id, person_id, split_message, split_person,
+    OwnStatus, Person, Preview, Quote, SearchHit, Status, conversation_id, message_id, person_id, split_message,
+    split_person,
 };
 use crate::source::{ChatError, ChatSource, Outgoing, StatusChange};
 
@@ -33,6 +39,16 @@ pub const LENA: &str = "nextcloud:anna@cloud.example.org/k7pq2xd9";
 /// The most messages one page holds.
 const PAGE_MAX: usize = 100;
 
+/// How long after sending a message can be edited (Talk: 24 hours).
+pub const EDIT_FOR: Duration = Duration::hours(24);
+
+/// How long after sending a message can be deleted (Talk: 6 hours).
+pub const DELETE_FOR: Duration = Duration::hours(6);
+
+/// The hits a search returns when it is not told, and the most.
+const HITS: u32 = 20;
+const HITS_MAX: u32 = 50;
+
 #[derive(Debug)]
 struct Data {
     conversations: Vec<Conversation>,
@@ -40,6 +56,49 @@ struct Data {
     people: Vec<Person>,
     own: OwnStatus,
     next: u64,
+    /// The moment the sample was made for: the limits of editing and deleting count from it.
+    now: DateTime<Utc>,
+}
+
+impl Data {
+    /// The message `id` and the conversation it is in, for changing it.
+    fn message_mut(&mut self, id: &str) -> Result<&mut Message, ChatError> {
+        let (conversation, _) = split_message(id).ok_or(ChatError::NotFound)?;
+        let list = self.messages.get_mut(conversation).ok_or(ChatError::NotFound)?;
+        list.iter_mut().find(|message| message.id == id).ok_or(ChatError::NotFound)
+    }
+
+    /// The person's own message `id`, if it may still be changed within `limit` of sending.
+    fn own_message(&mut self, id: &str, limit: Duration) -> Result<&mut Message, ChatError> {
+        let now = self.now.max(Utc::now());
+        let message = self.message_mut(id)?;
+        if !message.author.own || !matches!(message.kind, MessageKind::Message | MessageKind::Voice) {
+            return Err(ChatError::Unsupported("Only your own messages can be changed.".into()));
+        }
+        if now - message.at > limit {
+            return Err(ChatError::Unsupported(
+                "Messages can only be changed for a limited time after sending.".into(),
+            ));
+        }
+        Ok(message)
+    }
+
+    /// The conversation `id`, for changing it.
+    fn conversation_mut(&mut self, id: &str) -> Result<&mut Conversation, ChatError> {
+        self.conversations.iter_mut().find(|conversation| conversation.id == id).ok_or(ChatError::NotFound)
+    }
+
+    /// The list's preview of `conversation` after its messages changed: the last one as it is now.
+    fn refresh_preview(&mut self, conversation: &str) {
+        let last = self.messages.get(conversation).and_then(|list| list.last()).map(|message| Preview {
+            author: message.author.name.clone(),
+            text: message.text.clone(),
+            system: message.kind != MessageKind::Message,
+        });
+        if let Some(entry) = self.conversations.iter_mut().find(|c| c.id == conversation) {
+            entry.last_message = last;
+        }
+    }
 }
 
 /// The sample; cheap to share behind an `Arc`.
@@ -191,6 +250,8 @@ fn sample(now: DateTime<Utc>) -> Data {
         blurhash: None,
     }];
     ben[4].mentions = vec![Mention { id: ME.into(), name: "Anna Berg".into() }];
+    ben[3].reactions = BTreeMap::from([("👍".to_string(), 1)]);
+    ben[3].own_reactions = vec!["👍".to_string()];
 
     let mut team = vec![
         system(TEAM, 1, ago(3 * 24 * 60), MessageKind::System, "Dana Erb created the conversation"),
@@ -203,7 +264,10 @@ fn sample(now: DateTime<Utc>) -> Data {
         author: "Dana Erb".into(),
         text: "Release notes are in the wiki.".into(),
     });
-    team[2].reactions = BTreeMap::from([("👍".to_string(), 2)]);
+    team[2].reactions = BTreeMap::from([("👍".to_string(), 2), ("🎉".to_string(), 1)]);
+    team[2].own_reactions = vec!["👍".to_string()];
+    team[3].edited = true;
+    team[3].reactions = BTreeMap::from([("❤️".to_string(), 1)]);
 
     let design = conversation_id(ACCOUNT, "design4sync");
     let design_messages = vec![
@@ -232,6 +296,9 @@ fn sample(now: DateTime<Utc>) -> Data {
     conversations[0].person = Some(person_id(ACCOUNT, "ben"));
     conversations[1].person = Some(person_id(ACCOUNT, "gesa"));
     conversations[4].person = Some(person_id(ACCOUNT, "dana"));
+    conversations[1].favorite = true;
+    conversations[2].favorite = true;
+    conversations[2].notify = NotifyLevel::Always;
 
     let messages = BTreeMap::from([
         (BEN.to_string(), ben),
@@ -249,7 +316,7 @@ fn sample(now: DateTime<Utc>) -> Data {
         clear_at: None,
         heartbeat: true,
     };
-    Data { conversations, messages, people, own, next: 100 }
+    Data { conversations, messages, people, own, next: 100, now }
 }
 
 /// The messages of [`LENA`], the oldest first, the last at `now` less six minutes (the Talk entry of
@@ -405,6 +472,108 @@ impl ChatSource for DemoSource {
             .filter_map(|person| {
                 let (_, user) = split_person(&person.id)?;
                 Some(Mention { id: user.to_string(), name: person.name.clone() })
+            })
+            .collect())
+    }
+
+    async fn edit_message(&self, id: String, text: String) -> Result<(), ChatError> {
+        let mut data = self.lock();
+        let message = data.own_message(&id, EDIT_FOR)?;
+        message.text = text;
+        message.edited = true;
+        // Mentions of the old text no longer hold; the sample does not read new ones.
+        message.mentions.clear();
+        if let Some((conversation, _)) = split_message(&id) {
+            data.refresh_preview(conversation);
+        }
+        Ok(())
+    }
+
+    async fn delete_message(&self, id: String) -> Result<(), ChatError> {
+        let mut data = self.lock();
+        let message = data.own_message(&id, DELETE_FOR)?;
+        message.kind = MessageKind::Deleted;
+        message.text.clear();
+        message.mentions.clear();
+        message.files.clear();
+        message.reactions.clear();
+        message.own_reactions.clear();
+        if let Some((conversation, _)) = split_message(&id) {
+            data.refresh_preview(conversation);
+        }
+        Ok(())
+    }
+
+    async fn react(&self, id: String, emoji: String, remove: bool) -> Result<(), ChatError> {
+        let mut data = self.lock();
+        let message = data.message_mut(&id)?;
+        if !matches!(message.kind, MessageKind::Message | MessageKind::Voice) {
+            return Err(ChatError::Unsupported("Nobody can react to this message.".into()));
+        }
+        if emoji.trim().is_empty() {
+            return Err(ChatError::Other("A reaction is one emoji.".into()));
+        }
+        let given = message.own_reactions.contains(&emoji);
+        if remove && given {
+            message.own_reactions.retain(|own| *own != emoji);
+            if let Some(count) = message.reactions.get_mut(&emoji) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    message.reactions.remove(&emoji);
+                }
+            }
+        } else if !remove && !given {
+            message.own_reactions.push(emoji.clone());
+            *message.reactions.entry(emoji).or_insert(0) += 1;
+        }
+        Ok(())
+    }
+
+    async fn set_favorite(&self, conversation: String, favorite: bool) -> Result<(), ChatError> {
+        self.lock().conversation_mut(&conversation)?.favorite = favorite;
+        Ok(())
+    }
+
+    async fn set_notification_level(&self, conversation: String, level: NotifyLevel) -> Result<(), ChatError> {
+        self.lock().conversation_mut(&conversation)?.notify = level;
+        Ok(())
+    }
+
+    async fn search_messages(
+        &self,
+        query: String,
+        account: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<Vec<SearchHit>, ChatError> {
+        let query = query.trim().to_lowercase();
+        if query.chars().count() < 2 {
+            return Err(ChatError::Other("A search needs at least two characters.".into()));
+        }
+        if account.as_deref().is_some_and(|account| account != ACCOUNT) {
+            return Err(ChatError::NotFound);
+        }
+        let data = self.lock();
+        let mut found: Vec<(&Message, &str)> = data
+            .conversations
+            .iter()
+            .flat_map(|conversation| {
+                let list = data.messages.get(&conversation.id).map(Vec::as_slice).unwrap_or_default();
+                list.iter().map(move |message| (message, conversation.name.as_str()))
+            })
+            .filter(|(message, _)| matches!(message.kind, MessageKind::Message | MessageKind::Voice))
+            .filter(|(message, _)| message.text.to_lowercase().contains(&query))
+            .collect();
+        found.sort_by_key(|(message, _)| std::cmp::Reverse(message.at));
+        let limit = limit.unwrap_or(HITS).clamp(1, HITS_MAX) as usize;
+        Ok(found
+            .into_iter()
+            .take(limit)
+            .map(|(message, name)| SearchHit {
+                id: message.id.clone(),
+                // As Talk titles a hit: the author in the conversation.
+                title: format!("{} in {name}", message.author.name),
+                text: message.text.clone(),
+                untrusted: true,
             })
             .collect())
     }
@@ -602,6 +771,102 @@ mod tests {
         assert_eq!(cem.kind, ConversationKind::Direct);
         let again = demo.create_conversation(ACCOUNT.into(), person_id(ACCOUNT, "cem")).await.expect("Cem");
         assert_eq!(again.id, cem.id);
+    }
+
+    fn message(demo: &DemoSource, conversation: &str, number: u64) -> Message {
+        let page = run(demo.messages(conversation.into(), None, None, None)).expect("messages");
+        page.messages.into_iter().find(|message| message.number() == number).expect("the message")
+    }
+
+    /// Runs a future of the demo, which never waits.
+    fn run<T>(future: impl std::future::Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread().build().expect("a runtime").block_on(future)
+    }
+
+    #[test]
+    fn the_sample_shows_reactions_an_edit_and_favourites() {
+        let demo = demo();
+        let cem = message(&demo, TEAM, 3);
+        assert_eq!(cem.reactions.get("👍"), Some(&2));
+        assert_eq!(cem.own_reactions, ["👍"], "one of them is the person's own");
+        assert!(message(&demo, TEAM, 4).edited);
+        let conversations = run(demo.conversations(None)).expect("conversations");
+        let favourites: Vec<&str> = conversations.iter().filter(|c| c.favorite).map(|c| c.name.as_str()).collect();
+        assert_eq!(favourites, ["Gesa Lange", "Team Alpha"]);
+    }
+
+    #[test]
+    fn only_own_recent_messages_are_edited() {
+        let demo = demo();
+        let own = message_id(TEAM, 4);
+        run(demo.edit_message(own.clone(), "I can review tomorrow at nine.".into())).expect("edited");
+        let edited = message(&demo, TEAM, 4);
+        assert_eq!((edited.text.as_str(), edited.edited), ("I can review tomorrow at nine.", true));
+        let team = run(demo.conversations(None)).expect("list").into_iter().find(|c| c.id == TEAM);
+        assert_eq!(team.and_then(|c| c.last_message).map(|p| p.text), Some("I can review tomorrow at nine.".into()));
+        let theirs = run(demo.edit_message(message_id(TEAM, 3), "x".into()));
+        assert!(matches!(theirs, Err(ChatError::Unsupported(_))), "Cem's message");
+        let old = run(demo.edit_message(message_id(BEN, 2), "x".into()));
+        assert!(matches!(old, Err(ChatError::Unsupported(_))), "older than a day");
+        assert_eq!(run(demo.edit_message(message_id(TEAM, 99), "x".into())), Err(ChatError::NotFound));
+    }
+
+    #[test]
+    fn a_deleted_message_keeps_its_place_without_text() {
+        let demo = demo();
+        run(demo.delete_message(message_id(TEAM, 4))).expect("deleted");
+        let gone = message(&demo, TEAM, 4);
+        assert_eq!(gone.kind, MessageKind::Deleted);
+        assert!(gone.text.is_empty() && gone.reactions.is_empty());
+        let again = run(demo.delete_message(message_id(TEAM, 4)));
+        assert!(matches!(again, Err(ChatError::Unsupported(_))), "a deleted message is no message any more");
+        let old = run(demo.delete_message(message_id(BEN, 2)));
+        assert!(matches!(old, Err(ChatError::Unsupported(_))), "older than six hours");
+    }
+
+    #[test]
+    fn reactions_are_given_and_taken_back_once() {
+        let demo = demo();
+        let id = message_id(TEAM, 3);
+        run(demo.react(id.clone(), "🎉".into(), false)).expect("given");
+        run(demo.react(id.clone(), "🎉".into(), false)).expect("given twice is no error");
+        let cem = message(&demo, TEAM, 3);
+        assert_eq!(cem.reactions.get("🎉"), Some(&2));
+        run(demo.react(id.clone(), "👍".into(), true)).expect("taken back");
+        run(demo.react(id.clone(), "❤️".into(), true)).expect("not given, nothing happens");
+        let cem = message(&demo, TEAM, 3);
+        assert_eq!(cem.reactions.get("👍"), Some(&1));
+        assert_eq!(cem.own_reactions, ["🎉"]);
+        let system = run(demo.react(message_id(TEAM, 1), "👍".into(), false));
+        assert!(matches!(system, Err(ChatError::Unsupported(_))));
+    }
+
+    #[test]
+    fn favourite_and_notifications_change_the_conversation() {
+        let demo = demo();
+        run(demo.set_favorite(BEN.into(), true)).expect("favourite");
+        run(demo.set_notification_level(BEN.into(), NotifyLevel::Mention)).expect("level");
+        let ben = run(demo.conversations(None)).expect("list").into_iter().find(|c| c.id == BEN);
+        assert_eq!(ben.map(|c| (c.favorite, c.notify)), Some((true, NotifyLevel::Mention)));
+        assert_eq!(run(demo.set_favorite("nope/x".into(), true)), Err(ChatError::NotFound));
+    }
+
+    #[test]
+    fn a_search_finds_messages_newest_first() {
+        let demo = demo();
+        let hits = run(demo.search_messages(" THE ".into(), None, None)).expect("hits");
+        assert!(hits.len() > 2);
+        assert!(hits.iter().all(|hit| hit.untrusted && hit.text.to_lowercase().contains("the")));
+        assert_eq!(hits[0].id, message_id(BEN, 4), "the offer of an hour ago comes first");
+        assert_eq!(hits[0].title, "Ben Koch in Ben Koch");
+        let release = run(demo.search_messages("release".into(), Some(ACCOUNT.into()), Some(1))).expect("hits");
+        assert_eq!(release.len(), 1);
+        assert_eq!(release[0].title, "Dana Erb in Team Alpha");
+        assert!(run(demo.search_messages("x".into(), None, None)).is_err(), "two characters at least");
+        let missed = run(demo.search_messages("missed a call".into(), None, None)).expect("no hits");
+        assert!(missed.is_empty(), "messages of the provider are never found");
+        let other = run(demo.search_messages("the".into(), Some("nextcloud:x@y".into()), None));
+        assert_eq!(other, Err(ChatError::NotFound));
     }
 
     #[tokio::test]
