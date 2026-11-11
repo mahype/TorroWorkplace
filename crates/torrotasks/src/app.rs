@@ -1988,7 +1988,9 @@ impl App {
     fn top_row(&self, class: SizeClass) -> TopRow<Message> {
         let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
         TopRow::new(self.zoom.factor(), Message::DragWindow)
+            .title(AppId::TASKS)
             .sidebar(label, Message::ToggleSidebar)
+            .sidebar_at_edge(true)
             .settings(Message::ToggleSettings)
             .settings_open(self.settings.is_some())
             .cover(self.cover())
