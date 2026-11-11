@@ -260,6 +260,7 @@ async fn generated_or_hidden_invoice_content_in_the_stylesheet_is_refused() {
         ".c-sheet div { position: relative; top: -64px; }",
         ".c-sheet div, .c-sheet section { margin-left: -100px; }",
         ".g-container { margin-top: -100px; } .g-row { margin-top: -100px; }",
+        ".g-container, .g-row { margin-left: calc(0px - 100px); }",
     ] {
         let css = format!("{CSS}\n{rule}\n");
         assert!(invoice::check_stylesheet(css.as_bytes(), page.as_bytes()).is_err(), "{rule}");

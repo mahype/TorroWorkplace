@@ -1551,25 +1551,25 @@ fn declarations<'i>(
     }
 }
 
-/// Signed estimates of the lengths in a value, in CSS pixels; `calc()` as the sum of its lengths times the
-/// product of its numbers.
+/// Signed estimates of the lengths in a value, in CSS pixels. A `calc()` counts in both directions with the
+/// magnitude its lengths and factors could reach, since its signs are separate tokens.
 fn signed(values: &[Value]) -> Vec<f32> {
     values
         .iter()
-        .filter_map(|value| match value {
-            Value::Length(..) => px(value),
+        .flat_map(|value| match value {
+            Value::Length(..) => px(value).into_iter().collect::<Vec<_>>(),
             Value::Function(name, arguments) if name == "calc" => {
-                let sum: f32 = arguments.iter().filter_map(px).sum();
+                let sum: f32 = arguments.iter().filter_map(px).map(f32::abs).sum();
                 let product: f32 = arguments
                     .iter()
                     .filter_map(|argument| match argument {
-                        Value::Number(n) => Some(*n),
+                        Value::Number(n) => Some(n.abs().max(1.0)),
                         _ => None,
                     })
                     .product();
-                Some(sum * product)
+                vec![sum * product, -sum * product]
             }
-            _ => None,
+            _ => Vec::new(),
         })
         .collect()
 }
