@@ -335,11 +335,29 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::ChatSetNotificationLevel { conversation, .. } => vec![chat_conversation(conversation)],
         Request::ChatEditMessage { id: message, .. }
         | Request::ChatDeleteMessage { id: message }
-        | Request::ChatReact { id: message, .. } => {
+        | Request::ChatReact { id: message, .. }
+        | Request::ChatGetPreview { id: message, .. }
+        | Request::ChatGetAttachment { id: message, .. }
+        | Request::ChatSaveAttachment { id: message, .. }
+        | Request::ChatShowCard { id: message } => {
             let conversation = torro_chat::split_message(message).map(|(conversation, _)| conversation);
             let mut ids: Vec<String> = conversation.map(chat_conversation).into_iter().collect();
             ids.push(format!("item:{}", hashed(message)));
             ids
+        }
+        // Files of the chat (stage 4): the account, the conversation's token hashed, an upload's or a
+        // prepared file's id hashed; never a file name, a path or a byte.
+        Request::ChatListShared { conversation, .. } => vec![chat_conversation(conversation)],
+        Request::ChatPrepareFile { account: name, .. } | Request::ChatUploadFile { account: name, .. } => {
+            vec![account(name)]
+        }
+        Request::ChatReleaseFiles { account: name, ids } => {
+            let mut logged = vec![account(name)];
+            logged.extend(ids.iter().map(|id| format!("item:{}", hashed(id))));
+            logged
+        }
+        Request::ChatGetUpload { id: upload } | Request::ChatCancelUpload { id: upload } => {
+            vec![format!("item:{}", hashed(upload))]
         }
         Request::SetSetting { key, .. } => {
             let key = serde_json::to_value(key).ok().and_then(|key| key.as_str().map(str::to_string));

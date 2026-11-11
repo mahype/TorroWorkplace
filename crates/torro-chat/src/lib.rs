@@ -16,7 +16,7 @@ pub mod model;
 pub mod source;
 
 pub use model::{
-    Author, Conversation, ConversationKind, FileRef, Mention, Message, MessageKind, MessagePage, NotifyLevel,
+    Author, Conversation, ConversationKind, FileRef, LinkCard, Mention, Message, MessageKind, MessagePage, NotifyLevel,
     OwnStatus, Person, Preview, Quote, SearchHit, Status, conversation_id, message_id, person_id, split_conversation,
     split_message, split_person,
 };

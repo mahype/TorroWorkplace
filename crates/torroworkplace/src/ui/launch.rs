@@ -1331,6 +1331,7 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
         chat_accounts: Selection::Only(Vec::new()),
         presence_accounts: Selection::Only(Vec::new()),
         tools: Selection::Only(Vec::new()),
+        image_content: false,
         outbound: Outbound::Never,
         confirm: Confirm::Never,
         denied: Default::default(),

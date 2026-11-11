@@ -1721,9 +1721,11 @@ pub enum Request {
         limit: Option<u32>,
     },
     /// Messages of one conversation, the oldest first ([`Response::ChatMessages`]): the newest
-    /// `limit`, those before `before` or those after `after`. Reading changes nothing: not what is
-    /// read, no notification, not the person's status. Codes: `error` when both `before` and `after`
-    /// are given or one is no message of the conversation.
+    /// `limit`, those before `before`, those after `after`, or those around `around` (half before,
+    /// half after it, for "Show in chat"). Reading changes nothing: not what is read, no
+    /// notification, not the person's status. Messages carry the link cards the core holds
+    /// (`cards`). Codes: `error` when more than one of `before`, `after` and `around` is given or one
+    /// is no message of the conversation, `unsupported` for `around` on a server that cannot.
     #[serde(rename = "chat.get_messages")]
     ChatGetMessages {
         /// The conversation (`<account>/<token>`).
@@ -1734,6 +1736,9 @@ pub enum Request {
         /// Only messages newer than this one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         after: Option<String>,
+        /// This message with the messages around it (`<conversation>/<number>`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        around: Option<String>,
         /// The most messages in the answer: 1 to 100, 50 when left out.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(range(min = 1, max = 100))]
@@ -1742,10 +1747,20 @@ pub enum Request {
     /// Sends a message into a conversation on the person's behalf ([`Response::ChatSent`]). Nothing is
     /// sent later: without a connection the answer is `offline`. Codes: `error` for an empty text or
     /// one longer than the server takes, `unsupported` for a conversation nobody can write in now.
+    ///
+    /// With `files` (ids of `chat.prepare_file` or `chat.upload_file`, stage 4) the core uploads them
+    /// into the person's Talk folder on the server and shares them into the conversation, the text
+    /// under one of them; the answer is then [`Response::ChatSending`] as soon as the upload begins,
+    /// and `chat.get_upload` tells how it goes. Codes for files: `not-found` for a prepared file that
+    /// is not the caller's, of another account or whose lease ran out, `conflict` for a file on the
+    /// computer that changed since it was prepared, `unsupported` when the server does not let the
+    /// person share files, `busy` beyond a client's 20 files or 100 MiB an hour.
     #[serde(rename = "chat.send_message")]
     ChatSendMessage {
         conversation: String,
-        /// The text. A mention is written `@"<id>"` with an id of `chat.suggest_mentions`.
+        /// The text. A mention is written `@"<id>"` with an id of `chat.suggest_mentions`. With
+        /// `files` it may be empty.
+        #[serde(default)]
         text: String,
         /// The message this one answers (`<conversation>/<number>`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1753,6 +1768,10 @@ pub enum Request {
         /// Send without notifying the others.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         silent: bool,
+        /// Prepared files to send with it, by the ids `chat.prepare_file` and `chat.upload_file`
+        /// gave; at most 10.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<String>,
     },
     /// Marks a conversation read up to the message `up_to`, else up to its newest
     /// ([`Response::Ok`]). Others may see that the person read it.
@@ -1841,6 +1860,146 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(range(min = 1, max = 50))]
         limit: Option<u32>,
+    },
+
+    // Files and media of the chat (`docs/chat.md`, stage 4). Sending is two steps: a file is
+    // prepared in the core's memory first (`chat.prepare_file`, `chat.upload_file`), and only
+    // `chat.send_message` with `files` uploads and shares it, after an approval that shows exactly
+    // these bytes. Reading names a file only together with its message (`id`), checked against the
+    // files of that message as the core holds it: any other file is `not-found`. For a client,
+    // pictures and videos (also files of a kind the core cannot tell) need the right to picture
+    // content (`api::Rights::image_content`), else `forbidden`. Files shared so that they may not be
+    // downloaded are `forbidden` to fetch or save for everyone; files in conversations with people of
+    // other servers are `unsupported` to preview, fetch or save.
+    /// Prepares a file for sending ([`Response::ChatPreparedFile`]): kept in the core's memory under
+    /// a lease, with name, size, kind (read from its first bytes) and a small preview of a picture.
+    /// Nothing goes to the server. `source: path` is the app key's only. Codes: `not-found` for a
+    /// registered file that is not the caller's or changed, `forbidden` while its tool is off or
+    /// not allowed, `error` for a file larger than the limit (25 MiB for clients; for the app key the
+    /// free space of the account and 512 MiB) or one that cannot be read, `busy` when the core holds
+    /// too much already.
+    #[serde(rename = "chat.prepare_file")]
+    ChatPrepareFile {
+        /// The account the file will be sent with (`nextcloud:<login>@<host>`).
+        account: String,
+        /// Where the file comes from.
+        source: chat::FileSource,
+    },
+    /// Uploads a file into the core's memory in pieces of at most 256 KiB decoded, 25 MiB in all
+    /// ([`Response::ChatFileUpload`], with `final` [`Response::ChatPreparedFile`] as
+    /// `chat.prepare_file` gives it). The first piece starts at offset 0 without `upload`; the next
+    /// ones name the `upload` the answer gave and their offset. The same piece again is fine, another
+    /// one at a taken offset is `conflict`; after `final` the file does not change. At most four
+    /// unfinished uploads per caller (`busy`); they end after 10 minutes without a piece.
+    #[serde(rename = "chat.upload_file")]
+    ChatUploadFile {
+        /// The account the file will be sent with.
+        account: String,
+        /// The upload the first piece started; left out for the first piece.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        upload: Option<String>,
+        /// Where this piece starts in the file, in bytes.
+        offset: u64,
+        /// The bytes of this piece as Base64.
+        base64: chat::FileData,
+        /// The file's name, with the first piece; the caller's text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// This is the last piece: the file is complete.
+        #[serde(default, rename = "final", skip_serializing_if = "std::ops::Not::not")]
+        finish: bool,
+    },
+    /// Drops prepared files and unfinished uploads of the caller ([`Response::Ok`]). Ids of others
+    /// and unknown ones are passed over without a word. Codes: `conflict` for a file an approval
+    /// still waits for.
+    #[serde(rename = "chat.release_files")]
+    ChatReleaseFiles {
+        account: String,
+        /// The ids of `chat.prepare_file` and `chat.upload_file`.
+        ids: Vec<String>,
+    },
+    /// How sending files goes ([`Response::ChatUpload`]): bytes, state and, once sent, the messages
+    /// the files became. Codes: `not-found` for a sending of someone else or one that ended over an
+    /// hour ago.
+    #[serde(rename = "chat.get_upload")]
+    ChatGetUpload {
+        /// The id `chat.send_message` answered with (`chat-sending`).
+        id: String,
+    },
+    /// Cancels sending files ([`Response::Ok`]) and deletes what of them is on the server already.
+    /// Codes: `conflict` once the files are being shared (the messages are on their way), `not-found`
+    /// for a sending of someone else.
+    #[serde(rename = "chat.cancel_upload")]
+    ChatCancelUpload {
+        /// The id `chat.send_message` answered with.
+        id: String,
+    },
+    /// A preview of a file of a message, or the picture of its link card with `card`
+    /// ([`Response::ChatPicture`]), drawn by the account's server; never an SVG. Codes: `not-found`
+    /// for a file that is not one of the message's, or without a preview.
+    #[serde(rename = "chat.get_preview")]
+    ChatGetPreview {
+        /// The message (`<conversation>/<number>`).
+        id: String,
+        /// The file's id, as `files` of the message names it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file: Option<String>,
+        /// The picture of the message's link card instead of a file.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        card: bool,
+        /// `small` (256 pixels, when left out) or `large` (1600).
+        #[serde(default)]
+        size: chat::PreviewSize,
+    },
+    /// Fetches a file of a message into the chat's attachment folder for opening
+    /// ([`Response::ChatAttachment`]); it is deleted after a day. At most 50 MiB for clients, 512 MiB
+    /// for the app key (`error` beyond).
+    #[serde(rename = "chat.get_attachment")]
+    ChatGetAttachment {
+        /// The message (`<conversation>/<number>`).
+        id: String,
+        /// The file's id, as `files` of the message names it.
+        file: String,
+    },
+    /// Saves a file of a message ([`Response::ChatSaved`]): to Downloads, to a save target of
+    /// `mail.list_save_targets` (needs read access to mail besides) or, app key only, to a file or
+    /// folder a person chose. A file is never overwritten except with `to: file`; a taken name gets a
+    /// number. Codes: `not-found` for an unknown target or a missing folder, `forbidden` for `file`
+    /// or `folder` from a client.
+    #[serde(rename = "chat.save_attachment")]
+    ChatSaveAttachment {
+        /// The message (`<conversation>/<number>`).
+        id: String,
+        /// The file's id, as `files` of the message names it.
+        file: String,
+        /// Where it goes.
+        to: mail::SaveTo,
+    },
+    /// What a conversation shared, the newest first ([`Response::ChatShared`]): pictures and
+    /// videos, files, voice messages, links … of one `kind`, or the newest of each without it.
+    /// Codes: `unsupported` when the server cannot list them.
+    #[serde(rename = "chat.list_shared")]
+    ChatListShared {
+        /// The conversation (`<account>/<token>`).
+        conversation: String,
+        /// Only items of this kind.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<chat::SharedKind>,
+        /// Only items older than this message (`<conversation>/<number>`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<String>,
+        /// The most items: 1 to 100, 50 when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(min = 1, max = 100))]
+        limit: Option<u32>,
+    },
+    /// Fetches the card of the first link of a message ("Show preview", [`Response::ChatCard`]):
+    /// the account's server asks the link's address for it, so its owner may learn when it was read.
+    /// App key only: a person decides.
+    #[serde(rename = "chat.show_card")]
+    ChatShowCard {
+        /// The message (`<conversation>/<number>`).
+        id: String,
     },
 
     // Presence (`docs/chat.md`, decision 10): who is there, and the person's own status.
@@ -5083,6 +5242,48 @@ pub enum Response {
     /// holds no text of other people.
     ChatSent {
         id: String,
+    },
+    /// Sending files began ([`Request::ChatSendMessage`] with `files`): the id for
+    /// [`Request::ChatGetUpload`] and [`Request::ChatCancelUpload`], and nothing else (no name, no
+    /// path).
+    ChatSending {
+        id: String,
+    },
+    /// A prepared file ([`Request::ChatPrepareFile`], the last piece of [`Request::ChatUploadFile`]).
+    ChatPreparedFile {
+        file: Box<chat::PreparedFile>,
+    },
+    /// A piece of [`Request::ChatUploadFile`] arrived: the upload's id and how many bytes it holds.
+    ChatFileUpload {
+        upload: String,
+        received: u64,
+    },
+    /// How sending files goes ([`Request::ChatGetUpload`]).
+    ChatUpload {
+        upload: chat::UploadProgress,
+    },
+    /// A picture of the server ([`Request::ChatGetPreview`]).
+    ChatPicture {
+        picture: chat::ChatPicture,
+    },
+    /// A file fetched for opening ([`Request::ChatGetAttachment`]).
+    ChatAttachment {
+        attachment: chat::ChatAttachment,
+    },
+    /// Where [`Request::ChatSaveAttachment`] put the file, an absolute path.
+    ChatSaved {
+        path: String,
+    },
+    /// What a conversation shared ([`Request::ChatListShared`]), the newest first; `more` when older
+    /// items of the kind exist.
+    ChatShared {
+        items: Vec<chat::SharedItem>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        more: bool,
+    },
+    /// The card of a link ([`Request::ChatShowCard`]); `None` when the server knows none.
+    ChatCard {
+        card: Option<torro_chat::LinkCard>,
     },
     /// Who a mention could mean ([`Request::ChatSuggestMentions`]).
     ChatMentions {

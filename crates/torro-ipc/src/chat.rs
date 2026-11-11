@@ -1,7 +1,11 @@
 //! The API areas `chat` and `presence` (`docs/chat.md`, issue #643): limits of their commands, and
 //! [`ChatClient`], the chat windows' and the Notification Hub's way to the core. The answers carry
 //! the types of `torro_chat` as they are; every conversation, message and person says
-//! `untrusted: true`.
+//! `untrusted: true`. Files and media (stage 4) are in [`files`].
+
+pub mod files;
+
+pub use files::*;
 
 use std::path::PathBuf;
 
@@ -107,7 +111,7 @@ impl ChatSource for ChatClient {
         after: Option<String>,
         limit: Option<u32>,
     ) -> Result<MessagePage, ChatError> {
-        match self.ask(Request::ChatGetMessages { conversation, before, after, limit }).await? {
+        match self.ask(Request::ChatGetMessages { conversation, before, after, around: None, limit }).await? {
             Response::ChatMessages(page) => Ok(page),
             other => Err(unexpected(other)),
         }
@@ -115,7 +119,8 @@ impl ChatSource for ChatClient {
 
     async fn send(&self, message: Outgoing) -> Result<String, ChatError> {
         let Outgoing { conversation, text, reply_to, silent } = message;
-        match self.ask(Request::ChatSendMessage { conversation, text, reply_to, silent }).await? {
+        let files = Vec::new();
+        match self.ask(Request::ChatSendMessage { conversation, text, reply_to, silent, files }).await? {
             Response::ChatSent { id } => Ok(id),
             other => Err(unexpected(other)),
         }
@@ -210,10 +215,10 @@ mod tests {
             Request::ChatListConversations { account, .. } => {
                 demo.conversations(account).await.map(|conversations| Response::ChatConversations { conversations })
             }
-            Request::ChatGetMessages { conversation, before, after, limit } => {
+            Request::ChatGetMessages { conversation, before, after, limit, .. } => {
                 demo.messages(conversation, before, after, limit).await.map(Response::ChatMessages)
             }
-            Request::ChatSendMessage { conversation, text, reply_to, silent } => {
+            Request::ChatSendMessage { conversation, text, reply_to, silent, .. } => {
                 demo.send(Outgoing { conversation, text, reply_to, silent }).await.map(|id| Response::ChatSent { id })
             }
             Request::ChatMarkRead { conversation, up_to } => done(demo.mark_read(conversation, up_to).await),

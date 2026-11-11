@@ -109,6 +109,7 @@ fn text(conversation: &str, number: u64, user: &str, name: &str, at: DateTime<Ut
         reactions: BTreeMap::new(),
         own_reactions: Vec::new(),
         edited: false,
+        cards: Vec::new(),
         untrusted: true,
     }
 }
@@ -126,6 +127,7 @@ fn system(conversation: &str, number: u64, at: DateTime<Utc>, kind: MessageKind,
         reactions: BTreeMap::new(),
         own_reactions: Vec::new(),
         edited: false,
+        cards: Vec::new(),
         untrusted: true,
     }
 }
@@ -186,6 +188,7 @@ fn sample(now: DateTime<Utc>) -> Data {
         hide_download: false,
         width: None,
         height: None,
+        blurhash: None,
     }];
     ben[4].mentions = vec![Mention { id: ME.into(), name: "Anna Berg".into() }];
 

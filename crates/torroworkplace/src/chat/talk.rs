@@ -194,6 +194,7 @@ fn shown(message: ChatMessage) -> RemoteMessage {
                     hide_download: file.hide_download,
                     width: file.width,
                     height: file.height,
+                    blurhash: file.blurhash,
                 })
                 .collect()
         },

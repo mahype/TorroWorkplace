@@ -1494,6 +1494,16 @@ impl PimService {
             | Request::ChatSetFavorite { .. }
             | Request::ChatSetNotificationLevel { .. }
             | Request::ChatSearchMessages { .. }
+            | Request::ChatPrepareFile { .. }
+            | Request::ChatUploadFile { .. }
+            | Request::ChatReleaseFiles { .. }
+            | Request::ChatGetUpload { .. }
+            | Request::ChatCancelUpload { .. }
+            | Request::ChatGetPreview { .. }
+            | Request::ChatGetAttachment { .. }
+            | Request::ChatSaveAttachment { .. }
+            | Request::ChatListShared { .. }
+            | Request::ChatShowCard { .. }
             | Request::PresenceListPeople { .. }
             | Request::PresenceAddPerson { .. }
             | Request::PresenceRemovePerson { .. }

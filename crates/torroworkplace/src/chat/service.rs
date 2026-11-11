@@ -169,6 +169,7 @@ fn shown(account: &str, conversation: &str, me: &str, message: RemoteMessage) ->
         reactions: message.reactions,
         own_reactions: message.own_reactions,
         edited: message.edited,
+        cards: Vec::new(),
         untrusted: true,
     }
 }
@@ -349,11 +350,15 @@ impl ChatService {
             Request::ChatListConversations { account, unread_only, query, limit } => {
                 self.list(caller.reach, account.as_deref(), unread_only, query.as_deref(), limit).await
             }
-            Request::ChatGetMessages { conversation, before, after, limit } => self
+            Request::ChatGetMessages { around: Some(_), .. } => Err(unsupported("This server cannot do this.")),
+            Request::ChatGetMessages { conversation, before, after, limit, .. } => self
                 .messages(&conversation, before.as_deref(), after.as_deref(), limit, caller)
                 .await
                 .map(Response::ChatMessages),
-            Request::ChatSendMessage { conversation, text, reply_to, silent } => {
+            Request::ChatSendMessage { files, .. } if !files.is_empty() => {
+                Err(unsupported("This server cannot do this."))
+            }
+            Request::ChatSendMessage { conversation, text, reply_to, silent, .. } => {
                 self.send(&conversation, &text, reply_to.as_deref(), silent).await
             }
             Request::ChatMarkRead { conversation, up_to } => self.mark_read(&conversation, up_to.as_deref()).await,
@@ -907,6 +912,7 @@ mod tests {
             conversation: conversation.into(),
             before: before.map(|n| message_id(conversation, n)),
             after: after.map(|n| message_id(conversation, n)),
+            around: None,
             limit,
         }
     }
@@ -919,7 +925,13 @@ mod tests {
     }
 
     fn send(conversation: &str, text: &str) -> Request {
-        Request::ChatSendMessage { conversation: conversation.into(), text: text.into(), reply_to: None, silent: false }
+        Request::ChatSendMessage {
+            conversation: conversation.into(),
+            text: text.into(),
+            reply_to: None,
+            silent: false,
+            files: Vec::new(),
+        }
     }
 
     #[tokio::test]
@@ -971,6 +983,7 @@ mod tests {
             conversation: ben(),
             before: Some(message_id(&ben(), 4)),
             after: Some(message_id(&ben(), 1)),
+            around: None,
             limit: None,
         };
         assert_eq!(code(&chat.handle(both, APP).await), "error");
@@ -978,6 +991,7 @@ mod tests {
             conversation: ben(),
             before: Some(message_id(&conversation_id(ACCOUNT, "team4alpha"), 1)),
             after: None,
+            around: None,
             limit: None,
         };
         assert_eq!(code(&chat.handle(foreign, APP).await), "error", "a message of another conversation");
@@ -1026,6 +1040,7 @@ mod tests {
             text: "re".into(),
             reply_to: Some(message_id(&conversation_id(ACCOUNT, "team4alpha"), 1)),
             silent: false,
+            files: Vec::new(),
         };
         assert_eq!(code(&chat.handle(reply, APP).await), "error", "a reply quotes its own conversation");
         server.state().rooms[0].read_only = true;
@@ -1156,6 +1171,7 @@ mod tests {
             text: "the client's words".into(),
             reply_to: Some(message_id(&ben(), 1)),
             silent: false,
+            files: Vec::new(),
         };
         let facts = chat.facts(&reply).await.expect("facts");
         assert_eq!(facts.conversation.as_deref(), Some("Ben Koch"));

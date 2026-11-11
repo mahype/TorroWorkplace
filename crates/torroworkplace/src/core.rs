@@ -7095,6 +7095,16 @@ impl Core {
             | Request::ChatSetFavorite { .. }
             | Request::ChatSetNotificationLevel { .. }
             | Request::ChatSearchMessages { .. }
+            | Request::ChatPrepareFile { .. }
+            | Request::ChatUploadFile { .. }
+            | Request::ChatReleaseFiles { .. }
+            | Request::ChatGetUpload { .. }
+            | Request::ChatCancelUpload { .. }
+            | Request::ChatGetPreview { .. }
+            | Request::ChatGetAttachment { .. }
+            | Request::ChatSaveAttachment { .. }
+            | Request::ChatListShared { .. }
+            | Request::ChatShowCard { .. }
             | Request::PresenceListPeople { .. }
             | Request::PresenceAddPerson { .. }
             | Request::PresenceRemovePerson { .. }
@@ -34069,13 +34079,19 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let (core, server) = chatting(dir.path());
         let app_key = crate::clients::tests::app_key(dir.path());
-        let read =
-            || Request::ChatGetMessages { conversation: CHAT_BEN.into(), before: None, after: None, limit: None };
+        let read = || Request::ChatGetMessages {
+            conversation: CHAT_BEN.into(),
+            before: None,
+            after: None,
+            around: None,
+            limit: None,
+        };
         let send = |text: &str| Request::ChatSendMessage {
             conversation: CHAT_BEN.into(),
             text: text.into(),
             reply_to: None,
             silent: false,
+            files: Vec::new(),
         };
         // A template sets the level but opens no account: the conversation is not there.
         let (_, closed) = client(&core, RightsTemplate::FullAccess.rights()).await;
@@ -34099,6 +34115,7 @@ mod tests {
             conversation: "nextcloud:anna@other.example.org/ben4chat".into(),
             before: None,
             after: None,
+            around: None,
             limit: None,
         };
         assert_eq!(code(&ask(&core, Some(&key), other).await), "not-found");
