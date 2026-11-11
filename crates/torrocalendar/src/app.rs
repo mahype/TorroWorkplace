@@ -1824,6 +1824,14 @@ impl App {
         let select = || widgets::select_button(views, self.shown().label(), Message::ToggleMenu(Menu::View));
         if class == SizeClass::Wide || class == SizeClass::Medium {
             let title_width = title_words(&title, note.as_deref());
+            let fits = class != SizeClass::Medium || self.medium_header_fits(title_width);
+            // Issue #601: beside the top row's title a roomier level has no room for the long date either;
+            // then the day and the radar take the short one, as in narrow windows.
+            let title = match (fits, self.shown()) {
+                (false, CalView::Day) => short_date(self.anchor),
+                (false, CalView::Radar) => short_date(self.radar_start().date()),
+                _ => title,
+            };
             let today = widgets::text_button(None, tr("Today"), style::button::ghost, Some(Message::Today));
             let title = row![
                 shell::header_title(None, title, note),
@@ -1833,7 +1841,7 @@ impl App {
             .align_y(Alignment::Center);
             // Issue #484: in a roomier spacing level the medium header runs out of room; then "New
             // event" shrinks to "+" first, as in narrow windows.
-            let primary = if class == SizeClass::Medium && !self.medium_header_fits(title_width) {
+            let primary = if !fits {
                 widgets::compact_button(Icon::Plus, tr("New event"), style::button::primary, Some(new_event))
             } else {
                 widgets::text_button(Some(Icon::Plus), tr("New event"), style::button::primary, Some(new_event))
@@ -1867,8 +1875,8 @@ impl App {
         }
     }
 
-    /// Whether the medium header holds "New event" with its word (issue #484): the rail, the panel
-    /// button and the settings, the title `title_width` wide, "Today", ‹ ›, the view's menu, refresh
+    /// Whether the medium header holds "New event" with its word (issue #484): the rail, the top row's
+    /// lead (panel button and title, [`shell::head_inset`]) and the settings, the title `title_width` wide, "Today", ‹ ›, the view's menu, refresh
     /// and the primary button with the gaps between them – all from the tokens of the level drawn,
     /// so a roomier level shrinks the button sooner.
     fn medium_header_fits(&self, title_width: f32) -> bool {
@@ -1876,7 +1884,9 @@ impl App {
         let today = widgets::text_button_width(false, tr("Today"));
         let views = widgets::text_button_width(true, self.shown().label());
         let primary = widgets::text_button_width(true, tr("New event"));
-        let chrome = shell::rail() + 2.0 * icon + 2.0 * space::l();
+        // The top row's lead beside the rail: the panel button and the app's title (issue #601).
+        let lead = shell::head_inset(SizeClass::Medium, self.sidebar, self.zoom.factor());
+        let chrome = shell::rail() + lead + icon + 2.0 * space::l();
         // The timeline's "Nights" stands before the views as one more icon button.
         let nights = if self.shown() == CalView::Timeline { icon + space::s() } else { 0.0 };
         let needed = chrome
@@ -3405,7 +3415,8 @@ mod tests {
             app.medium_header_fits(title_words(&title, note.as_deref()))
         };
         assert!(fits(&mut app, CalView::Week, 1000.0), "a wide medium window has room");
-        assert!(fits(&mut app, CalView::Week, 800.0), "the standard's 800 holds the week");
+        // Issue #601: beside the top row's title the standard's 800 no longer holds the word.
+        assert!(!fits(&mut app, CalView::Week, 800.0), "800 shrinks the button beside the title");
         assert!(!fits(&mut app, CalView::Week, 620.0), "a slim one does not");
         let least = |app: &mut App, view: CalView| (600..1024).find(|w| fits(app, view, *w as f32));
         let (week, timeline) = (least(&mut app, CalView::Week), least(&mut app, CalView::Timeline));
