@@ -8967,7 +8967,6 @@ mod tests {
         assert!(!z("x", Code::KeyX, command));
     }
 
-    /// Task E11.1: the chips of attachments build on and off.
     /// Issue #627: the attachment card builds with an icon or a letter, on and off, with a long name.
     #[test]
     fn the_file_card_builds_on_and_off() {
@@ -8976,6 +8975,7 @@ mod tests {
         let _: Element<'_, Msg> = file_card(TileFace::letter("zip"), long, "", None);
     }
 
+    /// Task E11.1: the chips of attachments build on and off.
     #[test]
     fn the_attachment_chips_build_on_and_off() {
         let _: Element<'_, Msg> = file_chip("budget-q4.csv", "3 KB", Some(Msg::Go));

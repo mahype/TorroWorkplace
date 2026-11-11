@@ -1675,8 +1675,6 @@ pub enum Message {
     FormatBarLoaded(Option<bool>),
     /// "Aa": the format bar folds or unfolds, and the choice is kept.
     ToggleFormatBar,
-    /// A click on the folded subject of an answer: it becomes a field with the focus.
-    OpenSubject,
     /// "Show history": the quoted history of an answer unfolds.
     ShowHistory,
     /// "Discard draft" in the footer: asks first.
@@ -1685,10 +1683,10 @@ pub enum Message {
     ConfirmDiscard,
     /// The draft went to the trash, or not.
     Discarded(Result<(), ComposeError>),
-    /// A click ended: which row has the focus now, for its label.
+    /// A click ended, Tab moved or a row took the focus: which row has the focus now, for its label.
     FindFocus,
-    /// The widget with the focus after a click or Tab.
-    Focused(iced::advanced::widget::Id),
+    /// Whether the field of a row (its id) has the focus.
+    RowFocus(&'static str, bool),
 }
 
 /// The compose window: the fields, the draft they are saved as and what is going on with it.
@@ -1765,6 +1763,10 @@ pub struct Window<S> {
     focused: Option<&'static str>,
     /// "Discard draft" waits for the running save to know which draft to discard.
     discard_after_save: bool,
+    /// "Discard draft" was confirmed and runs: nothing is edited, saved or closed meanwhile.
+    discarding: bool,
+    /// The person switched the format bar before `ui.json` was read: the stored choice comes too late.
+    format_bar_chosen: bool,
     /// The suggestions under a recipient field, while they are open (issue #460).
     suggestions: Option<Suggestions>,
     /// Counts the letters typed into recipient fields: an answer to an older one is dropped.
@@ -1861,6 +1863,8 @@ impl<S: ComposeSource + 'static> Window<S> {
             subject_open: true,
             focused: None,
             discard_after_save: false,
+            discarding: false,
+            format_bar_chosen: false,
             suggestions: None,
             asked: 0,
             photos: HashMap::new(),
@@ -1916,7 +1920,7 @@ impl<S: ComposeSource + 'static> Window<S> {
     }
 
     fn editable(&self) -> bool {
-        self.ready() && !self.sending && !self.switching
+        self.ready() && !self.sending && !self.switching && !self.discarding
     }
 
     fn sender(&self) -> Option<&Sender> {
@@ -2536,6 +2540,7 @@ impl<S: ComposeSource + 'static> Window<S> {
             Message::Cc(text) => return self.typed(Field::Cc, text),
             Message::Bcc(text) => return self.typed(Field::Bcc, text),
             Message::Subject(text) => {
+                self.subject_open = true;
                 self.leave(None);
                 self.edited(|window| window.subject = text);
             }
@@ -2585,11 +2590,11 @@ impl<S: ComposeSource + 'static> Window<S> {
             }
             Message::ShowCc => {
                 self.show_cc = true;
-                return operation::focus(CC);
+                return operation::focus(CC).chain(Task::done(Message::FindFocus));
             }
             Message::ShowBcc => {
                 self.show_bcc = true;
-                return operation::focus(BCC);
+                return operation::focus(BCC).chain(Task::done(Message::FindFocus));
             }
             Message::ToolsMenu => self.tools = !self.tools && self.ready(),
             Message::TogglePaper => return self.toggle_paper(),
@@ -2666,20 +2671,18 @@ impl<S: ComposeSource + 'static> Window<S> {
                 self.asking = None;
                 return self.save(After::Close);
             }
-            Message::FormatBarLoaded(Some(on)) => self.format_bar = on,
+            Message::FormatBarLoaded(Some(on)) => {
+                if !self.format_bar_chosen {
+                    self.format_bar = on;
+                }
+            }
             Message::FormatBarLoaded(None) => {}
             Message::ToggleFormatBar => {
                 self.format_bar = !self.format_bar;
+                self.format_bar_chosen = true;
                 self.tools = false;
                 if self.source.remembers() {
                     return ui_state::save_flag_task(COMPOSE, FORMAT_BAR.to_owned(), self.format_bar);
-                }
-            }
-            Message::OpenSubject => {
-                if self.editable() {
-                    self.subject_open = true;
-                    self.focused = Some(SUBJECT);
-                    return operation::focus(SUBJECT).chain(operation::move_cursor_to_end(SUBJECT));
                 }
             }
             Message::ShowHistory => {
@@ -2687,7 +2690,7 @@ impl<S: ComposeSource + 'static> Window<S> {
                 self.body.unfold();
             }
             Message::DiscardDraft => {
-                if self.ready() && !self.sending && self.asking.is_none() {
+                if self.ready() && !self.sending && !self.discarding && self.asking.is_none() {
                     self.menu = false;
                     self.tools = false;
                     self.suggestions = None;
@@ -2697,21 +2700,33 @@ impl<S: ComposeSource + 'static> Window<S> {
             Message::ConfirmDiscard => return self.confirm_discard(),
             Message::Discarded(Ok(())) => return self.exit(),
             Message::Discarded(Err(err)) => {
+                // The window is the person's again; what is unsaved is saved by the clock as before.
                 self.discard_after_save = false;
+                self.discarding = false;
+                if self.unsaved() {
+                    self.changed = Some(Instant::now());
+                }
                 self.notice = Some(Notice::new(tr("The draft could not be discarded."), err));
             }
             Message::FindFocus => {
-                self.focused = None;
                 if self.ready() && !self.is_glance() {
-                    return iced::advanced::widget::operate(
-                        iced::advanced::widget::operation::focusable::find_focused(),
-                    )
-                    .map(Message::Focused);
+                    // Each row asks for itself: the answer is clear also when nothing has the focus.
+                    return Task::batch(
+                        [TO, CC, BCC, SUBJECT]
+                            .map(|row| operation::is_focused(row).map(move |on| Message::RowFocus(row, on))),
+                    );
                 }
             }
-            Message::Focused(id) => {
-                self.focused =
-                    [TO, CC, BCC, SUBJECT].into_iter().find(|row| iced::advanced::widget::Id::from(*row) == id);
+            Message::RowFocus(row, on) => {
+                if on {
+                    self.focused = Some(row);
+                    // A folded subject opens when it takes the focus, by Tab or by a click.
+                    if row == SUBJECT {
+                        self.subject_open = true;
+                    }
+                } else if self.focused == Some(row) {
+                    self.focused = None;
+                }
             }
             Message::DismissNotice => self.notice = None,
             Message::Focus(forward) => {
@@ -2724,11 +2739,9 @@ impl<S: ComposeSource + 'static> Window<S> {
                     let focus = if forward { operation::focus_next() } else { operation::focus_previous() };
                     // Clicking a toolbar button subsequently unfocuses the editor. Remember
                     // Tab's new body caret now, before that outside click can erase widget focus.
-                    self.focused = None;
                     return focus.chain(Task::batch([
                         self.body.focused_text().map(Message::BodyFocused),
-                        iced::advanced::widget::operate(iced::advanced::widget::operation::focusable::find_focused())
-                            .map(Message::Focused),
+                        Task::done(Message::FindFocus),
                     ]));
                 }
             }
@@ -2943,7 +2956,7 @@ impl<S: ComposeSource + 'static> Window<S> {
             self.paste_hint = None;
         }
         let idle = self.changed.is_some_and(|changed| now.duration_since(changed) >= AUTOSAVE);
-        if idle && self.unsaved() && self.saving.is_none() && !self.sending {
+        if idle && self.unsaved() && self.saving.is_none() && !self.sending && !self.discarding {
             return self.save(After::Nothing);
         }
         Task::none()
@@ -3293,6 +3306,9 @@ impl<S: ComposeSource + 'static> Window<S> {
                 // The draft is to go anyway: the one saved before (if any) goes to the trash.
                 self.discard_after_save = false;
                 self.after = After::Nothing;
+                self.discard_after = None;
+                self.pending_from = None;
+                self.saving_parts.clear();
                 return self.discard_saved();
             }
             Err(err) => {
@@ -3350,11 +3366,15 @@ impl<S: ComposeSource + 'static> Window<S> {
             None => Task::none(),
         };
         if self.discard_after_save {
-            // "Discard draft" waited for this save: the draft it filed goes to the trash.
+            // "Discard draft" waited for this save: the draft it filed goes to the trash, and the
+            // images of an account left meanwhile are released as after any save.
             self.discard_after_save = false;
             self.after = After::Nothing;
             self.pending_from = None;
-            return Task::batch([cleaned, self.discard_saved()]);
+            self.saved = self.saved.max(revision);
+            let retired = std::mem::take(&mut self.retired_images);
+            let release = Task::batch(retired.into_iter().map(|(account, id)| self.release(account, vec![id])));
+            return Task::batch([release, cleaned, self.discard_saved()]);
         }
         self.saved = self.saved.max(revision);
         let settled = revision == self.revision;
@@ -3457,7 +3477,8 @@ impl<S: ComposeSource + 'static> Window<S> {
 
     /// The window is asked to close: at once when everything is saved, else after a question.
     fn close(&mut self) -> Task<Message> {
-        if self.sending || self.asking.is_some() {
+        // While a confirmed discard runs, the window closes when it is done (`Discarded`).
+        if self.sending || self.discarding || self.asking.is_some() {
             return Task::none();
         }
         if self.unsaved() {
@@ -3478,6 +3499,8 @@ impl<S: ComposeSource + 'static> Window<S> {
             return Task::none();
         }
         self.asking = None;
+        // From here on nothing is edited, saved, sent or closed until the draft is gone or not.
+        self.discarding = true;
         if self.saving.is_some() {
             self.discard_after_save = true;
             return Task::none();
@@ -3487,9 +3510,7 @@ impl<S: ComposeSource + 'static> Window<S> {
 
     /// Moves the saved draft to the trash and closes when that worked; closes at once without one.
     fn discard_saved(&mut self) -> Task<Message> {
-        // Nothing waits for a draft that is about to go.
-        self.changed = None;
-        self.saved = self.revision;
+        // Unsaved changes stay unsaved until the core took the draft: a failure leaves them to the clock.
         let Some((id, _)) = self.draft.clone() else { return self.exit() };
         #[cfg(test)]
         self.calls.push(Call::Discard(id.clone()));
@@ -3911,20 +3932,10 @@ impl<S: ComposeSource + 'static> Window<S> {
             let bcc = self.recipients(Field::Bcc, anchors, narrow, Vec::new(), 0.0);
             rows = rows.push(self.line(Field::Bcc.label(), Some(BCC), bcc, narrow));
         }
-        let subject: Element<'_, Message> = if self.subject_open {
-            self.input(SUBJECT, &self.subject, Message::Subject, None, typo::body_strong())
-        } else {
-            // An answer's subject is folded: quiet text that turns into the field on a click.
-            let shown = list::one_line(&self.subject);
-            let words = typo::text(typo::body(), shown).style(theme::text_2).wrapping(Wrapping::None);
-            let open = button(container(words).center_y(Fill).clip(true))
-                .width(Fill)
-                .height(size::control())
-                .padding(style::INPUT_PADDING)
-                .style(style::button::ghost)
-                .on_press_maybe(editable.then_some(Message::OpenSubject));
-            widgets::with_tooltip(open, tr("Edit subject"))
-        };
+        // An answer's subject is folded: the same field in the plain weight; it opens (strong) as soon as
+        // it takes the focus, by a click or by Tab, so it stays reachable from the keyboard.
+        let level = if self.subject_open { typo::body_strong() } else { typo::body() };
+        let subject = self.input(SUBJECT, &self.subject, Message::Subject, None, level);
         rows = rows.push(self.line(tr("Subject"), Some(SUBJECT), subject, narrow));
 
         let mut page = column![];
@@ -7340,10 +7351,15 @@ mod tests {
         let _ = window.view();
         let _ = window.update(Message::ToggleFormatBar);
         assert!(window.format_bar);
-        let _ = window.update(Message::FormatBarLoaded(Some(false)));
-        assert!(!window.format_bar, "what ui.json keeps");
-        let _ = window.update(Message::FormatBarLoaded(None));
-        assert!(!window.format_bar, "nothing kept changes nothing");
+        let mut stored = ready(&[]);
+        let _ = stored.update(Message::FormatBarLoaded(Some(false)));
+        assert!(!stored.format_bar, "what ui.json keeps");
+        let _ = stored.update(Message::FormatBarLoaded(None));
+        assert!(!stored.format_bar, "nothing kept changes nothing");
+        let mut late = ready(&[]);
+        let _ = late.update(Message::ToggleFormatBar);
+        let _ = late.update(Message::FormatBarLoaded(Some(true)));
+        assert!(!late.format_bar, "a choice made before ui.json was read wins");
         assert!(!ready(&["--open", "format-off"]).format_bar);
     }
 
@@ -7355,8 +7371,8 @@ mod tests {
         assert_eq!(window.heading(), trf("Reply to {name}", &[("name", &first)]));
         assert!(!window.subject_open, "the subject is folded");
         assert!(window.body.folded.is_some(), "the history is folded");
-        let _ = window.update(Message::OpenSubject);
-        assert!(window.subject_open && window.focused == Some(SUBJECT));
+        let _ = window.update(Message::RowFocus(SUBJECT, true));
+        assert!(window.subject_open && window.focused == Some(SUBJECT), "Tab or a click opens it");
 
         let forward = ready(&["--forward", "m:w1"]);
         assert!(!forward.is_answer());
@@ -7404,8 +7420,11 @@ mod tests {
         let _ = window.update(Message::ConfirmDiscard);
         assert!(window.calls.contains(&Call::Discard(id)), "{:?}", window.calls);
         assert!(!exited(&window), "closes once the core took it");
+        assert!(!window.editable(), "nothing is written meanwhile");
+        let _ = window.update(Message::Close);
+        assert!(!exited(&window) && window.asking.is_none(), "nor closed");
         let _ = window.update(Message::Discarded(Err(ComposeError::NotFound)));
-        assert!(!exited(&window), "a failure keeps the window");
+        assert!(!exited(&window) && window.editable(), "a failure gives the window back");
         assert_eq!(window.notice.as_ref().map(|n| n.what.as_str()), Some(tr("The draft could not be discarded.")));
         let _ = window.update(Message::Discarded(Ok(())));
         assert!(exited(&window));
@@ -7430,12 +7449,11 @@ mod tests {
     fn the_label_of_the_row_with_the_focus_follows_it() {
         let mut window = ready(&[]);
         assert_eq!(window.focused, Some(TO), "a new message starts in To");
-        let _ = window.update(Message::Focused(iced::advanced::widget::Id::from(SUBJECT)));
-        assert_eq!(window.focused, Some(SUBJECT));
-        let _ = window.update(Message::Focused(iced::advanced::widget::Id::from(BODY)));
-        assert_eq!(window.focused, None, "the text is no row");
-        let _ = window.update(Message::FindFocus);
-        assert_eq!(window.focused, None);
+        let _ = window.update(Message::RowFocus(SUBJECT, true));
+        let _ = window.update(Message::RowFocus(TO, false));
+        assert_eq!(window.focused, Some(SUBJECT), "another row losing it changes nothing");
+        let _ = window.update(Message::RowFocus(SUBJECT, false));
+        assert_eq!(window.focused, None, "the text has it, no row");
     }
 
     #[test]
