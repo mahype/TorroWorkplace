@@ -190,7 +190,7 @@ impl<'a> Known<'a> {
     }
 }
 
-/// One of the six selections of a client's rights.
+/// One of the eight selections of a client's rights.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pick {
     Calendars,
@@ -198,13 +198,25 @@ pub enum Pick {
     GithubRepos,
     InboxSources,
     MailAccounts,
+    /// The accounts whose chats the client sees ([`Rights::chat_accounts`], `docs/chat.md`).
+    ChatAccounts,
+    /// The accounts whose people and status the client sees ([`Rights::presence_accounts`]).
+    PresenceAccounts,
     /// The assistant's own tools ([`Rights::tools`], task WZ.7), by their id (`pdf`).
     Tools,
 }
 
 impl Pick {
-    pub const ALL: [Pick; 6] =
-        [Pick::Calendars, Pick::TaskLists, Pick::GithubRepos, Pick::InboxSources, Pick::MailAccounts, Pick::Tools];
+    pub const ALL: [Pick; 8] = [
+        Pick::Calendars,
+        Pick::TaskLists,
+        Pick::GithubRepos,
+        Pick::InboxSources,
+        Pick::MailAccounts,
+        Pick::ChatAccounts,
+        Pick::PresenceAccounts,
+        Pick::Tools,
+    ];
 
     /// The area whose level decides whether the selection matters at all.
     pub fn area(self) -> Area {
@@ -214,6 +226,8 @@ impl Pick {
             Pick::GithubRepos => Area::Github,
             Pick::InboxSources => Area::Inbox,
             Pick::MailAccounts => Area::Mail,
+            Pick::ChatAccounts => Area::Chat,
+            Pick::PresenceAccounts => Area::Presence,
             Pick::Tools => Area::Tools,
         }
     }
@@ -225,6 +239,8 @@ impl Pick {
             Pick::GithubRepos => &rights.github_repos,
             Pick::InboxSources => &rights.inbox_sources,
             Pick::MailAccounts => &rights.mail_accounts,
+            Pick::ChatAccounts => &rights.chat_accounts,
+            Pick::PresenceAccounts => &rights.presence_accounts,
             Pick::Tools => &rights.tools,
         }
     }
@@ -236,6 +252,8 @@ impl Pick {
             Pick::GithubRepos => &mut rights.github_repos,
             Pick::InboxSources => &mut rights.inbox_sources,
             Pick::MailAccounts => &mut rights.mail_accounts,
+            Pick::ChatAccounts => &mut rights.chat_accounts,
+            Pick::PresenceAccounts => &mut rights.presence_accounts,
             Pick::Tools => &mut rights.tools,
         }
     }
@@ -247,6 +265,8 @@ impl Pick {
             Pick::GithubRepos => tr("GitHub repositories"),
             Pick::InboxSources => tr("Notification Hub sources"),
             Pick::MailAccounts => tr("Mail accounts"),
+            Pick::ChatAccounts => tr("Chat accounts"),
+            Pick::PresenceAccounts => tr("Presence accounts"),
             Pick::Tools => tr("Tools"),
         }
     }
@@ -270,6 +290,17 @@ impl Pick {
             ),
             (Pick::MailAccounts, true) => tr("Includes mail accounts added later."),
             (Pick::MailAccounts, false) => tr("Mail accounts left off don't exist for this agent."),
+            // With an account an agent sees every conversation in it (decision 3 in `docs/chat.md`).
+            (Pick::ChatAccounts, true) => {
+                tr("Includes accounts added later. The agent sees every conversation in them, private chats too.")
+            }
+            (Pick::ChatAccounts, false) => tr(
+                "The agent sees every conversation of a ticked account, private chats too. Accounts left off don't exist for it.",
+            ),
+            (Pick::PresenceAccounts, true) => tr("Includes accounts added later."),
+            (Pick::PresenceAccounts, false) => {
+                tr("The agent sees who is there on a ticked account. Accounts left off don't exist for it.")
+            }
             // The switch is the person's, under MCP servers in the control centre (task MA.7): the
             // rights alone never make a tool work (`docs/assistent.md`, "Schalter und Rechte sind zwei
             // Dinge"). `web` must be ticked by name (`ToolId::needs_naming`): "All" does not include it.
@@ -806,6 +837,9 @@ pub fn area_label(area: Area) -> &'static str {
         Area::Github => tr("GitHub"),
         Area::Inbox => tr("Notification Hub"),
         Area::Mail => tr("Mail"),
+        // "Talk" tells it from the assistant's chats (`docs/chat.md`, "Steuerzentrale").
+        Area::Chat => tr("Chat (Talk)"),
+        Area::Presence => tr("Presence"),
         Area::Workflows => tr("Workflows"),
         Area::Accounts => tr("Accounts"),
         Area::Ai => tr("AI"),
@@ -831,6 +865,8 @@ fn area_detail(area: Area) -> &'static str {
         Area::Github => tr("Issues and pull requests in filter lists"),
         Area::Inbox => tr("Entries of agents and scripts"),
         Area::Mail => tr("Folders, messages and drafts"),
+        Area::Chat => tr("Conversations and messages"),
+        Area::Presence => tr("Who is there, and your own status"),
         Area::Workflows => tr("Mail workflows, rules and retrieved documents"),
         Area::Accounts => tr("Connected accounts and sync"),
         Area::Ai => tr("Models of your AI accounts"),
@@ -940,6 +976,8 @@ pub fn candidates(pick: Pick, known: &Known, selection: &Selection) -> Vec<Candi
         Pick::GithubRepos => repo_candidates(known, selection),
         Pick::InboxSources => source_candidates(known, selection),
         Pick::MailAccounts => mail_candidates(known),
+        Pick::ChatAccounts => chat_candidates(known),
+        Pick::PresenceAccounts => nextcloud_candidates(known),
         Pick::Tools => tool_candidates(known),
     };
     // Repositories need no such pass: their candidates are made from the selection.
@@ -1068,6 +1106,32 @@ fn source_candidates(known: &Known, selection: &Selection) -> Vec<Candidate> {
 /// person knows it by. A sign-in that is still running has no id and no mail yet.
 fn mail_candidates(known: &Known) -> Vec<Candidate> {
     api::signed_in_mail(known.accounts)
+        .map(|account| Candidate::plain(account.id.clone(), account.label.clone(), None))
+        .collect()
+}
+
+/// The Nextcloud accounts that are signed in: the id is what the core checks a call against
+/// ([`Rights::reaches_presence_account`]), the label what the person knows the account by.
+fn nextcloud_candidates(known: &Known) -> Vec<Candidate> {
+    known
+        .accounts
+        .iter()
+        .filter(|account| account.kind == "nextcloud" && !account.id.is_empty())
+        .map(|account| Candidate::plain(account.id.clone(), account.label.clone(), None))
+        .collect()
+}
+
+/// The accounts with a chat (`docs/chat.md`): the Nextcloud accounts whose server has Talk. An
+/// account whose services are not known yet is offered too, so a rights editor opened right after
+/// a start does not hide it.
+fn chat_candidates(known: &Known) -> Vec<Candidate> {
+    let talk = |account: &AccountInfo| {
+        account.services.as_ref().is_none_or(|services| services.contains(&torro_ipc::ServerService::Talk))
+    };
+    known
+        .accounts
+        .iter()
+        .filter(|account| account.kind == "nextcloud" && !account.id.is_empty() && talk(account))
         .map(|account| Candidate::plain(account.id.clone(), account.label.clone(), None))
         .collect()
 }
@@ -1266,6 +1330,7 @@ fn selection_words(pick: Pick, selection: &Selection) -> String {
         Pick::GithubRepos => (tr("all repositories"), tr("1 repository"), "{n} repositories"),
         Pick::InboxSources => (tr("all sources"), tr("1 source"), "{n} sources"),
         Pick::MailAccounts => (tr("all mail accounts"), tr("1 mail account"), "{n} mail accounts"),
+        Pick::ChatAccounts | Pick::PresenceAccounts => (tr("all accounts"), tr("1 account"), "{n} accounts"),
         Pick::Tools => (tr("all tools"), tr("1 tool"), "{n} tools"),
     };
     match selection {
@@ -1634,7 +1699,15 @@ fn candidate_row<'a>(
         ),
         (Pick::Tools, None) if off == Some(false) => Some(Space::new().width(icon::SIZE).into()),
         (Pick::Calendars | Pick::TaskLists, None) => Some(Space::new().width(space::s()).into()),
-        (Pick::GithubRepos | Pick::InboxSources | Pick::MailAccounts | Pick::Tools, None) => None,
+        (
+            Pick::GithubRepos
+            | Pick::InboxSources
+            | Pick::MailAccounts
+            | Pick::ChatAccounts
+            | Pick::PresenceAccounts
+            | Pick::Tools,
+            None,
+        ) => None,
     };
     let row = setting_row(dot, label, detail, in_column(switch, column));
     pressable(row, Some(Message::Tick(pick, id, !ticked)))
@@ -2420,8 +2493,8 @@ mod tests {
         let mut wide = RightsTemplate::ReadOnly.rights();
         wide.confirm = Confirm::Never;
         let first = format!("{}, {}, {}", tr("Workspaces"), tr("Calendar"), tr("Tasks"));
-        // Contacts, GitHub, Inbox, Mail, Accounts, AI, Tools, Extensions, Settings, Apps follow.
-        assert_eq!(rights_summary(&wide, "codex"), trf("Custom: {areas} +{n}", &[("areas", &first), ("n", &10)]));
+        // Contacts, GitHub, Inbox, Mail, Chat, Presence, Accounts, AI, Tools, Extensions, Settings, Apps follow.
+        assert_eq!(rights_summary(&wide, "codex"), trf("Custom: {areas} +{n}", &[("areas", &first), ("n", &12)]));
         // A command switched off makes a template custom.
         let mut narrowed = RightsTemplate::ReadOnly.rights();
         narrowed.denied.insert("calendar.list_events".into());

@@ -139,6 +139,8 @@ fn area_icon(area: Option<Area>) -> Icon {
         Some(Area::Github) => Icon::Github,
         Some(Area::Inbox) => Icon::Inbox,
         Some(Area::Mail) => Icon::Mail,
+        Some(Area::Chat) => Icon::MessageCircle,
+        Some(Area::Presence) => Icon::Users,
         Some(Area::Workspaces) => Icon::LayoutGrid,
         Some(Area::Accounts) => Icon::Users,
         Some(Area::Settings) => shell::SETTINGS_ICON,
