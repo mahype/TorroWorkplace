@@ -344,7 +344,10 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::ChatMarkUnread { conversation }
         | Request::ChatSuggestMentions { conversation, .. }
         | Request::ChatSetFavorite { conversation, .. }
-        | Request::ChatSetNotificationLevel { conversation, .. } => vec![chat_conversation(conversation)],
+        | Request::ChatSetNotificationLevel { conversation, .. }
+        | Request::ChatGetCall { conversation }
+        | Request::ChatDeclineCall { conversation }
+        | Request::ChatLeaveCall { conversation } => vec![chat_conversation(conversation)],
         Request::ChatEditMessage { id: message, .. }
         | Request::ChatDeleteMessage { id: message }
         | Request::ChatReact { id: message, .. }

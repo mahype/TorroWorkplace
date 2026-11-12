@@ -135,6 +135,8 @@ pub(crate) fn room(room: Room) -> RemoteRoom {
         last_read: room.last_read,
         other_user: room.other_user.filter(|_| room.kind == RoomKind::OneToOne),
         has_call: room.has_call,
+        call_since: room.call_start,
+        in_call: room.in_call,
         favorite: room.favorite,
         read_only: room.read_only || room.lobby || room.kind == RoomKind::FormerOneToOne,
         federated: room.federated,
@@ -539,4 +541,39 @@ pub async fn overview(
 ) -> Result<Vec<(String, RemoteMessage)>, ChatError> {
     let found = client.shared_overview(&token(conversation)?, limit).await.map_err(talk)?;
     Ok(found.into_iter().map(|(kind, message)| (kind, shown(message))).collect())
+}
+
+pub async fn call_people(client: &Nextcloud, conversation: &str) -> Result<super::remote::CallPeople, ChatError> {
+    let peers = client.call_peers(&token(conversation)?).await.map_err(talk)?;
+    Ok(super::remote::CallPeople {
+        count: u32::try_from(peers.len()).unwrap_or(u32::MAX),
+        users: peers.into_iter().filter(|peer| peer.actor_type == ActorType::Users).map(|peer| peer.actor_id).collect(),
+    })
+}
+
+/// The notifications of Talk about calls: app `spreed`, object `call`, the object id a conversation's
+/// token. A server without the notifications app rings for nobody.
+pub async fn rings(client: &Nextcloud) -> Result<Vec<super::remote::RemoteRing>, ChatError> {
+    let notifications = match client.notifications(None).await {
+        Ok(torro_nextcloud::Listing::List { notifications, .. }) => notifications,
+        Ok(torro_nextcloud::Listing::NotModified) | Err(OcsError::MissingApp) => return Ok(Vec::new()),
+        Err(err) => return Err(ocs(err)),
+    };
+    Ok(notifications
+        .into_iter()
+        .filter(|notification| notification.app == "spreed" && notification.object_type == "call")
+        .filter_map(|notification| {
+            let token = RoomToken::parse(&notification.object_id)?;
+            Some(super::remote::RemoteRing {
+                token: token.as_str().to_string(),
+                notification: notification.id.get(),
+                at: notification.time,
+            })
+        })
+        .collect())
+}
+
+pub async fn end_ring(client: &Nextcloud, notification: u64) -> Result<(), ChatError> {
+    let Some(id) = torro_nextcloud::NotificationId::parse(&notification.to_string()) else { return Ok(()) };
+    client.delete_notification(id).await.map_err(ocs)
 }

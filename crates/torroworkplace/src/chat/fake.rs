@@ -11,8 +11,8 @@ use torro_chat::{ChatError, ConversationKind, FileRef, Mention, MessageKind, Not
 
 use super::remote::tests::message;
 use super::remote::{
-    Caps, DavPath, FileError, Picture, Reference, RemoteHit, RemoteMessage, RemotePerson, RemoteQuote, RemoteRoom,
-    RemoteStatus, Sending, ShareMeta, Uploaded,
+    CallPeople, Caps, DavPath, FileError, Picture, Reference, RemoteHit, RemoteMessage, RemotePerson, RemoteQuote,
+    RemoteRing, RemoteRoom, RemoteStatus, Sending, ShareMeta, Uploaded,
 };
 
 /// The user id of the fake's own person.
@@ -61,6 +61,10 @@ pub struct State {
     pub card_pictures: BTreeMap<String, Picture>,
     /// Free bytes of the person's storage; `None` is unlimited.
     pub free: Option<u64>,
+    /// The calls that ring for the person, as notifications (stage 6).
+    pub rings: Vec<RemoteRing>,
+    /// The user ids of the people in the call of a conversation, by token.
+    pub in_calls: BTreeMap<String, Vec<String>>,
 }
 
 /// See the module docs.
@@ -84,6 +88,8 @@ pub fn room(token: &str, name: &str, kind: ConversationKind, unread: u64) -> Rem
         last_read: None,
         other_user: None,
         has_call: false,
+        call_since: None,
+        in_call: false,
         favorite: false,
         read_only: false,
         federated: false,
@@ -163,6 +169,8 @@ impl Default for Server {
                 previews: BTreeMap::new(),
                 card_pictures: BTreeMap::new(),
                 free: None,
+                rings: Vec::new(),
+                in_calls: BTreeMap::new(),
             }),
         }
     }
@@ -611,6 +619,25 @@ impl Server {
             found.extend(of_kind.take(limit as usize).map(|m| (kind.to_string(), m.clone())));
         }
         Ok(found)
+    }
+
+    pub async fn call_people(&self, token: &str) -> Result<CallPeople, ChatError> {
+        let state = self.call(format!("call_people {token}"))?;
+        if !state.rooms.iter().any(|room| room.token == token) {
+            return Err(ChatError::NotFound);
+        }
+        let users = state.in_calls.get(token).cloned().unwrap_or_default();
+        Ok(CallPeople { count: u32::try_from(users.len()).unwrap_or(u32::MAX), users })
+    }
+
+    pub async fn rings(&self) -> Result<Vec<RemoteRing>, ChatError> {
+        self.call("rings").map(|state| state.rings.clone())
+    }
+
+    pub async fn end_ring(&self, notification: u64) -> Result<(), ChatError> {
+        let mut state = self.call(format!("end_ring {notification}"))?;
+        state.rings.retain(|ring| ring.notification != notification);
+        Ok(())
     }
 }
 

@@ -1504,6 +1504,9 @@ impl PimService {
             | Request::ChatSaveAttachment { .. }
             | Request::ChatListShared { .. }
             | Request::ChatShowCard { .. }
+            | Request::ChatGetCall { .. }
+            | Request::ChatDeclineCall { .. }
+            | Request::ChatLeaveCall { .. }
             | Request::PresenceListPeople { .. }
             | Request::PresenceAddPerson { .. }
             | Request::PresenceRemovePerson { .. }

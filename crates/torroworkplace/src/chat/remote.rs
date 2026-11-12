@@ -94,6 +94,10 @@ pub struct RemoteRoom {
     /// In a direct chat: the other person's user id.
     pub other_user: Option<String>,
     pub has_call: bool,
+    /// When the running call began, when the server says (stage 6).
+    pub call_since: Option<DateTime<Utc>>,
+    /// The person is in the call, on any of their devices.
+    pub in_call: bool,
     pub favorite: bool,
     pub read_only: bool,
     pub federated: bool,
@@ -167,6 +171,24 @@ pub struct RemoteHit {
     pub number: u64,
     pub title: String,
     pub text: String,
+}
+
+/// Someone calls the person (stage 6): the server's notification of the call in the conversation
+/// `token`, made at `at`. Declining deletes the notification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteRing {
+    pub token: String,
+    /// The notification's id on the server.
+    pub notification: u64,
+    pub at: DateTime<Utc>,
+}
+
+/// Who is in a call (stage 6): how many people, and the user ids of those who are users of this
+/// server, to tell whether the person is among them.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CallPeople {
+    pub count: u32,
+    pub users: Vec<String>,
 }
 
 /// A message to send.
@@ -435,6 +457,22 @@ impl Remote {
     /// The newest shared items of each kind, with their kind.
     pub async fn overview(&self, token: &str, limit: u32) -> Result<Vec<(String, RemoteMessage)>, ChatError> {
         each!(self, overview(token, limit))
+    }
+
+    /// Who is in the call of `token`, each person once (stage 6).
+    pub async fn call_people(&self, token: &str) -> Result<CallPeople, ChatError> {
+        each!(self, call_people(token))
+    }
+
+    /// The calls that ring for the person now, as the server's notifications tell (stage 6); they
+    /// may be older than a ring lasts, the service decides.
+    pub async fn rings(&self) -> Result<Vec<RemoteRing>, ChatError> {
+        each!(self, rings())
+    }
+
+    /// Stops a call ringing for the person: deletes its notification (stage 6). Gone already is fine.
+    pub async fn end_ring(&self, notification: u64) -> Result<(), ChatError> {
+        each!(self, end_ring(notification))
     }
 }
 

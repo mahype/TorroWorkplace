@@ -3914,7 +3914,8 @@ impl Core {
     /// An account removed or wiped takes its conversations, messages, people and status along
     /// ([`PimService::on_forget`]); nothing of them is on disk but the list of people added by
     /// hand. While "Show others when I am online" is on, the heartbeat goes out every five
-    /// minutes (decision 10 in `docs/chat.md`); off, nothing is ever sent. Part of [`Core::start`].
+    /// minutes (decision 10 in `docs/chat.md`); off, nothing is ever sent. While "Ring for incoming
+    /// calls" is on, the calls are looked at every 10 s (stage 6). Part of [`Core::start`].
     fn start_chat(self: &Arc<Self>) {
         let mut forgotten = self.pim.on_forget();
         let core = Arc::clone(self);
@@ -3930,6 +3931,21 @@ impl Core {
                 }
             }
         });
+        // Ringing (stage 6): while "Ring for incoming calls" is on, a look at the calls every 10 s,
+        // and the ringing window for each call that began ringing; off, nothing is asked.
+        let core = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(crate::chat::calls::RING_EVERY).await;
+                if !core.settings.current().chat_ring {
+                    core.chat.stop_rings();
+                    continue;
+                }
+                for conversation in core.chat.look_for_rings(Utc::now()).await {
+                    core.ring(conversation).await;
+                }
+            }
+        });
         let core = Arc::clone(self);
         tokio::spawn(async move {
             loop {
@@ -3941,6 +3957,19 @@ impl Core {
                 tokio::time::sleep(crate::presence::BEAT_EVERY).await;
             }
         });
+    }
+
+    /// Opens the chat's ringing window for `conversation` (stage 6 of `docs/chat.md`): `torrochat
+    /// --ring=<conversation>`, floating like the chat windows. Started directly, not through
+    /// `apps.open_app`, so no client can make it ring. A failure is only logged.
+    async fn ring(&self, conversation: String) {
+        self.float_chat_windows().await;
+        let opened = crate::apps::Opened::Ring { conversation };
+        let bundle = crate::apps::installed_bundle(crate::apps::target_entry(&opened));
+        let dirs = crate::apps::search_dirs();
+        if let Err(err) = crate::apps::launch(crate::apps::target_start(&opened, &dirs, bundle.as_deref())).await {
+            eprintln!("torroworkplace: the ringing window did not open: {err}");
+        }
     }
 
     /// One round of the contacts of every account; the books gone from their servers leave every
@@ -7123,6 +7152,9 @@ impl Core {
             | Request::ChatSaveAttachment { .. }
             | Request::ChatListShared { .. }
             | Request::ChatShowCard { .. }
+            | Request::ChatGetCall { .. }
+            | Request::ChatDeclineCall { .. }
+            | Request::ChatLeaveCall { .. }
             | Request::PresenceListPeople { .. }
             | Request::PresenceAddPerson { .. }
             | Request::PresenceRemovePerson { .. }
@@ -34306,6 +34338,40 @@ mod tests {
             runtime.block_on(chat_stays_within_a_clients_accounts());
         });
         worker.expect("thread").join().expect("the test ran through");
+    }
+
+    /// Stage 6b: a client sees and declines a call only in the accounts of its rights, without anyone
+    /// asked; the log names the conversation hashed only.
+    #[tokio::test]
+    async fn a_client_sees_and_declines_calls_of_its_accounts_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, server) = chatting(dir.path());
+        {
+            let mut state = server.state();
+            let at = Utc::now();
+            state.rings = vec![crate::chat::remote::RemoteRing { token: "ben4chat".into(), notification: 7, at }];
+            let ben = state.rooms.iter_mut().find(|room| room.token == "ben4chat").expect("ben");
+            ben.has_call = true;
+        }
+        let (_, closed) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.chat_accounts = Selection::Only(vec![CHAT_ACCOUNT.into()]);
+        let (_, key) = client(&core, rights).await;
+        let get = || Request::ChatGetCall { conversation: CHAT_BEN.into() };
+        let decline = || Request::ChatDeclineCall { conversation: CHAT_BEN.into() };
+        assert_eq!(code(&ask(&core, Some(&closed), get()).await), "not-found");
+        assert_eq!(code(&ask(&core, Some(&closed), decline()).await), "not-found");
+        assert_eq!(server.count("end_ring"), 0);
+
+        core.chat.look_for_rings(Utc::now()).await;
+        let Response::ChatCall { call } = ask(&core, Some(&key), get()).await else { panic!("a call") };
+        assert!(call.active && call.ringing, "{call:?}");
+        assert_eq!(ask(&core, Some(&key), decline()).await, Response::Ok, "nobody is asked");
+        assert_eq!(server.count("end_ring 7"), 1);
+        let leave = Request::ChatLeaveCall { conversation: CHAT_BEN.into() };
+        assert_eq!(ask(&core, Some(&key), leave).await, Response::Ok);
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log");
+        assert!(log.contains("chat.decline_call") && !log.contains("ben4chat"), "{log}");
     }
 
     /// Stage 5: a client shares a contact of a book it may read; the approval names the contact as

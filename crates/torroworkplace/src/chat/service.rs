@@ -112,7 +112,10 @@ fn account_of(request: &Request) -> Result<Option<&str>, ()> {
         | Request::ChatMarkUnread { conversation: id }
         | Request::ChatSuggestMentions { conversation: id, .. }
         | Request::ChatSetFavorite { conversation: id, .. }
-        | Request::ChatSetNotificationLevel { conversation: id, .. } => conversation(id).map(Some),
+        | Request::ChatSetNotificationLevel { conversation: id, .. }
+        | Request::ChatGetCall { conversation: id }
+        | Request::ChatDeclineCall { conversation: id }
+        | Request::ChatLeaveCall { conversation: id } => conversation(id).map(Some),
         Request::ChatEditMessage { id, .. }
         | Request::ChatDeleteMessage { id }
         | Request::ChatReact { id, .. }
@@ -197,7 +200,7 @@ pub struct Caller<'a> {
 }
 
 impl Caller<'_> {
-    fn is_app(&self) -> bool {
+    pub(super) fn is_app(&self) -> bool {
         matches!(self.reach, Reach::Suite)
     }
 }
@@ -401,6 +404,9 @@ impl ChatService {
                 return self.list_shared(&conversation, kind, before.as_deref(), limit, caller).await;
             }
             Request::ChatShowCard { id } => return self.show_card(&id).await,
+            Request::ChatGetCall { conversation } => self.get_call(&conversation, caller).await,
+            Request::ChatDeclineCall { conversation } => self.decline_call(&conversation, caller).await,
+            Request::ChatLeaveCall { conversation } => self.leave_call(&conversation).await,
             Request::ChatMarkRead { conversation, up_to } => self.mark_read(&conversation, up_to.as_deref()).await,
             Request::ChatMarkUnread { conversation } => self.mark_unread(&conversation).await,
             Request::ChatSuggestMentions { conversation, query, limit } => {
@@ -442,7 +448,11 @@ impl ChatService {
                         .filter(|room| room.kind != ConversationKind::Other)
                         .filter(|room| !unread_only || room.unread > 0)
                         .filter(|room| query.as_ref().is_none_or(|query| room.name.to_lowercase().contains(query)))
-                        .map(|room| conversation(id, room)),
+                        .map(|room| Conversation {
+                            // As the last look at the calls found it (stage 6).
+                            ringing: room.has_call && !room.in_call && self.rings(id, &room.token, chrono::Utc::now()),
+                            ..conversation(id, room)
+                        }),
                 ),
                 // An account without a chat is no failure of a list over all accounts.
                 Err(ChatError::NotConnected) if account.is_none() => {}

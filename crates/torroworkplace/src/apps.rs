@@ -794,6 +794,12 @@ pub enum Opened {
     Chat {
         conversation: Option<String>,
     },
+    /// The chat's ringing window for a call in a conversation (stage 6 of `docs/chat.md`), by the id
+    /// the core built when it saw the call ring. Only the core opens it: no target of
+    /// `apps.open_app` names it, so no client can make the person's computer ring.
+    Ring {
+        conversation: String,
+    },
 }
 
 impl Opened {
@@ -803,7 +809,7 @@ impl Opened {
             Opened::Mail { .. } | Opened::File { .. } => AppId::INBOX_MAIL,
             Opened::Task { .. } => AppId::TASKS,
             Opened::Template { .. } => AppId::WORKPLACE,
-            Opened::Chat { .. } => AppId::CHAT,
+            Opened::Chat { .. } | Opened::Ring { .. } => AppId::CHAT,
         }
     }
 }
@@ -824,6 +830,7 @@ pub fn target_command(program: String, opened: &Opened) -> Vec<String> {
         Opened::Chat { conversation: Some(conversation) } => {
             (opened.app().command(program), format!("--conversation={conversation}"))
         }
+        Opened::Ring { conversation } => (opened.app().command(program), format!("--ring={conversation}")),
         // A file opens the compose window, not the mail window the inbox's mail entry names.
         Opened::File { path } => (vec![program, "--compose".to_string()], format!("--attach={path}")),
     };
@@ -1036,6 +1043,11 @@ pub mod tests {
             ["/bin/torrochat", "--conversation=nextcloud:anna@cloud.example.org/ben4chat"]
         );
         assert_eq!(target_command("/bin/torrochat".into(), &Opened::Chat { conversation: None }), ["/bin/torrochat"]);
+        let ring = Opened::Ring { conversation: "nextcloud:anna@cloud.example.org/ben4chat".into() };
+        assert_eq!(
+            target_command("/bin/torrochat".into(), &ring),
+            ["/bin/torrochat", "--ring=nextcloud:anna@cloud.example.org/ben4chat"]
+        );
     }
 
     /// Task WZ.8: `file:<id>` names a file of the register by its 8 hex digits and opens in the

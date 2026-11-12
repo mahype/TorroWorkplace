@@ -10,12 +10,12 @@
 //!   it changes the message it names ([`Patch`]).
 //! - Time comes in from the caller, so the rules are tested without waiting.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use torro_chat::MessageKind;
 
-use super::remote::{Caps, RemoteMessage, RemoteRoom};
+use super::remote::{Caps, RemoteMessage, RemoteRing, RemoteRoom};
 
 /// The most messages kept per conversation.
 pub const MESSAGES_KEPT: usize = 200;
@@ -49,6 +49,10 @@ pub struct Account {
     pub rooms: Vec<RemoteRoom>,
     /// When the list of conversations was last fetched.
     pub rooms_at: Option<Instant>,
+    /// The calls that ring for the person, as the last look at the notifications found them (stage 6).
+    pub rings: Vec<RemoteRing>,
+    /// The notifications of calls the ringing window was opened for already, so each opens it once.
+    pub announced: BTreeSet<u64>,
 }
 
 impl Account {
