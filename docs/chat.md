@@ -797,6 +797,25 @@ Entscheidung 13: selbst gebaut. Was die Machbarkeit dazu ergab, steht in
 - **(c) Anruffenster und Gerätewahl** nach den Entwürfen, mit Bild in Iced; danach öffnet „Accept“ das eigene
   Fenster.
 
+**Umgesetzt in (b), Issue #643** (Kern und API; das Klingelfenster baut die App danach):
+- `chat.get_call` liest „läuft“ und „seit wann“ aus der Liste der Unterhaltungen (`hasCall`, `callStartTime`) und
+  die Teilnehmer aus `GET …/api/v4/call/{token}` (je Person einmal): ihre Zahl, und ob der Mensch dabei ist (seine
+  Benutzer-ID unter ihnen, oder `participantFlags`). Die Antwort trägt `link` (`<server>/call/<token>`) für „Accept“.
+  Clients fragen den Server einzeln nacheinander, wie bei Nachrichten.
+- **Klingeln** ist eine Benachrichtigung von `spreed` mit dem Objekt `call`, jünger als 45 s, in einer Unterhaltung mit
+  laufendem Anruf, in dem der Mensch auf keinem Gerät ist (`chat/calls.rs`). Die Abfrage läuft alle 10 s nur, solange
+  `chat_ring` an ist; aus vergisst der Kern, was klingelt. Offen: `notify_push` statt der Abfrage, ein `ETag` je Konto
+  für die Liste der Benachrichtigungen und kein Klingeln bei „Do not disturb“ (der Kern prüft den eigenen Status dafür
+  noch nicht).
+- **Ablehnen** löscht nur Benachrichtigungen, die noch klingeln; ein verpasster Anruf bleibt in den Benachrichtigungen
+  und im Eingang. `notification-state` braucht es dafür nicht. **Auflegen** antwortet `ok`, solange der Anruf im
+  Browser läuft.
+- **Start des Fensters:** Für jeden Anruf, der neu klingelt, startet der Kern einmal `torrochat
+  --ring=<unterhaltung>` (`apps::Opened::Ring`) und lässt die Klassen des Chats vorher schweben. Gewählt statt eines
+  Ziels `ring:<unterhaltung>` für `apps.open_app`, weil ein solches Ziel jedem Client mit `apps` erlaubte, den Rechner
+  klingeln zu lassen, und weil der Kern ohnehin selbst startet.
+- Keiner der drei Befehle ist `Never`; die Datenregel des Assistenten hält `chat-call` wie jede Chat-Antwort zurück.
+
 **Grenzen der ersten Fassung:** nur zu zweit (ohne HPB rät Talk selbst ab drei Personen ab), kein Bildschirm
 teilen, keine Aufnahme, keine Untertitel. Föderierte Unterhaltungen und Gäste ohne Konto erst, wenn der Versuch
 sie geprüft hat.
