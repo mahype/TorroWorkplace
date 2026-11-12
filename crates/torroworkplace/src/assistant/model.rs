@@ -850,10 +850,13 @@ impl Answering {
             }
             messages[0] = ChatMessage::system(system);
             // A small model gets the reading tools first; a chat about a mail (issue #605) needs its one way to
-            // suggest among them, not behind find_tools.
+            // suggest among them, not behind find_tools, and the tool of the call that read the mail: else, with
+            // more tools than fit, the request shows the model a call of a tool it is not offered, and it cannot
+            // read the mail again without find_tools. Only order: the rights still decide what is offered.
             let mut loaded = self.loaded.clone();
-            if self.job.about.is_some() {
+            if let Some(about) = &self.job.about {
                 loaded.insert(tools::EXTRACT_ACTION.replace('.', "_"));
+                loaded.insert(about_call(about).name);
             }
             let request = ChatRequest {
                 model: model.clone(),
@@ -3376,6 +3379,140 @@ pub(crate) mod tests {
         finished(&assistant, &plain).await;
         let later = about_message(Some(&plain), "And this mail?");
         assert_eq!(refused_with(assistant.about_for(&later, Some(mail_ref("m:4")), EngineKind::Ai).await), "error");
+    }
+
+    /// Issue #605: the mail read before the model's first step travels to Anthropic as a `tool_use` turn of the
+    /// assistant without a thinking block, followed by its `tool_result`. The Messages API takes that, with and
+    /// without an effort: the suite asks only for adaptive thinking (`anthropic::chat_body`), where no assistant turn
+    /// has to start with a thinking block; only manual thinking (`type: "enabled"`, which the suite never sends)
+    /// demands one at the start of the final assistant turn. The model's own thinking goes back first and unchanged,
+    /// and every step only appends to the messages and keeps the tools, so its thinking stays valid. The tool of the
+    /// call is offered, also when more tools are allowed than fit (as here).
+    #[tokio::test]
+    async fn a_chat_about_a_mail_reads_it_first_in_a_body_anthropic_takes() {
+        for effort in [None, Some(torro_core::ai::Effort::High)] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let thought = json!({"type": "thinking", "thinking": "", "signature": "c2lnbmF0dXJl"});
+            let call = ToolCall {
+                id: "toolu_01".into(),
+                name: "mail_get_message".into(),
+                arguments: json!({"id": "m:4", "include_body": false}).to_string(),
+            };
+            let thinks_and_calls = ChatReply {
+                tool_calls: vec![call],
+                finish: Finish::ToolCalls,
+                thinking: vec![thought.clone()],
+                ..ChatReply::default()
+            };
+            let steps = vec![Step::Reply(Vec::new(), thinks_and_calls), says("Yes, on Thursday at 14:00.")];
+            let script = Script::new(steps);
+            let (assistant, _host) =
+                set_up_with(dir.path(), Some(mail_of_anna()), Place::Local, Arc::clone(&script), about_answers);
+            let mut message = about_message(None, "Is there a date in it?");
+            message.effort = effort;
+            let checked = assistant.about_for(&message, Some(mail_ref("m:4")), EngineKind::Ai).await.expect("allowed");
+            let id = match assistant.send_about(message, checked, EngineKind::Ai, Utc::now()).await {
+                Response::Conversation { conversation, .. } => conversation.id,
+                other => panic!("expected a conversation, got {other:?}"),
+            };
+            finished(&assistant, &id).await;
+
+            let bodies: Vec<Value> =
+                script.asked().iter().map(|request| torro_core::ai::anthropic::chat_body(request, true)).collect();
+            assert_eq!(bodies.len(), 2, "{effort:?}: the read, then two steps of the model");
+            for body in &bodies {
+                anthropic_takes(body);
+                match effort {
+                    Some(_) => assert_eq!(body["thinking"], json!({"type": "adaptive"}), "{body}"),
+                    None => assert!(body.get("thinking").is_none(), "{body}"),
+                }
+            }
+
+            // The read, as the model sees it in its first step: the person's question, the call, the mail.
+            let first = bodies[0]["messages"].as_array().expect("messages");
+            let read = json!([
+                {"role": "user", "content": [{"type": "text", "text": "Is there a date in it?"}]},
+                {"role": "assistant", "content": [{
+                    "type": "tool_use",
+                    "id": ABOUT_CALL,
+                    "name": "mail_get_message",
+                    "input": {"id": "m:4", "include_body": true},
+                }]},
+            ]);
+            assert_eq!(first[..2], read.as_array().expect("an array")[..], "{effort:?}");
+            assert_eq!(first[2]["content"][0]["tool_use_id"], json!(ABOUT_CALL), "{effort:?}");
+            assert_eq!(first.len(), 3, "{effort:?}: the step answers the person's turn");
+
+            // The second step only appends: the model's thinking first and unchanged, then its call and the result.
+            let second = bodies[1]["messages"].as_array().expect("messages");
+            assert_eq!(second[..first.len()], first[..], "{effort:?}: nothing before is changed");
+            let turn = second[first.len()]["content"].as_array().expect("blocks");
+            assert_eq!(turn[0], thought, "{effort:?}: thinking first, as it came");
+            assert_eq!(turn[1]["type"], json!("tool_use"), "{effort:?}");
+            assert_eq!(bodies[0]["tools"], bodies[1]["tools"], "{effort:?}: the tools stay");
+        }
+    }
+
+    /// Asserts the rules of Anthropic's Messages API that a conversation with tools must keep, else the server
+    /// answers HTTP 400: it starts with the person and the roles take turns; no message and no text block is
+    /// empty; every `tool_use` is answered by a `tool_result` in the very next message, which answers nothing
+    /// else; `input` is an object; thinking, if asked for, is adaptive, never manual (`enabled`, which would need a
+    /// thinking block at the start of the final assistant turn); thinking blocks stand before the other blocks of
+    /// their message. And what the suite keeps to beyond the documented rules: tools are defined whenever a
+    /// `tool_use` or `tool_result` is in it, and every call names one of them.
+    fn anthropic_takes(body: &Value) {
+        let messages = body["messages"].as_array().expect("messages");
+        assert_eq!(messages.first().map(|message| &message["role"]), Some(&json!("user")), "{body}");
+        let tools: Vec<&str> = body["tools"]
+            .as_array()
+            .map(|tools| tools.iter().filter_map(|tool| tool["name"].as_str()).collect())
+            .unwrap_or_default();
+        for (at, message) in messages.iter().enumerate() {
+            if let Some(before) = at.checked_sub(1).map(|before| &messages[before]) {
+                assert_ne!(before["role"], message["role"], "the roles take turns: {body}");
+            }
+            let blocks = message["content"].as_array().expect("blocks");
+            assert!(!blocks.is_empty(), "an empty message: {body}");
+            let kinds: Vec<&str> = blocks.iter().filter_map(|block| block["type"].as_str()).collect();
+            let thoughts = kinds.iter().take_while(|kind| matches!(**kind, "thinking" | "redacted_thinking")).count();
+            assert!(
+                kinds[thoughts..].iter().all(|kind| !matches!(*kind, "thinking" | "redacted_thinking")),
+                "thinking first: {body}"
+            );
+            for block in blocks.iter().filter(|block| block["type"] == "text") {
+                assert!(block["text"].as_str().is_some_and(|text| !text.trim().is_empty()), "empty text: {body}");
+            }
+            let ids = |of: &Value, kind: &str, field: &str| -> Vec<String> {
+                of["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|block| block["type"] == kind)
+                    .filter_map(|block| block[field].as_str().map(str::to_string))
+                    .collect()
+            };
+            let calls = ids(message, "tool_use", "id");
+            let results = ids(message, "tool_result", "tool_use_id");
+            if !calls.is_empty() || !results.is_empty() {
+                assert!(!tools.is_empty(), "tool blocks without tools: {body}");
+            }
+            for block in blocks.iter().filter(|block| block["type"] == "tool_use") {
+                assert!(block["input"].is_object(), "an input object: {body}");
+                let name = block["name"].as_str().unwrap_or_default();
+                assert!(tools.contains(&name), "a call of a tool not offered, {name}: {body}");
+            }
+            if !calls.is_empty() {
+                let next = messages.get(at + 1).expect("the results follow the calls");
+                assert_eq!(ids(next, "tool_result", "tool_use_id"), calls, "every call answered next: {body}");
+            }
+            if !results.is_empty() {
+                let before = at.checked_sub(1).map(|before| &messages[before]).expect("a call before its result");
+                assert_eq!(ids(before, "tool_use", "id"), results, "a result answers the call before: {body}");
+            }
+        }
+        if let Some(thinking) = body.get("thinking") {
+            assert_eq!(thinking, &json!({"type": "adaptive"}), "only adaptive thinking: {body}");
+        }
     }
 
     /// The assistant only reads mail of [`ACCOUNT`] (issue #605: enough for the suggestion of its chat's mail).
