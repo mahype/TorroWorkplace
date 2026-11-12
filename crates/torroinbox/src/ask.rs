@@ -685,11 +685,13 @@ fn tinted<'a>(which: Icon, edge: f32, colour: fn(&Palette) -> iced::Color) -> El
 
 /// The head: "‹ Mail" while the panel covers the mail, the sparkles and "Ask AI", then "+" ("New
 /// chat", off while the panel opens) and ✕ ("Close"); padded like a panel's head, so ✕ lines up with the window's buttons. The
-/// chevron of "‹ Mail" stands on the panel's left edge like the content below (the ghost button's own
-/// padding is taken off the head's).
+/// tip of the chevron of "‹ Mail" stands on the line of the content below – the mail's mark and the
+/// chat's text: the ghost button's own padding and the room Lucide leaves inside the icon before the
+/// tip ([`chevron_inset`]) are taken off the head's (design review of #605: it stood that far to the
+/// right of the line).
 fn head<'a>(covering: bool, can_start_anew: bool) -> Element<'a, Message> {
     let left = match covering {
-        true => (space::l() - style::button_padding().left).max(0.0),
+        true => (space::l() - style::button_padding().left - chevron_inset()).max(0.0),
         false => space::l(),
     };
     let mut line = row![].spacing(space::s()).align_y(Alignment::Center);
@@ -708,6 +710,15 @@ fn head<'a>(covering: bool, can_start_anew: bool) -> Element<'a, Message> {
         .push(widgets::icon_button(Icon::Plus, tr("New chat"), can_start_anew.then_some(Message::Ask(Event::New))))
         .push(widgets::icon_button(Icon::X, tr("Close"), Some(Message::Ask(Event::Close))));
     container(line).width(Fill).center_y(size::header()).padding(Padding::new(0.0).left(left).right(space::m())).into()
+}
+
+/// How far inside its icon the chevron of a text button ([`widgets::text_button`], icon
+/// [`icon::SIZE_SM`]) has its tip: `chevron-left.svg` draws it at 9 of 24, less half its stroke of
+/// 1.75. Taken off the head's inset with the button's padding (never below 0), it puts the tip where
+/// the mail's mark below begins – that icon leaves a little room before its edge too – in all three
+/// spacing levels.
+fn chevron_inset() -> f32 {
+    icon::SIZE_SM * (9.0 - 1.75 / 2.0) / 24.0
 }
 
 /// What the chat is about: the mail's mark, "About: {subject}" and its sender and time, each on one
@@ -1178,6 +1189,17 @@ mod tests {
             bot_deleted: false,
             about,
         }
+    }
+
+    /// Design review of #605: over the mail the tip of "‹ Mail" stands on the line of the content below
+    /// (`space::l()` and the room the mail's mark has inside its icon), not a button's padding to the
+    /// right of it.
+    #[test]
+    fn the_chevron_of_the_way_back_stands_on_the_content_line() {
+        let left = (space::l() - style::button_padding().left - chevron_inset()).max(0.0);
+        let tip = left + style::button_padding().left + chevron_inset();
+        let mark = space::l() + icon::SIZE * (2.0 - 1.75 / 2.0) / 24.0;
+        assert!((tip - mark).abs() < 1.0, "tip {tip}, mark {mark}");
     }
 
     #[test]
