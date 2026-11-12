@@ -6894,6 +6894,7 @@ impl Core {
             | Request::ListConversations
             | Request::GetConversation { .. }
             | Request::SendMessage { .. }
+            | Request::CheckAbout { .. }
             | Request::CancelAnswer { .. }
             | Request::RenameConversation { .. }
             | Request::DeleteConversation { .. }
@@ -10960,14 +10961,15 @@ impl Core {
         }
     }
 
-    /// The mail a new `assistant.send_message` names as `about` (issue #605) as `reach` may read it: `Err` with
+    /// The mail a new `assistant.send_message` or `assistant.check_about` names as `about` (issue #605) as `reach`
+    /// may read it: `Err` with
     /// `not-found` when the caller may not read that account or the account does not hold that mail
     /// ([`Core::suggestion_mail`]), so nobody starts a chat about a mail they cannot see and an `about` always names a
     /// real mail. A conversation that goes on is checked by [`Core::about_hidden`] only, by its account: a mail
     /// deleted meanwhile shows in the tool line of the answer, not as a refusal. `Ok` for every other request.
     async fn about_reach(&self, request: &Request, reach: Reach<'_>) -> Result<(), Response> {
         match request {
-            Request::SendMessage { conversation: None, about: Some(about), .. } => {
+            Request::SendMessage { conversation: None, about: Some(about), .. } | Request::CheckAbout { about, .. } => {
                 self.suggestion_mail(&about.account, &about.id, reach).await
             }
             _ => Ok(()),
@@ -12299,13 +12301,13 @@ impl Core {
         Some(Response::Error { code: "unsupported".into(), message })
     }
 
-    /// `unsupported` for `assistant.send_message` and `bots.ask_bot` (by the bot's engine) with an AI
+    /// `unsupported` for `assistant.send_message`, `assistant.check_about` and `bots.ask_bot` (by the bot's engine) with an AI
     /// account that has no model on (task S.24): the module never answers with another account
     /// instead. `None` for every other request, an engine that is no AI account, and an unknown bot
     /// (the assistant refuses those itself).
     async fn models_off_refusal(&self, request: &Request) -> Option<Response> {
         let engine = match request {
-            Request::SendMessage { engine, .. } => engine.clone(),
+            Request::SendMessage { engine, .. } | Request::CheckAbout { engine, .. } => engine.clone(),
             Request::AskBot { bot, .. } => self.assistant.bots().get(bot).await?.engine,
             _ => return None,
         };
@@ -33071,6 +33073,63 @@ mod tests {
             core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, reading).await.expect("added");
             assert!(matches!(ask(&core, Some(&reader), send()).await, Response::Pending { .. }), "now it may run");
             assert_eq!(approvals(ask(&core, Some(&app_key), Request::ListApprovals).await).len(), 1);
+        }
+
+        /// Issue #605: `assistant.check_about` answers what a new chat about the mail would be refused with, for the
+        /// panel to show its hint on opening, and stores nothing: ok when it may run (reading the assistant's area is
+        /// enough), `forbidden` without an assistant that reads the account, `not-found` for a caller that cannot see
+        /// the mail and for a mail the account does not hold, `not-connected` for a model elsewhere under the data rule.
+        #[tokio::test]
+        async fn checking_a_chat_about_a_mail_answers_as_sending_would() {
+            let Invited { _dir: dir, core, id, app_key, .. } = invited().await;
+            let keys = MemoryTokens::default();
+            let core = Core { ai: Arc::new(crate::account::ai::tests::service(dir.path(), &keys, Vec::new())), ..core };
+            let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+            let core = Arc::new(core.with_assistant(assistant));
+            core.attach_assistant();
+            let ollama = crate::account::ai::tests::fake_ollama_with_cloud(true).await;
+            let account = core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await;
+            let account = account.expect("ollama");
+            for model in ["qwen3:8b", "glm-5.3:cloud"] {
+                assert_eq!(core.handle(turn_on(&account.id, model)).await, Response::Ok);
+            }
+            let mail = torro_ipc::assistant::MailRef { account: ANNA.into(), id: id.clone() };
+            let check = |model: &str, about: &torro_ipc::assistant::MailRef| Request::CheckAbout {
+                engine: account.id.clone(),
+                model: Some(model.into()),
+                about: about.clone(),
+            };
+            let local = check("qwen3:8b", &mail);
+            assert_eq!(code(&ask(&core, Some(&app_key), local.clone()).await), "forbidden", "no assistant client");
+
+            let mut reading = Rights::assistant();
+            reading.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+            reading.mail_accounts = Selection::Only(vec![ANNA.into()]);
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, reading).await.expect("added");
+            assert_eq!(ask(&core, Some(&app_key), local.clone()).await, Response::Ok);
+            let cloud = check("glm-5.3:cloud", &mail);
+            assert_eq!(code(&ask(&core, Some(&app_key), cloud).await), "not-connected", "the data rule");
+            let gone = torro_ipc::assistant::MailRef { account: ANNA.into(), id: "m:gone".into() };
+            assert_eq!(code(&ask(&core, Some(&app_key), check("qwen3:8b", &gone)).await), "not-found");
+
+            // A client: reading the assistant's area is enough, and it must see the mail itself.
+            let looking = |account: &str| {
+                let mut rights = RightsTemplate::ReadAndWrite.rights();
+                rights.areas.insert(Area::Assistant, AreaRights { level: Level::Read, admin: false });
+                rights.mail_accounts = Selection::Only(vec![account.into()]);
+                Rights { confirm: Confirm::OnEveryChange, ..rights }
+            };
+            let (_, reader) = client(&core, looking(ANNA)).await;
+            assert_eq!(ask(&core, Some(&reader), local.clone()).await, Response::Ok, "nobody asked");
+            let (_, stranger) = client(&core, looking("mail:bob@example.org")).await;
+            assert_eq!(code(&ask(&core, Some(&stranger), local).await), "not-found", "the client cannot see it");
+            assert!(
+                matches!(
+                    ask(&core, Some(&app_key), Request::ListConversations).await,
+                    Response::Conversations { conversations } if conversations.is_empty()
+                ),
+                "nothing stored"
+            );
         }
 
         /// Issue #605, decided with the person: in a chat about a mail the assistant's read access to that

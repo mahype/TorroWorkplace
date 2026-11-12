@@ -644,6 +644,10 @@ fn assistant_ids(request: &Request) -> Vec<&str> {
                 ids.extend([about.account.as_str(), about.id.as_str()]);
             }
         }
+        Request::CheckAbout { engine, model, about } => {
+            ids.extend([engine.as_str(), about.account.as_str(), about.id.as_str()]);
+            ids.extend(model.as_deref());
+        }
         Request::OpenChatWindow { window: ChatWindow::Bot(bot) } | Request::ConfirmBot { bot, .. } => ids.push(bot),
         Request::Forget { id } | Request::Remember { replaces: Some(id), .. } => ids.push(id),
         _ => {}
@@ -820,6 +824,15 @@ mod tests {
             Some("error".into())
         );
         assert_eq!(code(limit_refusal(&about(&"a".repeat(MAX_ID_BYTES + 1), "m:4"))), Some("error".into()));
+        // And so does the check before such a chat.
+        let check = |engine: &str, id: &str| Request::CheckAbout {
+            engine: engine.into(),
+            model: None,
+            about: MailRef { account: "mail:anna@example.org".into(), id: id.into() },
+        };
+        assert_eq!(code(limit_refusal(&check(TEST_ENGINE, "m:4"))), None);
+        assert_eq!(code(limit_refusal(&check(TEST_ENGINE, &"m".repeat(MAX_ID_BYTES + 1)))), Some("error".into()));
+        assert_eq!(code(limit_refusal(&check(&"a".repeat(MAX_ID_BYTES + 1), "m:4"))), Some("error".into()));
         assert_eq!(code(limit_refusal(&Request::Ping)), None, "other requests keep no limit here");
     }
 

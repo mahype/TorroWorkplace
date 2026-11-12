@@ -9,7 +9,9 @@
 //!   cards, the field and what answers (the assistant's default, `chat::preferred_choice`).
 //! - **Requests only** ([`Call`], [`call_for`]): opening asks `assistant.list_engines`,
 //!   `settings.get_settings` and `assistant.list_conversations` and continues the newest conversation
-//!   about the same mail ([`newest_about`]); "+" starts a new one. "Send" is
+//!   about the same mail ([`newest_about`]); "+" starts a new one. Before the chat shows it asks
+//!   `assistant.check_about` with what would answer ([`check_about`]), so a hint stands at once instead of
+//!   after the first message. "Send" is
 //!   `assistant.send_message` (with `about` for a new conversation, [`send_request`]); while an answer
 //!   runs the window asks `assistant.get_conversation` with `after` every [`FOLLOW`], and the cards
 //!   come from `assistant.get_cards`. The window reads and writes nothing itself; with `--demo` a
@@ -19,7 +21,8 @@
 //!   mail's panel, the conversation before "+") is dropped, never merged into the chat open now.
 //! - **Hints instead of a chat** ([`Hint`], [`hint_for`]): no AI set up, the assistant may not read
 //!   the mail (`forbidden`, with "Open assistant"), the data rule keeps mail from the chosen model
-//!   (`not-connected`), or a model that cannot chat about a mail (`unsupported`).
+//!   (`not-connected`), or a model that cannot chat about a mail (`unsupported`) – on opening, or when
+//!   "Send" is refused.
 //! - **Where it stands** (the app decides, `App::ask_layout`): wide beside the mail, medium and
 //!   narrow over it with "‹ Mail" back ([`view`]).
 //!
@@ -504,7 +507,8 @@ pub fn newest_about<'a>(conversations: &'a [ConversationSummary], about: &MailRe
 /// engines (`assistant.list_engines`), the default of the control centre (`settings.get_settings`,
 /// left out when the core does not tell) and the conversations (`assistant.list_conversations`); the
 /// newest conversation about the mail is loaded whole with its cards and answers with its own engine
-/// while that is still offered, a new one with `chat::preferred_choice`.
+/// while that is still offered, a new one with `chat::preferred_choice`. What answers is checked last
+/// ([`check_about`]): a refusal of the chat is the refusal of opening, so its hint shows at once.
 pub async fn open(call: Call, about: MailRef) -> Result<Opened, Refusal> {
     let engines = match call(Request::ListEngines).await? {
         Response::Engines { engines } => chat::ordered(engines),
@@ -522,6 +526,7 @@ pub async fn open(call: Call, about: MailRef) -> Result<Opened, Refusal> {
     let preferred = chat::preferred_choice(default.as_ref(), &conversations, &engines, |_| None);
     let preferred = mail_choice(preferred, &engines, mail_to_cloud)?;
     let Some(newest) = newest_about(&conversations, &about).cloned() else {
+        check_about(&call, preferred.as_ref(), &about).await?;
         return Ok(Opened { choice: preferred, conversation: None, cards: Vec::new() });
     };
     let request = Request::GetConversation { id: newest.id.clone(), after: None };
@@ -535,7 +540,30 @@ pub async fn open(call: Call, about: MailRef) -> Result<Opened, Refusal> {
         .find(|engine| engine.id == summary.engine)
         .filter(|engine| reads_mail(engine, summary.model.as_deref(), mail_to_cloud))
         .map(|_| (Choice { engine: summary.engine.clone(), model: summary.model.clone() }, summary.effort));
-    Ok(Opened { choice: own.or(preferred), conversation: Some((summary, entries)), cards })
+    let choice = own.or(preferred);
+    check_about(&call, choice.as_ref(), &about).await?;
+    Ok(Opened { choice, conversation: Some((summary, entries)), cards })
+}
+
+/// Whether the core would take a chat about `about` with `choice` (issue #605): `assistant.check_about`,
+/// which stores nothing and asks no model, so the panel shows its hint on opening. `Err` only for the refusals
+/// of the chat itself – `forbidden`, `not-connected`, `unsupported` and `not-found` (a mail the core does not
+/// see) –; anything else, above all an older core that does not know the command yet (`error`, "malformed
+/// request"), lets the panel open as before, and "Send" tells. Nothing to check without a choice.
+pub async fn check_about(
+    call: &Call,
+    choice: Option<&(Choice, Option<Effort>)>,
+    about: &MailRef,
+) -> Result<(), Refusal> {
+    let Some((choice, _)) = choice else { return Ok(()) };
+    let request =
+        Request::CheckAbout { engine: choice.engine.clone(), model: choice.model.clone(), about: about.clone() };
+    match call(request).await {
+        Err(refusal) if ["forbidden", "not-connected", "unsupported", "not-found"].contains(&refusal.code.as_str()) => {
+            Err(refusal)
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Whether `engine` with `model` may chat about a mail (review of #605): an AI account – no coding
@@ -1094,6 +1122,7 @@ fn demo_answer_to(held: &Mutex<Vec<Entry>>, request: Request) -> Result<Response
         Request::ListEngines => Ok(Response::Engines { engines: vec![demo_engine()] }),
         Request::ListConversations => Ok(Response::Conversations { conversations: Vec::new() }),
         Request::GetCards { .. } => Ok(Response::Cards { cards: Vec::new() }),
+        Request::CheckAbout { .. } => Ok(Response::Ok),
         Request::SendMessage { conversation, text, about, .. } => {
             let mut entries = held.lock().map_err(|_| refused())?;
             // A message without a conversation starts a new one ("+"): the one before is left.
@@ -1215,6 +1244,59 @@ mod tests {
         let asked = asked.lock().expect("log").clone();
         assert!(asked.contains(&Request::GetConversation { id: "newer".to_owned(), after: None }), "{asked:?}");
         assert!(asked.contains(&Request::GetCards { conversation: "newer".to_owned() }));
+        // This core does not know `assistant.check_about` yet: the panel opens all the same.
+        assert!(asked.iter().any(|request| matches!(request, Request::CheckAbout { .. })), "{asked:?}");
+    }
+
+    /// A core with one local engine and no conversation that answers `assistant.check_about` with `check`; the
+    /// requests it was asked are logged.
+    fn checking_core(check: Result<Response, Refusal>) -> (Call, Arc<Mutex<Vec<Request>>>) {
+        let asked: Arc<Mutex<Vec<Request>>> = Arc::new(Mutex::new(Vec::new()));
+        let log = asked.clone();
+        let call: Call = Arc::new(move |request: Request| -> Answer {
+            if let Ok(mut log) = log.lock() {
+                log.push(request.clone());
+            }
+            let answer = match request {
+                Request::ListEngines => Ok(Response::Engines { engines: vec![demo_engine()] }),
+                Request::ListConversations => Ok(Response::Conversations { conversations: Vec::new() }),
+                Request::CheckAbout { .. } => check.clone(),
+                _ => Err(Refusal::error("not asked")),
+            };
+            Box::pin(async move { answer })
+        });
+        (call, asked)
+    }
+
+    /// Issue #605: opening asks `assistant.check_about` with what would answer; a refusal shows its hint at once,
+    /// before anything is typed, and a chat the core takes is ready.
+    #[test]
+    fn the_hint_stands_as_soon_as_the_panel_opens() {
+        let forbidden = Refusal { code: "forbidden".to_owned(), message: "no".to_owned() };
+        let (call, asked) = checking_core(Err(forbidden));
+        let (mut ask, _) = Ask::open(call.clone(), mail_ref("m:1"));
+        let opened = block_on(open(call, mail_ref("m:1")));
+        let round = ask.round;
+        let _ = ask.update(Event::Opened(round, opened));
+        assert_eq!(ask.phase, Phase::Hint(Hint::NoRight));
+        let check = Request::CheckAbout { engine: demo_engine().id, model: None, about: mail_ref("m:1") };
+        assert!(asked.lock().expect("log").contains(&check), "with the engine that would answer");
+
+        let (call, _) = checking_core(Ok(Response::Ok));
+        let (mut ask, _) = Ask::open(call.clone(), mail_ref("m:1"));
+        let opened = block_on(open(call, mail_ref("m:1")));
+        let round = ask.round;
+        let _ = ask.update(Event::Opened(round, opened));
+        assert_eq!(ask.phase, Phase::Ready);
+
+        let not_local = Refusal { code: "not-connected".to_owned(), message: "kept".to_owned() };
+        let (call, _) = checking_core(Err(not_local));
+        let refused = block_on(open(call, mail_ref("m:1"))).expect_err("refused");
+        assert_eq!(hint_for(&refused), Hint::NotLocal);
+        // An older core without the command: nothing in the way.
+        let old = Refusal::error("malformed request: unknown method or arguments that do not fit it");
+        let (call, _) = checking_core(Err(old));
+        assert!(block_on(open(call, mail_ref("m:1"))).is_ok());
     }
 
     #[test]

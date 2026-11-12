@@ -3857,8 +3857,8 @@ mod tests {
             .collect();
         assert_eq!(
             catalogue.len(),
-            16,
-            "nine of task C.1, five of C.10, one of issue #134, one of #225: {catalogue:?}"
+            17,
+            "nine of task C.1, five of C.10, one of issue #134, one of #225, one of #605: {catalogue:?}"
         );
         assert!(catalogue.iter().all(|name| name.starts_with("assistant_") && names.contains(name.as_str())));
         // But the person's yes to asking a bot (task B.2), which no agent may give.
@@ -3967,6 +3967,20 @@ mod tests {
             Ok(Request::SendMessage { about: Some(ref about), .. })
                 if about.account == "mail:anna@example.org" && about.id == "m:4"
         ));
+        // Issue #605: the check before such a chat names the same mail.
+        let check = args(json!({
+            "engine": "test",
+            "model": "qwen3:8b",
+            "about": {"account": "mail:anna@example.org", "id": "m:4"}
+        }));
+        assert_eq!(
+            request_for("assistant_check_about", check, &Utc),
+            Ok(Request::CheckAbout {
+                engine: "test".into(),
+                model: Some("qwen3:8b".into()),
+                about: torro_ipc::assistant::MailRef { account: "mail:anna@example.org".into(), id: "m:4".into() },
+            })
+        );
         let read = request_for("assistant_get_conversation", args(json!({"id": "0123456789abcdef", "after": 4})), &Utc);
         assert_eq!(read, Ok(Request::GetConversation { id: "0123456789abcdef".into(), after: Some(4) }));
     }
@@ -4481,6 +4495,10 @@ mod tests {
                 ("assistant_get_conversation", json!({"id": CONVERSATION})),
                 ("assistant_get_cards", json!({"conversation": CONVERSATION})),
                 ("assistant_send_message", json!({"engine": "test", "text": "Hello"})),
+                (
+                    "assistant_check_about",
+                    json!({"engine": "test", "about": {"account": "mail:anna@example.org", "id": "m:4"}}),
+                ),
                 ("assistant_cancel", json!({"conversation": CONVERSATION})),
                 ("assistant_rename_conversation", json!({"id": CONVERSATION, "title": "Renamed"})),
                 ("assistant_delete_conversation", json!({"id": CONVERSATION})),

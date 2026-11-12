@@ -411,10 +411,10 @@ impl Assistant {
     /// What a request would be refused with anyway, checked before anyone is asked to approve it
     /// and again by [`answer_from`]: its limits, a conversation the core does not have (`not-found`),
     /// for a message (also `bots.ask_bot`) an engine that does not answer ([`Assistant::engine`]) and for a
-    /// message about a mail what [`Assistant::about_for`] refuses (issue #605),
-    /// a conversation that still answers (`busy`), a bot that is not there (`not-found`) or a
-    /// conversation of another bot or of none ([`Assistant::bot_refusal`]), the window of a
-    /// bot that is not there (`not-found`). `None` when it may run.
+    /// message about a mail what [`Assistant::about_for`] refuses (issue #605), the same for
+    /// `assistant.check_about` ([`Assistant::check_about_refusal`]), a conversation that still answers
+    /// (`busy`), a bot that is not there (`not-found`) or a conversation of another bot or of none
+    /// ([`Assistant::bot_refusal`]), the window of a bot that is not there (`not-found`). `None` when it may run.
     pub async fn refusal(&self, ai: &AiAccounts, request: &Request) -> Option<Response> {
         if let Some(refused) =
             torro_ipc::assistant::limit_refusal(request).or_else(|| torro_ipc::bots::limit_refusal(request))
@@ -451,6 +451,9 @@ impl Assistant {
         let actor = Actor::of(bot.as_ref());
         match (request, &bot) {
             (Request::SendMessage { .. }, _) => self.message_refusal(ai, request, bot.clone(), &actor).await,
+            (Request::CheckAbout { engine, model, about }, _) => {
+                self.check_about_refusal(ai, engine, model.clone(), about.clone()).await
+            }
             (Request::AskBot { .. }, Some(bot)) => self.engine(ai, &bot.engine, &actor).await.err(),
             (Request::OpenChatWindow { window: ChatWindow::Bot(id) }, _) if self.bots.get(id).await.is_none() => {
                 Some(crate::bots::no_bot(id))
@@ -474,10 +477,6 @@ impl Assistant {
         else {
             return None;
         };
-        let kind = match self.engine(ai, engine, actor).await {
-            Ok(kind) => kind,
-            Err(refused) => return Some(refused),
-        };
         let message = Message {
             conversation: conversation.clone(),
             engine: engine.clone(),
@@ -490,7 +489,48 @@ impl Assistant {
             on_behalf: None,
             from: None,
         };
-        self.about_for(&message, about.clone(), kind).await.err()
+        self.engine_and_about_refusal(ai, &message, about.clone(), actor).await
+    }
+
+    /// Why `assistant.check_about` (issue #605) is refused: what [`Assistant::message_refusal`] would refuse for a
+    /// new conversation of the assistant about `about` with `engine` and `model` – no bot, nothing switched off,
+    /// the default mode. Nothing is stored and no model is asked. `None` when such a chat would be taken.
+    async fn check_about_refusal(
+        &self,
+        ai: &AiAccounts,
+        engine: &str,
+        model: Option<String>,
+        about: MailRef,
+    ) -> Option<Response> {
+        let message = Message {
+            conversation: None,
+            engine: engine.to_string(),
+            model,
+            effort: None,
+            text: String::new(),
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            bot: None,
+            on_behalf: None,
+            from: None,
+        };
+        self.engine_and_about_refusal(ai, &message, Some(about), &Actor::Assistant).await
+    }
+
+    /// An engine of `message` that does not answer for `actor` ([`Assistant::engine`]), else what
+    /// [`Assistant::about_for`] refuses for `about`; `None` when neither refuses.
+    async fn engine_and_about_refusal(
+        &self,
+        ai: &AiAccounts,
+        message: &Message,
+        about: Option<MailRef>,
+        actor: &Actor,
+    ) -> Option<Response> {
+        let kind = match self.engine(ai, &message.engine, actor).await {
+            Ok(kind) => kind,
+            Err(refused) => return Some(refused),
+        };
+        self.about_for(message, about, kind).await.err()
     }
 
     /// What drives `engine` for `actor`, or why it cannot answer: `not-found` for no engine of
@@ -1230,6 +1270,8 @@ pub async fn answer_from(
             };
             assistant.send_about(message, about, kind, Utc::now()).await
         }
+        // Checked by [`Assistant::refusal`] above (issue #605): nothing more to do.
+        Request::CheckAbout { .. } => Response::Ok,
         Request::AskBot { bot, text, conversation } => {
             let Some(bot) = assistant.bots.get(&bot).await else { return crate::bots::no_bot(&bot) };
             let kind = match assistant.engine(ai, &bot.engine, &Actor::of(Some(&bot))).await {

@@ -3774,6 +3774,24 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         about: Option<assistant::MailRef>,
     },
+    /// Whether a new chat about the mail `about` with `engine` and `model` would be taken (issue #605): the checks
+    /// of [`Request::SendMessage`] with `about` for a new conversation, without storing anything or asking a
+    /// model, so a window can say why before the person types. [`Response::Ok`] when it would be taken; otherwise
+    /// the error `assistant.send_message` would answer: `not-found` for a mail or account the caller may not see
+    /// or an unknown engine, `forbidden` when the assistant may not read that mail account, `not-connected` when
+    /// the data rule keeps mail from the model, `unsupported` for an engine that cannot chat about a mail (a
+    /// coding agent, an AI account with no model on or while the core has not started), `error` for a limit
+    /// ([`assistant::limit_refusal`]).
+    #[serde(rename = "assistant.check_about")]
+    CheckAbout {
+        /// Who would answer: an engine's id from `assistant.list_engines`.
+        engine: String,
+        /// The model of the AI account, as for `assistant.send_message`; left out, the engine picks one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// The mail the chat would be about: `{"account": "mail:<address>", "id": "m:…"}`.
+        about: assistant::MailRef,
+    },
     /// Stops the answer that runs in `conversation`; what it did until then stays, and a
     /// `stopped` entry is added. [`Response::Ok`] also when nothing runs; `not-found` for an
     /// unknown conversation.

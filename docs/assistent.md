@@ -204,7 +204,10 @@ deckt es die Mail ab („‹ Mail“ führt zurück). Entwurf: `docs/prototypes/
   Chat zu einer Mail; ruft eine andere Unterhaltung `mail.extract_action` auf, steht dort nur die
   Werkzeugzeile, und der Vorschlag liegt wie jeder andere bei der Mail.
 - **Rechte.** Der Assistent braucht Mail-Leserecht und das Konto in seiner Reichweite, sonst
-  `forbidden` und das Paneel zeigt einen Hinweis mit „Open assistant“. Hält die Datenregel Mail vom
+  `forbidden` und das Paneel zeigt einen Hinweis mit „Open assistant“. Den Hinweis zeigt es schon beim
+  Öffnen: `assistant.check_about` (Read) prüft mit Antrieb, Modell und Mail dasselbe wie
+  `assistant.send_message` mit `about` für eine neue Unterhaltung, ohne etwas zu speichern oder ein Modell
+  zu fragen. Kennt ein älterer Kern den Befehl nicht, öffnet das Paneel wie zuvor, und erst „Send“ sagt es. Hält die Datenregel Mail vom
   gewählten Modell fern: `not-connected`. Mit Bot oder fremdem Antrieb: `unsupported`. Für einen
   Client, der das Konto selbst nicht sieht, gibt es die Unterhaltung nicht: Sie fehlt in der Liste, und
   jeder Befehl, der sie nennt, antwortet `not-found`, denn ihre Einträge erzählen, was in der Mail steht.
@@ -667,6 +670,7 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | Unterhaltung lesen (ab Stelle) | Verlauf | `assistant.get_conversation` · Read | `assistant_get_conversation` |
 | Nachricht schicken (neue oder bestehende Unterhaltung) | Eingabefeld | `assistant.send_message` · Write (startet einen Modelllauf) | `assistant_send_message` |
 | Fragen zu einer Mail | Mail › „Ask AI…“ (Paneel) | `assistant.send_message` mit `about` · Write | `assistant_send_message` mit `about` |
+| Vorab prüfen, ob ein Chat zu einer Mail ginge | Mail › „Ask AI…“ (Hinweis beim Öffnen) | `assistant.check_about` · Read | `assistant_check_about` |
 | Antwort abbrechen | „Stop“ | `assistant.cancel` · Write | `assistant_cancel` |
 | Unterhaltung umbenennen | Kontextmenü | `assistant.rename_conversation` · Write | `assistant_rename_conversation` |
 | Unterhaltung als eigenes Fenster öffnen | „Open in new window“, „Ask about this“ | `assistant.open_window { conversation \| new \| bot }` · Write (startet `torroassistant --chat …`) | `assistant_open_window` |

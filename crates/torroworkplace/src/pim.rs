@@ -1423,6 +1423,7 @@ impl PimService {
             | Request::GetConversation { .. }
             | Request::GetCards { .. }
             | Request::SendMessage { .. }
+            | Request::CheckAbout { .. }
             | Request::CancelAnswer { .. }
             | Request::RenameConversation { .. }
             | Request::DeleteConversation { .. }

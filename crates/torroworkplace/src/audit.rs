@@ -490,6 +490,10 @@ pub fn ids(request: &Request) -> Vec<String> {
             .chain([engine_id(engine)])
             .chain(about.iter().flat_map(|about| [account(&about.account), format!("message:{}", hashed(&about.id))]))
             .collect(),
+        // The check before such a chat: the same, without a conversation.
+        Request::CheckAbout { engine, about, .. } => {
+            vec![engine_id(engine), account(&about.account), format!("message:{}", hashed(&about.id))]
+        }
         Request::OpenChatWindow { window: ChatWindow::Bot(bot) } => vec![format!("bot:{}", hashed(bot))],
         Request::OpenChatWindow { window: ChatWindow::New } => Vec::new(),
         Request::GetConversation { id: conversation, .. }
@@ -954,6 +958,12 @@ pub(crate) mod tests {
         assert_eq!(logged[0], "engine:test");
         assert_eq!(logged[2], format!("message:{}", hashed("m:4")));
         assert!(logged.iter().all(|id| !id.contains("meeting")), "{logged:?}");
+        let check = Request::CheckAbout {
+            engine: TEST_ENGINE.into(),
+            model: Some("qwen3:8b".into()),
+            about: torro_ipc::assistant::MailRef { account: "mail:anna@example.org".into(), id: "m:4".into() },
+        };
+        assert_eq!(super::ids(&check), logged, "the check logs what its message would");
         let extract = Request::ExtractAction {
             account: "mail:anna@example.org".into(),
             id: "m:4".into(),

@@ -1865,6 +1865,7 @@ impl Request {
             Request::GetConversation { .. } => &GET_CONVERSATION,
             Request::GetCards { .. } => &GET_CARDS,
             Request::SendMessage { .. } => &SEND_MESSAGE,
+            Request::CheckAbout { .. } => &CHECK_ABOUT,
             Request::CancelAnswer { .. } => &CANCEL,
             Request::RenameConversation { .. } => &RENAME_CONVERSATION,
             Request::DeleteConversation { .. } => &DELETE_CONVERSATION,
@@ -2192,6 +2193,7 @@ pub static CATALOGUE: &[&Command] = &[
     &GET_CONVERSATION,
     &GET_CARDS,
     &SEND_MESSAGE,
+    &CHECK_ABOUT,
     &CANCEL,
     &RENAME_CONVERSATION,
     &DELETE_CONVERSATION,
@@ -5176,6 +5178,19 @@ static SEND_MESSAGE: Command = Command {
                   `about` than the conversation's or a chat about a mail with mail switched off in `without`.",
 };
 
+static CHECK_ABOUT: Command = Command {
+    name: "assistant.check_about",
+    area: Area::Assistant,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Checks whether send_message would start a chat about the mail `about` (`account`, `id`) with \
+                  `engine` and `model`, without storing anything or starting a model. Returns ok when it would; \
+                  otherwise the error send_message would give: `forbidden` (the assistant may not read that mail \
+                  account), `not-connected` (the data rule keeps mail from that model), `unsupported` (an engine \
+                  that cannot chat about a mail), `not-found` (a mail or account you may not see, or an unknown \
+                  engine).",
+};
+
 static CANCEL: Command = Command {
     name: "assistant.cancel",
     area: Area::Assistant,
@@ -6365,6 +6380,11 @@ mod tests {
                 mode: crate::assistant::Mode::Default,
                 bot: None,
                 about: None,
+            },
+            Request::CheckAbout {
+                engine: "ai:ollama@localhost:11434".into(),
+                model: Some("qwen3:8b".into()),
+                about: crate::assistant::MailRef { account: "mail:anna@example.org".into(), id: "m:4".into() },
             },
             Request::CancelAnswer { conversation: "0123456789abcdef".into() },
             Request::RenameConversation { id: "0123456789abcdef".into(), title: "Tomorrow".into() },
