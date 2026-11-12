@@ -5,6 +5,10 @@
 //! The types here hold what the service needs and nothing of Talk's wire format; ids are the
 //! server's own (a token, a message number, a user id), and the service makes the suite's ids of
 //! them. Every text in them is foreign and was made plain by the provider.
+//!
+//! Files (stage 4) are named by checked paths ([`DavPath`]) and come back as [`Uploaded`],
+//! [`Picture`] and [`Reference`] of `torro-nextcloud`: plain WebDAV and pictures, no wire format of
+//! Talk. Their refusals are [`FileError`].
 
 use std::collections::BTreeMap;
 #[cfg(test)]
@@ -12,6 +16,25 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use torro_chat::{ChatError, ConversationKind, FileRef, Mention, MessageKind, NotifyLevel, Preview, Status};
+pub use torro_nextcloud::{DavPath, Picture, Reference, ShareMeta, Uploaded};
+
+/// Why a call about a file failed: what every chat call can say, and what only files can.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileError {
+    Chat(ChatError),
+    /// A file of that name is there, or the file changed since the `ETag` was given.
+    Exists,
+    /// The person's storage on the server is full.
+    NoSpace,
+    /// The file is larger than asked for.
+    TooLarge,
+}
+
+impl From<ChatError> for FileError {
+    fn from(err: ChatError) -> FileError {
+        FileError::Chat(err)
+    }
+}
 
 /// What an account's server can do, read from its capabilities.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -35,6 +58,22 @@ pub struct Caps {
     pub search: bool,
     /// The server tells the status of its users.
     pub status: bool,
+    /// The person may share files into conversations (`attachments.allowed`).
+    pub attachments: bool,
+    /// The person's folder for shared files (`attachments.folder`, `/Talk` when not told).
+    pub attachments_folder: String,
+    /// Files go into a folder per conversation and person below it.
+    pub subfolders: bool,
+    /// The largest piece of a chunked upload; `None` (or not positive on the server) means one `PUT`.
+    pub chunk_max: Option<u64>,
+    /// A file can carry a text and be shared silently (`media-caption`).
+    pub caption: bool,
+    /// Shared items can be listed (`rich-object-list-media`).
+    pub shared: bool,
+    /// Messages and shares can carry an id against repeats (`chat-reference-id`).
+    pub reference_ids: bool,
+    /// Messages around one can be read (`chat-get-context`).
+    pub context: bool,
 }
 
 /// One conversation as the server lists it.
@@ -99,6 +138,9 @@ pub struct RemoteMessage {
     pub reactions: BTreeMap<String, u64>,
     pub own_reactions: Vec<String>,
     pub edited: bool,
+    /// Where each file of [`RemoteMessage::files`] lies in the person's files, by the file's id, as the
+    /// server named it: the only source of a path to fetch a file by (stage 4).
+    pub paths: BTreeMap<String, String>,
 }
 
 /// A person of the server: user id and name.
@@ -280,6 +322,120 @@ impl Remote {
     pub async fn find_users(&self, query: &str, limit: u32) -> Result<Vec<RemotePerson>, ChatError> {
         each!(self, find_users(query, limit))
     }
+
+    /// The server's base address (for telling links to it apart).
+    pub fn server(&self) -> String {
+        match self {
+            Remote::Talk(client) => client.server().to_string(),
+            #[cfg(test)]
+            Remote::Fake(_) => super::fake::SERVER.to_string(),
+        }
+    }
+
+    /// Free bytes in the person's storage; `None` when unlimited or not told.
+    pub async fn free_space(&self) -> Result<Option<u64>, ChatError> {
+        each!(self, free_space())
+    }
+
+    /// Up to `limit` messages before and after the message `number`, the oldest first.
+    pub async fn around(&self, token: &str, number: u64, limit: u32) -> Result<Vec<RemoteMessage>, ChatError> {
+        each!(self, around(token, number, limit))
+    }
+
+    /// `name` in `folder` of `user`, or the first free „name (2)“ …
+    pub async fn free_name(&self, user: &str, folder: &DavPath, name: &str) -> Result<String, FileError> {
+        each!(self, free_name(user, folder, name))
+    }
+
+    /// Makes `folder` and the folders above it that are missing.
+    pub async fn make_folders(&self, user: &str, folder: &DavPath) -> Result<(), FileError> {
+        each!(self, make_folders(user, folder))
+    }
+
+    /// Uploads `bytes` as the new file `path`; never replaces one ([`FileError::Exists`]).
+    pub async fn put_file(&self, user: &str, path: &DavPath, bytes: Vec<u8>) -> Result<Uploaded, FileError> {
+        each!(self, put_file(user, path, bytes))
+    }
+
+    /// Starts the chunked upload `upload` of `total` bytes for `target`.
+    pub async fn start_upload(&self, user: &str, upload: &str, target: &DavPath, total: u64) -> Result<(), FileError> {
+        each!(self, start_upload(user, upload, target, total))
+    }
+
+    /// Uploads the piece `number` (from 1) of the chunked upload `upload`.
+    pub async fn put_chunk(
+        &self,
+        user: &str,
+        upload: &str,
+        number: u32,
+        bytes: Vec<u8>,
+        target: &DavPath,
+        total: u64,
+    ) -> Result<(), FileError> {
+        each!(self, put_chunk(user, upload, number, bytes, target, total))
+    }
+
+    /// Puts the pieces together as `target`; never replaces a file ([`FileError::Exists`]).
+    pub async fn finish_upload(
+        &self,
+        user: &str,
+        upload: &str,
+        target: &DavPath,
+        total: u64,
+    ) -> Result<Uploaded, FileError> {
+        each!(self, finish_upload(user, upload, target, total))
+    }
+
+    /// Drops the chunked upload `upload` with its pieces.
+    pub async fn cancel_upload(&self, user: &str, upload: &str) -> Result<(), FileError> {
+        each!(self, cancel_upload(user, upload))
+    }
+
+    /// Deletes the file `path` only while it has `etag`.
+    pub async fn delete_file(&self, user: &str, path: &DavPath, etag: &str) -> Result<(), FileError> {
+        each!(self, delete_file(user, path, etag))
+    }
+
+    /// The bytes of the file `path`, at most `max` ([`FileError::TooLarge`]).
+    pub async fn get_file(&self, user: &str, path: &DavPath, max: u64) -> Result<Vec<u8>, FileError> {
+        each!(self, get_file(user, path, max))
+    }
+
+    /// The server's preview of the file `file`, at most `edge` pixels.
+    pub async fn preview(&self, file: u64, edge: u32) -> Result<Picture, FileError> {
+        each!(self, preview(file, edge))
+    }
+
+    /// The picture of a link card by its id on the server.
+    pub async fn card_picture(&self, id: &str) -> Result<Picture, FileError> {
+        each!(self, card_picture(id))
+    }
+
+    /// The card of `link` as the server resolves it (the server fetches the address).
+    pub async fn resolve(&self, link: &str) -> Result<Option<Reference>, FileError> {
+        each!(self, resolve(link))
+    }
+
+    /// Shares the file `path` into the conversation `token`.
+    pub async fn share(&self, token: &str, path: &DavPath, meta: &ShareMeta) -> Result<(), FileError> {
+        each!(self, share(token, path, meta))
+    }
+
+    /// Up to `limit` messages of the conversation that shared an item of `kind`, the newest first.
+    pub async fn shared(
+        &self,
+        token: &str,
+        kind: &str,
+        before: Option<u64>,
+        limit: u32,
+    ) -> Result<Vec<RemoteMessage>, ChatError> {
+        each!(self, shared(token, kind, before, limit))
+    }
+
+    /// The newest shared items of each kind, with their kind.
+    pub async fn overview(&self, token: &str, limit: u32) -> Result<Vec<(String, RemoteMessage)>, ChatError> {
+        each!(self, overview(token, limit))
+    }
 }
 
 #[cfg(test)]
@@ -303,6 +459,7 @@ pub(crate) mod tests {
             reactions: BTreeMap::new(),
             own_reactions: Vec::new(),
             edited: false,
+            paths: BTreeMap::new(),
         }
     }
 }

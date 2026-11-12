@@ -9,6 +9,8 @@
 //!   file's own, never the server's.
 //! - System messages that only change another message are marked hidden and carry the change
 //!   ([`shown`]); the cache applies it.
+//! - Files (stage 4): WebDAV, sharing, previews and link cards of `torro_nextcloud::files`; a
+//!   refusal is a [`FileError`] ([`file_error`]), its words this file's own.
 
 use chrono::{DateTime, Utc};
 use torro_chat::{ChatError, ConversationKind, FileRef, Mention, MessageKind, NotifyLevel, Preview, Status};
@@ -19,7 +21,8 @@ use torro_nextcloud::{
 };
 
 use super::remote::{
-    Caps, Patch, RemoteHit, RemoteMessage, RemotePerson, RemoteQuote, RemoteRoom, RemoteStatus, Sending,
+    Caps, DavPath, FileError, Patch, Picture, Reference, RemoteHit, RemoteMessage, RemotePerson, RemoteQuote,
+    RemoteRoom, RemoteStatus, Sending, ShareMeta, Uploaded,
 };
 
 /// The most statuses asked for in one page, and the most pages: 2,000 users with a status.
@@ -56,6 +59,20 @@ fn talk(err: TalkError) -> ChatError {
         TalkError::TooLong => ChatError::Other(tr("The message is too long for the server.").to_string()),
         TalkError::TooLate => unsupported("Messages can only be changed for a limited time after sending."),
         TalkError::Invalid => ChatError::Other(tr("The server does not take this.").to_string()),
+    }
+}
+
+/// The error of the area for a refusal of a call about files.
+fn file_error(err: torro_nextcloud::FilesError) -> FileError {
+    use torro_nextcloud::FilesError;
+    match err {
+        FilesError::Ocs(err) => FileError::Chat(ocs(err)),
+        FilesError::NotFound => FileError::Chat(ChatError::NotFound),
+        FilesError::Exists => FileError::Exists,
+        FilesError::NoSpace => FileError::NoSpace,
+        FilesError::TooLarge => FileError::TooLarge,
+        FilesError::Forbidden => FileError::Chat(unsupported("The server does not allow this.")),
+        FilesError::Invalid => FileError::Chat(ChatError::Other(tr("The server does not take this.").to_string())),
     }
 }
 
@@ -161,6 +178,10 @@ fn shown(message: ChatMessage) -> RemoteMessage {
         _ => None,
     };
     let deleted = kind == MessageKind::Deleted;
+    let paths = match deleted {
+        true => std::collections::BTreeMap::new(),
+        false => message.files.iter().filter_map(|file| Some((file.id.to_string(), file.path.clone()?))).collect(),
+    };
     RemoteMessage {
         number: message.id,
         author: (message.actor_type == ActorType::Users).then_some(message.actor_id),
@@ -202,6 +223,7 @@ fn shown(message: ChatMessage) -> RemoteMessage {
         reactions: message.reactions,
         own_reactions: message.own_reactions,
         edited: message.edited_at.is_some(),
+        paths,
     }
 }
 
@@ -228,6 +250,14 @@ pub async fn caps(client: &Nextcloud) -> Result<Caps, ChatError> {
         delete: talk.has("delete-messages"),
         search: talk.has("unified-search"),
         status,
+        attachments: talk.attachments_allowed,
+        attachments_folder: talk.attachments_folder.clone(),
+        subfolders: talk.conversation_subfolders,
+        chunk_max: capabilities.chunked_upload_max_size.and_then(|size| u64::try_from(size).ok()),
+        caption: talk.has("media-caption"),
+        shared: talk.has("rich-object-list-media"),
+        reference_ids: talk.has("chat-reference-id"),
+        context: talk.has("chat-get-context"),
     })
 }
 
@@ -402,4 +432,111 @@ pub async fn set_status_message(
 
 pub async fn heartbeat(client: &Nextcloud, status: Status) -> Result<(), ChatError> {
     client.heartbeat(status_kind(status)).await.map_err(ocs)
+}
+
+pub async fn free_space(client: &Nextcloud) -> Result<Option<u64>, ChatError> {
+    let user = client.user().await.map_err(ocs)?;
+    Ok(user.quota_free.and_then(|free| u64::try_from(free).ok()))
+}
+
+pub async fn around(
+    client: &Nextcloud,
+    conversation: &str,
+    number: u64,
+    limit: u32,
+) -> Result<Vec<RemoteMessage>, ChatError> {
+    let found = client.messages_around(&token(conversation)?, number, limit).await.map_err(talk)?;
+    Ok(found.messages.into_iter().map(shown).collect())
+}
+
+pub async fn free_name(client: &Nextcloud, user: &str, folder: &DavPath, name: &str) -> Result<String, FileError> {
+    client.free_name(user, folder, name).await.map_err(file_error)
+}
+
+pub async fn make_folders(client: &Nextcloud, user: &str, folder: &DavPath) -> Result<(), FileError> {
+    client.make_folders(user, folder).await.map_err(file_error)
+}
+
+pub async fn put_file(client: &Nextcloud, user: &str, path: &DavPath, bytes: Vec<u8>) -> Result<Uploaded, FileError> {
+    client.put_file(user, path, bytes).await.map_err(file_error)
+}
+
+pub async fn start_upload(
+    client: &Nextcloud,
+    user: &str,
+    upload: &str,
+    target: &DavPath,
+    total: u64,
+) -> Result<(), FileError> {
+    client.start_upload(user, upload, target, total).await.map_err(file_error)
+}
+
+pub async fn put_chunk(
+    client: &Nextcloud,
+    user: &str,
+    upload: &str,
+    number: u32,
+    bytes: Vec<u8>,
+    target: &DavPath,
+    total: u64,
+) -> Result<(), FileError> {
+    client.put_chunk(user, upload, number, bytes, target, total).await.map_err(file_error)
+}
+
+pub async fn finish_upload(
+    client: &Nextcloud,
+    user: &str,
+    upload: &str,
+    target: &DavPath,
+    total: u64,
+) -> Result<Uploaded, FileError> {
+    client.finish_upload(user, upload, target, total).await.map_err(file_error)
+}
+
+pub async fn cancel_upload(client: &Nextcloud, user: &str, upload: &str) -> Result<(), FileError> {
+    client.cancel_upload(user, upload).await.map_err(file_error)
+}
+
+pub async fn delete_file(client: &Nextcloud, user: &str, path: &DavPath, etag: &str) -> Result<(), FileError> {
+    client.delete_file(user, path, etag).await.map_err(file_error)
+}
+
+pub async fn get_file(client: &Nextcloud, user: &str, path: &DavPath, max: u64) -> Result<Vec<u8>, FileError> {
+    client.get_file(user, path, max).await.map_err(file_error)
+}
+
+pub async fn preview(client: &Nextcloud, file: u64, edge: u32) -> Result<Picture, FileError> {
+    client.preview(file, edge).await.map_err(file_error)
+}
+
+pub async fn card_picture(client: &Nextcloud, id: &str) -> Result<Picture, FileError> {
+    client.reference_preview(id).await.map_err(file_error)
+}
+
+pub async fn resolve(client: &Nextcloud, link: &str) -> Result<Option<Reference>, FileError> {
+    client.resolve_reference(link).await.map_err(file_error)
+}
+
+pub async fn share(client: &Nextcloud, conversation: &str, path: &DavPath, meta: &ShareMeta) -> Result<(), FileError> {
+    client.share_to_room(&token(conversation)?, path, meta).await.map_err(file_error)
+}
+
+pub async fn shared(
+    client: &Nextcloud,
+    conversation: &str,
+    kind: &str,
+    before: Option<u64>,
+    limit: u32,
+) -> Result<Vec<RemoteMessage>, ChatError> {
+    let found = client.shared_items(&token(conversation)?, kind, before, limit).await.map_err(talk)?;
+    Ok(found.into_iter().map(shown).collect())
+}
+
+pub async fn overview(
+    client: &Nextcloud,
+    conversation: &str,
+    limit: u32,
+) -> Result<Vec<(String, RemoteMessage)>, ChatError> {
+    let found = client.shared_overview(&token(conversation)?, limit).await.map_err(talk)?;
+    Ok(found.into_iter().map(|(kind, message)| (kind, shown(message))).collect())
 }

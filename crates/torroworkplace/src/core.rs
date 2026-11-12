@@ -4537,6 +4537,10 @@ impl Core {
         if let Some(outside) = self.out_of_reach(reach, &request).await {
             return Ok(not_reached(&request, &outside));
         }
+        // Files of the chat (stage 4): another's or a gone prepared file is nothing to approve.
+        if let Some(refused) = self.chat_refusal(&request, reach, &id).await {
+            return Ok(refused);
+        }
         // A save that removes events of a series (a shorter series, another rule, no rule, a split
         // with new times: task TE.4) is checked as `calendar.delete_event` is: the right to delete
         // first, then an approval where deleting waits for one. What it removes comes from the
@@ -5446,6 +5450,11 @@ impl Core {
                 if let Request::OpenApp { app, target: Some(target) } = &request {
                     let shown = self.open_target(app, target, Reach::Client(rights), Maker::Client(client)).await.ok();
                     facts.item = shown.map(|(_, title)| crate::approvals::Known { title, start: None });
+                }
+                // Chat and status (`docs/chat.md`, "Freigaben"): who else reads it, the whole text and,
+                // since stage 4, each file as the core prepared it, under the summary.
+                if matches!(request.operation().area(), Area::Chat | Area::Presence) {
+                    shown = crate::approvals::details(&request, &facts);
                 }
                 let summary = crate::approvals::summary(&request, &facts);
                 (request, None, summary)
@@ -9775,8 +9784,203 @@ impl Core {
                 return self.presence.handle(request, reach, caller, heartbeat).await;
             }
             let caller = crate::chat::service::Caller { reach, client: caller };
-            self.chat.handle(request, caller).await
+            match request {
+                // Files and media (stage 4 of `docs/chat.md`): what only the core knows comes first: a
+                // tool's file from the register, a place to save to, the files an approval waits for.
+                Request::ChatPrepareFile { account, source } => {
+                    match self.chat_source(source, reach, caller.client).await {
+                        Ok(source) => self.chat.prepare(&account, source, caller).await,
+                        Err(refused) => refused,
+                    }
+                }
+                Request::ChatSaveAttachment { id, file, to } => match self.chat_place(&to, reach) {
+                    Ok(place) => self.chat.save_attachment(&id, &file, place, caller).await,
+                    Err(refused) => refused,
+                },
+                Request::ChatReleaseFiles { account, ids } => {
+                    let waiting = self.waiting_chat_files(caller.client).await;
+                    self.chat.release(&account, &ids, &waiting, caller)
+                }
+                Request::ChatSendMessage { ref files, .. } if !files.is_empty() => {
+                    match self.chat_tool_files_refusal(files, reach, caller.client).await {
+                        Some(refused) => refused,
+                        None => self.chat.handle(request, caller).await,
+                    }
+                }
+                request => self.chat.handle(request, caller).await,
+            }
         })
+    }
+
+    /// Where `chat.prepare_file` takes a file from, resolved (stage 4 of `docs/chat.md`): a path only
+    /// for the app key (absolute), a tool's file from the register as `client` reaches it, while the
+    /// PDF tool is on and its rights reach it; `not-found` for a file it did not make or that changed.
+    async fn chat_source(
+        &self,
+        source: torro_ipc::chat::FileSource,
+        reach: Reach<'_>,
+        client: Option<&str>,
+    ) -> Result<crate::chat::media::Source, Response> {
+        use torro_core::settings::ToolId;
+        let command = "chat.prepare_file";
+        match source {
+            torro_ipc::chat::FileSource::Path { path } => {
+                if client.is_some() || !matches!(reach, Reach::Suite) {
+                    return Err(Refused::Lacks { command, lack: torro_ipc::api::Lack::ForPeople }.response());
+                }
+                let path = PathBuf::from(path);
+                if !path.is_absolute() {
+                    return Err(Response::Error {
+                        code: "error".into(),
+                        message: tr("The path must be a full path.").into(),
+                    });
+                }
+                Ok(crate::chat::media::Source::Path(path))
+            }
+            torro_ipc::chat::FileSource::Registered { file } => {
+                let settings = self.settings.current();
+                if let Reach::Client(rights) = reach {
+                    if !settings.tools.is_on(ToolId::Pdf) {
+                        let lack = torro_ipc::api::Lack::ToolOff { tool: ToolId::Pdf };
+                        return Err(Refused::Lacks { command, lack }.response());
+                    }
+                    if !crate::tools::reaches_files(&settings.tools, rights) {
+                        let lack = torro_ipc::api::Lack::Tool { tool: ToolId::Pdf };
+                        return Err(Refused::Lacks { command, lack }.response());
+                    }
+                }
+                let maker = client.map_or(Maker::App, Maker::Client);
+                let entry = self
+                    .tools
+                    .file(&file, maker)
+                    .await
+                    .ok_or_else(|| Response::Error { code: "not-found".into(), message: tr("No such file.").into() })?;
+                Ok(crate::chat::media::Source::Tool {
+                    register: entry.id,
+                    path: entry.path,
+                    title: entry.title,
+                    sha256: entry.sha256,
+                })
+            }
+        }
+    }
+
+    /// Where `chat.save_attachment` puts a file, resolved: the Downloads folder of the settings, a save
+    /// target (for a client only with read access to mail, else `forbidden`; an unknown one is
+    /// `not-found`), a path only for the app key.
+    fn chat_place(
+        &self,
+        to: &torro_ipc::mail::SaveTo,
+        reach: Reach<'_>,
+    ) -> Result<crate::chat::attachments::Place, Response> {
+        use crate::chat::attachments::Place;
+        use torro_ipc::mail::SaveTo;
+        let for_people =
+            || Refused::Lacks { command: "chat.save_attachment", lack: torro_ipc::api::Lack::ForPeople }.response();
+        match (to, reach) {
+            (SaveTo::Downloads, _) => {
+                let downloads = crate::mail::save::downloads_folder(&self.settings.current().mail_attachments);
+                match downloads {
+                    Some(dir) => Ok(Place::Folder(dir)),
+                    None => Err(Response::Error {
+                        code: "not-found".into(),
+                        message: tr("The Downloads folder is missing.").into(),
+                    }),
+                }
+            }
+            (SaveTo::Target(id), reach) => {
+                if let Reach::Client(rights) = reach
+                    && !rights.area(Area::Mail).allows(Access::Read)
+                {
+                    let message = tr("Saving to a save target needs read access to mail.").to_string();
+                    return Err(Response::Error { code: "forbidden".into(), message });
+                }
+                match self.mail.save_targets().get(id) {
+                    Ok(Some(target)) => Ok(Place::Target(target.spec)),
+                    _ => Err(Response::Error { code: "not-found".into(), message: tr("No such save target.").into() }),
+                }
+            }
+            (SaveTo::File(_) | SaveTo::Folder(_), Reach::Client(_)) => Err(for_people()),
+            (SaveTo::File(path), Reach::Suite) => match Path::new(path).is_absolute() {
+                true => Ok(Place::File(PathBuf::from(path))),
+                false => {
+                    Err(Response::Error { code: "error".into(), message: tr("The path must be a full path.").into() })
+                }
+            },
+            (SaveTo::Folder(path), Reach::Suite) => match Path::new(path).is_dir() {
+                true => Ok(Place::Folder(PathBuf::from(path))),
+                false => {
+                    Err(Response::Error { code: "not-found".into(), message: tr("The folder is missing.").into() })
+                }
+            },
+        }
+    }
+
+    /// The prepared files an open approval of `client` waits for (`chat.send_message` with `files`):
+    /// `chat.release_files` keeps them (`conflict`), so nobody swaps a file under an approval.
+    async fn waiting_chat_files(&self, client: Option<&str>) -> Vec<String> {
+        let requests = self.approvals.open_requests(client, Utc::now()).await.unwrap_or_default();
+        requests
+            .into_iter()
+            .flat_map(|request| match request {
+                Request::ChatSendMessage { files, .. } => files,
+                _ => Vec::new(),
+            })
+            .collect()
+    }
+
+    /// For the tool's files among the prepared `files` of `client`, checked again when they are sent
+    /// (also after an approval): the PDF tool on and reached, and each file still in the register as
+    /// prepared. `forbidden` or `not-found` otherwise; `None` when they may go.
+    async fn chat_tool_files_refusal(
+        &self,
+        files: &[String],
+        reach: Reach<'_>,
+        client: Option<&str>,
+    ) -> Option<Response> {
+        let tool_files = self.chat.tool_files(files, client);
+        if tool_files.is_empty() {
+            return None;
+        }
+        for (register, _) in &tool_files {
+            let source = torro_ipc::chat::FileSource::Registered { file: register.clone() };
+            if let Err(refused) = self.chat_source(source, reach, client).await {
+                return Some(refused);
+            }
+        }
+        let maker = client.map_or(Maker::App, Maker::Client);
+        for (register, sha256) in tool_files {
+            let unchanged = self.tools.file(&register, maker).await.is_some_and(|entry| entry.sha256 == sha256);
+            if !unchanged {
+                return Some(Response::Error { code: "not-found".into(), message: tr("No such file.").into() });
+            }
+        }
+        None
+    }
+
+    /// What a client's `chat.*` request about files would be refused with anyway, before anyone is
+    /// asked to approve it (stage 4 of `docs/chat.md`): prepared files of `chat.send_message` that
+    /// are not its own in the conversation's account, too many of them, or a tool's file it no longer
+    /// reaches. The handlers check again when it runs.
+    async fn chat_refusal(&self, request: &Request, reach: Reach<'_>, client: &str) -> Option<Response> {
+        match request {
+            Request::ChatSendMessage { conversation, files, .. } if !files.is_empty() => {
+                let (account, _) = torro_chat::split_conversation(conversation)?;
+                if let Some(refused) = self.chat.files_refusal(account, files, Some(client)) {
+                    return Some(refused);
+                }
+                self.chat_tool_files_refusal(files, reach, Some(client)).await
+            }
+            // Releasing a file an approval waits for is `conflict`, not a second approval.
+            Request::ChatReleaseFiles { ids, .. } => {
+                let waiting = self.waiting_chat_files(Some(client)).await;
+                ids.iter().any(|id| waiting.contains(id)).then(|| Response::Error {
+                    code: "conflict".into(),
+                    message: tr("An approval still waits for this file.").into(),
+                })
+            }
+            _ => None,
+        }
     }
 
     /// A request of the area `contacts`: `contacts.suggest_recipients` here ([`Core::suggest_ranked`],
@@ -34073,6 +34277,80 @@ mod tests {
             runtime.block_on(chat_stays_within_a_clients_accounts());
         });
         worker.expect("thread").join().expect("the test ran through");
+    }
+
+    /// Stage 4: a client's file waits with its message for the person, and the approval shows the
+    /// file as the core prepared it; once decided neither name nor bytes stay. Another client's file
+    /// is nothing to approve, a path is the person's, and a file an approval waits for stays.
+    #[test]
+    fn a_clients_file_waits_for_the_person_with_what_the_core_read_of_it() {
+        let worker = std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+            runtime.block_on(a_clients_file_waits_for_the_person());
+        });
+        worker.expect("thread").join().expect("the test ran through");
+    }
+
+    async fn a_clients_file_waits_for_the_person() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, server) = chatting(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.chat_accounts = Selection::Only(vec![CHAT_ACCOUNT.into()]);
+        let (_, key) = client(&core, rights.clone()).await;
+        let (_, other) = client(&core, rights).await;
+        let upload = Request::ChatUploadFile {
+            account: CHAT_ACCOUNT.into(),
+            upload: None,
+            offset: 0,
+            base64: "JVBERi0xLjcgc2VjcmV0IHJlcG9ydA==".into(),
+            name: Some("Quarterly report.pdf".into()),
+            finish: true,
+        };
+        let Response::ChatPreparedFile { file } = ask(&core, Some(&key), upload).await else { panic!("prepared") };
+        assert_eq!(file.content_type, "application/pdf");
+        let send = |files: Vec<String>| Request::ChatSendMessage {
+            conversation: CHAT_BEN.into(),
+            text: "Here it is.".into(),
+            reply_to: None,
+            silent: false,
+            files,
+        };
+        assert_eq!(code(&ask(&core, Some(&other), send(vec![file.id.clone()])).await), "not-found", "not its file");
+        let path = Request::ChatPrepareFile {
+            account: CHAT_ACCOUNT.into(),
+            source: torro_ipc::chat::FileSource::Path { path: "/etc/hosts".into() },
+        };
+        assert_eq!(code(&ask(&core, Some(&key), path).await), "forbidden", "a path is the person's");
+
+        let pending = waits(ask(&core, Some(&key), send(vec![file.id.clone()])).await);
+        assert!(pending.summary.contains("Quarterly report.pdf"), "{}", pending.summary);
+        let details = pending.details.join("\n");
+        let origin = tr("uploaded by this agent, name given by this agent");
+        assert!(details.contains("application/pdf") && details.contains(origin), "{details}");
+        let goes = trf("Uploads \"{name}\" to your Talk folder in Nextcloud", &[("name", &"Quarterly report.pdf")]);
+        assert!(details.contains(&goes), "{details}");
+        let release = Request::ChatReleaseFiles { account: CHAT_ACCOUNT.into(), ids: vec![file.id.clone()] };
+        assert_eq!(code(&ask(&core, Some(&key), release).await), "conflict", "an approval waits for it");
+        let stored = std::fs::read_to_string(dir.path().join("state").join("approvals.json")).unwrap_or_default();
+        assert!(stored.contains("volatile_images") && !stored.contains(&file.id), "a shell without the files");
+
+        let done = approval(ask(&core, Some(&app_key), decide(&pending.id, true)).await);
+        let Some(torro_ipc::ApprovalState::Done { response }) = Some(done.state.clone()) else { panic!("done") };
+        let Response::ChatSending { id } = *response else { panic!("sending: {response:?}") };
+        for _ in 0..300 {
+            if !server.state().shares.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(server.state().shares.len(), 1);
+        assert!(!done.summary.contains("Quarterly"), "kept: {}", done.summary);
+        let progress = ask(&core, Some(&key), Request::ChatGetUpload { id: id.clone() }).await;
+        assert!(matches!(progress, Response::ChatUpload { .. }), "{progress:?}");
+        assert_eq!(code(&ask(&core, Some(&other), Request::ChatGetUpload { id }).await), "not-found");
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log");
+        assert!(!log.contains("Quarterly") && !log.contains("JVBER"), "{log}");
     }
 
     async fn chat_stays_within_a_clients_accounts() {

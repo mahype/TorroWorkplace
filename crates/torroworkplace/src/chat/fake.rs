@@ -1,18 +1,33 @@
 //! A chat server in memory for the tests of the chat and presence services: it answers what
-//! [`super::remote::Remote`] asks, notes every call by name, and can be switched offline.
+//! [`super::remote::Remote`] asks, notes every call by name, and can be switched offline. Files
+//! (stage 4) live in [`State::files`] by path; sharing one posts a message with it.
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use torro_chat::{ChatError, ConversationKind, Mention, MessageKind, NotifyLevel, Preview, Status};
+use torro_chat::{ChatError, ConversationKind, FileRef, Mention, MessageKind, NotifyLevel, Preview, Status};
 
 use super::remote::tests::message;
-use super::remote::{Caps, RemoteHit, RemoteMessage, RemotePerson, RemoteQuote, RemoteRoom, RemoteStatus, Sending};
+use super::remote::{
+    Caps, DavPath, FileError, Picture, Reference, RemoteHit, RemoteMessage, RemotePerson, RemoteQuote, RemoteRoom,
+    RemoteStatus, Sending, ShareMeta, Uploaded,
+};
 
 /// The user id of the fake's own person.
 pub const ME: &str = "anna";
+
+/// The fake's address.
+pub const SERVER: &str = "https://cloud.example.org";
+
+/// A file in the fake's storage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredFile {
+    pub id: u64,
+    pub bytes: Vec<u8>,
+    pub etag: String,
+}
 
 #[derive(Debug)]
 pub struct State {
@@ -30,6 +45,22 @@ pub struct State {
     pub sent: Vec<(String, Sending)>,
     /// The heartbeats sent.
     pub beats: Vec<Status>,
+    /// The person's files, by path (`/Talk/x.png`).
+    pub files: BTreeMap<String, StoredFile>,
+    /// The pieces of chunked uploads, by upload id.
+    pub chunks: BTreeMap<String, Vec<(u32, Vec<u8>)>>,
+    /// The shares as they came in: token, path, meta data.
+    pub shares: Vec<(String, String, ShareMeta)>,
+    /// Sharing fails (the server refuses).
+    pub refuse_shares: bool,
+    /// The cards the server knows, by link.
+    pub references: BTreeMap<String, Reference>,
+    /// The previews the server draws, by file id.
+    pub previews: BTreeMap<u64, Picture>,
+    /// The pictures of cards, by id.
+    pub card_pictures: BTreeMap<String, Picture>,
+    /// Free bytes of the person's storage; `None` is unlimited.
+    pub free: Option<u64>,
 }
 
 /// See the module docs.
@@ -81,6 +112,14 @@ impl Default for Server {
             delete: true,
             search: true,
             status: true,
+            attachments: true,
+            attachments_folder: "/Talk".into(),
+            subfolders: false,
+            chunk_max: None,
+            caption: true,
+            shared: true,
+            reference_ids: true,
+            context: true,
         };
         let mut ben = room("ben4chat", "Ben Koch", ConversationKind::Direct, 2);
         ben.other_user = Some("ben".into());
@@ -116,6 +155,14 @@ impl Default for Server {
                 calls: Vec::new(),
                 sent: Vec::new(),
                 beats: Vec::new(),
+                files: BTreeMap::new(),
+                chunks: BTreeMap::new(),
+                shares: Vec::new(),
+                refuse_shares: false,
+                references: BTreeMap::new(),
+                previews: BTreeMap::new(),
+                card_pictures: BTreeMap::new(),
+                free: None,
             }),
         }
     }
@@ -341,5 +388,237 @@ impl Server {
 
     pub async fn heartbeat(&self, status: Status) -> Result<(), ChatError> {
         self.call("heartbeat").map(|mut state| state.beats.push(status))
+    }
+}
+
+impl Server {
+    /// Puts `bytes` as the file `path` in a message of Ben in `token`, as a server would hold a
+    /// file someone shared: the message with the file, its path and the file stored.
+    pub fn share_from_ben(&self, token: &str, path: &str, mimetype: &str, bytes: &[u8]) -> u64 {
+        let mut state = self.state();
+        let id = 9000 + state.files.len() as u64;
+        state.files.insert(path.to_string(), StoredFile { id, bytes: bytes.to_vec(), etag: format!("\"e{id}\"") });
+        let name = path.rsplit('/').next().unwrap_or(path).to_string();
+        let list = state.messages.entry(token.to_string()).or_default();
+        let number = list.last().map_or(1, |last| last.number + 1);
+        let mut shared = message(number, &name);
+        shared.files = vec![FileRef {
+            id: id.to_string(),
+            name,
+            size: bytes.len() as u64,
+            content_type: mimetype.to_string(),
+            preview: mimetype.starts_with("image/"),
+            hide_download: false,
+            width: None,
+            height: None,
+            blurhash: Some("LEHV6nWB2yk8".into()),
+        }];
+        shared.paths.insert(id.to_string(), path.trim_start_matches('/').to_string());
+        list.push(shared);
+        number
+    }
+
+    pub async fn free_space(&self) -> Result<Option<u64>, ChatError> {
+        self.call("free_space").map(|state| state.free)
+    }
+
+    pub async fn around(&self, token: &str, number: u64, limit: u32) -> Result<Vec<RemoteMessage>, ChatError> {
+        let state = self.call(format!("around {token} {number}"))?;
+        let all = state.messages.get(token).ok_or(ChatError::NotFound)?;
+        let at = all.iter().position(|m| m.number == number).ok_or(ChatError::NotFound)?;
+        let from = at.saturating_sub(limit as usize);
+        let to = (at + 1 + limit as usize).min(all.len());
+        Ok(all[from..to].to_vec())
+    }
+
+    pub async fn free_name(&self, _user: &str, folder: &DavPath, name: &str) -> Result<String, FileError> {
+        let state = self.call("free_name")?;
+        for copy in 1..=99 {
+            let candidate = torro_nextcloud::numbered(name, copy);
+            let path = folder.join(&candidate).ok_or(FileError::Chat(ChatError::NotFound))?;
+            if !state.files.contains_key(&path.as_path()) {
+                return Ok(candidate);
+            }
+        }
+        Err(FileError::Exists)
+    }
+
+    pub async fn make_folders(&self, _user: &str, folder: &DavPath) -> Result<(), FileError> {
+        let _held = self.call(format!("make_folders {}", folder.as_path()))?;
+        Ok(())
+    }
+
+    /// Stores `bytes` at `path` as a new file, when there is none and the storage has room.
+    fn store(state: &mut State, path: &DavPath, bytes: Vec<u8>) -> Result<Uploaded, FileError> {
+        let key = path.as_path();
+        if state.files.contains_key(&key) {
+            return Err(FileError::Exists);
+        }
+        if state.free.is_some_and(|free| free < bytes.len() as u64) {
+            return Err(FileError::NoSpace);
+        }
+        let id = 7000 + state.files.len() as u64;
+        let etag = format!("\"e{id}\"");
+        state.files.insert(key, StoredFile { id, bytes, etag: etag.clone() });
+        Ok(Uploaded { file_id: Some(id), etag: Some(etag) })
+    }
+
+    pub async fn put_file(&self, _user: &str, path: &DavPath, bytes: Vec<u8>) -> Result<Uploaded, FileError> {
+        let mut state = self.call(format!("put {}", path.as_path()))?;
+        Server::store(&mut state, path, bytes)
+    }
+
+    pub async fn start_upload(
+        &self,
+        _user: &str,
+        upload: &str,
+        _target: &DavPath,
+        _total: u64,
+    ) -> Result<(), FileError> {
+        let mut state = self.call(format!("start_upload {upload}"))?;
+        state.chunks.insert(upload.to_string(), Vec::new());
+        Ok(())
+    }
+
+    pub async fn put_chunk(
+        &self,
+        _user: &str,
+        upload: &str,
+        number: u32,
+        bytes: Vec<u8>,
+        _target: &DavPath,
+        _total: u64,
+    ) -> Result<(), FileError> {
+        let mut state = self.call(format!("put_chunk {upload} {number}"))?;
+        let pieces = state.chunks.get_mut(upload).ok_or(FileError::Chat(ChatError::NotFound))?;
+        pieces.push((number, bytes));
+        Ok(())
+    }
+
+    pub async fn finish_upload(
+        &self,
+        _user: &str,
+        upload: &str,
+        target: &DavPath,
+        total: u64,
+    ) -> Result<Uploaded, FileError> {
+        let mut state = self.call(format!("finish_upload {upload}"))?;
+        let mut pieces = state.chunks.remove(upload).ok_or(FileError::Chat(ChatError::NotFound))?;
+        pieces.sort_by_key(|(number, _)| *number);
+        let bytes: Vec<u8> = pieces.into_iter().flat_map(|(_, bytes)| bytes).collect();
+        if bytes.len() as u64 != total {
+            return Err(FileError::Chat(ChatError::Other("pieces missing".into())));
+        }
+        Server::store(&mut state, target, bytes)
+    }
+
+    pub async fn cancel_upload(&self, _user: &str, upload: &str) -> Result<(), FileError> {
+        let mut state = self.call(format!("cancel_upload {upload}"))?;
+        state.chunks.remove(upload);
+        Ok(())
+    }
+
+    pub async fn delete_file(&self, _user: &str, path: &DavPath, etag: &str) -> Result<(), FileError> {
+        let mut state = self.call(format!("delete_file {}", path.as_path()))?;
+        match state.files.get(&path.as_path()) {
+            Some(file) if file.etag != etag => Err(FileError::Exists),
+            Some(_) => {
+                state.files.remove(&path.as_path());
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    }
+
+    pub async fn get_file(&self, _user: &str, path: &DavPath, max: u64) -> Result<Vec<u8>, FileError> {
+        let state = self.call(format!("get_file {}", path.as_path()))?;
+        let file = state.files.get(&path.as_path()).ok_or(FileError::Chat(ChatError::NotFound))?;
+        if file.bytes.len() as u64 > max {
+            return Err(FileError::TooLarge);
+        }
+        Ok(file.bytes.clone())
+    }
+
+    pub async fn preview(&self, file: u64, _edge: u32) -> Result<Picture, FileError> {
+        let state = self.call(format!("preview {file}"))?;
+        state.previews.get(&file).cloned().ok_or(FileError::Chat(ChatError::NotFound))
+    }
+
+    pub async fn card_picture(&self, id: &str) -> Result<Picture, FileError> {
+        let state = self.call(format!("card_picture {id}"))?;
+        state.card_pictures.get(id).cloned().ok_or(FileError::Chat(ChatError::NotFound))
+    }
+
+    pub async fn resolve(&self, link: &str) -> Result<Option<Reference>, FileError> {
+        let state = self.call(format!("resolve {link}"))?;
+        Ok(state.references.get(link).cloned())
+    }
+
+    pub async fn share(&self, token: &str, path: &DavPath, meta: &ShareMeta) -> Result<(), FileError> {
+        let mut state = self.call(format!("share {token}"))?;
+        if state.refuse_shares {
+            return Err(FileError::Chat(ChatError::Unsupported("refused".into())));
+        }
+        let file = state.files.get(&path.as_path()).cloned().ok_or(FileError::Chat(ChatError::NotFound))?;
+        state.shares.push((token.to_string(), path.as_path(), meta.clone()));
+        let list = state.messages.get_mut(token).ok_or(FileError::Chat(ChatError::NotFound))?;
+        let number = list.last().map_or(1, |last| last.number + 1);
+        let mut shared = message(number, meta.caption.as_deref().unwrap_or(path.name()));
+        shared.author = Some(ME.into());
+        shared.author_name = "Anna Berg".into();
+        shared.files = vec![FileRef {
+            id: file.id.to_string(),
+            name: path.name().to_string(),
+            size: file.bytes.len() as u64,
+            content_type: "application/octet-stream".into(),
+            preview: false,
+            hide_download: false,
+            width: None,
+            height: None,
+            blurhash: None,
+        }];
+        shared.paths.insert(file.id.to_string(), path.as_path().trim_start_matches('/').to_string());
+        list.push(shared);
+        Ok(())
+    }
+
+    pub async fn shared(
+        &self,
+        token: &str,
+        kind: &str,
+        before: Option<u64>,
+        limit: u32,
+    ) -> Result<Vec<RemoteMessage>, ChatError> {
+        let state = self.call(format!("shared {token} {kind}"))?;
+        let all = state.messages.get(token).ok_or(ChatError::NotFound)?;
+        let mut found: Vec<RemoteMessage> = all
+            .iter()
+            .filter(|m| before.is_none_or(|before| m.number < before))
+            .filter(|m| m.files.iter().any(|file| kind_of(&file.content_type) == kind))
+            .cloned()
+            .collect();
+        found.reverse();
+        found.truncate(limit as usize);
+        Ok(found)
+    }
+
+    pub async fn overview(&self, token: &str, limit: u32) -> Result<Vec<(String, RemoteMessage)>, ChatError> {
+        let state = self.call(format!("overview {token}"))?;
+        let all = state.messages.get(token).ok_or(ChatError::NotFound)?;
+        let mut found = Vec::new();
+        for kind in ["media", "file", "audio"] {
+            let of_kind = all.iter().rev().filter(|m| m.files.iter().any(|file| kind_of(&file.content_type) == kind));
+            found.extend(of_kind.take(limit as usize).map(|m| (kind.to_string(), m.clone())));
+        }
+        Ok(found)
+    }
+}
+
+/// Talk's kind of a shared file of `mimetype`, as far as the fake needs it.
+fn kind_of(mimetype: &str) -> &'static str {
+    match mimetype.split('/').next() {
+        Some("image" | "video") => "media",
+        Some("audio") => "audio",
+        _ => "file",
     }
 }

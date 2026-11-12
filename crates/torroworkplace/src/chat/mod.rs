@@ -11,19 +11,25 @@
 //! - What other people see waits for approval unless the person allowed sending freely; a client
 //!   that may send freely is still throttled ([`throttle`]).
 //! - An account removed or wiped takes its conversations and messages with it
-//!   ([`ChatService::forget_account`], told by `PimService::on_forget`).
+//!   ([`ChatService::forget_account`], told by `PimService::on_forget`), and its prepared files,
+//!   previews, cards and fetched files too.
+//! - Files and media (stage 4): sending in [`media`], reading, previews and link cards in
+//!   [`attachments`].
 //!
 //! Logs name an account's id and a code, never a name, a text or a token.
 
+pub mod attachments;
 pub mod cache;
 #[cfg(test)]
 pub mod fake;
 pub mod live;
+pub mod media;
 pub mod remote;
 pub mod service;
 pub mod talk;
 pub mod throttle;
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use torro_chat::ChatError;
@@ -70,12 +76,20 @@ pub struct ChatService {
     /// One fetch at a time for client keys, so no agent keeps the server busy over many
     /// conversations (decision 9).
     client_fetch: tokio::sync::Mutex<()>,
+    /// Prepared files, uploads and sendings of files (stage 4).
+    media: Mutex<media::Store>,
+    /// Previews and link cards (stage 4).
+    held: Mutex<attachments::Held>,
+    /// The chat's own folder for fetched files (`<cache>/chat-attachments`); `None` without a home.
+    attachments: Option<PathBuf>,
 }
 
 impl ChatService {
     /// The service of the core: the Nextcloud accounts of `pim`.
     pub fn system(pim: Arc<PimService>) -> ChatService {
-        ChatService::with(Remotes::Pim(pim))
+        let folder = torro_core::paths::AppPaths::for_app(torro_core::AppId::WORKPLACE)
+            .map(|paths| paths.state.join("cache").join("chat-attachments"));
+        ChatService { attachments: folder, ..ChatService::with(Remotes::Pim(pim)) }
     }
 
     /// A service over servers in memory, by account id.
@@ -84,12 +98,21 @@ impl ChatService {
         ChatService::with(Remotes::Fixed(servers))
     }
 
+    /// This service with `folder` for fetched files (tests).
+    #[cfg(test)]
+    pub fn with_attachments(self, folder: PathBuf) -> ChatService {
+        ChatService { attachments: Some(folder), ..self }
+    }
+
     fn with(remotes: Remotes) -> ChatService {
         ChatService {
             remotes,
             cache: Mutex::new(Cache::default()),
             throttle: Arc::new(Throttle::default()),
             client_fetch: tokio::sync::Mutex::new(()),
+            media: Mutex::new(media::Store::default()),
+            held: Mutex::new(attachments::Held::default()),
+            attachments: None,
         }
     }
 
@@ -148,12 +171,22 @@ impl ChatService {
     /// their next turn.
     pub fn forget_account(&self, account: &str) {
         self.cache().forget_account(account);
+        self.media().forget_account(account);
+        self.held().forget_account(account);
+        if let Some(folder) = &self.attachments {
+            // The fetched files of the account go with it; failing leaves them for the daily sweep.
+            let _ = std::fs::remove_dir_all(folder.join(crate::audit::hashed(account)));
+        }
     }
 
     /// Drops everything of accounts that are no longer there (a missed message of
     /// `PimService::on_forget`).
     pub async fn forget_gone(&self) {
         let known = self.accounts().await;
+        let gone: Vec<String> = self.cache().accounts.keys().filter(|id| !known.contains(id)).cloned().collect();
+        for account in gone {
+            self.forget_account(&account);
+        }
         self.cache().keep_accounts(&known);
     }
 }

@@ -58,24 +58,27 @@ pub struct ChatFacts {
     pub quoted: Option<String>,
     /// The text of the message an edit, a deletion or a reaction is about, as the core holds it.
     pub old_text: Option<String>,
+    /// The files a message sends, as the core prepared them (stage 4): name, size, kind and where
+    /// they came from.
+    pub files: Vec<super::media::FileFact>,
 }
 
 /// The account a conversation id names and its checked token; `not-found` for anything that is
 /// no conversation id.
-fn conversation_of(id: &str) -> Result<(&str, RoomToken), ChatError> {
+pub(super) fn conversation_of(id: &str) -> Result<(&str, RoomToken), ChatError> {
     let (account, token) = split_conversation(id).ok_or(ChatError::NotFound)?;
     Ok((account, RoomToken::parse(token).ok_or(ChatError::NotFound)?))
 }
 
 /// Account, checked token and number of a message id.
-fn message_of(id: &str) -> Result<(&str, RoomToken, u64), ChatError> {
+pub(super) fn message_of(id: &str) -> Result<(&str, RoomToken, u64), ChatError> {
     let (conversation, number) = split_message(id).ok_or(ChatError::NotFound)?;
     let (account, token) = conversation_of(conversation)?;
     Ok((account, token, number))
 }
 
 /// The number of the message `id` when it is one of `conversation`; an `error` otherwise.
-fn number_in(conversation: &str, id: &str) -> Result<u64, ChatError> {
+pub(super) fn number_in(conversation: &str, id: &str) -> Result<u64, ChatError> {
     match split_message(id) {
         Some((of, number)) if of == conversation => Ok(number),
         _ => Err(ChatError::Other(tr("This is no message of the conversation.").to_string())),
@@ -107,9 +110,17 @@ fn account_of(request: &Request) -> Result<Option<&str>, ()> {
         | Request::ChatSuggestMentions { conversation: id, .. }
         | Request::ChatSetFavorite { conversation: id, .. }
         | Request::ChatSetNotificationLevel { conversation: id, .. } => conversation(id).map(Some),
-        Request::ChatEditMessage { id, .. } | Request::ChatDeleteMessage { id } | Request::ChatReact { id, .. } => {
-            message(id).map(Some)
-        }
+        Request::ChatEditMessage { id, .. }
+        | Request::ChatDeleteMessage { id }
+        | Request::ChatReact { id, .. }
+        | Request::ChatGetPreview { id, .. }
+        | Request::ChatGetAttachment { id, .. }
+        | Request::ChatSaveAttachment { id, .. }
+        | Request::ChatShowCard { id } => message(id).map(Some),
+        Request::ChatListShared { conversation: id, .. } => conversation(id).map(Some),
+        Request::ChatPrepareFile { account, .. }
+        | Request::ChatUploadFile { account, .. }
+        | Request::ChatReleaseFiles { account, .. } => Ok(Some(account)),
         _ => Ok(None),
     }
 }
@@ -325,7 +336,7 @@ impl ChatService {
 
     /// The conversation `token` of `account` as the list holds it, fetching the list once when it
     /// does not name it (a conversation made a moment ago). `not-found` when the server lists none.
-    async fn room(self: &Arc<Self>, account: &str, token: &RoomToken) -> Result<RemoteRoom, ChatError> {
+    pub(super) async fn room(self: &Arc<Self>, account: &str, token: &RoomToken) -> Result<RemoteRoom, ChatError> {
         let find = |rooms: &[RemoteRoom]| rooms.iter().find(|room| room.token == token.as_str()).cloned();
         if let Some(room) = find(&self.rooms_of(account).await?) {
             return Ok(room);
@@ -350,17 +361,39 @@ impl ChatService {
             Request::ChatListConversations { account, unread_only, query, limit } => {
                 self.list(caller.reach, account.as_deref(), unread_only, query.as_deref(), limit).await
             }
-            Request::ChatGetMessages { around: Some(_), .. } => Err(unsupported("This server cannot do this.")),
-            Request::ChatGetMessages { conversation, before, after, limit, .. } => self
-                .messages(&conversation, before.as_deref(), after.as_deref(), limit, caller)
-                .await
-                .map(Response::ChatMessages),
-            Request::ChatSendMessage { files, .. } if !files.is_empty() => {
-                Err(unsupported("This server cannot do this."))
+            Request::ChatGetMessages { conversation, before, after, around, limit } => {
+                let read =
+                    self.messages(&conversation, before.as_deref(), after.as_deref(), around.as_deref(), limit, caller);
+                match read.await {
+                    Ok(page) => Ok(Response::ChatMessages(self.decorate(&conversation, page, caller).await)),
+                    Err(err) => Err(err),
+                }
+            }
+            Request::ChatSendMessage { conversation, text, reply_to, silent, files } if !files.is_empty() => {
+                let reply_to = match reply_to.as_deref().map(|message| number_in(&conversation, message)).transpose() {
+                    Ok(reply_to) => reply_to,
+                    Err(err) => return error_response(&err),
+                };
+                let sent = self.send_files(&conversation, &text, reply_to, silent, &files, caller).await;
+                return sent.unwrap_or_else(|refusal| refusal);
             }
             Request::ChatSendMessage { conversation, text, reply_to, silent, .. } => {
                 self.send(&conversation, &text, reply_to.as_deref(), silent).await
             }
+            Request::ChatUploadFile { account, upload, offset, base64, name, finish } => {
+                return self.upload(&account, upload.as_deref(), offset, &base64, name, finish, caller).await;
+            }
+            Request::ChatReleaseFiles { account, ids } => return self.release(&account, &ids, &[], caller),
+            Request::ChatGetUpload { id } => return self.upload_state(&id, caller),
+            Request::ChatCancelUpload { id } => return self.cancel(&id, caller),
+            Request::ChatGetPreview { id, file, card, size } => {
+                return self.get_preview(&id, file.as_deref(), card, size, caller).await;
+            }
+            Request::ChatGetAttachment { id, file } => return self.get_attachment(&id, &file, caller).await,
+            Request::ChatListShared { conversation, kind, before, limit } => {
+                return self.list_shared(&conversation, kind, before.as_deref(), limit, caller).await;
+            }
+            Request::ChatShowCard { id } => return self.show_card(&id).await,
             Request::ChatMarkRead { conversation, up_to } => self.mark_read(&conversation, up_to.as_deref()).await,
             Request::ChatMarkUnread { conversation } => self.mark_unread(&conversation).await,
             Request::ChatSuggestMentions { conversation, query, limit } => {
@@ -447,12 +480,22 @@ impl ChatService {
         id: &str,
         before: Option<&str>,
         after: Option<&str>,
+        around: Option<&str>,
         limit: Option<u32>,
         caller: Caller<'_>,
     ) -> Result<MessagePage, ChatError> {
         let (account, token) = conversation_of(id)?;
-        if before.is_some() && after.is_some() {
+        if [before, after, around].iter().filter(|given| given.is_some()).count() > 1 {
             return Err(ChatError::Other(tr("Give either `before` or `after`, not both.").to_string()));
+        }
+        if let Some(around) = around {
+            let number = number_in(id, around)?;
+            let room = self.room(account, &token).await?;
+            let (remote, caps, user) = self.ready(account).await?;
+            let limit = limit.unwrap_or(MESSAGES).clamp(1, MAX_MESSAGES);
+            let found = self.around(id, &token, number, limit, &remote, &caps).await?;
+            let messages = found.into_iter().map(|message| shown(account, id, &user, message)).collect();
+            return Ok(MessagePage { messages, last_read: last_read(id, &room), more: true, offline: false });
         }
         let before = before.map(|message| number_in(id, message)).transpose()?;
         let after = after.map(|message| number_in(id, message)).transpose()?;
@@ -655,7 +698,7 @@ impl ChatService {
     }
 
     /// The message `number` of a conversation as the cache holds it, else asked of the server.
-    async fn message(
+    pub(super) async fn message(
         &self,
         account: &str,
         token: &RoomToken,
@@ -840,6 +883,10 @@ impl ChatService {
             federated: room.as_ref().is_some_and(|room| room.federated),
             quoted: None,
             old_text: None,
+            files: match request {
+                Request::ChatSendMessage { files, .. } => self.file_facts(files),
+                _ => Vec::new(),
+            },
         };
         if let Some(wanted) = number.or(quoted)
             && let Ok((remote, caps, _)) = self.ready(account).await
@@ -865,7 +912,7 @@ fn unsupported(text: &'static str) -> ChatError {
 
 /// A random id for one send (`referenceId`): 32 hex digits. With it the server drops a repeat of
 /// the same send.
-fn reference() -> String {
+pub(super) fn reference() -> String {
     let mut bytes = [0u8; 16];
     // Without random bytes the time stands in: the id only has to differ between sends.
     if getrandom::fill(&mut bytes).is_err() {
