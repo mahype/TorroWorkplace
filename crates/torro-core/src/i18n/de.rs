@@ -8809,4 +8809,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("On your list", "In deiner Liste"),
     ("Added by you", "Von dir hinzugefügt"),
     ("The person could not be added to the list.", "Die Person konnte nicht zur Liste hinzugefügt werden."),
+    // The right to pictures in chats (issue #643)
+    ("Pictures and videos", "Bilder und Videos"),
+    (
+        "Previews, pictures and videos in chats; off, this agent gets none of them",
+        "Vorschauen, Bilder und Videos in Chats; aus bekommt dieser Agent keine davon",
+    ),
 ];
