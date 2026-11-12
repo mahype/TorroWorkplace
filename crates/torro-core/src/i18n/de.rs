@@ -215,6 +215,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Diese KI darf keine Mail lesen. Wähle ein Modell auf diesem Rechner.",
     ),
     ("{kind} · Accept it in Mail", "{kind} · In E-Mail annehmen"),
+    ("Open in Mail", "In E-Mail öffnen"),
     // Paddle invoice copies (#598).
     (
         "The provider's page differs from the verified version. Check the copy before saving.",
