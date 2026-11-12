@@ -23,6 +23,8 @@ iced_test.workspace = true
 png.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The single-instance channel of one named window (`instance::claim_named`, issue #643): the name as a hash.
+sha2.workspace = true
 # The 2-s poll of the chosen design (`design::Follow::subscription`) sleeps on Iced's tokio runtime.
 tokio.workspace = true
 

@@ -1,0 +1,38 @@
+{
+  "ocs": {
+    "meta": { "status": "ok", "statuscode": 200, "message": "OK" },
+    "data": [
+      {
+        "actorType": "users",
+        "actorId": "bert",
+        "displayName": "Bert Example",
+        "token": "a1b2c3d4",
+        "lastPing": 1791880100,
+        "sessionId": "s1session1"
+      },
+      {
+        "actorType": "users",
+        "actorId": "bert",
+        "displayName": "Bert Example",
+        "token": "a1b2c3d4",
+        "lastPing": 1791880101,
+        "sessionId": "s2session2"
+      },
+      {
+        "actorType": "guests",
+        "actorId": "a1f0guest",
+        "displayName": "",
+        "token": "a1b2c3d4",
+        "lastPing": 1791880102,
+        "sessionId": "s3session3"
+      },
+      {
+        "actorType": "users",
+        "displayName": "No actor id",
+        "token": "a1b2c3d4",
+        "lastPing": 1791880103,
+        "sessionId": "s4session4"
+      }
+    ]
+  }
+}

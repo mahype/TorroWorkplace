@@ -123,6 +123,9 @@ pub struct EntryPopup {
     /// from the entry, all of its conversation once the core looked them up ([`run`]). Empty for
     /// every other entry.
     pub mail: Vec<String>,
+    /// A Talk entry: the popup offers "Reply", which opens the hub at the entry with its reply
+    /// field (`docs/chat.md`, stage 1).
+    pub talk: bool,
 }
 
 /// What to put on the desktop.
@@ -218,6 +221,8 @@ pub enum Answer {
     Archive,
     /// "Mark read", on a mail.
     MarkRead,
+    /// "Reply", on a Talk entry: the hub at the entry, with its reply field.
+    Reply,
 }
 
 /// The request `answer` to `popup` sends at `now`: "Done" marks the entry done, "Snooze 1 h" puts
@@ -237,6 +242,10 @@ pub fn request(answer: Answer, popup: &Popup, now: DateTime<Utc>) -> Option<Requ
             keep_open: false,
         }),
         Answer::Open => Some(Request::OpenApp { app: AppId::INBOX.binary.to_string(), target: None }),
+        Answer::Reply => match popup {
+            Popup::Entry(entry) if entry.talk => Some(Request::OpenItem { id: entry.id.clone() }),
+            _ => None,
+        },
     }
 }
 
@@ -657,16 +666,17 @@ fn entry(item: &Item) -> EntryPopup {
             _ => Vec::new(),
         };
         let title = foreign_line(&item.title, MAIL_SUBJECT_MAX);
-        return EntryPopup { id: item.id.clone(), title, source, urgent: false, mail };
+        return EntryPopup { id: item.id.clone(), title, source, urgent: false, mail, talk: false };
     }
     if let Some((title, source)) = session_line(item) {
-        return EntryPopup { id: item.id.clone(), title, source, urgent: item.urgent, mail: Vec::new() };
+        return EntryPopup { id: item.id.clone(), title, source, urgent: item.urgent, mail: Vec::new(), talk: false };
     }
     let source = match &item.from {
         Some(from) if !from.name.trim().is_empty() => format!("{} · {}", from.name.trim(), item.source.label()),
         _ => item.source.label(),
     };
-    EntryPopup { id: item.id.clone(), title: item.title.clone(), source, urgent: item.urgent, mail: Vec::new() }
+    let talk = item.source.kind == torro_inbox::SourceKind::Talk;
+    EntryPopup { id: item.id.clone(), title: item.title.clone(), source, urgent: item.urgent, mail: Vec::new(), talk }
 }
 
 /// Summary and body of a popup for an agent's session that has a name (task E2.6): the name,
@@ -858,6 +868,9 @@ async fn show_popup(popup: Popup, answer: Box<dyn FnOnce(Answer) + Send>) -> not
     if popup.messages().is_some() {
         notification.action("archive", torro_core::i18n::trc("action", "Archive")).action("read", tr("Mark read"));
     } else if popup.entry().is_some() {
+        if matches!(&popup, Popup::Entry(entry) if entry.talk) {
+            notification.action("reply", tr("Reply"));
+        }
         notification.action("done", tr("Done")).action("snooze", tr("Snooze 1 h"));
     }
     if popup.urgent() {
@@ -876,6 +889,7 @@ async fn show_popup(popup: Popup, answer: Box<dyn FnOnce(Answer) + Send>) -> not
                 "snooze" => Some(Answer::Snooze),
                 "archive" => Some(Answer::Archive),
                 "read" => Some(Answer::MarkRead),
+                "reply" => Some(Answer::Reply),
                 _ => None,
             },
             _ => None,
@@ -915,6 +929,7 @@ mod tests {
     /// A new, open entry "for me" from the script `backup`, updated at `updated`.
     fn item(id: &str, updated: DateTime<Utc>) -> Item {
         Item {
+            conversation: None,
             id: id.into(),
             source: SourceRef::script("backup"),
             thread_key: format!("t-{id}"),
@@ -1231,6 +1246,17 @@ mod tests {
         let bundle = Popup::Bundle { count: 4, urgent: false };
         assert_eq!((request(Answer::Done, &bundle, now), request(Answer::Snooze, &bundle, now)), (None, None));
         assert_eq!(request(Answer::Open, &bundle, now), open, "a summary opens the inbox too");
+    }
+
+    /// Stage 1 of `docs/chat.md`: a Talk entry's popup has "Reply", which opens the hub at the entry;
+    /// no other popup answers it.
+    #[test]
+    fn a_talk_entry_replies_in_the_hub() {
+        let talk = Item { source: SourceRef::talk("anna@cloud.example.org"), ..item("t", at(0, 0)) };
+        let popup = popup_of(&talk);
+        assert!(matches!(&popup, Popup::Entry(entry) if entry.talk));
+        assert_eq!(request(Answer::Reply, &popup, at(10, 0)), Some(Request::OpenItem { id: "t".into() }));
+        assert_eq!(request(Answer::Reply, &popup_of(&item("a", at(0, 0))), at(10, 0)), None);
     }
 
     /// A new mail entry "for me" from `sender` in `anna@example.org`, updated at `updated`.

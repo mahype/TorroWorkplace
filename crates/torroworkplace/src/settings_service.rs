@@ -562,6 +562,10 @@ enum Change {
     QuietWhenBusy(bool),
     /// Show the hidden address books in the contacts app.
     ContactsShowHiddenBooks(bool),
+    /// "Show others when I am online": the heartbeat of the presence.
+    PresenceHeartbeat(bool),
+    /// "Ring for incoming calls" (`docs/chat.md`, stage 6).
+    ChatRing(bool),
     /// A spacing level, mapped by `design::known_id` (`compact` and `console` are `dense`, issue #484);
     /// an id it does not know stays as sent, and [`SettingsStore::check_part`] refuses it.
     Design(String),
@@ -670,6 +674,10 @@ impl Change {
             SettingKey::QuietWhenBusy => Change::QuietWhenBusy(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::ContactsShowHiddenBooks => {
                 Change::ContactsShowHiddenBooks(serde_json::from_value(value.clone()).map_err(invalid)?)
+            }
+            SettingKey::ChatRing => Change::ChatRing(serde_json::from_value(value.clone()).map_err(invalid)?),
+            SettingKey::PresenceHeartbeat => {
+                Change::PresenceHeartbeat(serde_json::from_value(value.clone()).map_err(invalid)?)
             }
             SettingKey::Design => {
                 let id = part_id(key, value)?;
@@ -784,6 +792,8 @@ impl Change {
             Change::FocusSlots(slots) => settings.focus_slots = slots,
             Change::QuietWhenBusy(quiet) => settings.quiet_when_busy = quiet,
             Change::ContactsShowHiddenBooks(show) => settings.contacts_show_hidden_books = show,
+            Change::PresenceHeartbeat(on) => settings.presence_heartbeat = on,
+            Change::ChatRing(on) => settings.chat_ring = on,
             Change::Design(id) => settings.design = id,
             Change::Font(id) => settings.font = id,
             Change::ColorScheme(id) => settings.color_scheme = id,
@@ -1829,6 +1839,8 @@ mod tests {
                 focus_slots: FocusSlots::new(5).expect("in range"),
                 quiet_when_busy: false,
                 contacts_show_hidden_books: false,
+                presence_heartbeat: false,
+                chat_ring: true,
                 design: "dense".into(),
                 font: "channelr".into(),
                 color_scheme: "nord".into(),

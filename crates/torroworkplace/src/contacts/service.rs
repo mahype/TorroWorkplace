@@ -139,6 +139,26 @@ impl ContactsService {
         Ok(books.into_iter().filter(|book| reaches(reach, book)).collect())
     }
 
+    /// The users of `account`'s server as its system address book names them: user id and name,
+    /// nothing else of a card. For the presence, which shows who is there (`docs/chat.md`,
+    /// decision 10); empty when the server shares no such book or it is not synced yet.
+    pub fn server_people(&self, account: &str) -> Vec<crate::chat::remote::RemotePerson> {
+        let Ok(store) = self.store() else { return Vec::new() };
+        with(store, |s| {
+            let Some(book) = s.books(Some(account))?.into_iter().find(|book| book.name == SYSTEM_BOOK) else {
+                return Ok(Vec::new());
+            };
+            Ok(s.cards(&book.id)?
+                .into_iter()
+                .filter_map(|card| {
+                    let name = vcard::read(&card.vcard).ok()?.shown_name();
+                    (!name.trim().is_empty()).then_some(crate::chat::remote::RemotePerson { id: card.uid, name })
+                })
+                .collect())
+        })
+        .unwrap_or_default()
+    }
+
     /// Whether `reach` sees at least one book of `account` (`accounts.list_accounts` names
     /// `contacts` among its services then).
     pub fn reaches_any_book(&self, reach: Reach<'_>, account: &str) -> bool {

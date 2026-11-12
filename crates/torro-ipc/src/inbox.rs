@@ -1499,6 +1499,7 @@ mod tests {
 
     fn item(id: &str) -> Item {
         Item {
+            conversation: None,
             id: id.into(),
             source: SourceRef::script("ci"),
             thread_key: "build:main".into(),

@@ -370,6 +370,8 @@ pub fn area_name(area: Area) -> &'static str {
         Area::Github => tr("GitHub"),
         Area::Inbox => tr("Notification Hub"),
         Area::Mail => tr("Mail"),
+        Area::Chat => tr("Chat (Talk)"),
+        Area::Presence => tr("Presence"),
         Area::Accounts => tr("Accounts"),
         Area::Ai => tr("AI"),
         Area::Assistant => tr("Assistant"),

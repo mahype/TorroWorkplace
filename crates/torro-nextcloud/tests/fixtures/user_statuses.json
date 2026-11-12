@@ -1,0 +1,12 @@
+{
+  "ocs": {
+    "meta": { "status": "ok", "statuscode": 200, "message": "OK" },
+    "data": [
+      { "userId": "bert", "message": "In a meeting\nuntil  noon", "icon": "📅", "clearAt": 1791885600, "status": "away" },
+      { "userId": "carla", "message": "Focus time‮", "icon": null, "clearAt": null, "status": "dnd" },
+      { "userId": "dora", "message": "", "icon": "", "clearAt": 0, "status": "online" },
+      { "userId": "erik", "message": null, "icon": null, "clearAt": null, "status": "sleeping" },
+      { "message": "No user id", "icon": null, "clearAt": null, "status": "online" }
+    ]
+  }
+}

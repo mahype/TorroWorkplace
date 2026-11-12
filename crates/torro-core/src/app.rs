@@ -21,6 +21,19 @@ pub const WORKPLACE_DIALOG_CLASS: &str = "torro-workplace-dialog";
 /// from this bundle, carry it there instead of their window class. Never changes once released.
 pub const WORKPLACE_BUNDLE_ID: &str = "io.github.mahype.torro-workplace";
 
+/// The window class of a chat window of `torrochat` (issue #643, `torrochat --conversation=<id>`): one
+/// conversation, floating (decision 16 in `docs/chat.md`). No app of its own, so not in
+/// [`AppId::ALL`]; a workspace template stores the window's command line with its conversation.
+pub const CHAT_CONVERSATION_CLASS: &str = "torro-chat-conversation";
+
+/// The window class of the small window of `torrochat` that rings for an incoming call (stage 6 of
+/// `docs/chat.md`, decision 24). No app of its own, so not in [`AppId::ALL`]; it floats, centred.
+pub const CHAT_RING_CLASS: &str = "torro-chat-ring";
+
+/// The window class of the window of `torrochat` that shows a picture large (stage 4 of
+/// `docs/chat.md`, decision 24). No app of its own, so not in [`AppId::ALL`]; it floats.
+pub const CHAT_VIEWER_CLASS: &str = "torro-chat-viewer";
+
 /// An app of the suite, or one kind of window of an app with several ([`AppId::INBOX_MAIL`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AppId {
@@ -109,6 +122,18 @@ impl AppId {
         args: &[],
     };
 
+    /// The chat's contact list (issue #643, `docs/chat.md`): who is there, the group chats, the own
+    /// status. The same binary opens a window per conversation (`torrochat --conversation=<id>`) with
+    /// a class of its own, [`CHAT_CONVERSATION_CLASS`]; such a window is no app of its own, as the
+    /// assistant's chat window is not.
+    pub const CHAT: AppId = AppId {
+        window_class: "torro-chat",
+        binary: "torrochat",
+        dir: "torrochat",
+        display_name: "Torro Chat",
+        args: &[],
+    };
+
     /// Every app of the suite, in launcher order. Of the entries sharing a binary, the one the
     /// binary starts without arguments comes first: a lookup by binary finds it.
     pub const ALL: &'static [AppId] = &[
@@ -119,6 +144,7 @@ impl AppId {
         AppId::TASKS,
         AppId::CALENDAR,
         AppId::ASSISTANT,
+        AppId::CHAT,
     ];
 
     /// The entry of [`AppId::ALL`] that `name` names: a window class (`torro-inbox-mail`) names its
@@ -176,13 +202,27 @@ mod tests {
 
     #[test]
     fn window_classes_are_unique() {
-        assert!(AppId::ALL.iter().all(|app| app.window_class != WORKPLACE_DIALOG_CLASS), "the dialog is no app");
+        for class in [WORKPLACE_DIALOG_CLASS, CHAT_CONVERSATION_CLASS, CHAT_RING_CLASS, CHAT_VIEWER_CLASS] {
+            assert!(AppId::ALL.iter().all(|app| app.window_class != class), "{class} is no app");
+        }
         for (i, app) in AppId::ALL.iter().enumerate() {
             assert!(
                 AppId::ALL[i + 1..].iter().all(|other| other.window_class != app.window_class),
                 "{} twice",
                 app.window_class
             );
+        }
+    }
+
+    /// Issue #643: the contact list is the chat's entry; its other windows have classes of their own.
+    #[test]
+    fn the_chat_is_one_entry_with_window_classes_of_its_own() {
+        assert_eq!(AppId::find("torrochat"), Some(AppId::CHAT));
+        assert_eq!(AppId::find("torro-chat"), Some(AppId::CHAT));
+        assert_eq!(AppId::CHAT.open_name(), "torrochat");
+        assert_eq!(AppId::find(CHAT_CONVERSATION_CLASS), None, "a chat window is no app of its own");
+        for class in [CHAT_CONVERSATION_CLASS, CHAT_RING_CLASS, CHAT_VIEWER_CLASS] {
+            assert!(class.starts_with("torro-chat-"), "{class}");
         }
     }
 
@@ -228,7 +268,8 @@ mod tests {
                 "torro-inbox-notifications",
                 "torrotasks",
                 "torrocalendar",
-                "torroassistant"
+                "torroassistant",
+                "torrochat"
             ]
         );
         assert_eq!(AppId::INBOX_MAIL.binary, "torroinbox", "apps.list_apps answers as before");

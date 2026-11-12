@@ -1003,7 +1003,13 @@ impl Clients {
                     }
                 }
                 rights.hidden_address_books.retain(|book| !belongs(book));
-                for selection in [&mut rights.mail_accounts, &mut rights.inbox_sources] {
+                // Chat and presence name the account itself (`docs/chat.md`, "Konto weg").
+                for selection in [
+                    &mut rights.mail_accounts,
+                    &mut rights.inbox_sources,
+                    &mut rights.chat_accounts,
+                    &mut rights.presence_accounts,
+                ] {
                     if let Selection::Only(ids) = selection {
                         ids.retain(|selected| selected != id && Some(selected.as_str()) != talk.as_deref());
                     }
@@ -2750,8 +2756,14 @@ pub(crate) mod tests {
         assert_eq!(code(clients.admit(Some(&key), &mail)), "forbidden", "mail was lent without");
         assert!(clients.admit(Some(&key), &Request::TaskCollections).is_err(), "tasks too");
 
-        // Never on disk, never in the keychain.
-        assert_eq!(fs::read_to_string(clients_file(dir.path())).expect("stored"), stored_before);
+        // Never on disk, never in the keychain. Only the client's last use may have been noted
+        // meanwhile, on a thread of its own ([`Clients::note_in_background`]).
+        let without_last_use =
+            |text: String| text.lines().filter(|line| !line.contains("\"lastUsed\"")).collect::<Vec<_>>().join("\n");
+        assert_eq!(
+            without_last_use(fs::read_to_string(clients_file(dir.path())).expect("stored")),
+            without_last_use(stored_before)
+        );
         assert!(!fs::read_to_string(clients_file(dir.path())).expect("stored").contains(key.expose()));
         assert!(keychain.0.lock().expect("lock").values().all(|stored| stored != key.expose()));
 

@@ -287,6 +287,7 @@ mod tests {
 
     fn item(id: &str, lane: Lane, state: State, hour: u32) -> Item {
         Item {
+            conversation: None,
             id: id.into(),
             source: SourceRef::script(if id.starts_with('b') { "backup" } else { "ci" }),
             thread_key: id.into(),

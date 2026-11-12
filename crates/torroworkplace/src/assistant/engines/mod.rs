@@ -106,15 +106,21 @@ const STDERR_BYTES: usize = 16 * 1024;
 const DETAIL_CHARS: usize = 300;
 
 /// The areas an agent never gets under the default data rule, whatever the assistant's rights say:
-/// its answers go to its provider, and the data rule keeps mail on the person's computers. The
-/// person can let mail go to agents (task C.17, [`withheld_from_agents`]).
-const NEVER_TO_AGENTS: &[Area] = &[Area::Mail];
+/// its answers go to its provider, and the data rule keeps mail, chats and who is there on the
+/// person's computers (`docs/ki.md`, "Mail und Messenger nur lokal"; decision 6 in `docs/chat.md`).
+/// The person can let mail go to agents (task C.17, [`withheld_from_agents`]); chat and presence
+/// never ([`ALWAYS_HOME`]).
+const NEVER_TO_AGENTS: &[Area] = &[Area::Mail, Area::Chat, Area::Presence];
 
-/// The areas a run of an agent goes without under `rule`: [`NEVER_TO_AGENTS`], or none once the
-/// person let mail go to cloud models.
+/// The areas no switch lets out to an agent: the chats and who is there when are about other
+/// people, and the switch for mail speaks of mail alone.
+const ALWAYS_HOME: &[Area] = &[Area::Chat, Area::Presence];
+
+/// The areas a run of an agent goes without under `rule`: [`NEVER_TO_AGENTS`], or only
+/// [`ALWAYS_HOME`] once the person let mail go to cloud models.
 fn withheld_from_agents(rule: DataRule) -> &'static [Area] {
     match rule.mail_to_cloud {
-        true => &[],
+        true => ALWAYS_HOME,
         false => NEVER_TO_AGENTS,
     }
 }

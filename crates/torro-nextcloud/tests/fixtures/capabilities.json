@@ -14,7 +14,8 @@
           "features": ["audio", "video", "chat-v2", "conversation-v4", "guest-signaling", "chat-read-marker", "direct-mention-flag", "chat-read-last", "notification-levels", "note-to-self", "archived-conversations-v2"],
           "features-local": ["favorites", "chat-read-status", "archived-conversations-v2"],
           "config": {
-            "attachments": { "allowed": true, "folder": "/Talk" },
+            "attachments": { "allowed": true, "folder": "/Chat files", "conversation-subfolders": true },
+            "call": { "enabled": false, "breakout-rooms": true },
             "chat": { "max-length": 32000, "read-privacy": 0 },
             "conversations": { "can-create": true }
           },
@@ -28,7 +29,11 @@
             "pre_auth": "https://cloud.example.org/apps/notify_push/pre_auth"
           }
         },
-        "user_status": { "enabled": true, "restore": true, "supports_emoji": true }
+        "user_status": { "enabled": true, "restore": true, "supports_emoji": true },
+        "files": {
+          "bigfilechunking": true,
+          "chunked_upload": { "max_size": 104857600, "max_parallel_count": 5 }
+        }
       }
     }
   }

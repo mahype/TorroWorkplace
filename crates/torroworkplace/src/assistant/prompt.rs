@@ -430,6 +430,8 @@ fn area_access(rights: &Rights, area: Area) -> String {
         Area::Github => Some((&rights.github_repos, "repository", "repositories")),
         Area::Inbox => Some((&rights.inbox_sources, "source", "sources")),
         Area::Mail => Some((&rights.mail_accounts, "mail account", "mail accounts")),
+        Area::Chat => Some((&rights.chat_accounts, "chat account", "chat accounts")),
+        Area::Presence => Some((&rights.presence_accounts, "presence account", "presence accounts")),
         Area::Tools => Some((&rights.tools, "tool", "tools")),
         _ => None,
     };

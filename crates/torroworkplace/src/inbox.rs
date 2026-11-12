@@ -811,6 +811,27 @@ impl Inbox {
         };
     }
 
+    /// `sources` without Talk (`talk:*`), for a key the core lent without `chat` (decision 6 in
+    /// `docs/chat.md`): a Talk entry holds the start of a chat message. "All" becomes the sources
+    /// the inbox holds entries or rules of now; the core narrows anew with every request, so a
+    /// source added later counts from its first entry on. Unreadable, it is no source at all.
+    pub fn without_talk(&self, sources: &mut torro_ipc::api::Selection) {
+        use torro_ipc::api::Selection;
+        let talk = |key: &String| key.starts_with("talk:");
+        match sources {
+            Selection::Only(keys) => keys.retain(|key| !talk(key)),
+            Selection::All => {
+                let held = self.with(|db| {
+                    let mut statement =
+                        db.prepare("SELECT DISTINCT source FROM items UNION SELECT DISTINCT source FROM rules")?;
+                    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+                    Ok(rows.collect::<Result<Vec<String>, _>>()?)
+                });
+                *sources = Selection::Only(held.unwrap_or_default().into_iter().filter(|key| !talk(key)).collect());
+            }
+        }
+    }
+
     /// What `client` gets for `request` before the core asks a person to approve it: the
     /// `not-found` or `forbidden` the request would end in anyway, or `None` when it may go on.
     ///
@@ -1465,9 +1486,21 @@ impl Inbox {
     /// entry per approval (thread key `approval:<id>`); calling it again with the same approvals
     /// changes nothing. `open` must be all approvals open at `now`; the core passes them under the
     /// approvals' lock ([`file_approvals`]). `Err` holds the message for the log.
+    ///
+    /// The entry of a decided approval in `open` (it may hold those too) takes the words the
+    /// approval keeps once it is done: for a chat message no text of it (`docs/chat.md`, "Wartende
+    /// Freigaben auf der Platte"), which otherwise stood in the inbox's file until the entry ages
+    /// out.
     pub fn file_approvals(&self, open: &[ApprovalInfo], now: DateTime<Utc>) -> Result<(), String> {
         let matters = open.iter().filter(|info| info.state.is_pending()).map(approval_matter).collect();
-        self.with(|db| reconcile(db, APPROVAL_THREADS, matters, |_| true, now)).map_err(|f| f.to_string())
+        let kept: BTreeMap<String, (String, Option<String>)> = open
+            .iter()
+            .filter(|info| !info.state.is_pending())
+            .map(approval_matter)
+            .map(|matter| (matter.thread_key, (matter.title, matter.body)))
+            .collect();
+        let closing = |key: &str| kept.get(key).cloned();
+        self.with(|db| reconcile(db, APPROVAL_THREADS, matters, |_| true, closing, now)).map_err(|f| f.to_string())
     }
 
     /// Files the accounts in `checks` that need the user as entries of the source `suite` at
@@ -1499,7 +1532,7 @@ impl Inbox {
             Some(health) => health == Health::Fine,
             None => complete,
         };
-        self.with(|db| reconcile(db, ACCOUNT_THREADS, matters, fixed, now)).map_err(|f| f.to_string())
+        self.with(|db| reconcile(db, ACCOUNT_THREADS, matters, fixed, |_| None, now)).map_err(|f| f.to_string())
     }
 
     /// Files the reminders that stand now (task ER1.4): each fired reminder in `standing`, with when
@@ -1514,7 +1547,7 @@ impl Inbox {
     ) -> Result<(), String> {
         let matters: Vec<Matter> = standing.iter().map(|(reminder, fired)| reminder_matter(reminder, *fired)).collect();
         let keys: BTreeSet<String> = matters.iter().map(|matter| matter.thread_key.clone()).collect();
-        self.with(|db| reconcile(db, REMINDER_THREADS, matters, |key| !keys.contains(key), now))
+        self.with(|db| reconcile(db, REMINDER_THREADS, matters, |key| !keys.contains(key), |_| None, now))
             .map_err(|failure| failure.to_string())
     }
 
@@ -2893,8 +2926,9 @@ fn mail_of(db: &Connection, id: &str) -> Result<BTreeMap<String, Vec<String>>, F
 /// filed with it read (task E5.6), which takes write access to mail and each of its accounts among
 /// the client's `mail_accounts`; without it `forbidden`. (A repository out of reach never got this
 /// far: such an entry is `not-found`.) The
-/// app key (`None`) and every other entry pass: deleting a Nextcloud notification or marking a Talk
-/// conversation read touches nothing beyond the inbox's own matter. Checked before an approval
+/// app key (`None`) and every other entry pass: deleting a Nextcloud notification touches nothing
+/// beyond the inbox's own matter. A Talk entry marks its conversation read in Talk and needs write
+/// access to chat with its account in `chat_accounts` (`docs/chat.md`, issue #643). Checked before an approval
 /// ([`Inbox::refusal`]) and again when the command runs ([`answer`], [`Inbox::entry_for_task`]), so
 /// rights narrowed meanwhile hold.
 fn check_done(db: &Connection, item: &Item, client: Option<&ClientInfo>) -> Result<(), Failure> {
@@ -2904,6 +2938,17 @@ fn check_done(db: &Connection, item: &Item, client: Option<&ClientInfo>) -> Resu
         SourceKind::Mail if !writes(Area::Mail) => Err(Failure::Forbidden(InboxForbidden(
             "marking a mail entry done marks the mail read on its server, which needs write access to mail",
         ))),
+        // Done with a Talk entry sets the read marker in Talk (task E5.9): that is writing in the
+        // chat of its account (`docs/chat.md`, "Lesestand über den Eingang").
+        SourceKind::Talk
+            if !(writes(Area::Chat)
+                && client.rights.chat_accounts.contains(&SourceRef::nextcloud(item.source.name.as_str()).key())) =>
+        {
+            Err(Failure::Forbidden(InboxForbidden(
+                "marking a Talk entry done marks its conversation read in Talk, which needs write access to chat and \
+                 its account",
+            )))
+        }
         SourceKind::Github if !writes(Area::Github) => Err(Failure::Forbidden(InboxForbidden(
             "marking a GitHub entry done marks its notification done on GitHub, which needs write access to GitHub",
         ))),
@@ -3205,6 +3250,7 @@ fn post(
         None => new_id()?,
     };
     let mut incoming = Item {
+        conversation: None,
         id: id.clone(),
         source,
         thread_key: thread_key.unwrap_or_else(|| format!("item:{id}")),
@@ -3341,6 +3387,11 @@ fn opening(item: &Item) -> Result<Opening, Failure> {
     let refused = |why: &str| Err(Failure::Unsupported(format!("inbox entry {:?}: {why}", item.id)));
     if !rules::may_open(item, is_app_of_the_suite) {
         return refused("nothing on it may be opened");
+    }
+    // A Talk entry opens the hub at the entry, with its conversation and the reply field, as mail
+    // does (`docs/chat.md`, stage 1); the panel's "Open in Talk" leads to the page.
+    if item.source.kind == SourceKind::Talk {
+        return Ok(Opening::App(AppId::INBOX));
     }
     match &item.link {
         Some(Link::Url { url }) => Ok(Opening::Url(url.clone())),
@@ -4288,12 +4339,12 @@ pub enum Trouble {
 }
 
 /// Files the open approvals of `approvals` in `inbox` ([`Inbox::file_approvals`]) as of `now`,
-/// under the approvals' lock ([`Approvals::with_open`]), so an older view never overtakes a newer
+/// under the approvals' lock ([`Approvals::with_approvals`]), so an older view never overtakes a newer
 /// one. The core calls it after an approval was opened or decided, and [`tend_suite`] every
 /// minute, which catches expired approvals and those that vanished while the core was down.
 /// Failures go to the log; the approval itself works without its entry.
 pub async fn file_approvals(inbox: &Inbox, approvals: &Approvals, now: DateTime<Utc>) {
-    match approvals.with_open(now, |open| inbox.file_approvals(open, now)).await {
+    match approvals.with_approvals(now, |held| inbox.file_approvals(held, now)).await {
         Ok(Ok(())) => {}
         Ok(Err(err)) => eprintln!("torroworkplace: inbox: cannot file the approvals: {err}"),
         Err(err) => eprintln!("torroworkplace: inbox: cannot read the approvals to file them: {err}"),
@@ -4422,6 +4473,7 @@ fn finished_task_entry(
         None => trf("{task} is done. Its mail is still open.", &[("task", &title)]),
     };
     Item {
+        conversation: None,
         id,
         source: SourceRef::suite(),
         thread_key,
@@ -4468,6 +4520,7 @@ impl Matter {
     fn into_item(self, id: String, now: DateTime<Utc>) -> Item {
         let (lane, urgent) = rules::placement(self.kind, None);
         Item {
+            conversation: None,
             id,
             source: SourceRef::suite(),
             thread_key: self.thread_key,
@@ -4624,6 +4677,7 @@ fn reconcile(
     family: &str,
     matters: Vec<Matter>,
     fixed: impl Fn(&str) -> bool,
+    closing: impl Fn(&str) -> Option<(String, Option<String>)>,
     now: DateTime<Utc>,
 ) -> Result<(), Failure> {
     let tx = db.transaction()?;
@@ -4665,6 +4719,18 @@ fn reconcile(
         }
     }
     for (thread_key, mut entry) in entries {
+        // What a matter keeps once it is gone (a decided chat approval: no text), also on an entry
+        // done before.
+        if let Some((title, body)) = closing(&thread_key) {
+            let (title, body) = (cap(&title, TITLE_MAX), body.map(|body| cap(&body, BODY_MAX)));
+            if entry.title != title || entry.body != body {
+                entry.title = title;
+                entry.body = body;
+                if matches!(entry.state, State::Done { .. }) {
+                    update_item(&tx, &entry)?;
+                }
+            }
+        }
         if !matches!(entry.state, State::Done { .. }) && fixed(&thread_key) {
             rules::set_done(&mut entry, true, now);
             update_item(&tx, &entry)?;
@@ -5150,6 +5216,7 @@ fn file_mail(
     let subject = mail.subject.trim();
     let snippet = mail.snippet.trim();
     let mut incoming = Item {
+        conversation: None,
         id: id.clone(),
         source,
         thread_key: mail.thread.clone(),
@@ -5368,6 +5435,7 @@ fn file_remote(db: &mut Connection, remote: &Remote, now: DateTime<Utc>) -> Resu
     let from = remote.from.clone().map(|from| Sender { name: cap(from.name.trim(), TITLE_MAX), ..from });
     let link = remote.url.clone().filter(|url| url.len() <= URL_MAX).map(|url| Link::Url { url });
     let mut incoming = Item {
+        conversation: None,
         id: id.clone(),
         source,
         thread_key: matter.to_string(),
@@ -5972,6 +6040,7 @@ pub(crate) mod tests {
     fn approval(now: DateTime<Utc>) -> Item {
         let (lane, urgent) = rules::placement(Kind::Approval, None);
         Item {
+            conversation: None,
             id: "approval-1".into(),
             source: SourceRef::suite(),
             thread_key: "approval:1".into(),
@@ -7141,6 +7210,35 @@ pub(crate) mod tests {
 
         file_approvals(&inbox, &approvals, at(8, 11)).await;
         assert_eq!(entry_of(&suite(&inbox, at(8, 11)), &second).state, State::Done { at: at(8, 11) });
+    }
+
+    /// Review of #643: the entry of a chat approval shows the text while it waits; once decided it
+    /// keeps only what the approval keeps, no text of the message.
+    #[tokio::test]
+    async fn a_decided_chat_approval_leaves_no_text_in_the_inbox() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (inbox, approvals) = (inbox_in(dir.path()), crate::approvals::tests::quiet_in(dir.path()));
+        let request = Request::ChatSendMessage {
+            conversation: "nextcloud:anna@cloud.example.org/ben4chat".into(),
+            text: "the secret plan".into(),
+            reply_to: None,
+            silent: false,
+            files: Vec::new(),
+            items: Vec::new(),
+            fields: None,
+        };
+        let summary = "Send to the direct chat with \"Ben\": \"the secret plan\"".to_string();
+        let asked = approvals.open("c1", "Claude Code", request, None, summary, at(8, 0)).await.expect("opened");
+        file_approvals(&inbox, &approvals, at(8, 0)).await;
+        assert!(entry_of(&suite(&inbox, at(8, 0)), &asked).title.contains("the secret plan"), "shown while it waits");
+
+        approvals.decide(&asked.id, false, at(8, 1)).await.expect("decided");
+        file_approvals(&inbox, &approvals, at(8, 1)).await;
+        let items = suite(&inbox, at(8, 1));
+        let entry = entry_of(&items, &asked);
+        assert_eq!(entry.state, State::Done { at: at(8, 1) });
+        assert!(!format!("{entry:?}").contains("secret plan"), "{entry:?}");
+        assert_eq!(entry.title, tr("Send a chat message"));
     }
 
     #[tokio::test]
@@ -9238,6 +9336,48 @@ pub(crate) mod tests {
         let writer = with_rights(|_| {});
         assert!(inbox.refusal(&done(&id, false), Some(&writer)).is_none());
         assert!(matches!(item(inbox.handle(done(&id, false), Some(&writer), at(9, 2))).state, State::Done { .. }));
+    }
+
+    /// A key lent without chat sees no Talk entries (decision 6 in `docs/chat.md`): "all sources"
+    /// becomes the sources held now without `talk:*`, a list just loses them.
+    #[test]
+    fn without_talk_leaves_every_source_but_talk() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        filed_remote(&inbox, &Remote { source: SourceRef::talk(CLOUD), ..shared("1", &["1"], at(8, 0)) }, at(8, 0));
+        filed_remote(&inbox, &shared("2", &["2"], at(8, 0)), at(8, 0));
+        let (talk, cloud) = (SourceRef::talk(CLOUD).key(), shared("2", &["2"], at(8, 0)).source.key());
+        let mut all = Selection::All;
+        inbox.without_talk(&mut all);
+        assert_eq!(all, Selection::Only(vec![cloud.clone()]));
+        let mut named = Selection::Only(vec![talk, cloud.clone(), "suite".into()]);
+        inbox.without_talk(&mut named);
+        assert_eq!(named, Selection::Only(vec![cloud, "suite".into()]));
+    }
+
+    /// Done with a Talk entry sets the read marker in Talk: a client needs write access to chat
+    /// with the entry's account (`docs/chat.md`, "Lesestand über den Eingang", issue #643).
+    #[test]
+    fn marking_a_talk_entry_done_needs_write_access_to_chat_with_its_account() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let id =
+            filed_remote(&inbox, &Remote { source: SourceRef::talk(CLOUD), ..shared("1", &["1"], at(8, 0)) }, at(8, 0));
+        let done = Request::SetItemDone { id: id.clone(), done: true, dismissed: false };
+        let account = SourceRef::nextcloud(CLOUD).key();
+        let reader = with_rights(|rights| {
+            rights.areas.insert(Area::Chat, AreaRights { level: Level::Read, admin: false });
+            rights.chat_accounts = Selection::All;
+        });
+        let elsewhere = with_rights(|rights| rights.chat_accounts = Selection::Only(vec!["nextcloud:x@y".into()]));
+        for client in [&reader, &elsewhere] {
+            assert_eq!(inbox.refusal(&done, Some(client)).as_ref().map(code), Some("forbidden"));
+            assert_eq!(code(&inbox.handle(done.clone(), Some(client), at(9, 0))), "forbidden", "when it runs");
+        }
+        assert!(entry(&inbox, &id).state.is_open(), "nothing changed");
+        let writer = with_rights(|rights| rights.chat_accounts = Selection::Only(vec![account]));
+        assert!(inbox.refusal(&done, Some(&writer)).is_none());
+        assert!(matches!(item(inbox.handle(done, Some(&writer), at(9, 1))).state, State::Done { .. }));
     }
 
     // ----- GitHub mail (task E5.6) -----

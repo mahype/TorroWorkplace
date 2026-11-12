@@ -285,7 +285,11 @@ fn agents_that_are_not_offered_are_no_engines_even_when_installed() {
     assert!(agents.engines(true).is_empty(), "the product offers no agent (#219)");
     assert!(agents.find("claude-code").is_none(), "and no engine id finds one");
     assert_eq!(Agent::of("claude-code"), Some(Agent::ClaudeCode), "the agent itself stays, for never_given");
-    assert_eq!(never_given("claude-code"), [Area::Mail], "so an old conversation keeps its data rule");
+    assert_eq!(
+        never_given("claude-code"),
+        [Area::Mail, Area::Chat, Area::Presence],
+        "so an old conversation keeps its data rule"
+    );
 
     // The product's own constructor, so rebuilding `engines` on `Agent::ALL` cannot slip past this
     // test. The flag is read before anything is looked up, so no home directory is needed.
@@ -437,7 +441,11 @@ async fn the_stream_becomes_answers_and_tool_lines_and_the_key_stays_in_the_envi
     assert!(setup.host.clients.admit(Some(&key), &Request::CalendarCollections).is_err(), "taken back");
     let config = after("--mcp-config").expect("the configuration");
     assert!(!Path::new(&config).exists(), "the run's folder is removed");
-    assert_eq!(*setup.host.lent.lock().expect("lock"), [vec![Area::Tasks, Area::Mail]], "mail never goes to an agent");
+    assert_eq!(
+        *setup.host.lent.lock().expect("lock"),
+        [vec![Area::Tasks, Area::Mail, Area::Chat, Area::Presence]],
+        "mail and chat never go to an agent"
+    );
 
     // The next message carries the conversation so far: the agent keeps no session.
     let _ = ask(&setup, Some(&id), "And tomorrow?", Vec::new()).await;
@@ -510,7 +518,8 @@ async fn with_mail_let_out_the_agent_gets_mail_as_the_rights_give_it() {
     setup.host.mail_to_cloud.store(true, std::sync::atomic::Ordering::SeqCst);
     let id = ask(&setup, None, "Which mail folders do I have?", Vec::new()).await;
     finished(&setup.assistant, &id).await;
-    assert_eq!(*setup.host.lent.lock().expect("lock"), [Vec::<Area>::new()], "lent with mail");
+    // Chat and presence stay home whatever the switch for mail says (decision 6 in `docs/chat.md`).
+    assert_eq!(*setup.host.lent.lock().expect("lock"), [vec![Area::Chat, Area::Presence]], "lent with mail");
     let arguments = setup.read("args");
     let prompt = arguments.split_once("--append-system-prompt=").map(|(_, rest)| rest).expect("the prompt");
     assert!(prompt.contains("  - mail: read"), "{prompt}");

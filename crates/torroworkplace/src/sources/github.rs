@@ -616,7 +616,9 @@ mod tests {
             let pim = PimService::with_filter_file(settings.clone(), dir.path().join("config").join("filters.json"));
             let inbox = Arc::new(crate::inbox::tests::inbox_in(dir.path()));
             let ntfy = Arc::new(crate::account::ntfy::NtfyAccounts::new(None, Arc::new(MemoryTokens::default())));
-            let sources = Sources { inbox, github, pim: Arc::new(pim), ntfy, settings };
+            let pim = Arc::new(pim);
+            let chat = Arc::new(crate::chat::ChatService::system(Arc::clone(&pim)));
+            let sources = Sources { inbox, github, pim, ntfy, settings, chat };
             World { _dir: dir, server, sources, poller: tokio::sync::Mutex::new(Poller::default()) }
         }
 

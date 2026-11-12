@@ -6237,7 +6237,7 @@ fn focus_reply<'a>(focus: &'a FocusReply, id: &'a str, width: f32, height: f32) 
 }
 
 /// The height of the reply field for `lines` lines of `typo::body()` inside its padding.
-fn field_height(lines: f32) -> f32 {
+pub(crate) fn field_height(lines: f32) -> f32 {
     let body = typo::body();
     lines * body.line_height.to_absolute(body.size).0 + style::INPUT_PADDING.top + style::INPUT_PADDING.bottom
 }

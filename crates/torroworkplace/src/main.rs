@@ -44,6 +44,7 @@ mod bots;
 // The app catalog: versions, installing, updating, uninstalling (issue #411).
 mod catalog;
 mod categorize;
+mod chat;
 mod cli;
 mod client_setup;
 mod clients;
@@ -60,6 +61,7 @@ mod mcp;
 mod notify;
 mod pim;
 mod places;
+mod presence;
 mod reminders;
 mod settings_service;
 mod sources;

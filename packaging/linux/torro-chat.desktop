@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Torro Chat
+GenericName=Chat
+Comment=Chat on Nextcloud Talk for the tiled desktop
+Exec=torrochat
+Icon=torro-chat
+Terminal=false
+Categories=Network;InstantMessaging;Chat;
+# Must equal the window class / Wayland app id set in torro-core (AppId::CHAT).
+StartupWMClass=torro-chat
