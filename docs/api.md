@@ -1019,9 +1019,9 @@ sonst `busy`); erst `send_message` mit `files` lädt nach der Freigabe hoch, tei
 `chat-sending` mit einer Kennung für `get_upload` und `cancel_upload`. Die Art der Datei liest der Kern aus ihren
 ersten Bytes. Die Freigabe zeigt je Datei Name, Größe, Art und Herkunft aus dem Kern; auf der Platte liegt nur eine
 Hülle ohne Dateien, nach einem Neustart ist sie abgelaufen. Gelesen wird eine Datei nur zusammen mit ihrer Nachricht
-und nur, wenn sie zu deren Dateien gehört (sonst `not-found`). Bilder, Videos und Dateien unbekannter Art brauchen für
-Clients zusätzlich das Recht `Rights.image_content` (fehlt = aus, in keiner Vorlage; der App-Schlüssel hat es immer),
-ohne es fehlt auch `blurhash`. `hide-download` macht Holen und Sichern für jeden Schlüssel `forbidden`. Clients
+und nur, wenn sie zu deren Dateien gehört (sonst `not-found`). Vorschauen und Bilder von Link-Karten sowie Bilder,
+Videos und Dateien unbekannter Art als Datei brauchen für Clients zusätzlich das Recht `Rights.image_content` (fehlt =
+aus, in keiner Vorlage; der App-Schlüssel hat es immer), ohne es fehlt auch `blurhash`. `hide-download` macht Holen und Sichern für jeden Schlüssel `forbidden`. Clients
 schicken höchstens 20 Dateien und 100 MiB je Stunde (`busy`).
 
 ²⁸ **Kontakte** (Issue #351, Konzept [kontakte.md](kontakte.md)): Rechte gelten je Adressbuch,

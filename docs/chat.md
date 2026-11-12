@@ -971,8 +971,16 @@ Wo der Code vom Text oben abweicht oder etwas offen ließ, gilt:
 - **412 beim `PUT` oder beim abschließenden `MOVE`:** Der Kern verwirft die Stücke, wählt per `PROPFIND` einen neuen
   freien Namen und beginnt den Upload neu, höchstens dreimal; danach `conflict`.
 - **Eigenes Speicherbudget:** Vorbereitete Dateien und unfertige Uploads des Chats teilen sich 100 MiB, getrennt vom
-  Budget der Mail-Bilder (eine gemeinsame Buchführung hätte `mail/images.rs` geändert). Eine Datei vom Rechner
-  (`source: path`) zählt nicht mit, sie wird erst beim Senden gelesen.
+  Budget der Mail-Bilder (eine gemeinsame Buchführung hätte `mail/images.rs` geändert); ein Client hält davon höchstens
+  50 MiB, damit er das Einfügen der Oberfläche nicht sperrt. Eine Datei vom Rechner (`source: path`) zählt nicht mit,
+  sie wird erst beim Senden gelesen.
+- **Vorschauen brauchen immer `image_content`:** Eine Vorschau ist ein Bild des Inhalts, auch die Seite eines PDF.
+  Darum verlangt `get_preview` das Recht für jede Datei, nicht nur bei `image/*` und `video/*`; `get_attachment` und
+  `save_attachment` verlangen es wie oben nach der Art.
+- **Drossel vor der Freigabe:** Ob die Dateien eines Clients noch in die 20 Dateien und 100 MiB je Stunde passen, prüft
+  der Kern schon, bevor er fragt; gezählt wird erst beim Senden.
+- **Stand `sharing` ab der ersten geteilten Datei:** Von da an bleibt das Senden bis zum Ende in `sharing`, und
+  `cancel_upload` antwortet `conflict`, weil schon eine Nachricht in der Unterhaltung steht.
 - **Leases werden beim Senden verbraucht:** Sobald das Hochladen beginnt, gibt es die vorbereiteten Dateien nicht mehr;
   scheitert das Senden, bereitet die Oberfläche sie neu vor. So kann dieselbe Datei nicht zweimal unter einer
   Freigabe gehen.
