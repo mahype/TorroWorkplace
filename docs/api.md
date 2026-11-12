@@ -155,7 +155,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `contacts` ²⁸ | `list_address_books`, `list_contacts`, `get_contact`, `get_photo`, `list_groups`, `upcoming_birthdays` | `create_contact`, `add_to_contact`, `set_favorite`, `add_to_group`, `mark_used`, `move_contact`, `resolve_conflict` mit `both` | `update_contact`, `remove_from_group`, `set_photo`, `delete_contact`, `resolve_conflict` mit `mine`/`theirs` | |
 | `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_pile` ²⁶, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `mute_item` mit `conversation`, `hide` (nicht für Mail ¹⁰)/`info`, ohne `until` ¹¹ | | `mute_source`, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ², `move_category` ²⁹ |
 | `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `overview` ⁷, `sync_status`, `get_message`, `get_thread`, `get_attachment`, `get_draft`, `prepare_paste`, `list_filters` ²⁷, `preview_filter` ²⁷ | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `prepare_image`, `upload_image`, `respond_to_invitation` ⁷ ¹⁶, `unsubscribe` ⁷ | `delete_messages`, `release_images` | `create_filter`, `update_filter`, `remove_filter`, `apply_filter` ²⁷ |
-| `chat` ³⁰ | `list_conversations`, `get_messages`, `suggest_mentions`, `find_people`, `search_messages` | `send_message` (nach außen), `mark_read`, `mark_unread`, `create_conversation` (nach außen), `react` (nach außen), `set_favorite`, `set_notification_level` | `edit_message`, `delete_message` (beide nach außen) | |
+| `chat` ³⁰ | `list_conversations`, `get_messages`, `suggest_mentions`, `find_people`, `search_messages`, `get_upload`, `get_preview`, `get_attachment`, `list_shared` | `send_message` (nach außen, auch mit `files`), `mark_read`, `mark_unread`, `create_conversation` (nach außen), `react` (nach außen), `set_favorite`, `set_notification_level`, `prepare_file` (`source: path` **nur App-Schlüssel**, Punkt 10 unten), `upload_file`, `cancel_upload`, `save_attachment` (`to: file`/`folder` **nur App-Schlüssel**), `show_card` (**nur App-Schlüssel**, Punkt 10) | `edit_message`, `delete_message` (beide nach außen), `release_files` | |
 | `presence` ³⁰ | `list_people`, `find_people`, `get_own_status` | `add_person`, `remove_person`, `set_own_status` (nach außen) | | |
 | `workflows` (#556) | Vorlagen, Abläufe, Regeln, Läufe, Dokumentstücke und lokale Vorschau (siehe unten) | Entwürfe, getestete Abläufe, Start/Abbruch, Öffnen/Zeigen | Ablauf/Regel entfernen | Regeln verwalten; Dauergrant erteilen/widerrufen **nur App-Schlüssel** |
 | `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav`, `connect_mail` und `reconfigure_mail` (die letzten fünf **nur App-Schlüssel**, Punkt 5 unten), `set_search_key` (**nur App-Schlüssel**, Punkt 5, #305) |
@@ -1012,6 +1012,17 @@ Nachrichten, Namen und Statusnachrichten sind `untrusted`. Der Kern hält Nachri
 Bereiche gehen nie an einen Coding-Agenten als Antrieb des Assistenten und nie an ein Modell anderswo
 (`NEVER_TO_AGENTS`, Datenregel), auch nicht mit dem Schalter für Mail; ein geliehener Schlüssel ohne `chat` verliert
 auch die Eingangsquellen `talk:*`.
+**Dateien und Medien** (Stufe 4, [chat.md](chat.md) „Dateien und Medien“): Senden geht in zwei Schritten. Vorbereiten
+(`prepare_file`, `upload_file` in Stücken von höchstens 256 KiB, 25 MiB je Datei) hält die Datei nur im Speicher des
+Kerns unter einer Lease (unfertig 10 Minuten, fertig eine Stunde nach der letzten Nutzung, zusammen höchstens 100 MiB,
+sonst `busy`); erst `send_message` mit `files` lädt nach der Freigabe hoch, teilt in die Unterhaltung und antwortet
+`chat-sending` mit einer Kennung für `get_upload` und `cancel_upload`. Die Art der Datei liest der Kern aus ihren
+ersten Bytes. Die Freigabe zeigt je Datei Name, Größe, Art und Herkunft aus dem Kern; auf der Platte liegt nur eine
+Hülle ohne Dateien, nach einem Neustart ist sie abgelaufen. Gelesen wird eine Datei nur zusammen mit ihrer Nachricht
+und nur, wenn sie zu deren Dateien gehört (sonst `not-found`). Bilder, Videos und Dateien unbekannter Art brauchen für
+Clients zusätzlich das Recht `Rights.image_content` (fehlt = aus, in keiner Vorlage; der App-Schlüssel hat es immer),
+ohne es fehlt auch `blurhash`. `hide-download` macht Holen und Sichern für jeden Schlüssel `forbidden`. Clients
+schicken höchstens 20 Dateien und 100 MiB je Stunde (`busy`).
 
 ²⁸ **Kontakte** (Issue #351, Konzept [kontakte.md](kontakte.md)): Rechte gelten je Adressbuch,
 `Rights.address_books` mit Kennungen `<konto-id>/<name>`; fehlt das Feld in alten Rechten, ist kein Buch frei. Die
@@ -1326,6 +1337,16 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
     Höchstens 998951424 Bytes und ein EML-Export gleichzeitig (`busy`), niemals Kürzung
     (`shortened: false`). Freigaben binden EML zusätzlich an die Zielspezifikation (bei Downloads
     den eingestellten Ordner); Änderungen während der Wartezeit erfordern eine neue Anfrage.
+
+    Ebenso **Dateien im Chat** (Issue #643, Stufe 4 von [chat.md](chat.md)): `chat.prepare_file` mit
+    `source: path` und `chat.save_attachment` mit `to: file` oder `to: folder` gehen nur mit dem App-Schlüssel
+    (`Request::kept_for_people`): Den Pfad wählt ein Mensch im Dialog des Systems bzw. durch Ziehen. Sonst gäbe ein
+    Agent dem Kern einen Pfad, und eine Datei vom Rechner ginge mit nur einer Sende-Freigabe nach außen. Clients
+    bereiten nur eigene Dateien der Werkzeuge vor (`source: registered`) oder laden Bytes hoch
+    (`chat.upload_file`), und sie sichern nach `downloads` oder in ein Ablageziel (dafür zusätzlich Lesen in
+    `mail`). Ebenso gibt es `chat.show_card` nur mit dem App-Schlüssel (`Mcp::Never`): Ob der Absender eines fremden
+    Links erfährt, wann gelesen wurde, entscheidet der Mensch mit einem Klick, nicht ein Agent (Test
+    `chat_files_are_open_to_clients_but_paths_and_foreign_cards_are_kept_for_people` in `torro-ipc`).
 
 11. **Eine App installieren oder aktualisieren** (Issue #411, App-Katalog): `apps.install_app` und
    `apps.update_apps` nur mit dem App-Schlüssel (`Mcp::Never`). Grund: Wer installiert oder aktualisiert,

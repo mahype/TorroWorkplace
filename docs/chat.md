@@ -962,6 +962,32 @@ mit einem Klick, nicht ein Agent.
 Seitenleiste im Chatfenster. Demo:
 `torrochat --demo --open media | viewer | upload`.
 
+**Umsetzung im Kern** (Backend der Stufe 4, `chat/media.rs`, `chat/attachments.rs`, `torro-nextcloud/src/files.rs`).
+Wo der Code vom Text oben abweicht oder etwas offen ließ, gilt:
+- **Beschriftung an der letzten Datei** einer Nachricht, `replyTo` ebenda; `referenceId` geht in `talkMetaData`, wenn
+  der Server `chat-reference-id` nennt. Beides ist nicht gegen spreed und nicht gegen einen echten Server geprüft
+  (Prüfung von Hand steht aus); nimmt Talk die `referenceId` beim Teilen nicht an, fragt der Kern vor einer
+  Wiederholung noch nicht `…/share` ab.
+- **412 beim `PUT` oder beim abschließenden `MOVE`:** Der Kern verwirft die Stücke, wählt per `PROPFIND` einen neuen
+  freien Namen und beginnt den Upload neu, höchstens dreimal; danach `conflict`.
+- **Eigenes Speicherbudget:** Vorbereitete Dateien und unfertige Uploads des Chats teilen sich 100 MiB, getrennt vom
+  Budget der Mail-Bilder (eine gemeinsame Buchführung hätte `mail/images.rs` geändert). Eine Datei vom Rechner
+  (`source: path`) zählt nicht mit, sie wird erst beim Senden gelesen.
+- **Leases werden beim Senden verbraucht:** Sobald das Hochladen beginnt, gibt es die vorbereiteten Dateien nicht mehr;
+  scheitert das Senden, bereitet die Oberfläche sie neu vor. So kann dieselbe Datei nicht zweimal unter einer
+  Freigabe gehen.
+- **Abbrechen** wirkt zwischen zwei Stücken bzw. nach dem laufenden `PUT`: Der Kern löscht danach die Stücke bzw. die
+  eben hochgeladene Datei mit `If-Match` auf ihren ETag.
+- **Freien Platz** fragt `prepare_file` für den App-Schlüssel ab; ist der Server nicht erreichbar, gilt nur die
+  Grenze von 512 MiB.
+- **Ordner der geöffneten Anhänge** ist `<cache>/chat-attachments/<Prüfsumme der Kontokennung>/`, damit die Kennung
+  (mit `@` und `:`) kein Pfadteil wird.
+- **Freigabe:** Die Vorschau eines Bildes zeigt sie noch nicht (das Format der Freigaben kennt kein Bild); Name,
+  Größe, Art und Herkunft stehen in den Details. Seit Stufe 4 stehen die Details einer Chat-Freigabe (ganzer Text,
+  „Sent silently“, Dateien) auch wirklich an der Freigabe; zuvor berechnete der Kern sie, hängte sie aber nicht an.
+- **Noch offen:** das Attribut `com.apple.quarantine` an geholten Dateien (macOS), die Dauer von Videos, Links in der
+  Medien-Übersicht nennen Autor und Zeit nur, solange der Kern die Nachricht hält.
+
 ## Teilen in einen Chat (Stufe 5)
 
 Übernimmt TL2 aus [teilen.md](teilen.md) und nutzt den Ablauf zum Senden aus
