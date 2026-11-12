@@ -9,9 +9,9 @@ use std::sync::Arc;
 
 use torro_chat::demo::DemoSource;
 use torro_chat::{
-    ChatError, ChatSource, Conversation, Fetched, FilePiece, LinkCard, Mention, MessagePage, NotifyLevel, Outgoing,
-    OwnStatus, Person, Picture, PreparedFile, PreviewSize, SaveTo, SearchHit, Sending, SharedKind, SharedPage,
-    StatusChange, UploadProgress, Uploaded,
+    Call, ChatError, ChatSource, Conversation, Fetched, FilePiece, LinkCard, Mention, MessagePage, NotifyLevel,
+    Outgoing, OwnStatus, Person, Picture, PreparedFile, PreviewSize, SaveTo, SearchHit, Sending, SharedKind,
+    SharedPage, StatusChange, UploadProgress, Uploaded,
 };
 use torro_ipc::chat::ChatClient;
 use torro_ipc::{Request, Response};
@@ -330,6 +330,22 @@ impl Backend {
         match self {
             Backend::Core(core) => core.show_card(id).await,
             Backend::Demo(demo) => demo.show_card(id).await,
+        }
+    }
+
+    /// `chat.get_call` (stage 6b): the call of `conversation`, for the ringing window.
+    pub async fn call(self, conversation: String) -> Result<Call, ChatError> {
+        match self {
+            Backend::Core(core) => ChatSource::call(&core, conversation).await,
+            Backend::Demo(demo) => demo.call(conversation).await,
+        }
+    }
+
+    /// `chat.decline_call`: `conversation` stops ringing for the person.
+    pub async fn decline_call(self, conversation: String) -> Result<(), ChatError> {
+        match self {
+            Backend::Core(core) => ChatSource::decline_call(&core, conversation).await,
+            Backend::Demo(demo) => demo.decline_call(conversation).await,
         }
     }
 

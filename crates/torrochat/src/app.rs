@@ -24,6 +24,7 @@
 
 pub(crate) mod chat;
 pub(crate) mod files;
+pub(crate) mod ring;
 pub(crate) mod viewer;
 
 use std::collections::BTreeMap;
@@ -35,7 +36,7 @@ use iced::widget::operation;
 use iced::{Point, Size, Subscription, Task, Theme, keyboard};
 use torro_chat::{ChatError, Conversation, OwnStatus, Person, SearchHit, Status, StatusChange};
 use torro_core::AppId;
-use torro_core::app::{CHAT_CONVERSATION_CLASS, CHAT_VIEWER_CLASS};
+use torro_core::app::{CHAT_CONVERSATION_CLASS, CHAT_RING_CLASS, CHAT_VIEWER_CLASS};
 use torro_core::i18n::tr;
 use torro_gui::design::{self, Follow};
 use torro_gui::layout::{self, SizeClass};
@@ -45,6 +46,7 @@ use torro_gui::widgets;
 use torro_gui::zoom::{self, Zoom};
 
 pub use self::chat::ChatState;
+pub use self::ring::RingState;
 pub use self::viewer::ViewerState;
 use crate::backend::Backend;
 use crate::launch::{Launch, Open, Window};
@@ -82,6 +84,19 @@ pub const CONVERSATION_SIZE: Size = Size::new(440.0, 680.0);
 
 /// The window "Picture large" at start (draft B of `docs/prototypes/chat/`: 900 × 620).
 pub const VIEWER_SIZE: Size = Size::new(900.0, 620.0);
+
+/// The ringing window (stage 6b, decision 24): its own class, so tiling rules let it float.
+pub const RING: AppId = AppId {
+    window_class: CHAT_RING_CLASS,
+    binary: AppId::CHAT.binary,
+    dir: AppId::CHAT.dir,
+    display_name: AppId::CHAT.display_name,
+    // Started by the core with `--ring=<conversation>`; no entry of its own.
+    args: &[],
+};
+
+/// The ringing window's size (`docs/chat.md`, "Eingehender Anruf": 340 × 360).
+pub const RING_SIZE: Size = Size::new(340.0, 360.0);
 
 /// How often the windows ask for people and conversations. The core answers from memory and fetches
 /// itself when its copy is older than 10 s, so asking is cheap.
@@ -267,6 +282,9 @@ pub enum Message {
 
     // -- The window "Picture large"
     Viewer(viewer::ViewerMsg),
+
+    // -- The ringing window
+    Ring(ring::RingMsg),
 }
 
 pub struct App {
@@ -312,23 +330,30 @@ pub struct App {
     pub(crate) chat: Option<ChatState>,
     /// The state of the window "Picture large"; `None` in the others.
     pub(crate) viewer: Option<ViewerState>,
+    /// The state of the ringing window; `None` in the others.
+    pub(crate) ring: Option<RingState>,
 }
 
 impl App {
     pub fn new(backend: Backend, suite: Source, launch: Launch) -> (App, Task<Message>) {
         let chat = match &launch.window {
             Window::Conversation(id) => Some(ChatState::new(id.clone(), launch.open)),
-            Window::Contacts | Window::Viewer { .. } => None,
+            Window::Contacts | Window::Viewer { .. } | Window::Ring(_) => None,
         };
         let viewer = match &launch.window {
             Window::Viewer { message, file } => ViewerState::new(message, file),
-            Window::Contacts | Window::Conversation(_) => None,
+            Window::Contacts | Window::Conversation(_) | Window::Ring(_) => None,
+        };
+        let ring = match &launch.window {
+            Window::Ring(conversation) => Some(RingState::new(conversation.clone())),
+            Window::Contacts | Window::Conversation(_) | Window::Viewer { .. } => None,
         };
         let open = launch.open;
         let size = match &launch.window {
             Window::Contacts => CONTACTS_SIZE,
             Window::Conversation(_) => CONVERSATION_SIZE,
             Window::Viewer { .. } => VIEWER_SIZE,
+            Window::Ring(_) => RING_SIZE,
         };
         let mut app = App {
             backend,
@@ -379,6 +404,7 @@ impl App {
             notice: None,
             chat,
             viewer,
+            ring,
             launch,
         };
         // `--open message-search` starts with the query typed.
@@ -406,6 +432,7 @@ impl App {
             }
         }
         tasks.push(app.viewer_start());
+        tasks.push(app.ring_start());
         if let Some(Dialog::NewChat { query, .. }) = &app.dialog {
             let query = query.clone();
             tasks.push(app.find(query));
@@ -416,6 +443,9 @@ impl App {
     /// The window's title: "Contacts" for the list, the conversation's name for a chat window.
     /// Tiling rules and window lists tell chat windows apart by it.
     pub fn title(&self) -> String {
+        if self.ring.is_some() {
+            return tr("Incoming call").to_owned();
+        }
         if let Some(viewer) = &self.viewer {
             return match viewer.current().filter(|item| !item.name.is_empty()) {
                 Some(item) => item.name.clone(),
@@ -458,6 +488,7 @@ impl App {
         if self.menu.is_some()
             || self.dialog.is_some()
             || self.viewer.is_some()
+            || self.ring.is_some()
             || self.chat.as_ref().is_some_and(ChatState::escapes)
         {
             subscriptions.push(widgets::escape().map(|()| Message::Escape));
@@ -465,12 +496,15 @@ impl App {
         if self.notice.is_some() {
             subscriptions.push(iced::time::every(NOTICE_TICK).map(Message::NoticeTick));
         }
+        if let Some(ring) = &self.ring {
+            subscriptions.push(ring.subscription().map(Message::Ring));
+        }
         if let Some(viewer) = &self.viewer {
             subscriptions.push(viewer.subscription().map(Message::Viewer));
         }
         match &self.chat {
             Some(chat) => subscriptions.push(chat.subscription().map(Message::Chat)),
-            None if self.viewer.is_some() => {}
+            None if self.viewer.is_some() || self.ring.is_some() => {}
             None if self.dialog.is_none() && self.menu.is_none() => {
                 subscriptions.push(iced::event::listen_with(contact_key));
             }
@@ -728,6 +762,7 @@ impl App {
 
             Message::Chat(message) => return self.chat_update(message),
             Message::Viewer(message) => return self.viewer_update(message),
+            Message::Ring(message) => return self.ring_update(message),
         }
         Task::none()
     }
@@ -863,7 +898,7 @@ impl App {
         if self.menu.take().is_some() || self.dialog.take().is_some() {
             return Task::none();
         }
-        if self.viewer.is_some() {
+        if self.viewer.is_some() || self.ring.is_some() {
             return iced::window::latest().and_then(iced::window::close);
         }
         self.chat_update(chat::Msg::Escape)

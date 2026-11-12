@@ -16,6 +16,7 @@
 mod chat;
 mod files;
 mod media;
+mod ring;
 mod viewer;
 
 pub(crate) use files::has_preview;
@@ -72,12 +73,18 @@ pub(crate) struct Anchors {
 impl App {
     /// The window: a chat window or the contact list, with the zoom badge and the notice over it.
     pub fn view(&self) -> Element<'_, Message> {
-        let class = self.class();
+        let mut class = self.class();
+        // The ringing window is narrower than a mini tile by design (340 × 360): only a low window
+        // makes it a glance.
+        if self.ring.is_some() {
+            class = layout::of(Size::new(size::panel().max(self.size.width), self.size.height));
+        }
         if matches!(class, SizeClass::Mini | SizeClass::Strip) {
-            let glance = match (&self.viewer, &self.chat) {
-                (Some(viewer), _) => self.viewer_picture(viewer),
-                (None, Some(_)) => self.chat_glance(class),
-                (None, None) => self.glance(class),
+            let glance = match (&self.ring, &self.viewer, &self.chat) {
+                (Some(ring), _, _) => self.ring_glance(ring, class),
+                (None, Some(viewer), _) => self.viewer_picture(viewer),
+                (None, None, Some(_)) => self.chat_glance(class),
+                (None, None, None) => self.glance(class),
             };
             return widgets::ctrl_guard(shell::titlebar(
                 self.zoom.view(glance),
@@ -89,10 +96,11 @@ impl App {
             ));
         }
         let anchors = Anchors::default();
-        let window = match (&self.viewer, &self.chat) {
-            (Some(viewer), _) => self.viewer_window(viewer),
-            (None, Some(chat)) => self.chat_window(chat, &anchors),
-            (None, None) => self.contacts(&anchors),
+        let window = match (&self.ring, &self.viewer, &self.chat) {
+            (Some(ring), _, _) => self.ring_window(ring),
+            (None, Some(viewer), _) => self.viewer_window(viewer),
+            (None, None, Some(chat)) => self.chat_window(chat, &anchors),
+            (None, None, None) => self.contacts(&anchors),
         };
         let window = match &self.dialog {
             Some(dialog) => widgets::modal(window, self.dialog_view(dialog), size::form_max(), Message::CloseDialog),

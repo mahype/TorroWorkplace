@@ -9,6 +9,9 @@
 //! - `--viewer=<message>/<file>`: the window "Picture large" (stage 4) of the file `<file>` of the
 //!   message `<conversation>/<number>`, class `torro-chat-viewer`
 //!   ([`torro_core::app::CHAT_VIEWER_CLASS`]).
+//! - `--ring=<id>`: the small window of a call ringing in the conversation `<account>/<token>`
+//!   (stage 6b), class `torro-chat-ring` ([`torro_core::app::CHAT_RING_CLASS`]); the core starts it
+//!   once per call.
 //! - `--demo`: the sample of `torro_chat::demo` instead of the core; nothing is written.
 //! - `--open <state>`: start in a state ([`Open`]), for the pictures of the visual check; needs
 //!   `--demo`. `chat` is the chat window with Ben of the demo.
@@ -35,6 +38,8 @@ pub enum Window {
     /// The window "Picture large" of the file `file` of the message `message`
     /// (`<conversation>/<number>`).
     Viewer { message: String, file: String },
+    /// The ringing window of a call in the conversation (`<account>/<token>`).
+    Ring(String),
 }
 
 /// A state the window can start in (`--demo --open <state>`), so every state can be photographed
@@ -92,11 +97,13 @@ pub enum Open {
     Drop,
     /// The window "Picture large" of the first picture of "Design sync".
     Viewer,
+    /// Stage 6b: the ringing window of Ben's call.
+    Ring,
 }
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 23] = [
+    pub const ALL: [(&'static str, Open); 24] = [
         ("contacts", Open::Contacts),
         ("groups", Open::Groups),
         ("status", Open::Status),
@@ -120,6 +127,7 @@ impl Open {
         ("media", Open::Media),
         ("drop", Open::Drop),
         ("viewer", Open::Viewer),
+        ("ring", Open::Ring),
     ];
 
     /// The picture `--open viewer` shows: the first of "Design sync" (message, file).
@@ -129,7 +137,9 @@ impl Open {
     /// list.
     pub fn conversation(self) -> Option<&'static str> {
         match self {
-            Open::Chat | Open::Reply | Open::MessageMenu | Open::ChangeError => Some(torro_chat::demo::BEN),
+            Open::Chat | Open::Reply | Open::MessageMenu | Open::ChangeError | Open::Ring => {
+                Some(torro_chat::demo::BEN)
+            }
             Open::Group | Open::Reactions | Open::ChatMenu | Open::OwnMenu | Open::Delete | Open::Edit => {
                 Some(torro_chat::demo::TEAM)
             }
@@ -231,7 +241,13 @@ impl Launch {
             }
             None => None,
         };
-        let window = match (viewer, flag_value(args, "--conversation")?) {
+        let ring = match flag_value(args, "--ring")? {
+            Some(id) if is_conversation(id) => Some(Window::Ring(id.to_owned())),
+            Some(id) => return Err(unknown("--ring", id, vec!["<account>/<token>"])),
+            None if open == Some(Open::Ring) => Some(Window::Ring(torro_chat::demo::BEN.to_owned())),
+            None => None,
+        };
+        let window = match (viewer.or(ring), flag_value(args, "--conversation")?) {
             (Some(viewer), _) => viewer,
             (None, Some(id)) if is_conversation(id) => Window::Conversation(id.to_owned()),
             (None, Some(id)) => return Err(unknown("--conversation", id, vec!["<account>/<token>"])),
@@ -330,6 +346,14 @@ mod tests {
     }
 
     #[test]
+    fn ring_takes_a_conversation() {
+        let id = "nextcloud:anna@cloud.example.org/ben4chat";
+        assert_eq!(window_of(&[&format!("--ring={id}")]), Ok(Window::Ring(id.into())));
+        assert_eq!(window_of(&["--demo", "--open", "ring"]), Ok(Window::Ring(torro_chat::demo::BEN.into())));
+        assert!(matches!(window_of(&["--ring", "token"]), Err(LaunchError::UnknownValue { flag: "--ring", .. })));
+    }
+
+    #[test]
     fn viewer_takes_a_message_and_a_file() {
         let word = "nextcloud:anna@cloud.example.org/design4sync/3/5103";
         let viewer =
@@ -348,7 +372,7 @@ mod tests {
         assert_eq!(Launch::parse(&args(&["--open", "chat"])), Err(LaunchError::NeedsDemo("--open")));
         assert_eq!(Launch::parse(&args(&["--design", "torro"])), Err(LaunchError::NeedsDemo("--design")));
         assert!(matches!(
-            Launch::parse(&args(&["--demo", "--open", "ring"])),
+            Launch::parse(&args(&["--demo", "--open", "call"])),
             Err(LaunchError::UnknownValue { flag: "--open", .. })
         ));
         let launch = Launch::parse(&args(&["--demo", "--appearance", "dark", "--design", "dense"])).expect("valid");
