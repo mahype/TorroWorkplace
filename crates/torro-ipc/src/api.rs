@@ -4094,7 +4094,8 @@ static OPEN_APP: Command = Command {
                   windows by class (`torro-inbox-mail` Mail, `torro-inbox-notifications` App Feed, `torro-inbox` \
                   Notification Hub); the binary `torroinbox` opens the Notification Hub. `torroworkplace` opens the control centre, which list_apps does not \
                   list. With `target` a new window always starts and shows one thing: `mail:<address>:<Message-ID>` (a task's \
-                  `link.id`) a mail in the inbox's Mail window, `task:<uid>` a task in the tasks app, `file:<id>` \
+                  `link.id`) or `message:<account>:<id>` (an `account` and an `m:…` id from mail_search_messages, \
+                  e.g. `message:mail:anna@example.org:m:0a1b`) a mail in the inbox's Mail window, `task:<uid>` a task in the tasks app, `file:<id>` \
                   (the `id` of tools_create_pdf) a new mail with that file attached in the inbox's compose window, \
                   for the person to address and send, `template:<id>` (an id from workspaces_list_templates) the \
                   dialog to edit that workspace template's name, key and startup, `chat:<conversation>` (an id \

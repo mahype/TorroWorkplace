@@ -2174,7 +2174,9 @@ pub enum Request {
     /// for a name of no app, `error` when the app does not start.
     ///
     /// With `target` (task E8.7a) the app shows one thing: `mail:<address>:<Message-ID>` (a task's
-    /// link, [`torro_pim::model::Link::mail_ref`]) a mail in the inbox's mail window
+    /// link, [`torro_pim::model::Link::mail_ref`]) or `message:<account>:<id>` (issue #605: the
+    /// account `mail:<address>` and the mail's id `m:…` of the core's store, as `mail.search_messages`
+    /// and a suggestion's card name it) a mail in the inbox's mail window
     /// (`torroinbox --view mail --message m:…`), `task:<uid>` a task in the tasks app
     /// (`torrotasks --task=<uid>`), `file:<id>` a new mail in the inbox's compose window with a file
     /// of the assistant's tools attached (issue #225, the id of `tools.create_pdf`; `torroinbox
@@ -2197,8 +2199,8 @@ pub enum Request {
     OpenApp {
         /// Binary name or window class, from `apps.list_apps`.
         app: String,
-        /// What the app shows: `mail:<address>:<Message-ID>`, `task:<uid>`, `file:<id>` (a new
-        /// mail with that file of the assistant's tools attached), `template:<id>` (the dialog
+        /// What the app shows: `mail:<address>:<Message-ID>`, `message:<account>:<id>`, `task:<uid>`,
+        /// `file:<id>` (a new mail with that file of the assistant's tools attached), `template:<id>` (the dialog
         /// to edit a workspace template) or `chat:<conversation>`/`chat:contacts` (a chat window,
         /// the contact list); left out: the app as it starts.
         #[serde(default, skip_serializing_if = "Option::is_none")]

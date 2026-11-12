@@ -10825,8 +10825,9 @@ impl Core {
     /// of what it shows for an approval's summary: the window and the arguments the core builds
     /// ([`crate::apps::target_command`]). `error` for a target of no known form, one longer than
     /// [`TARGET_MAX`] or one that does not open in `app`; `not-found` for a mail or task `reach`
-    /// may not read or that is gone. Nothing of the target reaches a command line but the store's
-    /// own mail id, a task uid the cache holds or the path the tools' register keeps.
+    /// may not read or that is gone. A mail comes by its Message-ID (`mail:`) or by the store's id
+    /// (`message:`, issue #605). Nothing of the target reaches a command line but the store's own
+    /// mail id, a task uid the cache holds or the path the tools' register keeps.
     ///
     /// A file of the tools (`file:<id>`, task WZ.8) for `maker`: the person reaches every file of
     /// the register, a client only its own ([`Maker::Client`]) and only while it may reach the
@@ -10857,6 +10858,18 @@ impl Core {
                     return Err(Box::new(no_mail()));
                 }
                 let found = crate::mail::inbox_feed::linked_mail(&self.mail, account, message_id).await;
+                let found = found.ok_or_else(|| Box::new(no_mail()))?;
+                Ok((crate::apps::Opened::Mail { message: found.id }, found.subject))
+            }
+            // A mail by the store's id (issue #605): read as `mail.get_message` reads it, the same
+            // `not-found` for an account out of reach, one the core does not have and a mail gone.
+            crate::apps::Target::Message { account, id } => {
+                if !reads_mail(reach, account) {
+                    return Err(Box::new(no_mail()));
+                }
+                let store = self.mail.store(account).await.map_err(|_| Box::new(no_mail()))?;
+                let wanted = id.to_string();
+                let found = store.run(move |store| store.summary(&wanted)).await.ok().flatten();
                 let found = found.ok_or_else(|| Box::new(no_mail()))?;
                 Ok((crate::apps::Opened::Mail { message: found.id }, found.subject))
             }
@@ -27617,6 +27630,51 @@ mod tests {
             let (_, asking) = client(&core, asking).await;
             let asked = waits(ask(&core, Some(&asking), open("torrotasks", &task)).await);
             assert!(asked.summary.contains("Offer") && !asked.summary.contains(&todo.uid), "{}", asked.summary);
+        }
+
+        /// Issue #605: `message:<account>:<id>` opens the mail by the store's id for the person and a
+        /// client that may read the account; without the right to read mail, for another account and
+        /// for a mail that is not there it is `not-found`, before anything starts.
+        #[tokio::test]
+        async fn a_message_target_opens_the_mail_by_the_stores_id_for_who_may_read_it() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (core, _fake, server) = mail_and_tasks(dir.path()).await;
+            server.add("INBOX", &offer(), &[]);
+            sync_now(&core).await;
+            let id = mail_id(&core, OFFER_ID).await;
+            let target = format!("message:{ANNA}:{id}");
+            let found = (crate::apps::Opened::Mail { message: id.clone() }, "Offer".to_string());
+            let reader = reader_of_mail();
+            let opened = core.open_target("torro-inbox-mail", &target, Reach::Suite, Maker::App).await;
+            assert_eq!(opened, Ok(found.clone()), "the person");
+            let opened = core.open_target("torroinbox", &target, Reach::Client(&reader), Maker::App).await;
+            assert_eq!(opened, Ok(found), "a client that reads the account");
+
+            let open = |target: &str| Request::OpenApp { app: "torro-inbox-mail".into(), target: Some(target.into()) };
+            let mut unread = reader_of_mail();
+            unread.areas.remove(&Area::Mail);
+            let (_, unread) = client(&core, unread).await;
+            assert_eq!(code(&ask(&core, Some(&unread), open(&target)).await), "not-found", "no right to read mail");
+            let mut other = RightsTemplate::FullAccess.rights();
+            other.mail_accounts = Selection::Only(vec!["mail:ben@example.org".into()]);
+            let (_, other) = client(&core, other).await;
+            assert_eq!(code(&ask(&core, Some(&other), open(&target)).await), "not-found", "another account");
+            let (_, reader) = client(&core, reader_of_mail()).await;
+            let gone = format!("message:{ANNA}:m:gone");
+            assert_eq!(code(&ask(&core, Some(&reader), open(&gone)).await), "not-found", "no such mail");
+            let elsewhere = format!("message:mail:ben@example.org:{id}");
+            let unknown = core.open_target("torro-inbox-mail", &elsewhere, Reach::Suite, Maker::App).await;
+            assert_eq!(unknown.map_err(|refused| code(&refused).to_string()), Err("not-found".into()));
+            let tasks = Request::OpenApp { app: "torrotasks".into(), target: Some(target.clone()) };
+            assert_eq!(code(&ask(&core, Some(&reader), tasks).await), "error", "a mail opens in the inbox");
+            assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing asked");
+            // Asked for approval, the summary names the mail's subject from the store, not the target
+            // (not decided here: allowing would start the mail window).
+            let mut asking = reader_of_mail();
+            asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+            let (_, asking) = client(&core, asking).await;
+            let asked = waits(ask(&core, Some(&asking), open(&target)).await);
+            assert!(asked.summary.contains("Offer") && !asked.summary.contains(&id), "{}", asked.summary);
         }
 
         /// The due day of an entry's task reads like a task's on the wire.
