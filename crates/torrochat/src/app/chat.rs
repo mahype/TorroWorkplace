@@ -757,7 +757,11 @@ impl App {
             return Task::none();
         }
         chat.read_up_to = newest;
-        Task::perform(self.backend.clone().mark_read(chat.id.clone()), |result| Message::Chat(Msg::MarkedRead(result)))
+        let Some(number) = newest else { return Task::none() };
+        let up_to = torro_chat::message_id(&chat.id, number);
+        Task::perform(self.backend.clone().mark_read(chat.id.clone(), up_to), |result| {
+            Message::Chat(Msg::MarkedRead(result))
+        })
     }
 
     /// Asks for suggestions when the cursor stands in a word after `@`; drops them otherwise.

@@ -67,11 +67,12 @@ impl Backend {
         }
     }
 
-    /// `chat.mark_read` up to the newest message.
-    pub async fn mark_read(self, conversation: String) -> Result<(), ChatError> {
+    /// `chat.mark_read` up to the message `up_to`: the newest the window shows, never a newer one
+    /// the core's list may know already.
+    pub async fn mark_read(self, conversation: String, up_to: String) -> Result<(), ChatError> {
         match self {
-            Backend::Core(core) => core.mark_read(conversation, None).await,
-            Backend::Demo(demo) => demo.mark_read(conversation, None).await,
+            Backend::Core(core) => core.mark_read(conversation, Some(up_to)).await,
+            Backend::Demo(demo) => demo.mark_read(conversation, Some(up_to)).await,
         }
     }
 
