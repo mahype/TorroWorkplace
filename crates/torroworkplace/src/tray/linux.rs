@@ -168,8 +168,8 @@ mod tests {
             .collect()
     }
 
-    /// Where the template entries start: after the six apps and a separator.
-    const TEMPLATES: usize = 7;
+    /// Where the template entries start: after the seven apps and a separator.
+    const TEMPLATES: usize = 8;
 
     fn snapshot() -> Snapshot {
         Snapshot {
@@ -202,6 +202,7 @@ mod tests {
                 tr("Calendar").to_string(),
                 tr("Tasks").to_string(),
                 tr("Assistant").to_string(),
+                tr("Chat").to_string(),
                 "-".to_string(),
                 format!("({})", trf("Workspaces · {manager}", &[("manager", &"Hyprland")])),
                 sub("Entwicklung"),
