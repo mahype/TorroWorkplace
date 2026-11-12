@@ -4339,7 +4339,7 @@ pub enum Trouble {
 }
 
 /// Files the open approvals of `approvals` in `inbox` ([`Inbox::file_approvals`]) as of `now`,
-/// under the approvals' lock ([`Approvals::with_open`]), so an older view never overtakes a newer
+/// under the approvals' lock ([`Approvals::with_approvals`]), so an older view never overtakes a newer
 /// one. The core calls it after an approval was opened or decided, and [`tend_suite`] every
 /// minute, which catches expired approvals and those that vanished while the core was down.
 /// Failures go to the log; the approval itself works without its entry.

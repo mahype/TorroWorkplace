@@ -19,7 +19,7 @@
 //! The notification closes once the approval is decided by any of these ways, and the core asks
 //! again about the open ones when it starts ([`Approvals::announce_open`]). Every open approval is
 //! also an entry of the inbox, with "Allow" and "Deny", done once it is decided or expired (task
-//! E2.1, [`crate::inbox::file_approvals`] over [`Approvals::with_open`]). The agent never gets a
+//! E2.1, [`crate::inbox::file_approvals`] over [`Approvals::with_approvals`]). The agent never gets a
 //! code it could confirm with. A command kept from agents ([`Mcp::Never`]: taking secrets,
 //! managing clients, deciding approvals) never becomes an approval, so a secret never reaches
 //! `approvals.json`.
