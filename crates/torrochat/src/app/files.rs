@@ -145,7 +145,7 @@ impl MediaTab {
         match self {
             MediaTab::Media => tr("Media"),
             MediaTab::Files => tr("Files"),
-            MediaTab::Voice => tr("Voice"),
+            MediaTab::Voice => tr("Voice messages"),
             MediaTab::Links => tr("Links"),
         }
     }
