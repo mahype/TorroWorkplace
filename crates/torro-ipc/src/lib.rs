@@ -2174,7 +2174,9 @@ pub enum Request {
     /// for a name of no app, `error` when the app does not start.
     ///
     /// With `target` (task E8.7a) the app shows one thing: `mail:<address>:<Message-ID>` (a task's
-    /// link, [`torro_pim::model::Link::mail_ref`]) a mail in the inbox's mail window
+    /// link, [`torro_pim::model::Link::mail_ref`]) or `message:<account>:<id>` (issue #605: the
+    /// account `mail:<address>` and the mail's id `m:…` of the core's store, as `mail.search_messages`
+    /// and a suggestion's card name it) a mail in the inbox's mail window
     /// (`torroinbox --view mail --message m:…`), `task:<uid>` a task in the tasks app
     /// (`torrotasks --task=<uid>`), `file:<id>` a new mail in the inbox's compose window with a file
     /// of the assistant's tools attached (issue #225, the id of `tools.create_pdf`; `torroinbox
@@ -2197,8 +2199,8 @@ pub enum Request {
     OpenApp {
         /// Binary name or window class, from `apps.list_apps`.
         app: String,
-        /// What the app shows: `mail:<address>:<Message-ID>`, `task:<uid>`, `file:<id>` (a new
-        /// mail with that file of the assistant's tools attached), `template:<id>` (the dialog
+        /// What the app shows: `mail:<address>:<Message-ID>`, `message:<account>:<id>`, `task:<uid>`,
+        /// `file:<id>` (a new mail with that file of the assistant's tools attached), `template:<id>` (the dialog
         /// to edit a workspace template) or `chat:<conversation>`/`chat:contacts` (a chat window,
         /// the contact list); left out: the app as it starts.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4068,6 +4070,12 @@ pub enum Request {
         /// one that fits; as for `inbox.suggest_task_from_item`. Ignored for other forms.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         lists: Vec<String>,
+        /// What the person asked for, in their words (issue #605: "the meeting on Thursday"), at
+        /// most 200 characters: it only steers what is read out of the mail when it holds several,
+        /// and goes to the model as data, never as instructions. Left out, the model picks.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(length(max = 200))]
+        focus: Option<String>,
     },
     /// The kinds of action Torro can find in mail (issue #603), each with its form and whether it
     /// looks for it in new mail ([`Response::ActionKinds`]). Every kind is listed, also one switched
@@ -4179,6 +4187,34 @@ pub enum Request {
         /// needs write access to `bots`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bot: Option<String>,
+        /// The mail this conversation is about (issue #605, "Chat zu einer Mail" in
+        /// `docs/assistent.md`): `{"account": "mail:<address>", "id": "m:…"}`. Only for a new
+        /// conversation with the assistant (`unsupported` with `bot`); a conversation continued
+        /// without it keeps its own, one with another is `error`. Its answers may only read and
+        /// suggest (`mail.extract_action`), whatever the assistant's rights allow beyond that, and the
+        /// assistant reads the mail first. Needs the assistant's read access to that mail account
+        /// (`forbidden` otherwise, nothing stored), a caller that sees the account (`not-found`), and a
+        /// model the data rule lets read mail (`not-connected`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        about: Option<assistant::MailRef>,
+    },
+    /// Whether a new chat about the mail `about` with `engine` and `model` would be taken (issue #605): the checks
+    /// of [`Request::SendMessage`] with `about` for a new conversation, without storing anything or asking a
+    /// model, so a window can say why before the person types. [`Response::Ok`] when it would be taken; otherwise
+    /// the error `assistant.send_message` would answer: `not-found` for a mail or account the caller may not see
+    /// or an unknown engine, `forbidden` when the assistant may not read that mail account, `not-connected` when
+    /// the data rule keeps mail from the model, `unsupported` for an engine that cannot chat about a mail (a
+    /// coding agent, an AI account with no model on or while the core has not started), `error` for a limit
+    /// ([`assistant::limit_refusal`]).
+    #[serde(rename = "assistant.check_about")]
+    CheckAbout {
+        /// Who would answer: an engine's id from `assistant.list_engines`.
+        engine: String,
+        /// The model of the AI account, as for `assistant.send_message`; left out, the engine picks one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// The mail the chat would be about: `{"account": "mail:<address>", "id": "m:…"}`.
+        about: assistant::MailRef,
     },
     /// Stops the answer that runs in `conversation`; what it did until then stays, and a
     /// `stopped` entry is added. [`Response::Ok`] also when nothing runs; `not-found` for an
@@ -6474,7 +6510,7 @@ pub const SUGGESTION_LISTS_MAX: usize = 50;
 
 /// The task an AI suggests for an inbox entry (`inbox.suggest_task_from_item`, issue #120). Made of
 /// text from outside the suite: data to show and check, never instructions. Nothing is saved yet.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TaskSuggestion {
     /// What to do, one line of at most [`SUGGESTION_TITLE_MAX`] characters, never blank.
     pub title: String,
@@ -6498,7 +6534,7 @@ pub struct TaskSuggestion {
 /// The event an AI suggests for an inbox entry (`inbox.suggest_event_from_item`, issue #120). Made
 /// of text from outside the suite: data to show and check, never instructions. Nothing is saved
 /// yet.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct EventSuggestion {
     /// What it is, one line of at most [`SUGGESTION_TITLE_MAX`] characters, never blank.
     pub title: String,

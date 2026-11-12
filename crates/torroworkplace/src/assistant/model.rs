@@ -35,6 +35,13 @@
 //! the web's own results; a message a client sent counts in every turn, as it does for the memory). A
 //! page whose address the person wrote in a message is read without `robots.txt`.
 //!
+//! A chat about a mail (issue #605, [`Job::about`]) reads the mail first: before the model's first step of its
+//! first answer the loop runs `mail.get_message` itself, as if the model had called it ([`Answering::call`]),
+//! so rights, the data rule and the tool line are the same as for any call. Such a chat only reads and suggests:
+//! the tools offered and run are cut to [`tools::about_mail`], whatever the rights allow, and the prompt ends with
+//! [`prompt::about_mail`]. A suggestion `mail.extract_action` reads out becomes a card ([`super::cards`]), only in
+//! such a chat; in any other the tool line is all.
+//!
 //! A command that waits for a person (`pending`) puts an approval entry into the conversation; the
 //! loop asks for its state every [`Limits::approval_poll`] and goes on once the person decided (the
 //! command's answer, or "denied"/"expired" for the model). `assistant.cancel` aborts the loop at
@@ -52,7 +59,7 @@ use torro_core::ai::{
 };
 use torro_core::i18n::{self, tr, trf};
 use torro_ipc::api::{Area, Lack, Operation, Rights};
-use torro_ipc::assistant::{Entry, EntryContent, Mode, Note};
+use torro_ipc::assistant::{Entry, EntryContent, MailRef, Mode, Note};
 use torro_ipc::bots::Bot;
 use torro_ipc::extensions::ExtensionTool;
 use torro_ipc::{ApprovalState, ClientInfo, Request, Response};
@@ -253,6 +260,26 @@ pub trait Host: Send + Sync {
             return self.run_as(actor, request, engine, untrusted);
         }
         Box::pin(async move { forbidden(request.operation().name()) })
+    }
+
+    /// [`Host::run_in`] for a tool call of a chat about the mail `about` (issue #605, decided with the person):
+    /// `mail.extract_action` for exactly that mail – its account **and** its id – is checked as reading, so the
+    /// client's read access to that mail account is enough, a read-only mode does not refuse it and no approval
+    /// for a change is asked. Every other request, and `mail.extract_action` for another mail or account, runs
+    /// exactly as [`Host::run_in`] runs it (writing still needed). Only for the assistant's own answers: the loop
+    /// calls it for [`Actor::Assistant`] only. The default is [`Host::run_in`], so a host that cannot tell
+    /// still asks for writing.
+    fn run_about<'a>(
+        &'a self,
+        actor: &'a Actor,
+        request: Request,
+        engine: &'a str,
+        untrusted: bool,
+        mode: Mode,
+        about: &'a MailRef,
+    ) -> BoxFuture<'a, Response> {
+        let _ = about;
+        self.run_in(actor, request, engine, untrusted, mode)
     }
 
     /// A command of the tool `web` (`tools.web_search`, `tools.fetch_page`; issue #305, task WEB.5,
@@ -578,6 +605,45 @@ pub(super) struct Job {
     /// The bot that answers, as stored when the message came (task B.1): its personality,
     /// instructions and skills make its prompt. `None` for the assistant.
     pub bot: Option<Bot>,
+    /// The mail the conversation is about (issue #605), as it keeps it: the answer reads it first
+    /// ([`about_call`]) when no earlier turn did, offers and runs only [`tools::about_mail`], and its prompt
+    /// ends with [`prompt::about_mail`]. Only with the assistant and engine A; the assistant checked the rights
+    /// and the data rule before it stored the message. `None` for every other conversation.
+    pub about: Option<MailRef>,
+}
+
+/// The id of the call the loop makes itself to read the mail a chat is about (issue #605).
+const ABOUT_CALL: &str = "call_about_mail";
+
+/// The call of `mail.get_message` with its text that reads the mail `about` at the start of a chat about it
+/// (issue #605): the call the model would make, so the core runs it as any other.
+fn about_call(about: &MailRef) -> ToolCall {
+    let arguments = json!({"id": about.id, "include_body": true});
+    ToolCall { id: ABOUT_CALL.into(), name: "mail_get_message".into(), arguments: arguments.to_string() }
+}
+
+/// Whether `history` holds a tool line of `mail.get_message` that read the mail `about` without an error
+/// (issue #605): then a later turn does not read it again by itself, the model calls it when it needs it.
+fn read_before(history: &[Entry], about: &MailRef) -> bool {
+    history.iter().any(|entry| match &entry.content {
+        EntryContent::Tool { name, input, error: None, .. } => {
+            name == "mail.get_message" && input.get("id").and_then(Value::as_str) == Some(about.id.as_str())
+        }
+        _ => false,
+    })
+}
+
+/// Drops the thinking of every message in `messages`, for good: what the model thought in this answer before its
+/// system prompt or its tools changed within the answer (tools [`tools::FIND_TOOLS`] loaded, rights or servers
+/// changed meanwhile). Anthropic binds each thinking block to the system prompt, the tools and the messages before
+/// it (preserved thinking) and answers a block sent back after a change with HTTP 400; without a beta its fix is to
+/// leave that block and every later one out, the other blocks in place, also in every later request. The text and
+/// the calls stay, so the turns keep their shape; the model goes on without its earlier reasoning. Adding a tool
+/// counts as a change too, so appending the loaded tools would not keep the blocks valid.
+fn without_thinking(messages: &mut [ChatMessage]) {
+    for message in messages {
+        message.thinking.clear();
+    }
 }
 
 /// How a command the model called ended.
@@ -744,6 +810,22 @@ impl Answering {
         let reader = Reader { place: access.place, rule: self.rule };
         let mut messages = vec![ChatMessage::system(String::new())];
         messages.extend(history(&self.job.history, &self.job.engine, Some(&model), reader));
+        // A chat about a mail reads it first (issue #605), as a call of the model would, so the model answers the
+        // person's first question with the mail before it.
+        if let Some(about) = self.job.about.clone()
+            && !read_before(&self.job.history, &about)
+        {
+            let call = about_call(&about);
+            let Some(result) = self.call(&call, reader).await else { return Ok(()) };
+            messages.push(ChatMessage::assistant(String::new(), vec![call.clone()]));
+            messages.push(ChatMessage::tool(call.id, result));
+        }
+        // One time for the whole answer, so its system prompt stays the same from step to step: Anthropic binds
+        // every thinking block to the system prompt it was written under (preserved thinking), and one rebuilt with
+        // the next minute fails the step after a tool round with HTTP 400.
+        let now = Local::now();
+        // The system prompt and the tools of the step before, to see what changed since ([`without_thinking`]).
+        let mut sent: Option<(String, Vec<torro_core::ai::ToolSpec>)> = None;
         for _ in 0..self.limits.max_steps {
             let rights = self.rights();
             let allowed = self.allowed(rights.as_ref());
@@ -763,7 +845,7 @@ impl Answering {
                 .collect();
             let servers: Vec<String> = servers.into_iter().collect();
             let context = prompt::Context {
-                now: Local::now(),
+                now,
                 lang: i18n::lang(),
                 // The suite keeps no name of the person yet (no setting holds one).
                 person: None,
@@ -778,15 +860,33 @@ impl Answering {
                 memory: &self.memory,
                 servers: &servers,
             };
-            let system = match &self.job.bot {
+            let mut system = match &self.job.bot {
                 Some(bot) => prompt::bot_system(Some(&self.persona), &prompt::BotParts::of(bot), &context),
                 None => prompt::system(Some(&self.persona), &context),
             };
+            if let Some(about) = &self.job.about {
+                system = format!("{system}\n\n{}", prompt::about_mail(about));
+            }
+            // A small model gets the reading tools first; a chat about a mail (issue #605) needs its one way to
+            // suggest among them, not behind find_tools, and the tool of the call that read the mail: else, with
+            // more tools than fit, the request shows the model a call of a tool it is not offered, and it cannot
+            // read the mail again without find_tools. Only order: the rights still decide what is offered.
+            let mut loaded = self.loaded.clone();
+            if let Some(about) = &self.job.about {
+                loaded.insert(tools::EXTRACT_ACTION.replace('.', "_"));
+                loaded.insert(about_call(about).name);
+            }
+            let tools = tools::offered(&allowed, small, &loaded);
+            let changed = sent.as_ref().is_some_and(|(before, offered)| *before != system || *offered != tools);
+            if changed {
+                without_thinking(&mut messages);
+            }
+            sent = Some((system.clone(), tools.clone()));
             messages[0] = ChatMessage::system(system);
             let request = ChatRequest {
                 model: model.clone(),
                 messages: messages.clone(),
-                tools: tools::offered(&allowed, small, &self.loaded),
+                tools,
                 max_tokens: None,
                 effort: self.job.effort,
             };
@@ -859,6 +959,12 @@ impl Answering {
             let message = format!("there is no tool {}", call.name.chars().take(64).collect::<String>());
             return self.refused(name, input, "error", &message, None).await;
         };
+        // A chat about a mail only reads and suggests (issue #605), also for a tool the model was not offered.
+        if self.job.about.is_some() && !tools::fits_about_mail(&tool) {
+            let message = "this chat about a mail only reads and suggests (mail_extract_action); nothing else that \
+                           changes something runs here, so say what the person could do instead";
+            return self.refused(name, input, "forbidden", message, Some(Lack::ReadOnly)).await;
+        }
         // Making a task of an inbox entry writes a task too (as the core checks its rights); making
         // an event of one writes to a calendar (task E8.5b); making a task of a mail in a folder
         // reads the mail (task E8.7a); answering an invitation writes to a calendar (task E8.3b).
@@ -887,7 +993,10 @@ impl Answering {
         // A card after a command that made an item (issue #225): the core's own answer, read before
         // the tool line takes it.
         let card = match &outcome {
-            Outcome::Answered(response) => super::cards::after(&name, response),
+            // And after a suggestion read out of a mail, only in a chat about a mail (issue #605): elsewhere the
+            // suggestion stays in the mail's own list and the tool line says what was read out.
+            Outcome::Answered(response) => super::cards::after(&name, response)
+                .or_else(|| self.job.about.as_ref().and_then(|_| super::cards::suggestion_after(&request, response))),
             Outcome::Denied | Outcome::Expired => None,
         };
         // Mail switched off in this conversation (issue #460): suggestions keep only what the address
@@ -1066,9 +1175,14 @@ impl Answering {
     /// The tools the answer may use now with `rights` ([`Answering::rights`]): the catalogue's and those of
     /// the MCP servers the host offers these rights ([`Host::extension_tools`], issue #302), in the
     /// answer's permission mode and without the areas switched off here ([`tools::allowed_with`]).
+    /// A chat about a mail (issue #605) keeps only [`tools::about_mail`] of them.
     fn allowed(&self, rights: Option<&Rights>) -> Vec<Arc<tools::Tool>> {
         let servers = rights.map(|rights| self.host.extension_tools(rights)).unwrap_or_default();
-        tools::allowed_with(self.job.actor.kind(), rights, &self.job.without, self.job.mode, &servers)
+        let allowed = tools::allowed_with(self.job.actor.kind(), rights, &self.job.without, self.job.mode, &servers);
+        match &self.job.about {
+            Some(about) => tools::about_mail(allowed, rights, &self.job.without, &about.account),
+            None => allowed,
+        }
     }
 
     /// The rights of the answer's client now, narrowed by the answer's permission mode (issue #132)
@@ -1109,15 +1223,20 @@ impl Answering {
         // be asked after mail, never after entries of Nextcloud or Talk.
         let (main, without, read_mail) = (self.job.conversation.clone(), self.job.without.clone(), self.read_kept);
         let web = self.web_consent(&request);
+        let about = self.job.about.clone();
         // Asking a bot (task B.2) needs the conversation: the person must have asked for the bot here;
-        // and so does the web (task WEB.5): the person says yes once per conversation.
+        // and so does the web (task WEB.5): the person says yes once per conversation. A chat about a mail
+        // (issue #605) names it, so its suggestion counts as reading.
         let ran = tokio::spawn(async move {
-            match (&actor, &request, web) {
-                (Actor::Assistant, Request::AskBot { .. }, _) => {
+            match (&actor, &request, web, about) {
+                (Actor::Assistant, Request::AskBot { .. }, ..) => {
                     let from = AskedIn { main: &main, read_mail, without: &without, mode };
                     host.ask_bot_in(from, request, &engine, untrusted).await
                 }
-                (_, _, Some(web)) => host.run_web(&actor, request, &engine, mode, web).await,
+                (_, _, Some(web), _) => host.run_web(&actor, request, &engine, mode, web).await,
+                (Actor::Assistant, _, None, Some(about)) => {
+                    host.run_about(&actor, request, &engine, untrusted, mode, &about).await
+                }
                 _ => host.run_in(&actor, request, &engine, untrusted, mode).await,
             }
         })
@@ -1305,7 +1424,7 @@ pub(crate) mod tests {
     use torro_core::ai::{AiModel, Finish};
     use torro_inbox::{Kind, Lane, SourceKind, SourceRef, State};
     use torro_ipc::api::{AreaRights, Level, Rights};
-    use torro_ipc::assistant::ConversationSummary;
+    use torro_ipc::assistant::{CardRef, ConversationSummary};
 
     use super::super::{EngineKind, Message, tests::assistant_in};
     use super::*;
@@ -1510,6 +1629,8 @@ pub(crate) mod tests {
         servers: Mutex<Vec<ExtensionTool>>,
         /// The web's commands with what came with them (issue #305, task WEB.5).
         webs: Mutex<Vec<(Request, crate::approvals::WebConsent)>>,
+        /// The commands of a chat about a mail with the mail (issue #605).
+        abouts: Mutex<Vec<(Request, MailRef)>>,
     }
 
     impl Host for FakeHost {
@@ -1585,6 +1706,22 @@ pub(crate) mod tests {
             Box::pin(async move {
                 self.actors.lock().expect("lock").push(actor.clone());
                 self.run(request, engine, untrusted).await
+            })
+        }
+
+        /// Kept with the mail it came about, then answered as every other request.
+        fn run_about<'a>(
+            &'a self,
+            actor: &'a Actor,
+            request: Request,
+            engine: &'a str,
+            untrusted: bool,
+            _mode: Mode,
+            about: &'a MailRef,
+        ) -> BoxFuture<'a, Response> {
+            Box::pin(async move {
+                self.abouts.lock().expect("lock").push((request.clone(), about.clone()));
+                self.run_as(actor, request, engine, untrusted).await
             })
         }
 
@@ -1711,6 +1848,7 @@ pub(crate) mod tests {
             rule: Mutex::new(DataRule::default()),
             servers: Mutex::new(Vec::new()),
             webs: Mutex::new(Vec::new()),
+            abouts: Mutex::new(Vec::new()),
         });
         let weak = Arc::downgrade(&host);
         let weak: std::sync::Weak<dyn Host> = weak;
@@ -2540,6 +2678,55 @@ pub(crate) mod tests {
         assert!(tool_result(&script, FIND_TOOLS).contains("calendar_delete_event"));
     }
 
+    /// Issue #605: Anthropic binds each thinking block to the system prompt, the tools and the messages before it.
+    /// Within one answer the system prompt stays the same from step to step (the time is fixed per answer); when the
+    /// tools change (find_tools loaded some), the thinking of the answer so far is left out of that request and every
+    /// later one, the calls and results stay; thinking written after the change goes back unchanged.
+    #[tokio::test]
+    async fn an_answer_keeps_its_prompt_and_drops_its_thinking_once_the_tools_change() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut rights = reader();
+        rights.areas.insert(Area::Calendar, AreaRights { level: Level::Full, admin: false });
+        let thought = |signature: &str| json!({"type": "thinking", "thinking": "", "signature": signature});
+        let thinks_and_calls = |signature: &str, tool: &str, arguments: Value| {
+            let call = ToolCall { id: format!("call_{tool}"), name: tool.into(), arguments: arguments.to_string() };
+            let reply = ChatReply {
+                tool_calls: vec![call],
+                finish: Finish::ToolCalls,
+                thinking: vec![thought(signature)],
+                ..ChatReply::default()
+            };
+            Step::Reply(Vec::new(), reply)
+        };
+        let script = Script::new(vec![
+            thinks_and_calls("before", FIND_TOOLS, json!({"query": "delete an event"})),
+            thinks_and_calls("after", "calendar_delete_event", json!({"event": {"collection": "c", "summary": "x"}})),
+            says("Done."),
+        ]);
+        let (assistant, _kept) = set_up(dir.path(), Some(rights), Place::Local, Arc::clone(&script));
+        let id = ask(&assistant, None, "Delete my dentist appointment", Vec::new()).await;
+        finished(&assistant, &id).await;
+
+        let asked = script.asked();
+        assert_eq!(asked.len(), 3);
+        let system = |step: usize| asked[step].messages[0].content.clone();
+        assert!(!system(0).is_empty());
+        assert_eq!((system(1), system(2)), (system(0), system(0)), "one system prompt per answer");
+        assert_ne!(asked[1].tools, asked[0].tools, "find_tools loaded a tool");
+        assert_eq!(asked[2].tools, asked[1].tools, "nothing loaded since");
+        let thinking = |step: usize| -> Vec<Vec<Value>> {
+            let steps = asked[step].messages.iter().filter(|message| message.role == torro_core::ai::Role::Assistant);
+            steps.map(|message| message.thinking.clone()).collect()
+        };
+        assert_eq!(thinking(1), [Vec::<Value>::new()], "written before the tools changed: left out");
+        assert_eq!(thinking(2), [Vec::new(), vec![thought("after")]], "left out for good; the newer one as it came");
+        let calls = |step: usize| asked[step].messages.iter().filter(|message| !message.tool_calls.is_empty()).count();
+        assert_eq!((calls(1), calls(2)), (1, 2), "the calls stay");
+        for request in &asked {
+            anthropic_takes(&torro_core::ai::anthropic::chat_body(request, true));
+        }
+    }
+
     #[tokio::test]
     async fn the_answer_grows_in_the_conversation_and_cancel_keeps_what_was_written() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -3096,5 +3283,415 @@ pub(crate) mod tests {
         assert!(sent_by_a_client(&assistants, &Actor::Bot("9f8e7d6c".into())), "in the bot's own run");
         assert!(!sent_by_a_client(&assistants, &Actor::Delegated(delegation.clone())));
         assert!(sent_by_a_client(&clients, &Actor::Delegated(delegation)), "another client's still counts");
+    }
+
+    // ----- Issue #605: a chat about a mail -----
+
+    const ACCOUNT: &str = "mail:anna@example.org";
+
+    fn mail_ref(id: &str) -> MailRef {
+        MailRef { account: ACCOUNT.into(), id: id.into() }
+    }
+
+    /// The assistant reads and writes mail of [`ACCOUNT`].
+    fn mail_of_anna() -> Rights {
+        let mut rights = reader();
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::Write, admin: false });
+        rights.mail_accounts = torro_ipc::api::Selection::Only(vec![ACCOUNT.into()]);
+        rights
+    }
+
+    /// The core's answers in a chat about a mail: a mail read, a suggestion read out, the rest as [`answers`].
+    fn about_answers(request: &Request) -> Response {
+        match request {
+            Request::GetMail { .. } => Response::Ok,
+            Request::ExtractAction { kind, .. } => Response::Suggestion {
+                suggestion: torro_ipc::actions::Suggestion {
+                    kind: kind.clone(),
+                    state: torro_ipc::actions::SuggestionState::Ready,
+                    task: None,
+                    event: None,
+                    reason: Some("The mail names a meeting".into()),
+                },
+            },
+            other => answers(other),
+        }
+    }
+
+    /// A message of the person, new or in `conversation`.
+    fn about_message(conversation: Option<&str>, text: &str) -> Message {
+        Message {
+            conversation: conversation.map(str::to_string),
+            engine: ENGINE.into(),
+            model: None,
+            effort: None,
+            text: text.into(),
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            bot: None,
+            on_behalf: None,
+            from: None,
+        }
+    }
+
+    /// Sends `text` about `about` as `assistant.send_message` does once checked, answers the conversation's id.
+    async fn ask_about(assistant: &Arc<Assistant>, conversation: Option<&str>, text: &str, about: MailRef) -> String {
+        let message = about_message(conversation, text);
+        let checked = assistant.about_for(&message, Some(about), EngineKind::Ai).await.expect("allowed");
+        match assistant.send_about(message, checked, EngineKind::Ai, Utc::now()).await {
+            Response::Conversation { conversation, .. } => conversation.id,
+            other => panic!("expected a conversation, got {other:?}"),
+        }
+    }
+
+    fn refused_with(refused: Result<Option<MailRef>, Response>) -> String {
+        match refused {
+            Err(Response::Error { code, .. }) => code,
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    /// Issue #605: a chat about a mail needs the assistant's own read access to that account, the assistant
+    /// with an AI account, mail on in the conversation, and a model the data rule lets read mail.
+    #[tokio::test]
+    async fn a_chat_about_a_mail_needs_the_assistants_access_and_a_model_that_may_read_mail() {
+        let mail = mail_ref("m:4");
+        let cases: [(Option<Rights>, Place, bool, &str); 6] = [
+            (None, Place::Local, false, "forbidden"),
+            (Some(reader()), Place::Local, false, "forbidden"),
+            (Some(reading_mail()), Place::Local, false, "forbidden"),
+            (Some(mail_of_anna()), Place::Remote, false, "not-connected"),
+            (Some(mail_of_anna()), Place::Remote, true, "ok"),
+            (Some(mail_of_anna()), Place::Local, false, "ok"),
+        ];
+        for (rights, place, mail_to_cloud, wanted) in cases {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (assistant, host) = set_up(dir.path(), rights, place, Script::new(Vec::new()));
+            *host.rule.lock().expect("lock") = DataRule { mail_to_cloud };
+            let message = about_message(None, "Is there a date?");
+            match (assistant.about_for(&message, Some(mail.clone()), EngineKind::Ai).await, wanted) {
+                (Ok(Some(about)), "ok") => assert_eq!(about, mail),
+                (refused, _) => assert_eq!(refused_with(refused), wanted, "{place:?}, mail out {mail_to_cloud}"),
+            }
+        }
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (assistant, _host) = set_up(dir.path(), Some(mail_of_anna()), Place::Local, Script::new(Vec::new()));
+        let agent = assistant.about_for(&about_message(None, "Hi"), Some(mail.clone()), EngineKind::Agent).await;
+        assert_eq!(refused_with(agent), "unsupported", "engine B is given no mail");
+        let mut off = about_message(None, "Hi");
+        off.without = vec![Area::Mail];
+        assert_eq!(refused_with(assistant.about_for(&off, Some(mail.clone()), EngineKind::Ai).await), "error");
+        let bot = Bot {
+            id: "1a2b3c4d".into(),
+            name: "Travel planner".into(),
+            description: String::new(),
+            avatar: String::new(),
+            engine: ENGINE.into(),
+            model: None,
+            personality: String::new(),
+            instructions: String::new(),
+            skills: Vec::new(),
+            client: "b0b0b0b0".into(),
+        };
+        let mut with_bot = about_message(None, "Hi");
+        with_bot.bot = Some(bot);
+        assert_eq!(refused_with(assistant.about_for(&with_bot, Some(mail), EngineKind::Ai).await), "unsupported");
+        assert!(
+            matches!(assistant.list().await, Response::Conversations { conversations } if conversations.is_empty())
+        );
+        // A message about no mail is no chat about one.
+        assert_eq!(assistant.about_for(&about_message(None, "Hi"), None, EngineKind::Agent).await, Ok(None));
+    }
+
+    /// Issue #605: the first answer reads the mail through the core as a call would, with its tool line, before
+    /// the model's first step; the prompt names the mail; a later turn does not read it again by itself.
+    #[tokio::test]
+    async fn a_chat_about_a_mail_reads_it_first() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = Script::new(vec![says("Yes, on Thursday at 14:00."), says("In the office.")]);
+        let (assistant, host) =
+            set_up_with(dir.path(), Some(mail_of_anna()), Place::Local, Arc::clone(&script), about_answers);
+        let id = ask_about(&assistant, None, "Is there a date in it?", mail_ref("m:4")).await;
+        let entries = finished(&assistant, &id).await;
+        assert!(
+            matches!(
+                content(&entries)[..],
+                [
+                    EntryContent::Message { .. },
+                    EntryContent::Tool { name, input, error: None, .. },
+                    EntryContent::Answer { .. },
+                ] if name == "mail.get_message" && *input == json!({"id": "m:4", "include_body": true})
+            ),
+            "{entries:?}"
+        );
+        let ran: Vec<Request> = host.ran.lock().expect("lock").iter().map(|(request, _)| request.clone()).collect();
+        assert_eq!(ran, [Request::GetMail { id: "m:4".into(), include_body: true, include_html: false }]);
+        assert_eq!(*host.actors.lock().expect("lock"), [Actor::Assistant], "as the assistant's own client");
+        let first = &script.asked()[0];
+        let last = &first.messages[first.messages.len() - 2..];
+        assert_eq!(last[0].tool_calls.first().map(|call| call.name.as_str()), Some("mail_get_message"));
+        assert_eq!(last[1].tool_call_id.as_deref(), Some(ABOUT_CALL), "the mail as the call's result");
+        assert!(first.messages[0].content.contains(prompt::ABOUT_HEADING), "the prompt names the mail");
+        let (summary, _) = read(&assistant, &id, None).await;
+        assert_eq!(summary.about, Some(mail_ref("m:4")));
+
+        // The next turn goes on with the same mail and reads it only when the model asks.
+        let message = about_message(Some(&id), "Where?");
+        let inherited = assistant.about_for(&message, None, EngineKind::Ai).await.expect("allowed");
+        assert_eq!(inherited, Some(mail_ref("m:4")), "inherited");
+        assert_eq!(refused_with(assistant.about_for(&message, Some(mail_ref("m:5")), EngineKind::Ai).await), "error");
+        assert!(matches!(
+            assistant.send_about(message, inherited, EngineKind::Ai, Utc::now()).await,
+            Response::Conversation { .. }
+        ));
+        finished(&assistant, &id).await;
+        assert_eq!(host.ran.lock().expect("lock").len(), 1, "not read again");
+        assert!(script.asked()[1].messages[0].content.contains(prompt::ABOUT_HEADING));
+
+        // A conversation about no mail does not become one about a mail.
+        let plain = ask(&assistant, None, "Hello", Vec::new()).await;
+        finished(&assistant, &plain).await;
+        let later = about_message(Some(&plain), "And this mail?");
+        assert_eq!(refused_with(assistant.about_for(&later, Some(mail_ref("m:4")), EngineKind::Ai).await), "error");
+    }
+
+    /// Issue #605: the mail read before the model's first step travels to Anthropic as a `tool_use` turn of the
+    /// assistant without a thinking block, followed by its `tool_result`. The Messages API takes that, with and
+    /// without an effort: the suite asks only for adaptive thinking (`anthropic::chat_body`), where no assistant turn
+    /// has to start with a thinking block; only manual thinking (`type: "enabled"`, which the suite never sends)
+    /// demands one at the start of the final assistant turn. The model's own thinking goes back first and unchanged,
+    /// and every step only appends to the messages and keeps the tools, so its thinking stays valid. The tool of the
+    /// call is offered, also when more tools are allowed than fit (as here).
+    #[tokio::test]
+    async fn a_chat_about_a_mail_reads_it_first_in_a_body_anthropic_takes() {
+        for effort in [None, Some(torro_core::ai::Effort::High)] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let thought = json!({"type": "thinking", "thinking": "", "signature": "c2lnbmF0dXJl"});
+            let call = ToolCall {
+                id: "toolu_01".into(),
+                name: "mail_get_message".into(),
+                arguments: json!({"id": "m:4", "include_body": false}).to_string(),
+            };
+            let thinks_and_calls = ChatReply {
+                tool_calls: vec![call],
+                finish: Finish::ToolCalls,
+                thinking: vec![thought.clone()],
+                ..ChatReply::default()
+            };
+            let steps = vec![Step::Reply(Vec::new(), thinks_and_calls), says("Yes, on Thursday at 14:00.")];
+            let script = Script::new(steps);
+            let (assistant, _host) =
+                set_up_with(dir.path(), Some(mail_of_anna()), Place::Local, Arc::clone(&script), about_answers);
+            let mut message = about_message(None, "Is there a date in it?");
+            message.effort = effort;
+            let checked = assistant.about_for(&message, Some(mail_ref("m:4")), EngineKind::Ai).await.expect("allowed");
+            let id = match assistant.send_about(message, checked, EngineKind::Ai, Utc::now()).await {
+                Response::Conversation { conversation, .. } => conversation.id,
+                other => panic!("expected a conversation, got {other:?}"),
+            };
+            finished(&assistant, &id).await;
+
+            let bodies: Vec<Value> =
+                script.asked().iter().map(|request| torro_core::ai::anthropic::chat_body(request, true)).collect();
+            assert_eq!(bodies.len(), 2, "{effort:?}: the read, then two steps of the model");
+            for body in &bodies {
+                anthropic_takes(body);
+                match effort {
+                    Some(_) => assert_eq!(body["thinking"], json!({"type": "adaptive"}), "{body}"),
+                    None => assert!(body.get("thinking").is_none(), "{body}"),
+                }
+            }
+
+            // The read, as the model sees it in its first step: the person's question, the call, the mail.
+            let first = bodies[0]["messages"].as_array().expect("messages");
+            let read = json!([
+                {"role": "user", "content": [{"type": "text", "text": "Is there a date in it?"}]},
+                {"role": "assistant", "content": [{
+                    "type": "tool_use",
+                    "id": ABOUT_CALL,
+                    "name": "mail_get_message",
+                    "input": {"id": "m:4", "include_body": true},
+                }]},
+            ]);
+            assert_eq!(first[..2], read.as_array().expect("an array")[..], "{effort:?}");
+            assert_eq!(first[2]["content"][0]["tool_use_id"], json!(ABOUT_CALL), "{effort:?}");
+            assert_eq!(first.len(), 3, "{effort:?}: the step answers the person's turn");
+
+            // The second step only appends: the model's thinking first and unchanged, then its call and the result.
+            let second = bodies[1]["messages"].as_array().expect("messages");
+            assert_eq!(second[..first.len()], first[..], "{effort:?}: nothing before is changed");
+            let turn = second[first.len()]["content"].as_array().expect("blocks");
+            assert_eq!(turn[0], thought, "{effort:?}: thinking first, as it came");
+            assert_eq!(turn[1]["type"], json!("tool_use"), "{effort:?}");
+            assert_eq!(bodies[0]["tools"], bodies[1]["tools"], "{effort:?}: the tools stay");
+        }
+    }
+
+    /// Asserts the rules of Anthropic's Messages API that a conversation with tools must keep, else the server
+    /// answers HTTP 400: it starts with the person and the roles take turns; no message and no text block is
+    /// empty; every `tool_use` is answered by a `tool_result` in the very next message, which answers nothing
+    /// else; `input` is an object; thinking, if asked for, is adaptive, never manual (`enabled`, which would need a
+    /// thinking block at the start of the final assistant turn); thinking blocks stand before the other blocks of
+    /// their message. And what the suite keeps to beyond the documented rules: tools are defined whenever a
+    /// `tool_use` or `tool_result` is in it, and every call names one of them.
+    fn anthropic_takes(body: &Value) {
+        let messages = body["messages"].as_array().expect("messages");
+        assert_eq!(messages.first().map(|message| &message["role"]), Some(&json!("user")), "{body}");
+        let tools: Vec<&str> = body["tools"]
+            .as_array()
+            .map(|tools| tools.iter().filter_map(|tool| tool["name"].as_str()).collect())
+            .unwrap_or_default();
+        for (at, message) in messages.iter().enumerate() {
+            if let Some(before) = at.checked_sub(1).map(|before| &messages[before]) {
+                assert_ne!(before["role"], message["role"], "the roles take turns: {body}");
+            }
+            let blocks = message["content"].as_array().expect("blocks");
+            assert!(!blocks.is_empty(), "an empty message: {body}");
+            let kinds: Vec<&str> = blocks.iter().filter_map(|block| block["type"].as_str()).collect();
+            let thoughts = kinds.iter().take_while(|kind| matches!(**kind, "thinking" | "redacted_thinking")).count();
+            assert!(
+                kinds[thoughts..].iter().all(|kind| !matches!(*kind, "thinking" | "redacted_thinking")),
+                "thinking first: {body}"
+            );
+            for block in blocks.iter().filter(|block| block["type"] == "text") {
+                assert!(block["text"].as_str().is_some_and(|text| !text.trim().is_empty()), "empty text: {body}");
+            }
+            let ids = |of: &Value, kind: &str, field: &str| -> Vec<String> {
+                of["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|block| block["type"] == kind)
+                    .filter_map(|block| block[field].as_str().map(str::to_string))
+                    .collect()
+            };
+            let calls = ids(message, "tool_use", "id");
+            let results = ids(message, "tool_result", "tool_use_id");
+            if !calls.is_empty() || !results.is_empty() {
+                assert!(!tools.is_empty(), "tool blocks without tools: {body}");
+            }
+            for block in blocks.iter().filter(|block| block["type"] == "tool_use") {
+                assert!(block["input"].is_object(), "an input object: {body}");
+                let name = block["name"].as_str().unwrap_or_default();
+                assert!(tools.contains(&name), "a call of a tool not offered, {name}: {body}");
+            }
+            if !calls.is_empty() {
+                let next = messages.get(at + 1).expect("the results follow the calls");
+                assert_eq!(ids(next, "tool_result", "tool_use_id"), calls, "every call answered next: {body}");
+            }
+            if !results.is_empty() {
+                let before = at.checked_sub(1).map(|before| &messages[before]).expect("a call before its result");
+                assert_eq!(ids(before, "tool_use", "id"), results, "a result answers the call before: {body}");
+            }
+        }
+        if let Some(thinking) = body.get("thinking") {
+            assert_eq!(thinking, &json!({"type": "adaptive"}), "only adaptive thinking: {body}");
+        }
+    }
+
+    /// The assistant only reads mail of [`ACCOUNT`] (issue #605: enough for the suggestion of its chat's mail).
+    fn reading_anna() -> Rights {
+        let mut rights = reading_mail();
+        rights.mail_accounts = torro_ipc::api::Selection::Only(vec![ACCOUNT.into()]);
+        rights
+    }
+
+    /// Issue #605: a chat about a mail is offered only reading tools and `mail.extract_action` – the latter with
+    /// read access alone, decided with the person – refuses a write the model makes up without asking the core,
+    /// sends every call with the chat's mail (the core checks the suggestion of that mail as reading), and a
+    /// suggestion it reads out becomes a card.
+    #[tokio::test]
+    async fn a_chat_about_a_mail_only_reads_and_suggests() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let extract = json!({"account": ACCOUNT, "id": "m:4", "kind": "event", "focus": "the meeting on Thursday"});
+        let script = Script::new(vec![
+            calls("mail_delete_messages", json!({"ids": ["m:4"]})),
+            calls("mail_extract_action", extract),
+            says("Here is the event to check."),
+        ]);
+        let (assistant, host) =
+            set_up_with(dir.path(), Some(reading_anna()), Place::Local, Arc::clone(&script), about_answers);
+        let id = ask_about(&assistant, None, "Make an event of it", mail_ref("m:4")).await;
+        let entries = finished(&assistant, &id).await;
+        let offered: Vec<String> = script.asked()[0].tools.iter().map(|tool| tool.name.clone()).collect();
+        assert!(offered.contains(&"mail_extract_action".to_string()), "{offered:?}");
+        for unwanted in ["mail_delete_messages", "mail_save_draft", "assistant_remember", "bots_ask_bot"] {
+            assert!(!offered.iter().any(|name| name == unwanted), "{unwanted}: {offered:?}");
+        }
+        let lines: Vec<(&str, Option<&str>, Option<Lack>)> = entries
+            .iter()
+            .filter_map(|entry| match &entry.content {
+                EntryContent::Tool { name, error, lack, .. } => Some((name.as_str(), error.as_deref(), *lack)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                ("mail.get_message", None, None),
+                ("mail.delete_messages", Some("forbidden"), Some(Lack::ReadOnly)),
+                ("mail.extract_action", None, None),
+            ]
+        );
+        let ran: Vec<Request> = host.ran.lock().expect("lock").iter().map(|(request, _)| request.clone()).collect();
+        assert!(!ran.iter().any(|request| matches!(request, Request::DeleteMail { .. })), "never asked: {ran:?}");
+        assert!(
+            ran.iter().any(|request| matches!(request, Request::ExtractAction { focus: Some(focus), .. } if focus == "the meeting on Thursday")),
+            "{ran:?}"
+        );
+        let card = CardRef::Suggestion { account: ACCOUNT.into(), id: "m:4".into(), action: "event".into() };
+        let at = entries.iter().position(|entry| entry.content == EntryContent::Card { card: card.clone() });
+        let tool = entries.iter().position(
+            |entry| matches!(&entry.content, EntryContent::Tool { name, .. } if name == "mail.extract_action"),
+        );
+        assert_eq!(at, tool.map(|tool| tool + 1), "the card right after its tool line: {entries:?}");
+        let abouts = host.abouts.lock().expect("lock").clone();
+        assert_eq!(abouts.len(), 2, "the mail read first and the suggestion: {abouts:?}");
+        assert!(abouts.iter().all(|(_, about)| *about == mail_ref("m:4")));
+        assert!(matches!(abouts[1].0, Request::ExtractAction { .. }), "{abouts:?}");
+    }
+
+    /// Issue #605: outside a chat about a mail the suggestion is offered only with writing, and a call goes to the
+    /// core without a mail, so it is checked as writing there.
+    #[tokio::test]
+    async fn a_suggestion_elsewhere_still_needs_writing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let extract = json!({"account": ACCOUNT, "id": "m:4", "kind": "event"});
+        let script = Script::new(vec![calls("mail_extract_action", extract), says("Done.")]);
+        let (assistant, host) =
+            set_up_with(dir.path(), Some(reading_anna()), Place::Local, Arc::clone(&script), about_answers);
+        let id = ask(&assistant, None, "Make an event of the mail m:4", Vec::new()).await;
+        finished(&assistant, &id).await;
+        let offered: Vec<String> = script.asked()[0].tools.iter().map(|tool| tool.name.clone()).collect();
+        assert!(!offered.iter().any(|name| name == "mail_extract_action"), "{offered:?}");
+        assert!(host.abouts.lock().expect("lock").is_empty(), "no mail named");
+        assert_eq!(host.ran.lock().expect("lock").len(), 1, "the core decides by its rights");
+    }
+
+    /// Issue #605: a suggestion read out in a chat about no mail stays a tool line; only a chat about a mail shows
+    /// it as a card.
+    #[tokio::test]
+    async fn a_suggestion_elsewhere_gets_no_card() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let extract = json!({"account": ACCOUNT, "id": "m:4", "kind": "event"});
+        let script = Script::new(vec![calls("mail_extract_action", extract), says("Done.")]);
+        let (assistant, host) =
+            set_up_with(dir.path(), Some(mail_of_anna()), Place::Local, Arc::clone(&script), about_answers);
+        let id = ask(&assistant, None, "Make an event of the mail m:4", Vec::new()).await;
+        let entries = finished(&assistant, &id).await;
+        assert!(
+            entries.iter().any(|entry| matches!(
+                &entry.content,
+                EntryContent::Tool { name, error: None, .. } if name == "mail.extract_action"
+            )),
+            "the suggestion was read out: {entries:?}"
+        );
+        assert!(
+            !entries.iter().any(|entry| matches!(entry.content, EntryContent::Card { .. })),
+            "no card: {entries:?}"
+        );
+        assert!(
+            host.ran.lock().expect("lock").iter().any(|(request, _)| matches!(request, Request::ExtractAction { .. }))
+        );
     }
 }

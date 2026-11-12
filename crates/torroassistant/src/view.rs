@@ -374,8 +374,8 @@ impl App {
     }
 
     /// A conversation in the sidebar: its title on a row of the sidebar's height, the open one
-    /// chosen, one that answers with a quiet mark. A click opens it, a double click opens it in a
-    /// window of its own, a right click its menu.
+    /// chosen, one that answers with a quiet mark, one about a mail with the mail's (issue #605). A
+    /// click opens it, a double click opens it in a window of its own, a right click its menu.
     fn conversation_row<'a>(
         &'a self,
         conversation: &'a ConversationSummary,
@@ -384,15 +384,23 @@ impl App {
         let id = conversation.id.clone();
         let active = self.current.as_ref() == Some(&id);
         let hovered = self.hover.as_ref() == Some(&id);
-        // The title fits the row or ends in "…", with the whole title as tooltip.
-        let mark = if conversation.running { icon::SIZE_SM + space::s() } else { 0.0 };
-        let room = row_title_room(self.sidebar_shown()) - mark;
+        // The title fits the row or ends in "…", with the whole title as tooltip; the marks before
+        // and after it take their room.
+        let about = conversation.about.is_some();
+        let marks = usize::from(conversation.running) + usize::from(about);
+        let room = row_title_room(self.sidebar_shown()) - marks as f32 * (icon::SIZE_SM + space::s());
         let shown = typo::ellipsize(&conversation.title, typo::body(), room);
         let cut = shown != conversation.title;
         let title = container(typo::text(typo::body(), shown).wrapping(Wrapping::None)).width(Fill).clip(true);
         let title: Element<'a, Message> =
             if cut { widgets::with_tooltip(title, conversation.title.as_str()) } else { title.into() };
-        let mut content = row![title].spacing(space::s()).align_y(Alignment::Center);
+        let mut content = row![].spacing(space::s()).align_y(Alignment::Center);
+        // A chat about a mail (issue #605, "Ask AI…" in the mail window) carries the mail's mark.
+        if about {
+            content = content
+                .push(widgets::with_tooltip(tinted(Icon::Mail, icon::SIZE_SM, |p| p.text_3), tr("About a mail")));
+        }
+        let mut content = content.push(title);
         if conversation.running {
             content = content.push(widgets::with_tooltip(
                 tinted(Icon::CircleDotDashed, icon::SIZE_SM, |p| p.text_3),

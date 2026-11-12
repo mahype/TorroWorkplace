@@ -63,6 +63,7 @@
 //! written to [`START_ERROR_FILE`] in the inbox's state directory instead (see [`report_start_error`]).
 
 mod app;
+mod ask;
 mod compose;
 mod detail;
 #[cfg(test)]

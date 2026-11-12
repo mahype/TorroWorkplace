@@ -924,7 +924,7 @@ impl InboxClient {
         kind: String,
         lists: Vec<String>,
     ) -> Result<Suggestion, InboxError> {
-        match self.ask(Request::ExtractAction { account, id, kind, lists }).await? {
+        match self.ask(Request::ExtractAction { account, id, kind, lists, focus: None }).await? {
             Response::Suggestion { suggestion } => Ok(suggestion),
             other => Err(unexpected(other)),
         }

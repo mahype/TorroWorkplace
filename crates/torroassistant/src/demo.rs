@@ -30,7 +30,7 @@ use torro_inbox::{SourceInfo, SourceRef};
 use torro_ipc::api::{Access, Area, AreaRights, BOT_CLIENT, Lack, Level, Rights, Selection};
 use torro_ipc::assistant::{
     Card, CardEntry, CardRef, ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, LETTER_AVATAR,
-    Profile,
+    MailRef, Profile,
 };
 use torro_ipc::bots::{Bot, Skill};
 use torro_ipc::{AccountInfo, ApprovalInfo, ApprovalState, ClientInfo, Request, Response};
@@ -60,6 +60,9 @@ pub const ASKED: &str = "d000000000000008";
 pub const PROPOSAL: &str = "d00000000000000a";
 /// "Release notes": a conversation of a bot that was deleted.
 pub const GONE: &str = "d000000000000009";
+/// "Design review on Thursday": a chat about a mail (issue #605, "Ask AI…" in the mail window), with
+/// the mail's mark in the sidebar and the event it read out as a suggestion card.
+pub const MAIL_CHAT: &str = "d00000000000000b";
 
 /// The bot "Travel planner".
 pub const TRAVEL: &str = "b0000001";
@@ -165,7 +168,7 @@ impl Demo {
             Request::Accounts => Response::Accounts { accounts: accounts() },
             Request::ListConversations => Response::Conversations { conversations: state.summaries() },
             Request::GetConversation { id, after } => state.get(&id, after.unwrap_or(0)),
-            Request::SendMessage { conversation, engine, model, effort, text, without, mode, bot } => {
+            Request::SendMessage { conversation, engine, model, effort, text, without, mode, bot, about: _ } => {
                 state.send(conversation, (engine, model, effort), text, (without, mode), bot)
             }
             // No default for new chats in the demo: the one used last (issue #131).
@@ -326,6 +329,7 @@ impl State {
                     last: 0,
                     bot: bot.clone(),
                     bot_deleted: false,
+                    about: None,
                 };
                 self.conversations.push(Conversation { summary, entries: Vec::new(), growing: None });
                 id
@@ -529,6 +533,7 @@ fn sample(id: &str, title: &str, now: DateTime<Utc>, ago: Duration, entries: Vec
         last: entries.len() as u64,
         bot: None,
         bot_deleted: false,
+        about: None,
     };
     Conversation { summary, entries, growing: None }
 }
@@ -694,11 +699,33 @@ fn samples(now: DateTime<Utc>) -> Vec<Conversation> {
             answer(tr("Your travel planner knows the night trains well. Shall I ask Travel planner?")),
         ],
     );
-    vec![plan, block, draft, forbidden, trip, release, lisbon, porto, gone, vienna]
+    // Issue #605: a chat about a mail, started in the mail window.
+    let mail = MailRef { account: "mail:anna@work.example.org".into(), id: "m:w2".into() };
+    let mut review = sample(
+        MAIL_CHAT,
+        tr("Design review on Thursday"),
+        now,
+        Duration::hours(1),
+        vec![
+            message(tr("There is a meeting on Thursday, make an event of it please.")),
+            tool("mail.get_message", serde_json::json!({"id": "m:w2"}), "", None),
+            tool("mail.extract_action", serde_json::json!({"id": "m:w2", "kind": "event"}), "", None),
+            answer(tr("Here it is. Check it and accept it to open the event editor.")),
+            EntryContent::Card {
+                card: CardRef::Suggestion {
+                    account: mail.account.clone(),
+                    id: mail.id.clone(),
+                    action: "event".into(),
+                },
+            },
+        ],
+    );
+    review.summary.about = Some(mail);
+    vec![plan, block, draft, forbidden, trip, release, lisbon, porto, gone, vienna, review]
 }
 
 /// The cards of `entries` as the core resolves them (task WZ.8): [`PDF`] as a file on the desktop,
-/// every other file gone.
+/// every other file gone; a suggestion of a mail (issue #605) as the event read out of it.
 fn cards(entries: &[Entry], now: DateTime<Utc>) -> Vec<CardEntry> {
     entries
         .iter()
@@ -707,9 +734,38 @@ fn cards(entries: &[Entry], now: DateTime<Utc>) -> Vec<CardEntry> {
                 seq: entry.seq,
                 card: if id == PDF { Card::File(pdf(now)) } else { Card::Unavailable },
             }),
+            EntryContent::Card { card: CardRef::Suggestion { account, id, .. } } => Some(CardEntry {
+                seq: entry.seq,
+                card: Card::Suggestion {
+                    account: account.clone(),
+                    id: id.clone(),
+                    suggestion: Box::new(design_review(now)),
+                },
+            }),
             _ => None,
         })
         .collect()
+}
+
+/// The event "Design review" read out of the mail of [`MAIL_CHAT`]: two days on at 14:00 for an hour.
+/// Made-up model text like the demo's mail, so its title and place stay untranslated.
+fn design_review(now: DateTime<Utc>) -> torro_ipc::actions::Suggestion {
+    let start = now + Duration::days(2);
+    torro_ipc::actions::Suggestion {
+        kind: "event".into(),
+        state: torro_ipc::actions::SuggestionState::Ready,
+        task: None,
+        event: Some(torro_ipc::EventSuggestion {
+            title: "Design review".into(),
+            start: Some(torro_pim::EventTime::DateTime(start)),
+            end: Some(torro_pim::EventTime::DateTime(start + Duration::hours(1))),
+            location: Some("Office".into()),
+            attendees: Vec::new(),
+            engine: OLLAMA.into(),
+            model: "qwen3:14b".into(),
+        }),
+        reason: Some("The mail proposes the meeting".into()),
+    }
 }
 
 /// The PDF of "Release checklist" as the register keeps it.
@@ -1012,6 +1068,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         let (summary, entries) = conversation(demo.answer(send));
         assert_eq!((summary.last, summary.running, entries.len()), (1, true, 1));

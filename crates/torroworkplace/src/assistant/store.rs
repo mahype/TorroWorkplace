@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use torro_core::ai::Effort;
-use torro_ipc::assistant::{ConversationSummary, Entry, EntryContent};
+use torro_ipc::assistant::{ConversationSummary, Entry, EntryContent, MailRef};
 
 /// The extension of a conversation's file.
 const EXTENSION: &str = "jsonl";
@@ -29,13 +29,16 @@ const TITLE_CHARS: usize = 60;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "line", rename_all = "snake_case")]
 pub enum Line {
-    /// The first line: when the conversation started, its first title, and the bot it is with
-    /// (task B.1; left out for the assistant, so files from before bots read the same).
+    /// The first line: when the conversation started, its first title, the bot it is with
+    /// (task B.1; left out for the assistant, so files from before bots read the same) and the mail
+    /// it is about (issue #605; left out for every other conversation, so older files read as none).
     Started {
         created: DateTime<Utc>,
         title: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bot: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        about: Option<MailRef>,
     },
     /// One entry, as the API shows it.
     Entry { entry: Entry },
@@ -57,24 +60,39 @@ pub struct Conversation {
     pub entries: Vec<Entry>,
     /// The bot it is with (task B.1), fixed when it starts; `None` for the assistant.
     pub bot: Option<String>,
+    /// The mail it is about (issue #605), fixed when it starts; `None` for every other conversation.
+    pub about: Option<MailRef>,
 }
 
 impl Conversation {
     /// A new conversation that starts with `text` at `now`: titled with the start of its first line.
     pub fn new(id: String, text: &str, now: DateTime<Utc>) -> Conversation {
-        Conversation { id, title: title_of(text), created: now, pinned: false, entries: Vec::new(), bot: None }
+        Conversation {
+            id,
+            title: title_of(text),
+            created: now,
+            pinned: false,
+            entries: Vec::new(),
+            bot: None,
+            about: None,
+        }
     }
 
     /// The first line of its file.
     pub fn started(&self) -> Line {
-        Line::Started { created: self.created, title: self.title.clone(), bot: self.bot.clone() }
+        Line::Started {
+            created: self.created,
+            title: self.title.clone(),
+            bot: self.bot.clone(),
+            about: self.about.clone(),
+        }
     }
 
     /// The conversation the lines of the file `id` tell, `None` without [`Line::Started`] first.
     fn fold(id: String, lines: impl IntoIterator<Item = Line>) -> Option<Conversation> {
         let mut lines = lines.into_iter();
-        let Some(Line::Started { created, title, bot }) = lines.next() else { return None };
-        let mut conversation = Conversation { id, title, created, pinned: false, entries: Vec::new(), bot };
+        let Some(Line::Started { created, title, bot, about }) = lines.next() else { return None };
+        let mut conversation = Conversation { id, title, created, pinned: false, entries: Vec::new(), bot, about };
         for line in lines {
             conversation.apply(line);
         }
@@ -137,6 +155,7 @@ impl Conversation {
             last: self.last(),
             bot: self.bot.clone(),
             bot_deleted: false,
+            about: self.about.clone(),
         }
     }
 
@@ -333,6 +352,29 @@ mod tests {
         assert_eq!((read[1].title.as_str(), read[1].bot.as_ref()), ("Old", None));
         let line = fs::read_to_string(file(dir.path(), &with_bot.id)).expect("the file");
         assert!(line.contains("\"bot\":\"1a2b3c4d\""), "{line}");
+    }
+
+    /// Issue #605: a conversation about a mail keeps the mail in its first line and shows it; one from
+    /// before reads as about none.
+    #[test]
+    fn a_conversation_keeps_the_mail_it_is_about() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut about = Conversation::new("0123456789abcdef".into(), "Is there a date?", at(0));
+        about.about = Some(MailRef { account: "mail:anna@example.org".into(), id: "m:4".into() });
+        append(dir.path(), &about.id, &[about.started()]).expect("written");
+        fs::write(
+            file(dir.path(), "fedcba9876543210"),
+            "{\"line\":\"started\",\"created\":\"2026-10-13T09:00:00Z\",\"title\":\"Old\"}\n",
+        )
+        .expect("an older file");
+        let mut read = load_all(dir.path()).expect("read");
+        read.sort_by(|a, b| a.id.cmp(&b.id));
+        assert_eq!(read[0], about);
+        assert_eq!(read[0].summary(false).about, about.about);
+        assert_eq!((read[1].about.as_ref(), read[1].summary(false).about), (None, None));
+        let line = fs::read_to_string(file(dir.path(), &about.id)).expect("the file");
+        assert!(line.contains("\"about\":{\"account\":\"mail:anna@example.org\",\"id\":\"m:4\"}"), "{line}");
+        assert!(!fs::read_to_string(file(dir.path(), "fedcba9876543210")).expect("old").contains("about"));
     }
 
     #[test]

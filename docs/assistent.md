@@ -62,7 +62,10 @@ Was offene Modelle brauchen, damit das gut geht:
 - **Wenige Werkzeuge auf einmal:** Kleine Modelle verlieren bei 80 Werkzeugen den Überblick. Der Kern
   gibt nur die Werkzeuge der Bereiche, die der Assistent darf und die in der Unterhaltung an sind,
   und bei kleinen Modellen zunächst nur die lesenden. Ist die Zahl zu groß, bekommt das Modell ein
-  Werkzeug `find_tools` (Suche im Katalog), das die passenden nachlädt.
+  Werkzeug `find_tools` (Suche im Katalog), das die passenden nachlädt. Ändern sich dadurch (oder durch
+  geänderte Rechte) die Werkzeuge mitten in einer Antwort, schickt die Schleife das bisherige Denken
+  (thinking-Blöcke) dieser Antwort nicht mehr mit: Anthropic bindet jeden Block an Systemprompt und
+  Werkzeuge, unter denen er entstand, und lehnt ihn nach einer Änderung mit HTTP 400 ab (#605).
 - **Kurzer Kontext:** Ergebnisse von Werkzeugen werden gekürzt (Mail-Text abgeschnitten, Listen mit
   Anzahl), die volle Fassung bleibt aufklappbar in der App.
 - **Ehrlich bei Grenzen:** Kann ein lokales Modell keine Werkzeuge, sagt die Auswahl das, statt es
@@ -116,7 +119,8 @@ Der Assistent bekommt zu jeder Unterhaltung einen Systemprompt aus drei Teilen:
    zurückgeben beim Ändern, Freigaben, `not-found` heißt auch „nicht erlaubt“), Stil der Antworten
    (kurz, Sprache der Person, Zeiten in ihrer Zeitzone, vor großen Änderungen fragen).
 3. **Erzeugter Teil** beim Start: Datum, Zeitzone, Sprache, Name der Person, welche Bereiche der
-   Client darf. Keine Liste aller Mails oder Termine; die holt das Modell über Werkzeuge.
+   Client darf. Die Uhrzeit wird einmal je Antwort festgehalten, damit der Systemprompt von Schritt zu
+   Schritt einer Antwort gleich bleibt (#605). Keine Liste aller Mails oder Termine; die holt das Modell über Werkzeuge.
 
 Die Beschreibungen der Werkzeuge kommen wie immer aus dem Katalog (`api.rs`); der Skill
 wiederholt sie nicht. Derselbe Text steht auch als MCP-Prompt `torro_workplace` und als Skill-Datei
@@ -178,6 +182,43 @@ Konto, Hosts, Wirkungen und Zielbindung für Automatik; Regelaktivierung bleibt 
 und Widerruf stoppen über die Ausführungsepoche auch bereits laufende manuelle Einmalaufträge.
 Automatische Ausführung benutzt anschließend den begrenzten Runner, **keinen** laufenden Chat-Agenten, kein Portal-Login,
 keinen Browser, kein Skript und keinen Ausbau der allgemeinen Übergabe #260 oder Erweiterungen #79.
+
+## Chat zu einer Mail (#605)
+
+Im Mail-Programm öffnet „Ask AI…“ in der Gruppe Torro der Aktionsleiste ein Chat-Paneel zur offenen
+Mail, im Leser wie im eigenen Mail-Fenster; die Taste `i` öffnet es und schließt es wieder (solange
+das Eingabefeld die Tastatur nicht hat, sonst schließt Escape). Breit steht es rechts neben der Mail,
+mittel und schmal deckt es die Mail ab („‹ Mail“ führt zurück). Entwurf: `docs/prototypes/mail-mini-chat/`.
+
+- **Eine Unterhaltung des Assistenten mit Bezug.** `assistant.send_message` nimmt `about`
+  (`mail:<adresse>`, `m:…`). Die Unterhaltung behält den Bezug; eine Fortsetzung ohne `about` erbt
+  ihn, ein anderer ist ein Fehler (`error`). Sie erscheint auch in der Assistent-App, mit Mail-Symbol.
+- **Verlauf je Mail.** „Ask AI…“ setzt die neueste Unterhaltung zur selben Mail fort, „+“ beginnt neu.
+- **Nur lesen und vorschlagen.** Auch wenn der Assistent sonst mehr darf, stehen in einer solchen
+  Unterhaltung nur Werkzeuge mit Zugriff Read und `mail.extract_action` bereit, ohne Werkzeuge der
+  MCP-Server, ohne Bots und ohne Websuche und Seitenabruf (der Text der Mail darf keine Anfrage nach
+  außen lenken); der Kern lehnt andere Aufrufe auch beim Ausführen ab. Entwürfe schreibt der Chat nicht. `mail.extract_action` für genau diese Mail (Konto und Kennung) gilt hier als Lesen:
+  Das Mail-Leserecht des Assistenten auf dem Konto reicht; für eine andere Mail, in anderen Chats und
+  über API und MCP braucht es weiter Schreibrecht.
+- **Die Mail liest der Kern vorab.** Vor der ersten Antwort ruft er `mail.get_message` wie ein Werkzeug
+  auf (Rechte, Datenregel, Werkzeugzeile). Frühere Mails holt das Modell nur auf Abruf über
+  `mail.get_thread` und `mail.search_messages`; das hält den Kontext lokaler Modelle klein.
+- **Vorschläge als Karte.** Was das Modell über `mail.extract_action` ausliest (die Worte der Person als
+  `focus`), wird ein Vorschlag der Mail wie in [vorschlaege.md](vorschlaege.md) und erscheint als Karte
+  im Chat. „Accept“ öffnet den vorausgefüllten Dialog; erst „Create“ legt an. Die Karte gibt es nur im
+  Chat zu einer Mail; ruft eine andere Unterhaltung `mail.extract_action` auf, steht dort nur die
+  Werkzeugzeile, und der Vorschlag liegt wie jeder andere bei der Mail. In der Assistent-App zeigt die
+  Karte nur die Kurzform mit „Open in Mail“: `apps.open_app` mit `message:<konto>:<m:…>` öffnet das
+  Mail-Fenster auf dieser Mail, wo man den Vorschlag annimmt. Der Kern prüft Leserecht und Konto und
+  antwortet sonst `not-found`; das Ziel gibt es auch für API und MCP (`apps_open_app`).
+- **Rechte.** Der Assistent braucht Mail-Leserecht und das Konto in seiner Reichweite, sonst
+  `forbidden` und das Paneel zeigt einen Hinweis mit „Open assistant“. Den Hinweis zeigt es schon beim
+  Öffnen: `assistant.check_about` (Read) prüft mit Antrieb, Modell und Mail dasselbe wie
+  `assistant.send_message` mit `about` für eine neue Unterhaltung, ohne etwas zu speichern oder ein Modell
+  zu fragen. Kennt ein älterer Kern den Befehl nicht, öffnet das Paneel wie zuvor, und erst „Send“ sagt es. Hält die Datenregel Mail vom
+  gewählten Modell fern: `not-connected`. Mit Bot oder fremdem Antrieb: `unsupported`. Für einen
+  Client, der das Konto selbst nicht sieht, gibt es die Unterhaltung nicht: Sie fehlt in der Liste, und
+  jeder Befehl, der sie nennt, antwortet `not-found`, denn ihre Einträge erzählen, was in der Mail steht.
 
 ## Bots (Stufe 2)
 
@@ -636,6 +677,8 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | Unterhaltungen auflisten | Seitenleiste | `assistant.list_conversations` · Read | `assistant_list_conversations` |
 | Unterhaltung lesen (ab Stelle) | Verlauf | `assistant.get_conversation` · Read | `assistant_get_conversation` |
 | Nachricht schicken (neue oder bestehende Unterhaltung) | Eingabefeld | `assistant.send_message` · Write (startet einen Modelllauf) | `assistant_send_message` |
+| Fragen zu einer Mail | Mail › „Ask AI…“ (Paneel) | `assistant.send_message` mit `about` · Write | `assistant_send_message` mit `about` |
+| Vorab prüfen, ob ein Chat zu einer Mail ginge | Mail › „Ask AI…“ (Hinweis beim Öffnen) | `assistant.check_about` · Read | `assistant_check_about` |
 | Antwort abbrechen | „Stop“ | `assistant.cancel` · Write | `assistant_cancel` |
 | Unterhaltung umbenennen | Kontextmenü | `assistant.rename_conversation` · Write | `assistant_rename_conversation` |
 | Unterhaltung als eigenes Fenster öffnen | „Open in new window“, „Ask about this“ | `assistant.open_window { conversation \| new \| bot }` · Write (startet `torroassistant --chat …`) | `assistant_open_window` |

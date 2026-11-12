@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<!-- Entwurf: Mini-Chat zu einer Mail (Issue #605), siehe docs/assistent.md „Chat zu einer Mail“.
+     „Ask AI…“ in der Gruppe Torro der Aktionsleiste öffnet ein Paneel: breit rechts neben der Mail,
+     mittel und schmal deckt es die Mail ab („‹ Mail“ zurück). Zustände über die Knöpfe oben oder
+     ?state=closed|open|answer|card|no-ai|no-right|not-local, ?window=reader|mail, ?theme=light,
+     ?size=s|m|l. Tokens und Bausteine aus ../linear/torro.css. -->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mail mini chat</title>
+<link rel="stylesheet" href="../linear/torro.css">
+<script src="../linear/size.js"></script>
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<style>
+:root{--attention:#E8A33D;--ok:#3FB984;--error:#F2555A}
+:root[data-theme="light"]{--attention:#B06F12;--ok:#1F9D68;--error:#C9302C}
+body{overflow:auto;height:auto}
+.bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line)}
+.bar .label{font-size:12px;color:var(--text3);margin-right:4px}
+.bar .btn[aria-pressed="true"]{border-color:var(--focus);background:var(--selected)}
+.stage{height:calc(100vh - 46px);min-height:560px;display:flex}
+.window{flex:1;min-width:0;display:flex;margin:8px;background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+html:not([data-size="l"]) .window{margin:0;border:0;border-radius:0}
+.list{width:300px;flex:none;border-right:1px solid var(--line);display:flex;flex-direction:column}
+html:not([data-size="l"]) .list,.window.mailwin .list{display:none}
+.lrow{padding:10px 16px;border-bottom:1px solid var(--line)}
+.lrow.sel{background:var(--selected)}
+.lrow b{font-weight:500;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lrow span{font-size:12px;color:var(--text3)}
+
+/* Leser: die Aktionsleiste schwebt rechts über dem Rand (wie bisher). */
+.reader{flex:1;min-width:0;position:relative;display:flex;flex-direction:column}
+.rbody{flex:1;overflow:auto;padding:16px 72px 24px 24px;max-width:860px}
+.rbody h2{font-size:20px;line-height:28px;font-weight:600;margin:4px 0 12px}
+.from{display:flex;gap:12px;align-items:center;margin-bottom:16px}
+.from .avatar{width:32px;height:32px;font-size:11px;margin:0;border:0;background:var(--c-work)}
+.from .who b{font-weight:500;display:block}
+.from .who span{font-size:12px;color:var(--text3)}
+.mailtext p{margin:0 0 12px;color:var(--text2);max-width:64ch}
+.att{display:flex;align-items:center;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid var(--line);color:var(--text2)}
+.att svg{color:var(--text3)}
+.rail{position:absolute;right:12px;top:12px;display:flex;flex-direction:column;gap:2px;padding:4px;background:var(--menu);border:1px solid var(--line-strong);border-radius:10px;box-shadow:var(--shadow);z-index:5}
+.rail .iconbtn{width:32px;height:32px}
+.rail .rsep{height:1px;background:var(--line);margin:4px 2px}
+.rail .grp{font-size:10px;line-height:12px;font-weight:500;color:var(--text3);text-align:center;padding:2px 0}
+.rail .iconbtn.accent{color:var(--accent)}
+.rail .iconbtn.on{background:var(--selected);color:var(--text)}
+.tip{position:absolute;right:56px;height:28px;display:flex;align-items:center;gap:8px;padding:0 10px;background:var(--menu);border:1px solid var(--line-strong);border-radius:6px;box-shadow:var(--shadow);white-space:nowrap;font-weight:500}
+.tip svg{color:var(--accent)}
+
+/* Das Paneel: breit eine Spalte neben der Mail, mittel und schmal über der Mail. */
+.ask{width:380px;flex:none;border-left:1px solid var(--line);display:flex;flex-direction:column;background:var(--panel);min-height:0}
+html:not([data-size="l"]) .ask{position:absolute;inset:0;width:auto;border-left:0;z-index:10}
+.window{position:relative}
+.ask .header{gap:6px}
+.ask .header b{font-weight:500}
+.ask .header svg.spark{color:var(--accent)}
+.about{display:flex;gap:10px;align-items:flex-start;padding:10px 16px;border-bottom:1px solid var(--line)}
+.about svg{color:var(--text3);margin-top:2px}
+.about .t{min-width:0}
+.about .t b{font-weight:500;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.about .t span{font-size:12px;color:var(--text3)}
+.log{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+.me{align-self:flex-end;max-width:85%;background:var(--raised);border:1px solid var(--line-strong);border-radius:10px;padding:8px 12px}
+.toolline{display:flex;align-items:center;gap:8px;height:24px;color:var(--text3);font-size:12px;font-weight:500}
+.toolline svg{width:14px;height:14px;color:var(--ok)}
+.say{color:var(--text)}
+.typing{color:var(--text3)}
+.empty{margin:auto;text-align:center;color:var(--text3);max-width:260px;display:flex;flex-direction:column;gap:8px;align-items:center}
+.empty svg{width:24px;height:24px;color:var(--text3)}
+.starters{display:flex;flex-direction:column;gap:6px;width:100%}
+.starters .pchip{justify-content:flex-start;height:30px;color:var(--text2)}
+.card{background:var(--raised);border:1px solid var(--line-strong);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:10px}
+.card .head{display:flex;gap:10px;align-items:center}
+.card .head svg{color:var(--c-work)}
+.card .head b{font-weight:500;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card .meta{font-size:12px;line-height:16px;color:var(--text2)}
+.card .why{font-size:12px;line-height:16px;color:var(--text3)}
+.card .actions{display:flex;gap:8px;justify-content:flex-end}
+.composer{margin:0 12px 12px;border:1px solid var(--line-strong);background:var(--raised);border-radius:10px;padding:8px 8px 8px 12px;display:flex;align-items:center;gap:8px}
+.composer .ph{flex:1;color:var(--text3)}
+.composer .iconbtn.send{background:var(--accent);color:#fff}
+.composer.off{opacity:.5}
+.hint{margin:16px;padding:12px;border:1px solid var(--line-strong);border-radius:10px;background:var(--raised);display:flex;flex-direction:column;gap:10px}
+.hint .row{display:flex;gap:10px;align-items:flex-start}
+.hint svg{color:var(--attention);margin-top:2px}
+.hint .actions{display:flex;justify-content:flex-end}
+.back{display:none}
+html:not([data-size="l"]) .back{display:inline-flex}
+</style>
+</head>
+<body>
+<div class="bar">
+  <span class="label">State</span>
+  <span id="states"></span>
+  <span class="label" style="margin-left:12px">Window</span>
+  <button class="btn" data-window="reader">Reader</button>
+  <button class="btn" data-window="mail">Mail window</button>
+</div>
+<div class="stage"><div class="window" id="win"></div></div>
+
+<script>
+const q=new URLSearchParams(location.search);
+let state=q.get('state')||'card', win=q.get('window')||'reader';
+const STATES=[['closed','Collapsed'],['open','Open'],['answer','With answer'],['card','With action card'],
+  ['no-ai','Hint: no AI'],['no-right','Hint: no right'],['not-local','Hint: AI may not read mail']];
+const icon=(n,c='')=>`<i data-lucide="${n}" class="${c}"></i>`;
+
+function mail(){return `
+  <div class="rbody">
+    <div class="crumbs faint">Inbox › Work</div>
+    <h2>Projekttreffen</h2>
+    <div class="from"><div class="avatar">AB</div><div class="who"><b>Anna Berg</b><span>anna@example.org · Today 09:12</span></div></div>
+    <div class="mailtext">
+      <p>Hallo,</p>
+      <p>lass uns am Donnerstag um 14 Uhr im Büro über den Stand sprechen. Bring bitte die Zahlen vom letzten Quartal mit.</p>
+      <p>Bis Freitag bräuchte ich außerdem deine Rückmeldung zum Entwurf.</p>
+      <p>Viele Grüße<br>Anna</p>
+    </div>
+    <div class="att">${icon('paperclip')}Entwurf.pdf <span class="faint">240 KB</span></div>
+  </div>`}
+
+function rail(open){return `
+  <div class="rail">
+    <button class="iconbtn" title="Reply">${icon('reply')}</button>
+    <button class="iconbtn" title="Done">${icon('check')}</button>
+    <button class="iconbtn" title="Pile">${icon('layers')}</button>
+    <div class="rsep"></div><div class="grp">Torro</div>
+    <button class="iconbtn" title="Task">${icon('circle-check')}</button>
+    <button class="iconbtn" title="Event">${icon('calendar-plus')}</button>
+    <button class="iconbtn accent ${open?'on':''}" title="Ask AI…">${icon('sparkles')}</button>
+    <button class="iconbtn" title="Category…">${icon('tag')}</button>
+  </div>
+  ${open?'':'<div class="tip" style="top:236px">'+icon('sparkles')+'Ask AI…</div>'}`}
+
+function body(){
+  switch(state){
+    case 'open': return `<div class="log"><div class="empty">${icon('sparkles')}
+      <div>Ask about this mail. Torro reads it first; it only reads and suggests.</div>
+      <div class="starters"><span class="pchip">What does the sender want from me?</span>
+      <span class="pchip">Is there a deadline?</span><span class="pchip">What was said about this before?</span></div></div></div>${composer()}`;
+    case 'answer': return `<div class="log">
+      <div class="me">What does Anna want from me?</div>
+      <div class="toolline">${icon('check')}Read mail</div>
+      <div class="say">Anna asks for two things: bring the figures of the last quarter to the meeting on Thursday at 14:00, and give feedback on the draft (attached) by Friday.</div>
+      <div class="me">Was that discussed before?</div>
+      <div class="toolline">${icon('check')}Searched mail · 3 results</div>
+      <div class="typing">Writing…</div></div>${composer()}`;
+    case 'card': return `<div class="log">
+      <div class="me">There is a meeting on Thursday, make an event of it please.</div>
+      <div class="toolline">${icon('check')}Read mail</div>
+      <div class="toolline">${icon('check')}Read an event out of the mail</div>
+      <div class="say">Here it is. Check it and accept it to open the event editor.</div>
+      <div class="card"><div class="head">${icon('calendar-plus')}<b>Event · Projekttreffen</b></div>
+        <div class="meta">Thu 14:00–15:00 · Büro</div>
+        <div class="why">“The mail proposes the meeting”</div>
+        <div class="actions"><button class="btn ghost">Dismiss</button><button class="btn primary">Accept</button></div></div>
+      </div>${composer()}`;
+    case 'no-ai': return hint('Set up an AI in Settings › AI first.','Open settings');
+    case 'no-right': return hint("The assistant may not read this mail. Allow it in the assistant's settings under Access.",'Open assistant');
+    case 'not-local': return hint('This AI may not read mail. Choose a model on this computer.',null);
+  }
+  return '';
+}
+const composer=()=>`<div class="composer"><span class="ph">Ask about this mail…</span><button class="iconbtn send" title="Send">${icon('arrow-up')}</button></div>`;
+const hint=(text,action)=>`<div class="hint"><div class="row">${icon('info')}<div>${text}</div></div>
+  ${action?`<div class="actions"><button class="btn">${action}</button></div>`:''}</div>
+  <div class="log"></div><div class="composer off"><span class="ph">Ask about this mail…</span><button class="iconbtn" title="Send">${icon('arrow-up')}</button></div>`;
+
+function panel(){return `
+  <div class="ask">
+    <div class="header">
+      <button class="btn ghost back">${icon('chevron-left')}Mail</button>
+      ${icon('sparkles','spark')}<b>Ask AI</b><span class="grow"></span>
+      <button class="iconbtn" title="New chat">${icon('plus')}</button>
+      <button class="iconbtn" title="Close">${icon('x')}</button>
+    </div>
+    <div class="about">${icon('mail')}<div class="t"><b>About: Projekttreffen</b><span>Anna Berg · Today 09:12</span></div></div>
+    ${body()}
+  </div>`}
+
+function render(){
+  const open=state!=='closed';
+  const w=document.getElementById('win');
+  w.className='window'+(win==='mail'?' mailwin':'');
+  w.innerHTML=`
+    <div class="list">
+      <div class="header"><b>Inbox</b></div>
+      <div class="lrow sel"><b>Anna Berg</b><span>Projekttreffen</span></div>
+      <div class="lrow"><b>Max Weber</b><span>Rechnung März</span></div>
+      <div class="lrow"><b>GitHub</b><span>New pull request</span></div>
+    </div>
+    <div class="reader">${win==='mail'?'<div class="header"><b>Projekttreffen</b><span class="grow"></span><span class="faint">6 of 9</span></div>':''}${mail()}${rail(open)}</div>
+    ${open?panel():''}`;
+  document.getElementById('states').innerHTML=STATES.map(([id,l])=>`<button class="btn" data-state="${id}" aria-pressed="${id===state}">${l}</button>`).join(' ');
+  document.querySelectorAll('[data-window]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.window===win));
+  lucide.createIcons();
+}
+document.addEventListener('click',e=>{
+  const b=e.target.closest('button');if(!b)return;
+  if(b.dataset.state){state=b.dataset.state;render()}
+  if(b.dataset.window){win=b.dataset.window;render()}
+});
+render();
+</script>
+</body>
+</html>

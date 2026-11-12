@@ -1236,6 +1236,7 @@ fn describe(request: &Request) -> String {
         // Never a file's title or path (issue #225).
         Request::GetCards { conversation } => format!("cards of conversation {conversation}"),
         Request::SendMessage { .. } => "message to the assistant".into(),
+        Request::CheckAbout { .. } => "check a chat about a mail".into(),
         Request::CancelAnswer { conversation } => format!("stop the answer in conversation {conversation}"),
         Request::RenameConversation { id, .. } => format!("rename conversation {id}"),
         Request::DeleteConversation { id } => format!("delete conversation {id}"),

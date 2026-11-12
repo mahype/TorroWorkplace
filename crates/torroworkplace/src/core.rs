@@ -4363,7 +4363,7 @@ impl Core {
             mode,
             consent: None,
         };
-        let mut via = Via { origin, untrusted: true, asking: None, web: None };
+        let mut via = Via { origin, untrusted: true, asking: None, web: None, about: None };
         let mut rights = rights;
         match scope {
             Some(LentFor::Conversation(conversation)) => {
@@ -4434,7 +4434,7 @@ impl Core {
         // A read-only answer of the assistant (issue #132) changes nothing, also not what its kind
         // may do whatever its rights say (its memory, proposing a bot). A server's tool by its own
         // access (issue #302): a `read` tool stays.
-        if via.origin.mode.refuses(self.extension_operation(&request)) {
+        if via.origin.mode.refuses(self.operation_about(&request, via.about.as_ref())) {
             return Err(Refused::Lacks { command: request.operation().name(), lack: torro_ipc::api::Lack::ReadOnly });
         }
         // Mail limits and accounts first (task M2.1): nobody is asked to approve what is refused
@@ -4491,7 +4491,10 @@ impl Core {
         // Point 6 (task C.9): switching the microphone on is a person's, also with every right, and
         // so is letting mail go to the cloud (task C.17). The assistant's own memory is its own
         // whatever its rights in `assistant` say (task C.10).
-        let allowed = rights.allows_request(&request) || self.allowed_by_kind(&id, request.operation());
+        // A suggestion of the mail a chat is about counts as reading there (issue #605, [`about_read`]).
+        let checked = self.operation_about(&request, via.about.as_ref());
+        let allowed =
+            (rights.allows(checked) && !request.kept_for_people()) || self.allowed_by_kind(&id, request.operation());
         let for_people = self.switches_on_for_people(&request);
         // Turning on a model that computes elsewhere is the person's too (task S.24): the core's
         // list says where it computes, so it is checked here and not with the request alone.
@@ -4501,7 +4504,7 @@ impl Core {
             false => Ok(false),
         };
         if !allowed || for_people || matches!(elsewhere, Ok(true)) {
-            let (command, operation) = (request.operation().name(), self.extension_operation(&request));
+            let (command, operation) = (request.operation().name(), checked);
             // Issue #133: the answer says what is missing. The microphone is the person's whatever
             // the rights say, and so are a tool's switch and its paths (point 9): more rights would
             // not help.
@@ -4676,6 +4679,16 @@ impl Core {
         {
             return Ok(*refused);
         }
+        // A chat about a mail the client may not read is not there for it (issue #605): before anything
+        // else of the assistant, so neither `busy` nor an approval tells it is there.
+        if let Some(hidden) = self.about_hidden(&request, reach).await {
+            return Ok(hidden);
+        }
+        // Nor a new chat about a mail the client may not see; what the assistant may not read is refused with the
+        // assistant's other refusals below (issue #605).
+        if let Err(refused) = self.about_reach(&request, reach).await {
+            return Ok(refused);
+        }
         // What the assistant would refuse anyway is nothing to approve (task C.1): limits, an
         // unknown conversation or engine, a conversation that still answers, a bot's window; nor
         // what the bots would (task B.1): an unknown bot, too many bots.
@@ -4709,8 +4722,9 @@ impl Core {
         {
             return Ok(refused);
         }
-        // A server's tool waits for approval by its own access (issue #302).
-        let operation = self.extension_operation(&request);
+        // A server's tool waits for approval by its own access (issue #302), a suggestion of the mail a chat is
+        // about as reading (issue #605).
+        let operation = self.operation_about(&request, via.about.as_ref());
         // The inbox needs to know who asks, not only what it may see: its own entries, its kind.
         let inbox_client = match operation.area() {
             Area::Inbox => match self.client_info(&id, &rights) {
@@ -4895,7 +4909,8 @@ impl Core {
     /// (task C.11); `untrusted`: the conversation read data from outside the suite, so
     /// `assistant.remember` waits for a person ([`Via::untrusted`]).
     async fn handle_as_assistant(&self, request: Request, engine: &str, untrusted: bool) -> Response {
-        self.handle_as(self.assistant_client(), request, engine, untrusted, Scope::Own, Mode::Default, None).await
+        self.handle_as(self.assistant_client(), request, engine, untrusted, Scope::Own, Mode::Default, (None, None))
+            .await
     }
 
     /// The client of the bot whose client id is `client` (kind `torro_ipc::api::BOT_CLIENT`) as
@@ -4924,7 +4939,9 @@ impl Core {
     /// which narrows the client's rights as well and is kept by the approvals it asks for. `web` (issue
     /// #305, task WEB.5): a command of the tool `web` from the answer's conversation
     /// ([`crate::assistant::Host::run_web`]); `None` on every other way, which refuses the assistant and
-    /// bots those commands ([`Core::web_gate`]).
+    /// bots those commands ([`Core::web_gate`]). `about` (issue #605): the mail of a chat about it
+    /// ([`crate::assistant::Host::run_about`]), so `mail.extract_action` for that mail counts as reading
+    /// ([`about_read`]); `None` on every other way.
     #[expect(clippy::too_many_arguments, reason = "the ways of the assistant into the core, each a plain value")]
     async fn handle_as(
         &self,
@@ -4934,7 +4951,7 @@ impl Core {
         untrusted: bool,
         scope: Scope<'_>,
         mode: Mode,
-        web: Option<crate::approvals::WebConsent>,
+        (web, about): (Option<crate::approvals::WebConsent>, Option<torro_ipc::assistant::MailRef>),
     ) -> Response {
         let reads_mail_too = matches!(request, Request::SuggestRecipients { contacts_only: false, .. });
         let (command, mut ids) = (request.operation().name(), crate::audit::ids(&request));
@@ -4965,12 +4982,13 @@ impl Core {
             info.rights = origin.mode.narrow(&info.rights);
             info
         });
+        let operation = self.operation_about(&request, about.as_ref());
         let answer = match &client {
             Some(info)
-                if info.rights.allows_request(&request)
+                if (info.rights.allows(operation) && !request.kept_for_people())
                     || torro_ipc::api::allowed_by_kind(&info.kind, request.operation()) =>
             {
-                let via = Via { origin, untrusted, asking, web };
+                let via = Via { origin, untrusted, asking, web, about };
                 self.handle_client(info.id.clone(), info.rights.clone(), request, &via).await
             }
             // A server or tool of it the client may not know of is `not-found`, as in `handle_client`: what the
@@ -4979,7 +4997,6 @@ impl Core {
             Some(info) => match self.extension_unseen(&info.rights, &request) {
                 Some(unseen) => Ok(unseen),
                 None => {
-                    let operation = self.extension_operation(&request);
                     let lack = torro_ipc::api::Lack::of_in(&info.kind, &info.rights, operation, &[], &[], origin.mode);
                     Err(match lack {
                         Some(lack) => Refused::Lacks { command, lack },
@@ -6609,8 +6626,8 @@ impl Core {
             Request::DismissSuggestion { account, id, kind } => {
                 self.close_suggestion(&account, &id, &kind, false, reach).await
             }
-            Request::ExtractAction { account, id, kind, lists } => {
-                Box::pin(self.extract_action((&account, &id, &kind), lists, reach)).await
+            Request::ExtractAction { account, id, kind, lists, focus } => {
+                Box::pin(self.extract_action((&account, &id, &kind), lists, focus, reach)).await
             }
             Request::ListActionKinds => {
                 Response::ActionKinds { kinds: crate::actions::kinds(&self.settings.current()) }
@@ -7062,6 +7079,7 @@ impl Core {
             | Request::ListConversations
             | Request::GetConversation { .. }
             | Request::SendMessage { .. }
+            | Request::CheckAbout { .. }
             | Request::CancelAnswer { .. }
             | Request::RenameConversation { .. }
             | Request::DeleteConversation { .. }
@@ -7076,11 +7094,23 @@ impl Core {
                     Reach::Suite => None,
                     Reach::Client(_) => Some(caller.unwrap_or("unknown").to_string()),
                 };
-                Box::pin(self.assistant_request(request, from)).await
+                // A chat about a mail (issue #605): only for a caller that sees the mail itself.
+                if let Some(hidden) = self.about_hidden(&request, reach).await {
+                    return hidden;
+                }
+                if let Err(refused) = self.about_reach(&request, reach).await {
+                    return refused;
+                }
+                let answered = Box::pin(self.assistant_request(request, from)).await;
+                self.about_within(answered, reach)
             }
             // Cards (issue #225): resolved with the rights of the conversation's client, not the caller's
             // alone.
-            Request::GetCards { conversation } => self.cards(&conversation, reach).await,
+            // A chat about a mail the caller may not read is not there for it (issue #605).
+            Request::GetCards { conversation } => match self.hidden_conversation(&conversation, reach).await {
+                Some(hidden) => hidden,
+                None => self.cards(&conversation, reach).await,
+            },
             // Bots (task B.1): rights were checked in `handle_from`; a bot's client is made and
             // removed with it.
             request @ (Request::ListBots
@@ -7313,6 +7343,20 @@ impl Core {
                 None => operation,
             },
             _ => operation,
+        }
+    }
+
+    /// [`Core::extension_operation`] for a tool call of a chat about the mail `about` (issue #605): reading for
+    /// `mail.extract_action` of exactly that mail ([`about_read`]), so the rights, the permission mode and the
+    /// approvals treat it as reading; every other request, and every request without `about`, as before.
+    fn operation_about(
+        &self,
+        request: &Request,
+        about: Option<&torro_ipc::assistant::MailRef>,
+    ) -> torro_ipc::api::Operation {
+        match about_read(request, about) {
+            true => torro_ipc::api::Operation { command: request.operation().command, access: Access::Read },
+            false => self.extension_operation(request),
         }
     }
 
@@ -7602,7 +7646,7 @@ impl Core {
         for held in waiting {
             let Some(kind) = crate::actions::kind(&held.kind) else { continue };
             // A model that hangs must not hold up the mail after it.
-            let reading = self.read_action(account, message, kind, lists.clone());
+            let reading = self.read_action(account, message, kind, lists.clone(), None);
             let read = match tokio::time::timeout(READING_TIMEOUT, reading).await {
                 Ok(Ok(read)) => read,
                 _ => torro_ipc::actions::Suggestion { state: torro_ipc::actions::SuggestionState::Unfilled, ..held },
@@ -7650,14 +7694,16 @@ impl Core {
 
     /// Reads the action `kind` out of the mail `message` of `account` (issue #603) with the AI of
     /// [`Core::action_reader`]: the fields of its form and the reason, `ready`. `lists` are the names
-    /// of the task lists a task may go to. `Err` with the core's answer: `not-found` for a mail the
-    /// store does not hold, `not-connected` without an AI, the AI's own errors.
+    /// of the task lists a task may go to, `focus` the person's words that say which of several they
+    /// mean (issue #605). `Err` with the core's answer: `not-found` for a mail the store does not hold,
+    /// `not-connected` without an AI, the AI's own errors.
     async fn read_action(
         &self,
         account: &str,
         message: &str,
         kind: &crate::actions::KindDef,
         lists: Vec<String>,
+        focus: Option<String>,
     ) -> Result<torro_ipc::actions::Suggestion, Response> {
         let held = self.mail.content_for_category(account, message).await.map_err(|err| err.response())?;
         let Some(held) = held else { return Err(no_mail()) };
@@ -7667,6 +7713,7 @@ impl Core {
             received: held.date.unwrap_or_else(Utc::now),
             text: held.text,
             lists: crate::suggest::offered_lists(lists),
+            focus,
         };
         let chosen = self.action_reader().await?;
         let provider =
@@ -7780,10 +7827,13 @@ impl Core {
 
     /// `mail.extract_action` (issue #603): reads the action `kind` out of the mail now, after a reading
     /// of the same mail under way, and keeps it `ready` – also over a dismissed one, which opens again.
+    /// `focus`, the person's words (issue #605), goes to the model as data next to the mail
+    /// ([`crate::suggest::Content::focus`]).
     async fn extract_action(
         &self,
         (account, id, kind): (&str, &str, &str),
         lists: Vec<String>,
+        focus: Option<String>,
         reach: Reach<'_>,
     ) -> Response {
         if let Err(refused) = self.suggestion_mail(account, id, reach).await {
@@ -7799,7 +7849,8 @@ impl Core {
             Err(err) => return err.response(),
         };
         let claimed = self.readings.claim(account, id).await;
-        let read = match tokio::time::timeout(READING_TIMEOUT, self.read_action(account, id, def, lists)).await {
+        let reading = self.read_action(account, id, def, lists, focus);
+        let read = match tokio::time::timeout(READING_TIMEOUT, reading).await {
             Ok(read) => read,
             Err(_) => Err(refusal("busy", tr("The AI took too long to read the mail. Try again.").to_string())),
         };
@@ -9538,6 +9589,7 @@ impl Core {
             received: entry.received,
             text: self.text_for_ai(&entry, reach).await,
             lists: crate::suggest::offered_lists(lists),
+            focus: None,
         };
         let local_only = crate::assistant::held_back(&entry);
         let chosen = match self.suggestion_ai(local_only).await {
@@ -10773,8 +10825,9 @@ impl Core {
     /// of what it shows for an approval's summary: the window and the arguments the core builds
     /// ([`crate::apps::target_command`]). `error` for a target of no known form, one longer than
     /// [`TARGET_MAX`] or one that does not open in `app`; `not-found` for a mail or task `reach`
-    /// may not read or that is gone. Nothing of the target reaches a command line but the store's
-    /// own mail id, a task uid the cache holds or the path the tools' register keeps.
+    /// may not read or that is gone. A mail comes by its Message-ID (`mail:`) or by the store's id
+    /// (`message:`, issue #605). Nothing of the target reaches a command line but the store's own
+    /// mail id, a task uid the cache holds or the path the tools' register keeps.
     ///
     /// A file of the tools (`file:<id>`, task WZ.8) for `maker`: the person reaches every file of
     /// the register, a client only its own ([`Maker::Client`]) and only while it may reach the
@@ -10805,6 +10858,18 @@ impl Core {
                     return Err(Box::new(no_mail()));
                 }
                 let found = crate::mail::inbox_feed::linked_mail(&self.mail, account, message_id).await;
+                let found = found.ok_or_else(|| Box::new(no_mail()))?;
+                Ok((crate::apps::Opened::Mail { message: found.id }, found.subject))
+            }
+            // A mail by the store's id (issue #605): read as `mail.get_message` reads it, the same
+            // `not-found` for an account out of reach, one the core does not have and a mail gone.
+            crate::apps::Target::Message { account, id } => {
+                if !reads_mail(reach, account) {
+                    return Err(Box::new(no_mail()));
+                }
+                let store = self.mail.store(account).await.map_err(|_| Box::new(no_mail()))?;
+                let wanted = id.to_string();
+                let found = store.run(move |store| store.summary(&wanted)).await.ok().flatten();
                 let found = found.ok_or_else(|| Box::new(no_mail()))?;
                 Ok((crate::apps::Opened::Mail { message: found.id }, found.subject))
             }
@@ -11410,6 +11475,71 @@ impl Core {
         }
     }
 
+    /// The mail a new `assistant.send_message` or `assistant.check_about` names as `about` (issue #605) as `reach`
+    /// may read it: `Err` with
+    /// `not-found` when the caller may not read that account or the account does not hold that mail
+    /// ([`Core::suggestion_mail`]), so nobody starts a chat about a mail they cannot see and an `about` always names a
+    /// real mail. A conversation that goes on is checked by [`Core::about_hidden`] only, by its account: a mail
+    /// deleted meanwhile shows in the tool line of the answer, not as a refusal. `Ok` for every other request.
+    async fn about_reach(&self, request: &Request, reach: Reach<'_>) -> Result<(), Response> {
+        match request {
+            Request::SendMessage { conversation: None, about: Some(about), .. } | Request::CheckAbout { about, .. } => {
+                self.suggestion_mail(&about.account, &about.id, reach).await
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// `not-found` for a request of the assistant that names a conversation about a mail (issue #605) of an account
+    /// `reach` may not read: for that caller the conversation is not there at all, since its entries (tool lines,
+    /// cards, answers) tell what the mail says. As the assistant answers an unknown conversation. `None` for every
+    /// other request, the suite, and a conversation about no mail or a mail the caller reads.
+    async fn about_hidden(&self, request: &Request, reach: Reach<'_>) -> Option<Response> {
+        self.hidden_conversation(request.conversation()?, reach).await
+    }
+
+    /// [`Core::about_hidden`] for the conversation `id`.
+    async fn hidden_conversation(&self, id: &str, reach: Reach<'_>) -> Option<Response> {
+        let about = self.assistant.about(id).await?;
+        (!reads_mail(reach, &about.account))
+            .then(|| Response::Error { code: "not-found".into(), message: format!("no conversation {id:?}") })
+    }
+
+    /// `answered`, an answer of the assistant, without the conversations about a mail (issue #605) of an account
+    /// `reach` may not read ([`Core::about_hidden`]): `assistant.list_conversations` leaves them out.
+    fn about_within(&self, answered: Response, reach: Reach<'_>) -> Response {
+        match answered {
+            Response::Conversations { mut conversations } => {
+                conversations
+                    .retain(|summary| summary.about.as_ref().is_none_or(|about| reads_mail(reach, &about.account)));
+                Response::Conversations { conversations }
+            }
+            other => other,
+        }
+    }
+
+    /// The open suggestions of the mails the suggestion cards among `entries` point at (issue #605,
+    /// [`crate::assistant::cards::Held`]), as `mail.list_suggestions` lists them for a client with `rights`: a
+    /// mail of an account it may not read is left out, and so is one whose suggestions cannot be read now.
+    async fn held_suggestions(
+        &self,
+        entries: &[torro_ipc::assistant::Entry],
+        rights: Option<&torro_ipc::api::Rights>,
+    ) -> crate::assistant::cards::Held {
+        let mut held = crate::assistant::cards::Held::new();
+        let Some(rights) = rights else { return held };
+        for (account, id) in crate::assistant::cards::suggestion_mails(entries) {
+            if !reads_mail(Reach::Client(rights), &account) {
+                continue;
+            }
+            if let Ok(mut open) = self.mail.suggestions(&account, &id).await {
+                self.seen_lists_only(&mut open, Reach::Client(rights)).await;
+                held.insert((account, id), open);
+            }
+        }
+        held
+    }
+
     /// `assistant.get_cards` (issue #225, task WZ.5) for `reach`: the cards of the conversation
     /// `conversation` as they are now ([`crate::assistant::cards::resolve`]). Resolved with the rights
     /// of the conversation's client – the assistant's own, or the bot's for a conversation with a bot
@@ -11418,8 +11548,9 @@ impl Core {
     /// client may reach the tools' files ([`crate::tools::reaches_files`]: the tool switched on,
     /// `tools` readable, `pdf` selected) and the register keeps it as that client's and intact;
     /// every other card is unavailable, also without such a client (none set up, the bot deleted).
-    /// `not-found` for an unknown conversation, `error` for an id beyond its limit. The register and
-    /// the files are read on a blocking thread.
+    /// A suggestion of a mail (issue #605) shows while the mail has it open, read with the same rights
+    /// ([`Core::held_suggestions`]). `not-found` for an unknown conversation, `error` for an id beyond its
+    /// limit. The register and the files are read on a blocking thread.
     async fn cards(&self, conversation: &str, reach: Reach<'_>) -> Response {
         let request = Request::GetCards { conversation: conversation.to_string() };
         if let Some(refused) = torro_ipc::assistant::limit_refusal(&request) {
@@ -11437,18 +11568,18 @@ impl Core {
             },
         };
         let settings = self.settings.current();
+        let rights = client.as_ref().map(|client| match reach {
+            Reach::Suite => client.rights.clone(),
+            Reach::Client(asker) => client.rights.common(asker),
+        });
+        let held = self.held_suggestions(&entries, rights.as_ref()).await;
         let maker = client
-            .filter(|client| {
-                let rights = match reach {
-                    Reach::Suite => client.rights.clone(),
-                    Reach::Client(asker) => client.rights.common(asker),
-                };
-                crate::tools::reaches_files(&settings.tools, &rights)
-            })
-            .map(|client| client.id);
+            .zip(rights)
+            .filter(|(_, rights)| crate::tools::reaches_files(&settings.tools, rights))
+            .map(|(client, _)| client.id);
         let register = self.tools.register().clone();
         let resolved = tokio::task::spawn_blocking(move || {
-            crate::assistant::cards::resolve(&entries, &register, maker.as_deref())
+            crate::assistant::cards::resolve(&entries, &register, maker.as_deref(), &held)
         });
         match resolved.await {
             Ok(cards) => Response::Cards { cards },
@@ -12686,13 +12817,13 @@ impl Core {
         Some(Response::Error { code: "unsupported".into(), message })
     }
 
-    /// `unsupported` for `assistant.send_message` and `bots.ask_bot` (by the bot's engine) with an AI
-    /// account that has no model on (task S.24): the module never answers with another account
+    /// `unsupported` for `assistant.send_message`, `assistant.check_about` and `bots.ask_bot` (by the
+    /// bot's engine) with an AI account that has no model on (task S.24): the module never answers with another account
     /// instead. `None` for every other request, an engine that is no AI account, and an unknown bot
     /// (the assistant refuses those itself).
     async fn models_off_refusal(&self, request: &Request) -> Option<Response> {
         let engine = match request {
-            Request::SendMessage { engine, .. } => engine.clone(),
+            Request::SendMessage { engine, .. } | Request::CheckAbout { engine, .. } => engine.clone(),
             Request::AskBot { bot, .. } => self.assistant.bots().get(bot).await?.engine,
             _ => return None,
         };
@@ -13223,7 +13354,26 @@ impl crate::assistant::Host for Core {
             crate::assistant::Actor::Delegated(delegation) => Scope::Delegated(delegation),
             _ => Scope::Own,
         };
-        Box::pin(self.handle_as(client, request, engine, untrusted, scope, mode, None))
+        Box::pin(self.handle_as(client, request, engine, untrusted, scope, mode, (None, None)))
+    }
+
+    /// A tool call of a chat about the mail `about` (issue #605): as [`Host::run_in`](crate::assistant::Host::run_in),
+    /// with `mail.extract_action` for exactly that mail checked as reading ([`about_read`]).
+    fn run_about<'a>(
+        &'a self,
+        actor: &'a crate::assistant::Actor,
+        request: Request,
+        engine: &'a str,
+        untrusted: bool,
+        mode: Mode,
+        about: &'a torro_ipc::assistant::MailRef,
+    ) -> torro_core::ai::BoxFuture<'a, Response> {
+        let client = crate::assistant::Host::client_of(self, actor);
+        let scope = match actor {
+            crate::assistant::Actor::Delegated(delegation) => Scope::Delegated(delegation),
+            _ => Scope::Own,
+        };
+        Box::pin(self.handle_as(client, request, engine, untrusted, scope, mode, (None, Some(about.clone()))))
     }
 
     /// A command of the tool `web` from an answer (issue #305, task WEB.5): [`Core::handle_as`] with
@@ -13242,7 +13392,7 @@ impl crate::assistant::Host for Core {
             crate::assistant::Actor::Delegated(delegation) => Scope::Delegated(delegation),
             _ => Scope::Own,
         };
-        Box::pin(self.handle_as(client, request, engine, true, scope, mode, Some(web)))
+        Box::pin(self.handle_as(client, request, engine, true, scope, mode, (Some(web), None)))
     }
 
     fn approval<'a>(&'a self, id: &'a str) -> torro_core::ai::BoxFuture<'a, Response> {
@@ -13395,7 +13545,15 @@ impl crate::assistant::Host for Core {
         without: &'a [Area],
     ) -> torro_core::ai::BoxFuture<'a, Response> {
         let scope = Scope::Asking { conversation: main, without, read_mail };
-        Box::pin(self.handle_as(self.assistant_client(), request, engine, untrusted, scope, Mode::Default, None))
+        Box::pin(self.handle_as(
+            self.assistant_client(),
+            request,
+            engine,
+            untrusted,
+            scope,
+            Mode::Default,
+            (None, None),
+        ))
     }
 
     /// `bots.ask_bot` in the permission mode of the answer (issue #132): the bot then runs in it as
@@ -13408,7 +13566,7 @@ impl crate::assistant::Host for Core {
         untrusted: bool,
     ) -> torro_core::ai::BoxFuture<'a, Response> {
         let scope = Scope::Asking { conversation: from.main, without: from.without, read_mail: from.read_mail };
-        Box::pin(self.handle_as(self.assistant_client(), request, engine, untrusted, scope, from.mode, None))
+        Box::pin(self.handle_as(self.assistant_client(), request, engine, untrusted, scope, from.mode, (None, None)))
     }
 }
 
@@ -13565,6 +13723,20 @@ struct Via {
     /// (issue #305, task WEB.5, [`Core::web_gate`]). `None` for every other request: the assistant
     /// and bots then get no web, a client over API and MCP needs no yes.
     web: Option<crate::approvals::WebConsent>,
+    /// The assistant answers in a chat about this mail (issue #605, [`crate::assistant::Host::run_about`]):
+    /// `mail.extract_action` for exactly this mail is checked as reading ([`about_read`]). `None` on every
+    /// other way, so everywhere else it needs writing.
+    about: Option<torro_ipc::assistant::MailRef>,
+}
+
+/// Whether `request` is `mail.extract_action` for exactly the mail `about` (its account and id) of a chat about
+/// it (issue #605, decided with the person): only then it counts as reading, so the assistant's read access to
+/// that account is enough. It only suggests and creates nothing; for another mail or account it needs writing.
+fn about_read(request: &Request, about: Option<&torro_ipc::assistant::MailRef>) -> bool {
+    match (request, about) {
+        (Request::ExtractAction { account, id, .. }, Some(about)) => *account == about.account && *id == about.id,
+        _ => false,
+    }
 }
 
 /// The ids of an approval's request for the log lines of a person's decision: as the request's own
@@ -16282,7 +16454,7 @@ mod tests {
         let (id, _) = client(&core, rights.clone()).await;
         let info = core.clients.list().into_iter().find(|info| info.id == id).expect("client");
         let run = |info: torro_ipc::ClientInfo, tool: &str| {
-            core.handle_as(Some(info), call_tool(tool), "claude-code", false, Scope::Own, Mode::ReadOnly, None)
+            core.handle_as(Some(info), call_tool(tool), "claude-code", false, Scope::Own, Mode::ReadOnly, (None, None))
         };
         for tool in ["echo", "nothing"] {
             assert_eq!(code(&run(info.clone(), tool).await), "not-found", "{tool}");
@@ -27460,6 +27632,51 @@ mod tests {
             assert!(asked.summary.contains("Offer") && !asked.summary.contains(&todo.uid), "{}", asked.summary);
         }
 
+        /// Issue #605: `message:<account>:<id>` opens the mail by the store's id for the person and a
+        /// client that may read the account; without the right to read mail, for another account and
+        /// for a mail that is not there it is `not-found`, before anything starts.
+        #[tokio::test]
+        async fn a_message_target_opens_the_mail_by_the_stores_id_for_who_may_read_it() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (core, _fake, server) = mail_and_tasks(dir.path()).await;
+            server.add("INBOX", &offer(), &[]);
+            sync_now(&core).await;
+            let id = mail_id(&core, OFFER_ID).await;
+            let target = format!("message:{ANNA}:{id}");
+            let found = (crate::apps::Opened::Mail { message: id.clone() }, "Offer".to_string());
+            let reader = reader_of_mail();
+            let opened = core.open_target("torro-inbox-mail", &target, Reach::Suite, Maker::App).await;
+            assert_eq!(opened, Ok(found.clone()), "the person");
+            let opened = core.open_target("torroinbox", &target, Reach::Client(&reader), Maker::App).await;
+            assert_eq!(opened, Ok(found), "a client that reads the account");
+
+            let open = |target: &str| Request::OpenApp { app: "torro-inbox-mail".into(), target: Some(target.into()) };
+            let mut unread = reader_of_mail();
+            unread.areas.remove(&Area::Mail);
+            let (_, unread) = client(&core, unread).await;
+            assert_eq!(code(&ask(&core, Some(&unread), open(&target)).await), "not-found", "no right to read mail");
+            let mut other = RightsTemplate::FullAccess.rights();
+            other.mail_accounts = Selection::Only(vec!["mail:ben@example.org".into()]);
+            let (_, other) = client(&core, other).await;
+            assert_eq!(code(&ask(&core, Some(&other), open(&target)).await), "not-found", "another account");
+            let (_, reader) = client(&core, reader_of_mail()).await;
+            let gone = format!("message:{ANNA}:m:gone");
+            assert_eq!(code(&ask(&core, Some(&reader), open(&gone)).await), "not-found", "no such mail");
+            let elsewhere = format!("message:mail:ben@example.org:{id}");
+            let unknown = core.open_target("torro-inbox-mail", &elsewhere, Reach::Suite, Maker::App).await;
+            assert_eq!(unknown.map_err(|refused| code(&refused).to_string()), Err("not-found".into()));
+            let tasks = Request::OpenApp { app: "torrotasks".into(), target: Some(target.clone()) };
+            assert_eq!(code(&ask(&core, Some(&reader), tasks).await), "error", "a mail opens in the inbox");
+            assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing asked");
+            // Asked for approval, the summary names the mail's subject from the store, not the target
+            // (not decided here: allowing would start the mail window).
+            let mut asking = reader_of_mail();
+            asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+            let (_, asking) = client(&core, asking).await;
+            let asked = waits(ask(&core, Some(&asking), open(&target)).await);
+            assert!(asked.summary.contains("Offer") && !asked.summary.contains(&id), "{}", asked.summary);
+        }
+
         /// The due day of an entry's task reads like a task's on the wire.
         #[test]
         fn an_entrys_task_is_due_like_a_task() {
@@ -27486,6 +27703,7 @@ mod tests {
                 without: Vec::new(),
                 mode: torro_ipc::assistant::Mode::Default,
                 bot: None,
+                about: None,
             },
             Request::CancelAnswer { conversation: id.into() },
             Request::RenameConversation { id: id.into(), title: "Renamed".into() },
@@ -27667,6 +27885,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         let Response::Conversation { conversation, entries } = ask(&core, Some(&app_key), send).await else {
             panic!("the person starts a conversation")
@@ -27735,6 +27954,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         let Response::Conversation { conversation, entries } = ask(&core, Some(&key), send).await else {
             panic!("the agent starts a conversation")
@@ -27760,6 +27980,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         assert_eq!(code(&ask(&core, Some(&key), nowhere).await), "not-found", "no such engine");
         let bot = Request::OpenChatWindow { window: torro_ipc::assistant::ChatWindow::Bot("travel".into()) };
@@ -27837,6 +28058,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: Some(bot.into()),
+            about: None,
         }
     }
 
@@ -31038,6 +31260,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         match core.handle(send).await {
             Response::Conversation { conversation, .. } => conversation.id,
@@ -31228,6 +31451,7 @@ mod tests {
                     without: Vec::new(),
                     mode: torro_ipc::assistant::Mode::Default,
                     bot: None,
+                    about: None,
                 };
                 let Response::Conversation { conversation, .. } = core.handle(send).await else {
                     panic!("a conversation")
@@ -31420,6 +31644,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: Some(bot.id.clone()),
+            about: None,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         conversation_until(&core, &conversation.id, |running, _| !running).await;
@@ -31503,6 +31728,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         assert!(matches!(core.handle(send).await, Response::Conversation { .. }), "sent");
     }
@@ -31737,6 +31963,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: Some(bot.id.clone()),
+            about: None,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         let asked = waiting_approval(&core).await;
@@ -31875,6 +32102,7 @@ mod tests {
             without: vec![Area::Calendar],
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         let entries = conversation_until(&core, &conversation.id, |running, _| !running).await;
@@ -32236,6 +32464,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         conversation_until(core, &conversation.id, |running, _| !running).await;
@@ -32315,6 +32544,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         assert!(matches!(core.handle(named).await, Response::Conversation { .. }));
         let entries = conversation_until(&core, &first, |running, _| !running).await;
@@ -32520,6 +32750,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         assert!(matches!(ask(&core, Some(&agent_key), by_agent).await, Response::Conversation { .. }));
         conversation_until(&core, &named, |running, _| !running).await;
@@ -32923,6 +33154,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         let label = core.ai.label_of(&account.id).await.expect("a label");
         let off = trf("Turn on a model of {provider} in Settings › AI.", &[("provider", &label)]);
@@ -33280,6 +33512,7 @@ mod tests {
                 id: room.id.clone(),
                 kind: "task".into(),
                 lists: vec![],
+                focus: None,
             };
             assert_eq!(code(&ask(core, Some(&stranger), extract).await), "not-found");
             assert_eq!(ask(core, key, list).await, Response::Suggestions { suggestions: Vec::new() });
@@ -33298,6 +33531,297 @@ mod tests {
             let unknown =
                 Request::DismissSuggestion { account: ANNA.into(), id: room.id.clone(), kind: "github".into() };
             assert_eq!(code(&ask(core, Some(&asking), unknown).await), "not-found", "refused before it is asked");
+        }
+
+        /// Issue #605: a chat about a mail needs a caller that sees the mail (`not-found` otherwise, also to go
+        /// on with one), names a mail the account holds, and shows the mail it is about only to callers that may
+        /// read that account; the assistant's own client must read it too (`forbidden`). A suggestion card shows
+        /// the open suggestion as the assistant's client reads it.
+        #[tokio::test]
+        async fn a_chat_about_a_mail_keeps_to_the_reach_of_the_caller_and_the_assistant() {
+            let Invited { _dir: dir, core, id, app_key, .. } = invited().await;
+            let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+            let core = Arc::new(core.with_assistant(assistant));
+            core.attach_assistant();
+            let mail = torro_ipc::assistant::MailRef { account: ANNA.into(), id: id.clone() };
+            let send =
+                |conversation: Option<&str>, about: Option<torro_ipc::assistant::MailRef>| Request::SendMessage {
+                    conversation: conversation.map(str::to_string),
+                    engine: torro_ipc::assistant::TEST_ENGINE.into(),
+                    model: None,
+                    effort: None,
+                    text: "Is there a date in it?".into(),
+                    without: Vec::new(),
+                    mode: torro_ipc::assistant::Mode::Default,
+                    bot: None,
+                    about,
+                };
+            // Without the assistant's own client nobody reads the mail for it.
+            assert_eq!(code(&ask(&core, Some(&app_key), send(None, Some(mail.clone()))).await), "forbidden");
+            let read = AreaRights { level: Level::Read, admin: false };
+            let mut reading = Rights::assistant();
+            reading.areas.insert(Area::Mail, read);
+            let (assistant, _) =
+                core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, reading.clone()).await.expect("added");
+            assert_eq!(
+                code(&ask(&core, Some(&app_key), send(None, Some(mail.clone()))).await),
+                "forbidden",
+                "mail, but not this account"
+            );
+            reading.mail_accounts = Selection::Only(vec![ANNA.into()]);
+            core.clients.update(&assistant.id, reading.clone()).await.expect("updated");
+            assert!(
+                matches!(
+                    ask(&core, Some(&app_key), Request::ListConversations).await,
+                    Response::Conversations { conversations } if conversations.is_empty()
+                ),
+                "nothing stored when refused"
+            );
+
+            let Response::Conversation { conversation, .. } =
+                ask(&core, Some(&app_key), send(None, Some(mail.clone()))).await
+            else {
+                panic!("the person chats about the mail")
+            };
+            assert_eq!(conversation.about.as_ref(), Some(&mail));
+            let gone = torro_ipc::assistant::MailRef { account: ANNA.into(), id: "m:gone".into() };
+            assert_eq!(code(&ask(&core, Some(&app_key), send(None, Some(gone))).await), "not-found", "no such mail");
+            conversation_until(&core, &conversation.id, |running, _| !running).await;
+
+            let mut elsewhere = RightsTemplate::ReadAndWrite.rights();
+            elsewhere.areas.insert(Area::Assistant, AreaRights { level: Level::Full, admin: false });
+            elsewhere.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
+            let (_, stranger) = client(&core, elsewhere).await;
+            assert_eq!(code(&ask(&core, Some(&stranger), send(None, Some(mail.clone()))).await), "not-found");
+            assert_eq!(
+                code(&ask(&core, Some(&stranger), send(Some(&conversation.id), None)).await),
+                "not-found",
+                "nor go on with it"
+            );
+            let listed = |response: Response| match response {
+                Response::Conversations { conversations } => {
+                    conversations.into_iter().map(|summary| summary.about).collect::<Vec<_>>()
+                }
+                other => panic!("expected conversations, got {other:?}"),
+            };
+            // For a caller that may not read the account the chat is not there at all: its tool lines,
+            // cards and answers tell what the mail says.
+            assert!(listed(ask(&core, Some(&stranger), Request::ListConversations).await).is_empty());
+            let named = conversation.id.clone();
+            for request in [
+                Request::GetConversation { id: named.clone(), after: None },
+                Request::GetCards { conversation: named.clone() },
+                Request::RenameConversation { id: named.clone(), title: "Mine now".into() },
+                Request::PinConversation { id: named.clone(), pinned: true },
+                Request::CancelAnswer { conversation: named.clone() },
+                Request::DeleteConversation { id: named.clone() },
+            ] {
+                let name = request.operation().name();
+                assert_eq!(code(&ask(&core, Some(&stranger), request).await), "not-found", "{name}");
+            }
+            assert_eq!(listed(ask(&core, Some(&app_key), Request::ListConversations).await), [Some(mail.clone())]);
+            let get = Request::GetConversation { id: named.clone(), after: None };
+            let Response::Conversation { conversation: kept, .. } = ask(&core, Some(&app_key), get).await else {
+                panic!("the person still has it")
+            };
+            assert_eq!((kept.title.as_str(), kept.pinned), (conversation.title.as_str(), false), "nothing changed");
+            // A client that reads the account sees and goes on with it.
+            let mut anna = RightsTemplate::ReadAndWrite.rights();
+            anna.areas.insert(Area::Assistant, AreaRights { level: Level::Full, admin: false });
+            anna.mail_accounts = Selection::Only(vec![ANNA.into()]);
+            let (_, reader) = client(&core, anna).await;
+            assert_eq!(listed(ask(&core, Some(&reader), Request::ListConversations).await), [Some(mail.clone())]);
+            assert!(matches!(
+                ask(&core, Some(&reader), send(Some(&named), None)).await,
+                Response::Conversation { conversation, .. } if conversation.about.as_ref() == Some(&mail)
+            ));
+            conversation_until(&core, &named, |running, _| !running).await;
+
+            // A suggestion card shows the mail's open suggestion as the assistant's client reads it.
+            let card = torro_ipc::assistant::Entry {
+                seq: 1,
+                time: Utc::now(),
+                content: torro_ipc::assistant::EntryContent::Card {
+                    card: torro_ipc::assistant::CardRef::Suggestion {
+                        account: ANNA.into(),
+                        id: id.clone(),
+                        action: "event".into(),
+                    },
+                },
+            };
+            let open = torro_ipc::actions::Suggestion {
+                kind: "event".into(),
+                state: torro_ipc::actions::SuggestionState::Ready,
+                task: None,
+                event: None,
+                reason: Some("Anna invites you".into()),
+            };
+            core.mail.keep_suggestion(ANNA, &id, open.clone(), None).await.expect("kept");
+            let held = core.held_suggestions(std::slice::from_ref(&card), Some(&reading)).await;
+            let kinds = held.get(&(ANNA.to_string(), id.clone())).map(|open| {
+                open.iter().map(|suggestion| (suggestion.kind.clone(), suggestion.reason.clone())).collect::<Vec<_>>()
+            });
+            assert_eq!(kinds, Some(vec![("event".to_string(), open.reason)]), "the store's open suggestion");
+            let bob = Rights { mail_accounts: Selection::Only(vec!["mail:bob@example.org".into()]), ..reading };
+            assert!(core.held_suggestions(std::slice::from_ref(&card), Some(&bob)).await.is_empty(), "out of reach");
+            assert!(core.held_suggestions(&[card], None).await.is_empty(), "no client");
+        }
+
+        /// Issue #605: a new chat about a mail is refused before anyone is asked to approve it, when the client
+        /// may not see the mail (`not-found`) and when the assistant may not read it (`forbidden`); only a chat
+        /// that may run waits for the person.
+        #[tokio::test]
+        async fn a_chat_about_a_mail_is_refused_before_anyone_is_asked() {
+            let Invited { _dir: dir, core, id, app_key, .. } = invited().await;
+            let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+            let core = Arc::new(core.with_assistant(assistant));
+            core.attach_assistant();
+            let mail = torro_ipc::assistant::MailRef { account: ANNA.into(), id: id.clone() };
+            let send = || Request::SendMessage {
+                conversation: None,
+                engine: torro_ipc::assistant::TEST_ENGINE.into(),
+                model: None,
+                effort: None,
+                text: "Is there a date in it?".into(),
+                without: Vec::new(),
+                mode: torro_ipc::assistant::Mode::Default,
+                bot: None,
+                about: Some(mail.clone()),
+            };
+            // Every change of these clients waits for the person.
+            let careful = |account: &str| {
+                let mut rights = RightsTemplate::ReadAndWrite.rights();
+                rights.areas.insert(Area::Assistant, AreaRights { level: Level::Full, admin: false });
+                rights.mail_accounts = Selection::Only(vec![account.into()]);
+                Rights { confirm: Confirm::OnEveryChange, ..rights }
+            };
+            let (_, stranger) = client(&core, careful("mail:bob@example.org")).await;
+            assert_eq!(code(&ask(&core, Some(&stranger), send()).await), "not-found", "the client cannot see it");
+            let (_, reader) = client(&core, careful(ANNA)).await;
+            assert_eq!(code(&ask(&core, Some(&reader), send()).await), "forbidden", "no assistant that reads it");
+            let approvals = |response: Response| match response {
+                Response::Approvals { approvals } => approvals,
+                other => panic!("expected approvals, got {other:?}"),
+            };
+            assert!(approvals(ask(&core, Some(&app_key), Request::ListApprovals).await).is_empty(), "nobody asked");
+
+            let mut reading = Rights::assistant();
+            reading.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+            reading.mail_accounts = Selection::Only(vec![ANNA.into()]);
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, reading).await.expect("added");
+            assert!(matches!(ask(&core, Some(&reader), send()).await, Response::Pending { .. }), "now it may run");
+            assert_eq!(approvals(ask(&core, Some(&app_key), Request::ListApprovals).await).len(), 1);
+        }
+
+        /// Issue #605: `assistant.check_about` answers what a new chat about the mail would be refused with, for the
+        /// panel to show its hint on opening, and stores nothing: ok when it may run (reading the
+        /// assistant's area is enough), `forbidden` without an assistant that reads the account,
+        /// `not-found` for a caller that cannot see the mail and for a mail the account does not hold,
+        /// `not-connected` for a model elsewhere under the data rule.
+        #[tokio::test]
+        async fn checking_a_chat_about_a_mail_answers_as_sending_would() {
+            let Invited { _dir: dir, core, id, app_key, .. } = invited().await;
+            let keys = MemoryTokens::default();
+            let core = Core { ai: Arc::new(crate::account::ai::tests::service(dir.path(), &keys, Vec::new())), ..core };
+            let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+            let core = Arc::new(core.with_assistant(assistant));
+            core.attach_assistant();
+            let ollama = crate::account::ai::tests::fake_ollama_with_cloud(true).await;
+            let account = core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await;
+            let account = account.expect("ollama");
+            for model in ["qwen3:8b", "glm-5.3:cloud"] {
+                assert_eq!(core.handle(turn_on(&account.id, model)).await, Response::Ok);
+            }
+            let mail = torro_ipc::assistant::MailRef { account: ANNA.into(), id: id.clone() };
+            let check = |model: &str, about: &torro_ipc::assistant::MailRef| Request::CheckAbout {
+                engine: account.id.clone(),
+                model: Some(model.into()),
+                about: about.clone(),
+            };
+            let local = check("qwen3:8b", &mail);
+            assert_eq!(code(&ask(&core, Some(&app_key), local.clone()).await), "forbidden", "no assistant client");
+
+            let mut reading = Rights::assistant();
+            reading.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+            reading.mail_accounts = Selection::Only(vec![ANNA.into()]);
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, reading).await.expect("added");
+            assert_eq!(ask(&core, Some(&app_key), local.clone()).await, Response::Ok);
+            let cloud = check("glm-5.3:cloud", &mail);
+            assert_eq!(code(&ask(&core, Some(&app_key), cloud).await), "not-connected", "the data rule");
+            let gone = torro_ipc::assistant::MailRef { account: ANNA.into(), id: "m:gone".into() };
+            assert_eq!(code(&ask(&core, Some(&app_key), check("qwen3:8b", &gone)).await), "not-found");
+
+            // A client: reading the assistant's area is enough, and it must see the mail itself.
+            let looking = |account: &str| {
+                let mut rights = RightsTemplate::ReadAndWrite.rights();
+                rights.areas.insert(Area::Assistant, AreaRights { level: Level::Read, admin: false });
+                rights.mail_accounts = Selection::Only(vec![account.into()]);
+                Rights { confirm: Confirm::OnEveryChange, ..rights }
+            };
+            let (_, reader) = client(&core, looking(ANNA)).await;
+            assert_eq!(ask(&core, Some(&reader), local.clone()).await, Response::Ok, "nobody asked");
+            let (_, stranger) = client(&core, looking("mail:bob@example.org")).await;
+            assert_eq!(code(&ask(&core, Some(&stranger), local).await), "not-found", "the client cannot see it");
+            assert!(
+                matches!(
+                    ask(&core, Some(&app_key), Request::ListConversations).await,
+                    Response::Conversations { conversations } if conversations.is_empty()
+                ),
+                "nothing stored"
+            );
+        }
+
+        /// Issue #605, decided with the person: in a chat about a mail the assistant's read access to that
+        /// account is enough for `mail.extract_action` of exactly that mail, also in a read-only answer; elsewhere,
+        /// and for another mail or account in that chat, it still needs writing.
+        #[tokio::test]
+        async fn a_suggestion_of_the_chats_mail_needs_reading_only() {
+            let Invited { _dir: dir, core, id, .. } = invited().await;
+            let keys = MemoryTokens::default();
+            let core = Core { ai: Arc::new(crate::account::ai::tests::service(dir.path(), &keys, Vec::new())), ..core };
+            let ollama = crate::account::ai::tests::fake_ollama().await;
+            let read_out = r#"{"title": "Planning", "start": "2026-11-14T10:00", "end": "2026-11-14T11:00",
+                "reason": "Anna invites you"}"#;
+            let chat = answers_chat(&ollama, "/v1/chat/completions", read_out).await;
+            let connect = Request::ConnectAi {
+                provider: AiProvider::Ollama,
+                server: Some(ollama.url("/v1")),
+                key: torro_ipc::Secret::default(),
+            };
+            let Response::Account { account } = core.handle(connect).await else { panic!("connected") };
+            assert_eq!(core.handle(turn_on(&account.id, "qwen3:8b")).await, Response::Ok);
+            let mut reading = Rights::assistant();
+            reading.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+            reading.mail_accounts = Selection::Only(vec![ANNA.into(), "mail:bob@example.org".into()]);
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, reading).await.expect("added");
+
+            let mail = torro_ipc::assistant::MailRef { account: ANNA.into(), id: id.clone() };
+            let extract = |account: &str, id: &str| Request::ExtractAction {
+                account: account.into(),
+                id: id.into(),
+                kind: "event".into(),
+                lists: Vec::new(),
+                focus: Some("the planning".into()),
+            };
+            let assistant = crate::assistant::Actor::Assistant;
+            let about = |request: Request, mode: Mode| {
+                crate::assistant::Host::run_about(&core, &assistant, request, "test", false, mode, &mail)
+            };
+            // (a) In the chat about the mail: reading is enough, also in a read-only answer.
+            let Response::Suggestion { suggestion } = about(extract(ANNA, &id), Mode::Default).await else {
+                panic!("read out with reading only")
+            };
+            assert_eq!(suggestion.event.map(|event| event.title), Some("Planning".to_string()));
+            assert!(matches!(about(extract(ANNA, &id), Mode::ReadOnly).await, Response::Suggestion { .. }));
+            assert_eq!(chat.calls_async().await, 2, "the AI read it out");
+            // (b) Without the chat's mail it needs writing, as before.
+            let plain =
+                crate::assistant::Host::run_in(&core, &assistant, extract(ANNA, &id), "test", false, Mode::Default);
+            assert_eq!(code(&plain.await), "forbidden");
+            // (c) Another mail or account in the chat needs writing too.
+            assert_eq!(code(&about(extract(ANNA, "m:other"), Mode::Default).await), "forbidden");
+            assert_eq!(code(&about(extract("mail:bob@example.org", &id), Mode::Default).await), "forbidden");
+            assert_eq!(chat.calls_async().await, 2, "nothing more was read out");
         }
 
         /// The answer kept with the mail, as lists show it.
@@ -35076,6 +35600,7 @@ mod tests {
             id: message.clone(),
             kind: "event".into(),
             lists: Vec::new(),
+            focus: None,
         };
         let Response::Suggestion { suggestion } = core.handle(extract).await else { panic!("read out") };
         assert_eq!(suggestion.state, torro_ipc::actions::SuggestionState::Ready);
@@ -35169,6 +35694,7 @@ mod tests {
             id: id.into(),
             kind: kind.into(),
             lists: Vec::new(),
+            focus: None,
         };
         assert_eq!(code(&core.handle(extract("github", &message)).await), "not-found", "no such kind");
         assert_eq!(code(&core.handle(extract("task", "m:gone")).await), "not-found", "no such mail");

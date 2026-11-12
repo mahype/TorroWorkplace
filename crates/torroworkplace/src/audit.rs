@@ -545,12 +545,18 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::ListEngines | Request::ListConversations => Vec::new(),
         // Voice (task C.9): no ids, never what was said.
         Request::VoiceStatus | Request::TestVoice => Vec::new(),
-        Request::SendMessage { conversation, engine, bot, .. } => conversation
+        // A chat about a mail (issue #605): the account and the mail hashed as for its suggestions.
+        Request::SendMessage { conversation, engine, bot, about, .. } => conversation
             .iter()
             .map(|id| random("conversation", id))
             .chain(bot.iter().map(|id| random("bot", id)))
             .chain([engine_id(engine)])
+            .chain(about.iter().flat_map(|about| [account(&about.account), format!("message:{}", hashed(&about.id))]))
             .collect(),
+        // The check before such a chat: the same, without a conversation.
+        Request::CheckAbout { engine, about, .. } => {
+            vec![engine_id(engine), account(&about.account), format!("message:{}", hashed(&about.id))]
+        }
         Request::OpenChatWindow { window: ChatWindow::Bot(bot) } => vec![format!("bot:{}", hashed(bot))],
         Request::OpenChatWindow { window: ChatWindow::New } => Vec::new(),
         Request::GetConversation { id: conversation, .. }
@@ -978,6 +984,7 @@ pub(crate) mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         assert_eq!(
             super::ids(&send),
@@ -992,6 +999,7 @@ pub(crate) mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         assert_eq!(super::ids(&new), vec!["engine:test".to_string()]);
         let odd = Request::SendMessage {
@@ -1003,8 +1011,43 @@ pub(crate) mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         assert_eq!(super::ids(&odd), vec![format!("engine:hash:{}", hashed("Anna's server"))]);
+        // Issue #605: a chat about a mail names the account and the mail hashed, never the text.
+        let about = Request::SendMessage {
+            conversation: None,
+            engine: TEST_ENGINE.into(),
+            model: None,
+            effort: None,
+            text: "Is there a meeting in it?".into(),
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            bot: None,
+            about: Some(torro_ipc::assistant::MailRef { account: "mail:anna@example.org".into(), id: "m:4".into() }),
+        };
+        let logged = super::ids(&about);
+        assert_eq!(logged[0], "engine:test");
+        assert_eq!(logged[2], format!("message:{}", hashed("m:4")));
+        assert!(logged.iter().all(|id| !id.contains("meeting")), "{logged:?}");
+        let check = Request::CheckAbout {
+            engine: TEST_ENGINE.into(),
+            model: Some("qwen3:8b".into()),
+            about: torro_ipc::assistant::MailRef { account: "mail:anna@example.org".into(), id: "m:4".into() },
+        };
+        assert_eq!(super::ids(&check), logged, "the check logs what its message would");
+        let extract = Request::ExtractAction {
+            account: "mail:anna@example.org".into(),
+            id: "m:4".into(),
+            kind: "event".into(),
+            lists: Vec::new(),
+            focus: Some("the meeting on Thursday".into()),
+        };
+        let logged = super::ids(&extract);
+        assert!(
+            logged.iter().all(|id| !id.contains("Thursday") && !id.contains("meeting")),
+            "never the focus: {logged:?}"
+        );
         assert_eq!(super::engine_id("claude-code"), "engine:claude-code", "an agent the core starts is named");
 
         let rename = Request::RenameConversation { id: "0123456789abcdef".into(), title: "Salary talks".into() };

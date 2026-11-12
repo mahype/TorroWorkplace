@@ -52,6 +52,14 @@
 //!   answer adds a card entry that points at it, with either engine; `assistant.get_cards` shows what it points
 //!   at now, resolved by the core with the rights of the conversation's client.
 //!
+//! - **A chat about a mail** (issue #605, "Chat zu einer Mail" in `docs/assistent.md`): `assistant.send_message`
+//!   with `about` starts a conversation that keeps the mail ([`ConversationSummary::about`]) for good; a later
+//!   message without it goes on with that mail, one with another is `error` ([`Assistant::about_for`]). Only
+//!   with the assistant (not a bot) and engine A, only while the assistant's own client may read that mail
+//!   account (`forbidden`) and only with a model the data rule lets read mail (`not-connected`); refused, nothing
+//!   is stored. The answer reads the mail first and only reads and suggests ([`model`]). The caller's own reach
+//!   to the mail the core checks ([`crate::core::Core::handle_from`]).
+//!
 //! What goes to a client never names a path; the core's log does.
 
 pub(crate) mod cards;
@@ -79,9 +87,10 @@ use torro_core::ai::Effort;
 use torro_core::i18n::tr;
 use torro_core::paths::AppPaths;
 use torro_core::settings::Retention;
-use torro_ipc::api::Area;
+use torro_ipc::api::{Access, Area};
 use torro_ipc::assistant::{
-    ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, MAX_NOTES, Note, Profile, TEST_ENGINE,
+    ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, MAX_NOTES, MailRef, Note, Profile,
+    TEST_ENGINE,
 };
 use torro_ipc::bots::Bot;
 use torro_ipc::{Request, Response};
@@ -401,10 +410,11 @@ impl Assistant {
 
     /// What a request would be refused with anyway, checked before anyone is asked to approve it
     /// and again by [`answer_from`]: its limits, a conversation the core does not have (`not-found`),
-    /// for a message (also `bots.ask_bot`) an engine that does not answer ([`Assistant::engine`]),
-    /// a conversation that still answers (`busy`), a bot that is not there (`not-found`) or a
-    /// conversation of another bot or of none ([`Assistant::bot_refusal`]), the window of a
-    /// bot that is not there (`not-found`). `None` when it may run.
+    /// for a message (also `bots.ask_bot`) an engine that does not answer ([`Assistant::engine`]) and for a
+    /// message about a mail what [`Assistant::about_for`] refuses (issue #605), the same for
+    /// `assistant.check_about` ([`Assistant::check_about_refusal`]), a conversation that still answers
+    /// (`busy`), a bot that is not there (`not-found`) or a conversation of another bot or of none
+    /// ([`Assistant::bot_refusal`]), the window of a bot that is not there (`not-found`). `None` when it may run.
     pub async fn refusal(&self, ai: &AiAccounts, request: &Request) -> Option<Response> {
         if let Some(refused) =
             torro_ipc::assistant::limit_refusal(request).or_else(|| torro_ipc::bots::limit_refusal(request))
@@ -440,13 +450,87 @@ impl Assistant {
         }
         let actor = Actor::of(bot.as_ref());
         match (request, &bot) {
-            (Request::SendMessage { engine, .. }, _) => self.engine(ai, engine, &actor).await.err(),
+            (Request::SendMessage { .. }, _) => self.message_refusal(ai, request, bot.clone(), &actor).await,
+            (Request::CheckAbout { engine, model, about }, _) => {
+                self.check_about_refusal(ai, engine, model.clone(), about.clone()).await
+            }
             (Request::AskBot { .. }, Some(bot)) => self.engine(ai, &bot.engine, &actor).await.err(),
             (Request::OpenChatWindow { window: ChatWindow::Bot(id) }, _) if self.bots.get(id).await.is_none() => {
                 Some(crate::bots::no_bot(id))
             }
             _ => None,
         }
+    }
+
+    /// Why the `assistant.send_message` `request` would be refused anyway, checked before anyone is asked to approve
+    /// it: an engine that does not answer for `actor` ([`Assistant::engine`]), and for a chat about a mail (issue
+    /// #605) what [`Assistant::about_for`] refuses (the assistant's read access to the account, the data rule, a bot
+    /// or an agent, mail switched off, another mail than the conversation's). `bot`: the bot it names, as stored.
+    async fn message_refusal(
+        &self,
+        ai: &AiAccounts,
+        request: &Request,
+        bot: Option<Bot>,
+        actor: &Actor,
+    ) -> Option<Response> {
+        let Request::SendMessage { conversation, engine, model, effort, text, without, mode, about, .. } = request
+        else {
+            return None;
+        };
+        let message = Message {
+            conversation: conversation.clone(),
+            engine: engine.clone(),
+            model: model.clone(),
+            effort: *effort,
+            text: text.clone(),
+            without: without.clone(),
+            mode: *mode,
+            bot,
+            on_behalf: None,
+            from: None,
+        };
+        self.engine_and_about_refusal(ai, &message, about.clone(), actor).await
+    }
+
+    /// Why `assistant.check_about` (issue #605) is refused: what [`Assistant::message_refusal`] would refuse for a
+    /// new conversation of the assistant about `about` with `engine` and `model` – no bot, nothing switched off,
+    /// the default mode. Nothing is stored and no model is asked. `None` when such a chat would be taken.
+    async fn check_about_refusal(
+        &self,
+        ai: &AiAccounts,
+        engine: &str,
+        model: Option<String>,
+        about: MailRef,
+    ) -> Option<Response> {
+        let message = Message {
+            conversation: None,
+            engine: engine.to_string(),
+            model,
+            effort: None,
+            text: String::new(),
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            bot: None,
+            on_behalf: None,
+            from: None,
+        };
+        self.engine_and_about_refusal(ai, &message, Some(about), &Actor::Assistant).await
+    }
+
+    /// An engine of `message` that does not answer for `actor` ([`Assistant::engine`]), else what
+    /// [`Assistant::about_for`] refuses for `about`; `None` when neither refuses.
+    async fn engine_and_about_refusal(
+        &self,
+        ai: &AiAccounts,
+        message: &Message,
+        about: Option<MailRef>,
+        actor: &Actor,
+    ) -> Option<Response> {
+        let kind = match self.engine(ai, &message.engine, actor).await {
+            Ok(kind) => kind,
+            Err(refused) => return Some(refused),
+        };
+        self.about_for(message, about, kind).await.err()
     }
 
     /// What drives `engine` for `actor`, or why it cannot answer: `not-found` for no engine of
@@ -469,16 +553,106 @@ impl Assistant {
         }
     }
 
+    /// The mail of conversation `id` (issue #605); `None` for one about none and one the core does not have.
+    pub async fn about(&self, id: &str) -> Option<MailRef> {
+        self.state().await.conversations.get(id).and_then(|conversation| conversation.about.clone())
+    }
+
+    /// The mail `message` is about (issue #605), or why it may not be sent; checked before anything is stored.
+    /// `about` as the request names it: for a new conversation the mail it is about, for one that goes on the
+    /// same mail it keeps (`error` for another, or for a mail where it is about none); left out, it goes on with
+    /// the conversation's own. `Ok(None)` for a message about no mail. A message about a mail is refused
+    ///
+    /// - `unsupported` with a bot or a coding agent (engine B, `kind`): only the assistant's model reads it;
+    /// - `error` with mail switched off for the conversation (`without`);
+    /// - `forbidden` when the assistant's own client may not read mail or not that account
+    ///   ([`torro_ipc::api::Rights::reaches_mail_account`]), also when there is no such client or core yet;
+    /// - `not-connected` for engine A when the model it answers with runs elsewhere and the person's data rule
+    ///   keeps mail on their computers ([`Host::data_rule`]); a model that cannot be had is left to the answer,
+    ///   which fails with its error.
+    async fn about_for(
+        &self,
+        message: &Message,
+        about: Option<MailRef>,
+        kind: EngineKind,
+    ) -> Result<Option<MailRef>, Response> {
+        let kept = match &message.conversation {
+            Some(id) => match self.state().await.conversations.get(id) {
+                Some(conversation) => Some(conversation.about.clone()),
+                None => return Err(unknown(id)),
+            },
+            None => None,
+        };
+        let about = match (about, kept) {
+            (Some(asked), Some(kept)) if kept.as_ref() != Some(&asked) => {
+                return Err(failure("this conversation is about another mail or none; start a new one for this mail"));
+            }
+            (asked, kept) => asked.or(kept.flatten()),
+        };
+        let Some(about) = about else { return Ok(None) };
+        if message.bot.is_some() {
+            return Err(refusal("unsupported", "a chat about a mail is with the assistant only, not with a bot"));
+        }
+        if kind == EngineKind::Agent {
+            return Err(refusal("unsupported", "a chat about a mail needs an AI account; agents are not given mail"));
+        }
+        if message.without.contains(&Area::Mail) {
+            return Err(failure("a chat about a mail reads mail; do not switch mail off for it"));
+        }
+        let host = self.host();
+        let rights = host.as_ref().and_then(|host| host.client_of(&Actor::Assistant)).map(|client| client.rights);
+        let reads = rights.is_some_and(|rights| {
+            rights.area(Area::Mail).allows(Access::Read) && rights.reaches_mail_account(&about.account)
+        });
+        if !reads {
+            return Err(refusal(
+                "forbidden",
+                "the assistant may not read this mail account; a person can allow it in the assistant's access",
+            ));
+        }
+        // A model that cannot be had now is left to the answer, which fails with its error; should it get one
+        // after all, the data rule still holds: the mail is read through the tools and screened for the model's
+        // place ([`data_rule::for_model`] with its `Reader`), so a model elsewhere reads "withheld" only.
+        if let (EngineKind::Ai, Some(host)) = (kind, host)
+            && let Ok(access) = host.model(&message.engine, message.model.as_deref()).await
+            && access.place != Place::Local
+            && !host.data_rule().mail_to_cloud
+        {
+            return Err(refusal(
+                "not-connected",
+                "the person's data rule keeps mail on their computers, and this model runs elsewhere; choose a \
+                 model on this computer",
+            ));
+        }
+        Ok(Some(about))
+    }
+
     /// `assistant.send_message` once the engine is known to answer (`kind`): adds the message to
     /// `conversation` or to a new one and starts the answer. Answers with the conversation and the
-    /// entries this call added.
+    /// entries this call added. A conversation about a mail goes on with it ([`Assistant::send_about`]).
     async fn send(self: &Arc<Self>, message: Message, kind: EngineKind, now: DateTime<Utc>) -> Response {
+        self.send_about(message, None, kind, now).await
+    }
+
+    /// [`Assistant::send`] about the mail `about` (issue #605, checked by [`Assistant::about_for`]): a new
+    /// conversation keeps it for good; one that goes on keeps its own, and `error` when `about` names another.
+    async fn send_about(
+        self: &Arc<Self>,
+        message: Message,
+        about: Option<MailRef>,
+        kind: EngineKind,
+        now: DateTime<Utc>,
+    ) -> Response {
         let mut state = self.state().await;
         let (mut conversation, new) = match &message.conversation {
             Some(id) if state.running.contains_key(id) => return busy(),
             Some(id) => match state.conversations.get(id) {
                 Some(conversation) => match bot_refusal(conversation, message.bot.as_ref()) {
                     Some(refused) => return refused,
+                    // Checked before, again under the lock: the mail a conversation is about never changes.
+                    None if about.is_some() && about != conversation.about => {
+                        return failure("this conversation is about another mail or none; start a new one for it");
+                    }
                     None => (conversation.clone(), false),
                 },
                 None => return unknown(id),
@@ -487,11 +661,13 @@ impl Assistant {
                 Ok(id) => {
                     let mut conversation = Conversation::new(id, &message.text, now);
                     conversation.bot = message.bot.as_ref().map(|bot| bot.id.clone());
+                    conversation.about = about;
                     (conversation, true)
                 }
                 Err(err) => return failure(&err),
             },
         };
+        let about = conversation.about.clone();
         let before = conversation.last();
         let entry = conversation.next(
             EntryContent::Message {
@@ -536,6 +712,7 @@ impl Assistant {
             partial: Arc::default(),
             actor,
             bot: message.bot,
+            about,
         };
         match kind {
             EngineKind::Test => self.start_test_answer(&mut state, &id, engine),
@@ -1069,7 +1246,7 @@ pub async fn answer_from(
         Request::ListEngines => Response::Engines { engines: assistant.engines(ai).await },
         Request::ListConversations => assistant.list().await,
         Request::GetConversation { id, after } => assistant.get(&id, after).await,
-        Request::SendMessage { conversation, engine, model, effort, text, without, mode, bot } => {
+        Request::SendMessage { conversation, engine, model, effort, text, without, mode, bot, about } => {
             let bot = match bot {
                 Some(id) => match assistant.bots.get(&id).await {
                     Some(bot) => Some(bot),
@@ -1086,8 +1263,15 @@ pub async fn answer_from(
             };
             let message =
                 Message { conversation, engine, model, effort, text, without, mode, bot, on_behalf: None, from };
-            assistant.send(message, kind, Utc::now()).await
+            // A chat about a mail (issue #605): refused before anything is stored.
+            let about = match assistant.about_for(&message, about, kind).await {
+                Ok(about) => about,
+                Err(refused) => return refused,
+            };
+            assistant.send_about(message, about, kind, Utc::now()).await
         }
+        // Checked by [`Assistant::refusal`] above (issue #605): nothing more to do.
+        Request::CheckAbout { .. } => Response::Ok,
         Request::AskBot { bot, text, conversation } => {
             let Some(bot) = assistant.bots.get(&bot).await else { return crate::bots::no_bot(&bot) };
             let kind = match assistant.engine(ai, &bot.engine, &Actor::of(Some(&bot))).await {
@@ -1187,6 +1371,7 @@ pub(crate) mod tests {
             without: vec![Area::Mail],
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         }
     }
 
@@ -1301,6 +1486,7 @@ pub(crate) mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         assert_eq!(code(&answer(&assistant, &ai, other).await), "not-found", "no such engine");
         assert_eq!(code(&answer(&assistant, &ai, send(None, " ")).await), "error", "limits first");
@@ -1362,6 +1548,7 @@ pub(crate) mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         assert_eq!(code(&answer(&assistant, &ai, to_ollama).await), "unsupported");
         assert_eq!(

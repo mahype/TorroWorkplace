@@ -10,6 +10,9 @@
 //! - [`typo`]: the type scale (`typo::text(typo::body(), …)`).
 //! - [`fonts`] / [`settings`]: the bundled Inter files and the Iced settings that load the fonts
 //!   of the active design.
+//! - [`chat`]: the chat with the assistant apart from drawing (issue #605): the transcript of a
+//!   conversation, what answers, the words of a tool line – shared by the assistant's windows and the
+//!   mini chat about a mail.
 //! - [`connect`]: the "connect your Nextcloud" screen every app shows without an account.
 //! - [`datetime`]: German date and time parsing and formatting, week arithmetic.
 //! - [`dialog`]: the frame of a dialog: fixed head and foot, a body that scrolls in low windows.
@@ -35,6 +38,7 @@
 //! - [`zoom`]: zoom like a browser (Ctrl + Plus / Minus / 0) for the whole suite, with the short
 //!   badge that shows the new level.
 
+pub mod chat;
 pub mod components;
 pub mod connect;
 pub mod datetime;

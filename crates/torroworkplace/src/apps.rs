@@ -692,6 +692,10 @@ pub enum Target<'a> {
     /// `mail:<address>:<Message-ID>`: a task's link to a mail, as the account id and the
     /// Message-ID ([`torro_pim::model::Link::mail_ref`]).
     Mail { account: &'a str, message_id: &'a str },
+    /// `message:<account>:<id>` (issue #605): a mail by the account (`mail:<address>`) and the id the
+    /// core's store gives it (`m:…`), as `mail.search_messages` and a suggestion's card name it – for
+    /// clients that know no Message-ID.
+    Message { account: &'a str, id: &'a str },
     /// `task:<uid>`: a task by its iCalendar UID.
     Task { uid: &'a str },
     /// `file:<id>`: a file of the tools' register (issue #225), by its id of 8 hex digits, to go
@@ -711,6 +715,12 @@ const CHAT_TARGET: &str = "chat:";
 /// The start of a task target.
 const TASK_TARGET: &str = "task:";
 
+/// The start of a target naming a mail by its account and the store's id (issue #605).
+const MESSAGE_TARGET: &str = "message:";
+
+/// The start of the store's id of a mail.
+const STORE_ID: &str = "m:";
+
 /// The start of a file target.
 const FILE_TARGET: &str = "file:";
 
@@ -725,8 +735,8 @@ impl<'a> Target<'a> {
     /// is empty or holds control characters, for a file id that is not 8 hex digits, and for a
     /// template id with other characters than `a`–`z`, `0`–`9` and `-` (the form of a template's id).
     pub fn parse(text: &'a str) -> Result<Target<'a>, &'static str> {
-        const FORMS: &str =
-            "a target is mail:<address>:<Message-ID>, task:<uid>, file:<id>, template:<id> or chat:<conversation>";
+        const FORMS: &str = "a target is mail:<address>:<Message-ID>, message:mail:<address>:m:<id>, task:<uid>, file:<id>, \
+             template:<id> or chat:<conversation>";
         if let Some(conversation) = text.strip_prefix(CHAT_TARGET) {
             let named = conversation == "contacts" || torro_chat::split_conversation(conversation).is_some();
             return if named { Ok(Target::Chat { conversation }) } else { Err(FORMS) };
@@ -739,6 +749,18 @@ impl<'a> Target<'a> {
         if let Some(id) = text.strip_prefix(FILE_TARGET) {
             let hex = id.len() == FILE_ID_LEN && id.bytes().all(|byte| byte.is_ascii_hexdigit());
             return if hex { Ok(Target::File { id }) } else { Err(FORMS) };
+        }
+        // `message:mail:<address>:m:…`: the account ends where a mail link's does (`Link::mail_ref`),
+        // the rest must be a store id – no blanks or control characters, which it never holds.
+        if let Some(rest) = text.strip_prefix(MESSAGE_TARGET) {
+            let link = torro_pim::model::Link::new(rest);
+            let (account, id) = link.mail_ref().ok_or(FORMS)?;
+            let (account, id) = (account.len(), id.len());
+            let (account, id) = (&rest[..account], &rest[rest.len() - id..]);
+            let stored = id.len() > STORE_ID.len()
+                && id.starts_with(STORE_ID)
+                && !id.chars().any(|c| c.is_whitespace() || c.is_control());
+            return if stored { Ok(Target::Message { account, id }) } else { Err(FORMS) };
         }
         if let Some(uid) = text.strip_prefix(TASK_TARGET) {
             return match uid.is_empty() || uid.chars().any(char::is_control) {
@@ -757,7 +779,7 @@ impl<'a> Target<'a> {
     /// a file), the tasks app, or the core (its dialog for a template).
     pub fn app(self) -> AppId {
         match self {
-            Target::Mail { .. } | Target::File { .. } => AppId::INBOX_MAIL,
+            Target::Mail { .. } | Target::Message { .. } | Target::File { .. } => AppId::INBOX_MAIL,
             Target::Task { .. } => AppId::TASKS,
             Target::Template { .. } => AppId::WORKPLACE,
             Target::Chat { .. } => AppId::CHAT,
@@ -1024,6 +1046,29 @@ pub mod tests {
         );
         let opened = Opened::Task { uid: "--version".into() };
         assert_eq!(target_command("torrotasks".into(), &opened), ["torrotasks", "--task=--version"]);
+    }
+
+    /// Issue #605: `message:<account>:<id>` names a mail by the store's id; it opens in the inbox and
+    /// takes nothing but an account and an id of the form `m:…`.
+    #[test]
+    fn a_message_target_names_a_mail_by_the_stores_id() {
+        let message = Target::parse("message:mail:anna@mailbox.org:m:0a1b").expect("message");
+        assert_eq!(message, Target::Message { account: "mail:anna@mailbox.org", id: "m:0a1b" });
+        assert!(message.opens_in(AppId::INBOX_MAIL) && message.opens_in(AppId::INBOX));
+        assert!(!message.opens_in(AppId::TASKS));
+        let bad = [
+            "message:",
+            "message:m:0a1b",
+            "message:mail:anna@mailbox.org",
+            "message:mail:anna@mailbox.org:",
+            "message:mail:anna@mailbox.org:m:",
+            "message:mail:anna@mailbox.org:<a@example.org>",
+            "message:mail:anna@mailbox.org:m:0a 1b",
+            "message:mail:anna@mailbox.org:m:0a\n1b",
+        ];
+        for bad in bad {
+            assert!(Target::parse(bad).is_err(), "{bad:?}");
+        }
     }
 
     /// Stage 3 of `docs/chat.md`: `chat:<conversation>` opens a chat window with the conversation,

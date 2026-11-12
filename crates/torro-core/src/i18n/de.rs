@@ -175,6 +175,47 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Sheets and tables", "Tabellen"),
     ("Fill in and combine PDFs", "PDFs ausfüllen und zusammenfügen"),
     ("Preview · Mail", "Vorschau · Mail"),
+    // Mail mini chat (#605).
+    ("About a mail", "Zu einer Mail"),
+    ("About this mail", "Zu dieser Mail"),
+    ("About: {subject}", "Zu: {subject}"),
+    ("Ask AI", "KI fragen"),
+    ("Ask AI…", "KI fragen…"),
+    ("Ask about this mail…", "Frag etwas zu dieser Mail…"),
+    ("Design review on Thursday", "Designreview am Donnerstag"),
+    (
+        "Here it is. Check it and accept it to open the event editor.",
+        "Hier ist er. Prüf ihn und nimm ihn an, um den Termin-Editor zu öffnen.",
+    ),
+    (
+        "There is a meeting on Thursday, make an event of it please.",
+        "Am Donnerstag ist ein Treffen, mach bitte einen Termin daraus.",
+    ),
+    ("Is there a deadline?", "Gibt es eine Frist?"),
+    ("What does the sender want from me?", "Was will der Absender von mir?"),
+    ("What was said about this before?", "Was wurde dazu vorher gesagt?"),
+    (
+        "Ask about this mail. Torro reads it first; it only reads and suggests.",
+        "Frag etwas zu dieser Mail. Torro liest sie zuerst; es liest nur und schlägt vor.",
+    ),
+    ("Open assistant", "Assistent öffnen"),
+    ("Open settings", "Einstellungen öffnen"),
+    ("Read a suggestion out of the mail", "Vorschlag aus der Mail auslesen"),
+    ("Set up an AI in Settings › AI first.", "Richte zuerst unter Einstellungen › KI eine KI ein."),
+    (
+        "The assistant may not read this mail. Allow it in the assistant's settings under Access.",
+        "Der Assistent darf diese Mail nicht lesen. Erlaube es in den Einstellungen des Assistenten unter Zugriff.",
+    ),
+    (
+        "This AI can't chat about a mail. Choose an AI account in Settings › AI.",
+        "Diese KI kann nicht über eine Mail chatten. Wähle unter Einstellungen › KI ein KI-Konto.",
+    ),
+    (
+        "This AI may not read mail. Choose a model on this computer.",
+        "Diese KI darf keine Mail lesen. Wähle ein Modell auf diesem Rechner.",
+    ),
+    ("{kind} · Accept it in Mail", "{kind} · In E-Mail annehmen"),
+    ("Open in Mail", "In E-Mail öffnen"),
     // Paddle invoice copies (#598).
     (
         "The provider's page differs from the verified version. Check the copy before saving.",

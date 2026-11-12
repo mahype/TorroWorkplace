@@ -355,6 +355,7 @@ where
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         let (id, mut after) = match self.request(send)? {
             Response::Conversation { conversation, .. } => (conversation.id, conversation.last),
@@ -499,6 +500,7 @@ mod tests {
             last,
             bot: None,
             bot_deleted: false,
+            about: None,
         }
     }
 

@@ -88,6 +88,10 @@ pub const MY_ACCESS: &str = "assistant.my_access";
 /// The command a server tool's call becomes (issue #302).
 const CALL_TOOL: &str = "extensions.call_tool";
 
+/// The one command that changes something a chat about a mail may run (issue #605, [`fits_about_mail`]): it
+/// reads an action out of a mail and keeps it as a suggestion, and creates nothing.
+pub const EXTRACT_ACTION: &str = "mail.extract_action";
+
 /// One command the model may be offered: a command of the catalogue, or a tool of an MCP server
 /// (issue #302), whose command is `extensions.call_tool`.
 #[derive(Debug, Clone)]
@@ -566,6 +570,42 @@ pub fn error_summary(code: &str) -> String {
     .into()
 }
 
+/// The commands that reach out of the computer by reading: the web's search and page (issue #305). In a chat about a
+/// mail the mail's text is data from outside, and must not steer a request out (search words, an address).
+const REACHES_OUT: [&str; 2] = ["tools.web_search", "tools.fetch_page"];
+
+/// Whether a chat about a mail (issue #605, `assistant.send_message` with `about`, decision 4 of the plan) may
+/// offer and run `tool`: a command of the catalogue that only reads ([`Access::Read`], by its own access, also in
+/// the area `tools`), or [`EXTRACT_ACTION`], which only suggests. Never a tool of an MCP server (its access is the
+/// server's word), never asking or listing a bot, never a command that sends or reaches out ([`REACHES_OUT`],
+/// `Command::is_outbound`): the mail's text could steer it. Whatever the assistant's rights allow beyond that stays
+/// out, so the chat writes no draft, creates no task and sends nothing; the core still checks every call's rights.
+pub fn fits_about_mail(tool: &Tool) -> bool {
+    let out = tool.command.is_outbound() || REACHES_OUT.contains(&tool.command.name);
+    !tool.is_server() && !tool.is_bots() && !out && (tool.reads() || tool.command.name == EXTRACT_ACTION)
+}
+
+/// The tools of `tools` a chat about a mail of `account` may use ([`fits_about_mail`]), in their order. Applied
+/// after [`allowed_with`], so it narrows what the rights, the mode and the conversation allow, with one
+/// exception (issue #605, decided with the person): [`EXTRACT_ACTION`] counts as reading for the mail of the
+/// chat, so it is offered with read access to mail and to `account` alone (`rights`, as [`allowed_with`] got
+/// them, narrowed by the mode), unless mail is switched off here (`without`) or the command is turned off for
+/// the client (`Rights::denied`). The core checks it the same way, for that mail only
+/// ([`super::Host::run_about`]).
+pub fn about_mail(tools: Vec<Arc<Tool>>, rights: Option<&Rights>, without: &[Area], account: &str) -> Vec<Arc<Tool>> {
+    let mut kept: Vec<Arc<Tool>> = tools.into_iter().filter(|tool| fits_about_mail(tool)).collect();
+    let reads = rights.is_some_and(|rights| {
+        let extract = CATALOGUE.iter().find(|command| command.name == EXTRACT_ACTION);
+        let read = extract.map(|command| Operation { command, access: Access::Read });
+        read.is_some_and(|read| rights.allows(read)) && rights.reaches_mail_account(account)
+    });
+    let offered = kept.iter().any(|tool| tool.command.name == EXTRACT_ACTION);
+    if reads && !offered && !without.contains(&Area::Mail) {
+        kept.extend(catalogue().iter().find(|tool| tool.command.name == EXTRACT_ACTION).cloned());
+    }
+    kept
+}
+
 /// [`allowed_with`] without server tools: what the prompt of an agent (engine B) names, whose server tools
 /// come over MCP with its lent key.
 pub fn allowed_in(kind: &str, rights: Option<&Rights>, without: &[Area], mode: Mode) -> Vec<Arc<Tool>> {
@@ -681,6 +721,68 @@ mod tests {
         assert_eq!(usable_tools(&rights, &[Area::Tools]), vec![ToolId::Pdf, ToolId::Files], "writing: both");
         reading.areas.remove(&Area::Tools);
         assert!(usable_tools(&reading, &[Area::Tools]).is_empty(), "no access");
+    }
+
+    /// Issue #605: a chat about a mail keeps the reading tools and `mail.extract_action`, never a write, a
+    /// server's tool, a bot, the memory's writing or anything that reaches out (the web), whatever the rights allow.
+    #[test]
+    fn a_chat_about_a_mail_only_reads_and_suggests() {
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Extensions, AreaRights { level: Level::Full, admin: false });
+        rights.extensions.insert("time".into(), Level::Full);
+        let servers = time_tools();
+        let all = allowed_with(ASSISTANT_CLIENT, Some(&rights), &[], Mode::Default, &servers);
+        assert!(all.iter().any(|tool| tool.is_server()), "the servers' tools are allowed otherwise");
+        let kept = about_mail(all.clone(), Some(&rights), &[], "mail:anna@example.org");
+        let names: Vec<&str> = kept.iter().map(|tool| tool.command.name).collect();
+        for wanted in ["mail.get_message", "mail.get_thread", "mail.search_messages", EXTRACT_ACTION] {
+            assert!(names.contains(&wanted), "{wanted}: {names:?}");
+        }
+        for unwanted in [
+            "mail.save_draft",
+            "mail.send_draft",
+            "calendar.create_event",
+            "calendar.create_event_from_mail",
+            "tasks.create_todo_from_mail",
+            "assistant.remember",
+            "bots.list_bots",
+            "bots.ask_bot",
+            CALL_TOOL,
+        ] {
+            assert!(!names.contains(&unwanted), "{unwanted} stays out");
+        }
+        assert!(kept.iter().all(|tool| tool.access == Access::Read || tool.command.name == EXTRACT_ACTION));
+        assert!(kept.len() < all.len());
+        // A call the model makes up is judged the same way.
+        let write = callable("mail_save_draft").expect("a real command");
+        assert!(!fits_about_mail(&write));
+        assert!(fits_about_mail(&callable("mail_extract_action").expect("a real command")));
+        let server = callable("ext_time_get_current_time").expect("a server's tool name");
+        assert!(!fits_about_mail(&server), "a server's tool never");
+        for out in ["tools_web_search", "tools_fetch_page", "mail_send_draft"] {
+            let tool = callable(out).expect("a real command");
+            assert!(!fits_about_mail(&tool), "{out}: the mail's text must not steer a request out");
+        }
+        assert!(!names.contains(&"tools.web_search") && !names.contains(&"tools.fetch_page"), "{names:?}");
+
+        // Decided with the person: reading the account is enough for the suggestion of the chat's mail.
+        let mut reading = Rights::assistant();
+        reading.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+        reading.mail_accounts = Selection::Only(vec!["mail:anna@example.org".into()]);
+        let read_only = allowed_with(ASSISTANT_CLIENT, Some(&reading), &[], Mode::Default, &[]);
+        assert!(!read_only.iter().any(|tool| tool.command.name == EXTRACT_ACTION), "elsewhere it needs writing");
+        let with = |rights: &Rights, without: &[Area], account: &str| {
+            about_mail(read_only.clone(), Some(rights), without, account)
+                .iter()
+                .any(|tool| tool.command.name == EXTRACT_ACTION)
+        };
+        assert!(with(&reading, &[], "mail:anna@example.org"));
+        assert!(!with(&reading, &[], "mail:bob@example.org"), "another account");
+        assert!(!with(&reading, &[Area::Mail], "mail:anna@example.org"), "mail switched off");
+        let mut denied = reading.clone();
+        denied.denied = [EXTRACT_ACTION.to_string()].into();
+        assert!(!with(&denied, &[], "mail:anna@example.org"), "turned off for the client");
+        assert!(!with(&Rights::assistant(), &[], "mail:anna@example.org"), "no mail at all");
     }
 
     /// Issue #305, decision 26: "all tools" cut to the switched-on ones never reaches `web`; reading in

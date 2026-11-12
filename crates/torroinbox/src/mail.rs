@@ -4065,9 +4065,9 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 ///    E19); for an `entry` "Move to Info" or "Move to For me" (`l`,
 ///    `AskLane`); Delete (`#`) on the same rule as Archive.
 /// 3. **Torro**: Task (`t`; `AskTask` for an entry, `AskMailTask` for a folder's message), for an
-///    entry Event (`c`, `AskEvent`) and – for a mail entry – Category… (`AskCategory`) and, with a
-///    decision model set up ([`Reading::deciding`]), Re-categorize (`Reclassify`, sparkles in the
-///    accent).
+///    entry Event (`c`, `AskEvent`), "Ask AI…" (`i`, `AskAi`, issue #605) and – for a mail entry –
+///    Category… (`AskCategory`) and, with a decision model set up ([`Reading::deciding`]),
+///    Re-categorize (`Reclassify`, sparkles in the accent).
 /// 4. **Mark**, once the mail's flags are known: Flag or Unflag, Mark read or Mark unread.
 /// 5. **Save** ([`save_items`], issue #501, the floppy disk): "Save as PDF" and "Save as image"
 ///    (`AskSaveMailAs`, each opening the menu of its ways and save targets), off while the mail loads,
@@ -4280,13 +4280,17 @@ fn pile_items<'a>(reading: &Reading<'_>) -> [RailItem<'a, Message>; 2] {
 
 /// The items of the rail's group "Torro" ([`action_groups`]): what Torro adds to the mail, as the
 /// reader's pills had it (task E11.3). First the kinds of action (issue #603, [`action_items`]), then
-/// "Category…" and – for an entry with a decision model – "Re-categorize".
+/// "Ask AI…" (issue #605, the chat about the mail, `ask.rs`), "Category…" and – for an entry with a
+/// decision model – "Re-categorize".
 fn torro_items<'a>(
     reading: &Reading<'_>,
     entry: Option<ReaderEntry<'_>>,
     anchors: &detail::Anchors,
 ) -> Vec<RailItem<'a, Message>> {
     let mut items = action_items(reading, entry.map(|entry| entry.item.id.as_str()), anchors);
+    // Always there: without an AI or the right to read the mail, the chat says so itself.
+    let ask = Some(Message::AskAi(reading.id.to_owned()));
+    items.push(RailItem::new(Icon::Sparkles, tr("Ask AI…"), "I", ask).accent());
     let Some(ReaderEntry { item, .. }) = entry else {
         // Mail without an entry (a folder's, the archive's, older mail) is filed by hand too (issue
         // #500); "Re-categorize" needs an entry, as the model decides for one.
@@ -6813,6 +6817,7 @@ mod tests {
                         strings(&[
                             tr("Task"),
                             tr("Event"),
+                            tr("Ask AI…"),
                             tr("Category…"),
                             tr("Create workflow with AI…"),
                             tr("Run workflow")
@@ -6890,7 +6895,7 @@ mod tests {
                 [
                     vec!["R", "", "F"],
                     vec!["E", "W", "B", "S", "L", "#"],
-                    vec!["T", "C", "", "", ""],
+                    vec!["T", "C", "I", "", "", ""],
                     vec!["", ""],
                     vec!["", "", "", ""],
                     vec!["M"],
@@ -7013,6 +7018,25 @@ mod tests {
         });
     }
 
+    /// Issue #605: "Ask AI…" follows the kinds of action in "Torro", with the sparkles in the accent,
+    /// and opens the chat about the mail – in the rail and in the context menu.
+    #[test]
+    fn ask_ai_follows_the_kinds_of_action() {
+        reading_of("m:w1", MailFormat::Text, true, |reading| {
+            let groups = action_groups(reading, None, &folders(), true, &detail::Anchors::default());
+            let context = context_groups(groups.clone(), reading.id);
+            for groups in [&groups, &context] {
+                let items = &group(groups, tr("Torro")).items;
+                let at = items.iter().position(|item| item.label == tr("Ask AI…")).expect("Ask AI…");
+                let kinds = items.iter().filter(|item| matches!(item.press(), Some(Message::AskAction(..)))).count();
+                assert_eq!(at, kinds, "right after the kinds");
+                assert!(items[at].accent);
+                assert!(matches!(items[at].press(), Some(Message::AskAi(id)) if id == reading.id));
+                assert_eq!(items[at].key, "I", "its key, as `i` opens it");
+            }
+        });
+    }
+
     /// Task E14.3: a folder's message has no Done or "Move to …" – Task makes a task
     /// of the message, the bell mutes its own traits, `e` archives it; in the trash it has no Delete, in
     /// an account without an archive folder no Archive. Task E19.4: it goes on the piles and is followed
@@ -7059,11 +7083,12 @@ mod tests {
             assert_eq!(group(&groups, tr("File")).icon, Icon::Check, "the group's fixed icon");
             assert!(group(&groups, tr("File")).first_press().is_some(), "a click archives");
             let torro = &group(&groups, tr("Torro")).items;
-            assert_eq!(torro.len(), 5, "Task, Event and Category stay first; workflow setup and reuse follow");
+            assert_eq!(torro.len(), 6, "Task, Event, Ask AI and Category stay first; workflow setup and reuse follow");
             let action = |item: &RailItem<'_, Message>, wanted: &str| matches!(item.press(), Some(Message::AskAction(None, id, kind)) if id == "m:w1" && kind == wanted);
             assert!(action(&torro[0], "task") && action(&torro[1], "event"));
             assert_eq!((torro[0].key, torro[1].key), ("T", "C"));
-            assert!(matches!(torro[2].press(), Some(Message::AskMailCategory(id)) if id == "m:w1"));
+            assert!(matches!(torro[2].press(), Some(Message::AskAi(id)) if id == "m:w1"), "issue #605");
+            assert!(matches!(torro[3].press(), Some(Message::AskMailCategory(id)) if id == "m:w1"));
             let mute = sends(&groups, tr("Mute"), tr("Mute…"));
             assert!(matches!(mute, Some(Message::AskMuteMail(id)) if id == "m:w1"), "the message's own traits");
             // An account without an archive folder: no Archive.
@@ -8760,11 +8785,12 @@ mod tests {
                     tr("Task"),
                     "Probe",
                     tr("Event"),
+                    tr("Ask AI…"),
                     tr("Category…"),
                     tr("Create workflow with AI…"),
                     tr("Run workflow")
                 ]),
-                "the tasks' first, workflows appended"
+                "the tasks' first, Ask AI after the kinds, workflows appended"
             );
             assert_eq!(torro[1].icon, Icon::Sparkles);
             assert_eq!((torro[0].key, torro[1].key, torro[2].key), ("T", "", "C"));
@@ -8776,7 +8802,10 @@ mod tests {
                 let without = Reading { kinds, ..*reading };
                 let groups = action_groups(&without, None, &folders, true, &detail::Anchors::default());
                 let icons: Vec<Icon> = group(&groups, tr("Torro")).items.iter().map(|item| item.icon).collect();
-                assert_eq!(icons, [Icon::ListTodo, Icon::CalendarPlus, Icon::Tag, Icon::Sparkles, Icon::ListChecks]);
+                assert_eq!(
+                    icons,
+                    [Icon::ListTodo, Icon::CalendarPlus, Icon::Sparkles, Icon::Tag, Icon::Sparkles, Icon::ListChecks]
+                );
             }
         });
         assert_eq!(kind_icon("calendar-plus"), Icon::CalendarPlus);

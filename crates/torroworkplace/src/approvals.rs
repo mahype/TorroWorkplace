@@ -5860,6 +5860,7 @@ pub(crate) mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         let with_engine = Facts { engine: Some("Ollama".into()), ..held.clone() };
         let in_it = summary(&send(Some(id.clone())), &with_engine);
