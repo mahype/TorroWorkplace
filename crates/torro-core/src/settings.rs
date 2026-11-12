@@ -82,6 +82,11 @@ pub struct Settings {
     /// Off unless a person turns it on: "I am online" tells something about them.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub presence_heartbeat: bool,
+    /// "Ring for incoming calls" (`docs/chat.md`, decision 9 and stage 6): while on, the service asks every
+    /// Nextcloud account with Talk every 10 seconds whether someone calls, and opens the chat's ringing
+    /// window when someone does. On unless turned off; off, nothing is asked and nothing rings.
+    #[serde(default = "on")]
+    pub chat_ring: bool,
     /// The spacing level every window draws with (issue #484, `docs/design-pakete.md`): `"torro"`
     /// ([`crate::design::STANDARD_ID`], the standard), `"comfort"` or `"dense"`. It sets only spacing;
     /// the font, the colour scheme and the mail view are settings of their own.
@@ -828,6 +833,7 @@ impl Default for Settings {
             quiet_when_busy: on(),
             contacts_show_hidden_books: false,
             presence_heartbeat: false,
+            chat_ring: true,
             design: standard_design(),
             font: standard_design(),
             color_scheme: standard_design(),
@@ -2834,6 +2840,7 @@ mod tests {
             quiet_when_busy: true,
             contacts_show_hidden_books: false,
             presence_heartbeat: false,
+            chat_ring: true,
             design: "torro".into(),
             font: "torro".into(),
             color_scheme: "torro".into(),
@@ -3109,6 +3116,7 @@ mod tests {
             quiet_when_busy: false,
             contacts_show_hidden_books: false,
             presence_heartbeat: false,
+            chat_ring: true,
             design: "comfort".into(),
             font: "channelr".into(),
             color_scheme: "nord".into(),
