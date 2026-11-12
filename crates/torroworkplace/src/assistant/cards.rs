@@ -14,9 +14,10 @@
 //! reaches a card, and nothing here logs a title, a path or content.
 //!
 //! A suggestion of a mail (issue #605, [`suggestion_after`]) becomes a card after `mail.extract_action` answered
-//! one, in a chat about a mail or any other. It shows while the mail still has that suggestion open, as
-//! `mail.list_suggestions` lists it with the rights of the conversation's client ([`Held`], which the core
-//! fills, [`suggestion_mails`]); accepted, dismissed or out of reach, it is [`Card::Unavailable`].
+//! one in a chat about a mail; the loop asks for it only there, in any other chat the tool line is all. It shows
+//! while the mail still has that suggestion open, as `mail.list_suggestions` lists it with the rights of the
+//! conversation's client ([`Held`], which the core fills, [`suggestion_mails`]); accepted, dismissed or out of
+//! reach, it is [`Card::Unavailable`].
 
 use std::collections::HashMap;
 
@@ -42,7 +43,8 @@ pub fn after(name: &str, response: &Response) -> Option<EntryContent> {
 
 /// The card to add after `request` answered `response` (issue #605): a suggestion card after
 /// `mail.extract_action` read one out of a mail, pointing at that mail and the kind of action; `None` after an
-/// error and after every other command. [`after`] keeps its own commands, this one the suggestions.
+/// error and after every other command. [`after`] keeps its own commands, this one the suggestions. The caller asks
+/// only in a chat about a mail.
 pub fn suggestion_after(request: &Request, response: &Response) -> Option<EntryContent> {
     match (request, response) {
         (Request::ExtractAction { account, id, kind, .. }, Response::Suggestion { .. }) => Some(EntryContent::Card {

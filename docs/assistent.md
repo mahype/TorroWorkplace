@@ -200,7 +200,9 @@ deckt es die Mail ab („‹ Mail“ führt zurück). Entwurf: `docs/prototypes/
   `mail.get_thread` und `mail.search_messages`; das hält den Kontext lokaler Modelle klein.
 - **Vorschläge als Karte.** Was das Modell über `mail.extract_action` ausliest (die Worte der Person als
   `focus`), wird ein Vorschlag der Mail wie in [vorschlaege.md](vorschlaege.md) und erscheint als Karte
-  im Chat. „Accept“ öffnet den vorausgefüllten Dialog; erst „Create“ legt an.
+  im Chat. „Accept“ öffnet den vorausgefüllten Dialog; erst „Create“ legt an. Die Karte gibt es nur im
+  Chat zu einer Mail; ruft eine andere Unterhaltung `mail.extract_action` auf, steht dort nur die
+  Werkzeugzeile, und der Vorschlag liegt wie jeder andere bei der Mail.
 - **Rechte.** Der Assistent braucht Mail-Leserecht und das Konto in seiner Reichweite, sonst
   `forbidden` und das Paneel zeigt einen Hinweis mit „Open assistant“. Hält die Datenregel Mail vom
   gewählten Modell fern: `not-connected`. Mit Bot oder fremdem Antrieb: `unsupported`. Für einen

@@ -39,7 +39,8 @@
 //! first answer the loop runs `mail.get_message` itself, as if the model had called it ([`Answering::call`]),
 //! so rights, the data rule and the tool line are the same as for any call. Such a chat only reads and suggests:
 //! the tools offered and run are cut to [`tools::about_mail`], whatever the rights allow, and the prompt ends with
-//! [`prompt::about_mail`]. A suggestion `mail.extract_action` reads out becomes a card ([`super::cards`]).
+//! [`prompt::about_mail`]. A suggestion `mail.extract_action` reads out becomes a card ([`super::cards`]), only in
+//! such a chat; in any other the tool line is all.
 //!
 //! A command that waits for a person (`pending`) puts an approval entry into the conversation; the
 //! loop asks for its state every [`Limits::approval_poll`] and goes on once the person decided (the
@@ -964,10 +965,10 @@ impl Answering {
         // A card after a command that made an item (issue #225): the core's own answer, read before
         // the tool line takes it.
         let card = match &outcome {
-            // And after a suggestion read out of a mail (issue #605).
-            Outcome::Answered(response) => {
-                super::cards::after(&name, response).or_else(|| super::cards::suggestion_after(&request, response))
-            }
+            // And after a suggestion read out of a mail, only in a chat about a mail (issue #605): elsewhere the
+            // suggestion stays in the mail's own list and the tool line says what was read out.
+            Outcome::Answered(response) => super::cards::after(&name, response)
+                .or_else(|| self.job.about.as_ref().and_then(|_| super::cards::suggestion_after(&request, response))),
             Outcome::Denied | Outcome::Expired => None,
         };
         // Mail switched off in this conversation (issue #460): suggestions keep only what the address
@@ -3453,5 +3454,32 @@ pub(crate) mod tests {
         assert!(!offered.iter().any(|name| name == "mail_extract_action"), "{offered:?}");
         assert!(host.abouts.lock().expect("lock").is_empty(), "no mail named");
         assert_eq!(host.ran.lock().expect("lock").len(), 1, "the core decides by its rights");
+    }
+
+    /// Issue #605: a suggestion read out in a chat about no mail stays a tool line; only a chat about a mail shows
+    /// it as a card.
+    #[tokio::test]
+    async fn a_suggestion_elsewhere_gets_no_card() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let extract = json!({"account": ACCOUNT, "id": "m:4", "kind": "event"});
+        let script = Script::new(vec![calls("mail_extract_action", extract), says("Done.")]);
+        let (assistant, host) =
+            set_up_with(dir.path(), Some(mail_of_anna()), Place::Local, Arc::clone(&script), about_answers);
+        let id = ask(&assistant, None, "Make an event of the mail m:4", Vec::new()).await;
+        let entries = finished(&assistant, &id).await;
+        assert!(
+            entries.iter().any(|entry| matches!(
+                &entry.content,
+                EntryContent::Tool { name, error: None, .. } if name == "mail.extract_action"
+            )),
+            "the suggestion was read out: {entries:?}"
+        );
+        assert!(
+            !entries.iter().any(|entry| matches!(entry.content, EntryContent::Card { .. })),
+            "no card: {entries:?}"
+        );
+        assert!(
+            host.ran.lock().expect("lock").iter().any(|(request, _)| matches!(request, Request::ExtractAction { .. }))
+        );
     }
 }
