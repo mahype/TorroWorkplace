@@ -718,6 +718,9 @@ Regeln:
   **Ausnahme Assistent** (#547, entschieden): Mini und Leiste behalten ihr eine Eingabefeld, weil schnelles
   Fragen der Zweck der Kachel ist – ein Feld, kein Formular, keine Menüs. In der Leiste stehen Feld (unten)
   und letzte Zeile der Antwort bzw. Leertext auf einer Mittellinie.
+- **Ausnahme Kontaktliste** (#652, entschieden): Die Kontaktliste des Chats zeigt ab 280 Breite und 280 Höhe die volle
+  Liste, auch in „Mini hoch“ (320 × 760 beim Start); die Kurzübersicht gilt erst darunter. Die Sichtprüfung meldet
+  die Liste in `mini-tall` deshalb nicht als Fehler.
 - **Mini und Mini hoch auf dem Mac** (#554, entschieden): Oben bleibt der Streifen der Ampel frei (die Höhe der oberen
   Zeile, Mitte bei y = 20). Der Leerraum dort ist kein Befund; im Bild von `shots.sh` fehlt nur die Ampel selbst.
 - **Groß heißt nicht gestreckt:** Leselisten (Mail, Aufgaben, Chat) und Fließtext max. `size::content_max()`,

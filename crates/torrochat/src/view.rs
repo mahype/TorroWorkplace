@@ -8,8 +8,10 @@
 //! "People | Groups", the list, and the own status at the bottom. While the field filters "People",
 //! the list ends with the part "On the server": "Find on server…", then the server's people with their
 //! presence mark and "Add to list". In a wide tile the column stays
-//! [`size::content_max`] wide, centred: a list to read is never stretched. Mini shows how many are
-//! there and the unread chats in figures; the strip the faces of the people who are there.
+//! [`size::content_max`] wide, centred: a list to read is never stretched. From
+//! [`crate::app::CONTACTS_LIST_MIN_WIDTH`] wide and `STRIP_MAX_HEIGHT` high it stays a list (#652);
+//! below, mini shows how many are there and the unread chats in figures, the strip the faces of the
+//! people who are there.
 //!
 //! Presence marks (`docs/chat.md`, "Kontaktliste"): each status has a form of its own, so it never
 //! rests on colour alone – a dot (online), the moon (away), half a circle (busy), a dot with a bar (do
@@ -77,12 +79,7 @@ pub(crate) struct Anchors {
 impl App {
     /// The window: a chat window or the contact list, with the zoom badge and the notice over it.
     pub fn view(&self) -> Element<'_, Message> {
-        let mut class = self.class();
-        // The ringing window is narrower than a mini tile by design (340 × 360): only a low window
-        // makes it a glance.
-        if self.ring.is_some() {
-            class = layout::of(Size::new(size::panel().max(self.size.width), self.size.height));
-        }
+        let class = self.view_class();
         if matches!(class, SizeClass::Mini | SizeClass::Strip) {
             let glance = match (&self.ring, &self.viewer, &self.chat) {
                 (Some(ring), _, _) => self.ring_glance(ring, class),
@@ -765,7 +762,7 @@ fn segmented_fill<'a>(options: impl IntoIterator<Item = (String, Message)>, acti
         button(container(label).center(Fill))
             .width(Fill)
             .height(inner)
-            .padding(style::button_padding())
+            .padding([0.0, space::xs()])
             .style(style::button::segment(at == active))
             .on_press(message)
             .into()

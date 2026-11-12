@@ -672,3 +672,27 @@ fn a_poll_that_came_clears_the_error() {
     let _ = app.update(Message::Chat(Msg::Polled(page)));
     assert_eq!(chat(&app).error, None);
 }
+
+#[test]
+fn the_contact_list_shows_the_list_from_280_wide() {
+    let mut app = start(&[]);
+    assert_eq!(app.size, CONTACTS_SIZE);
+    assert_eq!(app.view_class(), SizeClass::Narrow);
+    for (width, height, class) in [
+        (280.0, 760.0, SizeClass::Narrow),
+        (279.0, 760.0, SizeClass::Mini),
+        (320.0, 279.0, SizeClass::Mini),
+        (200.0, 150.0, SizeClass::Mini),
+        (1200.0, 200.0, SizeClass::Strip),
+    ] {
+        app.size = Size::new(width, height);
+        assert_eq!(app.view_class(), class, "{width} × {height}");
+    }
+}
+
+#[test]
+fn a_chat_window_keeps_its_glance_at_the_contact_list_size() {
+    let mut app = start(&["--conversation", BEN]);
+    app.size = CONTACTS_SIZE;
+    assert_eq!(app.view_class(), SizeClass::Mini);
+}

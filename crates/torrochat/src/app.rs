@@ -80,8 +80,12 @@ pub const VIEWER: AppId = AppId {
     args: &[],
 };
 
-/// The contact list's size at start: a narrow tile (`docs/chat.md`, "Kontaktliste": 300 wide).
+/// The contact list's size at start: a narrow, tall tile (`docs/chat.md`, "Kontaktliste": 320 × 760).
 pub const CONTACTS_SIZE: Size = Size::new(320.0, 760.0);
+
+/// The width from which the contact list shows its list instead of the glance (#652). Below it the
+/// "People | Groups | Messages" tabs no longer fit; the height needed is `STRIP_MAX_HEIGHT`.
+pub const CONTACTS_LIST_MIN_WIDTH: f32 = 280.0;
 
 /// A chat window's size at start (`docs/chat.md`, "Chatfenster": 440 × 680).
 pub const CONVERSATION_SIZE: Size = Size::new(440.0, 680.0);
@@ -508,6 +512,21 @@ impl App {
     /// The window's size class.
     pub fn class(&self) -> SizeClass {
         layout::of(self.size)
+    }
+
+    /// The class the window draws in. The ringing window is narrower than a mini tile by design
+    /// (340 × 360), so only a low one is a glance. The contact list keeps its list from
+    /// [`CONTACTS_LIST_MIN_WIDTH`] on and tall enough (#652); a chat window, the viewer and every
+    /// smaller window use [`Self::class`].
+    pub fn view_class(&self) -> SizeClass {
+        let Size { width, height } = self.size;
+        if self.ring.is_some() {
+            layout::of(Size::new(torro_gui::theme::size::panel().max(width), height))
+        } else if self.viewer.is_none() && self.chat.is_none() && width >= CONTACTS_LIST_MIN_WIDTH {
+            layout::of(Size::new(layout::MINI_MAX_WIDTH.max(width), height))
+        } else {
+            self.class()
+        }
     }
 
     pub fn subscription(&self) -> Subscription<Message> {

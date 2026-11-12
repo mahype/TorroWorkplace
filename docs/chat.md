@@ -488,7 +488,7 @@ umschaltbar; gewählt ist, was Entscheidung 24 nennt). Alle Fenster gehören zur
 ([`torro-design`](../.claude/skills/torro-design/SKILL.md)): Inter, Tokens des aktiven Designs, Status nie nur über
 Farbe, Rot nur für den einen Primärknopf.
 
-**Kontaktliste** (Fensterklasse `torro-chat`, Kachel, schmal, 300 breit gedacht):
+**Kontaktliste** (Fensterklasse `torro-chat`, Kachel, schmal, hoch, beim Start 320 × 760):
 - **Obere Zeile:** „Contacts“, rechts die Einstellungen (`shell::SETTINGS_ICON`).
 - **Suchfeld** filtert Namen und Statusnachrichten in der Liste; Enter öffnet den ersten Treffer. Ohne Treffer
   „Find on server…“ (`presence.find_people`), das Ergebnis kommt mit „Add to list“ in die Liste.
@@ -503,8 +503,9 @@ Farbe, Rot nur für den einen Primärknopf.
   Suche. Kontextmenü: „Open chat“, „Audio call“, „Video call“, „Show contact“ (sobald es die Kontakte-App `torrocontacts` gibt; öffnet sie beim Kontakt mit
   derselben Mail-Adresse bzw. Nextcloud-Kennung; die Zuordnung macht der Kern, ohne Treffer fehlt der Eintrag),
   „Remove from list“ (nur für selbst hinzugefügte).
-- **Größen:** Mini zeigt die Zahl der Menschen online und die ungelesenen Unterhaltungen; Leiste die Avatare der
-  Menschen online. In einer breiten Kachel wird die Liste höchstens `size::content_max()` breit, nicht gestreckt.
+- **Größen:** Ab 280 Breite und 280 Höhe (`CONTACTS_LIST_MIN_WIDTH`, #652) bleibt es die volle Liste, auch in „Mini
+  hoch“, damit sie ohne Tiling-Manager (macOS) nutzbar ist. Darunter zeigt Mini die Zahl der Menschen online und die
+  ungelesenen Unterhaltungen; Leiste die Avatare der Menschen online. In einer breiten Kachel wird die Liste höchstens `size::content_max()` breit, nicht gestreckt.
 - **Leer:** ohne Konto „Connect Nextcloud“ (öffnet die Steuerzentrale), ohne User status „Your Nextcloud does not
   share status“, ohne sichtbare Menschen „Your Nextcloud does not show other users“ mit der Suche.
 
