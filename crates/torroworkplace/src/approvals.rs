@@ -2365,8 +2365,15 @@ fn chat_summary(request: &Request, facts: Option<&crate::chat::service::ChatFact
         None => tr("an unknown message").to_string(),
     };
     match request {
-        Request::ChatSendMessage { text, files, .. } if !files.is_empty() => {
-            let sent = chat_files_word(files.len(), facts);
+        Request::ChatSendMessage { text, files, items, .. } if !files.is_empty() || !items.is_empty() => {
+            let sent = match (items.is_empty(), files.is_empty()) {
+                (true, _) => chat_files_word(files.len(), facts),
+                (false, true) => chat_card_word(items.len(), facts),
+                (false, false) => trf(
+                    "{cards} and {files}",
+                    &[("cards", &chat_card_word(items.len(), facts)), ("files", &chat_files_word(files.len(), facts))],
+                ),
+            };
             match text.trim().is_empty() {
                 true => trf("Send {files} to {place}", &[("files", &sent), ("place", &place)]),
                 false => trf(
@@ -2469,6 +2476,7 @@ fn chat_file_lines(count: usize, facts: &crate::chat::service::ChatFacts) -> Vec
             (Origin::Upload, true) => tr("uploaded by this agent, name given by this agent"),
             (Origin::Upload, false) => tr("uploaded by this agent"),
             (Origin::Path, _) => tr("chosen on this computer"),
+            (Origin::Card, _) => tr("made from your address book"),
         };
         let size = torro_gui::units::format_bytes(file.size);
         lines.push(trf(
@@ -2480,6 +2488,56 @@ fn chat_file_lines(count: usize, facts: &crate::chat::service::ChatFacts) -> Vec
     if facts.files.len() < count {
         lines.push(trf("{n} unknown files", &[("n", &(count - facts.files.len()))]));
     }
+    lines
+}
+
+/// The card of the items a chat message shares, in a summary (stage 5): the one contact's name as
+/// the address book holds it, else how many.
+fn chat_card_word(count: usize, facts: &crate::chat::service::ChatFacts) -> String {
+    let contacts = facts.card.as_ref().map(|card| card.contacts.as_slice()).unwrap_or_default();
+    match (count, contacts) {
+        (1, [contact]) => trf("the contact card \"{name}\"", &[("name", &quote_up_to(&contact.name, 60))]),
+        (1, _) => tr("the card of an unknown contact").to_string(),
+        (count, _) => trf("{n} contact cards", &[("n", &count)]),
+    }
+}
+
+/// One line per contact a chat message shares (stage 5, `docs/teilen.md`): its name from the
+/// address book with how many values go along, each chosen field beyond the default it has ("+
+/// private address"), and that the card goes to the person's Talk folder. Without the card (a
+/// contact gone meanwhile) the lines say so; the command then fails when it runs.
+fn chat_card_lines(count: usize, facts: &crate::chat::service::ChatFacts) -> Vec<String> {
+    use torro_ipc::share::ShareField;
+    let Some(card) = &facts.card else {
+        return vec![trf("{n} unknown contacts", &[("n", &count)])];
+    };
+    let mut lines = Vec::new();
+    for contact in &card.contacts {
+        let name = quote_up_to(&contact.name, 60);
+        lines.push(match contact.values {
+            // The name always goes, so one value is the name alone.
+            1 => trf("Contact card: \"{name}\" (name only)", &[("name", &name)]),
+            n => trf("Contact card: \"{name}\" ({n} fields)", &[("name", &name), ("n", &n)]),
+        });
+        for field in &contact.extra {
+            let word = match field {
+                ShareField::PrivateAddresses => tr("+ private address"),
+                ShareField::Birthday => tr("+ birthday"),
+                ShareField::Note => tr("+ note"),
+                ShareField::Messengers => tr("+ messenger"),
+                ShareField::Groups => tr("+ groups"),
+                // The default goes without a word ([`ShareField::DEFAULT`]).
+                ShareField::Organization
+                | ShareField::Phones
+                | ShareField::Emails
+                | ShareField::WorkAddresses
+                | ShareField::Web => continue,
+            };
+            lines.push(word.to_string());
+        }
+    }
+    let name = quote_up_to(&card.file, 60);
+    lines.push(trf("Uploads \"{name}\" to your Talk folder in Nextcloud", &[("name", &name)]));
     lines
 }
 
@@ -2496,12 +2554,23 @@ fn chat_details(request: &Request, facts: Option<&crate::chat::service::ChatFact
         }
     }
     match request {
-        Request::ChatSendMessage { text, silent, files, .. } => {
+        Request::ChatSendMessage { text, silent, files, items, .. } => {
+            let empty = crate::chat::service::ChatFacts::default();
+            if !items.is_empty() {
+                lines.extend(chat_card_lines(items.len(), facts.unwrap_or(&empty)));
+            }
             if !files.is_empty() {
-                let empty = crate::chat::service::ChatFacts::default();
                 lines.extend(chat_file_lines(files.len(), facts.unwrap_or(&empty)));
             }
-            if mentions_everyone(text) {
+            // Without a text of its own the card's text goes under the file (stage 5): shown whole,
+            // as it comes from the address book.
+            let card_text = facts.and_then(|facts| facts.card.as_ref()).map(|card| card.text.as_str());
+            let card_text = card_text.filter(|_| !items.is_empty() && text.trim().is_empty());
+            if let Some(card_text) = card_text {
+                lines.push(tr("The text under the card:").to_string());
+                lines.extend(whole(card_text));
+            }
+            if mentions_everyone(text) || card_text.is_some_and(mentions_everyone) {
                 lines.push(tr("Notifies everyone in the conversation").to_string());
             }
             if *silent {
@@ -5053,6 +5122,8 @@ pub(crate) mod tests {
             reply_to: None,
             silent: false,
             files: vec!["fSECRETLEASE".into()],
+            items: Vec::new(),
+            fields: None,
         };
         let now = Utc::now();
         let summary = "Send \"Plan.pdf\" to the group".to_string();

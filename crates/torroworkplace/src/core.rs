@@ -5696,7 +5696,16 @@ impl Core {
             // service by id (`docs/chat.md`, "Freigaben").
             request if request.operation().area() == torro_ipc::api::Area::Chat => {
                 // Boxed: the lookup may ask the server, and its future must not grow this frame.
-                let chat = Box::pin(self.chat.facts(request)).await;
+                let mut chat = Box::pin(self.chat.facts(request)).await;
+                // The card of shared items as the core makes it from its stores (stage 5). Facts are
+                // gathered only for an approval, after `Core::chat_refusal` read the same items with
+                // the client's reach; the command reads them with it again when it runs.
+                if let (Some(facts), Request::ChatSendMessage { items, fields, .. }) = (chat.as_mut(), request)
+                    && !items.is_empty()
+                {
+                    let card = crate::chat::share::card_for(&self.contacts, Reach::Suite, items, fields.as_deref());
+                    facts.card = Box::pin(card).await.ok().map(|card| card.facts);
+                }
                 Facts { chat: chat.map(Box::new), ..Facts::default() }
             }
             request => self.pim.facts(request).await,
@@ -9801,9 +9810,15 @@ impl Core {
                     let waiting = self.waiting_chat_files(caller.client).await;
                     self.chat.release(&account, &ids, &waiting, caller)
                 }
-                Request::ChatSendMessage { ref files, .. } if !files.is_empty() => {
+                // Sharing (stage 5): the card of the items is made from the core's stores with the
+                // caller's rights, then sent as one more prepared file.
+                Request::ChatSendMessage { ref files, ref items, ref fields, .. }
+                    if !files.is_empty() || !items.is_empty() || fields.is_some() =>
+                {
+                    let shares = !items.is_empty() || fields.is_some();
                     match self.chat_tool_files_refusal(files, reach, caller.client).await {
                         Some(refused) => refused,
+                        None if shares => self.chat.share(&self.contacts, request, caller).await,
                         None => self.chat.handle(request, caller).await,
                     }
                 }
@@ -9961,11 +9976,25 @@ impl Core {
     /// What a client's `chat.*` request about files would be refused with anyway, before anyone is
     /// asked to approve it (stage 4 of `docs/chat.md`): prepared files of `chat.send_message` that
     /// are not its own in the conversation's account, too many of them, or a tool's file it no longer
-    /// reaches. The handlers check again when it runs.
+    /// reaches; and for items to share (stage 5), one it may not read (`not-found`) or a card that
+    /// cannot be made. The handlers check again when it runs.
     async fn chat_refusal(&self, request: &Request, reach: Reach<'_>, client: &str) -> Option<Response> {
         match request {
-            Request::ChatSendMessage { conversation, files, .. } if !files.is_empty() => {
+            Request::ChatSendMessage { conversation, files, items, fields, .. }
+                if !files.is_empty() || !items.is_empty() || fields.is_some() =>
+            {
                 let (account, _) = torro_chat::split_conversation(conversation)?;
+                if !items.is_empty() || fields.is_some() {
+                    let fields = fields.as_deref();
+                    if let Some(refused) = crate::chat::share::shape_refusal(items, fields, files.len()) {
+                        return Some(refused);
+                    }
+                    // Boxed: reading the contacts must not grow the frame every request passes.
+                    let card = Box::pin(crate::chat::share::card_for(&self.contacts, reach, items, fields));
+                    if let Err(refused) = card.await {
+                        return Some(refused);
+                    }
+                }
                 if let Some(refused) = self.chat.files_refusal(account, files, Some(client)) {
                     return Some(refused);
                 }
@@ -34279,6 +34308,107 @@ mod tests {
         worker.expect("thread").join().expect("the test ran through");
     }
 
+    /// Stage 5: a client shares a contact of a book it may read; the approval names the contact as
+    /// the address book holds it and what goes beyond the default, and the card that goes is a lean
+    /// vCard with the card's text under it. A contact out of its reach, or reach without read access
+    /// to contacts, is `not-found` before anyone is asked.
+    #[test]
+    fn a_client_shares_a_contact_it_may_read_as_a_card() {
+        let worker = std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+            runtime.block_on(a_client_shares_a_contact());
+        });
+        worker.expect("thread").join().expect("the test ran through");
+    }
+
+    async fn a_client_shares_a_contact() {
+        use torro_ipc::share::{ShareField, ShareItem};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let books = Arc::new(crate::contacts::sync::fake::Server::default());
+        let work = books.add_book("contacts", true, false);
+        let private = books.add_book("privat", true, false);
+        let anna = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:anna\r\nFN:Anna Muster\r\nORG:Werke\r\n\
+                    TEL;TYPE=WORK:+49 30 1234\r\nADR;TYPE=HOME:;;Gartenweg 2;Berlin;;10115;\r\n\
+                    NOTE:Knows the secret plan\r\nX-KEEP:me\r\nEND:VCARD\r\n";
+        books.put_card(&work, "anna", anna);
+        books.put_card(&private, "secret", "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:secret\r\nFN:Secret\r\nEND:VCARD\r\n");
+        let contacts =
+            crate::contacts::ContactsService::in_dir(&dir.path().join("contacts"), vec![(CHAT_ACCOUNT.into(), books)]);
+        contacts.sync_all().await;
+        let (core, server) = chatting(dir.path());
+        let core = core.with_contacts(contacts);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.chat_accounts = Selection::Only(vec![CHAT_ACCOUNT.into()]);
+        rights.address_books = Selection::Only(vec![format!("{CHAT_ACCOUNT}/contacts")]);
+        let mut no_contacts = rights.clone();
+        no_contacts.areas.remove(&Area::Contacts);
+        let (_, key) = client(&core, rights).await;
+        let (_, blind) = client(&core, no_contacts).await;
+        let share = |id: &str, fields: Option<Vec<ShareField>>| Request::ChatSendMessage {
+            conversation: CHAT_BEN.into(),
+            text: String::new(),
+            reply_to: None,
+            silent: false,
+            files: Vec::new(),
+            items: vec![ShareItem::contact(&format!("{CHAT_ACCOUNT}/{id}"))],
+            fields,
+        };
+        assert_eq!(code(&ask(&core, Some(&key), share("privat/secret", None)).await), "not-found", "another book");
+        assert_eq!(code(&ask(&core, Some(&key), share("contacts/nobody", None)).await), "not-found");
+        assert_eq!(code(&ask(&core, Some(&blind), share("contacts/anna", None)).await), "not-found", "no contacts");
+        let only_fields = Request::ChatSendMessage {
+            conversation: CHAT_BEN.into(),
+            text: "Hi".into(),
+            reply_to: None,
+            silent: false,
+            files: Vec::new(),
+            items: Vec::new(),
+            fields: Some(vec![ShareField::Note]),
+        };
+        assert_eq!(code(&ask(&core, Some(&key), only_fields).await), "error");
+        let none = ask(&core, Some(&app_key), Request::ListApprovals).await;
+        assert!(matches!(&none, Response::Approvals { approvals } if approvals.is_empty()), "{none:?}");
+
+        // The conversation's name comes from the list the core holds.
+        let list = Request::ChatListConversations { account: None, unread_only: false, query: None, limit: None };
+        ask(&core, Some(&key), list).await;
+        let more = Some(vec![ShareField::Phones, ShareField::PrivateAddresses]);
+        let pending = waits(ask(&core, Some(&key), share("contacts/anna", more)).await);
+        let card = trf("the contact card \"{name}\"", &[("name", &"Anna Muster")]);
+        assert!(pending.summary.contains(&card) && pending.summary.contains("Ben Koch"), "{}", pending.summary);
+        let details = pending.details.join("\n");
+        let named = trf("Contact card: \"{name}\" ({n} fields)", &[("name", &"Anna Muster"), ("n", &3)]);
+        assert!(details.contains(&named) && details.contains(tr("+ private address")), "{details}");
+        let goes = trf("Uploads \"{name}\" to your Talk folder in Nextcloud", &[("name", &"Anna Muster.vcf")]);
+        assert!(details.contains(&goes) && !details.contains("secret plan"), "{details}");
+        let under = format!(
+            "{}\n\"Anna Muster\"\n\"+49 30 1234\"\n\"Gartenweg 2, 10115 Berlin\"",
+            tr("The text under the card:")
+        );
+        assert!(details.contains(&under), "the caption the person did not write: {details}");
+
+        let done = approval(ask(&core, Some(&app_key), decide(&pending.id, true)).await);
+        let Some(torro_ipc::ApprovalState::Done { response }) = Some(done.state.clone()) else { panic!("done") };
+        assert!(matches!(*response, Response::ChatSending { .. }), "{response:?}");
+        for _ in 0..300 {
+            if !server.state().shares.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let state = server.state();
+        let (_, path, meta) = state.shares.first().expect("shared");
+        assert!(path.ends_with("/Anna Muster.vcf"), "{path}");
+        let vcard = String::from_utf8(state.files.get(path).expect("uploaded").bytes.clone()).expect("text");
+        assert!(vcard.contains("+49 30 1234") && vcard.contains("Gartenweg 2"), "{vcard}");
+        assert!(!vcard.contains("Werke") && !vcard.contains("secret plan") && !vcard.contains("X-KEEP"), "{vcard}");
+        assert_eq!(meta.caption.as_deref(), Some("Anna Muster\n+49 30 1234\nGartenweg 2, 10115 Berlin"));
+        drop(state);
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log");
+        assert!(!log.contains("Muster") && !log.contains("Gartenweg") && log.contains("kind:contact"), "{log}");
+    }
+
     /// Stage 4: a client's file waits with its message for the person, and the approval shows the
     /// file as the core prepared it; once decided neither name nor bytes stay. Another client's file
     /// is nothing to approve, a path is the person's, and a file an approval waits for stays.
@@ -34315,6 +34445,8 @@ mod tests {
             reply_to: None,
             silent: false,
             files,
+            items: Vec::new(),
+            fields: None,
         };
         assert_eq!(code(&ask(&core, Some(&other), send(vec![file.id.clone()])).await), "not-found", "not its file");
         let path = Request::ChatPrepareFile {
@@ -34370,6 +34502,8 @@ mod tests {
             reply_to: None,
             silent: false,
             files: Vec::new(),
+            items: Vec::new(),
+            fields: None,
         };
         // A template sets the level but opens no account: the conversation is not there.
         let (_, closed) = client(&core, RightsTemplate::FullAccess.rights()).await;

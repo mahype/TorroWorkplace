@@ -61,6 +61,9 @@ pub struct ChatFacts {
     /// The files a message sends, as the core prepared them (stage 4): name, size, kind and where
     /// they came from.
     pub files: Vec<super::media::FileFact>,
+    /// The card of the items a message shares (stage 5), as the core makes it from its stores; the
+    /// core fills it in. `None` without items or when an item is gone.
+    pub card: Option<super::share::CardFacts>,
 }
 
 /// The account a conversation id names and its checked token; `not-found` for anything that is
@@ -369,7 +372,11 @@ impl ChatService {
                     Err(err) => Err(err),
                 }
             }
-            Request::ChatSendMessage { conversation, text, reply_to, silent, files } if !files.is_empty() => {
+            // The core makes items into a prepared file first (`super::share`); here they are a mistake.
+            Request::ChatSendMessage { items, fields, .. } if !items.is_empty() || fields.is_some() => {
+                Err(ChatError::Other("chat.send_message with items is no command of the chat service".into()))
+            }
+            Request::ChatSendMessage { conversation, text, reply_to, silent, files, .. } if !files.is_empty() => {
                 let reply_to = match reply_to.as_deref().map(|message| number_in(&conversation, message)).transpose() {
                     Ok(reply_to) => reply_to,
                     Err(err) => return error_response(&err),
@@ -887,6 +894,7 @@ impl ChatService {
                 Request::ChatSendMessage { files, .. } => self.file_facts(files),
                 _ => Vec::new(),
             },
+            card: None,
         };
         if let Some(wanted) = number.or(quoted)
             && let Ok((remote, caps, _)) = self.ready(account).await
@@ -978,6 +986,8 @@ mod tests {
             reply_to: None,
             silent: false,
             files: Vec::new(),
+            items: Vec::new(),
+            fields: None,
         }
     }
 
@@ -1088,6 +1098,8 @@ mod tests {
             reply_to: Some(message_id(&conversation_id(ACCOUNT, "team4alpha"), 1)),
             silent: false,
             files: Vec::new(),
+            items: Vec::new(),
+            fields: None,
         };
         assert_eq!(code(&chat.handle(reply, APP).await), "error", "a reply quotes its own conversation");
         server.state().rooms[0].read_only = true;
@@ -1219,6 +1231,8 @@ mod tests {
             reply_to: Some(message_id(&ben(), 1)),
             silent: false,
             files: Vec::new(),
+            items: Vec::new(),
+            fields: None,
         };
         let facts = chat.facts(&reply).await.expect("facts");
         assert_eq!(facts.conversation.as_deref(), Some("Ben Koch"));

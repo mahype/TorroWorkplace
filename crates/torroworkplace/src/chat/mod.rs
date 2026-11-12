@@ -15,6 +15,7 @@
 //!   previews, cards and fetched files too.
 //! - Files and media (stage 4): sending in [`media`], reading, previews and link cards in
 //!   [`attachments`].
+//! - Sharing items of the suite (stage 5): contacts as a card in [`share`].
 //!
 //! Logs name an account's id and a code, never a name, a text or a token.
 
@@ -26,6 +27,7 @@ pub mod live;
 pub mod media;
 pub mod remote;
 pub mod service;
+pub mod share;
 pub mod talk;
 pub mod throttle;
 

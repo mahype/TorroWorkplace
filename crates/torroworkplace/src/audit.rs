@@ -326,8 +326,20 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::PresenceRemovePerson { account: name, person } => {
             vec![account(name), format!("item:{}", hashed(person))]
         }
+        // Shared items (stage 5, `docs/teilen.md`): their kind and each id hashed, never a name.
+        Request::ChatSendMessage { conversation, items, .. } => {
+            let mut ids = vec![chat_conversation(conversation)];
+            for item in items {
+                let kind = serde_json::to_value(item.kind).ok().and_then(|kind| kind.as_str().map(str::to_string));
+                let kind = id("kind", &kind.unwrap_or_default());
+                if !ids.contains(&kind) {
+                    ids.push(kind);
+                }
+                ids.push(format!("item:{}", hashed(&item.id)));
+            }
+            ids
+        }
         Request::ChatGetMessages { conversation, .. }
-        | Request::ChatSendMessage { conversation, .. }
         | Request::ChatMarkRead { conversation, .. }
         | Request::ChatMarkUnread { conversation }
         | Request::ChatSuggestMentions { conversation, .. }

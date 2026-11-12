@@ -99,6 +99,8 @@ pub enum Origin {
     Upload,
     /// Made with the PDF tool.
     Tool,
+    /// The card of shared items, made by the core from its own store (stage 5, [`super::share`]).
+    Card,
 }
 
 /// The bytes of a prepared file.
@@ -678,6 +680,29 @@ impl ChatService {
             Ok(()) => Response::ChatPreparedFile { file: Box::new(shown) },
             Err(refusal) => refusal,
         }
+    }
+
+    /// Keeps the card file `bytes` named `name` (stage 5, [`super::share`]) as a prepared file of
+    /// `caller` in `account`, so it is sent as any other file; answers its id. `busy` when its bytes
+    /// do not fit.
+    pub fn prepare_card(
+        &self,
+        account: &str,
+        name: &str,
+        bytes: Vec<u8>,
+        caller: Caller<'_>,
+    ) -> Result<String, Response> {
+        let file = of_bytes(bytes, clean_name(name), Origin::Card, None);
+        let id = format!("f{}", super::service::reference());
+        let prepared = Prepared {
+            id: id.clone(),
+            account: account.to_string(),
+            owner: caller.client.map(str::to_string),
+            used: Instant::now(),
+            ..file
+        };
+        self.media().keep(prepared)?;
+        Ok(id)
     }
 
     /// `chat.release_files`: `waiting` are the ids an approval of the caller waits for.
@@ -1356,7 +1381,15 @@ mod flow {
     }
 
     fn send(files: Vec<String>, text: &str) -> Request {
-        Request::ChatSendMessage { conversation: ben(), text: text.into(), reply_to: None, silent: false, files }
+        Request::ChatSendMessage {
+            conversation: ben(),
+            text: text.into(),
+            reply_to: None,
+            silent: false,
+            files,
+            items: Vec::new(),
+            fields: None,
+        }
     }
 
     /// Waits until the sending `id` is over and answers how it ended.
