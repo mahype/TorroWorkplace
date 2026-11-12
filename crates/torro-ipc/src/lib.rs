@@ -2020,6 +2020,34 @@ pub enum Request {
         id: String,
     },
 
+    // Calls (`docs/chat.md`, stage 6b): ringing, declining and leaving. The call itself runs in the
+    // browser (`<server>/call/<token>`) until the suite has its own call window; starting and
+    // answering a call come with it and are the app key's only (decision 14).
+    /// Whether a call runs in a conversation ([`Response::ChatCall`]): whether it rings for the
+    /// person, since when it runs, how many are in it and whether the person is, with the link to
+    /// join it in the browser; never names, devices or pictures. Clients ask the server one at a
+    /// time.
+    #[serde(rename = "chat.get_call")]
+    ChatGetCall {
+        /// The conversation (`<account>/<token>`).
+        conversation: String,
+    },
+    /// Stops the call ringing for the person ([`Response::Ok`]); the others go on calling. When nothing
+    /// rings it changes nothing: missed calls stay. Clients ask the server one at a time.
+    #[serde(rename = "chat.decline_call")]
+    ChatDeclineCall {
+        /// The conversation (`<account>/<token>`).
+        conversation: String,
+    },
+    /// Leaves the call of a conversation and closes the suite's call window ([`Response::Ok`]). Until
+    /// the suite has a call window of its own the person takes part in the browser, which the core
+    /// cannot leave for them: then it answers `ok` and changes nothing.
+    #[serde(rename = "chat.leave_call")]
+    ChatLeaveCall {
+        /// The conversation (`<account>/<token>`).
+        conversation: String,
+    },
+
     // Presence (`docs/chat.md`, decision 10): who is there, and the person's own status.
     // - Granted in the area `presence` with accounts of its own (`api::Rights::presence_accounts`);
     //   people of any other account are `not-found`.
@@ -4837,6 +4865,11 @@ pub enum SettingKey {
     /// window or the control centre: it tells others lastingly when the person is there. Any
     /// client allowed to change settings may send `false`.
     PresenceHeartbeat,
+    /// "Ring for incoming calls" (`docs/chat.md`, decision 9 and stage 6): `true` (the default) or
+    /// `false`. While on, the service asks every Nextcloud account with Talk every 10 seconds whether
+    /// someone calls, and opens the chat's ringing window when someone does. Off, it asks nothing
+    /// and nothing rings.
+    ChatRing,
     /// The spacing level every window draws with (issue #484): `"torro"` (Standard), `"comfort"` or
     /// `"dense"`, as `settings.list_designs` lists them. It changes only spacing – gaps and the
     /// heights of rows and controls –, never the font, the colour scheme or the mail view. The old
@@ -5302,6 +5335,10 @@ pub enum Response {
     /// The card of a link ([`Request::ChatShowCard`]); `None` when the server knows none.
     ChatCard {
         card: Option<torro_chat::LinkCard>,
+    },
+    /// Whether a call runs in a conversation and rings ([`Request::ChatGetCall`]).
+    ChatCall {
+        call: chat::ChatCall,
     },
     /// Who a mention could mean ([`Request::ChatSuggestMentions`]).
     ChatMentions {

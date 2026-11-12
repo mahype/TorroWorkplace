@@ -9,6 +9,8 @@ pub use files::*;
 
 use std::path::PathBuf;
 
+use chrono::{DateTime, Utc};
+
 use torro_chat::{
     ChatError, ChatSource, Conversation, Mention, MessagePage, NotifyLevel, Outgoing, OwnStatus, Person, SearchHit,
     StatusChange,
@@ -39,6 +41,29 @@ pub const MAX_HITS: u32 = 50;
 
 /// The most characters of a status message (the limit of Nextcloud's user status).
 pub const MAX_STATUS_MESSAGE: usize = 80;
+
+/// A call in a conversation as `chat.get_call` tells it (stage 6 of `docs/chat.md`): no names, no
+/// devices, no pictures; who takes part is in the conversation itself.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct ChatCall {
+    /// The conversation (`<account>/<token>`).
+    pub conversation: String,
+    /// A call runs.
+    pub active: bool,
+    /// Someone calls the person and it still rings for them: not declined, not answered on another
+    /// device, at most 45 seconds.
+    pub ringing: bool,
+    /// When the call began, when the server says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<DateTime<Utc>>,
+    /// How many people are in the call, each once however many devices they joined with.
+    pub people: u32,
+    /// The person is in the call, on any of their devices.
+    pub joined: bool,
+    /// Where the person takes part in the call in the browser (`<server>/call/<token>`), until the
+    /// suite has its own call window: what "Accept" opens.
+    pub link: String,
+}
 
 /// Talks to the core at its socket: [`ChatSource`] for the chat windows, one request per call.
 #[derive(Debug, Clone)]
@@ -93,6 +118,28 @@ impl ChatClient {
             Response::Ok => Ok(()),
             other => Err(unexpected(other)),
         }
+    }
+}
+
+/// Calls (stage 6b of `docs/chat.md`), for the ringing window. Not part of [`ChatSource`]: only the
+/// chat app's ringing window asks them, and the demo has no calls.
+impl ChatClient {
+    /// `chat.get_call`: the call of `conversation`.
+    pub async fn call(&self, conversation: String) -> Result<ChatCall, ChatError> {
+        match self.ask(Request::ChatGetCall { conversation }).await? {
+            Response::ChatCall { call } => Ok(call),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `chat.decline_call`: stops `conversation` ringing for the person.
+    pub async fn decline_call(&self, conversation: String) -> Result<(), ChatError> {
+        self.ok(Request::ChatDeclineCall { conversation }).await
+    }
+
+    /// `chat.leave_call`: leaves the call of `conversation`.
+    pub async fn leave_call(&self, conversation: String) -> Result<(), ChatError> {
+        self.ok(Request::ChatLeaveCall { conversation }).await
     }
 }
 
