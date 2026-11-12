@@ -176,7 +176,7 @@ impl App {
             .into();
         }
         if let Some(error) = &chat.error {
-            return container(widgets::error_state(error.as_str(), Message::Chat(Msg::Refresh)))
+            return container(widgets::error_state(error.as_str(), Message::Chat(Msg::Retry)))
                 .width(Fill)
                 .height(Fill)
                 .center(Fill)
@@ -584,8 +584,12 @@ impl App {
         let newest = chat.messages.iter().rev().find(|message| !timeline::is_system(message));
         let line = match newest {
             Some(message) => format!("{}: {}", people::first_name(&message.author.name), message.text),
-            None if chat.loaded => tr("No messages yet").to_owned(),
-            None => tr("Loading…").to_owned(),
+            // A first page that failed is not loading: the glance says why.
+            None => match &chat.error {
+                Some(error) => error.clone(),
+                None if chat.loaded => tr("No messages yet").to_owned(),
+                None => tr("Loading…").to_owned(),
+            },
         };
         let line = widgets::ellipsized(typo::meta(), line, theme::text_2);
         let pad = if class == SizeClass::Strip { [space::s(), space::m()] } else { [space::m(), space::m()] };

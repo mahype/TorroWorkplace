@@ -59,11 +59,12 @@ pub struct ChatState {
     pub more: bool,
     /// The number of the message the person had read when the window opened: "New" goes after it.
     pub new_after: Option<u64>,
-    /// The first page came (or failed).
+    /// The first page came, or the conversation is gone. A first page that failed leaves it `false`,
+    /// so every tick ([`Msg::Refresh`]) and "Retry" ([`Msg::Retry`]) ask for it again.
     pub loaded: bool,
     /// The conversation does not exist (any more), or the person is no longer in it.
     pub gone: bool,
-    /// Why the first page could not be read; `None` once it came.
+    /// Why the first page could not be read; `None` once a page or a poll came.
     pub error: Option<String>,
     /// The server could not be reached: the history is what the core still held.
     pub offline: bool,
@@ -152,6 +153,9 @@ pub enum Msg {
     Listed,
     /// The window's tick: load the first page if it is not there.
     Refresh,
+    /// "Retry" under a first page that failed: the error goes, the placeholder shows while the first
+    /// page is asked for again.
+    Retry,
     /// The window got the keyboard.
     Seen,
     Escape,
@@ -351,6 +355,10 @@ impl App {
             |msg: fn(Result<torro_chat::MessagePage, ChatError>) -> Msg| move |result| Message::Chat(msg(result));
         match message {
             Msg::Listed => {}
+            Msg::Retry => {
+                chat.error = None;
+                return self.chat_update(Msg::Refresh);
+            }
             Msg::Refresh => {
                 if !chat.loaded && !chat.polling {
                     chat.polling = true;
@@ -379,9 +387,9 @@ impl App {
             }
             Msg::Page(result) => {
                 chat.polling = false;
-                chat.loaded = true;
                 match result {
                     Ok(page) => {
+                        chat.loaded = true;
                         chat.new_after = page.last_read.as_deref().and_then(torro_chat::split_message).map(|(_, n)| n);
                         chat.more = page.more;
                         chat.offline = page.offline;
@@ -396,7 +404,11 @@ impl App {
                             operation::snap_to_end(HISTORY),
                         ]);
                     }
-                    Err(ChatError::NotFound) => chat.gone = true,
+                    Err(ChatError::NotFound) => {
+                        chat.gone = true;
+                        chat.loaded = true;
+                    }
+                    // Not loaded: the next tick or "Retry" asks for the first page again.
                     Err(err) => chat.error = Some(chat_failed(&err)),
                 }
             }
@@ -435,6 +447,7 @@ impl App {
                 match result {
                     Ok(page) => {
                         chat.offline = page.offline;
+                        chat.error = None;
                         if chat.merge(page.messages) {
                             chat.hold_read = false;
                         }

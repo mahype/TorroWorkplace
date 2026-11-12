@@ -533,3 +533,39 @@ fn polls_do_not_overlap() {
     let _ = app.update(Message::Chat(Msg::Polled(page)));
     assert_eq!(chat(&app).messages.len(), held, "known messages are not added twice");
 }
+
+#[test]
+fn a_first_page_that_failed_is_asked_again_on_retry() {
+    let mut app = start(&["--open", "chat"]);
+    let _ = app.update(Message::Chat(Msg::Refresh));
+    assert!(chat(&app).polling, "the first page is asked for");
+    let _ = app.update(Message::Chat(Msg::Page(Err(ChatError::Offline))));
+    assert!(!chat(&app).loaded, "a failed first page is not loaded");
+    assert_eq!(chat(&app).error.as_deref(), Some(tr("The server cannot be reached. Try again when you are online.")));
+    let _ = app.update(Message::Chat(Msg::Poll));
+    assert!(!chat(&app).polling, "no poll without a first page");
+    let _ = app.update(Message::Chat(Msg::Retry));
+    assert!(chat(&app).polling, "\"Retry\" asks for the first page again");
+    assert_eq!(chat(&app).error, None, "the placeholder shows while it is asked for");
+    let _ = app.update(Message::Chat(Msg::Page(Err(ChatError::Busy))));
+    let _ = app.update(Message::Chat(Msg::Refresh));
+    assert!(chat(&app).polling, "the tick asks again too");
+    assert!(chat(&app).error.is_some(), "and the error stays while it does");
+    let page = block_on(app.backend.clone().messages(BEN.into(), None, None));
+    let _ = app.update(Message::Chat(Msg::Page(page)));
+    assert!(chat(&app).loaded && !chat(&app).messages.is_empty());
+    assert_eq!(chat(&app).error, None, "the history shows");
+}
+
+#[test]
+fn a_poll_that_came_clears_the_error() {
+    let mut app = loaded(start(&["--open", "chat"]));
+    if let Some(chat) = app.chat.as_mut() {
+        chat.error = Some("An old failure".into());
+    }
+    let _ = app.update(Message::Chat(Msg::Poll));
+    let after = chat(&app).messages.last().map(|message| message.id.clone());
+    let page = block_on(app.backend.clone().messages(BEN.into(), None, after));
+    let _ = app.update(Message::Chat(Msg::Polled(page)));
+    assert_eq!(chat(&app).error, None);
+}
