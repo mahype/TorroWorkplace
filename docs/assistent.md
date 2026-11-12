@@ -207,7 +207,10 @@ mittel und schmal deckt es die Mail ab („‹ Mail“ führt zurück). Entwurf:
   `focus`), wird ein Vorschlag der Mail wie in [vorschlaege.md](vorschlaege.md) und erscheint als Karte
   im Chat. „Accept“ öffnet den vorausgefüllten Dialog; erst „Create“ legt an. Die Karte gibt es nur im
   Chat zu einer Mail; ruft eine andere Unterhaltung `mail.extract_action` auf, steht dort nur die
-  Werkzeugzeile, und der Vorschlag liegt wie jeder andere bei der Mail.
+  Werkzeugzeile, und der Vorschlag liegt wie jeder andere bei der Mail. In der Assistent-App zeigt die
+  Karte nur die Kurzform mit „Open in Mail“: `apps.open_app` mit `message:<konto>:<m:…>` öffnet das
+  Mail-Fenster auf dieser Mail, wo man den Vorschlag annimmt. Der Kern prüft Leserecht und Konto und
+  antwortet sonst `not-found`; das Ziel gibt es auch für API und MCP (`apps_open_app`).
 - **Rechte.** Der Assistent braucht Mail-Leserecht und das Konto in seiner Reichweite, sonst
   `forbidden` und das Paneel zeigt einen Hinweis mit „Open assistant“. Den Hinweis zeigt es schon beim
   Öffnen: `assistant.check_about` (Read) prüft mit Antrieb, Modell und Mail dasselbe wie

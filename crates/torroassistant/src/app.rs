@@ -359,7 +359,13 @@ pub enum Message {
     SavePicked(String, Option<PathBuf>),
     /// "Send by mail" on the card of the file with this id: a new mail with it attached.
     MailFile(String),
-    /// The core's answer to a button of a file card; `Ok` with what to say then, the text says what
+    /// "Open in Mail" on a suggestion's card (issue #605): the mail window on the mail `id` of
+    /// `account`, where the suggestion is accepted.
+    OpenMail {
+        account: String,
+        id: String,
+    },
+    /// The core's answer to a button of a card; `Ok` with what to say then, the text says what
     /// failed.
     FileDone(Result<Option<&'static str>, Refusal>, &'static str),
     /// The core's answer to the decision.
@@ -984,6 +990,11 @@ impl App {
             Message::MailFile(id) => {
                 let failed = tr("Couldn't open a new mail with the file.");
                 let request = chat::mail_file_request(&id);
+                return self.ask(request, move |result| Message::FileDone(result.map(|_| None), failed));
+            }
+            Message::OpenMail { account, id } => {
+                let failed = tr("Couldn't open the mail.");
+                let request = chat::open_mail_request(&account, &id);
                 return self.ask(request, move |result| Message::FileDone(result.map(|_| None), failed));
             }
             Message::FileDone(Ok(said), _) => {

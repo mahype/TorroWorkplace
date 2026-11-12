@@ -318,6 +318,13 @@ pub fn mail_file_request(file: &str) -> Request {
     Request::OpenApp { app: AppId::INBOX.binary.to_owned(), target: Some(format!("file:{file}")) }
 }
 
+/// "Open in Mail" on a suggestion's card (issue #605): `apps.open_app` with `message:<account>:<id>`, the
+/// mail window on that mail, whose cards accept the suggestion. The core checks that the mail is there
+/// and may be read.
+pub fn open_mail_request(account: &str, id: &str) -> Request {
+    Request::OpenApp { app: AppId::INBOX_MAIL.window_class.to_owned(), target: Some(format!("message:{account}:{id}")) }
+}
+
 /// The sidebar's conversations: pinned ones, then the rest, each newest first, both narrowed to
 /// the titles that contain `query` (any case; all of them for a blank query).
 pub fn sidebar_groups<'a>(
@@ -629,6 +636,13 @@ mod tests {
         assert_eq!(
             mail_file_request("1a2b3c4d"),
             Request::OpenApp { app: "torroinbox".into(), target: Some("file:1a2b3c4d".into()) }
+        );
+        assert_eq!(
+            open_mail_request("mail:anna@example.org", "m:w2"),
+            Request::OpenApp {
+                app: "torro-inbox-mail".into(),
+                target: Some("message:mail:anna@example.org:m:w2".into())
+            }
         );
     }
 

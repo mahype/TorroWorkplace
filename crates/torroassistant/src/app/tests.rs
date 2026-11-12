@@ -12,8 +12,8 @@ use torro_ipc::assistant::TEST_ENGINE;
 
 use super::*;
 use crate::demo::{
-    APPROVAL, APPROVAL_ID, ASKED, BOT_CHAT, CARDS, FORBIDDEN, GONE, OLLAMA, PDF, PROPOSAL, RELEASE, STREAMING, TOOLS,
-    TRAVEL,
+    APPROVAL, APPROVAL_ID, ASKED, BOT_CHAT, CARDS, FORBIDDEN, GONE, MAIL_CHAT, OLLAMA, PDF, PROPOSAL, RELEASE,
+    STREAMING, TOOLS, TRAVEL,
 };
 
 const WIDE: Size = Size::new(1600.0, 1000.0);
@@ -184,6 +184,29 @@ fn every_kind_of_entry_builds_unfolded_too() {
             let _ = app.view();
         }
     }
+}
+
+/// Issue #605: "Open in Mail" on a suggestion's card opens the mail window on that mail through the
+/// core (`apps.open_app` with `message:<account>:<id>`); a refusal says so and asks for the cards again.
+#[test]
+fn open_in_mail_on_a_suggestion_opens_its_mail() {
+    let mut app = started(&["--chat", MAIL_CHAT]);
+    let suggestion = app.cards.values().find_map(|card| match card {
+        Card::Suggestion { account, id, .. } => Some((account.clone(), id.clone())),
+        _ => None,
+    });
+    let (account, id) = suggestion.expect("the demo's suggestion");
+    sent(&mut app);
+    for size in SIZES {
+        let _ = app.update(Message::Resized(size));
+        let _ = app.view();
+    }
+    let _ = app.update(Message::OpenMail { account: account.clone(), id: id.clone() });
+    let target = format!("message:{account}:{id}");
+    assert_eq!(sent(&mut app), [Request::OpenApp { app: "torro-inbox-mail".into(), target: Some(target) }]);
+    let refusal = Refusal { code: "not-found".into(), message: "no such mail".into() };
+    let _ = app.update(Message::FileDone(Err(refusal), tr("Couldn't open the mail.")));
+    assert!(sent(&mut app).iter().any(|request| matches!(request, Request::GetCards { .. })), "the cards again");
 }
 
 /// Task WZ.8: a conversation with cards asks the core what they show (`assistant.get_cards`) and

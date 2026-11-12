@@ -9,8 +9,8 @@
 //! - **No longer available:** the file went, changed or is out of reach; no buttons, and the tile
 //!   only its quiet mark in `text_3` without its surface, so it never reads as a file to open.
 //! - **Suggestion of a mail** (issue #605, a chat about a mail): only its short form – the kind's
-//!   tile, what was read out (or the kind's word) and "Accept it in Mail"; no buttons, as accepting
-//!   opens the filled dialog in the mail window, where the chat about the mail has the whole card.
+//!   tile, what was read out (or the kind's word) and "Accept it in Mail" – and one button, "Open in
+//!   Mail": accepting opens the filled dialog in the mail window, where the mail shows the whole card.
 //! - **Short form:** one line for mini and strip tiles, the tile small, the name and the size.
 
 use iced::widget::text::Wrapping;
@@ -39,7 +39,7 @@ impl App {
     pub(super) fn card(&self, seq: u64) -> Option<Element<'_, Message>> {
         Some(match self.cards.get(&seq)? {
             Card::File(file) => file_card(file),
-            Card::Suggestion { suggestion, .. } => suggestion_card(suggestion),
+            Card::Suggestion { account, id, suggestion } => suggestion_card(account, id, suggestion),
             Card::Unavailable => gone_card(),
         })
     }
@@ -166,8 +166,9 @@ fn suggestion_title(suggestion: &Suggestion) -> String {
 }
 
 /// A suggestion of a mail in the short form (issue #605): its tile, what it is about, and its kind
-/// with where to accept it – the mail window, whose chat about the mail shows the whole card.
-fn suggestion_card<'a>(suggestion: &Suggestion) -> Element<'a, Message> {
+/// with where to accept it – the mail window, whose chat about the mail shows the whole card –, and
+/// "Open in Mail", which opens the mail window on the mail `id` of `account` (`apps.open_app`).
+fn suggestion_card<'a>(account: &str, id: &str, suggestion: &Suggestion) -> Element<'a, Message> {
     let meta = trf("{kind} · Accept it in Mail", &[("kind", &suggestion_kind(suggestion))]);
     let head = widgets::card_head(
         Some(suggestion_tile(suggestion, TileSize::Large)),
@@ -175,7 +176,10 @@ fn suggestion_card<'a>(suggestion: &Suggestion) -> Element<'a, Message> {
         meta,
         None,
     );
-    widgets::card(vec![head], false, None)
+    let open = Message::OpenMail { account: account.to_owned(), id: id.to_owned() };
+    let button =
+        widgets::text_button(Some(Icon::ArrowUpRight), tr("Open in Mail"), style::button::secondary, Some(open));
+    widgets::card(vec![head, button], false, None)
 }
 
 /// A card whose item is gone or out of reach: said so, without buttons; why is not told (the core
