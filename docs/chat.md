@@ -804,9 +804,9 @@ Entscheidung 13: selbst gebaut. Was die Machbarkeit dazu ergab, steht in
   Clients fragen den Server einzeln nacheinander, wie bei Nachrichten.
 - **Klingeln** ist eine Benachrichtigung von `spreed` mit dem Objekt `call`, jünger als 45 s, in einer Unterhaltung mit
   laufendem Anruf, in dem der Mensch auf keinem Gerät ist (`chat/calls.rs`). Die Abfrage läuft alle 10 s nur, solange
-  `chat_ring` an ist; aus vergisst der Kern, was klingelt. Offen: `notify_push` statt der Abfrage, ein `ETag` je Konto
-  für die Liste der Benachrichtigungen und kein Klingeln bei „Do not disturb“ (der Kern prüft den eigenen Status dafür
-  noch nicht).
+  `chat_ring` an ist; aus vergisst der Kern, was klingelt. Bei „Do not disturb“ auf dem Konto (eigener Status, wie
+  zuletzt gelesen oder gesetzt) öffnet sich kein Fenster. Offen: `notify_push` statt der Abfrage und ein `ETag` je Konto
+  für die Liste der Benachrichtigungen.
 - **Ablehnen** löscht nur Benachrichtigungen, die noch klingeln; ein verpasster Anruf bleibt in den Benachrichtigungen
   und im Eingang. `notification-state` braucht es dafür nicht. **Auflegen** antwortet `ok`, solange der Anruf im
   Browser läuft.
