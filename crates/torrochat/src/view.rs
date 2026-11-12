@@ -25,7 +25,7 @@ use torro_gui::icon::{self, Icon};
 use torro_gui::layout::SizeClass;
 use torro_gui::shell::{self, Cover, Surface, TitleButtons, TopRow};
 use torro_gui::theme::{self, Palette, palette, size, space};
-use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, TileFace, TileSize};
+use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, TileFace, TileSize};
 use torro_gui::{layout, style, typo};
 
 use crate::app::{App, ClearAfter, Dialog, Menu, Message, NEW_QUERY, SEARCH, STATUS_TEXT, Tab, Target};
@@ -39,6 +39,9 @@ pub(crate) const HAIRLINE: f32 = 1.0;
 
 /// The faces the strip shows before "+n".
 const STRIP_FACES: usize = 8;
+
+/// The unread chats a glance lists where it has room (mini tall, strip).
+const GLANCE_CHATS: usize = 3;
 
 /// How a row of the contact list reads: a person offline dimmed, a favourite with its pin.
 #[derive(Debug, Clone, Copy)]
@@ -122,16 +125,23 @@ impl App {
             Tab::Groups => tr("Search groups"),
             Tab::Messages => tr("Search messages"),
         };
-        let search = text_input(placeholder, &self.search)
+        // A quiet field as the mail window's, its magnifier inside before the text.
+        let lead = style::INPUT_PADDING.left + icon::SIZE + space::s();
+        let input = text_input(placeholder, &self.search)
             .id(SEARCH)
             .size(body.size)
             .line_height(body.line_height)
             .font(body.font)
-            .padding(style::INPUT_PADDING)
+            .padding(Padding { left: lead, ..style::INPUT_PADDING })
             .width(Fill)
-            .style(style::text_input)
+            .style(style::text_input_quiet)
             .on_input(Message::Search)
             .on_submit(Message::SearchSubmit);
+        let glass = container(tinted(Icon::Search, icon::SIZE, |p| p.text_3))
+            .height(Fill)
+            .center_y(Fill)
+            .padding(Padding::ZERO.left(style::INPUT_PADDING.left));
+        let search = stack![input, glass];
         let unread = people::unread_groups(&self.conversations);
         let groups = if unread > 0 { trf("Groups ({count})", &[("count", &unread)]) } else { tr("Groups").to_owned() };
         let selected = match self.tab {
@@ -139,7 +149,7 @@ impl App {
             Tab::Groups => 1,
             Tab::Messages => 2,
         };
-        let tabs = widgets::segmented(
+        let tabs = segmented_fill(
             [
                 (tr("People").to_owned(), Message::Tab(Tab::People)),
                 (groups, Message::Tab(Tab::Groups)),
@@ -206,8 +216,7 @@ impl App {
         for (group, members) in people::groups(&self.people, &self.conversations, &self.search) {
             // A search shows every match; a folded group keeps its head.
             let folded = self.folded(group) && !searching;
-            let label = format!("{} {}", group.title(), members.len());
-            rows.push(widgets::sidebar_group(label, Some((!folded, Message::Fold(group)))));
+            rows.push(group_head(group.title(), members.len(), !folded, Message::Fold(group)));
             if folded {
                 continue;
             }
@@ -229,7 +238,7 @@ impl App {
         people::group_chats(&self.conversations, &self.search)
             .into_iter()
             .map(|conversation| {
-                let lead = widgets::source_tile(TileFace::Icon(Icon::Users), TileSize::Large, None);
+                let lead = tile_face(Icon::Users);
                 let target = Target::Conversation(conversation.id.clone());
                 let line = people::chat_line(conversation);
                 let look = Look { dim: false, favorite: conversation.favorite };
@@ -265,8 +274,8 @@ impl App {
                 Some(c) if c.kind == torro_chat::ConversationKind::Direct => {
                     avatar(&c.name, c.person.as_deref().unwrap_or(&c.id), None, &colours)
                 }
-                Some(_) => widgets::source_tile(TileFace::Icon(Icon::Users), TileSize::Large, None),
-                None => widgets::source_tile(TileFace::Icon(Icon::MessageCircle), TileSize::Large, None),
+                Some(_) => tile_face(Icon::Users),
+                None => tile_face(Icon::MessageCircle),
             };
             let look = Look { dim: false, favorite: false };
             self.row(Target::Hit(hit.id.clone()), lead, &hit.title, hit.text.clone(), 0, look, anchors)
@@ -385,32 +394,24 @@ impl App {
 
     /// The own status's menu: the statuses, each with its mark, then the status message.
     fn status_menu(&self) -> Element<'_, Message> {
-        let colours = self.colours();
         let own = self.own.as_ref();
         let heartbeat = own.is_some_and(|own| own.heartbeat);
         let statuses = [Status::Online, Status::Away, Status::Busy, Status::Dnd, Status::Invisible]
             .into_iter()
             .map(|status| {
-                let mut item = MenuItem::new(
-                    status_mark(status, &colours),
-                    people::status_word(status),
-                    Message::SetStatus(status),
-                )
-                .current(own.is_some_and(|own| own.status == status));
-                if status == Status::Online && !heartbeat {
-                    item = item.detail(tr("Needs “Show others when I am online”"));
-                }
-                if status == Status::Invisible {
-                    item = item.detail(tr("Others see you offline"));
-                }
-                item
+                let detail = match status {
+                    Status::Online if !heartbeat => Some(tr("Needs “Show others when I am online”")),
+                    Status::Invisible => Some(tr("Others see you offline")),
+                    _ => None,
+                };
+                status_entry(status, own.is_some_and(|own| own.status == status), detail)
             })
             .collect();
         let mut message = vec![MenuItem::new(Icon::SquarePen, tr("Set status message…"), Message::StatusDialog)];
         if own.and_then(|own| own.message.as_deref()).is_some_and(|text| !text.trim().is_empty()) {
             message.push(MenuItem::new(Icon::X, tr("Clear status message"), Message::ClearStatusText));
         }
-        widgets::menu(vec![MenuSection::new(statuses), MenuSection::new(message)])
+        chat::menu_card(statuses, vec![MenuSection::new(message)])
     }
 
     /// A row's context menu: open the chat, and take off the list someone added by hand.
@@ -467,10 +468,11 @@ impl App {
                 let chips = row(chips).spacing(space::s()).wrap();
                 let clear = column![typo::text(typo::caption(), tr("Clear after")).style(theme::text_3), chips]
                     .spacing(space::xs());
+                // The dialog's one primary button (the window has none of its own).
                 let save = if *saving {
-                    widgets::busy_button(tr("Saving…"), style::button::secondary)
+                    widgets::busy_button(tr("Saving…"), style::button::primary)
                 } else {
-                    widgets::text_button(None, tr("Save"), style::button::secondary, Some(Message::SaveStatusText))
+                    widgets::text_button(None, tr("Save"), style::button::primary, Some(Message::SaveStatusText))
                 };
                 (tr("Set status message"), column![input, clear].spacing(space::l()).into(), Some(save))
             }
@@ -491,10 +493,11 @@ impl App {
         if !self.people_loaded {
             return container(widgets::loading()).width(Fill).height(Fill).into();
         }
-        let there = people::there(&self.people);
+        // Only who is online: away, busy and "do not disturb" are there, but not "online".
+        let online = people::online(&self.people);
         let unread = people::unread_conversations(&self.conversations);
-        let figure = typo::text(typo::display().tabular(), there.to_string()).wrapping(Wrapping::None);
-        let label = typo::text(typo::meta(), if there == 1 { tr("person online") } else { tr("people online") })
+        let figure = typo::text(typo::display().tabular(), online.to_string()).wrapping(Wrapping::None);
+        let label = typo::text(typo::meta(), if online == 1 { tr("person online") } else { tr("people online") })
             .style(theme::text_2)
             .wrapping(Wrapping::None);
         let unread_line = if unread == 0 {
@@ -507,26 +510,56 @@ impl App {
         let unread_line = widgets::ellipsized(typo::meta(), unread_line, theme::text_3);
         let counts =
             column![row![figure, label].spacing(space::s()).align_y(Alignment::End), unread_line].spacing(space::xs());
+        // Mini tall and the strip have room for the unread chats themselves; plain mini does not.
+        let room = class == SizeClass::Strip || self.size.height >= size::panel();
+        let chats: Vec<Element<'_, Message>> = people::unread_chats(&self.conversations)
+            .into_iter()
+            .take(if room { GLANCE_CHATS } else { 0 })
+            .map(|chat| {
+                let name = widgets::ellipsized(typo::body(), chat.name.as_str(), theme::text);
+                let line = row![container(name).width(Fill), count_badge(chat.unread)].align_y(Alignment::Center);
+                container(line).height(size::row_sidebar()).center_y(size::row_sidebar()).into()
+            })
+            .collect();
+        let chats = column(chats).spacing(space::xs());
         let content: Element<'_, Message> = if class == SizeClass::Strip {
+            // The faces of those who are there, each with the mark of its status, as in the list.
             let colours = self.colours();
-            let faces: Vec<(String, iced::Color)> = self
-                .people
+            let there: Vec<&Person> =
+                self.people.iter().filter(|person| !person.unknown && person.status.is_there()).collect();
+            let mut faces = row(there
                 .iter()
-                .filter(|person| !person.unknown && person.status.is_there())
                 .take(STRIP_FACES)
-                .map(|person| (people::initials(&person.name), hue(&colours, &person.id)))
-                .collect();
-            let more = there.saturating_sub(faces.len());
-            row![counts, Space::new().width(Fill), widgets::avatar_stack(&faces, more)]
-                .spacing(space::l())
+                .map(|person| avatar(&person.name, &person.id, Some(Group::of(person).status()), &colours)))
+            .spacing(space::xs())
+            .align_y(Alignment::Center);
+            let more = people::there(&self.people).saturating_sub(STRIP_FACES);
+            if more > 0 {
+                let label = trf("+{count}", &[("count", &more)]);
+                faces = faces.push(typo::text(typo::meta().tabular(), label).style(theme::text_3));
+            }
+            row![counts, container(chats).width(size::props()), Space::new().width(Fill), faces]
+                .spacing(space::xl())
                 .align_y(Alignment::Center)
                 .into()
         } else {
-            counts.into()
+            column![counts, chats].spacing(space::l()).into()
         };
         let pad = if class == SizeClass::Strip { [space::s(), space::m()] } else { [space::m(), space::m()] };
         container(content).width(Fill).height(Fill).padding(pad).center_y(Fill).into()
     }
+}
+
+/// A group's face, as large as a person's ([`face_edge`]): its icon on a neutral tile.
+pub(crate) fn tile_face<'a>(which: Icon) -> Element<'a, Message> {
+    let size = if face_edge() >= size::tile_lg() { TileSize::Large } else { TileSize::Medium };
+    widgets::source_tile(TileFace::Icon(which), size, None)
+}
+
+/// The edge of a face: [`size::tile_lg()`] while a row leaves it [`space::m()`] of air, else
+/// [`size::tile()`] – in Dense (rows 42) a face of 36 would touch the next row's.
+pub(crate) fn face_edge() -> f32 {
+    if size::row() >= size::tile_lg() + space::m() { size::tile_lg() } else { size::tile() }
 }
 
 /// The colour of a person's avatar: the sender colour of their id, the same everywhere.
@@ -534,16 +567,20 @@ pub(crate) fn hue(colours: &Palette, id: &str) -> iced::Color {
     colours.sender.get(widgets::sender_hue(id)).copied().unwrap_or(colours.text_3)
 }
 
-/// A face, [`size::tile_lg()`] across: the initials in `text` on the person's colour, tinted as the
+/// A face, [`face_edge`] across: the initials in `text` on the person's colour, tinted as the
 /// faces of [`widgets::avatar_stack`] are (never the full colour as a surface), with the presence mark
-/// of `status` over its lower right edge, where it covers no letter.
+/// of `status` over its lower right edge, where it covers no letter. The small face of Dense has
+/// room for one letter only; a second would run under the mark.
 pub(crate) fn avatar<'a>(name: &str, id: &str, status: Option<Status>, colours: &Palette) -> Element<'a, Message> {
-    let edge = size::tile_lg();
+    let edge = face_edge();
     let round = edge / 2.0;
     let colour = hue(colours, id);
-    let face = container(typo::text(typo::caption(), people::initials(name)).wrapping(Wrapping::None))
-        .center(edge)
-        .style(move |t: &Theme| {
+    let mut letters = people::initials(name);
+    if edge < size::tile_lg() {
+        letters = letters.chars().take(1).collect();
+    }
+    let face = container(typo::text(typo::caption(), letters).wrapping(Wrapping::None)).center(edge).style(
+        move |t: &Theme| {
             let p = palette(t);
             container::Style {
                 background: Some(Background::Color(p.tinted(colour))),
@@ -551,7 +588,8 @@ pub(crate) fn avatar<'a>(name: &str, id: &str, status: Option<Status>, colours: 
                 border: border::rounded(round),
                 ..container::Style::default()
             }
-        });
+        },
+    );
     let Some(status) = status else { return face.into() };
     // The mark reaches past the face by its ring, as in the draft.
     let room = edge + MARK_RING;
@@ -559,10 +597,15 @@ pub(crate) fn avatar<'a>(name: &str, id: &str, status: Option<Status>, colours: 
     container(stack![face, mark]).width(room).height(room).into()
 }
 
+/// The presence mark of `status` ([`presence_mark`]) with its word as the tooltip.
+pub(crate) fn presence<'a>(status: Status) -> Element<'a, Message> {
+    widgets::with_tooltip(presence_mark(status), people::status_word(status))
+}
+
 /// The presence mark of `status`, [`icon::SIZE_SM`] across with a ring in the panel's colour: a dot
 /// (online), the moon (away), half a circle (busy), a dot with a bar (do not disturb), a ring
-/// (offline, invisible).
-pub(crate) fn presence<'a>(status: Status) -> Element<'a, Message> {
+/// (offline, invisible). The same form in the list, the head, the footer and the status menu.
+pub(crate) fn presence_mark<'a>(status: Status) -> Element<'a, Message> {
     let edge = icon::SIZE_SM;
     let round = edge / 2.0;
     let inner = edge - MARK_RING;
@@ -597,18 +640,75 @@ pub(crate) fn presence<'a>(status: Status) -> Element<'a, Message> {
         Status::Away | Status::Busy => surface(None, |p| p.panel),
         Status::Invisible | Status::Offline => surface(None, |p| p.text_3),
     };
-    widgets::with_tooltip(container(content).center(edge).style(style), people::status_word(status))
+    container(content).center(edge).style(style).into()
 }
 
-/// The mark of `status` in a menu, of the same form as [`presence`] where a menu mark can draw it.
-fn status_mark(status: Status, colours: &Palette) -> Mark {
-    match status {
-        Status::Online => Mark::Dot(colours.ok),
-        Status::Away => Mark::Tinted(Icon::Moon, colours.attention),
-        Status::Busy => Mark::Tinted(Icon::Contrast, colours.error),
-        Status::Dnd => Mark::Tinted(Icon::Minus, colours.error),
-        Status::Invisible | Status::Offline => Mark::Ring(colours.text_3),
+/// One status in the menu of the own status: the mark of [`presence_mark`] in a cell of
+/// [`icon::SIZE`], so every label starts on one axis, the word and an optional second line; the
+/// current one is chosen (`menu_item(true)`) with a check at its end, not a dot that reads as a mark.
+fn status_entry<'a>(status: Status, current: bool, detail: Option<&'a str>) -> Element<'a, Message> {
+    let mark = container(presence_mark(status)).center(icon::SIZE);
+    let mut words = column![typo::text(typo::body(), people::status_word(status)).wrapping(Wrapping::None)];
+    let mut height = style::MENU_ITEM_HEIGHT;
+    if let Some(detail) = detail {
+        words = words.push(typo::text(typo::meta(), detail).style(theme::text_3).wrapping(Wrapping::None));
+        height += typo::line_height(typo::meta());
     }
+    let mut content =
+        row![mark, container(words).width(Fill).clip(true)].spacing(space::s()).align_y(Alignment::Center);
+    if current {
+        content = content.push(tinted(Icon::Check, icon::SIZE, |p| p.text_2));
+    }
+    button(container(content).center_y(Fill))
+        .width(Fill)
+        .height(height)
+        .padding(style::ITEM_PADDING)
+        .style(style::button::menu_item(current))
+        .on_press(Message::SetStatus(status))
+        .into()
+}
+
+/// The head of a group of people: its title and the chevron in `caption`/`text_3` as a sidebar
+/// group has them, the number of people as a cell of its own at the end, in `meta`, tabular, on
+/// the axis of the rows' unread counts. A click folds or unfolds the group.
+fn group_head<'a>(title: &'a str, count: usize, open: bool, on_press: Message) -> Element<'a, Message> {
+    let chevron = if open { Icon::ChevronDown } else { Icon::ChevronRight };
+    let content = row![
+        typo::text(typo::caption(), title).style(theme::text_3).wrapping(Wrapping::None),
+        tinted(chevron, icon::SIZE_SM, |p| p.text_3),
+        Space::new().width(Fill),
+        typo::text(typo::meta().tabular(), count.to_string()).style(theme::text_3).wrapping(Wrapping::None),
+    ]
+    .spacing(space::xs())
+    .align_y(Alignment::Center);
+    let bar = container(content)
+        .width(Fill)
+        .height(size::row_sidebar())
+        .padding(style::ITEM_PADDING)
+        .center_y(size::row_sidebar());
+    let bar = mouse_area(bar).on_press(on_press).interaction(iced::mouse::Interaction::Pointer);
+    container(bar).padding(Padding::ZERO.top(space::m())).into()
+}
+
+/// The tabs of the contact list over the column's whole width: the frame and segments of
+/// [`widgets::segmented`] (its styles), each segment an equal share with its label in the middle.
+fn segmented_fill<'a>(options: impl IntoIterator<Item = (String, Message)>, active: usize) -> Element<'a, Message> {
+    let inner = size::control_sm() - (style::SEGMENT_INSET + HAIRLINE) * 2.0;
+    let segments = options.into_iter().enumerate().map(|(at, (label, message))| {
+        let label = typo::text(typo::caption(), label).wrapping(Wrapping::None);
+        button(container(label).center(Fill))
+            .width(Fill)
+            .height(inner)
+            .padding(style::button_padding())
+            .style(style::button::segment(at == active))
+            .on_press(message)
+            .into()
+    });
+    container(row(segments.collect::<Vec<_>>()).width(Fill))
+        .width(Fill)
+        .padding(style::SEGMENT_INSET)
+        .style(style::container::segmented)
+        .into()
 }
 
 /// The unread count of a row: a small round badge, the figure tabular.
@@ -641,7 +741,8 @@ fn unread_words(count: u64) -> String {
 
 /// One person found in the dialog "New chat": a click starts the direct chat.
 fn found_row<'a>(person: &Person, colours: &Palette) -> Element<'a, Message> {
-    let face = avatar(&person.name, &person.id, None, colours);
+    // With the mark of their status, as in the list: the server's search tells it.
+    let face = avatar(&person.name, &person.id, Some(Group::of(person).status()), colours);
     let content = row![face, widgets::ellipsized(typo::body(), person.name.clone(), theme::text)]
         .spacing(space::m())
         .align_y(Alignment::Center);

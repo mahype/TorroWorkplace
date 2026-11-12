@@ -321,7 +321,7 @@ impl App {
                 _ => Tab::People,
             },
             search: match open {
-                Some(Open::Search) => "e".into(),
+                Some(Open::Search) => "er".into(),
                 Some(Open::MessageSearch) => "review".into(),
                 _ => String::new(),
             },

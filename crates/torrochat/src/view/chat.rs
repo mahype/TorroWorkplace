@@ -28,16 +28,15 @@ use iced::widget::{
 };
 use iced::{Alignment, Background, Element, Fill, Padding, Rectangle, Size, Theme, border, keyboard};
 use torro_chat::{Conversation, FileRef, Mention, MessageKind, NotifyLevel, Person};
-use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::SizeClass;
-use torro_gui::shell::{self, Cover, TopRow};
+use torro_gui::shell::{self, TopRow};
 use torro_gui::theme::{self, palette, size, space};
-use torro_gui::widgets::{self, Align, MenuItem, MenuSection, Placement, TileFace, TileSize};
+use torro_gui::widgets::{self, Align, MenuItem, MenuSection, Placement};
 use torro_gui::{style, typo, units};
 
-use super::{Anchors, HAIRLINE, avatar, kind_words, tinted};
+use super::{Anchors, HAIRLINE, avatar, kind_words, tile_face, tinted};
 use crate::app::chat::{Change, EDITOR, HISTORY, Msg, level_word};
 use crate::app::{App, ChatState, Menu, Message};
 use crate::people::{self, Group};
@@ -47,6 +46,9 @@ use crate::timeline::{self, Item};
 /// wrote it reads from where it stands.
 const BUBBLE_SHARE: f32 = 0.78;
 
+/// The stroke left of a quote: as wide as the bar that marks a chosen row (two hairlines).
+const QUOTE_STROKE: f32 = 2.0 * HAIRLINE;
+
 /// The composer: two lines high at first, at most six, then it scrolls.
 fn editor_heights() -> (f32, f32) {
     let line = typo::line_height(typo::body());
@@ -55,12 +57,28 @@ fn editor_heights() -> (f32, f32) {
 }
 
 impl App {
-    /// A chat window: the flush frame of the narrow layout in every size, with the top row.
+    /// A chat window: the flush frame of the narrow layout in every size. The top row names the
+    /// conversation (as the draft has it, the window's title); under it the head of the person or
+    /// group as a row of its own, [`size::header`] high, on the axis of the history.
     pub(crate) fn chat_window<'a>(&'a self, chat: &'a ChatState, anchors: &Anchors) -> Element<'a, Message> {
-        let top = TopRow::new(self.zoom.factor(), Message::DragWindow).title(AppId::CHAT).cover(Cover::Nothing);
-        let body = column![self.history(chat, anchors), self.composer(chat, anchors)].width(Fill).height(Fill);
+        let top = TopRow::new(self.zoom.factor(), Message::DragWindow).cover(self.cover());
+        let title = widgets::ellipsized(typo::body_strong(), self.chat_name(chat), theme::text);
+        // Off macOS the app's mark stands where the lights would, so the corner is never empty.
+        let mut header = row![].spacing(space::s()).width(Fill).align_y(Alignment::Center);
+        if !cfg!(target_os = "macos") {
+            header = header.push(shell::app_mark(torro_core::AppId::CHAT));
+        }
+        let header = header.push(title);
+        let head = container(self.chat_head(chat, anchors))
+            .width(Fill)
+            .max_width(size::content_max())
+            .height(size::header())
+            .padding([0.0, space::l()])
+            .center_y(size::header());
+        let head = column![container(head).width(Fill).center_x(Fill), rule::horizontal(HAIRLINE).style(style::rule)];
+        let body = column![head, self.history(chat, anchors), self.composer(chat, anchors)].width(Fill).height(Fill);
         let body = container(body).width(Fill).height(Fill).center_x(Fill);
-        shell::shell(SizeClass::Narrow, Space::new(), self.chat_head(chat, anchors), body, None)
+        shell::shell(SizeClass::Narrow, Space::new(), header, body, None)
             .overlay(self.chat_layer(chat, anchors))
             .top_row(top)
             .into()
@@ -94,13 +112,11 @@ impl App {
                     _ => people::person_line(person),
                 },
             ),
-            (None, Some(conversation)) if conversation.kind != torro_chat::ConversationKind::Direct => (
-                widgets::source_tile(TileFace::Icon(Icon::Users), TileSize::Large, None),
-                kind_words(conversation).to_owned(),
-            ),
+            (None, Some(conversation)) if conversation.kind != torro_chat::ConversationKind::Direct => {
+                (tile_face(Icon::Users), kind_words(conversation).to_owned())
+            }
             _ => (avatar(&name, &chat.id, None, &colours), String::new()),
         };
-        // Name over status: both fit the top row (22 + 18 of the standard's 40).
         let mut words = column![widgets::ellipsized(typo::body_strong(), name, theme::text)];
         if !line.is_empty() {
             words = words.push(widgets::ellipsized(typo::meta(), line, theme::text_3));
@@ -230,9 +246,9 @@ impl App {
                 let p = palette(t);
                 container::Style {
                     background: Some(Background::Color(if own { p.selected } else { p.raised })),
-                    border: border::rounded(theme::radius::md())
-                        .color(if own { p.line_strong } else { p.line })
-                        .width(HAIRLINE),
+                    // The person's own stand on `selected` without an edge; the others' need the line
+                    // to stand off the panel.
+                    border: border::rounded(theme::radius::md()).color(p.line).width(if own { 0.0 } else { HAIRLINE }),
                     text_color: Some(p.text),
                     ..container::Style::default()
                 }
@@ -351,7 +367,7 @@ impl App {
         } else {
             widgets::icon_button(send_icon, send_tip, ready.then_some(Message::Chat(Msg::Send)))
         };
-        let entry = row![field, send].spacing(space::s()).align_y(Alignment::End);
+        let entry = row![field, send].spacing(space::s()).align_y(Alignment::Center);
         let mut parts: Vec<Element<'a, Message>> = Vec::new();
         if let Some(error) = &chat.send_error {
             let mark = tinted(Icon::CircleAlert, icon::SIZE_SM, |p| p.error_text);
@@ -406,8 +422,7 @@ impl App {
             );
         }
         parts.push(entry.into());
-        let content =
-            column(parts).spacing(space::s()).padding([space::s(), space::m()]).max_width(size::content_max());
+        let content = column(parts).spacing(space::s()).padding(composer_padding()).max_width(size::content_max());
         // The suggestions of an `@` float above the whole composer, so they never hide the quote.
         let content = widgets::anchored(&anchors.composer, content);
         column![rule::horizontal(HAIRLINE).style(style::rule), container(content).width(Fill).center_x(Fill)].into()
@@ -457,7 +472,7 @@ impl App {
                 sections.push(MenuSection::new(last));
                 let reactions = (open && timeline::is_reactable(message) && !chat.changing.contains_key(id))
                     .then(|| quick_reactions(message));
-                let card = menu_card(reactions, sections);
+                let card = menu_card(reactions.into_iter().collect(), sections);
                 return Some(match at {
                     Some(at) => {
                         let anchor = anchors.message.area(Rectangle::new(*at, Size::ZERO));
@@ -529,6 +544,12 @@ impl App {
     }
 }
 
+/// Around the composer: the history's side margin, so field and bubbles share an axis, and a step
+/// more below than above, so the field keeps air over the window's edge also in Dense.
+fn composer_padding() -> Padding {
+    Padding { top: space::s(), right: space::l(), bottom: space::m(), left: space::l() }
+}
+
 /// The composer's keys: `Enter` sends – or, while suggestions show, picks the first, as `Tab` does;
 /// `Shift + Enter` starts a new line; the rest as usual.
 pub(crate) fn composer_binding(press: KeyPress, first: Option<Mention>) -> Option<Binding<Message>> {
@@ -588,14 +609,18 @@ fn quick_reactions<'a>(message: &torro_chat::Message) -> Element<'a, Message> {
     row(buttons.collect::<Vec<_>>()).width(Fill).into()
 }
 
-/// A menu card as [`widgets::menu`] draws it, with `top` (the quick reactions) above the entries.
-fn menu_card<'a>(top: Option<Element<'a, Message>>, sections: Vec<MenuSection<'a, Message>>) -> Element<'a, Message> {
+/// A menu card as [`widgets::menu`] draws it, with the rows of `top` (the quick reactions, the statuses) above
+/// the entries and a line between them.
+pub(super) fn menu_card<'a>(
+    top: Vec<Element<'a, Message>>,
+    sections: Vec<MenuSection<'a, Message>>,
+) -> Element<'a, Message> {
     let line = || -> Element<'a, Message> {
         container(rule::horizontal(HAIRLINE).style(style::rule)).padding([space::xs(), 0.0]).into()
     };
     let mut rows: Vec<Element<'a, Message>> = Vec::new();
-    if let Some(top) = top {
-        rows.push(top);
+    if !top.is_empty() {
+        rows.extend(top);
         rows.push(line());
     }
     for (at, section) in sections.into_iter().enumerate() {
@@ -627,26 +652,22 @@ fn message_text<'a>(text: &'a str, mentions: &'a [Mention]) -> Element<'a, Messa
     rich.into()
 }
 
-/// The quote of the message another one answers: the author and the text in one line, on a quiet
-/// surface inside the bubble (a line's tint, so it reads on `raised` and on `selected`).
+/// The quote of the message another one answers: a stroke at the left and beside it the author
+/// over the text in one line, as the Notification Hub's panel quotes (no surface of its own).
 fn quote_block<'a>(author: &'a str, text: &'a str) -> Element<'a, Message> {
     let text = if text.is_empty() { tr("This message was deleted.") } else { text };
     let words = column![
         typo::text(typo::caption(), author).style(theme::text_2),
         widgets::ellipsized(typo::meta(), text, theme::text_3),
-    ];
-    container(words)
-        .width(Fill)
-        .padding([space::xs(), space::s()])
-        .style(|t: &Theme| {
-            let p = palette(t);
-            container::Style {
-                background: Some(Background::Color(p.line_strong)),
-                border: border::rounded(theme::radius::xs()),
-                ..container::Style::default()
-            }
-        })
-        .into()
+    ]
+    .width(Fill);
+    // As high as its two lines: a filling height would collapse in a row that shrinks to them.
+    let high = typo::line_height(typo::caption()) + typo::line_height(typo::meta());
+    let stroke = container(Space::new().width(QUOTE_STROKE).height(high)).style(|t: &Theme| container::Style {
+        background: Some(Background::Color(palette(t).line_selected)),
+        ..container::Style::default()
+    });
+    row![stroke, words].spacing(space::s()).into()
 }
 
 /// A file of a message as one line (stage 3: every kind; pictures and players come with stage 4):

@@ -189,6 +189,19 @@ pub fn there(people: &[Person]) -> usize {
     people.iter().filter(|person| !person.unknown && person.status.is_there()).count()
 }
 
+/// How many people are online: the figure of the mini tile, which says "people online". Away,
+/// busy and "do not disturb" are there ([`there`]) but not online; unknown statuses never count.
+pub fn online(people: &[Person]) -> usize {
+    people.iter().filter(|person| !person.unknown && person.status == Status::Online).count()
+}
+
+/// The conversations with unread messages, the most recent first: what a glance lists.
+pub fn unread_chats(conversations: &[Conversation]) -> Vec<&Conversation> {
+    let mut chats: Vec<&Conversation> = conversations.iter().filter(|c| c.unread > 0).collect();
+    chats.sort_by_key(|c| std::cmp::Reverse(c.last_activity));
+    chats
+}
+
 /// How many conversations have unread messages.
 pub fn unread_conversations(conversations: &[Conversation]) -> usize {
     conversations.iter().filter(|c| c.unread > 0).count()
@@ -293,6 +306,15 @@ mod tests {
             chat_line(team),
             trf("{author}: {text}", &[("author", &"Anna"), ("text", &"I can review tomorrow morning.")])
         );
+    }
+
+    #[test]
+    fn the_glance_counts_only_who_is_online_and_lists_unread_chats() {
+        let (people, conversations) = sample();
+        assert_eq!(online(&people), 2, "Ben and Gesa; Cem, Dana and Elif are there but not online");
+        assert_eq!(there(&people), 5);
+        let unread: Vec<&str> = unread_chats(&conversations).iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(unread, ["Ben Koch", "Gesa Lange"], "the most recent first");
     }
 
     #[test]

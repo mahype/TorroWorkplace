@@ -45,7 +45,8 @@ pub enum Open {
     StatusMessage,
     /// The contact list with the dialog "New chat", "be" typed.
     New,
-    /// The contact list with "Offline" folded and the search "e" typed.
+    /// The contact list with "Offline" folded and the search "er" typed: two matches, Dana Erb (busy)
+    /// and Finn Maier (offline, shown although his group is folded).
     Search,
     /// The chat window with Ben: mention, file, missed call, the divider "New".
     Chat,
