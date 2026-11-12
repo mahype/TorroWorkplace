@@ -633,6 +633,19 @@ fn read_before(history: &[Entry], about: &MailRef) -> bool {
     })
 }
 
+/// Drops the thinking of every message in `messages`, for good: what the model thought in this answer before its
+/// system prompt or its tools changed within the answer (tools [`tools::FIND_TOOLS`] loaded, rights or servers
+/// changed meanwhile). Anthropic binds each thinking block to the system prompt, the tools and the messages before
+/// it (preserved thinking) and answers a block sent back after a change with HTTP 400; without a beta its fix is to
+/// leave that block and every later one out, the other blocks in place, also in every later request. The text and
+/// the calls stay, so the turns keep their shape; the model goes on without its earlier reasoning. Adding a tool
+/// counts as a change too, so appending the loaded tools would not keep the blocks valid.
+fn without_thinking(messages: &mut [ChatMessage]) {
+    for message in messages {
+        message.thinking.clear();
+    }
+}
+
 /// How a command the model called ended.
 enum Outcome {
     /// The core's answer, also after a person allowed it.
@@ -807,6 +820,12 @@ impl Answering {
             messages.push(ChatMessage::assistant(String::new(), vec![call.clone()]));
             messages.push(ChatMessage::tool(call.id, result));
         }
+        // One time for the whole answer, so its system prompt stays the same from step to step: Anthropic binds
+        // every thinking block to the system prompt it was written under (preserved thinking), and one rebuilt with
+        // the next minute fails the step after a tool round with HTTP 400.
+        let now = Local::now();
+        // The system prompt and the tools of the step before, to see what changed since ([`without_thinking`]).
+        let mut sent: Option<(String, Vec<torro_core::ai::ToolSpec>)> = None;
         for _ in 0..self.limits.max_steps {
             let rights = self.rights();
             let allowed = self.allowed(rights.as_ref());
@@ -826,7 +845,7 @@ impl Answering {
                 .collect();
             let servers: Vec<String> = servers.into_iter().collect();
             let context = prompt::Context {
-                now: Local::now(),
+                now,
                 lang: i18n::lang(),
                 // The suite keeps no name of the person yet (no setting holds one).
                 person: None,
@@ -848,7 +867,6 @@ impl Answering {
             if let Some(about) = &self.job.about {
                 system = format!("{system}\n\n{}", prompt::about_mail(about));
             }
-            messages[0] = ChatMessage::system(system);
             // A small model gets the reading tools first; a chat about a mail (issue #605) needs its one way to
             // suggest among them, not behind find_tools, and the tool of the call that read the mail: else, with
             // more tools than fit, the request shows the model a call of a tool it is not offered, and it cannot
@@ -858,10 +876,17 @@ impl Answering {
                 loaded.insert(tools::EXTRACT_ACTION.replace('.', "_"));
                 loaded.insert(about_call(about).name);
             }
+            let tools = tools::offered(&allowed, small, &loaded);
+            let changed = sent.as_ref().is_some_and(|(before, offered)| *before != system || *offered != tools);
+            if changed {
+                without_thinking(&mut messages);
+            }
+            sent = Some((system.clone(), tools.clone()));
+            messages[0] = ChatMessage::system(system);
             let request = ChatRequest {
                 model: model.clone(),
                 messages: messages.clone(),
-                tools: tools::offered(&allowed, small, &loaded),
+                tools,
                 max_tokens: None,
                 effort: self.job.effort,
             };
@@ -2651,6 +2676,55 @@ pub(crate) mod tests {
         assert!(offered(0).contains(&FIND_TOOLS.to_string()));
         assert!(offered(1).contains(&"calendar_delete_event".to_string()), "loaded by find_tools");
         assert!(tool_result(&script, FIND_TOOLS).contains("calendar_delete_event"));
+    }
+
+    /// Issue #605: Anthropic binds each thinking block to the system prompt, the tools and the messages before it.
+    /// Within one answer the system prompt stays the same from step to step (the time is fixed per answer); when the
+    /// tools change (find_tools loaded some), the thinking of the answer so far is left out of that request and every
+    /// later one, the calls and results stay; thinking written after the change goes back unchanged.
+    #[tokio::test]
+    async fn an_answer_keeps_its_prompt_and_drops_its_thinking_once_the_tools_change() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut rights = reader();
+        rights.areas.insert(Area::Calendar, AreaRights { level: Level::Full, admin: false });
+        let thought = |signature: &str| json!({"type": "thinking", "thinking": "", "signature": signature});
+        let thinks_and_calls = |signature: &str, tool: &str, arguments: Value| {
+            let call = ToolCall { id: format!("call_{tool}"), name: tool.into(), arguments: arguments.to_string() };
+            let reply = ChatReply {
+                tool_calls: vec![call],
+                finish: Finish::ToolCalls,
+                thinking: vec![thought(signature)],
+                ..ChatReply::default()
+            };
+            Step::Reply(Vec::new(), reply)
+        };
+        let script = Script::new(vec![
+            thinks_and_calls("before", FIND_TOOLS, json!({"query": "delete an event"})),
+            thinks_and_calls("after", "calendar_delete_event", json!({"event": {"collection": "c", "summary": "x"}})),
+            says("Done."),
+        ]);
+        let (assistant, _kept) = set_up(dir.path(), Some(rights), Place::Local, Arc::clone(&script));
+        let id = ask(&assistant, None, "Delete my dentist appointment", Vec::new()).await;
+        finished(&assistant, &id).await;
+
+        let asked = script.asked();
+        assert_eq!(asked.len(), 3);
+        let system = |step: usize| asked[step].messages[0].content.clone();
+        assert!(!system(0).is_empty());
+        assert_eq!((system(1), system(2)), (system(0), system(0)), "one system prompt per answer");
+        assert_ne!(asked[1].tools, asked[0].tools, "find_tools loaded a tool");
+        assert_eq!(asked[2].tools, asked[1].tools, "nothing loaded since");
+        let thinking = |step: usize| -> Vec<Vec<Value>> {
+            let steps = asked[step].messages.iter().filter(|message| message.role == torro_core::ai::Role::Assistant);
+            steps.map(|message| message.thinking.clone()).collect()
+        };
+        assert_eq!(thinking(1), [Vec::<Value>::new()], "written before the tools changed: left out");
+        assert_eq!(thinking(2), [Vec::new(), vec![thought("after")]], "left out for good; the newer one as it came");
+        let calls = |step: usize| asked[step].messages.iter().filter(|message| !message.tool_calls.is_empty()).count();
+        assert_eq!((calls(1), calls(2)), (1, 2), "the calls stay");
+        for request in &asked {
+            anthropic_takes(&torro_core::ai::anthropic::chat_body(request, true));
+        }
     }
 
     #[tokio::test]

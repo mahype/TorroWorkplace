@@ -62,7 +62,10 @@ Was offene Modelle brauchen, damit das gut geht:
 - **Wenige Werkzeuge auf einmal:** Kleine Modelle verlieren bei 80 Werkzeugen den Überblick. Der Kern
   gibt nur die Werkzeuge der Bereiche, die der Assistent darf und die in der Unterhaltung an sind,
   und bei kleinen Modellen zunächst nur die lesenden. Ist die Zahl zu groß, bekommt das Modell ein
-  Werkzeug `find_tools` (Suche im Katalog), das die passenden nachlädt.
+  Werkzeug `find_tools` (Suche im Katalog), das die passenden nachlädt. Ändern sich dadurch (oder durch
+  geänderte Rechte) die Werkzeuge mitten in einer Antwort, schickt die Schleife das bisherige Denken
+  (thinking-Blöcke) dieser Antwort nicht mehr mit: Anthropic bindet jeden Block an Systemprompt und
+  Werkzeuge, unter denen er entstand, und lehnt ihn nach einer Änderung mit HTTP 400 ab (#605).
 - **Kurzer Kontext:** Ergebnisse von Werkzeugen werden gekürzt (Mail-Text abgeschnitten, Listen mit
   Anzahl), die volle Fassung bleibt aufklappbar in der App.
 - **Ehrlich bei Grenzen:** Kann ein lokales Modell keine Werkzeuge, sagt die Auswahl das, statt es
@@ -116,7 +119,8 @@ Der Assistent bekommt zu jeder Unterhaltung einen Systemprompt aus drei Teilen:
    zurückgeben beim Ändern, Freigaben, `not-found` heißt auch „nicht erlaubt“), Stil der Antworten
    (kurz, Sprache der Person, Zeiten in ihrer Zeitzone, vor großen Änderungen fragen).
 3. **Erzeugter Teil** beim Start: Datum, Zeitzone, Sprache, Name der Person, welche Bereiche der
-   Client darf. Keine Liste aller Mails oder Termine; die holt das Modell über Werkzeuge.
+   Client darf. Die Uhrzeit wird einmal je Antwort festgehalten, damit der Systemprompt von Schritt zu
+   Schritt einer Antwort gleich bleibt (#605). Keine Liste aller Mails oder Termine; die holt das Modell über Werkzeuge.
 
 Die Beschreibungen der Werkzeuge kommen wie immer aus dem Katalog (`api.rs`); der Skill
 wiederholt sie nicht. Derselbe Text steht auch als MCP-Prompt `torro_workplace` und als Skill-Datei
