@@ -1020,6 +1020,14 @@ Wo der Code vom Text oben abweicht oder etwas offen ließ, gilt:
   - Ohne `media-caption` kommen zwei Nachrichten: erst der Text, dann die Datei.
   - Ohne Datei in der Karte geht nur der Text.
 - **Größe:** höchstens 5 MB je Karte (die Grenze von `share_card`).
+- **Umgesetzt (Issue #643):** nur Kontakte. Die Karte entsteht im Kern (`chat/share.rs`, `card_for`) und wird eine
+  vorbereitete Datei des Aufrufers (Herkunft `Card`), die genau den Weg aus Stufe 4 nimmt; die Freigabe entsteht vor
+  der Karte und liest Namen und Felder dafür selbst aus dem Adressbuch. Abweichend von oben: Die Datei heißt bei einem
+  Kontakt nach ihm („Anna Muster.vcf“), erst bei mehreren `contacts.vcf`, damit die Gegenseite sie erkennt. Der Name geht
+  immer mit; ein Foto geht noch nicht mit (die Auswahl kennt es nicht), ebenso kein Jahrestag. Höchstens 20 Inhalte je
+  Nachricht; die Karte zählt zu den zehn Dateien einer Nachricht. Den Assistenten deckt der Kern ab: Ein geliehener
+  Schlüssel ohne `contacts` hat das Recht nicht und bekommt `not-found`; eine eigene Zuordnung des Befehls zu
+  `contacts` im Assistenten gibt es nicht. Das Teilen-Blatt fehlt, solange es keine Kontakte-App gibt.
 - **Freigabe:** Unterhaltung, Text, jede Karte („Contact card: Anna Muster (6 fields)“, „+ private
   address“) und „Uploads contacts.vcf to your Talk folder in Nextcloud“.
 - **Rechte:** „Send on my behalf“ (Entscheidung 4) plus Lesen der Inhalte. Das Schreiben in die
