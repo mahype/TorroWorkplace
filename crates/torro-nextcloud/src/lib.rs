@@ -49,7 +49,7 @@ pub use notifications::{Listing, Notification, NotificationId, Person};
 pub use ocs::{MAX_WAIT, Nextcloud, OcsError, THROTTLE_WAIT, TalkError};
 pub use people::User;
 pub use talk::{
-    ActorType, CONTEXT_MAX, ChatMessage, FoundMessage, LastMessage, MESSAGES_MAX, Mention, MentionKind,
+    ActorType, CONTEXT_MAX, CallPeer, ChatMessage, FoundMessage, LastMessage, MESSAGES_MAX, Mention, MentionKind,
     MentionSuggestion, MessageKind, Messages, NotificationLevel, Parent, Room, RoomKind, RoomToken, SendOptions,
     SharedFile, WAIT_MAX_SECS,
 };

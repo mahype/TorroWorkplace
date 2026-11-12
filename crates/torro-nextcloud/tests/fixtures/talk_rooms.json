@@ -20,6 +20,8 @@
         "readOnly": 0,
         "isArchived": false,
         "hasCall": true,
+        "callStartTime": 1791880000,
+        "participantFlags": 0,
         "callFlag": 7,
         "isFavorite": true,
         "canStartCall": true,

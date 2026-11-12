@@ -26,6 +26,11 @@
 //! - Search: the unified search provider `talk-message`
 //!   (`GET /ocs/v2.php/search/providers/talk-message/search?term=…&limit=…`), whose entries name
 //!   the conversation and the message in `attributes` (`lib/Search/MessageSearch.php` of Talk).
+//! - Calls (#643, stage 6 of `docs/chat.md`): whether one runs, since when and whether the person is
+//!   in it come with the conversation (`hasCall`, `callStartTime`, `participantFlags`); who is in it
+//!   `GET …/api/v4/call/{token}` (operation `call-get-peers-for-call`). That someone calls the person
+//!   is a notification of `spreed` with the object `call` ([`crate::notifications`]); declining it is
+//!   deleting that notification. <https://nextcloud-talk.readthedocs.io/en/latest/call/>
 //!
 //! Schemas `Room`, `RoomLastMessage`, `ChatMessage`, `ChatMessageWithParent`,
 //! `DeletedChatMessage`, `RichObjectParameter`, `ChatMentionSuggestion` and the token pattern
@@ -53,6 +58,7 @@ const ROOM: &str = "/ocs/v2.php/apps/spreed/api/v4/room";
 const CHAT: &str = "/ocs/v2.php/apps/spreed/api/v1/chat";
 const REACTION: &str = "/ocs/v2.php/apps/spreed/api/v1/reaction";
 const SEARCH: &str = "/ocs/v2.php/search/providers/talk-message/search";
+const CALL: &str = "/ocs/v2.php/apps/spreed/api/v4/call";
 
 /// The most messages one read asks for (Talk's limit).
 pub const MESSAGES_MAX: u32 = 200;
@@ -190,6 +196,10 @@ pub struct Room {
     /// What the call carries, all participants together (`callFlag`: 1 in call, 2 audio,
     /// 4 video, 8 phone; 0 without a call).
     pub call_flag: u32,
+    /// When the running call began (`callStartTime`, 0 or missing without a call).
+    pub call_start: Option<DateTime<Utc>>,
+    /// The person is in the call, on any of their devices (`participantFlags` not 0).
+    pub in_call: bool,
     /// The person marked the conversation a favourite (`isFavorite`).
     pub favorite: bool,
     /// The conversation is locked, nobody writes (`readOnly` 1).
@@ -432,6 +442,14 @@ pub struct FoundMessage {
     pub at: Option<DateTime<Utc>>,
 }
 
+/// One session in a call ([`Nextcloud::call_peers`]): who it is, not what they send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallPeer {
+    pub actor_type: ActorType,
+    /// The user id for a user, a guest's hash for a guest; one line, foreign text.
+    pub actor_id: String,
+}
+
 /// What a refused request was meant to do: Talk's 400 means "too late" only for changing a message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Intent {
@@ -632,6 +650,25 @@ impl Nextcloud {
         Ok(entries.map(|list| list.iter().filter_map(read_found).collect()).unwrap_or_default())
     }
 
+    /// Who is in the call of the conversation `token`: one entry per person, however many devices
+    /// they joined with (an entry without an actor id is left out); empty without a call.
+    /// [`TalkError::NotFound`] when the conversation is gone or the person is no longer in it.
+    pub async fn call_peers(&self, token: &RoomToken) -> Result<Vec<CallPeer>, TalkError> {
+        let data = self.talk(Method::GET, &format!("{CALL}/{token}"), &[], None, Intent::Other).await?;
+        let entries = data.as_ref().and_then(Value::as_array).ok_or_else(|| unreadable("call"))?;
+        let mut seen = HashSet::new();
+        Ok(entries
+            .iter()
+            .filter_map(|entry| {
+                let text = |key: &str| entry.get(key).and_then(Value::as_str).unwrap_or_default();
+                let actor_id = rich::line(text("actorId"), &Value::Null);
+                (!actor_id.is_empty())
+                    .then(|| CallPeer { actor_type: ActorType::from_talk(text("actorType")), actor_id })
+            })
+            .filter(|peer| seen.insert((peer.actor_type, peer.actor_id.clone())))
+            .collect())
+    }
+
     /// A Talk request: `method` on `path` (fixed parts and checked ids) with `query` and `body`;
     /// the `data` of a success, or the refusal as a [`TalkError`].
     async fn talk(
@@ -753,6 +790,8 @@ fn read_room(entry: &Value) -> Option<Room> {
         last_read: entry.get("lastReadMessage").and_then(Value::as_u64).filter(|id| *id > 0),
         has_call: flag("hasCall"),
         call_flag: entry.get("callFlag").and_then(Value::as_u64).and_then(|f| u32::try_from(f).ok()).unwrap_or(0),
+        call_start: Some(number("callStartTime")).filter(|at| *at > 0).and_then(|at| DateTime::from_timestamp(at, 0)),
+        in_call: number("participantFlags") != 0,
         favorite: flag("isFavorite"),
         read_only: number("readOnly") == 1,
         lobby: number("lobbyState") == 1 && !passes_lobby,
@@ -1062,6 +1101,10 @@ mod tests {
         assert_eq!(direct.other_user.as_deref(), Some("bert"));
         assert!(direct.has_call && direct.favorite && direct.can_start_call);
         assert_eq!(direct.call_flag, 7);
+        assert_eq!(direct.call_start.map(|at| at.timestamp()), Some(1_791_880_000));
+        assert!(!direct.in_call, "the person is not in it");
+        let group = room(&rooms, "x7k2m9qa");
+        assert_eq!((group.call_start, group.in_call), (None, false), "no call");
         assert!(!direct.read_only && !direct.lobby && !direct.federated);
         assert_eq!(direct.description, "");
         assert_eq!(room(&rooms, "x7k2m9qa").other_user, None, "only one-to-one conversations name a user");
@@ -1332,6 +1375,32 @@ mod tests {
             })
             .await;
         assert_eq!(account(&server).rooms().await, Err(OcsError::MissingApp));
+    }
+
+    /// Who is in a call: one entry per person, however many devices; an entry without an actor goes.
+    #[tokio::test]
+    async fn lists_who_is_in_a_call_once_per_person() {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/ocs/v2.php/apps/spreed/api/v4/call/a1b2c3d4")
+                    .header("authorization", AUTHORIZATION)
+                    .header("ocs-apirequest", "true");
+                then.status(200).body(include_str!("../tests/fixtures/talk_call_peers.json"));
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/ocs/v2.php/apps/spreed/api/v4/call/g0ne0000");
+                then.status(404).body(r#"{"ocs":{"meta":{"status":"failure","statuscode":404},"data":[]}}"#);
+            })
+            .await;
+        let token = |token: &str| RoomToken::parse(token).expect("token");
+        let peers = account(&server).call_peers(&token("a1b2c3d4")).await.expect("peers");
+        let who: Vec<(ActorType, &str)> = peers.iter().map(|peer| (peer.actor_type, peer.actor_id.as_str())).collect();
+        assert_eq!(who, [(ActorType::Users, "bert"), (ActorType::Guests, "a1f0guest")]);
+        assert_eq!(account(&server).call_peers(&token("g0ne0000")).await, Err(TalkError::NotFound));
     }
 
     #[tokio::test]
