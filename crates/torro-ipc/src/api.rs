@@ -3165,7 +3165,7 @@ static CHAT_SEND_MESSAGE: Command = Command {
     area: Area::Chat,
     access: Access::Write,
     mcp: Mcp::Tool,
-    description: "Sends a message into a conversation on the person's behalf; everyone in it sees it. Unless the person allowed sending without asking, it waits for their approval, and is `forbidden` when the person does not let this key send. Write a mention as `@\"<id>\"` with an id of suggest_mentions; `reply_to` quotes a message, `silent` notifies nobody. `files` sends files prepared with prepare_file or upload_file (the text may then be empty): the answer is `chat-sending` with an id for get_upload, at most 20 files and 100 MiB an hour (`busy`). Without a connection the answer is `offline` and nothing is sent later.",
+    description: "Sends a message into a conversation on the person's behalf; everyone in it sees it. Unless the person allowed sending without asking, it waits for their approval, and is `forbidden` when the person does not let this key send. Write a mention as `@\"<id>\"` with an id of suggest_mentions; `reply_to` quotes a message, `silent` notifies nobody. `files` sends files prepared with prepare_file or upload_file (the text may then be empty): the answer is `chat-sending` with an id for get_upload, at most 20 files and 100 MiB an hour (`busy`). `items` shares contacts as a card (`{\"kind\": \"contact\", \"id\": \"<contact id>\"}`, ids from contacts_list_contacts): the core makes a short text and a vCard of them from the address book, with the name and, without `fields`, company, numbers, mail addresses, work addresses and web pages (with `fields` exactly the fields listed there), and sends it like a file; it needs read access to the contacts' address books, else `not-found`. Without a connection the answer is `offline` and nothing is sent later.",
 };
 
 static CHAT_MARK_READ: Command = Command {
@@ -6925,6 +6925,8 @@ mod tests {
                 reply_to: None,
                 silent: false,
                 files: Vec::new(),
+                items: vec![crate::share::ShareItem::contact("nextcloud:anna@cloud.example.org/contacts/u1")],
+                fields: Some(vec![crate::share::ShareField::Phones]),
             },
             Request::ChatPrepareFile {
                 account: CLOUD.into(),
@@ -7139,6 +7141,8 @@ mod tests {
             reply_to: None,
             silent: false,
             files: Vec::new(),
+            items: Vec::new(),
+            fields: None,
         };
         let status = Request::PresenceSetOwnStatus {
             account: CLOUD.into(),

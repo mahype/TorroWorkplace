@@ -121,7 +121,18 @@ impl ChatSource for ChatClient {
     async fn send(&self, message: Outgoing) -> Result<String, ChatError> {
         let Outgoing { conversation, text, reply_to, silent } = message;
         let files = Vec::new();
-        match self.ask(Request::ChatSendMessage { conversation, text, reply_to, silent, files }).await? {
+        match self
+            .ask(Request::ChatSendMessage {
+                conversation,
+                text,
+                reply_to,
+                silent,
+                files,
+                items: Vec::new(),
+                fields: None,
+            })
+            .await?
+        {
             Response::ChatSent { id } => Ok(id),
             other => Err(unexpected(other)),
         }

@@ -2178,15 +2178,19 @@ Reads messages of one conversation, the oldest first: the newest `limit` (at mos
 
 Zugriff `write` · MCP-Tool `chat_send_message` · sendet nach außen, braucht zusätzlich `outbound`
 
-Sends a message into a conversation on the person's behalf; everyone in it sees it. Unless the person allowed sending without asking, it waits for their approval, and is `forbidden` when the person does not let this key send. Write a mention as `@"<id>"` with an id of suggest_mentions; `reply_to` quotes a message, `silent` notifies nobody. `files` sends files prepared with prepare_file or upload_file (the text may then be empty): the answer is `chat-sending` with an id for get_upload, at most 20 files and 100 MiB an hour (`busy`). Without a connection the answer is `offline` and nothing is sent later.
+Sends a message into a conversation on the person's behalf; everyone in it sees it. Unless the person allowed sending without asking, it waits for their approval, and is `forbidden` when the person does not let this key send. Write a mention as `@"<id>"` with an id of suggest_mentions; `reply_to` quotes a message, `silent` notifies nobody. `files` sends files prepared with prepare_file or upload_file (the text may then be empty): the answer is `chat-sending` with an id for get_upload, at most 20 files and 100 MiB an hour (`busy`). `items` shares contacts as a card (`{"kind": "contact", "id": "<contact id>"}`, ids from contacts_list_contacts): the core makes a short text and a vCard of them from the address book, with the name and, without `fields`, company, numbers, mail addresses, work addresses and web pages (with `fields` exactly the fields listed there), and sends it like a file; it needs read access to the contacts' address books, else `not-found`. Without a connection the answer is `offline` and nothing is sent later.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `conversation` | string | ja |  |
-| `files` | array<string> | nein | Prepared files to send with it, by the ids `chat.prepare_file` and `chat.upload_file` gave; at most 10. |
+| `fields` | array<`"birthday"` \| `"note"` \| `"organization"` \| `"phones"` \| `"emails"` \| `"work_addresses"` \| `"private_addresses"` \| `"web"` \| `"messengers"` \| `"groups"`> | nein | What of each item goes along besides the name, which always does. Given, exactly these fields go: list every one wanted. Without `fields`: company and position, phone numbers, mail addresses, work addresses and web pages, nothing private. |
+| `files` | array<string> | nein | Prepared files to send with it, by the ids `chat.prepare_file` and `chat.upload_file` gave; at most 10 (the card of `items` counts as one). |
+| `items` | array<object> | nein | Items of the suite to share as one card, all of one kind: for now contacts (`{"kind": "contact", "id": "<contact id>"}`); at most 20. |
+| `items[].id` | string | ja | The item's id in its area. |
+| `items[].kind` | `"contact"` | ja | What kind of item is shared. |
 | `reply_to` | string | nein | The message this one answers (`<conversation>/<number>`). |
 | `silent` | boolean | nein | Send without notifying the others. |
-| `text` | string | nein, Standard `""` | The text. A mention is written `@"<id>"` with an id of `chat.suggest_mentions`. With `files` it may be empty. |
+| `text` | string | nein, Standard `""` | The text. A mention is written `@"<id>"` with an id of `chat.suggest_mentions`. With `files` or `items` it may be empty. |
 
 ### `chat.mark_read`
 

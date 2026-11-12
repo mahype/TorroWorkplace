@@ -33,6 +33,7 @@ pub mod inbox;
 pub mod mail;
 pub mod pim;
 pub mod server;
+pub mod share;
 pub mod tools;
 pub mod web;
 pub mod workflows;
@@ -1755,11 +1756,19 @@ pub enum Request {
     /// is not the caller's, of another account or whose lease ran out, `conflict` for a file on the
     /// computer that changed since it was prepared, `unsupported` when the server does not let the
     /// person share files, `busy` beyond a client's 20 files or 100 MiB an hour.
+    ///
+    /// With `items` (stage 5, `docs/teilen.md`) the core makes one card of them from its own store,
+    /// a short text and a file (contacts: a lean vCard of the chosen `fields`, at most 5 MB), and
+    /// sends the file as above, its text under it when the message has none. The caller needs read
+    /// access to the items besides (contacts: the area `contacts` and the address book); an item it
+    /// may not read makes the whole command `not-found`, checked before any approval and again when
+    /// it runs. Codes for items: `error` for more than 20 items, a card over 5 MB, or `fields`
+    /// without `items`.
     #[serde(rename = "chat.send_message")]
     ChatSendMessage {
         conversation: String,
         /// The text. A mention is written `@"<id>"` with an id of `chat.suggest_mentions`. With
-        /// `files` it may be empty.
+        /// `files` or `items` it may be empty.
         #[serde(default)]
         text: String,
         /// The message this one answers (`<conversation>/<number>`).
@@ -1769,9 +1778,18 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         silent: bool,
         /// Prepared files to send with it, by the ids `chat.prepare_file` and `chat.upload_file`
-        /// gave; at most 10.
+        /// gave; at most 10 (the card of `items` counts as one).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         files: Vec<String>,
+        /// Items of the suite to share as one card, all of one kind: for now contacts
+        /// (`{"kind": "contact", "id": "<contact id>"}`); at most 20.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        items: Vec<share::ShareItem>,
+        /// What of each item goes along besides the name, which always does. Given, exactly these
+        /// fields go: list every one wanted. Without `fields`: company and position, phone numbers,
+        /// mail addresses, work addresses and web pages, nothing private.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fields: Option<Vec<share::ShareField>>,
     },
     /// Marks a conversation read up to the message `up_to`, else up to its newest
     /// ([`Response::Ok`]). Others may see that the person read it.
