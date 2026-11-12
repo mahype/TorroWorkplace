@@ -237,8 +237,9 @@ dahinter rückten um eins.
       Schalter daneben.
     - **Der eigene Status** (online, abwesend, beschäftigt, nicht stören, unsichtbar, Nachricht mit Ablauf) steht
       unten in der Kontaktliste und im Tray-Menü. Setzen ist nach außen (Entscheidung 4). „Online“ hält Nextcloud
-      nur mit Heartbeat (ohne fällt es nach 15 Minuten auf offline): Ohne Heartbeat steht „Online“ im Menü aus,
-      mit dem Hinweis auf den Schalter, und `presence.set_own_status` mit `online` antwortet `unsupported`
+      nur mit Heartbeat (ohne fällt es nach 15 Minuten auf offline): In Kontaktliste und Tray schaltet „Online“
+      den Heartbeat bei Bedarf selbst ein (#653: die Wahl ist dieselbe Zustimmung wie der Schalter). Über die API
+      und MCP bleibt es dabei: `presence.set_own_status` mit `online` ohne Heartbeat antwortet `unsupported`
       („Turn on “Show others when I am online” first.“). „Do not disturb“ stellt auch das
       Klingeln in der Suite ab.
     - **Mehrere Konten:** je Nextcloud-Konto eine Gruppe in der Liste, ab zwei Konten mit Kontonamen.

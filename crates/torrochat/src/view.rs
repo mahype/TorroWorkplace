@@ -463,12 +463,10 @@ impl App {
     /// The own status's menu: the statuses, each with its mark, then the status message.
     fn status_menu(&self) -> Element<'_, Message> {
         let own = self.own.as_ref();
-        let heartbeat = own.is_some_and(|own| own.heartbeat);
         let statuses = [Status::Online, Status::Away, Status::Busy, Status::Dnd, Status::Invisible]
             .into_iter()
             .map(|status| {
                 let detail = match status {
-                    Status::Online if !heartbeat => Some(tr("Needs “Show others when I am online”")),
                     Status::Invisible => Some(tr("Others see you offline")),
                     _ => None,
                 };

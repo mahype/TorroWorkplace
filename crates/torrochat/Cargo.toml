@@ -21,6 +21,7 @@ torro-core.workspace = true
 torro-chat.workspace = true
 torro-gui.workspace = true
 torro-ipc.workspace = true
+serde_json.workspace = true
 chrono.workspace = true
 # `image-without-codecs`: previews of pictures, link cards and the large picture (stage 4).
 iced = { workspace = true, features = ["image-without-codecs"] }

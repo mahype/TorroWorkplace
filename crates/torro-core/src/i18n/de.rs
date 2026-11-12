@@ -8547,7 +8547,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Marked as unread", "Als ungelesen markiert"),
     ("Message {name}", "Nachricht an {name}"),
     ("Name of a person", "Name einer Person"),
-    ("Needs “Show others when I am online”", "Braucht „Anderen zeigen, wann ich online bin“"),
     ("Nobody can write here now", "Hier kann gerade niemand schreiben"),
     ("No group chats", "Keine Gruppenchats"),
     ("No messages yet", "Noch keine Nachrichten"),

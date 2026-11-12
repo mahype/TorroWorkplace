@@ -709,10 +709,11 @@ impl App {
             }
             Message::SetStatus(status) => {
                 self.menu = None;
-                // "Online" only lasts with the heartbeat (decision 10): the core would refuse it.
+                // "Online" is the same consent as "Show others when I am online" (decision 10): without the
+                // heartbeat the choice switches it on first, then sets the status.
                 if status == Status::Online && self.own.as_ref().is_some_and(|own| !own.heartbeat) {
-                    self.notify(tr("Turn on “Show others when I am online” first.").to_owned());
-                    return Task::none();
+                    let Some(account) = self.own.as_ref().map(|own| own.account.clone()) else { return Task::none() };
+                    return Task::perform(self.backend.clone().go_online(account), Message::StatusSet);
                 }
                 return self.set_status(StatusChange { status: Some(status), ..StatusChange::default() });
             }

@@ -58,6 +58,9 @@ pub enum Action {
     /// "Manage workspaces…" (task WS.7): the control centre on its page Workspaces
     /// ([`Daemon::manage_workspaces`]).
     ManageWorkspaces,
+    /// "Online" while "Show others when I am online" is off: switches it on, then sets the status
+    /// ([`Daemon::go_online`]); the account is the one the status was read on.
+    GoOnline(String),
 }
 
 /// How long "Pause reminders" pauses (task ER2.5).
@@ -100,6 +103,7 @@ impl Action {
             }
             Action::SaveWorkspace => daemon.save_workspace(),
             Action::ManageWorkspaces => daemon.manage_workspaces(),
+            Action::GoOnline(account) => daemon.go_online(account.clone()),
         }
     }
 }
@@ -180,9 +184,10 @@ pub fn build(snapshot: &Snapshot) -> Vec<Item> {
 }
 
 /// "Status: Online" (`docs/chat.md`, stage 2) with the statuses to set on the account the core
-/// last read one of; `None` before it read any (no chat account, or not yet). "Online" only while
-/// "Show others when I am online" is on: the server drops it within minutes otherwise, and the core
-/// refuses it ([`crate::presence`]).
+/// last read one of; `None` before it read any (no chat account, or not yet). "Online" is always
+/// there: without "Show others when I am online" the click switches it on first ([`Action::GoOnline`]),
+/// because the server drops "Online" within minutes otherwise and the core refuses it for programs
+/// ([`crate::presence`]).
 fn own_status_section(snapshot: &Snapshot) -> Option<Item> {
     use torro_chat::Status;
     let (account, now) = snapshot.own_status.clone()?;
@@ -195,11 +200,15 @@ fn own_status_section(snapshot: &Snapshot) -> Option<Item> {
     };
     let items = [Status::Online, Status::Away, Status::Busy, Status::Dnd, Status::Invisible]
         .into_iter()
-        .filter(|status| *status != Status::Online || snapshot.presence_heartbeat)
         .map(|status| {
             let label = status_name(status).to_string();
             let label = if status == now { trf("{status} ✓", &[("status", &label)]) } else { label };
-            entry(&label, set(status))
+            match status {
+                Status::Online if !snapshot.presence_heartbeat => {
+                    Item::Entry { label, action: Some(Action::GoOnline(account.clone())) }
+                }
+                _ => entry(&label, set(status)),
+            }
         })
         .collect();
     Some(submenu(&trf("Status: {status}", &[("status", &status_name(now))]), items))
@@ -509,9 +518,9 @@ mod tests {
     }
 
     /// Stage 2 of `docs/chat.md`: "Status: Away" before "Settings…" once a status was read, its
-    /// entries set it on that account, "Online" only with the heartbeat on.
+    /// entries set it on that account, "Online" first, switching the heartbeat on when it is off.
     #[test]
-    fn the_own_status_stands_before_the_settings_and_online_needs_the_heartbeat() {
+    fn the_own_status_stands_before_the_settings_and_online_turns_the_heartbeat_on() {
         use torro_chat::Status;
         assert!(!labels(&build(&snapshot())).iter().any(|label| label.ends_with('▸') && label.contains(':')));
         let account = "nextcloud:anna@cloud.example.org".to_string();
@@ -522,8 +531,18 @@ mod tests {
         let checked = trf("{status} ✓", &[("status", &tr("Away"))]);
         assert_eq!(
             labels(items),
-            [tr("Away").to_string(), tr("Busy").into(), tr("Do not disturb").into(), tr("Invisible").into()]
-                .map(|l| if l == tr("Away") { checked.clone() } else { l })
+            [
+                tr("Online").to_string(),
+                tr("Away").into(),
+                tr("Busy").into(),
+                tr("Do not disturb").into(),
+                tr("Invisible").into()
+            ]
+            .map(|l| if l == tr("Away") { checked.clone() } else { l })
+        );
+        assert_eq!(
+            items.first(),
+            Some(&Item::Entry { label: tr("Online").into(), action: Some(Action::GoOnline(account.clone())) })
         );
         let set = Request::PresenceSetOwnStatus {
             account,
@@ -534,7 +553,17 @@ mod tests {
         };
         assert!(all_actions(items).contains(&Action::Run(Box::new(set))));
         let beating = Snapshot { presence_heartbeat: true, ..away };
-        assert_eq!(labels(submenu_of(&build(&beating), &label))[0], tr("Online"));
+        let online = Request::PresenceSetOwnStatus {
+            account: "nextcloud:anna@cloud.example.org".into(),
+            status: Some(Status::Online),
+            message: None,
+            icon: None,
+            clear_at: None,
+        };
+        let menu = build(&beating);
+        let items = submenu_of(&menu, &label);
+        assert_eq!(labels(items)[0], tr("Online"));
+        assert!(all_actions(items).contains(&Action::Run(Box::new(online))));
     }
 
     /// Task WS.7: the templates stand in the first level in the order of their keys (1 … 9, 0, then
