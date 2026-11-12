@@ -9,7 +9,7 @@ set -euo pipefail
 
 usage() {
   echo "usage: $(basename "$0") <app> <dir> [<state> ...] [-- <parameter> ...]" >&2
-  echo "  <app>: torrocalendar torrotasks torroinbox torroassistant torroworkplace" >&2
+  echo "  <app>: torrocalendar torrotasks torroinbox torroassistant torrochat torroworkplace" >&2
   echo "  e.g.:  $(basename "$0") torrocalendar /tmp/shots week editor -- --appearance dark" >&2
   exit 64
 }
@@ -17,7 +17,7 @@ usage() {
 [ $# -ge 2 ] || usage
 app=$1; out=$2; shift 2
 case $app in
-  torrocalendar|torrotasks|torroinbox|torroassistant) sub=() ;;
+  torrocalendar|torrotasks|torroinbox|torroassistant|torrochat) sub=() ;;
   torroworkplace) sub=(ui) ;;
   *) usage ;;
 esac
