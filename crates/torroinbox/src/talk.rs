@@ -765,7 +765,7 @@ fn message_line<'a>(message: &'a torro_chat::Message, chosen: bool) -> Element<'
     let body = typo::body();
     let middle = body.line_height.to_absolute(body.size).0 / 2.0;
     // Room at the right for the bar, kept always: it covers no text and nothing moves on hover.
-    let room = widgets::row_actions_height() + space::s();
+    let room = 2.0 * widgets::row_actions_height();
     let parts = container(parts).width(Fill).padding(iced::Padding { right: room, ..iced::Padding::ZERO });
     widgets::row_actions_at(parts, vec![reply], chosen, false, middle)
 }
