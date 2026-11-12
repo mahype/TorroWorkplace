@@ -1010,13 +1010,13 @@ impl Approvals {
         Ok(open.len())
     }
 
-    /// Runs `work` with the approvals still open as of `now` (expired ones are marked first) while
-    /// no approval can be opened or decided, and returns what it returns. So whatever `work` passes
-    /// the open approvals on to (the inbox, task E2.1) is never overtaken by an older view of them.
+    /// Runs `work` with the approvals held as of `now` – the open ones and those decided lately,
+    /// with what a decided one keeps ([`forget`]: a chat approval no text) – while no approval can
+    /// be opened or decided, and returns what it returns. Expired ones are marked first. So whatever
+    /// `work` passes them on to (the inbox, task E2.1) is never overtaken by an older view of them.
     /// `work` must return at once: it holds up every other approval command. Without a file (no
-    /// home directory, tests without their own approvals) no approval can be open, and `work` gets
-    /// none.
-    pub async fn with_open<T>(
+    /// home directory, tests without their own approvals) there are none, and `work` gets none.
+    pub async fn with_approvals<T>(
         &self,
         now: DateTime<Utc>,
         work: impl FnOnce(&[ApprovalInfo]) -> T,
@@ -1025,14 +1025,9 @@ impl Approvals {
             return Ok(work(&[]));
         }
         let state = self.state(now).await?;
-        let open: Vec<ApprovalInfo> = state
-            .entries
-            .iter()
-            .filter(|entry| entry.info.state.is_pending())
-            .map(|entry| entry.info.clone())
-            .collect();
+        let all: Vec<ApprovalInfo> = state.entries.iter().map(|entry| entry.info.clone()).collect();
         // `state` is held until `work` returns.
-        Ok(work(&open))
+        Ok(work(&all))
     }
 
     /// The requests of the open approvals `client` may see ([`Approvals::list`]), for checks such as

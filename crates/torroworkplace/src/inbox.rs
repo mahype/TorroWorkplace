@@ -1486,9 +1486,21 @@ impl Inbox {
     /// entry per approval (thread key `approval:<id>`); calling it again with the same approvals
     /// changes nothing. `open` must be all approvals open at `now`; the core passes them under the
     /// approvals' lock ([`file_approvals`]). `Err` holds the message for the log.
+    ///
+    /// The entry of a decided approval in `open` (it may hold those too) takes the words the
+    /// approval keeps once it is done: for a chat message no text of it (`docs/chat.md`, "Wartende
+    /// Freigaben auf der Platte"), which otherwise stood in the inbox's file until the entry ages
+    /// out.
     pub fn file_approvals(&self, open: &[ApprovalInfo], now: DateTime<Utc>) -> Result<(), String> {
         let matters = open.iter().filter(|info| info.state.is_pending()).map(approval_matter).collect();
-        self.with(|db| reconcile(db, APPROVAL_THREADS, matters, |_| true, now)).map_err(|f| f.to_string())
+        let kept: BTreeMap<String, (String, Option<String>)> = open
+            .iter()
+            .filter(|info| !info.state.is_pending())
+            .map(approval_matter)
+            .map(|matter| (matter.thread_key, (matter.title, matter.body)))
+            .collect();
+        let closing = |key: &str| kept.get(key).cloned();
+        self.with(|db| reconcile(db, APPROVAL_THREADS, matters, |_| true, closing, now)).map_err(|f| f.to_string())
     }
 
     /// Files the accounts in `checks` that need the user as entries of the source `suite` at
@@ -1520,7 +1532,7 @@ impl Inbox {
             Some(health) => health == Health::Fine,
             None => complete,
         };
-        self.with(|db| reconcile(db, ACCOUNT_THREADS, matters, fixed, now)).map_err(|f| f.to_string())
+        self.with(|db| reconcile(db, ACCOUNT_THREADS, matters, fixed, |_| None, now)).map_err(|f| f.to_string())
     }
 
     /// Files the reminders that stand now (task ER1.4): each fired reminder in `standing`, with when
@@ -1535,7 +1547,7 @@ impl Inbox {
     ) -> Result<(), String> {
         let matters: Vec<Matter> = standing.iter().map(|(reminder, fired)| reminder_matter(reminder, *fired)).collect();
         let keys: BTreeSet<String> = matters.iter().map(|matter| matter.thread_key.clone()).collect();
-        self.with(|db| reconcile(db, REMINDER_THREADS, matters, |key| !keys.contains(key), now))
+        self.with(|db| reconcile(db, REMINDER_THREADS, matters, |key| !keys.contains(key), |_| None, now))
             .map_err(|failure| failure.to_string())
     }
 
@@ -4332,7 +4344,7 @@ pub enum Trouble {
 /// minute, which catches expired approvals and those that vanished while the core was down.
 /// Failures go to the log; the approval itself works without its entry.
 pub async fn file_approvals(inbox: &Inbox, approvals: &Approvals, now: DateTime<Utc>) {
-    match approvals.with_open(now, |open| inbox.file_approvals(open, now)).await {
+    match approvals.with_approvals(now, |held| inbox.file_approvals(held, now)).await {
         Ok(Ok(())) => {}
         Ok(Err(err)) => eprintln!("torroworkplace: inbox: cannot file the approvals: {err}"),
         Err(err) => eprintln!("torroworkplace: inbox: cannot read the approvals to file them: {err}"),
@@ -4665,6 +4677,7 @@ fn reconcile(
     family: &str,
     matters: Vec<Matter>,
     fixed: impl Fn(&str) -> bool,
+    closing: impl Fn(&str) -> Option<(String, Option<String>)>,
     now: DateTime<Utc>,
 ) -> Result<(), Failure> {
     let tx = db.transaction()?;
@@ -4706,6 +4719,18 @@ fn reconcile(
         }
     }
     for (thread_key, mut entry) in entries {
+        // What a matter keeps once it is gone (a decided chat approval: no text), also on an entry
+        // done before.
+        if let Some((title, body)) = closing(&thread_key) {
+            let (title, body) = (cap(&title, TITLE_MAX), body.map(|body| cap(&body, BODY_MAX)));
+            if entry.title != title || entry.body != body {
+                entry.title = title;
+                entry.body = body;
+                if matches!(entry.state, State::Done { .. }) {
+                    update_item(&tx, &entry)?;
+                }
+            }
+        }
         if !matches!(entry.state, State::Done { .. }) && fixed(&thread_key) {
             rules::set_done(&mut entry, true, now);
             update_item(&tx, &entry)?;
@@ -7185,6 +7210,35 @@ pub(crate) mod tests {
 
         file_approvals(&inbox, &approvals, at(8, 11)).await;
         assert_eq!(entry_of(&suite(&inbox, at(8, 11)), &second).state, State::Done { at: at(8, 11) });
+    }
+
+    /// Review of #643: the entry of a chat approval shows the text while it waits; once decided it
+    /// keeps only what the approval keeps, no text of the message.
+    #[tokio::test]
+    async fn a_decided_chat_approval_leaves_no_text_in_the_inbox() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (inbox, approvals) = (inbox_in(dir.path()), crate::approvals::tests::quiet_in(dir.path()));
+        let request = Request::ChatSendMessage {
+            conversation: "nextcloud:anna@cloud.example.org/ben4chat".into(),
+            text: "the secret plan".into(),
+            reply_to: None,
+            silent: false,
+            files: Vec::new(),
+            items: Vec::new(),
+            fields: None,
+        };
+        let summary = "Send to the direct chat with \"Ben\": \"the secret plan\"".to_string();
+        let asked = approvals.open("c1", "Claude Code", request, None, summary, at(8, 0)).await.expect("opened");
+        file_approvals(&inbox, &approvals, at(8, 0)).await;
+        assert!(entry_of(&suite(&inbox, at(8, 0)), &asked).title.contains("the secret plan"), "shown while it waits");
+
+        approvals.decide(&asked.id, false, at(8, 1)).await.expect("decided");
+        file_approvals(&inbox, &approvals, at(8, 1)).await;
+        let items = suite(&inbox, at(8, 1));
+        let entry = entry_of(&items, &asked);
+        assert_eq!(entry.state, State::Done { at: at(8, 1) });
+        assert!(!format!("{entry:?}").contains("secret plan"), "{entry:?}");
+        assert_eq!(entry.title, tr("Send a chat message"));
     }
 
     #[tokio::test]
