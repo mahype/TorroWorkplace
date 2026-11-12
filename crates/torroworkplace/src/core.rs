@@ -3949,8 +3949,14 @@ impl Core {
         let core = Arc::clone(self);
         tokio::spawn(async move {
             loop {
+                // `online` at the computer, `away` after the system's idle time, nothing while the
+                // screen is locked (decision 10 in `docs/chat.md`).
                 if core.settings.current().presence_heartbeat {
-                    core.presence.beat(torro_chat::Status::Online).await;
+                    match crate::presence::idle::activity().await {
+                        crate::presence::idle::Activity::Active => core.presence.beat(torro_chat::Status::Online).await,
+                        crate::presence::idle::Activity::Idle => core.presence.beat(torro_chat::Status::Away).await,
+                        crate::presence::idle::Activity::Locked => {}
+                    }
                 }
                 // The tray's "Status" shows what the server says, read here and not when it is drawn.
                 core.presence.refresh_own().await;

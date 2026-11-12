@@ -18,6 +18,7 @@
 //!
 //! Logs name an account's id and a code, never a name or a status message.
 
+pub mod idle;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
