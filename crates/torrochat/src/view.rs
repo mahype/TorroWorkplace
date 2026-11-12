@@ -40,6 +40,13 @@ pub(crate) const HAIRLINE: f32 = 1.0;
 /// The faces the strip shows before "+n".
 const STRIP_FACES: usize = 8;
 
+/// How a row of the contact list reads: a person offline dimmed, a favourite with its pin.
+#[derive(Debug, Clone, Copy)]
+struct Look {
+    dim: bool,
+    favorite: bool,
+}
+
 /// The anchors of the menus that float next to their triggers; new in every `view`.
 #[derive(Default)]
 pub(crate) struct Anchors {
@@ -47,6 +54,8 @@ pub(crate) struct Anchors {
     pub row: Anchor,
     pub head: Anchor,
     pub message: Anchor,
+    /// The "…" beside a message under the pointer.
+    pub more: Anchor,
     pub composer: Anchor,
 }
 
@@ -108,7 +117,12 @@ impl App {
     /// Search and tabs, the list, the own status: a column at most `content_max` wide.
     fn contacts_body<'a>(&'a self, anchors: &Anchors) -> Element<'a, Message> {
         let body = typo::body();
-        let search = text_input(tr("Search people"), &self.search)
+        let placeholder = match self.tab {
+            Tab::People => tr("Search people"),
+            Tab::Groups => tr("Search groups"),
+            Tab::Messages => tr("Search messages"),
+        };
+        let search = text_input(placeholder, &self.search)
             .id(SEARCH)
             .size(body.size)
             .line_height(body.line_height)
@@ -120,9 +134,18 @@ impl App {
             .on_submit(Message::SearchSubmit);
         let unread = people::unread_groups(&self.conversations);
         let groups = if unread > 0 { trf("Groups ({count})", &[("count", &unread)]) } else { tr("Groups").to_owned() };
+        let selected = match self.tab {
+            Tab::People => 0,
+            Tab::Groups => 1,
+            Tab::Messages => 2,
+        };
         let tabs = widgets::segmented(
-            [(tr("People").to_owned(), Message::Tab(Tab::People)), (groups, Message::Tab(Tab::Groups))],
-            usize::from(self.tab == Tab::Groups),
+            [
+                (tr("People").to_owned(), Message::Tab(Tab::People)),
+                (groups, Message::Tab(Tab::Groups)),
+                (tr("Messages").to_owned(), Message::Tab(Tab::Messages)),
+            ],
+            selected,
         );
         let tools = column![search, tabs].spacing(space::s()).padding(space::s());
         let list = scrollable(container(self.list(anchors)).padding([0.0, space::s()]))
@@ -156,14 +179,19 @@ impl App {
                 Some((tr("Open Torro Workplace"), Message::OpenWorkplace)),
             );
         }
+        if self.tab == Tab::Messages {
+            return self.hit_list(anchors);
+        }
         let rows: Vec<Element<'a, Message>> = match self.tab {
             Tab::People => self.people_rows(anchors),
-            Tab::Groups => self.group_rows(anchors),
+            Tab::Groups | Tab::Messages => self.group_rows(anchors),
         };
         if rows.is_empty() {
             let (title, hint) = match (self.tab, self.search.trim().is_empty()) {
                 (Tab::People, true) => (tr("No people yet"), tr("Your Nextcloud does not show other users.")),
-                (Tab::Groups, true) => (tr("No group chats"), tr("Group chats you take part in show here.")),
+                (Tab::Groups | Tab::Messages, true) => {
+                    (tr("No group chats"), tr("Group chats you take part in show here."))
+                }
                 (_, false) => (tr("No matches"), tr("Try another name.")),
             };
             return container(widgets::empty_state(title, hint)).padding([space::xl(), 0.0]).into();
@@ -175,7 +203,7 @@ impl App {
         let searching = !self.search.trim().is_empty();
         let colours = self.colours();
         let mut rows = Vec::new();
-        for (group, members) in people::groups(&self.people, &self.search) {
+        for (group, members) in people::groups(&self.people, &self.conversations, &self.search) {
             // A search shows every match; a folded group keeps its head.
             let folded = self.folded(group) && !searching;
             let label = format!("{} {}", group.title(), members.len());
@@ -184,12 +212,14 @@ impl App {
                 continue;
             }
             for person in members {
-                let unread = people::direct_chat(&self.conversations, person).map_or(0, |c| c.unread);
+                let chat = people::direct_chat(&self.conversations, person);
+                let unread = chat.map_or(0, |c| c.unread);
                 let lead = avatar(&person.name, &person.id, Some(Group::of(person).status()), &colours);
                 let target = Target::Person(person.id.clone());
                 let line = people::person_line(person);
-                let dim = group == Group::Offline;
-                rows.push(self.row(target, lead, &person.name, line, unread, dim, anchors));
+                // The group "Favorites" says it already; a pin on each of its rows would repeat it.
+                let look = Look { dim: Group::of(person) == Group::Offline, favorite: false };
+                rows.push(self.row(target, lead, &person.name, line, unread, look, anchors));
             }
         }
         rows
@@ -202,13 +232,50 @@ impl App {
                 let lead = widgets::source_tile(TileFace::Icon(Icon::Users), TileSize::Large, None);
                 let target = Target::Conversation(conversation.id.clone());
                 let line = people::chat_line(conversation);
-                self.row(target, lead, &conversation.name, line, conversation.unread, false, anchors)
+                let look = Look { dim: false, favorite: conversation.favorite };
+                self.row(target, lead, &conversation.name, line, conversation.unread, look, anchors)
             })
             .collect()
     }
 
-    /// One row: the face, the name over its line, the unread count. No button, so the double and
-    /// right clicks reach it; it takes the look of a sidebar row for its surface.
+    /// The tab "Messages": what to type, the search running, why it failed, or the hits – each with
+    /// the conversation's face, "Author in Conversation" and the part of the text that matched.
+    fn hit_list<'a>(&'a self, anchors: &Anchors) -> Element<'a, Message> {
+        let found = &self.found;
+        let quiet = |title: &'a str, hint: &'a str| -> Element<'a, Message> {
+            container(widgets::empty_state(title, hint)).padding([space::xl(), 0.0]).into()
+        };
+        if found.query.is_empty() {
+            return quiet(tr("Search messages"), tr("Type at least two letters to search all your chats."));
+        }
+        if let Some(error) = &found.error {
+            return no_people(error.clone(), None);
+        }
+        if found.searching && found.hits.is_empty() {
+            return container(widgets::loading()).padding([space::xl(), 0.0]).into();
+        }
+        if found.hits.is_empty() {
+            return quiet(tr("No messages found"), tr("Try other words."));
+        }
+        let colours = self.colours();
+        let rows = found.hits.iter().map(|hit| {
+            let conversation = torro_chat::split_message(&hit.id)
+                .and_then(|(id, _)| self.conversations.iter().find(|conversation| conversation.id == id));
+            let lead = match conversation {
+                Some(c) if c.kind == torro_chat::ConversationKind::Direct => {
+                    avatar(&c.name, c.person.as_deref().unwrap_or(&c.id), None, &colours)
+                }
+                Some(_) => widgets::source_tile(TileFace::Icon(Icon::Users), TileSize::Large, None),
+                None => widgets::source_tile(TileFace::Icon(Icon::MessageCircle), TileSize::Large, None),
+            };
+            let look = Look { dim: false, favorite: false };
+            self.row(Target::Hit(hit.id.clone()), lead, &hit.title, hit.text.clone(), 0, look, anchors)
+        });
+        column(rows.collect::<Vec<_>>()).spacing(space::xs()).padding(Padding::ZERO.bottom(space::s())).into()
+    }
+
+    /// One row: the face, the name over its line, a favourite's pin and the unread count. No button,
+    /// so the double and right clicks reach it; it takes the look of a sidebar row for its surface.
     #[allow(clippy::too_many_arguments)]
     fn row<'a>(
         &'a self,
@@ -217,18 +284,22 @@ impl App {
         name: &'a str,
         line: String,
         unread: u64,
-        dim: bool,
+        look: Look,
         anchors: &Anchors,
     ) -> Element<'a, Message> {
         let chosen = self.cursor.as_ref() == Some(&target);
         let hovered = self.hover.as_ref() == Some(&target);
-        let name_style = if dim { theme::text_2 } else { theme::text };
+        let name_style = if look.dim { theme::text_2 } else { theme::text };
         let words = column![
             widgets::ellipsized(typo::body_strong(), name, name_style),
             widgets::ellipsized(typo::meta(), line, theme::text_3),
         ]
         .width(Fill);
         let mut content = row![lead, words].spacing(space::m()).align_y(Alignment::Center);
+        if look.favorite {
+            content =
+                content.push(widgets::with_tooltip(tinted(Icon::Pin, icon::SIZE_SM, |p| p.text_3), tr("Favorite")));
+        }
         if unread > 0 {
             content = content.push(widgets::with_tooltip(count_badge(unread), unread_words(unread)));
         }

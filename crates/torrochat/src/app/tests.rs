@@ -4,8 +4,8 @@
 
 use iced::futures::executor::block_on;
 use torro_chat::demo::{ACCOUNT, BEN, TEAM};
-use torro_chat::{ChatError, Status, person_id};
-use torro_core::i18n::tr;
+use torro_chat::{ChatError, NotifyLevel, Status, person_id};
+use torro_core::i18n::{tr, trf};
 use torro_gui::source::Source;
 
 use super::chat::Msg;
@@ -48,7 +48,8 @@ fn the_contact_list_lists_people_by_group_and_the_cursor_walks_them() {
     assert_eq!(app.title(), tr("Contacts"));
     let rows = app.rows();
     assert_eq!(rows.len(), 6, "every person of the demo");
-    assert_eq!(rows[0], Target::Person(person_id(ACCOUNT, "ben")), "online first, by name");
+    assert_eq!(rows[0], Target::Person(person_id(ACCOUNT, "gesa")), "her chat is a favourite: on top");
+    assert_eq!(rows[1], Target::Person(person_id(ACCOUNT, "ben")), "then online");
     let _ = app.update(Message::Move(1));
     assert_eq!(app.cursor, Some(rows[0].clone()), "the first move goes to the top");
     let _ = app.update(Message::Move(1));
@@ -56,9 +57,55 @@ fn the_contact_list_lists_people_by_group_and_the_cursor_walks_them() {
     assert_eq!(app.cursor, Some(rows[0].clone()), "never past the ends");
     let _ = app.update(Message::Fold(Group::Online));
     assert!(app.folded(Group::Online));
-    assert_eq!(app.rows().len(), 4, "Ben and Gesa are folded away");
-    let _ = app.update(Message::Search("gesa".into()));
-    assert_eq!(app.rows(), [Target::Person(person_id(ACCOUNT, "gesa"))], "a search shows folded matches too");
+    assert_eq!(app.rows().len(), 5, "Ben is folded away, Gesa stands in the favourites");
+    let _ = app.update(Message::Search("ben".into()));
+    assert_eq!(app.rows(), [Target::Person(person_id(ACCOUNT, "ben"))], "a search shows folded matches too");
+}
+
+// -- The search in messages (stage 7) -----------------------------------------------------------
+
+/// What the demo finds for `query`, as the core answers `chat.search_messages`.
+fn hits_for(app: &App, query: &str) -> Message {
+    Message::Hits(query.into(), block_on(app.backend.clone().search_messages(query.into())))
+}
+
+#[test]
+fn the_tab_messages_searches_what_the_field_holds() {
+    let mut app = loaded(start(&[]));
+    let _ = app.update(Message::SearchMessages);
+    assert_eq!(app.tab, Tab::Messages, "Ctrl+Shift+F goes to the search in messages");
+    let _ = app.update(Message::Search("r".into()));
+    assert_eq!(app.found, MessageSearch::default(), "one letter asks nothing");
+    let _ = app.update(Message::Search("re".into()));
+    let _ = app.update(Message::Search("release".into()));
+    assert!(app.found.searching && app.found.query == "release");
+    // The answer to the older query comes late and is dropped.
+    let late = hits_for(&app, "re");
+    let _ = app.update(late);
+    assert!(app.found.searching && app.found.hits.is_empty());
+    let answer = hits_for(&app, "release");
+    let _ = app.update(answer);
+    assert!(!app.found.searching);
+    let hit = torro_chat::message_id(TEAM, 2);
+    assert_eq!(app.rows(), [Target::Hit(hit.clone())]);
+    assert_eq!(app.cursor, Some(Target::Hit(hit.clone())), "the first hit is ready for Enter");
+    assert_eq!(app.found.hits[0].title, "Dana Erb in Team Alpha", "author and conversation");
+    let _ = app.update(Message::Open(Target::Hit(hit)));
+    assert_eq!(app.creating, None, "a hit opens its conversation, nothing is created");
+}
+
+#[test]
+fn a_search_that_failed_says_why_and_the_field_serves_every_tab() {
+    let mut app = loaded(start(&["--open", "message-search"]));
+    assert_eq!((app.tab, app.found.query.as_str()), (Tab::Messages, "review"));
+    let _ = app.update(Message::Hits("review".into(), Err(ChatError::Unsupported("No search here.".into()))));
+    assert_eq!(app.found.error.as_deref(), Some("No search here."));
+    let _ = app.update(Message::Tab(Tab::Groups));
+    assert!(app.rows().is_empty(), "the same field filters the groups: none is called \"review\"");
+    let _ = app.update(Message::Search(String::new()));
+    assert!(matches!(app.rows().first(), Some(Target::Conversation(_))));
+    let _ = app.update(Message::Tab(Tab::Messages));
+    assert_eq!(app.found, MessageSearch::default(), "an empty field shows what to type");
 }
 
 #[test]
@@ -317,6 +364,163 @@ fn a_conversation_that_went_says_so() {
     assert!(chat(&app).gone);
     let _ = app.update(Message::Chat(Msg::Poll));
     assert!(!chat(&app).polling, "nothing is asked for a conversation that went");
+}
+
+// -- Changing messages and the conversation (stage 7) -------------------------------------------
+
+/// The person's own message in "Team Alpha" of the demo, three hours old.
+fn own() -> String {
+    torro_chat::message_id(TEAM, 4)
+}
+
+fn message<'a>(app: &'a App, id: &str) -> &'a torro_chat::Message {
+    chat(app).message(id).expect("the message")
+}
+
+#[test]
+fn edit_takes_the_message_into_the_field_and_escape_gives_the_draft_back() {
+    let mut app = loaded(start(&["--open", "group"]));
+    type_text(&mut app, "half a thought");
+    let _ = app.update(Message::Chat(Msg::StartEdit(own())));
+    assert_eq!(chat(&app).editing.as_ref().map(|editing| editing.id.clone()), Some(own()));
+    assert_eq!(chat(&app).editor.text(), "I can review tomorrow morning.");
+    let _ = app.update(Message::Escape);
+    assert!(chat(&app).editing.is_none());
+    assert_eq!(chat(&app).editor.text(), "half a thought", "the draft is back");
+    let _ = app.update(Message::Chat(Msg::StartEdit(torro_chat::message_id(TEAM, 3))));
+    assert!(chat(&app).editing.is_none(), "Cem's message is not the person's");
+}
+
+#[test]
+fn enter_saves_the_edit_and_the_history_shows_it_edited() {
+    let mut app = loaded(start(&["--open", "group"]));
+    let _ = app.update(Message::Chat(Msg::StartEdit(own())));
+    type_text(&mut app, " At nine.");
+    let _ = app.update(Message::Chat(Msg::Send));
+    assert!(chat(&app).sending, "chat.edit_message is on its way");
+    let text = "I can review tomorrow morning. At nine.".to_owned();
+    let result = block_on(app.backend.clone().edit_message(own(), text.clone()));
+    let _ = app.update(Message::Chat(Msg::Edited { id: own(), text: text.clone(), mentions: Vec::new(), result }));
+    assert!(!chat(&app).sending && chat(&app).editing.is_none());
+    assert_eq!((message(&app, &own()).text.as_str(), message(&app, &own()).edited), (text.as_str(), true));
+    assert!(chat(&app).editor.text().is_empty(), "the field holds what it held before");
+}
+
+#[test]
+fn an_unchanged_edit_sends_nothing() {
+    let mut app = loaded(start(&["--open", "group"]));
+    let _ = app.update(Message::Chat(Msg::StartEdit(own())));
+    let _ = app.update(Message::Chat(Msg::Send));
+    assert!(!chat(&app).sending && chat(&app).editing.is_none());
+}
+
+#[test]
+fn a_refused_edit_stays_in_the_field_with_a_calm_line() {
+    let mut app = loaded(start(&["--open", "chat"]));
+    let yesterday = torro_chat::message_id(BEN, 2);
+    let _ = app.update(Message::Chat(Msg::StartEdit(yesterday.clone())));
+    type_text(&mut app, "!");
+    let _ = app.update(Message::Chat(Msg::Send));
+    let result = block_on(app.backend.clone().edit_message(yesterday.clone(), "x".into()));
+    let ChatError::Unsupported(why) = result.clone().expect_err("too old") else { panic!("unsupported") };
+    let _ = app.update(Message::Chat(Msg::Edited { id: yesterday, text: "x".into(), mentions: Vec::new(), result }));
+    assert!(chat(&app).editing.is_some(), "nothing typed is lost");
+    assert_eq!(chat(&app).note, Some(super::chat::Note { text: why, waiting: false }));
+    let _ = app.update(Message::Chat(Msg::Edited {
+        id: own(),
+        text: "x".into(),
+        mentions: Vec::new(),
+        result: Err(ChatError::Pending),
+    }));
+    let note = chat(&app).note.clone().expect("a note");
+    assert_eq!((note.text.as_str(), note.waiting), (tr("The command waits for approval."), true));
+    let _ = app.update(Message::Chat(Msg::DismissNote));
+    assert!(chat(&app).note.is_none());
+}
+
+#[test]
+fn delete_asks_in_the_menu_then_leaves_the_message_deleted() {
+    let mut app = loaded(start(&["--open", "group"]));
+    let _ = app.update(Message::Chat(Msg::MoreMenu(own())));
+    assert_eq!(app.menu, Some(Menu::Message { id: own(), at: None, confirm: false }));
+    let _ = app.update(Message::Chat(Msg::AskDelete(own())));
+    assert_eq!(app.menu, Some(Menu::Message { id: own(), at: None, confirm: true }), "the menu asks");
+    let _ = app.update(Message::Chat(Msg::Delete(own())));
+    assert_eq!(app.menu, None);
+    assert_eq!(chat(&app).changing.get(&own()), Some(&super::chat::Change::Delete));
+    let _ = app.update(Message::Chat(Msg::Deleted(own(), Err(ChatError::Offline))));
+    assert!(chat(&app).changing.is_empty() && chat(&app).note.is_some());
+    assert_eq!(message(&app, &own()).kind, torro_chat::MessageKind::Message, "still there");
+    let _ = app.update(Message::Chat(Msg::Delete(own())));
+    let result = block_on(app.backend.clone().delete_message(own()));
+    let _ = app.update(Message::Chat(Msg::Deleted(own(), result)));
+    let gone = message(&app, &own());
+    assert_eq!((gone.kind, gone.text.as_str()), (torro_chat::MessageKind::Deleted, ""));
+}
+
+#[test]
+fn a_reaction_shows_at_once_and_goes_back_when_refused() {
+    let mut app = loaded(start(&["--open", "group"]));
+    let cem = torro_chat::message_id(TEAM, 3);
+    let _ = app.update(Message::Chat(Msg::React(cem.clone(), "🎉".into())));
+    assert_eq!(message(&app, &cem).reactions.get("🎉"), Some(&2), "shown before the core answers");
+    let _ = app.update(Message::Chat(Msg::React(cem.clone(), "😂".into())));
+    assert!(!message(&app, &cem).reactions.contains_key("😂"), "one reaction at a time per message");
+    let refused = Err(ChatError::Forbidden("Not allowed.".into()));
+    let _ =
+        app.update(Message::Chat(Msg::Reacted {
+            id: cem.clone(), emoji: "🎉".into(), remove: false, result: refused
+        }));
+    assert_eq!(message(&app, &cem).reactions.get("🎉"), Some(&1), "back as it was");
+    assert_eq!(chat(&app).note.as_ref().map(|note| note.text.as_str()), Some("Not allowed."));
+    // A click on the person's own reaction takes it back.
+    let _ = app.update(Message::Chat(Msg::React(cem.clone(), "👍".into())));
+    assert_eq!(message(&app, &cem).reactions.get("👍"), Some(&1));
+    assert!(message(&app, &cem).own_reactions.is_empty());
+    let _ =
+        app.update(Message::Chat(Msg::Reacted { id: cem.clone(), emoji: "👍".into(), remove: true, result: Ok(()) }));
+    assert!(chat(&app).changing.is_empty());
+}
+
+#[test]
+fn favourite_and_notifications_change_at_once_and_say_so() {
+    let mut app = loaded(start(&["--open", "chat"]));
+    let ben = |app: &App| app.conversations.iter().find(|c| c.id == BEN).cloned().expect("Ben");
+    let _ = app.update(Message::Chat(Msg::HeadMenu));
+    let _ = app.update(Message::Chat(Msg::ToggleFavorite));
+    assert!(ben(&app).favorite && app.menu.is_none());
+    let _ = app.update(Message::Chat(Msg::FavoriteSet(true, Ok(()))));
+    assert_eq!(app.notice.as_ref().map(|n| n.text.as_str()), Some(tr("Added to favorites")));
+    let _ = app.update(Message::Chat(Msg::ToggleFavorite));
+    let _ = app.update(Message::Chat(Msg::FavoriteSet(false, Err(ChatError::Offline))));
+    assert!(ben(&app).favorite, "refused: still a favourite");
+
+    let _ = app.update(Message::Chat(Msg::SetLevel(NotifyLevel::Never)));
+    assert_eq!(ben(&app).notify, NotifyLevel::Never);
+    let done = Msg::LevelSet { previous: NotifyLevel::Default, level: NotifyLevel::Never, result: Ok(()) };
+    let _ = app.update(Message::Chat(done));
+    let said = trf("Notifications: {level}", &[("level", &tr("Never"))]);
+    assert_eq!(app.notice.as_ref().map(|n| n.text.clone()), Some(said));
+    let _ = app.update(Message::Chat(Msg::SetLevel(NotifyLevel::Mention)));
+    let refused =
+        Msg::LevelSet { previous: NotifyLevel::Never, level: NotifyLevel::Mention, result: Err(ChatError::Busy) };
+    let _ = app.update(Message::Chat(refused));
+    assert_eq!(ben(&app).notify, NotifyLevel::Never, "back as it was");
+    assert_eq!(chat(&app).note.as_ref().map(|n| n.text.as_str()), Some(tr("Too many calls. Try again later.")));
+}
+
+#[test]
+fn the_demo_states_of_stage_seven_open_what_they_name() {
+    let app = loaded(start(&["--open", "own-menu"]));
+    assert_eq!(app.menu, Some(Menu::Message { id: own(), at: None, confirm: false }));
+    let app = loaded(start(&["--open", "delete"]));
+    assert_eq!(app.menu, Some(Menu::Message { id: own(), at: None, confirm: true }));
+    let app = loaded(start(&["--open", "chat-menu"]));
+    assert_eq!(app.menu, Some(Menu::Head));
+    let app = loaded(start(&["--open", "edit"]));
+    assert_eq!(chat(&app).editing.as_ref().map(|editing| editing.id.clone()), Some(own()));
+    let app = loaded(start(&["--open", "change-error"]));
+    assert!(chat(&app).sending, "the edit of yesterday's message is on its way");
 }
 
 #[test]

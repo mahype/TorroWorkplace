@@ -5,7 +5,8 @@
 //! The order follows `docs/chat.md` ("Fenster", Kontaktliste): "Online", "Away", "Busy", "Do not
 //! disturb", "Offline", each by name. Someone the server did not tell the status of stands in
 //! "Offline" with "Status unknown"; "Invisible" is only ever the person's own status, others see
-//! "Offline".
+//! "Offline". Stage 7: people whose direct chat is a favourite stand above all in "Favorites" (and
+//! only there), favourite group chats come first in "Groups".
 
 use torro_chat::{Conversation, ConversationKind, Person, Status};
 use torro_core::i18n::{tr, trf};
@@ -16,6 +17,8 @@ pub const FOLD_OFFLINE_FROM: usize = 20;
 /// A group of the people tab, in the order the list shows them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Group {
+    /// People whose direct chat is a favourite, whatever their status.
+    Favorites,
     Online,
     Away,
     Busy,
@@ -24,11 +27,12 @@ pub enum Group {
 }
 
 impl Group {
-    pub const ALL: [Group; 5] = [Group::Online, Group::Away, Group::Busy, Group::Dnd, Group::Offline];
+    pub const ALL: [Group; 6] = [Group::Favorites, Group::Online, Group::Away, Group::Busy, Group::Dnd, Group::Offline];
 
     /// The group's title.
     pub fn title(self) -> &'static str {
         match self {
+            Group::Favorites => tr("Favorites"),
             Group::Online => tr("Online"),
             Group::Away => tr("Away"),
             Group::Busy => tr("Busy"),
@@ -37,7 +41,8 @@ impl Group {
         }
     }
 
-    /// The group `person` stands in.
+    /// The group of `person`'s status; never [`Group::Favorites`], which [`groups`] decides by the
+    /// conversations.
     pub fn of(person: &Person) -> Group {
         if person.unknown {
             return Group::Offline;
@@ -51,9 +56,11 @@ impl Group {
         }
     }
 
-    /// The status the group's mark shows.
+    /// The status the group's mark shows. "Favorites" mixes statuses and has none of its own; it is
+    /// never asked, because [`Group::of`] never gives it.
     pub fn status(self) -> Status {
         match self {
+            Group::Favorites => Status::Offline,
             Group::Online => Status::Online,
             Group::Away => Status::Away,
             Group::Busy => Status::Busy,
@@ -76,14 +83,19 @@ pub fn status_word(status: Status) -> &'static str {
 }
 
 /// The people in their groups, each group by name (ignoring case); groups without anyone are left
-/// out. `query` keeps only people whose name or status message holds it ([`matches`]).
-pub fn groups<'a>(people: &'a [Person], query: &str) -> Vec<(Group, Vec<&'a Person>)> {
+/// out. People whose direct chat in `conversations` is a favourite stand in "Favorites" and not in
+/// their status's group, so each person is one row. `query` keeps only people whose name or status
+/// message holds it ([`matches`]).
+pub fn groups<'a>(people: &'a [Person], conversations: &[Conversation], query: &str) -> Vec<(Group, Vec<&'a Person>)> {
+    let place = |person: &Person| {
+        if is_favorite(conversations, person) { Group::Favorites } else { Group::of(person) }
+    };
     Group::ALL
         .into_iter()
         .filter_map(|group| {
             let mut members: Vec<&Person> = people
                 .iter()
-                .filter(|person| Group::of(person) == group)
+                .filter(|person| place(person) == group)
                 .filter(|person| matches(query, &person.name, person.message.as_deref()))
                 .collect();
             members.sort_by_cached_key(|person| person.name.to_lowercase());
@@ -101,15 +113,21 @@ pub fn matches(query: &str, name: &str, line: Option<&str>) -> bool {
         || line.is_some_and(|line| line.to_lowercase().contains(&query))
 }
 
-/// The conversations of the tab "Groups": every one that is no direct chat, the most recent first.
+/// The conversations of the tab "Groups": every one that is no direct chat, the favourites first,
+/// each part the most recent first.
 pub fn group_chats<'a>(conversations: &'a [Conversation], query: &str) -> Vec<&'a Conversation> {
     let mut chats: Vec<&Conversation> = conversations
         .iter()
         .filter(|c| matches!(c.kind, ConversationKind::Group | ConversationKind::Public | ConversationKind::NoteToSelf))
         .filter(|c| matches(query, &c.name, None))
         .collect();
-    chats.sort_by_key(|c| std::cmp::Reverse(c.last_activity));
+    chats.sort_by_key(|c| (!c.favorite, std::cmp::Reverse(c.last_activity)));
     chats
+}
+
+/// Whether `person`'s direct chat is a favourite.
+pub fn is_favorite(conversations: &[Conversation], person: &Person) -> bool {
+    direct_chat(conversations, person).is_some_and(|c| c.favorite)
 }
 
 /// How many group chats have unread messages: the number on the tab "Groups".
@@ -204,14 +222,20 @@ mod tests {
 
     #[test]
     fn people_stand_in_groups_by_status_in_the_concepts_order() {
-        let (people, _) = sample();
-        let groups = groups(&people, "");
+        let (people, conversations) = sample();
+        let groups = groups(&people, &conversations, "");
         let order: Vec<Group> = groups.iter().map(|(group, _)| *group).collect();
         assert_eq!(order, Group::ALL, "the demo has someone in every group");
-        let online: Vec<&str> = groups[0].1.iter().map(|person| person.name.as_str()).collect();
-        assert_eq!(online, ["Ben Koch", "Gesa Lange"], "by name");
-        assert_eq!(groups[0].0.title(), tr("Online"));
+        let names = |at: usize| groups[at].1.iter().map(|person| person.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(names(0), ["Gesa Lange"], "her chat is a favourite");
+        assert_eq!(names(1), ["Ben Koch"], "online, without Gesa: one row each");
+        assert_eq!(groups[1].0.title(), tr("Online"));
+        assert_eq!(Group::Favorites.title(), tr("Favorites"));
         assert_eq!(Group::Dnd.title(), tr("Do not disturb"));
+        let plain = super::groups(&people, &[], "");
+        assert_eq!(plain[0].0, Group::Online, "no favourites without conversations");
+        let online: Vec<&str> = plain[0].1.iter().map(|person| person.name.as_str()).collect();
+        assert_eq!(online, ["Ben Koch", "Gesa Lange"], "by name");
     }
 
     #[test]
@@ -228,10 +252,12 @@ mod tests {
     #[test]
     fn a_search_keeps_names_and_status_messages() {
         let (people, conversations) = sample();
-        let found: Vec<&str> =
-            groups(&people, "MEETING").iter().flat_map(|(_, p)| p.iter().map(|p| p.name.as_str())).collect();
+        let found: Vec<&str> = groups(&people, &conversations, "MEETING")
+            .iter()
+            .flat_map(|(_, p)| p.iter().map(|p| p.name.as_str()))
+            .collect();
         assert_eq!(found, ["Dana Erb"], "her status message says it");
-        assert!(groups(&people, "nobody here").is_empty());
+        assert!(groups(&people, &conversations, "nobody here").is_empty());
         let chats: Vec<&str> = group_chats(&conversations, " team ").iter().map(|c| c.name.as_str()).collect();
         assert_eq!(chats, ["Team Alpha"]);
     }
@@ -240,7 +266,13 @@ mod tests {
     fn the_groups_tab_lists_conversations_that_are_no_direct_chat() {
         let (people, conversations) = sample();
         let chats: Vec<&str> = group_chats(&conversations, "").iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(chats, ["Team Alpha", "Design sync"], "the most recent first");
+        assert_eq!(chats, ["Team Alpha", "Design sync"], "the favourite first");
+        let mut swapped = conversations.clone();
+        for conversation in &mut swapped {
+            conversation.favorite = conversation.name == "Design sync";
+        }
+        let chats: Vec<&str> = group_chats(&swapped, "").iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(chats, ["Design sync", "Team Alpha"], "a favourite goes before a more recent chat");
         assert_eq!(unread_groups(&conversations), 0);
         let ben = people.iter().find(|person| person.name == "Ben Koch").expect("Ben");
         assert_eq!(direct_chat(&conversations, ben).map(|c| c.unread), Some(2));

@@ -55,11 +55,28 @@ pub enum Open {
     Group,
     /// The chat window with Ben, the menu of a message open.
     MessageMenu,
+    /// The contact list on "Messages", "review" searched (stage 7).
+    MessageSearch,
+    /// The chat window of "Team Alpha", a favourite: reactions (one the person's own) and an edited
+    /// message.
+    Reactions,
+    /// The chat window of "Team Alpha" with the head's "…" open: favourite and notifications.
+    ChatMenu,
+    /// The chat window of "Team Alpha" with the menu of the person's own message open: the quick
+    /// reactions, "Edit" and "Delete…".
+    OwnMenu,
+    /// As [`Open::OwnMenu`], the menu asking whether to delete the message.
+    Delete,
+    /// The chat window of "Team Alpha", the person's own message being edited in the composer.
+    Edit,
+    /// The chat window with Ben after a try to edit the person's message of yesterday, which the
+    /// provider no longer allows: the calm line above the composer says so.
+    ChangeError,
 }
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 10] = [
+    pub const ALL: [(&'static str, Open); 17] = [
         ("contacts", Open::Contacts),
         ("groups", Open::Groups),
         ("status", Open::Status),
@@ -70,15 +87,30 @@ impl Open {
         ("reply", Open::Reply),
         ("group", Open::Group),
         ("message-menu", Open::MessageMenu),
+        ("message-search", Open::MessageSearch),
+        ("reactions", Open::Reactions),
+        ("chat-menu", Open::ChatMenu),
+        ("own-menu", Open::OwnMenu),
+        ("delete", Open::Delete),
+        ("edit", Open::Edit),
+        ("change-error", Open::ChangeError),
     ];
 
     /// The demo conversation a state of the chat window shows; `None` for a state of the contact
     /// list.
     pub fn conversation(self) -> Option<&'static str> {
         match self {
-            Open::Chat | Open::Reply | Open::MessageMenu => Some(torro_chat::demo::BEN),
-            Open::Group => Some(torro_chat::demo::TEAM),
-            Open::Contacts | Open::Groups | Open::Status | Open::StatusMessage | Open::New | Open::Search => None,
+            Open::Chat | Open::Reply | Open::MessageMenu | Open::ChangeError => Some(torro_chat::demo::BEN),
+            Open::Group | Open::Reactions | Open::ChatMenu | Open::OwnMenu | Open::Delete | Open::Edit => {
+                Some(torro_chat::demo::TEAM)
+            }
+            Open::Contacts
+            | Open::Groups
+            | Open::Status
+            | Open::StatusMessage
+            | Open::New
+            | Open::Search
+            | Open::MessageSearch => None,
         }
     }
 }

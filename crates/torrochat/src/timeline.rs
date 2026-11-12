@@ -1,7 +1,9 @@
 //! What the history of a chat window shows, worked out apart from the widgets so it can be tested:
 //! the messages with day dividers, the divider "New" after the last read message and the runs of one
 //! author ([`items`]); mentions while typing ([`mention_query`], [`with_mention`]) and in a message
-//! ([`pieces`]), and the text that goes out ([`outgoing`]).
+//! ([`pieces`]), and the text that goes out ([`outgoing`]); stage 7: which messages can be changed
+//! and reacted to ([`is_changeable`], [`is_reactable`]), a reaction given or taken back
+//! ([`apply_reaction`]) and a deletion as the history shows it ([`apply_deleted`]).
 //!
 //! Mentions: the composer shows `@Ben Koch`, as people read it; the provider wants `@"ben"`
 //! (`docs/chat.md`, "Befehle": mentions are written as `@"<mentionId>"`). [`outgoing`] turns the one
@@ -83,6 +85,51 @@ pub fn items(messages: &[Message], new_after: Option<u64>) -> Vec<Item<'_>> {
 /// A message of the provider, shown small: a system message or a missed call.
 pub fn is_system(message: &Message) -> bool {
     matches!(message.kind, MessageKind::System | MessageKind::MissedCall)
+}
+
+/// The reactions the message menu offers in one click, the most common first.
+pub const QUICK_REACTIONS: [&str; 6] = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
+
+/// A message people can react to: one a person wrote (or recorded), not deleted, not of the provider.
+pub fn is_reactable(message: &Message) -> bool {
+    matches!(message.kind, MessageKind::Message | MessageKind::Voice)
+}
+
+/// A message the person may try to edit or delete: their own and [`is_reactable`]. Whether it is
+/// still within the provider's time is for the core to say (`unsupported`).
+pub fn is_changeable(message: &Message) -> bool {
+    message.author.own && is_reactable(message)
+}
+
+/// `message` with the person's reaction `emoji` given, or taken back with `remove`, as the core
+/// answers it: the count goes up or down by one, a reaction nobody gives any more goes; giving one
+/// twice or taking back one not given changes nothing. The window shows it at once and takes it
+/// back when the core refuses (`chat.react`).
+pub fn apply_reaction(message: &mut Message, emoji: &str, remove: bool) {
+    let given = message.own_reactions.iter().any(|own| own == emoji);
+    if remove && given {
+        message.own_reactions.retain(|own| own != emoji);
+        if let Some(count) = message.reactions.get_mut(emoji) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                message.reactions.remove(emoji);
+            }
+        }
+    } else if !remove && !given {
+        message.own_reactions.push(emoji.to_owned());
+        *message.reactions.entry(emoji.to_owned()).or_insert(0) += 1;
+    }
+}
+
+/// `message` as it stands once the core deleted it (`chat.delete_message`): in its place, without
+/// text, files or reactions, saying "This message was deleted."
+pub fn apply_deleted(message: &mut Message) {
+    message.kind = MessageKind::Deleted;
+    message.text.clear();
+    message.mentions.clear();
+    message.files.clear();
+    message.reactions.clear();
+    message.own_reactions.clear();
 }
 
 /// Whether `next` continues the run of `before`: the same author, within [`RUN_GAP`].
@@ -266,6 +313,30 @@ mod tests {
         assert_eq!(outgoing("  @Ben Koch typed by hand  ", &[]), "@Ben Koch typed by hand", "only picked ones");
         let both = [Mention { id: "b".into(), name: "Ben".into() }, ben];
         assert_eq!(outgoing("@Ben Koch and @Ben", &both), "@\"ben\" and @\"b\"", "the longer name first");
+    }
+
+    #[test]
+    fn a_reaction_counts_once_per_person() {
+        let mut cem = page(TEAM).messages.remove(2);
+        assert_eq!(cem.own_reactions, ["👍"], "the demo's own reaction");
+        apply_reaction(&mut cem, "👍", false);
+        assert_eq!(cem.reactions.get("👍"), Some(&2), "given already: nothing changes");
+        apply_reaction(&mut cem, "👍", true);
+        assert_eq!((cem.reactions.get("👍"), cem.own_reactions.len()), (Some(&1), 0));
+        apply_reaction(&mut cem, "😮", false);
+        apply_reaction(&mut cem, "😮", true);
+        assert!(!cem.reactions.contains_key("😮"), "nobody gives it any more");
+    }
+
+    #[test]
+    fn only_own_messages_of_people_can_be_changed() {
+        let team = page(TEAM).messages;
+        assert!(!is_reactable(&team[0]) && !is_changeable(&team[0]), "the provider's message");
+        assert!(is_reactable(&team[2]) && !is_changeable(&team[2]), "Cem's");
+        assert!(is_changeable(&team[3]), "Anna's own");
+        let mut gone = team[3].clone();
+        apply_deleted(&mut gone);
+        assert!(!is_reactable(&gone) && gone.text.is_empty() && gone.reactions.is_empty());
     }
 
     #[test]

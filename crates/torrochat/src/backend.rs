@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use torro_chat::demo::DemoSource;
 use torro_chat::{
-    ChatError, ChatSource, Conversation, Mention, MessagePage, Outgoing, OwnStatus, Person, StatusChange,
+    ChatError, ChatSource, Conversation, Mention, MessagePage, NotifyLevel, Outgoing, OwnStatus, Person, SearchHit,
+    StatusChange,
 };
 use torro_ipc::chat::ChatClient;
 use torro_ipc::{Request, Response};
@@ -86,6 +87,54 @@ impl Backend {
         match self {
             Backend::Core(core) => core.suggest_mentions(conversation, query).await,
             Backend::Demo(demo) => demo.suggest_mentions(conversation, query).await,
+        }
+    }
+
+    /// `chat.edit_message`: the person's own message `id` gets `text` (mentions as `@"<id>"`).
+    pub async fn edit_message(self, id: String, text: String) -> Result<(), ChatError> {
+        match self {
+            Backend::Core(core) => core.edit_message(id, text).await,
+            Backend::Demo(demo) => demo.edit_message(id, text).await,
+        }
+    }
+
+    /// `chat.delete_message`: the person's own message `id`, for everyone.
+    pub async fn delete_message(self, id: String) -> Result<(), ChatError> {
+        match self {
+            Backend::Core(core) => core.delete_message(id).await,
+            Backend::Demo(demo) => demo.delete_message(id).await,
+        }
+    }
+
+    /// `chat.react`: gives `emoji` to the message `id`, or takes it back with `remove`.
+    pub async fn react(self, id: String, emoji: String, remove: bool) -> Result<(), ChatError> {
+        match self {
+            Backend::Core(core) => core.react(id, emoji, remove).await,
+            Backend::Demo(demo) => demo.react(id, emoji, remove).await,
+        }
+    }
+
+    /// `chat.set_favorite`.
+    pub async fn set_favorite(self, conversation: String, favorite: bool) -> Result<(), ChatError> {
+        match self {
+            Backend::Core(core) => core.set_favorite(conversation, favorite).await,
+            Backend::Demo(demo) => demo.set_favorite(conversation, favorite).await,
+        }
+    }
+
+    /// `chat.set_notification_level`.
+    pub async fn set_notification_level(self, conversation: String, level: NotifyLevel) -> Result<(), ChatError> {
+        match self {
+            Backend::Core(core) => core.set_notification_level(conversation, level).await,
+            Backend::Demo(demo) => demo.set_notification_level(conversation, level).await,
+        }
+    }
+
+    /// `chat.search_messages` in every account, as many hits as the core gives without being told.
+    pub async fn search_messages(self, query: String) -> Result<Vec<SearchHit>, ChatError> {
+        match self {
+            Backend::Core(core) => core.search_messages(query, None, None).await,
+            Backend::Demo(demo) => demo.search_messages(query, None, None).await,
         }
     }
 
@@ -183,7 +232,7 @@ impl Backend {
 mod tests {
     use iced::futures::executor::block_on;
     use torro_chat::Status;
-    use torro_chat::demo::{ACCOUNT, BEN};
+    use torro_chat::demo::{ACCOUNT, BEN, TEAM};
 
     use super::*;
 
@@ -200,5 +249,15 @@ mod tests {
         let own = block_on(backend.clone().set_own_status(ACCOUNT.into(), change)).expect("status");
         assert_eq!(own.status, Status::Busy, "the answer is the new status");
         assert!(backend.is_demo());
+
+        // Stage 7.
+        let own = torro_chat::message_id(TEAM, 4);
+        block_on(backend.clone().edit_message(own.clone(), "Nine.".into())).expect("edited");
+        block_on(backend.clone().react(own.clone(), "🎉".into(), false)).expect("reacted");
+        block_on(backend.clone().delete_message(own)).expect("deleted");
+        block_on(backend.clone().set_favorite(BEN.into(), true)).expect("favourite");
+        block_on(backend.clone().set_notification_level(BEN.into(), NotifyLevel::Never)).expect("level");
+        let hits = block_on(backend.search_messages("release".into())).expect("hits");
+        assert_eq!(hits.len(), 1);
     }
 }

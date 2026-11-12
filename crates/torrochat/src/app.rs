@@ -3,12 +3,13 @@
 //! One program, two kinds of window ([`Window`]):
 //!
 //! - **The contact list** (class `torro-chat`): the people of the account with their status in
-//!   groups ("Online", "Away", "Busy", "Do not disturb", "Offline", each folds), the group chats
-//!   behind "People | Groups", a search, the unread counts and the own status at the bottom with a
-//!   menu that sets it (`presence.set_own_status`). A double click or Enter opens the chat window of
-//!   a person or group: the person's direct chat, created first when there is none
+//!   groups ("Favorites", "Online", "Away", "Busy", "Do not disturb", "Offline", each folds), the
+//!   group chats behind "People | Groups", a search, the unread counts and the own status at the
+//!   bottom with a menu that sets it (`presence.set_own_status`). A double click or Enter opens the
+//!   chat window of a person or group: the person's direct chat, created first when there is none
 //!   (`chat.create_conversation`). "+" starts a direct chat with someone of the server
-//!   (`chat.find_people`).
+//!   (`chat.find_people`). The third tab, "Messages" (also Ctrl+Shift+F), searches the messages
+//!   with the same field (`chat.search_messages`); a hit opens its conversation's chat window.
 //! - **A chat window** (class `torro-chat-conversation`, `--conversation=<id>`): its methods live in
 //!   [`chat`].
 //!
@@ -30,7 +31,7 @@ use chrono::{DateTime, Utc};
 use iced::theme::Mode;
 use iced::widget::operation;
 use iced::{Point, Size, Subscription, Task, Theme, keyboard};
-use torro_chat::{ChatError, Conversation, OwnStatus, Person, Status, StatusChange};
+use torro_chat::{ChatError, Conversation, OwnStatus, Person, SearchHit, Status, StatusChange};
 use torro_core::AppId;
 use torro_core::app::CHAT_CONVERSATION_CLASS;
 use torro_core::i18n::tr;
@@ -82,12 +83,14 @@ pub const NEW_QUERY: &str = "chat-new-query";
 /// The field of the dialog "Set status message".
 pub const STATUS_TEXT: &str = "chat-status-text";
 
-/// The tabs of the contact list (decision 17, version B).
+/// The tabs of the contact list (decision 17, version B); "Messages" turns the search field into a
+/// search in messages (stage 7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
     #[default]
     People,
     Groups,
+    Messages,
 }
 
 /// What a row of the contact list stands for.
@@ -97,6 +100,20 @@ pub enum Target {
     Person(String),
     /// A conversation (`<account>/<token>`).
     Conversation(String),
+    /// A message a search found (`<conversation>/<number>`): its conversation.
+    Hit(String),
+}
+
+/// The search in messages of the tab "Messages" (`chat.search_messages`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MessageSearch {
+    /// What the hits are for, or are being asked for; empty while the field holds too little.
+    pub query: String,
+    pub hits: Vec<SearchHit>,
+    /// The ask for `query` is out.
+    pub searching: bool,
+    /// Why the search failed, in words for people.
+    pub error: Option<String>,
 }
 
 /// When a status message ends by itself (`docs/chat.md`, "Fuß").
@@ -149,8 +166,9 @@ pub enum Menu {
     Row { target: Target, at: Point },
     /// The "…" of a chat window's head.
     Head,
-    /// A message's context menu at the pointer.
-    Message { id: String, at: Point },
+    /// A message's menu: at the pointer after a right click (`at`), else under the message's "…".
+    /// `confirm`: it asks whether to delete the message.
+    Message { id: String, at: Option<Point>, confirm: bool },
 }
 
 /// An open dialog of the contact list.
@@ -197,6 +215,10 @@ pub enum Message {
     Search(String),
     SearchSubmit,
     FocusSearch,
+    /// Ctrl+Shift+F: the tab "Messages" with the field focused.
+    SearchMessages,
+    /// What `chat.search_messages` found for the query.
+    Hits(String, Result<Vec<SearchHit>, ChatError>),
     Tab(Tab),
     Fold(Group),
     Hover(Option<Target>),
@@ -252,7 +274,9 @@ pub struct App {
 
     // The contact list
     pub(crate) tab: Tab,
+    /// The field above the list: a filter of people and groups, or the query of "Messages".
     pub(crate) search: String,
+    pub(crate) found: MessageSearch,
     /// Groups folded or unfolded by a click; the others as they start ([`App::folded`]).
     pub(crate) folds: BTreeMap<Group, bool>,
     pub(crate) cursor: Option<Target>,
@@ -275,7 +299,7 @@ impl App {
         };
         let open = launch.open;
         let size = if chat.is_some() { CONVERSATION_SIZE } else { CONTACTS_SIZE };
-        let app = App {
+        let mut app = App {
             backend,
             zoom: Zoom::for_source(&suite),
             design: Follow::for_source(&suite),
@@ -291,8 +315,17 @@ impl App {
             error: None,
             refreshing: 0,
             own: None,
-            tab: if open == Some(Open::Groups) { Tab::Groups } else { Tab::People },
-            search: if open == Some(Open::Search) { "e".into() } else { String::new() },
+            tab: match open {
+                Some(Open::Groups) => Tab::Groups,
+                Some(Open::MessageSearch) => Tab::Messages,
+                _ => Tab::People,
+            },
+            search: match open {
+                Some(Open::Search) => "e".into(),
+                Some(Open::MessageSearch) => "review".into(),
+                _ => String::new(),
+            },
+            found: MessageSearch::default(),
             folds: if open == Some(Open::Search) { BTreeMap::from([(Group::Offline, true)]) } else { BTreeMap::new() },
             cursor: None,
             hover: None,
@@ -316,8 +349,11 @@ impl App {
             chat,
             launch,
         };
+        // `--open message-search` starts with the query typed.
+        let search = app.search_messages();
         let suite = app.suite.clone();
         let mut tasks = vec![
+            search,
             // The first load waits for a core that is still starting (issue #206).
             Task::perform(async move { suite.ready().await }, |_| Message::CoreReady),
             app.fetch_appearance(),
@@ -453,12 +489,39 @@ impl App {
             Message::Search(text) => {
                 self.search = text;
                 self.cursor = self.rows().first().cloned();
+                return self.search_messages();
             }
             Message::SearchSubmit => return self.open_cursor_or_first(),
             Message::FocusSearch => return operation::focus(SEARCH),
+            Message::SearchMessages => {
+                self.tab = Tab::Messages;
+                self.cursor = None;
+                return Task::batch([self.search_messages(), operation::focus(SEARCH)]);
+            }
+            Message::Hits(asked, result) => {
+                // Only the answer to what the field holds now; an older one is dropped.
+                if asked != self.found.query {
+                    return Task::none();
+                }
+                self.found.searching = false;
+                match result {
+                    Ok(hits) => {
+                        self.found.hits = hits;
+                        self.found.error = None;
+                    }
+                    Err(err) => {
+                        self.found.hits.clear();
+                        self.found.error = Some(chat_failed(&err));
+                    }
+                }
+                if self.tab == Tab::Messages {
+                    self.cursor = self.rows().first().cloned();
+                }
+            }
             Message::Tab(tab) => {
                 self.tab = tab;
                 self.cursor = None;
+                return self.search_messages();
             }
             Message::Fold(group) => {
                 let folded = self.folded(group);
@@ -676,11 +739,36 @@ impl App {
         })
     }
 
+    /// `chat.search_messages` for the field, while the tab "Messages" shows and the field holds at
+    /// least two characters; with less the hits go. The same query is not asked twice in a row.
+    fn search_messages(&mut self) -> Task<Message> {
+        if self.tab != Tab::Messages || self.chat.is_some() {
+            return Task::none();
+        }
+        let query = self.search.trim().to_owned();
+        if query.chars().count() < torro_ipc::chat::MIN_QUERY {
+            self.found = MessageSearch::default();
+            return Task::none();
+        }
+        if query == self.found.query && self.found.error.is_none() {
+            return Task::none();
+        }
+        self.found.query = query.clone();
+        self.found.searching = true;
+        self.found.error = None;
+        let asked = query.clone();
+        Task::perform(self.backend.clone().search_messages(query), move |result| Message::Hits(asked.clone(), result))
+    }
+
     /// Opens the chat window of `target`: a conversation at once; a person's direct chat, created
-    /// first when there is none yet.
+    /// first when there is none yet; the conversation of a message a search found.
     fn open(&mut self, target: Target) -> Task<Message> {
         match target {
             Target::Conversation(id) => self.open_window(id),
+            Target::Hit(id) => match torro_chat::split_message(&id) {
+                Some((conversation, _)) => self.open_window(conversation.to_owned()),
+                None => Task::none(),
+            },
             Target::Person(id) => {
                 let known = self.people.iter().find(|person| person.id == id);
                 if let Some(conversation) = known.and_then(|person| people::direct_chat(&self.conversations, person)) {
@@ -738,7 +826,7 @@ impl App {
     /// as the search keeps them.
     pub(crate) fn rows(&self) -> Vec<Target> {
         match self.tab {
-            Tab::People => people::groups(&self.people, &self.search)
+            Tab::People => people::groups(&self.people, &self.conversations, &self.search)
                 .into_iter()
                 .filter(|(group, _)| !self.folded(*group) || !self.search.trim().is_empty())
                 .flat_map(|(_, members)| members.into_iter().map(|person| Target::Person(person.id.clone())))
@@ -747,6 +835,7 @@ impl App {
                 .into_iter()
                 .map(|conversation| Target::Conversation(conversation.id.clone()))
                 .collect(),
+            Tab::Messages => self.found.hits.iter().map(|hit| Target::Hit(hit.id.clone())).collect(),
         }
     }
 
@@ -815,14 +904,14 @@ fn window_event(event: iced::Event, _status: iced::event::Status, _window: iced:
     }
 }
 
-/// The contact list's keys: ↑ ↓ move, Enter opens, Ctrl+F (⌘F) goes to the search. Arrows and Enter
-/// only when no field took them.
+/// The contact list's keys: ↑ ↓ move, Enter opens, Ctrl+F (⌘F) goes to the search, Ctrl+Shift+F
+/// (⇧⌘F) to the search in messages. Arrows and Enter only when no field took them.
 fn contact_key(event: iced::Event, status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
     let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, physical_key, modifiers, .. }) = event else {
         return None;
     };
-    if modifiers.command() && !modifiers.shift() && !modifiers.alt() && key.to_latin(physical_key) == Some('f') {
-        return Some(Message::FocusSearch);
+    if modifiers.command() && !modifiers.alt() && key.to_latin(physical_key) == Some('f') {
+        return Some(if modifiers.shift() { Message::SearchMessages } else { Message::FocusSearch });
     }
     use keyboard::key::Named;
     match key.as_ref() {

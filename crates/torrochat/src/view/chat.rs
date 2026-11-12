@@ -10,13 +10,24 @@
 //!   its name and size (pictures and the rest come with stage 4). Mentions read stronger.
 //! - **Composer:** Enter sends, Shift+Enter starts a new line; the quote of a reply above it with ✕;
 //!   the suggestions of an `@` float above it; a message that could not go says why above it.
-//! - The head's "…" and a message's context menu hold "Reply", "Copy text" and "Mark as unread".
+//! - The head's "…" holds "Mark as unread", the favourite (a pin, as the icon set has no star) and
+//!   the notification level; a favourite shows its pin in the head, "Never" a crossed-out bell.
+//! - **A message's menu** (right click, or the "…" beside it under the pointer): the quick
+//!   reactions in a row at the top, "Reply", "Copy text", for the person's own "Edit" and
+//!   "Delete…" (which asks in the menu), "Mark as unread".
+//! - **Reactions** stand under the bubble as chips with their count; the person's own is chosen
+//!   (`selected` with the stronger edge), a click gives or takes it back.
+//! - **Stage 7 states:** the message being edited fills the composer with "Edit message" above it,
+//!   Enter saves; a deletion on its way says "Deleting…"; what the core refused or holds for
+//!   approval stands in a calm line above the composer ([`crate::app::chat::Note`]).
 
 use iced::widget::text::{Rich, Span, Wrapping};
 use iced::widget::text_editor::{Binding, KeyPress};
-use iced::widget::{Space, column, container, mouse_area, rich_text, row, rule, scrollable, text_editor as editor};
-use iced::{Alignment, Background, Element, Fill, Rectangle, Size, Theme, border, keyboard};
-use torro_chat::{Conversation, FileRef, Mention, MessageKind, Person};
+use iced::widget::{
+    Space, button, column, container, mouse_area, rich_text, row, rule, scrollable, text_editor as editor,
+};
+use iced::{Alignment, Background, Element, Fill, Padding, Rectangle, Size, Theme, border, keyboard};
+use torro_chat::{Conversation, FileRef, Mention, MessageKind, NotifyLevel, Person};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
@@ -27,7 +38,7 @@ use torro_gui::widgets::{self, Align, MenuItem, MenuSection, Placement, TileFace
 use torro_gui::{style, typo, units};
 
 use super::{Anchors, HAIRLINE, avatar, kind_words, tinted};
-use crate::app::chat::{EDITOR, HISTORY, Msg};
+use crate::app::chat::{Change, EDITOR, HISTORY, Msg, level_word};
 use crate::app::{App, ChatState, Menu, Message};
 use crate::people::{self, Group};
 use crate::timeline::{self, Item};
@@ -96,6 +107,15 @@ impl App {
         }
         let mut head =
             row![face, container(words).width(Fill).clip(true)].spacing(space::s()).align_y(Alignment::Center);
+        if conversation.is_some_and(|c| c.favorite) {
+            head = head.push(widgets::with_tooltip(tinted(Icon::Pin, icon::SIZE_SM, |p| p.text_3), tr("Favorite")));
+        }
+        if conversation.is_some_and(|c| c.notify == NotifyLevel::Never) {
+            head = head.push(widgets::with_tooltip(
+                tinted(Icon::BellOff, icon::SIZE_SM, |p| p.text_3),
+                tr("Notifications are off"),
+            ));
+        }
         if chat.offline {
             let mark = widgets::Mark::Tinted(Icon::CircleAlert, colours.attention);
             head = head.push(widgets::with_tooltip(
@@ -218,15 +238,31 @@ impl App {
                 }
             });
         let hovered = chat.hover.as_deref() == Some(message.id.as_str());
-        let reply: Element<'a, Message> = if hovered && !chat.gone {
-            widgets::icon_button(Icon::Reply, tr("Reply"), Some(Message::Chat(Msg::Reply(message.id.clone()))))
+        // The "…" stays while its menu is open, so the menu keeps its place.
+        let more_here = matches!(&self.menu, Some(Menu::Message { id, at: None, .. }) if *id == message.id);
+        let tools: Element<'a, Message> = if (hovered || more_here) && !chat.gone {
+            let reply: Element<'a, Message> = if timeline::is_reactable(message) {
+                widgets::icon_button(Icon::Reply, tr("Reply"), Some(Message::Chat(Msg::Reply(message.id.clone()))))
+            } else {
+                Space::new().width(size::control_sm()).into()
+            };
+            let more = widgets::icon_button(
+                Icon::Ellipsis,
+                tr("More"),
+                Some(Message::Chat(Msg::MoreMenu(message.id.clone()))),
+            );
+            let more = if more_here { widgets::anchored(&anchors.more, more) } else { more };
+            // The "…" stands on the outer side, away from the bubble, in both directions.
+            let tools = if own { row![more, reply] } else { row![reply, more] };
+            tools.spacing(space::xs()).align_y(Alignment::Center).into()
         } else {
-            Space::new().width(size::control_sm()).into()
+            // As wide as the two buttons, so the bubble does not move when they come.
+            Space::new().width(size::control_sm() + space::xs() + size::control_sm()).into()
         };
         let line: Element<'a, Message> = if own {
-            row![Space::new().width(Fill), reply, bubble].spacing(space::xs()).align_y(Alignment::Center).into()
+            row![Space::new().width(Fill), tools, bubble].spacing(space::xs()).align_y(Alignment::Center).into()
         } else {
-            row![bubble, reply, Space::new().width(Fill)].spacing(space::xs()).align_y(Alignment::Center).into()
+            row![bubble, tools, Space::new().width(Fill)].spacing(space::xs()).align_y(Alignment::Center).into()
         };
         let align = if own { Alignment::End } else { Alignment::Start };
         let mut column = column![].spacing(space::xs()).width(Fill).align_x(align);
@@ -234,7 +270,24 @@ impl App {
             column = column.push(typo::text(typo::caption(), message.author.name.as_str()).style(theme::text_3));
         }
         column = column.push(line);
-        if last {
+        let change = chat.changing.get(&message.id).copied();
+        if !message.reactions.is_empty() {
+            let chips = message
+                .reactions
+                .iter()
+                .map(|(emoji, count)| {
+                    let given = message.own_reactions.iter().any(|own| own == emoji);
+                    // A reaction on its way takes no second click until the core answered.
+                    reaction_chip(&message.id, emoji, *count, given, change.is_none())
+                })
+                .collect();
+            column = column.push(container(widgets::chip_row(chips)).max_width(bubble_max));
+        }
+        if change == Some(Change::Delete) {
+            column = column.push(typo::text(typo::micro(), tr("Deleting…")).style(theme::text_3));
+        } else if chat.editing.as_ref().is_some_and(|editing| editing.id == message.id) {
+            column = column.push(typo::text(typo::micro(), tr("Editing below")).style(theme::text_3));
+        } else if last {
             let mut time = timeline::time_label(message.at);
             if message.edited {
                 time = trf("{time} · edited", &[("time", &time)]);
@@ -246,7 +299,7 @@ impl App {
         let area = mouse_area(area)
             .on_enter(Message::Chat(Msg::Hover(Some(message.id.clone()))))
             .on_exit(Message::Chat(Msg::Hover(None)));
-        let menu_here = matches!(&self.menu, Some(Menu::Message { id, .. }) if *id == message.id);
+        let menu_here = matches!(&self.menu, Some(Menu::Message { id, at: Some(_), .. }) if *id == message.id);
         // A new run stands a little off the one before it.
         let gap = if first { space::xs() } else { 0.0 };
         let area = container(area).padding(iced::Padding::ZERO.top(gap));
@@ -284,13 +337,19 @@ impl App {
             field = field.on_action(|action| Message::Chat(Msg::Edit(action)));
         }
         let ready = !chat.editor.text().trim().is_empty() && !chat.sending && !read_only;
+        let editing = chat.editing.is_some();
+        let (send_icon, send_tip, busy_tip) = if editing {
+            (Icon::Check, tr("Save (Enter)"), tr("Saving…"))
+        } else {
+            (Icon::Send, tr("Send (Enter)"), tr("Sending…"))
+        };
         let send: Element<'a, Message> = if chat.sending {
             widgets::with_tooltip(
-                container(tinted(Icon::Send, icon::SIZE, |p| p.text_3)).center(size::control_sm()),
-                tr("Sending…"),
+                container(tinted(send_icon, icon::SIZE, |p| p.text_3)).center(size::control_sm()),
+                busy_tip,
             )
         } else {
-            widgets::icon_button(Icon::Send, tr("Send (Enter)"), ready.then_some(Message::Chat(Msg::Send)))
+            widgets::icon_button(send_icon, send_tip, ready.then_some(Message::Chat(Msg::Send)))
         };
         let entry = row![field, send].spacing(space::s()).align_y(Alignment::End);
         let mut parts: Vec<Element<'a, Message>> = Vec::new();
@@ -300,6 +359,35 @@ impl App {
                 .style(|t: &Theme| iced::widget::text::Style { color: Some(palette(t).error_text) });
             parts.push(
                 row![mark, words.wrapping(Wrapping::WordOrGlyph)].spacing(space::s()).align_y(Alignment::Center).into(),
+            );
+        }
+        if let Some(note) = &chat.note {
+            // Calm: a change the server does not take is no failure of the app; the icon says which.
+            let mark = if note.waiting {
+                tinted(Icon::Clock, icon::SIZE_SM, |p| p.attention)
+            } else {
+                tinted(Icon::Info, icon::SIZE_SM, |p| p.text_2)
+            };
+            let words = typo::text(typo::meta(), note.text.as_str())
+                .style(theme::text_2)
+                .wrapping(Wrapping::WordOrGlyph)
+                .width(Fill);
+            let dismiss = widgets::icon_button(Icon::X, tr("Dismiss"), Some(Message::Chat(Msg::DismissNote)));
+            parts.push(row![mark, words, dismiss].spacing(space::s()).align_y(Alignment::Center).into());
+        }
+        if let Some(editing) = &chat.editing {
+            let cancel =
+                widgets::icon_button(Icon::X, tr("Cancel editing (Esc)"), Some(Message::Chat(Msg::CancelEdit)));
+            let words = column![
+                typo::text(typo::caption(), tr("Edit message")).style(theme::text_2),
+                widgets::ellipsized(typo::meta(), editing.original.as_str(), theme::text_3),
+            ]
+            .width(Fill);
+            parts.push(
+                row![tinted(Icon::SquarePen, icon::SIZE_SM, |p| p.text_3), words, cancel]
+                    .spacing(space::s())
+                    .align_y(Alignment::Center)
+                    .into(),
             );
         }
         if let Some(quote) = &chat.reply {
@@ -330,14 +418,15 @@ impl App {
     fn chat_layer<'a>(&'a self, chat: &'a ChatState, anchors: &Anchors) -> Option<Element<'a, Message>> {
         match &self.menu {
             Some(Menu::Head) => {
-                let items = vec![MenuItem::new(Icon::MailOpen, tr("Mark as unread"), Message::Chat(Msg::MarkUnread))];
-                let menu = widgets::menu(vec![MenuSection::new(items)]);
+                let menu = widgets::menu_wide(self.head_sections(chat), size::props());
                 return Some(widgets::floating(&anchors.head, Placement::Below(Align::End), menu, Message::CloseMenu));
             }
-            Some(Menu::Message { id, at }) => {
+            Some(Menu::Message { id, at, confirm }) => {
                 let message = chat.message(id)?;
+                let read_only = self.conversation(chat).is_some_and(|c| c.read_only);
+                let open = !chat.gone && !read_only;
                 let mut first = Vec::new();
-                if !chat.gone && !timeline::is_system(message) {
+                if open && timeline::is_reactable(message) {
                     first.push(MenuItem::new(Icon::Reply, tr("Reply"), Message::Chat(Msg::Reply(id.clone()))));
                 }
                 if !message.text.is_empty() && message.kind != MessageKind::Deleted {
@@ -347,11 +436,38 @@ impl App {
                         Message::Chat(Msg::Copy(message.text.clone())),
                     ));
                 }
-                let second = vec![MenuItem::new(Icon::MailOpen, tr("Mark as unread"), Message::Chat(Msg::MarkUnread))];
-                let sections =
-                    [first, second].into_iter().filter(|items| !items.is_empty()).map(MenuSection::new).collect();
-                let anchor = anchors.message.area(Rectangle::new(*at, Size::ZERO));
-                return Some(widgets::floating(&anchor, Placement::At, widgets::menu(sections), Message::CloseMenu));
+                let own = if !(open && timeline::is_changeable(message)) {
+                    None
+                } else if *confirm {
+                    let items = vec![
+                        MenuItem::new(Icon::Trash2, tr("Delete for everyone"), Message::Chat(Msg::Delete(id.clone()))),
+                        MenuItem::new(Icon::X, tr("Cancel"), Message::CloseMenu),
+                    ];
+                    Some(MenuSection::titled(tr("Delete this message?"), items))
+                } else {
+                    Some(MenuSection::new(vec![
+                        MenuItem::new(Icon::SquarePen, tr("Edit"), Message::Chat(Msg::StartEdit(id.clone()))),
+                        MenuItem::new(Icon::Trash2, tr("Delete…"), Message::Chat(Msg::AskDelete(id.clone()))),
+                    ]))
+                };
+                let last = vec![MenuItem::new(Icon::MailOpen, tr("Mark as unread"), Message::Chat(Msg::MarkUnread))];
+                let mut sections: Vec<MenuSection<'a, Message>> =
+                    [first].into_iter().filter(|items| !items.is_empty()).map(MenuSection::new).collect();
+                sections.extend(own);
+                sections.push(MenuSection::new(last));
+                let reactions = (open && timeline::is_reactable(message) && !chat.changing.contains_key(id))
+                    .then(|| quick_reactions(message));
+                let card = menu_card(reactions, sections);
+                return Some(match at {
+                    Some(at) => {
+                        let anchor = anchors.message.area(Rectangle::new(*at, Size::ZERO));
+                        widgets::floating(&anchor, Placement::At, card, Message::CloseMenu)
+                    }
+                    None => {
+                        let side = if message.author.own { Align::End } else { Align::Start };
+                        widgets::floating(&anchors.more, Placement::Below(side), card, Message::CloseMenu)
+                    }
+                });
             }
             _ => {}
         }
@@ -370,6 +486,31 @@ impl App {
             .collect();
         let menu = widgets::menu(vec![MenuSection::titled(tr("Mention"), items)]);
         Some(widgets::floating(&anchors.composer, Placement::Below(Align::Start), menu, Message::Chat(Msg::Escape)))
+    }
+
+    /// The head's "…": "Mark as unread" and the favourite, then the notification levels with the
+    /// current one marked. Without the conversation in the list only the first.
+    fn head_sections<'a>(&'a self, chat: &'a ChatState) -> Vec<MenuSection<'a, Message>> {
+        let mut first = vec![MenuItem::new(Icon::MailOpen, tr("Mark as unread"), Message::Chat(Msg::MarkUnread))];
+        let Some(conversation) = self.conversation(chat) else { return vec![MenuSection::new(first)] };
+        let (mark, label) = if conversation.favorite {
+            (Icon::PinOff, tr("Remove from favorites"))
+        } else {
+            (Icon::Pin, tr("Add to favorites"))
+        };
+        first.push(MenuItem::new(mark, label, Message::Chat(Msg::ToggleFavorite)));
+        let levels = [NotifyLevel::Default, NotifyLevel::Always, NotifyLevel::Mention, NotifyLevel::Never]
+            .into_iter()
+            .map(|level| {
+                let item = MenuItem::plain(level_word(level), Message::Chat(Msg::SetLevel(level)))
+                    .current(conversation.notify == level);
+                match level {
+                    NotifyLevel::Default => item.detail(tr("Direct chats always, groups on mentions")),
+                    NotifyLevel::Always | NotifyLevel::Mention | NotifyLevel::Never => item,
+                }
+            })
+            .collect();
+        vec![MenuSection::new(first), MenuSection::titled(tr("Notifications"), levels)]
     }
 
     /// The glance of a chat window in a mini or strip tile: the name and the newest message.
@@ -402,6 +543,72 @@ pub(crate) fn composer_binding(press: KeyPress, first: Option<Mention>) -> Optio
         return Some(Binding::Custom(Message::Chat(Msg::Send)));
     }
     Binding::from_key_press(press)
+}
+
+/// A reaction under a message: the emoji and how many gave it, a chip as high as every chip. The
+/// person's own is chosen (`selected` with the stronger edge) and its tooltip says a click takes it
+/// back; `clickable` is false while a reaction to the message is on its way.
+fn reaction_chip<'a>(id: &str, emoji: &'a str, count: u64, given: bool, clickable: bool) -> Element<'a, Message> {
+    let content = row![
+        typo::text(typo::body(), emoji).wrapping(Wrapping::None),
+        typo::text(typo::meta().tabular(), count.to_string()).wrapping(Wrapping::None),
+    ]
+    .spacing(space::xs())
+    .align_y(Alignment::Center);
+    let press = clickable.then(|| Message::Chat(Msg::React(id.to_owned(), emoji.to_owned())));
+    let chip = button(container(content).center_y(Fill))
+        .height(style::CHIP_HEIGHT)
+        .padding(style::CHIP_PADDING)
+        .style(style::button::choice_chip(given))
+        .on_press_maybe(press);
+    let tip =
+        if given { tr("Take back your reaction").to_owned() } else { trf("React with {emoji}", &[("emoji", &emoji)]) };
+    widgets::with_tooltip(chip, tip)
+}
+
+/// The quick reactions at the top of a message's menu, side by side over its whole width; one the
+/// person gave already is chosen, and a click takes it back.
+fn quick_reactions<'a>(message: &torro_chat::Message) -> Element<'a, Message> {
+    let buttons = timeline::QUICK_REACTIONS.into_iter().map(|emoji| {
+        let given = message.own_reactions.iter().any(|own| own == emoji);
+        let face = typo::text(typo::title(), emoji).wrapping(Wrapping::None);
+        let pick = button(container(face).center(Fill))
+            .width(Fill)
+            .height(size::control_sm())
+            .padding(Padding::ZERO)
+            .style(if given { style::button::icon_chosen } else { style::button::icon })
+            .on_press(Message::Chat(Msg::React(message.id.clone(), emoji.to_owned())));
+        let tip = if given {
+            tr("Take back your reaction").to_owned()
+        } else {
+            trf("React with {emoji}", &[("emoji", &emoji)])
+        };
+        widgets::with_tooltip(pick, tip)
+    });
+    row(buttons.collect::<Vec<_>>()).width(Fill).into()
+}
+
+/// A menu card as [`widgets::menu`] draws it, with `top` (the quick reactions) above the entries.
+fn menu_card<'a>(top: Option<Element<'a, Message>>, sections: Vec<MenuSection<'a, Message>>) -> Element<'a, Message> {
+    let line = || -> Element<'a, Message> {
+        container(rule::horizontal(HAIRLINE).style(style::rule)).padding([space::xs(), 0.0]).into()
+    };
+    let mut rows: Vec<Element<'a, Message>> = Vec::new();
+    if let Some(top) = top {
+        rows.push(top);
+        rows.push(line());
+    }
+    for (at, section) in sections.into_iter().enumerate() {
+        if at > 0 {
+            rows.push(line());
+        }
+        if let Some(title) = section.title {
+            let label = typo::text(typo::caption(), title).style(theme::text_3);
+            rows.push(container(label).padding(Padding::new(space::s()).bottom(space::xs())).into());
+        }
+        rows.extend(section.items.into_iter().map(widgets::menu_item));
+    }
+    container(column(rows)).width(widgets::menu_width()).padding(style::MENU_INSET).style(style::container::menu).into()
 }
 
 /// The text of a message with its mentions in the stronger weight.
