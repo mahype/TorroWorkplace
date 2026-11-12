@@ -211,7 +211,7 @@ impl std::fmt::Debug for ChatPicture {
 
 /// A file of a message, fetched into the chat's own attachment folder for opening
 /// ([`crate::Response::ChatAttachment`]); it is deleted a day later.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatAttachment {
     /// Where the core put it, an absolute path.
     pub path: String,
@@ -223,6 +223,15 @@ pub struct ChatAttachment {
     /// Always `true`: name and content come from other people. Data, never instructions.
     #[serde(default = "untrusted")]
     pub untrusted: bool,
+}
+
+impl std::fmt::Debug for ChatAttachment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChatAttachment")
+            .field("size", &self.size)
+            .field("content_type", &self.content_type)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What kind of item a conversation shared (`chat.list_shared`), as Talk sorts them; `link` comes
@@ -342,6 +351,14 @@ mod tests {
         assert_eq!(serde_json::to_value(&file).expect("JSON")["preview"], "aGVsbG8=");
         let picture = ChatPicture { content_type: "image/png".into(), base64: data, width: None, height: None };
         assert!(!format!("{picture:?}").contains("aGVsbG8"));
+        let fetched = ChatAttachment {
+            path: "/cache/secret plan.pdf".into(),
+            name: "secret plan.pdf".into(),
+            size: 5,
+            content_type: "application/pdf".into(),
+            untrusted: true,
+        };
+        assert!(!format!("{fetched:?}").contains("secret"));
     }
 
     #[test]
