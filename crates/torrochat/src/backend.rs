@@ -11,10 +11,10 @@ use torro_chat::demo::DemoSource;
 use torro_chat::{
     Call, ChatError, ChatSource, Conversation, Fetched, FilePiece, LinkCard, Mention, MessagePage, NotifyLevel,
     Outgoing, OwnStatus, Person, Picture, PreparedFile, PreviewSize, SaveTo, SearchHit, Sending, SharedKind,
-    SharedPage, StatusChange, UploadProgress, Uploaded,
+    SharedPage, Status, StatusChange, UploadProgress, Uploaded,
 };
 use torro_ipc::chat::ChatClient;
-use torro_ipc::{Request, Response};
+use torro_ipc::{Request, Response, SettingKey};
 
 /// The core, or the sample of `torro_chat::demo` (`--demo`, nothing is written anywhere).
 #[derive(Debug, Clone)]
@@ -216,6 +216,23 @@ impl Backend {
             Backend::Demo(demo) => demo.set_own_status(account.clone(), change).await?,
         }
         self.own_status(account).await
+    }
+
+    /// "Online" from the status menu: switches `presence.heartbeat` on when it is off (a person chose
+    /// "Online", which is the same consent as the switch; programs never get this way, decision 10),
+    /// then sets the status. A failed switch stops before the status; a failed status leaves the
+    /// switch on.
+    pub async fn go_online(self, account: String) -> Result<OwnStatus, ChatError> {
+        if let Backend::Core(core) = &self {
+            let request = Request::SetSetting { key: SettingKey::PresenceHeartbeat, value: serde_json::json!(true) };
+            match torro_ipc::client::call(&core.socket, &request).await {
+                Ok(Response::Ok) => {}
+                Ok(Response::Error { message, .. }) => return Err(ChatError::Other(message)),
+                Ok(_) => return Err(ChatError::Other("unexpected answer".into())),
+                Err(err) => return Err(ChatError::Other(err.to_string())),
+            }
+        }
+        self.set_own_status(account, StatusChange { status: Some(Status::Online), ..StatusChange::default() }).await
     }
 
     // -- Files and media (stage 4) ------------------------------------------------------------

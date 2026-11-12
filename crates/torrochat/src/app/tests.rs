@@ -186,13 +186,21 @@ fn the_own_status_is_set_through_the_menu() {
 }
 
 #[test]
-fn online_without_the_heartbeat_is_refused_in_words() {
+fn online_without_the_heartbeat_turns_it_on() {
     let mut app = loaded(start(&[]));
+    let away = StatusChange { status: Some(Status::Away), ..StatusChange::default() };
+    let _ = block_on(app.backend.clone().set_own_status(ACCOUNT.into(), away));
     if let Some(own) = &mut app.own {
         own.heartbeat = false;
     }
     let _ = app.update(Message::SetStatus(Status::Online));
-    assert_eq!(app.notice.as_ref().map(|n| n.text.as_str()), Some(tr("Turn on “Show others when I am online” first.")));
+    assert!(app.notice.is_none(), "no hint to turn the switch on first");
+    assert_eq!(app.menu, None);
+    let answer = block_on(app.backend.clone().go_online(ACCOUNT.into()));
+    let _ = app.update(Message::StatusSet(answer));
+    let own = app.own.as_ref().expect("own status");
+    assert_eq!(own.status, Status::Online);
+    assert!(own.heartbeat);
 }
 
 #[test]
