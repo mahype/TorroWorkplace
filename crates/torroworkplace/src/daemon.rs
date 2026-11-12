@@ -53,7 +53,7 @@ use torro_core::i18n::trf;
 use torro_core::paths::AppPaths;
 use torro_core::timing;
 use torro_core::version::Version;
-use torro_ipc::{Door, Key, Request, Response, app_key_path, client, server, socket_path};
+use torro_ipc::{Door, Key, Request, Response, SettingKey, app_key_path, client, server, socket_path};
 use torro_setups::storage::Store;
 
 use crate::clients::{Clients, SystemKeychain};
@@ -83,6 +83,18 @@ impl Daemon {
         self.runtime.spawn(async move {
             let _ = refresh.send(());
             run_from_tray(&core, request, &quit, quit_mark.as_deref(), report).await;
+            let _ = refresh.send(());
+        });
+    }
+
+    /// "Online" in the tray while "Show others when I am online" is off: switches it on, then sets the
+    /// status ([`go_online_from_tray`]), refreshing the menu before and after like [`Daemon::run`].
+    pub fn go_online(&self, account: String) {
+        let core = Arc::clone(&self.core);
+        let refresh = self.refresh.clone();
+        self.runtime.spawn(async move {
+            let _ = refresh.send(());
+            go_online_from_tray(&core, account, report).await;
             let _ = refresh.send(());
         });
     }
@@ -190,6 +202,30 @@ async fn run_from_tray(
     if ends && matches!(response, Response::Ok) {
         end_after_answer(quit.clone(), quit_mark);
     }
+}
+
+/// What choosing "Online" in the tray does without the heartbeat: a person chose it, which is the same
+/// consent as the switch, so the switch goes on first (programs never get this way, `docs/chat.md`).
+/// A refused switch is told and ends it; otherwise the status is set and told like any tray click.
+async fn go_online_from_tray(core: &Core, account: String, tell: fn(&str, &Response)) {
+    let switch = Request::SetSetting { key: SettingKey::PresenceHeartbeat, value: serde_json::json!(true) };
+    let what = describe(&switch);
+    let response = core.handle(switch).await;
+    if matches!(response, Response::Error { .. }) {
+        tell(&what, &response);
+        return;
+    }
+    log(&what, &response);
+    let status = Request::PresenceSetOwnStatus {
+        account,
+        status: Some(torro_chat::Status::Online),
+        message: None,
+        icon: None,
+        clear_at: None,
+    };
+    let what = describe(&status);
+    let response = core.handle(status).await;
+    tell(&what, &response);
 }
 
 /// One request from the socket ([`serve`]): passes the key check ([`Core::handle_from`]), tells
@@ -1409,6 +1445,24 @@ mod tests {
             .with_approvals(crate::approvals::tests::quiet_in(dir))
             .with_inbox(crate::inbox::tests::inbox_in(dir)),
         )
+    }
+
+    /// "Online" from the tray switches the heartbeat on; without a chat account the status then fails
+    /// and the tray hears of it.
+    #[test]
+    fn online_from_the_tray_turns_the_heartbeat_on() {
+        use std::sync::Mutex;
+        static TOLD: Mutex<Vec<bool>> = Mutex::new(Vec::new());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let core = core_in(dir.path());
+        let rt = tokio::runtime::Builder::new_current_thread().build().expect("runtime");
+        rt.block_on(go_online_from_tray(&core, "nextcloud:none".into(), |_, response| {
+            if let Ok(mut told) = TOLD.lock() {
+                told.push(matches!(response, Response::Error { .. }));
+            }
+        }));
+        assert!(rt.block_on(core.snapshot()).presence_heartbeat, "the switch is on");
+        assert_eq!(TOLD.lock().map(|t| t.clone()).unwrap_or_default(), [true], "the status failed and was told");
     }
 
     /// The marker holds the time only and is the owner's alone.
