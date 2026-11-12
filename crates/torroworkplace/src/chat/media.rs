@@ -918,7 +918,11 @@ impl ChatService {
             let (path, uploaded) = self.upload_one(job, file).await?;
             let etag = uploaded.etag.clone().unwrap_or_default();
             if job.cancel.load(Ordering::Acquire) {
-                let _ = remote.delete_file(&job.user, &path, &etag).await;
+                // Only the file just uploaded, known by its ETag: without one an empty `If-Match`
+                // would count as none, and the delete could take a file someone else put there.
+                if !etag.is_empty() {
+                    let _ = remote.delete_file(&job.user, &path, &etag).await;
+                }
                 return Err(Stop::Cancelled);
             }
             // From the first share on the state stays `sharing`: a message is out, cancelling is over.
