@@ -684,8 +684,8 @@ fn tinted<'a>(which: Icon, edge: f32, colour: fn(&Palette) -> iced::Color) -> El
 }
 
 /// The head: "‹ Mail" while the panel covers the mail, the sparkles and "Ask AI", then "+" ("New
-/// chat", off while the panel opens) and ✕ ("Close"); padded like a panel's head, so ✕ lines up with the window's buttons. The
-/// tip of the chevron of "‹ Mail" stands on the line of the content below – the mail's mark and the
+/// chat", off while the panel opens) and ✕ ("Close"); padded like a panel's head, so ✕ lines up
+/// with the window's buttons. The tip of the chevron of "‹ Mail" stands on the line of the content below – the mail's mark and the
 /// chat's text: the ghost button's own padding and the room Lucide leaves inside the icon before the
 /// tip ([`chevron_inset`]) are taken off the head's (design review of #605: it stood that far to the
 /// right of the line).

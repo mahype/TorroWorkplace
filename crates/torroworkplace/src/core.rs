@@ -12817,8 +12817,8 @@ impl Core {
         Some(Response::Error { code: "unsupported".into(), message })
     }
 
-    /// `unsupported` for `assistant.send_message`, `assistant.check_about` and `bots.ask_bot` (by the bot's engine) with an AI
-    /// account that has no model on (task S.24): the module never answers with another account
+    /// `unsupported` for `assistant.send_message`, `assistant.check_about` and `bots.ask_bot` (by the
+    /// bot's engine) with an AI account that has no model on (task S.24): the module never answers with another account
     /// instead. `None` for every other request, an engine that is no AI account, and an unknown bot
     /// (the assistant refuses those itself).
     async fn models_off_refusal(&self, request: &Request) -> Option<Response> {
@@ -33714,9 +33714,10 @@ mod tests {
         }
 
         /// Issue #605: `assistant.check_about` answers what a new chat about the mail would be refused with, for the
-        /// panel to show its hint on opening, and stores nothing: ok when it may run (reading the assistant's area is
-        /// enough), `forbidden` without an assistant that reads the account, `not-found` for a caller that cannot see
-        /// the mail and for a mail the account does not hold, `not-connected` for a model elsewhere under the data rule.
+        /// panel to show its hint on opening, and stores nothing: ok when it may run (reading the
+        /// assistant's area is enough), `forbidden` without an assistant that reads the account,
+        /// `not-found` for a caller that cannot see the mail and for a mail the account does not hold,
+        /// `not-connected` for a model elsewhere under the data rule.
         #[tokio::test]
         async fn checking_a_chat_about_a_mail_answers_as_sending_would() {
             let Invited { _dir: dir, core, id, app_key, .. } = invited().await;

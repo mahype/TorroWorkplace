@@ -1120,8 +1120,9 @@ pub const MAX_FOCUS_CHARS: usize = 200;
 /// [`torro_mail::FILTER_QUERY_MAX`], issue #339), a draft with more than
 /// [`MAX_RECIPIENTS`] recipients, more than [`MAX_ATTACHMENTS`] attachments or a text over
 /// [`MAX_BODY_BYTES`], a `focus` of `mail.extract_action` over [`MAX_FOCUS_CHARS`], and any id,
-/// folder, cursor or attachment part over [`MAX_ID_BYTES`]. `None` for every request within them and for every other request. The core calls it before rights,
-/// approvals and handlers, so nobody is asked to approve what would be refused anyway.
+/// folder, cursor or attachment part over [`MAX_ID_BYTES`]. `None` for every request within them
+/// and for every other request. The core calls it before rights, approvals and handlers, so nobody
+/// is asked to approve what would be refused anyway.
 pub fn limit_refusal(request: &Request) -> Option<Response> {
     let refuse = |message: String| Some(Response::Error { code: "error".into(), message });
     if mail_ids(request).any(|id| id.len() > MAX_ID_BYTES) {
