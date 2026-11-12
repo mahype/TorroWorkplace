@@ -41,6 +41,15 @@ use torro_nextcloud::RoomToken;
 
 use super::ChatService;
 use super::media::{clean_name, file_refusal, is_picture_content, refused, sniff};
+
+/// The name of a file of the server on this computer: [`clean_name`] (its last part, one line), then
+/// the rules of every system a folder may be on ([`torro_mail::save_target::clean_file_name`]): no
+/// `:` that would name a drive or a stream on Windows (`C:evil.exe` would replace the whole folder
+/// in `Path::join`), no reserved name such as `CON`, nothing invisible. `file` when nothing is left.
+fn local_name(name: &str) -> String {
+    let name = torro_mail::save_target::clean_file_name(&clean_name(name));
+    if name.is_empty() { torro_core::i18n::tr("file").to_string() } else { name }
+}
 use super::remote::{Caps, DavPath, Picture, Remote, RemoteMessage, RemoteRoom};
 use super::service::{Caller, error_response};
 use crate::pim::Reach;
@@ -335,7 +344,7 @@ impl ChatService {
             return refused("error", tr("There is no folder for chat files on this computer."));
         };
         let dir = root.join(crate::audit::hashed(&located.account));
-        let name = clean_name(&located.file.name);
+        let name = local_name(&located.file.name);
         let kind = sniff(&bytes).to_string();
         let size = bytes.len() as u64;
         let written = tokio::task::spawn_blocking(move || {
@@ -367,7 +376,7 @@ impl ChatService {
             Ok(fetched) => fetched,
             Err(refusal) => return refusal,
         };
-        let name = clean_name(&located.file.name);
+        let name = local_name(&located.file.name);
         let place = match place {
             Place::Target(spec) => {
                 let facts = torro_mail::FileFacts {
@@ -719,6 +728,20 @@ fn unsupported(text: &'static str) -> ChatError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review of #643: a name from the server never leaves the folder it is saved in, on any system.
+    #[test]
+    fn a_name_from_the_server_stays_in_its_folder() {
+        for (name, kept) in
+            [("C:evil.exe", "C_evil.exe"), ("plan.pdf:stream", "plan.pdf_stream"), ("../../x.txt", "x.txt")]
+        {
+            assert_eq!(local_name(name), kept, "{name}");
+        }
+        assert_ne!(local_name("CON"), "CON", "a reserved name on Windows");
+        assert_eq!(local_name(".."), torro_core::i18n::tr("file"));
+        let dir = std::path::Path::new("/home/anna/chat");
+        assert!(dir.join(local_name("C:evil.exe")).starts_with(dir));
+    }
 
     #[test]
     fn the_first_link_is_https_only_without_trailing_punctuation() {
