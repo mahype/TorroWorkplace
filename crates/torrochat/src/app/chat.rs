@@ -40,6 +40,10 @@ use crate::timeline;
 /// How often a chat window asks for new messages (`docs/chat.md`, decision 9).
 pub const POLL: Duration = Duration::from_secs(2);
 
+/// Every this many polls the window asks for the newest page itself, not only what came after:
+/// reactions, edits and deletions of others change messages it holds already (review of PR #644).
+pub const REFRESH_EVERY: u32 = 5;
+
 /// The composer.
 pub const EDITOR: &str = "chat-editor";
 
@@ -70,6 +74,8 @@ pub struct ChatState {
     pub offline: bool,
     /// An ask for new messages is out.
     pub polling: bool,
+    /// Polls since the window opened, for [`REFRESH_EVERY`].
+    pub polls: u32,
     pub loading_earlier: bool,
     pub editor: Content,
     /// The message the next one answers.
@@ -228,6 +234,7 @@ impl ChatState {
             error: None,
             offline: false,
             polling: false,
+            polls: 0,
             loading_earlier: false,
             editor: Content::new(),
             reply: None,
@@ -439,7 +446,12 @@ impl App {
                     return Task::none();
                 }
                 chat.polling = true;
-                let after = chat.messages.last().map(|message| message.id.clone());
+                chat.polls = chat.polls.wrapping_add(1);
+                // Now and then the newest page itself, so changes to messages held come in too.
+                let after = match chat.polls % REFRESH_EVERY {
+                    0 => None,
+                    _ => chat.messages.last().map(|message| message.id.clone()),
+                };
                 return Task::perform(backend.messages(id, None, after), wrap(Msg::Polled));
             }
             Msg::Polled(result) => {

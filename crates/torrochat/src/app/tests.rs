@@ -634,6 +634,24 @@ fn a_first_page_that_failed_is_asked_again_on_retry() {
     assert_eq!(chat(&app).error, None, "the history shows");
 }
 
+/// Review of PR #644: every [`REFRESH_EVERY`]th poll asks for the newest page itself, so a
+/// reaction of someone else to a message the window holds already shows.
+#[test]
+fn a_refresh_brings_a_reaction_to_a_message_held_already() {
+    let mut app = loaded(start(&["--open", "chat"]));
+    let held = chat(&app).messages.first().map(|message| message.id.clone()).expect("a message");
+    block_on(app.backend.clone().react(held.clone(), "🎉".into(), false)).expect("reacted");
+    if let Some(chat) = app.chat.as_mut() {
+        chat.polls = crate::app::chat::REFRESH_EVERY - 1;
+    }
+    let _ = app.update(Message::Chat(Msg::Poll));
+    assert_eq!(chat(&app).polls % crate::app::chat::REFRESH_EVERY, 0, "this one is the newest page");
+    let page = block_on(app.backend.clone().messages(BEN.into(), None, None));
+    let _ = app.update(Message::Chat(Msg::Polled(page)));
+    let shown = chat(&app).messages.iter().find(|message| message.id == held).expect("still held");
+    assert!(shown.reactions.contains_key("🎉"), "{:?}", shown.reactions);
+}
+
 #[test]
 fn a_poll_that_came_clears_the_error() {
     let mut app = loaded(start(&["--open", "chat"]));
