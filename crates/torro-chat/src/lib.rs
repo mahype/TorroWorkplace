@@ -12,9 +12,14 @@
 //! No input or output here.
 
 pub mod demo;
+pub mod files;
 pub mod model;
 pub mod source;
 
+pub use files::{
+    Fetched, FilePiece, Picture, PreparedFile, PreviewSize, SaveTo, Sending, SharedItem, SharedKind, SharedPage,
+    UploadProgress, UploadState, Uploaded,
+};
 pub use model::{
     Author, Conversation, ConversationKind, FileRef, LinkCard, Mention, Message, MessageKind, MessagePage, NotifyLevel,
     OwnStatus, Person, Preview, Quote, SearchHit, Status, conversation_id, message_id, person_id, split_conversation,

@@ -3,13 +3,20 @@
 //! The windows only know [`ChatSource`]. In production that is the core over the socket
 //! (`torro_ipc::chat::ChatClient`); for building and trying the windows it is
 //! [`crate::demo::DemoSource`]. Each method is one command of the API areas `chat` or `presence`.
+//!
+//! Stage 4 (files and media) adds the methods from [`ChatSource::messages_around`] on, with the
+//! types of [`crate::files`].
 
 use std::fmt;
 use std::future::Future;
 
 use chrono::{DateTime, Utc};
 
-use crate::model::{Conversation, Mention, MessagePage, NotifyLevel, OwnStatus, Person, SearchHit, Status};
+use crate::files::{
+    Fetched, FilePiece, Picture, PreparedFile, PreviewSize, SaveTo, Sending, SharedKind, SharedPage, UploadProgress,
+    Uploaded,
+};
+use crate::model::{Conversation, LinkCard, Mention, MessagePage, NotifyLevel, OwnStatus, Person, SearchHit, Status};
 
 /// Why a call failed, in the terms the core answers with (`docs/chat.md`, "Fehler").
 ///
@@ -197,4 +204,105 @@ pub trait ChatSource: Send + Sync {
         account: String,
         change: StatusChange,
     ) -> impl Future<Output = Result<(), ChatError>> + Send;
+
+    // -- Files and media (stage 4) ------------------------------------------------------------
+
+    /// `chat.get_messages` with `around`: the message `around` (`<conversation>/<number>`) with the
+    /// messages before and after it, half each, at most `limit` (1 to 100, 50 when `None`), the
+    /// oldest first – for "Show in chat". `more` says whether older messages exist.
+    ///
+    /// Must fail with [`ChatError::NotFound`] for an unknown conversation, [`ChatError::Other`] for
+    /// a message that is not one of the conversation's, and [`ChatError::Unsupported`] when the
+    /// server cannot.
+    fn messages_around(
+        &self,
+        conversation: String,
+        around: String,
+        limit: Option<u32>,
+    ) -> impl Future<Output = Result<MessagePage, ChatError>> + Send;
+
+    /// `chat.send_message` with `files` (ids of [`ChatSource::prepare_file`] or
+    /// [`ChatSource::upload_file`], at most 10): the core uploads them into the person's Talk folder
+    /// and shares them, the text (`message.text`, may be empty) as the caption. The answer is
+    /// [`Sending::Uploading`] as soon as the upload begins; without files it is the same as
+    /// [`ChatSource::send`] ([`Sending::Sent`]). From then on the prepared files are used up.
+    ///
+    /// Must fail with [`ChatError::NotFound`] for a prepared file that is unknown or of another
+    /// account, [`ChatError::Unsupported`] when the server does not let the person share files.
+    fn send_files(
+        &self,
+        message: Outgoing,
+        files: Vec<String>,
+    ) -> impl Future<Output = Result<Sending, ChatError>> + Send;
+
+    /// `chat.prepare_file` with `source: path`: the file at the absolute `path` a person chose
+    /// (paperclip, dragging, a file on the clipboard), for sending with `account`. The core reads only
+    /// what it needs for kind and preview; nothing goes to the server.
+    ///
+    /// Must fail with [`ChatError::Other`] (a sentence for people) for a file larger than the limit
+    /// or one that cannot be read, [`ChatError::Busy`] when the core holds too much already.
+    fn prepare_file(
+        &self,
+        account: String,
+        path: String,
+    ) -> impl Future<Output = Result<PreparedFile, ChatError>> + Send;
+
+    /// `chat.upload_file`: one piece of a file the window holds itself (a pasted picture), at most
+    /// 25 MiB in all. The first piece starts at offset 0 without `upload`, the next name the upload
+    /// the answer gave; the last one (`last`) answers with the prepared file.
+    fn upload_file(&self, piece: FilePiece) -> impl Future<Output = Result<Uploaded, ChatError>> + Send;
+
+    /// `chat.release_files`: drops prepared files and unfinished uploads of the caller; unknown ids
+    /// are passed over without an error.
+    fn release_files(&self, account: String, ids: Vec<String>) -> impl Future<Output = Result<(), ChatError>> + Send;
+
+    /// `chat.get_upload`: how the sending `id` of [`Sending::Uploading`] goes.
+    /// [`ChatError::NotFound`] for an unknown one.
+    fn upload(&self, id: String) -> impl Future<Output = Result<UploadProgress, ChatError>> + Send;
+
+    /// `chat.cancel_upload`: stops the sending `id` and deletes what of it is on the server already.
+    /// Must fail with [`ChatError::Other`] (the core's sentence) once the files are being shared.
+    fn cancel_upload(&self, id: String) -> impl Future<Output = Result<(), ChatError>> + Send;
+
+    /// `chat.get_preview`: a preview of the file `file` of the message `id`, or with `card` the
+    /// picture of the message's link card (then `file` is `None`). [`ChatError::NotFound`] for a
+    /// file that is no file of the message or has no preview.
+    fn preview(
+        &self,
+        id: String,
+        file: Option<String>,
+        card: bool,
+        size: PreviewSize,
+    ) -> impl Future<Output = Result<Picture, ChatError>> + Send;
+
+    /// `chat.get_attachment`: fetches the file `file` of the message `id` for opening.
+    /// [`ChatError::Forbidden`] for a file shared so that it may not be downloaded,
+    /// [`ChatError::NotFound`] for a file that is no file of the message.
+    fn attachment(&self, id: String, file: String) -> impl Future<Output = Result<Fetched, ChatError>> + Send;
+
+    /// `chat.save_attachment`: saves the file `file` of the message `id` to `to`; the answer is the
+    /// absolute path it went to. Errors as [`ChatSource::attachment`], and
+    /// [`ChatError::NotFound`] for a folder or target that does not exist.
+    fn save_attachment(
+        &self,
+        id: String,
+        file: String,
+        to: SaveTo,
+    ) -> impl Future<Output = Result<String, ChatError>> + Send;
+
+    /// `chat.list_shared`: what the conversation shared, the newest first: of `kind`, or the newest
+    /// of each kind without it; only items older than the message `before`; at most `limit` (1 to
+    /// 100, 50 when `None`). [`ChatError::Unsupported`] when the server cannot list them.
+    fn shared(
+        &self,
+        conversation: String,
+        kind: Option<SharedKind>,
+        before: Option<String>,
+        limit: Option<u32>,
+    ) -> impl Future<Output = Result<SharedPage, ChatError>> + Send;
+
+    /// `chat.show_card` ("Show preview"): the card of the first link of the message `id`, fetched by
+    /// the account's server; `None` when there is none. Later pages of `chat.get_messages` carry it
+    /// in `cards`.
+    fn show_card(&self, id: String) -> impl Future<Output = Result<Option<LinkCard>, ChatError>> + Send;
 }

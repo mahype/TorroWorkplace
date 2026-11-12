@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 chrono.workspace = true
+png.workspace = true
 schemars.workspace = true
 serde.workspace = true
 

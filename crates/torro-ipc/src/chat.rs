@@ -9,11 +9,13 @@ pub use files::*;
 
 use std::path::PathBuf;
 
+use base64::Engine;
 use chrono::{DateTime, Utc};
-
 use torro_chat::{
-    ChatError, ChatSource, Conversation, Mention, MessagePage, NotifyLevel, Outgoing, OwnStatus, Person, SearchHit,
-    StatusChange,
+    ChatError, ChatSource, Conversation, Fetched, FilePiece, LinkCard, Mention, MessagePage, NotifyLevel, Outgoing,
+    OwnStatus, Person, Picture, PreparedFile as WindowFile, PreviewSize as WindowSize, SaveTo, SearchHit, Sending,
+    SharedItem as WindowItem, SharedKind as WindowKind, SharedPage, StatusChange, UploadProgress as WindowProgress,
+    UploadState as WindowState, Uploaded,
 };
 
 use crate::{Request, Response};
@@ -272,6 +274,223 @@ impl ChatSource for ChatClient {
         let StatusChange { status, message, icon, clear_at } = change;
         self.ok(Request::PresenceSetOwnStatus { account, status, message, icon, clear_at }).await
     }
+
+    async fn messages_around(
+        &self,
+        conversation: String,
+        around: String,
+        limit: Option<u32>,
+    ) -> Result<MessagePage, ChatError> {
+        let request = Request::ChatGetMessages { conversation, before: None, after: None, around: Some(around), limit };
+        match self.ask(request).await? {
+            Response::ChatMessages(page) => Ok(page),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn send_files(&self, message: Outgoing, files: Vec<String>) -> Result<Sending, ChatError> {
+        let Outgoing { conversation, text, reply_to, silent } = message;
+        match self
+            .ask(Request::ChatSendMessage {
+                conversation,
+                text,
+                reply_to,
+                silent,
+                files,
+                items: Vec::new(),
+                fields: None,
+            })
+            .await?
+        {
+            Response::ChatSending { id } => Ok(Sending::Uploading(id)),
+            Response::ChatSent { id } => Ok(Sending::Sent(id)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn prepare_file(&self, account: String, path: String) -> Result<WindowFile, ChatError> {
+        match self.ask(Request::ChatPrepareFile { account, source: FileSource::Path { path } }).await? {
+            Response::ChatPreparedFile { file } => Ok(window_file(*file)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn upload_file(&self, piece: FilePiece) -> Result<Uploaded, ChatError> {
+        let FilePiece { account, upload, offset, bytes, name, last } = piece;
+        let base64 = FileData(base64::engine::general_purpose::STANDARD.encode(bytes));
+        match self.ask(Request::ChatUploadFile { account, upload, offset, base64, name, finish: last }).await? {
+            Response::ChatFileUpload { upload, received } => Ok(Uploaded::Piece { upload, received }),
+            Response::ChatPreparedFile { file } => Ok(Uploaded::File(window_file(*file))),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn release_files(&self, account: String, ids: Vec<String>) -> Result<(), ChatError> {
+        self.ok(Request::ChatReleaseFiles { account, ids }).await
+    }
+
+    async fn upload(&self, id: String) -> Result<WindowProgress, ChatError> {
+        match self.ask(Request::ChatGetUpload { id }).await? {
+            Response::ChatUpload { upload } => Ok(window_progress(upload)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn cancel_upload(&self, id: String) -> Result<(), ChatError> {
+        self.ok(Request::ChatCancelUpload { id }).await
+    }
+
+    async fn preview(
+        &self,
+        id: String,
+        file: Option<String>,
+        card: bool,
+        size: WindowSize,
+    ) -> Result<Picture, ChatError> {
+        let size = match size {
+            WindowSize::Small => PreviewSize::Small,
+            WindowSize::Large => PreviewSize::Large,
+        };
+        match self.ask(Request::ChatGetPreview { id, file, card, size }).await? {
+            Response::ChatPicture { picture } => window_picture(picture),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn attachment(&self, id: String, file: String) -> Result<Fetched, ChatError> {
+        match self.ask(Request::ChatGetAttachment { id, file }).await? {
+            Response::ChatAttachment { attachment } => Ok(Fetched {
+                path: attachment.path,
+                name: attachment.name,
+                size: attachment.size,
+                content_type: attachment.content_type,
+            }),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn save_attachment(&self, id: String, file: String, to: SaveTo) -> Result<String, ChatError> {
+        let to = match to {
+            SaveTo::Downloads => crate::mail::SaveTo::Downloads,
+            SaveTo::Target(target) => crate::mail::SaveTo::Target(target),
+            SaveTo::File(path) => crate::mail::SaveTo::File(path),
+            SaveTo::Folder(path) => crate::mail::SaveTo::Folder(path),
+        };
+        match self.ask(Request::ChatSaveAttachment { id, file, to }).await? {
+            Response::ChatSaved { path } => Ok(path),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn shared(
+        &self,
+        conversation: String,
+        kind: Option<WindowKind>,
+        before: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<SharedPage, ChatError> {
+        let kind = kind.map(wire_kind);
+        match self.ask(Request::ChatListShared { conversation, kind, before, limit }).await? {
+            Response::ChatShared { items, more } => {
+                Ok(SharedPage { items: items.into_iter().map(window_item).collect(), more })
+            }
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn show_card(&self, id: String) -> Result<Option<LinkCard>, ChatError> {
+        match self.ask(Request::ChatShowCard { id }).await? {
+            Response::ChatCard { card } => Ok(card),
+            other => Err(unexpected(other)),
+        }
+    }
+}
+
+// The wire types of stage 4 and the windows' own (`torro_chat::files`): bytes travel as Base64 on the
+// wire, the windows hold the bytes themselves.
+
+/// Bytes of Base64 text; `None` when it is none (a broken preview shows no picture, it fails nothing).
+fn decoded(data: &FileData) -> Option<Vec<u8>> {
+    base64::engine::general_purpose::STANDARD.decode(&data.0).ok()
+}
+
+/// A prepared file as the windows hold it.
+fn window_file(file: PreparedFile) -> WindowFile {
+    WindowFile {
+        preview: file.preview.as_ref().and_then(decoded),
+        id: file.id,
+        name: file.name,
+        size: file.size,
+        content_type: file.content_type,
+        width: file.width,
+        height: file.height,
+    }
+}
+
+/// How sending goes, as the windows read it.
+fn window_progress(upload: UploadProgress) -> WindowProgress {
+    WindowProgress {
+        id: upload.id,
+        state: match upload.state {
+            UploadState::Uploading => WindowState::Uploading,
+            UploadState::Sharing => WindowState::Sharing,
+            UploadState::Sent => WindowState::Sent,
+            UploadState::Cancelled => WindowState::Cancelled,
+            UploadState::Failed => WindowState::Failed,
+        },
+        sent: upload.sent,
+        total: upload.total,
+        messages: upload.messages,
+        code: upload.code,
+        message: upload.message,
+    }
+}
+
+/// A picture of the server with its bytes; an error when they are no Base64.
+fn window_picture(picture: ChatPicture) -> Result<Picture, ChatError> {
+    let bytes = decoded(&picture.base64).ok_or_else(|| ChatError::Other("The picture could not be read.".into()))?;
+    Ok(Picture { content_type: picture.content_type, bytes, width: picture.width, height: picture.height })
+}
+
+/// The wire's word for a kind of shared item.
+fn wire_kind(kind: WindowKind) -> SharedKind {
+    match kind {
+        WindowKind::Media => SharedKind::Media,
+        WindowKind::File => SharedKind::File,
+        WindowKind::Voice => SharedKind::Voice,
+        WindowKind::Audio => SharedKind::Audio,
+        WindowKind::Link => SharedKind::Link,
+        WindowKind::Location => SharedKind::Location,
+        WindowKind::Deckcard => SharedKind::Deckcard,
+        WindowKind::Recording => SharedKind::Recording,
+        WindowKind::Other => SharedKind::Other,
+    }
+}
+
+/// A shared item as the windows read it.
+fn window_item(item: SharedItem) -> WindowItem {
+    let kind = match item.kind {
+        SharedKind::Media => WindowKind::Media,
+        SharedKind::File => WindowKind::File,
+        SharedKind::Voice => WindowKind::Voice,
+        SharedKind::Audio => WindowKind::Audio,
+        SharedKind::Link => WindowKind::Link,
+        SharedKind::Location => WindowKind::Location,
+        SharedKind::Deckcard => WindowKind::Deckcard,
+        SharedKind::Recording => WindowKind::Recording,
+        SharedKind::Other => WindowKind::Other,
+    };
+    WindowItem {
+        message: item.message,
+        kind,
+        file: item.file,
+        name: item.name,
+        size: item.size,
+        content_type: item.content_type,
+        author: item.author,
+        at: item.at,
+        preview: item.preview,
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -306,12 +525,113 @@ mod tests {
             Request::ChatListConversations { account, .. } => {
                 demo.conversations(account).await.map(|conversations| Response::ChatConversations { conversations })
             }
+            Request::ChatGetMessages { conversation, around: Some(around), limit, .. } => {
+                demo.messages_around(conversation, around, limit).await.map(Response::ChatMessages)
+            }
             Request::ChatGetMessages { conversation, before, after, limit, .. } => {
                 demo.messages(conversation, before, after, limit).await.map(Response::ChatMessages)
+            }
+            Request::ChatSendMessage { conversation, text, reply_to, silent, files, .. } if !files.is_empty() => {
+                let message = Outgoing { conversation, text, reply_to, silent };
+                demo.send_files(message, files).await.map(|sending| match sending {
+                    Sending::Uploading(id) => Response::ChatSending { id },
+                    Sending::Sent(id) => Response::ChatSent { id },
+                })
             }
             Request::ChatSendMessage { conversation, text, reply_to, silent, .. } => {
                 demo.send(Outgoing { conversation, text, reply_to, silent }).await.map(|id| Response::ChatSent { id })
             }
+            Request::ChatPrepareFile { account, source: FileSource::Path { path } } => {
+                demo.prepare_file(account, path).await.map(|file| Response::ChatPreparedFile { file: wire_file(file) })
+            }
+            Request::ChatUploadFile { account, upload, offset, base64, name, finish } => {
+                let bytes = base64::engine::general_purpose::STANDARD.decode(&base64.0).expect("Base64");
+                let piece = FilePiece { account, upload, offset, bytes, name, last: finish };
+                demo.upload_file(piece).await.map(|uploaded| match uploaded {
+                    Uploaded::Piece { upload, received } => Response::ChatFileUpload { upload, received },
+                    Uploaded::File(file) => Response::ChatPreparedFile { file: wire_file(file) },
+                })
+            }
+            Request::ChatReleaseFiles { account, ids } => done(demo.release_files(account, ids).await),
+            Request::ChatGetUpload { id } => demo.upload(id).await.map(|progress| Response::ChatUpload {
+                upload: UploadProgress {
+                    id: progress.id,
+                    state: match progress.state {
+                        WindowState::Uploading => UploadState::Uploading,
+                        WindowState::Sharing => UploadState::Sharing,
+                        WindowState::Sent => UploadState::Sent,
+                        WindowState::Cancelled => UploadState::Cancelled,
+                        WindowState::Failed => UploadState::Failed,
+                    },
+                    sent: progress.sent,
+                    total: progress.total,
+                    messages: progress.messages,
+                    code: progress.code,
+                    message: progress.message,
+                },
+            }),
+            Request::ChatCancelUpload { id } => done(demo.cancel_upload(id).await),
+            Request::ChatGetPreview { id, file, card, size } => {
+                let size = if size == PreviewSize::Large { WindowSize::Large } else { WindowSize::Small };
+                demo.preview(id, file, card, size).await.map(|picture| Response::ChatPicture {
+                    picture: ChatPicture {
+                        content_type: picture.content_type,
+                        base64: FileData(base64::engine::general_purpose::STANDARD.encode(picture.bytes)),
+                        width: picture.width,
+                        height: picture.height,
+                    },
+                })
+            }
+            Request::ChatGetAttachment { id, file } => {
+                demo.attachment(id, file).await.map(|fetched| Response::ChatAttachment {
+                    attachment: ChatAttachment {
+                        path: fetched.path,
+                        name: fetched.name,
+                        size: fetched.size,
+                        content_type: fetched.content_type,
+                        untrusted: true,
+                    },
+                })
+            }
+            Request::ChatSaveAttachment { id, file, to } => {
+                let to = match to {
+                    crate::mail::SaveTo::Downloads => SaveTo::Downloads,
+                    crate::mail::SaveTo::Target(target) => SaveTo::Target(target),
+                    crate::mail::SaveTo::File(path) => SaveTo::File(path),
+                    crate::mail::SaveTo::Folder(path) => SaveTo::Folder(path),
+                };
+                demo.save_attachment(id, file, to).await.map(|path| Response::ChatSaved { path })
+            }
+            Request::ChatListShared { conversation, kind, before, limit } => {
+                let kind = kind.map(|kind| match kind {
+                    SharedKind::Media => WindowKind::Media,
+                    SharedKind::File => WindowKind::File,
+                    SharedKind::Voice => WindowKind::Voice,
+                    SharedKind::Link => WindowKind::Link,
+                    _ => WindowKind::Other,
+                });
+                demo.shared(conversation, kind, before, limit).await.map(|page| Response::ChatShared {
+                    items: page
+                        .items
+                        .into_iter()
+                        .map(|item| SharedItem {
+                            message: item.message,
+                            kind: wire_kind(item.kind),
+                            file: item.file,
+                            name: item.name,
+                            size: item.size,
+                            content_type: item.content_type,
+                            author: item.author,
+                            at: item.at,
+                            preview: item.preview,
+                            blurhash: None,
+                            untrusted: true,
+                        })
+                        .collect(),
+                    more: page.more,
+                })
+            }
+            Request::ChatShowCard { id } => demo.show_card(id).await.map(|card| Response::ChatCard { card }),
             Request::ChatMarkRead { conversation, up_to } => done(demo.mark_read(conversation, up_to).await),
             Request::ChatMarkUnread { conversation } => done(demo.mark_unread(conversation).await),
             Request::ChatSuggestMentions { conversation, query, .. } => {
@@ -428,6 +748,67 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert!(hits[0].untrusted);
         assert!(matches!(chat.search_messages("r".into(), None, None).await, Err(ChatError::Other(_))));
+        serving.abort();
+    }
+
+    /// A prepared file of the demo as the core sends it.
+    fn wire_file(file: WindowFile) -> Box<PreparedFile> {
+        Box::new(PreparedFile {
+            preview: file.preview.map(|png| FileData(base64::engine::general_purpose::STANDARD.encode(png))),
+            id: file.id,
+            name: file.name,
+            size: file.size,
+            content_type: file.content_type,
+            width: file.width,
+            height: file.height,
+            untrusted: true,
+        })
+    }
+
+    /// Stage 4: each file method is one request, bytes cross as Base64 and come back as bytes.
+    #[tokio::test]
+    async fn the_windows_send_and_read_files_over_the_socket() {
+        let (chat, serving, _dir) = core().await;
+        let design = torro_chat::demo::DESIGN;
+        let picture = torro_chat::message_id(design, 3);
+        let preview =
+            chat.preview(picture.clone(), Some("5103".into()), false, WindowSize::Small).await.expect("small");
+        assert!(preview.bytes.starts_with(&[0x89, b'P', b'N', b'G']), "the bytes themselves, not Base64");
+        let shared = chat.shared(design.into(), Some(WindowKind::Media), None, None).await.expect("shared");
+        assert!(shared.items.iter().any(|item| item.message == picture));
+        let around = chat.messages_around(design.into(), picture.clone(), Some(2)).await.expect("around");
+        assert!(around.messages.iter().any(|message| message.id == picture));
+        let hidden = chat.attachment(torro_chat::message_id(design, 9), "5109".into()).await;
+        assert!(matches!(hidden, Err(ChatError::Forbidden(_))));
+        let saved = chat.save_attachment(torro_chat::message_id(design, 7), "5107".into(), SaveTo::Downloads).await;
+        assert!(saved.expect("saved").ends_with("Icon guide.pdf"));
+        let card = chat.show_card(torro_chat::message_id(design, 11)).await.expect("asked");
+        assert_eq!(card.map(|card| card.domain), Some("example.com".into()));
+
+        let png = torro_chat::demo::picture(2, 12, 8);
+        let piece = FilePiece { account: ACCOUNT.into(), bytes: png, last: true, ..FilePiece::default() };
+        let Uploaded::File(file) = chat.upload_file(piece).await.expect("uploaded") else { panic!("one piece") };
+        assert_eq!((file.width, file.height), (Some(12), Some(8)));
+        let message = Outgoing { conversation: design.into(), ..Outgoing::default() };
+        let Sending::Uploading(id) = chat.send_files(message, vec![file.id]).await.expect("sending") else {
+            panic!("files upload first");
+        };
+        let mut states = Vec::new();
+        for _ in 0..6 {
+            states.push(chat.upload(id.clone()).await.expect("progress").state);
+        }
+        assert_eq!(states[0], WindowState::Uploading, "a quarter at a time");
+        assert_eq!(states[4], WindowState::Sharing);
+        assert_eq!(states[5], WindowState::Sent);
+        let prepared = chat.prepare_file(ACCOUNT.into(), "/home/anna/a.pdf".into()).await.expect("prepared");
+        chat.release_files(ACCOUNT.into(), vec![prepared.id]).await.expect("released");
+        let stalled = chat.prepare_file(ACCOUNT.into(), "/home/anna/b.pdf".into()).await.expect("prepared");
+        let message = Outgoing { conversation: design.into(), ..Outgoing::default() };
+        let Sending::Uploading(id) = chat.send_files(message, vec![stalled.id]).await.expect("sending") else {
+            panic!("files upload first");
+        };
+        chat.cancel_upload(id.clone()).await.expect("cancelled");
+        assert_eq!(chat.upload(id).await.expect("progress").state, WindowState::Cancelled);
         serving.abort();
     }
 

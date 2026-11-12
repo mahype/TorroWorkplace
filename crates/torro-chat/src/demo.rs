@@ -4,7 +4,9 @@
 //! One Nextcloud account with six people in every status, two groups and three direct chats: one
 //! with a mention, a file, a system message and a missed call (`docs/chat.md`, "Demo"). For stage 7:
 //! reactions (one of them the person's own), an edited message, two favourites ("Team Alpha" and
-//! the chat with Gesa) and a message of the person's that is too old to change.
+//! the chat with Gesa) and a message of the person's that is too old to change. For stage 4: the
+//! group "Design sync" ([`DESIGN`]) shares pictures, videos with and without a preview, a PDF, a
+//! voice message, a file that may not be downloaded and two links, one with its card ([`files`]).
 //!
 //! Editing and deleting follow Talk's limits ([`EDIT_FOR`], [`DELETE_FOR`]), measured from the
 //! sample's "now" or the clock, whichever is later, so tests on a fixed time stay the same.
@@ -17,12 +19,21 @@ use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, Duration, Utc};
 
+use crate::files::{
+    Fetched, FilePiece, Picture, PreparedFile, PreviewSize, SaveTo, Sending, SharedKind, SharedPage, UploadProgress,
+    UploadState, Uploaded,
+};
+use crate::model::LinkCard;
 use crate::model::{
     Author, Conversation, ConversationKind, FileRef, Mention, Message, MessageKind, MessagePage, NotifyLevel,
     OwnStatus, Person, Preview, Quote, SearchHit, Status, conversation_id, message_id, person_id, split_message,
     split_person,
 };
 use crate::source::{ChatError, ChatSource, Outgoing, StatusChange};
+
+mod files;
+
+pub use files::{DESIGN, picture};
 
 /// The account of the sample.
 pub const ACCOUNT: &str = "nextcloud:anna@cloud.example.org";
@@ -58,6 +69,8 @@ struct Data {
     next: u64,
     /// The moment the sample was made for: the limits of editing and deleting count from it.
     now: DateTime<Utc>,
+    /// Prepared files, uploads and sendings (stage 4).
+    files: files::Files,
 }
 
 impl Data {
@@ -132,6 +145,43 @@ impl DemoSource {
         data.conversations.push(chat);
         data.messages.insert(LENA.to_string(), messages);
         DemoSource { data: Mutex::new(data) }
+    }
+
+    /// A sending of `conversation` that stays at 42 % (`torrochat --demo --open upload`): one picture,
+    /// "Screenshot.png", 2.4 MB. Its id is for [`ChatSource::upload`] and
+    /// [`ChatSource::cancel_upload`] as any other.
+    pub fn stalled_upload(&self, conversation: &str) -> String {
+        let mut data = self.lock();
+        let id = data.files.id("sending");
+        let total = 2_516_582;
+        let file = PreparedFile {
+            id: String::new(),
+            name: "Screenshot.png".into(),
+            size: total,
+            content_type: "image/png".into(),
+            width: Some(1440),
+            height: Some(900),
+            preview: None,
+        };
+        let progress = UploadProgress {
+            id: id.clone(),
+            state: UploadState::Uploading,
+            sent: total * 42 / 100,
+            total,
+            messages: Vec::new(),
+            code: None,
+            message: None,
+        };
+        let upload = files::Upload {
+            conversation: conversation.to_owned(),
+            text: String::new(),
+            reply_to: None,
+            files: vec![file],
+            progress,
+            stalled: true,
+        };
+        data.files.uploads.insert(id.clone(), upload);
+        id
     }
 
     /// The data; a lock a panicking thread left is taken over, the sample cannot break by that.
@@ -269,11 +319,12 @@ fn sample(now: DateTime<Utc>) -> Data {
     team[3].edited = true;
     team[3].reactions = BTreeMap::from([("❤️".to_string(), 1)]);
 
-    let design = conversation_id(ACCOUNT, "design4sync");
-    let design_messages = vec![
+    let design = DESIGN.to_string();
+    let mut design_messages = vec![
         text(&design, 1, "gesa", "Gesa Lange", ago(2 * 24 * 60), "Icons for the new app are done."),
         text(&design, 2, "elif", "Elif Aydin", ago(2 * 24 * 60 - 20), "They look great."),
     ];
+    design_messages.extend(files::design_media(now));
 
     let dana = conversation_id(ACCOUNT, "dana4chat");
     let dana_messages = vec![
@@ -316,7 +367,7 @@ fn sample(now: DateTime<Utc>) -> Data {
         clear_at: None,
         heartbeat: true,
     };
-    Data { conversations, messages, people, own, next: 100, now }
+    Data { conversations, messages, people, own, next: 100, now, files: files::Files::default() }
 }
 
 /// The messages of [`LENA`], the oldest first, the last at `now` less six minutes (the Talk entry of
@@ -672,6 +723,337 @@ impl ChatSource for DemoSource {
         }
         Ok(())
     }
+
+    async fn messages_around(
+        &self,
+        conversation: String,
+        around: String,
+        limit: Option<u32>,
+    ) -> Result<MessagePage, ChatError> {
+        let data = self.lock();
+        let all = data.messages.get(&conversation).ok_or(ChatError::NotFound)?;
+        let at = all
+            .iter()
+            .position(|message| message.id == around)
+            .ok_or_else(|| ChatError::Other("This message is not part of the conversation.".into()))?;
+        let limit = (limit.unwrap_or(50) as usize).clamp(1, PAGE_MAX);
+        let from = at.saturating_sub(limit / 2);
+        let to = (from + limit).min(all.len());
+        let last_read = data.conversations.iter().find(|c| c.id == conversation).and_then(|c| c.last_read.clone());
+        Ok(MessagePage { messages: all[from..to].to_vec(), last_read, more: from > 0, offline: false })
+    }
+
+    async fn send_files(&self, message: Outgoing, ids: Vec<String>) -> Result<Sending, ChatError> {
+        if ids.is_empty() {
+            return self.send(message).await.map(Sending::Sent);
+        }
+        let mut data = self.lock();
+        if !data.messages.contains_key(&message.conversation) {
+            return Err(ChatError::NotFound);
+        }
+        if ids.iter().any(|id| !data.files.prepared.contains_key(id)) {
+            return Err(ChatError::NotFound);
+        }
+        // Used up from here on, as the core does once the upload begins.
+        let prepared: Vec<PreparedFile> = ids.iter().filter_map(|id| data.files.prepared.remove(id)).collect();
+        let id = data.files.id("sending");
+        let total = prepared.iter().map(|file| file.size).sum();
+        let progress = UploadProgress {
+            id: id.clone(),
+            state: UploadState::Uploading,
+            sent: 0,
+            total,
+            messages: Vec::new(),
+            code: None,
+            message: None,
+        };
+        let upload = files::Upload {
+            conversation: message.conversation,
+            text: message.text,
+            reply_to: message.reply_to,
+            files: prepared,
+            progress,
+            stalled: false,
+        };
+        data.files.uploads.insert(id.clone(), upload);
+        Ok(Sending::Uploading(id))
+    }
+
+    async fn prepare_file(&self, account: String, path: String) -> Result<PreparedFile, ChatError> {
+        if account != ACCOUNT {
+            return Err(ChatError::NotFound);
+        }
+        let name = path.rsplit(['/', '\\']).next().unwrap_or_default().to_owned();
+        if name.is_empty() {
+            return Err(ChatError::Other("This file cannot be read.".into()));
+        }
+        if name.to_ascii_lowercase().ends_with(".iso") {
+            return Err(ChatError::Other("This file is larger than 512 MB.".into()));
+        }
+        let (content_type, size) = files::kind_of_name(&name);
+        let mut data = self.lock();
+        let id = data.files.id("prepared");
+        let is_picture = content_type.starts_with("image/");
+        let (width, height) = if is_picture { (Some(1440), Some(900)) } else { (None, None) };
+        let preview = is_picture.then(|| {
+            let (w, h) = files::fitted(1440, 900, files::edge(false));
+            picture_of(&id, w, h)
+        });
+        let file =
+            PreparedFile { id: id.clone(), name, size, content_type: content_type.into(), width, height, preview };
+        data.files.prepared.insert(id, file.clone());
+        Ok(file)
+    }
+
+    async fn upload_file(&self, piece: FilePiece) -> Result<Uploaded, ChatError> {
+        if piece.account != ACCOUNT {
+            return Err(ChatError::NotFound);
+        }
+        let mut data = self.lock();
+        let upload = match piece.upload {
+            Some(upload) => upload,
+            None if piece.offset == 0 => {
+                let id = data.files.id("upload");
+                data.files.pieces.insert(id.clone(), (piece.name.clone(), Vec::new()));
+                id
+            }
+            None => return Err(ChatError::Other("A new upload starts at offset 0.".into())),
+        };
+        let (name, bytes) = data.files.pieces.get_mut(&upload).ok_or(ChatError::NotFound)?;
+        if piece.offset != bytes.len() as u64 {
+            return Err(ChatError::Other("This piece does not follow the last one.".into()));
+        }
+        bytes.extend_from_slice(&piece.bytes);
+        if bytes.len() as u64 > 25 * 1024 * 1024 {
+            data.files.pieces.remove(&upload);
+            return Err(ChatError::Other("This file is larger than 25 MB.".into()));
+        }
+        if !piece.last {
+            let received = bytes.len() as u64;
+            return Ok(Uploaded::Piece { upload, received });
+        }
+        let name = name.clone().unwrap_or_else(|| "Pasted image.png".into());
+        let bytes = std::mem::take(bytes);
+        data.files.pieces.remove(&upload);
+        let (content_type, edges) = files::kind_of_bytes(&bytes);
+        let preview = (content_type == "image/png" && bytes.len() <= 256 * 1024).then(|| bytes.clone());
+        let file = PreparedFile {
+            id: upload.clone(),
+            name,
+            size: bytes.len() as u64,
+            content_type: content_type.into(),
+            width: edges.map(|(width, _)| width),
+            height: edges.map(|(_, height)| height),
+            preview,
+        };
+        data.files.prepared.insert(upload, file.clone());
+        Ok(Uploaded::File(file))
+    }
+
+    async fn release_files(&self, account: String, ids: Vec<String>) -> Result<(), ChatError> {
+        if account != ACCOUNT {
+            return Ok(());
+        }
+        let mut data = self.lock();
+        for id in ids {
+            data.files.prepared.remove(&id);
+            data.files.pieces.remove(&id);
+        }
+        Ok(())
+    }
+
+    async fn upload(&self, id: String) -> Result<UploadProgress, ChatError> {
+        let mut data = self.lock();
+        let (mut progress, sent_now) = data.files.progress(&id)?;
+        if sent_now && let Some(upload) = data.files.uploads.get(&id) {
+            let conversation = upload.conversation.clone();
+            let caption = upload.text.clone();
+            let reply_to = upload.reply_to.clone();
+            let shared = upload.files.clone();
+            let ids = data.add_shared(&conversation, &caption, reply_to.as_deref(), shared);
+            if let Some(upload) = data.files.uploads.get_mut(&id) {
+                upload.progress.messages = ids.clone();
+            }
+            progress.messages = ids;
+        }
+        Ok(progress)
+    }
+
+    async fn cancel_upload(&self, id: String) -> Result<(), ChatError> {
+        let mut data = self.lock();
+        let upload = data.files.uploads.get_mut(&id).ok_or(ChatError::NotFound)?;
+        match upload.progress.state {
+            UploadState::Uploading => {
+                upload.progress.state = UploadState::Cancelled;
+                Ok(())
+            }
+            UploadState::Sharing | UploadState::Sent => {
+                Err(ChatError::Other("The files are already being shared, so the upload cannot be cancelled.".into()))
+            }
+            UploadState::Cancelled | UploadState::Failed => Ok(()),
+        }
+    }
+
+    async fn preview(
+        &self,
+        id: String,
+        file: Option<String>,
+        card: bool,
+        size: PreviewSize,
+    ) -> Result<Picture, ChatError> {
+        let mut data = self.lock();
+        let message = data.message_mut(&id)?;
+        let large = size == PreviewSize::Large;
+        if card {
+            if !message.cards.first().is_some_and(|card| card.image) {
+                return Err(ChatError::NotFound);
+            }
+            let (w, h) = files::fitted(1200, 630, files::edge(large));
+            return Ok(png_picture(picture_of(&id, w, h), w, h));
+        }
+        let wanted = file.ok_or(ChatError::NotFound)?;
+        let shared = message.files.iter().find(|shared| shared.id == wanted).ok_or(ChatError::NotFound)?;
+        if !shared.preview || shared.content_type == "image/svg+xml" {
+            return Err(ChatError::NotFound);
+        }
+        let (w, h) = files::fitted(shared.width.unwrap_or(1200), shared.height.unwrap_or(900), files::edge(large));
+        Ok(png_picture(picture_of(&shared.id, w, h), w, h))
+    }
+
+    async fn attachment(&self, id: String, file: String) -> Result<Fetched, ChatError> {
+        let mut data = self.lock();
+        let shared = data.shared_file(&id, &file)?;
+        // The demo writes nothing: the path names where the core would put it.
+        let path = std::env::temp_dir().join("torro-chat-demo").join(&shared.name);
+        Ok(Fetched {
+            path: path.to_string_lossy().into_owned(),
+            name: shared.name.clone(),
+            size: shared.size,
+            content_type: shared.content_type.clone(),
+        })
+    }
+
+    async fn save_attachment(&self, id: String, file: String, to: SaveTo) -> Result<String, ChatError> {
+        let mut data = self.lock();
+        let shared = data.shared_file(&id, &file)?;
+        match to {
+            SaveTo::Downloads => Ok(format!("~/Downloads/{}", shared.name)),
+            SaveTo::File(path) => Ok(path),
+            SaveTo::Folder(folder) => Ok(format!("{}/{}", folder.trim_end_matches('/'), shared.name)),
+            SaveTo::Target(_) => Err(ChatError::NotFound),
+        }
+    }
+
+    async fn shared(
+        &self,
+        conversation: String,
+        kind: Option<SharedKind>,
+        before: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<SharedPage, ChatError> {
+        let data = self.lock();
+        let all = data.messages.get(&conversation).ok_or(ChatError::NotFound)?;
+        let before = before.as_deref().and_then(split_message).map(|(_, number)| number);
+        let limit = limit.unwrap_or(50).clamp(1, 100) as usize;
+        let items: Vec<_> = files::shared_of(all)
+            .into_iter()
+            .filter(|item| kind.is_none_or(|kind| item.kind == kind))
+            .filter(|item| {
+                before.is_none_or(|before| split_message(&item.message).is_some_and(|(_, number)| number < before))
+            })
+            .collect();
+        let more = items.len() > limit;
+        Ok(SharedPage { items: items.into_iter().take(limit).collect(), more })
+    }
+
+    async fn show_card(&self, id: String) -> Result<Option<LinkCard>, ChatError> {
+        let mut data = self.lock();
+        let message = data.message_mut(&id)?;
+        if let Some(card) = message.cards.first() {
+            return Ok(Some(card.clone()));
+        }
+        let card = files::first_link(&message.text).and_then(files::foreign_card);
+        if let Some(card) = &card {
+            message.cards.push(card.clone());
+        }
+        Ok(card)
+    }
+}
+
+/// A picture of the sample for the file or message `id`, `width` × `height`.
+fn picture_of(id: &str, width: u32, height: u32) -> Vec<u8> {
+    picture(files::seed_of(id), width, height)
+}
+
+/// `png` as the core answers a preview.
+fn png_picture(png: Vec<u8>, width: u32, height: u32) -> Picture {
+    Picture { content_type: "image/png".into(), bytes: png, width: Some(width), height: Some(height) }
+}
+
+impl Data {
+    /// The file `file` of the message `id`, if it may be fetched: not one shared without download.
+    fn shared_file(&mut self, id: &str, file: &str) -> Result<FileRef, ChatError> {
+        let message = self.message_mut(id)?;
+        let shared = message.files.iter().find(|shared| shared.id == file).ok_or(ChatError::NotFound)?;
+        if shared.hide_download {
+            return Err(ChatError::Forbidden("The sender does not allow downloading this file.".into()));
+        }
+        Ok(shared.clone())
+    }
+
+    /// The messages a sending became, one per file, the text under the last one (as the core shares
+    /// them); their ids.
+    fn add_shared(
+        &mut self,
+        conversation: &str,
+        caption: &str,
+        reply_to: Option<&str>,
+        shared: Vec<PreparedFile>,
+    ) -> Vec<String> {
+        let name = self.own.name.clone();
+        let count = shared.len();
+        let mut ids = Vec::new();
+        for (at, prepared) in shared.into_iter().enumerate() {
+            self.next += 1;
+            let id = message_id(conversation, self.next);
+            let last = at + 1 == count;
+            let words = if last && !caption.trim().is_empty() { caption.to_owned() } else { prepared.name.clone() };
+            let mut sent = text(conversation, 0, ME, &name, Utc::now(), &words);
+            sent.id = id.clone();
+            let picture = prepared.content_type.starts_with("image/") && prepared.content_type != "image/svg+xml";
+            sent.files = vec![FileRef {
+                id: (9000 + self.next).to_string(),
+                name: prepared.name,
+                size: prepared.size,
+                content_type: prepared.content_type,
+                preview: picture,
+                hide_download: false,
+                width: prepared.width,
+                height: prepared.height,
+                blurhash: None,
+            }];
+            if last && let Some(list) = self.messages.get(conversation) {
+                sent.reply_to = reply_to.and_then(|quoted| {
+                    list.iter().find(|other| other.id == quoted).map(|other| Quote {
+                        id: other.id.clone(),
+                        author: other.author.name.clone(),
+                        text: other.text.clone(),
+                    })
+                });
+            }
+            if let Some(list) = self.messages.get_mut(conversation) {
+                list.push(sent);
+            }
+            ids.push(id);
+        }
+        self.refresh_preview(conversation);
+        if let Some(entry) = self.conversations.iter_mut().find(|c| c.id == conversation) {
+            entry.last_activity = Utc::now();
+            entry.unread = 0;
+            entry.last_read = ids.last().cloned();
+        }
+        ids
+    }
 }
 
 #[cfg(test)]
@@ -898,5 +1280,137 @@ mod tests {
         let change = StatusChange { message: Some(String::new()), ..StatusChange::default() };
         demo.set_own_status(ACCOUNT.into(), change).await.expect("set");
         assert_eq!(demo.own_status(ACCOUNT.into()).await.expect("own").message, None);
+    }
+
+    // -- Stage 4 ------------------------------------------------------------------------------
+
+    #[test]
+    fn design_sync_shares_every_kind_of_file() {
+        let demo = demo();
+        let page = run(demo.messages(DESIGN.into(), None, None, None)).expect("messages");
+        let files: Vec<&FileRef> = page.messages.iter().flat_map(|message| &message.files).collect();
+        assert!(files.iter().any(|f| f.content_type.starts_with("image/") && f.preview), "a picture");
+        assert!(files.iter().any(|f| f.content_type.starts_with("video/") && f.preview), "a video with a preview");
+        assert!(files.iter().any(|f| f.content_type.starts_with("video/") && !f.preview), "one without");
+        assert!(files.iter().any(|f| f.content_type == "application/pdf"), "a document");
+        assert!(files.iter().any(|f| f.hide_download), "a file that may not be downloaded");
+        assert!(page.messages.iter().any(|m| m.kind == MessageKind::Voice), "a voice message");
+        assert!(page.messages.iter().any(|m| !m.cards.is_empty()), "a link card");
+        let list = run(demo.conversations(None)).expect("list");
+        let order: Vec<&str> = list.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(order[..4], ["Ben Koch", "Gesa Lange", "Team Alpha", "Design sync"], "the order stays");
+    }
+
+    #[test]
+    fn previews_and_files_come_only_for_files_of_the_message() {
+        let demo = demo();
+        let picture = message_id(DESIGN, 3);
+        let small =
+            run(demo.preview(picture.clone(), Some("5103".into()), false, PreviewSize::Small)).expect("a preview");
+        assert_eq!((small.width, small.height), (Some(256), Some(160)));
+        assert_eq!(files::kind_of_bytes(&small.bytes).0, "image/png");
+        let large = run(demo.preview(picture.clone(), Some("5103".into()), false, PreviewSize::Large)).expect("large");
+        assert!(large.width > small.width);
+        let other = run(demo.preview(picture, Some("5104".into()), false, PreviewSize::Small));
+        assert_eq!(other, Err(ChatError::NotFound), "a file of another message");
+        let svg = run(demo.preview(message_id(DESIGN, 12), Some("5112".into()), false, PreviewSize::Small));
+        assert_eq!(svg, Err(ChatError::NotFound));
+        run(demo.preview(message_id(DESIGN, 10), None, true, PreviewSize::Small)).expect("the card's picture");
+        let hidden = run(demo.attachment(message_id(DESIGN, 9), "5109".into()));
+        assert!(matches!(hidden, Err(ChatError::Forbidden(_))), "downloads are off for it");
+        let pdf = run(demo.attachment(message_id(DESIGN, 7), "5107".into())).expect("fetched");
+        assert_eq!(pdf.name, "Icon guide.pdf");
+        let saved = run(demo.save_attachment(message_id(DESIGN, 7), "5107".into(), SaveTo::Downloads)).expect("saved");
+        assert!(saved.ends_with("Icon guide.pdf"));
+    }
+
+    #[test]
+    fn a_prepared_file_goes_out_after_a_few_looks() {
+        let demo = demo();
+        let file = run(demo.prepare_file(ACCOUNT.into(), "/home/anna/Pictures/Palette.png".into())).expect("prepared");
+        assert_eq!((file.name.as_str(), file.content_type.as_str()), ("Palette.png", "image/png"));
+        assert!(file.preview.is_some());
+        let outgoing = Outgoing { conversation: DESIGN.into(), text: "Here it is".into(), ..Outgoing::default() };
+        let Sending::Uploading(id) = run(demo.send_files(outgoing.clone(), vec![file.id.clone()])).expect("sending")
+        else {
+            panic!("files upload first");
+        };
+        let mut progress = run(demo.upload(id.clone())).expect("progress");
+        for _ in 0..10 {
+            if progress.state.is_over() {
+                break;
+            }
+            progress = run(demo.upload(id.clone())).expect("progress");
+        }
+        assert_eq!(progress.state, UploadState::Sent);
+        assert_eq!(progress.messages.len(), 1);
+        let last = run(demo.messages(DESIGN.into(), None, None, None)).expect("messages").messages;
+        let last = last.last().expect("the new message");
+        assert_eq!((last.text.as_str(), last.files[0].name.as_str()), ("Here it is", "Palette.png"));
+        assert_eq!(run(demo.send_files(outgoing, vec![file.id])), Err(ChatError::NotFound), "used up");
+        let too_large = run(demo.prepare_file(ACCOUNT.into(), "/home/anna/disk.iso".into()));
+        assert!(matches!(too_large, Err(ChatError::Other(_))));
+    }
+
+    #[test]
+    fn pieces_make_a_file_and_releasing_drops_it() {
+        let demo = demo();
+        let png = picture(1, 30, 20);
+        let (head, tail) = png.split_at(10);
+        let first = FilePiece {
+            account: ACCOUNT.into(),
+            bytes: head.to_vec(),
+            name: Some("Pasted image.png".into()),
+            ..FilePiece::default()
+        };
+        let Uploaded::Piece { upload, received } = run(demo.upload_file(first)).expect("a piece") else {
+            panic!("not the last piece");
+        };
+        assert_eq!(received, 10);
+        let last = FilePiece {
+            account: ACCOUNT.into(),
+            upload: Some(upload),
+            offset: 10,
+            bytes: tail.to_vec(),
+            last: true,
+            ..FilePiece::default()
+        };
+        let Uploaded::File(file) = run(demo.upload_file(last)).expect("the file") else { panic!("the last piece") };
+        assert_eq!((file.width, file.height, file.size), (Some(30), Some(20), png.len() as u64));
+        run(demo.release_files(ACCOUNT.into(), vec![file.id.clone(), "unknown".into()])).expect("released");
+        let outgoing = Outgoing { conversation: DESIGN.into(), ..Outgoing::default() };
+        assert_eq!(run(demo.send_files(outgoing, vec![file.id])), Err(ChatError::NotFound));
+    }
+
+    #[test]
+    fn a_stalled_upload_stays_until_cancelled() {
+        let demo = demo();
+        let id = demo.stalled_upload(DESIGN);
+        let first = run(demo.upload(id.clone())).expect("progress");
+        let again = run(demo.upload(id.clone())).expect("progress");
+        assert_eq!((first.sent, first.state), (again.sent, UploadState::Uploading));
+        assert_eq!(first.sent, first.total * 42 / 100);
+        run(demo.cancel_upload(id.clone())).expect("cancelled");
+        assert_eq!(run(demo.upload(id)).expect("progress").state, UploadState::Cancelled);
+    }
+
+    #[test]
+    fn shared_items_by_kind_and_cards_on_request() {
+        let demo = demo();
+        let media = run(demo.shared(DESIGN.into(), Some(SharedKind::Media), None, None)).expect("media");
+        assert_eq!(media.items.len(), 5, "two pictures, two videos and the SVG");
+        assert!(media.items.windows(2).all(|pair| pair[0].at >= pair[1].at), "the newest first");
+        let links = run(demo.shared(DESIGN.into(), Some(SharedKind::Link), None, None)).expect("links");
+        assert_eq!(links.items.len(), 1, "only the link with a card");
+        let foreign = message_id(DESIGN, 11);
+        let card = run(demo.show_card(foreign.clone())).expect("a card").expect("example.com has one");
+        assert_eq!(card.domain, "example.com");
+        assert_eq!(message(&demo, DESIGN, 11).cards.len(), 1, "later pages carry it");
+        let links = run(demo.shared(DESIGN.into(), Some(SharedKind::Link), None, Some(1))).expect("links");
+        assert!(links.more && links.items.len() == 1);
+        let around = run(demo.messages_around(DESIGN.into(), message_id(DESIGN, 7), Some(4))).expect("around");
+        let numbers: Vec<u64> = around.messages.iter().map(Message::number).collect();
+        assert_eq!(numbers, [5, 6, 7, 8]);
+        assert!(around.more);
     }
 }
