@@ -325,6 +325,8 @@ pub enum Message {
     Confirm(Confirm),
     /// A segment of "Send on my behalf".
     Outbound(Outbound),
+    /// "Pictures and videos" under the chat ([`Rights::image_content`], stage 4 of `docs/chat.md`).
+    ImageContent(bool),
     /// "All" (`true`) or "Selected" of a selection.
     All(Pick, bool),
     /// A switch of a selection: the id and whether it is on now.
@@ -492,6 +494,7 @@ pub fn change_rights(
         }
         Message::Confirm(confirm) => rights.confirm = confirm,
         Message::Outbound(outbound) => rights.outbound = outbound,
+        Message::ImageContent(on) => rights.image_content = on,
         Message::All(pick, true) => *pick.of_mut(rights) = Selection::All,
         // What "All" reached stays ticked; for tools that is every one but those ticked by name.
         Message::All(pick, false) if !matches!(pick.of(rights), Selection::Only(_)) => {
@@ -1380,6 +1383,19 @@ fn access_group<'a>(
         if area == Area::Mail && can_send(granted.level) {
             rows.extend(outbound_rows(rights, column));
         }
+        // Pictures and videos of chats, previews and the pictures of link cards: off, the key gets
+        // none of them (`Rights::image_content`); only with access to the chat at all.
+        if area == Area::Chat && granted.level != Level::NoAccess {
+            let on = rights.image_content;
+            let switch = toggler(on).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::ImageContent);
+            let detail = tr("Previews, pictures and videos in chats; off, this agent gets none of them");
+            rows.push(setting_row(
+                None,
+                tr("Pictures and videos"),
+                Some(detail.to_string()),
+                in_column(switch, column),
+            ));
+        }
         if has_admin(area) {
             let switch = toggler(granted.admin)
                 .size(style::CHECK_SIZE)
@@ -1958,6 +1974,7 @@ mod tests {
                 |r| r.github_repos == Selection::Only(vec!["anna/torro".into(), "anna/notes".into()]),
             ),
             (vec![Message::Outbound(Outbound::Free)], |r| r.outbound == Outbound::Free),
+            (vec![Message::ImageContent(true)], |r| r.image_content),
             (vec![Message::Outbound(Outbound::Never)], |r| r.outbound == Outbound::Never),
             (vec![Message::Level(Area::Mail, Level::Read)], |r| r.area(Area::Mail).level == Level::Read),
             (vec![Message::All(Pick::MailAccounts, false)], |r| {

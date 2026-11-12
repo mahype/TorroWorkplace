@@ -184,6 +184,7 @@ fn belongs(message: &rights::Message, areas: &[Area]) -> bool {
         M::All(pick, _) | M::Tick(pick, ..) => areas.contains(&pick.area()),
         M::AddRepo => areas.contains(&Pick::GithubRepos.area()),
         M::Outbound(_) => areas.contains(&Area::Mail),
+        M::ImageContent(_) => areas.contains(&Area::Chat),
         M::Confirm(_) | M::ServerLevel(..) | M::ExpandServer(_) | M::ServerTool(..) => false,
         M::RepoInput(_) | M::Clock(_) => true,
     }
