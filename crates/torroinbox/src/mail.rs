@@ -4065,9 +4065,9 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 ///    E19); for an `entry` "Move to Info" or "Move to For me" (`l`,
 ///    `AskLane`); Delete (`#`) on the same rule as Archive.
 /// 3. **Torro**: Task (`t`; `AskTask` for an entry, `AskMailTask` for a folder's message), for an
-///    entry Event (`c`, `AskEvent`) and – for a mail entry – Category… (`AskCategory`) and, with a
-///    decision model set up ([`Reading::deciding`]), Re-categorize (`Reclassify`, sparkles in the
-///    accent).
+///    entry Event (`c`, `AskEvent`), "Ask AI…" (`i`, `AskAi`, issue #605) and – for a mail entry –
+///    Category… (`AskCategory`) and, with a decision model set up ([`Reading::deciding`]),
+///    Re-categorize (`Reclassify`, sparkles in the accent).
 /// 4. **Mark**, once the mail's flags are known: Flag or Unflag, Mark read or Mark unread.
 /// 5. **Save** ([`save_items`], issue #501, the floppy disk): "Save as PDF" and "Save as image"
 ///    (`AskSaveMailAs`, each opening the menu of its ways and save targets), off while the mail loads,
@@ -4290,7 +4290,7 @@ fn torro_items<'a>(
     let mut items = action_items(reading, entry.map(|entry| entry.item.id.as_str()), anchors);
     // Always there: without an AI or the right to read the mail, the chat says so itself.
     let ask = Some(Message::AskAi(reading.id.to_owned()));
-    items.push(RailItem::new(Icon::Sparkles, tr("Ask AI…"), "", ask).accent());
+    items.push(RailItem::new(Icon::Sparkles, tr("Ask AI…"), "I", ask).accent());
     let Some(ReaderEntry { item, .. }) = entry else {
         // Mail without an entry (a folder's, the archive's, older mail) is filed by hand too (issue
         // #500); "Re-categorize" needs an entry, as the model decides for one.
@@ -6895,7 +6895,7 @@ mod tests {
                 [
                     vec!["R", "", "F"],
                     vec!["E", "W", "B", "S", "L", "#"],
-                    vec!["T", "C", "", "", "", ""],
+                    vec!["T", "C", "I", "", "", ""],
                     vec!["", ""],
                     vec!["", "", "", ""],
                     vec!["M"],
@@ -7032,6 +7032,7 @@ mod tests {
                 assert_eq!(at, kinds, "right after the kinds");
                 assert!(items[at].accent);
                 assert!(matches!(items[at].press(), Some(Message::AskAi(id)) if id == reading.id));
+                assert_eq!(items[at].key, "I", "its key, as `i` opens it");
             }
         });
     }

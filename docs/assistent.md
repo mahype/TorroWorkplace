@@ -182,8 +182,9 @@ keinen Browser, kein Skript und keinen Ausbau der allgemeinen Übergabe #260 ode
 ## Chat zu einer Mail (#605)
 
 Im Mail-Programm öffnet „Ask AI…“ in der Gruppe Torro der Aktionsleiste ein Chat-Paneel zur offenen
-Mail, im Leser wie im eigenen Mail-Fenster. Breit steht es rechts neben der Mail, mittel und schmal
-deckt es die Mail ab („‹ Mail“ führt zurück). Entwurf: `docs/prototypes/mail-mini-chat/`.
+Mail, im Leser wie im eigenen Mail-Fenster; die Taste `i` öffnet es und schließt es wieder (solange
+das Eingabefeld die Tastatur nicht hat, sonst schließt Escape). Breit steht es rechts neben der Mail,
+mittel und schmal deckt es die Mail ab („‹ Mail“ führt zurück). Entwurf: `docs/prototypes/mail-mini-chat/`.
 
 - **Eine Unterhaltung des Assistenten mit Bezug.** `assistant.send_message` nimmt `about`
   (`mail:<adresse>`, `m:…`). Die Unterhaltung behält den Bezug; eine Fortsetzung ohne `about` erbt

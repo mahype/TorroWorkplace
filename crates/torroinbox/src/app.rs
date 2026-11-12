@@ -10667,6 +10667,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.pile_mail(id, next)
             }
             Command::ReplyLater | Command::SetAside => Task::none(),
+            Command::AskAi => self.toggle_ask(),
             // In the views of mail `s` and `m` act on the message's entry in "For me", as its card's
             // "Later" and "…" do (task E8.11).
             // No follow-up for mail in the archive, the trash or spam in the mail window (decision of
@@ -11842,6 +11843,21 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let (ask, opening) = ask::Ask::open(ask::call_for(&self.suite), torro_ipc::assistant::MailRef { account, id });
         self.ask = Some(ask);
         opening.map(Message::Ask)
+    }
+
+    /// `i` (issue #605): closes the chat about the mail while it shows, else opens it for the mail open
+    /// in the mail window, as "Ask AI…" in its rail does. Nothing without an open mail, and in the
+    /// other windows, whose rail has no "Ask AI…".
+    fn toggle_ask(&mut self) -> Task<Message> {
+        if self.ask_shown().is_some() {
+            self.ask = None;
+            return Task::none();
+        }
+        let open = self.letter.as_ref().filter(|_| self.launch.kind == Kind::Mail && self.panel_open());
+        match open.map(|letter| letter.id.clone()) {
+            Some(id) => self.open_ask(id),
+            None => Task::none(),
+        }
     }
 
     /// What the chat about a mail reported (issue #605): closing it, its buttons that lead out of it,
@@ -27805,6 +27821,25 @@ mod tests {
         let _ = app.update(Message::AskAi("m:w2".into()));
         let _ = app.update(Message::CloseDetail);
         assert!(app.ask.is_none(), "it goes with its mail");
+    }
+
+    /// Issue #605: `i` opens the chat about the open mail and closes it again; without an open mail,
+    /// and in the notifications window, it does nothing.
+    #[test]
+    fn i_opens_and_closes_the_chat_about_the_open_mail() {
+        let mut app = mail_window(Density::Compact, &["--open", "suggestions"]);
+        deliver_letter(&mut app, "m:w2");
+        let _ = press(&mut app, Key::I);
+        let about = app.ask_shown().map(|ask| ask.about.id.clone());
+        assert_eq!(about.as_deref(), Some("m:w2"), "the chat about the open mail");
+        let _ = press(&mut app, Key::I);
+        assert!(app.ask.is_none() && app.panel_open(), "closed again, the mail stays");
+        let _ = app.update(Message::CloseDetail);
+        let _ = press(&mut app, Key::I);
+        assert!(app.ask.is_none(), "no mail open: nothing to ask about");
+        let mut hub = loaded(&[]);
+        let _ = press(&mut hub, Key::I);
+        assert!(hub.ask.is_none(), "only the mail window has the chat");
     }
 
     /// Review of #605: "Accept" in the chat opens no dialog when the suggestions could not be fetched

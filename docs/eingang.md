@@ -473,7 +473,7 @@ aus E9.4.
   **Reply** (Reply, Reply all, Forward; Icon in der Akzentfarbe), **File** (Archive mit `e`, Reply later mit `w`, Set
   aside mit `b`, Follow up… mit `s`, Move to Info bzw. For me, Delete, Save attachments – kein Done und kein Reopen
   mehr, E18.5; liegt die Mail auf einem Stapel, steht an seiner Stelle „Remove from Reply later“ bzw. „Remove from Set
-  aside“ mit derselben Taste, E19.4), **Torro** (Task, Event, Category…, Re-categorize nur mit Entscheidungsmodell),
+  aside“ mit derselben Taste, E19.4), **Torro** (Task, Event, Ask AI… mit `i` (#605), Category…, Re-categorize nur mit Entscheidungsmodell),
   **Mark** (Flag, Mark read bzw. unread), unten abgesetzt **Mute** (Mute…), **Display** (#456: ein Klick öffnet die
   Karte „Display“ mit „View“ HTML oder Text, Taste `v`, und „Mail colors“ Light, Dark oder As app; die Wahl ist die
   Einstellung `mail_view` bzw. `mail_appearance` und bleibt nach dem Neustart) und **More** (Copy text, Create filter…

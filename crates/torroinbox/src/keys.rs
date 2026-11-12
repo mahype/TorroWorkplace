@@ -15,7 +15,8 @@
 //!    the folder (in a folder `e` archives: the app decides), `v` switches the mail in the panel or
 //!    reader between HTML and text (task M9.7; the app decides whether it has HTML); `w` puts the mail on
 //!    "Reply later" and `b` on "Set aside" (task E19.4; again on its pile, it takes it off – the app
-//!    decides); in a menu of choices the digits pick
+//!    decides); `i` opens the chat about the open mail ("Ask AI…", issue #605) or closes it again (the
+//!    mail window only); in a menu of choices the digits pick
 //!    its entries; `[` collapses the sidebar and `]` the mail's action rail (task E14.3); in the date picker the arrows change
 //!    day and time and `Enter` snoozes; in the dialog of "Make task" `Enter` creates the task.
 //!    Behind the navigation menu or the drawer no key reaches the list. Escape
@@ -119,6 +120,8 @@ pub enum Key {
     W,
     /// `b` (task E19.4).
     B,
+    /// `i` (issue #605): "Ask AI…".
+    I,
     /// The hash sign (Shift + 3 on many keyboards: Shift does not stop it).
     Hash,
     /// Delete or Backspace (the key Mac keyboards call "delete", issue #118). A text field that has
@@ -243,6 +246,9 @@ pub enum Command {
     /// Put the mail under the cursor on "Set aside", or take it off when it lies there (task E19.4,
     /// `b`; the mail window only).
     SetAside,
+    /// Open the chat about the mail open in the mail window ("Ask AI…", issue #605, `i`), or close it
+    /// while it shows; nothing without an open mail and in the other windows.
+    AskAi,
     /// Pick the n-th entry (from 1) of the open menu of choices.
     Choose(usize),
     /// The bell's menu: "For" one step longer (→, `true`) or shorter (←).
@@ -429,6 +435,7 @@ pub fn key_on(key: &Name, modifiers: keyboard::Modifiers, system: System) -> Opt
         Name::Character("v") => Key::V,
         Name::Character("w") => Key::W,
         Name::Character("b") => Key::B,
+        Name::Character("i") => Key::I,
         Name::Character("#") => Key::Hash,
         Name::Named(named @ (Named::Delete | Named::Backspace)) => {
             let pressed = if named == Named::Delete { shortcuts::Key::Delete } else { shortcuts::Key::Backspace };
@@ -481,6 +488,7 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::List, Key::V) => Some(Command::SwitchView),
         (Focus::List, Key::W) => Some(Command::ReplyLater),
         (Focus::List, Key::B) => Some(Command::SetAside),
+        (Focus::List, Key::I) => Some(Command::AskAi),
         (Focus::Choices | Focus::Mute, Key::Digit(n)) => Some(Command::Choose(usize::from(n))),
         (Focus::Mute, Key::Left) => Some(Command::MuteFor { longer: false }),
         (Focus::Mute, Key::Right) => Some(Command::MuteFor { longer: true }),
@@ -565,6 +573,7 @@ mod tests {
             (char("v"), Command::SwitchView),
             (char("w"), Command::ReplyLater),
             (char("b"), Command::SetAside),
+            (char("i"), Command::AskAi),
             (char("["), Command::Sidebar),
         ] {
             let key = heard(key, none, Status::Ignored).expect("a key of the inbox");
@@ -610,6 +619,28 @@ mod tests {
         for focus in [Focus::Choices, Focus::Mute, Focus::Picker, Focus::Task, Focus::Elsewhere, Focus::Question] {
             assert_eq!(command(focus, Key::W), None, "{focus:?}");
             assert_eq!(command(focus, Key::B), None, "{focus:?}");
+        }
+    }
+
+    /// Issue #605: `i` is "Ask AI…" in the list and the open mail, never inside an open menu or dialog,
+    /// nor in "Focus & reply"; the chat's own field takes the letter while it has the keyboard.
+    #[test]
+    fn i_asks_the_ai_about_the_mail() {
+        assert_eq!(heard(char("i"), Modifiers::empty(), Status::Captured), None, "a field types it");
+        for focus in [Focus::List, Focus::MailDetail, Focus::Overview] {
+            assert_eq!(command(focus, Key::I), Some(Command::AskAi), "{focus:?}");
+        }
+        let elsewhere = [
+            Focus::Choices,
+            Focus::Mute,
+            Focus::Picker,
+            Focus::Task,
+            Focus::Elsewhere,
+            Focus::Question,
+            Focus::Replying,
+        ];
+        for focus in elsewhere {
+            assert_eq!(command(focus, Key::I), None, "{focus:?}");
         }
     }
 
