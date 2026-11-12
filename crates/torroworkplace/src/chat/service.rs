@@ -870,7 +870,7 @@ impl ChatService {
     /// What an approval of `request` shows, looked up by its ids: the conversation's name and
     /// kind, the author a reply quotes, the text an edit, a deletion or a reaction is about.
     /// `None` for requests of other areas. Never asks the server for more than one message.
-    pub async fn facts(&self, request: &Request) -> Option<ChatFacts> {
+    pub async fn facts(self: &Arc<Self>, request: &Request) -> Option<ChatFacts> {
         if request.operation().area() != torro_ipc::api::Area::Chat {
             return None;
         }
@@ -893,7 +893,9 @@ impl ChatService {
             }
             _ => return Some(ChatFacts::default()),
         };
-        let room = self.cache().account(account).room(token.as_str()).cloned();
+        // From the list in memory, fetched once when it does not hold the conversation yet, so an
+        // approval names it also before any window listed the conversations.
+        let room = self.room(account, &token).await.ok();
         let mut facts = ChatFacts {
             conversation: room.as_ref().map(|room| room.name.clone()),
             kind: room.as_ref().map(|room| room.kind),
@@ -1234,6 +1236,9 @@ mod tests {
     #[tokio::test]
     async fn approvals_get_their_facts_from_the_service() {
         let (chat, _) = service();
+        // Before any list was fetched the facts fetch it, so the approval names the conversation.
+        let read = Request::ChatMarkRead { conversation: ben(), up_to: None };
+        assert_eq!(chat.facts(&read).await.expect("facts").conversation.as_deref(), Some("Ben Koch"));
         chat.refresh_rooms(ACCOUNT).await.expect("rooms");
         let reply = Request::ChatSendMessage {
             conversation: ben(),
