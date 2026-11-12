@@ -7,6 +7,8 @@
 //! ([`torro_gui::instance::claim_named`], decision 2). The core holds conversations, people and
 //! status; the windows only send requests of `chat` and `presence` ([`backend::Backend`]). Without
 //! `--demo` the app talks to the core over its socket and starts the core when it is not running.
+//! A picture of a chat opens large in a window of its own, `torrochat --viewer=<message>/<file>`
+//! (class `torro-chat-viewer`, stage 4).
 //!
 //! `--demo` runs on the sample of `torro_chat::demo` and writes nothing; `--open <state>` starts in a
 //! state (`contacts`, `chat`, …, see [`launch::Open`]); `--demo --shots <dir>` writes the view at each
@@ -22,6 +24,7 @@ mod app;
 mod backend;
 mod launch;
 mod people;
+mod system;
 mod timeline;
 mod view;
 
@@ -31,7 +34,7 @@ use torro_gui::instance::Claim;
 use torro_gui::shots::{RunError, Shots};
 use torro_gui::source::Source;
 
-use crate::app::{App, CONTACTS, CONTACTS_SIZE, CONVERSATION, CONVERSATION_SIZE};
+use crate::app::{App, CONTACTS, CONTACTS_SIZE, CONVERSATION, CONVERSATION_SIZE, VIEWER, VIEWER_SIZE};
 use crate::backend::Backend;
 use crate::launch::{Launch, Window};
 
@@ -89,6 +92,11 @@ fn instance_of(launch: &Launch) -> Option<Box<dyn FnOnce() -> Claim>> {
             let id = id.clone();
             Box::new(move || torro_gui::instance::claim_named(CONTACTS, &id))
         }
+        // The same picture twice brings its window to the front.
+        Window::Viewer { message, file } => {
+            let name = format!("viewer:{message}/{file}");
+            Box::new(move || torro_gui::instance::claim_named(CONTACTS, &name))
+        }
     })
 }
 
@@ -100,6 +108,7 @@ fn run(backend: Backend, suite: Source, launch: Launch, shots: Option<&Shots>) -
         Window::Conversation(_) => {
             iced::window::Settings { size: CONVERSATION_SIZE, ..torro_gui::window(CONVERSATION) }
         }
+        Window::Viewer { .. } => iced::window::Settings { size: VIEWER_SIZE, ..torro_gui::window(VIEWER) },
     };
     let application =
         iced::application(move || App::new(backend.clone(), suite.clone(), launch.clone()), App::update, App::view)

@@ -56,7 +56,7 @@ pub(super) fn design_media(now: DateTime<chrono::Utc>) -> Vec<Message> {
         "elif",
         elif,
         214,
-        "Voice message",
+        "Voice message.ogg",
         file("5108", "Voice message.ogg", 48_213, "audio/ogg", false, None),
     );
     voice.kind = MessageKind::Voice;

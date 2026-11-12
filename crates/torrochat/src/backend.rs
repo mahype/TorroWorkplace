@@ -9,8 +9,9 @@ use std::sync::Arc;
 
 use torro_chat::demo::DemoSource;
 use torro_chat::{
-    ChatError, ChatSource, Conversation, Mention, MessagePage, NotifyLevel, Outgoing, OwnStatus, Person, SearchHit,
-    StatusChange,
+    ChatError, ChatSource, Conversation, Fetched, FilePiece, LinkCard, Mention, MessagePage, NotifyLevel, Outgoing,
+    OwnStatus, Person, Picture, PreparedFile, PreviewSize, SaveTo, SearchHit, Sending, SharedKind, SharedPage,
+    StatusChange, UploadProgress, Uploaded,
 };
 use torro_ipc::chat::ChatClient;
 use torro_ipc::{Request, Response};
@@ -198,6 +199,165 @@ impl Backend {
         self.own_status(account).await
     }
 
+    // -- Files and media (stage 4) ------------------------------------------------------------
+
+    /// `chat.get_messages` with `around`: "Show in chat".
+    pub async fn messages_around(self, conversation: String, around: String) -> Result<MessagePage, ChatError> {
+        match self {
+            Backend::Core(core) => core.messages_around(conversation, around, None).await,
+            Backend::Demo(demo) => demo.messages_around(conversation, around, None).await,
+        }
+    }
+
+    /// `chat.send_message` with `files`.
+    pub async fn send_files(self, message: Outgoing, files: Vec<String>) -> Result<Sending, ChatError> {
+        match self {
+            Backend::Core(core) => core.send_files(message, files).await,
+            Backend::Demo(demo) => demo.send_files(message, files).await,
+        }
+    }
+
+    /// `chat.prepare_file` with the file at `path` a person chose.
+    pub async fn prepare_file(self, account: String, path: String) -> Result<PreparedFile, ChatError> {
+        match self {
+            Backend::Core(core) => core.prepare_file(account, path).await,
+            Backend::Demo(demo) => demo.prepare_file(account, path).await,
+        }
+    }
+
+    /// `chat.upload_file`, one piece.
+    async fn upload_piece(&self, piece: FilePiece) -> Result<Uploaded, ChatError> {
+        match self {
+            Backend::Core(core) => core.upload_file(piece).await,
+            Backend::Demo(demo) => demo.upload_file(piece).await,
+        }
+    }
+
+    /// A file the window holds (a pasted picture) uploaded into the core's memory in pieces of
+    /// [`torro_ipc::chat::UPLOAD_PIECE_BYTES`] (`chat.upload_file`, one request per piece, as the mail
+    /// window uploads pasted pictures); the prepared file. A failure releases what arrived.
+    pub async fn upload_bytes(self, account: String, name: String, bytes: Vec<u8>) -> Result<PreparedFile, ChatError> {
+        let pieces: Vec<&[u8]> = bytes.chunks(torro_ipc::chat::UPLOAD_PIECE_BYTES).collect();
+        let count = pieces.len().max(1);
+        let mut upload = None;
+        for at in 0..count {
+            let piece = FilePiece {
+                account: account.clone(),
+                upload: upload.clone(),
+                offset: (at * torro_ipc::chat::UPLOAD_PIECE_BYTES) as u64,
+                bytes: pieces.get(at).map(|piece| piece.to_vec()).unwrap_or_default(),
+                name: (at == 0).then(|| name.clone()),
+                last: at + 1 == count,
+            };
+            match self.upload_piece(piece).await {
+                Ok(Uploaded::File(file)) => return Ok(file),
+                Ok(Uploaded::Piece { upload: id, .. }) => upload = Some(id),
+                Err(err) => {
+                    if let Some(id) = upload {
+                        let _ = self.clone().release_files(account, vec![id]).await;
+                    }
+                    return Err(err);
+                }
+            }
+        }
+        Err(ChatError::Other("unexpected answer".into()))
+    }
+
+    /// `chat.release_files`.
+    pub async fn release_files(self, account: String, ids: Vec<String>) -> Result<(), ChatError> {
+        match self {
+            Backend::Core(core) => core.release_files(account, ids).await,
+            Backend::Demo(demo) => demo.release_files(account, ids).await,
+        }
+    }
+
+    /// `chat.get_upload`.
+    pub async fn upload(self, id: String) -> Result<UploadProgress, ChatError> {
+        match self {
+            Backend::Core(core) => core.upload(id).await,
+            Backend::Demo(demo) => demo.upload(id).await,
+        }
+    }
+
+    /// `chat.cancel_upload`.
+    pub async fn cancel_upload(self, id: String) -> Result<(), ChatError> {
+        match self {
+            Backend::Core(core) => core.cancel_upload(id).await,
+            Backend::Demo(demo) => demo.cancel_upload(id).await,
+        }
+    }
+
+    /// `chat.get_preview` of a file (`file`) or of the message's link card (`file` `None`).
+    pub async fn preview(self, id: String, file: Option<String>, size: PreviewSize) -> Result<Picture, ChatError> {
+        let card = file.is_none();
+        match self {
+            Backend::Core(core) => core.preview(id, file, card, size).await,
+            Backend::Demo(demo) => demo.preview(id, file, card, size).await,
+        }
+    }
+
+    /// `chat.get_attachment`.
+    pub async fn attachment(self, id: String, file: String) -> Result<Fetched, ChatError> {
+        match self {
+            Backend::Core(core) => core.attachment(id, file).await,
+            Backend::Demo(demo) => demo.attachment(id, file).await,
+        }
+    }
+
+    /// `chat.save_attachment`: the path the file went to.
+    pub async fn save_attachment(self, id: String, file: String, to: SaveTo) -> Result<String, ChatError> {
+        match self {
+            Backend::Core(core) => core.save_attachment(id, file, to).await,
+            Backend::Demo(demo) => demo.save_attachment(id, file, to).await,
+        }
+    }
+
+    /// `chat.list_shared` of one kind, older than `before`.
+    pub async fn shared(
+        self,
+        conversation: String,
+        kind: SharedKind,
+        before: Option<String>,
+    ) -> Result<SharedPage, ChatError> {
+        match self {
+            Backend::Core(core) => core.shared(conversation, Some(kind), before, None).await,
+            Backend::Demo(demo) => demo.shared(conversation, Some(kind), before, None).await,
+        }
+    }
+
+    /// `chat.show_card` ("Show preview").
+    pub async fn show_card(self, id: String) -> Result<Option<LinkCard>, ChatError> {
+        match self {
+            Backend::Core(core) => core.show_card(id).await,
+            Backend::Demo(demo) => demo.show_card(id).await,
+        }
+    }
+
+    /// The demo's sending that stays at 42 % (`--open upload`); `None` on the core.
+    pub fn stalled_upload(&self, conversation: &str) -> Option<String> {
+        match self {
+            Backend::Core(_) => None,
+            Backend::Demo(demo) => Some(demo.stalled_upload(conversation)),
+        }
+    }
+
+    /// Opens the window "Picture large" of the file `file` of the message `message`: this program
+    /// once more with `--viewer=<message>/<file>` (decision 24), with the demo and `appearance` when
+    /// this one runs on them. The core has no target for it; a second start on the same picture
+    /// brings its window to the front.
+    pub fn open_viewer(&self, message: &str, file: &str, appearance: Option<&'static str>) -> Result<(), String> {
+        let program = std::env::current_exe().map_err(|err| err.to_string())?;
+        let mut command = std::process::Command::new(program);
+        command.arg(format!("--viewer={message}/{file}"));
+        if self.is_demo() {
+            command.arg("--demo");
+            if let Some(appearance) = appearance {
+                command.arg("--appearance").arg(appearance);
+            }
+        }
+        command.spawn().map(|_| ()).map_err(|err| err.to_string())
+    }
+
     /// `apps.open_app` with the target `chat:<conversation>`: the core opens the conversation's chat
     /// window, or brings it to the front. The demo has no core: it starts this program once more on
     /// the conversation, with the demo, so the window can be tried.
@@ -257,7 +417,24 @@ mod tests {
         block_on(backend.clone().delete_message(own)).expect("deleted");
         block_on(backend.clone().set_favorite(BEN.into(), true)).expect("favourite");
         block_on(backend.clone().set_notification_level(BEN.into(), NotifyLevel::Never)).expect("level");
-        let hits = block_on(backend.search_messages("release".into())).expect("hits");
+        let hits = block_on(backend.clone().search_messages("release".into())).expect("hits");
         assert_eq!(hits.len(), 1);
+
+        // Stage 4: a pasted picture goes up in pieces, larger than one piece.
+        let design = torro_chat::demo::DESIGN;
+        let bytes = vec![7u8; torro_ipc::chat::UPLOAD_PIECE_BYTES + 10];
+        let file =
+            block_on(backend.clone().upload_bytes(ACCOUNT.into(), "Pasted image.png".into(), bytes)).expect("prepared");
+        assert_eq!(file.size, torro_ipc::chat::UPLOAD_PIECE_BYTES as u64 + 10);
+        let outgoing = Outgoing { conversation: design.into(), ..Outgoing::default() };
+        let sending = block_on(backend.clone().send_files(outgoing, vec![file.id])).expect("sending");
+        assert!(matches!(sending, Sending::Uploading(_)));
+        let picture = torro_chat::message_id(design, 3);
+        let preview = block_on(backend.clone().preview(picture.clone(), Some("5103".into()), PreviewSize::Small));
+        assert!(preview.is_ok());
+        let shared = block_on(backend.clone().shared(design.into(), SharedKind::Media, None)).expect("shared");
+        assert!(!shared.items.is_empty());
+        assert!(backend.stalled_upload(design).is_some(), "the demo's stalled upload");
+        assert!(Backend::core().stalled_upload(design).is_none());
     }
 }

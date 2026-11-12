@@ -23,6 +23,8 @@
 //! [`chat::POLL`] with `after`, which tells the core to keep the conversation live (long polling).
 
 pub(crate) mod chat;
+pub(crate) mod files;
+pub(crate) mod viewer;
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -33,7 +35,7 @@ use iced::widget::operation;
 use iced::{Point, Size, Subscription, Task, Theme, keyboard};
 use torro_chat::{ChatError, Conversation, OwnStatus, Person, SearchHit, Status, StatusChange};
 use torro_core::AppId;
-use torro_core::app::CHAT_CONVERSATION_CLASS;
+use torro_core::app::{CHAT_CONVERSATION_CLASS, CHAT_VIEWER_CLASS};
 use torro_core::i18n::tr;
 use torro_gui::design::{self, Follow};
 use torro_gui::layout::{self, SizeClass};
@@ -43,6 +45,7 @@ use torro_gui::widgets;
 use torro_gui::zoom::{self, Zoom};
 
 pub use self::chat::ChatState;
+pub use self::viewer::ViewerState;
 use crate::backend::Backend;
 use crate::launch::{Launch, Open, Window};
 use crate::people::{self, Group};
@@ -61,11 +64,24 @@ pub const CONVERSATION: AppId = AppId {
     args: &[],
 };
 
+/// The window "Picture large" (stage 4, decision 24): its own class, so tiling rules let it float.
+pub const VIEWER: AppId = AppId {
+    window_class: CHAT_VIEWER_CLASS,
+    binary: AppId::CHAT.binary,
+    dir: AppId::CHAT.dir,
+    display_name: AppId::CHAT.display_name,
+    // Started with `--viewer=<message>/<file>`; no entry of its own.
+    args: &[],
+};
+
 /// The contact list's size at start: a narrow tile (`docs/chat.md`, "Kontaktliste": 300 wide).
 pub const CONTACTS_SIZE: Size = Size::new(320.0, 760.0);
 
 /// A chat window's size at start (`docs/chat.md`, "Chatfenster": 440 × 680).
 pub const CONVERSATION_SIZE: Size = Size::new(440.0, 680.0);
+
+/// The window "Picture large" at start (draft B of `docs/prototypes/chat/`: 900 × 620).
+pub const VIEWER_SIZE: Size = Size::new(900.0, 620.0);
 
 /// How often the windows ask for people and conversations. The core answers from memory and fetches
 /// itself when its copy is older than 10 s, so asking is cheap.
@@ -169,6 +185,8 @@ pub enum Menu {
     /// A message's menu: at the pointer after a right click (`at`), else under the message's "…".
     /// `confirm`: it asks whether to delete the message.
     Message { id: String, at: Option<Point>, confirm: bool },
+    /// The menu of an item of the shared media (the `index` of the tab's list), at the pointer.
+    Shared { index: usize, at: Point },
 }
 
 /// An open dialog of the contact list.
@@ -246,6 +264,9 @@ pub enum Message {
 
     // -- A chat window
     Chat(chat::Msg),
+
+    // -- The window "Picture large"
+    Viewer(viewer::ViewerMsg),
 }
 
 pub struct App {
@@ -289,16 +310,26 @@ pub struct App {
 
     /// The chat window's state; `None` in the contact list.
     pub(crate) chat: Option<ChatState>,
+    /// The state of the window "Picture large"; `None` in the others.
+    pub(crate) viewer: Option<ViewerState>,
 }
 
 impl App {
     pub fn new(backend: Backend, suite: Source, launch: Launch) -> (App, Task<Message>) {
         let chat = match &launch.window {
             Window::Conversation(id) => Some(ChatState::new(id.clone(), launch.open)),
-            Window::Contacts => None,
+            Window::Contacts | Window::Viewer { .. } => None,
+        };
+        let viewer = match &launch.window {
+            Window::Viewer { message, file } => ViewerState::new(message, file),
+            Window::Contacts | Window::Conversation(_) => None,
         };
         let open = launch.open;
-        let size = if chat.is_some() { CONVERSATION_SIZE } else { CONTACTS_SIZE };
+        let size = match &launch.window {
+            Window::Contacts => CONTACTS_SIZE,
+            Window::Conversation(_) => CONVERSATION_SIZE,
+            Window::Viewer { .. } => VIEWER_SIZE,
+        };
         let mut app = App {
             backend,
             zoom: Zoom::for_source(&suite),
@@ -347,6 +378,7 @@ impl App {
             creating: None,
             notice: None,
             chat,
+            viewer,
             launch,
         };
         // `--open message-search` starts with the query typed.
@@ -365,7 +397,15 @@ impl App {
         ];
         if app.chat.is_some() {
             tasks.push(operation::focus(chat::EDITOR));
+            // The width of the shared media as the person dragged it; the demo keeps none.
+            if !app.backend.is_demo() {
+                tasks.push(
+                    torro_gui::ui_state::load_splits_task(AppId::CHAT)
+                        .map(|widths| files::wrap(files::FilesMsg::Stored(widths))),
+                );
+            }
         }
+        tasks.push(app.viewer_start());
         if let Some(Dialog::NewChat { query, .. }) = &app.dialog {
             let query = query.clone();
             tasks.push(app.find(query));
@@ -376,6 +416,12 @@ impl App {
     /// The window's title: "Contacts" for the list, the conversation's name for a chat window.
     /// Tiling rules and window lists tell chat windows apart by it.
     pub fn title(&self) -> String {
+        if let Some(viewer) = &self.viewer {
+            return match viewer.current().filter(|item| !item.name.is_empty()) {
+                Some(item) => item.name.clone(),
+                None => tr("Picture").to_owned(),
+            };
+        }
         match &self.chat {
             Some(chat) => self.chat_name(chat),
             None => tr("Contacts").to_owned(),
@@ -409,14 +455,22 @@ impl App {
             iced::event::listen_with(window_event),
             iced::time::every(REFRESH).map(|_| Message::Tick),
         ];
-        if self.menu.is_some() || self.dialog.is_some() || self.chat.as_ref().is_some_and(ChatState::escapes) {
+        if self.menu.is_some()
+            || self.dialog.is_some()
+            || self.viewer.is_some()
+            || self.chat.as_ref().is_some_and(ChatState::escapes)
+        {
             subscriptions.push(widgets::escape().map(|()| Message::Escape));
         }
         if self.notice.is_some() {
             subscriptions.push(iced::time::every(NOTICE_TICK).map(Message::NoticeTick));
         }
+        if let Some(viewer) = &self.viewer {
+            subscriptions.push(viewer.subscription().map(Message::Viewer));
+        }
         match &self.chat {
             Some(chat) => subscriptions.push(chat.subscription().map(Message::Chat)),
+            None if self.viewer.is_some() => {}
             None if self.dialog.is_none() && self.menu.is_none() => {
                 subscriptions.push(iced::event::listen_with(contact_key));
             }
@@ -673,6 +727,7 @@ impl App {
             }
 
             Message::Chat(message) => return self.chat_update(message),
+            Message::Viewer(message) => return self.viewer_update(message),
         }
         Task::none()
     }
@@ -682,6 +737,10 @@ impl App {
     /// People and conversations, unless an earlier ask is still out; the own status once an account
     /// is known.
     fn load(&mut self) -> Task<Message> {
+        // The window "Picture large" needs neither people nor conversations.
+        if self.viewer.is_some() {
+            return Task::none();
+        }
         let mut tasks = Vec::new();
         if self.refreshing == 0 {
             self.refreshing = 2;
@@ -803,6 +862,9 @@ impl App {
     fn escape(&mut self) -> Task<Message> {
         if self.menu.take().is_some() || self.dialog.take().is_some() {
             return Task::none();
+        }
+        if self.viewer.is_some() {
+            return iced::window::latest().and_then(iced::window::close);
         }
         self.chat_update(chat::Msg::Escape)
     }

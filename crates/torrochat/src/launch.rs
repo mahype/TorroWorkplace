@@ -6,6 +6,9 @@
 //! - `--conversation=<id>`: the chat window of the conversation `<account>/<token>`, class
 //!   `torro-chat-conversation` ([`torro_core::app::CHAT_CONVERSATION_CLASS`]). A second start on the
 //!   same conversation brings its window to the front (`torro_gui::instance::claim_named`).
+//! - `--viewer=<message>/<file>`: the window "Picture large" (stage 4) of the file `<file>` of the
+//!   message `<conversation>/<number>`, class `torro-chat-viewer`
+//!   ([`torro_core::app::CHAT_VIEWER_CLASS`]).
 //! - `--demo`: the sample of `torro_chat::demo` instead of the core; nothing is written.
 //! - `--open <state>`: start in a state ([`Open`]), for the pictures of the visual check; needs
 //!   `--demo`. `chat` is the chat window with Ben of the demo.
@@ -29,6 +32,9 @@ pub enum Window {
     Contacts,
     /// The chat window of one conversation (`<account>/<token>`).
     Conversation(String),
+    /// The window "Picture large" of the file `file` of the message `message`
+    /// (`<conversation>/<number>`).
+    Viewer { message: String, file: String },
 }
 
 /// A state the window can start in (`--demo --open <state>`), so every state can be photographed
@@ -73,11 +79,24 @@ pub enum Open {
     /// The chat window with Ben after a try to edit the person's message of yesterday, which the
     /// provider no longer allows: the calm line above the composer says so.
     ChangeError,
+    /// Stage 4: the chat window of "Design sync" with every kind of file in the history.
+    Files,
+    /// As [`Open::Files`], three files chosen for sending above the composer – a picture, a PDF and
+    /// one too large – and a caption typed.
+    Attach,
+    /// As [`Open::Files`], a picture on its way to the server at 42 %.
+    Upload,
+    /// As [`Open::Files`], the shared media at the side.
+    Media,
+    /// As [`Open::Files`], a file dragged over the window.
+    Drop,
+    /// The window "Picture large" of the first picture of "Design sync".
+    Viewer,
 }
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 17] = [
+    pub const ALL: [(&'static str, Open); 23] = [
         ("contacts", Open::Contacts),
         ("groups", Open::Groups),
         ("status", Open::Status),
@@ -95,7 +114,16 @@ impl Open {
         ("delete", Open::Delete),
         ("edit", Open::Edit),
         ("change-error", Open::ChangeError),
+        ("files", Open::Files),
+        ("attach", Open::Attach),
+        ("upload", Open::Upload),
+        ("media", Open::Media),
+        ("drop", Open::Drop),
+        ("viewer", Open::Viewer),
     ];
+
+    /// The picture `--open viewer` shows: the first of "Design sync" (message, file).
+    pub const VIEWER: (&'static str, &'static str) = ("nextcloud:anna@cloud.example.org/design4sync/3", "5103");
 
     /// The demo conversation a state of the chat window shows; `None` for a state of the contact
     /// list.
@@ -104,6 +132,9 @@ impl Open {
             Open::Chat | Open::Reply | Open::MessageMenu | Open::ChangeError => Some(torro_chat::demo::BEN),
             Open::Group | Open::Reactions | Open::ChatMenu | Open::OwnMenu | Open::Delete | Open::Edit => {
                 Some(torro_chat::demo::TEAM)
+            }
+            Open::Files | Open::Attach | Open::Upload | Open::Media | Open::Drop | Open::Viewer => {
+                Some(torro_chat::demo::DESIGN)
             }
             Open::Contacts
             | Open::Groups
@@ -190,10 +221,21 @@ impl Launch {
                 None => return Err(unknown("--open", word, Open::ALL.iter().map(|(name, _)| *name).collect())),
             },
         };
-        let window = match flag_value(args, "--conversation")? {
-            Some(id) if is_conversation(id) => Window::Conversation(id.to_owned()),
-            Some(id) => return Err(unknown("--conversation", id, vec!["<account>/<token>"])),
-            None => match open.and_then(Open::conversation) {
+        let viewer = match flag_value(args, "--viewer")? {
+            Some(word) => match viewer_of(word) {
+                Some(window) => Some(window),
+                None => return Err(unknown("--viewer", word, vec!["<account>/<token>/<number>/<file>"])),
+            },
+            None if open == Some(Open::Viewer) => {
+                Some(Window::Viewer { message: Open::VIEWER.0.to_owned(), file: Open::VIEWER.1.to_owned() })
+            }
+            None => None,
+        };
+        let window = match (viewer, flag_value(args, "--conversation")?) {
+            (Some(viewer), _) => viewer,
+            (None, Some(id)) if is_conversation(id) => Window::Conversation(id.to_owned()),
+            (None, Some(id)) => return Err(unknown("--conversation", id, vec!["<account>/<token>"])),
+            (None, None) => match open.and_then(Open::conversation) {
                 Some(id) => Window::Conversation(id.to_owned()),
                 None => Window::Contacts,
             },
@@ -231,6 +273,20 @@ fn is_conversation(word: &str) -> bool {
         && word.len() <= ID_MAX
         && !word.chars().any(|c| c.is_whitespace() || c.is_control())
         && torro_chat::split_conversation(word).is_some()
+}
+
+/// The window "Picture large" of `<conversation>/<number>/<file>`: a message id
+/// (`torro_chat::split_message`) and a file id of letters and digits after the last `/`, within
+/// [`ID_MAX`] bytes, without spaces or control characters.
+fn viewer_of(word: &str) -> Option<Window> {
+    let (message, file) = word.rsplit_once('/')?;
+    let clean = !word.starts_with('-')
+        && word.len() <= ID_MAX
+        && !word.chars().any(|c| c.is_whitespace() || c.is_control())
+        && !file.is_empty()
+        && file.bytes().all(|byte| byte.is_ascii_alphanumeric());
+    (clean && torro_chat::split_message(message).is_some())
+        .then(|| Window::Viewer { message: message.to_owned(), file: file.to_owned() })
 }
 
 #[cfg(test)]
@@ -271,6 +327,20 @@ mod tests {
             let parsed = Launch::parse(&args(&["--demo", "--open", word])).expect("every state parses");
             assert_eq!(parsed.open, Some(open), "{word}");
         }
+    }
+
+    #[test]
+    fn viewer_takes_a_message_and_a_file() {
+        let word = "nextcloud:anna@cloud.example.org/design4sync/3/5103";
+        let viewer =
+            Window::Viewer { message: "nextcloud:anna@cloud.example.org/design4sync/3".into(), file: "5103".into() };
+        assert_eq!(window_of(&[&format!("--viewer={word}")]), Ok(viewer.clone()));
+        assert_eq!(window_of(&["--demo", "--open", "viewer"]), Ok(viewer));
+        for bad in ["a/b/5103", "a/b/c/../x", "nextcloud:a@b/tok/x/1", "nextcloud:a@b/tok/1/", "x"] {
+            assert!(matches!(window_of(&["--viewer", bad]), Err(LaunchError::UnknownValue { .. })), "{bad:?}");
+        }
+        let design = Window::Conversation(torro_chat::demo::DESIGN.into());
+        assert_eq!(window_of(&["--demo", "--open", "media"]), Ok(design));
     }
 
     #[test]

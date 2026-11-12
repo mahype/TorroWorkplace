@@ -7596,8 +7596,12 @@ dependencies = [
 name = "torrochat"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "chrono",
  "iced",
+ "image",
+ "rfd",
+ "tokio",
  "torro-chat",
  "torro-core",
  "torro-gui",

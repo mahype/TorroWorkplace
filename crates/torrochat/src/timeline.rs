@@ -82,6 +82,14 @@ pub fn items(messages: &[Message], new_after: Option<u64>) -> Vec<Item<'_>> {
     items
 }
 
+/// The first web link of `text` (`https://` or `http://` up to the next space): the one a link card
+/// stands for, as in Talk.
+pub fn first_link(text: &str) -> Option<&str> {
+    let start = text.find("https://").or_else(|| text.find("http://"))?;
+    let rest = &text[start..];
+    rest.split_whitespace().next()
+}
+
 /// A message of the provider, shown small: a system message or a missed call.
 pub fn is_system(message: &Message) -> bool {
     matches!(message.kind, MessageKind::System | MessageKind::MissedCall)

@@ -20,6 +20,7 @@
 //!   refuses. Whatever the core refuses (`unsupported`, `forbidden`) or holds for approval
 //!   (`pending`) is said in a calm line above the composer ([`Note`]). Polls only bring new messages,
 //!   so the window writes the confirmed change into the message it holds.
+//! - **Files and media (stage 4):** in [`super::files`], as [`Msg::Files`].
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -31,6 +32,7 @@ use iced::{Point, Subscription, Task};
 use torro_chat::{ChatError, Mention, Message as ChatMessage, NotifyLevel, Outgoing, Quote};
 use torro_core::i18n::{tr, trf};
 
+use super::files::{FilesMsg, FilesState, UPLOAD_POLL};
 use super::{App, Menu, Message, chat_failed};
 use crate::launch::Open;
 use crate::timeline;
@@ -95,6 +97,8 @@ pub struct ChatState {
     pub changing: BTreeMap<String, Change>,
     /// The calm line above the composer about the last change.
     pub note: Option<Note>,
+    /// Files chosen and on their way, pictures, the shared media (stage 4).
+    pub files: FilesState,
 }
 
 /// A message being edited in the composer, and what the composer held before.
@@ -204,6 +208,8 @@ pub enum Msg {
         result: Result<(), ChatError>,
     },
     DismissNote,
+    /// Files and media (stage 4, [`super::files`]).
+    Files(FilesMsg),
 }
 
 impl ChatState {
@@ -234,6 +240,7 @@ impl ChatState {
             editing: None,
             changing: BTreeMap::new(),
             note: None,
+            files: FilesState::default(),
         }
     }
 
@@ -258,7 +265,20 @@ impl ChatState {
     }
 
     pub fn subscription(&self) -> Subscription<Msg> {
-        if self.loaded && !self.gone { iced::time::every(POLL).map(|_| Msg::Poll) } else { Subscription::none() }
+        let mut subscriptions = vec![iced::event::listen_with(dropped)];
+        if self.loaded && !self.gone {
+            subscriptions.push(iced::time::every(POLL).map(|_| Msg::Poll));
+        }
+        if self.files.upload.as_ref().is_some_and(|upload| upload.running()) {
+            subscriptions.push(iced::time::every(UPLOAD_POLL).map(|_| Msg::Files(FilesMsg::Poll)));
+        }
+        if self.files.split.dragging {
+            subscriptions.push(
+                torro_gui::split::release()
+                    .map(|()| Msg::Files(FilesMsg::Split(torro_gui::split::SplitEvent::Release))),
+            );
+        }
+        Subscription::batch(subscriptions)
     }
 
     /// The newest message number held.
@@ -313,7 +333,7 @@ impl ChatState {
     }
 
     /// Replaces the composer's text by `before` + `after`, the cursor between them.
-    fn set_text(&mut self, before: &str, after: &str) {
+    pub(super) fn set_text(&mut self, before: &str, after: &str) {
         self.editor = Content::with_text(&format!("{before}{after}"));
         let line = before.matches('\n').count();
         let column = before.rsplit('\n').next().map_or(0, str::len);
@@ -349,7 +369,10 @@ impl App {
                     chat.reply = None;
                 } else if chat.note.is_some() {
                     chat.note = None;
-                } else if chat.editor.text().trim().is_empty() && self.menu.is_none() {
+                } else if chat.files.media.is_some() {
+                    return self.files_update(FilesMsg::CloseMedia);
+                } else if chat.editor.text().trim().is_empty() && self.menu.is_none() && chat.files.attached.is_empty()
+                {
                     // An empty window closes; one with text keeps it.
                     return iced::window::latest().and_then(iced::window::close);
                 }
@@ -365,7 +388,13 @@ impl App {
                         chat.error = None;
                         chat.merge(page.messages);
                         let demo = self.apply_open();
-                        return Task::batch([self.mark_read_if_seen(), demo, operation::snap_to_end(HISTORY)]);
+                        let pictures = self.want_pictures();
+                        return Task::batch([
+                            self.mark_read_if_seen(),
+                            demo,
+                            pictures,
+                            operation::snap_to_end(HISTORY),
+                        ]);
                     }
                     Err(ChatError::NotFound) => chat.gone = true,
                     Err(err) => chat.error = Some(chat_failed(&err)),
@@ -385,6 +414,7 @@ impl App {
                     Ok(page) => {
                         chat.more = page.more;
                         chat.merge(page.messages);
+                        return self.want_pictures();
                     }
                     Err(err) => {
                         let text = chat_failed(&err);
@@ -408,7 +438,7 @@ impl App {
                         if chat.merge(page.messages) {
                             chat.hold_read = false;
                         }
-                        return self.mark_read_if_seen();
+                        return Task::batch([self.mark_read_if_seen(), self.want_pictures()]);
                     }
                     Err(ChatError::NotFound) => chat.gone = true,
                     Err(ChatError::Offline) => chat.offline = true,
@@ -425,6 +455,7 @@ impl App {
                 return self.suggest();
             }
             Msg::Send if chat.editing.is_some() => return self.save_edit(),
+            Msg::Send if !chat.files.attached.is_empty() => return self.send_files(),
             Msg::Send => {
                 let text = timeline::outgoing(&chat.editor.text(), &chat.picked);
                 if text.is_empty() || chat.sending || chat.gone {
@@ -686,6 +717,7 @@ impl App {
                 }
             },
             Msg::DismissNote => chat.note = None,
+            Msg::Files(message) => return self.files_update(message),
         }
         Task::none()
     }
@@ -804,7 +836,18 @@ impl App {
                 }
                 Task::batch([focus, self.save_edit()])
             }
+            Some(open @ (Open::Attach | Open::Upload | Open::Media | Open::Drop)) => self.apply_files_open(open),
             _ => Task::none(),
         }
+    }
+}
+
+/// A file dragged over the window, dropped on it, or taken away again.
+fn dropped(event: iced::Event, _status: iced::event::Status, _window: iced::window::Id) -> Option<Msg> {
+    match event {
+        iced::Event::Window(iced::window::Event::FileHovered(_)) => Some(Msg::Files(FilesMsg::Hovered(true))),
+        iced::Event::Window(iced::window::Event::FilesHoveredLeft) => Some(Msg::Files(FilesMsg::Hovered(false))),
+        iced::Event::Window(iced::window::Event::FileDropped(path)) => Some(Msg::Files(FilesMsg::Dropped(path))),
+        _ => None,
     }
 }

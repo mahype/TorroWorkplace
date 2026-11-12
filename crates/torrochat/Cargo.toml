@@ -22,4 +22,17 @@ torro-chat.workspace = true
 torro-gui.workspace = true
 torro-ipc.workspace = true
 chrono.workspace = true
-iced.workspace = true
+# `image-without-codecs`: previews of pictures, link cards and the large picture (stage 4).
+iced = { workspace = true, features = ["image-without-codecs"] }
+# Turns on the decoders Iced reads the previews with (PNG, JPEG, GIF, WebP), and encodes a picture
+# pasted from the clipboard as PNG.
+image.workspace = true
+# A picture or files pasted into the composer.
+arboard.workspace = true
+# The system's dialogs: "Attach file" and "Save as…".
+rfd.workspace = true
+# The clipboard is read on a worker thread, so the window never waits for it.
+tokio.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+arboard = { workspace = true, features = ["wayland-data-control"] }

@@ -14,6 +14,11 @@
 //! not disturb), a ring (offline). Their word stands beside them or in the tooltip.
 
 mod chat;
+mod files;
+mod media;
+mod viewer;
+
+pub(crate) use files::has_preview;
 
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, button, column, container, mouse_area, row, rule, scrollable, stack, text_input};
@@ -60,6 +65,8 @@ pub(crate) struct Anchors {
     /// The "…" beside a message under the pointer.
     pub more: Anchor,
     pub composer: Anchor,
+    /// The shared media at the side: their menu opens at the pointer in it.
+    pub shared: Anchor,
 }
 
 impl App {
@@ -67,7 +74,11 @@ impl App {
     pub fn view(&self) -> Element<'_, Message> {
         let class = self.class();
         if matches!(class, SizeClass::Mini | SizeClass::Strip) {
-            let glance = if self.chat.is_some() { self.chat_glance(class) } else { self.glance(class) };
+            let glance = match (&self.viewer, &self.chat) {
+                (Some(viewer), _) => self.viewer_picture(viewer),
+                (None, Some(_)) => self.chat_glance(class),
+                (None, None) => self.glance(class),
+            };
             return widgets::ctrl_guard(shell::titlebar(
                 self.zoom.view(glance),
                 self.zoom.factor(),
@@ -78,9 +89,10 @@ impl App {
             ));
         }
         let anchors = Anchors::default();
-        let window = match &self.chat {
-            Some(chat) => self.chat_window(chat, &anchors),
-            None => self.contacts(&anchors),
+        let window = match (&self.viewer, &self.chat) {
+            (Some(viewer), _) => self.viewer_window(viewer),
+            (None, Some(chat)) => self.chat_window(chat, &anchors),
+            (None, None) => self.contacts(&anchors),
         };
         let window = match &self.dialog {
             Some(dialog) => widgets::modal(window, self.dialog_view(dialog), size::form_max(), Message::CloseDialog),
@@ -388,7 +400,7 @@ impl App {
                 let anchor = anchors.row.area(Rectangle::new(*at, Size::ZERO));
                 Some(widgets::floating(&anchor, Placement::At, self.row_menu(target), Message::CloseMenu))
             }
-            Menu::Head | Menu::Message { .. } => None,
+            Menu::Head | Menu::Message { .. } | Menu::Shared { .. } => None,
         }
     }
 

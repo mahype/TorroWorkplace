@@ -24,20 +24,22 @@
 use iced::widget::text::{Rich, Span, Wrapping};
 use iced::widget::text_editor::{Binding, KeyPress};
 use iced::widget::{
-    Space, button, column, container, mouse_area, rich_text, row, rule, scrollable, text_editor as editor,
+    Space, button, column, container, mouse_area, rich_text, row, rule, scrollable, stack, text_editor as editor,
 };
 use iced::{Alignment, Background, Element, Fill, Padding, Rectangle, Size, Theme, border, keyboard};
-use torro_chat::{Conversation, FileRef, Mention, MessageKind, NotifyLevel, Person};
+use torro_chat::{Conversation, Mention, MessageKind, NotifyLevel, Person};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::SizeClass;
 use torro_gui::shell::{self, TopRow};
+use torro_gui::split;
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, Align, MenuItem, MenuSection, Placement};
-use torro_gui::{style, typo, units};
+use torro_gui::{style, typo};
 
 use super::{Anchors, HAIRLINE, avatar, kind_words, tile_face, tinted};
 use crate::app::chat::{Change, EDITOR, HISTORY, Msg, level_word};
+use crate::app::files::{self, FilesMsg};
 use crate::app::{App, ChatState, Menu, Message};
 use crate::people::{self, Group};
 use crate::timeline::{self, Item};
@@ -78,6 +80,20 @@ impl App {
         let head = column![container(head).width(Fill).center_x(Fill), rule::horizontal(HAIRLINE).style(style::rule)];
         let body = column![head, self.history(chat, anchors), self.composer(chat, anchors)].width(Fill).height(Fill);
         let body = container(body).width(Fill).height(Fill).center_x(Fill);
+        // The shared media stand at the side where both fit, else they take the window (stage 4).
+        let body: Element<'a, Message> = match &chat.files.media {
+            Some(panel) if files::media_beside(self.size.width) => {
+                let total = self.size.width;
+                let width = chat.files.split.width(files::media_limits(total));
+                let side = widgets::anchored(&anchors.shared, self.media_panel(chat, panel, width));
+                split::split_end(body, side, width, total, chat.files.split.dragging, |event| {
+                    files::wrap(FilesMsg::Split(event))
+                })
+            }
+            Some(panel) => widgets::anchored(&anchors.shared, self.media_panel(chat, panel, self.size.width)),
+            None => body.into(),
+        };
+        let body = stack![body, self.drop_layer(chat)].width(Fill).height(Fill);
         shell::shell(SizeClass::Narrow, Space::new(), header, body, None)
             .overlay(self.chat_layer(chat, anchors))
             .top_row(top)
@@ -139,8 +155,12 @@ impl App {
                 tr("The server cannot be reached. This is what was kept."),
             ));
         }
+        let open = chat.files.media.is_some();
+        let tip = if open { tr("Hide shared media") } else { tr("Shared media") };
+        let media =
+            widgets::icon_toggle(Icon::LayoutGrid, tip, open, Some(Message::Chat(Msg::Files(FilesMsg::ToggleMedia))));
         let more = widgets::icon_button(Icon::Ellipsis, tr("More"), Some(Message::Chat(Msg::HeadMenu)));
-        head.push(widgets::anchored(&anchors.head, more)).into()
+        head.push(media).push(widgets::anchored(&anchors.head, more)).into()
     }
 
     /// The history, or why there is none.
@@ -231,24 +251,36 @@ impl App {
         if let Some(quote) = &message.reply_to {
             parts.push(quote_block(&quote.author, &quote.text));
         }
+        // Inside the bubble: what is left of its width after its padding.
+        let room = bubble_max - 2.0 * space::m();
         if message.kind == MessageKind::Deleted {
             parts.push(typo::text(typo::body(), tr("This message was deleted.")).style(theme::text_3).into());
-        } else if !message.text.trim().is_empty()
-            && !(message.files.len() == 1 && message.text == message.files[0].name)
-        {
-            parts.push(message_text(&message.text, &message.mentions));
+        } else {
+            // Files first, the text under them as their caption (stage 4), as Talk shows it.
+            parts.extend(message.files.iter().map(|file| self.file_part(chat, message, file, room)));
+            let caption_is_name = message.files.len() == 1 && message.text == message.files[0].name;
+            if !message.text.trim().is_empty() && !caption_is_name && message.kind != MessageKind::Voice {
+                parts.push(message_text(&message.text, &message.mentions));
+            }
+            parts.extend(self.link_part(chat, message, room));
         }
-        parts.extend(message.files.iter().map(file_line));
+        // "Show in chat" marks the message it went to.
+        let marked = chat.files.highlight.as_deref() == Some(message.id.as_str());
         let bubble = container(column(parts).spacing(space::xs()))
             .padding([space::s(), space::m()])
             .max_width(bubble_max)
             .style(move |t: &Theme| {
                 let p = palette(t);
+                // The person's own stand on `selected` without an edge; the others' need the line
+                // to stand off the panel.
+                let (edge, width) = match (marked, own) {
+                    (true, _) => (p.line_selected, HAIRLINE),
+                    (false, true) => (p.line, 0.0),
+                    (false, false) => (p.line, HAIRLINE),
+                };
                 container::Style {
                     background: Some(Background::Color(if own { p.selected } else { p.raised })),
-                    // The person's own stand on `selected` without an edge; the others' need the line
-                    // to stand off the panel.
-                    border: border::rounded(theme::radius::md()).color(p.line).width(if own { 0.0 } else { HAIRLINE }),
+                    border: border::rounded(theme::radius::md()).color(edge).width(width),
                     text_color: Some(p.text),
                     ..container::Style::default()
                 }
@@ -352,8 +384,10 @@ impl App {
         if !read_only {
             field = field.on_action(|action| Message::Chat(Msg::Edit(action)));
         }
-        let ready = !chat.editor.text().trim().is_empty() && !chat.sending && !read_only;
         let editing = chat.editing.is_some();
+        let files = &chat.files;
+        let something = !chat.editor.text().trim().is_empty() || (!editing && !files.ready().is_empty());
+        let ready = something && !chat.sending && !read_only && !files.preparing() && files.upload.is_none();
         let (send_icon, send_tip, busy_tip) = if editing {
             (Icon::Check, tr("Save (Enter)"), tr("Saving…"))
         } else {
@@ -367,7 +401,13 @@ impl App {
         } else {
             widgets::icon_button(send_icon, send_tip, ready.then_some(Message::Chat(Msg::Send)))
         };
-        let entry = row![field, send].spacing(space::s()).align_y(Alignment::Center);
+        let can_attach = !read_only && !editing && files.upload.is_none();
+        let attach = widgets::icon_button(
+            Icon::Paperclip,
+            tr("Attach file"),
+            can_attach.then_some(Message::Chat(Msg::Files(FilesMsg::Attach))),
+        );
+        let entry = row![attach, field, send].spacing(space::s()).align_y(Alignment::Center);
         let mut parts: Vec<Element<'a, Message>> = Vec::new();
         if let Some(error) = &chat.send_error {
             let mark = tinted(Icon::CircleAlert, icon::SIZE_SM, |p| p.error_text);
@@ -421,6 +461,8 @@ impl App {
                     .into(),
             );
         }
+        // The files stand right above the field, where the text that becomes their caption is typed.
+        parts.extend(self.composer_files(chat));
         parts.push(entry.into());
         let content = column(parts).spacing(space::s()).padding(composer_padding()).max_width(size::content_max());
         // The suggestions of an `@` float above the whole composer, so they never hide the quote.
@@ -468,6 +510,7 @@ impl App {
                 let last = vec![MenuItem::new(Icon::MailOpen, tr("Mark as unread"), Message::Chat(Msg::MarkUnread))];
                 let mut sections: Vec<MenuSection<'a, Message>> =
                     [first].into_iter().filter(|items| !items.is_empty()).map(MenuSection::new).collect();
+                sections.extend(file_items(message));
                 sections.extend(own);
                 sections.push(MenuSection::new(last));
                 let reactions = (open && timeline::is_reactable(message) && !chat.changing.contains_key(id))
@@ -483,6 +526,12 @@ impl App {
                         widgets::floating(&anchors.more, Placement::Below(side), card, Message::CloseMenu)
                     }
                 });
+            }
+            Some(Menu::Shared { index, at }) => {
+                let item = chat.files.media.as_ref()?.items.get(*index)?;
+                let menu = widgets::menu(vec![MenuSection::new(self.shared_items(item))]);
+                let anchor = anchors.shared.area(Rectangle::new(*at, Size::ZERO));
+                return Some(widgets::floating(&anchor, Placement::At, menu, Message::CloseMenu));
             }
             _ => {}
         }
@@ -563,6 +612,16 @@ pub(crate) fn composer_binding(press: KeyPress, first: Option<Mention>) -> Optio
     if named(Named::Enter) && !press.modifiers.shift() {
         return Some(Binding::Custom(Message::Chat(Msg::Send)));
     }
+    // A paste may bring a picture or files (stage 4): the window reads the clipboard itself and
+    // pastes text as before. Shift keeps the plain paste of the field.
+    let modifiers = press.modifiers;
+    if modifiers.command()
+        && !modifiers.alt()
+        && !modifiers.shift()
+        && matches!(press.key.as_ref(), keyboard::Key::Character("v" | "V"))
+    {
+        return Some(Binding::Custom(Message::Chat(Msg::Files(FilesMsg::Paste))));
+    }
     Binding::from_key_press(press)
 }
 
@@ -636,6 +695,30 @@ pub(super) fn menu_card<'a>(
     container(column(rows)).width(widgets::menu_width()).padding(style::MENU_INSET).style(style::container::menu).into()
 }
 
+/// The file entries of a message's menu (stage 4), for its first file – Talk shares one file per
+/// message: show it large or open it, save it to Downloads or elsewhere, open it in Nextcloud. A file
+/// shared without download keeps only the last.
+fn file_items<'a>(message: &'a torro_chat::Message) -> Option<MenuSection<'a, Message>> {
+    let file = message.files.first().filter(|_| message.kind != MessageKind::Deleted)?;
+    let (id, file_id) = (message.id.clone(), file.id.clone());
+    let wrap = |msg: FilesMsg| Message::Chat(Msg::Files(msg));
+    let mut items = Vec::new();
+    if super::files::look(message, file, None) == super::files::Look::Picture {
+        items.push(MenuItem::new(Icon::Maximize, tr("Show large"), wrap(FilesMsg::View(id.clone(), file_id.clone()))));
+    }
+    if !file.hide_download {
+        items.push(MenuItem::new(Icon::ExternalLink, tr("Open"), wrap(FilesMsg::Open(id.clone(), file_id.clone()))));
+        items.push(MenuItem::new(
+            Icon::Download,
+            tr("Save to Downloads"),
+            wrap(FilesMsg::Save(id.clone(), file_id.clone())),
+        ));
+        items.push(MenuItem::new(Icon::Save, tr("Save as…"), wrap(FilesMsg::SaveAs(id, file_id.clone()))));
+    }
+    items.push(MenuItem::new(Icon::Cloud, tr("Open in Nextcloud"), wrap(FilesMsg::Nextcloud(file_id))));
+    Some(MenuSection::new(items))
+}
+
 /// The text of a message with its mentions in the stronger weight.
 fn message_text<'a>(text: &'a str, mentions: &'a [Mention]) -> Element<'a, Message> {
     let body = typo::body();
@@ -668,20 +751,6 @@ fn quote_block<'a>(author: &'a str, text: &'a str) -> Element<'a, Message> {
         ..container::Style::default()
     });
     row![stroke, words].spacing(space::s()).into()
-}
-
-/// A file of a message as one line (stage 3: every kind; pictures and players come with stage 4):
-/// its icon, name and size.
-fn file_line<'a>(file: &'a FileRef) -> Element<'a, Message> {
-    let size = units::format_bytes(file.size);
-    row![
-        tinted(Icon::FileText, icon::SIZE, |p| p.text_2),
-        widgets::ellipsized(typo::body(), file.name.as_str(), theme::text),
-        typo::text(typo::meta().tabular(), size).style(theme::text_3).wrapping(Wrapping::None),
-    ]
-    .spacing(space::s())
-    .align_y(Alignment::Center)
-    .into()
 }
 
 /// A message of the provider: small and grey in the middle, a missed call with its icon, the time
