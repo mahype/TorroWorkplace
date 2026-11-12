@@ -248,6 +248,10 @@ pub enum Icon {
     FilePenLine,
     /// "Aa" in the tools row of the compose window (issue #627): shows or hides the formats.
     ALargeSmall,
+    /// A video's preview and a voice message in the chat (issue #643): plays it.
+    Play,
+    /// A file dragged over a chat window (issue #643): dropping sends it.
+    Upload,
 }
 
 impl Icon {
@@ -387,6 +391,8 @@ impl Icon {
         Icon::TriangleAlert,
         Icon::FilePenLine,
         Icon::ALargeSmall,
+        Icon::Play,
+        Icon::Upload,
     ];
 
     /// The icon as an SVG handle with its stroke in `color` (opaque), for drawing it on a canvas,
@@ -536,6 +542,8 @@ impl Icon {
             Icon::TriangleAlert => include_bytes!("../assets/icons/triangle-alert.svg"),
             Icon::FilePenLine => include_bytes!("../assets/icons/file-pen-line.svg"),
             Icon::ALargeSmall => include_bytes!("../assets/icons/a-large-small.svg"),
+            Icon::Play => include_bytes!("../assets/icons/play.svg"),
+            Icon::Upload => include_bytes!("../assets/icons/upload.svg"),
         }
     }
 }
