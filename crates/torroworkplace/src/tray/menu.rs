@@ -312,6 +312,7 @@ fn apps_section(waiting: Waiting, off: &BTreeSet<Component>) -> Vec<Item> {
         open(tr("Calendar"), AppId::CALENDAR),
         open(tr("Tasks"), AppId::TASKS),
         open(tr("Assistant"), AppId::ASSISTANT),
+        open(tr("Chat"), AppId::CHAT),
     ]
     .into_iter()
     .filter(|item| match item {
@@ -409,8 +410,8 @@ mod tests {
     use crate::core::InboxLine;
     use torro_pim::AccountState;
 
-    /// Where the template entries start: after the six apps and a separator.
-    const TEMPLATES: usize = 7;
+    /// Where the template entries start: after the seven apps and a separator.
+    const TEMPLATES: usize = 8;
 
     /// The menu as text: `▸` marks a submenu, parentheses a greyed-out entry, `-` a separator.
     fn labels(menu: &[Item]) -> Vec<String> {
@@ -493,6 +494,7 @@ mod tests {
                 tr("Calendar").to_string(),
                 tr("Tasks").to_string(),
                 tr("Assistant").to_string(),
+                tr("Chat").to_string(),
                 "-".to_string(),
                 workspaces_line(),
                 sub("Entwicklung"),
@@ -597,6 +599,7 @@ mod tests {
         assert_eq!(action_of(&menu, tr("Calendar")), Some(Action::OpenApp(AppId::CALENDAR)));
         assert_eq!(action_of(&menu, tr("Tasks")), Some(Action::OpenApp(AppId::TASKS)));
         assert_eq!(action_of(&menu, tr("Assistant")), Some(Action::OpenApp(AppId::ASSISTANT)));
+        assert_eq!(action_of(&menu, tr("Chat")), Some(Action::OpenApp(AppId::CHAT)));
         assert_eq!(
             action_of(&menu, tr("Settings…")),
             Some(Action::Run(Box::new(Request::OpenApp { app: AppId::WORKPLACE.binary.to_string(), target: None })))
