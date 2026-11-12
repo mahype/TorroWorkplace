@@ -165,6 +165,12 @@ impl PresenceService {
         self.seen().get(account).copied()
     }
 
+    /// Reads the person's own status on `account` anew, for the ringing, which must know a "Do not
+    /// disturb" set elsewhere a moment ago; what was seen stays when the server cannot be asked.
+    pub async fn refresh_own_on(&self, account: &str) {
+        let _ = self.own(account, false).await;
+    }
+
     /// Reads the person's own status on every account anew for [`PresenceService::own_status_seen`];
     /// an account whose server tells none or cannot be reached keeps what was seen.
     pub async fn refresh_own(&self) {

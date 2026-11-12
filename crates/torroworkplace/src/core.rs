@@ -3920,10 +3920,16 @@ impl Core {
         // The chat's windows float under Hyprland (decision 3 in `docs/chat.md`): set at the start
         // and again after Hyprland reloaded its configuration, which drops rules set at run time;
         // so also the windows `torrochat` starts itself (a picture shown large) float.
+        // Only Hyprland has the rules and the reload; elsewhere nothing is asked.
         let core = Arc::clone(self);
         tokio::spawn(async move {
+            if !matches!(core.backend, Backend::Hyprland(_)) {
+                return;
+            }
+            // Subscribed before the first rule, so a reload in between is not missed.
+            let events = core.backend.events().await;
             core.float_chat_windows().await;
-            let Ok(mut events) = core.backend.events().await else { return };
+            let Ok(mut events) = events else { return };
             while let Some(event) = events.recv().await {
                 if event == torro_wm::WmEvent::ConfigReloaded {
                     core.float_chat_windows().await;
@@ -3957,9 +3963,10 @@ impl Core {
                 for conversation in core.chat.look_for_rings(Utc::now()).await {
                     // "Do not disturb" on the account rings nothing (`docs/chat.md`, stage 6); the call
                     // stays announced, so it does not ring later either.
-                    let account = torro_chat::split_conversation(&conversation).map(|(account, _)| account);
-                    if account.and_then(|account| core.presence.own_status_on(account)) == Some(torro_chat::Status::Dnd)
-                    {
+                    let Some((account, _)) = torro_chat::split_conversation(&conversation) else { continue };
+                    // Read now: "Do not disturb" may have been set on the phone a moment ago.
+                    core.presence.refresh_own_on(account).await;
+                    if core.presence.own_status_on(account) == Some(torro_chat::Status::Dnd) {
                         continue;
                     }
                     core.ring(conversation).await;
@@ -9861,7 +9868,11 @@ impl Core {
                     }
                 }
                 Request::ChatSaveAttachment { id, file, to } => match self.chat_place(&to, reach) {
-                    Ok(place) => self.chat.save_attachment(&id, &file, place, caller).await,
+                    // One read of the server at a time per client, as for the other reads (decision 9).
+                    Ok(place) => {
+                        let _one = self.chat.one_read(caller).await;
+                        self.chat.save_attachment(&id, &file, place, caller).await
+                    }
                     Err(refused) => refused,
                 },
                 Request::ChatReleaseFiles { account, ids } => {

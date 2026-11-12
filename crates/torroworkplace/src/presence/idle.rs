@@ -2,8 +2,9 @@
 //! decision 10): `online` while they are, `away` after the system's idle time, nothing while the
 //! screen is locked. Read from what the system already tells, without a library of its own:
 //!
-//! - Linux: systemd-logind's session (`loginctl show-session auto`), whose `LockedHint` lockers
-//!   such as hyprlock set through `loginctl lock-session`, and `IdleHint`, which idle daemons set.
+//! - Linux: systemd-logind's session (`loginctl show-session auto`): `LockedHint`, which some
+//!   lockers set, and `IdleHint`, which idle daemons may set. Lockers of Wayland desktops such as
+//!   hyprlock (Omarchy) and swaylock set neither, so a running one counts as locked too.
 //! - macOS: the idle time of the input devices (`ioreg -c IOHIDSystem`, `HIDIdleTime`); a locked
 //!   screen is not told, so after five minutes without input it counts as away.
 //! - Elsewhere, and whenever the answer cannot be read: [`Activity::Active`]. The plan says so: a
@@ -39,8 +40,16 @@ pub async fn activity() -> Activity {
     }
 }
 
+/// Screen lockers of Wayland desktops that tell logind nothing; one of them running means locked.
+#[cfg(target_os = "linux")]
+const LOCKERS: &str = "hyprlock|swaylock|gtklock|waylock";
+
 #[cfg(target_os = "linux")]
 async fn ask() -> Option<Activity> {
+    let locker = tokio::process::Command::new("pgrep").args(["-x", LOCKERS]).output().await;
+    if locker.is_ok_and(|output| output.status.success()) {
+        return Some(Activity::Locked);
+    }
     let output = tokio::process::Command::new("loginctl")
         .args(["show-session", "auto", "-p", "LockedHint", "-p", "IdleHint"])
         .output()

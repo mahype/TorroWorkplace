@@ -77,9 +77,9 @@ pub struct ChatService {
     cache: Mutex<Cache>,
     /// Shared with the presence service: one budget for everything a client sends in both areas.
     throttle: Arc<Throttle>,
-    /// One fetch at a time for client keys, so no agent keeps the server busy over many
-    /// conversations (decision 9).
-    client_fetch: tokio::sync::Mutex<()>,
+    /// One read of the server at a time per client key, so no agent keeps the server busy over
+    /// many conversations, and none holds up another (decision 9): a lock per client id.
+    client_fetch: Mutex<std::collections::BTreeMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Prepared files, uploads and sendings of files (stage 4).
     media: Mutex<media::Store>,
     /// Previews and link cards (stage 4).
@@ -113,11 +113,24 @@ impl ChatService {
             remotes,
             cache: Mutex::new(Cache::default()),
             throttle: Arc::new(Throttle::default()),
-            client_fetch: tokio::sync::Mutex::new(()),
+            client_fetch: Mutex::new(std::collections::BTreeMap::new()),
             media: Mutex::new(media::Store::default()),
             held: Mutex::new(attachments::Held::default()),
             attachments: None,
         }
+    }
+
+    /// Waits until `caller` may read the server: at once for the apps, one read at a time for each
+    /// client (decision 9). Held while the guard lives.
+    pub(crate) async fn one_read(&self, caller: service::Caller<'_>) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        if caller.is_app() {
+            return None;
+        }
+        let lock = {
+            let mut locks = self.client_fetch.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            Arc::clone(locks.entry(caller.client.unwrap_or_default().to_string()).or_default())
+        };
+        Some(lock.lock_owned().await)
     }
 
     /// The budget of what clients send, for the presence service to share.

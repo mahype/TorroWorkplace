@@ -200,7 +200,7 @@ pub struct Caller<'a> {
 }
 
 impl Caller<'_> {
-    pub(super) fn is_app(&self) -> bool {
+    pub(crate) fn is_app(&self) -> bool {
         matches!(self.reach, Reach::Suite)
     }
 }
@@ -373,12 +373,7 @@ impl ChatService {
             | Request::ChatFindPeople { .. }
             | Request::ChatGetPreview { .. }
             | Request::ChatGetAttachment { .. }
-            | Request::ChatSaveAttachment { .. }
-            | Request::ChatListShared { .. }
-                if !caller.is_app() =>
-            {
-                Some(self.client_fetch.lock().await)
-            }
+            | Request::ChatListShared { .. } => self.one_read(caller).await,
             _ => None,
         };
         let answer = match request {
@@ -666,6 +661,10 @@ impl ChatService {
             // Nothing in it: nothing to read.
             return Ok(Response::Ok);
         };
+        // Never back: what was read elsewhere already (the phone) stays read.
+        if room.last_read.is_some_and(|read| read >= number) {
+            return Ok(Response::Ok);
+        }
         self.asked(account, remote.mark_read(token.as_str(), number).await).await?;
         if let Some(room) = self.cache().account(account).room_mut(token.as_str()) {
             room.last_read = Some(number);

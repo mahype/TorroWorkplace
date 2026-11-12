@@ -111,7 +111,7 @@ impl ChatService {
     /// and whether the person is; the link to take part in the browser.
     pub(super) async fn get_call(self: &Arc<Self>, id: &str, caller: Caller<'_>) -> Result<Response, ChatError> {
         let (account, token) = conversation_of(id)?;
-        let _one = if caller.is_app() { None } else { Some(self.client_fetch.lock().await) };
+        let _one = self.one_read(caller).await;
         let (remote, _, me) = self.ready(account).await?;
         let room = self.room(account, &token).await?;
         let people = match room.has_call {
@@ -137,7 +137,7 @@ impl ChatService {
     /// nothing rings.
     pub(super) async fn decline_call(self: &Arc<Self>, id: &str, caller: Caller<'_>) -> Result<Response, ChatError> {
         let (account, token) = conversation_of(id)?;
-        let _one = if caller.is_app() { None } else { Some(self.client_fetch.lock().await) };
+        let _one = self.one_read(caller).await;
         let (remote, _, me) = self.ready(account).await?;
         self.room(account, &token).await?;
         // The server's list, not only what the last look found: a call may ring since.
