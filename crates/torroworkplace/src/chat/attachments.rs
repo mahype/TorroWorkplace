@@ -232,7 +232,8 @@ impl ChatService {
         if located.room.federated {
             return error_response(&unsupported("Files of conversations with other servers open in Nextcloud only."));
         }
-        if !sees_pictures(caller) && is_picture_content(&located.file.content_type) {
+        // A preview is a picture of the content, of a PDF page as much as of a photo.
+        if !sees_pictures(caller) {
             return no_picture_right();
         }
         if !located.file.preview || located.file.content_type.contains("svg") {

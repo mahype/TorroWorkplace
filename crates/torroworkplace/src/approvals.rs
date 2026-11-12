@@ -1218,7 +1218,10 @@ impl Approvals {
         for (entry, volatile) in entries.iter_mut().zip(&volatile) {
             if *volatile {
                 entry.request = Request::Ping;
-                if matches!(entry.info.state, ApprovalState::Done { .. }) {
+                // A chat command that ran keeps its answer: it names a sending, no file or byte, and
+                // after a restart nobody should take a sent message for one that never went.
+                let chat = entry.info.command.starts_with("chat.");
+                if matches!(entry.info.state, ApprovalState::Done { .. }) && !chat {
                     entry.info.state = ApprovalState::Done {
                         response: Box::new(Response::Error {
                             code: "not-found".into(),
@@ -1334,8 +1337,17 @@ fn entries_of(bytes: &[u8]) -> Result<Vec<Entry>, serde_json::Error> {
         let mut entry: Entry = serde_json::from_value(value.take())?;
         if volatile {
             entry.request = Request::Ping;
-            entry.info.state = ApprovalState::Expired;
-            entry.info.decided = Some(Utc::now());
+            let chat = entry.info.command.starts_with("chat.");
+            // A chat command that ran stays done; one still waiting has lost its files with the core.
+            if !(chat && matches!(entry.info.state, ApprovalState::Done { .. } | ApprovalState::Denied)) {
+                entry.info.state = ApprovalState::Expired;
+                entry.info.decided = Some(Utc::now());
+            }
+            // Its names and text go too, as with every decided chat approval (`forget`).
+            if chat {
+                entry.info.summary = chat_kept_command(&entry.info.command).to_string();
+                entry.info.details.clear();
+            }
         }
         if (old || sorting)
             && !matches!(entry.info.state, ApprovalState::Done { .. } | ApprovalState::Denied | ApprovalState::Expired)
@@ -2283,6 +2295,15 @@ fn chat_kept_summary(request: &Request) -> &'static str {
         Request::ChatReact { .. } => tr("React to a chat message"),
         Request::ChatCreateConversation { .. } => tr("Start a chat"),
         Request::PresenceSetOwnStatus { .. } => tr("Set your status"),
+        _ => tr("Send a chat message"),
+    }
+}
+
+/// What a chat approval read back without its request says (a restart dropped its files from
+/// memory): the kind of command by its name, nothing of the conversation or the files.
+fn chat_kept_command(command: &str) -> &'static str {
+    match command {
+        "chat.upload_file" | "chat.prepare_file" => tr("Prepare a file for the chat; nothing is sent yet"),
         _ => tr("Send a chat message"),
     }
 }
@@ -5018,6 +5039,39 @@ pub(crate) mod tests {
         approvals.finish(&opened.id, Response::MailImage { image }, now).await.expect("finished");
         let stored = fs::read_to_string(file_in(dir.path())).expect("file");
         assert!(!stored.contains("PRIVATE_PREVIEW"));
+    }
+
+    /// Stage 4 of `docs/chat.md`: a message with files is a shell on disk; after a restart one still
+    /// waiting has expired without its names, and one that ran stays done with its answer.
+    #[tokio::test]
+    async fn chat_files_wait_as_a_shell_and_a_restart_keeps_what_ran() {
+        let dir = tempfile::tempdir().expect("temp");
+        let approvals = quiet_in(dir.path());
+        let send = Request::ChatSendMessage {
+            conversation: "nextcloud:a@b/tok1".into(),
+            text: "the secret plan".into(),
+            reply_to: None,
+            silent: false,
+            files: vec!["fSECRETLEASE".into()],
+        };
+        let now = Utc::now();
+        let summary = "Send \"Plan.pdf\" to the group".to_string();
+        let waiting = approvals.open("one", "Agent", send.clone(), None, summary.clone(), now).await.expect("open");
+        let ran = approvals.open("one", "Agent", send, None, summary, now).await.expect("open");
+        approvals.decide(&ran.id, true, now).await.expect("decided");
+        approvals.finish(&ran.id, Response::ChatSending { id: "s1".into() }, now).await.expect("finished");
+        let stored = fs::read_to_string(file_in(dir.path())).expect("file");
+        assert!(!stored.contains("fSECRETLEASE") && stored.contains("volatile_images"));
+        let restarted = quiet_in(dir.path());
+        let waited = restarted.status(Some("one"), &waiting.id, now).await.expect("status");
+        assert_eq!(waited.state, ApprovalState::Expired);
+        assert!(!waited.summary.contains("Plan.pdf"), "{}", waited.summary);
+        let done = restarted.status(Some("one"), &ran.id, now).await.expect("status");
+        assert_eq!(
+            done.state,
+            ApprovalState::Done { response: Box::new(Response::ChatSending { id: "s1".into() }) },
+            "a sent message is no expired one"
+        );
     }
 
     #[test]

@@ -39,6 +39,9 @@ use super::service::{Caller, error_response};
 /// The most bytes prepared files and unfinished uploads hold together.
 pub const HELD_MAX: u64 = 100 * 1024 * 1024;
 
+/// The most bytes one client holds of [`HELD_MAX`].
+pub const CLIENT_HELD_MAX: u64 = 50 * 1024 * 1024;
+
 /// How long an unfinished upload waits for its next piece.
 pub const UPLOAD_OPEN_FOR: Duration = Duration::from_secs(10 * 60);
 
@@ -227,14 +230,23 @@ impl Store {
             + self.partial.values().map(|partial| partial.bytes.len() as u64).sum::<u64>()
     }
 
-    /// Whether `more` bytes still fit into [`HELD_MAX`].
-    fn fits(&self, more: u64) -> bool {
-        self.held().saturating_add(more) <= HELD_MAX
+    /// The bytes `owner` holds in memory.
+    fn held_by(&self, owner: Option<&str>) -> u64 {
+        self.prepared.values().filter(|p| p.owner.as_deref() == owner).map(Prepared::held).sum::<u64>()
+            + self.partial.values().filter(|p| p.owner.as_deref() == owner).map(|p| p.bytes.len() as u64).sum::<u64>()
+    }
+
+    /// Whether `more` bytes of `owner` still fit: [`HELD_MAX`] for all, and for a client at most
+    /// [`CLIENT_HELD_MAX`], so no client fills the memory the person's windows need.
+    fn fits(&self, owner: Option<&str>, more: u64) -> bool {
+        let all = self.held().saturating_add(more) <= HELD_MAX;
+        let own = owner.is_none() || self.held_by(owner).saturating_add(more) <= CLIENT_HELD_MAX;
+        all && own
     }
 
     /// Keeps `prepared`; `busy` when its bytes do not fit.
     fn keep(&mut self, prepared: Prepared) -> Result<(), Response> {
-        if !self.fits(prepared.held()) {
+        if !self.fits(prepared.owner.as_deref(), prepared.held()) {
             return Err(error_response(&ChatError::Busy));
         }
         self.prepared.insert(prepared.id.clone(), prepared);
@@ -259,7 +271,7 @@ impl Store {
                 return Err(refused("conflict", tr("A new upload starts at offset 0.")));
             }
             let open = self.partial.values().filter(|partial| partial.owner.as_deref() == owner).count();
-            if open >= MAX_OPEN_UPLOADS || !self.fits(bytes.len() as u64) {
+            if open >= MAX_OPEN_UPLOADS || !self.fits(owner, bytes.len() as u64) {
                 return Err(error_response(&ChatError::Busy));
             }
             let id = format!("u{}", super::service::reference());
@@ -269,7 +281,7 @@ impl Store {
             self.partial.insert(id.clone(), partial);
             return Ok((id, received));
         };
-        let fits = self.fits(bytes.len() as u64);
+        let fits = self.fits(owner, bytes.len() as u64);
         let partial = self
             .partial
             .get_mut(id)
@@ -360,17 +372,23 @@ impl Store {
         ids.iter().filter_map(|id| self.prepared.get(id).cloned()).collect()
     }
 
-    /// Whether `client` may send `count` files of `bytes` more at `now` ([`FILES_PER_HOUR`],
-    /// [`BYTES_PER_HOUR`]); counts them when it may.
-    pub fn admit(&mut self, client: &str, count: usize, bytes: u64, now: Instant) -> bool {
+    /// Whether `client` could send `count` files of `bytes` more at `now`, without counting them.
+    pub fn would_admit(&mut self, client: &str, count: usize, bytes: u64, now: Instant) -> bool {
         let sent = self.sent.entry(client.to_string()).or_default();
         while sent.front().is_some_and(|(at, _)| now.duration_since(*at) >= HOUR) {
             sent.pop_front();
         }
         let total: u64 = sent.iter().map(|(_, bytes)| bytes).sum();
-        if sent.len() + count > FILES_PER_HOUR || total.saturating_add(bytes) > BYTES_PER_HOUR {
+        sent.len() + count <= FILES_PER_HOUR && total.saturating_add(bytes) <= BYTES_PER_HOUR
+    }
+
+    /// Whether `client` may send `count` files of `bytes` more at `now` ([`FILES_PER_HOUR`],
+    /// [`BYTES_PER_HOUR`]); counts them when it may.
+    pub fn admit(&mut self, client: &str, count: usize, bytes: u64, now: Instant) -> bool {
+        if !self.would_admit(client, count, bytes, now) {
             return false;
         }
+        let sent = self.sent.entry(client.to_string()).or_default();
         sent.extend(std::iter::repeat_n((now, 0), count.saturating_sub(1)));
         sent.push_back((now, bytes));
         true
@@ -682,12 +700,25 @@ impl ChatService {
     }
 
     /// For a client's request before anyone is asked to approve it: `not-found` for a prepared file
-    /// of `chat.send_message` that is not its own in the conversation's account, `error` for too many.
+    /// of `chat.send_message` that is not its own in the conversation's account, `error` for too many,
+    /// `busy` when its files would go beyond what it may send in an hour (counted when they go).
     pub fn files_refusal(&self, account: &str, ids: &[String], owner: Option<&str>) -> Option<Response> {
         if ids.len() > MAX_FILES {
             return Some(refused("error", tr("A message takes at most 10 files.")));
         }
-        self.media().lease(account, owner, ids, Instant::now()).err()
+        let now = Instant::now();
+        let mut store = self.media();
+        let files = match store.lease(account, owner, ids, now) {
+            Ok(files) => files,
+            Err(refusal) => return Some(refusal),
+        };
+        let bytes = files.iter().map(|file| file.size).sum();
+        match owner {
+            Some(client) if !store.would_admit(client, files.len(), bytes, now) => {
+                Some(error_response(&ChatError::Busy))
+            }
+            _ => None,
+        }
     }
 
     /// `chat.send_message` with `files`: checks them and the server, then uploads and shares them in
@@ -860,6 +891,7 @@ impl ChatService {
                 let _ = remote.delete_file(&job.user, &path, &etag).await;
                 return Err(Stop::Cancelled);
             }
+            // From the first share on the state stays `sharing`: a message is out, cancelling is over.
             self.progress(&job.id, |progress| progress.state = UploadState::Sharing);
             // The text goes under the last file, as Talk's own window does.
             let with_text = index == last && job.caps.caption;
@@ -877,9 +909,6 @@ impl ChatService {
                 return Err(err.into());
             }
             shared_ids.extend(uploaded.file_id);
-            if index != last {
-                self.progress(&job.id, |progress| progress.state = UploadState::Uploading);
-            }
         }
         Ok(())
     }
@@ -1102,6 +1131,8 @@ fn read_source(source: Source, limit: u64, space: bool) -> Result<Prepared, Resp
     };
     match source {
         Source::Tool { register, path, title, sha256: expected } => {
+            let (size, _) = stamp(&path).ok_or_else(not_found)?;
+            over(size)?;
             let bytes = std::fs::read(&path).map_err(|_| not_found())?;
             over(bytes.len() as u64)?;
             if sha256(&bytes) != expected {
