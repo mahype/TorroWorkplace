@@ -8573,12 +8573,26 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Nobody can write in this conversation right now.", "In dieser Unterhaltung kann gerade niemand schreiben."),
     ("No messages yet.", "Noch keine Nachrichten."),
     ("Open in Talk", "In Talk öffnen"),
-    ("Something went wrong. Open it in Talk to go on.", "Etwas ist schiefgegangen. Öffne die Unterhaltung in Talk, um weiterzumachen."),
+    (
+        "Something went wrong. Open it in Talk to go on.",
+        "Etwas ist schiefgegangen. Öffne die Unterhaltung in Talk, um weiterzumachen.",
+    ),
     ("Talk can't be reached right now. Trying again.", "Talk ist gerade nicht erreichbar. Neuer Versuch läuft."),
-    ("Talk can't be reached. These are the messages saved last.", "Talk ist nicht erreichbar. Das sind die zuletzt gespeicherten Nachrichten."),
+    (
+        "Talk can't be reached. These are the messages saved last.",
+        "Talk ist nicht erreichbar. Das sind die zuletzt gespeicherten Nachrichten.",
+    ),
     ("Talk is busy. Trying again in a few seconds.", "Talk ist ausgelastet. Neuer Versuch in ein paar Sekunden."),
-    ("Talk refused the sign-in. Check the account in the control centre.", "Talk hat die Anmeldung abgelehnt. Prüfe das Konto in der Steuerzentrale."),
+    (
+        "Talk refused the sign-in. Check the account in the control centre.",
+        "Talk hat die Anmeldung abgelehnt. Prüfe das Konto in der Steuerzentrale.",
+    ),
     ("This account has no Talk.", "Dieses Konto hat kein Talk."),
-    ("This conversation is gone, or you are no longer part of it.", "Diese Unterhaltung gibt es nicht mehr, oder du bist nicht mehr dabei."),
+    (
+        "This conversation is gone, or you are no longer part of it.",
+        "Diese Unterhaltung gibt es nicht mehr, oder du bist nicht mehr dabei.",
+    ),
     ("You", "Du"),
+    // Status icon (issue #643)
+    ("A status icon is one emoji.", "Ein Status-Icon ist ein einzelnes Emoji."),
 ];
