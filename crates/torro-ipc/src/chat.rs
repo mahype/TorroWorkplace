@@ -833,9 +833,11 @@ mod tests {
         for _ in 0..6 {
             states.push(chat.upload(id.clone()).await.expect("progress").state);
         }
+        // A quarter at a time: four or five looks, as the size divides by four, then sharing, then sent.
         assert_eq!(states[0], WindowState::Uploading, "a quarter at a time");
-        assert_eq!(states[4], WindowState::Sharing);
-        assert_eq!(states[5], WindowState::Sent);
+        let sharing = states.iter().position(|state| *state == WindowState::Sharing).expect("sharing");
+        assert!(states[..sharing].iter().all(|state| *state == WindowState::Uploading), "{states:?}");
+        assert_eq!(states.get(sharing + 1), Some(&WindowState::Sent), "{states:?}");
         let prepared = chat.prepare_file(ACCOUNT.into(), "/home/anna/a.pdf".into()).await.expect("prepared");
         chat.release_files(ACCOUNT.into(), vec![prepared.id]).await.expect("released");
         let stalled = chat.prepare_file(ACCOUNT.into(), "/home/anna/b.pdf".into()).await.expect("prepared");
