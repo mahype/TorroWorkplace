@@ -769,7 +769,7 @@ impl ChatService {
         let (account, ..) = message_of(id)?;
         let (remote, token, number) = self.own_message(id, |caps| caps.edit).await?;
         self.asked(account, remote.edit(token.as_str(), number, text).await).await?;
-        let patch = super::remote::Patch { number, text: Some(text.to_string()), deleted: false };
+        let patch = super::remote::Patch { number, text: Some(text.to_string()), deleted: false, reactions: None };
         self.patch(&conversation_id(account, token.as_str()), patch);
         Ok(Response::Ok)
     }
@@ -778,7 +778,7 @@ impl ChatService {
         let (account, ..) = message_of(id)?;
         let (remote, token, number) = self.own_message(id, |caps| caps.delete).await?;
         self.asked(account, remote.delete(token.as_str(), number).await).await?;
-        let patch = super::remote::Patch { number, text: None, deleted: true };
+        let patch = super::remote::Patch { number, text: None, deleted: true, reactions: None };
         self.patch(&conversation_id(account, token.as_str()), patch);
         Ok(Response::Ok)
     }

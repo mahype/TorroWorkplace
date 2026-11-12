@@ -350,6 +350,11 @@ pub struct Parent {
     pub text: String,
     /// The message was deleted (`deleted`, or `messageType` `comment_deleted`).
     pub deleted: bool,
+    /// Its reactions as they are now (`reactions`): a reaction's system message carries them, so
+    /// the message it names can show them without being fetched again.
+    pub reactions: BTreeMap<String, u64>,
+    /// The emojis the person gave it (`reactionsSelf`).
+    pub own_reactions: Vec<String>,
 }
 
 /// One chat message as checked from the server's answer ([`read_messages`]). All its texts are
@@ -876,12 +881,7 @@ pub(crate) fn read_message(entry: &Value) -> Option<ChatMessage> {
         parent: entry.get("parent").and_then(read_parent).map(Box::new),
         reference_id,
         reactions: read_reactions(entry.get("reactions")),
-        own_reactions: entry
-            .get("reactionsSelf")
-            .and_then(Value::as_array)
-            .map(|list| list.iter().filter_map(Value::as_str).map(|r| rich::line(r, &Value::Null)))
-            .map(|list| list.filter(|r| !r.is_empty()).collect())
-            .unwrap_or_default(),
+        own_reactions: read_own_reactions(entry.get("reactionsSelf")),
         edited_at,
         silent: entry.get("silent").and_then(Value::as_bool).unwrap_or(false),
         markdown: entry.get("markdown").and_then(Value::as_bool).unwrap_or(false),
@@ -963,7 +963,17 @@ fn read_parent(parent: &Value) -> Option<Parent> {
         author_name: author_name(parent, actor_type, &actor_id),
         text: rich::plain(text("message").unwrap_or_default(), parameters),
         deleted,
+        reactions: read_reactions(parent.get("reactions")),
+        own_reactions: read_own_reactions(parent.get("reactionsSelf")),
     })
+}
+
+/// The emojis the person gave (`reactionsSelf`), each one line; none when missing.
+fn read_own_reactions(own: Option<&Value>) -> Vec<String> {
+    own.and_then(Value::as_array)
+        .map(|list| list.iter().filter_map(Value::as_str).map(|r| rich::line(r, &Value::Null)))
+        .map(|list| list.filter(|r| !r.is_empty()).collect())
+        .unwrap_or_default()
 }
 
 /// The reactions map (emoji → count); PHP's empty `[]` and counts of 0 are none.
@@ -1242,6 +1252,8 @@ mod tests {
                 author_name: "Carla Example".into(),
                 text: "Hi Anna Example, can you check the plan?".into(),
                 deleted: false,
+                reactions: BTreeMap::new(),
+                own_reactions: Vec::new(),
             }
         );
         assert!(reply.silent);

@@ -113,6 +113,9 @@ pub struct Patch {
     pub text: Option<String>,
     /// It was deleted.
     pub deleted: bool,
+    /// Its reactions and the person's own ones as they are now, after a reaction or one taken
+    /// back (a hidden message of the provider that is not shown itself).
+    pub reactions: Option<(BTreeMap<String, u64>, Vec<String>)>,
 }
 
 /// The message another one answers.

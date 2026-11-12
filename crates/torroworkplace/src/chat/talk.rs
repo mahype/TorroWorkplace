@@ -165,10 +165,19 @@ fn shown(message: ChatMessage) -> RemoteMessage {
     };
     // An edit or a deletion names the message it changed as its parent.
     let patch = match (event, message.parent.as_deref()) {
-        (Some("message_deleted"), Some(parent)) => Some(Patch { number: parent.id, text: None, deleted: true }),
-        (Some("message_edited"), Some(parent)) => {
-            Some(Patch { number: parent.id, text: Some(parent.text.clone()), deleted: false })
+        (Some("message_deleted"), Some(parent)) => {
+            Some(Patch { number: parent.id, text: None, deleted: true, reactions: None })
         }
+        (Some("message_edited"), Some(parent)) => {
+            Some(Patch { number: parent.id, text: Some(parent.text.clone()), deleted: false, reactions: None })
+        }
+        // Someone reacted or took a reaction back: the parent carries the reactions as they are now.
+        (Some("reaction" | "reaction_revoked" | "reaction_deleted"), Some(parent)) => Some(Patch {
+            number: parent.id,
+            text: None,
+            deleted: false,
+            reactions: Some((parent.reactions.clone(), parent.own_reactions.clone())),
+        }),
         _ => None,
     };
     let reply_to = match (changes, message.parent) {

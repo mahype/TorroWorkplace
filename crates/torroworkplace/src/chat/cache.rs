@@ -153,6 +153,10 @@ impl Thread {
                     target.text.clone_from(text);
                     target.edited = true;
                 }
+                if let Some((reactions, own)) = &patch.reactions {
+                    target.reactions.clone_from(reactions);
+                    target.own_reactions.clone_from(own);
+                }
             }
             if message.hidden {
                 continue;
@@ -290,6 +294,30 @@ mod tests {
         assert!(thread.more, "what fell out is on the server");
     }
 
+    /// Review of PR #644: someone else's reaction comes as a hidden message whose parent carries the
+    /// reactions as they are now; the message reacted to shows them, also while a window watches.
+    #[test]
+    fn a_reaction_of_someone_else_changes_the_message_it_names() {
+        let mut cache = Cache::default();
+        let thread = cache.thread("a/tok1", Instant::now());
+        thread.merge(vec![message(3, "c")]);
+        let reactions = BTreeMap::from([("👍".to_string(), 2)]);
+        let reaction = RemoteMessage {
+            hidden: true,
+            patch: Some(Patch {
+                number: 3,
+                text: None,
+                deleted: false,
+                reactions: Some((reactions.clone(), vec!["👍".to_string()])),
+            }),
+            ..message(4, "")
+        };
+        thread.merge(vec![reaction]);
+        let (kept, _) = thread.last(10);
+        assert_eq!((kept[0].reactions.clone(), kept[0].own_reactions.clone()), (reactions, vec!["👍".to_string()]));
+        assert_eq!(kept.len(), 1, "the reaction itself is not shown");
+    }
+
     /// Review of #643: a hidden message (a reaction) is not kept, but a wait starts after it, else
     /// the server would answer the same reaction at once again and again.
     #[test]
@@ -309,10 +337,10 @@ mod tests {
         thread.merge(vec![message(1, "first"), message(2, "second")]);
         let mut edit = message(3, "You edited a message");
         edit.hidden = true;
-        edit.patch = Some(Patch { number: 1, text: Some("first, corrected".into()), deleted: false });
+        edit.patch = Some(Patch { number: 1, text: Some("first, corrected".into()), deleted: false, reactions: None });
         let mut deletion = message(4, "You deleted a message");
         deletion.hidden = true;
-        deletion.patch = Some(Patch { number: 2, text: None, deleted: true });
+        deletion.patch = Some(Patch { number: 2, text: None, deleted: true, reactions: None });
         thread.merge(vec![edit, deletion]);
         let (kept, _) = thread.last(10);
         assert_eq!(kept.len(), 2);
