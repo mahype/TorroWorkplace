@@ -26,7 +26,7 @@ esac
 root="$(cd "$(dirname "$0")/.." && pwd)"
 # The seven programs of the suite (AppId::program_file in crates/torro-core/src/app.rs); the package of each has the
 # same name.
-programs="torroworkplace torroinbox torro-inbox-mail torro-inbox-notifications torrocalendar torrotasks torroassistant"
+programs="torroworkplace torroinbox torro-inbox-mail torro-inbox-notifications torrocalendar torrotasks torroassistant torrochat"
 
 case "$(uname -s)" in
     Linux | Darwin) ;;
