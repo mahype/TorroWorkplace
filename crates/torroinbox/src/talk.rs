@@ -594,7 +594,15 @@ pub fn panel<'a>(
     now: DateTime<Utc>,
     buttons: Vec<Element<'a, Message>>,
 ) -> Panel<'a, Message> {
-    let path = detail::path(item, view_name);
+    // With a conversation the path ends with its name, which stays in view while the history
+    // scrolls; without one, as for any entry.
+    let path = match talk {
+        Some(_) => panel::path(
+            Some(torro_gui::widgets::Mark::Icon(list::source_icon(&item.source))),
+            [item.source.label(), list::plain(&item.title)],
+        ),
+        None => detail::path(item, view_name),
+    };
     let buttons: Element<'a, Message> = row(buttons).spacing(space::s()).align_y(Alignment::Center).width(Fill).into();
     let Some(talk) = talk else {
         return panel::panel(path, detail::heading(item), bare_body(item), Message::CloseDetail).footer(vec![buttons]);
@@ -602,7 +610,10 @@ pub fn panel<'a>(
     let open = widgets::icon_button(Icon::ExternalLink, tr("Open in Talk"), open_message(item));
     let chat = widgets::icon_button(Icon::MessageCircle, tr("Open chat"), Some(Message::Talk(Event::OpenChat)));
     let foot = column![reply_block(talk), buttons].spacing(space::m()).width(Fill);
+    // A line under the head, so the history does not run up into it unseparated.
+    let line = rule::horizontal(size::HAIRLINE).style(style::rule);
     panel::panel(path, detail::heading(item), panel::inset(history(talk, now)), Message::CloseDetail)
+        .bar(line)
         .actions(vec![chat, open])
         .footer(vec![foot.into()])
 }
@@ -655,9 +666,16 @@ fn history<'a>(talk: &'a Talk, now: DateTime<Utc>) -> Element<'a, Message> {
     }
     let divider = talk.divider();
     let mut start = 0;
+    let mut shown_day = None;
     while start < talk.messages.len() {
+        // A divider per day, as in the chat window; the messages then name only their time.
+        let day = local_day(talk.messages[start].at);
+        if shown_day != Some(day) {
+            lines = lines.push(line_divider(day_words(day, local_day(now))));
+            shown_day = Some(day);
+        }
         if divider == Some(start) {
-            lines = lines.push(new_divider());
+            lines = lines.push(line_divider(tr("New").to_string()));
         }
         let end = block_end(&talk.messages, start, divider);
         lines = lines.push(block(&talk.messages[start..end], talk.quote.as_ref(), now));
@@ -683,7 +701,8 @@ fn block_end(messages: &[torro_chat::Message], start: usize, divider: Option<usi
     while let Some(next) = messages.get(end) {
         let previous = &messages[end - 1];
         let same = next.author.name == first.author.name && next.author.own == first.author.own;
-        let close = next.at - previous.at <= chrono::TimeDelta::minutes(10);
+        let close =
+            next.at - previous.at <= chrono::TimeDelta::minutes(10) && local_day(next.at) == local_day(previous.at);
         let person = matches!(next.kind, MessageKind::Message | MessageKind::Deleted);
         if !same || !close || !person || divider == Some(end) {
             break;
@@ -745,7 +764,10 @@ fn message_line<'a>(message: &'a torro_chat::Message, chosen: bool) -> Element<'
     let reply = RowAction::new(Icon::Reply, tr("Reply"), "", Message::Talk(Event::Reply(message.id.clone())));
     let body = typo::body();
     let middle = body.line_height.to_absolute(body.size).0 / 2.0;
-    widgets::row_actions_at(container(parts).width(Fill), vec![reply], chosen, false, middle)
+    // Room at the right for the bar, kept always: it covers no text and nothing moves on hover.
+    let room = widgets::row_actions_height() + space::s();
+    let parts = container(parts).width(Fill).padding(iced::Padding { right: room, ..iced::Padding::ZERO });
+    widgets::row_actions_at(parts, vec![reply], chosen, false, middle)
 }
 
 /// A quote in a message or over the field: a line at the left, the author in `text_2`, the start of
@@ -764,9 +786,9 @@ fn quote_view<'a>(quote: &Quote) -> Element<'a, Message> {
 }
 
 /// "New" between two lines.
-fn new_divider<'a>() -> Element<'a, Message> {
+fn line_divider<'a>(words: String) -> Element<'a, Message> {
     let line = || rule::horizontal(size::HAIRLINE).style(style::rule);
-    row![line(), typo::text(typo::caption(), tr("New")).style(theme::text_3).wrapping(Wrapping::None), line()]
+    row![line(), typo::text(typo::caption(), words).style(theme::text_3).wrapping(Wrapping::None), line()]
         .spacing(space::s())
         .align_y(Alignment::Center)
         .into()
@@ -800,7 +822,9 @@ fn reply_block<'a>(talk: &'a Talk) -> Element<'a, Message> {
     let send: Element<'a, Message> = if talk.sending {
         widgets::busy_button(tr("Sending…"), style::button::ghost)
     } else {
-        let ready = !talk.reply.text().trim().is_empty();
+        // Offline nothing could go out, and nothing is sent later: the text waits in the field.
+        let offline = talk.offline || matches!(talk.problem, Some((_, ChatError::Offline)));
+        let ready = !talk.reply.text().trim().is_empty() && !offline;
         widgets::icon_button(Icon::Send, tr("Send"), ready.then_some(Message::Talk(Event::Send)))
     };
     block = block.push(row![field, send].spacing(space::s()).align_y(Alignment::End));
@@ -850,14 +874,25 @@ fn icon_text_3(t: &Theme, _: iced::widget::svg::Status) -> iced::widget::svg::St
     iced::widget::svg::Style { color: Some(palette(t).text_3) }
 }
 
-/// "14:30" today, else "Mon, 12 Oct · 14:30", in local time.
-fn stamp(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
-    let (local, today) = (at.with_timezone(&Local), now.with_timezone(&Local).date_naive());
-    let time = datetime::format_time(local.time());
-    if local.date_naive() == today {
-        time
+/// "14:30", in local time: the day stands in the divider above ([`day_words`]).
+fn stamp(at: DateTime<Utc>, _now: DateTime<Utc>) -> String {
+    datetime::format_time(at.with_timezone(&Local).time())
+}
+
+/// The local day of `at`.
+fn local_day(at: DateTime<Utc>) -> chrono::NaiveDate {
+    at.with_timezone(&Local).date_naive()
+}
+
+/// The words of a day divider: "Today", "Yesterday", else the short date ("Sat, 3 Oct"), as in the
+/// chat window.
+fn day_words(day: chrono::NaiveDate, today: chrono::NaiveDate) -> String {
+    if day == today {
+        tr("Today").to_string()
+    } else if today.pred_opt() == Some(day) {
+        tr("Yesterday").to_string()
     } else {
-        format!("{} · {time}", datetime::format_short_date(local.date_naive(), today))
+        datetime::format_short_date(day, today)
     }
 }
 
