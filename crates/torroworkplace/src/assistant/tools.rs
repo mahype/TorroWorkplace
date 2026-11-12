@@ -431,9 +431,11 @@ pub fn untrusted(area: Area, value: &Value) -> bool {
     match area {
         Area::Workflows => !matches!(result, Some("error" | "ok" | "workflow-template" | "workflow-templates")),
         Area::Mail | Area::Github => !error,
-        // Names, messages and status messages of other people (decision 5 in `docs/chat.md`); only
-        // `ok` and the id of a sent message hold none.
-        Area::Chat | Area::Presence => !matches!(result, Some("error" | "ok" | "chat-sent")),
+        // Names, messages and status messages of other people (decision 5 in `docs/chat.md`); only the
+        // answers of the data rule's positive list hold none (ids, the caller's own files).
+        Area::Chat | Area::Presence => {
+            !result.is_some_and(|result| crate::assistant::data_rule::CHAT_ANSWERS_ALLOWED.contains(&result))
+        }
         // Contacts are text of other people (shared books, the system address book), every answer
         // (decision 4 in `docs/kontakte.md`).
         Area::Contacts => true,

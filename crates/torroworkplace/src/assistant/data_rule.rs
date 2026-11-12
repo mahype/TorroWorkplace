@@ -194,10 +194,13 @@ const MAIL_ANSWERS_ALLOWED: &[&str] =
     &["ok", "mail-draft", "mail-sent", "mail-folders", "mail-filter-applied", "error"];
 
 /// The answers of `chat.*` and `presence.*` commands that hold no text of other people (decision 6
-/// in `docs/chat.md`): `ok`, that a message went out (its id alone) and errors. A positive list, so
-/// every answer added later stays home by itself. No switch lets the rest out: chats and who is
-/// there when are about other people.
-const CHAT_ANSWERS_ALLOWED: &[&str] = &["ok", "chat-sent", "error"];
+/// in `docs/chat.md`): `ok`, that a message went out (its id alone), that sending files began (its
+/// id alone), the caller's own prepared file and upload (`prepare_file`, `upload_file`) and how its
+/// sending goes (`get_upload`: ids, bytes and state), and errors; else an assistant with a model
+/// elsewhere could never send a file. A positive list, so every answer added later stays home by
+/// itself. No switch lets the rest out: chats and who is there when are about other people.
+pub(crate) const CHAT_ANSWERS_ALLOWED: &[&str] =
+    &["ok", "chat-sent", "chat-sending", "chat-prepared-file", "chat-file-upload", "chat-upload", "error"];
 
 /// A tool's answer as a model may read it.
 #[derive(Debug, Clone, PartialEq)]
@@ -498,6 +501,28 @@ mod tests {
         // Errors, and what the assistant wrote itself, still reach it.
         let error = Response::Error { code: "not-found".into(), message: "no such message".into() };
         assert_eq!(for_model(&search, &error, Place::Remote).value["result"], "error");
+    }
+
+    /// Decision 6 of `docs/chat.md`: a model elsewhere gets what sending a file needs (ids and the
+    /// caller's own file), never the messages of other people.
+    #[test]
+    fn a_model_elsewhere_may_send_chat_files_but_reads_no_chat() {
+        let prepare: Request =
+            serde_json::from_value(json!({"method": "chat.get_upload", "id": "s1"})).expect("a look at the upload");
+        let sending = Response::ChatSending { id: "s1".into() };
+        let send: Request = serde_json::from_value(
+            json!({"method": "chat.send_message", "conversation": "nextcloud:anna@cloud.example.org/ben4chat", "text": "hi"}),
+        )
+        .expect("a send");
+        assert!(!for_model(&send, &sending, Place::Remote).withheld, "the id of the sending");
+        let upload = Response::ChatFileUpload { upload: "u1".into(), received: 12 };
+        assert!(!for_model(&prepare, &upload, Place::Remote).withheld, "the caller's own upload");
+        let read: Request = serde_json::from_value(
+            json!({"method": "chat.get_messages", "conversation": "nextcloud:anna@cloud.example.org/ben4chat"}),
+        )
+        .expect("a read");
+        let page = Response::ChatConversations { conversations: Vec::new() };
+        assert!(for_model(&read, &page, Place::Remote).withheld, "what others wrote stays home");
     }
 
     #[test]
