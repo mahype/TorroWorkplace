@@ -89,11 +89,22 @@ pub struct Thread {
     pub watched_until: Option<Instant>,
     /// A live request for it is open.
     pub polling: bool,
+    /// The number of the newest message the server sent, kept or not: hidden ones (reactions,
+    /// edits) are not kept, and a wait after the newest kept one would get them again and again.
+    seen: Option<u64>,
 }
 
 impl Thread {
     fn new(now: Instant) -> Thread {
-        Thread { messages: VecDeque::new(), used: now, fetched: None, more: true, watched_until: None, polling: false }
+        Thread {
+            messages: VecDeque::new(),
+            used: now,
+            fetched: None,
+            more: true,
+            watched_until: None,
+            polling: false,
+            seen: None,
+        }
     }
 
     /// Whether the newest messages were confirmed less than [`FRESH_FOR`] ago, or live updates
@@ -111,6 +122,12 @@ impl Thread {
         self.messages.back().map(|message| message.number)
     }
 
+    /// Where a wait for new messages starts: after the newest message the server sent, also a
+    /// hidden one ([`Thread::merge`] keeps none of those).
+    pub fn wait_after(&self) -> Option<u64> {
+        self.newest().max(self.seen)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.messages.is_empty()
     }
@@ -123,6 +140,7 @@ impl Thread {
     /// every other one is kept once, in order. Beyond [`MESSAGES_KEPT`] the oldest go.
     pub fn merge(&mut self, messages: Vec<RemoteMessage>) {
         for message in messages {
+            self.seen = self.seen.max(Some(message.number));
             if let Some(patch) = &message.patch
                 && let Some(target) = self.messages.iter_mut().find(|held| held.number == patch.number)
             {
@@ -270,6 +288,18 @@ mod tests {
         assert_eq!(thread.last(usize::MAX).0.len(), MESSAGES_KEPT);
         assert_eq!(thread.newest(), Some(9 + MESSAGES_KEPT as u64));
         assert!(thread.more, "what fell out is on the server");
+    }
+
+    /// Review of #643: a hidden message (a reaction) is not kept, but a wait starts after it, else
+    /// the server would answer the same reaction at once again and again.
+    #[test]
+    fn a_wait_starts_after_a_hidden_message_too() {
+        let mut cache = Cache::default();
+        let thread = cache.thread("a/tok1", Instant::now());
+        thread.merge(vec![message(3, "c")]);
+        let reaction = RemoteMessage { hidden: true, ..message(4, "") };
+        thread.merge(vec![reaction]);
+        assert_eq!((thread.newest(), thread.wait_after()), (Some(3), Some(4)));
     }
 
     #[test]

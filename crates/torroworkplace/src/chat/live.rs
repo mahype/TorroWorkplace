@@ -71,7 +71,7 @@ async fn turn(service: &ChatService, conversation: &str) -> Result<(), ChatError
     let (fetched, newest) = {
         let cache = service.cache();
         let thread = cache.peek(conversation);
-        (thread.is_some_and(|thread| thread.fetched.is_some()), thread.and_then(|thread| thread.newest()))
+        (thread.is_some_and(|thread| thread.fetched.is_some()), thread.and_then(|thread| thread.wait_after()))
     };
     if !fetched {
         return service.fetch_newest(account, &token, &remote, &caps).await;
