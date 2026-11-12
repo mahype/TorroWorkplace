@@ -3917,6 +3917,19 @@ impl Core {
     /// minutes (decision 10 in `docs/chat.md`); off, nothing is ever sent. While "Ring for incoming
     /// calls" is on, the calls are looked at every 10 s (stage 6). Part of [`Core::start`].
     fn start_chat(self: &Arc<Self>) {
+        // The chat's windows float under Hyprland (decision 3 in `docs/chat.md`): set at the start
+        // and again after Hyprland reloaded its configuration, which drops rules set at run time;
+        // so also the windows `torrochat` starts itself (a picture shown large) float.
+        let core = Arc::clone(self);
+        tokio::spawn(async move {
+            core.float_chat_windows().await;
+            let Ok(mut events) = core.backend.events().await else { return };
+            while let Some(event) = events.recv().await {
+                if event == torro_wm::WmEvent::ConfigReloaded {
+                    core.float_chat_windows().await;
+                }
+            }
+        });
         let mut forgotten = self.pim.on_forget();
         let core = Arc::clone(self);
         tokio::spawn(async move {
@@ -3942,6 +3955,13 @@ impl Core {
                     continue;
                 }
                 for conversation in core.chat.look_for_rings(Utc::now()).await {
+                    // "Do not disturb" on the account rings nothing (`docs/chat.md`, stage 6); the call
+                    // stays announced, so it does not ring later either.
+                    let account = torro_chat::split_conversation(&conversation).map(|(account, _)| account);
+                    if account.and_then(|account| core.presence.own_status_on(account)) == Some(torro_chat::Status::Dnd)
+                    {
+                        continue;
+                    }
                     core.ring(conversation).await;
                 }
             }
@@ -10820,7 +10840,10 @@ impl Core {
             // The contact list shows who is there: for a client, as for a conversation, only with
             // read access to chat (`docs/api.md`, `apps.open_app`).
             crate::apps::Target::Chat { conversation: "contacts" } => match reach {
-                Reach::Client(rights) if !rights.area(Area::Chat).allows(Access::Read) => {
+                Reach::Client(rights)
+                    if !rights.area(Area::Chat).allows(Access::Read)
+                        || rights.chat_accounts == Selection::Only(Vec::new()) =>
+                {
                     Err(Box::new(refusal("not-found", "no chat for this key".into())))
                 }
                 _ => Ok((crate::apps::Opened::Chat { conversation: None }, tr("Contacts").to_string())),

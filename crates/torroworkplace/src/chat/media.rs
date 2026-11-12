@@ -803,6 +803,11 @@ impl ChatService {
         let cancel = Arc::new(AtomicBool::new(false));
         {
             let mut store = self.media();
+            // Taken and checked under one lock: of two sends with the same files at once, only the
+            // first gets them; the other finds them gone, as after a send.
+            if files.iter().any(|file| !store.prepared.contains_key(&file.id)) {
+                return Err(error_response(&ChatError::NotFound));
+            }
             for file in &files {
                 store.prepared.remove(&file.id);
             }

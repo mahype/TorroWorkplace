@@ -363,6 +363,24 @@ impl ChatService {
         {
             return error_response(&ChatError::Busy);
         }
+        // One read of the server at a time for clients (decision 9), on every way that reads it, so
+        // an agent cannot keep the server busy with many reads at once; the apps are not held up.
+        let _one = match &request {
+            Request::ChatListConversations { .. }
+            | Request::ChatGetMessages { .. }
+            | Request::ChatSearchMessages { .. }
+            | Request::ChatSuggestMentions { .. }
+            | Request::ChatFindPeople { .. }
+            | Request::ChatGetPreview { .. }
+            | Request::ChatGetAttachment { .. }
+            | Request::ChatSaveAttachment { .. }
+            | Request::ChatListShared { .. }
+                if !caller.is_app() =>
+            {
+                Some(self.client_fetch.lock().await)
+            }
+            _ => None,
+        };
         let answer = match request {
             Request::ChatListConversations { account, unread_only, query, limit } => {
                 self.list(caller.reach, account.as_deref(), unread_only, query.as_deref(), limit).await
@@ -541,8 +559,7 @@ impl ChatService {
                     (thread.fresh(now) && !thread.is_empty(), before.map(|before| thread.before(before, limit)))
                 };
                 if !fresh {
-                    // One at a time for clients, so an agent cannot keep the server busy.
-                    let _one = if caller.is_app() { None } else { Some(self.client_fetch.lock().await) };
+                    // A client holds the one read of the server already ([`ChatService::handle`]).
                     match self.fetch_newest(account, &token, &remote, &caps).await {
                         Ok(()) => {}
                         Err(ChatError::Offline) => offline = true,

@@ -160,6 +160,11 @@ impl PresenceService {
         self.seen().iter().next().map(|(account, status)| (account.clone(), *status))
     }
 
+    /// The person's own status on `account` as last read or set; `None` before any was.
+    pub fn own_status_on(&self, account: &str) -> Option<Status> {
+        self.seen().get(account).copied()
+    }
+
     /// Reads the person's own status on every account anew for [`PresenceService::own_status_seen`];
     /// an account whose server tells none or cannot be reached keeps what was seen.
     pub async fn refresh_own(&self) {
