@@ -7,6 +7,7 @@
 //! the chat with Gesa) and a message of the person's that is too old to change. For stage 4: the
 //! group "Design sync" ([`DESIGN`]) shares pictures, videos with and without a preview, a PDF, a
 //! voice message, a file that may not be downloaded and two links, one with its card ([`files`]).
+//! For stage 6b: Ben calls, and it rings ([`ChatSource::call`]).
 //!
 //! Editing and deleting follow Talk's limits ([`EDIT_FOR`], [`DELETE_FOR`]), measured from the
 //! sample's "now" or the clock, whichever is later, so tests on a fixed time stay the same.
@@ -19,6 +20,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, Duration, Utc};
 
+use crate::calls::Call;
 use crate::files::{
     Fetched, FilePiece, Picture, PreparedFile, PreviewSize, SaveTo, Sending, SharedKind, SharedPage, UploadProgress,
     UploadState, Uploaded,
@@ -71,6 +73,8 @@ struct Data {
     now: DateTime<Utc>,
     /// Prepared files, uploads and sendings (stage 4).
     files: files::Files,
+    /// Calls by conversation (stage 6b): Ben rings.
+    calls: BTreeMap<String, Call>,
 }
 
 impl Data {
@@ -367,7 +371,8 @@ fn sample(now: DateTime<Utc>) -> Data {
         clear_at: None,
         heartbeat: true,
     };
-    Data { conversations, messages, people, own, next: 100, now, files: files::Files::default() }
+    let calls = BTreeMap::from([(BEN.to_string(), ringing_call(BEN, now))]);
+    Data { conversations, messages, people, own, next: 100, now, files: files::Files::default(), calls }
 }
 
 /// The messages of [`LENA`], the oldest first, the last at `now` less six minutes (the Talk entry of
@@ -978,6 +983,59 @@ impl ChatSource for DemoSource {
         }
         Ok(card)
     }
+
+    async fn call(&self, conversation: String) -> Result<Call, ChatError> {
+        let data = self.lock();
+        if !data.messages.contains_key(&conversation) {
+            return Err(ChatError::NotFound);
+        }
+        Ok(data.calls.get(&conversation).cloned().unwrap_or_else(|| Call {
+            link: call_link(&conversation),
+            conversation,
+            ..Call::default()
+        }))
+    }
+
+    async fn decline_call(&self, conversation: String) -> Result<(), ChatError> {
+        let mut data = self.lock();
+        if !data.messages.contains_key(&conversation) {
+            return Err(ChatError::NotFound);
+        }
+        if let Some(call) = data.calls.get_mut(&conversation) {
+            call.ringing = false;
+        }
+        Ok(())
+    }
+
+    async fn leave_call(&self, conversation: String) -> Result<(), ChatError> {
+        let mut data = self.lock();
+        if !data.messages.contains_key(&conversation) {
+            return Err(ChatError::NotFound);
+        }
+        if let Some(call) = data.calls.get_mut(&conversation) {
+            call.joined = false;
+        }
+        Ok(())
+    }
+}
+
+/// Where the sample's call of `conversation` would run in the browser.
+fn call_link(conversation: &str) -> String {
+    let token = crate::model::split_conversation(conversation).map_or("", |(_, token)| token);
+    format!("https://cloud.example.org/call/{token}")
+}
+
+/// The call of the sample: Ben calls the person, it rings, one is in it (Ben), since `now`.
+fn ringing_call(conversation: &str, now: DateTime<Utc>) -> Call {
+    Call {
+        conversation: conversation.to_owned(),
+        active: true,
+        ringing: true,
+        since: Some(now),
+        people: 1,
+        joined: false,
+        link: call_link(conversation),
+    }
 }
 
 /// A picture of the sample for the file or message `id`, `width` × `height`.
@@ -1283,6 +1341,23 @@ mod tests {
     }
 
     // -- Stage 4 ------------------------------------------------------------------------------
+
+    // -- Stage 6b ------------------------------------------------------------------------------
+
+    #[test]
+    fn ben_rings_until_declined() {
+        let demo = demo();
+        let call = run(demo.call(BEN.into())).expect("Ben's call");
+        assert!(call.rings() && call.active);
+        assert_eq!(call.link, "https://cloud.example.org/call/ben4chat");
+        let quiet = run(demo.call(TEAM.into())).expect("no call");
+        assert!(!quiet.active && !quiet.rings());
+        run(demo.decline_call(BEN.into())).expect("declined");
+        assert!(!run(demo.call(BEN.into())).expect("call").rings(), "it no longer rings");
+        assert!(run(demo.call(BEN.into())).expect("call").active, "the others' call goes on");
+        run(demo.leave_call(BEN.into())).expect("nothing to leave");
+        assert_eq!(run(demo.call("nope/x".into())), Err(ChatError::NotFound));
+    }
 
     #[test]
     fn design_sync_shares_every_kind_of_file() {

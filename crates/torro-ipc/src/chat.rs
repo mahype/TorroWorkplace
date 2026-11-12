@@ -123,8 +123,8 @@ impl ChatClient {
     }
 }
 
-/// Calls (stage 6b of `docs/chat.md`), for the ringing window. Not part of [`ChatSource`]: only the
-/// chat app's ringing window asks them, and the demo has no calls.
+/// Calls (stage 6b of `docs/chat.md`), for the ringing window, with the wire's [`ChatCall`]. The
+/// ringing window asks them through [`ChatSource::call`] and its kin, which the demo answers too.
 impl ChatClient {
     /// `chat.get_call`: the call of `conversation`.
     pub async fn call(&self, conversation: String) -> Result<ChatCall, ChatError> {
@@ -404,6 +404,29 @@ impl ChatSource for ChatClient {
             other => Err(unexpected(other)),
         }
     }
+
+    // Stage 6b: the same requests as the methods of `ChatClient` above (`Type::method` names those).
+
+    async fn call(&self, conversation: String) -> Result<torro_chat::Call, ChatError> {
+        let call = ChatClient::call(self, conversation).await?;
+        Ok(torro_chat::Call {
+            conversation: call.conversation,
+            active: call.active,
+            ringing: call.ringing,
+            since: call.since,
+            people: call.people,
+            joined: call.joined,
+            link: call.link,
+        })
+    }
+
+    async fn decline_call(&self, conversation: String) -> Result<(), ChatError> {
+        ChatClient::decline_call(self, conversation).await
+    }
+
+    async fn leave_call(&self, conversation: String) -> Result<(), ChatError> {
+        ChatClient::leave_call(self, conversation).await
+    }
 }
 
 // The wire types of stage 4 and the windows' own (`torro_chat::files`): bytes travel as Base64 on the
@@ -632,6 +655,19 @@ mod tests {
                 })
             }
             Request::ChatShowCard { id } => demo.show_card(id).await.map(|card| Response::ChatCard { card }),
+            Request::ChatGetCall { conversation } => demo.call(conversation).await.map(|call| Response::ChatCall {
+                call: ChatCall {
+                    conversation: call.conversation,
+                    active: call.active,
+                    ringing: call.ringing,
+                    since: call.since,
+                    people: call.people,
+                    joined: call.joined,
+                    link: call.link,
+                },
+            }),
+            Request::ChatDeclineCall { conversation } => done(demo.decline_call(conversation).await),
+            Request::ChatLeaveCall { conversation } => done(demo.leave_call(conversation).await),
             Request::ChatMarkRead { conversation, up_to } => done(demo.mark_read(conversation, up_to).await),
             Request::ChatMarkUnread { conversation } => done(demo.mark_unread(conversation).await),
             Request::ChatSuggestMentions { conversation, query, .. } => {
@@ -809,6 +845,20 @@ mod tests {
         };
         chat.cancel_upload(id.clone()).await.expect("cancelled");
         assert_eq!(chat.upload(id).await.expect("progress").state, WindowState::Cancelled);
+        serving.abort();
+    }
+
+    /// Stage 6b: the ringing window's three methods of `ChatSource` are the requests of the client's own.
+    #[tokio::test]
+    async fn the_ringing_window_asks_and_declines_over_the_socket() {
+        let (chat, serving, _dir) = core().await;
+        let call = ChatSource::call(&chat, BEN.into()).await.expect("Ben's call");
+        assert!(call.rings());
+        assert!(call.link.ends_with("/call/ben4chat"));
+        ChatSource::decline_call(&chat, BEN.into()).await.expect("declined");
+        assert!(!ChatSource::call(&chat, BEN.into()).await.expect("call").rings());
+        ChatSource::leave_call(&chat, BEN.into()).await.expect("left");
+        assert_eq!(ChatSource::call(&chat, "nextcloud:x@y/nope".into()).await, Err(ChatError::NotFound));
         serving.abort();
     }
 

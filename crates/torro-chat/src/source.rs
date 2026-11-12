@@ -12,6 +12,7 @@ use std::future::Future;
 
 use chrono::{DateTime, Utc};
 
+use crate::calls::Call;
 use crate::files::{
     Fetched, FilePiece, Picture, PreparedFile, PreviewSize, SaveTo, Sending, SharedKind, SharedPage, UploadProgress,
     Uploaded,
@@ -305,4 +306,20 @@ pub trait ChatSource: Send + Sync {
     /// the account's server; `None` when there is none. Later pages of `chat.get_messages` carry it
     /// in `cards`.
     fn show_card(&self, id: String) -> impl Future<Output = Result<Option<LinkCard>, ChatError>> + Send;
+
+    // -- Calls (stage 6b) ---------------------------------------------------------------------
+
+    /// `chat.get_call`: the call of `conversation` – whether one runs, whether it rings for the
+    /// person, how many are in it, whether the person is, and the link to take part in the browser.
+    /// Without a call `active` and `ringing` are false. [`ChatError::NotFound`] for an unknown
+    /// conversation.
+    fn call(&self, conversation: String) -> impl Future<Output = Result<Call, ChatError>> + Send;
+
+    /// `chat.decline_call`: stops `conversation` ringing for the person; the call of the others goes
+    /// on. Declining what no longer rings is no error.
+    fn decline_call(&self, conversation: String) -> impl Future<Output = Result<(), ChatError>> + Send;
+
+    /// `chat.leave_call`: the person leaves the call of `conversation`; while they take part in the
+    /// browser there is nothing to leave here, and the answer is `Ok`.
+    fn leave_call(&self, conversation: String) -> impl Future<Output = Result<(), ChatError>> + Send;
 }
