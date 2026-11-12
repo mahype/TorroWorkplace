@@ -16,7 +16,7 @@ der Wahl, was mitgeht, und den Zielen:
 | **Copy** | der Text in die Zwischenablage | TL1 |
 | **Save as file…** | die Datei (`.vcf`) speichern | TL1 |
 | **QR code** | die vCard als QR-Code, zum Abscannen mit dem Handy, ohne Netz | TL1 |
-| **Chat** | eine Nachricht mit Text und Datei in eine Unterhaltung (Nextcloud Talk) | TL2, umgesetzt in Stufe 4 des Chats ([chat.md](chat.md)) |
+| **Chat** | eine Nachricht mit Text und Datei in eine Unterhaltung (Nextcloud Talk) | TL2, umgesetzt in Stufe 5 des Chats ([chat.md](chat.md)) |
 | **Konnektoren** (Slack, Discord, Webhook) | Text und Datei an einen Kanal oder eine Person | [konnektoren.md](konnektoren.md) |
 
 Wie jede Funktion gibt es Teilen dreimal: in der Oberfläche (Teilen-Blatt), über die API und über
@@ -88,7 +88,7 @@ Dauergrant und Regelaktivierung sind getrennt. Kein Portal-Login, Browser, Skrip
    mitgeschickten Karten: „Contact card: Anna Muster (6 fields)“. Namen gehen durch dieselbe
    Entschärfung wie in anderen Freigaben (eine Zeile, keine Steuerzeichen, 60 Zeichen); kennt der
    Cache einen Kontakt nicht mehr, steht dort „unknown contact“.
-6. **Chat als Ziel kommt mit der Chat-App** ([chat.md](chat.md), Stufe 4). Hier steht, was ihr
+6. **Chat als Ziel kommt mit der Chat-App** ([chat.md](chat.md), Stufe 5). Hier steht, was ihr
    Senden-Befehl `chat.send_message` (MCP `chat_send_message`, Bereich `chat`) für das Teilen können
    muss (TL2):
    - Eine Nachricht kann Inhalte tragen: `items: [ShareItem]` mit Auswahl (`fields`).
@@ -140,7 +140,7 @@ torroinbox  ───┘  (Teilen-Blatt)          share/mod.rs         ShareItem
 | TL1 | `contacts.share_card { ids, fields? }` (Text, Datei, mitgehende Felder) | Read (`contacts`) | `contacts_share_card` |
 | TL1 | `mail.save_draft` mit `attachments: [{ kind: "items", items, fields? }]` (Erweiterung; einen eigenen Entwurf ersetzen braucht wie bisher Delete) | Write (`mail`) + Read der Inhalte | `mail_save_draft` (vorhanden) |
 | TL1 | `apps.open_app` mit `target: "draft:<m:id>"` (Schreibfenster mit dem Entwurf öffnen, Erweiterung) | Write (`apps`) | `apps_open_app` (vorhanden) |
-| TL2 | `chat.send_message { conversation, text, items?, fields? }` (Stufe 4 im [Chat-Konzept](chat.md#teilen-in-einen-chat-stufe-4)) | Write (`chat`) + nach außen + Read der Inhalte | `chat_send_message` |
+| TL2 | `chat.send_message { conversation, text, items?, fields? }` (Stufe 5 im [Chat-Konzept](chat.md#teilen-in-einen-chat-stufe-5)) | Write (`chat`) + nach außen + Read der Inhalte | `chat_send_message` |
 | TL3 | `notes.share_card`, `calendar.share_card`, `tasks.share_card`, … | Read im jeweiligen Bereich | je ein Tool |
 
 Erläuterungen:

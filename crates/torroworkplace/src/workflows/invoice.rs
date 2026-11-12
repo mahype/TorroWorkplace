@@ -1,7 +1,9 @@
 //! Strict, offline invoice copies: bounded tokenization, a closed Paddle profile and measured PDF text.
-//! No provider markup, styles, resources, links, forms or actions enter the generated PDF.
+//! No provider markup, styles, resources, links, forms or actions enter the generated PDF. Profile 2 also reads
+//! the page's stylesheet as data and refuses it when it could generate or hide invoice content.
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -12,6 +14,8 @@ use html5ever::tokenizer::{BufferQueue, Token, TokenSink, TokenSinkResult, Token
 use printpdf::{Mm, Op, ParsedFont, PdfDocument, PdfFontHandle, PdfPage, Point, Pt, TextItem};
 use sha2::{Digest, Sha256};
 
+use super::download::ResourceKind;
+
 const MAX_HTML: usize = 2 * 1024 * 1024;
 const MAX_TEXT: usize = 1024 * 1024;
 const MAX_TOKEN: usize = 16 * 1024;
@@ -19,7 +23,15 @@ const MAX_NODES: usize = 50_000;
 const MAX_DEPTH: usize = 64;
 const COPY_MARK: &str = "PDF copy generated from HTML · Not the supplier's original PDF";
 const TIME: Duration = Duration::from_secs(5);
+const MAX_CSS: usize = 512 * 1024;
+const MAX_CSS_RULES: usize = 20_000;
+const MAX_CSS_DEPTH: usize = 16;
+/// The only witnessed selectors whose hiding removes navigation and editing controls, never invoice facts.
+const HIDE_ALLOWED: &[&str] = &[".no-print", ".c-header"];
 static CONVERTERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+/// Tests that convert hold this turn, so the single global converter never reports `Busy` between parallel tests.
+#[cfg(test)]
+pub(super) static TEST_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -88,36 +100,211 @@ impl Invoice {
 pub struct Copy {
     pub bytes: Vec<u8>,
     pub pages: usize,
+    /// Profile 2: SHA-256 of the page's layout, compared with the package's `binding.layout`.
+    pub layout: Option<String>,
 }
 
 /// This digest deliberately includes the exact embedded font bytes, parser/profile and typesetter versions.
-pub fn binding() -> String {
-    static BINDING: OnceLock<String> = OnceLock::new();
-    BINDING
-        .get_or_init(|| {
-            // These are immutable bytes embedded in this binary, not the person's configured font.
-            // Rehashing them before every download chunk would stall otherwise bounded retrievals.
-            let fonts = crate::tools::pdf::PdfFonts::standard();
-            let mut hash = Sha256::new();
-            hash.update(b"paddle_setapp/1;html5ever/0.39.0;bounded-token-profile/2;no-external-presentation;typesetter/1;A4/15mm/11pt");
-            hash.update(&fonts.text);
-            hash.update(&fonts.strong);
-            hash.update(&fonts.heading);
-            hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
-        })
-        .clone()
+/// Each profile has its own prefix, so a package bound to one profile never passes as the other.
+pub fn binding(profile: u16) -> String {
+    static FIRST: OnceLock<String> = OnceLock::new();
+    static SECOND: OnceLock<String> = OnceLock::new();
+    let (cell, prefix): (_, &[u8]) = match profile {
+        1 => (
+            &FIRST,
+            b"paddle_setapp/1;html5ever/0.39.0;bounded-token-profile/2;no-external-presentation;typesetter/1;A4/15mm/11pt",
+        ),
+        _ => (
+            &SECOND,
+            b"paddle_setapp/2;html5ever/0.39.0;bounded-token-profile/2;cssparser/0.37.0;css-rules/1;\
+              hide-only:.no-print,.c-header;pinned-scripts-never-executed;pinned-layout/1;typesetter/1;A4/15mm/11pt",
+        ),
+    };
+    cell.get_or_init(|| {
+        // These are immutable bytes embedded in this binary, not the person's configured font.
+        // Rehashing them before every download chunk would stall otherwise bounded retrievals.
+        let fonts = crate::tools::pdf::PdfFonts::standard();
+        let mut hash = Sha256::new();
+        hash.update(prefix);
+        hash.update(&fonts.text);
+        hash.update(&fonts.strong);
+        hash.update(&fonts.heading);
+        hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+    })
+    .clone()
+}
+
+/// A stylesheet or script the page's head names. Only profile 2 accepts any.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reference {
+    pub kind: ResourceKind,
+    pub href: String,
+}
+
+/// What profile 2 found in the page besides its text: resources to load, inline scripts to pin and inline
+/// styles and page facts for the stylesheet check.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Presentation {
+    pub references: Vec<Reference>,
+    /// SHA-256 of each inline script's text, in page order. Never executed.
+    pub inline_scripts: Vec<String>,
+    inline_styles: Vec<InlineStyle>,
+    facts: PageFacts,
+    /// The page's layout frame for the fingerprint: the order of the head's styles, scripts and links, and the
+    /// paths of the invoice and of every element outside it.
+    frame: String,
+}
+
+/// An inline `<style>` (no owner) or a `style` attribute, which applies only to its own element.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InlineStyle {
+    css: String,
+    owner: Option<usize>,
+    /// Where a `style` attribute sits, for the layout fingerprint: tags, classes and ids up to the root. Unlike
+    /// an element index, it does not change with the number of invoice lines.
+    path: String,
+}
+
+impl Presentation {
+    /// Inline `<style>` elements and the `style` attributes outside the invoice, through the same allow list.
+    fn check_inline(&self, budget: &Budget, sheet: &mut Sheet) -> Result<(), Error> {
+        sheet.layout.update(self.frame.as_bytes());
+        sheet.layout.update(b"\0");
+        for style in &self.inline_styles {
+            sheet.layout.update(style.path.as_bytes());
+            sheet.layout.update(b"\0");
+            check_css(style.css.as_bytes(), budget, &self.facts, sheet, style.owner)?;
+        }
+        Ok(())
+    }
+
+    /// Offsets add up, through nested elements and through siblings that follow a negative margin. However each
+    /// rule stays within its own bound, no element may end up moved more than 128px left or up together with its
+    /// ancestors, and all moves of the page together stay within 512px per direction. Every rule that could
+    /// match an element counts with all its moves; a text indent counts again on every descendant, which
+    /// inherits it.
+    fn check_shifts(&self, shifts: &[Shift], budget: &Budget) -> Result<(), Error> {
+        if shifts.len() > 10_000 {
+            return Err(Error::Unsupported);
+        }
+        let elements = &self.facts.elements;
+        let present: BTreeSet<&str> = elements.iter().map(|element| element.tag.as_str()).collect();
+        // A tag the browser adds but the markup lacks has no element here; its rules are taken for everyone.
+        let applies = |shift: &Shift, index: usize, element: &Element| match shift.owner {
+            Some(owner) => owner == index,
+            None => {
+                shift.subject.tag.as_deref().is_some_and(|tag| IMPLIED.contains(&tag) && !present.contains(tag))
+                    || shift.subject.matches(element)
+            }
+        };
+        // (left, up, inherited indent) per element.
+        let mut total: Vec<(f32, f32, f32)> = Vec::with_capacity(elements.len());
+        let (mut page_left, mut page_up) = (0.0f32, 0.0f32);
+        for (index, element) in elements.iter().enumerate() {
+            budget.check()?;
+            let own = shifts
+                .iter()
+                .filter(|shift| applies(shift, index, element))
+                .fold((0.0f32, 0.0f32, 0.0f32), |(left, up, indent), shift| {
+                    (left + shift.left, up + shift.up, indent + shift.indent)
+                });
+            let (left, up, indent) =
+                element.parent.and_then(|parent| total.get(parent).copied()).unwrap_or((0.0, 0.0, 0.0));
+            let indent = indent + own.2;
+            let sum = (left + own.0 + indent, up + own.1, indent);
+            page_left += own.0 + own.2;
+            page_up += own.1;
+            if sum.0 > 128.0 || sum.1 > 128.0 || page_left > 512.0 || page_up > 512.0 {
+                return Err(Error::Unsupported);
+            }
+            total.push(sum);
+        }
+        Ok(())
+    }
+}
+
+/// Tags a browser adds even when the markup omits them.
+const IMPLIED: &[&str] = &["html", "head", "body", "tbody"];
+
+/// What the stylesheet check collects across all stylesheets of a page: the moves of each rule and the layout
+/// fingerprint.
+struct Sheet {
+    shifts: Vec<Shift>,
+    layout: Sha256,
+}
+
+impl Sheet {
+    fn new() -> Self {
+        Self { shifts: Vec::new(), layout: Sha256::new() }
+    }
+
+    fn layout(self) -> String {
+        self.layout.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+}
+
+/// A loaded reference. Stylesheets carry their bytes for the rule check; scripts are only named, never run.
+pub struct Loaded {
+    pub reference: Reference,
+    pub stylesheet: Option<Vec<u8>>,
+}
+
+/// Lists the head resources of a profile-2 page after the same complete structural check as the conversion,
+/// so nothing is loaded for a page that would be refused anyway.
+pub async fn references(
+    bytes: Vec<u8>,
+    content_type: Option<String>,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<Presentation, Error> {
+    let budget = Budget::new(cancel);
+    run_worker(move || {
+        let (_, presentation) = extract_with(&bytes, content_type.as_deref(), &budget, 2)?;
+        // Inline styles are checked before anything is loaded; a refused page needs no resources.
+        let mut sheet = Sheet::new();
+        presentation.check_inline(&budget, &mut sheet)?;
+        presentation.check_shifts(&sheet.shifts, &budget)?;
+        Ok(presentation)
+    })
+    .await
 }
 
 /// Admission moves into the actual blocking worker, not the cancelable async waiting future.
+/// `loaded` is `None` for profile 1 and the page's checked resources, in page order, for profile 2.
 pub async fn convert(
     bytes: Vec<u8>,
     content_type: Option<String>,
+    loaded: Option<Vec<Loaded>>,
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<Copy, Error> {
     let budget = Budget::new(cancel);
     run_worker(move || {
-        let invoice = extract_with(&bytes, content_type.as_deref(), &budget)?;
-        render(&invoice, &budget)
+        let profile = if loaded.is_some() { 2 } else { 1 };
+        let (invoice, presentation) = extract_with(&bytes, content_type.as_deref(), &budget, profile)?;
+        let loaded = loaded.unwrap_or_default();
+        let references = &presentation.references;
+        // The PDF may only follow the exact resources that were loaded and checked for this page.
+        if references.len() != loaded.len()
+            || references.iter().zip(&loaded).any(|(reference, loaded)| *reference != loaded.reference)
+        {
+            return Err(Error::Unsupported);
+        }
+        let mut sheet = Sheet::new();
+        presentation.check_inline(&budget, &mut sheet)?;
+        for loaded in &loaded {
+            match (loaded.reference.kind, &loaded.stylesheet) {
+                (ResourceKind::Stylesheet, Some(css)) => {
+                    check_css(css, &budget, &presentation.facts, &mut sheet, None)?;
+                }
+                (ResourceKind::Script, None) => {}
+                _ => return Err(Error::Unsupported),
+            }
+        }
+        presentation.check_shifts(&sheet.shifts, &budget)?;
+        let mut copy = render(&invoice, &budget)?;
+        if profile == 2 {
+            copy.layout = Some(sheet.layout());
+        }
+        Ok(copy)
     })
     .await
 }
@@ -155,7 +342,21 @@ pub(super) async fn verify_worker_admission_after_cancellation() {
 
 #[cfg(test)]
 pub fn extract(bytes: &[u8], content_type: Option<&str>) -> Result<Invoice, Error> {
-    extract_with(bytes, content_type, &Budget::new(None))
+    extract_with(bytes, content_type, &Budget::new(None), 1).map(|(invoice, _)| invoice)
+}
+
+#[cfg(test)]
+pub fn extract_profile_2(bytes: &[u8], content_type: Option<&str>) -> Result<(Invoice, Presentation), Error> {
+    extract_with(bytes, content_type, &Budget::new(None), 2)
+}
+
+/// Checks a stylesheet against the facts of the given page, as the conversion does.
+#[cfg(test)]
+pub fn check_stylesheet(css: &[u8], page: &[u8]) -> Result<(), Error> {
+    let (_, presentation) = extract_with(page, Some("text/html; charset=utf-8"), &Budget::new(None), 2)?;
+    let mut sheet = Sheet::new();
+    check_css(css, &Budget::new(None), &presentation.facts, &mut sheet, None)?;
+    presentation.check_shifts(&sheet.shifts, &Budget::new(None))
 }
 
 #[derive(Default)]
@@ -414,7 +615,12 @@ fn preflight(html: &str, budget: &Budget) -> Result<(), Error> {
     Ok(())
 }
 
-fn extract_with(bytes: &[u8], kind: Option<&str>, budget: &Budget) -> Result<Invoice, Error> {
+fn extract_with(
+    bytes: &[u8],
+    kind: Option<&str>,
+    budget: &Budget,
+    profile: u16,
+) -> Result<(Invoice, Presentation), Error> {
     let (html, encoding) = decode(bytes, kind)?;
     preflight(&html, budget)?;
     let sink = Sink(RefCell::new(Tree {
@@ -448,7 +654,7 @@ fn extract_with(bytes: &[u8], kind: Option<&str>, budget: &Budget) -> Result<Inv
     let roots: Vec<_> =
         tree.nodes.iter().enumerate().filter(|(_, node)| node.class("c-sheet")).map(|(index, _)| index).collect();
     let [root] = roots.as_slice() else { return Err(Error::Unsupported) };
-    presentation(&tree, *root)?;
+    let presentation = presentation(&tree, *root, profile)?;
     let mut invoice = Invoice { blocks: Vec::new() };
     collect(&tree, *root, &mut invoice.blocks, budget)?;
     let headings = tree
@@ -466,17 +672,19 @@ fn extract_with(bytes: &[u8], kind: Option<&str>, budget: &Budget) -> Result<Inv
     if headings != 1 || tables != 1 || totals != 1 || invoice.blocks.is_empty() {
         return Err(Error::Unsupported);
     }
-    // No unaccounted visible text outside the invoice. Only witnessed navigation/editor/metadata is excluded.
+    // No unaccounted visible text outside the invoice. Only witnessed navigation/editor/metadata is excluded,
+    // and the text of the inline styles and scripts profile 2 has accepted, which is code, not visible text.
     for (index, node) in tree.nodes.iter().enumerate() {
         if node.tag.is_empty()
             && !normalize(&node.text).is_empty()
             && !beneath(&tree, index, *root)
             && !known_outside(&tree, index)
+            && !(profile == 2 && code_text(&tree, node))
         {
             return Err(Error::Unsupported);
         }
     }
-    Ok(invoice)
+    Ok((invoice, presentation))
 }
 
 fn beneath(tree: &Tree, mut node: usize, root: usize) -> bool {
@@ -496,6 +704,8 @@ fn known_outside(tree: &Tree, mut node: usize) -> bool {
         if held.tag == "head"
             || held.attr("id") == Some("customer-information-modal")
             || (held.tag == "header" && held.class("c-header") && held.class("no-print"))
+            // The provider's logo link below the invoice: an image without text.
+            || (held.tag == "a" && held.class("logo") && held.attrs.iter().all(|(key, _)| matches!(key.as_str(), "class" | "href" | "target")))
         {
             return true;
         }
@@ -505,16 +715,153 @@ fn known_outside(tree: &Tree, mut node: usize) -> bool {
     false
 }
 
+/// The text of a `<script>` or `<style>` element.
+fn code_text(tree: &Tree, node: &Node) -> bool {
+    node.parent
+        .and_then(|parent| tree.nodes.get(parent))
+        .is_some_and(|parent| matches!(parent.tag.as_str(), "script" | "style"))
+}
+
+/// The concatenated text children of an element; any child element refuses it.
+fn element_text(tree: &Tree, node: &Node) -> Result<String, Error> {
+    let mut text = String::new();
+    for child in &node.children {
+        let child = tree.nodes.get(*child).ok_or(Error::Unsupported)?;
+        if !child.tag.is_empty() {
+            return Err(Error::Unsupported);
+        }
+        text.push_str(&child.text);
+    }
+    Ok(text)
+}
+
+/// Accepts one witnessed profile-2 element of the page's code and metadata, or says it is not one.
+/// Head: `<link rel=stylesheet|icon>`, `<script src>`, `<style>`, `<meta name=robots>`. Anywhere outside the
+/// invoice: an inline `<script>`. Module scripts are refused: their imports would be further, unpinned code.
+fn profile_two(
+    tree: &Tree,
+    node: &Node,
+    in_head: bool,
+    outside: bool,
+    found: &mut Presentation,
+) -> Result<bool, Error> {
+    let only = |keys: &[&str]| node.attrs.iter().all(|(key, _)| keys.contains(&key.as_str()));
+    let typed = |allowed: &[&str]| node.attr("type").is_none_or(|kind| allowed.contains(&kind.trim()));
+    let href = || {
+        node.attr("href")
+            .filter(|href| !href.is_empty() && href.len() <= 2048)
+            .map(String::from)
+            .ok_or(Error::Unsupported)
+    };
+    let scripts = ["text/javascript", "application/javascript"];
+    // The cascade follows the order of styles and stylesheets, so the order is part of the layout.
+    found.frame.push_str(match node.tag.as_str() {
+        "link" => "L",
+        "style" => "S",
+        "script" => "J",
+        _ => "",
+    });
+    match node.tag.as_str() {
+        "link"
+            if in_head
+                && only(&["rel", "href", "type"])
+                && typed(&["text/css"])
+                && node.attr("rel").is_some_and(|rel| rel.trim().eq_ignore_ascii_case("stylesheet")) =>
+        {
+            found.references.push(Reference { kind: ResourceKind::Stylesheet, href: href()? });
+        }
+        // The page's icon is never loaded and shows no invoice content.
+        "link"
+            if in_head
+                && only(&["rel", "href", "type", "sizes"])
+                && node.attr("rel").is_some_and(|rel| rel.trim().eq_ignore_ascii_case("icon")) =>
+        {
+            href()?;
+        }
+        "meta"
+            if in_head
+                && only(&["name", "content"])
+                && node.attr("name") == Some("robots")
+                && node.attr("content").is_some_and(|content| content.len() <= 256) => {}
+        "style" if in_head && only(&["type"]) && typed(&["text/css"]) => {
+            found.inline_styles.push(InlineStyle { css: element_text(tree, node)?, owner: None, path: String::new() });
+        }
+        "script"
+            if node.attr("src").is_some() && in_head && only(&["src", "defer", "async", "type"]) && typed(&scripts) =>
+        {
+            if !normalize(&element_text(tree, node)?).is_empty() {
+                return Err(Error::Unsupported);
+            }
+            found.references.push(Reference {
+                kind: ResourceKind::Script,
+                href: node
+                    .attr("src")
+                    .filter(|src| !src.is_empty() && src.len() <= 2048)
+                    .ok_or(Error::Unsupported)?
+                    .into(),
+            });
+        }
+        "script" if node.attr("src").is_none() && outside && only(&["type"]) && typed(&scripts) => {
+            let text = element_text(tree, node)?;
+            found
+                .inline_scripts
+                .push(Sha256::digest(text.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect());
+        }
+        _ => return Ok(false),
+    }
+    if found.references.len() > 8 || found.inline_scripts.len() > 4 || found.inline_styles.len() > 32 {
+        return Err(Error::Unsupported);
+    }
+    Ok(true)
+}
+
 /// No external or executable presentation influences are proven by profile 1. A mutable stylesheet
 /// URL is not a version pin: even a familiar provider URL can add generated invoice facts tomorrow.
 /// Refuse rather than compare a PDF against an extraction that has already lost those facts.
-fn presentation(tree: &Tree, root: usize) -> Result<(), Error> {
+/// Profile 2 returns the page's resources, inline scripts and styles instead; the caller loads, checks and
+/// pins each one.
+fn presentation(tree: &Tree, root: usize, profile: u16) -> Result<Presentation, Error> {
     let heads: Vec<_> =
         tree.nodes.iter().enumerate().filter(|(_, node)| node.tag == "head").map(|(index, _)| index).collect();
     if heads.len() > 1 {
         return Err(Error::Unsupported);
     }
+    let mut found = Presentation::default();
+    if profile == 2 {
+        found.facts = PageFacts::of(tree);
+    }
     for (index, node) in tree.nodes.iter().enumerate() {
+        let in_head = heads.first().is_some_and(|head| beneath(tree, index, *head));
+        if profile == 2 {
+            if node.attrs.iter().any(|(key, _)| key.starts_with("on")) {
+                return Err(Error::Unsupported);
+            }
+            // Elsewhere outside the invoice, a `style` attribute could cover it; it gets the stylesheet rules as a
+            // rule for every element. Inside, safe_node and the ancestor check already hold it.
+            if !in_head
+                && !beneath(tree, index, root)
+                && !beneath(tree, root, index)
+                && let Some(style) = node.attr("style")
+            {
+                if style.contains(['{', '}', '<', '\\']) || style.contains("/*") || found.inline_styles.len() >= 32 {
+                    return Err(Error::Unsupported);
+                }
+                // Within the witnessed navigation, the attribute may hide like the navigation's own rules.
+                let selector = if in_navigation(tree, index) { ".no-print *" } else { "*" };
+                found.inline_styles.push(InlineStyle {
+                    css: format!("{selector} {{{style}}}"),
+                    owner: found.facts.element_of.get(index).copied().flatten(),
+                    path: element_path(tree, index),
+                });
+            }
+            if profile_two(tree, node, in_head, !beneath(tree, index, root), &mut found)? {
+                continue;
+            }
+            // Text of an accepted script or style element; profile_two refused any other content.
+            if node.tag.is_empty() && code_text(tree, node) {
+                continue;
+            }
+        }
         if matches!(node.tag.as_str(), "script" | "style" | "link" | "base" | "iframe" | "object" | "embed")
             || node.attrs.iter().any(|(key, _)| key.starts_with("on"))
         {
@@ -543,9 +890,7 @@ fn presentation(tree: &Tree, root: usize) -> Result<(), Error> {
             return Err(Error::Unsupported);
         }
         // The head is metadata only, not a blanket exception for arbitrary DOM or form values.
-        if heads.first().is_some_and(|head| beneath(tree, index, *head))
-            && !matches!(node.tag.as_str(), "head" | "title" | "meta" | "")
-        {
+        if in_head && !matches!(node.tag.as_str(), "head" | "title" | "meta" | "") {
             return Err(Error::Unsupported);
         }
         if !beneath(tree, index, root)
@@ -568,7 +913,62 @@ fn presentation(tree: &Tree, root: usize) -> Result<(), Error> {
             return Err(Error::Unsupported);
         }
     }
-    Ok(())
+    if profile == 2 {
+        // HTML moves the invoice as much as CSS: a missing wrapper class or a new element before it is a change.
+        // Elements after the invoice cannot push it in the flow, and what could cover it from there (style
+        // attributes, positioned rules) is bound on its own; so a form message in the edit dialog is no change.
+        found.frame.push('\n');
+        found.frame.push_str(&element_path(tree, root));
+        let head = heads.first().copied();
+        for (index, node) in tree.nodes.iter().enumerate().take(root) {
+            if !node.tag.is_empty()
+                && !beneath(tree, root, index)
+                && head.is_none_or(|head| !beneath(tree, index, head))
+            {
+                found.frame.push('\n');
+                found.frame.push_str(&element_path(tree, index));
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Tags, classes and ids from the root down to the node, e.g. `html>body>main.c-main>div`.
+fn element_path(tree: &Tree, mut node: usize) -> String {
+    let mut parts = Vec::new();
+    for _ in 0..=MAX_DEPTH {
+        let Some(held) = tree.nodes.get(node) else { break };
+        if !held.tag.is_empty() {
+            let mut part = held.tag.clone();
+            if let Some(id) = held.attr("id") {
+                part.push('#');
+                part.push_str(id);
+            }
+            for class in held.attr("class").unwrap_or("").split_ascii_whitespace() {
+                part.push('.');
+                part.push_str(class);
+            }
+            parts.push(part);
+        }
+        let Some(parent) = held.parent else { break };
+        node = parent;
+    }
+    parts.reverse();
+    parts.join(">")
+}
+
+/// The node is the witnessed navigation header (`header.c-header.no-print`) or lies beneath it. Any other
+/// element could give itself these classes.
+fn in_navigation(tree: &Tree, mut node: usize) -> bool {
+    for _ in 0..=MAX_DEPTH {
+        let Some(held) = tree.nodes.get(node) else { return false };
+        if held.tag == "header" && held.class("no-print") && held.class("c-header") {
+            return true;
+        }
+        let Some(parent) = held.parent else { return false };
+        node = parent;
+    }
+    false
 }
 
 fn normalize(text: &str) -> String {
@@ -714,11 +1114,18 @@ fn collect(tree: &Tree, index: usize, blocks: &mut Vec<Block>, budget: &Budget) 
     budget.check()?;
     let node = tree.nodes.get(index).ok_or(Error::Unsupported)?;
     // This one witnessed control contains no invoice facts; arbitrary no-print blocks are refused.
+    // Only the paragraph's own attributes, text and plain links with text; no style may reach the invoice.
     if node.tag == "p" && node.attr("id") == Some("add-edit-address-container") && node.class("no-print") {
-        if node
-            .children
-            .iter()
-            .all(|child| tree.nodes.get(*child).is_some_and(|child| child.tag.is_empty() || child.tag == "a"))
+        let plain_link = |child: &Node| {
+            child.tag == "a"
+                && child.attrs.iter().all(|(key, _)| matches!(key.as_str(), "id" | "href" | "class" | "target"))
+                && child.children.iter().all(|text| tree.nodes.get(*text).is_some_and(|text| text.tag.is_empty()))
+        };
+        if node.attrs.iter().all(|(key, _)| matches!(key.as_str(), "id" | "class"))
+            && node
+                .children
+                .iter()
+                .all(|child| tree.nodes.get(*child).is_some_and(|child| child.tag.is_empty() || plain_link(child)))
         {
             return Ok(());
         }
@@ -769,6 +1176,1161 @@ fn collect(tree: &Tree, index: usize, blocks: &mut Vec<Block>, budget: &Budget) 
         collect(tree, *child, blocks, budget)?;
     }
     Ok(())
+}
+
+/// Classes, ids and tags present anywhere in the page. A selector naming anything else matches nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PageFacts {
+    classes: BTreeSet<String>,
+    ids: BTreeSet<String>,
+    tags: BTreeSet<String>,
+    /// The page's elements in document order; a parent always comes before its children.
+    elements: Vec<Element>,
+    /// The element index of each tree node, `None` for text and the document root.
+    element_of: Vec<Option<usize>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Element {
+    tag: String,
+    id: Option<String>,
+    classes: Vec<String>,
+    parent: Option<usize>,
+}
+
+impl PageFacts {
+    fn of(tree: &Tree) -> Self {
+        let mut facts = Self::default();
+        // A browser adds these even when the markup omits them. Names compare without case, as in quirks mode.
+        facts.tags.extend(["html", "head", "body", "tbody"].map(String::from));
+        for node in &tree.nodes {
+            if node.tag.is_empty() {
+                facts.element_of.push(None);
+                continue;
+            }
+            let element = Element {
+                tag: node.tag.to_ascii_lowercase(),
+                id: node.attr("id").map(str::to_ascii_lowercase),
+                classes: node
+                    .attr("class")
+                    .unwrap_or("")
+                    .split_ascii_whitespace()
+                    .map(str::to_ascii_lowercase)
+                    .collect(),
+                parent: node.parent.and_then(|parent| facts.element_of.get(parent).copied().flatten()),
+            };
+            facts.tags.insert(element.tag.clone());
+            facts.ids.extend(element.id.clone());
+            facts.classes.extend(element.classes.iter().cloned());
+            facts.element_of.push(Some(facts.elements.len()));
+            facts.elements.push(element);
+        }
+        facts
+    }
+}
+
+/// The subject compound of a selector (its last one): tag, classes and ids an element needs to match it.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Subject {
+    tag: Option<String>,
+    classes: Vec<String>,
+    ids: Vec<String>,
+}
+
+impl Subject {
+    /// A selector the check does not read gets an empty subject, which matches every element.
+    fn of(selector: &str) -> Subject {
+        let Some(plain) = plain_selector(selector) else { return Subject::default() };
+        let plain = plain.replace(['>', '+', '~'], " ");
+        let Some(last) = plain.split_ascii_whitespace().last() else { return Subject::default() };
+        let mut subject = Subject::default();
+        let tag_end = last.find(['.', '#', ':']).unwrap_or(last.len());
+        let tag = last[..tag_end].to_ascii_lowercase();
+        if !tag.is_empty() && tag != "*" && tag != "&" {
+            subject.tag = Some(tag);
+        }
+        let mut rest = &last[tag_end..];
+        while let Some(marker) = rest.chars().next() {
+            let tail = &rest[1..];
+            let end = tail.find(['.', '#', ':']).unwrap_or(tail.len());
+            let name = tail[..end].to_ascii_lowercase();
+            match marker {
+                '.' => subject.classes.push(name),
+                '#' => subject.ids.push(name),
+                _ => {}
+            }
+            rest = &tail[end..];
+        }
+        subject
+    }
+
+    fn matches(&self, element: &Element) -> bool {
+        self.tag.as_ref().is_none_or(|tag| *tag == element.tag)
+            && self.classes.iter().all(|class| element.classes.contains(class))
+            && self.ids.iter().all(|id| element.id.as_ref() == Some(id))
+    }
+}
+
+/// How far a rule could move the elements it matches left and up, in CSS pixels.
+#[derive(Debug, Clone, PartialEq)]
+struct Shift {
+    subject: Subject,
+    /// A `style` attribute moves only its own element.
+    owner: Option<usize>,
+    left: f32,
+    up: f32,
+    /// A negative text indent, inherited by every descendant.
+    indent: f32,
+}
+
+/// Reads a stylesheet as data under a fixed allow list. A rule whose selectors name a class, id or tag the page
+/// does not have cannot change it and is skipped. Every other rule may only use known properties with values
+/// that neither generate nor hide text; hiding is allowed only beneath the witnessed navigation selectors.
+/// Anything unknown refuses the copy instead of passing silently.
+fn check_css(
+    bytes: &[u8],
+    budget: &Budget,
+    facts: &PageFacts,
+    sheet: &mut Sheet,
+    owner: Option<usize>,
+) -> Result<(), Error> {
+    if bytes.len() > MAX_CSS {
+        return Err(Error::Unsupported);
+    }
+    let text =
+        std::str::from_utf8(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)).map_err(|_| Error::Unsupported)?;
+    let mut input = cssparser::ParserInput::new(text);
+    let mut parser = cssparser::Parser::new(&mut input);
+    let mut walk = CssWalk { budget, facts, tokens: 0, rules: 0, sheet, owner, context: Vec::new() };
+    rule_list(&mut parser, &mut walk, 0).map_err(|error| match error.kind {
+        cssparser::ParseErrorKind::Custom(error) => error,
+        cssparser::ParseErrorKind::Basic(_) => Error::Unsupported,
+    })
+}
+
+struct CssWalk<'b> {
+    budget: &'b Budget,
+    facts: &'b PageFacts,
+    tokens: usize,
+    rules: usize,
+    sheet: &'b mut Sheet,
+    owner: Option<usize>,
+    /// Preludes of the grouping at-rules around the current rule, e.g. `@media print`.
+    context: Vec<String>,
+}
+
+type CssFail<'i> = cssparser::ParseError<'i, Error>;
+
+fn refuse<'i>() -> CssFail<'i> {
+    cssparser::ParseError {
+        kind: cssparser::ParseErrorKind::Custom(Error::Unsupported),
+        location: cssparser::SourceLocation { line: 0, column: 0 },
+    }
+}
+
+impl CssWalk<'_> {
+    fn tick<'i>(&mut self) -> Result<(), CssFail<'i>> {
+        self.tokens += 1;
+        if self.tokens.is_multiple_of(1000) {
+            self.budget.check().map_err(|error| cssparser::ParseError {
+                kind: cssparser::ParseErrorKind::Custom(error),
+                location: cssparser::SourceLocation { line: 0, column: 0 },
+            })?;
+        }
+        Ok(())
+    }
+
+    fn rule<'i>(&mut self) -> Result<(), CssFail<'i>> {
+        self.rules += 1;
+        if self.rules > MAX_CSS_RULES { Err(refuse()) } else { Ok(()) }
+    }
+}
+
+/// A simplified declaration value: enough to check it against the allow list, never to apply styles.
+#[derive(Debug, Clone, PartialEq)]
+enum Value {
+    Word(String),
+    Text(String),
+    Number(f32),
+    Length(f32, String),
+    Function(String, Vec<Value>),
+    Hex(String),
+    Url(String),
+    Slash,
+    /// `+`, `-`, `*` and other single characters, kept so that `calc(a + b)` and `calc(a - b)` differ.
+    Delim(char),
+    Comma,
+    Other,
+}
+
+/// Rules at the top level or inside a grouping at-rule.
+fn rule_list<'i>(
+    parser: &mut cssparser::Parser<'i, '_>,
+    walk: &mut CssWalk<'_>,
+    depth: usize,
+) -> Result<(), CssFail<'i>> {
+    use cssparser::Token;
+    if depth > MAX_CSS_DEPTH {
+        return Err(refuse());
+    }
+    loop {
+        walk.tick()?;
+        let start = parser.position();
+        let token = match parser.next() {
+            Ok(token) => token.clone(),
+            Err(_) => return Ok(()),
+        };
+        match token {
+            Token::CDO | Token::CDC => {}
+            Token::AtKeyword(name) => at_rule(parser, walk, &name.to_ascii_lowercase(), depth)?,
+            Token::BadUrl(_) | Token::BadString(_) | Token::Semicolon => return Err(refuse()),
+            _ => {
+                walk.rule()?;
+                let mut opened = matches!(token, Token::CurlyBracketBlock);
+                while !opened {
+                    walk.tick()?;
+                    match parser.next().map_err(|_| refuse())? {
+                        Token::CurlyBracketBlock => opened = true,
+                        Token::Semicolon | Token::BadUrl(_) | Token::BadString(_) => return Err(refuse()),
+                        _ => {}
+                    }
+                }
+                let prelude = parser.slice_from(start);
+                let selectors = selector_list(prelude.strip_suffix('{').unwrap_or(prelude));
+                // An unmatchable rule is not checked, but its whole text is bound: rules for elements that scripts
+                // add at run time, or that another invoice of the same layout has, may not change unnoticed.
+                // It goes in with the same layout declarations as a checked rule, so that the fingerprint does not
+                // depend on which classes one invoice happens to have; only an unreadable block goes in raw.
+                if !selectors.iter().any(|selector| can_match(selector, walk.facts)) {
+                    let layout = parser.parse_nested_block(|block| {
+                        let start = block.position();
+                        match block.try_parse(|block| layout_only(block, walk)) {
+                            Ok(layout) => Ok(layout),
+                            Err(_) => {
+                                while block.next_including_whitespace_and_comments().is_ok() {
+                                    walk.tick()?;
+                                }
+                                Ok(format!("raw:{}", normalize(&without_comments(block.slice_from(start)))))
+                            }
+                        }
+                    })?;
+                    if !layout.is_empty() {
+                        let entry = format!("{}\0{}\0{layout}\n", walk.context.join("\0"), selectors.join(","));
+                        walk.sheet.layout.update(entry.as_bytes());
+                    }
+                } else {
+                    let may_hide = selectors.iter().all(|selector| beneath_navigation(selector));
+                    // Only the header itself may be taken out of the flow; `.no-print` also marks a control
+                    // inside the invoice.
+                    let header = selectors.iter().all(|selector| selector.starts_with(".c-header"));
+                    let rule = parser.parse_nested_block(|block| declarations(block, walk, may_hide, header))?;
+                    if !rule.layout.is_empty() {
+                        let entry = format!("{}\0{}\0{}\n", walk.context.join("\0"), selectors.join(","), rule.layout);
+                        walk.sheet.layout.update(entry.as_bytes());
+                    }
+                    if rule.left > 0.0 || rule.up > 0.0 || rule.indent > 0.0 {
+                        for selector in selectors.iter().filter(|selector| can_match(selector, walk.facts)) {
+                            let owner = walk.owner;
+                            walk.sheet.shifts.push(Shift {
+                                subject: Subject::of(selector),
+                                owner,
+                                left: rule.left,
+                                up: rule.up,
+                                indent: rule.indent,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Splits a selector list at top-level commas. Comments are removed and brackets counted only outside strings,
+/// so a quoted `/*`, `,` or `]` cannot hide a selector from the check.
+fn selector_list(prelude: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let (mut depth, mut quote, mut chars) = (0usize, None::<char>, prelude.chars().peekable());
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(_), '\\') => {
+                current.push(c);
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+                continue;
+            }
+            (Some(open), _) if c == open => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '/') if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut last = ' ';
+                for next in chars.by_ref() {
+                    if last == '*' && next == '/' {
+                        break;
+                    }
+                    last = next;
+                }
+                current.push(' ');
+                continue;
+            }
+            (None, '(' | '[') => depth += 1,
+            (None, ')' | ']') => depth = depth.saturating_sub(1),
+            (None, ',') if depth == 0 => {
+                parts.push(normalize(&std::mem::take(&mut current)));
+                continue;
+            }
+            _ => {}
+        }
+        current.push(c);
+    }
+    parts.push(normalize(&current));
+    // A list the split cannot read safely stays one selector, which plain_selector then treats as unreadable.
+    if prelude.to_ascii_lowercase().contains("url(") || depth != 0 || quote.is_some() {
+        return vec![normalize(prelude)];
+    }
+    parts
+}
+
+/// The selector without the contents of `(…)`, `[…]` and strings in them, or `None` when it uses a form the
+/// check does not read: escapes, namespaces (`*|p`) or a string outside brackets.
+fn plain_selector(selector: &str) -> Option<String> {
+    // `url(…)` tokens and comments read differently inside selectors; neither belongs in a witnessed one.
+    if selector.to_ascii_lowercase().contains("url(") || selector.contains("/*") {
+        return None;
+    }
+    let mut plain = String::new();
+    let (mut open, mut quote) = (Vec::new(), None::<char>);
+    for c in selector.chars() {
+        match (quote, c) {
+            (_, '\\') => return None,
+            (Some(start), _) if c == start => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') if !open.is_empty() => quote = Some(c),
+            (None, '"' | '\'' | '|') if open.is_empty() => return None,
+            (None, '(' | '[') => open.push(c),
+            // A browser closes `(` only with `)` and `[` only with `]`; any other closer is unreadable here.
+            (None, ')') if open.pop() != Some('(') => return None,
+            (None, ']') if open.pop() != Some('[') => return None,
+            (None, ')' | ']') => {}
+            (None, _) if open.is_empty() => plain.push(c),
+            _ => {}
+        }
+    }
+    open.is_empty().then_some(plain)
+}
+
+/// Conservative: false only when a compound outside functional pseudo-classes names a class, id or tag the page
+/// lacks. Anything the check does not read counts as a possible match.
+fn can_match(selector: &str, facts: &PageFacts) -> bool {
+    let Some(plain) = plain_selector(selector) else { return true };
+    let plain = plain.replace(['>', '+', '~'], " ");
+    for compound in plain.split_ascii_whitespace() {
+        let mut rest = compound;
+        let tag_end = rest.find(['.', '#', ':']).unwrap_or(rest.len());
+        let tag = &rest[..tag_end];
+        if !tag.is_empty() && tag != "*" && tag != "&" && !facts.tags.contains(&tag.to_ascii_lowercase()) {
+            return false;
+        }
+        rest = &rest[tag_end..];
+        while let Some(marker) = rest.chars().next() {
+            let tail = &rest[1..];
+            let end = tail.find(['.', '#', ':']).unwrap_or(tail.len());
+            let name = tail[..end].to_ascii_lowercase();
+            let known = match marker {
+                '.' => facts.classes.contains(&name),
+                '#' => facts.ids.contains(&name),
+                _ => true,
+            };
+            if !known {
+                return false;
+            }
+            // A pseudo-element marker `::x` leaves an empty name before the second colon.
+            rest = &tail[end..];
+        }
+    }
+    true
+}
+
+/// The selector targets a witnessed navigation element or something beneath it, never a sibling.
+fn beneath_navigation(selector: &str) -> bool {
+    let Some(plain) = plain_selector(selector) else { return false };
+    let plain = normalize(&plain);
+    HIDE_ALLOWED.iter().any(|allowed| {
+        plain.strip_prefix(allowed).is_some_and(|rest| {
+            (rest.is_empty() || rest.starts_with(' ') || rest.starts_with('>'))
+                && !rest.contains(['+', '~', ',', '(', ':'])
+        })
+    })
+}
+
+/// Consumes a block that is not checked and returns its text without comments and with collapsed spaces, for
+/// the layout fingerprint. Without consuming it, the next rule's prelude would start inside the block.
+fn raw_block<'i>(parser: &mut cssparser::Parser<'i, '_>, walk: &mut CssWalk<'_>) -> Result<String, CssFail<'i>> {
+    parser.parse_nested_block(|block| {
+        let start = block.position();
+        while block.next_including_whitespace_and_comments().is_ok() {
+            walk.tick()?;
+        }
+        Ok(normalize(&without_comments(block.slice_from(start))))
+    })
+}
+
+/// Comments removed outside strings, for a stable fingerprint of raw text.
+fn without_comments(text: &str) -> String {
+    let mut plain = String::new();
+    let (mut quote, mut chars) = (None::<char>, text.chars().peekable());
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(_), '\\') => {
+                plain.push(c);
+                if let Some(next) = chars.next() {
+                    plain.push(next);
+                }
+                continue;
+            }
+            (Some(open), _) if c == open => quote = None,
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '/') if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut last = ' ';
+                for next in chars.by_ref() {
+                    if last == '*' && next == '/' {
+                        break;
+                    }
+                    last = next;
+                }
+                plain.push(' ');
+                continue;
+            }
+            _ => {}
+        }
+        plain.push(c);
+    }
+    plain
+}
+
+fn prelude_until_block<'i>(
+    parser: &mut cssparser::Parser<'i, '_>,
+    walk: &mut CssWalk<'_>,
+) -> Result<bool, CssFail<'i>> {
+    use cssparser::Token;
+    loop {
+        walk.tick()?;
+        match parser.next() {
+            Ok(Token::CurlyBracketBlock) => return Ok(true),
+            Ok(Token::Semicolon) | Err(_) => return Ok(false),
+            Ok(Token::BadUrl(_) | Token::BadString(_)) => return Err(refuse()),
+            Ok(_) => {}
+        }
+    }
+}
+
+fn at_rule<'i>(
+    parser: &mut cssparser::Parser<'i, '_>,
+    walk: &mut CssWalk<'_>,
+    name: &str,
+    depth: usize,
+) -> Result<(), CssFail<'i>> {
+    walk.rule()?;
+    let start = parser.position();
+    let block = prelude_until_block(parser, walk)?;
+    let prelude = normalize(parser.slice_from(start).trim_end_matches(['{', ';']));
+    let context = walk.context.join("\0");
+    // A `@layer` order or a font, keyframe or page block changes the cascade or the drawing; all are bound.
+    let bind = |walk: &mut CssWalk<'_>, body: &str| {
+        walk.sheet.layout.update(format!("{context}\0@{name} {prelude}\0{body}\n").as_bytes());
+    };
+    match (name, block) {
+        ("charset", false) => Ok(()),
+        ("layer", false) => {
+            bind(walk, "");
+            Ok(())
+        }
+        ("media" | "supports" | "layer" | "container", true) => {
+            walk.context.push(format!("@{name} {prelude}"));
+            let nested = parser.parse_nested_block(|nested| rule_list(nested, walk, depth + 1));
+            walk.context.pop();
+            nested
+        }
+        ("font-face", true) => {
+            let body = parser.parse_nested_block(|nested| {
+                let start = nested.position();
+                font_face(nested, walk)?;
+                Ok(normalize(&without_comments(nested.slice_from(start))))
+            })?;
+            bind(walk, &body);
+            Ok(())
+        }
+        // Keyframes act only through `animation`, which no checked rule may use.
+        ("keyframes" | "-webkit-keyframes" | "-moz-keyframes", true) => {
+            let body = raw_block(parser, walk)?;
+            bind(walk, &body);
+            Ok(())
+        }
+        // Page boxes: size and margins only; margin boxes such as `@bottom-center` could print generated text.
+        ("page", true) => {
+            let body = parser.parse_nested_block(|nested| {
+                let start = nested.position();
+                page_box(nested, walk)?;
+                Ok(normalize(&without_comments(nested.slice_from(start))))
+            })?;
+            bind(walk, &body);
+            Ok(())
+        }
+        // `@import` loads further, unchecked CSS; every other at-rule is unwitnessed.
+        _ => Err(refuse()),
+    }
+}
+
+/// Font descriptors only. Fonts are never loaded by Torro, and an inline `data:` font is refused.
+fn font_face<'i>(parser: &mut cssparser::Parser<'i, '_>, walk: &mut CssWalk<'_>) -> Result<(), CssFail<'i>> {
+    use cssparser::Token;
+    loop {
+        walk.tick()?;
+        let name = match parser.next() {
+            Err(_) => return Ok(()),
+            Ok(Token::Semicolon) => continue,
+            Ok(Token::Ident(name)) => name.to_ascii_lowercase(),
+            Ok(_) => return Err(refuse()),
+        };
+        parser.expect_colon().map_err(|_| refuse())?;
+        let values = parser.parse_until_after(cssparser::Delimiter::Semicolon, |value| values(value, walk, 0))?;
+        if !matches!(
+            name.as_str(),
+            "font-family" | "src" | "font-weight" | "font-style" | "font-display" | "font-stretch" | "unicode-range"
+        ) || inline_data(&values)
+        {
+            return Err(refuse());
+        }
+    }
+}
+
+fn page_box<'i>(parser: &mut cssparser::Parser<'i, '_>, walk: &mut CssWalk<'_>) -> Result<(), CssFail<'i>> {
+    use cssparser::Token;
+    loop {
+        walk.tick()?;
+        let name = match parser.next() {
+            Err(_) => return Ok(()),
+            Ok(Token::Semicolon) => continue,
+            Ok(Token::Ident(name)) => name.to_ascii_lowercase(),
+            Ok(_) => return Err(refuse()),
+        };
+        parser.expect_colon().map_err(|_| refuse())?;
+        let values = parser.parse_until_after(cssparser::Delimiter::Semicolon, |value| values(value, walk, 0))?;
+        if !(matches!(name.as_str(), "size" | "page-orientation" | "marks" | "bleed") || name.starts_with("margin"))
+            || values.iter().any(|value| matches!(value, Value::Function(..) | Value::Url(_) | Value::Text(_)))
+            || !small_lengths(&values, 128.0)
+            || (name == "size" && values.iter().filter_map(px).any(|n| n < 300.0))
+        {
+            return Err(refuse());
+        }
+    }
+}
+
+/// The checked declarations of a rule that can match the page.
+/// What one checked rule does to the page: its moves and its layout declarations for the fingerprint.
+#[derive(Default)]
+struct Rule {
+    left: f32,
+    up: f32,
+    indent: f32,
+    layout: String,
+}
+
+/// Properties that change neither position, size, stacking nor what covers the text: colours, font families
+/// and the like. Everything else the allow list admits is layout and goes into the fingerprint, including
+/// opacity (a stacking context), shadows, border and outline styles and text decoration lines.
+const FREE: &[&str] = &[
+    "color",
+    "-webkit-text-fill-color",
+    "background",
+    "background-color",
+    "border-color",
+    "border-top-color",
+    "border-right-color",
+    "border-bottom-color",
+    "border-left-color",
+    "border-radius",
+    "border-top-left-radius",
+    "border-top-right-radius",
+    "border-bottom-left-radius",
+    "border-bottom-right-radius",
+    "outline-color",
+    "text-decoration-color",
+    "text-decoration-style",
+    "font-family",
+    "font-weight",
+    "font-style",
+    "font-variant",
+    "font-kerning",
+    "-webkit-font-smoothing",
+    "-moz-osx-font-smoothing",
+    "text-rendering",
+    "cursor",
+    "transition",
+    "transition-property",
+    "transition-duration",
+    "transition-timing-function",
+    "transition-delay",
+    "user-select",
+    "-webkit-user-select",
+    "-moz-user-select",
+    "-ms-user-select",
+    "pointer-events",
+    "appearance",
+    "-webkit-appearance",
+    "-moz-appearance",
+    "caret-color",
+    "accent-color",
+    "-webkit-tap-highlight-color",
+    "touch-action",
+    "-ms-overflow-style",
+    "quotes",
+    "text-transform",
+    "content",
+    "list-style",
+    "list-style-type",
+];
+
+fn declarations<'i>(
+    parser: &mut cssparser::Parser<'i, '_>,
+    walk: &mut CssWalk<'_>,
+    may_hide: bool,
+    header: bool,
+) -> Result<Rule, CssFail<'i>> {
+    use cssparser::Token;
+    let mut rule = Rule::default();
+    loop {
+        walk.tick()?;
+        let name = match parser.next() {
+            Err(_) => return Ok(rule),
+            Ok(Token::Semicolon) => continue,
+            Ok(Token::Ident(name)) => name.to_ascii_lowercase(),
+            // Nested rules and at-rules inside a declaration block are not part of the checked grammar.
+            Ok(_) => return Err(refuse()),
+        };
+        parser.expect_colon().map_err(|_| refuse())?;
+        let values = parser.parse_until_after(cssparser::Delimiter::Semicolon, |value| values(value, walk, 0))?;
+        let important = values.contains(&Value::Word("important".into()));
+        let values: Vec<_> = values.into_iter().filter(|value| *value != Value::Word("important".into())).collect();
+        let positions = matches!(name.as_str(), "position") && !words_in(&values, &["static", "relative", "inherit"]);
+        if !allowed(&name, &values, may_hide) || (positions && !header) {
+            return Err(refuse());
+        }
+        if !FREE.contains(&name.as_str()) {
+            // `!important` decides the cascade, so it is part of the layout.
+            rule.layout.push_str(&format!("{name}:{values:?}{};", if important { "!" } else { "" }));
+        }
+        // Every move counts, added up: a margin, a relative offset and an indent of one element act together.
+        let moves = signed(&values);
+        let back: f32 = moves.iter().filter(|n| **n < 0.0).map(|n| -n).sum();
+        let forward: f32 = moves.iter().filter(|n| **n > 0.0).sum();
+        match name.as_str() {
+            "text-indent" => rule.indent += back,
+            // A negative right or bottom margin pulls the following content left or up.
+            "left" | "margin-left" | "margin-right" | "margin-inline-start" | "margin-inline-end" => rule.left += back,
+            "right" => rule.left += forward,
+            "top" | "margin-top" | "margin-bottom" | "margin-block-start" | "margin-block-end" => rule.up += back,
+            "bottom" => rule.up += forward,
+            "margin" | "margin-inline" | "margin-block" => {
+                rule.left += back;
+                rule.up += back;
+            }
+            "inset" => {
+                rule.left += back + forward;
+                rule.up += back + forward;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The layout declarations of a rule that is not checked, in the same form as `declarations` writes them.
+fn layout_only<'i>(parser: &mut cssparser::Parser<'i, '_>, walk: &mut CssWalk<'_>) -> Result<String, CssFail<'i>> {
+    use cssparser::Token;
+    let mut layout = String::new();
+    loop {
+        walk.tick()?;
+        let name = match parser.next() {
+            Err(_) => return Ok(layout),
+            Ok(Token::Semicolon) => continue,
+            Ok(Token::Ident(name)) => name.to_ascii_lowercase(),
+            Ok(_) => return Err(refuse()),
+        };
+        parser.expect_colon().map_err(|_| refuse())?;
+        let values = parser.parse_until_after(cssparser::Delimiter::Semicolon, |value| values(value, walk, 0))?;
+        let important = values.contains(&Value::Word("important".into()));
+        let values: Vec<_> = values.into_iter().filter(|value| *value != Value::Word("important".into())).collect();
+        if !FREE.contains(&name.as_str()) {
+            layout.push_str(&format!("{name}:{values:?}{};", if important { "!" } else { "" }));
+        }
+    }
+}
+
+fn words_in(values: &[Value], wanted: &[&str]) -> bool {
+    values.iter().all(|value| matches!(value, Value::Word(word) if wanted.contains(&word.as_str())))
+}
+
+/// Signed estimates of the lengths in a value, in CSS pixels. A `calc()` counts in both directions with the
+/// magnitude its lengths and factors could reach, since its signs are separate tokens.
+fn signed(values: &[Value]) -> Vec<f32> {
+    values
+        .iter()
+        .flat_map(|value| match value {
+            Value::Length(..) => px(value).into_iter().collect::<Vec<_>>(),
+            Value::Function(name, arguments) if name == "calc" => {
+                let sum: f32 = arguments.iter().filter_map(px).map(f32::abs).sum();
+                let product: f32 = arguments
+                    .iter()
+                    .filter_map(|argument| match argument {
+                        Value::Number(n) => Some(n.abs()),
+                        _ => None,
+                    })
+                    .product();
+                vec![sum * product, -sum * product]
+            }
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+/// The allow list, witnessed on Paddle's invoice stylesheets. Each entry names the values that cannot generate
+/// or hide text; everything else is refused.
+fn allowed(name: &str, values: &[Value], may_hide: bool) -> bool {
+    let words = |wanted: &[&str]| {
+        values.iter().all(|value| matches!(value, Value::Word(word) if wanted.contains(&word.as_str())))
+    };
+    let functions = |allowed: &[&str]| {
+        values.iter().all(|value| match value {
+            Value::Function(name, arguments) => {
+                allowed.contains(&name.as_str())
+                    && arguments.iter().all(|argument| !matches!(argument, Value::Function(..) | Value::Url(_)))
+            }
+            Value::Url(_) => false,
+            _ => true,
+        })
+    };
+    let colours = &["rgb", "rgba", "hsl", "hsla"];
+    let global = &["inherit", "initial", "unset", "revert"];
+    match name {
+        "content" => {
+            matches!(values, [Value::Word(word)] if matches!(word.as_str(), "none" | "normal"))
+                || matches!(values, [Value::Text(text)] if text.is_empty())
+        }
+        "display" => {
+            words(&[
+                "block",
+                "inline",
+                "inline-block",
+                "flex",
+                "inline-flex",
+                "-ms-flexbox",
+                "-ms-inline-flexbox",
+                "-webkit-box",
+                "grid",
+                "inline-grid",
+                "table",
+                "table-row",
+                "table-cell",
+                "table-row-group",
+                "table-header-group",
+                "table-footer-group",
+                "table-caption",
+                "flow-root",
+                "contents",
+                "inherit",
+                "initial",
+                "unset",
+            ]) || (may_hide && words(&["none"]))
+        }
+        "visibility" => words(&["visible", "inherit"]) || (may_hide && words(&["hidden", "collapse"])),
+        "position" => {
+            words(&["static", "relative", "inherit"])
+                || (may_hide && words(&["absolute", "fixed", "sticky", "-webkit-sticky"]))
+        }
+        "opacity" => {
+            may_hide
+                || values.iter().all(|value| match value {
+                    Value::Number(n) => *n >= 0.5,
+                    Value::Length(n, unit) => unit == "%" && *n >= 50.0,
+                    Value::Word(word) => global.contains(&word.as_str()),
+                    _ => false,
+                })
+        }
+        "color" | "-webkit-text-fill-color" => (may_hide || visible_colour(values)) && functions(colours),
+        "font-size" => values.len() == 1 && readable_size(&values[0]),
+        // The first length is the size; a length or number after `/` is the line height.
+        "font" => {
+            let slash = values.iter().position(|value| *value == Value::Slash);
+            let (size, line) = values.split_at(slash.unwrap_or(values.len()));
+            functions(&[])
+                && !size.iter().any(|value| matches!(value, Value::Number(n) if *n == 0.0))
+                && !size.iter().any(|value| matches!(value, Value::Word(word) if matches!(word.as_str(), "smaller" | "larger" | "xxx-large")))
+                && size.iter().filter(|value| matches!(value, Value::Length(..))).take(1).all(readable_size)
+                && line.get(1).is_none_or(|value| allowed("line-height", std::slice::from_ref(value), false))
+        }
+        "line-height" => {
+            values.len() == 1
+                && match &values[0] {
+                    Value::Number(n) => (0.8..=3.0).contains(n),
+                    Value::Length(n, unit) if unit == "%" => (80.0..=300.0).contains(n),
+                    Value::Length(n, unit) if matches!(unit.as_str(), "em" | "rem") => (0.8..=3.0).contains(n),
+                    value @ Value::Length(n, unit)
+                        if matches!(unit.as_str(), "px" | "pt" | "pc" | "in" | "cm" | "mm" | "q") =>
+                    {
+                        px(value).is_some_and(|n| (8.0..=96.0).contains(&n)) && *n > 0.0
+                    }
+                    Value::Word(word) => word == "normal" || global.contains(&word.as_str()),
+                    _ => false,
+                }
+        }
+        "letter-spacing" | "word-spacing" => {
+            values.len() == 1
+                && match &values[0] {
+                    Value::Word(word) => word == "normal" || global.contains(&word.as_str()),
+                    Value::Number(n) => *n == 0.0,
+                    value => px(value).is_some_and(|n| (-1.0..=8.0).contains(&n)),
+                }
+        }
+        "text-indent"
+        | "margin"
+        | "margin-top"
+        | "margin-right"
+        | "margin-bottom"
+        | "margin-left"
+        | "margin-inline"
+        | "margin-block"
+        | "margin-inline-start"
+        | "margin-inline-end"
+        | "margin-block-start"
+        | "margin-block-end"
+        | "top"
+        | "right"
+        | "bottom"
+        | "left"
+        | "inset" => functions(&["calc"]) && bounded(values, 128.0),
+        "padding" | "padding-top" | "padding-right" | "padding-bottom" | "padding-left" | "padding-inline"
+        | "padding-block" => functions(&["calc"]) && bounded(values, 320.0),
+        "width"
+        | "height"
+        | "min-width"
+        | "min-height"
+        | "max-width"
+        | "max-height"
+        | "flex-basis"
+        // Percentages compound through nesting, so a box may not be wider or taller than its container.
+        | "-ms-flex-preferred-size" => {
+            functions(&["calc"])
+                && bounded(values, 2000.0)
+                && !values.iter().any(|value| matches!(value, Value::Length(n, unit) if unit == "%" && *n > 100.0))
+        }
+        "vertical-align" => small_lengths(values, 32.0) && functions(&[]),
+        "gap" | "row-gap" | "column-gap" | "border-spacing" => functions(&["calc"]) && bounded(values, 64.0),
+        // Lines and shadows may not grow into an overlay: widths, offsets and spreads stay small.
+        "border"
+        | "border-top"
+        | "border-right"
+        | "border-bottom"
+        | "border-left"
+        | "border-width"
+        | "border-top-width"
+        | "border-right-width"
+        | "border-bottom-width"
+        | "border-left-width"
+        | "outline"
+        | "outline-width"
+        | "outline-offset" => functions(colours) && small_lengths(values, 8.0),
+        "box-shadow" => functions(colours) && small_lengths(values, 32.0),
+        "text-decoration" | "text-decoration-line" | "-webkit-text-decoration-line" | "text-underline-offset" => {
+            functions(colours) && small_lengths(values, 4.0)
+        }
+        "z-index" => values.iter().all(|value| match value {
+            Value::Number(n) => (0.0..=100.0).contains(n),
+            Value::Word(word) => word == "auto" || global.contains(&word.as_str()),
+            _ => false,
+        }),
+        "text-transform" => words(&["none", "uppercase", "lowercase", "capitalize", "inherit"]),
+        "unicode-bidi" => words(&["normal", "embed", "isolate", "inherit"]),
+        "direction" => words(&["ltr", "inherit"]),
+        "list-style" | "list-style-type" => {
+            !values.iter().any(|value| matches!(value, Value::Text(_))) && functions(&[])
+        }
+        "background" => functions(colours) && !values.iter().any(|value| matches!(value, Value::Url(_))),
+        "box-sizing"
+        | "-ms-flex"
+        | "-ms-flex-direction"
+        | "-ms-flex-pack"
+        | "-ms-flex-wrap"
+        | "-ms-flex-align"
+        | "-ms-flex-item-align"
+        | "-ms-flex-line-pack"
+        | "-ms-flex-positive"
+        | "-ms-flex-negative"
+        | "-ms-flex-order"
+        | "flex"
+        | "flex-direction"
+        | "flex-wrap"
+        | "flex-flow"
+        | "flex-grow"
+        | "flex-shrink"
+        | "justify-content"
+        | "align-items"
+        | "align-content"
+        | "align-self"
+        | "justify-items"
+        | "justify-self"
+        | "border-style"
+        | "border-color"
+        | "border-top-color"
+        | "border-right-color"
+        | "border-bottom-color"
+        | "border-left-color"
+        | "border-top-style"
+        | "border-right-style"
+        | "border-bottom-style"
+        | "border-left-style"
+        | "border-radius"
+        | "border-top-left-radius"
+        | "border-top-right-radius"
+        | "border-bottom-left-radius"
+        | "border-bottom-right-radius"
+        | "border-collapse"
+        | "outline-style"
+        | "outline-color"
+        | "background-color"
+        | "text-align"
+        | "text-decoration-color"
+        | "text-decoration-style"
+        | "-webkit-text-decoration-skip"
+        | "text-decoration-skip-ink"
+        | "cursor"
+        | "font-weight"
+        | "font-style"
+        | "font-family"
+        | "font-variant"
+        | "white-space"
+        | "word-break"
+        | "overflow-wrap"
+        | "word-wrap"
+        | "hyphens"
+        | "table-layout"
+        | "caption-side"
+        | "empty-cells"
+        | "transition"
+        | "transition-property"
+        | "transition-duration"
+        | "transition-timing-function"
+        | "transition-delay"
+        | "quotes"
+        | "-webkit-font-smoothing"
+        | "-moz-osx-font-smoothing"
+        | "text-rendering"
+        | "-webkit-text-size-adjust"
+        | "-ms-text-size-adjust"
+        | "text-size-adjust"
+        | "user-select"
+        | "-webkit-user-select"
+        | "-moz-user-select"
+        | "-ms-user-select"
+        | "pointer-events"
+        | "appearance"
+        | "-webkit-appearance"
+        | "-moz-appearance"
+        | "resize"
+        | "float"
+        | "clear"
+        | "caret-color"
+        | "accent-color"
+        | "tab-size"
+        | "-moz-tab-size"
+        | "-webkit-tap-highlight-color"
+        | "touch-action"
+        | "-ms-overflow-style"
+        | "font-kerning" => functions(&["rgb", "rgba", "hsl", "hsla", "cubic-bezier"]),
+        _ => false,
+    }
+}
+
+/// Text colour with at least 50 % alpha; `transparent` is refused.
+fn visible_colour(values: &[Value]) -> bool {
+    values.iter().all(|value| match value {
+        Value::Word(word) => word != "transparent",
+        Value::Hex(hex) if !hex.is_ascii() => false,
+        Value::Hex(hex) => match hex.len() {
+            4 => u8::from_str_radix(&hex[3..4], 16).is_ok_and(|alpha| alpha >= 8),
+            8 => u8::from_str_radix(&hex[6..8], 16).is_ok_and(|alpha| alpha >= 0x80),
+            _ => true,
+        },
+        Value::Function(_, arguments) => {
+            let numbers: Vec<_> = arguments
+                .iter()
+                .filter_map(|value| match value {
+                    Value::Number(n) => Some(*n),
+                    Value::Length(n, unit) if unit == "%" => Some(*n / 100.0),
+                    Value::Length(n, _) => Some(*n),
+                    _ => None,
+                })
+                .collect();
+            arguments.iter().all(|value| !matches!(value, Value::Word(_)))
+                && (numbers.len() == 3 || numbers.last().is_some_and(|alpha| *alpha >= 0.5))
+        }
+        _ => false,
+    })
+}
+
+/// Font sizes from 8px: absolute units, at least half the parent size, or a keyword.
+fn readable_size(value: &Value) -> bool {
+    match value {
+        Value::Word(word) => matches!(
+            word.as_str(),
+            "xx-small"
+                | "x-small"
+                | "small"
+                | "medium"
+                | "large"
+                | "x-large"
+                | "xx-large"
+                | "inherit"
+                | "initial"
+                | "unset"
+        ),
+        // `%` and `em` compound through nested elements, so they may neither shrink nor grow; `rem` is fixed to
+        // the root, which absolute sizes keep at 8 to 32px. Other relative units are not read.
+        Value::Length(n, unit) => match unit.as_str() {
+            "%" => *n == 100.0,
+            "em" => *n == 1.0,
+            "rem" => (0.75..=3.0).contains(n),
+            "px" | "pt" | "pc" | "in" | "cm" | "mm" | "q" => px(value).is_some_and(|n| (8.0..=32.0).contains(&n)),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// Lengths and `calc()` whose magnitude stays within `limit` CSS pixels, counting every factor at full size.
+fn bounded(values: &[Value], limit: f32) -> bool {
+    fn size(value: &Value) -> Option<f32> {
+        match value {
+            // `inherit` would copy the parent's offset again on every level; a unitless number is a length only
+            // in quirks mode.
+            Value::Word(word) => matches!(word.as_str(), "auto" | "initial").then_some(0.0),
+            Value::Number(n) => (*n == 0.0).then_some(0.0),
+            Value::Length(..) => px(value).map(f32::abs),
+            // A division could grow a length without bound; only sums and products are counted.
+            // Constants such as `infinity` are words; they and a division could grow a length without bound.
+            Value::Function(name, arguments)
+                if name == "calc"
+                    && !arguments.iter().any(|argument| matches!(argument, Value::Slash | Value::Word(_))) =>
+            {
+                let lengths = arguments.iter().filter(|argument| matches!(argument, Value::Length(..))).map(size);
+                let factors: f32 = arguments
+                    .iter()
+                    .filter_map(|argument| match argument {
+                        Value::Number(n) => Some(n.abs()),
+                        _ => None,
+                    })
+                    .product();
+                lengths.sum::<Option<f32>>().map(|sum| sum * factors)
+            }
+            Value::Other | Value::Delim(_) | Value::Comma => Some(0.0),
+            _ => None,
+        }
+    }
+    values.iter().all(|value| size(value).is_some_and(|n| n <= limit))
+}
+
+/// Every length within `limit` CSS pixels; numbers and words pass.
+fn small_lengths(values: &[Value], limit: f32) -> bool {
+    values.iter().all(|value| match value {
+        Value::Length(..) => px(value).is_some_and(|n| n.abs() <= limit),
+        _ => true,
+    })
+}
+
+/// An upper estimate of a length in CSS pixels: font-relative units at the largest admitted font size, `%` of a
+/// 1000px container and viewport units of a 2600px screen.
+fn px(value: &Value) -> Option<f32> {
+    let Value::Length(n, unit) = value else { return None };
+    let factor = match unit.as_str() {
+        "px" => 1.0,
+        "pt" => 4.0 / 3.0,
+        "pc" => 16.0,
+        "in" => 96.0,
+        "cm" => 37.8,
+        "mm" => 3.78,
+        "q" => 0.945,
+        // Upper bounds for the font sizes the allow list admits: the root at most 32px, any element at most 96px.
+        // Units relative to the line height are not read.
+        "rem" => 32.0,
+        "em" | "ch" | "ex" => 96.0,
+        "%" => 10.0,
+        "vw" | "vh" | "vmin" | "vmax" | "svw" | "svh" | "lvw" | "lvh" | "dvw" | "dvh" | "vi" | "vb" => 26.0,
+        _ => return None,
+    };
+    Some(n * factor)
+}
+
+/// `url(data:…)` in any spelling, also nested in functions.
+fn inline_data(values: &[Value]) -> bool {
+    values.iter().any(|value| match value {
+        Value::Url(url) | Value::Text(url) => url.trim_start().to_ascii_lowercase().starts_with("data:"),
+        Value::Function(_, arguments) => inline_data(arguments),
+        _ => false,
+    })
+}
+
+fn values<'i>(
+    parser: &mut cssparser::Parser<'i, '_>,
+    walk: &mut CssWalk<'_>,
+    depth: usize,
+) -> Result<Vec<Value>, CssFail<'i>> {
+    use cssparser::Token;
+    if depth > MAX_CSS_DEPTH {
+        return Err(refuse());
+    }
+    let mut out = Vec::new();
+    loop {
+        walk.tick()?;
+        let token = match parser.next() {
+            Ok(token) => token.clone(),
+            Err(_) => return Ok(out),
+        };
+        out.push(match token {
+            Token::Ident(word) => Value::Word(word.to_ascii_lowercase()),
+            Token::QuotedString(text) => Value::Text(text.to_string()),
+            Token::Number { value, .. } => Value::Number(value),
+            Token::Percentage { unit_value, .. } => Value::Length(unit_value * 100.0, "%".into()),
+            Token::Dimension { value, unit, .. } => Value::Length(value, unit.to_ascii_lowercase()),
+            Token::Hash(hex) | Token::IDHash(hex) => Value::Hex(hex.to_ascii_lowercase()),
+            Token::UnquotedUrl(url) => Value::Url(url.to_string()),
+            Token::Function(name) => {
+                let name = name.to_ascii_lowercase();
+                let arguments = parser.parse_nested_block(|nested| values(nested, walk, depth + 1))?;
+                if name == "url" {
+                    let target = arguments.iter().find_map(|argument| match argument {
+                        Value::Text(text) => Some(text.clone()),
+                        _ => None,
+                    });
+                    Value::Url(target.unwrap_or_default())
+                } else {
+                    Value::Function(name, arguments)
+                }
+            }
+            Token::ParenthesisBlock | Token::SquareBracketBlock => {
+                Value::Function(String::new(), parser.parse_nested_block(|nested| values(nested, walk, depth + 1))?)
+            }
+            Token::CurlyBracketBlock | Token::BadUrl(_) | Token::BadString(_) => return Err(refuse()),
+            // `!important` changes no visible content; its keyword is dropped by the caller.
+            Token::Delim('!') => continue,
+            Token::Delim('/') => Value::Slash,
+            Token::Delim(c) => Value::Delim(c),
+            Token::Comma => Value::Comma,
+            _ => Value::Other,
+        });
+    }
 }
 
 fn width(font: &ParsedFont, text: &str) -> Result<f32, Error> {
@@ -889,5 +2451,5 @@ fn render(invoice: &Invoice, budget: &Budget) -> Result<Copy, Error> {
     if normalize(&actual.join("\n")) != normalize(&expected) {
         return Err(Error::Unsupported);
     }
-    Ok(Copy { bytes, pages: count })
+    Ok(Copy { bytes, pages: count, layout: None })
 }

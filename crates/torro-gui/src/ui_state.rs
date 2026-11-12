@@ -77,6 +77,10 @@ const SEARCHES: &str = "recentSearches";
 /// `"collapsed"` or `"expanded"`.
 const ACTIONS: &str = "actions";
 
+/// The key of the right columns shown or hidden ([`right_column_from`], issue #601): an object from a
+/// window's key to `true` (shown) or `false` (hidden).
+const RIGHT_COLUMN: &str = "rightColumn";
+
 /// How many searches [`save_searches_to`] keeps at most.
 pub const SEARCHES_MAX: usize = 8;
 
@@ -588,6 +592,49 @@ pub fn save_actions_task<T: Send + 'static>(app: AppId, key: String, mode: RailM
     .discard()
 }
 
+/// Whether the right column of the window `key` (the mail's reader, the calendar's "Up next", the hub's
+/// "Coming back"; issue #601) is shown, as [`save_right_column_to`] stored it in `path`. `None` when
+/// there is none, the file cannot be read or the value is not a bool; the app then shows the column.
+/// Windows are keyed as for [`order_from`].
+pub fn right_column_from(path: &Path, key: &str) -> Option<bool> {
+    let text = fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value.get(RIGHT_COLUMN)?.get(key)?.as_bool()
+}
+
+/// Stores whether the right column of the window `key` is `shown` in `path`, keeping the other
+/// windows' choices and everything else in the file.
+pub fn save_right_column_to(path: &Path, key: &str, shown: bool) -> Result<(), Error> {
+    let mut columns = fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| value.get(RIGHT_COLUMN).and_then(serde_json::Value::as_object).cloned())
+        .unwrap_or_default();
+    columns.insert(key.to_string(), serde_json::Value::Bool(shown));
+    let mut fields = serde_json::Map::new();
+    fields.insert(RIGHT_COLUMN.into(), serde_json::Value::Object(columns));
+    merge_into(path, fields)
+}
+
+/// [`right_column_from`] for the window `key` of `app` in the background, for the start of a window:
+/// `ui_state::load_right_column_task(app, key).map(Message::StoredRightColumn)`. Like [`load_task`],
+/// tests that only build the app never run it.
+pub fn load_right_column_task(app: AppId, key: String) -> Task<Option<bool>> {
+    Task::perform(async move { file(app).and_then(|path| right_column_from(&path, &key)) }, |shown| shown)
+}
+
+/// [`save_right_column_to`] for the window `key` of `app` in the background, after the person showed
+/// or hid the right column. A failure is reported on stderr and otherwise ignored, as in [`save_task`].
+pub fn save_right_column_task<T: Send + 'static>(app: AppId, key: String, shown: bool) -> Task<T> {
+    Task::future(async move {
+        let saved = file(app).ok_or(Error::NoHome).and_then(|path| save_right_column_to(&path, &key, shown));
+        if let Err(err) = saved {
+            eprintln!("{}: {err}", app.binary);
+        }
+    })
+    .discard()
+}
+
 /// Writes `fields` into the JSON object in `path` – over the keys of the same name, beside the
 /// others – atomically, creating the directory if needed. A missing or broken file starts empty.
 fn merge_into(path: &Path, fields: serde_json::Map<String, serde_json::Value>) -> Result<(), Error> {
@@ -903,6 +950,34 @@ mod tests {
         ] {
             fs::write(&path, content).expect("write");
             assert_eq!(actions_from(&path, "mail"), None, "{content}");
+        }
+    }
+
+    /// Issue #601: every window keeps whether its right column shows beside the rest; a missing or
+    /// foreign value reads as `None`, which the app takes as shown.
+    #[test]
+    fn right_columns_are_kept_per_window_beside_the_rest() {
+        let dir = TempDir::new("right-column");
+        let path = dir.0.join(FILE);
+        assert_eq!(right_column_from(&path, "mail"), None, "no file yet");
+        save_to(&path, &UiState { sidebar: SidebarMode::Rail }).expect("save the sidebar");
+        save_actions_to(&path, "mail", RailMode::Expanded).expect("save a rail");
+        assert_eq!(right_column_from(&path, "mail"), None, "nothing chosen yet");
+        save_right_column_to(&path, "mail", false).expect("hide in the mail window");
+        save_right_column_to(&path, "calendar", true).expect("show in the calendar");
+        assert_eq!(right_column_from(&path, "mail"), Some(false));
+        assert_eq!(right_column_from(&path, "calendar"), Some(true));
+        assert_eq!(right_column_from(&path, "hub"), None, "another window chose nothing");
+        assert_eq!(load_from(&path).sidebar, SidebarMode::Rail, "the sidebar stays");
+        assert_eq!(actions_from(&path, "mail"), Some(RailMode::Expanded), "the rail stays");
+        save_right_column_to(&path, "mail", true).expect("show again");
+        assert_eq!(right_column_from(&path, "mail"), Some(true));
+        assert_eq!(right_column_from(&path, "calendar"), Some(true), "the other window stays");
+        save_to(&path, &UiState::default()).expect("save the sidebar again");
+        assert_eq!(right_column_from(&path, "mail"), Some(true), "saving the sidebar keeps it");
+        for content in ["{ not json", r#"{"rightColumn":false}"#, r#"{"rightColumn":{"mail":"hidden"}}"#] {
+            fs::write(&path, content).expect("write");
+            assert_eq!(right_column_from(&path, "mail"), None, "{content}");
         }
     }
 

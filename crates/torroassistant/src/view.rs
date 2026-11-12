@@ -23,6 +23,7 @@ use iced::widget::{
     Space, button, column, container, mouse_area, responsive, row, scrollable, stack, text_editor, text_input,
 };
 use iced::{Alignment, Background, Element, Fill, Padding, Theme};
+use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::SizeClass;
@@ -184,6 +185,8 @@ impl App {
     /// back out of them – and what lies over the top of the window.
     fn top_row(&self, class: SizeClass) -> TopRow<Message> {
         let mut top = TopRow::new(self.zoom.factor(), Message::DragWindow)
+            .title(AppId::ASSISTANT)
+            .sidebar_at_edge(true)
             .settings(Message::ToggleSettings)
             .settings_open(self.settings.is_some())
             .cover(self.cover());

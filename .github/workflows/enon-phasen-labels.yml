@@ -1,4 +1,4 @@
-# enon-tools-vorlage: phasen-labels 1
+# enon-tools-vorlage: phasen-labels 2
 # Entfernt die Phasen-Labels des Issue-Workflows von einem geschlossenen Issue,
 # auch wenn es ein Merge mit "Closes #<nr>" schließt (enon-tools #202).
 # Vorlage aus dem Plugin enon-tools, eingerichtet mit /setup. Ohne die erste
@@ -22,7 +22,7 @@ jobs:
           REPO: ${{ github.repository }}
           NR: ${{ github.event.issue.number }}
           # Muss zu PHASEN_LABELS_GESCHLOSSEN in plugins/enon-tools/lib/conventions.mjs passen.
-          PHASEN: awaiting-approval approved started-implementation pr-open awaiting-review
+          PHASEN: plan-ready plan-accepted started-implementation pr-open awaiting-review
         run: |
           # Nur Labels, die am Issue hängen, in dessen Schreibweise; GitHub
           # vergleicht Label-Namen ohne Groß-/Kleinschreibung.

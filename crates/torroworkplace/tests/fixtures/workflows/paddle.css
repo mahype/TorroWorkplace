@@ -1,0 +1,28 @@
+/* Synthetic stand-in for a provider invoice stylesheet (#598). No real provider content. */
+@charset "utf-8";
+@font-face {
+  font-family: "Synthetic Sans";
+  src: url("/assets/fonts/synthetic.woff2") format("woff2");
+  font-display: swap;
+}
+html, body { margin: 0; font-family: "Synthetic Sans", sans-serif; color: #1f2430; background: #f4f5f8; }
+.c-header { position: fixed; top: 0; left: 0; right: 0; height: 64px; background: #3a4bd9; }
+.c-main { padding-top: 80px; }
+.c-sheet { max-width: 860px; margin: 0 auto; padding: 40px; background: #fff; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12); }
+.g-row { display: flex; flex-wrap: wrap; }
+.g-row::after { content: ""; display: table; clear: both; }
+.g-col-6 { width: 50%; }
+.c-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; }
+.c-badge--success { background: #d9f5e3; color: #11663a; }
+.receipt-table-head, .receipt-table-row, .receipt-table-tax, .receipt-table-total { display: flex; }
+.receipt-table-row-price, .receipt-table-total-right { text-align: right; }
+.receipt-table-total { font-weight: 700; border-top: 2px solid #1f2430; }
+@media (max-width: 600px) {
+  .g-col-6 { width: 100%; }
+  .c-sheet { padding: 16px; }
+}
+@media print {
+  .no-print, .c-header { display: none !important; }
+  .c-main { padding-top: 0; }
+  .c-sheet { box-shadow: none; }
+}

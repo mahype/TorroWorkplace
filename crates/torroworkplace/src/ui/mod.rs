@@ -2132,7 +2132,9 @@ impl Ui {
     fn top_row(&self, class: SizeClass) -> TopRow<Message> {
         let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
         TopRow::new(self.zoom.factor(), Message::DragWindow)
+            .title(AppId::WORKPLACE)
             .sidebar(label, Message::ToggleSidebar)
+            .sidebar_at_edge(true)
             .settings(Message::Select(Section::General))
             .settings_open(self.section == Section::General)
             .cover(self.cover())

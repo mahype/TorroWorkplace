@@ -7627,6 +7627,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "cssparser 0.37.0",
  "dirs",
  "dom_query",
  "dom_smoothie",

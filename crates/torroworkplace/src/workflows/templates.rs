@@ -1,7 +1,7 @@
 //! Bundled, versioned provider packages. Reading or copying a template never executes it or grants access.
 
 use sha2::{Digest, Sha256};
-use torro_ipc::workflows::{InvoiceProfile, Package, Step, TemplateOrigin, WorkflowTemplate};
+use torro_ipc::workflows::{InvoiceProfile, Package, ResourcePin, Step, TemplateOrigin, WorkflowTemplate};
 
 use super::{Error, invoice};
 
@@ -18,7 +18,7 @@ pub(super) fn labels(id: &str) -> Result<(&'static str, &'static str), Error> {
         )),
         "paddle_setapp_invoice_copy" => Ok((
             "Paddle / Setapp invoice copy",
-            "Creates a marked PDF copy only of supported Paddle HTML without stylesheets or scripts. Current provider pages using external resources are unsupported; no resource loading or login.",
+            "Creates a marked PDF copy of a supported Paddle invoice page. Loads its stylesheets and scripts from my.paddle.com, static.paddle.com and cdn.paddle.com as data only: stylesheets are checked on every run and their layout, like the scripts, must match the tested version; scripts are never executed. No login.",
         )),
         _ => Err(Error::NotFound),
     }
@@ -41,18 +41,20 @@ pub fn list() -> Result<Vec<WorkflowTemplate>, Error> {
         ..direct.clone()
     };
     let mut paddle = Package {
-        hosts: vec!["my.paddle.com".into()],
+        hosts: vec!["my.paddle.com".into(), "static.paddle.com".into(), "cdn.paddle.com".into()],
         steps: vec![
             Step::MailLink { host: "my.paddle.com".into(), label: None },
             Step::Get,
-            Step::RenderInvoiceCopy { profile: InvoiceProfile::PaddleSetapp, version: 1 },
+            Step::RenderInvoiceCopy { profile: InvoiceProfile::PaddleSetapp, version: 2 },
             Step::VerifyPdf,
             Step::SaveToTarget,
         ],
         ..direct.clone()
     };
     paddle.binding.typesetter = 1;
-    paddle.binding.fonts_digest = invoice::binding();
+    paddle.binding.fonts_digest = invoice::binding(2);
+    paddle.binding.resources = paddle_scripts();
+    paddle.binding.layout = Some(PADDLE_LAYOUT.into());
     [("direct_pdf", direct), ("stripe_invoice", stripe), ("paddle_setapp_invoice_copy", paddle)]
         .into_iter()
         .map(|(id, package)| {
@@ -70,6 +72,51 @@ pub fn list() -> Result<Vec<WorkflowTemplate>, Error> {
             })
         })
         .collect()
+}
+
+/// The layout fingerprint of the real Paddle/Setapp invoice pages (August to November 2026), identical on all of
+/// them. A draft test adopts a newer one; a saved workflow stops with `provider_changed`.
+const PADDLE_LAYOUT: &str = "a0b64d3f30a791c12a2f946ee4f7014ee67e9deb665037b36b9048e21ae80e50";
+
+/// The provider scripts witnessed on the real Paddle/Setapp invoice pages (August to November 2026): jQuery and
+/// jQuery UI from the CDN, select2 and the invoice script, and the inline address-form handler. A draft test
+/// adopts newer ones; a saved workflow stops with `provider_changed`.
+fn paddle_scripts() -> Vec<ResourcePin> {
+    [
+        ("my.paddle.com", "/", "adb4739d687831bbc5b85bf18e800ac6047198900efe16c17f2360781b49692c", true),
+        (
+            "cdn.paddle.com",
+            "/external/jquery-3.6.0.min.js",
+            "ff1523fb7389539c84c65aba19260648793bb4f5e29329d2ee8804bc37a3fe6e",
+            false,
+        ),
+        (
+            "cdn.paddle.com",
+            "/external/jquery-ui-1.12.1.min.js",
+            "55accff7b642c2d7a402cbe03c1494c0f14a76bc03dee9d47d219562b6a152a5",
+            false,
+        ),
+        (
+            "static.paddle.com",
+            "/assets/libraries/js/select2.min.js",
+            "1cd91b9dd3e258ce4421181a85cde15a2b860fa0adc0580c7c4534a37cde69ba",
+            false,
+        ),
+        (
+            "static.paddle.com",
+            "/assets/js/customer/invoice.js",
+            "324072216721de7328ce00b3611c149e0588443555b510494d89ecb4cd33d3f5",
+            false,
+        ),
+    ]
+    .into_iter()
+    .map(|(host, path, sha256, inline)| ResourcePin {
+        host: host.into(),
+        path: path.into(),
+        sha256: sha256.into(),
+        inline,
+    })
+    .collect()
 }
 
 pub fn get(id: &str) -> Result<WorkflowTemplate, Error> {

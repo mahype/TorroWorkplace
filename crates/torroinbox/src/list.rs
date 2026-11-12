@@ -1102,7 +1102,7 @@ pub(crate) fn sized_row<'a>(
 /// The marker slot at the left of a mail row – the row's padding, at least the unread dot with
 /// [`space::xs()`] at its sides –, less the selection's bar while one is drawn (`bar`), so the dot and
 /// the text stay where they are.
-fn mail_row_left(bar: bool) -> f32 {
+pub(crate) fn mail_row_left(bar: bool) -> f32 {
     let left = layout::row_padding().left.max(new_dot() + 2.0 * space::xs());
     if bar { left - SELECTED_BAR } else { left }
 }
