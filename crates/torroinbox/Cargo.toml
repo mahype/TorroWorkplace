@@ -17,6 +17,8 @@ workspace = true
 "mahype/torro/torroworkplace" = { stage = ["run"] }
 
 [dependencies]
+# The conversation of a Talk entry in the hub's panel (issue #643): its model and the demo's chats.
+torro-chat.workspace = true
 # Recipient suggestions in the compose window (issue #460): their types, ranking for the demo.
 torro-contacts.workspace = true
 torro-core.workspace = true

@@ -87,6 +87,12 @@ pub struct Item {
     /// foreign text like `title`. Answer it with `mail.respond_to_invitation` for the linked message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invite: Option<torro_mail::Invite>,
+    /// The chat conversation of a Talk entry (`docs/chat.md`, issue #643), as `chat.*` commands
+    /// name it (`<account>/<token>`): set by the core for a caller that may read chat with the
+    /// entry's account, so the Notification Hub can show its history and answer it. `None` for
+    /// every other entry and caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<String>,
     /// Why the entry stands in its lane when a rule rather than its kind put it there (issue #128):
     /// for mail the header that made it bulk mail or a lane kept for its sender, for any entry a
     /// muted trait that sends it to "Info". Set by the core when the report is filed, never taken

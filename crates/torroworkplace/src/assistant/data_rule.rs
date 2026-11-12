@@ -193,6 +193,15 @@ impl Reader {
 const MAIL_ANSWERS_ALLOWED: &[&str] =
     &["ok", "mail-draft", "mail-sent", "mail-folders", "mail-filter-applied", "error"];
 
+/// The answers of `chat.*` and `presence.*` commands that hold no text of other people (decision 6
+/// in `docs/chat.md`): `ok`, that a message went out (its id alone), that sending files began (its
+/// id alone), the caller's own prepared file and upload (`prepare_file`, `upload_file`) and how its
+/// sending goes (`get_upload`: ids, bytes and state), and errors; else an assistant with a model
+/// elsewhere could never send a file. A positive list, so every answer added later stays home by
+/// itself. No switch lets the rest out: chats and who is there when are about other people.
+pub(crate) const CHAT_ANSWERS_ALLOWED: &[&str] =
+    &["ok", "chat-sent", "chat-sending", "chat-prepared-file", "chat-file-upload", "chat-upload", "error"];
+
 /// A tool's answer as a model may read it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Screened {
@@ -223,6 +232,10 @@ pub fn for_model(request: &Request, response: &Response, reader: impl Into<Reade
             !mail && torro_ipc::workflows::reads_mail(request.operation().name()) && result != "error"
         }
         request if request.operation().area() == Area::Mail => !mail && !MAIL_ANSWERS_ALLOWED.contains(&result),
+        // Chats and presence stay home whatever the switch for mail says.
+        request if matches!(request.operation().area(), Area::Chat | Area::Presence) => {
+            !CHAT_ANSWERS_ALLOWED.contains(&result)
+        }
         // A task made of a mail in a folder (task E8.7a) holds that mail only.
         Request::CreateTodoFromMail { .. } => !mail && result != "error",
         // So does an event made of a mail (issue #603).
@@ -309,6 +322,10 @@ pub fn without_mail(response: Response) -> Response {
 pub fn reads_mail(name: &str) -> bool {
     name.starts_with("mail.")
         || torro_ipc::workflows::reads_mail(name)
+        // Chats and status messages are text of other people like mail (decision 6 in
+        // `docs/chat.md`), and no switch lets them out ([`kept_from`]).
+        || name.starts_with("chat.")
+        || name.starts_with("presence.")
         || name.starts_with("inbox.")
         || name == "bots.ask_bot"
         || name == "contacts.suggest_recipients"
@@ -427,6 +444,7 @@ mod tests {
     fn item(id: &str, source: SourceRef, title: &str) -> Item {
         let time = Utc.with_ymd_and_hms(2026, 10, 13, 9, 0, 0).single().expect("valid time");
         Item {
+            conversation: None,
             id: id.into(),
             source,
             thread_key: "t".into(),
@@ -483,6 +501,28 @@ mod tests {
         // Errors, and what the assistant wrote itself, still reach it.
         let error = Response::Error { code: "not-found".into(), message: "no such message".into() };
         assert_eq!(for_model(&search, &error, Place::Remote).value["result"], "error");
+    }
+
+    /// Decision 6 of `docs/chat.md`: a model elsewhere gets what sending a file needs (ids and the
+    /// caller's own file), never the messages of other people.
+    #[test]
+    fn a_model_elsewhere_may_send_chat_files_but_reads_no_chat() {
+        let prepare: Request =
+            serde_json::from_value(json!({"method": "chat.get_upload", "id": "s1"})).expect("a look at the upload");
+        let sending = Response::ChatSending { id: "s1".into() };
+        let send: Request = serde_json::from_value(
+            json!({"method": "chat.send_message", "conversation": "nextcloud:anna@cloud.example.org/ben4chat", "text": "hi"}),
+        )
+        .expect("a send");
+        assert!(!for_model(&send, &sending, Place::Remote).withheld, "the id of the sending");
+        let upload = Response::ChatFileUpload { upload: "u1".into(), received: 12 };
+        assert!(!for_model(&prepare, &upload, Place::Remote).withheld, "the caller's own upload");
+        let read: Request = serde_json::from_value(
+            json!({"method": "chat.get_messages", "conversation": "nextcloud:anna@cloud.example.org/ben4chat"}),
+        )
+        .expect("a read");
+        let page = Response::ChatConversations { conversations: Vec::new() };
+        assert!(for_model(&read, &page, Place::Remote).withheld, "what others wrote stays home");
     }
 
     #[test]

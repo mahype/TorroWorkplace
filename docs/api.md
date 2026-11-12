@@ -155,6 +155,8 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `contacts` ²⁸ | `list_address_books`, `list_contacts`, `get_contact`, `get_photo`, `list_groups`, `upcoming_birthdays` | `create_contact`, `add_to_contact`, `set_favorite`, `add_to_group`, `mark_used`, `move_contact`, `resolve_conflict` mit `both` | `update_contact`, `remove_from_group`, `set_photo`, `delete_contact`, `resolve_conflict` mit `mine`/`theirs` | |
 | `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_pile` ²⁶, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `mute_item` mit `conversation`, `hide` (nicht für Mail ¹⁰)/`info`, ohne `until` ¹¹ | | `mute_source`, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ², `move_category` ²⁹ |
 | `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `overview` ⁷, `sync_status`, `get_message`, `get_thread`, `get_attachment`, `get_draft`, `prepare_paste`, `list_filters` ²⁷, `preview_filter` ²⁷ | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `prepare_image`, `upload_image`, `respond_to_invitation` ⁷ ¹⁶, `unsubscribe` ⁷ | `delete_messages`, `release_images` | `create_filter`, `update_filter`, `remove_filter`, `apply_filter` ²⁷ |
+| `chat` ³⁰ | `list_conversations`, `get_messages`, `suggest_mentions`, `find_people`, `search_messages`, `get_upload`, `get_preview`, `get_attachment`, `list_shared`, `get_call` | `send_message` (nach außen, auch mit `files` und `items`), `mark_read`, `mark_unread`, `create_conversation` (nach außen), `react` (nach außen), `set_favorite`, `set_notification_level`, `prepare_file` (`source: path` **nur App-Schlüssel**, Punkt 10 unten), `upload_file`, `cancel_upload`, `save_attachment` (`to: file`/`folder` **nur App-Schlüssel**), `show_card` (**nur App-Schlüssel**, Punkt 10), `decline_call`, `leave_call` | `edit_message`, `delete_message` (beide nach außen), `release_files` | |
+| `presence` ³⁰ | `list_people`, `find_people`, `get_own_status` | `add_person`, `remove_person`, `set_own_status` (nach außen) | | |
 | `workflows` (#556) | Vorlagen, Abläufe, Regeln, Läufe, Dokumentstücke und lokale Vorschau (siehe unten) | Entwürfe, getestete Abläufe, Start/Abbruch, Öffnen/Zeigen | Ablauf/Regel entfernen | Regeln verwalten; Dauergrant erteilen/widerrufen **nur App-Schlüssel** |
 | `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav`, `connect_mail` und `reconfigure_mail` (die letzten fünf **nur App-Schlüssel**, Punkt 5 unten), `set_search_key` (**nur App-Schlüssel**, Punkt 5, #305) |
 | `settings` | `get_settings`, `list_designs` ⁹, `list_fonts` ⁹, `list_color_schemes` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
@@ -665,7 +667,10 @@ Datei hat er selbst erzeugt), sonst `not-found`. Die Freigabe nennt den Titel au
 `template:<id>` (Issue #243) öffnet den kleinen Dialog des Kerns zum Bearbeiten einer Vorlage (`torroworkplace ui
 --template=<id>`), immer im Modus „Edit“, nie im Modus „Save“: dessen „Cancel“ löscht die Vorlage, und das darf
 kein Ziel von außen auslösen. Ein Client braucht Leserecht in `workspaces` (sonst `not-found`); die Freigabe nennt den
-Namen der Vorlage aus dem Speicher.
+Namen der Vorlage aus dem Speicher. `chat:<unterhaltung>` (Issue #643, [chat.md](chat.md)) öffnet ein Chatfenster mit
+der Unterhaltung (`torrochat --conversation=<id>`), `chat:contacts` die Kontaktliste; ein Client braucht Leserecht
+in `chat` mit dem Konto (sonst `not-found`). Auf die Befehlszeile kommen nur das Konto, wie der Kern es kennt, und ein
+geprüftes Token; die Freigabe nennt den Namen der Unterhaltung vom Server.
 
 ¹⁴ Statistik des Eingangs (E8.8a, Konzept [eingang.md](eingang.md#insights)). `get_stats { range: week
 | month | quarter, until? }` (`Read`) zählt über die letzten 7, 30 bzw. 90 Tage bis `until` (ein lokaler
@@ -776,10 +781,13 @@ Nachrichten: jede neue ist eine Meldung mit eigener Kennung (`<token>/<id der le
 n-te davor; höchstens 99 je Runde), wie viele neu sind, sagt der Lesestand `room:<token>` (Lesemarke und gezählte
 Ungelesene). Ungelesen = 0, nicht mehr gewünscht oder nicht mehr in der Liste → erledigt. Erledigen markiert die
 Unterhaltung bis zur neuesten Nachricht der Kennungen als gelesen und löscht ihre Chat-Benachrichtigungen bis zur
-letzten Meldung; Neueres bleibt ungelesen und öffnet den Eintrag wieder. Solange der Server Talk hat, legt Nextcloud die
+letzten Meldung (für Clients nur mit Write in `chat` und dem Konto in `chat_accounts`, sonst `forbidden`, Issue #643); Neueres bleibt ungelesen und öffnet den Eintrag wieder. Solange der Server Talk hat, legt Nextcloud die
 Chat-Benachrichtigungen (`spreed`, `chat`) nicht ab, Anrufe und Einladungen schon; vorher abgelegte bleiben, bis Talk
 sie auf dem Server löscht. Nach dem Stummschalten zählt erst, was danach kam (nur im Speicher: nach einem Neustart wird
-das Liegengebliebene doch abgelegt). Antworten gibt es noch nicht.
+das Liegengebliebene doch abgelegt). Geantwortet wird über `chat.send_message` ([chat.md](chat.md), Issue #643): Wer Chat
+mit dem Konto lesen darf, bekommt in `inbox.get_item` die Unterhaltung im Feld `conversation`; `inbox.open_item`
+öffnet einen Talk-Eintrag im Notification Hub mit Verlauf und Antwortfeld. Ein Schlüssel, den der Kern ohne `chat`
+verleiht, sieht keine Quelle `talk:*` (Entscheidung 6 in [chat.md](chat.md)).
 **GitHub** (E5.4, `sources/github.rs`): ein Eintrag je Thread der
 Benachrichtigungen (`GET /notifications`, höchstens im Takt von `X-Poll-Interval`, mindestens 60 s, mit
 `If-Modified-Since`; jede Abfrage reicht nur bis 3 Tage vor der ersten des Kontos); Titel des Themas, kein Text,
@@ -989,6 +997,51 @@ diesem Vorrang an; ein Filter setzt dabei nur seine Kategorie und nur für Mail 
 **„Nicht eingeordnet“ hält nur „Sonstiges“** (#402): `create_category`, `update_category` und `move_category` mit der
 Gruppe `unsorted` sind für jede andere Kategorie als `other` ein `error`, bei `move_category` schon vor der Freigabe. Eine
 Kategorie, die vor dieser Regel dort lag, bleibt und lässt sich weiter ändern.
+
+³⁰ **Chat und Präsenz** (Issue #643, Konzept [chat.md](chat.md)): zwei Bereiche mit je eigener Kontoauswahl,
+`Rights.chat_accounts` und `Rights.presence_accounts` mit den Kennungen der Nextcloud-Konten
+(`nextcloud:<login>@<host>`); fehlen die Felder in alten Rechten, ist kein Konto frei. Die Vorlagen setzen nur die
+Stufe und öffnen kein Konto. Das Konto steht in jeder Kennung (Unterhaltung `<konto>/<token>`, Nachricht
+`<unterhaltung>/<nummer>`, Person `<konto>/<user-id>`), darum ist alles außerhalb `not-found`, bevor der Kern etwas
+fragt. Mit einem Konto sieht ein Client alle Unterhaltungen darin. **Nach außen** (Schalter „Send on my behalf“,
+ab Werk mit Freigabe) sind `send_message`, `create_conversation`, `edit_message`, `delete_message`, `react` und
+`presence.set_own_status`; die Freigabe zeigt den Namen der Unterhaltung aus dem Kern und den Text, der wirklich
+geht, und behält nach der Entscheidung keins von beidem. Dafür gilt je Client eine Drossel von 30 Befehlen je Stunde
+und 5 je Minute (`busy`). Lesen ändert nichts auf dem Server (kein Lesestand, keine Benachrichtigung, kein Status).
+Nachrichten, Namen und Statusnachrichten sind `untrusted`. Der Kern hält Nachrichten und Status nur im Speicher. Beide
+Bereiche gehen nie an einen Coding-Agenten als Antrieb des Assistenten und nie an ein Modell anderswo
+(`NEVER_TO_AGENTS`, Datenregel), auch nicht mit dem Schalter für Mail; ein geliehener Schlüssel ohne `chat` verliert
+auch die Eingangsquellen `talk:*`.
+**Dateien und Medien** (Stufe 4, [chat.md](chat.md) „Dateien und Medien“): Senden geht in zwei Schritten. Vorbereiten
+(`prepare_file`, `upload_file` in Stücken von höchstens 256 KiB, 25 MiB je Datei) hält die Datei nur im Speicher des
+Kerns unter einer Lease (unfertig 10 Minuten, fertig eine Stunde nach der letzten Nutzung, zusammen höchstens 100 MiB,
+sonst `busy`); erst `send_message` mit `files` lädt nach der Freigabe hoch, teilt in die Unterhaltung und antwortet
+`chat-sending` mit einer Kennung für `get_upload` und `cancel_upload`. Die Art der Datei liest der Kern aus ihren
+ersten Bytes. Die Freigabe zeigt je Datei Name, Größe, Art und Herkunft aus dem Kern; auf der Platte liegt nur eine
+Hülle ohne Dateien, nach einem Neustart ist sie abgelaufen. Gelesen wird eine Datei nur zusammen mit ihrer Nachricht
+und nur, wenn sie zu deren Dateien gehört (sonst `not-found`). Vorschauen und Bilder von Link-Karten sowie Bilder,
+Videos und Dateien unbekannter Art als Datei brauchen für Clients zusätzlich das Recht `Rights.image_content` (fehlt =
+aus, in keiner Vorlage; der App-Schlüssel hat es immer), ohne es fehlt auch `blurhash`. `hide-download` macht Holen und Sichern für jeden Schlüssel `forbidden`. Clients
+schicken höchstens 20 Dateien und 100 MiB je Stunde (`busy`).
+**Teilen in einen Chat** (Stufe 5, [chat.md](chat.md), TL2 aus [teilen.md](teilen.md)): `send_message` mit `items`
+(vorerst nur Kontakte, höchstens 20) und `fields` (Auswahl; ohne sie Firma und Position, Telefon, Mail,
+Arbeitsadressen und Web, der Name geht immer). Die Karte baut der Kern aus seinem Adressbuch (Text und eine schlanke
+vCard 3.0, höchstens 5 MB) und schickt sie als vorbereitete Datei wie in Stufe 4, ihren Text als Beschriftung, wenn die
+Nachricht keinen hat. Ein Client braucht dafür zusätzlich Lesen in `contacts` und das Adressbuch in
+`Rights.address_books`; ein Kontakt außerhalb macht den ganzen Befehl `not-found`, geprüft vor der Freigabe und noch
+einmal bei der Ausführung. Die Freigabe nennt je Kontakt den Namen aus dem Kern, die Zahl der Werte und was über die
+Voreinstellung hinaus mitgeht („+ private address“); ins Protokoll kommen Art und Kennung als Prüfsumme.
+**Anrufe** (Stufe 6b, [chat.md](chat.md) „Anrufe“): `get_call` sagt, ob in einer Unterhaltung ein Anruf läuft, ob es
+für den Menschen klingelt, seit wann, wie viele drin sind (nie wer) und ob der Mensch dabei ist, dazu den Link
+`<server>/call/<token>`, über den der Anruf vorerst im Browser läuft; `list_conversations` sagt in `ringing`, ob es
+klingelt. `decline_call` beendet nur das eigene Klingeln (der Kern löscht die Benachrichtigung, die noch klingelt,
+auf dem Server; ein verpasster Anruf bleibt), `leave_call` antwortet ohne eigenes Anruffenster `ok` und ändert
+nichts. Beide sind `Write` ohne nach außen
+und für Clients offen, weil sie nichts einschalten und nichts preisgeben (Entscheidung 14). Anruf starten und annehmen
+gibt es erst mit dem eigenen Anruffenster, dann nur mit dem App-Schlüssel. Geklingelt wird nur mit `chat_ring` („Ring
+for incoming calls“, ab Werk an, `Admin` in `settings`): Der Kern fragt dann alle 10 s die Benachrichtigungen jedes
+Kontos mit Talk ab und öffnet für jeden Anruf einmal `torrochat --ring=<unterhaltung>`, direkt und nicht über
+`apps.open_app`, damit kein Client den Rechner klingeln lassen kann.
 
 ²⁸ **Kontakte** (Issue #351, Konzept [kontakte.md](kontakte.md)): Rechte gelten je Adressbuch,
 `Rights.address_books` mit Kennungen `<konto-id>/<name>`; fehlt das Feld in alten Rechten, ist kein Buch frei. Die
@@ -1304,6 +1357,16 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
     (`shortened: false`). Freigaben binden EML zusätzlich an die Zielspezifikation (bei Downloads
     den eingestellten Ordner); Änderungen während der Wartezeit erfordern eine neue Anfrage.
 
+    Ebenso **Dateien im Chat** (Issue #643, Stufe 4 von [chat.md](chat.md)): `chat.prepare_file` mit
+    `source: path` und `chat.save_attachment` mit `to: file` oder `to: folder` gehen nur mit dem App-Schlüssel
+    (`Request::kept_for_people`): Den Pfad wählt ein Mensch im Dialog des Systems bzw. durch Ziehen. Sonst gäbe ein
+    Agent dem Kern einen Pfad, und eine Datei vom Rechner ginge mit nur einer Sende-Freigabe nach außen. Clients
+    bereiten nur eigene Dateien der Werkzeuge vor (`source: registered`) oder laden Bytes hoch
+    (`chat.upload_file`), und sie sichern nach `downloads` oder in ein Ablageziel (dafür zusätzlich Lesen in
+    `mail`). Ebenso gibt es `chat.show_card` nur mit dem App-Schlüssel (`Mcp::Never`): Ob der Absender eines fremden
+    Links erfährt, wann gelesen wurde, entscheidet der Mensch mit einem Klick, nicht ein Agent (Test
+    `chat_files_are_open_to_clients_but_paths_and_foreign_cards_are_kept_for_people` in `torro-ipc`).
+
 11. **Eine App installieren oder aktualisieren** (Issue #411, App-Katalog): `apps.install_app` und
    `apps.update_apps` nur mit dem App-Schlüssel (`Mcp::Never`). Grund: Wer installiert oder aktualisiert,
    entscheidet, welcher Code auf dem Rechner der Person läuft, wie bei einem MCP-Server (Punkt 10). Die Liste mit den
@@ -1319,6 +1382,13 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
     und des unveränderten Ablageziels; ein Entwurf, eine Vorlage, eine Regel oder eine normale
     Client-Freigabe ersetzt sie nicht. Der Bereich `workflows` bleibt in allen Rechtevorlagen
     zunächst aus. Vertrags- und Entwicklungsstand: [mail-workflows.md](mail-workflows.md).
+
+13. **Den Heartbeat der Präsenz einschalten** (Issue #643, [chat.md](chat.md), Entscheidung 10):
+    `settings.set_setting` mit `presence_heartbeat: true` nur mit dem App-Schlüssel, also durch einen Menschen
+    in der Steuerzentrale unter General (`Request::kept_for_people`, wie beim Mikrofon
+    entscheidet der Wert). Der Heartbeat sagt dem Server alle fünf Minuten, dass der Mensch am Rechner sitzt,
+    und verrät das dauerhaft allen Kollegen. Ausschalten darf jeder Client mit Admin in `settings`. Anrufe,
+    Kamera und Mikrofon im Chat kommen mit dem Klingeln und dem Anruffenster dazu (Stufe 6 des Konzepts).
 
 Allgemein gilt: Jeder Befehl mit `Mcp::Never` ist nur mit dem App-Schlüssel erlaubt. `Rights::allows`
 setzt das durch (seit G.1), auch ein Script-Schlüssel mit Admin-Rechten bekommt `forbidden`.

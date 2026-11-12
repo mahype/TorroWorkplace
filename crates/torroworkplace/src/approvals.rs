@@ -19,7 +19,7 @@
 //! The notification closes once the approval is decided by any of these ways, and the core asks
 //! again about the open ones when it starts ([`Approvals::announce_open`]). Every open approval is
 //! also an entry of the inbox, with "Allow" and "Deny", done once it is decided or expired (task
-//! E2.1, [`crate::inbox::file_approvals`] over [`Approvals::with_open`]). The agent never gets a
+//! E2.1, [`crate::inbox::file_approvals`] over [`Approvals::with_approvals`]). The agent never gets a
 //! code it could confirm with. A command kept from agents ([`Mcp::Never`]: taking secrets,
 //! managing clients, deciding approvals) never becomes an approval, so a secret never reaches
 //! `approvals.json`.
@@ -343,6 +343,10 @@ pub struct Facts {
     /// them, looked up by the contact's id, never by the client's text. `None` for other commands.
     /// Boxed: a contact is large, and the facts travel through the core's futures.
     pub contact: Option<Box<ContactFacts>>,
+    /// For the `chat.*` commands (`docs/chat.md`, "Freigaben"): the conversation's name and kind and
+    /// the message a command is about, as the chat service holds them, looked up by id, never from
+    /// the client's text. `None` for other commands.
+    pub chat: Option<Box<crate::chat::service::ChatFacts>>,
     /// For `mail.create_filter`, `mail.update_filter`, `mail.remove_filter` and `mail.apply_filter`
     /// (issue #339): the stored filter and how its account and folder read, from the core's file and
     /// stores (`crate::mail::filters::to_approve`). The account, folder and count of what the request
@@ -1006,13 +1010,13 @@ impl Approvals {
         Ok(open.len())
     }
 
-    /// Runs `work` with the approvals still open as of `now` (expired ones are marked first) while
-    /// no approval can be opened or decided, and returns what it returns. So whatever `work` passes
-    /// the open approvals on to (the inbox, task E2.1) is never overtaken by an older view of them.
+    /// Runs `work` with the approvals held as of `now` – the open ones and those decided lately,
+    /// with what a decided one keeps ([`forget`]: a chat approval no text) – while no approval can
+    /// be opened or decided, and returns what it returns. Expired ones are marked first. So whatever
+    /// `work` passes them on to (the inbox, task E2.1) is never overtaken by an older view of them.
     /// `work` must return at once: it holds up every other approval command. Without a file (no
-    /// home directory, tests without their own approvals) no approval can be open, and `work` gets
-    /// none.
-    pub async fn with_open<T>(
+    /// home directory, tests without their own approvals) there are none, and `work` gets none.
+    pub async fn with_approvals<T>(
         &self,
         now: DateTime<Utc>,
         work: impl FnOnce(&[ApprovalInfo]) -> T,
@@ -1021,14 +1025,28 @@ impl Approvals {
             return Ok(work(&[]));
         }
         let state = self.state(now).await?;
-        let open: Vec<ApprovalInfo> = state
+        let all: Vec<ApprovalInfo> = state.entries.iter().map(|entry| entry.info.clone()).collect();
+        // `state` is held until `work` returns.
+        Ok(work(&all))
+    }
+
+    /// The requests of the open approvals `client` may see ([`Approvals::list`]), for checks such as
+    /// "an approval still waits for this file" (`chat.release_files`, stage 4 of `docs/chat.md`).
+    pub async fn open_requests(
+        &self,
+        client: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<Request>, ApprovalsError> {
+        if self.file.is_none() {
+            return Ok(Vec::new());
+        }
+        let state = self.state(now).await?;
+        Ok(state
             .entries
             .iter()
-            .filter(|entry| entry.info.state.is_pending())
-            .map(|entry| entry.info.clone())
-            .collect();
-        // `state` is held until `work` returns.
-        Ok(work(&open))
+            .filter(|entry| entry.info.state.is_pending() && visible(entry, client))
+            .map(|entry| entry.request.clone())
+            .collect())
     }
 
     /// The approvals `client` may see, newest first: its own, or all for `None` (the app key).
@@ -1085,12 +1103,17 @@ impl Approvals {
             },
             false => Decision::Denied { approval: entry.info.clone(), request, origin: entry.origin.clone() },
         };
+        // What must not be kept goes before the file is written: the text of a chat message never
+        // reaches the disk as a decided approval, also not while it runs (`docs/chat.md`, "Wartende
+        // Freigaben"); the decision carries its own copy of the request.
+        let held = state.entries[index].request.clone();
+        if !allow || holds_chat_text(&state.entries[index].request) {
+            forget(&mut state.entries[index]);
+        }
         if let Err(err) = self.write(&state).await {
             state.entries[index].info = before;
+            state.entries[index].request = held;
             return Err(err);
-        }
-        if !allow && crate::mail::images::is_request(&state.entries[index].request) {
-            state.entries[index].request = Request::Ping;
         }
         drop(state);
         self.changed.send_replace(());
@@ -1113,9 +1136,7 @@ impl Approvals {
             .find(|entry| entry.info.id == id)
             .ok_or_else(|| ApprovalsError::NotFound(id.to_string()))?;
         entry.info.state = ApprovalState::Done { response: Box::new(response) };
-        if crate::mail::images::is_request(&entry.request) {
-            entry.request = Request::Ping;
-        }
+        forget(entry);
         let info = entry.info.clone();
         if let Err(err) = self.write(&state).await {
             eprintln!("torroworkplace: cannot store the outcome of approval {id}: {err}");
@@ -1184,7 +1205,7 @@ impl Approvals {
                 matches!(
                     entry.info.command.as_str(),
                     "mail.prepare_image" | "mail.upload_image" | "mail.release_images"
-                )
+                ) || holds_chat_file(&entry.request)
             })
             .collect::<Vec<_>>();
         // Strip the typed clones before serialization: shared image payloads/previews never
@@ -1192,7 +1213,10 @@ impl Approvals {
         for (entry, volatile) in entries.iter_mut().zip(&volatile) {
             if *volatile {
                 entry.request = Request::Ping;
-                if matches!(entry.info.state, ApprovalState::Done { .. }) {
+                // A chat command that ran keeps its answer: it names a sending, no file or byte, and
+                // after a restart nobody should take a sent message for one that never went.
+                let chat = entry.info.command.starts_with("chat.");
+                if matches!(entry.info.state, ApprovalState::Done { .. }) && !chat {
                     entry.info.state = ApprovalState::Done {
                         response: Box::new(Response::Error {
                             code: "not-found".into(),
@@ -1241,10 +1265,8 @@ fn tidy(entries: &mut Vec<Entry>, now: DateTime<Utc>) -> bool {
             entry.info.decided = Some(entry.info.expires);
             expired = true;
         }
-        if matches!(entry.info.state, ApprovalState::Denied | ApprovalState::Expired | ApprovalState::Done { .. })
-            && crate::mail::images::is_request(&entry.request)
-        {
-            entry.request = Request::Ping;
+        if matches!(entry.info.state, ApprovalState::Denied | ApprovalState::Expired | ApprovalState::Done { .. }) {
+            forget(entry);
         }
     }
     entries.retain(|entry| entry.info.decided.is_none_or(|decided| now - decided < KEPT));
@@ -1310,8 +1332,17 @@ fn entries_of(bytes: &[u8]) -> Result<Vec<Entry>, serde_json::Error> {
         let mut entry: Entry = serde_json::from_value(value.take())?;
         if volatile {
             entry.request = Request::Ping;
-            entry.info.state = ApprovalState::Expired;
-            entry.info.decided = Some(Utc::now());
+            let chat = entry.info.command.starts_with("chat.");
+            // A chat command that ran stays done; one still waiting has lost its files with the core.
+            if !(chat && matches!(entry.info.state, ApprovalState::Done { .. } | ApprovalState::Denied)) {
+                entry.info.state = ApprovalState::Expired;
+                entry.info.decided = Some(Utc::now());
+            }
+            // Its names and text go too, as with every decided chat approval (`forget`).
+            if chat {
+                entry.info.summary = chat_kept_command(&entry.info.command).to_string();
+                entry.info.details.clear();
+            }
         }
         if (old || sorting)
             && !matches!(entry.info.state, ApprovalState::Done { .. } | ApprovalState::Denied | ApprovalState::Expired)
@@ -2204,10 +2235,364 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         | Request::MoveContact { .. }
         | Request::DeleteContact { .. }
         | Request::ResolveContactConflict { .. }) => contact_summary(request, facts.contact.as_deref()),
+        request if matches!(request.operation().area(), Area::Chat | Area::Presence) => {
+            chat_summary(request, facts.chat.as_deref())
+        }
         // Reads and the commands only the app key may send never wait for approval; say at least
         // which command it is.
         other => trf("Run {command}", &[("command", &other.operation().name())]),
     }
+}
+
+/// Whether `request` holds or names files of the chat that live in the core's memory only (stage 4
+/// of `docs/chat.md`): the bytes of `chat.upload_file`, the prepared files of `chat.send_message`.
+/// On disk such an approval is a shell without them; after a restart it has expired.
+fn holds_chat_file(request: &Request) -> bool {
+    match request {
+        Request::ChatUploadFile { .. } => true,
+        Request::ChatSendMessage { files, .. } => !files.is_empty(),
+        _ => false,
+    }
+}
+
+/// Whether `request` holds text of a chat or a status message, which the core keeps on disk only
+/// while its approval waits (`docs/chat.md`, "Wartende Freigaben auf der Platte").
+fn holds_chat_text(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::ChatSendMessage { .. }
+            | Request::ChatEditMessage { .. }
+            | Request::ChatDeleteMessage { .. }
+            | Request::ChatReact { .. }
+            | Request::ChatCreateConversation { .. }
+            | Request::PresenceSetOwnStatus { .. }
+    )
+}
+
+/// Drops what a decided, done or expired approval must not keep: the request of a mail image (its
+/// bytes live in memory only) and, for chat and status, the request with its text together with
+/// the summary and details that quote it. What stays says only which kind of command it was.
+fn forget(entry: &mut Entry) {
+    if crate::mail::images::is_request(&entry.request) || matches!(entry.request, Request::ChatUploadFile { .. }) {
+        entry.request = Request::Ping;
+    } else if holds_chat_text(&entry.request) {
+        entry.info.summary = chat_kept_summary(&entry.request).to_string();
+        entry.info.details.clear();
+        entry.request = Request::Ping;
+    }
+}
+
+/// What a chat approval says once it is decided: the kind of command, no conversation, no text.
+fn chat_kept_summary(request: &Request) -> &'static str {
+    match request {
+        Request::ChatEditMessage { .. } => tr("Change a chat message"),
+        Request::ChatDeleteMessage { .. } => tr("Delete a chat message"),
+        Request::ChatReact { .. } => tr("React to a chat message"),
+        Request::ChatCreateConversation { .. } => tr("Start a chat"),
+        Request::PresenceSetOwnStatus { .. } => tr("Set your status"),
+        _ => tr("Send a chat message"),
+    }
+}
+
+/// What a chat approval read back without its request says (a restart dropped its files from
+/// memory): the kind of command by its name, nothing of the conversation or the files.
+fn chat_kept_command(command: &str) -> &'static str {
+    match command {
+        "chat.upload_file" | "chat.prepare_file" => tr("Prepare a file for the chat; nothing is sent yet"),
+        _ => tr("Send a chat message"),
+    }
+}
+
+/// The most characters of a chat message in a summary (`docs/chat.md`, "Freigaben"); the details
+/// show all of it.
+const CHAT_TEXT_MAX: usize = 1000;
+
+/// Where a chat command goes, in words: the conversation's name and kind from the chat service's
+/// list, "an unknown conversation" when it holds none (any more).
+fn chat_place(facts: &crate::chat::service::ChatFacts) -> String {
+    use torro_chat::ConversationKind;
+    let Some(name) = facts.conversation.as_deref().map(quote) else {
+        return tr("an unknown conversation").to_string();
+    };
+    let words = match facts.kind {
+        Some(ConversationKind::Direct) => "the direct chat with \"{name}\"",
+        Some(ConversationKind::Group) => "the group \"{name}\"",
+        Some(ConversationKind::Public) => "the public conversation \"{name}\"",
+        Some(ConversationKind::NoteToSelf) => return tr("your notes to yourself").to_string(),
+        Some(ConversationKind::Other) | None => "the conversation \"{name}\"",
+    };
+    trf(words, &[("name", &name)])
+}
+
+/// `text` for a chat summary: harmless, one line, at most [`CHAT_TEXT_MAX`] characters, and how
+/// many more there are.
+fn chat_text(text: &str) -> String {
+    let length = text.chars().count();
+    let shown = quote_up_to(text, CHAT_TEXT_MAX);
+    match length > CHAT_TEXT_MAX {
+        true => trf("{text} ({n} more characters)", &[("text", &shown), ("n", &(length - CHAT_TEXT_MAX))]),
+        false => shown,
+    }
+}
+
+/// The name of a status as the chat windows show it.
+fn status_word(status: torro_chat::Status) -> &'static str {
+    match status {
+        torro_chat::Status::Online => tr("Online"),
+        torro_chat::Status::Away => tr("Away"),
+        torro_chat::Status::Busy => tr("Busy"),
+        torro_chat::Status::Dnd => tr("Do not disturb"),
+        torro_chat::Status::Invisible => tr("Invisible"),
+        torro_chat::Status::Offline => tr("Offline"),
+    }
+}
+
+/// The summary of a `chat.*` or `presence.*` command that waits (`docs/chat.md`, "Freigaben"):
+/// where it goes by the name the chat service holds, and the text that really goes out, made
+/// harmless. What an edit or a deletion is about comes from the service, never from the client.
+fn chat_summary(request: &Request, facts: Option<&crate::chat::service::ChatFacts>) -> String {
+    let empty = crate::chat::service::ChatFacts::default();
+    let facts = facts.unwrap_or(&empty);
+    let place = chat_place(facts);
+    let old = match facts.old_text.as_deref().map(quote) {
+        Some(text) if !text.is_empty() => format!("\"{text}\""),
+        Some(_) => tr("a message without text").to_string(),
+        None => tr("an unknown message").to_string(),
+    };
+    match request {
+        Request::ChatSendMessage { text, files, items, .. } if !files.is_empty() || !items.is_empty() => {
+            let sent = match (items.is_empty(), files.is_empty()) {
+                (true, _) => chat_files_word(files.len(), facts),
+                (false, true) => chat_card_word(items.len(), facts),
+                (false, false) => trf(
+                    "{cards} and {files}",
+                    &[("cards", &chat_card_word(items.len(), facts)), ("files", &chat_files_word(files.len(), facts))],
+                ),
+            };
+            match text.trim().is_empty() {
+                true => trf("Send {files} to {place}", &[("files", &sent), ("place", &place)]),
+                false => trf(
+                    "Send {files} to {place}: \"{text}\"",
+                    &[("files", &sent), ("place", &place), ("text", &chat_text(text))],
+                ),
+            }
+        }
+        Request::ChatSendMessage { text, reply_to: Some(_), .. } => {
+            let author = match facts.quoted.as_deref().map(quote) {
+                Some(author) if !author.is_empty() => author,
+                _ => tr("an unknown message").to_string(),
+            };
+            trf(
+                "Reply to {author} in {place}: \"{text}\"",
+                &[("author", &author), ("place", &place), ("text", &chat_text(text))],
+            )
+        }
+        Request::ChatSendMessage { text, .. } => {
+            trf("Send to {place}: \"{text}\"", &[("place", &place), ("text", &chat_text(text))])
+        }
+        Request::ChatEditMessage { text, .. } => trf(
+            "Change your message in {place}: {old} → \"{new}\"",
+            &[("place", &place), ("old", &old), ("new", &chat_text(text))],
+        ),
+        Request::ChatDeleteMessage { .. } => {
+            trf("Delete your message in {place}: {old}", &[("place", &place), ("old", &old)])
+        }
+        Request::ChatReact { emoji, remove: false, .. } => {
+            trf("React with {emoji} in {place} to {old}", &[("emoji", &quote(emoji)), ("place", &place), ("old", &old)])
+        }
+        Request::ChatReact { emoji, .. } => trf(
+            "Take back the reaction {emoji} in {place} to {old}",
+            &[("emoji", &quote(emoji)), ("place", &place), ("old", &old)],
+        ),
+        Request::ChatCreateConversation { with, .. } => {
+            let user = torro_chat::split_person(with).map_or(with.as_str(), |(_, user)| user);
+            trf("Start a direct chat with \"{user}\"", &[("user", &quote(user))])
+        }
+        // Files of the chat (stage 4): never a name the client gives, only what they do.
+        Request::ChatPrepareFile { .. } | Request::ChatUploadFile { .. } => {
+            tr("Prepare a file for the chat; nothing is sent yet").to_string()
+        }
+        Request::ChatReleaseFiles { ids, .. } => trf("Drop {n} prepared chat files", &[("n", &ids.len())]),
+        Request::ChatCancelUpload { .. } => tr("Cancel sending files in the chat").to_string(),
+        Request::ChatSaveAttachment { .. } => tr("Save a file of a chat message").to_string(),
+        Request::ChatMarkRead { .. } => trf("Mark {place} as read", &[("place", &place)]),
+        Request::ChatMarkUnread { .. } => trf("Mark {place} as unread", &[("place", &place)]),
+        Request::ChatSetFavorite { favorite: true, .. } => trf("Make {place} a favourite", &[("place", &place)]),
+        Request::ChatSetFavorite { .. } => trf("Take {place} off the favourites", &[("place", &place)]),
+        Request::ChatSetNotificationLevel { .. } => trf("Change the notifications of {place}", &[("place", &place)]),
+        Request::PresenceSetOwnStatus { account, status, message, icon, .. } => {
+            let server = quote(crate::presence::server_of(account));
+            let mut shown: Vec<String> = status.iter().map(|status| status_word(*status).to_string()).collect();
+            // The icon goes out with the message, so it shows in front of it, as others see it.
+            let icon = icon.as_deref().map(quote).filter(|icon| !icon.is_empty());
+            match message.as_deref().map(quote) {
+                Some(message) if !message.is_empty() => match icon {
+                    Some(icon) => shown.push(format!("{icon} \"{message}\"")),
+                    None => shown.push(format!("\"{message}\"")),
+                },
+                Some(_) => shown.push(tr("no status message").to_string()),
+                None => {}
+            }
+            trf("Everyone on {server} sees: {status}", &[("server", &server), ("status", &shown.join(" · "))])
+        }
+        Request::PresenceAddPerson { person, .. } | Request::PresenceRemovePerson { person, .. } => {
+            let user = torro_chat::split_person(person).map_or(person.as_str(), |(_, user)| user);
+            match request {
+                Request::PresenceAddPerson { .. } => {
+                    trf("Add \"{user}\" to your list of people", &[("user", &quote(user))])
+                }
+                _ => trf("Take \"{user}\" off your list of people", &[("user", &quote(user))]),
+            }
+        }
+        other => trf("Run {command}", &[("command", &other.operation().name())]),
+    }
+}
+
+/// The files of a chat message in a summary: the one file's name as the core prepared it, else how
+/// many.
+fn chat_files_word(count: usize, facts: &crate::chat::service::ChatFacts) -> String {
+    match (count, facts.files.as_slice()) {
+        (1, [file]) => format!("\"{}\"", quote_up_to(&file.name, 60)),
+        (1, _) => tr("an unknown file").to_string(),
+        (count, _) => trf("{n} files", &[("n", &count)]),
+    }
+}
+
+/// One line per file a chat message sends (stage 4 of `docs/chat.md`): name, size and kind as the
+/// core read them, where it came from, and that it goes to the person's Talk folder. A file the core
+/// no longer holds is named as unknown.
+fn chat_file_lines(count: usize, facts: &crate::chat::service::ChatFacts) -> Vec<String> {
+    use crate::chat::media::Origin;
+    let mut lines = Vec::new();
+    for file in &facts.files {
+        let name = quote_up_to(&file.name, 60);
+        let origin = match (file.origin, file.named_by_caller) {
+            (Origin::Tool, _) => tr("made by this agent with the PDF tool"),
+            (Origin::Upload, true) => tr("uploaded by this agent, name given by this agent"),
+            (Origin::Upload, false) => tr("uploaded by this agent"),
+            (Origin::Path, _) => tr("chosen on this computer"),
+            (Origin::Card, _) => tr("made from your address book"),
+        };
+        let size = torro_gui::units::format_bytes(file.size);
+        lines.push(trf(
+            "File \"{name}\" · {size} · {kind} · {origin}",
+            &[("name", &name), ("size", &size), ("kind", &quote(&file.kind)), ("origin", &origin)],
+        ));
+        lines.push(trf("Uploads \"{name}\" to your Talk folder in Nextcloud", &[("name", &name)]));
+    }
+    if facts.files.len() < count {
+        lines.push(trf("{n} unknown files", &[("n", &(count - facts.files.len()))]));
+    }
+    lines
+}
+
+/// The card of the items a chat message shares, in a summary (stage 5): the one contact's name as
+/// the address book holds it, else how many.
+fn chat_card_word(count: usize, facts: &crate::chat::service::ChatFacts) -> String {
+    let contacts = facts.card.as_ref().map(|card| card.contacts.as_slice()).unwrap_or_default();
+    match (count, contacts) {
+        (1, [contact]) => trf("the contact card \"{name}\"", &[("name", &quote_up_to(&contact.name, 60))]),
+        (1, _) => tr("the card of an unknown contact").to_string(),
+        (count, _) => trf("{n} contact cards", &[("n", &count)]),
+    }
+}
+
+/// One line per contact a chat message shares (stage 5, `docs/teilen.md`): its name from the
+/// address book with how many values go along, each chosen field beyond the default it has ("+
+/// private address"), and that the card goes to the person's Talk folder. Without the card (a
+/// contact gone meanwhile) the lines say so; the command then fails when it runs.
+fn chat_card_lines(count: usize, facts: &crate::chat::service::ChatFacts) -> Vec<String> {
+    use torro_ipc::share::ShareField;
+    let Some(card) = &facts.card else {
+        return vec![trf("{n} unknown contacts", &[("n", &count)])];
+    };
+    let mut lines = Vec::new();
+    for contact in &card.contacts {
+        let name = quote_up_to(&contact.name, 60);
+        lines.push(match contact.values {
+            // The name always goes, so one value is the name alone.
+            1 => trf("Contact card: \"{name}\" (name only)", &[("name", &name)]),
+            n => trf("Contact card: \"{name}\" ({n} fields)", &[("name", &name), ("n", &n)]),
+        });
+        for field in &contact.extra {
+            let word = match field {
+                ShareField::PrivateAddresses => tr("+ private address"),
+                ShareField::Birthday => tr("+ birthday"),
+                ShareField::Note => tr("+ note"),
+                ShareField::Messengers => tr("+ messenger"),
+                ShareField::Groups => tr("+ groups"),
+                // The default goes without a word ([`ShareField::DEFAULT`]).
+                ShareField::Organization
+                | ShareField::Phones
+                | ShareField::Emails
+                | ShareField::WorkAddresses
+                | ShareField::Web => continue,
+            };
+            lines.push(word.to_string());
+        }
+    }
+    let name = quote_up_to(&card.file, 60);
+    lines.push(trf("Uploads \"{name}\" to your Talk folder in Nextcloud", &[("name", &name)]));
+    lines
+}
+
+/// The lines under the summary of a chat approval: who else reads it, whom it notifies, and the
+/// whole text line by line, so nobody approves what they did not see.
+fn chat_details(request: &Request, facts: Option<&crate::chat::service::ChatFacts>) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(facts) = facts {
+        if facts.kind == Some(torro_chat::ConversationKind::Public) {
+            lines.push(tr("Public conversation – anyone with the link can read it").to_string());
+        }
+        if facts.federated {
+            lines.push(tr("Includes people on other servers").to_string());
+        }
+    }
+    match request {
+        Request::ChatSendMessage { text, silent, files, items, .. } => {
+            let empty = crate::chat::service::ChatFacts::default();
+            if !items.is_empty() {
+                lines.extend(chat_card_lines(items.len(), facts.unwrap_or(&empty)));
+            }
+            if !files.is_empty() {
+                lines.extend(chat_file_lines(files.len(), facts.unwrap_or(&empty)));
+            }
+            // Without a text of its own the card's text goes under the file (stage 5): shown whole,
+            // as it comes from the address book.
+            let card_text = facts.and_then(|facts| facts.card.as_ref()).map(|card| card.text.as_str());
+            let card_text = card_text.filter(|_| !items.is_empty() && text.trim().is_empty());
+            if let Some(card_text) = card_text {
+                lines.push(tr("The text under the card:").to_string());
+                lines.extend(whole(card_text));
+            }
+            if mentions_everyone(text) || card_text.is_some_and(mentions_everyone) {
+                lines.push(tr("Notifies everyone in the conversation").to_string());
+            }
+            if *silent {
+                lines.push(tr("Sent silently").to_string());
+            }
+            if text.chars().count() > QUOTE_MAX || text.contains('\n') {
+                lines.push(tr("The whole text:").to_string());
+                lines.extend(whole(text));
+            }
+        }
+        Request::ChatEditMessage { text, .. } if text.chars().count() > QUOTE_MAX || text.contains('\n') => {
+            lines.push(tr("The whole text:").to_string());
+            lines.extend(whole(text));
+        }
+        Request::PresenceSetOwnStatus { clear_at: Some(until), message: Some(_), .. } => {
+            let until = until.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string();
+            lines.push(trf("The status message ends at {time}", &[("time", &until)]));
+        }
+        _ => {}
+    }
+    lines
+}
+
+/// Whether `text` mentions everyone of a conversation: `@all` or `@"all"` as a word of its own.
+fn mentions_everyone(text: &str) -> bool {
+    text.split(|c: char| c.is_whitespace() || matches!(c, ',' | '.' | '!' | '?' | ':' | ';'))
+        .any(|word| matches!(word, "@all" | "@\"all\"" | "@here"))
 }
 
 /// The summary of a writing `contacts.*` command (issue #351): the contact by its name in the store
@@ -4189,6 +4574,9 @@ pub fn details(request: &Request, facts: &Facts) -> Vec<String> {
         lines.extend(argument_lines(arguments).iter().flat_map(|line| whole(line)));
         return lines;
     }
+    if matches!(request.operation().area(), Area::Chat | Area::Presence) {
+        return chat_details(request, facts.chat.as_deref());
+    }
     let Request::SendDraft { .. } = request else { return Vec::new() };
     let Some(draft) = facts.mail.as_ref().and_then(|mail| mail.draft.as_ref()) else { return Vec::new() };
     let long = |text: &str| quote_up_to(text, DETAIL_MAX);
@@ -4715,6 +5103,41 @@ pub(crate) mod tests {
         approvals.finish(&opened.id, Response::MailImage { image }, now).await.expect("finished");
         let stored = fs::read_to_string(file_in(dir.path())).expect("file");
         assert!(!stored.contains("PRIVATE_PREVIEW"));
+    }
+
+    /// Stage 4 of `docs/chat.md`: a message with files is a shell on disk; after a restart one still
+    /// waiting has expired without its names, and one that ran stays done with its answer.
+    #[tokio::test]
+    async fn chat_files_wait_as_a_shell_and_a_restart_keeps_what_ran() {
+        let dir = tempfile::tempdir().expect("temp");
+        let approvals = quiet_in(dir.path());
+        let send = Request::ChatSendMessage {
+            conversation: "nextcloud:a@b/tok1".into(),
+            text: "the secret plan".into(),
+            reply_to: None,
+            silent: false,
+            files: vec!["fSECRETLEASE".into()],
+            items: Vec::new(),
+            fields: None,
+        };
+        let now = Utc::now();
+        let summary = "Send \"Plan.pdf\" to the group".to_string();
+        let waiting = approvals.open("one", "Agent", send.clone(), None, summary.clone(), now).await.expect("open");
+        let ran = approvals.open("one", "Agent", send, None, summary, now).await.expect("open");
+        approvals.decide(&ran.id, true, now).await.expect("decided");
+        approvals.finish(&ran.id, Response::ChatSending { id: "s1".into() }, now).await.expect("finished");
+        let stored = fs::read_to_string(file_in(dir.path())).expect("file");
+        assert!(!stored.contains("fSECRETLEASE") && stored.contains("volatile_images"));
+        let restarted = quiet_in(dir.path());
+        let waited = restarted.status(Some("one"), &waiting.id, now).await.expect("status");
+        assert_eq!(waited.state, ApprovalState::Expired);
+        assert!(!waited.summary.contains("Plan.pdf"), "{}", waited.summary);
+        let done = restarted.status(Some("one"), &ran.id, now).await.expect("status");
+        assert_eq!(
+            done.state,
+            ApprovalState::Done { response: Box::new(Response::ChatSending { id: "s1".into() }) },
+            "a sent message is no expired one"
+        );
     }
 
     #[test]
@@ -6646,6 +7069,7 @@ pub(crate) mod tests {
     fn inbox_entry(title: &str) -> Item {
         let at = Utc.with_ymd_and_hms(2026, 10, 12, 8, 0, 0).single().expect("time");
         Item {
+            conversation: None,
             id: "e1".into(),
             source: SourceRef::script("backup"),
             thread_key: "t".into(),

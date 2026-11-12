@@ -758,6 +758,7 @@ pub fn message_stand_in(summary: &torro_mail::MessageSummary, list: Option<&str>
         Sender { name: name.unwrap_or(&from.address).to_string(), address: Some(from.address.clone()) }
     });
     let mut item = Item {
+        conversation: None,
         id: summary.id.clone(),
         source,
         thread_key: summary.thread_id.clone(),
@@ -1202,6 +1203,7 @@ mod tests {
     fn item(id: &str, kind: Kind) -> Item {
         let (lane, urgent) = placement(kind, None);
         Item {
+            conversation: None,
             id: id.into(),
             source: SourceRef::script("backup"),
             thread_key: format!("thread-{id}"),

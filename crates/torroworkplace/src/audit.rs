@@ -311,6 +311,69 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::MoveContact { id: contact, to_book, .. } => {
             vec![format!("item:{}", hashed(contact)), collection(to_book)]
         }
+        // Chat and presence (`docs/chat.md`, "Kein Inhalt im Protokoll"): the account as it is, a
+        // conversation's token, a message and a person hashed; never a name, a text, a status
+        // message or what was searched for.
+        Request::ChatListConversations { account: name, .. }
+        | Request::ChatSearchMessages { account: name, .. }
+        | Request::PresenceListPeople { account: name } => name.iter().map(|name| account(name)).collect(),
+        Request::ChatFindPeople { account: name, .. }
+        | Request::PresenceFindPeople { account: name, .. }
+        | Request::PresenceGetOwnStatus { account: name }
+        | Request::PresenceSetOwnStatus { account: name, .. } => vec![account(name)],
+        Request::ChatCreateConversation { account: name, with: person }
+        | Request::PresenceAddPerson { account: name, person }
+        | Request::PresenceRemovePerson { account: name, person } => {
+            vec![account(name), format!("item:{}", hashed(person))]
+        }
+        // Shared items (stage 5, `docs/teilen.md`): their kind and each id hashed, never a name.
+        Request::ChatSendMessage { conversation, items, .. } => {
+            let mut ids = vec![chat_conversation(conversation)];
+            for item in items {
+                let kind = serde_json::to_value(item.kind).ok().and_then(|kind| kind.as_str().map(str::to_string));
+                let kind = id("kind", &kind.unwrap_or_default());
+                if !ids.contains(&kind) {
+                    ids.push(kind);
+                }
+                ids.push(format!("item:{}", hashed(&item.id)));
+            }
+            ids
+        }
+        Request::ChatGetMessages { conversation, .. }
+        | Request::ChatMarkRead { conversation, .. }
+        | Request::ChatMarkUnread { conversation }
+        | Request::ChatSuggestMentions { conversation, .. }
+        | Request::ChatSetFavorite { conversation, .. }
+        | Request::ChatSetNotificationLevel { conversation, .. }
+        | Request::ChatGetCall { conversation }
+        | Request::ChatDeclineCall { conversation }
+        | Request::ChatLeaveCall { conversation } => vec![chat_conversation(conversation)],
+        Request::ChatEditMessage { id: message, .. }
+        | Request::ChatDeleteMessage { id: message }
+        | Request::ChatReact { id: message, .. }
+        | Request::ChatGetPreview { id: message, .. }
+        | Request::ChatGetAttachment { id: message, .. }
+        | Request::ChatSaveAttachment { id: message, .. }
+        | Request::ChatShowCard { id: message } => {
+            let conversation = torro_chat::split_message(message).map(|(conversation, _)| conversation);
+            let mut ids: Vec<String> = conversation.map(chat_conversation).into_iter().collect();
+            ids.push(format!("item:{}", hashed(message)));
+            ids
+        }
+        // Files of the chat (stage 4): the account, the conversation's token hashed, an upload's or a
+        // prepared file's id hashed; never a file name, a path or a byte.
+        Request::ChatListShared { conversation, .. } => vec![chat_conversation(conversation)],
+        Request::ChatPrepareFile { account: name, .. } | Request::ChatUploadFile { account: name, .. } => {
+            vec![account(name)]
+        }
+        Request::ChatReleaseFiles { account: name, ids } => {
+            let mut logged = vec![account(name)];
+            logged.extend(ids.iter().map(|id| format!("item:{}", hashed(id))));
+            logged
+        }
+        Request::ChatGetUpload { id: upload } | Request::ChatCancelUpload { id: upload } => {
+            vec![format!("item:{}", hashed(upload))]
+        }
         Request::SetSetting { key, .. } => {
             let key = serde_json::to_value(key).ok().and_then(|key| key.as_str().map(str::to_string));
             key.map(|key| vec![id("setting", &key)]).unwrap_or_default()
@@ -684,6 +747,15 @@ fn made_id(kind: &str, value: &str) -> String {
     match is_random_id(value) {
         true => format!("{kind}:{}", cut(value)),
         false => format!("{kind}:hash:{}", hashed(value)),
+    }
+}
+
+/// A conversation's id for the log: its account as it is and its token hashed, like a collection;
+/// hashed whole when it is no id of an account's conversation.
+fn chat_conversation(value: &str) -> String {
+    match torro_chat::split_conversation(value) {
+        Some((account, token)) if is_account_id(account) => format!("conversation:{account}/{}", hashed(token)),
+        _ => format!("conversation:hash:{}", hashed(value)),
     }
 }
 

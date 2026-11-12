@@ -443,7 +443,7 @@ fn when(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
 /// that is no approval, and at the right "Move to …" and "…" (hide from the inbox) when there is a
 /// way to hide it. With a whole mail ([`Footer::view`], task E9.4) in two rows: those that finish the
 /// entry first, "Move to …", the bell and the mail's view group under them.
-fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
+pub(crate) fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
     let (finish, view) = button_groups(item, footer);
     match footer.view {
         None => finish.into_iter().chain([iced::widget::space::horizontal().into()]).chain(view).collect(),

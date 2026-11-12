@@ -6,3 +6,9 @@ runner = "scripts/macos-dev-run.sh"
 
 [target.x86_64-apple-darwin]
 runner = "scripts/macos-dev-run.sh"
+
+# Every test thread (and a debug `cargo run`) gets 8 MiB of stack: in a debug build, where no frame is
+# shrunk, a command that waits for approval runs through the core twice and nests deeper than the
+# 2 MiB of a test thread hold (issue #643; several core tests overflowed on main already).
+[env]
+RUST_MIN_STACK = "8388608"

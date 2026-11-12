@@ -1,0 +1,68 @@
+{
+  "ocs": {
+    "meta": { "status": "ok", "statuscode": 200, "message": "OK" },
+    "data": {
+      "110": {
+        "id": 110,
+        "token": "x7k2m9qa",
+        "actorType": "users",
+        "actorId": "bert",
+        "actorDisplayName": "Bert Example",
+        "timestamp": 1791880100,
+        "message": "{file}",
+        "messageParameters": {
+          "file": {
+            "type": "file",
+            "id": "4500",
+            "name": "Beach.jpg",
+            "size": "204857",
+            "path": "Talk/Beach.jpg",
+            "link": "https://cloud.example.org/f/4500",
+            "mimetype": "image/jpeg",
+            "preview-available": "yes",
+            "hide-download": "no",
+            "width": "1600",
+            "height": "1200",
+            "blurhash": "LEHV6nWB2yk8pyo0adR*.7kCMdnj"
+          }
+        },
+        "systemMessage": "",
+        "messageType": "comment",
+        "isReplyable": true,
+        "referenceId": "",
+        "reactions": [],
+        "expirationTimestamp": 0,
+        "markdown": true
+      },
+      "120": {
+        "id": 120,
+        "token": "x7k2m9qa",
+        "actorType": "users",
+        "actorId": "anna",
+        "actorDisplayName": "Anna Example",
+        "timestamp": 1791880200,
+        "message": "{file}",
+        "messageParameters": {
+          "file": {
+            "type": "file",
+            "id": 4501,
+            "name": "Clip.mp4",
+            "size": 9048576,
+            "path": "Talk/Clip.mp4",
+            "link": "https://cloud.example.org/f/4501",
+            "mimetype": "video/mp4",
+            "preview-available": "no",
+            "hide-download": "no"
+          }
+        },
+        "systemMessage": "",
+        "messageType": "comment",
+        "isReplyable": true,
+        "referenceId": "",
+        "reactions": [],
+        "expirationTimestamp": 0,
+        "markdown": true
+      }
+    }
+  }
+}

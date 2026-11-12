@@ -1,0 +1,33 @@
+{
+  "ocs": {
+    "meta": { "status": "ok", "statuscode": 200, "message": "OK" },
+    "data": {
+      "references": {
+        "https://example.org/a": {
+          "richObjectType": "open-graph",
+          "richObject": { "id": "https://example.org/a", "name": "Example article" },
+          "openGraphObject": {
+            "id": "https://example.org/a",
+            "name": "Example article",
+            "description": "What it is about",
+            "thumb": "{base}/index.php/core/references/preview/0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+            "link": "https://example.org/a"
+          },
+          "accessible": true
+        },
+        "https://example.org/b": {
+          "richObjectType": "open-graph",
+          "richObject": { "id": "https://example.org/b", "name": "Elsewhere" },
+          "openGraphObject": {
+            "id": "https://example.org/b",
+            "name": "Elsewhere",
+            "description": null,
+            "thumb": "https://tracker.example.net/core/references/preview/0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+            "link": "https://example.org/b"
+          },
+          "accessible": true
+        }
+      }
+    }
+  }
+}

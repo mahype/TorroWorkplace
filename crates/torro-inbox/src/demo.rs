@@ -338,6 +338,7 @@ fn entry(now: DateTime<Utc>, n: u32, source: SourceRef, kind: Kind, title: Strin
     let (lane, urgent) = rules::placement(kind, None);
     let time = now - TimeDelta::minutes(minutes);
     Item {
+        conversation: None,
         id: format!("demo-{n}"),
         thread_key: format!("demo-thread-{n}"),
         source,
@@ -1336,6 +1337,7 @@ fn mail_entries(mail: &[Message]) -> Vec<Item> {
                 address: Some(from.address.clone()),
             });
             let entry = Item {
+                conversation: None,
                 id: format!("demo-mail-{}", n + 1),
                 source: SourceRef::mail(summary.account.trim_start_matches("mail:")),
                 thread_key: summary.thread_id.clone(),

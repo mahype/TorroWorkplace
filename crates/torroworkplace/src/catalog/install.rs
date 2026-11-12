@@ -469,6 +469,11 @@ const LAUNCHERS: &[(&str, &str, &str)] = &[
         include_str!("../../../../packaging/linux/torro-assistant.desktop"),
         include_str!("../../../../packaging/linux/icons/torro-assistant.svg"),
     ),
+    (
+        "torro-chat",
+        include_str!("../../../../packaging/linux/torro-chat.desktop"),
+        include_str!("../../../../packaging/linux/icons/torro-chat.svg"),
+    ),
 ];
 
 /// `program` as one argument of a `.desktop` file's `Exec` key, encoded for the file: quoted when it

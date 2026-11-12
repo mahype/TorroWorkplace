@@ -1,6 +1,7 @@
 # Chat: Kontaktliste, Chatfenster und Anrufe auf Nextcloud Talk
 
-Stand: 2026-11-11. **Konzept (#470), löst den Text-Chat-Plan aus #201 ab; Dateien und Medien mit #636.** Machbarkeit:
+Stand: 2026-11-11. **Konzept (#470), löst den Text-Chat-Plan aus #201 ab; Dateien und Medien mit #636; Umsetzung
+mit #643 (Stand am Ende unter [Stand der Umsetzung](#stand-der-umsetzung)).** Machbarkeit:
 [chat-machbarkeit.md](chat-machbarkeit.md). Entwürfe: [prototypes/chat/](prototypes/chat/index.html). Recherche zu
 Status und Sichtbarkeit: [praesenz.md](praesenz.md). Aufgaben gibt es noch keine; die Umsetzung kommt als eigene
 Issues je Stufe. Beantwortet die Ideen „Chat (Nextcloud Talk)“ und „Präsenz“ aus dem
@@ -796,6 +797,25 @@ Entscheidung 13: selbst gebaut. Was die Machbarkeit dazu ergab, steht in
 - **(c) Anruffenster und Gerätewahl** nach den Entwürfen, mit Bild in Iced; danach öffnet „Accept“ das eigene
   Fenster.
 
+**Umgesetzt in (b), Issue #643** (Kern und API; das Klingelfenster baut die App danach):
+- `chat.get_call` liest „läuft“ und „seit wann“ aus der Liste der Unterhaltungen (`hasCall`, `callStartTime`) und
+  die Teilnehmer aus `GET …/api/v4/call/{token}` (je Person einmal): ihre Zahl, und ob der Mensch dabei ist (seine
+  Benutzer-ID unter ihnen, oder `participantFlags`). Die Antwort trägt `link` (`<server>/call/<token>`) für „Accept“.
+  Clients fragen den Server einzeln nacheinander, wie bei Nachrichten.
+- **Klingeln** ist eine Benachrichtigung von `spreed` mit dem Objekt `call`, jünger als 45 s, in einer Unterhaltung mit
+  laufendem Anruf, in dem der Mensch auf keinem Gerät ist (`chat/calls.rs`). Die Abfrage läuft alle 10 s nur, solange
+  `chat_ring` an ist; aus vergisst der Kern, was klingelt. Bei „Do not disturb“ auf dem Konto (eigener Status, wie
+  zuletzt gelesen oder gesetzt) öffnet sich kein Fenster. Offen: `notify_push` statt der Abfrage und ein `ETag` je Konto
+  für die Liste der Benachrichtigungen.
+- **Ablehnen** löscht nur Benachrichtigungen, die noch klingeln; ein verpasster Anruf bleibt in den Benachrichtigungen
+  und im Eingang. `notification-state` braucht es dafür nicht. **Auflegen** antwortet `ok`, solange der Anruf im
+  Browser läuft.
+- **Start des Fensters:** Für jeden Anruf, der neu klingelt, startet der Kern einmal `torrochat
+  --ring=<unterhaltung>` (`apps::Opened::Ring`) und lässt die Klassen des Chats vorher schweben. Gewählt statt eines
+  Ziels `ring:<unterhaltung>` für `apps.open_app`, weil ein solches Ziel jedem Client mit `apps` erlaubte, den Rechner
+  klingeln zu lassen, und weil der Kern ohnehin selbst startet.
+- Keiner der drei Befehle ist `Never`; die Datenregel des Assistenten hält `chat-call` wie jede Chat-Antwort zurück.
+
 **Grenzen der ersten Fassung:** nur zu zweit (ohne HPB rät Talk selbst ab drei Personen ab), kein Bildschirm
 teilen, keine Aufnahme, keine Untertitel. Föderierte Unterhaltungen und Gäste ohne Konto erst, wenn der Versuch
 sie geprüft hat.
@@ -961,6 +981,40 @@ mit einem Klick, nicht ein Agent.
 Seitenleiste im Chatfenster. Demo:
 `torrochat --demo --open media | viewer | upload`.
 
+**Umsetzung im Kern** (Backend der Stufe 4, `chat/media.rs`, `chat/attachments.rs`, `torro-nextcloud/src/files.rs`).
+Wo der Code vom Text oben abweicht oder etwas offen ließ, gilt:
+- **Beschriftung an der letzten Datei** einer Nachricht, `replyTo` ebenda; `referenceId` geht in `talkMetaData`, wenn
+  der Server `chat-reference-id` nennt. Beides ist nicht gegen spreed und nicht gegen einen echten Server geprüft
+  (Prüfung von Hand steht aus); nimmt Talk die `referenceId` beim Teilen nicht an, fragt der Kern vor einer
+  Wiederholung noch nicht `…/share` ab.
+- **412 beim `PUT` oder beim abschließenden `MOVE`:** Der Kern verwirft die Stücke, wählt per `PROPFIND` einen neuen
+  freien Namen und beginnt den Upload neu, höchstens dreimal; danach `conflict`.
+- **Eigenes Speicherbudget:** Vorbereitete Dateien und unfertige Uploads des Chats teilen sich 100 MiB, getrennt vom
+  Budget der Mail-Bilder (eine gemeinsame Buchführung hätte `mail/images.rs` geändert); ein Client hält davon höchstens
+  50 MiB, damit er das Einfügen der Oberfläche nicht sperrt. Eine Datei vom Rechner (`source: path`) zählt nicht mit,
+  sie wird erst beim Senden gelesen.
+- **Vorschauen brauchen immer `image_content`:** Eine Vorschau ist ein Bild des Inhalts, auch die Seite eines PDF.
+  Darum verlangt `get_preview` das Recht für jede Datei, nicht nur bei `image/*` und `video/*`; `get_attachment` und
+  `save_attachment` verlangen es wie oben nach der Art.
+- **Drossel vor der Freigabe:** Ob die Dateien eines Clients noch in die 20 Dateien und 100 MiB je Stunde passen, prüft
+  der Kern schon, bevor er fragt; gezählt wird erst beim Senden.
+- **Stand `sharing` ab der ersten geteilten Datei:** Von da an bleibt das Senden bis zum Ende in `sharing`, und
+  `cancel_upload` antwortet `conflict`, weil schon eine Nachricht in der Unterhaltung steht.
+- **Leases werden beim Senden verbraucht:** Sobald das Hochladen beginnt, gibt es die vorbereiteten Dateien nicht mehr;
+  scheitert das Senden, bereitet die Oberfläche sie neu vor. So kann dieselbe Datei nicht zweimal unter einer
+  Freigabe gehen.
+- **Abbrechen** wirkt zwischen zwei Stücken bzw. nach dem laufenden `PUT`: Der Kern löscht danach die Stücke bzw. die
+  eben hochgeladene Datei mit `If-Match` auf ihren ETag.
+- **Freien Platz** fragt `prepare_file` für den App-Schlüssel ab; ist der Server nicht erreichbar, gilt nur die
+  Grenze von 512 MiB.
+- **Ordner der geöffneten Anhänge** ist `<cache>/chat-attachments/<Prüfsumme der Kontokennung>/`, damit die Kennung
+  (mit `@` und `:`) kein Pfadteil wird.
+- **Freigabe:** Die Vorschau eines Bildes zeigt sie noch nicht (das Format der Freigaben kennt kein Bild); Name,
+  Größe, Art und Herkunft stehen in den Details. Seit Stufe 4 stehen die Details einer Chat-Freigabe (ganzer Text,
+  „Sent silently“, Dateien) auch wirklich an der Freigabe; zuvor berechnete der Kern sie, hängte sie aber nicht an.
+- **Noch offen:** das Attribut `com.apple.quarantine` an geholten Dateien (macOS), die Dauer von Videos, Links in der
+  Medien-Übersicht nennen Autor und Zeit nur, solange der Kern die Nachricht hält.
+
 ## Teilen in einen Chat (Stufe 5)
 
 Übernimmt TL2 aus [teilen.md](teilen.md) und nutzt den Ablauf zum Senden aus
@@ -985,6 +1039,14 @@ Seitenleiste im Chatfenster. Demo:
   - Ohne `media-caption` kommen zwei Nachrichten: erst der Text, dann die Datei.
   - Ohne Datei in der Karte geht nur der Text.
 - **Größe:** höchstens 5 MB je Karte (die Grenze von `share_card`).
+- **Umgesetzt (Issue #643):** nur Kontakte. Die Karte entsteht im Kern (`chat/share.rs`, `card_for`) und wird eine
+  vorbereitete Datei des Aufrufers (Herkunft `Card`), die genau den Weg aus Stufe 4 nimmt; die Freigabe entsteht vor
+  der Karte und liest Namen und Felder dafür selbst aus dem Adressbuch. Abweichend von oben: Die Datei heißt bei einem
+  Kontakt nach ihm („Anna Muster.vcf“), erst bei mehreren `contacts.vcf`, damit die Gegenseite sie erkennt. Der Name geht
+  immer mit; ein Foto geht noch nicht mit (die Auswahl kennt es nicht), ebenso kein Jahrestag. Höchstens 20 Inhalte je
+  Nachricht; die Karte zählt zu den zehn Dateien einer Nachricht. Den Assistenten deckt der Kern ab: Ein geliehener
+  Schlüssel ohne `contacts` hat das Recht nicht und bekommt `not-found`; eine eigene Zuordnung des Befehls zu
+  `contacts` im Assistenten gibt es nicht. Das Teilen-Blatt fehlt, solange es keine Kontakte-App gibt.
 - **Freigabe:** Unterhaltung, Text, jede Karte („Contact card: Anna Muster (6 fields)“, „+ private
   address“) und „Uploads contacts.vcf to your Talk folder in Nextcloud“.
 - **Rechte:** „Send on my behalf“ (Entscheidung 4) plus Lesen der Inhalte. Das Schreiben in die
@@ -999,15 +1061,15 @@ Seitenleiste im Chatfenster. Demo:
   (`UNTextInputNotificationAction`), das braucht AppKit-Code in `torro-appkit`. KDE kennt eine
   Erweiterung für Antworten in der Benachrichtigung, GNOME nicht. Eigener kleiner Plan nach Rückfrage. Anrufe
   brauchen das nicht: Sie klingeln in einem kleinen Fenster (Entscheidung 24).
-- **Lesestand über den Eingang:** `inbox.set_item_done` setzt an Talk-Einträgen schon heute den Lesestand in Talk,
-  ohne Recht in `chat`. Vorschlag für Stufe 1: An Talk-Einträgen braucht es künftig auch Write in `chat` mit dem
-  Konto in `chat_accounts`, wie Mail-Einträge Write in `mail` brauchen.
-- **`inbox.reply`** aus [eingang.md](eingang.md) war als ein Antworten für Mail, Slack und Talk
-  geplant. Für Talk antwortet das Paneel jetzt über `chat.send_message`. Stufe 1 passt die Zeile in
-  [eingang.md](eingang.md) an; ob Mail und Slack ein gemeinsames `inbox.reply` brauchen, entscheiden
-  deren Pläne.
 - **Liste sparsamer holen:** Ob `GET /room?modifiedSince=…` auf allen unterstützten Versionen nur
-  geänderte Unterhaltungen liefert, prüft Stufe 1.
+  geänderte Unterhaltungen liefert, ist nicht gegen einen Server geprüft (der Server dieses Rechners hat kein Talk);
+  bis dahin holt der Kern die ganze Liste, für Eingang und Chat in einer Anfrage.
+- **Zahl der Teilnehmer im Kopf eines Gruppenchats:** Die Raumliste von Talk nennt sie nicht; sie je Gruppe einzeln
+  abzufragen kostet bei jeder Liste eine Anfrage je Gruppe. Bis ein günstiger Weg geklärt ist, steht dort „Group chat“.
+
+Erledigt mit Issue #643: Erledigen eines Talk-Eintrags braucht Write in `chat` mit dem Konto (vorher nur die
+Quelle); geantwortet wird auf Talk-Einträge über `chat.send_message`, die Zeile in [eingang.md](eingang.md) ist
+angepasst.
 - **Teams als Gruppen in der Kontaktliste** (App `circles`) und eine Obergrenze für große Instanzen: Stufe 2.
 - **„Do not disturb“ an einen Fokus-Modus oder eine Workspace-Vorlage koppeln:** später.
 - **Gruppen anlegen, Teilnehmer, Unterhaltungen verlassen oder archivieren:** nicht in diesem Konzept.

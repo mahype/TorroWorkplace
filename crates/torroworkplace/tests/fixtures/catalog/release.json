@@ -823,6 +823,118 @@
       "content_type": "application/octet-stream",
       "state": "uploaded",
       "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-reminder-x86_64-apple-darwin.app.zip.sha256"
+    },
+    {
+      "id": 1102,
+      "name": "torrochat-x86_64-unknown-linux-gnu.tar.xz",
+      "size": 9084000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrochat-x86_64-unknown-linux-gnu.tar.xz"
+    },
+    {
+      "id": 1103,
+      "name": "torrochat-x86_64-unknown-linux-gnu.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrochat-x86_64-unknown-linux-gnu.tar.xz.sha256"
+    },
+    {
+      "id": 1104,
+      "name": "torrochat-aarch64-unknown-linux-gnu.tar.xz",
+      "size": 9086000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrochat-aarch64-unknown-linux-gnu.tar.xz"
+    },
+    {
+      "id": 1105,
+      "name": "torrochat-aarch64-unknown-linux-gnu.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrochat-aarch64-unknown-linux-gnu.tar.xz.sha256"
+    },
+    {
+      "id": 1106,
+      "name": "torrochat-x86_64-pc-windows-msvc.zip",
+      "size": 8088000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrochat-x86_64-pc-windows-msvc.zip"
+    },
+    {
+      "id": 1107,
+      "name": "torrochat-x86_64-pc-windows-msvc.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrochat-x86_64-pc-windows-msvc.zip.sha256"
+    },
+    {
+      "id": 1108,
+      "name": "torrochat-aarch64-apple-darwin.tar.xz",
+      "size": 9000000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrochat-aarch64-apple-darwin.tar.xz"
+    },
+    {
+      "id": 1109,
+      "name": "torrochat-aarch64-apple-darwin.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrochat-aarch64-apple-darwin.tar.xz.sha256"
+    },
+    {
+      "id": 1110,
+      "name": "torrochat-aarch64-apple-darwin.app.zip",
+      "size": 24600000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrochat-aarch64-apple-darwin.app.zip"
+    },
+    {
+      "id": 1111,
+      "name": "torrochat-aarch64-apple-darwin.app.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrochat-aarch64-apple-darwin.app.zip.sha256"
+    },
+    {
+      "id": 1112,
+      "name": "torrochat-x86_64-apple-darwin.tar.xz",
+      "size": 9000000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrochat-x86_64-apple-darwin.tar.xz"
+    },
+    {
+      "id": 1113,
+      "name": "torrochat-x86_64-apple-darwin.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrochat-x86_64-apple-darwin.tar.xz.sha256"
+    },
+    {
+      "id": 1114,
+      "name": "torrochat-x86_64-apple-darwin.app.zip",
+      "size": 24600000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrochat-x86_64-apple-darwin.app.zip"
+    },
+    {
+      "id": 1115,
+      "name": "torrochat-x86_64-apple-darwin.app.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrochat-x86_64-apple-darwin.app.zip.sha256"
     }
   ]
 }

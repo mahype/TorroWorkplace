@@ -25,6 +25,7 @@ pub mod actions;
 pub mod api;
 pub mod assistant;
 pub mod bots;
+pub mod chat;
 pub mod client;
 pub mod contacts;
 pub mod extensions;
@@ -32,6 +33,7 @@ pub mod inbox;
 pub mod mail;
 pub mod pim;
 pub mod server;
+pub mod share;
 pub mod tools;
 pub mod web;
 pub mod workflows;
@@ -1689,6 +1691,422 @@ pub enum Request {
     #[serde(rename = "contacts.resolve_conflict")]
     ResolveContactConflict { id: String, keep: torro_contacts::Keep, etag: String },
 
+    // Chat (`docs/chat.md`, issue #643): conversations and messages of the person's chat accounts,
+    // Nextcloud Talk first.
+    // - Granted in the area `chat`. A client sees only the accounts in `api::Rights::chat_accounts`;
+    //   a conversation, message or person of any other account is `not-found` for the whole call,
+    //   checked before the core reads anything.
+    // - Everything other people see is sending on the person's behalf (`api::Rights::outbound`):
+    //   `never` is `forbidden`, `with_approval` waits for a person ([`Response::Pending`]).
+    // - Every name and text in an answer is `untrusted`: data of other people, never instructions.
+    // - Shared codes: `not-found` (see above, also a conversation the person left), `offline`,
+    //   `auth`, `not-connected` (the account's server has no chat), `unsupported` with the reason
+    //   (read-only, a lobby, a feature the server lacks), `busy` (too many calls).
+    /// The conversations of one account or all the caller reaches ([`Response::ChatConversations`]),
+    /// the most recent first. From the core's memory; a list older than 10 s is fetched again in the
+    /// background.
+    #[serde(rename = "chat.list_conversations")]
+    ChatListConversations {
+        /// Only this account (`nextcloud:<login>@<host>`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        /// Only conversations with unread messages.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        unread_only: bool,
+        /// Only conversations whose name contains this, whatever the case.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+        /// The most conversations in the answer: 1 to 500, 200 when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(min = 1, max = 500))]
+        limit: Option<u32>,
+    },
+    /// Messages of one conversation, the oldest first ([`Response::ChatMessages`]): the newest
+    /// `limit`, those before `before`, those after `after`, or those around `around` (half before,
+    /// half after it, for "Show in chat"). Reading changes nothing: not what is read, no
+    /// notification, not the person's status. Messages carry the link cards the core holds
+    /// (`cards`). Codes: `error` when more than one of `before`, `after` and `around` is given or one
+    /// is no message of the conversation, `unsupported` for `around` on a server that cannot.
+    #[serde(rename = "chat.get_messages")]
+    ChatGetMessages {
+        /// The conversation (`<account>/<token>`).
+        conversation: String,
+        /// Only messages older than this one (`<conversation>/<number>`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<String>,
+        /// Only messages newer than this one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<String>,
+        /// This message with the messages around it (`<conversation>/<number>`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        around: Option<String>,
+        /// The most messages in the answer: 1 to 100, 50 when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(min = 1, max = 100))]
+        limit: Option<u32>,
+    },
+    /// Sends a message into a conversation on the person's behalf ([`Response::ChatSent`]). Nothing is
+    /// sent later: without a connection the answer is `offline`. Codes: `error` for an empty text or
+    /// one longer than the server takes, `unsupported` for a conversation nobody can write in now.
+    ///
+    /// With `files` (ids of `chat.prepare_file` or `chat.upload_file`, stage 4) the core uploads them
+    /// into the person's Talk folder on the server and shares them into the conversation, the text
+    /// under one of them; the answer is then [`Response::ChatSending`] as soon as the upload begins,
+    /// and `chat.get_upload` tells how it goes. Codes for files: `not-found` for a prepared file that
+    /// is not the caller's, of another account or whose lease ran out, `conflict` for a file on the
+    /// computer that changed since it was prepared, `unsupported` when the server does not let the
+    /// person share files, `busy` beyond a client's 20 files or 100 MiB an hour.
+    ///
+    /// With `items` (stage 5, `docs/teilen.md`) the core makes one card of them from its own store,
+    /// a short text and a file (contacts: a lean vCard of the chosen `fields`, at most 5 MB), and
+    /// sends the file as above, its text under it when the message has none. The caller needs read
+    /// access to the items besides (contacts: the area `contacts` and the address book); an item it
+    /// may not read makes the whole command `not-found`, checked before any approval and again when
+    /// it runs. Codes for items: `error` for more than 20 items, a card over 5 MB, or `fields`
+    /// without `items`.
+    #[serde(rename = "chat.send_message")]
+    ChatSendMessage {
+        conversation: String,
+        /// The text. A mention is written `@"<id>"` with an id of `chat.suggest_mentions`. With
+        /// `files` or `items` it may be empty.
+        #[serde(default)]
+        text: String,
+        /// The message this one answers (`<conversation>/<number>`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to: Option<String>,
+        /// Send without notifying the others.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        silent: bool,
+        /// Prepared files to send with it, by the ids `chat.prepare_file` and `chat.upload_file`
+        /// gave; at most 10 (the card of `items` counts as one).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<String>,
+        /// Items of the suite to share as one card, all of one kind: for now contacts
+        /// (`{"kind": "contact", "id": "<contact id>"}`); at most 20.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        items: Vec<share::ShareItem>,
+        /// What of each item goes along besides the name, which always does. Given, exactly these
+        /// fields go: list every one wanted. Without `fields`: company and position, phone numbers,
+        /// mail addresses, work addresses and web pages, nothing private.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fields: Option<Vec<share::ShareField>>,
+    },
+    /// Marks a conversation read up to the message `up_to`, else up to its newest
+    /// ([`Response::Ok`]). Others may see that the person read it.
+    #[serde(rename = "chat.mark_read")]
+    ChatMarkRead {
+        conversation: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        up_to: Option<String>,
+    },
+    /// Marks a conversation unread again ([`Response::Ok`]).
+    #[serde(rename = "chat.mark_unread")]
+    ChatMarkUnread { conversation: String },
+    /// Who `@query` could mean in a conversation ([`Response::ChatMentions`]): the `id` of an entry
+    /// is what `chat.send_message` takes in `@"<id>"`.
+    #[serde(rename = "chat.suggest_mentions")]
+    ChatSuggestMentions {
+        conversation: String,
+        /// The start of a name; empty lists the people of the conversation.
+        #[serde(default)]
+        query: String,
+        /// The most entries: 1 to 50, 20 when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(min = 1, max = 50))]
+        limit: Option<u32>,
+    },
+    /// People of the account's server who can be written to, by name ([`Response::ChatPeople`]), for
+    /// a new conversation. Codes: `error` for a query under two characters.
+    #[serde(rename = "chat.find_people")]
+    ChatFindPeople {
+        account: String,
+        /// At least two characters.
+        query: String,
+        /// The most people: 1 to 20, 20 when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(min = 1, max = 20))]
+        limit: Option<u32>,
+    },
+    /// The direct chat with one person ([`Response::ChatConversation`]): the existing one, else a
+    /// new one, which the other person then sees. Groups are made in the provider's own app.
+    #[serde(rename = "chat.create_conversation")]
+    ChatCreateConversation {
+        account: String,
+        /// The person (`<account>/<user id>`), as `chat.find_people` or `presence.list_people` name
+        /// them.
+        with: String,
+    },
+    /// Replaces the text of one of the person's own messages ([`Response::Ok`]); the old text is
+    /// gone. Codes: `unsupported` for a message of someone else or one older than the server allows
+    /// (24 hours on Talk).
+    #[serde(rename = "chat.edit_message")]
+    ChatEditMessage {
+        /// The message (`<conversation>/<number>`).
+        id: String,
+        text: String,
+    },
+    /// Deletes one of the person's own messages for everyone ([`Response::Ok`]); it cannot be
+    /// restored. Codes: `unsupported` for a message of someone else or one older than the server
+    /// allows (6 hours on Talk).
+    #[serde(rename = "chat.delete_message")]
+    ChatDeleteMessage { id: String },
+    /// Adds a reaction to a message, or takes the person's own back with `remove`
+    /// ([`Response::Ok`]).
+    #[serde(rename = "chat.react")]
+    ChatReact {
+        id: String,
+        /// One emoji.
+        emoji: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        remove: bool,
+    },
+    /// Makes a conversation a favourite or no longer one ([`Response::Ok`]).
+    #[serde(rename = "chat.set_favorite")]
+    ChatSetFavorite { conversation: String, favorite: bool },
+    /// When the person hears of a conversation ([`Response::Ok`]); it also decides where its
+    /// messages land in the inbox.
+    #[serde(rename = "chat.set_notification_level")]
+    ChatSetNotificationLevel { conversation: String, level: torro_chat::NotifyLevel },
+    /// Searches the messages of one account or all the caller reaches ([`Response::ChatFound`]).
+    /// Codes: `error` for a query under two characters, `unsupported` when the server cannot search.
+    #[serde(rename = "chat.search_messages")]
+    ChatSearchMessages {
+        query: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        /// The most hits: 1 to 50, 20 when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(min = 1, max = 50))]
+        limit: Option<u32>,
+    },
+
+    // Files and media of the chat (`docs/chat.md`, stage 4). Sending is two steps: a file is
+    // prepared in the core's memory first (`chat.prepare_file`, `chat.upload_file`), and only
+    // `chat.send_message` with `files` uploads and shares it, after an approval that shows exactly
+    // these bytes. Reading names a file only together with its message (`id`), checked against the
+    // files of that message as the core holds it: any other file is `not-found`. For a client,
+    // pictures and videos (also files of a kind the core cannot tell) need the right to picture
+    // content (`api::Rights::image_content`), else `forbidden`. Files shared so that they may not be
+    // downloaded are `forbidden` to fetch or save for everyone; files in conversations with people of
+    // other servers are `unsupported` to preview, fetch or save.
+    /// Prepares a file for sending ([`Response::ChatPreparedFile`]): kept in the core's memory under
+    /// a lease, with name, size, kind (read from its first bytes) and a small preview of a picture.
+    /// Nothing goes to the server. `source: path` is the app key's only. Codes: `not-found` for a
+    /// registered file that is not the caller's or changed, `forbidden` while its tool is off or
+    /// not allowed, `error` for a file larger than the limit (25 MiB for clients; for the app key the
+    /// free space of the account and 512 MiB) or one that cannot be read, `busy` when the core holds
+    /// too much already.
+    #[serde(rename = "chat.prepare_file")]
+    ChatPrepareFile {
+        /// The account the file will be sent with (`nextcloud:<login>@<host>`).
+        account: String,
+        /// Where the file comes from.
+        source: chat::FileSource,
+    },
+    /// Uploads a file into the core's memory in pieces of at most 256 KiB decoded, 25 MiB in all
+    /// ([`Response::ChatFileUpload`], with `final` [`Response::ChatPreparedFile`] as
+    /// `chat.prepare_file` gives it). The first piece starts at offset 0 without `upload`; the next
+    /// ones name the `upload` the answer gave and their offset. The same piece again is fine, another
+    /// one at a taken offset is `conflict`; after `final` the file does not change. At most four
+    /// unfinished uploads per caller (`busy`); they end after 10 minutes without a piece.
+    #[serde(rename = "chat.upload_file")]
+    ChatUploadFile {
+        /// The account the file will be sent with.
+        account: String,
+        /// The upload the first piece started; left out for the first piece.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        upload: Option<String>,
+        /// Where this piece starts in the file, in bytes.
+        offset: u64,
+        /// The bytes of this piece as Base64.
+        base64: chat::FileData,
+        /// The file's name, with the first piece; the caller's text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// This is the last piece: the file is complete.
+        #[serde(default, rename = "final", skip_serializing_if = "std::ops::Not::not")]
+        finish: bool,
+    },
+    /// Drops prepared files and unfinished uploads of the caller ([`Response::Ok`]). Ids of others
+    /// and unknown ones are passed over without a word. Codes: `conflict` for a file an approval
+    /// still waits for.
+    #[serde(rename = "chat.release_files")]
+    ChatReleaseFiles {
+        account: String,
+        /// The ids of `chat.prepare_file` and `chat.upload_file`.
+        ids: Vec<String>,
+    },
+    /// How sending files goes ([`Response::ChatUpload`]): bytes, state and, once sent, the messages
+    /// the files became. Codes: `not-found` for a sending of someone else or one that ended over an
+    /// hour ago.
+    #[serde(rename = "chat.get_upload")]
+    ChatGetUpload {
+        /// The id `chat.send_message` answered with (`chat-sending`).
+        id: String,
+    },
+    /// Cancels sending files ([`Response::Ok`]) and deletes what of them is on the server already.
+    /// Codes: `conflict` once the files are being shared (the messages are on their way), `not-found`
+    /// for a sending of someone else.
+    #[serde(rename = "chat.cancel_upload")]
+    ChatCancelUpload {
+        /// The id `chat.send_message` answered with.
+        id: String,
+    },
+    /// A preview of a file of a message, or the picture of its link card with `card`
+    /// ([`Response::ChatPicture`]), drawn by the account's server; never an SVG. Codes: `not-found`
+    /// for a file that is not one of the message's, or without a preview.
+    #[serde(rename = "chat.get_preview")]
+    ChatGetPreview {
+        /// The message (`<conversation>/<number>`).
+        id: String,
+        /// The file's id, as `files` of the message names it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file: Option<String>,
+        /// The picture of the message's link card instead of a file.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        card: bool,
+        /// `small` (256 pixels, when left out) or `large` (1600).
+        #[serde(default)]
+        size: chat::PreviewSize,
+    },
+    /// Fetches a file of a message into the chat's attachment folder for opening
+    /// ([`Response::ChatAttachment`]); it is deleted after a day. At most 50 MiB for clients, 512 MiB
+    /// for the app key (`error` beyond).
+    #[serde(rename = "chat.get_attachment")]
+    ChatGetAttachment {
+        /// The message (`<conversation>/<number>`).
+        id: String,
+        /// The file's id, as `files` of the message names it.
+        file: String,
+    },
+    /// Saves a file of a message ([`Response::ChatSaved`]): to Downloads, to a save target of
+    /// `mail.list_save_targets` (needs read access to mail besides) or, app key only, to a file or
+    /// folder a person chose. A file is never overwritten except with `to: file`; a taken name gets a
+    /// number. Codes: `not-found` for an unknown target or a missing folder, `forbidden` for `file`
+    /// or `folder` from a client.
+    #[serde(rename = "chat.save_attachment")]
+    ChatSaveAttachment {
+        /// The message (`<conversation>/<number>`).
+        id: String,
+        /// The file's id, as `files` of the message names it.
+        file: String,
+        /// Where it goes.
+        to: mail::SaveTo,
+    },
+    /// What a conversation shared, the newest first ([`Response::ChatShared`]): pictures and
+    /// videos, files, voice messages, links … of one `kind`, or the newest of each without it.
+    /// Codes: `unsupported` when the server cannot list them.
+    #[serde(rename = "chat.list_shared")]
+    ChatListShared {
+        /// The conversation (`<account>/<token>`).
+        conversation: String,
+        /// Only items of this kind.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<chat::SharedKind>,
+        /// Only items older than this message (`<conversation>/<number>`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<String>,
+        /// The most items: 1 to 100, 50 when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(min = 1, max = 100))]
+        limit: Option<u32>,
+    },
+    /// Fetches the card of the first link of a message ("Show preview", [`Response::ChatCard`]):
+    /// the account's server asks the link's address for it, so its owner may learn when it was read.
+    /// App key only: a person decides.
+    #[serde(rename = "chat.show_card")]
+    ChatShowCard {
+        /// The message (`<conversation>/<number>`).
+        id: String,
+    },
+
+    // Calls (`docs/chat.md`, stage 6b): ringing, declining and leaving. The call itself runs in the
+    // browser (`<server>/call/<token>`) until the suite has its own call window; starting and
+    // answering a call come with it and are the app key's only (decision 14).
+    /// Whether a call runs in a conversation ([`Response::ChatCall`]): whether it rings for the
+    /// person, since when it runs, how many are in it and whether the person is, with the link to
+    /// join it in the browser; never names, devices or pictures. Clients ask the server one at a
+    /// time.
+    #[serde(rename = "chat.get_call")]
+    ChatGetCall {
+        /// The conversation (`<account>/<token>`).
+        conversation: String,
+    },
+    /// Stops the call ringing for the person ([`Response::Ok`]); the others go on calling. When nothing
+    /// rings it changes nothing: missed calls stay. Clients ask the server one at a time.
+    #[serde(rename = "chat.decline_call")]
+    ChatDeclineCall {
+        /// The conversation (`<account>/<token>`).
+        conversation: String,
+    },
+    /// Leaves the call of a conversation and closes the suite's call window ([`Response::Ok`]). Until
+    /// the suite has a call window of its own the person takes part in the browser, which the core
+    /// cannot leave for them: then it answers `ok` and changes nothing.
+    #[serde(rename = "chat.leave_call")]
+    ChatLeaveCall {
+        /// The conversation (`<account>/<token>`).
+        conversation: String,
+    },
+
+    // Presence (`docs/chat.md`, decision 10): who is there, and the person's own status.
+    // - Granted in the area `presence` with accounts of its own (`api::Rights::presence_accounts`);
+    //   people of any other account are `not-found`.
+    // - A person is id, name, status, status message and when it ends, nothing else of the server's
+    //   address book. Names and status messages are `untrusted`.
+    /// The people of one account or all the caller reaches, with their status
+    /// ([`Response::PresencePeople`]). From the core's memory, fetched while someone asks.
+    #[serde(rename = "presence.list_people")]
+    PresenceListPeople {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+    },
+    /// Adds a person of the server to the person's own list on this computer ([`Response::Ok`]), for
+    /// servers that do not show their users. Nobody else sees it.
+    #[serde(rename = "presence.add_person")]
+    PresenceAddPerson {
+        account: String,
+        /// The person (`<account>/<user id>`), as `presence.find_people` names them.
+        person: String,
+    },
+    /// Takes a person off the person's own list again ([`Response::Ok`]); people the server lists
+    /// stay.
+    #[serde(rename = "presence.remove_person")]
+    PresenceRemovePerson { account: String, person: String },
+    /// People of the account's server by name ([`Response::PresencePeople`]), without their status.
+    /// Codes: `error` for a query under two characters.
+    #[serde(rename = "presence.find_people")]
+    PresenceFindPeople {
+        account: String,
+        /// At least two characters.
+        query: String,
+        /// The most people: 1 to 20, 20 when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(min = 1, max = 20))]
+        limit: Option<u32>,
+    },
+    /// The person's own status on an account ([`Response::PresenceOwnStatus`]).
+    #[serde(rename = "presence.get_own_status")]
+    PresenceGetOwnStatus { account: String },
+    /// Sets the person's own status, which every colleague on the server sees ([`Response::Ok`]).
+    /// Codes: `unsupported` for `online` while "Show others when I am online" is off (the server
+    /// would drop it after minutes), and for `offline` (use `invisible`).
+    #[serde(rename = "presence.set_own_status")]
+    PresenceSetOwnStatus {
+        account: String,
+        /// The status; left out it stays as it is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<torro_chat::Status>,
+        /// The status message, up to 80 characters; empty clears it, left out it stays.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        /// One emoji before the message; only with `message`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        icon: Option<String>,
+        /// When the message ends by itself; only with `message`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        clear_at: Option<DateTime<Utc>>,
+    },
+
     /// The suite-wide settings ([`Response::Settings`]).
     #[serde(rename = "settings.get_settings")]
     Settings,
@@ -1762,7 +2180,10 @@ pub enum Request {
     /// of the assistant's tools attached (issue #225, the id of `tools.create_pdf`; `torroinbox
     /// --compose --attach=<path>`), `template:<id>` the core's dialog to edit a workspace template
     /// (issue #243, `torroworkplace ui --template=<id>`; always to edit, never the dialog after
-    /// "Save workspace…", whose Cancel deletes the template). `app` must be the app the target
+    /// "Save workspace…", whose Cancel deletes the template), `chat:<conversation>` a chat window
+    /// with that conversation (`docs/chat.md`, `torrochat --conversation=<id>`; a client needs read
+    /// access to `chat` and the account, else `not-found`) and `chat:contacts` the contact list.
+    /// `app` must be the app the target
     /// opens in (any inbox window for a mail, the inbox for a file, `torroworkplace` for a
     /// template), else `error`. The core checks the target and builds the arguments; nothing of it
     /// reaches a shell. A window open already cannot be told to show something else yet, so a
@@ -1777,8 +2198,9 @@ pub enum Request {
         /// Binary name or window class, from `apps.list_apps`.
         app: String,
         /// What the app shows: `mail:<address>:<Message-ID>`, `task:<uid>`, `file:<id>` (a new
-        /// mail with that file of the assistant's tools attached) or `template:<id>` (the dialog
-        /// to edit a workspace template); left out: the app as it starts.
+        /// mail with that file of the assistant's tools attached), `template:<id>` (the dialog
+        /// to edit a workspace template) or `chat:<conversation>`/`chat:contacts` (a chat window,
+        /// the contact list); left out: the app as it starts.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<String>,
     },
@@ -4471,6 +4893,17 @@ pub enum SettingKey {
     /// shows, a client's rights stay as they are.
     #[serde(rename = "contacts.show_hidden_books")]
     ContactsShowHiddenBooks,
+    /// "Show others when I am online" (`docs/chat.md`, decision 10): `true` or `false` (the
+    /// default). While on, the service tells every Nextcloud account's server every five minutes
+    /// that the person is at the computer. Only the app key may send `true` – a person in the chat
+    /// window or the control centre: it tells others lastingly when the person is there. Any
+    /// client allowed to change settings may send `false`.
+    PresenceHeartbeat,
+    /// "Ring for incoming calls" (`docs/chat.md`, decision 9 and stage 6): `true` (the default) or
+    /// `false`. While on, the service asks every Nextcloud account with Talk every 10 seconds whether
+    /// someone calls, and opens the chat's ringing window when someone does. Off, it asks nothing
+    /// and nothing rings.
+    ChatRing,
     /// The spacing level every window draws with (issue #484): `"torro"` (Standard), `"comfort"` or
     /// `"dense"`, as `settings.list_designs` lists them. It changes only spacing – gaps and the
     /// heights of rows and controls –, never the font, the colour scheme or the mail view. The old
@@ -4879,6 +5312,87 @@ pub enum Response {
     /// The contacts that stay after [`Request::ResolveContactConflict`]: one, or two with `both`.
     ContactsResolved {
         contacts: Vec<torro_contacts::Contact>,
+    },
+    /// The conversations of [`Request::ChatListConversations`], the most recent first.
+    ChatConversations {
+        conversations: Vec<torro_chat::Conversation>,
+    },
+    /// One conversation ([`Request::ChatCreateConversation`]).
+    ChatConversation {
+        conversation: Box<torro_chat::Conversation>,
+    },
+    /// Messages of one conversation, the oldest first ([`Request::ChatGetMessages`]).
+    ChatMessages(torro_chat::MessagePage),
+    /// A message went out ([`Request::ChatSendMessage`]): its id and nothing else, so the answer
+    /// holds no text of other people.
+    ChatSent {
+        id: String,
+    },
+    /// Sending files began ([`Request::ChatSendMessage`] with `files`): the id for
+    /// [`Request::ChatGetUpload`] and [`Request::ChatCancelUpload`], and nothing else (no name, no
+    /// path).
+    ChatSending {
+        id: String,
+    },
+    /// A prepared file ([`Request::ChatPrepareFile`], the last piece of [`Request::ChatUploadFile`]).
+    ChatPreparedFile {
+        file: Box<chat::PreparedFile>,
+    },
+    /// A piece of [`Request::ChatUploadFile`] arrived: the upload's id and how many bytes it holds.
+    ChatFileUpload {
+        upload: String,
+        received: u64,
+    },
+    /// How sending files goes ([`Request::ChatGetUpload`]).
+    ChatUpload {
+        upload: chat::UploadProgress,
+    },
+    /// A picture of the server ([`Request::ChatGetPreview`]).
+    ChatPicture {
+        picture: chat::ChatPicture,
+    },
+    /// A file fetched for opening ([`Request::ChatGetAttachment`]).
+    ChatAttachment {
+        attachment: chat::ChatAttachment,
+    },
+    /// Where [`Request::ChatSaveAttachment`] put the file, an absolute path.
+    ChatSaved {
+        path: String,
+    },
+    /// What a conversation shared ([`Request::ChatListShared`]), the newest first; `more` when older
+    /// items of the kind exist.
+    ChatShared {
+        items: Vec<chat::SharedItem>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        more: bool,
+    },
+    /// The card of a link ([`Request::ChatShowCard`]); `None` when the server knows none.
+    ChatCard {
+        card: Option<torro_chat::LinkCard>,
+    },
+    /// Whether a call runs in a conversation and rings ([`Request::ChatGetCall`]).
+    ChatCall {
+        call: chat::ChatCall,
+    },
+    /// Who a mention could mean ([`Request::ChatSuggestMentions`]).
+    ChatMentions {
+        mentions: Vec<torro_chat::Mention>,
+    },
+    /// People of the server ([`Request::ChatFindPeople`]).
+    ChatPeople {
+        people: Vec<torro_chat::Person>,
+    },
+    /// The messages a search found ([`Request::ChatSearchMessages`]).
+    ChatFound {
+        hits: Vec<torro_chat::SearchHit>,
+    },
+    /// People with their status ([`Request::PresenceListPeople`], [`Request::PresenceFindPeople`]).
+    PresencePeople {
+        people: Vec<torro_chat::Person>,
+    },
+    /// The person's own status ([`Request::PresenceGetOwnStatus`]).
+    PresenceOwnStatus {
+        status: Box<torro_chat::OwnStatus>,
     },
     Todo {
         todo: Todo,

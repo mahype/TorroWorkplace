@@ -1718,6 +1718,7 @@ pub(crate) mod tests {
     fn mail_item(id: &str, title: &str) -> torro_inbox::Item {
         let time = Utc::now();
         torro_inbox::Item {
+            conversation: None,
             id: id.into(),
             source: SourceRef { kind: SourceKind::Mail, name: "anna@example.org".into() },
             thread_key: "t".into(),

@@ -7241,6 +7241,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "torro-chat"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "png 0.18.1",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "torro-contacts"
 version = "0.1.0"
 dependencies = [
@@ -7280,6 +7292,7 @@ dependencies = [
  "roxmltree 0.21.1",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tokio",
  "torro-appkit",
  "torro-core",
@@ -7354,6 +7367,7 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "tokio",
+ "torro-chat",
  "torro-contacts",
  "torro-core",
  "torro-inbox",
@@ -7579,6 +7593,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "torrochat"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "chrono",
+ "iced",
+ "image",
+ "rfd",
+ "tokio",
+ "torro-chat",
+ "torro-core",
+ "torro-gui",
+ "torro-ipc",
+]
+
+[[package]]
 name = "torroinbox"
 version = "0.1.0"
 dependencies = [
@@ -7592,6 +7622,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "torro-chat",
  "torro-contacts",
  "torro-core",
  "torro-gui",
@@ -7665,6 +7696,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "toml",
+ "torro-chat",
  "torro-contacts",
  "torro-core",
  "torro-gui",
