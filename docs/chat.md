@@ -1061,15 +1061,15 @@ Wo der Code vom Text oben abweicht oder etwas offen ließ, gilt:
   (`UNTextInputNotificationAction`), das braucht AppKit-Code in `torro-appkit`. KDE kennt eine
   Erweiterung für Antworten in der Benachrichtigung, GNOME nicht. Eigener kleiner Plan nach Rückfrage. Anrufe
   brauchen das nicht: Sie klingeln in einem kleinen Fenster (Entscheidung 24).
-- **Lesestand über den Eingang:** `inbox.set_item_done` setzt an Talk-Einträgen schon heute den Lesestand in Talk,
-  ohne Recht in `chat`. Vorschlag für Stufe 1: An Talk-Einträgen braucht es künftig auch Write in `chat` mit dem
-  Konto in `chat_accounts`, wie Mail-Einträge Write in `mail` brauchen.
-- **`inbox.reply`** aus [eingang.md](eingang.md) war als ein Antworten für Mail, Slack und Talk
-  geplant. Für Talk antwortet das Paneel jetzt über `chat.send_message`. Stufe 1 passt die Zeile in
-  [eingang.md](eingang.md) an; ob Mail und Slack ein gemeinsames `inbox.reply` brauchen, entscheiden
-  deren Pläne.
 - **Liste sparsamer holen:** Ob `GET /room?modifiedSince=…` auf allen unterstützten Versionen nur
-  geänderte Unterhaltungen liefert, prüft Stufe 1.
+  geänderte Unterhaltungen liefert, ist nicht gegen einen Server geprüft (der Server dieses Rechners hat kein Talk);
+  bis dahin holt der Kern die ganze Liste, für Eingang und Chat in einer Anfrage.
+- **Zahl der Teilnehmer im Kopf eines Gruppenchats:** Die Raumliste von Talk nennt sie nicht; sie je Gruppe einzeln
+  abzufragen kostet bei jeder Liste eine Anfrage je Gruppe. Bis ein günstiger Weg geklärt ist, steht dort „Group chat“.
+
+Erledigt mit Issue #643: Erledigen eines Talk-Eintrags braucht Write in `chat` mit dem Konto (vorher nur die
+Quelle); geantwortet wird auf Talk-Einträge über `chat.send_message`, die Zeile in [eingang.md](eingang.md) ist
+angepasst.
 - **Teams als Gruppen in der Kontaktliste** (App `circles`) und eine Obergrenze für große Instanzen: Stufe 2.
 - **„Do not disturb“ an einen Fokus-Modus oder eine Workspace-Vorlage koppeln:** später.
 - **Gruppen anlegen, Teilnehmer, Unterhaltungen verlassen oder archivieren:** nicht in diesem Konzept.
