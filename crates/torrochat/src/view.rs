@@ -5,7 +5,9 @@
 //!
 //! The contact list is a narrow tile without sidebar: the flush frame of the narrow layout in every
 //! size, with the top row (the app's name, "New chat" at the right). Under it the search and
-//! "People | Groups", the list, and the own status at the bottom. In a wide tile the column stays
+//! "People | Groups", the list, and the own status at the bottom. While the field filters "People",
+//! the list ends with the part "On the server": "Find on server…", then the server's people with their
+//! presence mark and "Add to list". In a wide tile the column stays
 //! [`size::content_max`] wide, centred: a list to read is never stretched. Mini shows how many are
 //! there and the unread chats in figures; the strip the faces of the people who are there.
 //!
@@ -49,11 +51,13 @@ const STRIP_FACES: usize = 8;
 /// The unread chats a glance lists where it has room (mini tall, strip).
 const GLANCE_CHATS: usize = 3;
 
-/// How a row of the contact list reads: a person offline dimmed, a favourite with its pin.
-#[derive(Debug, Clone, Copy)]
+/// How a row of the contact list reads: a person offline dimmed, a favourite with its pin, a person
+/// added by hand (`Person::added`) with their mark.
+#[derive(Debug, Clone, Copy, Default)]
 struct Look {
     dim: bool,
     favorite: bool,
+    added: bool,
 }
 
 /// The anchors of the menus that float next to their triggers; new in every `view`.
@@ -212,10 +216,18 @@ impl App {
         if self.tab == Tab::Messages {
             return self.hit_list(anchors);
         }
-        let rows: Vec<Element<'a, Message>> = match self.tab {
+        let mut rows: Vec<Element<'a, Message>> = match self.tab {
             Tab::People => self.people_rows(anchors),
             Tab::Groups | Tab::Messages => self.group_rows(anchors),
         };
+        if self.finds_on_server() {
+            if rows.is_empty() {
+                // On the line of a group's head, which it stands in for.
+                let at = Padding { top: space::m(), ..style::ITEM_PADDING };
+                rows.push(container(hint(tr("No one on your list matches."))).padding(at).into());
+            }
+            rows.extend(self.server_rows());
+        }
         if rows.is_empty() {
             let (title, hint) = match (self.tab, self.search.trim().is_empty()) {
                 (Tab::People, true) => (tr("No people yet"), tr("Your Nextcloud does not show other users.")),
@@ -247,7 +259,7 @@ impl App {
                 let target = Target::Person(person.id.clone());
                 let line = people::person_line(person);
                 // The group "Favorites" says it already; a pin on each of its rows would repeat it.
-                let look = Look { dim: Group::of(person) == Group::Offline, favorite: false };
+                let look = Look { dim: Group::of(person) == Group::Offline, favorite: false, added: person.added };
                 rows.push(self.row(target, lead, &person.name, line, unread, look, anchors));
             }
         }
@@ -261,7 +273,7 @@ impl App {
                 let lead = tile_face(Icon::Users);
                 let target = Target::Conversation(conversation.id.clone());
                 let line = people::chat_line(conversation);
-                let look = Look { dim: false, favorite: conversation.favorite };
+                let look = Look { favorite: conversation.favorite, ..Look::default() };
                 self.row(target, lead, &conversation.name, line, conversation.unread, look, anchors)
             })
             .collect()
@@ -297,7 +309,7 @@ impl App {
                 Some(_) => tile_face(Icon::Users),
                 None => tile_face(Icon::MessageCircle),
             };
-            let look = Look { dim: false, favorite: false };
+            let look = Look::default();
             self.row(Target::Hit(hit.id.clone()), lead, &hit.title, hit.text.clone(), 0, look, anchors)
         });
         column(rows.collect::<Vec<_>>()).spacing(space::xs()).padding(Padding::ZERO.bottom(space::s())).into()
@@ -325,6 +337,10 @@ impl App {
         ]
         .width(Fill);
         let mut content = row![lead, words].spacing(space::m()).align_y(Alignment::Center);
+        if look.added {
+            let mark = tinted(Icon::UserPlus, icon::SIZE_SM, |p| p.text_3);
+            content = content.push(widgets::with_tooltip(mark, tr("Added by you")));
+        }
         if look.favorite {
             content =
                 content.push(widgets::with_tooltip(tinted(Icon::Pin, icon::SIZE_SM, |p| p.text_3), tr("Favorite")));
@@ -362,6 +378,38 @@ impl App {
             return widgets::with_tooltip(row, tr("Opening the chat…"));
         }
         row
+    }
+
+    /// The part "On the server" at the end of a search in "People": "Find on server…" until the server
+    /// was asked for what the field holds, then its people – or that it searches, failed or found no
+    /// one.
+    fn server_rows<'a>(&'a self) -> Vec<Element<'a, Message>> {
+        let mut rows = vec![section_head(tr("On the server"))];
+        let server = &self.server;
+        let quiet =
+            |text: String| -> Element<'a, Message> { container(hint(text)).padding(style::ITEM_PADDING).into() };
+        if !self.server_asked() {
+            rows.push(find_row());
+        } else if let Some(error) = &server.error {
+            rows.push(quiet(error.clone()));
+        } else if server.searching && server.found.is_empty() {
+            rows.push(quiet(tr("Searching…").to_owned()));
+        } else if server.found.is_empty() {
+            rows.push(quiet(tr("No one found with this name.").to_owned()));
+        } else {
+            let colours = self.colours();
+            rows.extend(server.found.iter().map(|person| {
+                let state = if self.on_list(&person.id) {
+                    Adding::OnList
+                } else if server.adding.contains(&person.id) {
+                    Adding::Busy
+                } else {
+                    Adding::Offer
+                };
+                server_row(person, state, &colours)
+            }));
+        }
+        rows
     }
 
     /// The own status at the bottom: face with mark, the status's word, the message (or what to do),
@@ -773,6 +821,66 @@ fn found_row<'a>(person: &Person, colours: &Palette) -> Element<'a, Message> {
         .style(style::button::sidebar_item(false))
         .on_press(Message::StartWith(person.clone()))
         .into()
+}
+
+/// Where a person the server found stands: on the list already, being added, or to add.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Adding {
+    OnList,
+    Busy,
+    Offer,
+}
+
+/// The title of a part of the list without folding ("On the server"): `caption` in `text_3`, as a
+/// group's head has it.
+fn section_head<'a>(title: &'a str) -> Element<'a, Message> {
+    let title = typo::text(typo::caption(), title).style(theme::text_3).wrapping(Wrapping::None);
+    let bar = container(title).width(Fill).height(size::row_sidebar()).padding(style::ITEM_PADDING);
+    container(bar.center_y(size::row_sidebar())).padding(Padding::ZERO.top(space::m())).into()
+}
+
+/// "Find on server…": the magnifier in the cell of a face with its mark ([`avatar`]), so the words
+/// start on the names' axis.
+fn find_row<'a>() -> Element<'a, Message> {
+    let glass = container(tinted(Icon::Search, icon::SIZE, |p| p.text_2)).center_x(face_edge() + MARK_RING);
+    let words = widgets::ellipsized(typo::body(), tr("Find on server…"), theme::text_2);
+    let content = row![glass, words].spacing(space::m()).align_y(Alignment::Center);
+    button(container(content).center_y(Fill))
+        .width(Fill)
+        .height(size::row_sidebar() + space::s())
+        .padding(style::ITEM_PADDING)
+        .style(style::button::sidebar_item(false))
+        .on_press(Message::FindOnServer)
+        .into()
+}
+
+/// One person the server found: the face with their presence mark, the name over the status's line,
+/// and at the end "Add to list" – busy while it goes, "On your list" once they stand there.
+fn server_row<'a>(person: &Person, state: Adding, colours: &Palette) -> Element<'a, Message> {
+    let face = avatar(&person.name, &person.id, Some(Group::of(person).status()), colours);
+    let words = column![
+        widgets::ellipsized(typo::body_strong(), person.name.clone(), theme::text),
+        widgets::ellipsized(typo::meta(), people::person_line(person), theme::text_3),
+    ]
+    .width(Fill);
+    let end: Element<'a, Message> = match state {
+        Adding::OnList => row![
+            tinted(Icon::UserCheck, icon::SIZE_SM, |p| p.text_3),
+            typo::text(typo::meta(), tr("On your list")).style(theme::text_3).wrapping(Wrapping::None),
+        ]
+        .spacing(space::xs())
+        .align_y(Alignment::Center)
+        .into(),
+        Adding::Busy => widgets::busy_button(tr("Adding…"), style::button::secondary),
+        Adding::Offer => widgets::text_button(
+            Some(Icon::UserPlus),
+            tr("Add to list"),
+            style::button::secondary,
+            Some(Message::AddPerson(person.clone())),
+        ),
+    };
+    let content = row![face, words, end].spacing(space::m()).align_y(Alignment::Center);
+    container(content).width(Fill).height(size::row()).padding(style::ITEM_PADDING).center_y(size::row()).into()
 }
 
 /// A quiet line in a dialog: what to do, or what happens.

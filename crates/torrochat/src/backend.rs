@@ -175,6 +175,24 @@ impl Backend {
         }
     }
 
+    /// `presence.find_people`: people of the account's server by name (the server's people search,
+    /// also without Talk), to add to the person's own list. At least two characters.
+    pub async fn find_people(self, account: String, query: String) -> Result<Vec<Person>, ChatError> {
+        match self {
+            Backend::Core(core) => core.find_people(account, query).await,
+            Backend::Demo(demo) => demo.find_people(account, query).await,
+        }
+    }
+
+    /// `presence.add_person`: onto the person's own list; the next `presence.list_people` has them
+    /// with `added`.
+    pub async fn add_person(self, account: String, person: String) -> Result<(), ChatError> {
+        match self {
+            Backend::Core(core) => core.add_person(account, person).await,
+            Backend::Demo(demo) => demo.add_person(account, person).await,
+        }
+    }
+
     /// `presence.remove_person`: off the person's own list (only people they added themselves).
     pub async fn remove_person(self, account: String, person: String) -> Result<(), ChatError> {
         match self {

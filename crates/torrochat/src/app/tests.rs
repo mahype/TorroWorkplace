@@ -244,6 +244,83 @@ fn escape_closes_the_menu_before_the_dialog() {
     assert!(app.dialog.is_none());
 }
 
+// -- Find on server and "Add to list" -----------------------------------------------------------
+
+/// What the demo's server finds for `query`, as the core answers `presence.find_people`.
+fn server_found(app: &App, query: &str) -> Message {
+    Message::ServerFound(query.into(), block_on(app.backend.clone().find_people(ACCOUNT.into(), query.into())))
+}
+
+#[test]
+fn a_search_without_a_match_finds_on_the_server_and_adds_to_the_list() {
+    let mut app = loaded(start(&[]));
+    let _ = app.update(Message::Search("h".into()));
+    assert!(!app.finds_on_server(), "one letter offers nothing");
+    let _ = app.update(Message::Search("hanna".into()));
+    assert!(app.rows().is_empty() && app.finds_on_server() && !app.server_asked(), "\"Find on server…\" shows");
+    let _ = app.update(Message::SearchSubmit);
+    assert!(app.server.searching && app.server_asked(), "Enter without a match asks the server");
+    let answer = server_found(&app, "hanna");
+    let _ = app.update(answer);
+    assert!(!app.server.searching);
+    let hanna = app.server.found.first().cloned().expect("Hanna");
+    assert_eq!(hanna.name, "Hanna Vogt");
+    assert!(!app.on_list(&hanna.id), "only on the server");
+
+    let _ = app.update(Message::AddPerson(hanna.clone()));
+    assert_eq!(app.server.adding, std::slice::from_ref(&hanna.id), "the button turns busy");
+    let _ = app.update(Message::AddPerson(hanna.clone()));
+    assert_eq!(app.server.adding.len(), 1, "one ask per person");
+    let added = block_on(app.backend.clone().add_person(ACCOUNT.into(), hanna.id.clone()));
+    let _ = app.update(Message::Added(hanna.clone(), added));
+    assert!(app.server.adding.is_empty());
+    assert_eq!(app.rows(), [Target::Person(hanna.id.clone())], "on the list at once, where the search finds her");
+    assert!(app.people.iter().any(|p| p.id == hanna.id && p.added), "marked as added by hand");
+
+    let people = block_on(app.backend.clone().people());
+    let _ = app.update(Message::People(people));
+    assert!(app.people.iter().any(|p| p.id == hanna.id && p.added), "the core's list has her too");
+    let _ = app.update(Message::Remove(hanna.id.clone()));
+    assert!(!app.on_list(&hanna.id), "\"Remove from list\" takes her off again");
+}
+
+#[test]
+fn the_servers_hits_belong_to_what_the_field_holds() {
+    let mut app = loaded(start(&["--open", "server-found"]));
+    assert_eq!((app.search.as_str(), app.server.query.as_str()), ("an", "an"), "the demo state asks at once");
+    assert!(app.server.searching);
+    assert_eq!(app.rows().len(), 2, "Dana and Gesa match on the list");
+    let _ = app.update(Message::Search("ann".into()));
+    assert_eq!(app.server, ServerSearch::default(), "typing drops what was asked for the old text");
+    let late = server_found(&app, "an");
+    let _ = app.update(late);
+    assert!(app.server.found.is_empty(), "an answer to the old text is dropped");
+
+    let _ = app.update(Message::FindOnServer);
+    let _ = app.update(Message::ServerFound("ann".into(), Err(ChatError::Offline)));
+    assert_eq!(app.server.error.as_deref(), Some(tr("The server cannot be reached. Try again when you are online.")));
+    let _ = app.update(Message::FindOnServer);
+    assert!(app.server.searching && app.server.error.is_none(), "a failed search can be asked again");
+    let answer = server_found(&app, "ann");
+    let _ = app.update(answer);
+    let names: Vec<&str> = app.server.found.iter().map(|person| person.name.as_str()).collect();
+    assert_eq!(names, ["Hanna Vogt"]);
+}
+
+#[test]
+fn a_person_who_could_not_be_added_stays_off_the_list() {
+    let mut app = loaded(start(&["--open", "find-on-server"]));
+    assert_eq!(app.search, "hanna");
+    let _ = app.update(Message::FindOnServer);
+    let answer = server_found(&app, "hanna");
+    let _ = app.update(answer);
+    let hanna = app.server.found.first().cloned().expect("Hanna");
+    let _ = app.update(Message::AddPerson(hanna.clone()));
+    let _ = app.update(Message::Added(hanna.clone(), Err(ChatError::Busy)));
+    assert!(!app.on_list(&hanna.id) && app.server.adding.is_empty(), "\"Add to list\" is back");
+    assert_eq!(app.notice.as_ref().map(|n| n.text.as_str()), Some(tr("The person could not be added to the list.")));
+}
+
 // -- A chat window ------------------------------------------------------------------------------
 
 fn chat(app: &App) -> &ChatState {

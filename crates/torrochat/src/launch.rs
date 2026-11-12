@@ -59,6 +59,13 @@ pub enum Open {
     /// The contact list with "Offline" folded and the search "er" typed: two matches, Dana Erb (busy)
     /// and Finn Maier (offline, shown although his group is folded).
     Search,
+    /// The contact list with "hanna" typed: no one on the list matches, "Find on server…" stands
+    /// under "On the server".
+    FindOnServer,
+    /// The contact list with "an" typed and the server asked (`presence.find_people`): Dana Erb and
+    /// Gesa Lange on the list, then the server's hits – both "On your list", Hanna Vogt with "Add to
+    /// list".
+    ServerFound,
     /// The chat window with Ben: mention, file, missed call, the divider "New".
     Chat,
     /// The chat window with Ben, answering his last message, "@" typed with the suggestions open.
@@ -103,13 +110,15 @@ pub enum Open {
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 24] = [
+    pub const ALL: [(&'static str, Open); 26] = [
         ("contacts", Open::Contacts),
         ("groups", Open::Groups),
         ("status", Open::Status),
         ("status-message", Open::StatusMessage),
         ("new", Open::New),
         ("search", Open::Search),
+        ("find-on-server", Open::FindOnServer),
+        ("server-found", Open::ServerFound),
         ("chat", Open::Chat),
         ("reply", Open::Reply),
         ("group", Open::Group),
@@ -152,6 +161,8 @@ impl Open {
             | Open::StatusMessage
             | Open::New
             | Open::Search
+            | Open::FindOnServer
+            | Open::ServerFound
             | Open::MessageSearch => None,
         }
     }

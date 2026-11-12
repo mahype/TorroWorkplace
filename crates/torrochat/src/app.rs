@@ -8,8 +8,12 @@
 //!   bottom with a menu that sets it (`presence.set_own_status`). A double click or Enter opens the
 //!   chat window of a person or group: the person's direct chat, created first when there is none
 //!   (`chat.create_conversation`). "+" starts a direct chat with someone of the server
-//!   (`chat.find_people`). The third tab, "Messages" (also Ctrl+Shift+F), searches the messages
-//!   with the same field (`chat.search_messages`); a hit opens its conversation's chat window.
+//!   (`chat.find_people`). While the field filters "People", the list ends with "Find on server…"
+//!   (also Enter when no one on the list matches): the server's people by name
+//!   (`presence.find_people`), each with "Add to list" (`presence.add_person`); people added by hand
+//!   carry a mark and "Remove from list" in their menu (`presence.remove_person`). The third tab,
+//!   "Messages" (also Ctrl+Shift+F), searches the messages with the same field
+//!   (`chat.search_messages`); a hit opens its conversation's chat window.
 //! - **A chat window** (class `torro-chat-conversation`, `--conversation=<id>`): its methods live in
 //!   [`chat`].
 //!
@@ -147,6 +151,22 @@ pub struct MessageSearch {
     pub error: Option<String>,
 }
 
+/// The search on the server of the tab "People" (`presence.find_people`): people of the server by
+/// name, to put on the person's own list with "Add to list" (`presence.add_person`). It belongs to
+/// what the field held when it was asked; typing something else drops it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ServerSearch {
+    /// What was asked for (trimmed); empty while nothing was asked.
+    pub query: String,
+    pub found: Vec<Person>,
+    /// The ask for `query` is out.
+    pub searching: bool,
+    /// Why the search failed, in words for people.
+    pub error: Option<String>,
+    /// The people being added (`<account>/<user id>`): their button turns busy.
+    pub adding: Vec<String>,
+}
+
 /// When a status message ends by itself (`docs/chat.md`, "Fuß").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClearAfter {
@@ -276,6 +296,14 @@ pub enum Message {
     NewQuery(String),
     Found(String, Result<Vec<Person>, ChatError>),
     StartWith(Person),
+    /// "Find on server…": `presence.find_people` for what the field holds.
+    FindOnServer,
+    /// What `presence.find_people` found for the query.
+    ServerFound(String, Result<Vec<Person>, ChatError>),
+    /// "Add to list": `presence.add_person`.
+    AddPerson(Person),
+    /// The core's answer to "Add to list".
+    Added(Person, Result<(), ChatError>),
 
     // -- A chat window
     Chat(chat::Msg),
@@ -316,6 +344,8 @@ pub struct App {
     /// The field above the list: a filter of people and groups, or the query of "Messages".
     pub(crate) search: String,
     pub(crate) found: MessageSearch,
+    /// "Find on server…" of the tab "People".
+    pub(crate) server: ServerSearch,
     /// Groups folded or unfolded by a click; the others as they start ([`App::folded`]).
     pub(crate) folds: BTreeMap<Group, bool>,
     pub(crate) cursor: Option<Target>,
@@ -378,10 +408,13 @@ impl App {
             },
             search: match open {
                 Some(Open::Search) => "er".into(),
+                Some(Open::FindOnServer) => "hanna".into(),
+                Some(Open::ServerFound) => "an".into(),
                 Some(Open::MessageSearch) => "review".into(),
                 _ => String::new(),
             },
             found: MessageSearch::default(),
+            server: ServerSearch::default(),
             folds: if open == Some(Open::Search) { BTreeMap::from([(Group::Offline, true)]) } else { BTreeMap::new() },
             cursor: None,
             hover: None,
@@ -436,6 +469,9 @@ impl App {
         if let Some(Dialog::NewChat { query, .. }) = &app.dialog {
             let query = query.clone();
             tasks.push(app.find(query));
+        }
+        if open == Some(Open::ServerFound) {
+            tasks.push(app.update(Message::FindOnServer));
         }
         (app, Task::batch(tasks))
     }
@@ -577,7 +613,15 @@ impl App {
             Message::Search(text) => {
                 self.search = text;
                 self.cursor = self.rows().first().cloned();
+                // The server's hits belong to the query they were asked for.
+                if self.server.query != self.search.trim() {
+                    self.server = ServerSearch::default();
+                }
                 return self.search_messages();
+            }
+            // Without a match on the list Enter asks the server.
+            Message::SearchSubmit if self.tab == Tab::People && self.rows().is_empty() => {
+                return self.update(Message::FindOnServer);
             }
             Message::SearchSubmit => return self.open_cursor_or_first(),
             Message::FocusSearch => return operation::focus(SEARCH),
@@ -759,6 +803,46 @@ impl App {
                 // `chat.create_conversation` gives the existing direct chat when there is one.
                 return self.open(Target::Person(person.id));
             }
+            Message::FindOnServer => return self.find_on_server(),
+            Message::ServerFound(asked, result) => {
+                // Only the answer to what was asked last; an older one is dropped.
+                if asked != self.server.query {
+                    return Task::none();
+                }
+                self.server.searching = false;
+                match result {
+                    Ok(found) => {
+                        self.server.found = found;
+                        self.server.error = None;
+                    }
+                    Err(err) => {
+                        self.server.found.clear();
+                        self.server.error = Some(chat_failed(&err));
+                    }
+                }
+            }
+            Message::AddPerson(person) => {
+                if self.server.adding.contains(&person.id) || self.on_list(&person.id) {
+                    return Task::none();
+                }
+                self.server.adding.push(person.id.clone());
+                let (account, id) = (person.account.clone(), person.id.clone());
+                return Task::perform(self.backend.clone().add_person(account, id), move |result| {
+                    Message::Added(person.clone(), result)
+                });
+            }
+            Message::Added(person, result) => {
+                self.server.adding.retain(|id| *id != person.id);
+                if result.is_err() {
+                    self.notify(tr("The person could not be added to the list.").to_owned());
+                    return Task::none();
+                }
+                // On the list at once, marked as added; the next list of the core confirms it.
+                if !self.on_list(&person.id) {
+                    self.people.push(Person { added: true, ..person });
+                }
+                return self.load();
+            }
 
             Message::Chat(message) => return self.chat_update(message),
             Message::Viewer(message) => return self.viewer_update(message),
@@ -818,18 +902,40 @@ impl App {
         Task::perform(self.backend.clone().set_own_status(account, change), Message::StatusSet)
     }
 
-    /// `chat.find_people` for the dialog "New chat", in the account of the own status (or the first).
-    fn find(&self, query: String) -> Task<Message> {
-        let account = self
-            .own
+    /// The account a search for people asks: the one of the own status, else the first known.
+    fn search_account(&self) -> Option<String> {
+        self.own
             .as_ref()
             .map(|own| own.account.clone())
             .or_else(|| people::accounts(&self.people, &self.conversations).into_iter().next())
-            .or_else(|| self.backend.is_demo().then(|| torro_chat::demo::ACCOUNT.to_owned()));
-        let Some(account) = account else { return Task::none() };
+            .or_else(|| self.backend.is_demo().then(|| torro_chat::demo::ACCOUNT.to_owned()))
+    }
+
+    /// `chat.find_people` for the dialog "New chat", in the account of the own status (or the first).
+    fn find(&self, query: String) -> Task<Message> {
+        let Some(account) = self.search_account() else { return Task::none() };
         let asked = query.clone();
         Task::perform(self.backend.clone().find_chat_people(account, query.trim().to_owned()), move |result| {
             Message::Found(asked.clone(), result)
+        })
+    }
+
+    /// `presence.find_people` for what the field holds, while "Find on server…" shows
+    /// ([`App::finds_on_server`]). The same query is not asked twice in a row unless it failed.
+    fn find_on_server(&mut self) -> Task<Message> {
+        if !self.finds_on_server() {
+            return Task::none();
+        }
+        let query = self.search.trim().to_owned();
+        if query == self.server.query && self.server.error.is_none() {
+            return Task::none();
+        }
+        let Some(account) = self.search_account() else { return Task::none() };
+        let adding = std::mem::take(&mut self.server.adding);
+        self.server = ServerSearch { query: query.clone(), searching: true, adding, ..ServerSearch::default() };
+        let asked = query.clone();
+        Task::perform(self.backend.clone().find_people(account, query), move |result| {
+            Message::ServerFound(asked.clone(), result)
         })
     }
 
@@ -917,6 +1023,25 @@ impl App {
                         > people::FOLD_OFFLINE_FROM
             }
         }
+    }
+
+    /// Whether the list offers "Find on server…": the contact list on "People", the field holding at
+    /// least two characters.
+    pub(crate) fn finds_on_server(&self) -> bool {
+        self.chat.is_none()
+            && self.tab == Tab::People
+            && self.search.trim().chars().count() >= torro_ipc::chat::MIN_QUERY
+    }
+
+    /// Whether the server was asked for what the field holds now: its hits show instead of "Find on
+    /// server…".
+    pub(crate) fn server_asked(&self) -> bool {
+        !self.server.query.is_empty() && self.server.query == self.search.trim()
+    }
+
+    /// Whether the person `id` stands on the list already.
+    pub(crate) fn on_list(&self, id: &str) -> bool {
+        self.people.iter().any(|person| person.id == id)
     }
 
     /// The rows the list shows now, top to bottom: the people of unfolded groups or the group chats,
