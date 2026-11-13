@@ -68,6 +68,21 @@ Was offene Modelle brauchen, damit das gut geht:
   Werkzeuge, unter denen er entstand, und lehnt ihn nach einer Änderung mit HTTP 400 ab (#605).
 - **Kurzer Kontext:** Ergebnisse von Werkzeugen werden gekürzt (Mail-Text abgeschnitten, Listen mit
   Anzahl), die volle Fassung bleibt aufklappbar in der App.
+- **Lange Aufgaben (Issue #701):** Eine Antwort darf bis zu 80 Schritte machen, mit einem kleinen
+  Modell 30 (`Limits` in `assistant/model.rs`, keine Einstellung). Was ein Werkzeug dem Modell
+  geliefert hat, speichert der Dienst neben der Werkzeugzeile des Gesprächs; die nächste Nachricht
+  schickt Aufrufe und Ergebnisse wieder mit. Clients sehen diese Ergebnisse über
+  `get_conversation` nie. Überschreitet der Verlauf die Hälfte des Kontextfensters des Modells
+  (laut Modell-Liste, sonst 32 000 Tokens), verdichtet der Dienst ihn selbst, ohne Modellaufruf
+  (`assistant/compact.rs`): zuerst werden ältere Ergebnisse zu ihrer Kurzzeile („12 results“),
+  dann fallen ganze Schritte zwischen erster und letzter Nachricht der Person und vor den letzten
+  vier Schritten weg, ersetzt durch einen Vermerk mit Zahl der Schritte und den Werkzeugen samt
+  Kurzzeile, nie mit Inhalten. Systemprompt, erste und letzte Nachricht der Person und die letzten
+  Schritte bleiben wörtlich. Ein als `untrusted` markiertes Ergebnis bleibt auch verdichtet so
+  markiert; die Regeln dazu (Notizen warten auf eine Person, das Web fragt erneut) hängen an den
+  Werkzeugzeilen und gelten weiter. Ruft das Modell dasselbe Werkzeug in einer Antwort zum dritten
+  Mal mit derselben Eingabe auf, läuft der Aufruf nicht, und die Antwort endet mit einer Meldung,
+  damit es sich nicht im Kreis dreht.
 - **Ehrlich bei Grenzen:** Kann ein lokales Modell keine Werkzeuge, sagt die Auswahl das, statt es
   still schlecht zu machen.
 
