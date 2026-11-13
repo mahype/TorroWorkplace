@@ -19,6 +19,8 @@ torro-inbox.workspace = true
 # The calendars and task lists of an account, as `accounts.list_accounts` lists them
 # (`Collection`, `CollectionKind`, task S.19).
 torro-pim.workspace = true
+# The address books of an account and which of them a client sees (`AddressBook`, issue #353).
+torro-contacts.workspace = true
 # The settings of a mail account the sections change (`Notify`, `MailFormat`, `Role`, task S.20).
 torro-mail.workspace = true
 # The limits and the texts of an ntfy account's topics in the add-account dialog (issue #410).

@@ -168,6 +168,8 @@ impl Naming {
 pub struct Known<'a> {
     pub calendars: &'a [Collection],
     pub task_lists: &'a [Collection],
+    /// The address books (`contacts.list_address_books`, issue #353), the hidden ones too.
+    pub address_books: &'a [torro_contacts::AddressBook],
     pub sources: &'a [SourceInfo],
     pub clients: &'a [ClientInfo],
     pub accounts: &'a [AccountInfo],
@@ -181,6 +183,7 @@ impl<'a> Known<'a> {
         Known {
             calendars: &data.calendars,
             task_lists: &data.task_lists,
+            address_books: &data.address_books,
             sources: &data.sources,
             clients: &data.clients,
             accounts: &data.accounts,
@@ -190,11 +193,14 @@ impl<'a> Known<'a> {
     }
 }
 
-/// One of the eight selections of a client's rights.
+/// One of the nine selections of a client's rights.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pick {
     Calendars,
     TaskLists,
+    /// The address books a client sees ([`Rights::address_books`], issue #353); the hidden ones are
+    /// ticked one by one in a group of their own ([`Message::HiddenBook`]).
+    AddressBooks,
     GithubRepos,
     InboxSources,
     MailAccounts,
@@ -207,9 +213,10 @@ pub enum Pick {
 }
 
 impl Pick {
-    pub const ALL: [Pick; 8] = [
+    pub const ALL: [Pick; 9] = [
         Pick::Calendars,
         Pick::TaskLists,
+        Pick::AddressBooks,
         Pick::GithubRepos,
         Pick::InboxSources,
         Pick::MailAccounts,
@@ -223,6 +230,7 @@ impl Pick {
         match self {
             Pick::Calendars => Area::Calendar,
             Pick::TaskLists => Area::Tasks,
+            Pick::AddressBooks => Area::Contacts,
             Pick::GithubRepos => Area::Github,
             Pick::InboxSources => Area::Inbox,
             Pick::MailAccounts => Area::Mail,
@@ -236,6 +244,7 @@ impl Pick {
         match self {
             Pick::Calendars => &rights.calendars,
             Pick::TaskLists => &rights.task_lists,
+            Pick::AddressBooks => &rights.address_books,
             Pick::GithubRepos => &rights.github_repos,
             Pick::InboxSources => &rights.inbox_sources,
             Pick::MailAccounts => &rights.mail_accounts,
@@ -249,6 +258,7 @@ impl Pick {
         match self {
             Pick::Calendars => &mut rights.calendars,
             Pick::TaskLists => &mut rights.task_lists,
+            Pick::AddressBooks => &mut rights.address_books,
             Pick::GithubRepos => &mut rights.github_repos,
             Pick::InboxSources => &mut rights.inbox_sources,
             Pick::MailAccounts => &mut rights.mail_accounts,
@@ -262,6 +272,7 @@ impl Pick {
         match self {
             Pick::Calendars => tr("Calendars"),
             Pick::TaskLists => tr("Task lists"),
+            Pick::AddressBooks => tr("Address books"),
             Pick::GithubRepos => tr("GitHub repositories"),
             Pick::InboxSources => tr("Notification Hub sources"),
             Pick::MailAccounts => tr("Mail accounts"),
@@ -278,6 +289,8 @@ impl Pick {
             (Pick::Calendars, false) => tr("Calendars left off don't exist for this agent."),
             (Pick::TaskLists, true) => tr("Includes lists added later, GitHub filter lists too."),
             (Pick::TaskLists, false) => tr("Lists left off don't exist for this agent."),
+            (Pick::AddressBooks, true) => tr("Includes address books added later. Hidden ones are never included."),
+            (Pick::AddressBooks, false) => tr("Address books left off don't exist for this agent."),
             (Pick::GithubRepos, true) => tr("Every repository your GitHub token reaches, private ones too."),
             (Pick::GithubRepos, false) => tr(
                 "Matches from other repositories are dropped before the agent sees them. An owner stands for all of its repositories.",
@@ -331,6 +344,9 @@ pub enum Message {
     All(Pick, bool),
     /// A switch of a selection: the id and whether it is on now.
     Tick(Pick, String, bool),
+    /// A switch of a hidden address book (issue #353): its id and whether it is on now. Only a book
+    /// `known` lists as hidden is ticked ([`Rights::hidden_address_books`]); unticking takes any name out.
+    HiddenBook(String, bool),
     /// The text of "Add repository" changed.
     RepoInput(String),
     /// "Add" next to it, or Enter in it.
@@ -515,6 +531,15 @@ pub fn change_rights(
             rights.tools = Selection::Only(ids);
         }
         Message::Tick(pick, id, on) => tick(pick.of_mut(rights), id, on),
+        Message::HiddenBook(id, on) if shows_area(Area::Contacts, kind) => {
+            let hidden = known.address_books.iter().any(|book| book.id == id && book.hidden_by_default);
+            let held = rights.hidden_address_books.contains(&id);
+            if on && hidden && !held {
+                rights.hidden_address_books.push(id);
+            } else if !on {
+                rights.hidden_address_books.retain(|book| *book != id);
+            }
+        }
         Message::AddRepo => {
             let Some(repo) = valid_repo(repo_input) else { return false };
             repo_input.clear();
@@ -976,6 +1001,12 @@ pub fn candidates(pick: Pick, known: &Known, selection: &Selection) -> Vec<Candi
     let mut offered = match pick {
         Pick::Calendars => known.calendars.iter().map(|collection| collection_candidate(collection, known)).collect(),
         Pick::TaskLists => known.task_lists.iter().map(|collection| collection_candidate(collection, known)).collect(),
+        Pick::AddressBooks => known
+            .address_books
+            .iter()
+            .filter(|book| !book.hidden_by_default)
+            .map(|book| book_candidate(book, known))
+            .collect(),
         Pick::GithubRepos => repo_candidates(known, selection),
         Pick::InboxSources => source_candidates(known, selection),
         Pick::MailAccounts => mail_candidates(known),
@@ -992,6 +1023,41 @@ pub fn candidates(pick: Pick, known: &Known, selection: &Selection) -> Vec<Candi
             .collect();
         offered.extend(gone);
     }
+    offered
+}
+
+/// An address book: its name as the server shows it, below it the account it belongs to and how many
+/// contacts it holds (issue #353).
+fn book_candidate(book: &torro_contacts::AddressBook, known: &Known) -> Candidate {
+    let account = known
+        .accounts
+        .iter()
+        .find(|account| account.id == book.account)
+        .map_or(book.account.as_str(), |account| account.label.as_str());
+    let contacts = match book.count {
+        1 => tr("1 contact").to_string(),
+        n => trf("{n} contacts", &[("n", &torro_gui::units::format_count(u64::from(n)))]),
+    };
+    let label = if book.display_name.trim().is_empty() { book.name.clone() } else { book.display_name.clone() };
+    Candidate::plain(book.id.clone(), label, Some(format!("{account} · {contacts}")))
+}
+
+/// What the group "Hidden address books" offers: every book `known` lists as hidden by default, then
+/// what [`Rights::hidden_address_books`] names that is no longer known (marked, so it can be unticked).
+pub fn hidden_candidates(known: &Known, rights: &Rights) -> Vec<Candidate> {
+    let mut offered: Vec<Candidate> = known
+        .address_books
+        .iter()
+        .filter(|book| book.hidden_by_default)
+        .map(|book| book_candidate(book, known))
+        .collect();
+    let gone: Vec<Candidate> = rights
+        .hidden_address_books
+        .iter()
+        .filter(|id| !offered.iter().any(|candidate| candidate.id == **id))
+        .map(|id| Candidate::plain(id.clone(), id.clone(), Some(tr("No longer available").to_string())))
+        .collect();
+    offered.extend(gone);
     offered
 }
 
@@ -1241,11 +1307,41 @@ fn selection_groups<'a>(
     known: &Known,
     column: Option<f32>,
 ) -> Vec<Element<'a, Message>> {
-    Pick::ALL
+    let mut groups = Vec::new();
+    for pick in Pick::ALL.into_iter().filter(|pick| rights.area(pick.area()).level != Level::NoAccess) {
+        groups.push(selection_group(&state.repo_input, pick, rights, known, column));
+        // Right behind the address books: the ones that are never part of "All" (issue #353).
+        if pick == Pick::AddressBooks {
+            groups.extend(hidden_group(rights, known, column));
+        }
+    }
+    groups
+}
+
+/// "Hidden address books" (issue #353): the system address book and "Recently contacted", which "All"
+/// never includes – each is ticked by name. `None` while the client has no address books to see
+/// and none of these exist.
+fn hidden_group<'a>(rights: &Rights, known: &Known, column: Option<f32>) -> Option<Element<'a, Message>> {
+    let offered = hidden_candidates(known, rights);
+    if offered.is_empty() {
+        return None;
+    }
+    let rows = offered
         .into_iter()
-        .filter(|pick| rights.area(pick.area()).level != Level::NoAccess)
-        .map(|pick| selection_group(&state.repo_input, pick, rights, known, column))
-        .collect()
+        .map(|candidate| {
+            let ticked = rights.hidden_address_books.contains(&candidate.id);
+            let Candidate { id, label, detail, .. } = candidate;
+            let switch_id = id.clone();
+            let switch = toggler(ticked)
+                .size(style::CHECK_SIZE)
+                .style(style::toggler)
+                .on_toggle(move |on| Message::HiddenBook(switch_id.clone(), on));
+            let row = setting_row(None, label, detail, in_column(switch, column));
+            pressable(row, Some(Message::HiddenBook(id, !ticked)))
+        })
+        .collect();
+    let footer = tr("Never included in “All”. Switch each one on by name.");
+    Some(widgets::group(tr("Hidden address books"), rows, Some(footer.to_string())))
 }
 
 /// [`Part::Selections`] while no area is open: one quiet row that says where the choice comes from.
@@ -1330,6 +1426,7 @@ fn selection_words(pick: Pick, selection: &Selection) -> String {
     let (all, one, many) = match pick {
         Pick::Calendars => (tr("all calendars"), tr("1 calendar"), "{n} calendars"),
         Pick::TaskLists => (tr("all lists"), tr("1 list"), "{n} lists"),
+        Pick::AddressBooks => (tr("all address books"), tr("1 address book"), "{n} address books"),
         Pick::GithubRepos => (tr("all repositories"), tr("1 repository"), "{n} repositories"),
         Pick::InboxSources => (tr("all sources"), tr("1 source"), "{n} sources"),
         Pick::MailAccounts => (tr("all mail accounts"), tr("1 mail account"), "{n} mail accounts"),
@@ -1717,6 +1814,7 @@ fn candidate_row<'a>(
         (Pick::Calendars | Pick::TaskLists, None) => Some(Space::new().width(space::s()).into()),
         (
             Pick::GithubRepos
+            | Pick::AddressBooks
             | Pick::InboxSources
             | Pick::MailAccounts
             | Pick::ChatAccounts
@@ -1754,6 +1852,7 @@ mod tests {
         clients: Vec<ClientInfo>,
         calendars: Vec<Collection>,
         task_lists: Vec<Collection>,
+        address_books: Vec<torro_contacts::AddressBook>,
         sources: Vec<SourceInfo>,
         accounts: Vec<AccountInfo>,
         tools: Vec<ToolInfo>,
@@ -1765,6 +1864,7 @@ mod tests {
             Known {
                 calendars: &self.calendars,
                 task_lists: &self.task_lists,
+                address_books: &self.address_books,
                 sources: &self.sources,
                 clients: &self.clients,
                 accounts: &self.accounts,
@@ -1878,6 +1978,20 @@ mod tests {
         Collection { id: id.into(), name: name.into(), kind, color: Some("#5B8CFF".into()), writable: true, source }
     }
 
+    /// An address book of Anna's Nextcloud, as `contacts.list_address_books` lists it.
+    fn book(name: &str, display_name: &str, count: u32, hidden: bool) -> torro_contacts::AddressBook {
+        torro_contacts::AddressBook {
+            id: format!("nextcloud:anna@cloud.example.org/{name}"),
+            account: "nextcloud:anna@cloud.example.org".into(),
+            name: name.into(),
+            display_name: display_name.into(),
+            count,
+            writable: !hidden,
+            hidden_by_default: hidden,
+            untrusted: true,
+        }
+    }
+
     fn fixture() -> Fixture {
         Fixture {
             clients: vec![
@@ -1897,6 +2011,12 @@ mod tests {
                     CollectionKind::Todos,
                     &["is:open repo:anna/torro label:bug -repo:anna/old", "org:acme is:pr"],
                 ),
+            ],
+            address_books: vec![
+                book("contacts", "Contacts", 124, false),
+                book("team", "Team", 38, false),
+                book("z-server-generated--system", "System address book", 1204, true),
+                book("z-app-generated--contactsinteraction--recent", "Recently contacted", 57, true),
             ],
             sources: vec![SourceInfo { source: SourceRef::script("nightly"), open: 1, muted: false, health: None }],
             accounts: vec![
@@ -2610,6 +2730,128 @@ mod tests {
         if english {
             assert_eq!(reading, Some(segment_slot()));
         }
+    }
+
+    const BOOK: &str = "nextcloud:anna@cloud.example.org/contacts";
+    const TEAM: &str = "nextcloud:anna@cloud.example.org/team";
+    const SYSTEM: &str = "nextcloud:anna@cloud.example.org/z-server-generated--system";
+    const RECENT: &str = "nextcloud:anna@cloud.example.org/z-app-generated--contactsinteraction--recent";
+
+    /// Issue #353: switching "Contacts" on ticks the address books the suite shows – never a hidden
+    /// one – also for rights that never had the area (an assistant from before it), and "Selected"
+    /// from "All" starts without the hidden ones.
+    #[test]
+    fn address_books_switched_on_tick_only_the_visible_ones() {
+        let fixture = fixture();
+        let mut repo_input = String::new();
+        let mut rights = Rights::none();
+        let known = fixture.known();
+        assert!(change_rights(
+            &mut rights,
+            "codex",
+            Message::Level(Area::Contacts, Level::Read),
+            &known,
+            &mut repo_input
+        ));
+        assert_eq!(rights.address_books, Selection::Only(vec![BOOK.into(), TEAM.into()]));
+        assert!(rights.hidden_address_books.is_empty());
+
+        let mut all = Rights::assistant();
+        all.address_books = Selection::All;
+        assert!(change_rights(
+            &mut all,
+            ASSISTANT_CLIENT,
+            Message::All(Pick::AddressBooks, false),
+            &known,
+            &mut repo_input
+        ));
+        assert_eq!(all.address_books, Selection::Only(vec![BOOK.into(), TEAM.into()]), "no hidden one");
+
+        // An assistant of before: the area `contacts` has no entry, the selection is empty.
+        let mut old = Rights::assistant();
+        old.areas.remove(&Area::Contacts);
+        assert_eq!(old.area(Area::Contacts).level, Level::NoAccess);
+        assert!(change_rights(
+            &mut old,
+            ASSISTANT_CLIENT,
+            Message::Level(Area::Contacts, Level::Write),
+            &known,
+            &mut repo_input
+        ));
+        assert_eq!(old.address_books, Selection::Only(vec![BOOK.into(), TEAM.into()]));
+    }
+
+    /// Issue #353: a switch of a hidden book changes only `hidden_address_books`, by name; a book
+    /// the suite shows or one nobody knows is not taken, and "All" never holds a hidden one.
+    #[test]
+    fn hidden_address_books_are_ticked_one_by_one_and_saved() {
+        let fixture = fixture();
+        let mut state = State::default();
+        let books = |on: bool, id: &str| Message::HiddenBook(id.into(), on);
+        send(&mut state, &fixture, "c1", Message::Level(Area::Contacts, Level::Read));
+        send(&mut state, &fixture, "c1", Message::All(Pick::AddressBooks, true));
+        send(&mut state, &fixture, "c1", books(true, RECENT));
+        send(&mut state, &fixture, "c1", books(true, BOOK));
+        send(&mut state, &fixture, "c1", books(true, "nextcloud:anna@cloud.example.org/unknown"));
+        let (id, rights) = saved(&mut state, &fixture);
+        assert_eq!(id, "c1");
+        assert_eq!(rights.hidden_address_books, [RECENT]);
+        assert_eq!(rights.address_books, Selection::All, "the hidden book is no part of All");
+
+        send(&mut state, &fixture, "c1", books(true, SYSTEM));
+        send(&mut state, &fixture, "c1", books(false, RECENT));
+        let (_, rights) = saved(&mut state, &fixture);
+        assert_eq!(rights.hidden_address_books, [SYSTEM]);
+
+        // A book the core no longer lists stays to be unticked.
+        let mut rights = Rights::none();
+        rights.hidden_address_books = vec!["nextcloud:anna@cloud.example.org/gone".into()];
+        let offered = hidden_candidates(&fixture.known(), &rights);
+        assert_eq!(offered.len(), 3);
+        assert_eq!(offered[2].detail.as_deref(), Some(tr("No longer available")));
+        let mut repo_input = String::new();
+        let gone = Message::HiddenBook("nextcloud:anna@cloud.example.org/gone".into(), false);
+        assert!(change_rights(&mut rights, "codex", gone, &fixture.known(), &mut repo_input));
+        assert!(rights.hidden_address_books.is_empty());
+    }
+
+    /// Issue #353: the address books offered are the visible ones, each with its account and how many
+    /// contacts it holds; the hidden ones have a group of their own.
+    #[test]
+    fn address_books_offer_the_visible_ones_with_account_and_count() {
+        let fixture = fixture();
+        let offered = candidates(Pick::AddressBooks, &fixture.known(), &Selection::All);
+        let ids: Vec<&str> = offered.iter().map(|candidate| candidate.id.as_str()).collect();
+        assert_eq!(ids, [BOOK, TEAM]);
+        let contacts = trf("{n} contacts", &[("n", &"124")]);
+        assert_eq!(offered[0].label, "Contacts");
+        assert_eq!(offered[0].detail, Some(format!("anna@cloud.example.org · {contacts}")));
+        let hidden = hidden_candidates(&fixture.known(), &Rights::none());
+        let ids: Vec<&str> = hidden.iter().map(|candidate| candidate.id.as_str()).collect();
+        assert_eq!(ids, [SYSTEM, RECENT]);
+
+        let mut rights = Rights::none();
+        assert_eq!(selection_words(Pick::AddressBooks, &Selection::All), tr("all address books"));
+        rights.address_books = Selection::Only(vec![BOOK.into()]);
+        assert_eq!(selection_words(Pick::AddressBooks, &rights.address_books), tr("1 address book"));
+        rights.address_books = Selection::Only(vec![BOOK.into(), TEAM.into()]);
+        assert_eq!(selection_words(Pick::AddressBooks, &rights.address_books), trf("{n} address books", &[("n", &2)]));
+    }
+
+    /// Issue #353: both groups show while "Contacts" has a level and not at "No access"; the hidden
+    /// one only where a hidden book exists.
+    #[test]
+    fn the_address_book_groups_show_with_the_area_open() {
+        let fixture = fixture();
+        let state = State::default();
+        let mut rights = Rights::none();
+        assert!(selection_groups(&state, &rights, &fixture.known(), None).is_empty());
+        rights.areas.insert(Area::Contacts, AreaRights { level: Level::Read, admin: false });
+        assert_eq!(selection_groups(&state, &rights, &fixture.known(), None).len(), 2, "books and hidden books");
+        let bare = Known { address_books: &fixture.address_books[..2], ..fixture.known() };
+        assert_eq!(selection_groups(&state, &rights, &bare, None).len(), 1, "no hidden book, no group");
+        rights.hidden_address_books = vec![RECENT.into()];
+        assert_eq!(selection_groups(&state, &rights, &bare, None).len(), 2, "one that is named but gone");
     }
 
     #[test]

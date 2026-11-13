@@ -605,6 +605,10 @@ impl Host {
         if providers.contains(&Group::Ntfy) {
             wanted.push(Request::ListSources);
         }
+        // The page of a Nextcloud account counts its address books (issue #353).
+        if providers.contains(&Group::Nextcloud) {
+            wanted.push(Request::ListAddressBooks { account: None });
+        }
         let new: Vec<Request> = wanted.into_iter().filter(|request| !self.wanted.contains(request)).collect();
         // Shown at once from the app's memory only when it holds these too.
         self.loaded = self.loaded && new.iter().all(|request| self.answered.contains(request));
