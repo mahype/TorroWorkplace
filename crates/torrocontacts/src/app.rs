@@ -223,7 +223,7 @@ pub enum Message {
     // -- The contact
     Fetched(String, Result<Contact, ContactsError>),
     /// The groups of a book, for the suggestions of the open contact (`contacts.list_groups`).
-    Groups(String, Vec<String>),
+    Groups(String, Option<Vec<String>>),
     /// "Retry" after the open contact could not be fetched.
     Refetch,
     Close,
@@ -533,7 +533,7 @@ impl App {
         let mut names: Vec<String> = Vec::new();
         for contact in self.contacts.iter().filter(|c| c.book == id) {
             for group in contact.groups.iter().map(|g| g.trim()).filter(|g| !g.is_empty()) {
-                if !names.iter().any(|known| known.eq_ignore_ascii_case(group)) {
+                if !names.iter().any(|known| same_group(known, group)) {
                     names.push(group.to_owned());
                 }
             }
@@ -547,10 +547,7 @@ impl App {
     pub fn book_of_group(&self, name: &str) -> Option<String> {
         let holds = |book: &AddressBook| {
             book.writable
-                && self
-                    .contacts
-                    .iter()
-                    .any(|c| c.book == book.id && c.groups.iter().any(|g| g.trim().eq_ignore_ascii_case(name)))
+                && self.contacts.iter().any(|c| c.book == book.id && c.groups.iter().any(|g| same_group(g, name)))
         };
         let shown = match &self.view {
             View::Book(id) | View::Group(id, _) => self.book(id).filter(|b| holds(b)),
@@ -578,7 +575,7 @@ impl App {
             View::Group(book, name) => self
                 .contacts
                 .iter()
-                .filter(|c| &c.book == book && c.groups.iter().any(|g| g.trim().eq_ignore_ascii_case(name)))
+                .filter(|c| &c.book == book && c.groups.iter().any(|g| same_group(g, name)))
                 .filter(passes)
                 .collect(),
         }
@@ -730,8 +727,13 @@ impl App {
             Message::Photos(batch) => {
                 self.photos_busy = false;
                 for (id, version, bytes) in batch {
-                    let picture = bytes.as_deref().and_then(picture);
-                    self.photos.insert(id, (version, picture));
+                    // A picture the contact no longer has (a load came meanwhile) is not kept.
+                    let current =
+                        self.summary(&id).and_then(|c| c.photo.as_ref()).is_some_and(|p| p.version == version);
+                    if current {
+                        let picture = bytes.as_deref().and_then(picture);
+                        self.photos.insert(id, (version, picture));
+                    }
                 }
                 return self.fetch_photos();
             }
@@ -814,7 +816,12 @@ impl App {
                         self.notify(failed(&err));
                     }
                 }
-                self.cursor = self.rows().first().cloned();
+                // The cursor stays where it is while its contact is still found (a search asked again after
+                // a load); else it goes to the first row.
+                let rows = self.rows();
+                if !self.cursor.as_ref().is_some_and(|cursor| rows.contains(cursor)) {
+                    self.cursor = rows.first().cloned();
+                }
             }
             Message::Hover(id) => self.hover = id,
             Message::Open(id) => {
@@ -842,7 +849,9 @@ impl App {
             }
 
             Message::Fetched(id, result) => return self.fetched(id, result),
-            Message::Groups(book, names) => {
+            // A failure leaves the suggestions to the groups of the loaded contacts.
+            Message::Groups(_, None) => {}
+            Message::Groups(book, Some(names)) => {
                 if let Some(detail) = &mut self.detail
                     && detail.contact.as_ref().is_some_and(|c| c.book == book)
                 {
@@ -889,6 +898,9 @@ impl App {
                 });
             }
             Message::Favorited(id, favorite, result) => {
+                if !self.is_open(&id) {
+                    return self.answered_elsewhere(result.err());
+                }
                 self.set_busy(false);
                 match result {
                     Ok(()) => {
@@ -918,12 +930,12 @@ impl App {
                     Message::Moved(id.clone(), result)
                 });
             }
-            // An answer about a contact no longer open only brings the list up to date.
-            Message::Moved(id, _) | Message::Deleted(id, _) | Message::Changed(id, _) | Message::Resolved(id, _)
-                if !self.is_open(&id) =>
-            {
-                return self.load();
-            }
+            // An answer about a contact no longer open brings the list up to date; a failure is said all
+            // the same, so nothing that did not happen passes for done.
+            Message::Moved(id, result) if !self.is_open(&id) => return self.answered_elsewhere(result.err()),
+            Message::Deleted(id, result) if !self.is_open(&id) => return self.answered_elsewhere(result.err()),
+            Message::Changed(id, result) if !self.is_open(&id) => return self.answered_elsewhere(result.err()),
+            Message::Resolved(id, result) if !self.is_open(&id) => return self.answered_elsewhere(result.err()),
             Message::Moved(_, result) => {
                 self.set_busy(false);
                 match result {
@@ -1018,6 +1030,10 @@ impl App {
                         let picture = self.large_photo(&contact);
                         if let Some(detail) = &mut self.detail {
                             detail.error = None;
+                            // A form open meanwhile (a new picture while editing) saves on the new version.
+                            if let Some(draft) = &mut detail.draft {
+                                draft.etag = contact.etag.clone();
+                            }
                             detail.contact = Some(contact);
                         }
                         return Task::batch([self.load(), picture]);
@@ -1064,6 +1080,8 @@ impl App {
                     Err(err) => self.change_failed(&err),
                 }
             }
+            // "Recent" shows the contact just used at once.
+            Message::Used if self.view == View::Recent && !self.loading => return self.load(),
             Message::Used => {}
 
             Message::Edit => return self.edit(),
@@ -1115,7 +1133,7 @@ impl App {
                 }
             }
             Message::Done => return self.done(),
-            Message::Saved(id, _) if !self.is_open(&id) => return self.load(),
+            Message::Saved(id, result) if !self.is_open(&id) => return self.answered_elsewhere(result.err()),
             Message::Saved(_, result) => return self.saved(result),
             Message::Refetched(result) => {
                 if let (Ok(contact), Some(detail)) = (result, &mut self.detail)
@@ -1130,7 +1148,12 @@ impl App {
             Message::Created(group, result) => match result {
                 Ok(created) => {
                     let id = created.id.clone();
-                    if let Some(detail) = &mut self.detail {
+                    // Only the form that wrote it takes the new contact; one opened since stays as it is.
+                    let writing = self
+                        .detail
+                        .as_ref()
+                        .is_some_and(|d| d.id.is_none() && d.draft.as_ref().is_some_and(|d| d.saving));
+                    if let Some(detail) = self.detail.as_mut().filter(|_| writing) {
                         detail.id = Some(id.clone());
                         detail.contact = Some(created.clone());
                         detail.draft = None;
@@ -1139,7 +1162,9 @@ impl App {
                     self.notify(tr("Contact created"));
                     let mut tasks = vec![self.load(), self.mark_used(id.clone())];
                     if let Some(group) = group {
-                        self.set_busy(true);
+                        if writing {
+                            self.set_busy(true);
+                        }
                         let backend = self.backend.clone();
                         let etag = created.etag.clone().unwrap_or_default();
                         let asked = id.clone();
@@ -1249,6 +1274,15 @@ impl App {
     }
 
     /// The contact open in the panel, once fetched.
+    /// The answer to a change of a contact that is no longer open: the list loads again, and a failure is
+    /// said in the notice.
+    fn answered_elsewhere(&mut self, err: Option<ContactsError>) -> Task<Message> {
+        if let Some(err) = err {
+            self.notify(failed(&err));
+        }
+        self.load()
+    }
+
     /// Whether the contact `id` is the one open in the panel.
     pub fn is_open(&self, id: &str) -> bool {
         self.detail.as_ref().and_then(|d| d.id.as_deref()) == Some(id)
@@ -1350,9 +1384,12 @@ impl App {
         let backend = self.backend.clone();
         let asked = book.clone();
         Task::perform(async move { backend.list_groups(Some(asked)).await }, move |result| {
-            let mut names: Vec<String> = result.unwrap_or_default().into_iter().map(|g| g.name).collect();
-            names.sort_by_key(|n| n.to_lowercase());
-            names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+            let names = result.ok().map(|groups| {
+                let mut names: Vec<String> = groups.into_iter().map(|g| g.name).collect();
+                names.sort_by_key(|n| n.to_lowercase());
+                names.dedup_by(|a, b| same_group(a, b));
+                names
+            });
             Message::Groups(book.clone(), names)
         })
     }
@@ -1598,6 +1635,12 @@ impl App {
 pub fn picture(bytes: &[u8]) -> Option<Handle> {
     let decoded = image::load_from_memory(bytes).ok()?.to_rgba8();
     Some(Handle::from_rgba(decoded.width(), decoded.height(), decoded.into_raw()))
+}
+
+/// Whether two group names are one group: the same without case (Unicode, as the list's heads compare
+/// them) and the spaces around them.
+pub fn same_group(a: &str, b: &str) -> bool {
+    a.trim().to_lowercase() == b.trim().to_lowercase()
 }
 
 /// What "Copy" of a row puts on the clipboard: the name, the main mail address and number, a line each.

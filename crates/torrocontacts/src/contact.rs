@@ -329,7 +329,7 @@ pub fn suggestions(known: &[String], on: &[String], typed: &str) -> Vec<String> 
     let typed = typed.trim().to_lowercase();
     known
         .iter()
-        .filter(|name| !on.iter().any(|g| g.eq_ignore_ascii_case(name)))
+        .filter(|name| !on.iter().any(|g| crate::app::same_group(g, name)))
         .filter(|name| typed.is_empty() || name.to_lowercase().contains(&typed))
         .take(5)
         .cloned()

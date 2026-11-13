@@ -204,7 +204,9 @@ impl App {
                             let count = self
                                 .contacts
                                 .iter()
-                                .filter(|c| c.book == book.id && c.groups.iter().any(|g| g.trim() == name))
+                                .filter(|c| {
+                                    c.book == book.id && c.groups.iter().any(|g| crate::app::same_group(g, &name))
+                                })
                                 .count();
                             let view = View::Group(book.id.clone(), name.clone());
                             let active = self.view == view;
@@ -633,10 +635,11 @@ impl App {
             Menu::Row(id, at) => {
                 let contact = self.summary(id)?;
                 let mut items = vec![MenuItem::new(Mark::Icon(Icon::User), tr("Open"), Message::Open(id.clone()))];
-                if contact.email.is_some() {
+                // Only what can open: an address with "@", a number with digits.
+                if contact.email.as_deref().and_then(contact::mail_link).is_some() {
                     items.push(MenuItem::new(Mark::Icon(Icon::Mail), tr("Mail"), Message::QuickMail(id.clone())));
                 }
-                if contact.phone.is_some() {
+                if contact.phone.as_deref().and_then(contact::tel_link).is_some() {
                     items.push(MenuItem::new(Mark::Icon(Icon::Phone), tr("Call"), Message::QuickCall(id.clone())));
                 }
                 items.push(MenuItem::new(Mark::Icon(Icon::Copy), tr("Copy"), Message::QuickCopy(id.clone())));

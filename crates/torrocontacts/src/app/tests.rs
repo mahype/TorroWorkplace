@@ -323,3 +323,44 @@ async fn groups_are_one_without_case_and_new_contacts_go_where_the_group_is() {
     assert_eq!(groups.iter().filter(|g| g.eq_ignore_ascii_case("work")).count(), 1, "{groups:?}");
     assert_eq!(app.book_of_group("Work").as_deref(), Some(torro_contacts::demo::CONTACTS));
 }
+
+#[tokio::test]
+async fn a_search_asked_again_keeps_the_cursor() {
+    let mut app = loaded(&["--demo"]).await;
+    let _ = app.update(Message::Search("an".into()));
+    let ids = backend::search(app.backend.clone(), "an".into()).await;
+    let _ = app.update(Message::Found("an".into(), ids.clone()));
+    let _ = app.update(Message::Key(Press::Down));
+    let _ = app.update(Message::Key(Press::Down));
+    let cursor = app.cursor.clone();
+    assert_ne!(cursor, app.rows().first().cloned());
+    let _ = app.update(Message::Found("an".into(), ids));
+    assert_eq!(app.cursor, cursor);
+}
+
+#[tokio::test]
+async fn a_late_created_answer_leaves_another_panel_alone() {
+    let mut app = loaded(&["--demo"]).await;
+    let _ = app.update(Message::NewContact(None, None));
+    let _ = app.update(Message::Draft(edit::Msg::Text(edit::Field::Given, "Max".into())));
+    let _ = app.update(Message::Done);
+    let fields = app.detail.as_ref().and_then(|d| d.draft.as_ref()).map(|d| d.changes()).expect("form");
+    let created = app.backend.create_contact(torro_contacts::demo::CONTACTS.into(), fields).await;
+    let _ = app.update(Message::Escape);
+    let anna = opened(&mut app, "demo-01").await;
+    let _ = app.update(Message::Created(None, created));
+    assert!(app.is_open(&anna), "Anna stays open");
+}
+
+#[tokio::test]
+async fn a_new_picture_while_editing_moves_the_form_to_the_new_version() {
+    let mut app = loaded(&["--demo"]).await;
+    let id = opened(&mut app, "demo-01").await;
+    let _ = app.update(Message::Edit);
+    let etag = app.open_contact().and_then(|c| c.etag.clone()).unwrap_or_default();
+    let png = torro_contacts::demo::solid_png(64, [10, 20, 30]);
+    let changed = app.backend.set_photo(id.clone(), etag, Some(png)).await;
+    let new = changed.as_ref().ok().and_then(|c| c.etag.clone());
+    let _ = app.update(Message::Changed(id, changed));
+    assert_eq!(app.detail.as_ref().and_then(|d| d.draft.as_ref()).and_then(|d| d.etag.clone()), new);
+}

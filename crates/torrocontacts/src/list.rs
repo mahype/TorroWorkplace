@@ -17,7 +17,7 @@
 //! 900 the number (the mail address stays, on one line, so a medium window is not half empty), below 600
 //! the mail address too. Moving the pointer over a row shows Mail, Call and Copy – each only with a value.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 
 use iced::widget::image::Handle;
 use iced::widget::text::Wrapping;
@@ -144,7 +144,13 @@ pub fn heads<'a>(contacts: &[&'a ContactSummary], by: GroupBy, books: &[AddressB
             let mut named: BTreeMap<String, (String, Vec<&'a ContactSummary>)> = BTreeMap::new();
             let mut none = Vec::new();
             for contact in contacts {
-                let names: BTreeSet<&str> = contact.groups.iter().map(|g| g.trim()).filter(|g| !g.is_empty()).collect();
+                // One head per group without case: "Work" and "work" of one contact count once.
+                let mut names: Vec<&str> = Vec::new();
+                for group in contact.groups.iter().map(|g| g.trim()).filter(|g| !g.is_empty()) {
+                    if !names.iter().any(|known| known.to_lowercase() == group.to_lowercase()) {
+                        names.push(group);
+                    }
+                }
                 if names.is_empty() {
                     none.push(*contact);
                 }

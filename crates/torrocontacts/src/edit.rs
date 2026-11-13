@@ -315,13 +315,16 @@ impl Draft {
             Name { given: self.given.trim().to_owned(), family: self.family.trim().to_owned(), ..base.name.clone() };
         if name != base.name {
             // The name shown follows the name, unless the person gave it one of its own.
-            let own = !base.display_name.trim().is_empty() && base.display_name.trim() != base.name.full();
-            if !own {
+            if !self.own_name() {
                 fields.display_name = Some(shown_name(&name, self.org.trim()));
             }
             fields.name = Some(name);
-        } else if base.display_name.trim().is_empty() && !self.org.trim().is_empty() && base.name.is_empty() {
-            fields.display_name = Some(self.org.trim().to_owned());
+        } else if base.name.is_empty() && !self.org.trim().is_empty() && !self.own_name() {
+            // A company without a person's name is shown by the company, also after it is renamed.
+            let org = self.org.trim().to_owned();
+            if org != base.display_name.trim() {
+                fields.display_name = Some(org);
+            }
         }
         let text = |now: &str, before: &Option<String>| {
             let now = now.trim();
@@ -357,6 +360,14 @@ impl Draft {
             fields.birthday = Some(date.to_string());
         }
         fields
+    }
+
+    /// Whether the contact was given a name of its own to show: neither its name nor (without one) its
+    /// company.
+    fn own_name(&self) -> bool {
+        let base = &self.base;
+        let shown = base.display_name.trim();
+        !shown.is_empty() && shown != base.name.full() && Some(shown) != base.org.as_deref().map(str::trim)
     }
 
     /// Whether the form holds nothing a new contact could be made of.
@@ -797,6 +808,19 @@ mod tests {
         let mut draft = Draft::of(&own);
         draft.update(Msg::Text(Field::Family, "Klein".into()));
         assert_eq!(draft.changes().display_name, None, "a name of its own stays");
+    }
+
+    #[test]
+    fn a_company_keeps_its_name_shown_when_renamed() {
+        let acme = Contact {
+            display_name: "Acme".into(),
+            org: Some("Acme".into()),
+            etag: Some("\"1\"".into()),
+            ..Contact::default()
+        };
+        let mut draft = Draft::of(&acme);
+        draft.update(Msg::Text(Field::Org, "Acme Ltd".into()));
+        assert_eq!(draft.changes().display_name.as_deref(), Some("Acme Ltd"));
     }
 
     #[test]
