@@ -3784,12 +3784,12 @@ fn detail<'a>(
             let sources = sources_moved(state, account, data);
             match wide {
                 true => page_blocks(vec![
-                    vec![status, collections, contacts, sources],
+                    vec![status, collections, sources, contacts],
                     vec![connection_group(account)],
                     vec![rights],
                 ]),
                 false => {
-                    page_blocks(vec![vec![status, rights, collections, contacts, sources, connection_group(account)]])
+                    page_blocks(vec![vec![status, rights, collections, sources, contacts, connection_group(account)]])
                 }
             }
         })
