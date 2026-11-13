@@ -241,8 +241,8 @@ pub fn normalize_host(host: &str) -> String {
 }
 
 /// The provider of content from `host` ([`normalize_host`] is applied): a [`KNOWN`] service when the host is
-/// one of its domains or below one, an IP address as itself, else its registrable domain. `None` for a host
-/// that has none (`localhost`, `co.uk`, empty).
+/// one of its domains or below one, an IP address or a single label (`jira`) as itself, else its registrable
+/// domain. `None` for a host that has none (a bare public suffix such as `co.uk`, empty).
 pub fn provider_of(host: &str) -> Option<Provider> {
     let host = normalize_host(host);
     if host.is_empty() {
@@ -256,10 +256,10 @@ pub fn provider_of(host: &str) -> Option<Provider> {
         let key = ip.to_string();
         return Some(Provider { name: key.clone(), key });
     }
-    // Only a name of more than one label has a registrable domain; `psl` would take a single label for one
-    // under its catch-all rule.
+    // A single label (`jira`, `wiki`: a name of the local network, which the chat's server may reach) is its
+    // own provider; `psl` would take it for a public suffix under its catch-all rule.
     if !host.contains('.') {
-        return None;
+        return valid_key(&host).then(|| Provider { key: host.clone(), name: host });
     }
     let domain = psl::domain_str(&host)?;
     valid_key(domain).then(|| Provider { key: domain.to_string(), name: domain.to_string() })
@@ -334,8 +334,8 @@ mod tests {
         // An address is its own provider.
         assert_eq!(provider_of("203.0.113.7"), provider("203.0.113.7", "203.0.113.7"));
         assert_eq!(provider_of("[2001:db8::1]"), provider("2001:db8::1", "2001:db8::1"));
-        // No provider: a single label, a bare suffix, nothing.
-        assert_eq!(provider_of("localhost"), None);
+        // A name of the local network is its own provider; a bare suffix and nothing have none.
+        assert_eq!(provider_of("jira"), provider("jira", "jira"));
         assert_eq!(provider_of("co.uk"), None);
         assert_eq!(provider_of(""), None);
     }
@@ -348,7 +348,8 @@ mod tests {
             privacy.decide("i.ytimg.com"),
             Decision::Ask(Provider { key: "youtube".into(), name: "YouTube".into() })
         );
-        assert_eq!(privacy.decide("localhost"), Decision::Skip, "no provider, nothing to ask about");
+        assert_eq!(privacy.decide("co.uk"), Decision::Skip, "no provider, nothing to ask about");
+        assert_eq!(privacy.decide("wiki"), Decision::Ask(Provider { key: "wiki".into(), name: "wiki".into() }));
         privacy.providers.insert("youtube".into(), ProviderChoice::Allowed);
         privacy.providers.insert("example.org".into(), ProviderChoice::Blocked);
         assert_eq!(privacy.decide("youtu.be"), Decision::Load);
@@ -391,7 +392,7 @@ mod tests {
     #[test]
     fn a_mail_loads_what_the_level_and_the_list_allow() {
         let hosts: BTreeSet<String> =
-            ["i.ytimg.com", "img.mailchimp.com", "track.mailchimp.com", "cdn.example.org", "localhost"]
+            ["i.ytimg.com", "img.mailchimp.com", "track.mailchimp.com", "cdn.example.org", "co.uk"]
                 .into_iter()
                 .map(String::from)
                 .collect();

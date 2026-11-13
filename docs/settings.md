@@ -807,7 +807,8 @@ Oberflächen fragen nur nach.
   (danach wird wieder gefragt). Leer: „Providers appear here when you allow or block one in Chat or Mail.“ Höchstens
   1000 Anbieter.
 - **Anbieter:** der Server, der vom Laden erfährt, nach seiner registrierbaren Domain (`news.mailchimp.com` →
-  `mailchimp.com`, Public Suffix List), eine IP-Adresse als sie selbst; bekannte Dienste mit mehreren Domains stehen
+  `mailchimp.com`, Public Suffix List), eine IP-Adresse oder ein Name ohne Punkt aus dem eigenen Netz (`jira`) als
+  sie selbst; bekannte Dienste mit mehreren Domains stehen
   unter einem Namen (YouTube: `youtube.com`, `youtu.be`, `youtube-nocookie.com`, `ytimg.com`). In der Mail zählt der
   Server der Bilder, nicht der Absender.
 - **Rückfrage an der Stelle des Inhalts:** „Show once“ (nur dieser Inhalt, nichts wird gespeichert), „Always allow
