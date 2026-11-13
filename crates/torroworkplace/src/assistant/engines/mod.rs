@@ -533,7 +533,7 @@ impl Running {
 
     /// Adds `content` while this run is the conversation's running answer; `last` ends it.
     async fn add(&self, content: EntryContent, last: bool) -> bool {
-        self.assistant.add_to_run(&self.job.conversation, self.job.run, content, last).await
+        self.assistant.add_to_run(&self.job.conversation, self.job.run, content, last, None).await
     }
 
     /// Ends the run with an error entry.

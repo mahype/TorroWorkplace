@@ -13175,8 +13175,14 @@ impl crate::assistant::Host for Core {
             };
             let off = self.models_off_message(engine).await;
             let off = || torro_core::ai::AiError::NotFound(off);
+            // The context window of the model chosen (issue #701), as the list says; the list moves into the choice.
+            let windows: Vec<(String, Option<u64>)> = listed
+                .as_deref()
+                .map(|models| models.iter().map(|listed| (listed.id.clone(), listed.context)).collect())
+                .unwrap_or_default();
             let (model, place) = crate::assistant::ModelAccess::choose_on(listed, model, asked_on, place, off)?;
-            Ok(crate::assistant::ModelAccess { provider, model, place })
+            let context = windows.into_iter().find(|(id, _)| *id == model).and_then(|(_, context)| context);
+            Ok(crate::assistant::ModelAccess { provider, model, place, context })
         })
     }
 
@@ -30569,7 +30575,7 @@ mod tests {
             Box::pin(async move {
                 let models = torro_core::ai::Provider::models(&provider).await;
                 let (model, place) = ModelAccess::choose(models, model, |_| Place::Local)?;
-                Ok(ModelAccess { provider: Box::new(provider), model, place })
+                Ok(ModelAccess { provider: Box::new(provider), model, place, context: None })
             })
         }
 
@@ -30687,7 +30693,7 @@ mod tests {
         tools: Option<crate::tools::Tools>,
     ) -> (Arc<Core>, Arc<ScriptedCore>, String, String) {
         let keys = MemoryTokens::default();
-        let limits = Limits { max_steps: 6, approval_poll: std::time::Duration::from_millis(5) };
+        let limits = Limits { max_steps: 6, small_steps: 6, approval_poll: std::time::Duration::from_millis(5) };
         let assistant = crate::assistant::tests::assistant_in(dir, std::time::Duration::ZERO).with_limits(limits);
         let mut core = core_with_ai(dir, &keys, Vec::new()).with_assistant(assistant);
         if let Some(tools) = tools {
@@ -30966,7 +30972,7 @@ mod tests {
             says("The tool is switched off."),
         ]);
         let keys = MemoryTokens::default();
-        let limits = Limits { max_steps: 6, approval_poll: std::time::Duration::from_millis(5) };
+        let limits = Limits { max_steps: 6, small_steps: 6, approval_poll: std::time::Duration::from_millis(5) };
         let assistant =
             crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO).with_limits(limits);
         let core =
@@ -31072,7 +31078,7 @@ mod tests {
         let pdf = serde_json::json!({"title": "Packing list", "markdown": "- Socks"});
         let script = Script::new(vec![calls("tools_create_pdf", pdf), says("Done.")]);
         let keys = MemoryTokens::default();
-        let limits = Limits { max_steps: 6, approval_poll: std::time::Duration::from_millis(5) };
+        let limits = Limits { max_steps: 6, small_steps: 6, approval_poll: std::time::Duration::from_millis(5) };
         let assistant =
             crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO).with_limits(limits);
         let core =

@@ -8,8 +8,13 @@
 //! line being written. A line that does not read (cut off by a crash, from a newer core) is
 //! skipped; a file without its first line is no conversation.
 //!
+//! What a tool answered the model ([`Line::Result`], issue #701) is kept beside its tool line, so a later turn
+//! sends the model its calls with their results again. It never leaves the core: `assistant.get_conversation`
+//! shows the entries only, as a result can hold what another area's data said.
+//!
 //! Errors carry the path only for the core's own log; what goes to a client says nothing of it.
 
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -46,6 +51,9 @@ pub enum Line {
     Renamed { title: String },
     /// `assistant.pin_conversation`.
     Pinned { pinned: bool },
+    /// What the model read of the tool call whose line is the entry `seq` (issue #701): kept for later turns
+    /// ([`Conversation::results`]), never shown to a client.
+    Result { seq: u64, text: String },
 }
 
 /// One conversation as the core holds it in memory.
@@ -62,6 +70,8 @@ pub struct Conversation {
     pub bot: Option<String>,
     /// The mail it is about (issue #605), fixed when it starts; `None` for every other conversation.
     pub about: Option<MailRef>,
+    /// What the model read of each tool call, by the number of its tool line (issue #701, [`Line::Result`]).
+    pub results: BTreeMap<u64, String>,
 }
 
 impl Conversation {
@@ -75,6 +85,7 @@ impl Conversation {
             entries: Vec::new(),
             bot: None,
             about: None,
+            results: BTreeMap::new(),
         }
     }
 
@@ -92,7 +103,16 @@ impl Conversation {
     fn fold(id: String, lines: impl IntoIterator<Item = Line>) -> Option<Conversation> {
         let mut lines = lines.into_iter();
         let Some(Line::Started { created, title, bot, about }) = lines.next() else { return None };
-        let mut conversation = Conversation { id, title, created, pinned: false, entries: Vec::new(), bot, about };
+        let mut conversation = Conversation {
+            id,
+            title,
+            created,
+            pinned: false,
+            entries: Vec::new(),
+            bot,
+            about,
+            results: BTreeMap::new(),
+        };
         for line in lines {
             conversation.apply(line);
         }
@@ -108,7 +128,19 @@ impl Conversation {
             Line::Entry { .. } => {}
             Line::Renamed { title } => self.title = title,
             Line::Pinned { pinned } => self.pinned = pinned,
+            // Only for a tool line it has, so a damaged file adds no result to an answer or a message.
+            Line::Result { seq, text } if self.is_tool(seq) => {
+                self.results.insert(seq, text);
+            }
+            Line::Result { .. } => {}
         }
+    }
+
+    /// Whether the entry `seq` is a tool line.
+    fn is_tool(&self, seq: u64) -> bool {
+        self.entries
+            .binary_search_by_key(&seq, |entry| entry.seq)
+            .is_ok_and(|at| matches!(self.entries[at].content, EntryContent::Tool { .. }))
     }
 
     /// The number of the newest entry, 0 without one.
@@ -375,6 +407,36 @@ mod tests {
         let line = fs::read_to_string(file(dir.path(), &about.id)).expect("the file");
         assert!(line.contains("\"about\":{\"account\":\"mail:anna@example.org\",\"id\":\"m:4\"}"), "{line}");
         assert!(!fs::read_to_string(file(dir.path(), "fedcba9876543210")).expect("old").contains("about"));
+    }
+
+    /// Issue #701: a tool line's result is kept and read back; one for an entry that is no tool line, or for a
+    /// number the conversation does not have, is dropped.
+    #[test]
+    fn results_belong_to_tool_lines_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut conversation = Conversation::new("0123456789abcdef".into(), "Hello", at(0));
+        let tool = EntryContent::Tool {
+            name: "mail.search_messages".into(),
+            input: serde_json::json!({}),
+            summary: "2 results".into(),
+            error: None,
+            lack: None,
+        };
+        let mut lines = vec![conversation.started()];
+        for content in [tool, answer("Two mails.")] {
+            let entry = conversation.next(content, at(1));
+            conversation.apply(Line::Entry { entry: entry.clone() });
+            lines.push(Line::Entry { entry });
+        }
+        for (seq, text) in [(1, "{\"messages\":[]}"), (2, "an answer"), (9, "nothing")] {
+            let line = Line::Result { seq, text: text.into() };
+            conversation.apply(line.clone());
+            lines.push(line);
+        }
+        assert_eq!(conversation.results, BTreeMap::from([(1, "{\"messages\":[]}".to_string())]));
+        append(dir.path(), &conversation.id, &lines).expect("written");
+        let read = load_all(dir.path()).expect("read");
+        assert_eq!(read, [conversation]);
     }
 
     #[test]

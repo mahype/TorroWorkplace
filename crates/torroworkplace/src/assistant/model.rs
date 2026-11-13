@@ -10,7 +10,8 @@
 //! "Automatic" among those of the same account that are on, and the answer names the model that
 //! wrote it.
 //!
-//! One answer is a loop of at most [`Limits::max_steps`] steps. Each step sends the conversation
+//! One answer is a loop of at most [`Limits::max_steps`] steps ([`Limits::small_steps`] for a small model, issue
+//! #701). Each step sends the conversation
 //! with the tools the assistant may use now ([`super::tools::allowed_with`]; rights and the tools of
 //! MCP servers, [`Host::extension_tools`], are read anew every step, so a change applies from the next
 //! one) and streams the model's text into the conversation
@@ -20,6 +21,12 @@
 //! with a key. Its answer goes back to the model shortened ([`super::tools::for_model`]); the conversation
 //! keeps a tool line with the result in a few words, and after a command that made an item a card
 //! that points at it (issue #225, [`super::cards`]).
+//!
+//! What the model read of a call is kept with its tool line (issue #701), so a later message sends the calls of
+//! earlier turns with their results again ([`history_with_results`]). Before every step the messages are kept
+//! within half of the model's context window ([`super::compact`]): older results shrink to their summary, then
+//! older steps give way to a note. The same call a third time in one answer ends it ([`REPEATS`]), so a model that
+//! goes round in circles stops.
 //!
 //! The prompt ([`prompt::system`]) carries the person's personality and the notes of the memory,
 //! read anew for every answer (task C.10). Once the conversation read anything the tools mark
@@ -45,7 +52,7 @@
 //! its next await: the model's answer stops, a waiting approval stays for the person, and a command
 //! already handed to the core runs to its end on a task of its own, so nothing stops half done.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -61,6 +68,7 @@ use torro_ipc::bots::Bot;
 use torro_ipc::extensions::ExtensionTool;
 use torro_ipc::{ApprovalState, ClientInfo, Request, Response};
 
+use super::compact;
 use super::tools::{self, FIND_TOOLS};
 use super::{Assistant, Partial, prompt};
 use torro_core::ai::Place;
@@ -433,6 +441,9 @@ pub struct ModelAccess {
     pub model: String,
     /// Where [`ModelAccess::model`] runs (task S.23).
     pub place: Place,
+    /// The context window of [`ModelAccess::model`] in tokens as the account lists it ([`AiModel::context`]);
+    /// `None` when the list does not say. The loop keeps the conversation within half of it (issue #701).
+    pub context: Option<u64>,
 }
 
 impl ModelAccess {
@@ -549,13 +560,16 @@ pub(crate) async fn workflow_choice(
 pub struct Limits {
     /// At most this many model steps per message; then the answer ends with an error entry.
     pub max_steps: usize,
+    /// [`Limits::max_steps`] for a small model ([`tools::is_small`], issue #701): it loses its way sooner, so it
+    /// stops sooner.
+    pub small_steps: usize,
     /// How often a command waiting for a person is asked about.
     pub approval_poll: Duration,
 }
 
 impl Default for Limits {
     fn default() -> Limits {
-        Limits { max_steps: 12, approval_poll: Duration::from_secs(1) }
+        Limits { max_steps: 80, small_steps: 30, approval_poll: Duration::from_secs(1) }
     }
 }
 
@@ -575,6 +589,9 @@ pub(super) struct Job {
     pub mode: Mode,
     /// The conversation's entries up to the message, which is the last.
     pub history: Vec<Entry>,
+    /// What the model read of the tool lines of `history`, by their number (issue #701): sent again with their
+    /// calls ([`history_with_results`]).
+    pub results: BTreeMap<u64, String>,
     /// The answer as it grows, shown by `assistant.get_conversation`.
     pub partial: Arc<Mutex<Partial>>,
     /// Whose client the answer runs as (task B.1).
@@ -684,6 +701,8 @@ pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: 
         untrusted,
         outside,
         said,
+        summaries: BTreeMap::new(),
+        repeated: BTreeMap::new(),
     };
     if let Err(error) = run.go().await {
         let entry = EntryContent::Error { code: error.code().into(), message: error.to_string() };
@@ -704,7 +723,8 @@ struct Answering {
     /// The notes of the memory, read when the answer started.
     memory: Vec<Note>,
     /// The conversation read data from outside the suite: a tool of an earlier turn that may have
-    /// ([`tools::may_have_read_untrusted`]; its answer is not kept, so counted when it might), an
+    /// ([`tools::may_have_read_untrusted`]; counted by its line when it might, also once its result was left out
+    /// to save room, issue #701), an
     /// answer of this one the tools marked `untrusted`, or a message a client sent ([`sent_by_a_client`],
     /// issue #305). From then on every note waits for a person (task C.11, [`Host::run`]).
     untrusted: bool,
@@ -720,7 +740,20 @@ struct Answering {
     /// address in it counts as the person's ([`by_person`]). `None` when a client sent the message, and
     /// for a bot's run for the assistant.
     said: Option<u64>,
+    /// The summary of each tool line by the id of its call (issue #701): `call_<seq>` for those of earlier turns
+    /// ([`history_with_results`]), the model's id for this answer's. What a left-out stretch names
+    /// ([`compact::compact`]).
+    summaries: BTreeMap<String, String>,
+    /// How often this answer's model called each tool with each input (issue #701, [`REPEATS`]).
+    repeated: BTreeMap<(String, String), usize>,
 }
+
+/// The window assumed when the account does not list the model's ([`ModelAccess::context`], issue #701): small
+/// enough for the default window of a local server.
+const CONTEXT: u64 = 32_000;
+
+/// The same call this many times in one answer ends it (issue #701): the model goes round in circles.
+const REPEATS: usize = 3;
 
 /// Why an answer ended early, for its error entry.
 enum Ended {
@@ -728,13 +761,15 @@ enum Ended {
     /// The model gave neither text nor a tool call.
     Empty,
     TooManySteps(usize),
+    /// The model called the tool (its catalogue name) a [`REPEATS`]th time with the same input (issue #701).
+    Repeating(String),
 }
 
 impl Ended {
     fn code(&self) -> &'static str {
         match self {
             Ended::Model(error) => error.code(),
-            Ended::Empty | Ended::TooManySteps(_) => "error",
+            Ended::Empty | Ended::TooManySteps(_) | Ended::Repeating(_) => "error",
         }
     }
 }
@@ -748,6 +783,11 @@ impl std::fmt::Display for Ended {
                 "The assistant stopped after {steps} steps without finishing. Ask again to let it go on.",
                 &[("steps", steps)],
             )),
+            Ended::Repeating(tool) => f.write_str(&trf(
+                "The assistant called {tool} three times with the same input and stopped so it does not go round in \
+                 circles. Ask again in other words to let it go on.",
+                &[("tool", tool)],
+            )),
         }
     }
 }
@@ -760,9 +800,14 @@ impl Answering {
         let access = self.host.model(&self.job.engine, self.job.model.as_deref()).await.map_err(Ended::Model)?;
         let model = access.model.clone();
         let small = tools::is_small(&model, access.place == Place::Local);
+        // A small model loses its way sooner (issue #701).
+        let steps = if small { self.limits.small_steps } else { self.limits.max_steps };
+        // Half of the window: the rest is for the answer, and the estimate is rough ([`compact::estimate`]).
+        let budget = access.context.unwrap_or(CONTEXT) / 2;
         lock(&self.job.partial).model = Some(model.clone());
         let mut messages = vec![ChatMessage::system(String::new())];
-        messages.extend(history(&self.job.history));
+        messages.extend(history_with_results(&self.job.history, &self.job.results));
+        self.summaries.extend(summaries_of(&self.job.history, &self.job.results));
         // A chat about a mail reads it first (issue #605), as a call of the model would, so the model answers the
         // person's first question with the mail before it.
         if let Some(about) = self.job.about.clone()
@@ -779,7 +824,7 @@ impl Answering {
         let now = Local::now();
         // The system prompt and the tools of the step before, to see what changed since ([`without_thinking`]).
         let mut sent: Option<(String, Vec<torro_core::ai::ToolSpec>)> = None;
-        for _ in 0..self.limits.max_steps {
+        for _ in 0..steps {
             let rights = self.rights();
             let allowed = self.allowed(rights.as_ref());
             // The memory and the bots (task B.2) are the assistant's own, not areas the person granted;
@@ -834,6 +879,12 @@ impl Answering {
             }
             sent = Some((system.clone(), tools.clone()));
             messages[0] = ChatMessage::system(system);
+            // Within the window (issue #701): what changes the messages also drops the thinking so far, as each
+            // block is bound to the messages before it.
+            let room = budget.saturating_sub(compact::estimate(&[], &tools));
+            if compact::compact(&mut messages, &self.summaries, room) {
+                without_thinking(&mut messages);
+            }
             let request = ChatRequest {
                 model: model.clone(),
                 messages: messages.clone(),
@@ -861,11 +912,25 @@ impl Answering {
             // sends none.
             messages.push(ChatMessage::assistant(reply.text, reply.tool_calls.clone()).with_thinking(reply.thinking));
             for call in &reply.tool_calls {
+                if self.repeats(call) {
+                    return Err(Ended::Repeating(command_name(&call.name)));
+                }
                 let Some(result) = self.call(call).await else { return Ok(()) };
                 messages.push(ChatMessage::tool(call.id.clone(), result));
             }
         }
-        Err(Ended::TooManySteps(self.limits.max_steps))
+        Err(Ended::TooManySteps(steps))
+    }
+
+    /// Counts `call` for this answer (issue #701): `true` when the model called the same tool with the same input
+    /// [`REPEATS`] times now, so it does not run. The input as it reads ([`tools::input_of`]), so the order of its
+    /// keys or spaces do not make another. Only the model's calls count: the loop's own read of a mail
+    /// ([`about_call`]) never comes here.
+    fn repeats(&mut self, call: &ToolCall) -> bool {
+        let key = (call.name.clone(), tools::input_of(&call.arguments).to_string());
+        let count = self.repeated.entry(key).or_default();
+        *count += 1;
+        *count >= REPEATS
     }
 
     /// One step of the model, its text streamed into the growing answer.
@@ -893,7 +958,18 @@ impl Answering {
     /// Adds `content` to the conversation while this run is its running answer; `last` ends the
     /// run. `false` when it was stopped meanwhile: the loop ends.
     async fn add(&self, content: EntryContent, last: bool) -> bool {
-        self.assistant.add_to_run(&self.job.conversation, self.job.run, content, last).await
+        self.assistant.add_to_run(&self.job.conversation, self.job.run, content, last, None).await
+    }
+
+    /// Adds the tool line `line` of the call `call` with `result`, what the model reads of it (issue #701): kept
+    /// with the line for later turns, and its summary for what a left-out stretch names. `None` when the run was
+    /// stopped meanwhile, else `result`.
+    async fn add_tool(&mut self, call: &str, line: EntryContent, result: String) -> Option<String> {
+        if let EntryContent::Tool { summary, .. } = &line {
+            self.summaries.insert(call.to_string(), summary.clone());
+        }
+        let (conversation, run) = (&self.job.conversation, self.job.run);
+        self.assistant.add_to_run(conversation, run, line, false, Some(result.clone())).await.then_some(result)
     }
 
     /// Runs the tool call `call` and answers what the model reads of it; `None` when the run was
@@ -908,13 +984,13 @@ impl Answering {
         self.outside |= tools::may_have_read_outside(&name);
         let Some(tool) = tools::callable(&call.name) else {
             let message = format!("there is no tool {}", call.name.chars().take(64).collect::<String>());
-            return self.refused(name, input, "error", &message, None).await;
+            return self.refused(&call.id, name, input, "error", &message, None).await;
         };
         // A chat about a mail only reads and suggests (issue #605), also for a tool the model was not offered.
         if self.job.about.is_some() && !tools::fits_about_mail(&tool) {
             let message = "this chat about a mail only reads and suggests (mail_extract_action); nothing else that \
                            changes something runs here, so say what the person could do instead";
-            return self.refused(name, input, "forbidden", message, Some(Lack::ReadOnly)).await;
+            return self.refused(&call.id, name, input, "forbidden", message, Some(Lack::ReadOnly)).await;
         }
         // Making a task of an inbox entry writes a task too (as the core checks its rights); making
         // an event of one writes to a calendar (task E8.5b); making a task of a mail in a folder
@@ -933,11 +1009,11 @@ impl Answering {
         };
         if let Some(area) = touched.into_iter().find(|area| self.job.without.contains(area)) {
             let lack = Lack::SwitchedOff { area };
-            return self.refused(name, input, "forbidden", &lack.message(), Some(lack)).await;
+            return self.refused(&call.id, name, input, "forbidden", &lack.message(), Some(lack)).await;
         }
         let request = match tools::request_for(&call.name, &call.arguments) {
             Ok(request) => self.without_mail_ranking(request),
-            Err(message) => return self.refused(name, input, "error", &message, None).await,
+            Err(message) => return self.refused(&call.id, name, input, "error", &message, None).await,
         };
         let area = request.operation().area();
         let outcome = self.run(request.clone()).await?;
@@ -969,7 +1045,7 @@ impl Answering {
                         let summary = asked.summary(&bot);
                         let error = asked.error.clone();
                         let line = EntryContent::Tool { name, input, summary, error, lack: None };
-                        return self.add(line, false).await.then(|| asked.for_model());
+                        return self.add_tool(&call.id, line, asked.for_model()).await;
                     }
                     // Refused: the core's message tells the model what to do (propose the bot).
                     None => {
@@ -1025,9 +1101,7 @@ impl Answering {
         };
         let summary = lack.map_or(summary, tools::lack_summary);
         let line = EntryContent::Tool { name, input, summary, error, lack };
-        if !self.add(line, false).await {
-            return None;
-        }
+        let result = self.add_tool(&call.id, line, result).await?;
         // The card follows its tool line, so the chat shows what was done, then what came of it.
         if let Some(card) = card
             && !self.add(card, false).await
@@ -1071,7 +1145,8 @@ impl Answering {
     /// A call that never reached the core: its tool line, and the error for the model; `lack` says
     /// why it was `forbidden` (issue #133).
     async fn refused(
-        &self,
+        &mut self,
+        call: &str,
         name: String,
         input: Value,
         code: &str,
@@ -1080,7 +1155,7 @@ impl Answering {
     ) -> Option<String> {
         let summary = lack.map_or_else(|| tools::error_summary(code), tools::lack_summary);
         let line = EntryContent::Tool { name, input, summary, error: Some(code.into()), lack };
-        self.add(line, false).await.then(|| failure(code, message))
+        self.add_tool(call, line, failure(code, message)).await
     }
 
     /// Why the core refused `request` with `forbidden` (issue #133), from the client's rights of
@@ -1211,6 +1286,101 @@ pub(super) fn history(entries: &[Entry]) -> Vec<ChatMessage> {
     messages
 }
 
+/// [`history`] for engine A with the tool calls of earlier turns and what the model read of them (issue #701), so a
+/// later message can ask about what a tool returned without calling it again. A step is an answer's text (or none)
+/// with the tool lines after it: one assistant message with its calls, ids `call_<seq>` of the tool lines, then one
+/// tool message per call with its result. The tool is the catalogue's name for the model, or the name the line
+/// keeps (a server's tool). Lines without a kept result (conversations from before, `find_tools`, which has no
+/// line) are left out as before, and a turn that ends without text gets the note of [`answer_of`], so the person and
+/// the assistant still take turns.
+pub(super) fn history_with_results(entries: &[Entry], results: &BTreeMap<u64, String>) -> Vec<ChatMessage> {
+    let mut messages = Vec::new();
+    let mut turn: Option<Turn> = None;
+    for entry in entries {
+        match &entry.content {
+            EntryContent::Message { text, .. } => {
+                if let Some(done) = turn.take() {
+                    done.end(&mut messages);
+                }
+                messages.push(ChatMessage::user(text.clone()));
+                turn = Some(Turn::default());
+            }
+            EntryContent::Answer { text, .. } => {
+                if let Some(turn) = &mut turn {
+                    turn.say(text, &mut messages);
+                }
+            }
+            EntryContent::Tool { name, input, .. } => {
+                if let (Some(turn), Some(result)) = (&mut turn, results.get(&entry.seq)) {
+                    let call = ToolCall {
+                        id: format!("call_{}", entry.seq),
+                        name: tool_of(name),
+                        arguments: input.to_string(),
+                    };
+                    turn.calls.push((call, result.clone()));
+                }
+            }
+            _ => {}
+        }
+    }
+    messages
+}
+
+/// The summary of each tool line of `entries` that has a kept result, by the id its call gets in
+/// [`history_with_results`].
+fn summaries_of(entries: &[Entry], results: &BTreeMap<u64, String>) -> BTreeMap<String, String> {
+    entries
+        .iter()
+        .filter(|entry| results.contains_key(&entry.seq))
+        .filter_map(|entry| match &entry.content {
+            EntryContent::Tool { summary, .. } => Some((format!("call_{}", entry.seq), summary.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The tool's name for the model of the command `name` a tool line keeps: the catalogue's
+/// ([`torro_ipc::api::Command::tool_name`]), or `name` itself for one the catalogue does not know (a server's tool).
+fn tool_of(name: &str) -> String {
+    torro_ipc::api::CATALOGUE
+        .iter()
+        .find(|command| command.name == name)
+        .map_or_else(|| name.to_string(), |command| command.tool_name())
+}
+
+/// One earlier turn while [`history_with_results`] reads it: the texts and calls of its open step.
+#[derive(Default)]
+struct Turn {
+    texts: Vec<String>,
+    calls: Vec<(ToolCall, String)>,
+}
+
+impl Turn {
+    /// An answer's text: it starts a new step once the open one called tools.
+    fn say(&mut self, text: &str, messages: &mut Vec<ChatMessage>) {
+        if !self.calls.is_empty() {
+            self.step(messages);
+        }
+        self.texts.push(text.to_string());
+    }
+
+    /// The open step with its calls: the assistant message, then the results in the order of the calls.
+    fn step(&mut self, messages: &mut Vec<ChatMessage>) {
+        let calls = std::mem::take(&mut self.calls);
+        let text = std::mem::take(&mut self.texts).join("\n\n");
+        messages.push(ChatMessage::assistant(text, calls.iter().map(|(call, _)| call.clone()).collect()));
+        messages.extend(calls.into_iter().map(|(call, result)| ChatMessage::tool(call.id, result)));
+    }
+
+    /// The end of the turn: its open step, then its last text, or the note when it ended without one.
+    fn end(mut self, messages: &mut Vec<ChatMessage>) {
+        if !self.calls.is_empty() {
+            self.step(messages);
+        }
+        messages.push(answer_of(self.texts));
+    }
+}
+
 /// One earlier turn's answers as one message; a note when it has none.
 fn answer_of(answers: Vec<String>) -> ChatMessage {
     match answers.is_empty() {
@@ -1335,8 +1505,6 @@ pub(crate) mod tests {
     #[derive(Default)]
     pub(crate) struct Script {
         pub(crate) steps: Mutex<VecDeque<Step>>,
-        /// Answered when the steps ran out.
-        then: Mutex<Option<Step>>,
         pub(crate) asked: Mutex<Vec<ChatRequest>>,
         /// The models it lists; `None`: a model without tools, then one with ([`Scripted`]).
         models: Mutex<Option<Vec<AiModel>>>,
@@ -1354,11 +1522,6 @@ pub(crate) mod tests {
     impl Script {
         pub(crate) fn new(steps: Vec<Step>) -> Arc<Script> {
             Arc::new(Script { steps: Mutex::new(steps.into()), ..Script::default() })
-        }
-
-        pub(crate) fn then(self: Arc<Self>, step: Step) -> Arc<Script> {
-            *self.then.lock().expect("lock") = Some(step);
-            self
         }
 
         /// Lists `models` in place of the usual two.
@@ -1470,7 +1633,9 @@ pub(crate) mod tests {
     ) -> Result<ModelAccess, AiError> {
         let provider = Scripted(Arc::clone(script));
         let (model, place) = ModelAccess::choose(provider.models().await, model, scripted_place(place))?;
-        Ok(ModelAccess { provider: Box::new(provider), model, place })
+        let listed = provider.models().await.ok().unwrap_or_default();
+        let context = listed.iter().find(|listed| listed.id == model).and_then(|listed| listed.context);
+        Ok(ModelAccess { provider: Box::new(provider), model, place, context })
     }
 
     pub(crate) struct Scripted(pub(crate) Arc<Script>);
@@ -1493,7 +1658,6 @@ pub(crate) mod tests {
             Box::pin(async move {
                 self.0.asked.lock().expect("lock").push(request.clone());
                 let step = self.0.steps.lock().expect("lock").pop_front();
-                let step = step.or_else(|| self.0.then.lock().expect("lock").clone());
                 match step {
                     Some(Step::Reply(pieces, reply)) => {
                         for piece in pieces {
@@ -1737,7 +1901,19 @@ pub(crate) mod tests {
         script: Arc<Script>,
         answer: fn(&Request) -> Response,
     ) -> (Arc<Assistant>, Arc<FakeHost>) {
-        let limits = Limits { max_steps: 4, approval_poll: Duration::from_millis(5) };
+        let limits = Limits { max_steps: 4, small_steps: 4, approval_poll: Duration::from_millis(5) };
+        set_up_limited(dir, rights, place, script, answer, limits)
+    }
+
+    /// [`set_up_with`] with `limits` (issue #701).
+    fn set_up_limited(
+        dir: &std::path::Path,
+        rights: Option<Rights>,
+        place: Place,
+        script: Arc<Script>,
+        answer: fn(&Request) -> Response,
+        limits: Limits,
+    ) -> (Arc<Assistant>, Arc<FakeHost>) {
         let assistant = Arc::new(assistant_in(dir, Duration::ZERO).with_limits(limits));
         let host = Arc::new(FakeHost {
             rights,
@@ -2315,7 +2491,8 @@ pub(crate) mod tests {
         assert!(first.tools.iter().all(|tool| !tool.name.starts_with("mail_")), "no mail rights, no mail tools");
         assert!(tool_result(&script, "calendar_list_calendars").contains("collections"));
 
-        // The next message carries the conversation so far.
+        // The next message carries the conversation so far, read back from its file: since issue #701 with the
+        // call and what it returned.
         let script_next = Script::new(vec![says("Still none.")]);
         let (again, _kept) = set_up(dir.path(), Some(reader()), Place::Local, Arc::clone(&script_next));
         let same = ask(&again, Some(&id), "And now?", Vec::new()).await;
@@ -2326,6 +2503,8 @@ pub(crate) mod tests {
             roles,
             [
                 (torro_core::ai::Role::User, "Which calendars do I have?".to_string()),
+                (torro_core::ai::Role::Assistant, String::new()),
+                (torro_core::ai::Role::Tool, tool_result(&script, "calendar_list_calendars")),
                 (torro_core::ai::Role::Assistant, "You have no calendars.".to_string()),
                 (torro_core::ai::Role::User, "And now?".to_string()),
             ]
@@ -2503,7 +2682,8 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn too_many_steps_end_the_answer_with_an_error() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let script = Script::new(Vec::new()).then(calls("calendar_list_calendars", json!({})));
+        // Another input each step, or the third call would end the answer as going round in circles (issue #701).
+        let script = Script::new((0..10).map(lists_since).collect());
         let (assistant, host) = set_up(dir.path(), Some(reader()), Place::Local, Arc::clone(&script));
         let id = ask(&assistant, None, "Loop forever", Vec::new()).await;
         let entries = finished(&assistant, &id).await;
@@ -2564,6 +2744,10 @@ pub(crate) mod tests {
             thinks_and_calls("after", "calendar_delete_event", json!({"event": {"collection": "c", "summary": "x"}})),
             says("Done."),
         ]);
+        // A window as Anthropic lists it: nothing here is left out to save room (issue #701).
+        let mut listed = model("qwen3:8b", Some(true), None);
+        listed.context = Some(200_000);
+        let script = script.listing(vec![listed]);
         let (assistant, _kept) = set_up(dir.path(), Some(rights), Place::Local, Arc::clone(&script));
         let id = ask(&assistant, None, "Delete my dentist appointment", Vec::new()).await;
         finished(&assistant, &id).await;
@@ -3552,5 +3736,267 @@ pub(crate) mod tests {
         assert!(
             host.ran.lock().expect("lock").iter().any(|(request, _)| matches!(request, Request::ExtractAction { .. }))
         );
+    }
+
+    // ----- Issue #701: long tasks -----
+
+    /// A step that lists the inbox since minute `n` of the day: the same tool with another input each time.
+    fn lists_since(n: usize) -> Step {
+        calls("inbox_list_items", json!({"since": format!("2026-11-13T{:02}:{:02}:00Z", n / 60, n % 60)}))
+    }
+
+    /// A small and a large model of an Ollama account; the large one with the context window `context`.
+    fn small_and_large(steps: Vec<Step>, context: Option<u64>) -> Arc<Script> {
+        let mut large = model("qwen3:32b", Some(true), None);
+        large.context = context;
+        Script::new(steps).listing(vec![model("qwen3:8b", Some(true), None), large])
+    }
+
+    /// The text of the last entry, an error's message.
+    fn error_of(entries: &[Entry]) -> String {
+        match entries.last().map(|entry| &entry.content) {
+            Some(EntryContent::Error { message, .. }) => message.clone(),
+            other => panic!("expected an error at the end, got {other:?}"),
+        }
+    }
+
+    /// Every tool message follows the assistant message that called it, with nothing between.
+    fn calls_answered(messages: &[ChatMessage]) {
+        let mut open: Vec<String> = Vec::new();
+        for message in messages {
+            match message.role {
+                torro_core::ai::Role::Tool => {
+                    let id = message.tool_call_id.clone().expect("an id");
+                    assert_eq!(open.first(), Some(&id), "{messages:#?}");
+                    open.remove(0);
+                }
+                _ => {
+                    assert!(open.is_empty(), "a call without its result: {messages:#?}");
+                    open = message.tool_calls.iter().map(|call| call.id.clone()).collect();
+                }
+            }
+        }
+    }
+
+    /// Erledigt 1: the steps of an answer follow the size of the model; by default 80, 30 for a small one.
+    #[tokio::test]
+    async fn the_step_limit_follows_the_size_of_the_model() {
+        assert_eq!((Limits::default().max_steps, Limits::default().small_steps), (80, 30));
+        let limits = Limits { max_steps: 5, small_steps: 2, approval_poll: Duration::from_millis(5) };
+        for (asked, steps) in [("qwen3:8b", 2), ("qwen3:32b", 5)] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let script = small_and_large((0..10).map(lists_since).collect(), None);
+            let (assistant, _host) =
+                set_up_limited(dir.path(), Some(reading_mail()), Place::Local, Arc::clone(&script), answers, limits);
+            let id = ask_model(&assistant, None, "Go through my inbox.", Vec::new(), Some(asked)).await;
+            let entries = finished(&assistant, &id).await;
+            assert_eq!(script.asked().len(), steps, "{asked}");
+            assert_eq!(error_of(&entries), Ended::TooManySteps(steps).to_string(), "{asked}");
+        }
+    }
+
+    /// Erledigt 2: the third call of the same tool with the same input does not run and ends the answer with a
+    /// clear message; the same tool with other inputs goes on.
+    #[tokio::test]
+    async fn the_same_call_a_third_time_ends_the_answer() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let same = || calls("inbox_list_items", json!({"lane": "for_me"}));
+        let script = Script::new(vec![same(), same(), same(), says("Never said.")]);
+        let (assistant, host) = set_up(dir.path(), Some(reading_mail()), Place::Local, Arc::clone(&script));
+        let id = ask(&assistant, None, "What came in?", Vec::new()).await;
+        let entries = finished(&assistant, &id).await;
+        let listed = host
+            .ran
+            .lock()
+            .expect("lock")
+            .iter()
+            .filter(|(request, _)| matches!(request, Request::ListItems { .. }))
+            .count();
+        assert_eq!(listed, 2, "the third call does not run");
+        assert_eq!(error_of(&entries), Ended::Repeating("inbox.list_items".into()).to_string());
+        assert!(error_of(&entries).contains("inbox.list_items"));
+        assert!(
+            matches!(entries.last().map(|entry| &entry.content), Some(EntryContent::Error { code, .. }) if code == "error")
+        );
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = Script::new(vec![lists_since(1), lists_since(2), lists_since(3), says("Three looks.")]);
+        let (assistant, _host) = set_up(dir.path(), Some(reading_mail()), Place::Local, Arc::clone(&script));
+        let id = ask(&assistant, None, "What came in?", Vec::new()).await;
+        let entries = finished(&assistant, &id).await;
+        assert!(
+            matches!(entries.last().map(|entry| &entry.content), Some(EntryContent::Answer { text, .. }) if text == "Three looks.")
+        );
+    }
+
+    /// Erledigt 3: the next message sends the calls of the turn before with their results, in the shape the model
+    /// wrote them; a client never sees those results.
+    #[tokio::test]
+    async fn a_later_message_sends_the_calls_and_results_of_earlier_ones() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script =
+            Script::new(vec![calls("inbox_list_items", json!({})), says("One invoice."), says("It came from ACME.")]);
+        let (assistant, _host) = set_up(dir.path(), Some(reading_mail()), Place::Local, Arc::clone(&script));
+        let id = ask(&assistant, None, "What came in?", Vec::new()).await;
+        finished(&assistant, &id).await;
+        ask(&assistant, Some(&id), "Who sent it?", Vec::new()).await;
+        let entries = finished(&assistant, &id).await;
+
+        let asked = script.asked();
+        let messages = &asked[2].messages;
+        let roles: Vec<torro_core::ai::Role> = messages.iter().map(|message| message.role).collect();
+        use torro_core::ai::Role;
+        assert_eq!(roles, [Role::System, Role::User, Role::Assistant, Role::Tool, Role::Assistant, Role::User]);
+        let call = &messages[2].tool_calls[0];
+        assert_eq!(
+            (call.id.as_str(), call.name.as_str(), call.arguments.as_str()),
+            ("call_2", "inbox_list_items", "{}")
+        );
+        assert_eq!(messages[3].tool_call_id.as_deref(), Some("call_2"));
+        assert_eq!(messages[3].content, tool_result(&script, "inbox_list_items"), "the result as the model read it");
+        assert!(messages[3].content.contains("Invoice 42"));
+        assert_eq!(messages[4].content, "One invoice.");
+        calls_answered(messages);
+
+        // Only the core keeps it: neither the entries nor the conversation file's entries say what the tool read.
+        let shown = serde_json::to_string(&entries).expect("json");
+        assert!(!shown.contains("Invoice 42") && !shown.contains("password"), "{shown}");
+        let (_, shown) = read(&assistant, &id, None).await;
+        assert!(!serde_json::to_string(&shown).expect("json").contains("Invoice 42"));
+    }
+
+    /// Erledigt 4: a conversation longer than half of the window is compacted: the first and the last message of
+    /// the person and the last step stay word for word, a note without content stands for what was left out, and
+    /// every result still follows its call.
+    #[tokio::test]
+    async fn a_long_conversation_is_compacted_within_the_window() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut steps = vec![lists_since(0), says("A."), lists_since(1), says("B.")];
+        steps.extend((2..8).map(lists_since));
+        steps.push(says("C."));
+        let script = small_and_large(steps, Some(1_000));
+        let (assistant, _host) = set_up_limited(
+            dir.path(),
+            Some(reading_mail()),
+            Place::Local,
+            Arc::clone(&script),
+            answers,
+            Limits { max_steps: 20, small_steps: 20, approval_poll: Duration::from_millis(5) },
+        );
+        let large = Some("qwen3:32b");
+        let id = ask_model(&assistant, None, "first question", Vec::new(), large).await;
+        finished(&assistant, &id).await;
+        ask_model(&assistant, Some(&id), "second question", Vec::new(), large).await;
+        finished(&assistant, &id).await;
+        ask_model(&assistant, Some(&id), "last question", Vec::new(), large).await;
+        let entries = finished(&assistant, &id).await;
+        assert!(
+            matches!(entries.last().map(|entry| &entry.content), Some(EntryContent::Answer { text, .. }) if text == "C.")
+        );
+
+        let asked = script.asked();
+        let last = &asked.last().expect("asked").messages;
+        calls_answered(last);
+        let texts: Vec<&str> = last.iter().map(|message| message.content.as_str()).collect();
+        assert_eq!(texts[1], "first question");
+        assert!(texts.contains(&"last question") && !texts.contains(&"second question"), "{texts:#?}");
+        let notes: Vec<&&str> = texts.iter().filter(|text| text.starts_with("[Left out to save room")).collect();
+        assert!(!notes.is_empty(), "{texts:#?}");
+        for note in notes {
+            assert!(
+                note.contains("inbox.list_items") && !note.contains("Invoice 42") && !note.contains("since"),
+                "{note}"
+            );
+        }
+        let results: Vec<&ChatMessage> =
+            last.iter().filter(|message| message.role == torro_core::ai::Role::Tool).collect();
+        let (newest, older) = results.split_last().expect("results");
+        assert!(newest.content.contains("Invoice 42"), "the last step word for word");
+        assert!(older.iter().all(|result| result.content.contains(compact::LEFT_OUT)), "{older:#?}");
+        // Every request of the long answer stayed whole in its shape.
+        asked.iter().for_each(|request| calls_answered(&request.messages));
+    }
+
+    /// Erledigt 5: a mail's result left out to save room stays marked `untrusted`, and after compacting a note still
+    /// waits for a person.
+    #[tokio::test]
+    async fn results_left_out_stay_untrusted_and_notes_still_wait() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // Each look with a word, so each is a step of its own in the next turn ([`history_with_results`]).
+        let mut steps: Vec<Step> = (0..5)
+            .map(|n| match lists_since(n) {
+                Step::Reply(pieces, reply) => Step::Reply(pieces, ChatReply { text: format!("Look {n}."), ..reply }),
+                other => other,
+            })
+            .collect();
+        steps.push(says("Five looks."));
+        steps.push(calls("assistant_remember", json!({"text": "ACME sent invoice 42."})));
+        steps.push(says("Noted."));
+        let script = small_and_large(steps, Some(1_000));
+        let limits = Limits { max_steps: 20, small_steps: 20, approval_poll: Duration::from_millis(5) };
+        let (assistant, host) =
+            set_up_limited(dir.path(), Some(reading_mail()), Place::Local, Arc::clone(&script), answers, limits);
+        let large = Some("qwen3:32b");
+        let id = ask_model(&assistant, None, "Look five times.", Vec::new(), large).await;
+        finished(&assistant, &id).await;
+
+        // What the next message starts with, once older results give way (stage 1 alone).
+        let (mut history, results) = {
+            let state = assistant.state().await;
+            let conversation = state.conversations.get(&id).expect("conversation");
+            (conversation.entries.clone(), conversation.results.clone())
+        };
+        // A next message ends the turn, as the history of the next answer has it.
+        let mut next = history[0].clone();
+        next.seq = 100;
+        history.push(next);
+        let mut messages = history_with_results(&history, &results);
+        let summaries = summaries_of(&history, &results);
+        let budget = compact::estimate(&messages, &[]) - 10;
+        assert!(compact::compact(&mut messages, &summaries, budget));
+        let first = messages.iter().find(|message| message.role == torro_core::ai::Role::Tool).expect("a result");
+        let note: Value = serde_json::from_str(&first.content).expect("json");
+        assert_eq!(note["untrusted"], true, "{note}");
+        assert_eq!(note["note"], compact::LEFT_OUT);
+        assert_eq!(note["summary"], trf("{count} results", &[("count", &1)]));
+
+        ask_model(&assistant, Some(&id), "Remember it.", Vec::new(), large).await;
+        finished(&assistant, &id).await;
+        let left_out = script.asked().last().expect("asked").messages.iter().any(|message| {
+            message.content.contains(compact::LEFT_OUT) || message.content.starts_with("[Left out to save room")
+        });
+        assert!(left_out, "compacted");
+        assert_eq!(remembered(&host).len(), 1);
+        assert_eq!(host.untrusted.lock().expect("lock").last(), Some(&true), "the note waits for a person");
+    }
+
+    /// Erledigt 6: "Stop" ends a long answer at once: no step after it.
+    #[tokio::test]
+    async fn stop_ends_a_long_answer_at_once() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut steps: Vec<Step> = (0..20).map(lists_since).collect();
+        steps.push(Step::Hang(Vec::new()));
+        steps.extend((20..40).map(lists_since));
+        steps.push(says("Done."));
+        let script = small_and_large(steps, None);
+        let limits = Limits { max_steps: 80, small_steps: 30, approval_poll: Duration::from_millis(5) };
+        let (assistant, _host) =
+            set_up_limited(dir.path(), Some(reading_mail()), Place::Local, Arc::clone(&script), answers, limits);
+        let id = ask_model(&assistant, None, "Go through everything.", Vec::new(), Some("qwen3:32b")).await;
+        for _ in 0..400 {
+            if script.asked().len() == 21 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(script.asked().len(), 21, "twenty steps ran");
+        assert_eq!(assistant.cancel(&id, Utc::now()).await, Response::Ok);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let (summary, entries) = read(&assistant, &id, None).await;
+        assert!(!summary.running);
+        assert_eq!(entries.last().map(|entry| &entry.content), Some(&EntryContent::Stopped));
+        let tools = entries.iter().filter(|entry| matches!(entry.content, EntryContent::Tool { .. })).count();
+        assert_eq!(tools, 20);
+        assert_eq!(script.asked().len(), 21, "no step after the stop");
     }
 }
