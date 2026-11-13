@@ -1769,6 +1769,14 @@ mod flow {
         assert_eq!(code(&chat.show_card(&message_id(&ben(), 7)).await), "unsupported");
         let theirs = page(chat.handle(read.clone(), agent).await);
         assert_eq!(of(&theirs, 7), (None, None), "for a client too");
+        // Nor in the shared links, nor its picture.
+        let links =
+            Request::ChatListShared { conversation: ben(), kind: Some(SharedKind::Link), before: None, limit: None };
+        let Response::ChatShared { items, .. } = chat.handle(links, APP).await else { panic!("links") };
+        assert_eq!(items.iter().map(|item| item.name.as_str()).collect::<Vec<_>>(), ["https://cloud.example.org/f/12"]);
+        let picture =
+            Request::ChatGetPreview { id: message_id(&ben(), 7), file: None, card: true, size: PreviewSize::Small };
+        assert_eq!(code(&chat.handle(picture, APP).await), "not-found");
 
         // Always: every card without a click, the blocked one too.
         set(&|privacy| privacy.content = ForeignContent::Always);

@@ -184,6 +184,13 @@ impl Link {
     }
 }
 
+/// Whether Settings › Privacy turned the card of `link` off (issue #672): a link to another server than
+/// `server` whose provider is blocked, or any such link at "Never show". An empty link (a card without
+/// one) counts as another server's.
+fn turned_off(privacy: &torro_core::privacy::Privacy, link: &str, server: &str) -> bool {
+    !torro_nextcloud::same_origin(link, server) && privacy.decide(&host_of(link)) == Decision::Skip
+}
+
 /// The host of `link` as the suite compares hosts ([`torro_core::privacy::normalize_host`]); empty when it
 /// has none.
 fn host_of(link: &str) -> String {
@@ -298,12 +305,18 @@ impl ChatService {
         if !sees_pictures(caller) {
             return no_picture_right();
         }
-        let image = self.held().cards.get(id).and_then(|card| card.image.clone());
-        let Some(image) = image else { return error_response(&ChatError::NotFound) };
         let remote = match self.remote(account).await {
             Ok(remote) => remote,
             Err(err) => return error_response(&err),
         };
+        // No picture of a card Settings › Privacy turned off (issue #672): it is left out of the messages.
+        let privacy = self.privacy();
+        let server = remote.server();
+        let image = self.held().cards.get(id).and_then(|card| {
+            let link = card.card.as_ref().map(|card| card.url.as_str()).unwrap_or_default();
+            if turned_off(&privacy, link, &server) { None } else { card.image.clone() }
+        });
+        let Some(image) = image else { return error_response(&ChatError::NotFound) };
         let key = format!("card:{image}");
         if let Some(picture) = self.held().preview(account, &key) {
             return picture_answer(picture);
@@ -457,7 +470,7 @@ impl ChatService {
         }
         let pictures = sees_pictures(caller);
         if kind == Some(SharedKind::Link) {
-            return self.shared_links(conversation, before, limit);
+            return self.shared_links(conversation, before, limit, &remote.server());
         }
         if !caps.shared {
             return error_response(&unsupported("This server cannot list what a conversation shared."));
@@ -482,7 +495,10 @@ impl ChatService {
     }
 
     /// The links with a card in `conversation`, from the cards the core holds (Talk does not list links).
-    fn shared_links(&self, conversation: &str, before: Option<u64>, limit: u32) -> Response {
+    fn shared_links(&self, conversation: &str, before: Option<u64>, limit: u32, server: &str) -> Response {
+        // A card of a provider Settings › Privacy blocks, or of any other at "Never show", is left out as
+        // in the messages (issue #672).
+        let privacy = self.privacy();
         let held = self.held();
         let mut items: Vec<(u64, SharedItem)> = held
             .cards
@@ -490,6 +506,9 @@ impl ChatService {
             .filter_map(|(id, card)| {
                 let (of, number) = split_message(id)?;
                 let card = card.card.as_ref()?;
+                if turned_off(&privacy, &card.url, server) {
+                    return None;
+                }
                 (of == conversation && before.is_none_or(|before| number < before)).then(|| {
                     let item = SharedItem {
                         message: id.clone(),
@@ -558,10 +577,12 @@ impl ChatService {
         if matches!(caller.reach, Reach::Suite)
             && let Some((_, remote)) = &server
         {
+            // In the order of the page, as before the settings (the map is ordered by the ids' text).
             let open: Vec<(String, String)> = {
                 let held = self.held();
-                links
+                page.messages
                     .iter()
+                    .filter_map(|message| Some((&message.id, links.get(&message.id)?)))
                     .filter(|(id, (_, kind))| kind.loads() && !held.cards.contains_key(*id))
                     .map(|(id, (link, _))| (id.clone(), link.clone()))
                     .take(CARDS_PER_READ)
