@@ -516,6 +516,7 @@ mod tests {
             own_reactions: Vec::new(),
             edited: false,
             cards: Vec::new(),
+            foreign: None,
             untrusted: true,
         };
         assert_eq!(look(&message, &file("image/png", true), None), Look::Picture);

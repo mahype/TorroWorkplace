@@ -187,6 +187,7 @@ fn shown(account: &str, conversation: &str, me: &str, message: RemoteMessage) ->
         own_reactions: message.own_reactions,
         edited: message.edited,
         cards: Vec::new(),
+        foreign: None,
         untrusted: true,
     }
 }

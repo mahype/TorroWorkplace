@@ -2985,6 +2985,9 @@ impl Core {
         let mail = Arc::new(mail.with_calendars(Arc::clone(&pim)));
         let contacts = Arc::new(ContactsService::system(Arc::clone(&pim)));
         let chat = Arc::new(ChatService::system(Arc::clone(&pim)));
+        // Settings › Privacy (issue #672), read afresh for every page of messages.
+        let privacy = settings.clone();
+        chat.set_privacy(Arc::new(move || privacy.current().privacy));
         let presence = Arc::new(presence_of(&chat, &contacts));
         let core = Core {
             backend,
@@ -3425,6 +3428,8 @@ impl Core {
     /// keeping its list in `dir`, for tests.
     #[cfg(test)]
     pub(crate) fn with_chat(mut self, chat: ChatService, dir: &Path) -> Core {
+        let privacy = self.settings.clone();
+        chat.set_privacy(Arc::new(move || privacy.current().privacy));
         self.chat = Arc::new(chat);
         self.presence = Arc::new(PresenceService::in_dir(Arc::clone(&self.chat), dir));
         self

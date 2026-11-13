@@ -2011,9 +2011,10 @@ pub enum Request {
         #[schemars(range(min = 1, max = 100))]
         limit: Option<u32>,
     },
-    /// Fetches the card of the first link of a message ("Show preview", [`Response::ChatCard`]):
-    /// the account's server asks the link's address for it, so its owner may learn when it was read.
-    /// App key only: a person decides.
+    /// Fetches the card of the first link of a message ("Show once", [`Response::ChatCard`]): the
+    /// account's server asks the link's address for it, so its owner may learn when it was read. App
+    /// key only: a person decides. `unsupported` for a provider Settings › Privacy blocks and while it
+    /// says "Never show" (issue #672); nothing is stored about the provider.
     #[serde(rename = "chat.show_card")]
     ChatShowCard {
         /// The message (`<conversation>/<number>`).

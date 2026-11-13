@@ -188,6 +188,22 @@ impl DemoSource {
         id
     }
 
+    /// What Settings › Privacy would keep for the provider `key` (issue #672), in memory: every message
+    /// that asked about it asks no more, and an allowed one shows its card as `chat.show_card` brings it.
+    /// The demo writes no settings.
+    pub fn decide_provider(&self, key: &str, allowed: bool) {
+        let mut data = self.lock();
+        for message in data.messages.values_mut().flatten() {
+            if message.foreign.as_ref().is_none_or(|provider| provider.key != key) {
+                continue;
+            }
+            message.foreign = None;
+            if allowed && let Some(card) = files::first_link(&message.text).and_then(files::foreign_card) {
+                message.cards = vec![card];
+            }
+        }
+    }
+
     /// The data; a lock a panicking thread left is taken over, the sample cannot break by that.
     fn lock(&self) -> MutexGuard<'_, Data> {
         self.data.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -223,6 +239,7 @@ fn text(conversation: &str, number: u64, user: &str, name: &str, at: DateTime<Ut
         own_reactions: Vec::new(),
         edited: false,
         cards: Vec::new(),
+        foreign: None,
         untrusted: true,
     }
 }
@@ -241,6 +258,7 @@ fn system(conversation: &str, number: u64, at: DateTime<Utc>, kind: MessageKind,
         own_reactions: Vec::new(),
         edited: false,
         cards: Vec::new(),
+        foreign: None,
         untrusted: true,
     }
 }
@@ -981,6 +999,7 @@ impl ChatSource for DemoSource {
         if let Some(card) = &card {
             message.cards.push(card.clone());
         }
+        message.foreign = None;
         Ok(card)
     }
 
@@ -1469,6 +1488,20 @@ mod tests {
         assert_eq!(run(demo.upload(id)).expect("progress").state, UploadState::Cancelled);
     }
 
+    /// Issue #672: "Always allow" shows the card, "Never for" only the link; both ask no more.
+    #[test]
+    fn a_decided_provider_asks_no_more() {
+        let blocked = demo();
+        blocked.decide_provider("example.com", false);
+        let message11 = message(&blocked, DESIGN, 11);
+        assert!(message11.foreign.is_none() && message11.cards.is_empty());
+        let allowed = demo();
+        allowed.decide_provider("example.com", true);
+        let message11 = message(&allowed, DESIGN, 11);
+        assert!(message11.foreign.is_none());
+        assert_eq!(message11.cards.first().map(|card| card.domain.as_str()), Some("example.com"));
+    }
+
     #[test]
     fn shared_items_by_kind_and_cards_on_request() {
         let demo = demo();
@@ -1478,9 +1511,11 @@ mod tests {
         let links = run(demo.shared(DESIGN.into(), Some(SharedKind::Link), None, None)).expect("links");
         assert_eq!(links.items.len(), 1, "only the link with a card");
         let foreign = message_id(DESIGN, 11);
+        assert_eq!(message(&demo, DESIGN, 11).foreign.map(|provider| provider.key).as_deref(), Some("example.com"));
         let card = run(demo.show_card(foreign.clone())).expect("a card").expect("example.com has one");
         assert_eq!(card.domain, "example.com");
         assert_eq!(message(&demo, DESIGN, 11).cards.len(), 1, "later pages carry it");
+        assert!(message(&demo, DESIGN, 11).foreign.is_none(), "and ask no more");
         let links = run(demo.shared(DESIGN.into(), Some(SharedKind::Link), None, Some(1))).expect("links");
         assert!(links.more && links.items.len() == 1);
         let around = run(demo.messages_around(DESIGN.into(), message_id(DESIGN, 7), Some(4))).expect("around");

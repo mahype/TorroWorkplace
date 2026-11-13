@@ -3349,7 +3349,7 @@ static CHAT_SHOW_CARD: Command = Command {
     area: Area::Chat,
     access: Access::Write,
     mcp: Mcp::Never,
-    description: "Fetches the card of the first link of a message (\"Show preview\"); the account's server asks the link's address for it, so its owner may learn when the message was read. Only a person decides that.",
+    description: "Fetches the card of the first link of a message (\"Show once\"); the account's server asks the link's address for it, so its owner may learn when the message was read. Only a person decides that. `unsupported` for a provider the person blocked in Settings › Privacy, or while it says \"Never show\".",
 };
 
 static CHAT_GET_CALL: Command = Command {

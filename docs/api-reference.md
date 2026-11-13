@@ -2426,7 +2426,7 @@ Lists what a conversation shared, the newest first: pictures and videos (`media`
 
 Zugriff `write` · kein MCP-Tool, nur App-Schlüssel
 
-Fetches the card of the first link of a message ("Show preview"); the account's server asks the link's address for it, so its owner may learn when the message was read. Only a person decides that.
+Fetches the card of the first link of a message ("Show once"); the account's server asks the link's address for it, so its owner may learn when the message was read. Only a person decides that. `unsupported` for a provider the person blocked in Settings › Privacy, or while it says "Never show".
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|

@@ -1,7 +1,7 @@
 //! Files and media of the sample (stage 4): the shared files of "Design sync" ([`DESIGN`]) – two
 //! pictures, a video with a preview and one without, a PDF, a voice message, a file that may not be
 //! downloaded, an SVG without a preview, a link to the account's own server with its card and a
-//! foreign link whose card comes only with "Show preview" – and what the demo does with files:
+//! foreign link whose card comes only with "Show once" (issue #672) – and what the demo does with files:
 //! prepared files and uploads in memory, sendings that advance a quarter with each look
 //! ([`Files::progress`]), pictures drawn on the spot ([`picture`]).
 //!
@@ -13,7 +13,7 @@ use chrono::{DateTime, Duration};
 
 use super::{ME, text};
 use crate::files::{PreparedFile, SharedItem, SharedKind, UploadProgress, UploadState};
-use crate::model::{FileRef, LinkCard, Message, MessageKind};
+use crate::model::{FileRef, ForeignProvider, LinkCard, Message, MessageKind};
 use crate::source::ChatError;
 
 /// The group "Design sync": the conversation of the sample's files and media.
@@ -78,8 +78,10 @@ pub(super) fn design_media(now: DateTime<chrono::Utc>) -> Vec<Message> {
         domain: "cloud.example.org".into(),
         image: true,
     }];
-    let grids =
+    let mut grids =
         text(DESIGN, 11, "gesa", gesa, ago(198), "A good read on icon grids: https://example.com/blog/icon-grids");
+    // Settings › Privacy at "Ask" (issue #672): the window asks before the card of another server loads.
+    grids.foreign = Some(ForeignProvider { key: "example.com".into(), name: "example.com".into() });
     vec![
         shared(
             3,
@@ -129,7 +131,7 @@ pub(super) fn design_media(now: DateTime<chrono::Utc>) -> Vec<Message> {
     ]
 }
 
-/// The card "Show preview" brings for a foreign link of the sample (`chat.show_card`).
+/// The card "Show once" brings for a foreign link of the sample (`chat.show_card`).
 pub(super) fn foreign_card(url: &str) -> Option<LinkCard> {
     url.starts_with("https://example.com/").then(|| LinkCard {
         url: url.into(),
