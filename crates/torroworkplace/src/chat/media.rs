@@ -1720,7 +1720,9 @@ mod flow {
             let video = "https://www.youtube.com/watch?v=abc";
             let blog = "https://blog.example.net/post";
             state.references.insert(own.into(), reference("Plan.pdf"));
-            state.references.insert(video.into(), reference("A video"));
+            let with_picture = torro_nextcloud::Reference { image: Some("vid123".into()), ..reference("A video") };
+            state.references.insert(video.into(), with_picture);
+            state.card_pictures.insert("vid123".into(), Picture { bytes: png(), content_type: "image/png".into() });
             state.references.insert(blog.into(), reference("A post"));
             let list = state.messages.get_mut("ben4chat").expect("Ben");
             list.push(super::super::remote::tests::message(6, &format!("see {own}")));
@@ -1760,6 +1762,12 @@ mod flow {
         assert_eq!(of(&decided, 8), (None, None));
         assert_eq!(server.count("resolve"), 2, "the blocked one is not resolved");
         assert_eq!(code(&chat.show_card(&message_id(&ben(), 8)).await), "unsupported");
+        let picture =
+            Request::ChatGetPreview { id: message_id(&ben(), 7), file: None, card: true, size: PreviewSize::Small };
+        assert!(
+            matches!(chat.handle(picture.clone(), APP).await, Response::ChatPicture { .. }),
+            "allowed: its picture"
+        );
 
         // Never: nothing of other servers, also a card held from before; the own server stays.
         set(&|privacy| privacy.content = ForeignContent::Never);
@@ -1774,8 +1782,6 @@ mod flow {
             Request::ChatListShared { conversation: ben(), kind: Some(SharedKind::Link), before: None, limit: None };
         let Response::ChatShared { items, .. } = chat.handle(links, APP).await else { panic!("links") };
         assert_eq!(items.iter().map(|item| item.name.as_str()).collect::<Vec<_>>(), ["https://cloud.example.org/f/12"]);
-        let picture =
-            Request::ChatGetPreview { id: message_id(&ben(), 7), file: None, card: true, size: PreviewSize::Small };
         assert_eq!(code(&chat.handle(picture, APP).await), "not-found");
 
         // Always: every card without a click, the blocked one too.
