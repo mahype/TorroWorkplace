@@ -221,10 +221,10 @@ impl FilesState {
         self.pictures.get(key)
     }
 
-    /// The small picture of `key` for the shared media, as far as it came; without one asked for,
-    /// the history's picture once it is there.
+    /// The picture of `key` for the shared media: the history's once it is there, else the small one
+    /// as far as it came.
     pub fn thumb(&self, key: &PictureKey) -> Option<&Shown> {
-        self.thumbs.get(key).or_else(|| self.pictures.get(key).filter(|shown| matches!(shown, Shown::Ready(_))))
+        self.pictures.get(key).filter(|shown| matches!(shown, Shown::Ready(_))).or_else(|| self.thumbs.get(key))
     }
 
     fn key(&mut self) -> u64 {

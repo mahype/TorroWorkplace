@@ -99,7 +99,7 @@ pub fn framed(width: Option<u32>, height: Option<u32>, max_width: f32, max_heigh
 /// square while the height allows, else flatter. Whole pixels; the last column and row take what
 /// rounding leaves.
 pub fn album_tiles(count: usize, width: f32, gap: f32, max_height: f32) -> (Vec<Rectangle>, f32) {
-    let width = width.round();
+    let width = width.max(0.0).round();
     // Two rows share what the height allows; a row is never higher than it is wide.
     let row = |natural: f32| natural.min(((max_height - gap) / 2.0).floor());
     match count {

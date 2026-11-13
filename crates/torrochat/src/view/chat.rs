@@ -299,9 +299,9 @@ impl App {
         let width = self.history_width(chat).min(size::content_max());
         // A bubble leaves "Reply" and "…" their place beside it (the history's padding and the
         // buttons with their gaps); a picture fills it inside its edge.
-        let beside = width - 2.0 * space::l() - tools_width() - 2.0 * space::xs();
+        let beside = (width - 2.0 * space::l() - tools_width() - 2.0 * space::xs()).max(0.0);
         let bubble = (width * BUBBLE_SHARE).min(beside);
-        let picture = (bubble - 2.0 * HAIRLINE).min(size::list()).floor();
+        let picture = (bubble - 2.0 * HAIRLINE).clamp(0.0, size::list()).floor();
         let room = Room { bubble, picture };
         let group = self.conversation(chat).is_some_and(|c| c.kind != torro_chat::ConversationKind::Direct);
         let today = timeline::day_of(chrono::Utc::now());
