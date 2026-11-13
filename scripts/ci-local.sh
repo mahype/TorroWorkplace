@@ -59,7 +59,7 @@ scope_crates() {
         tasks) echo "torrotasks torro-pim torro-pim-caldav torro-pim-github" ;;
         inbox) echo "torro-inbox torro-inbox-mail torro-inbox-notifications torroinbox" ;;
         caldav) echo "torro-pim-caldav torro-nextcloud" ;;
-        contacts) echo "torro-contacts torro-nextcloud" ;;
+        contacts) echo "torro-contacts torro-nextcloud torrocontacts" ;;
         wm) echo "torro-wm torro-setups torro-tui" ;;
         ai) echo "torroassistant" ;;
         *) return 1 ;;
