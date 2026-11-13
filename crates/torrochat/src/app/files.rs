@@ -13,8 +13,10 @@
 //! - **History:** previews come with `chat.get_preview` (small) as soon as a page arrives; until
 //!   then a calm placeholder of the same size stands there. "Open" fetches the file
 //!   (`chat.get_attachment`) and opens it with the system's program, "Download" saves it to
-//!   Downloads (`chat.save_attachment`), "Save as…" asks the system's dialog first. "Show preview"
-//!   asks for the card of a foreign link (`chat.show_card`).
+//!   Downloads (`chat.save_attachment`), "Save as…" asks the system's dialog first. Under a link to
+//!   another provider not asked about yet (issue #672), "Show once" asks for its card
+//!   (`chat.show_card`), "Always allow …" and "Never for …" put the provider on the list of Settings ›
+//!   Privacy (`settings.set_setting privacy_provider`).
 //! - **Shared media:** a column at the side (`chat.list_shared`) with the tabs Media, Files, Voice
 //!   and Links; "Show in chat" loads the messages around the item (`chat.get_messages` with
 //!   `around`) and marks it.
@@ -37,6 +39,7 @@ use torro_chat::{
 };
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
+use torro_core::privacy::ProviderChoice;
 use torro_gui::split::{self, Split, SplitEvent};
 use torro_gui::theme::size;
 use torro_gui::ui_state;
@@ -120,7 +123,7 @@ pub enum Busy {
     Saving,
 }
 
-/// "Show preview" of a foreign link.
+/// "Show once" of a foreign link.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CardAsk {
     Asking,
@@ -182,7 +185,7 @@ pub struct FilesState {
     pub pictures: HashMap<PictureKey, Shown>,
     /// File actions under way: (message, file).
     pub busy: BTreeMap<(String, String), Busy>,
-    /// "Show preview" asked or answered without a card, by message.
+    /// "Show once" asked or answered without a card, by message.
     pub cards: BTreeMap<String, CardAsk>,
     pub media: Option<MediaPanel>,
     /// The width of the shared media, as the person dragged it.
@@ -258,9 +261,13 @@ pub enum FilesMsg {
     /// "Open in Nextcloud": the file's id.
     Nextcloud(String),
     OpenLink(String),
-    /// "Show preview" of the message's foreign link.
+    /// "Show once" of the message's foreign link.
     ShowCard(String),
     Card(String, Result<Option<LinkCard>, ChatError>),
+    /// "Always allow …" or "Never for …" (issue #672): the provider's key and the choice for Settings
+    /// › Privacy.
+    Decide(String, ProviderChoice),
+    Decided(String, ProviderChoice, Result<(), ChatError>),
     /// A picture clicked: the window "Picture large".
     View(String, String),
     ToggleMedia,
@@ -568,6 +575,7 @@ impl App {
                     let image = card.image;
                     if let Some(held) = chat.messages.iter_mut().find(|held| held.id == message) {
                         held.cards = vec![card];
+                        held.foreign = None;
                     }
                     if image {
                         return self.want_pictures();
@@ -580,6 +588,28 @@ impl App {
                     files.cards.remove(&message);
                     self.file_note(file_failed(&err));
                 }
+            },
+            FilesMsg::Decide(key, choice) => {
+                return Task::perform(backend.set_provider(key.clone(), choice), move |result| {
+                    wrap(FilesMsg::Decided(key.clone(), choice, result))
+                });
+            }
+            // Every message of the window that asked about the provider asks no more: an allowed one
+            // fetches its card (as the core will by itself from now on), a blocked one keeps its link.
+            FilesMsg::Decided(key, choice, result) => match result {
+                Ok(()) => {
+                    let mut asked = Vec::new();
+                    for held in chat.messages.iter_mut() {
+                        if held.foreign.as_ref().is_some_and(|provider| provider.key == key) {
+                            held.foreign = None;
+                            asked.push(held.id.clone());
+                        }
+                    }
+                    if choice == ProviderChoice::Allowed {
+                        return Task::batch(asked.into_iter().map(|id| self.files_update(FilesMsg::ShowCard(id))));
+                    }
+                }
+                Err(err) => self.file_note(super::chat_failed(&err)),
             },
             FilesMsg::View(message, file) => {
                 self.menu = None;

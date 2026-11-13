@@ -3099,6 +3099,8 @@ impl MailStore {
             let auth = auth.and_then(|json| serde_json::from_str::<torro_mail::AuthResults>(&json).ok());
             Ok(Message {
                 summary,
+                // Filled by `mail.get_message` only (issue #672), never kept.
+                external: None,
                 cc: json_column(row, after(0))?,
                 reply_to: json_column(row, after(1))?,
                 text: row.get(after(7))?,

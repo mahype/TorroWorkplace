@@ -23,8 +23,8 @@ pub use files::{
     UploadProgress, UploadState, Uploaded,
 };
 pub use model::{
-    Author, Conversation, ConversationKind, FileRef, LinkCard, Mention, Message, MessageKind, MessagePage, NotifyLevel,
-    OwnStatus, Person, Preview, Quote, SearchHit, Status, conversation_id, message_id, person_id, split_conversation,
-    split_message, split_person,
+    Author, Conversation, ConversationKind, FileRef, ForeignProvider, LinkCard, Mention, Message, MessageKind,
+    MessagePage, NotifyLevel, OwnStatus, Person, Preview, Quote, SearchHit, Status, conversation_id, message_id,
+    person_id, split_conversation, split_message, split_person,
 };
 pub use source::{ChatError, ChatSource, Outgoing, StatusChange};

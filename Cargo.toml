@@ -96,7 +96,7 @@ mail-parser = { version = "0.11.9", features = ["full_encoding"] }
 mail-auth = { version = "=0.13.0", default-features = false, features = ["aws-lc-rs"] }
 # The registrable domain of a mail's sender (issue #453): `news.paypal.de` and `paypal.de` are one sender, and a
 # subdomain handed out to others (`x.duckdns.org`) is not its parent's. The Public Suffix List compiled in, no file
-# and no download at run time. MIT/Apache-2.0.
+# and no download at run time. Also the provider of content from another server (torro-core, issue #672). MIT/Apache-2.0.
 psl = "2.1.248"
 # The HTML part of a mail, cleaned through an allow list before the core keeps or hands it out (task M8.1).
 ammonia = "4.2.3"
@@ -112,7 +112,8 @@ html5ever = "=0.39.0"
 # build through dom_query's selectors, so no further cssparser enters the lock. MPL-2.0.
 cssparser = "=0.37.0"
 # The hosts of the links of a mail, for its warning signs of fraud (torroworkplace, issue #506): IP addresses, Punycode
-# and the domain a link really goes to. Already in the build through reqwest. MIT OR Apache-2.0.
+# and the domain a link really goes to; the hosts of a mail's pictures (torro-mail, issue #672). Already in the build
+# through reqwest. MIT OR Apache-2.0.
 url = "2.5"
 # The main content of a web page as Markdown for the tool web (torroworkplace, WEB.3, issue #305), Mozilla's
 # Readability ported to dom_query. On dom_query 0.28 above, so it adds no further html5ever: the second one (0.39)

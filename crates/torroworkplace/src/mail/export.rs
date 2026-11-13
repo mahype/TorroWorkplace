@@ -4,8 +4,9 @@
 //!
 //! **Drawing.** The head is HTML of its own, every value escaped, drawn without the network. The
 //! content is the mail's cleaned HTML (`mime::read`, as `mail.get_message` hands it out) with its
-//! `cid:` pictures from the message's own parts and – like the reader – its external pictures loaded
-//! (decision 2); a text mail is its text in a block that keeps its lines. Both are laid out 720
+//! `cid:` pictures from the message's own parts and its external pictures from where Settings › Privacy
+//! allows (issue #672: every host at "Always show", the providers allowed at "Ask", none at "Never
+//! show"; "Show once" of the mail window does not count, agents save too); a text mail is its text in a block that keeps its lines. Both are laid out 720
 //! logical pixels wide at scale 2 and always in light colours: paper is light. Drawing waits for the
 //! pictures at most [`WAIT_FOR_PICTURES`]; a picture that comes later can move what follows, so the
 //! heights are measured again on every page and after the picture, and a mail that changed is marked
@@ -32,7 +33,7 @@ use printpdf::{
     RawImageFormat, XObject, XObjectId, XObjectTransform,
 };
 use torro_core::i18n::{tr, trf};
-use torro_htmlview::{CidSource, Content, MAX_PICTURE_BYTES, Scheme};
+use torro_htmlview::{CidSource, Content, MAX_PICTURE_BYTES, Scheme, Web};
 use torro_ipc::mail::ExportFormat;
 use torro_mail::{AttachmentInfo, MailAddress};
 use torro_mail_imap::mime;
@@ -106,19 +107,19 @@ pub struct Drawn {
     pub shortened: bool,
 }
 
-/// Draws the mail with `head` and `body` as `format`. `online`: external pictures are loaded, as the
-/// reader loads them (the tests draw offline). `Err` when it cannot be drawn or written; the reason
+/// Draws the mail with `head` and `body` as `format`. `web`: where its external pictures may load from
+/// (issue #672; the tests draw with [`Web::Off`]). `Err` when it cannot be drawn or written; the reason
 /// goes to the log without anything of the mail.
 ///
 /// The drawing runs on a thread of its own with [`DRAW_STACK`]: the HTML comes from outside, and a
 /// deeply nested mail must not overflow the stack of the service (review of PR #514). The thread
 /// holds the turn of [`EXPORTS`] until it is done, even when the caller gave up waiting.
-pub async fn draw(head: Head, body: Body, format: ExportFormat, online: bool) -> Result<Drawn, ()> {
+pub async fn draw(head: Head, body: Body, format: ExportFormat, web: Web) -> Result<Drawn, ()> {
     let turn = EXPORTS.lock().await;
     let (answer, drawn) = tokio::sync::oneshot::channel();
     let spawned = std::thread::Builder::new().name("mail-export".into()).stack_size(DRAW_STACK).spawn(move || {
         let _turn = turn;
-        let _ = answer.send(draw_now(&head, body, format, online));
+        let _ = answer.send(draw_now(&head, body, format, web));
     });
     if let Err(err) = spawned {
         eprintln!("torroworkplace: mail: cannot start drawing a mail: {}", err.kind());
@@ -138,7 +139,7 @@ pub async fn draw(head: Head, body: Body, format: ExportFormat, online: bool) ->
 }
 
 /// [`draw`] on this (blocking) thread.
-fn draw_now(head: &Head, body: Body, format: ExportFormat, online: bool) -> Result<Drawn, String> {
+fn draw_now(head: &Head, body: Body, format: ExportFormat, web: Web) -> Result<Drawn, String> {
     if format == ExportFormat::Eml {
         return Err("EML must use the original, not the renderer".into());
     }
@@ -146,11 +147,7 @@ fn draw_now(head: &Head, body: Body, format: ExportFormat, online: bool) -> Resu
     let body = match body {
         Body::Html { html, raw, parts } => {
             let pictures = Pictures::of(raw, parts).map(|pictures| Arc::new(pictures) as Arc<dyn CidSource>);
-            match (online, pictures) {
-                (true, Some(pictures)) => Content::with_cid(&html, pictures),
-                (true, None) => Content::new(&html),
-                (false, pictures) => Content::offline(&html, pictures),
-            }
+            Content::with_web(&html, pictures, web)
         }
         Body::Text(text) => Content::offline(&text_html(&text), None),
     };
@@ -551,14 +548,14 @@ mod tests {
     #[tokio::test]
     async fn a_mail_becomes_a_picture_of_the_column() {
         let html = html_body("<html><body><h1>Rechnung</h1><p>Betrag: 42 €</p></body></html>");
-        let drawn = draw(head(), html, ExportFormat::Png, false).await.expect("drawn");
+        let drawn = draw(head(), html, ExportFormat::Png, Web::Off).await.expect("drawn");
         assert!(drawn.bytes.starts_with(b"\x89PNG\r\n\x1a\n") && !drawn.shortened);
         let (width, height) = png_size(&drawn.bytes);
         assert_eq!(width, 1440);
         assert!(height > 200, "head and content: {height}");
 
         let text = Body::Text("Sehr geehrte Damen und Herren,\n\nanbei die Rechnung.".into());
-        let drawn = draw(head(), text, ExportFormat::Png, false).await.expect("drawn");
+        let drawn = draw(head(), text, ExportFormat::Png, Web::Off).await.expect("drawn");
         assert_eq!(png_size(&drawn.bytes).0, 1440);
     }
 
@@ -576,11 +573,11 @@ mod tests {
     /// pages (Erledigt 3).
     #[tokio::test]
     async fn a_mail_becomes_a_pdf_of_a4_pages() {
-        let short = draw(head(), Body::Text("Kurz.".into()), ExportFormat::Pdf, false).await.expect("drawn");
+        let short = draw(head(), Body::Text("Kurz.".into()), ExportFormat::Pdf, Web::Off).await.expect("drawn");
         assert!(short.bytes.starts_with(b"%PDF") && !short.shortened);
         assert_eq!(pages(&short.bytes), 1);
         let html = html_body("<html><body><p>Betrag: 42 €</p></body></html>");
-        let drawn = draw(head(), html, ExportFormat::Pdf, false).await.expect("drawn");
+        let drawn = draw(head(), html, ExportFormat::Pdf, Web::Off).await.expect("drawn");
         assert_eq!(pages(&drawn.bytes), 1);
 
         let long = text_sheet(120);

@@ -23,6 +23,8 @@ toml.workspace = true
 ttf-parser.workspace = true
 # The fonts of the computer (#299): listed and checked to be used by name, never copied.
 fontdb.workspace = true
+# The provider of content from another server (issue #672, `privacy`): its registrable domain.
+psl.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -7271,6 +7271,7 @@ version = "0.1.0"
 dependencies = [
  "fontdb",
  "keyring",
+ "psl",
  "roxmltree 0.21.1",
  "schemars",
  "serde",
@@ -7386,6 +7387,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "url",
 ]
 
 [[package]]

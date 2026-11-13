@@ -15,6 +15,8 @@
 //!   the header bar with the path, the page, and the sending and loading around it.
 //! * [`suite`] – the pages of the whole suite, Appearance and General (issue #408): the control
 //!   centre shows them, and so does an app while the main application is not installed.
+//! * [`privacy`] – the suite's page Privacy (issue #672): what loads from other providers in Chat and
+//!   Mail, shown where Appearance is.
 //! * [`accounts`] – Accounts and AI (issue #410): the control centre shows them with every
 //!   provider, an app with the ones it uses behind its gear ([`Host::with_accounts`]); the accounts
 //!   stay one for the whole suite, in the daemon.
@@ -64,6 +66,7 @@ pub mod inbox;
 pub mod mail;
 pub mod outside;
 pub mod parts;
+pub mod privacy;
 pub mod rights;
 pub mod suite;
 
