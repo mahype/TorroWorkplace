@@ -17,6 +17,7 @@
 //!   [`attachments`].
 //! - Sharing items of the suite (stage 5): contacts as a card in [`share`].
 //! - Calls (stage 6b): ringing, declining and leaving in [`calls`]; the call runs in the browser.
+//! - The chat's windows float under AeroSpace and GlazeWM too ([`float`], issue #667).
 //!
 //! Logs name an account's id and a code, never a name, a text or a token.
 
@@ -25,6 +26,7 @@ pub mod cache;
 pub mod calls;
 #[cfg(test)]
 pub mod fake;
+pub mod float;
 pub mod live;
 pub mod media;
 pub mod remote;

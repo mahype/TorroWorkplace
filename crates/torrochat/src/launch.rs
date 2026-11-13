@@ -364,6 +364,30 @@ mod tests {
         assert!(matches!(window_of(&["--ring", "token"]), Err(LaunchError::UnknownValue { flag: "--ring", .. })));
     }
 
+    /// Issue #667: every window flag but the contact list's start has its entry in the core's list of
+    /// floating windows, so AeroSpace and GlazeWM float the window as it appears. A new window of the
+    /// chat (a call or device window) is entered there and here; an entry there alone fails the count.
+    #[test]
+    fn every_side_window_is_a_floating_window() {
+        use torro_core::app::{CHAT_CONVERSATION_CLASS, CHAT_RING_CLASS, CHAT_VIEWER_CLASS, FLOATING_WINDOWS};
+
+        let conversation = "nextcloud:anna@cloud.example.org/ben4chat";
+        let message = "nextcloud:anna@cloud.example.org/design4sync/3/5103";
+        let windows = [
+            ("--conversation", conversation, CHAT_CONVERSATION_CLASS),
+            ("--ring", conversation, CHAT_RING_CLASS),
+            ("--viewer", message, CHAT_VIEWER_CLASS),
+        ];
+        for (flag, value, class) in windows {
+            let window = window_of(&[&format!("{flag}={value}")]).expect("a window flag");
+            assert_ne!(window, Window::Contacts, "{flag}");
+            let entry = FLOATING_WINDOWS.iter().find(|entry| entry.binary == "torrochat" && entry.flag == flag);
+            assert_eq!(entry.map(|entry| entry.class), Some(class), "{flag}");
+        }
+        let chat = FLOATING_WINDOWS.iter().filter(|entry| entry.binary == torro_core::AppId::CHAT.binary);
+        assert_eq!(chat.count(), windows.len(), "no floating window of the chat without a flag here");
+    }
+
     #[test]
     fn viewer_takes_a_message_and_a_file() {
         let word = "nextcloud:anna@cloud.example.org/design4sync/3/5103";
