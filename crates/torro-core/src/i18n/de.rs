@@ -8605,6 +8605,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Your colleagues on Nextcloud Talk: who is online, a window per chat, files and quick replies.",
         "Deine Kollegen auf Nextcloud Talk: wer online ist, ein Fenster je Chat, Dateien und schnelle Antworten.",
     ),
+    // The contacts in the app catalog (issue #352)
+    ("Who was that again?", "Wer war das noch gleich?"),
+    (
+        "Your address books from Nextcloud: contacts by group, town or book, birthdays and favourites.",
+        "Deine Adressbücher aus Nextcloud: Kontakte nach Gruppe, Ort oder Buch, Geburtstage und Favoriten.",
+    ),
     // The Talk panel of the Notification Hub (issue #643)
     ("Cancel reply", "Antwort verwerfen"),
     ("Chat is not allowed for this window.", "Chat ist für dieses Fenster nicht erlaubt."),
