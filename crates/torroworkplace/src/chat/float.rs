@@ -7,15 +7,22 @@
 //! appears. It stands tiled for a moment before; only a rule in the person's configuration would avoid
 //! that, and the core leaves that configuration alone.
 
+use std::time::Duration;
+
 use torro_setups::capture::{floating_window_class, suite_app};
 use torro_wm::{Events, Window, WindowId, WindowManager, WmError, WmEvent};
+
+/// How long [`float_opened`] waits before it looks once more for a window the window manager announced
+/// but does not list yet (AeroSpace can report a window before it lays it out).
+const NOT_LISTED_YET: Duration = Duration::from_millis(300);
 
 /// Floats the window `window` that just opened with the class `class` if it is one of the floating
 /// windows of the suite; `Ok(true)` when it was floated.
 ///
 /// A window outside the suite costs no question to the window manager and no look at its process.
-/// A window that is gone again or already floats is left alone. `command_of` finds the window's start
-/// command (the core passes `torro_setups::launch::command_for`).
+/// A window the window manager does not list is looked for once more after [`NOT_LISTED_YET`]; one that
+/// is gone then or already floats is left alone. `command_of` finds the window's start command (the
+/// core passes `torro_setups::launch::command_for`).
 pub async fn float_opened(
     wm: &impl WindowManager,
     window: &WindowId,
@@ -25,15 +32,47 @@ pub async fn float_opened(
     if suite_app(class).is_none() {
         return Ok(false);
     }
-    let windows = wm.windows(None).await?;
-    let Some(opened) = windows.iter().find(|w| &w.id == window) else {
+    let mut opened = listed(wm, window).await?;
+    if opened.is_none() {
+        tokio::time::sleep(NOT_LISTED_YET).await;
+        opened = listed(wm, window).await?;
+    }
+    let Some(opened) = opened else {
         return Ok(false);
     };
-    if opened.floating || floating_window_class(class, &command_of(opened)).is_none() {
+    if opened.floating || floating_window_class(class, &command_of(&opened)).is_none() {
         return Ok(false);
     }
     wm.float_window(window).await?;
     Ok(true)
+}
+
+/// The window `window` as the window manager lists it now, `None` when it does not.
+async fn listed(wm: &impl WindowManager, window: &WindowId) -> Result<Option<Window>, WmError> {
+    Ok(wm.windows(None).await?.into_iter().find(|w| &w.id == window))
+}
+
+/// Floats every floating window of the suite that is open and tiled now; the number floated. For the
+/// start of watching: windows that opened while nobody listened, and windows a restarted window
+/// manager tiled again. A window that cannot be floated is logged and the next one looked at.
+pub async fn float_open_windows(
+    wm: &impl WindowManager,
+    command_of: impl Fn(&Window) -> Vec<String>,
+) -> Result<usize, WmError> {
+    let mut floated = 0;
+    for window in wm.windows(None).await? {
+        if window.floating
+            || suite_app(&window.class).is_none()
+            || floating_window_class(&window.class, &command_of(&window)).is_none()
+        {
+            continue;
+        }
+        match wm.float_window(&window.id).await {
+            Ok(()) => floated += 1,
+            Err(err) => eprintln!("torroworkplace: a chat window will not float: {err}"),
+        }
+    }
+    Ok(floated)
 }
 
 /// Floats every floating window of the suite that opens while `events` runs ([`float_opened`]). A
@@ -110,6 +149,27 @@ mod tests {
         wm.add_window(floating);
         assert_eq!(float_opened(&wm, &WindowId("0xa".into()), CHAT_BUNDLE, chat_command).await, Ok(false));
         assert!(wm.calls().is_empty());
+    }
+
+    /// After a restart of the window manager the chat windows are tiles again: watching starts by
+    /// floating them, not the contact list, not a window that floats already, not another program.
+    #[tokio::test]
+    async fn open_chat_windows_are_floated_when_watching_starts() {
+        let wm = FakeWm::new("1");
+        let tiled_chat = window("0xa", CHAT_BUNDLE, "1", Rect::default());
+        let mut list = window("0xb", CHAT_BUNDLE, "1", Rect::default());
+        list.pid = Some(1);
+        let mut floating_chat = window("0xc", CHAT_BUNDLE, "1", Rect::default());
+        floating_chat.floating = true;
+        wm.add_window(tiled_chat);
+        wm.add_window(list);
+        wm.add_window(floating_chat);
+        wm.add_window(window("0xd", "com.mitchellh.ghostty", "1", Rect::default()));
+        let command_of = |window: &Window| {
+            if window.pid == Some(1) { contact_list_command(window) } else { chat_command(window) }
+        };
+        assert_eq!(float_open_windows(&wm, command_of).await, Ok(1));
+        assert_eq!(wm.calls(), vec![Call::FloatWindow(WindowId("0xa".into()))]);
     }
 
     #[tokio::test]

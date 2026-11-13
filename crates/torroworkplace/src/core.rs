@@ -13118,17 +13118,28 @@ impl Core {
 
     /// Floats each floating window of the suite ([`torro_core::app::FLOATING_WINDOWS`]: the chat's side
     /// windows, the template dialog) as it appears, under AeroSpace and GlazeWM (issue #667,
-    /// [`crate::chat::float`]). Runs for the core's lifetime: when the event stream ends or cannot be
-    /// opened (the window manager restarted or is not there yet), it subscribes again after
-    /// [`FLOAT_RESUBSCRIBE`]. Returns at once where floating a window is `Unsupported`.
+    /// [`crate::chat::float`]). Each time it subscribes it first floats such windows that are open and
+    /// tiled: those opened while nobody listened, and those a restarted window manager tiled again. Runs
+    /// for the core's lifetime: when the event stream ends or cannot be opened (the window manager
+    /// restarted or is not there yet), it subscribes again after [`FLOAT_RESUBSCRIBE`], and says so in
+    /// the log once until it can subscribe again. Returns at once where floating a window is `Unsupported`.
     async fn follow_floating_windows(&self) {
+        let mut reported = false;
         loop {
             match self.backend.events().await {
                 Ok(events) => {
+                    reported = false;
+                    if let Err(err) = crate::chat::float::float_open_windows(&self.backend, command_for).await {
+                        eprintln!("torroworkplace: open chat windows are not floated: {err}");
+                    }
                     crate::chat::float::follow(&self.backend, events, command_for).await;
                 }
                 Err(WmError::Unsupported(_)) => return,
-                Err(err) => eprintln!("torroworkplace: new windows are not watched for floating: {err}"),
+                Err(err) if !reported => {
+                    reported = true;
+                    eprintln!("torroworkplace: new windows are not watched for floating: {err}");
+                }
+                Err(_) => {}
             }
             tokio::time::sleep(FLOAT_RESUBSCRIBE).await;
         }
