@@ -1442,7 +1442,9 @@ MCP-Tool dafür: Agenten ändern nie Rechte („Was nie nach außen geht“, Pun
   allein dieser Zugriff, nicht „Nach außen“ (Fußnote ²⁵). Keine Vorlage öffnet einen Server, auch *Full access*
   nicht, und auch die Stufe im Bereich `extensions` nicht. Nur Assistent und Bots starten offen (`Rights::opened`:
   Grundstufe Voll, alle eingebauten Werkzeuge, Bereich `tools` Voll ohne Admin; seit #666 die Startrechte von
-  `Rights::assistant()` und jedem neuen Bot, bestehende ohne Grundstufe öffnet der Kern einmal beim Laden). Keys von
+  `Rights::assistant()` und jedem neuen Bot, bestehende ohne Grundstufe öffnet der Kern einmal beim Laden; dabei ersetzt `opened` auch eine engere
+  Auswahl der Werkzeuge und den Bereich `tools`, gewollt nach Entscheidung 3 von #666: Wer weniger will, schaltet es
+  danach unter „Used by the assistant“ aus, und das bleibt). Keys von
   API- und MCP-Clients behalten keine Grundstufe (`Rights::for_kind`); ein Server öffnet sich für sie nur mit Namen.
   Ein geliehener Schlüssel ohne `extensions`, eine Freigabe, die einengt, und ein Gespräch, das den Bereich
   abschaltet, schließen alle Server (`close_extensions`: Liste leer, Grundstufe Kein Zugriff). Der Nur-Lese-Modus

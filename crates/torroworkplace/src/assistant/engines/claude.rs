@@ -137,9 +137,9 @@ pub fn arguments(
 }
 
 /// [`DENIED_TOOLS`] and, as Claude Code names them, the suite's tools of the areas `without` (issue
-/// #133): the areas the agent never gets and those switched off in the conversation; in a read-only
+/// #133): the areas switched off in the conversation; in a read-only
 /// answer every tool that changes something (issue #132); the commands of the assistant's own tools
-/// not in `tools`, the ones switched on and selected (issue #225). Claude Code leaves denied tools
+/// not in `tools`, the ones selected (issue #225). Claude Code leaves denied tools
 /// out of what its model sees, so the model does not try mail and run into `forbidden`; the core
 /// refuses them anyway.
 fn denied(without: &[Area], mode: Mode, tools: &[ToolId]) -> String {

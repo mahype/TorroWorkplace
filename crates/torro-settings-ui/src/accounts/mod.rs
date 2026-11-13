@@ -459,7 +459,7 @@ pub enum Asked {
 }
 
 impl Asked {
-    /// The answer may have changed the settings (a slot, `decideMailToCloud`, a model turned on): the
+    /// The answer may have changed the settings (a slot, a model turned on): the
     /// shell reloads after it. Reading answers do not, so polling every second stays light.
     pub fn changes(&self) -> bool {
         matches!(self, Asked::Slot(_) | Asked::Setup { changes: true, .. })

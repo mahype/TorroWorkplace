@@ -4700,11 +4700,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Only you can do this, in Torro Workplace.", "Das kannst nur du, in Torro Workplace."),
     ("You switched off {area} for this conversation.", "Du hast {area} für diese Unterhaltung ausgeschaltet."),
-    (
-        "{area} never goes to coding agents like Claude Code: your data rule keeps it on your computers. Choose an AI account on this computer for it.",
-        "{area} geht nie an Coding-Agenten wie Claude Code: Deine Datenregel hält es auf deinen Computern. Wähle dafür ein KI-Konto auf diesem Computer.",
-    ),
-    ("Never gets your mail", "Bekommt nie deine Mails"),
     // Control centre: mail on the page Appearance (task M9.8)
     (
         "Formatted shows mail the way the sender designed it. Dark recolors mail for a dark background; some newsletters look worse that way.",
@@ -6169,8 +6164,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Add Nextcloud account…", "Nextcloud-Konto hinzufügen…"),
     ("Add ntfy account…", "ntfy-Konto hinzufügen…"),
     ("No account yet.", "Noch kein Konto."),
-    ("Allow API keys", "API-Schlüssel erlauben"),
-    ("Allow MCP", "MCP erlauben"),
     (
         "Another MCP client has this name. Choose another one.",
         "Ein anderer MCP-Client hat diesen Namen. Wähle einen anderen.",

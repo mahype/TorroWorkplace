@@ -1005,15 +1005,14 @@ impl App {
                     }
                     (EngineKind::Ai, Some(Err(_))) => vec![item(tr("Automatic").to_owned(), pick(None))],
                     (EngineKind::Ai, None) => vec![item(tr("Automatic").to_owned(), pick(None))],
-                    // An agent picks its model itself or takes one of its own (issue #131), and never
-                    // gets mail (issue #133): said where it is picked, not only when a tool is refused.
-                    // No agent is offered since issue #219, so this arm is reached only where one is
+                    // An agent picks its model itself or takes one of its own (issue #131); since issue
+                    // #664 it reads mail as its rights allow, so nothing is said about mail here. No
+                    // agent is offered since issue #219, so this arm is reached only where one is
                     // listed again; the kind stays in the protocol, so the picker keeps showing it.
                     (EngineKind::Agent, offered) => {
                         let models = offered.and_then(Result::ok).unwrap_or_default();
                         std::iter::once(item(tr("Automatic").to_owned(), pick(None)))
                             .chain(models.into_iter().map(|model| item(model.name.clone(), pick(Some(model.id)))))
-                            .chain([MenuItem::new(Icon::Info, tr("Never gets your mail"), Message::CloseMenu)])
                             .collect()
                     }
                     (EngineKind::Test, _) => vec![item(engine.name.clone(), pick(None))],

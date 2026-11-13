@@ -1257,7 +1257,7 @@ pub const ASSISTANT_CLIENT: &str = "assistant";
 pub const BOT_CLIENT: &str = "bot";
 
 /// The client kind of a script or program with an API key (#231, Settings › API clients): it comes only
-/// through the API ([`crate::Door::Api`]) and only while "Allow API keys" is on. Its name is its
+/// through the API ([`crate::Door::Api`]). Its name is its
 /// inbox source (`script:<name>`, [`post_source`]).
 pub const SCRIPT_CLIENT: &str = "script";
 
@@ -1267,8 +1267,7 @@ pub const SCRIPT_CLIENT: &str = "script";
 pub const MCP_CLIENT: &str = "mcp";
 
 /// The kinds of MCP clients (#231): the coding agents and apps the connect wizard knows, and
-/// [`MCP_CLIENT`]. They come only through MCP ([`crate::Door::Mcp`]) and only while "Allow MCP" is
-/// on.
+/// [`MCP_CLIENT`]. They come only through MCP ([`crate::Door::Mcp`]).
 pub const MCP_KINDS: &[&str] = &[
     "claude-code",
     "codex",
@@ -5719,8 +5718,7 @@ static MY_ACCESS: Command = Command {
                   area, the calendars, task lists, GitHub repositories, inbox sources and mail accounts you see \
                   (`all` or their ids), the commands the person turned off for you one by one (`denied`, by their \
                   names), whether you may send mail and what waits for the person's approval; as the \
-                  assistant or a bot also the areas your engine never gets and those switched off in this \
-                  conversation. Use it when the person asks what you may do. Changes nothing; only the person \
+                  assistant or a bot also the areas switched off in this conversation. Use it when the person asks what you may do. Changes nothing; only the person \
                   changes rights, in Torro Workplace.",
 };
 
@@ -9920,9 +9918,8 @@ mod reference {
                 "  `method` ist der Name des Befehls, die Felder aus den Tabellen unten stehen daneben im",
                 "  Objekt `request`. Ohne gültigen Schlüssel antwortet der Dienst nur auf `system.ping`.",
                 "- **Weg:** `\"via\":\"mcp\"` im Umschlag sagt, dass der Request über MCP kommt (`torroworkplace mcp`,",
-                "  `torroworkplace hook`); ohne `via` gilt `api`. Schlüssel von Skripten gelten nur über `api` und",
-                "  nur mit „Allow API keys“, Schlüssel von MCP-Clients nur über `mcp` und nur mit „Allow MCP“;",
-                "  sonst `unauthorized` ([api.md](api.md#transport)).",
+                "  `torroworkplace hook`); ohne `via` gilt `api`. Schlüssel von Skripten gelten nur über `api`,",
+                "  Schlüssel von MCP-Clients nur über `mcp`; sonst `unauthorized` ([api.md](api.md#transport)).",
                 "- **Antwort:** ein JSON-Objekt mit `result` (etwa `events`, `done`, `error`, `pending`).",
                 "  Clients müssen unbekannte Werte von `result` tolerieren.",
                 "- **Fehler:** `{\"result\":\"error\",\"code\":\"…\",\"message\":\"…\"}`. `code` ist fest, `message` ist für",

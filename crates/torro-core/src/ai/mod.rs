@@ -652,16 +652,14 @@ impl AiFunction {
 /// One of the two places a model is chosen for (issue #325, `docs/tasks/ki-modellwahl.md`): instead
 /// of a model per function, the person picks one for chatting and one for the suite's small
 /// decisions. A function takes the model of its slot ([`AiFunction::slot`]) unless it has an
-/// assignment of its own ([`AiAssignment`], the exception). Each slot has its own permission for
-/// mail to leave this computer ([`crate::settings::Settings::mail_to_cloud_in`]).
+/// assignment of its own ([`AiAssignment`], the exception). Issue #664: no slot holds a permission
+/// for mail; what a model reads follows from the rights and the model chosen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AiSlot {
-    /// `"chat"`: the assistant and its bots; a new chat starts with its model. Its mail permission
-    /// is `mail_to_cloud`.
+    /// `"chat"`: the assistant and its bots; a new chat starts with its model.
     Chat,
-    /// `"decide"`: the suite's small decisions, sorting mail into categories first. Its mail
-    /// permission is `decide_mail_to_cloud`.
+    /// `"decide"`: the suite's small decisions, sorting mail into categories first.
     Decide,
 }
 

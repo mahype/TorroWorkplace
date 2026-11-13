@@ -4278,7 +4278,7 @@ pub enum Request {
     #[serde(rename = "assistant.list_memories")]
     ListMemories,
     /// What the client that asks may do now (issue #134): its rights as they apply to this
-    /// request, after the areas its engine never gets, those switched off in the conversation and,
+    /// request, after the areas switched off in the conversation and,
     /// for a bot that runs for the assistant, what both clients may ([`Response::MyAccess`]). For a
     /// client key only; the app key gets `unsupported` (it may do everything). Changes nothing.
     #[serde(rename = "assistant.my_access")]

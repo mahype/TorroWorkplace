@@ -573,8 +573,7 @@ mod tests {
         }
     }
 
-    /// Issue #134: the prompt says what the assistant may do in each area, as the person set it,
-    /// and what its engine never gets.
+    /// Issue #134: the prompt says what the assistant may do in each area, as the person set it.
     #[test]
     fn the_prompt_says_what_the_assistant_may_do() {
         use torro_ipc::api::AreaRights;

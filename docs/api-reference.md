@@ -22,9 +22,8 @@ als Beschreibung der MCP-Tools lesen.
   `method` ist der Name des Befehls, die Felder aus den Tabellen unten stehen daneben im
   Objekt `request`. Ohne gültigen Schlüssel antwortet der Dienst nur auf `system.ping`.
 - **Weg:** `"via":"mcp"` im Umschlag sagt, dass der Request über MCP kommt (`torroworkplace mcp`,
-  `torroworkplace hook`); ohne `via` gilt `api`. Schlüssel von Skripten gelten nur über `api` und
-  nur mit „Allow API keys“, Schlüssel von MCP-Clients nur über `mcp` und nur mit „Allow MCP“;
-  sonst `unauthorized` ([api.md](api.md#transport)).
+  `torroworkplace hook`); ohne `via` gilt `api`. Schlüssel von Skripten gelten nur über `api`,
+  Schlüssel von MCP-Clients nur über `mcp`; sonst `unauthorized` ([api.md](api.md#transport)).
 - **Antwort:** ein JSON-Objekt mit `result` (etwa `events`, `done`, `error`, `pending`).
   Clients müssen unbekannte Werte von `result` tolerieren.
 - **Fehler:** `{"result":"error","code":"…","message":"…"}`. `code` ist fest, `message` ist für
@@ -3393,7 +3392,7 @@ Keine Felder.
 
 Zugriff `read` · MCP-Tool `assistant_my_access`
 
-Tells you your own rights as they apply now: the level (read, write, full) and admin switch per area, the calendars, task lists, GitHub repositories, inbox sources and mail accounts you see (`all` or their ids), the commands the person turned off for you one by one (`denied`, by their names), whether you may send mail and what waits for the person's approval; as the assistant or a bot also the areas your engine never gets and those switched off in this conversation. Use it when the person asks what you may do. Changes nothing; only the person changes rights, in Torro Workplace.
+Tells you your own rights as they apply now: the level (read, write, full) and admin switch per area, the calendars, task lists, GitHub repositories, inbox sources and mail accounts you see (`all` or their ids), the commands the person turned off for you one by one (`denied`, by their names), whether you may send mail and what waits for the person's approval; as the assistant or a bot also the areas switched off in this conversation. Use it when the person asks what you may do. Changes nothing; only the person changes rights, in Torro Workplace.
 
 Keine Felder.
 
