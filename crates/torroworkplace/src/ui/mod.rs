@@ -255,6 +255,9 @@ pub struct Data {
     /// Every task list, GitHub filter lists included (`tasks.list_lists`), for the selections of a
     /// client's rights.
     pub task_lists: Vec<Collection>,
+    /// Every address book, the hidden ones too (`contacts.list_address_books`), for the selections of
+    /// a client's rights and the count on an account's page.
+    pub address_books: Vec<torro_contacts::AddressBook>,
     /// The inbox sources with entries or muted (`inbox.list_sources`), for the selections of a
     /// client's rights.
     pub sources: Vec<SourceInfo>,
@@ -2650,6 +2653,11 @@ fn load(with_providers: bool, ai_cache: Option<MailDeciderCache>) -> Task<Messag
             }
             if let Ok(Response::Collections { collections }) = client::call(&socket, &Request::TaskCollections).await {
                 data.task_lists = collections;
+            }
+            if let Ok(Response::AddressBooks { books }) =
+                client::call(&socket, &Request::ListAddressBooks { account: None }).await
+            {
+                data.address_books = books;
             }
             if let Ok(Response::Sources { sources }) = client::call(&socket, &Request::ListSources).await {
                 data.sources = sources;

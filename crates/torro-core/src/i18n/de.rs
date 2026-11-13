@@ -8994,4 +8994,27 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Previews, pictures and videos in chats; off, this agent gets none of them",
         "Vorschauen, Bilder und Videos in Chats; aus bekommt dieser Agent keine davon",
     ),
+    // Rights per address book and the account page's Contacts (issue #353)
+    ("Address books", "Adressbücher"),
+    (
+        "Includes address books added later. Hidden ones are never included.",
+        "Enthält später hinzugefügte Adressbücher. Ausgeblendete gehören nie dazu.",
+    ),
+    (
+        "Address books left off don't exist for this agent.",
+        "Ausgeschaltete Adressbücher gibt es für diesen Agenten nicht.",
+    ),
+    ("all address books", "alle Adressbücher"),
+    ("1 address book", "1 Adressbuch"),
+    ("{n} address books", "{n} Adressbücher"),
+    ("1 contact", "1 Kontakt"),
+    ("{n} contacts", "{n} Kontakte"),
+    ("Hidden address books", "Ausgeblendete Adressbücher"),
+    ("Never included in “All”. Switch each one on by name.", "Gehören nie zu „Alle“. Jedes einzeln einschalten."),
+    ("1 of them hidden", "1 davon ausgeblendet"),
+    ("{n} of them hidden", "{n} davon ausgeblendet"),
+    (
+        "You choose which address books an agent sees under MCP clients, on its page.",
+        "Welche Adressbücher ein Agent sieht, wählst du unter MCP-Clients auf seiner Seite.",
+    ),
 ];

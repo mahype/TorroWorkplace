@@ -32,6 +32,10 @@ impl Seen for Data {
         self.error.as_deref()
     }
 
+    fn address_books(&self) -> &[torro_contacts::AddressBook] {
+        &self.address_books
+    }
+
     fn installed(&self, app: AppId) -> bool {
         match &self.apps {
             Some(apps) => apps.iter().any(|known| known.installed && known.window_class == app.window_class),

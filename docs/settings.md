@@ -665,6 +665,11 @@ sofort, immer nur eine zur Zeit, weil sie ihre Einstellungen ohne Abschied schli
   Server eine Zeile mit der Stufe (No access · Read · Write · Full). „Show commands“ zeigt seine zugestimmten
   Werkzeuge mit Zugriff und Schalter (`ext.<id>.<werkzeug>` in der Sperrliste); ausgeschaltete Server sind
   markiert. Speichern wie bisher über `clients.update_client`.
+- **Adressbücher (#353):** Ist „Contacts“ nicht „No access“, wählt die Gruppe „Address books“ (All/Selected)
+  die Bücher, die der Agent sieht; beim Einschalten sind alle sichtbaren angehakt. Das System-Adressbuch und
+  „Recently contacted“ stehen getrennt in „Hidden address books“: nie vorgewählt, nie Teil von „All“, jedes
+  einzeln anzuhaken (`Rights.address_books`, `Rights.hidden_address_books`). Die Kontoseite eines Nextcloud-Kontos
+  zeigt unter „Contacts“ nur die Zahl der Adressbücher und wie viele ausgeblendet sind.
 - Wie bisher: Auswahl der Kalender, Listen, Repositories, Inbox-Quellen, Mail-Konten und eigenen Werkzeuge des
   Assistenten (#225; ein Werkzeug, das in den Einstellungen des Assistenten aus ist, trägt ein Warnzeichen),
   „Ask first“, „Send on my behalf“. Gespeichert wird automatisch nach 500 ms mit `clients.update_client` (die ganzen Rechte).

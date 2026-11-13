@@ -82,14 +82,15 @@ pub fn sections(app: AppId) -> Vec<Section> {
 }
 
 /// What the page loads for `app`: the clients, and what the selections of its areas offer – the
-/// calendars, the task lists (whose GitHub filter lists name the repositories), the inbox sources, the
-/// accounts (mail accounts, and the account a calendar or list belongs to).
+/// calendars, the task lists (whose GitHub filter lists name the repositories), the address books, the
+/// inbox sources, the accounts (mail accounts, and the account a calendar or list belongs to).
 pub fn wanted(app: AppId) -> Vec<Request> {
     let mut wanted = vec![Request::ListClients, Request::Accounts];
     for area in areas(app) {
         let request = match area {
             Area::Calendar => Request::CalendarCollections,
             Area::Tasks | Area::Github => Request::TaskCollections,
+            Area::Contacts => Request::ListAddressBooks { account: None },
             Area::Inbox => Request::ListSources,
             _ => continue,
         };
@@ -182,6 +183,7 @@ fn belongs(message: &rights::Message, areas: &[Area]) -> bool {
         M::Level(area, _) | M::Admin(area, _) | M::Expand(area) => areas.contains(area),
         M::Command(name, _) => CATALOGUE.iter().any(|command| command.name == *name && areas.contains(&command.area)),
         M::All(pick, _) | M::Tick(pick, ..) => areas.contains(&pick.area()),
+        M::HiddenBook(..) => areas.contains(&Area::Contacts),
         M::AddRepo => areas.contains(&Pick::GithubRepos.area()),
         M::Outbound(_) => areas.contains(&Area::Mail),
         M::ImageContent(_) => areas.contains(&Area::Chat),
