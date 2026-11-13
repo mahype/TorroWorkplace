@@ -352,7 +352,7 @@ pub enum Request {
     #[serde(rename = "workflows.get_workflow")]
     GetWorkflow { id: String },
     /// Asks the configured chat model for a bounded draft from mail, a target and an optional instruction.
-    /// Returns WorkflowDraft; not-connected without a model, forbidden under mail data rules.
+    /// Returns WorkflowDraft; not-connected without a model, forbidden without the rights for the mail.
     #[serde(rename = "workflows.propose_workflow")]
     ProposeWorkflow { mail: String, save_target: String, instruction: String },
     /// Stores a validated, inactive draft. No test, grant or rule is created.
@@ -380,7 +380,7 @@ pub enum Request {
     /// Repeat explicitly requests a new generation; ordinary retries are deduplicated across versions/rules.
     #[serde(rename = "workflows.run")]
     RunWorkflow { id: String, revision: u32, mail: String, test: bool, repeat: bool },
-    /// Reachable runs, optionally for one workflow/mail. Content is untrusted and subject to mail data rules.
+    /// Reachable runs, optionally for one workflow/mail. Content is untrusted and within the caller's rights.
     #[serde(rename = "workflows.list_runs")]
     ListWorkflowRuns { workflow: Option<String>, mail: Option<String> },
     /// One reachable run; unknown/foreign ids are not-found.
@@ -4273,9 +4273,8 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         personality: Option<String>,
     },
-    /// The notes of the assistant's memory, oldest first ([`Response::Memories`]). A note kept from
-    /// remote models ([`Note::local_only`]) is listed only for the app key and clients with read
-    /// access to mail. Never fails; an empty list when the memory cannot be read.
+    /// The notes of the assistant's memory, oldest first ([`Response::Memories`]). A note from mail
+    /// ([`Note::local_only`]) is listed only for the app key and clients with read access to mail. Never fails; an empty list when the memory cannot be read.
     #[serde(rename = "assistant.list_memories")]
     ListMemories,
     /// What the client that asks may do now (issue #134): its rights as they apply to this
@@ -4296,8 +4295,9 @@ pub enum Request {
         /// The id of the note this one replaces.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         replaces: Option<String>,
-        /// Keep the note from models outside this computer ([`Note::local_only`]). A note that
-        /// replaces such a note stays so.
+        /// The note comes from mail ([`Note::local_only`]): it waits for the person's approval and
+        /// is listed only for clients that may read mail. Since issue #664 every model reads every
+        /// note. A note that replaces such a note stays so.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         local_only: bool,
     },

@@ -1475,7 +1475,7 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
 pub fn scene(name: &str) -> Option<Vec<Message>> {
     Some(match name {
         "ai" => vec![Message::Tab(1)],
-        "waiting" => vec![Message::Tab(1)],
+        "network" => vec![Message::Tab(1)],
         "categories" => Vec::new(),
         "category" => vec![Message::Editor(editor::Message::EditCategory(Category::Invoice))],
         // Issue #506: the page of Phishing with its trusted senders.

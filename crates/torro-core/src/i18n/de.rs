@@ -616,7 +616,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Get program", "Programm herunterladen"),
     ("Load in your AI program", "Im KI-Programm laden"),
     ("Load the suggested model in the program first.", "Lade das vorgeschlagene Modell zuerst im Programm."),
-    ("Mail needs your explicit permission.", "Für Mail ist deine ausdrückliche Zustimmung nötig."),
+    ("Mail may leave this computer.", "Mail kann diesen Rechner verlassen."),
     ("May be too large for this computer", "Möglicherweise zu groß für diesen Rechner"),
     ("Model list unavailable", "Modellliste nicht verfügbar"),
     ("No models available", "Keine Modelle verfügbar"),
@@ -4440,10 +4440,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Picture", "Bild"),
     ("Picture: {text}", "Bild: {text}"),
     ("Profile", "Profil"),
-    (
-        "Remember for the assistant, on this computer only: \"{note}\"",
-        "Für den Assistenten merken, nur auf diesem Computer: „{note}“",
-    ),
+    ("Remember for the assistant, from mail: \"{note}\"", "Für den Assistenten merken, aus einer Mail: „{note}“"),
     ("Remember for the assistant: \"{note}\"", "Für den Assistenten merken: „{note}“"),
     ("Say “Remember …” in a chat, or add a note here.", "Sag im Chat „Merk dir …“ oder füge hier eine Notiz hinzu."),
     ("Shown under the name in the chat.", "Steht im Chat unter dem Namen."),
@@ -4686,7 +4683,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Only you can do this", "Das kannst nur du"),
     ("{area} is off in this conversation", "{area} ist in dieser Unterhaltung aus"),
     // Task C.17: the data rule for mail under Mail of the assistant and its bots.
-    ("Mail to cloud models", "Mail an Cloud-Modelle"),
     (
         "Off: the chat reads mail only with AI on your own computers",
         "Aus: Der Chat liest Mail nur mit KI auf deinen eigenen Rechnern",
@@ -6231,8 +6227,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("This agent can't use tools left off.", "Ausgeschaltete Werkzeuge kann dieser Agent nicht verwenden."),
     ("The assistant and each bot have their own.", "Der Assistent und jeder Bot haben eigene."),
     (
-        "New tools and servers are allowed until you switch them off here.",
-        "Neue Werkzeuge und Server sind erlaubt, bis du sie hier ausschaltest.",
+        "New servers are allowed until you switch them off here, new tools as long as every tool is on.",
+        "Neue Server sind erlaubt, bis du sie hier ausschaltest, neue Werkzeuge, solange alle Werkzeuge an sind.",
     ),
     (
         "No MCP servers yet. Each one you add in Torro Workplace under MCP servers is allowed here.",
@@ -7842,7 +7838,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // The slots in the control centre's AI section (MW.8, issue #325); "Models", "Chat", "Sorting", "This
     // computer", "Retry", "Saving…", "None", "Cancel", "Turned off in Settings › AI" and "Answers in a fixed
     // format, slower" stand above.
-    ("Chat may read mail in the cloud", "Chat darf Mail in der Cloud lesen"),
     ("{tier} class", "Klasse {tier}"),
     ("Wait until the download for {slot} has finished", "Warte, bis der Download für {slot} fertig ist"),
     ("Wait until {slot} is saved", "Warte, bis {slot} gespeichert ist"),

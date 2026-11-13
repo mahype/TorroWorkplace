@@ -950,7 +950,6 @@ mod tests {
         off.enabled = false;
         let models = vec![off, model("tev1", Some(true))];
         assert_eq!(chosen(Some(&assign(Some("nimble"))), &models, here, true), Err(Refusal::NoModel));
-        assert_eq!(chosen(Some(&assign(Some("nimble"))), &models, here, true), Err(Refusal::NoModel));
         assert_eq!(
             chosen(Some(&assign(None)), &models, here, true),
             Ok(("ai:ollama@localhost:11434".into(), "tev1".into())),

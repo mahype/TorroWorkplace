@@ -502,8 +502,30 @@ pub async fn send(backend: Arc<dyn Backend>, requests: Vec<Request>, wanted: Vec
 /// Sends `requests` one after the other and loads nothing: what the host does with an
 /// [`Action::Send`] since issue #394, which then asks for its data answer by answer. Stops at the
 /// first request that fails, as [`send`] does.
+///
+/// The rights of the assistant or a bot (Access) go over the tools and servers the core holds right
+/// then: those are set under "API and MCP" ([`outside::send`]), so a draft of Access never takes back
+/// a switch flipped there meanwhile (review of #663).
 pub async fn apply(backend: Arc<dyn Backend>, requests: Vec<Request>) -> Result<(), String> {
     for request in requests {
+        let request = match request {
+            Request::UpdateClient { id, rights } => {
+                let fresh = match backend.call(Request::ListClients).await? {
+                    Response::Clients { clients } => clients.into_iter().find(|client| {
+                        client.id == id
+                            && [torro_ipc::api::ASSISTANT_CLIENT, torro_ipc::api::BOT_CLIENT]
+                                .contains(&client.kind.as_str())
+                    }),
+                    _ => None,
+                };
+                let rights = match fresh {
+                    Some(fresh) => outside::merged_used(&rights, &fresh.rights),
+                    None => rights,
+                };
+                Request::UpdateClient { id, rights }
+            }
+            other => other,
+        };
         backend.call(request).await?;
     }
     Ok(())

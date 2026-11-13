@@ -3232,9 +3232,9 @@ fn profile_summary(request: &Request, facts: &Facts) -> String {
         (Request::Remember { text, replaces: None, local_only: false }, _) => {
             trf("Remember for the assistant: \"{note}\"", &[("note", &quote(text))])
         }
-        // Kept from remote models: written after the assistant read mail (task C.10).
+        // Written after the assistant read mail (task C.10): the person sees where it comes from.
         (Request::Remember { text, replaces: None, local_only: true }, _) => {
-            trf("Remember for the assistant, on this computer only: \"{note}\"", &[("note", &quote(text))])
+            trf("Remember for the assistant, from mail: \"{note}\"", &[("note", &quote(text))])
         }
         (Request::Remember { text, .. }, Some(old)) => {
             trf("Change the assistant's note \"{old}\" to \"{note}\"", &[("old", &old), ("note", &quote(text))])
@@ -5753,7 +5753,7 @@ pub(crate) mod tests {
         let local = Request::Remember { text: "ACME owes 400 €.".into(), replaces: None, local_only: true };
         assert_eq!(
             summary(&local, &unknown),
-            trf("Remember for the assistant, on this computer only: \"{note}\"", &[("note", &"ACME owes 400 €.")])
+            trf("Remember for the assistant, from mail: \"{note}\"", &[("note", &"ACME owes 400 €.")])
         );
     }
 

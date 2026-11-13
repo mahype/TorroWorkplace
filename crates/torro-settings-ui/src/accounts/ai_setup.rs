@@ -1116,7 +1116,7 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
                     suggestions.push(setup_row(
                         narrow,
                         tr("Computation location unknown"),
-                        Some(tr("Mail needs your explicit permission.").into()),
+                        Some(tr("Mail may leave this computer.").into()),
                         iced::widget::Space::new(),
                     ));
                 }
@@ -1145,7 +1145,7 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
         }
         if !suggestions.is_empty() {
             let title = if cloud { tr("Suggested models") } else { tr("Our suggestion for this PC") };
-            let hint = cloud.then(|| tr("Mail needs your explicit permission.").to_string());
+            let hint = cloud.then(|| tr("Mail may leave this computer.").to_string());
             parts = parts.push(widgets::group(title, suggestions, hint));
             if !state.hosted {
                 parts = parts.push(widgets::text_button(
@@ -1280,7 +1280,7 @@ fn hosted_view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message>
     if !rows.is_empty() {
         let footer = match decide_local {
             true => tr("Your mail stays on this computer."),
-            false => tr("Mail needs your explicit permission."),
+            false => tr("Mail may leave this computer."),
         };
         parts = parts.push(widgets::group(tr("Our suggestion for this PC"), rows, Some(footer.to_string())));
     }

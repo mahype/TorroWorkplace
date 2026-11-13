@@ -927,6 +927,26 @@ mod tests {
         assert!(!demo.sent()[before..].iter().any(|request| matches!(request, Request::UpdateClient { .. })));
     }
 
+    /// Review of #663: a save of Access for the assistant keeps the tools and servers the core holds,
+    /// so it never takes back a switch of "Used by the assistant"; its areas go as edited.
+    #[tokio::test]
+    async fn an_access_save_keeps_the_tools_and_servers_held() {
+        let data = data(AppId::ASSISTANT).await;
+        let assistant = data.clients.iter().find(|client| client.kind == ASSISTANT_CLIENT).expect("assistant");
+        let mut edited = assistant.rights.clone();
+        edited.tools = torro_ipc::api::Selection::Only(Vec::new());
+        edited.extensions.insert("time".into(), Level::Full);
+        edited.areas.insert(Area::Tasks, torro_ipc::api::AreaRights { level: Level::Full, admin: false });
+        let demo = Arc::new(Demo::new());
+        let backend: Arc<dyn Backend> = demo.clone();
+        let update = Request::UpdateClient { id: assistant.id.clone(), rights: edited };
+        crate::apply(backend, vec![update]).await.expect("saved");
+        let sent = demo.sent();
+        let Some(Request::UpdateClient { rights, .. }) = sent.last() else { panic!("{sent:?}") };
+        assert_eq!(rights.area(Area::Tasks).level, Level::Full, "the area as edited");
+        assert_eq!((&rights.tools, &rights.extensions), (&assistant.rights.tools, &assistant.rights.extensions));
+    }
+
     /// A draft that waits for its turn is not replaced by a change of another client.
     #[tokio::test]
     async fn a_waiting_draft_keeps_its_place() {

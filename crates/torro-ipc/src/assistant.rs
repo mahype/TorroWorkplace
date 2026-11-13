@@ -404,9 +404,10 @@ pub struct Note {
     pub text: String,
     /// When it was written (or last changed).
     pub created: DateTime<Utc>,
-    /// Kept from models outside the person's computers (the data rule, `docs/ki.md`): set when a
-    /// model on this computer wrote it after reading mail, or when the client asked for it. Such a
-    /// note reaches no remote model or agent, and a client sees it only with read access to mail.
+    /// The note comes from mail: set when the client asked for it (older versions also set it when a
+    /// model on this computer wrote it after reading mail). Such a note waits for the person's
+    /// approval and a client sees it only with read access to mail. Since issue #664 (no data rule)
+    /// every model reads every note; the name stays for older files and clients.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub local_only: bool,
 }

@@ -1102,8 +1102,8 @@ impl Assistant {
         }
     }
 
-    /// What an answer reads of the profile and the memory: the personality and every note. The
-    /// prompt keeps notes marked [`Note::local_only`] from remote models itself ([`prompt::system`]).
+    /// What an answer reads of the profile and the memory: the personality and every note, those
+    /// from mail too ([`Note::local_only`], issue #664: every model reads them).
     async fn persona_and_notes(&self) -> (String, Vec<Note>) {
         (self.profile().await.personality, self.notes().await)
     }
@@ -1671,7 +1671,7 @@ pub(crate) mod tests {
             instructions: String::new(),
             skills: Vec::new(),
         };
-        let bot = match crate::bots::answer(&assistant, &clients, save).await {
+        let bot = match crate::bots::answer(&assistant, &clients, save, true).await {
             Response::Bot { bot } => bot,
             other => panic!("expected a bot, got {other:?}"),
         };

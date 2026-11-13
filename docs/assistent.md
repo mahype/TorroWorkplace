@@ -248,8 +248,10 @@ Agenten mit eigenem Profil, die auf ein Fachgebiet zugeschnitten sind, z. B. „
   und man jeden Schritt nachvollziehen kann.
 - **Anlegen:** in der App des Assistenten. Der Hauptbot kann einen Bot **vorschlagen**
   (Name, Beschreibung, Persönlichkeit, Anweisungen), ein neuer Bot hat aber keine Rechte an Daten, bis der
-  Mensch sie vergibt (Punkt 2 in „Was nie nach außen geht“). Eingebaute Werkzeuge und MCP-Server darf er seit #666
-  von Anfang an, bis ein Mensch sie unter „API and MCP“ abschaltet. Wer einen Bot selbst anlegt, vergibt
+  Mensch sie vergibt (Punkt 2 in „Was nie nach außen geht“). Eingebaute Werkzeuge und MCP-Server darf ein Bot,
+  den der Mensch anlegt, seit #666 von Anfang an, bis er sie unter „API and MCP“ abschaltet. Ein Bot, den ein
+  Client anlegt (auch ein Vorschlag des Hauptbots), startet auch dafür geschlossen (Review von #663): Kein
+  Programm verschafft sich über einen Bot Server oder Werkzeuge. Wer einen Bot selbst anlegt, vergibt
   die Rechte gleich im Bot-Editor (Abschnitt „Access“: Stufe je Bereich und „Ask first“, B.5);
   welche Kalender, Konten und Repositories, Senden und Admin-Befehle stellt man im Assistent-Fenster
   unter Einstellungen › Access bei diesem Bot ein.
@@ -405,7 +407,7 @@ Werkzeuge**: Fähigkeiten, die nur dem Assistenten (und den Bots) gehören, je e
   assistant“** (#666): ein Auswahlfeld (Assistant, je Bot), je Werkzeug ein Schalter (Ausschalten macht aus „alle“
   die Liste ohne dieses Werkzeug) und „Show commands“; der Hinweis sagt „New tools and servers are allowed until you
   switch them off here.“. Für Schlüssel und MCP-Clients unter Steuerzentrale › API clients bzw. MCP clients.
-- **Standard:** Assistent und neue Bots starten mit allen Werkzeugen, `web` eingeschlossen (`Rights::opened`), und
+- **Standard:** Assistent und Bots, die der Mensch anlegt, starten mit allen Werkzeugen, `web` eingeschlossen (`Rights::opened`), und
   Rechte ohne Grundstufe öffnet der Kern einmal so (beim Laden, Anlegen und Ändern); abschalten tut der Mensch. Schlüssel von API- und MCP-Clients
   starten geschlossen; in den Vorlagen *Read only* (nur auflisten), *Read and write* und *Full access* ist der
   Bereich wie jeder andere.
@@ -703,7 +705,7 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | Gedächtnis lesen / ergänzen / löschen | ebenda › Memory; im Chat „Remember …“ | `assistant.list_memories` · Read, `assistant.remember` · Write, `assistant.forget` · Delete | `assistant_list_memories`, `assistant_remember`, `assistant_forget` |
 | Eigene Rechte kennen (Issue #134) | im Chat „Welche Rechte hast du?“ (Prompt-Zusammenfassung); die Person sieht sie in Assistent › Einstellungen › Access | `assistant.my_access` · Read (Assistent und Bots durch ihre Art, andere Clients mit `assistant`) | `assistant_my_access` |
 | **Stufe 2:** Bots auflisten | Seitenleiste „Bots“ | `bots.list_bots` · Read | `bots_list_bots` |
-| **Stufe 2:** Bot anlegen/ändern (ohne Rechte) | Bot-Editor | `bots.save_bot` · Write | `bots_save_bot` |
+| **Stufe 2:** Bot anlegen/ändern (ohne Rechte an Daten; von einem Client angelegt auch ohne Werkzeuge und Server) | Bot-Editor | `bots.save_bot` · Write | `bots_save_bot` |
 | **Stufe 2:** Bot löschen | Bot-Editor | `bots.delete_bot` · Delete | `bots_delete_bot` |
 | **Stufe 2:** Bot fragen | Chat mit dem Bot; Hauptbot gibt ab | `bots.ask_bot` · Write (startet einen Modelllauf) | `bots_ask_bot` |
 | **Stufe 2:** Rechte eines Bots | Bot-Editor › Access (Stufen je Bereich, „Ask first“, B.5); alles Feinere in Assistent › Einstellungen › Access bei diesem Bot | `clients.list_clients` · Admin, `clients.update_client` · Admin (gibt es, nur App-Schlüssel) | **Never** (Punkt 2) |

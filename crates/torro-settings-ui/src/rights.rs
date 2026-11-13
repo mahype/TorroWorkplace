@@ -1448,7 +1448,7 @@ fn servers_groups<'a>(
         let words = tr("No MCP servers yet. Each one you add in Torro Workplace under MCP servers is allowed here.");
         servers.push(row_frame(typo::text(typo::body(), words).style(theme::text_3), false));
     }
-    let footer = tr("New tools and servers are allowed until you switch them off here.");
+    let footer = tr("New servers are allowed until you switch them off here, new tools as long as every tool is on.");
     vec![
         widgets::group(tr("Built-in tools"), tools, None),
         widgets::group(tr("MCP servers"), servers, Some(footer.to_string())),

@@ -335,7 +335,8 @@ MCP-Clients an. Der Server spricht nie mit Torro, hat keinen eigenen Schlüssel 
   (`Rights::extensions`: Kennung → Kein Zugriff · Lesen · Lesen und Schreiben · Voll; fehlt der Eintrag, gilt die
   Grundstufe `Rights::extensions_default`, ohne sie Kein Zugriff). Keine Vorlage öffnet einen Server, auch *Full
   access* nicht. Ein einzelnes Werkzeug sperrt `ext.<id>.<werkzeug>` in `Rights::denied`. Kein `Area` je Server.
-- **Standard für Assistent und Bots (#666):** Sie starten mit der Grundstufe Voll (`Rights::opened`): Jeder Server, dem
+- **Standard für Assistent und Bots (#666):** Sie starten mit der Grundstufe Voll (`Rights::opened`; ein Bot, den ein
+  Client anlegt, startet geschlossen): Jeder Server, dem
   die Person zugestimmt hat, steht ihnen offen, auch einer, der später dazukommt, bis die Person ihn im Assistenten
   unter „API and MCP“ › „Used by the assistant“ abschaltet (Eintrag „Kein Zugriff“). Rechte von Assistent und Bots ohne Grundstufe öffnet
   der Kern einmal so, beim Laden, beim Anlegen und beim Ändern (`Rights::opened_once`). Keys von API- und MCP-Clients bekommen keine Grundstufe: Ein Server

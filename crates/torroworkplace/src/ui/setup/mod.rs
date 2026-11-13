@@ -1512,9 +1512,6 @@ mod tests {
         assert_eq!(pages::primary(&setup, &data), (tr("Preparing model…"), false, true));
         assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::None)));
         assert!(matches!(update(&mut setup, Message::Later, &data), Outcome::Stay(Action::None)));
-        let mut asking = state(Step::Ai);
-        ai_setup::demo(&mut asking.ai_setup, "cloud-consent", &data);
-        assert!(!ai_working(&asking), "a question is no work");
     }
 
     /// The primary button says what is missing when pressed too early, and the note goes with the next step

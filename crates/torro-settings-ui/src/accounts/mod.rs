@@ -186,7 +186,7 @@ pub enum Action {
     /// that has just opened ([`widgets::DROPDOWN_SEARCH`], issue #554).
     Focus(&'static str),
     /// Open the control centre at this section (issue #547): "Open Torro Workplace" of an app
-    /// window's AI section, where the models, the other slots and the data rule are set.
+    /// window's AI section, where the AI accounts and their models are set.
     ControlCentre(String),
 }
 
@@ -322,8 +322,7 @@ impl State {
     }
 
     /// Whether the page stands in the mail window (issue #545): there AI shows only the slot that
-    /// sorts mail ([`ai_parts`]). The chat belongs to the assistant and the data rule to the suite, and
-    /// mail has no chat they would hold for.
+    /// sorts mail ([`ai_parts`]). The chat belongs to the assistant.
     fn in_mail(&self) -> bool {
         self.window == Some(AppId::INBOX_MAIL.window_class)
     }
@@ -1205,7 +1204,8 @@ fn ai_accounts(data: &dyn Seen) -> impl Iterator<Item = &AccountInfo> {
 /// lacks – the suggestion and the downloads once per opening, and the models of every AI account
 /// not asked for yet (`all`, as an account's page asks, so both share [`State::models`]). The shell
 /// calls it when the section is chosen, with every good reload while it is open, and at a start on
-/// it. Without an AI account there is no group, so nothing is asked.
+/// it. Without an AI account there is no group, so nothing is asked. Where the page shows no slot
+/// (issue #664, [`ai_parts`]) the answers stay unused; the slots' tests run on the plain state.
 pub fn ai_shown(state: &mut State, data: &dyn Seen) -> Action {
     let accounts: Vec<String> = ai_accounts(data).map(|account| account.id.clone()).collect();
     if accounts.is_empty() {

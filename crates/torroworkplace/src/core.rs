@@ -1236,8 +1236,9 @@ fn elsewhere_of(provider: torro_core::ai::AiProvider, server: &str, model: Optio
 }
 
 /// The models of an account that count for its switches ([`Core::model_off_refusal`]): all of
-/// `models`, or with `here_only` only those that compute on this computer – where mail must stay
-/// here and no model is named, one on elsewhere would never be asked, and nothing would say why.
+/// `models`, or with `here_only` only those that compute on this computer – where "Automatic" at an
+/// account here picks only models here, one on elsewhere would never be asked, and nothing would say
+/// why.
 fn considered_models(
     provider: torro_core::ai::AiProvider,
     server: &str,
@@ -4412,7 +4413,7 @@ impl Core {
         }
         let request = crate::mail::write::with_trash_role(&self.mail, Reach::Client(&rights), request).await;
         // Point 6 (task C.9): switching the microphone on is a person's, also with every right, and
-        // so is letting mail go to the cloud (task C.17). The assistant's own memory is its own
+        // so is choosing a model elsewhere for sorting (issue #664). The assistant's own memory is its own
         // whatever its rights in `assistant` say (task C.10).
         // A suggestion of the mail a chat is about counts as reading there (issue #605, [`about_read`]).
         let checked = self.operation_about(&request, via.about.as_ref());
@@ -7026,8 +7027,11 @@ impl Core {
             request @ (Request::ListBots
             | Request::GetBot { .. }
             | Request::SaveBot { .. }
-            | Request::DeleteBot { .. }) => crate::bots::answer(&self.assistant, &self.clients, request).await,
-            // Profile and memory (task C.10): a note kept from remote models only for the app key
+            | Request::DeleteBot { .. }) => {
+                let by_person = matches!(reach, Reach::Suite);
+                crate::bots::answer(&self.assistant, &self.clients, request, by_person).await
+            }
+            // Profile and memory (task C.10): a note from mail only for the app key
             // and clients that may read mail.
             request @ (Request::GetProfile
             | Request::UpdateProfile { .. }
@@ -12477,7 +12481,7 @@ impl Core {
     }
 
     /// Whether `request` from a client turns on a model that computes elsewhere (task S.24): only a
-    /// person may, like letting mail go to the cloud (`docs/api.md`, "Was nie nach außen geht", 6),
+    /// person may, like choosing one elsewhere for sorting (`docs/api.md`, "Was nie nach außen geht", 6),
     /// since every module would then send it what it reads. Where the model computes is the account's
     /// list in the core ([`AiAccounts::runs_elsewhere`], in doubt elsewhere). Turning a model off, and
     /// turning on one that computes here, are ordinary admin commands. The list's error when the core
@@ -12488,8 +12492,7 @@ impl Core {
     ///
     /// Choosing a model elsewhere for what reads mail is the person's too (issue #325, task MW.2):
     /// `ai.set_slot decide` with a model elsewhere, and `ai.set_assignment` that is on for a function
-    /// that reads mail ([`torro_core::ai::AiFunction::reads_mail`]) with one – also while the
-    /// permission is on, since it was given to another provider; switched off too, unless it names what
+    /// that reads mail ([`torro_core::ai::AiFunction::reads_mail`]) with one; switched off too, unless it names what
     /// the function uses now ([`names_what_is_in_effect`]), so no agent prepares one the person later
     /// switches on. Naming no model, the account's seat
     /// decides ([`elsewhere_of`]): "Automatic" at an account here picks only models here
@@ -13565,9 +13568,9 @@ fn decided_ids(request: &Request, origin: &crate::approvals::Origin) -> Vec<Stri
     ids
 }
 
-/// Whether `reach` may see notes of the assistant's memory kept from remote models
+/// Whether `reach` may see notes of the assistant's memory that come from mail
 /// ([`torro_ipc::assistant::Note::local_only`], task C.10): the suite, and a client with read access
-/// to mail – such a note may retell a mail. A key lent to an agent never has mail.
+/// to mail – such a note may retell a mail.
 /// `assistant.my_access` (issue #134) for a client admitted with `rights` (already narrowed as the
 /// core checks its commands: by the areas of a lent key, and for a bot that runs for the assistant to
 /// what both may), the request coming as `origin` says: the engine, and the areas switched off in the
@@ -27379,7 +27382,7 @@ mod tests {
         let local = waits(ask(&core, Some(&key), remember("ACME wants 400 €.", true)).await);
         assert_eq!(
             local.summary,
-            trf("Remember for the assistant, on this computer only: \"{note}\"", &[("note", &"ACME wants 400 €.")])
+            trf("Remember for the assistant, from mail: \"{note}\"", &[("note", &"ACME wants 400 €.")])
         );
         assert_eq!(asked.summary, trf("Forget the assistant's note \"{note}\"", &[("note", &"Anna works in sales.")]));
         for request in [Request::GetProfile, Request::ListConversations] {
@@ -27749,7 +27752,10 @@ mod tests {
         let made = core.assistant.bots().list().await;
         assert_eq!(made.iter().map(|bot| bot.name.as_str()).collect::<Vec<_>>(), ["Release helper", "Travel planner"]);
         let helper = core.clients.list().into_iter().find(|info| info.id == made[0].client).expect("its client");
-        assert_eq!(helper.rights, Rights::none().opened(), "a proposed bot has no data either");
+        // Review of #663: the assistant proposed it, a client, so it starts closed to tools and servers too.
+        let mut closed = Rights::none();
+        closed.close_extensions();
+        assert_eq!(helper.rights, closed, "a proposed bot has no rights either");
 
         for request in [
             Request::GetBot { id: travel.id.clone() },
