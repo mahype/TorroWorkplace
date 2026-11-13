@@ -3663,8 +3663,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     // HTML mail in the reader of the inbox (M9.7); "HTML" and "Text" read the same in German
     (
-        "Mail from outside the suite: no scripts run, pictures from the web are loaded.",
-        "Mail von außerhalb der Suite: Es laufen keine Skripte, Bilder aus dem Netz werden geladen.",
+        "Mail from outside the suite: no scripts run, pictures from the web load as Settings › Privacy allows.",
+        "Mail von außerhalb der Suite: Es laufen keine Skripte, Bilder aus dem Netz laden, wie es Einstellungen › Privatsphäre erlaubt.",
     ),
     // Take accounts over from TorroMail (M7.4)
     ("Connecting…", "Verbinde …"),
@@ -8805,7 +8805,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Show in chat", "Im Chat zeigen"),
     ("Show large", "Groß anzeigen"),
     ("Show older", "Ältere zeigen"),
-    ("Show preview", "Vorschau zeigen"),
     ("Show {name} large", "{name} groß anzeigen"),
     ("The clipboard could not be read.", "Die Zwischenablage konnte nicht gelesen werden."),
     ("The demo opens no files.", "Die Demo öffnet keine Dateien."),
@@ -8877,5 +8876,59 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     (
         "You choose which address books an agent sees under MCP clients, on its page.",
         "Welche Adressbücher ein Agent sieht, wählst du unter MCP-Clients auf seiner Seite.",
+    ),
+    // Settings › Privacy (issue #672)
+    ("Always show", "Immer zeigen"),
+    ("Ask", "Fragen"),
+    ("Blocked", "Gesperrt"),
+    (
+        "Chat and Mail ask before they load pictures, previews or videos from a provider for the first time.",
+        "Chat und Mail fragen, bevor sie zum ersten Mal Bilder, Vorschauen oder Videos eines Anbieters laden.",
+    ),
+    (
+        "Chat and Mail load nothing from other providers and ask nothing.",
+        "Chat und Mail laden nichts von fremden Anbietern und fragen nicht.",
+    ),
+    (
+        "Chat and Mail load pictures, previews and videos from every provider without asking.",
+        "Chat und Mail laden Bilder, Vorschauen und Videos von jedem Anbieter, ohne zu fragen.",
+    ),
+    ("Content from other providers", "Inhalte fremder Anbieter"),
+    (
+        "Forget a provider, and Chat and Mail ask about it again.",
+        "Vergisst du einen Anbieter, fragen Chat und Mail wieder nach.",
+    ),
+    ("Forget provider", "Anbieter vergessen"),
+    ("Never show", "Nie zeigen"),
+    ("Never show also stops sender logos in Mail.", "„Nie zeigen“ stellt auch die Absender-Logos in Mail ab."),
+    ("No providers yet", "Noch keine Anbieter"),
+    ("Pictures, previews and videos", "Bilder, Vorschauen und Videos"),
+    ("Privacy", "Privatsphäre"),
+    (
+        "Providers appear here when you allow or block one in Chat or Mail.",
+        "Anbieter erscheinen hier, wenn du in Chat oder Mail einen erlaubst oder sperrst.",
+    ),
+    ("The list counts only while “Ask” is chosen.", "Die Liste gilt nur, solange „Fragen“ gewählt ist."),
+    // Content from other providers in chat and mail (issue #672)
+    ("Always allow these", "Diese immer erlauben"),
+    ("Always allow {provider}", "{provider} immer erlauben"),
+    (
+        "Content from this provider is turned off in Settings › Privacy.",
+        "Inhalte dieses Anbieters sind in Einstellungen › Privatsphäre ausgeschaltet.",
+    ),
+    ("Couldn't save the choice for the images.", "Die Wahl für die Bilder konnte nicht gespeichert werden."),
+    ("Images from {count} providers are not loaded.", "Bilder von {count} Anbietern werden nicht geladen."),
+    ("Images from {provider} are not loaded.", "Bilder von {provider} werden nicht geladen."),
+    (
+        "Loading them tells the image server when you read this.",
+        "Lädst du sie, erfährt der Bildserver, wann du das liest.",
+    ),
+    ("Never for these", "Für diese nie"),
+    ("Never for {provider}", "Für {provider} nie"),
+    ("Show once", "Einmal zeigen"),
+    ("This message shows content from {provider}.", "Diese Nachricht zeigt Inhalte von {provider}."),
+    (
+        "{names}. Loading them tells the image servers when you read this.",
+        "{names}. Lädst du sie, erfahren die Bildserver, wann du das liest.",
     ),
 ];
