@@ -163,6 +163,12 @@ impl WindowManager for AeroSpace {
     async fn focus_monitor(&self, monitor: &str) -> Result<(), WmError> {
         self.run(&["focus-monitor", "--", &cli::monitor_pattern(monitor)]).await.map(|_| ())
     }
+
+    /// Issue #667: `layout --window-id <id> floating`, the option before the layout as in AeroSpace's
+    /// synopsis. AeroSpace has no command to centre a floating window, so it stays where its tile was.
+    async fn float_window(&self, window: &WindowId) -> Result<(), WmError> {
+        self.run(&["layout", "--window-id", &cli::window_arg(window)?, "floating"]).await.map(|_| ())
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -345,6 +351,16 @@ cat "$dir/geometry.json"
             fake.commands(),
             ["focus --window-id 102", "move-node-to-workspace --window-id 103 -- -web", "close --window-id 101"]
         );
+    }
+
+    /// Issue #667: a chat window floats by its id; an id AeroSpace cannot have is refused before a call.
+    #[tokio::test]
+    async fn float_window_sets_the_floating_layout_of_that_window() {
+        let fake = Fake::new("float");
+        let wm = fake.wm();
+        wm.float_window(&WindowId("512".into())).await.expect("float");
+        assert!(matches!(wm.float_window(&WindowId("0xabc".into())).await, Err(WmError::NotFound(_))));
+        assert_eq!(fake.commands(), ["layout --window-id 512 floating"]);
     }
 
     #[tokio::test]

@@ -4,7 +4,7 @@
 //! sends events to subscribers like a real backend. Tests set it up with
 //! [`FakeWm::add_window`], simulate an application showing up with
 //! [`FakeWm::open_window`] and check [`FakeWm::calls`] afterwards. Key binds and window rules are
-//! only recorded; [`FakeWm::reload_config`] sends [`WmEvent::ConfigReloaded`] like Hyprland does.
+//! only recorded; a floated window ([`WindowManager::float_window`]) floats; [`FakeWm::reload_config`] sends [`WmEvent::ConfigReloaded`] like Hyprland does.
 
 use std::sync::{Mutex, MutexGuard};
 
@@ -33,6 +33,8 @@ pub enum Call {
     UnbindKeys(Vec<String>),
     /// [`WindowManager::float_dialogs`] with the class.
     FloatDialogs(String),
+    /// [`WindowManager::float_window`] with the window, also an unknown one.
+    FloatWindow(WindowId),
 }
 
 #[derive(Debug, Default)]
@@ -236,6 +238,17 @@ impl WindowManager for FakeWm {
         self.lock().calls.push(Call::FloatDialogs(class.to_string()));
         Ok(())
     }
+
+    /// The window floats from now on ([`Window::floating`]). `NotFound` for an unknown window.
+    async fn float_window(&self, window: &WindowId) -> Result<(), WmError> {
+        let mut state = self.lock();
+        state.calls.push(Call::FloatWindow(window.clone()));
+        let Some(found) = state.windows.iter_mut().find(|w| &w.id == window) else {
+            return Err(WmError::NotFound(window.0.clone()));
+        };
+        found.floating = true;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -310,5 +323,17 @@ mod tests {
             ]
         );
         assert_eq!(wm.version().await, None);
+    }
+
+    /// Issue #667: a floated window is floating afterwards; an unknown one is `NotFound`.
+    #[tokio::test]
+    async fn float_window_marks_the_window_floating() {
+        let wm = FakeWm::new("1");
+        let opened = wm.open_window("torro-chat-conversation", None);
+        wm.float_window(&opened).await.expect("floated");
+        let unknown = WindowId("0xgone".into());
+        assert!(matches!(wm.float_window(&unknown).await, Err(WmError::NotFound(_))));
+        assert!(wm.all_windows().iter().all(|w| w.floating));
+        assert_eq!(wm.calls(), vec![Call::FloatWindow(opened), Call::FloatWindow(unknown)]);
     }
 }
