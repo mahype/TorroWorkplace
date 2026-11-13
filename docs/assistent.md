@@ -636,6 +636,10 @@ Freigaben.
 
 Aufgaben: [tasks/assistent.md](tasks/assistent.md), WD.1–WD.4.
 
+Ein Terminal-Werkzeug, das Befehle ausführt, ist **kein** Teil davon: Es hebt den Zweck von Entscheidung 6 auf und
+braucht eigene Regeln für Freigabe, Sandbox und Rechte. Das Konzept dazu steht in [terminal.md](terminal.md)
+(Diskussionsgrundlage, Issue #706).
+
 ## Sprache: per Weckwort mit dem Assistenten reden
 
 Ziel: Man sagt ein **Weckwort** (zum Start fest „Hey Torro“, später frei wählbar) und spricht einfach los: „Was steht heute
@@ -727,6 +731,9 @@ Sprache (C.9) kommt zuletzt, wenn der Chat steht. Persönlichkeit und Gedächtni
 (C.10), Bots sind Stufe 2 (Aufgaben B.1–B.5, geplant am 2026-10-14).
 
 ## Offen
+
+Ein Terminal-Werkzeug für den Assistenten ist als Konzept in [terminal.md](terminal.md) beschrieben, noch nicht entschieden
+(Issue #706).
 
 Fremde MCP-Server im Chat sind mit #302 gebaut (Entscheidung 9): Ihre Werkzeuge bekommt der Assistent nur über
 den Kern, mit der Stufe je Server, nur nach Zustimmung der Person zu jedem Werkzeug und mit Freigabe, wo der
