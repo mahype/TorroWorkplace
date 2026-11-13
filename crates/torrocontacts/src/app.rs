@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use chrono::{Local, NaiveDate};
 use iced::theme::Mode;
 use iced::widget::image::Handle;
-use iced::widget::operation;
+use iced::widget::{operation, text_editor};
 use iced::{Point, Size, Subscription, Task, Theme, keyboard};
 use torro_contacts::{
     AddressBook, Birthday, Contact, ContactSummary, ContactsError, ContactsSource, Keep, Moved, PhotoSize,
@@ -163,6 +163,10 @@ pub enum Press {
     Edit,
     /// `[`: the sidebar.
     Sidebar,
+    /// `M`: mail the contact under the cursor (as the row's "Mail").
+    Mail,
+    /// `C`: call the contact under the cursor (as the row's "Call").
+    Call,
 }
 
 #[derive(Debug, Clone)]
@@ -215,6 +219,8 @@ pub enum Message {
 
     // -- The contact
     Fetched(String, Result<Contact, ContactsError>),
+    /// "Retry" after the open contact could not be fetched.
+    Refetch,
     Close,
     OpenUri(String),
     CopyText(String),
@@ -239,6 +245,8 @@ pub enum Message {
     Edit,
     NewContact(Option<String>, Option<String>),
     Draft(edit::Msg),
+    /// A change of the notes in the form.
+    NoteEdit(text_editor::Action),
     ToggleKind(List, usize),
     ToggleAddField,
     Cancel,
@@ -297,6 +305,8 @@ pub struct App {
     pub(crate) menu: Option<Menu>,
     pub(crate) dialog: Option<Dialog>,
     pub(crate) detail: Option<Detail>,
+    /// The notes of the form, which take several lines; [`Draft::note`] follows them.
+    pub(crate) note: text_editor::Content,
     pub(crate) notice: Option<Notice>,
 
     /// Small pictures per contact id: their version and the picture (`None`: not to be had, asked
@@ -317,6 +327,14 @@ pub fn failed(err: &ContactsError) -> String {
         ContactsError::NotFound => tr("The contact is gone.").to_owned(),
         ContactsError::Conflict { .. } => tr("This contact changed meanwhile. Check and save again.").to_owned(),
         ContactsError::Unsupported(text) | ContactsError::Other(text) => text.clone(),
+    }
+}
+
+/// Why the first load failed, for people: as [`failed`], without the changes that wait.
+pub fn load_failed(err: &ContactsError) -> String {
+    match err {
+        ContactsError::Offline => tr("The server cannot be reached.").to_owned(),
+        other => failed(other),
     }
 }
 
@@ -360,6 +378,7 @@ impl App {
             menu: None,
             dialog: None,
             detail: None,
+            note: text_editor::Content::new(),
             notice: None,
             photos: HashMap::new(),
             photos_busy: false,
@@ -774,6 +793,12 @@ impl App {
             }
 
             Message::Fetched(id, result) => return self.fetched(id, result),
+            Message::Refetch => {
+                if let Some(detail) = &mut self.detail {
+                    detail.error = None;
+                }
+                return self.refetch();
+            }
             Message::Close => {
                 self.detail = None;
                 self.menu = None;
@@ -965,12 +990,22 @@ impl App {
                 self.detail = Some(Detail {
                     id: None,
                     contact: None,
-                    draft: Some(Draft::empty()),
+                    draft: Some({
+                        self.note = text_editor::Content::new();
+                        Draft::empty()
+                    }),
                     new_in: Some((book, group)),
                     group_text: String::new(),
                     busy: false,
                     error: None,
                 });
+            }
+            Message::NoteEdit(action) => {
+                self.note.perform(action);
+                let text = self.note.text();
+                if let Some(draft) = self.detail.as_mut().and_then(|d| d.draft.as_mut()) {
+                    draft.note = text.trim_end().to_owned();
+                }
             }
             Message::Draft(msg) => {
                 if let Some(draft) = self.detail.as_mut().and_then(|d| d.draft.as_mut()) {
@@ -1088,6 +1123,15 @@ impl App {
             Press::Search => operation::focus(SEARCH),
             Press::Sidebar => self.update(Message::ToggleSidebar),
             Press::Edit => self.edit(),
+            Press::Mail | Press::Call if self.editing() => Task::none(),
+            Press::Mail => match self.cursor.clone() {
+                Some(id) => self.update(Message::QuickMail(id)),
+                None => Task::none(),
+            },
+            Press::Call => match self.cursor.clone() {
+                Some(id) => self.update(Message::QuickCall(id)),
+                None => Task::none(),
+            },
             Press::Up | Press::Down => {
                 if self.editing() {
                     return Task::none();
@@ -1222,7 +1266,9 @@ impl App {
         if detail.draft.is_some() || contact.readonly {
             return Task::none();
         }
-        detail.draft = Some(Draft::of(contact));
+        let draft = Draft::of(contact);
+        self.note = text_editor::Content::with_text(&draft.note);
+        detail.draft = Some(draft);
         Task::none()
     }
 
@@ -1313,7 +1359,7 @@ impl App {
             }
             Err(err) => {
                 if !self.loaded {
-                    self.error = Some(failed(&err));
+                    self.error = Some(load_failed(&err));
                     self.loaded = true;
                 } else {
                     self.notify(failed(&err));
@@ -1354,7 +1400,7 @@ impl App {
                 self.contacts.clear();
                 self.birthdays.clear();
             }
-            Open::Error => self.error = Some(failed(&ContactsError::Offline)),
+            Open::Error => self.error = Some(load_failed(&ContactsError::Offline)),
             Open::List | Open::ByCity | Open::ByBook => {}
             Open::Contact
             | Open::Edit
@@ -1447,6 +1493,8 @@ fn key_press(event: iced::Event, status: iced::event::Status, _window: iced::win
     }
     match key.as_ref() {
         keyboard::Key::Character("/") => Some(Message::Key(Press::Search)),
+        keyboard::Key::Character("m") => Some(Message::Key(Press::Mail)),
+        keyboard::Key::Character("c") => Some(Message::Key(Press::Call)),
         keyboard::Key::Named(keyboard::key::Named::ArrowUp) => Some(Message::Key(Press::Up)),
         keyboard::Key::Named(keyboard::key::Named::ArrowDown) => Some(Message::Key(Press::Down)),
         keyboard::Key::Named(keyboard::key::Named::Enter) => Some(Message::Key(Press::Enter)),

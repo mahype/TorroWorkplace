@@ -161,7 +161,7 @@ pub fn body<'a>(contact: &'a Contact, look: Look<'a>) -> Element<'a, Message> {
                 widgets::text_button(
                     None,
                     tr("Keep both"),
-                    style::button::ghost,
+                    style::button::secondary,
                     (!look.busy).then_some(Message::Resolve(torro_contacts::Keep::Both))
                 ),
             ]
@@ -243,9 +243,11 @@ pub fn body<'a>(contact: &'a Contact, look: Look<'a>) -> Element<'a, Message> {
     parts.into()
 }
 
-/// A value of a field: its kind as the label, the value; with `link` the value opens it.
+/// A value of a field: its kind as the label, the value – wrapping, so a long address or date reads
+/// whole –; with `link` the value opens it.
 fn field_line<'a>(kind: String, value: &str, link: Option<String>) -> Element<'a, Message> {
-    let shown = widgets::prop_value(value.to_owned());
+    let shown: Element<'a, Message> =
+        typo::text(typo::body(), value.to_owned()).wrapping(Wrapping::Word).width(Fill).into();
     match link {
         Some(link) => widgets::prop_line(kind, None, shown, Some(Message::OpenUri(link))),
         None => widgets::prop_line(kind, None, shown, None),
@@ -254,16 +256,13 @@ fn field_line<'a>(kind: String, value: &str, link: Option<String>) -> Element<'a
 
 /// "15 April 1990 · turns 37 on Wed, 15 Apr" or, without a year, "15 April".
 pub fn date_words(date: torro_contacts::PartialDate, today: chrono::NaiveDate) -> String {
-    let day = match date.year {
-        Some(year) => trf(
-            "{day} {month} {year}",
-            &[("day", &date.day), ("month", &datetime::month_name(date.month)), ("year", &year)],
-        ),
-        None => trf("{day} {month}", &[("day", &date.day), ("month", &datetime::month_name(date.month))]),
-    };
+    let day = edit::date_text(date);
     let Some(next) = date.next_on_or_after(today) else { return day };
     use chrono::Datelike;
     match date.year {
+        Some(year) if next.year() > year && next == today => {
+            trf("{date} · turns {n} today", &[("date", &day), ("n", &(next.year() - year))])
+        }
         Some(year) if next.year() > year => trf(
             "{date} · turns {n} on {day}",
             &[("date", &day), ("n", &(next.year() - year)), ("day", &datetime::format_short_date(next, today))],
@@ -280,8 +279,12 @@ fn groups<'a>(contact: &'a Contact, look: &Look<'a>) -> Element<'a, Message> {
         .groups
         .iter()
         .map(|group| {
+            // A group of a read-only book has no ✕ at all, not one that is off.
+            if !writable {
+                return widgets::chip(Some(Mark::Icon(Icon::Tag)), group.as_str(), None);
+            }
             let lead: Element<'a, Message> = tinted(Icon::Tag, icon::SIZE_SM, |p| p.text_3);
-            let remove = (writable && !look.busy).then(|| Message::RemoveGroup(group.clone()));
+            let remove = (!look.busy).then(|| Message::RemoveGroup(group.clone()));
             widgets::chip_removable(lead, group.as_str(), None, tr("Remove from group"), remove)
         })
         .collect();
@@ -307,10 +310,9 @@ fn groups<'a>(contact: &'a Contact, look: &Look<'a>) -> Element<'a, Message> {
                 .suggestions
                 .iter()
                 .map(|name| {
-                    widgets::choice_chip(
-                        name.clone(),
+                    widgets::chip(
                         Some(Mark::Icon(Icon::Plus)),
-                        false,
+                        name.clone(),
                         (!look.busy).then(|| Message::AddGroup(name.clone())),
                     )
                 })
@@ -342,20 +344,12 @@ pub fn path<'a>(book: Option<&AddressBook>) -> Element<'a, Message> {
 
 /// The quiet button "Choose picture…" / "Remove picture" row of the form.
 pub fn picture_buttons<'a>(has: bool, busy: bool) -> Element<'a, Message> {
-    let mut buttons = row![widgets::text_button(
-        Some(Icon::Image),
-        tr("Choose picture…"),
-        style::button::ghost,
-        (!busy).then_some(Message::ChoosePhoto),
-    )]
-    .spacing(space::s());
+    let mut buttons =
+        row![edit::quiet_button(Icon::Image, tr("Choose picture…"), (!busy).then_some(Message::ChoosePhoto))]
+            .spacing(space::l());
     if has {
-        buttons = buttons.push(widgets::text_button(
-            None,
-            tr("Remove picture"),
-            style::button::ghost,
-            (!busy).then_some(Message::RemovePhoto),
-        ));
+        buttons =
+            buttons.push(edit::quiet_button(Icon::X, tr("Remove picture"), (!busy).then_some(Message::RemovePhoto)));
     }
     let hint = typo::text(typo::meta(), tr("Or drop a picture on the window.")).style(theme::text_3);
     torro_gui::panel::inset(column![buttons, hint].spacing(space::xs()))

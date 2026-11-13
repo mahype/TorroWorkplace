@@ -48,7 +48,8 @@ impl App {
         if matches!(class, SizeClass::Mini | SizeClass::Strip) {
             let glance = match (self.loaded, &self.error) {
                 (false, _) => widgets::loading(),
-                (true, Some(err)) => widgets::error_state(err.as_str(), Message::Retry),
+                (true, Some(err)) => crate::glance::failed(err),
+                (true, None) if self.books.is_empty() => crate::glance::no_account(),
                 (true, None) => match class {
                     SizeClass::Strip => crate::glance::strip(self),
                     _ => crate::glance::mini(self),
@@ -239,16 +240,13 @@ impl App {
             shell::header_title(Some(self.view_icon(&self.view)), self.view_name(&self.view), Some(count.to_string()))
         };
         let mut trailing: Vec<Element<'a, Message>> = Vec::new();
-        if !matches!(self.view, View::Recent | View::Birthdays) {
-            let label = if narrow {
-                self.group_by.label().to_owned()
-            } else {
-                trf("Group: {by}", &[("by", &self.group_by.label())])
-            };
-            trailing.push(widgets::anchored(
-                &anchors.group_by,
-                widgets::select_button(&anchors.group_by, label, Message::ToggleMenu(Menu::GroupBy)),
-            ));
+        if !matches!(self.view, View::Recent | View::Birthdays) && !self.contacts.is_empty() {
+            let toggle = Message::ToggleMenu(Menu::GroupBy);
+            // Narrow, the grouping moves into the navigation menu, so the navigation and "+" keep their room.
+            if !narrow {
+                let button = widgets::select_button(&anchors.group_by, self.group_by.by_label(), toggle);
+                trailing.push(widgets::anchored(&anchors.group_by, button));
+            }
         }
         let new = self.new_book().map(|_| Message::NewContact(None, None));
         trailing.push(if narrow {
@@ -264,12 +262,13 @@ impl App {
     fn search_bar(&self) -> Element<'_, Message> {
         let body = typo::body();
         let lead = style::INPUT_PADDING.left + icon::SIZE + space::s();
+        let trail = style::INPUT_PADDING.right + size::control_sm();
         let input = text_input(tr("Search name, company, phone, city…"), &self.search)
             .id(SEARCH)
             .size(body.size)
             .line_height(body.line_height)
             .font(body.font)
-            .padding(Padding { left: lead, ..style::INPUT_PADDING })
+            .padding(Padding { left: lead, right: trail, ..style::INPUT_PADDING })
             .width(Fill)
             .style(style::text_input_quiet)
             .on_input(Message::Search)
@@ -278,9 +277,21 @@ impl App {
             .height(Fill)
             .center_y(Fill)
             .padding(Padding::ZERO.left(style::INPUT_PADDING.left));
-        let field = stack![input, glass];
+        // At the right in the field: "Clear search" while something is typed, else the key that gets here.
+        let end: Element<'_, Message> = if self.search.is_empty() {
+            widgets::kbd("/")
+        } else {
+            widgets::icon_button(Icon::X, tr("Clear search"), Some(Message::Search(String::new())))
+        };
+        let end = container(end)
+            .height(Fill)
+            .width(Fill)
+            .center_y(Fill)
+            .align_right(Fill)
+            .padding(Padding::ZERO.right(style::INPUT_PADDING.right));
+        let field = stack![input, glass, end];
         let side = layout::row_padding();
-        container(row![field, widgets::kbd("/")].spacing(space::s()).align_y(Alignment::Center))
+        container(field)
             .padding(Padding { top: space::s(), bottom: space::s(), left: side.left - space::s(), right: side.right })
             .width(Fill)
             .into()
@@ -288,15 +299,8 @@ impl App {
 
     fn list_view<'a>(&'a self, anchors: &Anchors) -> Element<'a, Message> {
         let body: Element<'a, Message> = if self.contacts.is_empty() {
-            let new = self.new_book().map(|_| {
-                widgets::text_button(
-                    Some(Icon::Plus),
-                    tr("New contact"),
-                    style::button::secondary,
-                    Some(Message::NewContact(None, None)),
-                )
-            });
-            calm(Some(Icon::Users), tr("No contacts yet."), tr("Contacts of your address books show up here."), new)
+            // "New contact" stands in the header already.
+            calm(Some(Icon::Users), tr("No contacts yet."), tr("Contacts of your address books show up here."), None)
         } else {
             let rows = self.rows_view(anchors);
             if rows.is_empty() {
@@ -333,7 +337,7 @@ impl App {
             _ => None,
         };
         let open = self.detail.as_ref().and_then(|d| d.id.as_deref());
-        let look = |contact: &torro_contacts::ContactSummary, end: Option<String>| RowLook {
+        let look = |contact: &torro_contacts::ContactSummary, end: list::End| RowLook {
             columns,
             selected: open == Some(contact.id.as_str())
                 || (open.is_none() && self.cursor.as_deref() == Some(contact.id.as_str())),
@@ -349,7 +353,7 @@ impl App {
         match &self.view {
             View::Recent => {
                 for contact in self.shown() {
-                    rows.push(list::contact_row(contact, look(contact, None)));
+                    rows.push(list::contact_row(contact, look(contact, list::End::Town)));
                 }
             }
             View::Birthdays => {
@@ -362,10 +366,8 @@ impl App {
                     }
                     for birthday in members {
                         let Some(contact) = self.summary(&birthday.contact.id) else { continue };
-                        let end = Some(list::birthday_end(birthday, self.today));
-                        let mut look = look(contact, end);
-                        look.columns = Columns { city: true, ..columns };
-                        rows.push(list::contact_row(contact, look));
+                        let end = list::birthday_end(birthday, self.today);
+                        rows.push(list::contact_row(contact, look(contact, end)));
                     }
                 }
             }
@@ -387,7 +389,7 @@ impl App {
                         continue;
                     }
                     for contact in head.members {
-                        rows.push(list::contact_row(contact, look(contact, None)));
+                        rows.push(list::contact_row(contact, look(contact, list::End::Town)));
                     }
                 }
             }
@@ -440,7 +442,7 @@ impl App {
                 if let Some(contact) = contact {
                     body = body.push(contact::picture_buttons(contact.photo.is_some(), detail.busy));
                 }
-                body = body.push(edit::form(draft, &anchors.form, open));
+                body = body.push(edit::form(draft, &self.note, &anchors.form, open));
                 let done: Element<'a, Message> = if draft.saving {
                     widgets::busy_button(tr("Saving…"), style::button::secondary)
                 } else {
@@ -460,7 +462,7 @@ impl App {
                 let writable = !contact.readonly && contact.state != torro_contacts::ContactState::Conflict;
                 if writable {
                     actions.push(widgets::with_tooltip(
-                        widgets::icon_button(Icon::SquarePen, tr("Edit"), Some(Message::Edit)),
+                        widgets::icon_button(Icon::FilePenLine, tr("Edit"), Some(Message::Edit)),
                         tr("Edit (Ctrl+E)"),
                     ));
                 }
@@ -472,7 +474,7 @@ impl App {
             }
             (None, None) => {
                 let body: Element<'a, Message> = match &detail.error {
-                    Some(err) => widgets::error_state(err.as_str(), Message::Close),
+                    Some(err) => widgets::error_state(err.as_str(), Message::Refetch),
                     None => widgets::loading(),
                 };
                 panel::panel(path, Space::new(), body, Message::Close)
@@ -508,8 +510,15 @@ impl App {
     // -- Menus and the dialog -------------------------------------------------------------------
 
     fn menu_layer<'a>(&'a self, anchors: &Anchors) -> Option<Element<'a, Message>> {
-        let menu = self.menu.as_ref()?;
+        self.menu_layer_of(self.menu.as_ref()?, anchors)
+    }
+
+    fn menu_layer_of<'a>(&'a self, menu: &Menu, anchors: &Anchors) -> Option<Element<'a, Message>> {
         let (anchor, placement, sections) = match menu {
+            // Narrow, "Group by" lives in the navigation menu.
+            Menu::GroupBy if !matches!(self.class(), SizeClass::Wide | SizeClass::Medium) => {
+                return self.menu_layer_of(&Menu::Nav, anchors);
+            }
             Menu::GroupBy => {
                 let items = GroupBy::ALL
                     .into_iter()
@@ -535,7 +544,18 @@ impl App {
                             .current(current)
                     })
                     .collect();
-                (anchors.nav.clone(), Placement::Below(Align::Start), vec![MenuSection::new(items)])
+                let mut sections = vec![MenuSection::new(items)];
+                if !matches!(self.view, View::Recent | View::Birthdays) && !self.contacts.is_empty() {
+                    let by = GroupBy::ALL
+                        .into_iter()
+                        .map(|by| {
+                            MenuItem::new(Mark::Icon(by.icon()), by.label(), Message::GroupBy(by))
+                                .current(by == self.group_by)
+                        })
+                        .collect();
+                    sections.push(MenuSection::titled(tr("Group by"), by));
+                }
+                (anchors.nav.clone(), Placement::Below(Align::Start), sections)
             }
             Menu::More => (anchors.more.clone(), Placement::Below(Align::End), self.more_menu()),
             Menu::Move => {
@@ -550,7 +570,7 @@ impl App {
                     .collect::<Vec<_>>();
                 // The menu never stands empty: without a book to go to, it says so.
                 let items = if items.is_empty() {
-                    vec![MenuItem::plain(tr("No other address book may be written."), Message::CloseMenu)]
+                    vec![MenuItem::plain(tr("No other writable book"), Message::CloseMenu)]
                 } else {
                     items
                 };

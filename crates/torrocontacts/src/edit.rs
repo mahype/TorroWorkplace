@@ -16,12 +16,12 @@
 use std::collections::BTreeSet;
 
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, button, column, container, row, text_input};
+use iced::widget::{Space, button, column, container, row, text_editor, text_input};
 use iced::{Alignment, Element, Fill, Length, Padding};
 use torro_contacts::{Contact, ContactFields, FieldKind, Labeled, Name, PartialDate, PostalAddress};
-use torro_core::i18n::tr;
+use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
-use torro_gui::theme::{self, space};
+use torro_gui::theme::{self, size, space};
 use torro_gui::widgets::{self, Anchor};
 use torro_gui::{style, typo};
 
@@ -36,7 +36,6 @@ pub enum Field {
     Org,
     Title,
     Birthday,
-    Note,
     Email(usize),
     Phone(usize),
     Url(usize),
@@ -217,7 +216,7 @@ impl Draft {
             family: contact.name.family.clone(),
             org: contact.org.clone().unwrap_or_default(),
             title: contact.title.clone().unwrap_or_default(),
-            birthday: contact.birthday.map(|b| b.to_string()).unwrap_or_default(),
+            birthday: contact.birthday.map(date_field).unwrap_or_default(),
             note: contact.note.clone().unwrap_or_default(),
             emails: contact.emails.iter().map(Line::of).collect(),
             phones: contact.phones.iter().map(Line::of).collect(),
@@ -297,7 +296,6 @@ impl Draft {
             Field::Org => &mut self.org,
             Field::Title => &mut self.title,
             Field::Birthday => &mut self.birthday,
-            Field::Note => &mut self.note,
             Field::Email(i) => &mut self.emails.get_mut(i)?.value,
             Field::Phone(i) => &mut self.phones.get_mut(i)?.value,
             Field::Url(i) => &mut self.urls.get_mut(i)?.value,
@@ -351,9 +349,12 @@ impl Draft {
             .collect();
         fields.addresses = (places != base.addresses).then_some(places);
         let birthday = self.birthday.trim();
-        let before = base.birthday.map(|b| b.to_string()).unwrap_or_default();
-        if birthday != before && (birthday.is_empty() || PartialDate::parse(birthday).is_some()) {
-            fields.birthday = Some(birthday.to_owned());
+        if birthday.is_empty() {
+            if base.birthday.is_some() {
+                fields.birthday = Some(String::new());
+            }
+        } else if let Some(date) = date_of(birthday).filter(|date| Some(*date) != base.birthday) {
+            fields.birthday = Some(date.to_string());
         }
         fields
     }
@@ -383,11 +384,49 @@ impl Draft {
         match field {
             Field::Email(_) if !mail_ok(value) => Some(tr("This does not look like a mail address.")),
             Field::Phone(_) if !phone_ok(value) => Some(tr("This does not look like a phone number.")),
-            Field::Birthday if PartialDate::parse(value).is_none() => {
-                Some(tr("Not a date: write 1990-04-15, or --04-15 without the year. It is not saved."))
+            Field::Birthday if date_of(value).is_none() => {
+                Some(tr("Not a date: write 15.04.1990, or 15.04. without the year. It is not saved."))
             }
             _ => None,
         }
+    }
+}
+
+/// The date a person typed: `15.04.1990`, `15.04.` or `15.4.` without the year, or as the suite writes it
+/// (`1990-04-15`, `--04-15`). `None` for anything else.
+pub fn date_of(text: &str) -> Option<PartialDate> {
+    let text = text.trim();
+    if let Some(date) = PartialDate::parse(text) {
+        return Some(date);
+    }
+    let parts: Vec<&str> = text.split('.').map(str::trim).collect();
+    let number = |part: &str| part.parse::<u32>().ok();
+    let (day, month, year) = match parts.as_slice() {
+        [day, month] | [day, month, ""] => (number(day)?, number(month)?, None),
+        [day, month, year] if year.len() == 4 => (number(day)?, number(month)?, Some(year.parse::<i32>().ok()?)),
+        _ => return None,
+    };
+    let iso = match year {
+        Some(year) => format!("{year:04}-{month:02}-{day:02}"),
+        None => format!("--{month:02}-{day:02}"),
+    };
+    PartialDate::parse(&iso)
+}
+
+/// A date for people: "15 April 1990", without the year "15 April".
+pub fn date_text(date: PartialDate) -> String {
+    let month = torro_gui::datetime::month_name(date.month);
+    match date.year {
+        Some(year) => trf("{day} {month} {year}", &[("day", &date.day), ("month", &month), ("year", &year)]),
+        None => trf("{day} {month}", &[("day", &date.day), ("month", &month)]),
+    }
+}
+
+/// What the form shows for a date: "15.04.1990", without the year "15.04.".
+pub fn date_field(date: PartialDate) -> String {
+    match date.year {
+        Some(year) => format!("{:02}.{:02}.{year:04}", date.day, date.month),
+        None => format!("{:02}.{:02}.", date.day, date.month),
     }
 }
 
@@ -442,8 +481,8 @@ pub fn differences(mine: &Contact, theirs: &Contact) -> Vec<Difference> {
         (tr("Link"), joined(&mine.urls), joined(&theirs.urls)),
         (
             tr("Birthday"),
-            mine.birthday.map(|b| b.to_string()).unwrap_or_default(),
-            theirs.birthday.map(|b| b.to_string()).unwrap_or_default(),
+            mine.birthday.map(date_text).unwrap_or_default(),
+            theirs.birthday.map(date_text).unwrap_or_default(),
         ),
         (tr("Notes"), mine.note.clone().unwrap_or_default(), theirs.note.clone().unwrap_or_default()),
         (tr("Groups"), mine.groups.join(", "), theirs.groups.join(", ")),
@@ -484,37 +523,42 @@ fn input<'a>(placeholder: &'a str, value: &'a str, field: Field) -> Element<'a, 
         .into()
 }
 
-/// A line of the form: the label in `meta`/`text_3`, as wide as the labels of the properties, then the
-/// value; with `hint` a quiet line under the value.
+/// The width at the end of every line of the form, for the ✕ of a value: so all inputs end on one
+/// edge, with or without one.
+fn end_width() -> f32 {
+    size::control_sm()
+}
+
+/// One line of the form: `label` (empty for the further lines of a field), the value, and `end` (the
+/// ✕ or nothing) in a column of its own; label and value centred on one line. With `hint` a quiet line
+/// under the value.
 fn line<'a>(
-    label: Element<'a, Message>,
+    label: &'a str,
     value: Element<'a, Message>,
+    end: Option<Element<'a, Message>>,
     hint: Option<&'static str>,
 ) -> Element<'a, Message> {
-    let mut value = column![value].spacing(space::xs()).width(Fill);
-    if let Some(hint) = hint {
-        value = value.push(
-            row![
-                tinted(Icon::CircleAlert, icon::SIZE_SM, |p| p.attention),
-                typo::text(typo::meta(), hint).style(theme::text_2).wrapping(Wrapping::WordOrGlyph),
-            ]
-            .spacing(space::xs())
-            .align_y(Alignment::Center),
-        );
-    }
-    row![container(label).width(widgets::prop_label_width()), value]
-        .spacing(space::s())
-        .align_y(Alignment::Start)
-        .into()
+    let label = container(typo::text(typo::meta(), label).style(theme::text_3).wrapping(Wrapping::None))
+        .width(widgets::prop_label_width());
+    let end: Element<'a, Message> = match end {
+        Some(end) => container(end).width(end_width()).center_x(end_width()).into(),
+        None => Space::new().width(end_width()).into(),
+    };
+    let main = row![label, container(value).width(Fill), end].spacing(space::s()).align_y(Alignment::Center);
+    let Some(hint) = hint else { return main.into() };
+    let note = row![
+        Space::new().width(widgets::prop_label_width()),
+        tinted(Icon::CircleAlert, icon::SIZE_SM, |p| p.attention),
+        typo::text(typo::meta(), hint).style(theme::text_2).wrapping(Wrapping::WordOrGlyph).width(Fill),
+        Space::new().width(end_width()),
+    ]
+    .spacing(space::s())
+    .align_y(Alignment::Center);
+    column![main, note].spacing(space::xs()).into()
 }
 
-fn label<'a>(text: &'a str) -> Element<'a, Message> {
-    container(typo::text(typo::meta(), text).style(theme::text_3).wrapping(Wrapping::None))
-        .center_y(torro_gui::theme::size::control())
-        .into()
-}
-
-/// The kind chooser of a value: its word with a chevron, quiet; a click opens the menu of kinds.
+/// The kind chooser of a value, after its input: the word with a chevron, quiet; a click opens the
+/// menu of kinds.
 fn kind_button<'a>(
     list: List,
     index: usize,
@@ -530,42 +574,68 @@ fn kind_button<'a>(
     .align_y(Alignment::Center);
     let pressable =
         button(content).padding(Padding::ZERO).style(style::button::bare).on_press(Message::ToggleKind(list, index));
-    let pressable = container(pressable).center_y(torro_gui::theme::size::control());
-    if open == Some(Open::Kind(list, index)) { widgets::anchored(&anchors.kind, pressable) } else { pressable.into() }
+    let pressable = widgets::with_tooltip(pressable, tr("Kind"));
+    if open == Some(Open::Kind(list, index)) { widgets::anchored(&anchors.kind, pressable) } else { pressable }
 }
 
 fn remove_button<'a>(list: List, index: usize) -> Element<'a, Message> {
     widgets::icon_button(Icon::X, tr("Remove"), Some(Message::Draft(Msg::Remove(list, index))))
 }
 
-/// The form of `draft` in the panel's body.
-pub fn form<'a>(draft: &'a Draft, anchors: &Anchors, open: Option<Open>) -> Element<'a, Message> {
+/// A quiet button whose icon stands on the text's axis (no padding at its left), for "Add field" and
+/// "Choose picture…".
+pub fn quiet_button<'a>(which: Icon, label: &'a str, on_press: Option<Message>) -> Element<'a, Message> {
+    let content = row![
+        tinted(which, icon::SIZE_SM, |p| p.text_2),
+        typo::text(typo::caption(), label).style(theme::text_2).wrapping(Wrapping::None),
+    ]
+    .spacing(space::s())
+    .align_y(Alignment::Center);
+    let mut pressable =
+        button(container(content).center_y(size::control_sm())).padding(Padding::ZERO).style(style::button::bare);
+    if let Some(message) = on_press {
+        pressable = pressable.on_press(message);
+    }
+    pressable.into()
+}
+
+/// The form of `draft` in the panel's body; `note` holds the notes, which take several lines.
+pub fn form<'a>(
+    draft: &'a Draft,
+    note: &'a text_editor::Content,
+    anchors: &Anchors,
+    open: Option<Open>,
+) -> Element<'a, Message> {
     let mut rows = column![].spacing(space::s());
-    rows = rows.push(line(label(tr("First name")), input(tr("First name"), &draft.given, Field::Given), None));
-    rows = rows.push(line(label(tr("Last name")), input(tr("Last name"), &draft.family, Field::Family), None));
-    rows = rows.push(line(label(tr("Company")), input(tr("Company"), &draft.org, Field::Org), None));
-    rows = rows.push(line(label(tr("Position")), input(tr("Position"), &draft.title, Field::Title), None));
+    rows = rows.push(line(tr("First name"), input("", &draft.given, Field::Given), None, None));
+    rows = rows.push(line(tr("Last name"), input("", &draft.family, Field::Family), None, None));
+    rows = rows.push(line(tr("Company"), input("", &draft.org, Field::Org), None, None));
+    rows = rows.push(line(tr("Position"), input("", &draft.title, Field::Title), None, None));
     let mut sections = column![rows].spacing(space::l());
     for list in List::ALL {
         let mut group = column![].spacing(space::s());
+        let mut filled = false;
         match list {
             List::Address => {
                 for (index, place) in draft.addresses.iter().enumerate() {
-                    let parts = column![
+                    filled = true;
+                    let label = if index == 0 { list.label() } else { "" };
+                    let street = row![
                         input(tr("Street"), &place.street, Field::Street(index)),
-                        row![
-                            container(input(tr("Postal code"), &place.postal_code, Field::Postal(index)))
-                                .width(Length::FillPortion(2)),
-                            container(input(tr("Town"), &place.locality, Field::Town(index)))
-                                .width(Length::FillPortion(3)),
-                        ]
-                        .spacing(space::s()),
-                        row![input(tr("Country"), &place.country, Field::Country(index)), remove_button(list, index)]
-                            .spacing(space::xs())
-                            .align_y(Alignment::Center),
+                        kind_button(list, index, &place.kind, anchors, open),
                     ]
-                    .spacing(space::xs());
-                    group = group.push(line(kind_button(list, index, &place.kind, anchors, open), parts.into(), None));
+                    .spacing(space::s())
+                    .align_y(Alignment::Center);
+                    let town = row![
+                        container(input(tr("Postal code"), &place.postal_code, Field::Postal(index)))
+                            .width(Length::FillPortion(2)),
+                        container(input(tr("Town"), &place.locality, Field::Town(index))).width(Length::FillPortion(3)),
+                    ]
+                    .spacing(space::s());
+                    group = group
+                        .push(line(label, street.into(), Some(remove_button(list, index)), None))
+                        .push(line("", town.into(), None, None))
+                        .push(line("", input(tr("Country"), &place.country, Field::Country(index)), None, None));
                 }
             }
             _ => {
@@ -575,36 +645,40 @@ pub fn form<'a>(draft: &'a Draft, anchors: &Anchors, open: Option<Open>) -> Elem
                     _ => (&draft.urls, Field::Url),
                 };
                 for (index, value) in lines.iter().enumerate() {
+                    filled = true;
                     let field = field(index);
-                    let value_row = row![input(list.label(), &value.value, field), remove_button(list, index)]
-                        .spacing(space::xs())
-                        .align_y(Alignment::Center);
-                    group = group.push(line(
-                        kind_button(list, index, &value.kind, anchors, open),
-                        value_row.into(),
-                        draft.hint(field),
-                    ));
+                    let label = if index == 0 { list.label() } else { "" };
+                    let value_row =
+                        row![input("", &value.value, field), kind_button(list, index, &value.kind, anchors, open)]
+                            .spacing(space::s())
+                            .align_y(Alignment::Center);
+                    group =
+                        group.push(line(label, value_row.into(), Some(remove_button(list, index)), draft.hint(field)));
                 }
             }
         }
         // A field without values takes no room ("+ Add field" brings it).
-        let filled = match list {
-            List::Email => !draft.emails.is_empty(),
-            List::Phone => !draft.phones.is_empty(),
-            List::Url => !draft.urls.is_empty(),
-            List::Address => !draft.addresses.is_empty(),
-        };
         if filled {
             sections = sections.push(group);
         }
     }
+    let notes = text_editor(note)
+        .placeholder("")
+        .padding(style::INPUT_PADDING)
+        .height(notes_height())
+        .style(style::text_editor)
+        .on_action(Message::NoteEdit);
     let more = column![
-        line(label(tr("Birthday")), input("1990-04-15", &draft.birthday, Field::Birthday), draft.hint(Field::Birthday)),
-        line(label(tr("Notes")), input(tr("Notes"), &draft.note, Field::Note), None),
+        line(
+            tr("Birthday"),
+            input(tr("Day.month.year"), &draft.birthday, Field::Birthday),
+            None,
+            draft.hint(Field::Birthday)
+        ),
+        line(tr("Notes"), notes.into(), None, None),
     ]
     .spacing(space::s());
-    let add =
-        widgets::text_button(Some(Icon::Plus), tr("Add field"), style::button::ghost, Some(Message::ToggleAddField));
+    let add = quiet_button(Icon::Plus, tr("Add field"), Some(Message::ToggleAddField));
     let add = if open == Some(Open::Add) { widgets::anchored(&anchors.add, add) } else { add };
     sections = sections.push(more).push(row![Space::new().width(widgets::prop_label_width()), add].spacing(space::s()));
     if let Some(error) = &draft.error {
@@ -620,8 +694,13 @@ pub fn form<'a>(draft: &'a Draft, anchors: &Anchors, open: Option<Open>) -> Elem
     torro_gui::panel::inset(sections)
 }
 
-/// The two versions of a contact in conflict side by side, the values that differ marked with an
-/// icon and in `text` (the same ones quiet in `text_3`).
+/// The height of the notes: three lines of text with the input's padding.
+fn notes_height() -> f32 {
+    3.0 * typo::line_height(typo::body()) + style::INPUT_PADDING.top + style::INPUT_PADDING.bottom
+}
+
+/// The values that differ between the two versions of a contact in conflict, side by side, each with
+/// an icon; how many fields are the same stands under them in one quiet line.
 pub fn conflict<'a>(differences: Vec<Difference>) -> Element<'a, Message> {
     let head = row![
         Space::new().width(widgets::prop_label_width()),
@@ -629,27 +708,29 @@ pub fn conflict<'a>(differences: Vec<Difference>) -> Element<'a, Message> {
         container(typo::text(typo::caption(), tr("On the server")).style(theme::text_3)).width(Fill),
     ]
     .spacing(space::s());
+    let same = differences.iter().filter(|d| !d.differs).count();
     let mut table = column![head].spacing(space::s());
-    for difference in differences {
-        let value = |text: String, differs: bool| -> Element<'a, Message> {
-            let style = if differs { theme::text } else { theme::text_3 };
+    for difference in differences.into_iter().filter(|d| d.differs) {
+        let value = |text: String| -> Element<'a, Message> {
             let text = if text.is_empty() { "—".to_owned() } else { text };
-            container(typo::text(typo::body(), text).style(style).wrapping(Wrapping::WordOrGlyph)).width(Fill).into()
+            container(typo::text(typo::body(), text).wrapping(Wrapping::Word)).width(Fill).clip(true).into()
         };
-        let mut name = row![typo::text(typo::meta(), difference.label).style(theme::text_3)]
-            .spacing(space::xs())
-            .align_y(Alignment::Center);
-        if difference.differs {
-            name = name.push(widgets::with_tooltip(
-                tinted(Icon::TriangleAlert, icon::SIZE_SM, |p| p.attention),
-                tr("Differs"),
-            ));
-        }
+        let name = row![
+            typo::text(typo::meta(), difference.label).style(theme::text_3),
+            widgets::with_tooltip(tinted(Icon::TriangleAlert, icon::SIZE_SM, |p| p.attention), tr("Differs")),
+        ]
+        .spacing(space::xs())
+        .align_y(Alignment::Center);
+        table = table.push(
+            row![container(name).width(widgets::prop_label_width()), value(difference.mine), value(difference.theirs)]
+                .spacing(space::s()),
+        );
+    }
+    if same > 0 {
         table = table.push(
             row![
-                container(name).width(widgets::prop_label_width()),
-                value(difference.mine, difference.differs),
-                value(difference.theirs, difference.differs),
+                Space::new().width(widgets::prop_label_width()),
+                typo::text(typo::meta(), trf("{n} more fields are the same", &[("n", &same)])).style(theme::text_3),
             ]
             .spacing(space::s()),
         );
@@ -740,6 +821,10 @@ mod tests {
         assert_eq!(draft.changes().birthday, None);
         draft.update(Msg::Text(Field::Birthday, "--05-01".into()));
         assert_eq!(draft.changes().birthday.as_deref(), Some("--05-01"));
+        draft.update(Msg::Text(Field::Birthday, "1.5.".into()));
+        assert_eq!(draft.changes().birthday.as_deref(), Some("--05-01"), "as people write it");
+        draft.update(Msg::Text(Field::Birthday, "15.04.1990".into()));
+        assert_eq!(draft.changes().birthday, None, "the same date as before");
         draft.update(Msg::Text(Field::Birthday, String::new()));
         assert_eq!(draft.changes().birthday.as_deref(), Some(""), "emptied, it is removed");
     }
@@ -755,6 +840,19 @@ mod tests {
         draft.tried = true;
         assert!(draft.hint(Field::Phone(0)).is_some());
         assert!(!draft.changes().is_empty(), "saving stays possible");
+    }
+
+    #[test]
+    fn dates_as_people_write_them() {
+        assert_eq!(date_of("15.04.1990"), PartialDate::parse("1990-04-15"));
+        assert_eq!(date_of("15.4."), PartialDate::parse("--04-15"));
+        assert_eq!(date_of("15.04"), PartialDate::parse("--04-15"));
+        assert_eq!(date_of("31.02.1990"), None);
+        assert_eq!(date_of("soon"), None);
+        let date = PartialDate::parse("1990-04-15").expect("date");
+        assert_eq!(date_field(date), "15.04.1990");
+        assert_eq!(date_of(&date_field(date)), Some(date));
+        assert!(date_text(date).contains("1990"));
     }
 
     #[test]

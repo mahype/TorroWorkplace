@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use iced::widget::image::Handle;
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, button, column, container, image, mouse_area, row};
-use iced::{Alignment, Background, Element, Fill, Length, Padding, Theme, border, mouse};
+use iced::{Alignment, Background, Element, Fill, Padding, Theme, border, mouse};
 use torro_contacts::{AddressBook, Birthday, ContactState, ContactSummary};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
@@ -63,6 +63,15 @@ impl GroupBy {
             GroupBy::Group => tr("Group"),
             GroupBy::City => tr("City"),
             GroupBy::Book => tr("Address book"),
+        }
+    }
+
+    /// The words in the header's button: "By group".
+    pub fn by_label(self) -> &'static str {
+        match self {
+            GroupBy::Group => tr("By group"),
+            GroupBy::City => tr("By city"),
+            GroupBy::Book => tr("By address book"),
         }
     }
 
@@ -219,20 +228,33 @@ pub fn birthday_heads<'a>(birthdays: &[&'a Birthday]) -> Vec<(Key, String, Vec<&
 pub struct Columns {
     /// Mail over number.
     pub reach: bool,
+    /// Below [`REACH_FROM`]: the mail address alone, on one line beside the name.
+    pub mail: bool,
     /// The town at the end.
     pub city: bool,
 }
 
 /// Below this width a row drops the town (draft D2).
 pub const CITY_FROM: f32 = 1100.0;
-/// Below this width a row drops mail and number too.
+/// Below this width a row drops the number and keeps the mail address on one line.
 pub const REACH_FROM: f32 = 900.0;
+/// Below this width a row shows name and position only.
+pub const MAIL_FROM: f32 = 600.0;
 
 impl Columns {
     /// The columns of a list `width` wide.
     pub fn at(width: f32) -> Columns {
-        Columns { reach: width >= REACH_FROM, city: width >= CITY_FROM }
+        Columns { reach: width >= REACH_FROM, mail: (MAIL_FROM..REACH_FROM).contains(&width), city: width >= CITY_FROM }
     }
+}
+
+/// What a row shows at its end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum End {
+    /// The town (or nothing) as wide as [`end_width`].
+    Town,
+    /// "turns 40" and the day, each in a column of its own, the day at the right ("Birthdays").
+    Birthday { age: Option<String>, day: String },
 }
 
 /// The initials of a name for its picture: the first letters of the first and the last word, in
@@ -321,8 +343,8 @@ pub struct RowLook<'a> {
     pub hovered: bool,
     pub picture: Option<&'a Handle>,
     pub colours: Palette,
-    /// The text at the end instead of the town ("turns 40 · Tue 18" in "Birthdays").
-    pub end: Option<String>,
+    /// What stands at the end.
+    pub end: End,
     /// The width of the list, for the words of the action bar.
     pub width: f32,
     /// Registered by the row whose menu is open, so the menu hangs at the pointer in it.
@@ -335,30 +357,43 @@ pub fn contact_row<'a>(contact: &'a ContactSummary, look: RowLook<'a>) -> Elemen
     let shown = contact.display_name.as_str();
     let given = contact.given.trim();
     let family = contact.family.trim();
-    let mut name = row![].spacing(space::xs()).align_y(Alignment::Center);
+    // A word's gap between given and family name, whatever the spacing level.
+    let gap = typo::text_width(" ", typo::body());
+    let mut name = row![].align_y(Alignment::Center);
     if !family.is_empty() && shown.ends_with(family) && shown.len() > family.len() {
         let lead = shown[..shown.len() - family.len()].trim_end();
         name = name
             .push(typo::text(typo::body(), lead.to_owned()).style(theme::text_2).wrapping(Wrapping::None))
+            .push(Space::new().width(gap))
             .push(typo::text(typo::body_strong(), family.to_owned()).wrapping(Wrapping::None));
     } else if !given.is_empty() && shown.starts_with(given) && shown.len() > given.len() {
         name = name
             .push(typo::text(typo::body(), given.to_owned()).style(theme::text_2).wrapping(Wrapping::None))
+            .push(Space::new().width(gap))
             .push(typo::text(typo::body_strong(), shown[given.len()..].trim().to_owned()).wrapping(Wrapping::None));
     } else {
         name = name.push(typo::text(typo::body_strong(), shown.to_owned()).wrapping(Wrapping::None));
     }
-    for mark in marks(contact) {
-        name = name.push(mark);
+    let marks = marks(contact);
+    if !marks.is_empty() {
+        name = name.push(Space::new().width(space::xs()));
+        name = name.push(row(marks).spacing(space::xs()).align_y(Alignment::Center));
     }
     let role = role_line(contact.title.as_deref(), contact.org.as_deref());
-    let role = if role.is_empty() { "—".to_owned() } else { role };
-    let who = column![container(name).clip(true), widgets::ellipsized(typo::meta(), role, theme::text_3),]
-        .width(Length::FillPortion(6));
+    let mut who = column![container(name).clip(true)];
+    if !role.is_empty() {
+        who = who.push(widgets::ellipsized(typo::meta(), role, theme::text_3));
+    }
+    // The name takes the room, up to a reading width; what follows stands right after it.
+    let who = container(who).width(Fill).max_width(size::content_max());
     let mut cells = row![face(shown, look.picture, edge, &look.colours), who]
         .spacing(space::m())
         .align_y(Alignment::Center)
         .height(Fill);
+    if look.columns.mail {
+        let mail = contact.email.clone().unwrap_or_default();
+        cells = cells.push(container(widgets::ellipsized(typo::meta(), mail, theme::text_2)).width(reach_width()));
+    }
     if look.columns.reach {
         let mail = contact.email.clone().unwrap_or_default();
         let phone = contact.phone.clone().unwrap_or_default();
@@ -367,14 +402,30 @@ pub fn contact_row<'a>(contact: &'a ContactSummary, look: RowLook<'a>) -> Elemen
                 widgets::ellipsized(typo::meta(), mail, theme::text_2),
                 widgets::ellipsized(typo::meta().tabular(), phone, theme::text_3),
             ]
-            .width(Length::FillPortion(5)),
+            .width(reach_width()),
         );
     }
-    let end = look.end.clone().or_else(|| look.columns.city.then(|| contact.locality.clone().unwrap_or_default()));
-    if let Some(end) = end {
-        let width = if look.end.is_some() { birthday_width() } else { end_width() };
-        cells = cells.push(container(widgets::ellipsized(typo::meta(), end, theme::text_3)).width(width));
+    match &look.end {
+        End::Town if look.columns.city => {
+            let town = contact.locality.clone().unwrap_or_default();
+            cells = cells.push(container(widgets::ellipsized(typo::meta(), town, theme::text_3)).width(end_width()));
+        }
+        End::Town => {}
+        End::Birthday { age, day } => {
+            cells = cells.push(
+                container(widgets::ellipsized(typo::meta(), age.clone().unwrap_or_default(), theme::text_3))
+                    .width(end_width()),
+            );
+            cells = cells.push(
+                container(
+                    typo::text(typo::meta().tabular(), day.clone()).style(theme::text_2).wrapping(Wrapping::None),
+                )
+                .width(end_width())
+                .align_right(end_width()),
+            );
+        }
     }
+    cells = cells.push(Space::new().width(Fill));
     let id = contact.id.clone();
     let line = widgets::list_row_sized(cells, size::row_contact(), 0.0, look.selected, Some(Message::Open(id.clone())));
     let actions = row_actions(contact);
@@ -389,14 +440,14 @@ pub fn contact_row<'a>(contact: &'a ContactSummary, look: RowLook<'a>) -> Elemen
     mouse_area(area).on_enter(Message::Hover(Some(id))).on_exit(Message::Hover(None)).into()
 }
 
+/// The width of mail over number: the width of the properties column (300 in the standard design).
+pub fn reach_width() -> f32 {
+    size::props()
+}
+
 /// The width of the town at the end of a row: half a sidebar (120 in the standard design).
 pub fn end_width() -> f32 {
     size::sidebar() / 2.0
-}
-
-/// The width of "turns 40 · 18 Nov" at the end of a row of "Birthdays": three quarters of a sidebar.
-pub fn birthday_width() -> f32 {
-    size::sidebar() * 0.75
 }
 
 /// The bar a row shows under the pointer: Mail, Call and Copy, each only with a value.
@@ -458,14 +509,11 @@ pub fn head<'a>(
     mouse_area(head).on_press(fold).interaction(mouse::Interaction::Pointer).into()
 }
 
-/// "turns 40 · 18 Nov" (or "18 Nov" without a year of birth) at the end of a row of "Birthdays"; the
-/// month's head says which month, so the day needs no weekday.
-pub fn birthday_end(birthday: &Birthday, today: chrono::NaiveDate) -> String {
+/// The end of a row of "Birthdays": "turns 40" (none without a year of birth) and the day, "18 Nov" or
+/// "Today"; the month's head says which month, so the day needs no weekday.
+pub fn birthday_end(birthday: &Birthday, today: chrono::NaiveDate) -> End {
     let day = if birthday.next == today { tr("Today").to_owned() } else { datetime::format_day_month(birthday.next) };
-    match birthday.turns {
-        Some(turns) => trf("turns {n} · {day}", &[("n", &turns), ("day", &day)]),
-        None => day,
-    }
+    End::Birthday { age: birthday.turns.map(|turns| trf("turns {n}", &[("n", &turns)])), day }
 }
 
 /// The width the list takes of `content` beside an open contact: everything left of the panel.
@@ -572,9 +620,10 @@ mod tests {
 
     #[test]
     fn columns_drop_the_town_then_mail_and_number() {
-        assert_eq!(Columns::at(1400.0), Columns { reach: true, city: true });
-        assert_eq!(Columns::at(1000.0), Columns { reach: true, city: false });
-        assert_eq!(Columns::at(600.0), Columns { reach: false, city: false });
+        assert_eq!(Columns::at(1400.0), Columns { reach: true, mail: false, city: true });
+        assert_eq!(Columns::at(1000.0), Columns { reach: true, mail: false, city: false });
+        assert_eq!(Columns::at(740.0), Columns { reach: false, mail: true, city: false });
+        assert_eq!(Columns::at(500.0), Columns { reach: false, mail: false, city: false });
     }
 
     #[test]
@@ -613,6 +662,7 @@ mod tests {
         let flat: Vec<chrono::NaiveDate> = months.iter().flat_map(|m| m.2.iter().map(|b| b.next)).collect();
         assert!(flat.windows(2).all(|w| w[0] <= w[1]));
         let first = months[0].2[0];
-        assert_eq!(birthday_end(first, today).contains(tr("Today")), first.next == today);
+        let End::Birthday { day, .. } = birthday_end(first, today) else { panic!("a birthday's end") };
+        assert_eq!(day == tr("Today"), first.next == today);
     }
 }
