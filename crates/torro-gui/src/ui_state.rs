@@ -8,7 +8,9 @@
 //! `"sidebar"`, issue #376), the mail searches last made (issue #136, [`searches_from`]) and whether the
 //! action rail of a mail is expanded (task E14.1, [`actions_from`]), which mail accounts are
 //! selected ([`mail_accounts_from`]), which folders are pinned ([`pinned_mail_folders_from`]) and switches of
-//! a view such as the compose window's format bar (issue #627, [`flag_from`]). `ui.json` in
+//! a view such as the compose window's format bar (issue #627, [`flag_from`]), choices of a view such as
+//! what the contacts app groups by and the heads it folded (issue #352, [`choice_from`], [`names_from`]).
+//! `ui.json` in
 //! the app's state directory
 //! ([`torro_core::paths`]), because it is view state that may be lost – like the scroll position it
 //! is no suite setting and goes through no API.
@@ -68,6 +70,14 @@ const SPLIT: &str = "split";
 /// The key of the switches of a view ([`flag_from`], issue #627): an object from a name the app
 /// chooses (`compose.format_bar`) to `true` or `false`.
 const FLAGS: &str = "flags";
+
+/// The key of the choices of a view ([`choice_from`], issue #352): an object from a name the app
+/// chooses (`group_by`) to a word.
+const CHOICES: &str = "choices";
+
+/// The key of the lists of names of a view ([`names_from`], issue #352): an object from a name the app
+/// chooses (`collapsed.group`) to a list of words, such as the heads folded in a list.
+const NAMES: &str = "names";
 
 /// The key of the searches last made ([`searches_from`]): a list of what was searched for, newest
 /// first.
@@ -497,6 +507,102 @@ pub fn save_flag_task<T: Send + 'static>(app: AppId, key: String, on: bool) -> T
     .discard()
 }
 
+/// A choice of a view remembered under `key` in `path` (issue #352), as [`save_choice_to`] stored it:
+/// the contacts app's grouping under `group_by`. `None` when there is none, the file cannot be read or
+/// the value is no text; the app keeps its default then (and checks the word itself).
+pub fn choice_from(path: &Path, key: &str) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value.get(CHOICES)?.get(key)?.as_str().map(str::to_string)
+}
+
+/// Stores `word` for the choice `key` in `path`, keeping the other choices and everything else in the
+/// file.
+pub fn save_choice_to(path: &Path, key: &str, word: &str) -> Result<(), Error> {
+    let mut choices = object_of(path, CHOICES);
+    choices.insert(key.to_string(), serde_json::Value::String(word.to_string()));
+    let mut fields = serde_json::Map::new();
+    fields.insert(CHOICES.into(), serde_json::Value::Object(choices));
+    merge_into(path, fields)
+}
+
+/// [`choice_from`] for the choice `key` of `app` in the background, for the start of a window. Like
+/// [`load_task`], tests that only build the app never run it.
+pub fn load_choice_task(app: AppId, key: String) -> Task<Option<String>> {
+    Task::perform(async move { file(app).and_then(|path| choice_from(&path, &key)) }, |word| word)
+}
+
+/// [`save_choice_to`] for the choice `key` of `app` in the background, after the person chose. A
+/// failure is reported on stderr and otherwise ignored, as in [`save_task`].
+pub fn save_choice_task<T: Send + 'static>(app: AppId, key: String, word: String) -> Task<T> {
+    Task::future(async move {
+        let saved = file(app).ok_or(Error::NoHome).and_then(|path| save_choice_to(&path, &key, &word));
+        if let Err(err) = saved {
+            eprintln!("{}: {err}", app.binary);
+        }
+    })
+    .discard()
+}
+
+/// A list of names of a view remembered under `key` in `path` (issue #352), as [`save_names_to`]
+/// stored it: the heads folded in the contacts app's list under `collapsed.<grouping>`. Empty when there
+/// is none or the file cannot be read; words that are no text are left out.
+pub fn names_from(path: &Path, key: &str) -> Vec<String> {
+    let Some(value) =
+        fs::read_to_string(path).ok().and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+    else {
+        return Vec::new();
+    };
+    value
+        .get(NAMES)
+        .and_then(|names| names.get(key))
+        .and_then(serde_json::Value::as_array)
+        .map(|list| list.iter().filter_map(|word| word.as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
+}
+
+/// Stores `names` under `key` in `path`, keeping the other lists and everything else in the file; an
+/// empty list forgets the key.
+pub fn save_names_to(path: &Path, key: &str, names: &[String]) -> Result<(), Error> {
+    let mut lists = object_of(path, NAMES);
+    if names.is_empty() {
+        lists.remove(key);
+    } else {
+        let words = names.iter().map(|name| serde_json::Value::String(name.clone())).collect();
+        lists.insert(key.to_string(), serde_json::Value::Array(words));
+    }
+    let mut fields = serde_json::Map::new();
+    fields.insert(NAMES.into(), serde_json::Value::Object(lists));
+    merge_into(path, fields)
+}
+
+/// [`names_from`] for the list `key` of `app` in the background, for the start of a window. Like
+/// [`load_task`], tests that only build the app never run it.
+pub fn load_names_task(app: AppId, key: String) -> Task<Vec<String>> {
+    Task::perform(async move { file(app).map(|path| names_from(&path, &key)).unwrap_or_default() }, |names| names)
+}
+
+/// [`save_names_to`] for the list `key` of `app` in the background, after the person changed it. A
+/// failure is reported on stderr and otherwise ignored, as in [`save_task`].
+pub fn save_names_task<T: Send + 'static>(app: AppId, key: String, names: Vec<String>) -> Task<T> {
+    Task::future(async move {
+        let saved = file(app).ok_or(Error::NoHome).and_then(|path| save_names_to(&path, &key, &names));
+        if let Err(err) = saved {
+            eprintln!("{}: {err}", app.binary);
+        }
+    })
+    .discard()
+}
+
+/// The object under `key` in the file at `path`; empty when there is none or it cannot be read.
+fn object_of(path: &Path, key: &str) -> serde_json::Map<String, serde_json::Value> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| value.get(key).and_then(serde_json::Value::as_object).cloned())
+        .unwrap_or_default()
+}
+
 /// The searches last made, newest first, as [`save_searches_to`] stored them (issue #136): what the
 /// person searched for, kept on this device only, for the suggestions under the search field.
 /// Empty when nothing is stored, the file cannot be read or the value is no list (other entries
@@ -893,6 +999,51 @@ mod tests {
         for content in ["{ not json", r#"{"flags":true}"#, r#"{"flags":{"compose.format_bar":"yes"}}"#] {
             fs::write(&path, content).expect("write");
             assert_eq!(flag_from(&path, "compose.format_bar"), None, "{content}");
+        }
+    }
+
+    /// Issue #352: a choice of a view is kept beside the other choices and the rest of the file, and a
+    /// value that is no text counts as none.
+    #[test]
+    fn view_choices_are_kept_beside_the_rest() {
+        let dir = TempDir::new("choices");
+        let path = dir.0.join(FILE);
+        assert_eq!(choice_from(&path, "group_by"), None, "nothing chosen yet");
+        save_flag_to(&path, "compose.format_bar", false).expect("a switch");
+        save_choice_to(&path, "group_by", "city").expect("group by town");
+        save_choice_to(&path, "other", "x").expect("another choice");
+        assert_eq!(choice_from(&path, "group_by").as_deref(), Some("city"));
+        assert_eq!(choice_from(&path, "other").as_deref(), Some("x"));
+        assert_eq!(flag_from(&path, "compose.format_bar"), Some(false), "the switch stays");
+        save_choice_to(&path, "group_by", "book").expect("again");
+        assert_eq!(choice_from(&path, "group_by").as_deref(), Some("book"));
+        for content in ["{ not json", r#"{"choices":"city"}"#, r#"{"choices":{"group_by":3}}"#] {
+            fs::write(&path, content).expect("write");
+            assert_eq!(choice_from(&path, "group_by"), None, "{content}");
+        }
+    }
+
+    /// Issue #352: lists of names are kept per key beside the rest; an empty list forgets its key, and
+    /// words that are no text are left out.
+    #[test]
+    fn view_names_are_kept_beside_the_rest() {
+        let dir = TempDir::new("names");
+        let path = dir.0.join(FILE);
+        assert!(names_from(&path, "collapsed.group").is_empty(), "nothing folded yet");
+        save_choice_to(&path, "group_by", "group").expect("a choice");
+        save_names_to(&path, "collapsed.group", &["Family".to_string(), "Work".to_string()]).expect("fold two");
+        save_names_to(&path, "collapsed.city", &["Berlin".to_string()]).expect("fold a town");
+        assert_eq!(names_from(&path, "collapsed.group"), vec!["Family".to_string(), "Work".to_string()]);
+        assert_eq!(names_from(&path, "collapsed.city"), vec!["Berlin".to_string()]);
+        assert_eq!(choice_from(&path, "group_by").as_deref(), Some("group"), "the choice stays");
+        save_names_to(&path, "collapsed.group", &[]).expect("unfold all");
+        assert!(names_from(&path, "collapsed.group").is_empty());
+        assert_eq!(names_from(&path, "collapsed.city"), vec!["Berlin".to_string()], "the other list stays");
+        fs::write(&path, r#"{"names":{"collapsed.group":["A",3,"B"]}}"#).expect("write");
+        assert_eq!(names_from(&path, "collapsed.group"), vec!["A".to_string(), "B".to_string()]);
+        for content in ["{ not json", r#"{"names":["A"]}"#, r#"{"names":{"collapsed.group":"A"}}"#] {
+            fs::write(&path, content).expect("write");
+            assert!(names_from(&path, "collapsed.group").is_empty(), "{content}");
         }
     }
 

@@ -7612,6 +7612,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "torrocontacts"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "iced",
+ "image",
+ "rfd",
+ "tempfile",
+ "tokio",
+ "torro-contacts",
+ "torro-core",
+ "torro-gui",
+ "torro-ipc",
+]
+
+[[package]]
 name = "torroinbox"
 version = "0.1.0"
 dependencies = [

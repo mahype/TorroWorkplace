@@ -1537,6 +1537,7 @@ pub fn app_name(app: AppId) -> &'static str {
         "torro-calendar" => tr("Calendar"),
         "torro-assistant" => tr("Assistant"),
         "torro-chat" => tr("Chat"),
+        "torro-contacts" => tr("Contacts"),
         _ => tr("Workplace"),
     }
 }
@@ -1553,6 +1554,7 @@ pub fn app_icon(app: AppId) -> Icon {
         "torro-calendar" => Icon::Calendar,
         "torro-assistant" => Icon::Sparkles,
         "torro-chat" => Icon::MessageCircle,
+        "torro-contacts" => Icon::BookUser,
         _ => Icon::LayoutGrid,
     }
 }

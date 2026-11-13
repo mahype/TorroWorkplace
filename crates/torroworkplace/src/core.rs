@@ -19382,7 +19382,8 @@ mod tests {
                 "torro-tasks",
                 "torro-calendar",
                 "torro-assistant",
-                "torro-chat"
+                "torro-chat",
+                "torro-contacts"
             ]
         );
         assert!(apps[..3].iter().all(|app| app.binary == "torroinbox"));

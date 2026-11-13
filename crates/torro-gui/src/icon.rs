@@ -49,6 +49,16 @@ pub enum Icon {
     Users,
     /// "+ Contact" in the recipient suggestions of the compose window (issue #460).
     UserPlus,
+    /// A phone number and "Call" in the contacts app (issue #352).
+    Phone,
+    /// A favourite contact (issue #352).
+    Star,
+    /// A read-only address book or contact (issue #352).
+    Lock,
+    /// Birthdays in the contacts app (issue #352).
+    Cake,
+    /// An address book, and the contacts app itself (issue #352).
+    BookUser,
     /// "Clear formatting" in the toolbar of the compose window (issue #460).
     RemoveFormatting,
     LayoutGrid,
@@ -280,6 +290,11 @@ impl Icon {
         Icon::User,
         Icon::Users,
         Icon::UserPlus,
+        Icon::Phone,
+        Icon::Star,
+        Icon::Lock,
+        Icon::Cake,
+        Icon::BookUser,
         Icon::RemoveFormatting,
         Icon::LayoutGrid,
         Icon::AppWindow,
@@ -431,6 +446,11 @@ impl Icon {
             Icon::User => include_bytes!("../assets/icons/user.svg"),
             Icon::Users => include_bytes!("../assets/icons/users.svg"),
             Icon::UserPlus => include_bytes!("../assets/icons/user-plus.svg"),
+            Icon::Phone => include_bytes!("../assets/icons/phone.svg"),
+            Icon::Star => include_bytes!("../assets/icons/star.svg"),
+            Icon::Lock => include_bytes!("../assets/icons/lock.svg"),
+            Icon::Cake => include_bytes!("../assets/icons/cake.svg"),
+            Icon::BookUser => include_bytes!("../assets/icons/book-user.svg"),
             Icon::RemoveFormatting => include_bytes!("../assets/icons/remove-formatting.svg"),
             Icon::LayoutGrid => include_bytes!("../assets/icons/layout-grid.svg"),
             Icon::AppWindow => include_bytes!("../assets/icons/app-window.svg"),

@@ -674,6 +674,11 @@ pub mod size {
     pub fn row_group() -> f32 {
         design::with(|t| t.design.size.row_group)
     }
+    /// 60: a contact's row in the contacts app (issue #352): name and position on two lines, mail,
+    /// number and town beside them.
+    pub fn row_contact() -> f32 {
+        design::with(|t| t.design.size.row_contact)
+    }
     /// 64: the header bar of the content panel.
     pub fn header() -> f32 {
         design::with(|t| t.design.size.header)
@@ -1057,6 +1062,7 @@ mod tests {
         );
         assert_eq!([size::hour(), size::axis(), size::axis_narrow()], [48.0, 52.0, 44.0]);
         assert_eq!([size::row_sidebar(), size::row_group(), size::HAIRLINE], [32.0, 40.0, 1.0]);
+        assert_eq!(size::row_contact(), 60.0, "issue #352");
         // The mail window's large buttons (task E11.1).
         assert_eq!([size::command(), size::pill(), size::control_xl(), size::row_message()], [46.0, 40.0, 48.0, 100.0]);
         // Issue #291: the rails and the reading column.

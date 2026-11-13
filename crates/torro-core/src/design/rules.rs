@@ -293,6 +293,8 @@ fn size_range(key: &str) -> (f32, f32) {
         // Rows down to one line of a click target (issue #291: Console draws every row 24 high).
         "row" => (24.0, 64.0),
         "row_two" => (24.0, 96.0),
+        // A contact's row (issue #352): two lines of text, like `row_two`.
+        "row_contact" => (24.0, 96.0),
         // The inbox's rows (task E3.9): three and two lines of text with room around them, or a single
         // line (Console).
         "row_message" => (24.0, 120.0),
