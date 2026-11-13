@@ -13122,7 +13122,8 @@ impl Core {
     /// tiled: those opened while nobody listened, and those a restarted window manager tiled again. Runs
     /// for the core's lifetime: when the event stream ends or cannot be opened (the window manager
     /// restarted or is not there yet), it subscribes again after [`FLOAT_RESUBSCRIBE`], and says so in
-    /// the log once until it can subscribe again. Returns at once where floating a window is `Unsupported`.
+    /// the log once until it can subscribe again. Returns at once where the window manager's events are
+    /// `Unsupported` (no window manager); the caller starts it only for AeroSpace and GlazeWM.
     async fn follow_floating_windows(&self) {
         let mut reported = false;
         loop {

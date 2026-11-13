@@ -4,7 +4,8 @@
 //! sends events to subscribers like a real backend. Tests set it up with
 //! [`FakeWm::add_window`], simulate an application showing up with
 //! [`FakeWm::open_window`] and check [`FakeWm::calls`] afterwards. Key binds and window rules are
-//! only recorded; a floated window ([`WindowManager::float_window`]) floats; [`FakeWm::reload_config`] sends [`WmEvent::ConfigReloaded`] like Hyprland does.
+//! only recorded; a floated window ([`WindowManager::float_window`]) floats; [`FakeWm::reload_config`]
+//! sends [`WmEvent::ConfigReloaded`] like Hyprland does.
 
 use std::sync::{Mutex, MutexGuard};
 
