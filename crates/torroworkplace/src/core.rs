@@ -31423,11 +31423,10 @@ mod tests {
             serde_json::from_str(&read_by_model(&script, "assistant_my_access")).expect("json for the model");
         let access: torro_ipc::assistant::MyAccess =
             serde_json::from_value(read["access"].clone()).expect("the access");
-        let mut expected = set.clone();
+        // As the core stores them: opened once (issue #666), so "all tools" stays "all", web too.
+        let mut expected = set.for_kind(torro_ipc::api::ASSISTANT_CLIENT);
         expected.areas.remove(&Area::Calendar);
         expected.calendars = Selection::Only(Vec::new());
-        // "All tools" written out without `web`, which only a person's tick grants (issue #305).
-        expected.tools = set.reached_tools();
         assert_eq!(access.rights, expected, "no calendar of the area switched off either");
         assert_eq!((access.engine.as_deref(), access.switched_off), (Some(engine.as_str()), vec![Area::Calendar]));
         let engine_id = format!("engine:{engine}");

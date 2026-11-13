@@ -163,6 +163,11 @@ impl State {
     pub fn areas(&self) -> &'static [Area] {
         areas(self.app)
     }
+
+    /// The app whose page this is.
+    pub fn app(&self) -> AppId {
+        self.app
+    }
 }
 
 /// What the page's controls report.
@@ -385,21 +390,23 @@ pub fn merged_used(fresh: &Rights, edited: &Rights) -> Rights {
 }
 
 /// Sends what the page saves (`clients.update_client`), each time over the rights the core holds right
-/// then ([`merged`]): asks `clients.list_clients`, takes the client by its id and changes only `areas` –
-/// for the assistant or a bot only its tools and servers ([`merged_used`]).
+/// then ([`merged`]): asks `clients.list_clients`, takes the client by its id and changes only the
+/// areas of `app` – for the assistant or a bot only its tools and servers ([`merged_used`]), and only
+/// from the assistant's window ([`uses_servers`]; review of #663).
 /// A client that is gone fails with what the core says; any other request goes as it is. Stops at the
 /// first failure, as `crate::apply` does.
-pub async fn send(backend: Arc<dyn Backend>, requests: Vec<Request>, areas: &'static [Area]) -> Result<(), String> {
+pub async fn send(backend: Arc<dyn Backend>, requests: Vec<Request>, app: AppId) -> Result<(), String> {
+    let (areas, used) = (areas(app), uses_servers(app));
     for request in requests {
         let request = match request {
             Request::UpdateClient { id, rights } => {
                 let fresh = match backend.call(Request::ListClients).await? {
-                    // A key or an MCP client only, checked here too: whatever the page let through, the
-                    // assistant, a bot or a hook is never changed from here.
+                    // A key or an MCP client only, checked here too: whatever the page let through, a
+                    // hook is never changed from here, the assistant and a bot only from its window.
                     Response::Clients { clients } => clients.into_iter().find(|client| {
                         client.id == id
                             && (editable(&client.kind)
-                                || [ASSISTANT_CLIENT, BOT_CLIENT].contains(&client.kind.as_str()))
+                                || (used && [ASSISTANT_CLIENT, BOT_CLIENT].contains(&client.kind.as_str())))
                     }),
                     _ => None,
                 };
@@ -561,7 +568,16 @@ fn used_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
             );
             parts.push(editor.map(Message::Used));
         }
-        _ => parts.push(updating_group(tr("Used by the assistant"))),
+        _ if waiting(state) => parts.push(updating_group(tr("Used by the assistant"))),
+        // No client to show (review of #663): the assistant is off, or the bot chosen is gone.
+        _ => {
+            let missing = match state.used {
+                None => tr("The assistant is off"),
+                Some(_) => tr("This bot no longer exists"),
+            };
+            let line = setting_row(None, missing, None, iced::widget::Space::new());
+            parts.push(widgets::group(tr("Built-in tools"), vec![line], None));
+        }
     }
     column(parts).spacing(layout::section_gap()).into()
 }
@@ -877,7 +893,7 @@ mod tests {
         edited.denied.insert("calendar.list_events".into());
         edited.denied.insert("mail.search_messages".into());
         let request = Request::UpdateClient { id: claude.id.clone(), rights: edited.clone() };
-        send(backend, vec![request], areas(AppId::CALENDAR)).await.expect("saved");
+        send(backend, vec![request], AppId::CALENDAR).await.expect("saved");
         let sent = demo.sent();
         let Some(Request::UpdateClient { rights, .. }) = sent.last() else { panic!("{sent:?}") };
         assert_eq!(rights.area(Area::Calendar).level, Level::Read);
@@ -889,13 +905,15 @@ mod tests {
         // A client that is gone is not made up again.
         let gone = Request::UpdateClient { id: "gone".into(), rights: edited.clone() };
         let backend: Arc<dyn Backend> = demo.clone();
-        assert!(send(backend, vec![gone], areas(AppId::CALENDAR)).await.is_err());
+        assert!(send(backend, vec![gone], AppId::CALENDAR).await.is_err());
         // The assistant only in its tools and servers (issue #666), also when asked by its id with other
         // rights (review of PR #550).
         let assistant = data.clients.iter().find(|client| client.kind == ASSISTANT_CLIENT).expect("the assistant");
         let theirs = Request::UpdateClient { id: assistant.id.clone(), rights: edited.clone() };
         let backend: Arc<dyn Backend> = demo.clone();
-        send(backend, vec![theirs], areas(AppId::CALENDAR)).await.expect("saved");
+        assert!(send(backend, vec![theirs.clone()], AppId::CALENDAR).await.is_err(), "not from another app");
+        let backend: Arc<dyn Backend> = demo.clone();
+        send(backend, vec![theirs], AppId::ASSISTANT).await.expect("saved");
         let sent = demo.sent();
         let Some(Request::UpdateClient { rights, .. }) = sent.last() else { panic!("{sent:?}") };
         assert_eq!(*rights, merged_used(&assistant.rights, &edited));
@@ -905,7 +923,7 @@ mod tests {
         let before = demo.sent().len();
         let theirs = Request::UpdateClient { id: "h0000001".into(), rights: edited };
         let backend: Arc<dyn Backend> = demo.clone();
-        assert!(send(backend, vec![theirs], areas(AppId::CALENDAR)).await.is_err());
+        assert!(send(backend, vec![theirs], AppId::ASSISTANT).await.is_err());
         assert!(!demo.sent()[before..].iter().any(|request| matches!(request, Request::UpdateClient { .. })));
     }
 

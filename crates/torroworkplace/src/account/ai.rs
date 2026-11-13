@@ -10,7 +10,7 @@
 //! (task S.23): Ollama's cloud models
 //! run on `ollama.com` through the local Ollama, so its model list says so per model
 //! ([`AiModel::remote`]), and the core keeps the last list per account ([`AiAccounts::known_models`])
-//! so the data rule need not ask the server at every message. The accounts are kept like the GitHub accounts
+//! so the core need not ask the server at every message where a model computes. The accounts are kept like the GitHub accounts
 //! ([`super::github`]): the list in `accounts.json` (kind `ai`, the server's base address in
 //! `server`, the kind of server in `Account::ai`), the API key in the system keychain under the
 //! account id, loaded once in the background ([`AiAccounts::start`]).
@@ -27,7 +27,7 @@
 //! from the lists the servers give: `<config>/ai-models.json` (0600, written whole and atomically,
 //! [`torro_core::ai::ModelSwitches`]; never written over while it does not read, `Switches::damaged`). Listing a server's models never sets [`AiModel::enabled`];
 //! the core marks a list it answers with ([`AiAccounts::mark_enabled`]). Where a model computes,
-//! which the rule at the start needs, is the data rule's word ([`torro_core::ai::place_of`]).
+//! is said by [`torro_core::ai::place_of`]: only people turn on a model elsewhere.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -771,7 +771,7 @@ struct Slot {
     checked: Option<DateTime<Utc>>,
     problem: Option<String>,
     /// All its models as the server last listed them ([`AiAccounts::models`]); `None` until it did.
-    /// What the data rule reads where a model runs ([`AiAccounts::known_models`]).
+    /// Where each model runs, as the core reads it ([`AiAccounts::known_models`]).
     models: Option<Vec<AiModel>>,
 }
 
@@ -960,7 +960,7 @@ impl Automatic {
 }
 
 /// Whether `model` of the account at `server` (its kind and base address, `None` when it is gone)
-/// computes on this computer, as the data rule says ([`torro_core::ai::place_of`]).
+/// computes on this computer ([`torro_core::ai::place_of`]).
 fn computes_here(server: Option<&(AiProvider, String)>, model: &AiModel) -> bool {
     server.is_some_and(|(provider, base)| {
         torro_core::ai::place_of(*provider, base, model) == torro_core::ai::Place::Local
@@ -1108,7 +1108,7 @@ impl AiAccounts {
         self.slots.read().await.iter().any(|slot| slot.account.id == id)
     }
 
-    /// The kind of server and the base address of the account `id`, for the assistant's data rule
+    /// The kind of server and the base address of the account `id`
     /// (task C.2: where its model runs); `None` for an id that is no AI account.
     pub async fn server(&self, id: &str) -> Option<(AiProvider, String)> {
         let slots = self.slots.read().await;
@@ -1234,7 +1234,7 @@ impl AiAccounts {
                 tr("An API key is only sent over https or to this computer. Use an https address.").into(),
             ));
         }
-        // Strata's models count as computed on this computer (the data rule), so only a server that
+        // Strata's models count as computed on this computer, so only a server that
         // says it is Strata may be connected as one.
         if provider == AiProvider::Strata
             && !OpenAiCompatible::new(self.http()?.clone(), provider, &base, None).is_strata().await
@@ -1389,7 +1389,7 @@ impl AiAccounts {
     }
 
     /// All models of the account `id` as its server last listed them ([`AiAccounts::models`]), asked
-    /// now when it never did or when the list lacks `model`: what the data rule needs to know where
+    /// now when it never did or when the list lacks `model`: what the core needs to know where
     /// a model runs ([`AiModel::remote`], task S.23) without asking the server at every message. It
     /// lives as long as the capabilities of the same list: until the account is listed again (the
     /// apps do with `ai.list_models`) or connected anew. Errors as [`AiAccounts::models`].
@@ -2616,7 +2616,7 @@ pub(crate) mod tests {
     }
 
     /// Task S.23: a cloud model of Ollama runs elsewhere, a local one does not; without `/api/tags`
-    /// every model counts as elsewhere. The list is kept, so the data rule does not ask again.
+    /// every model counts as elsewhere. The list is kept, so the core does not ask again.
     #[tokio::test]
     async fn ollama_says_which_models_run_elsewhere_and_without_tags_all_do() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -3516,7 +3516,7 @@ pub(crate) mod tests {
     }
 
     /// Issue #322: the models of Strata run on this computer (`remote: false`) and are not described
-    /// by the server beyond their names (`tools` stays `null`), so the data rule counts them as local.
+    /// by the server beyond their names (`tools` stays `null`), so they count as local.
     #[tokio::test]
     async fn the_models_of_strata_run_on_this_computer_and_say_nothing_of_tools() {
         let dir = tempfile::tempdir().expect("temp dir");

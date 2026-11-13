@@ -2340,7 +2340,8 @@ pub enum Request {
     /// [`Response::Ok`]; an unknown id is `not-found`. A selection that names a collection by a
     /// bare URL instead of its id is `error` and changes nothing. Names in
     /// [`api::Rights::denied`] that the catalogue does not know, and `system.ping`, are dropped
-    /// ([`api::deniable`]).
+    /// ([`api::deniable`]). The rights are narrowed to the client's kind ([`api::Rights::for_kind`]):
+    /// [`api::Rights::extensions_default`] stays only for the assistant and its bots (issue #666).
     #[serde(rename = "clients.update_client")]
     UpdateClient { id: String, rights: Rights },
     /// Gives the client `id` a new key, answered with [`Response::ClientKey`]; the old key stops

@@ -1172,7 +1172,7 @@ impl Host {
                     // message, so no other section's answer settles it.
                     Action::Send(requests) => {
                         self.notice = None;
-                        let send = outside::send(Arc::clone(&self.backend), requests, state.areas());
+                        let send = outside::send(Arc::clone(&self.backend), requests, state.app());
                         Outcome::Work(Task::perform(send, Message::OutsideDone))
                     }
                     other => self.act(other),
@@ -1183,7 +1183,7 @@ impl Host {
                 let next = match self.outside.as_mut() {
                     Some(state) => match outside::done::<A>(state, &result) {
                         Action::Send(requests) => {
-                            let send = outside::send(Arc::clone(&self.backend), requests, state.areas());
+                            let send = outside::send(Arc::clone(&self.backend), requests, state.app());
                             Some(Task::perform(send, Message::OutsideDone))
                         }
                         _ => None,

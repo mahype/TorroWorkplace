@@ -6224,6 +6224,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Create keys for scripts and programs", "Schlüssel für Skripte und Programme anlegen"),
     ("Connect coding agents and apps", "Coding-Agenten und Apps verbinden"),
     ("Used by the assistant", "Vom Assistenten genutzt"),
+    (
+        "Includes tools added later, but not web search: tick it by name.",
+        "Enthält später hinzugefügte Werkzeuge, aber nicht die Websuche: Sie wird einzeln angehakt.",
+    ),
+    ("This agent can't use tools left off.", "Ausgeschaltete Werkzeuge kann dieser Agent nicht verwenden."),
     ("The assistant and each bot have their own.", "Der Assistent und jeder Bot haben eigene."),
     (
         "New tools and servers are allowed until you switch them off here.",
@@ -6530,14 +6535,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Die Dateien haben sich nach der Anfrage zur Freigabe geändert; es wurde nichts getan.",
     ),
     // The rights editor › the selection of tools (WZ.7, #225)
-    (
-        "Includes tools added later, but not web search: tick it by name. Each works only while it is on in the control centre under MCP servers.",
-        "Enthält später hinzugefügte Werkzeuge, aber nicht die Websuche: Sie wird einzeln angehakt. Jedes arbeitet nur, solange es in der Steuerzentrale unter MCP-Server eingeschaltet ist.",
-    ),
-    (
-        "This agent can't use tools left off. Each works only while it is on in the control centre under MCP servers.",
-        "Ausgeschaltete Werkzeuge kann dieser Agent nicht verwenden. Jedes arbeitet nur, solange es in der Steuerzentrale unter MCP-Server eingeschaltet ist.",
-    ),
     ("Off under MCP servers", "Unter MCP-Server ausgeschaltet"),
     // The file card in the chat (WZ.8, #225)
     ("Save as…", "Speichern unter…"),

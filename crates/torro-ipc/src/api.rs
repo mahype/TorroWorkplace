@@ -628,8 +628,20 @@ impl Rights {
     pub fn opened(mut self) -> Rights {
         self.extensions_default = Some(Level::Full);
         self.tools = Selection::All;
-        self.areas.insert(Area::Tools, AreaRights { level: Level::Full, admin: false });
+        // Never lower: an admin switch a person gave stays.
+        let admin = self.area(Area::Tools).admin;
+        self.areas.insert(Area::Tools, AreaRights { level: Level::Full, admin });
         self
+    }
+
+    /// [`Rights::opened`] for rights that were never opened ([`Rights::extensions_default`] missing);
+    /// rights opened once stay as they are, with what a person switched off since (review of #663:
+    /// so a template chosen when the assistant is set up starts open, and nothing opens twice).
+    pub fn opened_once(self) -> Rights {
+        match self.extensions_default {
+            Some(_) => self,
+            None => self.opened(),
+        }
     }
 
     /// Whether the client may call the tool `tool` of the MCP server `id`, which needs `access`
@@ -663,13 +675,15 @@ impl Rights {
 
     /// The tools the client reaches, as a selection that is never [`Selection::All`]: the ids it names,
     /// or for `All` every tool of [`ToolId::ALL`] that needs no naming (so not `web`), and `web` too
-    /// when the rights are open like the assistant's ([`Rights::extensions_default`] above
-    /// [`Level::NoAccess`], [`Rights::opened`], issue #666): a key with every right of a template still
+    /// when the rights were opened like the assistant's ([`Rights::extensions_default`] set,
+    /// [`Rights::opened`], issue #666) – also once every server is closed again: the servers and the
+    /// web are two things (review of #663), and `web` goes by the tool selection –: a key with every
+    /// right of a template still
     /// does not reach `web`. Every intersection of tool selections starts from this ([`Rights::common`]
     /// and `assistant.my_access` in the core), because [`Selection::common`] with `All` gives the
     /// other side whole and would hand on `web`.
     pub fn reached_tools(&self) -> Selection {
-        let open = self.extensions_base() != Level::NoAccess;
+        let open = self.extensions_default.is_some();
         match &self.tools {
             Selection::All => Selection::Only(
                 ToolId::ALL
@@ -729,8 +743,11 @@ impl Rights {
                 // An entry at the common base says nothing the base does not.
                 .filter(|(_, level)| *level != base)
                 .collect(),
-            extensions_default: (self.extensions_default.is_some() || other.extensions_default.is_some())
-                .then_some(base),
+            // Opened only where both were: a key's `None` keeps `web` out of the common rights.
+            extensions_default: match (self.extensions_default, other.extensions_default) {
+                (Some(_), Some(_)) => Some(base),
+                _ => None,
+            },
         }
     }
 
@@ -862,10 +879,11 @@ impl Rights {
 
     /// These rights narrowed to what a client of `kind` may hold: for [`HOOK_CLIENT`] what both
     /// they and [`Rights::hook`] allow ([`Rights::common`]), for [`BOT_CLIENT`] without the areas
-    /// `assistant` and `bots` (it may never use them, [`loops_back`]), for [`ASSISTANT_CLIENT`]
-    /// unchanged, and for every other kind without a level for servers it does not name
-    /// ([`Rights::extensions_default`], issue #666): only the assistant and its bots start open, and
-    /// not even the app key opens an API or MCP client that way.
+    /// `assistant` and `bots` (it may never use them, [`loops_back`]), and for both of them opened once
+    /// ([`Rights::opened_once`], issue #666: a template or rights from an older version start open
+    /// too), and for every other kind without a level for servers it does not name
+    /// ([`Rights::extensions_default`]): only the assistant and its bots start open, and not even the
+    /// app key opens an API or MCP client that way.
     ///
     /// The core stores a client's rights through this (`Clients::add` and `Clients::update`), so
     /// no template or change of rights ever opens more to a hook client, and a bot's rights never
@@ -874,11 +892,11 @@ impl Rights {
         match kind {
             HOOK_CLIENT => self.common(&Rights::hook()),
             BOT_CLIENT => {
-                let mut rights = self.clone();
+                let mut rights = self.clone().opened_once();
                 rights.areas.retain(|area, _| !matches!(area, Area::Assistant | Area::Bots));
                 rights
             }
-            ASSISTANT_CLIENT => self.clone(),
+            ASSISTANT_CLIENT => self.clone().opened_once(),
             _ => Rights { extensions_default: None, ..self.clone() },
         }
     }
@@ -4210,7 +4228,9 @@ static UPDATE_CLIENT: Command = Command {
     access: Access::Admin,
     mcp: Mcp::Never,
     description: "Replaces the rights of a client, the commands switched off one by one (`denied`) included; \
-                  names of commands that do not exist, and system.ping, are dropped. They apply from its next request.",
+                  names of commands that do not exist, and system.ping, are dropped. `extensionsDefault` (the level of \
+                  every MCP server without an entry) is kept only for the assistant and its bots, which start opened; \
+                  for other clients it is dropped. They apply from its next request.",
 };
 
 static NEW_KEY: Command = Command {
@@ -7931,7 +7951,14 @@ mod tests {
         assert_eq!(kept.area(Area::Assistant), AreaRights::NONE);
         assert_eq!(kept.area(Area::Bots), AreaRights::NONE);
         assert_eq!(kept.area(Area::Calendar), AreaRights { level: Level::Full, admin: true }, "the rest stays");
-        assert_eq!(every.for_kind(ASSISTANT_CLIENT), every, "other kinds keep theirs");
+        // Issue #666: the assistant keeps its areas and is opened once; opened, it stays as it is.
+        let assistant = every.for_kind(ASSISTANT_CLIENT);
+        assert_eq!(assistant, every.clone().opened(), "opened once");
+        assert_eq!(assistant.area(Area::Tools), AreaRights { level: Level::Full, admin: true }, "never lower");
+        let mut closed = assistant.clone();
+        closed.close_extensions();
+        assert_eq!(closed.for_kind(ASSISTANT_CLIENT), closed, "what a person closed stays closed");
+        assert!(closed.reaches_tool(ToolId::Web), "closing the servers keeps the web");
     }
 
     /// Task B.1: a new bot starts with nothing; it reaches what every key reaches (`system`, its own
@@ -7958,7 +7985,8 @@ mod tests {
         }
         assert_eq!(none.outbound, Outbound::Never);
         assert_eq!(none.template(), None);
-        assert_eq!(none.for_kind(BOT_CLIENT), none);
+        // Issue #666: a bot without a level for servers is opened once, no area with it.
+        assert_eq!(none.for_kind(BOT_CLIENT), none.clone().opened());
     }
 
     /// Decision 7 for bots: no template opens `bots`, a person switches it on per client; then

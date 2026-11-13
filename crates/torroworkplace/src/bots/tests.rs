@@ -101,7 +101,7 @@ async fn changing_a_bot_keeps_its_client_and_rights_and_renames_the_client() {
     let dir = tempfile::tempdir().expect("temp dir");
     let (assistant, clients) = set_up(dir.path());
     let bot = saved(answer(&assistant, &clients, save(None, "Travel planner")).await);
-    let mut granted = Rights::none();
+    let mut granted = Rights::none().opened();
     granted.areas.insert(torro_ipc::api::Area::Calendar, AreaRights { level: Level::Read, admin: false });
     clients.update(&bot.client, granted.clone()).await.expect("a person grants it reading calendars");
 

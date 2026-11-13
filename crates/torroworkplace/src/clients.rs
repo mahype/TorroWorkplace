@@ -2264,7 +2264,7 @@ pub(crate) mod tests {
         let (info, key) = clients.add("Travel planner", "bot", Rights::none()).await.expect("added");
         clients.rename(&info.id, "  Trip planner ").await.expect("renamed");
         let renamed = clients.list().into_iter().find(|client| client.id == info.id).expect("still there");
-        assert_eq!((renamed.name.as_str(), &renamed.rights), ("Trip planner", &Rights::none()));
+        assert_eq!((renamed.name.as_str(), &renamed.rights), ("Trip planner", &Rights::none().opened()));
         assert!(matches!(clients.admit(Some(&key), &Request::Ping), Ok(Caller::Client { .. })), "the key works");
         assert!(matches!(clients.rename(&info.id, " ").await, Err(ClientsError::Invalid(_))));
         assert!(matches!(clients.rename("00000000", "X").await, Err(ClientsError::NotFound(_))));
@@ -2762,6 +2762,24 @@ pub(crate) mod tests {
             Refused::Lacks { command: "accounts.list_accounts", lack: Lack::Area { area: Area::Accounts } }
         );
         assert!(message(accounts).contains("no access to accounts"));
+    }
+
+    /// Review of #663: an assistant set up with a template starts opened too, and a tool a person
+    /// switched off afterwards stays off when the core starts again.
+    #[tokio::test]
+    async fn an_assistant_from_a_template_starts_opened_and_stays_as_changed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = open_in(dir.path());
+        let (assistant, _) =
+            clients.add("Assistant", ASSISTANT_CLIENT, RightsTemplate::ReadOnly.rights()).await.expect("added");
+        let rights = |clients: &Clients| clients.list().into_iter().find(|c| c.id == assistant.id).expect("it").rights;
+        let opened = rights(&clients);
+        assert_eq!(opened.extension("installed-later"), Level::Full);
+        assert!(ToolId::ALL.into_iter().all(|tool| opened.reaches_tool(tool)), "every tool, web too");
+        let mut without_pdf = opened;
+        without_pdf.tools = Selection::Only(vec!["web".into(), "files".into()]);
+        clients.update(&assistant.id, without_pdf.clone()).await.expect("changed");
+        assert_eq!(rights(&open_in(dir.path())), without_pdf, "not opened again");
     }
 
     /// Issue #666: the assistant opened reaches every MCP server, also one installed later; a key lent

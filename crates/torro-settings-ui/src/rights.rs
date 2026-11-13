@@ -163,8 +163,7 @@ impl Naming {
 ///   (`accounts.list_accounts`, [`api::signed_in_mail`]),
 /// - inbox sources: `sources` (`inbox.list_sources`), the source of every one of `clients`
 ///   (`clients.list_clients`) and the sources of the remote accounts ([`api::present_sources`]),
-/// - tools: `tools` (`tools.list_tools` with the app key, task WZ.7), each with whether it is
-///   switched on under MCP servers,
+/// - tools: `tools` (`tools.list_tools` with the app key, task WZ.7),
 /// - MCP servers: `extensions` (`extensions.list_extensions`, task MA.10), each with whether it is
 ///   switched on and the tools it reported with their state; a row of its own under "MCP servers".
 ///
@@ -320,15 +319,10 @@ impl Pick {
             (Pick::PresenceAccounts, false) => {
                 tr("The agent sees who is there on a ticked account. Accounts left off don't exist for it.")
             }
-            // The switch is the person's, under MCP servers in the control centre (task MA.7): the
-            // rights alone never make a tool work (`docs/assistent.md`, "Schalter und Rechte sind zwei
-            // Dinge"). `web` must be ticked by name (`ToolId::needs_naming`): "All" does not include it.
-            (Pick::Tools, true) => tr(
-                "Includes tools added later, but not web search: tick it by name. Each works only while it is on in the control centre under MCP servers.",
-            ),
-            (Pick::Tools, false) => tr(
-                "This agent can't use tools left off. Each works only while it is on in the control centre under MCP servers.",
-            ),
+            // Issue #666: no switch beside the rights any more, the selection decides. `web` must be
+            // ticked by name (`ToolId::needs_naming`): "All" of a key does not include it.
+            (Pick::Tools, true) => tr("Includes tools added later, but not web search: tick it by name."),
+            (Pick::Tools, false) => tr("This agent can't use tools left off."),
         }
     }
 }
@@ -2542,8 +2536,8 @@ mod tests {
         }
     }
 
-    /// Task S.30: the data rule left the rights; the access group of the assistant with mail builds
-    /// without it (it stands under AI now).
+    /// Task S.30: the data rule left the rights (and with issue #664 the suite); the access group of
+    /// the assistant with mail builds without it.
     #[test]
     fn the_rights_have_no_data_rule_any_more() {
         let mut rights = Rights::assistant();
