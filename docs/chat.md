@@ -592,20 +592,33 @@ computer“), Mikrofon mit Pegel, Lautsprecher mit „Play test sound“, Schalt
 Ohne Gerät oder ohne Recht dazu steht der Weg zur Systemeinstellung da. Ein neu eingestecktes Gerät erscheint
 sofort in der Liste, gewechselt wird nur hier.
 
-**Schweben je Fenster-Manager** (Entscheidung 16): Der Kern setzt die Regeln für die festen Klassen des Chats
-beim Start selbst über `torro-wm`, wie heute für `WORKPLACE_DIALOG_CLASS`; einen Request dafür gibt es nicht:
-- **Hyprland:** `float_dialogs` gibt es schon (Regel `float = true, center = true` je Klasse). Ein Neuladen der
-  Konfiguration verwirft Laufzeit-Regeln (`ConfigReloaded` in `torro-wm`); der Kern muss sie darauf neu setzen,
-  das tut er heute für keine Klasse und kommt mit Stufe 3 dazu. Das reicht für Klingel-, Anruf- und Gerätefenster. Ein Chatfenster an einem
-  gemerkten Ort bräuchte eine Regel ohne `center` und ein Verschieben durch den Kern (unter Wayland darf das
-  Programm sein Fenster nicht selbst setzen, [modes.md](modes.md)); das ist eine neue Methode am Trait
-  `WindowManager`, dessen Schnittstelle festgelegt ist, also eine Rückfrage in Stufe 3. Bis dahin öffnen
-  Chatfenster mittig.
-- **AeroSpace und GlazeWM:** `float_dialogs` tut dort heute nichts, und die „Klasse“ ist die Bundle-ID bzw. der
-  Prozessname: Alle Fenster von `torrochat` teilen sie, auch die Kontaktliste. Unterscheiden ließen sie sich nur am
-  Fenstertitel (AeroSpace `on-window-detected` mit `window-title-regex-substring`, GlazeWM `window_rules` mit
-  `window_title`) oder indem Chat- und Anruffenster ein eigener Prozess bzw. ein eigenes Bündel werden. Welcher Weg,
-  klärt Stufe 3 mit Rückfrage; bis dahin schweben sie dort nicht von selbst.
+**Schweben je Fenster-Manager** (Entscheidung 16, #667): Welche Fenster der Suite schweben, steht an einer Stelle,
+der Liste `FLOATING_WINDOWS` in `torro-core` (`app.rs`): je Fenster das Programm, der Schalter, mit dem es startet,
+und seine Klasse. Heute sind das Chat-, Klingel- und Bildfenster des Chats (`torrochat --conversation`, `--ring`,
+`--viewer`) und der Dialog nach „Workspace speichern…“ (`torroworkplace ui --template`). Ein späteres Anruf- oder
+Gerätefenster bekommt dort einen Eintrag und schwebt dann unter jedem Fenster-Manager; ein Test in
+`torrochat/src/launch.rs` nennt jede Fensterart des Chats und verlangt für jede außer der Kontaktliste den Eintrag. Einen Request dafür gibt es nicht.
+- **Hyprland:** `float_dialogs` setzt je Klasse eine Regel `float = true, center = true`, bevor das Fenster öffnet:
+  beim Start des Kerns, vor jedem Klingelfenster und jedem Dialog und nach jedem Neuladen der Konfiguration
+  (`ConfigReloaded` in `torro-wm`), das Laufzeit-Regeln verwirft. Ein Chatfenster an einem gemerkten Ort bräuchte
+  eine Regel ohne `center` und ein Verschieben durch den Kern (unter Wayland darf das Programm sein Fenster nicht
+  selbst setzen, [modes.md](modes.md)). Bis dahin öffnen Chatfenster mittig.
+- **AeroSpace und GlazeWM:** Hier ist die „Klasse“ die Bundle-ID bzw. der Prozessname, alle Fenster von `torrochat`
+  teilen sie, auch die Kontaktliste. Der Kern erkennt ein Fenster deshalb an seinem **Startbefehl**: Er folgt den
+  Ereignissen des Fenster-Managers (`chat/float.rs`), liest bei jedem neuen Fenster eines Programms der Suite den
+  Befehl seines Prozesses (`torro_setups::launch::command_for`, wie beim Speichern eines Workspaces) und lässt es
+  schweben, wenn der Befehl einen Schalter aus `FLOATING_WINDOWS` trägt (`floating_window_class` in
+  `torro-setups`). Dafür hat der Trait `WindowManager` die Methode `float_window`: AeroSpace
+  `layout --window-id <id> floating`, GlazeWM `command --id <id> set-floating --centered`. Fenster anderer
+  Programme fragt der Kern nicht ab. Endet der Ereignisstrom (Fenster-Manager neu gestartet), abonniert der Kern
+  nach 10 s neu. Bei jedem Abonnieren lässt er zuerst die schon offenen, gekachelten Fenster dieser Art schweben:
+  die aus der Lücke und die, die ein neu gestarteter Fenster-Manager wieder als Kachel eingeordnet hat.
+  - Der Fenstertitel scheidet aus, weil er übersetzt wird und den Namen der Unterhaltung trägt; ein eigenes Bündel
+    je Fensterart wäre viel Aufwand beim Paketbau.
+  - Der Kern ändert die Konfiguration von AeroSpace und GlazeWM nicht. Darum steht ein neues Fenster einen
+    Augenblick als Kachel da, bevor es schwebt; nur eine Regel in der Konfiguration würde das vermeiden.
+  - GlazeWM setzt das Fenster in die Mitte. AeroSpace kennt keinen Befehl dafür; dort bleibt es an der Stelle und in
+    der Größe seiner kurzen Kachel.
 - **Ohne Kachel-Manager** (macOS ohne AeroSpace, Windows ohne GlazeWM, GNOME, KDE) schweben die Fenster ohnehin.
 
 **Notification Hub (Stufe 1)**, Paneel eines Talk-Eintrags:
@@ -696,9 +709,9 @@ Bereich `presence` (Rechte: Stufe in `presence` und eigene Auswahl `presence_acc
 | 2 | `presence.set_own_status { account, status, message?, icon?, clear_at? }` | Write + **nach außen** | `presence_set_own_status` |
 | 2 | `settings.set_setting` mit `presence_heartbeat` (Heartbeat) | Admin (`settings`); `true` **nur Menschen** | `settings_set_setting` (vorhanden) |
 
-Es gibt keinen Befehl für das Schweben der Fenster: Der Kern setzt die Regeln für die festen Fensterklassen des
-Chats beim Start selbst, wie heute für `WORKPLACE_DIALOG_CLASS`. So kann auch kein Client fremde Klassen schweben
-lassen. Eingeklappte Gruppen merkt die Kontaktliste in `ui.json` (`torro_gui::ui_state`); Größe und Ort heute
+Es gibt keinen Befehl für das Schweben der Fenster: Der Kern lässt die Fenster aus `FLOATING_WINDOWS` selbst
+schweben, unter Hyprland per Regel, unter AeroSpace und GlazeWM beim Erscheinen (siehe Fenster, „Schweben je
+Fenster-Manager“). So kann auch kein Client fremde Fenster schweben lassen. Eingeklappte Gruppen merkt die Kontaktliste in `ui.json` (`torro_gui::ui_state`); Größe und Ort heute
 nicht (siehe Fenster, „Schweben“).
 
 **Vorgeschlagener Punkt 11 für [„Was nie nach außen geht“](api.md#was-nie-nach-außen-geht)** (`api.md` nimmt
@@ -841,7 +854,8 @@ Entscheidung 13: selbst gebaut. Was die Machbarkeit dazu ergab, steht in
   und im Eingang. `notification-state` braucht es dafür nicht. **Auflegen** antwortet `ok`, solange der Anruf im
   Browser läuft.
 - **Start des Fensters:** Für jeden Anruf, der neu klingelt, startet der Kern einmal `torrochat
-  --ring=<unterhaltung>` (`apps::Opened::Ring`) und lässt die Klassen des Chats vorher schweben. Gewählt statt eines
+  --ring=<unterhaltung>` (`apps::Opened::Ring`) und setzt unter Hyprland vorher die Regeln für die Klassen des Chats;
+  unter AeroSpace und GlazeWM schwebt das Fenster beim Erscheinen. Gewählt statt eines
   Ziels `ring:<unterhaltung>` für `apps.open_app`, weil ein solches Ziel jedem Client mit `apps` erlaubte, den Rechner
   klingeln zu lassen, und weil der Kern ohnehin selbst startet.
 - Keiner der drei Befehle ist `Never`; die Datenregel des Assistenten hält `chat-call` wie jede Chat-Antwort zurück.
@@ -1123,8 +1137,9 @@ angepasst.
   „Oberflächen lesen und schreiben nichts selbst“, erste Aufgabe der Stufe 6. Die Wahl „Selbst gebaut“ vom
   2026-11-06 setzt sie voraus (ohne sie gibt es kein eigenes Anruffenster); festgeschrieben in `api.md` wird sie
   erst nach ausdrücklicher Bestätigung.
-- **Schweben unter AeroSpace und GlazeWM, Ort der Chatfenster unter Hyprland, ein Fenster je Unterhaltung über
-  `apps.open_app`:** Stufe 3, jeweils mit Rückfrage, weil Schnittstellen von `torro-wm` bzw. `OpenApp` sich ändern.
+- **Ort der Chatfenster unter Hyprland, ein Fenster je Unterhaltung über `apps.open_app`:** jeweils mit Rückfrage,
+  weil Schnittstellen von `torro-wm` bzw. `OpenApp` sich ändern. Das Schweben unter AeroSpace und GlazeWM ist mit
+  #667 geklärt (Fenster, „Schweben je Fenster-Manager“).
 - **Ist TURN auf dem eigenen Server eingerichtet?** Zeigt nur eine angemeldete Abfrage; klärt der Versuch.
 - **Matrix oder Slack als weitere Anbieter:** Die Bereiche `chat` und `presence` und das Modell in `torro-chat`
   sind dafür offen. Ein eigener Plan, wenn es so weit ist.

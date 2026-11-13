@@ -351,6 +351,11 @@ fn offline_mail_discoverer() -> Option<MailDiscoverer> {
 /// search asks DNS and web servers, so an agent must not turn the core into a stream of them.
 const MAX_SEARCHES: usize = 2;
 
+/// How long the core waits before it watches new windows again for floating ([`Core::follow_floating_windows`],
+/// issue #667) after the stream of AeroSpace or GlazeWM ended or could not be opened: long enough not to
+/// knock on a stopped window manager every moment, short enough that a restarted one floats the next chat.
+const FLOAT_RESUBSCRIBE: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The searches each client key runs right now, by client id.
 #[derive(Default)]
 struct Searches {
@@ -3931,9 +3936,14 @@ impl Core {
         // The chat's windows float under Hyprland (decision 3 in `docs/chat.md`): set at the start
         // and again after Hyprland reloaded its configuration, which drops rules set at run time;
         // so also the windows `torrochat` starts itself (a picture shown large) float.
-        // Only Hyprland has the rules and the reload; elsewhere nothing is asked.
+        // Only Hyprland has the rules and the reload; AeroSpace and GlazeWM float each such window as
+        // it appears (issue #667, [`crate::chat::float`]); without a window manager nothing is asked.
         let core = Arc::clone(self);
         tokio::spawn(async move {
+            if matches!(core.backend, Backend::AeroSpace(_) | Backend::GlazeWm(_)) {
+                core.follow_floating_windows().await;
+                return;
+            }
             if !matches!(core.backend, Backend::Hyprland(_)) {
                 return;
             }
@@ -13108,21 +13118,54 @@ impl Core {
         show_control_centre(&self.backend, section, self.start_control_centre).await
     }
 
-    /// Asks the window manager to float the template dialog ([`torro_core::app::WORKPLACE_DIALOG_CLASS`],
-    /// [`WindowManager::float_dialogs`]): at the core's start and again before each dialog opens,
-    /// because a reload of Hyprland's configuration drops the rule. A failure is only logged; the
-    /// dialog then opens tiled.
-    /// Lets the chat's conversation, ring and viewer windows float (decision 3 in `docs/chat.md`);
-    /// only Hyprland does something, the other window managers are left as they are.
+    /// Lets the chat's floating windows (conversation, ring, viewer: the chat's entries of
+    /// [`torro_core::app::FLOATING_WINDOWS`]) float by their class (decision 3 in `docs/chat.md`); only
+    /// Hyprland does something here, AeroSpace and GlazeWM float them as they appear
+    /// ([`Core::follow_floating_windows`]).
     async fn float_chat_windows(&self) {
-        use torro_core::app::{CHAT_CONVERSATION_CLASS, CHAT_RING_CLASS, CHAT_VIEWER_CLASS};
-        for class in [CHAT_CONVERSATION_CLASS, CHAT_RING_CLASS, CHAT_VIEWER_CLASS] {
-            if let Err(err) = self.backend.float_dialogs(class).await {
+        use torro_core::app::FLOATING_WINDOWS;
+        let chat = FLOATING_WINDOWS.iter().filter(|window| window.binary == AppId::CHAT.binary);
+        for window in chat {
+            if let Err(err) = self.backend.float_dialogs(window.class).await {
                 eprintln!("torroworkplace: the chat windows will not float: {err}");
             }
         }
     }
 
+    /// Floats each floating window of the suite ([`torro_core::app::FLOATING_WINDOWS`]: the chat's side
+    /// windows, the template dialog) as it appears, under AeroSpace and GlazeWM (issue #667,
+    /// [`crate::chat::float`]). Each time it subscribes it first floats such windows that are open and
+    /// tiled: those opened while nobody listened, and those a restarted window manager tiled again. Runs
+    /// for the core's lifetime: when the event stream ends or cannot be opened (the window manager
+    /// restarted or is not there yet), it subscribes again after [`FLOAT_RESUBSCRIBE`], and says so in
+    /// the log once until it can subscribe again. Returns at once where the window manager's events are
+    /// `Unsupported` (no window manager); the caller starts it only for AeroSpace and GlazeWM.
+    async fn follow_floating_windows(&self) {
+        let mut reported = false;
+        loop {
+            match self.backend.events().await {
+                Ok(events) => {
+                    reported = false;
+                    if let Err(err) = crate::chat::float::float_open_windows(&self.backend, command_for).await {
+                        eprintln!("torroworkplace: open chat windows are not floated: {err}");
+                    }
+                    crate::chat::float::follow(&self.backend, events, command_for).await;
+                }
+                Err(WmError::Unsupported(_)) => return,
+                Err(err) if !reported => {
+                    reported = true;
+                    eprintln!("torroworkplace: new windows are not watched for floating: {err}");
+                }
+                Err(_) => {}
+            }
+            tokio::time::sleep(FLOAT_RESUBSCRIBE).await;
+        }
+    }
+
+    /// Asks the window manager to float the template dialog ([`torro_core::app::WORKPLACE_DIALOG_CLASS`],
+    /// [`WindowManager::float_dialogs`]): at the core's start and again before each dialog opens,
+    /// because a reload of Hyprland's configuration drops the rule. A failure is only logged; the
+    /// dialog then opens tiled.
     async fn float_dialog(&self) {
         if let Err(err) = self.backend.float_dialogs(torro_core::app::WORKPLACE_DIALOG_CLASS).await {
             eprintln!("torroworkplace: the template dialog will not float: {err}");

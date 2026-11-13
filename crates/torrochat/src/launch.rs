@@ -364,6 +364,42 @@ mod tests {
         assert!(matches!(window_of(&["--ring", "token"]), Err(LaunchError::UnknownValue { flag: "--ring", .. })));
     }
 
+    /// Issue #667: every window but the contact list has its entry in the core's list of floating
+    /// windows, so AeroSpace and GlazeWM float it as it appears. The `match` names every kind of
+    /// [`Window`], so a new one (a call or device window) does not compile here until its flag is
+    /// named; whoever names it adds its start to `starts` too, and the count at the end fails as long as
+    /// `FLOATING_WINDOWS` and `starts` differ.
+    #[test]
+    fn every_side_window_is_a_floating_window() {
+        use torro_core::app::{CHAT_CONVERSATION_CLASS, CHAT_RING_CLASS, CHAT_VIEWER_CLASS, FLOATING_WINDOWS};
+
+        fn flag_of(window: &Window) -> Option<(&'static str, &'static str)> {
+            match window {
+                Window::Contacts => None,
+                Window::Conversation(_) => Some(("--conversation", CHAT_CONVERSATION_CLASS)),
+                Window::Viewer { .. } => Some(("--viewer", CHAT_VIEWER_CLASS)),
+                Window::Ring(_) => Some(("--ring", CHAT_RING_CLASS)),
+            }
+        }
+
+        let conversation = "nextcloud:anna@cloud.example.org/ben4chat";
+        let message = "nextcloud:anna@cloud.example.org/design4sync/3/5103";
+        let starts =
+            [format!("--conversation={conversation}"), format!("--ring={conversation}"), format!("--viewer={message}")];
+        let mut flags = Vec::new();
+        for start in &starts {
+            let window = window_of(&[start]).expect("a window flag");
+            let (flag, class) = flag_of(&window).expect("a side window");
+            assert!(start.starts_with(flag), "{start} opens {window:?}");
+            let entry = FLOATING_WINDOWS.iter().find(|entry| entry.binary == "torrochat" && entry.flag == flag);
+            assert_eq!(entry.map(|entry| entry.class), Some(class), "{flag}");
+            flags.push(flag);
+        }
+        assert_eq!(flag_of(&Window::Contacts), None, "the contact list stays a tile");
+        let chat = FLOATING_WINDOWS.iter().filter(|entry| entry.binary == torro_core::AppId::CHAT.binary);
+        assert_eq!(chat.count(), flags.len(), "no floating window of the chat that is not started here");
+    }
+
     #[test]
     fn viewer_takes_a_message_and_a_file() {
         let word = "nextcloud:anna@cloud.example.org/design4sync/3/5103";

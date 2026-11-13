@@ -131,6 +131,19 @@ pub trait WindowManager: Send + Sync {
         let _ = class;
         async { Ok(()) }
     }
+
+    /// Lets the open window `window` float over the tiled windows, taking it out of the tiling (issue
+    /// #667, a chat window under AeroSpace or GlazeWM). For window managers that cannot float by class
+    /// before a window opens ([`float_dialogs`](Self::float_dialogs)), so the core floats each such window
+    /// as it appears ([`WmEvent::WindowOpened`]). GlazeWM centres it on its monitor; AeroSpace leaves it
+    /// where its tile was.
+    ///
+    /// Errors: `Unsupported` where the window manager floats by rule instead (Hyprland) or there is no
+    /// window manager, `NotFound` for an unknown window (GlazeWM, the fake), `Protocol` for a refused command.
+    fn float_window(&self, window: &WindowId) -> impl Future<Output = Result<(), WmError>> + Send {
+        let _ = window;
+        async { Err(WmError::Unsupported("floating a window".into())) }
+    }
 }
 
 /// The backend chosen at runtime.
@@ -286,6 +299,15 @@ impl WindowManager for Backend {
             Backend::GlazeWm(wm) => wm.float_dialogs(class).await,
             Backend::AeroSpace(wm) => wm.float_dialogs(class).await,
             Backend::Unsupported { .. } => Ok(()),
+        }
+    }
+
+    async fn float_window(&self, window: &WindowId) -> Result<(), WmError> {
+        match self {
+            Backend::Hyprland(wm) => wm.float_window(window).await,
+            Backend::GlazeWm(wm) => wm.float_window(window).await,
+            Backend::AeroSpace(wm) => wm.float_window(window).await,
+            Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
         }
     }
 }
