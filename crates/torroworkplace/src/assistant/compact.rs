@@ -200,9 +200,14 @@ fn is_note(message: &ChatMessage) -> bool {
 /// with its summary, after the notes of stretches left out before (they stay word for word, so nothing they said
 /// gets lost). Never a result, a text or an argument: those can hold what a mail said.
 fn note_of(gone: &[ChatMessage], summaries: &BTreeMap<String, String>) -> String {
-    let earlier: Vec<&str> = gone.iter().filter_map(|message| split_note(&message.content).0).collect();
+    // Only the assistant's own notes: a message of the person that starts like one is their text, not a note.
+    let earlier: Vec<&str> = gone
+        .iter()
+        .filter(|message| message.role == Role::Assistant)
+        .filter_map(|message| split_note(&message.content).0)
+        .collect();
     let people = gone.iter().filter(|message| message.role == Role::User).count();
-    let steps = gone.iter().filter(|message| message.role == Role::Assistant && !is_note(message)).count();
+    let steps = gone.iter().filter(|message| is_step(message)).count();
     let calls: Vec<String> = gone
         .iter()
         .flat_map(|message| &message.tool_calls)

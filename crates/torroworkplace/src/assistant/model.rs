@@ -659,11 +659,14 @@ pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: 
     // A client's message (issue #305) is data from outside like a mail, in this turn and every later
     // one: it counts for the web's yes and for the memory (C.11) alike.
     let from_client = sent_by_a_client(&job.history, &job.actor);
+    // Results of earlier turns go to the model again (issue #701): one marked `untrusted` counts too, also of a
+    // command whose name [`tools::may_have_read_untrusted`] does not count (a task of a GitHub item).
     let untrusted = from_client
         || job.history.iter().any(|entry| match &entry.content {
             EntryContent::Tool { name, .. } => tools::may_have_read_untrusted(name),
             _ => false,
-        });
+        })
+        || job.results.values().any(|result| marked_untrusted(result));
     // For the web's yes (issue #305, task WEB.5): a bot that runs for the assistant counts what the
     // assistant's conversation read as well, as its yes is that conversation's, and a client's message
     // there (what the assistant's model read when it asked the bot).
@@ -806,7 +809,7 @@ impl Answering {
         let budget = access.context.unwrap_or(CONTEXT) / 2;
         lock(&self.job.partial).model = Some(model.clone());
         let mut messages = vec![ChatMessage::system(String::new())];
-        messages.extend(history_with_results(&self.job.history, &self.job.results));
+        messages.extend(history_with_results(&self.job.history, &self.job.results, &self.job.without));
         self.summaries.extend(summaries_of(&self.job.history, &self.job.results));
         // A chat about a mail reads it first (issue #605), as a call of the model would, so the model answers the
         // person's first question with the mail before it.
@@ -995,19 +998,7 @@ impl Answering {
         // Making a task of an inbox entry writes a task too (as the core checks its rights); making
         // an event of one writes to a calendar (task E8.5b); making a task of a mail in a folder
         // reads the mail (task E8.7a); answering an invitation writes to a calendar (task E8.3b).
-        let touched = match tool.command.name {
-            name if torro_ipc::workflows::reads_mail(name) => vec![Area::Workflows, Area::Mail],
-            "inbox.create_task_from_item" => vec![tool.command.area, Area::Tasks],
-            "inbox.create_event_from_item" => vec![tool.command.area, Area::Calendar],
-            "tasks.create_todo_from_mail" => vec![tool.command.area, Area::Mail],
-            // An event made of a mail reads the mail as well (issue #603).
-            "calendar.create_event_from_mail" => vec![tool.command.area, Area::Mail],
-            "mail.respond_to_invitation" => vec![Area::Mail, Area::Calendar],
-            // A topic decides what reaches the inbox (task E5.12, approval 16).
-            "accounts.set_ntfy_topic" => vec![Area::Accounts, Area::Inbox],
-            _ => vec![tool.command.area],
-        };
-        if let Some(area) = touched.into_iter().find(|area| self.job.without.contains(area)) {
+        if let Some(area) = touched(tool.command).into_iter().find(|area| self.job.without.contains(area)) {
             let lack = Lack::SwitchedOff { area };
             return self.refused(&call.id, name, input, "forbidden", &lack.message(), Some(lack)).await;
         }
@@ -1291,9 +1282,14 @@ pub(super) fn history(entries: &[Entry]) -> Vec<ChatMessage> {
 /// with the tool lines after it: one assistant message with its calls, ids `call_<seq>` of the tool lines, then one
 /// tool message per call with its result. The tool is the catalogue's name for the model, or the name the line
 /// keeps (a server's tool). Lines without a kept result (conversations from before, `find_tools`, which has no
-/// line) are left out as before, and a turn that ends without text gets the note of [`answer_of`], so the person and
-/// the assistant still take turns.
-pub(super) fn history_with_results(entries: &[Entry], results: &BTreeMap<u64, String>) -> Vec<ChatMessage> {
+/// line) are left out as before, and so are the lines of areas switched off in this conversation now (`without`,
+/// [`switched_off`]): what mail read stays with the mail. A turn that ends without text gets the note of
+/// [`answer_of`], so the person and the assistant still take turns.
+pub(super) fn history_with_results(
+    entries: &[Entry],
+    results: &BTreeMap<u64, String>,
+    without: &[Area],
+) -> Vec<ChatMessage> {
     let mut messages = Vec::new();
     let mut turn: Option<Turn> = None;
     for entry in entries {
@@ -1311,12 +1307,11 @@ pub(super) fn history_with_results(entries: &[Entry], results: &BTreeMap<u64, St
                 }
             }
             EntryContent::Tool { name, input, .. } => {
-                if let (Some(turn), Some(result)) = (&mut turn, results.get(&entry.seq)) {
-                    let call = ToolCall {
-                        id: format!("call_{}", entry.seq),
-                        name: tool_of(name),
-                        arguments: input.to_string(),
-                    };
+                if let (Some(turn), Some(result)) = (&mut turn, results.get(&entry.seq))
+                    && !switched_off(name, without)
+                {
+                    let call =
+                        ToolCall { id: history_id(entry.seq), name: tool_of(name), arguments: input.to_string() };
                     turn.calls.push((call, result.clone()));
                 }
             }
@@ -1326,6 +1321,47 @@ pub(super) fn history_with_results(entries: &[Entry], results: &BTreeMap<u64, St
     messages
 }
 
+/// Whether a result as the model read it is marked `untrusted` at its top ([`tools::for_model`]).
+fn marked_untrusted(result: &str) -> bool {
+    serde_json::from_str::<Value>(result)
+        .is_ok_and(|value| value.get("untrusted").and_then(Value::as_bool) == Some(true))
+}
+
+/// The areas the command `command` touches, as the areas switched off in a conversation are checked
+/// ([`Answering::call`]): making a task of an inbox entry writes a task too (as the core checks its rights); making
+/// an event of one writes to a calendar (task E8.5b); making a task of a mail in a folder reads the mail (task
+/// E8.7a); answering an invitation writes to a calendar (task E8.3b).
+fn touched(command: &torro_ipc::api::Command) -> Vec<Area> {
+    match command.name {
+        name if torro_ipc::workflows::reads_mail(name) => vec![Area::Workflows, Area::Mail],
+        "inbox.create_task_from_item" => vec![command.area, Area::Tasks],
+        "inbox.create_event_from_item" => vec![command.area, Area::Calendar],
+        "tasks.create_todo_from_mail" => vec![command.area, Area::Mail],
+        // An event made of a mail reads the mail as well (issue #603).
+        "calendar.create_event_from_mail" => vec![command.area, Area::Mail],
+        "mail.respond_to_invitation" => vec![Area::Mail, Area::Calendar],
+        // A topic decides what reaches the inbox (task E5.12, approval 16).
+        "accounts.set_ntfy_topic" => vec![Area::Accounts, Area::Inbox],
+        _ => vec![command.area],
+    }
+}
+
+/// Whether the tool line of the command `name` touches an area of `without` ([`touched`]); a name the catalogue
+/// does not know is a server's tool (area `extensions`).
+fn switched_off(name: &str, without: &[Area]) -> bool {
+    let areas = match torro_ipc::api::CATALOGUE.iter().find(|command| command.name == name) {
+        Some(command) => touched(command),
+        None => vec![Area::Extensions],
+    };
+    areas.iter().any(|area| without.contains(area))
+}
+
+/// The id a tool line's call gets in [`history_with_results`]: its own prefix, so it never meets an id a server
+/// makes up for a call of this answer (`call_<n>`).
+fn history_id(seq: u64) -> String {
+    format!("hist_{seq}")
+}
+
 /// The summary of each tool line of `entries` that has a kept result, by the id its call gets in
 /// [`history_with_results`].
 fn summaries_of(entries: &[Entry], results: &BTreeMap<u64, String>) -> BTreeMap<String, String> {
@@ -1333,7 +1369,7 @@ fn summaries_of(entries: &[Entry], results: &BTreeMap<u64, String>) -> BTreeMap<
         .iter()
         .filter(|entry| results.contains_key(&entry.seq))
         .filter_map(|entry| match &entry.content {
-            EntryContent::Tool { summary, .. } => Some((format!("call_{}", entry.seq), summary.clone())),
+            EntryContent::Tool { summary, .. } => Some((history_id(entry.seq), summary.clone())),
             _ => None,
         })
         .collect()
@@ -1403,7 +1439,7 @@ fn without_mail(response: Response) -> Response {
 
 /// Whether `entries` hold a tool line of a command that may have read data from outside the suite
 /// for the web's yes ([`tools::may_have_read_outside`], issue #305, task WEB.5): any such line,
-/// whatever it answered, as the line does not keep the answer.
+/// whatever it answered: by the line, as a result may have been left out to save room (issue #701).
 fn reads_outside(entries: &[Entry]) -> bool {
     entries.iter().any(|entry| match &entry.content {
         EntryContent::Tool { name, .. } => tools::may_have_read_outside(name),
@@ -3850,9 +3886,9 @@ pub(crate) mod tests {
         let call = &messages[2].tool_calls[0];
         assert_eq!(
             (call.id.as_str(), call.name.as_str(), call.arguments.as_str()),
-            ("call_2", "inbox_list_items", "{}")
+            ("hist_2", "inbox_list_items", "{}")
         );
-        assert_eq!(messages[3].tool_call_id.as_deref(), Some("call_2"));
+        assert_eq!(messages[3].tool_call_id.as_deref(), Some("hist_2"));
         assert_eq!(messages[3].content, tool_result(&script, "inbox_list_items"), "the result as the model read it");
         assert!(messages[3].content.contains("Invoice 42"));
         assert_eq!(messages[4].content, "One invoice.");
@@ -3950,7 +3986,7 @@ pub(crate) mod tests {
         let mut next = history[0].clone();
         next.seq = 100;
         history.push(next);
-        let mut messages = history_with_results(&history, &results);
+        let mut messages = history_with_results(&history, &results, &[]);
         let summaries = summaries_of(&history, &results);
         let budget = compact::estimate(&messages, &[]) - 10;
         assert!(compact::compact(&mut messages, &summaries, budget));
@@ -3968,6 +4004,34 @@ pub(crate) mod tests {
         assert!(left_out, "compacted");
         assert_eq!(remembered(&host).len(), 1);
         assert_eq!(host.untrusted.lock().expect("lock").last(), Some(&true), "the note waits for a person");
+    }
+
+    /// Review of #701: results of an area switched off in the conversation now stay out of the next message, and a
+    /// result marked `untrusted` counts for the memory whatever its command's name.
+    #[tokio::test]
+    async fn results_of_areas_switched_off_stay_out_and_marked_ones_count() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script =
+            Script::new(vec![calls("inbox_list_items", json!({})), says("One invoice."), says("Without the inbox.")]);
+        let (assistant, _host) = set_up(dir.path(), Some(reading_mail()), Place::Local, Arc::clone(&script));
+        let id = ask(&assistant, None, "What came in?", Vec::new()).await;
+        finished(&assistant, &id).await;
+        ask(&assistant, Some(&id), "And else?", vec![Area::Inbox]).await;
+        finished(&assistant, &id).await;
+        let last = &script.asked()[2].messages;
+        assert!(
+            last.iter().all(|message| message.tool_calls.is_empty() && message.tool_call_id.is_none()),
+            "{last:#?}"
+        );
+        assert!(last.iter().all(|message| !message.content.contains("Invoice 42")));
+
+        assert!(marked_untrusted(&json!({"untrusted": true, "data": {}}).to_string()));
+        assert!(!marked_untrusted("{\"result\":\"todo\"}") && !marked_untrusted("not json"));
+        assert!(switched_off("mail.get_message", &[Area::Mail]) && switched_off("ext_time_now", &[Area::Extensions]));
+        assert!(
+            switched_off("tasks.create_todo_from_mail", &[Area::Mail])
+                && !switched_off("tasks.list_todos", &[Area::Mail])
+        );
     }
 
     /// Erledigt 6: "Stop" ends a long answer at once: no step after it.

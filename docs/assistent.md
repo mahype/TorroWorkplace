@@ -78,7 +78,9 @@ Was offene Modelle brauchen, damit das gut geht:
   dann fallen ganze Schritte zwischen erster und letzter Nachricht der Person und vor den letzten
   vier Schritten weg, ersetzt durch einen Vermerk mit Zahl der Schritte und den Werkzeugen samt
   Kurzzeile, nie mit Inhalten. Systemprompt, erste und letzte Nachricht der Person und die letzten
-  Schritte bleiben wörtlich. Ein als `untrusted` markiertes Ergebnis bleibt auch verdichtet so
+  vier Schritte bleiben dabei wörtlich; reicht das nicht, werden zuletzt auch deren Ergebnisse bis
+  auf das des letzten Schritts zur Kurzzeile. Ergebnisse von Bereichen, die in der Unterhaltung
+  inzwischen abgeschaltet sind, gehen nicht mehr mit. Ein als `untrusted` markiertes Ergebnis bleibt auch verdichtet so
   markiert; die Regeln dazu (Notizen warten auf eine Person, das Web fragt erneut) hängen an den
   Werkzeugzeilen und gelten weiter. Ruft das Modell dasselbe Werkzeug in einer Antwort zum dritten
   Mal mit derselben Eingabe auf, läuft der Aufruf nicht, und die Antwort endet mit einer Meldung,
