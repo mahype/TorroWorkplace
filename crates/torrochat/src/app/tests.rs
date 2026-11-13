@@ -43,6 +43,20 @@ fn loaded(mut app: App) -> App {
 }
 
 #[test]
+fn theme_follows_the_stored_appearance_and_the_desktop() {
+    let mut app = start(&[]);
+    let _ = app.update(Message::SystemMode(iced::theme::Mode::Light));
+    assert_eq!(app.theme(), torro_gui::theme::light(), "System follows the desktop");
+    let _ = app.update(Message::Appearance(Ok(Appearance::Dark)));
+    assert_eq!(app.theme(), torro_gui::theme::theme(), "Dark ignores a light desktop");
+    let _ = app.update(Message::Appearance(Err("core is starting".into())));
+    assert_eq!(app.theme(), torro_gui::theme::theme(), "a failed ask keeps the appearance");
+    let _ = app.update(Message::Appearance(Ok(Appearance::Light)));
+    let _ = app.update(Message::SystemMode(iced::theme::Mode::Dark));
+    assert_eq!(app.theme(), torro_gui::theme::light(), "Light ignores a dark desktop");
+}
+
+#[test]
 fn the_contact_list_lists_people_by_group_and_the_cursor_walks_them() {
     let mut app = loaded(start(&[]));
     assert_eq!(app.title(), tr("Contacts"));
