@@ -34,14 +34,21 @@ pub const SAFE_SCHEMES: [&str; 6] = ["https", "mailto", "tel", "sms", "xmpp", "m
 pub const GROUP_INPUT: &str = "contacts-group";
 
 /// `link` when its scheme is one of [`SAFE_SCHEMES`] and it has something after the scheme; `None`
-/// otherwise.
+/// otherwise. A link with spaces, control characters or characters that turn or hide text (bidi
+/// marks, zero-width signs) is refused, so what the panel shows is where the link goes; `mailto:` and
+/// `sms:` take no query, so a contact's field cannot fill in a message (`?body=…&cc=…`).
 pub fn safe_link(link: &str) -> Option<&str> {
     let link = link.trim();
     let (scheme, rest) = link.split_once(':')?;
     let scheme = scheme.to_ascii_lowercase();
     let rest = rest.trim_start_matches('/');
-    (SAFE_SCHEMES.contains(&scheme.as_str()) && !rest.is_empty() && !link.chars().any(char::is_whitespace))
-        .then_some(link)
+    let hidden = |c: char| {
+        c.is_whitespace()
+            || c.is_control()
+            || matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
+    };
+    let query = matches!(scheme.as_str(), "mailto" | "sms") && rest.contains(['?', '&']);
+    (SAFE_SCHEMES.contains(&scheme.as_str()) && !rest.is_empty() && !link.chars().any(hidden) && !query).then_some(link)
 }
 
 /// The `tel:` address of a number: only `+` (in front) and digits stay, so a text cannot become a
@@ -364,9 +371,19 @@ mod tests {
         {
             assert_eq!(safe_link(good), Some(good), "{good}");
         }
-        for bad in
-            ["http://example.org", "javascript:alert(1)", "file:///etc/passwd", "https:", "https://a b", "ftp://x"]
-        {
+        for bad in [
+            "http://example.org",
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "https:",
+            "https://a b",
+            "ftp://x",
+            "mailto:x@y.org?body=hi&cc=z@y.org",
+            "sms:+49?body=hi",
+            "https://example.org/\u{202E}gpj.exe",
+            "https://exa\u{200B}mple.org",
+            "https://example.org/\u{0}",
+        ] {
             assert_eq!(safe_link(bad), None, "{bad}");
         }
     }
