@@ -172,9 +172,11 @@ pub struct UploadProgress {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PreviewSize {
-    /// At most 256 pixels on the longer side: the history and the media overview.
+    /// At most 256 pixels on the longer side: link cards and the media overview.
     #[default]
     Small,
+    /// At most 1024 pixels: a picture in the chat window's history, sharp on a HiDPI screen.
+    Medium,
     /// At most 1600 pixels: a picture shown large.
     Large,
 }
@@ -184,6 +186,7 @@ impl PreviewSize {
     pub fn edge(self) -> u32 {
         match self {
             PreviewSize::Small => 256,
+            PreviewSize::Medium => 1024,
             PreviewSize::Large => 1600,
         }
     }
@@ -368,7 +371,12 @@ mod tests {
             assert_eq!(serde_json::to_value(kind).expect("JSON"), kind.as_str());
         }
         assert_eq!(SharedKind::parse("Media"), None);
-        assert_eq!((PreviewSize::default().edge(), PreviewSize::Large.edge()), (256, 1600));
+        assert_eq!(
+            (PreviewSize::default().edge(), PreviewSize::Medium.edge(), PreviewSize::Large.edge()),
+            (256, 1024, 1600)
+        );
+        assert_eq!(serde_json::to_value(PreviewSize::Medium).expect("JSON"), "medium");
+        assert_eq!(serde_json::from_value::<PreviewSize>("medium".into()).expect("a size"), PreviewSize::Medium);
         let path: FileSource =
             serde_json::from_value(serde_json::json!({"kind": "path", "path": "/tmp/x"})).expect("a source");
         assert_eq!(path, FileSource::Path { path: "/tmp/x".into() });

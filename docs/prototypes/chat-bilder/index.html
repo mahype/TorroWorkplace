@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat-Bilder im Verlauf</title>
+<!--
+  Entwurf der Bilder im Chatverlauf (Issue #674), übernommen aus dem Artifact
+  https://claude.ai/artifact/H54S4c3zF6rkPPYLJKdwZY. Gewählt: B · Randlos für ein Bild, Raster für mehrere.
+  Seite mit echten Maßen des Chatfensters (440 breit), Farben wie docs/prototypes/linear/torro.css.
+-->
+<style>
+:root{
+  color-scheme:light;
+  --bg:#F4F5F6; --panel:#FFFFFF; --hover:#F0F1F3; --selected:#E9EAED; --raised:#F8F9FA;
+  --line:rgba(0,0,0,.07); --line-strong:rgba(0,0,0,.11);
+  --text:#18191B; --text2:#4F535A; --text3:#62666D; --accent:#D50C0C;
+  --p1a:#5B8CFF; --p1b:#A78BFA; --p2a:#3FB984; --p2b:#48AABE; --p3a:#E8A33D; --p3b:#D96CA8;
+  --shadow:0 12px 32px rgba(0,0,0,.12);
+  --sans:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#08090A; --panel:#0F1011; --hover:#16171A; --selected:#1C1E22; --raised:#141518;
+  --line:rgba(255,255,255,.06); --line-strong:rgba(255,255,255,.10);
+  --text:#EDEEF0; --text2:#B4B8BF; --text3:#8A8F98; --shadow:0 12px 32px rgba(0,0,0,.5); color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#08090A; --panel:#0F1011; --hover:#16171A; --selected:#1C1E22; --raised:#141518;
+  --line:rgba(255,255,255,.06); --line-strong:rgba(255,255,255,.10);
+  --text:#EDEEF0; --text2:#B4B8BF; --text3:#8A8F98; --shadow:0 12px 32px rgba(0,0,0,.5); color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:400 14px/22px var(--sans);-webkit-font-smoothing:antialiased}
+.page{max-width:1240px;margin:0 auto;padding:40px 16px 96px}
+h1{font-size:28px;line-height:36px;font-weight:600;margin:0 0 8px;text-wrap:balance}
+h2{font-size:20px;line-height:28px;font-weight:600;margin:0 0 6px;text-wrap:balance}
+p{margin:0 0 10px;max-width:72ch;color:var(--text2)}
+.lead{font-size:16px;line-height:26px}
+section{margin-top:52px}
+.tablewrap{overflow-x:auto;margin-top:12px;border:1px solid var(--line-strong);border-radius:8px}
+table{border-collapse:collapse;width:100%;min-width:760px;font-size:13px;line-height:19px}
+th,td{text-align:left;vertical-align:top;padding:9px 12px;border-bottom:1px solid var(--line)}
+th{font-weight:600;color:var(--text2);background:var(--raised)}
+tr:last-child td{border-bottom:0}
+td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.src{font-size:12px;color:var(--text3);margin-top:8px}
+.stage{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start;margin-top:16px;overflow-x:auto;padding-bottom:8px}
+.cap{font-size:12px;line-height:16px;font-weight:600;color:var(--text2);margin:0 0 4px;letter-spacing:.02em}
+.sub{font-size:12px;line-height:17px;color:var(--text3);margin:0 0 10px;max-width:440px}
+.win{width:440px;flex:none;background:var(--panel);border:1px solid var(--line-strong);border-radius:10px;box-shadow:var(--shadow);overflow:hidden}
+.top{height:40px;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--line);font-weight:500}
+.lights{display:flex;gap:7px;margin-right:6px}.lights i{width:11px;height:11px;border-radius:50%;background:var(--line-strong)}
+.hist{padding:16px 24px 20px;display:flex;flex-direction:column;gap:4px}
+.who{font-size:12px;line-height:16px;color:var(--text3);margin-top:6px}
+.time{font-size:12px;line-height:16px;color:var(--text3);margin:2px 0 6px}
+.own{align-self:flex-end;text-align:right}
+.bubble{max-width:343px;padding:8px 16px;border-radius:8px;background:var(--raised);border:1px solid var(--line);display:flex;flex-direction:column;gap:4px;width:fit-content}
+.bubble.mine{background:var(--selected);border-color:transparent;align-self:flex-end}
+.bubble.flush{padding:0;overflow:hidden}
+.bubble.flush .txt{padding:6px 12px 8px}
+.pic{border-radius:4px;flex:none;position:relative;background:linear-gradient(135deg,var(--a),var(--b))}
+.pic::after{content:"";position:absolute;left:18%;top:22%;width:22%;aspect-ratio:1;border-radius:50%;background:rgba(255,255,255,.55)}
+.pic::before{content:"";position:absolute;left:0;right:0;bottom:16%;height:14%;background:rgba(255,255,255,.22)}
+.bubble.flush .pic{border-radius:0}
+.c1{--a:var(--p1a);--b:var(--p1b)} .c2{--a:var(--p2a);--b:var(--p2b)} .c3{--a:var(--p3a);--b:var(--p3b)} .c4{--a:var(--p2b);--b:var(--p1a)}
+.dim{position:absolute;right:6px;bottom:6px;z-index:1;font:500 11px/1 var(--sans);font-variant-numeric:tabular-nums;color:#fff;background:rgba(0,0,0,.45);padding:3px 5px;border-radius:3px}
+.grid{display:grid;gap:2px;border-radius:4px;overflow:hidden}
+.grid .pic{border-radius:0}
+.more{position:absolute;inset:0;z-index:1;display:grid;place-items:center;background:rgba(0,0,0,.45);color:#fff;font:600 20px/1 var(--sans)}
+.legend{display:flex;flex-wrap:wrap;gap:8px 20px;margin-top:10px;font-size:12px;color:var(--text3)}
+.rec{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--accent);margin-left:6px}
+ul.notes{margin:6px 0 0;padding-left:18px;color:var(--text2);max-width:80ch}
+ul.notes li{margin:3px 0}
+@media (max-width:520px){.win{width:100%}}
+</style>
+</head>
+<body>
+<div class="page">
+<h1>Chat-Bilder im Verlauf</h1>
+<p class="lead">Entwurf zu Issue #674: Hochgeladene Bilder wirken im Chatfenster zu klein. Heute steht jedes Bild höchstens 240 × 240 im Verlauf. Unten stehen der Vergleich mit verbreiteten Chat-Apps und je zwei Fassungen für ein einzelnes Bild und für mehrere Bilder.</p>
+<p><strong>Gewählt in der Planung (2026-11-13): B · Randlos für ein Bild, Raster für mehrere Bilder.</strong> Im Code gelten die Maße der Design-Tokens: höchstens 440 breit (Listenbreite) und 400 hoch (Panelbreite) statt der gezeichneten 480.</p>
+<p>Alle Fenster sind 440 breit gezeichnet, so groß ist das Chatfenster gedacht. Die Zahlen im Bild sind die Maße der Vorschau in Pixeln der Oberfläche.</p>
+
+<section>
+<h2>Vergleich</h2>
+<p>Gemessen an der Desktop- bzw. Web-Fassung. Die Werte sind Höchstmaße eines einzelnen Bildes; ein kleineres Bild bleibt überall in seiner eigenen Größe.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>App</th><th>Einzelbild, höchstens</th><th>Hoch- und Querformat</th><th>Mehrere Bilder</th><th>Beschriftung</th></tr></thead>
+<tbody>
+<tr><td>Nextcloud Talk (Web)</td><td class="num">600 breit × 384 hoch</td><td>Seitenverhältnis bleibt, Höhe begrenzt</td><td>jede Datei eine eigene Nachricht, untereinander</td><td>unter dem letzten Bild</td></tr>
+<tr><td>Signal Desktop</td><td class="num">300 breit, Höhe bis 1,5 × Breite</td><td>Hochformat wird höher als breit</td><td>Raster in einer Blase (2 nebeneinander, 3 groß + 2, 4 als 2 × 2, mehr mit „+N“)</td><td>unter dem Raster</td></tr>
+<tr><td>WhatsApp Desktop</td><td class="num">etwa 330 breit</td><td>Hochformat beschnitten auf etwa 4 : 5</td><td>ab 4 Bildern Album 2 × 2 mit „+N“</td><td>unter dem Bild, im selben Rahmen</td></tr>
+<tr><td>Telegram Desktop</td><td class="num">etwa 430 breit, wächst mit dem Fenster</td><td>Seitenverhältnis bleibt, randlos in der Blase</td><td>Mosaik in einer Blase, Seitenverhältnisse bleiben</td><td>unter dem Mosaik</td></tr>
+<tr><td>Slack</td><td class="num">etwa 360 hoch</td><td>Höhe begrenzt, Breite folgt</td><td>Raster, bei vielen „+N“</td><td>Nachrichtentext darüber</td></tr>
+</tbody></table></div>
+<p class="src">Quellen: Talk aus dem Fehlerbericht zu FilePreview (600 × 384), Signal aus dem Quellcode (Attachment.ts, ältere Fassung). WhatsApp, Telegram und Slack geschätzt nach der Oberfläche, nicht gemessen.</p>
+<ul class="notes">
+<li>Alle zeigen Bilder deutlich größer als 240. Üblich sind 300 bis 430 breit; die Höhe wird begrenzt, damit ein Hochformat den Verlauf nicht füllt.</li>
+<li>Mehrere Bilder auf einmal fassen Signal, WhatsApp, Telegram und Slack zu einem Raster zusammen. Talk lässt sie untereinander stehen.</li>
+<li>Talk schickt jede Datei als eigene Nachricht, die Beschriftung hängt am letzten Bild. Ein Raster müsste die Torro-App also aus mehreren Nachrichten zusammensetzen.</li>
+</ul>
+</section>
+
+<section>
+<h2>Einzelbild</h2>
+<p>Gemeinsam: Die App lädt eine schärfere Vorschau (1024 statt 256 Pixel an der langen Seite), damit das größere Bild auch auf Retina-Bildschirmen scharf ist. Der Platz steht schon vor dem Laden in der richtigen Größe da.</p>
+<div class="stage">
+  <div>
+    <div class="cap">Heute</div>
+    <div class="sub">Höchstens 240 × 240. Querformat 240 × 150, Hochformat 180 × 240.</div>
+    <div class="win"><div class="top"><span class="lights"><i></i><i></i><i></i></span>Design sync</div>
+      <div class="hist">
+        <div class="who">Gesa</div>
+        <div class="bubble"><div class="pic c1" style="width:240px;height:150px"><span class="dim">240 × 150</span></div><div class="txt">First drafts of the app icons.</div></div>
+        <div class="time">10:02</div>
+        <div class="who">Elif</div>
+        <div class="bubble"><div class="pic c3" style="width:180px;height:240px"><span class="dim">180 × 240</span></div></div>
+        <div class="time">10:06</div>
+      </div></div>
+  </div>
+  <div>
+    <div class="cap">A · Im Rahmen</div>
+    <div class="sub">Bild füllt die Blase bis 480 breit und 400 hoch, mit dem gewohnten Rand. Im 440-Fenster: Querformat 311 × 194, Hochformat 300 × 400.</div>
+    <div class="win"><div class="top"><span class="lights"><i></i><i></i><i></i></span>Design sync</div>
+      <div class="hist">
+        <div class="who">Gesa</div>
+        <div class="bubble"><div class="pic c1" style="width:311px;height:194px"><span class="dim">311 × 194</span></div><div class="txt">First drafts of the app icons.</div></div>
+        <div class="time">10:02</div>
+        <div class="who">Elif</div>
+        <div class="bubble"><div class="pic c3" style="width:300px;height:400px"><span class="dim">300 × 400</span></div></div>
+        <div class="time">10:06</div>
+      </div></div>
+  </div>
+  <div>
+    <div class="cap">B · Randlos <span class="rec">Gewählt</span></div>
+    <div class="sub">Bild ohne Rand bis an die Kante der Blase, wie Telegram. Im 440-Fenster: Querformat 343 × 214, Hochformat 300 × 400. Die Beschriftung steht mit Rand darunter.</div>
+    <div class="win"><div class="top"><span class="lights"><i></i><i></i><i></i></span>Design sync</div>
+      <div class="hist">
+        <div class="who">Gesa</div>
+        <div class="bubble flush"><div class="pic c1" style="width:343px;height:214px"><span class="dim">343 × 214</span></div><div class="txt">First drafts of the app icons.</div></div>
+        <div class="time">10:02</div>
+        <div class="who">Elif</div>
+        <div class="bubble flush"><div class="pic c3" style="width:300px;height:400px"><span class="dim">300 × 400</span></div></div>
+        <div class="time">10:06</div>
+      </div></div>
+  </div>
+</div>
+<div class="tablewrap" style="max-width:820px"><table style="min-width:560px">
+<thead><tr><th>Fenster</th><th>Heute</th><th>A · Im Rahmen</th><th>B · Randlos</th></tr></thead>
+<tbody>
+<tr><td>Mini (unter 360)</td><td class="num">bis 240</td><td class="num">Blasenbreite, z. B. 230 × 144</td><td class="num">Blasenbreite, z. B. 262 × 164</td></tr>
+<tr><td>Schmal, 440 (Standard)</td><td class="num">240 × 150</td><td class="num">311 × 194</td><td class="num">343 × 214</td></tr>
+<tr><td>Mittel und breit (Verlauf ab 720)</td><td class="num">240 × 150</td><td class="num">480 × 300</td><td class="num">480 × 300</td></tr>
+</tbody></table></div>
+<p class="src">Querformat 1600 × 1000, Hochformat 900 × 1200. Höchstens 480 breit und 400 hoch; der Verlauf selbst ist nie breiter als 720.</p>
+</section>
+
+<section>
+<h2>Mehrere Bilder</h2>
+<p>Vier Bilder, auf einmal geschickt, mit der Beschriftung „Options for the new header“. Talk macht daraus vier Nachrichten.</p>
+<div class="stage">
+  <div>
+    <div class="cap">1 · Untereinander</div>
+    <div class="sub">Jedes Bild bleibt eine eigene Blase in voller Größe, wie in Talk. Einfach, aber vier Bilder füllen mehr als einen Bildschirm.</div>
+    <div class="win"><div class="top"><span class="lights"><i></i><i></i><i></i></span>Design sync</div>
+      <div class="hist">
+        <div class="time own" style="margin:0">You</div>
+        <div class="bubble mine"><div class="pic c1" style="width:311px;height:194px"></div></div>
+        <div class="bubble mine"><div class="pic c2" style="width:311px;height:194px"></div></div>
+        <div class="bubble mine"><div class="pic c3" style="width:300px;height:400px"></div></div>
+        <div class="bubble mine"><div class="pic c4" style="width:311px;height:194px"></div><div class="txt" style="text-align:left">Options for the new header</div></div>
+        <div class="time own">10:14</div>
+      </div></div>
+  </div>
+  <div>
+    <div class="cap">2 · Raster <span class="rec">Gewählt</span></div>
+    <div class="sub">Bilder, die eine Person kurz nacheinander ohne eigenen Text schickt, stehen als Raster in einer Blase, wie Signal und WhatsApp. Ein Klick auf ein Bild öffnet „Bild groß“ bei diesem Bild.</div>
+    <div class="win"><div class="top"><span class="lights"><i></i><i></i><i></i></span>Design sync</div>
+      <div class="hist">
+        <div class="bubble mine flush"><div class="grid" style="grid-template-columns:170px 171px;grid-template-rows:170px 171px;border-radius:0">
+          <div class="pic c1"></div><div class="pic c2"></div><div class="pic c3"></div><div class="pic c4"></div></div>
+          <div class="txt" style="text-align:left">Options for the new header</div></div>
+        <div class="time own">10:14</div>
+        <div class="legend" style="margin:8px 0 6px">Weitere Anordnungen:</div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+          <div><div class="legend" style="margin:0 0 4px">2 Bilder</div><div class="grid" style="grid-template-columns:84px 84px;grid-template-rows:84px"><div class="pic c1"></div><div class="pic c2"></div></div></div>
+          <div><div class="legend" style="margin:0 0 4px">3 Bilder</div><div class="grid" style="grid-template-columns:112px 56px;grid-template-rows:55px 55px"><div class="pic c3" style="grid-row:span 2"></div><div class="pic c1"></div><div class="pic c2"></div></div></div>
+          <div><div class="legend" style="margin:0 0 4px">6 Bilder</div><div class="grid" style="grid-template-columns:55px 55px;grid-template-rows:55px 55px"><div class="pic c1"></div><div class="pic c2"></div><div class="pic c3"></div><div class="pic c4"><span class="more">+3</span></div></div></div>
+        </div>
+      </div></div>
+  </div>
+</div>
+<ul class="notes">
+<li>Raster: Es gilt für Bilder derselben Person, die direkt aufeinander folgen, höchstens eine Minute auseinander, ohne Antwort-Zitat und ohne eigenen Text; nur das letzte darf eine Beschriftung tragen. Videos, Dateien und Bilder ohne Vorschau stehen weiter einzeln.</li>
+<li>Raster: Antworten, Reaktionen und das Menü „…“ der Blase gelten der letzten Nachricht, also der mit der Beschriftung. Ein Rechtsklick auf ein einzelnes Bild öffnet das Menü dieses Bildes, etwa zum Löschen.</li>
+<li>„Bild groß“ und die Medien-Übersicht bleiben unverändert.</li>
+</ul>
+</section>
+</div>
+</body>
+</html>

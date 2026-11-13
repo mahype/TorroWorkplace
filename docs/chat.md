@@ -437,7 +437,8 @@ roh darin: Sie sind fremder Text und kämen sonst ungeprüft zu einem Agenten.
     gebaut. Nie über eine URL aus der Antwort von Talk oder aus `openGraphObject` (`thumb`, `link`): Ein Bild von
     einem fremden Server verriete, wann und wo der Mensch die Nachricht liest. Gibt es kein Bild vom eigenen Server,
     gibt es keins.
-  - **Nur im Speicher** (Entscheidung 21): höchstens 64 MiB Vorschauen je Konto. Geöffnete Anhänge liegen in einem
+  - **Nur im Speicher** (Entscheidung 21): höchstens 64 MiB Vorschauen je Konto (mit `medium` im Verlauf grob 200 bis
+    400 Bilder; ältere fallen heraus und kommen beim Zurückscrollen neu vom Server). Geöffnete Anhänge liegen in einem
     eigenen Ordner des Chats, `<cache>/chat-attachments/<konto>/` (Ordner 0700, Dateien 0600, nach einem Tag
     gelöscht), nicht im Anhangsordner der Mail: `mail.save_draft` nimmt jede Datei aus jenem Ordner an und prüft nur
     den Ort, ein Agent mit `mail`, aber ohne `chat`, hängte sonst Chat-Bilder an einen Entwurf. `mail.save_draft` nimmt
@@ -522,10 +523,30 @@ Unterhaltung gemerkt werden können, siehe „Schweben“):
   Einfaches Markdown (fett, kursiv, Code, Links). Trenner „New“ beim Lesestand. Systemnachrichten klein in `TEXT_3`,
   verpasste Anrufe mit Icon. Nach oben scrollen lädt ältere. Dateien je nach Art (Stufe 4, ab Stufe 3 alle als
   Datei-Zeile):
-  - **Bild:** Vorschau (höchstens 220 × 220, Seitenverhältnis aus `width`/`height`, bis sie da ist ein ruhiger
-    Platzhalter in der Größe, damit nichts springt), darunter die Beschriftung. Ein Klick öffnet „Bild groß“.
-  - **Video:** Vorschaubild mit Abspielknopf, wenn der Server eins hat; die Dauer nur, wenn der Kern sie kennt
-    (Talk liefert keine). Ein Klick öffnet das Video im Programm des Systems (Entscheidung 22), der Tooltip sagt es.
+  - **Bild** (#674, Entwurf [`docs/prototypes/chat-bilder/`](prototypes/chat-bilder/index.html), Fassung B):
+    randlos bis an den Rand der Blase, höchstens so breit wie die Blase und `size::list()` (440) und so hoch wie
+    `size::panel()` (400), Seitenverhältnis aus `width`/`height`, nie größer als das Bild selbst. Die Blase lässt
+    daneben Platz für „Reply“ und „…“ (neben einer offenen Medien-Übersicht zählt nur der Verlauf); im Chatfenster mit 440 Breite ist ein Querformat so 322 × 201 groß, ein
+    Hochformat 300 × 400. Die Vorschau kommt als `medium` (1024 Pixel), damit sie auf Retina scharf ist; bis sie
+    da ist, steht ein ruhiger Platzhalter in der Größe, damit nichts springt. Die Beschriftung steht mit dem Rand
+    der Blase darunter. Ein Bild mit Zitat, ein Bild unter 240 Breite (`size::sidebar()`) und Bilder neben anderen
+    Dateien derselben Nachricht bleiben im Rahmen der Blase. Ein Klick öffnet „Bild groß“.
+  - **Mehrere Bilder** (#674): Talk macht aus jeder Datei eine eigene Nachricht. Bilder einer Person, die direkt
+    aufeinander folgen und höchstens eine Minute auseinander liegen, stehen deshalb als **Raster** in einer
+    randlosen Blase: zwei nebeneinander, drei als ein großes links und zwei rechts, vier als 2 × 2, höchstens
+    `size::panel()` hoch. Nach vier Bildern beginnt ein neues Raster, damit jedes Bild seine Kachel und damit das
+    Menü seiner Nachricht behält (bei der Umsetzung entschieden). Nur eine einzelne Nachricht mit mehr als vier
+    Bildern zeigt 2 × 2 mit „+N“ (die Zahl der nicht gezeigten) auf dem vierten. Teil des Rasters ist eine Nachricht ohne Zitat mit
+    genau einem Bild mit Vorschau (kein Video, kein SVG), deren Text leer ist oder nur den Dateinamen nennt; nur die
+    letzte darf eine eigene Beschriftung tragen, sie beendet das Raster. Kein Tagestrenner und kein „New“
+    dazwischen. Eine Nachricht mit mehreren Dateien, alle Bilder mit Vorschau, ist allein ein Raster. Antworten,
+    „…“, die Zeit und die Beschriftung gehören zur letzten Nachricht; die Reaktionen aller zählen zusammen, ein
+    Klick gilt der mit der eigenen Reaktion, sonst der letzten. Ein Klick auf eine Kachel öffnet „Bild groß“ bei
+    diesem Bild, ein Rechtsklick das Menü ihrer eigenen Nachricht (etwa „Delete for everyone“ nur für dieses Bild).
+    Kommt eine Vorschau nicht, bleibt ihr Platzhalter stehen, damit das Raster nicht zerfällt.
+  - **Video:** Vorschaubild mit Abspielknopf, wenn der Server eins hat, randlos wie ein Bild, aber nie im Raster;
+    die Dauer nur, wenn der Kern sie kennt (Talk liefert keine). Ein Klick öffnet das Video im Programm des
+    Systems (Entscheidung 22), der Tooltip sagt es.
   - **Sprachnachricht:** Abspielknopf, Wellenform, Dauer; spielt im Chatfenster (Entscheidung 19).
   - **Andere Datei** und jeder **Rückfall ohne Vorschau** (keine Vorschau, SVG, `hide-download`, Format ohne
     Decoder): Zeile mit Symbol der Art, Name, Größe und Art, Knöpfe „Open“, „Download“, „Open in Nextcloud“
@@ -640,7 +661,7 @@ Bereich `chat`:
 | 4 | `chat.send_message` mit `files` (Kennungen aus `prepare_file`, Erweiterung) | Write + **nach außen** | `chat_send_message` (vorhanden) |
 | 4 | `chat.get_upload { id }` (Fortschritt des Sendens: Bytes, Stand, Fehler) | Read | `chat_get_upload` |
 | 4 | `chat.cancel_upload { id }` (Senden abbrechen, die halbe Datei auf dem Server löschen) | Write | `chat_cancel_upload` |
-| 4 | `chat.get_preview { id, file?, card?, size }` (`id` die Nachricht, `file` eine Datei dieser Nachricht oder `card: true` das Bild ihrer Link-Karte, `size` `small` oder `large`; gibt ein Rasterbild zurück) | Read | `chat_get_preview` (liefert ein Bild) |
+| 4 | `chat.get_preview { id, file?, card?, size }` (`id` die Nachricht, `file` eine Datei dieser Nachricht oder `card: true` das Bild ihrer Link-Karte, `size` `small`, `medium` oder `large`; gibt ein Rasterbild zurück) | Read | `chat_get_preview` (liefert ein Bild) |
 | 4 | `chat.get_attachment { id, file }` (Datei einer Nachricht in den Anhangsordner des Chats, Pfad, Größe, Art; wie `mail.get_attachment`) | Read | `chat_get_attachment` |
 | 4 | `chat.save_attachment { id, file, to }` (`to`: `downloads`, `{ "target": … }`, `file` und `folder` **nur Menschen**) | Write | `chat_save_attachment` |
 | 4 | `chat.list_shared { conversation, kind?, before?, limit? }` (`kind`: `media`, `file`, `voice`, `link`, …; höchstens 100) | Read | `chat_list_shared` |
@@ -931,7 +952,8 @@ Nach der Entscheidung leert der Kern Dateinamen und Bytes wie den Text (Datensch
   und Pfad auf dem Server kommen nur aus dem Cache. Sonst öffnete `/core/preview?fileId=` bzw. WebDAV jedem Client
   mit `chat` den ganzen Speicher des Menschen (Test: fremde `fileId` → `not-found`).
 - `chat.get_preview` holt `/index.php/core/preview` mit der `fileId` aus dem Cache (nie eine URL aus der Antwort),
-  `small` 256 und `large` 1600 Pixel an der längeren Kante, `a=1`; mit `card: true` das Bild der Link-Karte über die
+  `small` 256 (Link-Karten, Medien-Übersicht), `medium` 1024 (Verlauf, #674) und `large` 1600 („Bild groß“) Pixel an
+  der längeren Kante, `a=1`; mit `card: true` das Bild der Link-Karte über die
   Referenz-ID aus dem Cache der Nachricht, nie aus der Eingabe. Ohne `preview-available`, ohne Bild oder bei SVG
   `not-found`. Das MCP-Tool gibt das Bild als Bildinhalt zurück.
 - **`hide-download`** gilt für jeden Weg: Bei so geteilten Dateien antworten `get_attachment` und `save_attachment`

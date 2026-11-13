@@ -819,7 +819,7 @@ impl ChatSource for DemoSource {
         let is_picture = content_type.starts_with("image/");
         let (width, height) = if is_picture { (Some(1440), Some(900)) } else { (None, None) };
         let preview = is_picture.then(|| {
-            let (w, h) = files::fitted(1440, 900, files::edge(false));
+            let (w, h) = files::fitted(1440, 900, files::edge(PreviewSize::Small));
             picture_of(&id, w, h)
         });
         let file =
@@ -926,12 +926,11 @@ impl ChatSource for DemoSource {
     ) -> Result<Picture, ChatError> {
         let mut data = self.lock();
         let message = data.message_mut(&id)?;
-        let large = size == PreviewSize::Large;
         if card {
             if !message.cards.first().is_some_and(|card| card.image) {
                 return Err(ChatError::NotFound);
             }
-            let (w, h) = files::fitted(1200, 630, files::edge(large));
+            let (w, h) = files::fitted(1200, 630, files::edge(size));
             return Ok(png_picture(picture_of(&id, w, h), w, h));
         }
         let wanted = file.ok_or(ChatError::NotFound)?;
@@ -939,7 +938,7 @@ impl ChatSource for DemoSource {
         if !shared.preview || shared.content_type == "image/svg+xml" {
             return Err(ChatError::NotFound);
         }
-        let (w, h) = files::fitted(shared.width.unwrap_or(1200), shared.height.unwrap_or(900), files::edge(large));
+        let (w, h) = files::fitted(shared.width.unwrap_or(1200), shared.height.unwrap_or(900), files::edge(size));
         Ok(png_picture(picture_of(&shared.id, w, h), w, h))
     }
 
@@ -1403,8 +1402,10 @@ mod tests {
             run(demo.preview(picture.clone(), Some("5103".into()), false, PreviewSize::Small)).expect("a preview");
         assert_eq!((small.width, small.height), (Some(256), Some(160)));
         assert_eq!(files::kind_of_bytes(&small.bytes).0, "image/png");
+        let medium =
+            run(demo.preview(picture.clone(), Some("5103".into()), false, PreviewSize::Medium)).expect("medium");
         let large = run(demo.preview(picture.clone(), Some("5103".into()), false, PreviewSize::Large)).expect("large");
-        assert!(large.width > small.width);
+        assert!(small.width < medium.width && medium.width < large.width);
         let other = run(demo.preview(picture, Some("5104".into()), false, PreviewSize::Small));
         assert_eq!(other, Err(ChatError::NotFound), "a file of another message");
         let svg = run(demo.preview(message_id(DESIGN, 12), Some("5112".into()), false, PreviewSize::Small));
@@ -1506,7 +1507,7 @@ mod tests {
     fn shared_items_by_kind_and_cards_on_request() {
         let demo = demo();
         let media = run(demo.shared(DESIGN.into(), Some(SharedKind::Media), None, None)).expect("media");
-        assert_eq!(media.items.len(), 5, "two pictures, two videos and the SVG");
+        assert_eq!(media.items.len(), 9, "six pictures, two videos and the SVG");
         assert!(media.items.windows(2).all(|pair| pair[0].at >= pair[1].at), "the newest first");
         let links = run(demo.shared(DESIGN.into(), Some(SharedKind::Link), None, None)).expect("links");
         assert_eq!(links.items.len(), 1, "only the link with a card");
