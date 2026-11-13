@@ -205,6 +205,7 @@ use iced::{Alignment, Element, Fill, Padding, Point, Rectangle, Size, Subscripti
 use torro_core::AppId;
 use torro_core::design::Density;
 use torro_core::i18n::{tr, trc, trf};
+use torro_core::privacy::ProviderChoice;
 use torro_core::settings::{MailAppearance, MailFormat};
 use torro_core::shortcuts;
 use torro_core::timing;
@@ -3371,6 +3372,9 @@ pub struct App<S> {
     /// The HTML of the mail held ([`App::letter`]), parsed for the panel and the reader (task
     /// M9.7, [`App::follow_html`]); `None` while no mail with HTML is held.
     html: Option<mail::HtmlMail>,
+    /// The mail whose pictures of other servers the person chose to see once (issue #672); its
+    /// question stays answered until another mail opens.
+    images_once: Option<String>,
     /// The save targets and the plans of the attachments of a mail (task M12.6,
     /// `mail.list_save_targets`), asked once its text is in: the message's id and the answer. Only an
     /// answer for the mail held is taken, and only the one of the mail held counts ([`App::saving_of`]).
@@ -3817,6 +3821,14 @@ pub enum Message {
     Release(String),
     /// The core's answer to `inbox.release_mail` for the mail with this id.
     Released(String, Result<(), String>),
+    /// "Show once" over the mail with this id (issue #672): its pictures of other servers load this
+    /// time.
+    ShowImagesOnce(String),
+    /// "Always allow …" or "Never for …" over the mail with this id (issue #672): the keys of the
+    /// providers it asked about and the choice for Settings › Privacy.
+    DecideImages(String, Vec<String>, ProviderChoice),
+    /// The answer to storing that choice.
+    ImagesDecided(String, Vec<String>, ProviderChoice, Result<(), String>),
     /// "Only if no reply" in the mail window's "Follow up" and its picker (task E19.4): on or off,
     /// the menu stays open.
     ToggleUnlessReply,
@@ -4911,6 +4923,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             start_mail: launch.message.clone(),
             pinned_mail: None,
             html: None,
+            images_once: None,
             saving: None,
             export_plans: None,
             look: launch.look(MailLook::default()),
@@ -5258,6 +5271,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// in, kept while it stays, dropped with it – which stops its pictures still loading. The demo
     /// loads nothing from the web.
     fn follow_html(&mut self) {
+        // "Show once" holds for the mail it was chosen for, until another one opens (issue #672).
+        if self.images_once.as_ref().is_some_and(|once| self.letter.as_ref().is_none_or(|letter| letter.id != *once)) {
+            self.images_once = None;
+        }
         let mail = match &self.letter {
             Some(Letter { loaded: Some(Ok(mail)), .. }) if mail::shows_html(mail) => mail,
             _ => {
@@ -5265,10 +5282,70 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 return;
             }
         };
-        if self.html.as_ref().is_some_and(|html| html.id == mail.summary.id) {
+        let once = self.images_once.as_deref() == Some(mail.summary.id.as_str());
+        let web = mail::web_of(mail, self.launch.demo, once);
+        if self.html.as_ref().is_some_and(|html| html.id == mail.summary.id && html.web == web) {
             return;
         }
-        self.html = mail::HtmlMail::new(mail, &self.inbox, self.launch.demo);
+        self.html = mail::HtmlMail::new(mail, &self.inbox, self.launch.demo, once);
+    }
+
+    /// "Show once" over the mail `id` (issue #672): its pictures of other servers load this time,
+    /// nothing is stored, and the next time it opens it asks again.
+    fn show_images_once(&mut self, id: String) {
+        if self.letter.as_ref().is_some_and(|letter| letter.id == id) {
+            self.images_once = Some(id);
+            self.follow_html();
+        }
+    }
+
+    /// "Always allow …" or "Never for …" over the mail `id` (issue #672): `settings.set_setting
+    /// privacy_provider` for each provider it asked about, one after the other. The demo writes no
+    /// settings and takes the choice at once.
+    fn decide_images(&mut self, id: String, keys: Vec<String>, choice: ProviderChoice) -> Task<Message> {
+        #[cfg(test)]
+        self.sent.extend(keys.iter().map(|key| {
+            Sent::Setting(torro_ipc::SettingKey::PrivacyProvider, format!("{key}={}", serde_json::json!(choice)))
+        }));
+        let Source::Core(client) = &self.suite else {
+            return self.update(Message::ImagesDecided(id, keys, choice, Ok(())));
+        };
+        let socket = client.socket.clone();
+        let asked = keys.clone();
+        Task::perform(
+            async move {
+                for key in asked {
+                    let value = serde_json::json!({"provider": key, "choice": choice});
+                    let request = torro_ipc::Request::SetSetting { key: torro_ipc::SettingKey::PrivacyProvider, value };
+                    match torro_ipc::client::call(&socket, &request).await {
+                        Ok(torro_ipc::Response::Ok) => {}
+                        Ok(torro_ipc::Response::Error { message, .. }) => return Err(message),
+                        Ok(other) => return Err(format!("{other:?}")),
+                        Err(err) => return Err(err.to_string()),
+                    }
+                }
+                Ok(())
+            },
+            move |result| Message::ImagesDecided(id.clone(), keys.clone(), choice, result),
+        )
+    }
+
+    /// The answer to [`App::decide_images`]: the open mail asks about those providers no more, and an
+    /// allowed one's pictures load – what the core says from now on for every mail of theirs.
+    fn images_decided(&mut self, id: &str, keys: &[String], choice: ProviderChoice) {
+        let Some(Ok(mail)) = self.letter.as_mut().filter(|letter| letter.id == id).and_then(|l| l.loaded.as_mut())
+        else {
+            return;
+        };
+        if let Some(external) = mail.external.as_mut() {
+            let (decided, open): (Vec<_>, Vec<_>) =
+                std::mem::take(&mut external.ask).into_iter().partition(|provider| keys.contains(&provider.key));
+            external.ask = open;
+            if choice == ProviderChoice::Allowed {
+                external.load.extend(decided.into_iter().flat_map(|provider| provider.hosts));
+            }
+        }
+        self.follow_html();
     }
 
     /// The parsed HTML of the mail in the panel or reader, if it has HTML (task M9.7).
@@ -6385,6 +6462,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             Message::Released(_, Err(err)) => {
                 self.error = Some(Failure::new(tr("Couldn't bring the mail back."), err));
+            }
+            Message::ShowImagesOnce(id) => self.show_images_once(id),
+            Message::DecideImages(id, keys, choice) => return self.decide_images(id, keys, choice),
+            Message::ImagesDecided(id, keys, choice, Ok(())) => self.images_decided(&id, &keys, choice),
+            Message::ImagesDecided(_, _, _, Err(err)) => {
+                self.error = Some(Failure::new(tr("Couldn't save the choice for the images."), err));
             }
             Message::ToggleUnlessReply => self.unless_reply = !self.unless_reply,
             Message::FocusReply => return self.start_focus(),
@@ -14167,6 +14250,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 format: self.mail_format,
                 scheme: self.mail_scheme(),
                 scale: self.html_scale(),
+                images_once: self.images_once.as_deref() == Some(letter.id.as_str()),
             }),
             saving: self.saving_of(&letter.id),
             click: &self.look.click,
@@ -28028,5 +28112,56 @@ mod tests {
         assert!(shows(&app, tr("Couldn't load the conversation.")));
         assert!(shows(&app, talk::problem_text(&torro_chat::ChatError::Offline)));
         draw_everywhere(&mut app);
+    }
+
+    /// Issue #672: a mail whose pictures of another server are not asked about yet asks over its text;
+    /// "Show once" answers it for this mail only, "Always allow …" stores the provider (here: the demo)
+    /// and lets its hosts load, and opening another mail forgets "Show once".
+    #[test]
+    fn pictures_of_other_servers_wait_for_the_person() {
+        use torro_htmlview::Web;
+        let mut app = in_folder("f:work-inbox");
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.update(Message::SelectMail("m:w14".into()));
+        deliver_letter(&mut app, "m:w14");
+        let asked = |app: &App<DemoSource>| match app.letter.as_ref().and_then(|letter| letter.loaded.as_ref()) {
+            Some(Ok(mail)) => mail.external.as_ref().map(|external| (external.ask.clone(), external.load.clone())),
+            _ => None,
+        };
+        let (ask, load) = asked(&app).expect("the newsletter names a picture elsewhere");
+        assert_eq!((ask.len(), ask[0].key.as_str(), load.len()), (1, "mailer.example", 0));
+        let question = |app: &App<DemoSource>| app.reading().as_ref().and_then(mail::images_question).is_some();
+        assert!(question(&app), "the question over the mail");
+        draw_everywhere(&mut app);
+
+        let _ = app.update(Message::ShowImagesOnce("m:w14".into()));
+        assert_eq!(app.images_once.as_deref(), Some("m:w14"));
+        assert!(!question(&app), "answered for this mail");
+        let _ =
+            app.update(Message::DecideImages("m:w14".into(), vec!["mailer.example".into()], ProviderChoice::Allowed));
+        assert!(
+            app.sent
+                .contains(&Sent::Setting(torro_ipc::SettingKey::PrivacyProvider, "mailer.example=\"allowed\"".into()))
+        );
+        let (ask, load) = asked(&app).expect("still there");
+        assert!(ask.is_empty());
+        assert_eq!(load.into_iter().collect::<Vec<_>>(), ["img.mailer.example"]);
+
+        // Another mail forgets "Show once".
+        let _ = app.update(Message::SelectMail("m:w13".into()));
+        deliver_letter(&mut app, "m:w13");
+        assert_eq!(app.images_once, None);
+
+        // Where the pictures may come from, as the core said.
+        let mut mail = block_on(MailSource::get_mail(app.inbox.as_ref(), "m:w14".into())).expect("the mail");
+        assert_eq!(mail::web_of(&mail, false, false), Web::Off, "nothing allowed yet");
+        assert_eq!(mail::web_of(&mail, false, true), Web::Hosts(["img.mailer.example".to_string()].into()));
+        assert_eq!(mail::web_of(&mail, true, true), Web::Off, "the demo never goes online");
+        if let Some(external) = mail.external.as_mut() {
+            external.all = true;
+        }
+        assert_eq!(mail::web_of(&mail, false, false), Web::All);
+        mail.external = None;
+        assert_eq!(mail::web_of(&mail, false, true), Web::Off);
     }
 }

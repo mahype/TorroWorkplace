@@ -88,7 +88,7 @@ use torro_gui::source;
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, Mark, MenuItem, MenuSection, RailGroup, RailItem, RowAction};
 use torro_gui::{datetime, style, typo};
-use torro_htmlview::{CidSource, Content, HtmlView, MAX_PICTURE_BYTES, Scheme};
+use torro_htmlview::{CidSource, Content, HtmlView, MAX_PICTURE_BYTES, Scheme, Web};
 use torro_inbox::InboxError;
 use torro_inbox::demo::DemoSource;
 use torro_inbox::item::{ItemTask, TaskDue};
@@ -1702,23 +1702,44 @@ pub struct HtmlMail {
     /// The message it belongs to.
     pub id: String,
     pub content: Content,
+    /// Where its web pictures may come from ([`web_of`]): when that changes (a provider allowed,
+    /// "Show once"), the mail is parsed again.
+    pub web: Web,
 }
 
 impl HtmlMail {
     /// Parses the HTML of `mail` (`None` without HTML, [`shows_html`]) and starts loading its
     /// pictures: `cid:` ones from `inbox` ([`MailPictures`]) when the mail has parts with a
-    /// Content-ID, web ones unless `offline`. The demo and the tests are offline: they never touch
-    /// the network.
-    pub fn new<S: MailSource + 'static>(mail: &Mail, inbox: &Arc<S>, offline: bool) -> Option<HtmlMail> {
+    /// Content-ID, web ones from where Settings › Privacy allows ([`web_of`], issue #672) unless
+    /// `offline`. `shown_once`: the person chose "Show once" for this mail. The demo and the tests are
+    /// offline: they never touch the network.
+    pub fn new<S: MailSource + 'static>(
+        mail: &Mail,
+        inbox: &Arc<S>,
+        offline: bool,
+        shown_once: bool,
+    ) -> Option<HtmlMail> {
         let html = mail.html.as_deref().filter(|_| shows_html(mail))?;
         let pictures = MailPictures::of(mail, inbox).map(|pictures| Arc::new(pictures) as Arc<dyn CidSource>);
-        let content = match (offline, pictures) {
-            (true, pictures) => Content::offline(html, pictures),
-            (false, Some(pictures)) => Content::with_cid(html, pictures),
-            (false, None) => Content::new(html),
-        };
-        Some(HtmlMail { id: mail.summary.id.clone(), content })
+        let web = web_of(mail, offline, shown_once);
+        let content = Content::with_web(html, pictures, web.clone());
+        Some(HtmlMail { id: mail.summary.id.clone(), content, web })
     }
+}
+
+/// Where the web pictures of `mail` may load from (issue #672), as the core said in `external`: nowhere
+/// `offline` or when it named nothing, from every host at "Always show", else from the hosts of the
+/// providers allowed – and, after "Show once" (`shown_once`), also from those not asked about yet.
+pub fn web_of(mail: &Mail, offline: bool, shown_once: bool) -> Web {
+    let Some(external) = mail.external.as_ref().filter(|_| !offline) else { return Web::Off };
+    if external.all {
+        return Web::All;
+    }
+    let mut hosts = external.load.clone();
+    if shown_once {
+        hosts.extend(external.ask.iter().flat_map(|provider| provider.hosts.iter().cloned()));
+    }
+    if hosts.is_empty() { Web::Off } else { Web::Hosts(hosts) }
 }
 
 /// The pictures a mail carries with it (`cid:`), from the core: `mail.get_attachment` places the
@@ -3241,6 +3262,9 @@ pub struct HtmlReading<'a> {
     pub scheme: Scheme,
     /// Device pixels per logical pixel: the window's scale factor times the zoom.
     pub scale: f32,
+    /// The person chose "Show once" for the mail's pictures (issue #672): the question over it is
+    /// answered until another mail opens.
+    pub images_once: bool,
 }
 
 impl HtmlReading<'_> {
@@ -3765,6 +3789,10 @@ fn head_in<'a>(
             None => {}
         }
     }
+    // The pictures of other servers not loaded yet (issue #672), while the HTML shows.
+    if let Some(question) = images_question(reading) {
+        head = head.push(question);
+    }
     // What the mail invites to, with its answers (task E8.3b), and the task made of it (task E8.7b).
     if let Some(summary) = summary
         && let Some(invite) = &summary.invite
@@ -3792,6 +3820,43 @@ fn head_in<'a>(
     } else {
         head.into()
     }
+}
+
+/// The question over a mail whose pictures of other servers wait for the person (issue #672, Settings ›
+/// Privacy at "Ask"): which providers, what loading tells them, and "Show once", "Always allow …",
+/// "Never for …". `None` while the mail loads, shows as text, has nothing to ask or was shown once.
+pub(crate) fn images_question<'a>(reading: &Reading<'a>) -> Option<Element<'a, Message>> {
+    reading.html.filter(|html| html.shown() && !html.images_once)?;
+    let Some(Ok(mail)) = reading.loaded else { return None };
+    let asked = &mail.external.as_ref()?.ask;
+    let keys: Vec<String> = asked.iter().map(|provider| provider.key.clone()).collect();
+    let decide = |choice| Message::DecideImages(mail.summary.id.clone(), keys.clone(), choice);
+    let (title, detail, allow, block) = match asked.as_slice() {
+        [] => return None,
+        [one] => (
+            trf("Images from {provider} are not loaded.", &[("provider", &one.name)]),
+            tr("Loading them tells the image server when you read this.").to_owned(),
+            trf("Always allow {provider}", &[("provider", &one.name)]),
+            trf("Never for {provider}", &[("provider", &one.name)]),
+        ),
+        many => {
+            let names = many.iter().map(|provider| provider.name.as_str()).collect::<Vec<_>>().join(", ");
+            (
+                trf("Images from {count} providers are not loaded.", &[("count", &many.len())]),
+                trf("{names}. Loading them tells the image servers when you read this.", &[("names", &names)]),
+                tr("Always allow these").to_owned(),
+                tr("Never for these").to_owned(),
+            )
+        }
+    };
+    let actions = vec![
+        widgets::PageAction::new(tr("Show once"), Some(Message::ShowImagesOnce(mail.summary.id.clone()))),
+        widgets::PageAction::new(allow, Some(decide(torro_core::privacy::ProviderChoice::Allowed)))
+            .style(style::button::ghost),
+        widgets::PageAction::new(block, Some(decide(torro_core::privacy::ProviderChoice::Blocked)))
+            .style(style::button::ghost),
+    ];
+    Some(widgets::question_card(Icon::Image, title, detail, actions))
 }
 
 /// The warning signs of the loaded mail (issue #506, `mail.get_message`); none while it loads.
@@ -6629,7 +6694,7 @@ mod tests {
         let demo = Arc::new(DemoSource::new(now()));
         let mail = Ok(DemoSource::get_mail(&demo, id).expect("a demo mail"));
         let text = Selectable::new(&mail.as_ref().map(text_of).unwrap_or_default());
-        let html = mail.as_ref().ok().and_then(|mail| HtmlMail::new(mail, &demo, true));
+        let html = mail.as_ref().ok().and_then(|mail| HtmlMail::new(mail, &demo, true, false));
         let summary = mail.as_ref().ok().map(|mail| mail.summary.clone());
         let unsubscribed = HashSet::new();
         let reading = Reading {
@@ -6656,6 +6721,7 @@ mod tests {
                 format,
                 scheme: Scheme::Light,
                 scale: 1.0,
+                images_once: false,
             }),
             saving: None,
             click: &OPEN,
@@ -8016,7 +8082,7 @@ mod tests {
             let loaded = Ok(message.clone());
             let text = Selectable::new(&text_of(message));
             // The HTML of a mail that has it (task M9.7), as HTML once and as text once.
-            let html = HtmlMail::new(message, &Arc::new(DemoSource::new(now())), true);
+            let html = HtmlMail::new(message, &Arc::new(DemoSource::new(now())), true, false);
             for loaded in [None, Some(&loaded)] {
                 for read in [false, true] {
                     let format = if read { MailFormat::Text } else { MailFormat::Html };
@@ -8025,6 +8091,7 @@ mod tests {
                         format,
                         scheme: Scheme::Dark,
                         scale: 1.0,
+                        images_once: false,
                     });
                     let saving = iced::futures::executor::block_on(MailSource::save_targets(
                         &DemoSource::new(now()),
@@ -8674,8 +8741,8 @@ mod tests {
         assert_eq!(pictures.picture("logo@other.example"), None, "not a part of this mail");
         let plain = DemoSource::get_mail(&demo, "m:w1").expect("a text mail");
         assert!(MailPictures::of(&plain, &demo).is_none(), "no part with a Content-ID");
-        assert!(HtmlMail::new(&plain, &demo, true).is_none(), "no HTML, nothing to parse");
-        let parsed = HtmlMail::new(&sale, &demo, true).expect("parsed");
+        assert!(HtmlMail::new(&plain, &demo, true, false).is_none(), "no HTML, nothing to parse");
+        let parsed = HtmlMail::new(&sale, &demo, true, false).expect("parsed");
         assert_eq!(parsed.id, "m:p2");
         assert!(parsed.content.height(480.0, 1.0, Scheme::Light) > 0.0, "it lays out");
     }
