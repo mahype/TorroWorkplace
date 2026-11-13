@@ -21,7 +21,8 @@ Ergebnisse lesen. Wie geht das mit den Rechten, Freigaben und Sperren der Suite 
   und ruft `approvals.decide_approval` selbst auf. **Ein Befehl aus dem Terminal-Werkzeug ist genau so ein Programm.**
   Ohne Sandbox kann er jede Freigabe der Suite umgehen, auch die, die ihn selbst erlaubt hat. Das ist der Kern der
   Frage: Eine Freigabe-Karte allein ist für dieses Werkzeug keine Sicherheitsgrenze, sondern eine Rückfrage an die
-  Person.
+  Person. `api.md` sagt dort auch: „Eine Sandbox gegen Programme desselben Nutzers ist nicht Ziel.“ Stufe 2 weicht davon ab (nur
+  für dieses Werkzeug); `api.md` ist dann anzupassen (Folge-Issues).
 - **Hermes Agent** (Abgleich vom 2026-11-13, Quellcode der lokalen Installation): keine Sandbox in der Voreinstellung.
   Etwa 100 Muster erkennen gefährliche Befehle; Modi `manual`, `smart` (ein Hilfsmodell entscheidet) und `off`;
   Antworten „einmal“, „Sitzung“, „immer“, „ablehnen“; harte Grenzen, die nie umgangen werden; ohne Mensch wird
@@ -49,7 +50,7 @@ Weg B nach Plattform (Stand 2026-11; Fassungen und Rechte vor dem Bau prüfen):
 | Windows | AppContainer (mit eingeschränktem Token) | hoch. Kein einfaches Gegenstück; Ordnerfreigaben und Netz sind je Programm fummelig. Bleibt vorerst bei Weg A. |
 
 **Jede Sandbox sperrt** die Ordner der Suite (Einstellungen, Daten und Zustand jeder App), die App-Schlüssel (`app.key`
-und die Schlüsseldateien der Clients) und `core.sock`. Ohne diese Sperre wäre sie wirkungslos: Mit dem Schlüssel
+und die Schlüsseldateien der Clients) `core.sock` und den Session-Bus des Systems (D-Bus; über ihn meldet die Benachrichtigung „Allow“, siehe „Grenze des Modells“). Ohne diese Sperre wäre sie wirkungslos: Mit dem Schlüssel
 spricht der Befehl wieder als die App (siehe „Ausgangslage“). Die Sperren sind dieselben wie bei „Immer gesperrt“ des
 Werkzeugs Dateien (Abschnitt „Harte Grenzen“); in der Sandbox kommt als Mittel das Betriebssystem dazu, nicht ein
 Textvergleich.
@@ -100,8 +101,8 @@ Namen als Vorschlag, Bereich `tools`, neues Werkzeug `terminal`:
 - **„Ask first: Never“ gilt nicht.** Wie beim Papierkorb des Werkzeugs Dateien fragt das Terminal immer einen Menschen,
   auch wenn der Client bei „Ask first“ „Never“ gewählt hat. Es fragt auch bei Lesebefehlen wie `ls`: Der Kern kann
   nicht wissen, was ein Programm tut.
-- **Nie per Stimme.** Eine Freigabe für das Terminal entscheidet man nur mit einem Klick auf der Karte (oder der
-  Benachrichtigung der Oberfläche), nie durch eine gesprochene Antwort: Ein Mikrofon hört auch Fernseher und
+- **Nie per Stimme.** Eine Freigabe für das Terminal entscheidet man nur mit einem Klick auf der Karte (die Aktion der
+  Benachrichtigung zählt für das Terminal nicht, weil das D-Bus-Signal nicht nach Absender gefiltert wird), nie durch eine gesprochene Antwort: Ein Mikrofon hört auch Fernseher und
   Nachbarn, und ein Befehl ist kein Kalendereintrag.
 - **Eine offene Frage** steht wie jede Freigabe in `approvals.json` (0600). Sie läuft nach der üblichen Frist ab; ein
   Befehl, der nach dem Ablauf kommt, braucht eine neue Karte. Das Protokoll (`audit.jsonl`) nennt Client, Befehl
@@ -150,8 +151,9 @@ Pfade außerhalb als Argument bekommt, ist ohne Sandbox ein Befund der Heuristik
   verschiebt die Last auf die Person zu genau dem Zeitpunkt, an dem das Modell am wenigsten zu trauen ist.
 - **Wie es sich anfühlt:** Hat die Unterhaltung fremde Inhalte gelesen, meldet das Werkzeug `forbidden` mit dem Grund
   „This conversation has read content from outside. Start a new conversation to run commands.“. Die Person kann eine
-  neue Unterhaltung beginnen; Der Zustand liegt im Speicher des Dienstes wie das Ja der Websuche; nach einem Neustart fragt
-  der Kern die Unterhaltung aus dem Verlauf neu ab (`untrusted`-Einträge zählen weiter).
+  neue Unterhaltung beginnen. Anders als das Ja der Websuche geht die Sperre beim Neustart nicht verloren: Der Kern
+  bestimmt sie aus dem Verlauf neu, nach den Namen der Werkzeuge, die fremde Inhalte lesen können (die Zeile im
+  Verlauf hält die Antwort nicht fest; es zählt, was gelesen worden sein kann).
 - **Restgefahr:** Was ein Befehl **selbst** ausgibt (eine Datei, die er liest, eine Antwort aus dem Netz), ist
   ebenfalls fremd, sobald es ein Modell erreicht. Die Ausgabe eines Befehls zählt deshalb wie ein Treffer der Websuche:
   Nach einem Befehl, dessen Ausgabe Inhalte von außen enthalten kann (`curl`, `git log`, ein Test), ist die
@@ -167,8 +169,8 @@ Pfade außerhalb als Argument bekommt, ist ohne Sandbox ein Befund der Heuristik
   `BASH_ENV` …), bleiben draußen: `blocked_env` (`crates/torro-ipc/src/extensions.rs`) ist die Grundlage. Das Modell
   gibt keine Umgebungsvariablen mit; wer welche braucht, setzt sie in der Karte (Entscheidung offen).
 - **Ausgabe schwärzen:** Der Kern ersetzt Geheimnis-Muster in der Ausgabe (Zugangsdaten in Adressen, `Authorization:`,
-  private Schlüsselblöcke, typische Token-Formen wie `ghp_…` oder `sk-…`, Werte von Variablen mit `KEY`, `TOKEN`,
-  `SECRET`, `PASSWORD` im Namen) durch `[redacted]`, **bevor** die Ausgabe zum Modell, in den Verlauf auf der Platte
+  private Schlüsselblöcke, typische Token-Formen wie `ghp_…` oder `sk-…`, Zeilen der Form `NAME_KEY=…`, `…TOKEN=…`, `…SECRET=…`,
+  `…PASSWORD=…`, wie sie ein Befehl aus einer Datei liest, etwa `.env`; im Prozess selbst gibt es solche Variablen nicht) durch `[redacted]`, **bevor** die Ausgabe zum Modell, in den Verlauf auf der Platte
   oder auf die Karte geht. **Das ist eine Heuristik:** Ein Geheimnis in einer ungewohnten Form kommt durch, und ein
   Befehl kann es verschlüsselt ausgeben. Es senkt das Risiko, es ist keine Zusage; die Oberfläche sagt das nicht auf
   jeder Karte, aber die Einstellungen des Werkzeugs nennen es.
@@ -182,7 +184,9 @@ Pfade außerhalb als Argument bekommt, ist ohne Sandbox ein Befund der Heuristik
   Karte; eine Freigabe ohne die Karte fragt in `approvals` und erscheint nur als Benachrichtigung, ohne den Befehl
   im Zusammenhang zu zeigen. Ein Agent, der Befehle ausführen will, hat seine eigenen Werkzeuge; ein Client, der
   `assistant_send_message` darf, lässt den Assistenten mit dessen Rechten arbeiten (Abschnitt „Drei Wege“ in
-  [assistent.md](assistent.md)); der Haken liegt dort nie bei einem fremden Agenten.
+  [assistent.md](assistent.md)); der Haken liegt dort nie bei einem fremden Agenten. **Technisch:** `terminal` ist in der Auswahl von Clients über API
+  und MCP nicht wählbar (der Editor zeigt es nicht an); ein Request von dort endet mit `forbidden`, auch wenn eine
+  Rechte-Datei den Eintrag trüge.
 - **Geplante Läufe** (Erinnerungen, Zeitpläne, spätere Hintergrundaufgaben) bekommen das Terminal **nie.** Es gibt
   keinen Menschen, der die Karte sieht; „ohne Mensch wird abgelehnt“ gilt wie bei Hermes. Das ist keine Entscheidung
   für später, sondern eine Voraussetzung: Wer geplante Läufe baut, nimmt das Terminal aus deren Werkzeugen heraus.
@@ -201,8 +205,10 @@ Pfade außerhalb als Argument bekommt, ist ohne Sandbox ein Befund der Heuristik
   nach `opened`, nicht in einer Schnittmenge, nicht in einer Vorlage (auch nicht *Full access*). Es gibt es
   nur, wenn die Auswahl des Clients `terminal` ausdrücklich nennt.
 - **Der Haken** setzt nur ein Mensch (App-Schlüssel, Punkt 2 in „Was nie nach außen geht“). Ein Agent kann ihn
-  weder setzen noch erweitern; **zurücknehmen** darf jeder mit Admin (wie bei „Mikrofon“ und Websuche-Anbietern).
-  Durchgesetzt wie dort in `Rights::allows_request` (`Request::kept_for_people`), mit Test.
+  weder setzen noch erweitern; auch **zurücknehmen** geht nur mit dem App-Schlüssel, denn der Haken liegt in der Auswahl des Clients
+  (`clients.update_client`, `clients.*` ist nur mit dem App-Schlüssel erreichbar). Anders als beim Mikrofon und bei den
+  Websuche-Anbietern (`settings.set_setting`) gibt es keinen Weg für Agenten, nicht einmal zum Abschalten; das ist
+  strenger als nötig, aber ohne neue Logik. Ob ein eigener Abschalt-Weg sinnvoll ist, ist Entscheidung 11.
 - **Warnung im Rechte-Editor** (Assistent › Einstellungen › „API and MCP“ › „Used by the assistant“): neben dem
   Schalter „Terminal“ steht, was er heißt: „Lets the assistant run programs on this computer as you. Torro can't
   fully limit what they do.“, und ob eine Sandbox gilt. Der Schalter steht beim Anlegen eines Bots aus.
@@ -220,7 +226,7 @@ Pfade außerhalb als Argument bekommt, ist ohne Sandbox ein Befund der Heuristik
 | Befehl freigeben („Allow once“, „in this conversation“, „Deny“) | Karte im Chat | `approvals.decide_approval` (gibt es) | **Never** (Punkt 3) |
 | Haken „Terminal“ für einen Client setzen | Assistent › „Used by the assistant“; Steuerzentrale › API clients, MCP clients | `clients.update_client` · Admin | **Never** (Punkt 2) |
 | „Immer erlaubt“-Liste ändern (Stufe 2) | Assistent › „Used by the assistant“ | `clients.update_client` · Admin | **Never** (Punkt 2) |
-| Grenzen (Zeit, Ausgabe, Hintergrundbefehle) | Steuerzentrale › MCP servers › Built-in tools | `settings.set_setting` · Admin | `settings_set_setting`, nur verkleinern; vergrößern nur Menschen |
+| Grenzen (Zeit, Ausgabe, Hintergrundbefehle) | – | – (in Stufe 1 feste Werte des Kerns; einstellbar erst später, Entscheidung 2) | – |
 
 `Never` ist nur, was in „Was nie nach außen geht“ in [api.md](api.md) steht: den Haken setzen und die „Immer“-Liste
 ändern (Punkt 2: kein Agent ändert Rechte) und die Freigabe entscheiden (Punkt 3). Alles andere hat ein MCP-Tool. Ein
@@ -254,7 +260,7 @@ fremder Client sieht `tools_run_command` in Stufe 1 trotzdem nicht, weil sein Re
 
 Diese Fragen kann nur ein Mensch beantworten; der Plan lässt sie offen.
 
-1. **Stufenweg bestätigen?** Stufe 1 ohne Sandbox gegen die Aussage in „Grenze des Modells“: ein Terminal ist ein
+1. **Stufenweg gegenprüfen?** (Die Annahme des Plans hat ihn bestätigt; das hier ist die Gegenprobe vor dem Bau.) Stufe 1 ohne Sandbox gegen die Aussage in „Grenze des Modells“: ein Terminal ist ein
    Programm als derselbe Nutzer. Ist „Karte bei jedem Befehl“ ein ausreichender Schutz, wenn die Oberfläche die Grenze
    offen sagt? Alternative: erst Stufe 2.
 2. **Zeit- und Ausgabegrenzen und Hintergrundprozesse:** Zahlen für Zeit je Befehl, Ausgabe je Aufruf, Ausgabe je
@@ -272,6 +278,8 @@ Diese Fragen kann nur ein Mensch beantworten; der Plan lässt sie offen.
 9. **Shell erlauben:** Bleibt „Run in a shell“ ein ausdrücklicher Fall mit ungekürzter Karte, oder gibt es nur
    Programm und Argumente?
 10. **Bots:** Dürfen Bots das Terminal überhaupt bekommen, oder bleibt es dem Assistenten vorbehalten?
+11. **Abschalt-Weg für Agenten:** Darf ein Agent den Haken „Terminal“ zurücknehmen (neue Logik in `kept_for_people`), oder
+    bleibt alles beim App-Schlüssel?
 
 ## Folge-Issues
 
@@ -280,4 +288,6 @@ Hier nur benannt, **nicht angelegt**; sie entstehen nach den Antworten auf die E
 - Stufe 1: Werkzeug `terminal` (Requests und Katalog, Karte, Grenzen, Umgebung, Schwärzen, fremde Inhalte)
 - Sandbox Linux (bubblewrap oder Landlock)
 - Sandbox macOS (Seatbelt, mit Plan für den Wegfall von `sandbox-exec`)
+- `docs/api.md` anpassen: Der Satz „Eine Sandbox gegen Programme desselben Nutzers ist nicht Ziel“ in „Grenze des Modells“ gilt
+  mit Stufe 2 nicht mehr für das Terminal
 - Rechte-Klasse „nie in alle“ (`ToolId`, `Rights::reached_tools`, Rechte-Editor, Warnung)
