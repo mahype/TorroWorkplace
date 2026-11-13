@@ -1,6 +1,6 @@
 # Terminal-Werkzeug für den Assistenten
 
-Stand: 2026-11-13, Issue #706. **Diskussionsgrundlage:** Hier ist nichts entschieden und nichts gebaut. Das Dokument
+Stand: 2026-11-13, Issue #706. **Diskussionsgrundlage:** Gebaut ist nichts; entschieden ist nur, was als „in der Planung entschieden“ oder „bestätigt“ gekennzeichnet ist (Stufenweg, Terminal nie in „alle“, Sperre nach fremden Inhalten), alles andere liegt bei den „Entscheidungen für Menschen“. Das Dokument
 macht die Grundsatzfrage entscheidbar und endet mit einer Empfehlung und der Liste der Entscheidungen, die ein Mensch
 treffen muss. Es gibt keinen Code, keinen Request und keinen Katalogeintrag; alle Namen unten sind Vorschläge.
 
@@ -154,8 +154,11 @@ Pfade außerhalb als Argument bekommt, ist ohne Sandbox ein Befund der Heuristik
   neue Unterhaltung beginnen. Anders als das Ja der Websuche geht die Sperre beim Neustart nicht verloren: Der Kern
   bestimmt sie aus dem Verlauf neu, nach den Namen der Werkzeuge, die fremde Inhalte lesen können (die Zeile im
   Verlauf hält die Antwort nicht fest; es zählt, was gelesen worden sein kann).
+- **Restgefahr (Nachrichten fremder Agenten):** Ein Client mit dem Recht `assistant` kann dem Assistenten schreiben, er solle einen
+  Befehl ausführen; die Nachricht zählt nicht als fremder Inhalt. Es erscheint die Karte, die Person entscheidet. Der
+  Bereich `assistant` ist bei fremden Clients standardmäßig aus (Entscheidung 7).
 - **Restgefahr:** Was ein Befehl **selbst** ausgibt (eine Datei, die er liest, eine Antwort aus dem Netz), ist
-  ebenfalls fremd, sobald es ein Modell erreicht. Die Ausgabe eines Befehls zählt deshalb wie ein Treffer der Websuche:
+  ebenfalls fremd, sobald es ein Modell erreicht. Die Ausgabe eines Befehls könnte deshalb wie ein Treffer der Websuche zählen (offen, Entscheidung 4):
   Nach einem Befehl, dessen Ausgabe Inhalte von außen enthalten kann (`curl`, `git log`, ein Test), ist die
   Unterhaltung nicht mehr sauber. Das Konzept lässt die Frage offen, ob jede Ausgabe so zählt (Entscheidung 4 unten);
   die strenge Antwort („ja“) macht das Werkzeug fast nutzlos für lange Aufgaben, die lockere lässt eine Lücke.
@@ -177,7 +180,7 @@ Pfade außerhalb als Argument bekommt, ist ohne Sandbox ein Befund der Heuristik
 
 ## Bots, API, MCP und geplante Läufe
 
-- **Bots** wie der Assistent: Ein Bot hat sein eigenes Terminal-Recht nur mit Haken (Abschnitt „Rechte“); im Auftrag
+- **Bots** wie der Assistent: Falls Bots das Terminal bekommen (Entscheidung 10): Ein Bot hat sein eigenes Terminal-Recht nur mit Haken (Abschnitt „Rechte“); im Auftrag
   des Hauptbots gilt die Schnittmenge beider Rechte, und die Freigabe läuft in der Unterhaltung des Hauptbots, wo die
   Person sie sieht. Fremde Inhalte aus beiden Läufen zählen (wie bei der Websuche).
 - **Clients über API und MCP** haben **in Stufe 1 kein Terminal.** Sie haben keine Unterhaltung und deshalb keine
@@ -221,12 +224,12 @@ Pfade außerhalb als Argument bekommt, ist ohne Sandbox ein Befund der Heuristik
 |---|---|---|---|
 | Befehl ausführen | Chat: Werkzeugzeile und Freigabe-Karte | `tools.run_command` · Write, Freigabe immer | `tools_run_command` (Stufe 1: nur durch den Assistenten, nicht für fremde Clients) |
 | Hintergrundbefehl starten | ebenso | `tools.start_command` · Write, Freigabe immer | `tools_start_command` (ebenso) |
-| Ausgabe lesen | Werkzeugzeile | `tools.read_output` · Read, nur für Befehle des eigenen Clients | `tools_read_output` |
-| Hintergrundbefehl beenden | Werkzeugzeile, „Stop“ auf der Zeile | `tools.stop_command` · Write | `tools_stop_command` |
+| Ausgabe lesen | Werkzeugzeile | `tools.read_output` · Read, nur für Befehle des eigenen Clients | `tools_read_output` (Stufe 1 ebenso nur für den Assistenten) |
+| Hintergrundbefehl beenden | Werkzeugzeile, „Stop“ auf der Zeile | `tools.stop_command` · Write | `tools_stop_command` (ebenso) |
 | Befehl freigeben („Allow once“, „in this conversation“, „Deny“) | Karte im Chat | `approvals.decide_approval` (gibt es) | **Never** (Punkt 3) |
-| Haken „Terminal“ für einen Client setzen | Assistent › „Used by the assistant“; Steuerzentrale › API clients, MCP clients | `clients.update_client` · Admin | **Never** (Punkt 2) |
+| Haken „Terminal“ für einen Client setzen | Assistent › „Used by the assistant“ (Assistent und Bots); bei API- und MCP-Clients nicht wählbar | `clients.update_client` · Admin | **Never** (Punkt 2) |
 | „Immer erlaubt“-Liste ändern (Stufe 2) | Assistent › „Used by the assistant“ | `clients.update_client` · Admin | **Never** (Punkt 2) |
-| Grenzen (Zeit, Ausgabe, Hintergrundbefehle) | – | – (in Stufe 1 feste Werte des Kerns; einstellbar erst später, Entscheidung 2) | – |
+| Grenzen (Zeit, Ausgabe, Hintergrundbefehle) | – | – (in Stufe 1 feste Werte des Kerns; Zahlen: Entscheidung 2; ob sie später einstellbar sind, entscheidet ein Mensch mit | – |
 
 `Never` ist nur, was in „Was nie nach außen geht“ in [api.md](api.md) steht: den Haken setzen und die „Immer“-Liste
 ändern (Punkt 2: kein Agent ändert Rechte) und die Freigabe entscheiden (Punkt 3). Alles andere hat ein MCP-Tool. Ein
@@ -242,7 +245,7 @@ fremder Client sieht `tools_run_command` in Stufe 1 trotzdem nicht, weil sein Re
    Befehlstexts, aber sie heißt überall Heuristik. Alle drei Plattformen. **Der Nutzen ist klein und ehrlich:** Der
    Assistent kann die Aufgaben einer Person erledigen, die ihm dabei zusieht.
 2. **Stufe 2 – Sandbox unter Linux und macOS.** Erst dann „Immer“ für genau einen Befehl samt Ordner, gespeichert bei
-   den Rechten, nur durch Menschen zu ändern. Die Sandbox sperrt die Ordner der Suite, die Schlüssel und den Socket.
+   den Rechten, nur durch Menschen zu ändern. Die Sandbox sperrt die Ordner der Suite, die Schlüssel, den Socket (unter Windows die Pipe) und unter Linux den Session-Bus (D-Bus); für macOS und Windows ist der Gegenwert zu klären (Folge-Issues).
    **Windows bleibt bei Stufe 1**, bis es einen tragfähigen Weg gibt.
 
 **Verworfen:**
@@ -290,4 +293,6 @@ Hier nur benannt, **nicht angelegt**; sie entstehen nach den Antworten auf die E
 - Sandbox macOS (Seatbelt, mit Plan für den Wegfall von `sandbox-exec`)
 - `docs/api.md` anpassen: Der Satz „Eine Sandbox gegen Programme desselben Nutzers ist nicht Ziel“ in „Grenze des Modells“ gilt
   mit Stufe 2 nicht mehr für das Terminal
+- Freigaben für das Terminal: Aktion der Benachrichtigung ausnehmen und Sprache ausschließen; Abschalt-Weg für Agenten
+  (eigener Request oder eigene Einstellung, Entscheidung 11)
 - Rechte-Klasse „nie in alle“ (`ToolId`, `Rights::reached_tools`, Rechte-Editor, Warnung)
