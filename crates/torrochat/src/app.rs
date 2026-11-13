@@ -570,7 +570,8 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::CoreReady => return self.load(),
+            // The first ask for the appearance went out before the core answered; ask again.
+            Message::CoreReady => return Task::batch([self.load(), self.fetch_appearance()]),
             Message::Resized(size) => self.size = size,
             Message::DragWindow => return torro_gui::drag_window(),
             Message::Raise => return torro_gui::instance::bring_to_front(),
@@ -600,7 +601,8 @@ impl App {
                 return task;
             }
             Message::Escape => return self.escape(),
-            Message::Tick => return self.load(),
+            // Every tick asks for the appearance too, so a change in the control centre reaches an open window.
+            Message::Tick => return Task::batch([self.load(), self.fetch_appearance()]),
             Message::NoticeTick(now) => {
                 if self.notice.as_ref().is_some_and(|n| now.saturating_duration_since(n.shown) >= widgets::TOAST_FOR) {
                     self.notice = None;
@@ -912,6 +914,7 @@ impl App {
         }
     }
 
+    /// Asks the core for the stored appearance (light, dark, system); an error keeps the one we have.
     fn fetch_appearance(&self) -> Task<Message> {
         let suite = self.suite.clone();
         Task::perform(async move { theme::stored_appearance(&suite).await }, Message::Appearance)
