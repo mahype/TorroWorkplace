@@ -5,7 +5,8 @@
 //! the accounts all apps share, the types of AI accounts ([`ai`]), the words for a mail's category ([`category`]), translations (English first, German as a translation), the
 //! Torro theme tokens, the design packs that hold the whole look ([`design`]), the keyboard
 //! shortcuts of the mail window ([`shortcuts`]), the timestamps that measure how fast the windows
-//! start ([`timing`]), the checks on someone else's text before a person reads it ([`text`]) and how
+//! start ([`timing`]), the checks on someone else's text before a person reads it ([`text`]), whether content of other
+//! providers is loaded ([`privacy`]) and how
 //! versions of the programs compare ([`version`]).
 
 pub mod account;
@@ -15,6 +16,7 @@ pub mod category;
 pub mod design;
 pub mod i18n;
 pub mod paths;
+pub mod privacy;
 pub mod settings;
 pub mod shortcuts;
 pub mod text;
