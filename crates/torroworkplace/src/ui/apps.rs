@@ -107,6 +107,8 @@ pub enum Message {
     Open(String),
     /// "Release notes": the release's page on GitHub.
     ReleaseNotes,
+    /// The native installers' download index; no file changes in the catalog.
+    Downloads,
     /// "Install": `apps.install_app` for the app.
     Install(String),
     /// "Update to 0.2.0" of one app: `apps.update_apps` with it alone.
@@ -167,6 +169,10 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
                 Some(url) => Action::OpenUrl(url),
                 None => Action::None,
             }
+        }
+        Message::Downloads => {
+            close(state);
+            Action::OpenUrl("https://github.com/mahype/TorroWorkplace/releases/latest".into())
         }
         Message::Install(app) => Action::StartAppJob(Request::InstallApp { app }),
         Message::Update(app) if app == MAIN_APP => Action::AppWindow(Target::SelfUpdate),
@@ -478,7 +484,8 @@ pub fn note(data: &Data) -> Option<String> {
 
 /// "5 installed · 2 updates", quietly beside the title.
 fn summary(catalog: &AppCatalog) -> String {
-    let installed = catalog.apps.iter().filter(|app| is_installed(app)).count();
+    let installed = catalog.apps.iter().filter(|app| is_installed(app)).count()
+        + usize::from(catalog.main.state == CatalogState::Managed && is_installed(&catalog.main));
     let updates = updatable(catalog).len();
     let installed = trf("{n} installed", &[("n", &installed)]);
     match updates {
@@ -523,7 +530,11 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass, width: f32) 
     if catalog.main.state == CatalogState::Update {
         page = page.push(main_update(&catalog.main));
     }
-    let shown: Vec<&CatalogApp> = catalog.apps.iter().filter(|app| matches(app, &state.query)).collect();
+    let shown: Vec<&CatalogApp> = std::iter::once(&catalog.main)
+        .filter(|main| main.state == CatalogState::Managed)
+        .chain(&catalog.apps)
+        .filter(|app| matches(app, &state.query))
+        .collect();
     let (installed, missing): (Vec<&CatalogApp>, Vec<&CatalogApp>) =
         shown.into_iter().partition(|app| is_installed(app));
     if installed.is_empty() && missing.is_empty() {
@@ -760,6 +771,13 @@ fn actions<'a>(app: &'a CatalogApp, offer: &Offer<'a>, state: &'a State) -> Elem
             .width(Fill)
             .into()
         }
+        Offer::Managed(_, Some(command)) if *command == "https://github.com/mahype/TorroWorkplace/releases/latest" => {
+            let mut actions = row![].spacing(space::s());
+            if is_installed(app) {
+                actions = actions.push(button(tr("Open").to_string(), Some(Message::Open(class.clone()))));
+            }
+            actions.push(button(tr("Downloads").to_string(), Some(Message::Downloads))).into()
+        }
         Offer::Managed(_, Some(command)) => command_field(command),
         Offer::Managed(_, None) => button(tr("Open").to_string(), Some(Message::Open(class.clone()))),
         Offer::Update => {
@@ -840,7 +858,7 @@ pub fn checked_words(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
     let class = state.menu.as_ref()?;
     let catalog = data.app_catalog.catalog.listed()?;
-    let app = catalog.apps.iter().find(|app| &app.window_class == class)?;
+    let app = entry_of(catalog, class)?;
     let menu = widgets::menu(menu_sections(app, catalog, &data.settings));
     Some(widgets::floating(&state.anchor, Placement::Below(Align::End), menu, Message::CloseMenu))
 }
@@ -930,7 +948,7 @@ pub fn reveal(app: AppId, path: Option<&str>) -> Result<(), String> {
 }
 
 /// The demo's catalog (`--demo --section apps`): checked just now, Calendar and Mail with an update,
-/// Tasks and the App Feed up to date, the Notification Hub from a package manager, the Assistant
+/// Tasks and the App Feed up to date, the Notification Hub from a package manager, Assistant and Chat
 /// missing, and the main application up to date.
 pub fn demo_catalog(now: DateTime<Utc>) -> AppCatalog {
     let entry = |app: AppId, installed: Option<&str>, available: &str, state: CatalogState| CatalogApp {
@@ -975,22 +993,36 @@ pub fn demo_catalog(now: DateTime<Utc>) -> AppCatalog {
             hub,
             feed,
             entry(AppId::ASSISTANT, None, "0.2.0", CatalogState::Available),
+            entry(AppId::CHAT, None, "0.2.0", CatalogState::Available),
         ],
         job: None,
     }
 }
 
-/// The demo's catalog when the main application came from the AUR (`--open apps-managed`, decision
-/// 1): every app is looked after by it and shows its command instead of a button.
+/// Native installers and the older package managers (`--open apps-managed`), with the existing
+/// cards and copyable commands. The main application is visible too when externally managed.
 pub fn demo_managed(catalog: &mut AppCatalog) {
-    for app in &mut catalog.apps {
+    for (index, app) in std::iter::once(&mut catalog.main).chain(&mut catalog.apps).enumerate() {
         let package = format!("{}-bin", app.program);
-        app.managed = Some(ManagedBy {
-            manager: "AUR".into(),
-            install: format!("yay -S {package}"),
-            update: "yay -Syu".into(),
-            uninstall: format!("sudo pacman -R {package}"),
-        });
+        let (manager, uninstall) = match index {
+            0 => ("Windows Setup", "control appwiz.cpl".to_string()),
+            1 => ("DEB", format!("sudo apt remove {package}")),
+            2 => ("RPM", format!("sudo dnf remove {package}")),
+            3 => ("pacman", format!("sudo pacman -R {package}")),
+            4 => ("AUR", format!("sudo pacman -R {package}")),
+            5 => ("Homebrew", format!("brew uninstall mahype/torro/{}", app.program)),
+            _ => ("Windows Setup", "control appwiz.cpl".to_string()),
+        };
+        let downloads = "https://github.com/mahype/TorroWorkplace/releases/latest";
+        let (install, update) = match manager {
+            "AUR" => (format!("yay -S {package}"), "yay -Syu".to_string()),
+            "Homebrew" => (
+                format!("brew install mahype/torro/{}", app.program),
+                format!("brew upgrade mahype/torro/{}", app.program),
+            ),
+            _ => (downloads.to_string(), downloads.to_string()),
+        };
+        app.managed = Some(ManagedBy { manager: manager.into(), install, update, uninstall });
         app.state = CatalogState::Managed;
     }
 }
@@ -1037,6 +1069,15 @@ mod tests {
         demo_catalog(Utc::now())
     }
 
+    #[test]
+    fn the_catalog_demo_covers_every_released_app() {
+        let catalog = catalog();
+        let shown: std::collections::BTreeSet<_> =
+            std::iter::once(&catalog.main).chain(&catalog.apps).map(|app| app.window_class.as_str()).collect();
+        let expected: std::collections::BTreeSet<_> = AppId::ALL.iter().map(|app| app.window_class).collect();
+        assert_eq!(shown, expected);
+    }
+
     /// Opening the section asks the core to check GitHub (decision 2); the footer says so until the
     /// answer came, which replaces the catalog.
     #[test]
@@ -1047,11 +1088,28 @@ mod tests {
         let mut loaded = Loaded::default();
         checked(&mut state, &mut loaded, &Ok(Response::AppCatalog { catalog: catalog() }));
         assert!(!state.checking);
-        assert_eq!(loaded.catalog.listed().map(|catalog| catalog.apps.len()), Some(6));
+        assert_eq!(loaded.catalog.listed().map(|catalog| catalog.apps.len()), Some(AppId::ALL.len() - 1));
         // A refusal keeps what was there.
         let mut state = State { checking: true, ..State::default() };
         checked(&mut state, &mut loaded, &Err("no answer".into()));
         assert!(!state.checking && loaded.catalog.listed().is_some());
+    }
+
+    #[test]
+    fn managed_main_app_has_an_openable_menu_and_never_a_catalog_update() {
+        let mut catalog = catalog();
+        demo_managed(&mut catalog);
+        assert_eq!(catalog.main.state, CatalogState::Managed);
+        assert!(updatable(&catalog).is_empty());
+        assert_eq!(summary(&catalog), trf("{n} installed", &[("n", &6)]));
+        let class = catalog.main.window_class.clone();
+        let data = data_with(catalog);
+        let mut state = State::default();
+        let _ = update(&mut state, Message::ToggleMenu(class), &data);
+        assert!(overlay(&state, &data).is_some());
+        assert!(
+            matches!(update(&mut state, Message::Downloads, &data), Action::OpenUrl(ref url) if url == "https://github.com/mahype/TorroWorkplace/releases/latest")
+        );
     }
 
     /// Each button of a card is one request: install and update start a job, "Update all" takes
@@ -1120,7 +1178,7 @@ mod tests {
 
         let listed = data.app_catalog.catalog.listed().expect("listed");
         let found = |query: &str| listed.apps.iter().filter(|app| matches(app, query)).count();
-        assert_eq!(found(""), 6);
+        assert_eq!(found(""), listed.apps.len());
         assert_eq!(found("CALDAV"), 1, "without regard to case, in the sentence");
         assert_eq!(found(&tr("What do I need to do?").to_lowercase()), 1, "the question");
         assert_eq!(found("zzz"), 0);

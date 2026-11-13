@@ -215,6 +215,28 @@ jobs:
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
+
+  custom-publish-macos-app:
+    needs:
+      - plan
+      - build-local-artifacts
+    uses: ./.github/workflows/publish-macos-app.yml
+    with:
+      plan: ${{ needs.plan.outputs.val }}
+    secrets: inherit
+    permissions:
+      "contents": "read"
+
+  custom-build-installers:
+    needs:
+      - plan
+      - build-local-artifacts
+    uses: ./.github/workflows/build-installers.yml
+    with:
+      plan: ${{ needs.plan.outputs.val }}
+    secrets: inherit
+    permissions:
+      "contents": "read"
   # Determines if we should publish/announce
   host:
     needs:
@@ -222,9 +244,11 @@ jobs:
       - custom-ci
       - build-local-artifacts
       - build-global-artifacts
+      - custom-publish-macos-app
+      - custom-build-installers
     # Only run if we're "publishing", and only if plan, local and global didn't fail (skipped is fine)
-    # TorroWorkplace (hand edit, allow-dirty in dist-workspace.toml): never publish when the checks in ci.yml failed.
-    if: ${{ always() && needs.plan.result == 'success' && needs.custom-ci.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+    # TorroWorkplace hand edit (allow-dirty): no skipped mandatory jobs, no partial release.
+    if: ${{ always() && needs.plan.result == 'success' && needs.custom-ci.result == 'success' && needs.plan.outputs.publishing == 'true' && needs.build-global-artifacts.result == 'success' && needs.custom-publish-macos-app.result == 'success' && needs.custom-build-installers.result == 'success' && needs.build-local-artifacts.result == 'success' }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: "ubuntu-22.04"
@@ -248,6 +272,12 @@ jobs:
           pattern: artifacts-*
           path: target/distrib/
           merge-multiple: true
+      - name: Require complete native installer matrix before any hosting
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          python3 packaging/installers.py verify --tag "$TAG" --input target/distrib --output target/distrib
+          python3 packaging/installers.py downloads --tag "$TAG" --input target/distrib --output target/distrib
       - id: host
         shell: bash
         run: |
@@ -281,21 +311,10 @@ jobs:
         run: |
           # Write and read notes from a file to avoid quoting breaking things
           echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
+          cat target/distrib/downloads.md >> "$RUNNER_TEMP/notes.txt"
+          cp target/distrib/downloads.md target/distrib/installers-manifest.json artifacts/
 
           gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
-
-  custom-publish-macos-app:
-    needs:
-      - plan
-      - host
-    if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
-    uses: ./.github/workflows/publish-macos-app.yml
-    with:
-      plan: ${{ needs.plan.outputs.val }}
-    secrets: inherit
-    # publish jobs get escalated permissions
-    permissions:
-      "contents": "write"
 
   custom-publish-aur:
     needs:
@@ -314,12 +333,11 @@ jobs:
     needs:
       - plan
       - host
-      - custom-publish-macos-app
       - custom-publish-aur
     # use "always() && ..." to allow us to wait for all publish jobs while
     # still allowing individual publish jobs to skip themselves (for prereleases).
     # "host" however must run to completion, no skipping allowed!
-    if: ${{ always() && needs.host.result == 'success' && (needs.custom-publish-macos-app.result == 'skipped' || needs.custom-publish-macos-app.result == 'success') && (needs.custom-publish-aur.result == 'skipped' || needs.custom-publish-aur.result == 'success') }}
+    if: ${{ always() && needs.host.result == 'success' && (needs.custom-publish-aur.result == 'skipped' || needs.custom-publish-aur.result == 'success') }}
     runs-on: "ubuntu-22.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

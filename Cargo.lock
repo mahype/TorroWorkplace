@@ -7508,6 +7508,7 @@ dependencies = [
  "iced",
  "serde_json",
  "tokio",
+ "torro-contacts",
  "torro-core",
  "torro-gui",
  "torro-inbox",
@@ -7607,6 +7608,7 @@ dependencies = [
  "torro-core",
  "torro-gui",
  "torro-ipc",
+ "winresource",
 ]
 
 [[package]]

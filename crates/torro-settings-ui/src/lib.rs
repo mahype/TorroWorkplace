@@ -166,6 +166,10 @@ pub struct Data {
     /// The task lists the suite shows, GitHub filter lists included (`tasks.list_lists`): what the
     /// rights editor offers under "Task lists" and, from their searches, "GitHub repositories".
     pub task_lists: Vec<Collection>,
+    /// The address books of every account, the hidden ones too (`contacts.list_address_books`, issue
+    /// #353): what the rights editor offers under "Address books" and "Hidden address books", and what
+    /// an account's page counts under "Contacts".
+    pub address_books: Vec<torro_contacts::AddressBook>,
     /// Which AI account and model each function uses (`ai.list_assignments`, task E12.10): the
     /// mail window's section "Categorization" reads and changes the one for sorting mail.
     pub assignments: Vec<torro_ipc::AiAssignmentInfo>,
@@ -340,6 +344,7 @@ impl Data {
                     }
                 }
             }
+            Response::AddressBooks { books } => self.address_books = books,
             Response::Sources { sources } => self.sources = sources,
             Response::SaveTargets { targets, downloads, .. } => {
                 self.save_targets = targets;

@@ -37,3 +37,7 @@ tokio.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 arboard = { workspace = true, features = ["wayland-data-control"] }
+
+# The build script runs on the host, including macOS/Linux cross builds for Windows.
+[build-dependencies]
+winresource.workspace = true
