@@ -743,7 +743,7 @@ struct Answering {
     /// address in it counts as the person's ([`by_person`]). `None` when a client sent the message, and
     /// for a bot's run for the assistant.
     said: Option<u64>,
-    /// The summary of each tool line by the id of its call (issue #701): `call_<seq>` for those of earlier turns
+    /// The summary of each tool line by the id of its call (issue #701): `hist_<seq>` for those of earlier turns
     /// ([`history_with_results`]), the model's id for this answer's. What a left-out stretch names
     /// ([`compact::compact`]).
     summaries: BTreeMap<String, String>,
@@ -1279,7 +1279,7 @@ pub(super) fn history(entries: &[Entry]) -> Vec<ChatMessage> {
 
 /// [`history`] for engine A with the tool calls of earlier turns and what the model read of them (issue #701), so a
 /// later message can ask about what a tool returned without calling it again. A step is an answer's text (or none)
-/// with the tool lines after it: one assistant message with its calls, ids `call_<seq>` of the tool lines, then one
+/// with the tool lines after it: one assistant message with its calls, ids `hist_<seq>` of the tool lines ([`history_id`]), then one
 /// tool message per call with its result. The tool is the catalogue's name for the model, or the name the line
 /// keeps (a server's tool). Lines without a kept result (conversations from before, `find_tools`, which has no
 /// line) are left out as before, and so are the lines of areas switched off in this conversation now (`without`,

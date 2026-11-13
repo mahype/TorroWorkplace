@@ -81,8 +81,9 @@ Was offene Modelle brauchen, damit das gut geht:
   vier Schritte bleiben dabei wörtlich; reicht das nicht, werden zuletzt auch deren Ergebnisse bis
   auf das des letzten Schritts zur Kurzzeile. Ergebnisse von Bereichen, die in der Unterhaltung
   inzwischen abgeschaltet sind, gehen nicht mehr mit. Ein als `untrusted` markiertes Ergebnis bleibt auch verdichtet so
-  markiert; die Regeln dazu (Notizen warten auf eine Person, das Web fragt erneut) hängen an den
-  Werkzeugzeilen und gelten weiter. Ruft das Modell dasselbe Werkzeug in einer Antwort zum dritten
+  markiert; die Regeln dazu gelten weiter: Notizen warten auf eine Person, sobald eine
+  Werkzeugzeile fremde Daten gelesen haben kann oder ein mitgeschicktes Ergebnis als `untrusted`
+  markiert ist; das Web fragt erneut nach den Werkzeugzeilen. Ruft das Modell dasselbe Werkzeug in einer Antwort zum dritten
   Mal mit derselben Eingabe auf, läuft der Aufruf nicht, und die Antwort endet mit einer Meldung,
   damit es sich nicht im Kreis dreht.
 - **Ehrlich bei Grenzen:** Kann ein lokales Modell keine Werkzeuge, sagt die Auswahl das, statt es
