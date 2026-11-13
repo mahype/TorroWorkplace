@@ -11,22 +11,42 @@ Am 2026-10-20 ist AI als ständiger Abschnitt direkt nach Accounts hinzugekommen
 die Aufgaben in [tasks/steuerzentrale.md](tasks/steuerzentrale.md), Stufe 5. Nennt ein älterer Absatz (vor allem
 im [Bestand](#bestand-stand-2026-10-16)) noch „Agents & API“ oder „Accounts › AI“, gilt die aktuelle Navigation oben.
 
+**Zentrale richtet ein, Apps regeln den Zugriff (#663, 2026-11-13):** Die Modellwahl steht nur noch in den Apps, die
+Datenregel für Mail ist entfallen (#664), API und MCP haben keine Schalter „Allow …“ mehr (#665), und unter MCP servers
+richtet man nur noch ein; wer Server und Werkzeuge nutzt, regeln die Rechte der Clients (#666).
+
 ### Die Regel
 
+Jede Einstellung gibt es an genau einer Stelle, und es gibt keine stillen Sperren (#663):
+
+| Ort | Was dort passiert |
+|---|---|
+| **Steuerzentrale** | Dinge **einrichten**, ohne Rechte: Konten, KI-Anbieter und ihre Modelle an/aus, MCP-Server und die eingebauten Werkzeuge. Dazu **API clients** und **MCP clients**: Schlüssel für Programme von außen, mit allen ihren Rechten gesammelt. |
+| **Jede App** | Was die App tut, auch welche KI-Modelle sie nutzt (Assistent › General: *Chat*; Mail › AI: *Sorting*). Unter „API and MCP“: was die Clients von außen in **dieser** App dürfen (#531) und, sobald die App MCP-Server oder eingebaute Werkzeuge nutzt, worauf sie selbst zugreift (heute nur der Assistent für sich und seine Bots, #666). **Standard: alles erlaubt.** Schlüssel anlegen und Clients verbinden führt mit einem Verweis in die Steuerzentrale. |
+| **Nirgends** | Stille Sperren: keine Datenregel und keine Schalter „Allow …“ oder Werkzeug-Schalter, die im Hintergrund etwas zurückhalten. Was ein Modell liest, folgt aus den Rechten und dem gewählten Modell ([ki.md](ki.md), Grundsatz 4). |
+
+Eine Schutzregel bleibt: Ein Modell, das außerhalb dieses Rechners rechnet, schaltet nur ein Mensch an, und nur ein
+Mensch wählt es fürs Sortieren von Mail; Agenten dürfen es ausschalten, mit Freigabe ([api.md](api.md) Punkt 6).
+
 **In die Steuerzentrale gehört, was mehrere Apps teilen oder ohne das keine App läuft:** die Übersicht aller
-Konten (auch KI-Konten mit ihren Modellen und der Datenregel), Programme, die die Suite von außen nutzen,
-mit Schlüsseln und allen ihren Rechten gesammelt (API und MCP), Freigaben, Aussehen, Sprache, welche Apps an sind
-und was die ganze Suite teilt, etwa welche Modelle eines KI-Anbieters freigegeben sind. Die Rechte von
-Assistent und Bots stehen seit #231 in deren Fenster (siehe [Accounts, API und MCP](#accounts-api-und-mcp-231)).
+Konten (auch KI-Konten mit ihren Modellen), Programme, die die Suite von außen nutzen, mit Schlüsseln und allen ihren
+Rechten gesammelt (API clients und MCP clients), MCP-Server und eingebaute Werkzeuge (nur einrichten), Freigaben,
+Aussehen, Sprache, welche Apps an sind und was die ganze Suite teilt, etwa welche Modelle eines KI-Anbieters
+freigegeben sind. Die Rechte von Assistent und Bots stehen seit #231 in deren Fenster (siehe
+[Accounts, API und MCP](#accounts-api-und-mcp-231)).
 
 **Rechte für API und MCP je App (#531):** Jede App ist einzeln herunterladbar und bringt ihre Rechte mit. Unter
 Zahnrad › **API and MCP** zeigt sie jeden API-Schlüssel und MCP-Client mit dem, was er in **ihrem** Bereich darf,
 und ändert es dort: Kalender `calendar`, Aufgaben `tasks` und `github`, Notification Hub und App Feed `inbox`, Mail
 `mail` und mit #556 `workflows`, der Assistent `assistant` und `bots`. Kontakte und alles andere, was
 mehrere Apps teilen, bleibt in der Steuerzentrale. Gespeichert wird einmal im Dienst (`clients.update_client`); die Steuerzentrale zeigt dieselben
-Rechte gesammelt. Schlüssel anlegen und Clients verbinden bleibt in der Steuerzentrale; ohne Hauptanwendung steht
-dort nur ein Satz, wo Clients angelegt werden (das Anlegen in einer einzelnen App klärt #538). Was die Suite teilt
-(etwa freigegebene KI-Modelle), zeigt eine App nur ohne Hauptanwendung, wie Aussehen und Sprache.
+Rechte gesammelt. Schlüssel anlegen und Clients verbinden bleibt in der Steuerzentrale: Darunter steht die Gruppe
+„Torro Workplace“ mit den Zeilen „API clients“ und „MCP clients“, die die Steuerzentrale an diesen Abschnitten öffnen
+(#665); ohne Hauptanwendung steht dort nur ein Satz, wo Clients angelegt werden (das Anlegen in einer einzelnen App
+klärt #538). Im Assistenten kommt die Gruppe **„Used by the assistant“** dazu (#666): mit einem Auswahlfeld für den
+Assistenten oder einen Bot je eingebautem Werkzeug und je MCP-Server ein Schalter und „Show commands“, Standard an
+(siehe [Der Rechte-Editor](#der-rechte-editor)). API- und MCP-Grundeinstellungen gibt es in den Apps nicht. Was die
+Suite teilt (etwa freigegebene KI-Modelle), zeigt eine App nur ohne Hauptanwendung, wie Aussehen und Sprache.
 
 **In die App gehört, was nur ändert, wie diese App arbeitet:** welche Kalender oder Listen sie zeigt, wann
 sie erinnert, was in den Eingang darf, wie Mail aussieht und abgeschickt wird, wer der Assistent ist. Das
@@ -49,9 +69,10 @@ installierten Apps es nutzen; sie ist die Übersicht, nicht der einzige Weg. Feh
 je Anbieter einen Knopf, der „Add account“ in der App öffnet ([einzelne-apps.md](einzelne-apps.md)).
 Die Seite „AI“ einer App zeigt seit #547 (Entscheidung 5 in #528) mit Hauptanwendung nur die KI-Konten, die
 eigene Modellzeile der App (Mail: „Sorting“; der Assistent stellt „Chat“ unter General ein, dort mit Denkstufe und
-„The one used last“) und „Open Torro Workplace“; Modell-Schalter der Konten, die übrigen Zeilen und die Datenregel
-stehen dann nur in der Steuerzentrale. Ohne Hauptanwendung bleibt die ganze Seite, im Assistenten ohne die Zeile
-„Chat“, in Mail ohne „Chat“ und ohne Datenregel (#545).
+„The one used last“) und „Open Torro Workplace“ („AI accounts and their models are set there for the whole
+suite.“); die Modell-Schalter der Konten stehen dann nur in der Steuerzentrale. Ohne Hauptanwendung bleibt die ganze
+Seite, im Assistenten ohne die Zeile „Chat“, in Mail ohne „Chat“ (#545). Seit #664 wählt die Steuerzentrale kein
+Modell mehr, und die Datenregel gibt es nirgends.
 
 Vorbild sind die Einstellungen von **TorroWhisper** (Aufbau, Seiten, Speichern) und
 **TorroMail** (Konten, Anbieter-Katalog, Einrichtungsassistent, Zugriff für KI-Clients). Beide
@@ -104,10 +125,10 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 | **Overview** | Auf einen Blick: Dienst läuft, Tiling-Manager erkannt, Konten (Zahl, Probleme), letzter Sync, „Needs your attention“ mit Konten, die eine neue Anmeldung brauchen | v1 |
 | **Apps** | App-Katalog (#411): jede App mit Icon, Frage, Beschreibung und Version, installierte oben, fehlende darunter; Installieren, Aktualisieren („Update all“, auch die Hauptanwendung) und Entfernen in einem eigenen Fenster mit Schritten und Fortschritt; Ein/Aus einer App im Menü „…“ ihrer Karte; per Paketmanager installierte Apps zeigen den Befehl. Siehe [einzelne-apps.md](einzelne-apps.md), „App-Katalog“ | #411 |
 | **Accounts** | Externe Konten in festen Gruppen (Nextcloud, Mail, GitHub, ntfy): Anbieter links, Konten rechts; Status, Verbindung und Dienste je Konto. | v1 |
-| **AI** | Ständiger Abschnitt für KI-Anbieter, ihre Konten und Modelle sowie die Datenregel „Mail to cloud models“. | seit 2026-10-20 |
-| **API** | Ob Programme die API mit eigenem Schlüssel nutzen dürfen; die Keys mit ihren Rechten bis auf einzelne Endpunkte. Konzept: [api.md](api.md) | #231 (S.35) |
-| **MCP clients** | Ob Agenten Torro über MCP nutzen dürfen (`--section mcp`); die verbundenen Clients (Claude Code, Codex …) mit ihren Rechten bis auf einzelne Tools und ihren Hooks für den Notification Hub | #231 (S.35) |
-| **MCP servers** | Was Torro für seine Clients ausführt (`--section connections`): die eingebauten Werkzeuge (PDF, mit der Unterseite „PDF templates“), der Katalog fremder MCP-Server und die eigenen Server; je Server eine Seite. Wer einen Server nutzen darf, steht im Rechte-Editor (MCP clients, API, Access) | #302 (MA.7–MA.9) |
+| **AI** | Ständiger Abschnitt für KI-Anbieter, ihre Konten und Modelle (an/aus). Bis #664 auch die Modelle für *Chat* und *Sorting* und die Datenregel „Mail to cloud models“. | seit 2026-10-20 |
+| **API clients** | Die Keys für Programme, die die API mit eigenem Schlüssel nutzen, mit ihren Rechten bis auf einzelne Endpunkte (`--section api`; bis #665 „API“ mit dem Schalter „Allow API keys“). Konzept: [api.md](api.md) | #231 (S.35), #665 |
+| **MCP clients** | Die verbundenen Clients (Claude Code, Codex …) mit ihren Rechten bis auf einzelne Tools und ihren Hooks für den Notification Hub (`--section mcp`; bis #665 mit dem Schalter „Allow MCP“) | #231 (S.35), #665 |
+| **MCP servers** | Was Torro für seine Clients ausführt, nur zum Einrichten (`--section connections`): die eingebauten Werkzeuge (PDF, mit der Unterseite „PDF templates“), der Katalog fremder MCP-Server und die eigenen Server; je Server eine Seite. Wer einen Server oder ein Werkzeug nutzen darf, regeln die Rechte der Clients (API clients, MCP clients; Assistent und Bots im Assistenten unter „API and MCP“, #666) | #302 (MA.7–MA.9), #666 |
 | **Approvals** | Was Agenten zur Freigabe vorlegen, und was entschieden wurde | v1 |
 | **Workspaces** | Fenstermanager, Tasten 1 … 0 mit wählbarem Modifikator, Vorlagen bearbeiten, aktualisieren, löschen, beim Anmelden laden. Strategie je Fenster später; die F1–F10 der alten App sind verworfen. Siehe [Workspaces (#243)](#workspaces-243) | #243 (WS.6), Rest später |
 | **Appearance** | Abstände (Komfort, Standard, Dicht), Schrift, Farben (Farbschema, hell/dunkel), Zoom ([design-pakete.md](design-pakete.md)); gilt für alle Apps, die Apps verweisen hierher | v1 |
@@ -116,11 +137,11 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 | **Diagnostics** | Log-Datei, Sync-Protokoll, Verbindung testen | später |
 | **Help** | Kurzanleitung, Tastenkürzel, Links | später |
 
-Die Seitenleiste hat **eine** Liste: Overview, Apps (#411), Accounts, AI, API, MCP clients, MCP servers (#302), Approvals, Workspaces,
+Die Seitenleiste hat **eine** Liste: Overview, Apps (#411), Accounts, AI, API clients (bis #665 „API“), MCP clients, MCP servers (#302), Approvals, Workspaces,
 Appearance; General am Fuß (#231). Die heutigen Seiten **Apps**, **Assistant** und **Notification Hub** entfallen (entschieden
 2026-10-16, #210): Apps geht in General auf, die Einstellungen von Assistent und Eingang ziehen in deren Fenster.
-Mit #231 ziehen die Rechte von Assistent und Bots in das Fenster des Assistenten. Die Datenregel steht
-seit 2026-10-20 unter AI; „Agents & API“ entfällt. Seit #411 gibt es wieder einen Abschnitt **Apps**, jetzt als App-Katalog gleich nach Overview; die Gruppe Apps unter General entfällt.
+Mit #231 ziehen die Rechte von Assistent und Bots in das Fenster des Assistenten. Die Datenregel stand
+seit 2026-10-20 unter AI und ist mit #664 entfallen; „Agents & API“ entfällt. Seit #411 gibt es wieder einen Abschnitt **Apps**, jetzt als App-Katalog gleich nach Overview; die Gruppe Apps unter General entfällt.
 
 ## Einstellungen in den Apps
 
@@ -188,7 +209,7 @@ Konto zählen nicht (#543).
 
 | App | Abschnitte | kommt heute von |
 |---|---|---|
-| **Assistant** | General (Status an/aus mit Verweis auf Access; neue Chats: Konto und Modell als Dropdowns, Denkstufe als Segmente, #547) · Profile (Profil mit Speicherleiste und Gedächtnis) · **Access** (seit #231: Rechte des Assistenten und je Bot, „Turn on assistant“, „Turn off assistant…“; seit #547 in Reitern Access · Selections · Bots, beim Bot Access · Selections) · Bots (Liste; je Bot „Edit“ öffnet den Bot-Editor, „Access“ öffnet Access beim Bot) · Tools (seit #302 nur ein Verweis auf MCP servers › Built-in tools) · Voice (Sprechen, Antworten vorlesen, Mikrofon als Dropdown, Programme auf diesem Rechner) · History (Unterhaltungen aufheben, als Segmente) · AI (#547: mit Hauptanwendung nur KI-Konten und Verweis) · API and MCP (#531: was Schlüssel und MCP-Clients mit Assistent und Bots dürfen) | Seite Assistant ohne Datenregel und „Engines“; Access aus Agents & API (#231) |
+| **Assistant** | General (Status an/aus mit Verweis auf Access; neue Chats: Konto und Modell als Dropdowns, Denkstufe als Segmente, #547) · Profile (Profil mit Speicherleiste und Gedächtnis) · **Access** (seit #231: Rechte des Assistenten und je Bot, „Turn on assistant“, „Turn off assistant…“; seit #547 in Reitern Access · Selections · Bots, beim Bot Access · Selections) · Bots (Liste; je Bot „Edit“ öffnet den Bot-Editor, „Access“ öffnet Access beim Bot) · Tools (seit #302 nur ein Verweis auf MCP servers › Built-in tools) · Voice (Sprechen, Antworten vorlesen, Mikrofon als Dropdown, Programme auf diesem Rechner) · History (Unterhaltungen aufheben, als Segmente) · AI (#547: mit Hauptanwendung nur KI-Konten und Verweis) · API and MCP (#531: was Schlüssel und MCP-Clients mit Assistent und Bots dürfen; #666: „Used by the assistant“, welche eingebauten Werkzeuge und MCP-Server Assistent und je Bot nutzen, Standard an; Access zeigt sie seitdem nicht mehr) | Seite Assistant ohne Datenregel und „Engines“; Access aus Agents & API (#231) |
 | **Calendar** | Calendars (welche die Suite zeigt, je Konto gruppiert; Art der Erinnerung je Kalender) · Reminders (an/aus, Vorlauf, alle Bildschirme, Ton, welche Termine) · Night (die Karte am Mond in der Zeitleiste bleibt als schneller Weg) · API and MCP (#531) | Kontodetail „Calendars and lists“; General › Calendar, › Reminders, › Which events, › Calendars |
 | **Tasks** | Lists (welche die Suite zeigt, je Konto gruppiert) · API and MCP (#531, Aufgaben und GitHub) | Kontodetail „Calendars and lists“ |
 | **Notification Hub** (Fensterarten Notification Hub und App Feed) | Notifications (still bei Terminen) · Sources (je Konto: Nextcloud-Benachrichtigungen und Talk, GitHub, je ntfy-Server stumm oder an, je Mail-Konto „Show new mail“; ab vier Gruppen Reiter je Anbieter Nextcloud · GitHub · Mail · ntfy, #546) · Rules (Liste mit „Remove“; vertraute Absender stehen nur unter Mail › Categorization › Spam und Phishing, #546) · API and MCP (#531) | Seite Notification Hub; Abschnitte „Notification Hub“ der Kontoseiten |
@@ -202,8 +223,9 @@ Seiten wie die Steuerzentrale
 zeigen je ihre Abschnitte: Notification Hub und App Feed die des Eingangs, das Mail-Fenster die von Mail.
 
 In der Steuerzentrale bleiben: Konten (Status, Verbindung, welche Dienste ein Konto liefert,
-Entfernen; KI-Konten mit Modellen und Datenregel, siehe [KI](#ki)), API und MCP (Programme von außen: Schlüssel
-anlegen, Clients verbinden und alle Rechte gesammelt; die Rechte eines Bereichs zeigt seit #531 auch die App),
+Entfernen; KI-Konten mit Modellen an/aus, siehe [KI](#ki)), API clients und MCP clients (Programme von außen:
+Schlüssel anlegen, Clients verbinden und alle Rechte gesammelt; die Rechte eines Bereichs zeigt seit #531 auch die
+App), MCP servers (einrichten, #666),
 Approvals, Workspaces, Appearance, General (Sprache, Start beim Anmelden), Apps (Katalog, Apps an/aus, #411). Die Kontodetailseiten
 werden dadurch kurz; wo eine Einstellung umzieht, steht dort eine Zeile, die zum neuen Ort führt
 („Calendars and lists are chosen in Calendar and Tasks.“) mit „Open“ je App.
@@ -371,14 +393,15 @@ agent“ verstand niemand als den Weg zu einem Modell. Aufgaben: S.23–S.26.
    des Moduls, in dessen Fenster ([Einstellungen in den Apps](#einstellungen-in-den-apps)), nicht in
    der Steuerzentrale.
 3. **Rechte stehen beim Weg, über den ein Programm kommt** (geändert mit #231; vorher „Rechte stehen zentral“,
-   #210). Programme von außen: Steuerzentrale › API (Skripte mit Key) bzw. › MCP clients (Agenten wie Claude Code).
-   Der eigene Assistent und seine Bots: im Fenster des Assistenten, Abschnitt Access. Alle nutzen denselben
-   Rechte-Editor. Fremde **MCP-Server** richtet man seit #302 unter MCP servers ein; wer sie nutzen darf, steuert
-man unter MCP clients, API bzw. Access, je Server mit einer Stufe.
+   #210). Programme von außen: Steuerzentrale › API clients (Skripte mit Key) bzw. › MCP clients (Agenten wie
+   Claude Code). Der eigene Assistent und seine Bots: im Fenster des Assistenten, Abschnitt Access, ihre
+   eingebauten Werkzeuge und MCP-Server seit #666 unter „API and MCP“. Alle nutzen denselben Rechte-Editor. Fremde
+   **MCP-Server** richtet man seit #302 unter MCP servers ein; wer sie nutzen darf, steuert man unter MCP clients
+   und API clients je Server mit einer Stufe, für Assistent und Bots im Assistenten (Standard erlaubt, #666).
 
 **KI-Konten stehen im eigenen Abschnitt AI** (seit 2026-10-20 direkt nach Accounts). Dort gibt es
-„+ Add“; intern sind es Konten wie bisher (`accounts.json`, Schlüssel im Schlüsselbund). Unter den
-Konten steht die Datenregel „Mail to cloud models“ (vorher in den Rechten des Assistenten).
+„+ Add“; intern sind es Konten wie bisher (`accounts.json`, Schlüssel im Schlüsselbund). Die Datenregel „Mail to
+cloud models“, die bis #664 unter den Konten stand (vorher in den Rechten des Assistenten), ist entfallen.
 
 - **Der Abschnitt „AI“:** eine Zeile je Anbieter mit Name, Adresse bzw. „Found on this computer“, Status
   (verbunden, Server aus, Schlüssel abgelehnt) und der Zahl angeschalteter Modelle. Reihenfolge Open
@@ -402,29 +425,26 @@ Konten steht die Datenregel „Mail to cloud models“ (vorher in den Rechten de
   kein Modul sie nutzen kann; ein Entscheidungsmodell (nimble) hat das Merkmal „Decides“ und einen Schalter, weil
   die Mail-Sortierung es braucht (#231).
   OpenRouter: Suche und „Show closed models“, weil es Hunderte sind. Ganz unten „Remove account…“.
-- **Modelle je Platz** (#325, [ki.md](ki.md), Abschnitte „Plätze“ und „Erlaubnis je Platz“): Unter AI steht die
-  Gruppe **„Models“** mit zwei Zeilen, *Chat* und *Sorting*. Die Einstellung `aiSlots` hält je Platz `chat` bzw.
-  `decide` mit `engine`, `model` und `effort`; gesetzt wird sie mit `ai.set_slot`. Jede Zeile zeigt das gewählte
-  Modell und darunter den Vorschlag der Suite für diesen Rechner mit „Use suggestion“ (`ai.recommend`, Herunterladen
-  in Ollama mit Fortschritt und „Cancel“). Leer heißt der Platz *Chat* „The one used last“ wie in Assistant › General
-  (der Assistent nimmt dann das zuletzt benutzte Modell), *Sorting* „None“. *Chat* wählt in einer Auswahlliste,
-  *Sorting* in einem Knopf mit Menü in Abschnitten (#421), weil die Liste keine Überschriften zeigen kann: oben ohne
-  Titel „None“ und ein gewähltes Modell, das die Listen nicht führen, dann „Decision models (fast)“, dann „Other
-  models“ (Chat-Modelle über den Ersatzweg); ein leerer Abschnitt entfällt, Escape oder ein Klick daneben schließt
-  es. Der Satz unter der Gruppe sagt, dass Entscheidungsmodelle direkt antworten und viel schneller einordnen als
-  Chat-Modelle. Ist schmaler als ein Formular, steht das
-  Bedienelement jeder Zeile unter ihrem Text, damit nichts abgeschnitten wird. Ein Modell für Sorting nimmt vorher eine gespeicherte Ausnahme
-  `inbox.categorize` zurück (`ai.set_assignment` mit `engine: null`), damit der
-  Platz sortiert. Unter „Data rule“ steht nur die Erlaubnis des Chats, `mailToCloud` („Chat may read mail outside this
-  computer“). Die für Sorting, `decideMailToCloud`, hat keinen eigenen Schalter (#424): Das Menü von Sorting zeigt nach
-  „Other models“ den Abschnitt „Elsewhere“, jede Zeile mit Wolke; ein Modell dort
-  fragt vorher („Send mail outside this computer?“, „Cancel“/„Use“, auch „Use suggestion“ für ein Modell anderswo), und
-  erst „Use“ setzt Modell und Erlaubnis. Ein Modell hier oder „None“ nimmt sie zurück. Steht ein Modell in der
-  Cloud im Platz und die Erlaubnis ist aus, sagt die Zeile unter Sorting „Waiting for your OK – mail stays here“.
-- **Im Mail-Fenster** (#545) zeigt AI nur den Platz *Sorting* und keine Datenregel, auch ohne Hauptanwendung: Der
-  Chat gehört zum Assistenten, die Datenregel zur Suite, und ohne Assistent gibt es in Mail keinen Chat, für den sie
-  gälte. Das Sortiermodell wählt man nur hier; Mail › Categorization, Reiter AI, zeigt es als Zeile „Sort with model“
-  mit ↗, die hierher führt.
+- **Modelle je Platz** (#325, [ki.md](ki.md), Abschnitte „Plätze“ und „Modell anderswo“): Die Einstellung `aiSlots`
+  hält je Platz `chat` bzw. `decide` mit `engine`, `model` und `effort`; gesetzt wird sie mit `ai.set_slot`. Seit #664
+  wählt man einen Platz nur in der App, die ihn nutzt: *Chat* im Assistenten unter General, *Sorting* im Mail-Fenster
+  unter AI. Die Gruppe **„Models“** unter Steuerzentrale › AI und die Gruppe „Data rule“ („Chat may read mail outside
+  this computer“, `mailToCloud`) gibt es nicht mehr. Die Zeile *Sorting* zeigt das gewählte Modell und darunter den
+  Vorschlag der Suite für diesen Rechner mit „Use suggestion“ (`ai.recommend`, Herunterladen in Ollama mit
+  Fortschritt und „Cancel“); leer heißt sie „None“. Sie wählt in einem Knopf mit Menü in Abschnitten (#421), weil
+  die Liste keine Überschriften zeigen kann: oben ohne Titel „None“ und ein gewähltes Modell, das die Listen nicht
+  führen, dann „Decision models (fast)“, dann „Other models“ (Chat-Modelle über den Ersatzweg), dann „Elsewhere“
+  mit Wolke an jeder Zeile; ein leerer Abschnitt entfällt, Escape oder ein Klick daneben schließt es. Der Satz unter
+  der Gruppe sagt, dass Entscheidungsmodelle direkt antworten und viel schneller einordnen als Chat-Modelle. Ist
+  schmaler als ein Formular, steht das Bedienelement unter dem Text, damit nichts abgeschnitten wird. Ein Modell für
+  Sorting nimmt vorher eine gespeicherte Ausnahme `inbox.categorize` zurück (`ai.set_assignment` mit
+  `engine: null`), damit der Platz sortiert. Ein Modell anderswo wählt man seit #664 ohne Rückfrage; vorher fragte
+  „Send mail outside this computer?“ und setzte die Erlaubnis `decideMailToCloud` mit, und ohne sie stand „Waiting
+  for your OK – mail stays here“ unter Sorting. Rechnet das Modell, das sortiert, anderswo, sagt die Gruppe, wohin
+  Mail geht („Mail goes to {provider} ({seat}) for sorting only.“).
+- **Im Mail-Fenster** (#545) zeigt AI nur den Platz *Sorting*, auch ohne Hauptanwendung: Der Chat gehört zum
+  Assistenten, und ohne Assistent gibt es in Mail keinen Chat. Das Sortiermodell wählt man nur hier; Mail ›
+  Categorization, Reiter AI, zeigt es als Zeile „Sort with model“ mit ↗, die hierher führt.
 - **Was angeschaltet ist, gilt überall:** Die Auswahlen der Module (Assistent › New chats, die Auswahl
   pro Chat, der Bot-Editor, später die KI-Funktionen der Inbox) bieten nur angeschaltete Modelle an.
   Ist keins an, sagen sie es in einem Satz mit „Turn on models in Settings › AI“.
@@ -435,23 +455,22 @@ Konten steht die Datenregel „Mail to cloud models“ (vorher in den Rechten de
   nutzt (gespeicherter Standard, ein Bot, eine Zuordnung wie die Mail-Sortierung), ist an; steht das Modul auf
   „Automatic“, bleibt das Modell an, das „Automatic“ dort vorher gewählt hätte. Neue Modelle, die hier rechnen, kommen an dazu,
   solange der Mensch an diesem Anbieter noch nichts ausgeschaltet hat.
-- **Ein Modell anschalten, das anderswo rechnet, kann nur ein Mensch** (wie der Schalter
-  `mail_to_cloud`, [api.md](api.md) Punkt 6). Abschalten dürfen auch Agenten, mit Freigabe.
+- **Ein Modell anschalten, das anderswo rechnet, kann nur ein Mensch** ([api.md](api.md) Punkt 6; die Schutzregel
+  aus #663). Abschalten dürfen auch Agenten, mit Freigabe.
 - **Ein abgeschaltetes Modell, das ein Modul noch nutzt** (Standard neuer Chats, ein Bot, die Wahl in
   einer Unterhaltung): Das Modul zeigt es weiter mit dem Hinweis „Turned off in Settings › AI“ und
   nimmt für neue Antworten „Automatic“ unter den angeschalteten Modellen **desselben Anbieters**, bis
-  jemand ein anderes wählt; erst danach bestimmt der Kern den Ort und wendet die Datenregel an.
+  jemand ein anderes wählt; erst danach bestimmt der Kern den Ort.
   Laufende Antworten laufen zu Ende. Ist bei diesem Anbieter gar nichts mehr an, antwortet das Modul
   nicht mit einem anderen Anbieter, sondern sagt es: „Turn on a model of {provider} in Settings › AI.“
 - **Nur Loopback ist hier** (#359, #334): Ollama, LM Studio und Strata im LAN (auch auf eigenen Geräten)
   stehen als „Outside this computer“, nicht als „Ollama Cloud“. Nur `localhost`, `*.localhost`, `127/8`
   und `::1` können zusammen mit den Modellangaben „On this computer“ ergeben. Neue LAN-Modelle starten aus;
-  gespeicherte Schalter und Mail-Erlaubnisse bleiben erhalten. LAN-„Automatic“ darf mit Sortiererlaubnis
-  auch Cloud-Modelle desselben Kontos wählen, auf Loopback bleibt Automatic lokal. Jede neue Auswahl
-  anderswo fragt vor dem Setzen nach, auch in der Einrichtung und bei vorhandener Erlaubnis. „Cancel“
-  ändert nichts; „Continue“ ersetzt kein „Use“.
+  gespeicherte Schalter bleiben erhalten. LAN-„Automatic“ darf auch Cloud-Modelle desselben Kontos wählen, auf
+  Loopback bleibt Automatic lokal. Bis #664 fragte jede neue Auswahl anderswo vor dem Setzen nach, auch in der
+  Einrichtung; seitdem nicht mehr.
 - **Ollama Cloud:** Modelle mit dem Zusatz `:cloud` laufen über das lokale Ollama auf `ollama.com` und
-  gelten für die Datenregel als **entfernt** ([ki.md](ki.md), Grundsatz 4; umgesetzt mit S.23). Ein
+  gelten als **entfernt** ([ki.md](ki.md), Grundsatz 4; umgesetzt mit S.23). Ein
   eigener Anbieter „Ollama Cloud“ (direkt mit API-Schlüssel) kommt erst, wenn jemand ihn ohne lokales
   Ollama braucht.
 
@@ -474,15 +493,16 @@ aus TorroMail; unter „Agents & API“ standen Assistent, Bots, Coding-Agenten,
 Modelle eines KI-Kontos ließen sich nirgends an- und abschalten. Aufgaben: S.24, S.26, S.30–S.35 in
 [tasks/steuerzentrale.md](tasks/steuerzentrale.md).
 
-**Die Ordnung:** Accounts und AI für Dienste, API und MCP für Zugriffe auf die Suite.
+**Die Ordnung:** Accounts und AI für Dienste, API clients und MCP clients für Zugriffe auf die Suite, MCP servers für
+Werkzeuge. Alle fünf richten ein; was eine App selbst nutzt, regelt sie (#663, siehe [Die Regel](#die-regel)).
 
 | Abschnitt | Richtung | Was man dort tut |
 |---|---|---|
 | **Accounts** | Torro nutzt Dienste von außen | Nicht-KI-Konten hinzufügen, prüfen und entfernen |
-| **AI** | Die Suite ruft KI-Modelle | KI-Anbieter hinzufügen, Modelle an/aus, Datenregel ändern |
-| **API** | Programme nutzen Torro mit Key | API an/aus, Keys anlegen, je Key die Rechte bis auf einzelne Endpunkte |
-| **MCP clients** | Agenten nutzen Torro über MCP | MCP an/aus, Clients verbinden, je Client die Rechte bis auf einzelne Tools, Hooks |
-| **MCP servers** | Torro nutzt Werkzeuge für seine Clients | eingebaute Werkzeuge, Katalog und eigene MCP-Server; je Server eine Seite (#302) |
+| **AI** | Die Suite ruft KI-Modelle | KI-Anbieter hinzufügen, Modelle an/aus (bis #664 auch die Datenregel) |
+| **API clients** | Programme nutzen Torro mit Key | Keys anlegen, je Key die Rechte bis auf einzelne Endpunkte (bis #665 „API“ mit Schalter an/aus) |
+| **MCP clients** | Agenten nutzen Torro über MCP | Clients verbinden, je Client die Rechte bis auf einzelne Tools, Hooks (bis #665 mit Schalter an/aus) |
+| **MCP servers** | Torro nutzt Werkzeuge für seine Clients | eingebaute Werkzeuge, Katalog und eigene MCP-Server einrichten; je Server eine Seite (#302). Wer sie nutzt, regeln die Rechte der Clients (#666) |
 
 ### Accounts
 
@@ -505,15 +525,16 @@ Modelle eines KI-Kontos ließen sich nirgends an- und abschalten. Aufgaben: S.24
   nur, wenn TorroMail Konten hat, die die Suite übernehmen kann und noch nicht hat. Der Knopf öffnet denselben
   Dialog bei einem eigenen Schritt „TorroMail“, der nur die Liste zum Übernehmen zeigt (wie bisher oben im
   Katalog). Die Einrichtung beim ersten Start („Take over from TorroMail“) öffnet denselben Schritt.
-- **KI-Konten:** eigener Abschnitt „AI“ und Kontoseite mit „Models“, siehe [KI](#ki). Unter den KI-Konten steht die Datenregel.
+- **KI-Konten:** eigener Abschnitt „AI“ und Kontoseite mit „Models“, siehe [KI](#ki).
 
-### API
+### API clients
 
-- Gruppe **„API“:** Schalter **„Allow API keys“** (Standard an). Aus: Der Kern weist jeden Key der Art `script`
-  ab (`unauthorized` mit dem Satz, dass die API in Torro Workplace ausgeschaltet ist). Später hier HTTP auf
-  `127.0.0.1` mit Port (A.10).
+Bis #665 hieß der Abschnitt „API“; `--section api` bleibt.
+
+- **Kein Schalter vor den Keys** (#665): Die Gruppe „API“ mit **„Allow API keys“** ist entfallen. Ein Key wirkt,
+  sobald ein Mensch ihn angelegt hat, und nur über die API. Später hier HTTP auf `127.0.0.1` mit Port (A.10).
 - Gruppe **„Keys“:** eine Zeile je Key (Name, Rechte in Worten, zuletzt benutzt), „Create key“ in der
-  Kopfleiste. „Create key“ fragt Name und Vorlage (Read only, Read and write, Full access) und zeigt den Key
+  Kopfleiste; darunter der Satz, dass Programme Torro Workplace nur auf diesem Rechner erreichen. „Create key“ fragt Name und Vorlage (Read only, Read and write, Full access) und zeigt den Key
   einmal mit „Copy“ (der bisherige Weg „Script“ des Agent-Dialogs).
 - **Seite eines Keys:** der Rechte-Editor (unten) mit den Endpunkten (`calendar.list_events`), die letzten
   Aufrufe, „Create new key“, „Revoke…“.
@@ -522,9 +543,9 @@ Modelle eines KI-Kontos ließen sich nirgends an- und abschalten. Aufgaben: S.24
 
 Bis zur Nacharbeit von #302 hieß der Abschnitt „MCP“; `--section mcp` bleibt.
 
-- Gruppe **„MCP server“:** Schalter **„Allow MCP“** (Standard an). Aus: Der Kern weist jeden Aufruf eines
-  MCP-Clients ab, auch die seiner Hooks. Darunter die Befehlszeile zum Kopieren für Clients, die man von Hand
-  einrichtet (`torroworkplace mcp` mit `TORRO_TOKEN`).
+- Gruppe **„Torro's MCP server“:** die Befehlszeile zum Kopieren für Clients, die man von Hand einrichtet
+  (`torroworkplace mcp` mit `TORRO_TOKEN`). Der Schalter **„Allow MCP“** davor ist mit #665 entfallen: Ein Client
+  wirkt, sobald ein Mensch ihn verbunden hat.
 - Gruppe **„Connected clients“:** eine Zeile je Client (Claude Code, Codex, Gemini CLI, Claude Desktop,
   Cursor, OpenCode, Open WebUI, Zed, Cline, Continue, Cherry Studio, LibreChat, „Other MCP client“), „Connect client“ in der Kopfleiste: der Agent-Dialog ohne „Script“,
   dafür mit „Other MCP client“ (Name, Key einmal zum Kopieren samt Befehlszeile).
@@ -614,11 +635,12 @@ nach „‹“; ein automatisch gewählter ebenso, bis die Person den Abschnitt 
 - **Allowed folders** (#304): die Ordner, in denen Werkzeuge mit Dateien arbeiten, je „Read“ oder „Read and write“,
   „Add folder…“ und „Remove“; nur ein Mensch ändert die Liste.
 - **Built-in tools:** die eigenen Werkzeuge der Suite, heute Files, PDF und Web; „Organize files“ zeigt, solange kein
-  Ordner freigegeben ist, „No allowed folders“ mit „Add folder…“. Schalter „Make PDFs“ (`tool_enabled`;
-  einschalten nur ein Mensch), Ablage-Ordner und die Unterseite **„PDF templates“** mit den Vorlagen Letter, Report und
-  Note; Schalter „Search the web“ und die Unterseite **„Search providers“** (#305): je Anbieter Schalter, Schlüssel und
-  bei SearXNG die Adresse, dieselbe Ansicht wie im Einrichtungsschritt „Web search“.
-  Wer ein Werkzeug nutzen darf, steht bei den Clients (Access, API, MCP clients), nicht hier.
+  Ordner freigegeben ist, „No allowed folders“ mit „Add folder…“. Beim PDF der Ablage-Ordner und die Unterseite
+  **„PDF templates“** mit den Vorlagen Letter, Report und Note; bei Web die Unterseite **„Search providers“** (#305):
+  je Anbieter Schalter, Schlüssel und bei SearXNG die Adresse, dieselbe Ansicht wie im Einrichtungsschritt „Web
+  search“. Seit #666 sind die Werkzeuge immer da: Die Schalter „Make PDFs“, „Organize files“ und „Search the web“
+  (`tool_enabled`) und die Zeilen, ob der Assistent ein Werkzeug nutzen darf, sind entfallen. Der Fußtext sagt: „Who
+  may use a tool is set by the rights of each client. Only you can choose the folder and the logos.“
 - **Catalog:** die eingebauten fremden MCP-Server (Time, Sequential Thinking, GitHub, seit #303 WordCraft, DeckCraft,
   GridCraft und PdfCraft) mit Name, Herausgeber, Lizenz, „Experimental“ und, was fehlt (etwa Node.js, Docker oder
   `wordcraft-cli`); bei Programmen, die die Person selbst installiert, „tested with version …“. „Install…“ öffnet einen Dialog mit den Werkzeugen und
@@ -638,16 +660,16 @@ Ein Server, der mit Dateien arbeitet (#303, ArtCraft), hat im Reiter Overview di
 freigegebene Ordner (mit Achtungspunkt, wenn er gerade nicht nutzbar ist) oder „No folder chosen“, „Choose…“ mit den
 freigegebenen Ordnern und „None“ (`extensions.set_folder`, nur Menschen, MCP Never), ohne freigegebene Ordner „Add
 folder…“; gesperrte Werkzeuge stehen als „Blocked by Torro“.
-Wer den Server nutzen darf, sagt der Hinweis „Who may use it: API, MCP clients and the assistant's Access“; die Stufe je
-Server setzt der Rechte-Editor. Die Seitenleiste markiert den Abschnitt, wenn ein Server auf Zustimmung wartet oder
-nach Fehlern steht.
+Wer den Server nutzen darf, setzt der Rechte-Editor der Clients (API clients, MCP clients; Assistent und Bots im
+Assistenten unter „API and MCP“); den Hinweis „Who may use it“ gibt es seit #666 nicht mehr. Die Seitenleiste markiert
+den Abschnitt, wenn ein Server auf Zustimmung wartet oder nach Fehlern steht.
 
 Die Abweichungen von den Festlegungen (Geheimnisse beim Update, Sichtbarkeit fremder Schlüssel, Hooks ohne Server)
 stehen in [erweiterungen.md](erweiterungen.md#mcp-server-302).
 
 ### Der Rechte-Editor
 
-Ein Editor für API, MCP clients und Access (Assistent, Bots), in `torro-settings-ui`, damit Steuerzentrale und
+Ein Editor für API clients, MCP clients und Access (Assistent, Bots), in `torro-settings-ui`, damit Steuerzentrale und
 Assistent-Fenster denselben nutzen. Seit #531 zeigt jede App unter API and MCP denselben Editor nur für ihre Bereiche
 (`rights::groups_in`): Stufe, Admin-Schalter, Befehle und Auswahl dieser Bereiche, ohne MCP-Server und ohne „Ask
 first“ (das gilt für alle Bereiche des Clients und bleibt in der Steuerzentrale). Die App speichert jede Änderung
@@ -670,9 +692,18 @@ sofort, immer nur eine zur Zeit, weil sie ihre Einstellungen ohne Abschied schli
   „Recently contacted“ stehen getrennt in „Hidden address books“: nie vorgewählt, nie Teil von „All“, jedes
   einzeln anzuhaken (`Rights.address_books`, `Rights.hidden_address_books`). Die Kontoseite eines Nextcloud-Kontos
   zeigt unter „Contacts“ nur die Zahl der Adressbücher und wie viele ausgeblendet sind.
-- Wie bisher: Auswahl der Kalender, Listen, Repositories, Inbox-Quellen, Mail-Konten und eigenen Werkzeuge des
-  Assistenten (#225; ein Werkzeug, das in den Einstellungen des Assistenten aus ist, trägt ein Warnzeichen),
-  „Ask first“, „Send on my behalf“. Gespeichert wird automatisch nach 500 ms mit `clients.update_client` (die ganzen Rechte).
+- Wie bisher: Auswahl der Kalender, Listen, Repositories, Inbox-Quellen, Mail-Konten und eingebauten Werkzeuge
+  (#225; das Warnzeichen für ein ausgeschaltetes Werkzeug entfiel mit #666), „Ask first“, „Send on my behalf“.
+  Gespeichert wird automatisch nach 500 ms mit `clients.update_client` (die ganzen Rechte).
+- **Was Assistent und Bots nutzen (#666):** Für sie zeigt der Editor eingebaute Werkzeuge und MCP-Server nicht unter
+  Access, sondern im Assistenten unter „API and MCP“ › **„Used by the assistant“**, mit einem Auswahlfeld
+  (Assistant, je Bot; jeder hat eigene Rechte). Je eingebautem Werkzeug ein Schalter (seine Stelle in der Auswahl
+  `tools`; Ausschalten macht aus „alle“ die Liste ohne dieses Werkzeug), je MCP-Server ein Schalter (aus heißt ein
+  Eintrag „No access“, an nimmt ihn heraus) und je Eintrag „Show commands“ über die Sperrliste. Der Hinweis sagt:
+  „New tools and servers are allowed until you switch them off here.“ Grund: Assistent und Bots starten offen
+  (`Rights::opened`: jedes Werkzeug, auch `web`, und jeder Server mit voller Stufe über `extensionsDefault`); ältere
+  Clients von Assistent und Bots öffnet der Kern einmal beim Laden so. Schlüssel von API- und MCP-Clients bleiben
+  geschlossen: Ein Server öffnet sich für sie nur mit Namen.
 
 ### Assistent und Bots
 
@@ -691,21 +722,23 @@ sofort, immer nur eine zur Zeit, weil sie ihre Einstellungen ohne Abschied schli
 ### Schalter und Wege im Kern
 
 - Jeder Aufruf trägt im Umschlag, über welchen Weg er kommt (`via`: `api` oder `mcp`, ohne Angabe `api`);
-  `torroworkplace mcp` und der Hook-Befehl `torroworkplace hook` setzen `mcp`. Der Kern prüft nach dem Key:
-  - Key der Art `script`: nur mit „Allow API keys“, und nur über `api`.
-  - Key eines MCP-Clients (auch OpenCode, Open WebUI, Zed, Cline, Continue, Cherry Studio, LibreChat): nur mit
-    „Allow MCP“, und nur über `mcp`.
-  - Key der Art `hook`: nur mit „Allow MCP“ (er gehört zu einem Agenten), über beide Wege. Der Hook-Befehl
-    `torroworkplace hook` meldet sich als `mcp`, weil er ohne Schlüsseldatei `TORRO_TOKEN` nimmt, das der Key des
-    Agenten sein kann.
-  - Die Arten `assistant` und `bot` (auch ihre geliehenen Keys) hängen an keinem der beiden Schalter: Sie sind die
-    Suite selbst.
+  `torroworkplace mcp` und der Hook-Befehl `torroworkplace hook` setzen `mcp`. Der Kern prüft nach dem Key nur noch
+  den Weg (`clients::closed_door`); die Schalter „Allow API keys“ und „Allow MCP“ sind mit #665 entfallen:
+  - Key der Art `script`: nur über `api`.
+  - Key eines MCP-Clients (auch OpenCode, Open WebUI, Zed, Cline, Continue, Cherry Studio, LibreChat): nur über
+    `mcp`.
+  - Key der Art `hook`: über beide Wege (er gehört zu einem Agenten). Der Hook-Befehl `torroworkplace hook` meldet
+    sich als `mcp`, weil er ohne Schlüsseldatei `TORRO_TOKEN` nimmt, das der Key des Agenten sein kann.
+  - Die Arten `assistant` und `bot` mit einem geliehenen Key: über beide Wege, sie sind die Suite selbst. Ihr eigener,
+    gespeicherter Key aus einer früheren Version gilt wie der eines MCP-Clients.
   - Jede andere Art wird wie `script` geprüft; neue Clients gibt es nur in den genannten Arten.
 - **Ehrlich festgehalten:** Der Weg im Umschlag ist eine Angabe des Programms, keine Prüfung. Er schützt vor
   Fehlbedienung (ein Agent-Key in einem Skript), nicht vor bösartigem Code unter demselben Benutzer – wie die
   Keys selbst ([api.md](api.md), „Was der Schlüssel schützt“).
-- **Einschalten nur durch Menschen:** „Allow API keys“ und „Allow MCP“ einschalten bekommt von jedem Client
-  `forbidden` (wie `mail_to_cloud`, [api.md](api.md) Punkt 6); ausschalten ist eine gewöhnliche Admin-Änderung.
+- **Kein Schalter mehr (#665):** Bis dahin bekam das Einschalten von „Allow API keys“ und „Allow MCP“
+  (`allow_api_keys`, `allow_mcp`) von jedem Client `forbidden`. Ohne Key bzw. verbundenen Client kommt ohnehin niemand
+  hinein; der Schalter war eine weitere Stelle, an der etwas still blockierte. Alte Einstellungsdateien laden weiter,
+  die Felder werden ignoriert.
 
 ### Was wohin zieht
 
@@ -715,11 +748,11 @@ sofort, immer nur eine zur Zeit, weil sie ihre Einstellungen ohne Abschied schli
 | Katalog › „Use accounts from TorroMail?“ | Mail › „Import from TorroMail…“ |
 | Gruppe CalDAV | Gruppe Mail |
 | geplanter Abschnitt „AI“ (S.25) | Kontoseite des KI-Kontos › Models (S.31) |
-| Rechte des Assistenten › „Mail to cloud models“ | Accounts › unter der Gruppe AI |
+| Rechte des Assistenten › „Mail to cloud models“ | Accounts › unter der Gruppe AI; mit #664 entfallen |
 | Agents & API › Agents | MCP clients › Connected clients |
-| Agents & API › Scripts | API › Keys |
+| Agents & API › Scripts | API › Keys (seit #665 API clients › Keys) |
 | Agents & API › Hooks | MCP clients › Seite des Agenten › Notification Hub |
-| Assistent › Tools (Schalter, Ablage, Vorlagen PDF) | MCP servers › Built-in tools, Vorlagen unter „PDF templates“ (#302) |
+| Assistent › Tools (Schalter, Ablage, Vorlagen PDF) | MCP servers › Built-in tools, Vorlagen unter „PDF templates“ (#302); die Schalter entfielen mit #666 |
 | Assistent › Tools › Web (Anbieter der Websuche, #305) | MCP servers › Built-in tools › „Search providers“ (beim Merge von #302) |
 | Assistent › Tools › Allowed folders, Organize files (#304) | MCP servers › „Allowed folders“ und Built-in tools (beim Merge von #302) |
 | – (neu mit #302) | MCP servers › Catalog und Your own servers; `--section connections` |
@@ -742,6 +775,8 @@ sofort, immer nur eine zur Zeit, weil sie ihre Einstellungen ohne Abschied schli
 6. **Hooks gehören zum Agenten.** Verworfen: eigener Abschnitt oder eigene Einstellungen in den Apps.
 7. **Weg im Umschlag, Schalter für API und MCP.** Verworfen: keine Schalter (dann ließe sich die API nicht
    abschalten) und eine echte Trennung über getrennte Sockets (Aufwand ohne Schutz gegen denselben Benutzer).
+   **Überholt durch #665** für die Schalter: Ohne Key oder verbundenen Client kommt niemand hinein; abschalten heißt
+   Key widerrufen oder Client trennen. Der Weg im Umschlag bleibt.
 
 ## Workspaces (#243)
 
@@ -934,7 +969,7 @@ Approval, bis zu fünf Auswahlgruppen, Voice, Microphone, Programs on this compu
 | New chats (The one used last, Engine), Model, Effort | womit ein neuer Chat beginnt | Assistant › New chats, Model, Effort; Einrichtung › AI › Use for (nur Engine) | `aiSlots.chat` (Platz Chat; `assistantDefault` nur noch Übernahme) | `ai.set_slot chat`; `set_setting assistant_default` als Alias | Assistent | bleibt, Assistent |
 | Engines (Zeile je KI-Konto) | nur Anzeige, führt zu Accounts | Assistant › Engines | – | `assistant.list_engines` | – | streichen, ersetzt durch Verweis auf AI |
 | What the assistant may use (Stufe je Bereich), Approval (Ask first), Auswahl (All/Selected je Kalender, Liste, Repo, Quelle, Mail-Konto), Send on my behalf, Admin-Schalter | Rechte des Assistenten | Assistant › Rechte-Gruppen (`agents::rights_groups`) | `clients.json` | `clients.update_client`, MCP bewusst nie | Assistent | umziehen nach Agents & API |
-| Mail to cloud models | Datenregel für Mail, **gilt für die ganze Suite**; je Platz: `mailToCloud` für Chat, `decideMailToCloud` für Sorting (#325; seit #424 die Wahl eines Modells in der Cloud mit Rückfrage, kein Schalter) | Assistant; jede Bot-Seite; AI › Data rule (nur Chat, nicht im Mail-Fenster, #545); AI › Sorting (Mail › Categorization verweist dorthin, #545) | `mailToCloud`, `decideMailToCloud` | `set_setting mail_to_cloud`, `set_setting decide_mail_to_cloud` (anschalten nur Menschen) | alle KI-Nutzer | umziehen nach AI, ein Ort |
+| Mail to cloud models | Datenregel für Mail, **gilt für die ganze Suite**; je Platz: `mailToCloud` für Chat, `decideMailToCloud` für Sorting (#325; seit #424 die Wahl eines Modells in der Cloud mit Rückfrage, kein Schalter) | Assistant; jede Bot-Seite; AI › Data rule (nur Chat, nicht im Mail-Fenster, #545); AI › Sorting (Mail › Categorization verweist dorthin, #545) | `mailToCloud`, `decideMailToCloud` | `set_setting mail_to_cloud`, `set_setting decide_mail_to_cloud` (anschalten nur Menschen) | alle KI-Nutzer | umziehen nach AI, ein Ort; mit #664 entfallen |
 | Profile: Name, Description, Picture, Personality | wer der Assistent ist und wie er spricht | Assistant › Profile (Unterseite) | `<config>/assistant/profile.json`, `persona.md` | `assistant.update_profile` | Assistent | bleibt, Assistent |
 | Memory: Add note, Edit, Forget | Gedächtnis | Assistant › Profile › Memory | `memory.md` | `assistant.remember`, `assistant.forget` | Assistent | bleibt, Assistent |
 | Bots (Zeile je Bot) › What the bot may use … | Rechte eines Bots | Assistant › Bots › Bot; Assistent-App › Bot-Editor › Access (nur Stufen und Ask first) | `clients.json` | `clients.update_client`, MCP bewusst nie | Assistent | umziehen nach Agents & API; der Bot-Editor verweist dorthin |
@@ -945,12 +980,12 @@ Approval, bis zu fünf Auswahlgruppen, Voice, Microphone, Programs on this compu
 | – (Sprachmodell, Stimme) | whisper- und Piper-Datei | keine Oberfläche, erste im Ordner | `voice.sttModel`, `voice.voice` | `set_setting stt_model`, `set_setting voice` | Assistent | bleibt ohne Oberfläche, bis es mehr als eine Datei gibt |
 | Test the microphone, Check again | Prüfen (Aktion) | Assistant › Voice, Programs | – | `settings.test_voice` (nie), `settings.voice_status` | – | bleibt als Aktion |
 | Keep conversations (30, 90 Tage, 1 Jahr, Forever) | wie lange Unterhaltungen bleiben | Assistant › Keep conversations | `assistantRetention` | `set_setting assistant_retention` | Assistent | bleibt, Assistent |
-| Make PDFs, Organize files (Schalter je Werkzeug) | ob es ein eigenes Werkzeug auf diesem Rechner gibt, für jeden Client (#225, #304) | MCP servers › Built-in tools (seit #302; vorher Assistent › Tools, WZ.6) | `tools.enabled` | `set_setting tool_enabled` (an nur Menschen, Punkt 9); Liste `tools.list_tools` | Assistent | Assistent |
+| Make PDFs, Organize files (Schalter je Werkzeug) | ob es ein eigenes Werkzeug auf diesem Rechner gibt, für jeden Client (#225, #304) | MCP servers › Built-in tools (seit #302; vorher Assistent › Tools, WZ.6) | `tools.enabled` | `set_setting tool_enabled` (an nur Menschen, Punkt 9); Liste `tools.list_tools` | Assistent | Assistent; mit #666 entfallen, die Werkzeuge sind immer da |
 | Folder (Choose…, Use desktop) | wohin neue PDFs gehen, sonst Schreibtisch | MCP servers › Built-in tools | `tools.pdf.folder` | `set_setting pdf_folder` (setzen nur Menschen, `null` jeder mit Admin) | Assistent | Assistent; Dialog des Systems in der App |
 | Folder eines MCP-Servers (Choose…, None) | in welchem freigegebenen Ordner eine ArtCraft-App arbeitet (#303) | MCP servers › Seite des Servers › Folder | `extensions.json`, `folder` des Servers | `extensions.set_folder` (Admin, nur App-Schlüssel, MCP Never, Punkt 10) | ArtCraft-Apps | Assistent, Agenten |
 | Allowed folders (Add folder…, Read / Read and write, Remove) | in welchen Ordnern Werkzeuge mit Dateien arbeiten dürfen (Files, ArtCraft) und wie weit (#304) | MCP servers › Allowed folders, eine Gruppe vor Built-in tools (WD.4, seit #302 dort) | `tools.folders` | `set_setting allowed_folder` (`{"path", "access"}`, `null` entfernt; nur Menschen, auch das Entfernen, Punkt 9) | Werkzeuge mit Dateien | Assistent; Dialog des Systems in der App, neu zuerst „Read“ |
 | Vorlagen Letter, Report, Note: Paper, Margins, Font size, Header, Footer, Page numbers, Logo | wie eine PDF gesetzt wird | MCP servers › Built-in tools › PDF templates | `tools.pdf.letter`, `.report`, `.note` | `set_setting pdf_template` (ganze Vorlage; Logo setzen nur Menschen) | Assistent | Assistent; jede Änderung schickt die ganze Vorlage |
-| Welche Werkzeuge ein Client darf | Rechte, Bereich `tools` mit Auswahl | Agents & API (WZ.7) | `clients.json` | `clients.update_client`, MCP bewusst nie | alle Clients | Rechte-Editor (seit #231: Assistent › Access, API, MCP clients); Tools zeigt es nur an |
+| Welche Werkzeuge ein Client darf | Rechte, Bereich `tools` mit Auswahl | Agents & API (WZ.7) | `clients.json` | `clients.update_client`, MCP bewusst nie | alle Clients | Rechte-Editor (seit #231: Assistent › Access, API, MCP clients; seit #666 für Assistent und Bots Assistent › API and MCP); Tools zeigt es nur an |
 | Websuche-Anbieter (Schalter je Anbieter: SearXNG, Brave, Tavily, Exa, Mojeek, DuckDuckGo, Wikipedia) | an welche Dienste die Suchwörter des Werkzeugs `web` gehen, in fester Reihenfolge (#305) | neu: MCP servers › Built-in tools › Web (WEB.6, seit #302 dort), Einrichtung „Web search“ (WEB.7) | `webSearch.providers` | `set_setting search_provider` (an nur Menschen, Punkt 6); Liste `tools.list_search_providers` | Assistent | Assistent |
 | SearXNG-Adresse | die eigene SearXNG-Instanz, auch im lokalen Netz | neu: MCP servers › Built-in tools › Web | `webSearch.searxng` | `set_setting searxng_address` (setzen nur Menschen, `null` jeder mit Admin) | Assistent | Assistent |
 | Schlüssel eines Anbieters (Brave, Tavily, Exa, Mojeek) | Zugang zur Such-API des Anbieters | neu: MCP servers › Built-in tools › Web | Schlüsselbund `websearch-<id>`, nie `settings.json` | `accounts.set_search_key` (nur App-Schlüssel, MCP nie, Punkt 5) | Assistent | Assistent |
@@ -1073,7 +1108,8 @@ gelesen oder geschrieben (Issue #226), bleibt aber in der Datei stehen. Ebenso n
    Quiet und New chats (je Seite und Einrichtung, die Einrichtung ist gewollt), Rechte eines Bots (Bot-Seite und
    Bot-Editor), neue Mail im Eingang auf zwei Wegen (`notify` am Mail-Konto und die Quelle „Mail“ der Einrichtung).
 3. **Die Datenregel sieht aus wie ein Recht**, gilt aber für die ganze Suite: Wer sie auf einer Bot-Seite ausschaltet,
-   schaltet sie für Assistent und alle Bots aus, ohne dass die Zeile es sagt.
+   schaltet sie für Assistent und alle Bots aus, ohne dass die Zeile es sagt. *Mit #664 erledigt: Die Datenregel
+   ist entfallen.*
 4. **Was eine App betrifft, steht weit weg:** Erinnerungen (13 Zeilen) unter General; Mail-Ansicht unter Appearance;
    Quellen des Eingangs verteilt auf Nextcloud-, GitHub-, ntfy- und Mail-Konto, die Seite Notification Hub hat keine
    Quellen. Absender und Signatur am Konto.

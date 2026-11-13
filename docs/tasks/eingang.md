@@ -2771,6 +2771,8 @@ Schnittstellen nach CLAUDE.md, vom Nutzer alle 16 freigegeben.
 14. **Neue Crates** `torro-nextcloud` und `torro-ntfy` oder Module im Kern? Empfehlung: Crates wie `torro-pim-github`.
 15. **Datenregel:** Nextcloud und Talk für entfernte Modelle zurückhalten, GitHub und ntfy durchlassen? Empfehlung: ja,
     bis KI.1 Regeln je Quelle bringt.
+    **Überholt durch #664:** Es gibt keine Datenregel mehr; Einträge jeder Quelle gehen an das gewählte Modell, soweit
+    die Rechte sie geben ([ki.md](../ki.md), Grundsatz 4).
 16. **GitHub-Mail:** Erledigt am GitHub-Eintrag markiert die zugeordnete Mail gelesen? Empfehlung: ja.
 17. **`notify_push` in E5?** Empfehlung: als letzte, optionale Aufgabe (E5.10); Abfrage alle 60 s mit ETag reicht.
 

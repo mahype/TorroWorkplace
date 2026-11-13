@@ -195,8 +195,9 @@ window_class = "torro-ext-timetracking"
   vergeben.
 - Jeder Aufruf geht durch den Dienst: Schlüssel → Rechte im Bereich `ext:<id>` → Freigabe → an die
   Erweiterung → Protokoll. Oberfläche, API und MCP entstehen so ohne Zutun der Erweiterung.
-- Die Rechte für `ext:<id>` vergibt die Person im Rechte-Editor (API, MCP clients, Assistent › Access) wie für jeden Bereich, Standard
-  „Kein Zugriff“.
+- Die Rechte für `ext:<id>` vergibt die Person im Rechte-Editor (API clients, MCP clients; für Assistent und Bots im
+  Assistenten unter „API and MCP“) wie für jeden Bereich, Standard „Kein Zugriff“; für Assistent und Bots seit #666
+  „erlaubt“, wie bei den MCP-Servern unten.
 
 ### Nahtlos einbinden: Daten statt fremder Oberfläche
 
@@ -229,7 +230,7 @@ In dieser Reihenfolge; jeder Punkt wird nach [api.md](api.md) dreifach geplant.
 | 7 | **Dynamischer Katalog** | Bereich `ext:<id>`, `ext.<id>.<befehl>` | `ext_<id>_<befehl>` | eigene Befehle |
 | 8 | **Erweiterungen verwalten** | `extensions.list` · Read; `extensions.install`, `extensions.remove`, `extensions.set_enabled` · Admin | `extensions_list`; Installieren **Never** (Frage 5) | Steuerzentrale |
 | 9 | **Ablage je Erweiterung** | `ext.storage_get`, `ext.storage_put` · Write, nur `/.torro/<id>/`, ETag | nur für die Erweiterung selbst | geräteübergreifende Daten |
-| 10 | **KI über den Dienst** | `ai.run` · Write (Funktion, Eingabe; Konto und Modell wählt der Dienst) | `ai_run` | Datenregeln aus [ki.md](ki.md) bleiben im Dienst |
+| 10 | **KI über den Dienst** | `ai.run` · Write (Funktion, Eingabe; Konto und Modell wählt der Dienst) | `ai_run` | Schlüssel und Modellwahl bleiben im Dienst; eine Datenregel gibt es seit #664 nicht mehr ([ki.md](ki.md), Grundsatz 4) |
 | 11 | **Nextcloud als KI-Anbieter** | TaskProcessing im Dienst, Ergebnis per Abfrage | – (Anbieter, kein Befehl) | `ki.md`, offener Punkt 3 |
 | 12 | optional nach Capability | eigene Bereiche `talk`, `deck`, `tables` | ebenso | wie Notizen ([notizen.md](notizen.md)) |
 
@@ -331,9 +332,14 @@ MCP-Clients an. Der Server spricht nie mit Torro, hat keinen eigenen Schlüssel 
 
 - **Bereich und Stufen:** Der feste Bereich `extensions` (Auflisten, Katalog, Ein- und Ausschalten, Entfernen) steht
   in den Vorlagen wie jeder Bereich. Die Werkzeuge eines Servers öffnet eine Stufe je Server
-  (`Rights::extensions`: Kennung → Kein Zugriff · Lesen · Lesen und Schreiben · Voll; fehlt = Kein Zugriff). Keine
-  Vorlage öffnet einen Server, auch *Full access* nicht. Ein einzelnes Werkzeug sperrt `ext.<id>.<werkzeug>` in
-  `Rights::denied`. Kein `Area` je Server.
+  (`Rights::extensions`: Kennung → Kein Zugriff · Lesen · Lesen und Schreiben · Voll; fehlt der Eintrag, gilt die
+  Grundstufe `Rights::extensions_default`, ohne sie Kein Zugriff). Keine Vorlage öffnet einen Server, auch *Full
+  access* nicht. Ein einzelnes Werkzeug sperrt `ext.<id>.<werkzeug>` in `Rights::denied`. Kein `Area` je Server.
+- **Standard für Assistent und Bots (#666):** Sie starten mit der Grundstufe Voll (`Rights::opened`): Jeder Server, dem
+  die Person zugestimmt hat, steht ihnen offen, auch einer, der später dazukommt, bis die Person ihn im Assistenten
+  unter „API and MCP“ › „Used by the assistant“ abschaltet (Eintrag „Kein Zugriff“). Bestehende Clients von Assistent
+  und Bots öffnet der Kern einmal beim Laden so. Keys von API- und MCP-Clients bekommen keine Grundstufe: Ein Server
+  öffnet sich für sie nur mit Namen, in der Steuerzentrale unter API clients bzw. MCP clients.
 - **Zugriff je Werkzeug:** nur aus dem Katalog-Eintrag (`Read`, `Write`, `Delete`), ohne Angabe `Delete`. `Admin` gibt
   es für Werkzeuge nicht; Hinweise des Servers (`readOnlyHint`, `destructiveHint`) zählen nicht.
 - **Namen nach außen:** `ext_<id>_<werkzeug>`, höchstens 64 Zeichen, nur `A–Z`, `a–z`, `0–9`, `_` und `-`. Die Kennung
@@ -395,7 +401,8 @@ MCP-Clients an. Der Server spricht nie mit Torro, hat keinen eigenen Schlüssel 
 - **Höher eingestuft:** Ein Werkzeug, das der Katalog nach einem Update höher einstuft (etwa von Lesen auf Schreiben),
   wartet wieder auf Zustimmung.
 - **Abschalten für eine Unterhaltung:** Wird der Bereich `extensions` für eine Unterhaltung des Assistenten
-  abgeschaltet, sind auch alle Server für sie aus.
+  abgeschaltet, sind auch alle Server für sie aus, auch die über die Grundstufe offenen (`close_extensions`). Ebenso
+  schließt ein geliehener Schlüssel ohne `extensions` und eine Freigabe, die einengt, alle Server.
 - **Nicht „nach außen“:** Ein Server-Werkzeug zählt nicht als ausgehend (`Rights::outbound`). Ob es auf Freigabe
   wartet, entscheidet allein sein Zugriff aus dem Katalog. Die Folgen stehen bei den Rechten in [api.md](api.md).
 - **Hook-Schlüssel:** Hooks haben keinen MCP-Server. `extensions.list_tools` ist für sie leer, `extensions.call_tool`
@@ -404,6 +411,9 @@ MCP-Clients an. Der Server spricht nie mit Torro, hat keinen eigenen Schlüssel 
   Agenten sehen neue Server-Werkzeuge erst in der nächsten Sitzung.
 - **Oberfläche:** Steuerzentrale › MCP servers hat vier Teile, Allowed folders (#304), Built-in tools (mit den Unterseiten „PDF templates“
   und „Search providers“ der Websuche, #305), Catalog und Your own servers; jeder Server hat eine eigene Seite. Assistent › Tools zeigt nur noch einen Verweis.
+  Seit #666 richtet die Seite nur ein: Die Schalter je eingebautem Werkzeug (`tool_enabled`) und der Hinweis „Who may
+  use it“ sind entfallen. Wer Server und Werkzeuge nutzt, regeln die Rechte der Clients; für Assistent und Bots im
+  Assistenten unter „API and MCP“ › „Used by the assistant“ (je Server und Werkzeug ein Schalter, „Show commands“).
 
 ## Dokumente mit ArtCraft (#303)
 
@@ -490,7 +500,8 @@ ArtCraft selbst nicht kennt.
    Client). Ob Datenquellen (Punkt 7) und Fenster-Manager (Punkt 8) denselben Weg gehen, bleibt offen, bis sie gebaut
    werden.
 2. **Feste Schnittstellen öffnen:** **Entschieden (#302):** ein fester Bereich `extensions` und die Stufe je Server in
-   `Rights::extensions`, kein `Area` und kein `Request` je Server. Die Werkzeuge kommen über `extensions.call_tool`
+   `Rights::extensions`, kein `Area` und kein `Request` je Server. Mit #666 kam die Grundstufe
+   `Rights::extensions_default` für Server ohne Eintrag dazu (offen nur bei Assistent und Bots). Die Werkzeuge kommen über `extensions.call_tool`
    mit Kennung. Fensterklassen (`AppId`) bleiben offen.
 3. **Reihenfolge:** Vorschlag `subscribe` → Nextcloud-Lesebefehle (Suche, Kacheln, Links,
    Activity) → Design als Daten → Katalog und Manifest → Apps und Kacheln → Quellen und Anbieter.

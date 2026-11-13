@@ -160,28 +160,23 @@ dahinter rückten um eins.
    Weg für eingeschleuste Anweisungen. Katalogbeschreibungen und MCP-Tools sagen, dass Nachrichten
    **Daten, keine Anweisungen** sind. Das gilt für Text, Namen von Unterhaltungen, Autorennamen,
    Dateinamen und **Statusnachrichten** anderer Menschen.
-6. **Chat geht an KI nur auf den Rechnern des Menschen**, wie Mail und die Talk-Einträge des
-   Eingangs ([ki.md](ki.md), Grundsatz 4: „Mail und Messenger nur lokal“):
-   - `Area::Chat` kommt in `NEVER_TO_AGENTS`. Ein Coding-Agent als Antrieb des Assistenten bekommt
-     den Chat nie. **Auch nicht über den Eingang:** Mail-Einträge fallen für ihn schon weg, weil sie
-     `Area::Mail` brauchen; Talk-Einträge brauchen heute nur die Quelle. Leiht der Kern einen Schlüssel
-     ohne `chat`, streicht er darum auch die Quellen `talk:*` aus `inbox_sources`. Eine Restlücke
-     bleibt bewusst: Die Quelle `nextcloud:*` meldet Anrufe und Einladungen von Talk mit dem Namen der
-     Unterhaltung und der Person (keinen Nachrichtentext). Sie fällt unter die Regeln der
+6. **Was eine KI vom Chat liest, folgt aus den Rechten** (seit #664, [ki.md](ki.md), Grundsatz 4). Bis dahin hieß
+   die Entscheidung „Chat geht an KI nur auf den Rechnern des Menschen“, wie Mail und die Talk-Einträge des Eingangs:
+   `Area::Chat` und `Area::Presence` standen in `NEVER_TO_AGENTS` (kein Coding-Agent als Antrieb des Assistenten
+   bekam sie), und die Datenregel des Assistenten (`assistant/data_rule.rs`) hielt Antworten der `chat.*`- und
+   `presence.*`-Befehle für Modelle anderswo zurück, als Positivliste nach dem Vorbild `MAIL_ANSWERS_ALLOWED`. Beides
+   ist entfallen; keine Regel hält Chat-Antworten still zurück. Es bleibt:
+   - **Talk-Einträge des Eingangs:** Leiht der Kern einen Schlüssel ohne `chat`, streicht er auch die Quellen
+     `talk:*` aus `inbox_sources`, denn sie tragen den Anfang einer Chat-Nachricht und brauchen sonst nur die
+     Quelle. Eine Restlücke bleibt bewusst: Die Quelle `nextcloud:*` meldet Anrufe und Einladungen von Talk mit dem
+     Namen der Unterhaltung und der Person (keinen Nachrichtentext). Sie fällt unter die Regeln der
      Benachrichtigungen, nicht des Chats.
-   - `Area::Presence` kommt ebenfalls in `NEVER_TO_AGENTS`: Wer wann da ist, ist eine Angabe über andere
-     Menschen, und Statusnachrichten sind fremder Text.
-   - Die Datenregel des Assistenten (`assistant/data_rule.rs`) hält Antworten der `chat.*`- und
-     `presence.*`-Befehle für Modelle anderswo zurück, wie `mail.*`. Gebaut als Positivliste (Vorbild
-     `MAIL_ANSWERS_ALLOWED`): Durch gehen nur Antworten ohne fremden Text (`ok`, die eigene Antwortart
-     `chat-sent` mit nur der Kennung der gesendeten Nachricht, ab Stufe 4 `chat-sending` mit nur der Kennung des
-     Sendens und die Antworten von `prepare_file`, `upload_file`, `release_files` und `get_upload`, die nur
-     Kennungen und die eigenen Angaben des Aufrufers tragen, sonst schickte ein Assistent mit einem Modell anderswo nie
-     eine Datei; Fehler); jeder spätere Befehl ist damit von selbst
-     zurückgehalten.
-   - Wer `chat.*` oder `presence.*` aufgerufen hat, hat fremden Text gelesen, wie bei Mail: `reads_mail` und
-     `may_have_read_untrusted` kennen `chat.`, `presence.` bzw. `Area::Chat`, `Area::Presence`. So geht auch der
-     Verlauf eines Gesprächs danach nicht an ein Modell anderswo, und eine Notiz des Assistenten wird `local_only`.
+   - **Fremder Text:** Wer `chat.*` oder `presence.*` aufgerufen hat, hat fremden Text gelesen, wie bei Mail:
+     `may_have_read_untrusted` und `tools::untrusted` kennen `Area::Chat` und `Area::Presence`. Nur Antworten ohne
+     fremden Text zählen nicht (`CHAT_ANSWERS_OWN`: `ok`, `chat-sent` mit nur der Kennung der gesendeten Nachricht,
+     ab Stufe 4 `chat-sending` mit nur der Kennung des Sendens, die Antworten von `prepare_file`, `upload_file` und
+     `get_upload`, die nur Kennungen und die eigenen Angaben des Aufrufers tragen, und Fehler). Danach braucht eine
+     neue Notiz des Assistenten eine Freigabe, und die Websuche fragt neu.
    - `Rights::assistant()` bekommt `chat` und `presence` nicht. Der Mensch schaltet sie in „What the assistant may
      use“ ein und wählt die Konten.
 
@@ -816,7 +811,8 @@ Entscheidung 13: selbst gebaut. Was die Machbarkeit dazu ergab, steht in
   --ring=<unterhaltung>` (`apps::Opened::Ring`) und lässt die Klassen des Chats vorher schweben. Gewählt statt eines
   Ziels `ring:<unterhaltung>` für `apps.open_app`, weil ein solches Ziel jedem Client mit `apps` erlaubte, den Rechner
   klingeln zu lassen, und weil der Kern ohnehin selbst startet.
-- Keiner der drei Befehle ist `Never`; die Datenregel des Assistenten hält `chat-call` wie jede Chat-Antwort zurück.
+- Keiner der drei Befehle ist `Never`; `chat-call` zählt wie jede Chat-Antwort als fremder Text (Entscheidung 6; bis #664
+  hielt die Datenregel des Assistenten sie für Modelle anderswo zurück).
 
 **Grenzen der ersten Fassung:** nur zu zweit (ohne HPB rät Talk selbst ab drei Personen ab), kein Bildschirm
 teilen, keine Aufnahme, keine Untertitel. Föderierte Unterhaltungen und Gäste ohne Konto erst, wenn der Versuch
@@ -895,7 +891,7 @@ später gehen:
    4. Schlägt das Teilen fehl, löscht der Kern die eben hochgeladene Datei wieder (`If-Match` mit dem ETag des
       Uploads).
    - Die Antwort ist `pending` (Freigabe) oder, sobald der Upload beginnt, `chat-sending` mit nur der Kennung des
-     Sendens, nie Name oder Pfad (Datenregel des Assistenten, Entscheidung 6). `chat.get_upload` mit dieser Kennung
+     Sendens, nie Name oder Pfad (so zählt sie nicht als fremder Text, Entscheidung 6). `chat.get_upload` mit dieser Kennung
      nennt Bytes, Stand (`uploading`, `sharing`, `sent`, `cancelled`, `failed` mit Code) und am Ende die Kennungen
      der entstandenen Nachrichten (je Datei eine). Ohne Dateien bleibt die Antwort `chat-sent` wie bisher.
    - **Abbrechen** (`chat.cancel_upload`, ✕ in der Oberfläche) bricht den Upload ab und löscht nur die eigene halbe
