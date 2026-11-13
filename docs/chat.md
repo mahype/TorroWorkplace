@@ -521,7 +521,7 @@ Unterhaltung gemerkt werden können, siehe „Schweben“):
   - **Bild** (#674, Entwurf [`docs/prototypes/chat-bilder/`](prototypes/chat-bilder/index.html), Fassung B):
     randlos bis an den Rand der Blase, höchstens so breit wie die Blase und `size::list()` (440) und so hoch wie
     `size::panel()` (400), Seitenverhältnis aus `width`/`height`, nie größer als das Bild selbst. Die Blase lässt
-    daneben Platz für „Reply“ und „…“; im Chatfenster mit 440 Breite ist ein Querformat so 324 × 203 groß, ein
+    daneben Platz für „Reply“ und „…“ (neben einer offenen Medien-Übersicht zählt nur der Verlauf); im Chatfenster mit 440 Breite ist ein Querformat so 322 × 201 groß, ein
     Hochformat 300 × 400. Die Vorschau kommt als `medium` (1024 Pixel), damit sie auf Retina scharf ist; bis sie
     da ist, steht ein ruhiger Platzhalter in der Größe, damit nichts springt. Die Beschriftung steht mit dem Rand
     der Blase darunter. Ein Bild mit Zitat, ein Bild unter 240 Breite (`size::sidebar()`) und Bilder neben anderen

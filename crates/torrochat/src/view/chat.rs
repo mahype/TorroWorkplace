@@ -189,6 +189,17 @@ impl App {
             .into()
     }
 
+    /// How wide the history stands: the window, less the shared media where they stand beside it.
+    fn history_width(&self, chat: &ChatState) -> f32 {
+        let total = self.size.width;
+        match &chat.files.media {
+            Some(_) if files::media_beside(total) => {
+                total - chat.files.split.width(files::media_limits(total)) - split::divider_width()
+            }
+            _ => total,
+        }
+    }
+
     /// The conversation as the list has it.
     fn conversation(&self, chat: &ChatState) -> Option<&Conversation> {
         self.conversations.iter().find(|conversation| conversation.id == chat.id)
@@ -281,12 +292,13 @@ impl App {
                 .center(Fill)
                 .into();
         }
-        let width = self.size.width.min(size::content_max());
+        let width = self.history_width(chat).min(size::content_max());
         let bubble = width * BUBBLE_SHARE;
-        // A picture fills its bubble, but leaves "Reply" and "…" their place beside it: the history's
-        // padding and the buttons with their gaps.
+        // A picture fills its bubble, but leaves "Reply" and "…" their place beside it (the history's
+        // padding and the buttons with their gaps) and the bubble its edge around it.
         let beside = width - 2.0 * space::l() - tools_width() - 2.0 * space::xs();
-        let room = Room { bubble, picture: bubble.min(size::list()).min(beside).floor() };
+        let picture = (bubble.min(beside) - 2.0 * HAIRLINE).min(size::list()).floor();
+        let room = Room { bubble, picture };
         let group = self.conversation(chat).is_some_and(|c| c.kind != torro_chat::ConversationKind::Direct);
         let today = timeline::day_of(chrono::Utc::now());
         let mut lines: Vec<Element<'a, Message>> = Vec::new();
