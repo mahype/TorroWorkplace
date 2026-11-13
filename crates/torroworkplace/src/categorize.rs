@@ -1,4 +1,4 @@
-//! What a mail is, decided by a model on this computer (task E12.6, `docs/kategorien.md`).
+//! What a mail is, decided by the model of the slot Sorting (task E12.6, `docs/kategorien.md`).
 //!
 //! Built like [`crate::suggest`]: read the mail ([`Content`]), pick the model ([`chosen`]), ask
 //! ([`decide`]) and read the answer ([`read`]). Nothing is written here – the caller keeps what
@@ -26,12 +26,10 @@
 //! left out or answered with something not offered is `other`. The core picks the way by the model
 //! (`ask_decider` in `core.rs`); this module reads both alike.
 //!
-//! **The data rule** (`docs/ki.md`, principle 4): while the permission of the slot Sorting
-//! (`decide_mail_to_cloud`; the chat's `mail_to_cloud` is not asked here) is off, mail goes only to
-//! a model that computes on this computer. Guarded twice – only a person chooses a model elsewhere
-//! for sorting (`ai.set_slot`, `ai.set_assignment`, which then set that permission), and [`chosen`]
-//! refuses to ask one while it is off. "Automatic" at an account on this computer takes only a model
-//! here, also while the permission is on: the permission was given to the model a person chose.
+//! **Where the mail goes** (`docs/ki.md`, principle 4, issue #664): to the model chosen, wherever it
+//! computes – no rule holds it back. Only a person chooses a model elsewhere for sorting
+//! (`ai.set_slot`, `ai.set_assignment`). "Automatic" at an account on this computer takes only a model
+//! here: who chooses "Ollama on this computer" chooses "here", and an agent may choose it.
 //!
 //! **The switches of the models** (task S.24, #231): only a model that is on is asked. Guarded
 //! twice as well – `ai.set_assignment` refuses a model that is off, and [`chosen`] treats one
@@ -147,9 +145,6 @@ pub enum Refusal {
     /// off, the account it names is gone – removed or signed out since it was chosen –, or the model
     /// it names is turned off (task S.24).
     NoModel,
-    /// Mail may only go to a model on this computer – the permission of the slot Sorting is off –,
-    /// and the one assigned is not.
-    NotLocal,
 }
 
 /// The account and the **concrete model** to ask, from the person's assignment and the models
@@ -158,44 +153,33 @@ pub enum Refusal {
 /// this computer.
 ///
 /// Refuses, rather than asking the wrong model, when nothing is assigned, the assignment is off,
-/// the model it names is gone, turned off or can neither decide nor use tools, the account offers no
-/// such model that is on, or the data rule leaves the model out. The caller then leaves the mail without a category – never `other`, so a later run
-/// can still catch it.
-///
-/// **The rule is weighed on the model, not on the account** (`docs/ki.md`, principle 4): a local
-/// Ollama serves cloud models too (`:cloud`), and one of those would send the mail to
-/// ollama.com. So `here` answers for the concrete model, both when the assignment names one and
-/// when one is picked for it.
+/// the model it names is gone, turned off or can neither decide nor use tools, or the account offers
+/// no such model that is on. The caller then leaves the mail without a category – never `other`, so a
+/// later run can still catch it.
 ///
 /// **"Automatic" at an account on this computer stays here** (`seat_here`, review of issue #325):
 /// with no model named, an account that sits on this computer ([`torro_core::ai::Seat::ThisComputer`])
-/// picks only among the models `here` lets through, whatever the permission says. Who chooses
-/// "Ollama on this computer" chooses "here"; its `:cloud` models are never picked for them, only
-/// named. `ai.set_slot` and `ai.set_assignment` judge such a choice as here for the same reason.
+/// picks only among the models `here` lets through. Who chooses "Ollama on this computer" chooses
+/// "here"; its `:cloud` models are never picked for them, only named – a local Ollama serves cloud
+/// models too, and one of those would send the mail to ollama.com. `ai.set_slot` and
+/// `ai.set_assignment` judge such a choice as here for the same reason, so an agent may make it.
 pub fn chosen(
     assignment: Option<&AiAssignment>,
     models: &[AiModel],
     here: impl Fn(&AiModel) -> bool,
-    local_only: bool,
     seat_here: bool,
 ) -> Result<(String, String), Refusal> {
     let assignment = assignment.filter(|held| held.is_ready()).ok_or(Refusal::NoModel)?;
     let engine = assignment.engine.clone().ok_or(Refusal::NoModel)?;
     let chosen = match &assignment.model {
-        // Named by the person: taken as it is, and weighed by the rule below. Turned off since,
-        // it counts as no assignment: never another model in its place.
+        // Named by the person: taken as it is. Turned off since, it counts as no assignment: never
+        // another model in its place.
         Some(id) => models
             .iter()
             .find(|model| &model.id == id && model.enabled && model.can_decide())
             .ok_or(Refusal::NoModel)?,
-        None => {
-            let here_only = local_only || seat_here;
-            pick_model(models, |model| model.enabled && (!here_only || here(model))).ok_or(Refusal::NoModel)?
-        }
+        None => pick_model(models, |model| model.enabled && (!seat_here || here(model))).ok_or(Refusal::NoModel)?,
     };
-    if local_only && !here(chosen) {
-        return Err(Refusal::NotLocal);
-    }
     Ok((engine, chosen.id.clone()))
 }
 
@@ -892,7 +876,7 @@ mod tests {
         assert_eq!(decided.needs_reply, Some(true), "the side answer stays");
     }
 
-    /// A model as a server lists it; `remote` is what the data rule weighs.
+    /// A model as a server lists it; `remote` says where it computes.
     fn model(id: &str, decision: Option<bool>) -> AiModel {
         AiModel {
             id: id.into(),
@@ -927,28 +911,28 @@ mod tests {
         };
         let named = assign(Some("nimble"), true);
         assert_eq!(
-            chosen(Some(&named), &models, here, true, true),
+            chosen(Some(&named), &models, here, true),
             Ok(("ai:ollama@localhost:11434".into(), "nimble".into()))
         );
-        assert_eq!(chosen(None, &models, here, true, true), Err(Refusal::NoModel));
-        assert_eq!(chosen(Some(&assign(Some("nimble"), false)), &models, here, true, true), Err(Refusal::NoModel));
+        assert_eq!(chosen(None, &models, here, true), Err(Refusal::NoModel));
+        assert_eq!(chosen(Some(&assign(Some("nimble"), false)), &models, here, true), Err(Refusal::NoModel));
         // The model was removed after it was chosen: nothing is asked, and nothing fails.
-        assert_eq!(chosen(Some(&assign(Some("gone"), true)), &models, here, true, true), Err(Refusal::NoModel));
+        assert_eq!(chosen(Some(&assign(Some("gone"), true)), &models, here, true), Err(Refusal::NoModel));
         // No model named: one that decides is picked.
         assert_eq!(
-            chosen(Some(&assign(None, true)), &models, here, true, true),
+            chosen(Some(&assign(None, true)), &models, here, true),
             Ok(("ai:ollama@localhost:11434".into(), "nimble".into()))
         );
         // Task MW.3: an account with only a model that writes takes it through the fallback; one
         // with only a model that can do neither (an embedding model) has nothing to ask.
         assert_eq!(
-            chosen(Some(&assign(None, true)), &models[..1], here, true, true),
+            chosen(Some(&assign(None, true)), &models[..1], here, true),
             Ok(("ai:ollama@localhost:11434".into(), "qwen3:8b".into()))
         );
         let embedding = vec![AiModel { tools: Some(false), ..model("nomic-embed-text", Some(false)) }];
-        assert_eq!(chosen(Some(&assign(None, true)), &embedding, here, true, true), Err(Refusal::NoModel));
+        assert_eq!(chosen(Some(&assign(None, true)), &embedding, here, true), Err(Refusal::NoModel));
         let named = assign(Some("nomic-embed-text"), true);
-        assert_eq!(chosen(Some(&named), &embedding, here, true, true), Err(Refusal::NoModel), "named, all the same");
+        assert_eq!(chosen(Some(&named), &embedding, here, true), Err(Refusal::NoModel), "named, all the same");
     }
 
     /// Task S.24 (#231): a model turned off after it was assigned is not asked, and no other model
@@ -965,18 +949,20 @@ mod tests {
         let mut off = model("nimble", Some(true));
         off.enabled = false;
         let models = vec![off, model("tev1", Some(true))];
-        assert_eq!(chosen(Some(&assign(Some("nimble"))), &models, here, true, true), Err(Refusal::NoModel));
-        assert_eq!(chosen(Some(&assign(Some("nimble"))), &models, here, false, true), Err(Refusal::NoModel));
+        assert_eq!(chosen(Some(&assign(Some("nimble"))), &models, here, true), Err(Refusal::NoModel));
+        assert_eq!(chosen(Some(&assign(Some("nimble"))), &models, here, true), Err(Refusal::NoModel));
         assert_eq!(
-            chosen(Some(&assign(None)), &models, here, true, true),
+            chosen(Some(&assign(None)), &models, here, true),
             Ok(("ai:ollama@localhost:11434".into(), "tev1".into())),
             "picked among the models that are on"
         );
-        assert_eq!(chosen(Some(&assign(None)), &models[..1], here, true, true), Err(Refusal::NoModel));
+        assert_eq!(chosen(Some(&assign(None)), &models[..1], here, true), Err(Refusal::NoModel));
     }
 
+    /// Issue #664: a model elsewhere named by the person is asked; "Automatic" at an account here
+    /// passes the cloud model over.
     #[test]
-    fn the_data_rule_weighs_the_model_not_the_account() {
+    fn a_model_elsewhere_named_by_the_person_is_asked() {
         let assign = |model: Option<&str>| AiAssignment {
             function: Function::InboxCategorize,
             engine: Some("ai:ollama@localhost:11434".to_string()),
@@ -989,22 +975,21 @@ mod tests {
         cloud.remote = Some(true);
         let mixed = vec![cloud, model("nimble", Some(true))];
         assert_eq!(
-            chosen(Some(&assign(None)), &mixed, here, true, true),
+            chosen(Some(&assign(None)), &mixed, here, true),
             Ok(("ai:ollama@localhost:11434".into(), "nimble".into())),
             "the cloud model is passed over"
         );
-        assert_eq!(chosen(Some(&assign(None)), &mixed[..1], here, true, true), Err(Refusal::NoModel));
-        // Named by hand, it is refused rather than quietly swapped.
-        assert_eq!(chosen(Some(&assign(Some("glm-5.3:cloud"))), &mixed, here, true, true), Err(Refusal::NotLocal));
-        assert!(
-            chosen(Some(&assign(Some("glm-5.3:cloud"))), &mixed, here, false, true).is_ok(),
-            "allowed by the person"
+        assert_eq!(chosen(Some(&assign(None)), &mixed[..1], here, true), Err(Refusal::NoModel));
+        // Named by hand, it is asked: no data rule holds the mail back.
+        assert_eq!(
+            chosen(Some(&assign(Some("glm-5.3:cloud"))), &mixed, here, true),
+            Ok(("ai:ollama@localhost:11434".into(), "glm-5.3:cloud".into()))
         );
     }
 
-    /// Review of issue #325: "Automatic" at an account on this computer picks only models here, also
-    /// while the permission of Sorting is on – a `:cloud` model listed first is passed over, and with
-    /// no model here there is none to ask. At an account elsewhere the permission alone decides.
+    /// Review of issue #325: "Automatic" at an account on this computer picks only models here – a
+    /// `:cloud` model listed first is passed over, and with no model here there is none to ask. At an
+    /// account elsewhere it picks as the account lists.
     #[test]
     fn automatic_at_an_account_here_never_picks_a_model_elsewhere() {
         let automatic = AiAssignment {
@@ -1017,13 +1002,13 @@ mod tests {
         let mut cloud = model("nimble:cloud", Some(true));
         cloud.remote = Some(true);
         let mixed = vec![cloud, model("nimble", Some(true))];
-        let picked = |models: &[AiModel], seat_here| chosen(Some(&automatic), models, here, false, seat_here);
-        assert_eq!(picked(&mixed, true), Ok(("ai:ollama@localhost:11434".into(), "nimble".into())), "permission on");
+        let picked = |models: &[AiModel], seat_here| chosen(Some(&automatic), models, here, seat_here);
+        assert_eq!(picked(&mixed, true), Ok(("ai:ollama@localhost:11434".into(), "nimble".into())), "here");
         assert_eq!(picked(&mixed[..1], true), Err(Refusal::NoModel), "nothing here, nothing asked");
         assert_eq!(picked(&mixed, false), Ok(("ai:ollama@localhost:11434".into(), "nimble:cloud".into())), "elsewhere");
         // Named by the person, the model elsewhere is still theirs to choose.
         let named = AiAssignment { model: Some("nimble:cloud".into()), ..automatic.clone() };
-        assert!(chosen(Some(&named), &mixed, here, false, true).is_ok());
+        assert!(chosen(Some(&named), &mixed, here, true).is_ok());
     }
 
     /// Task MW.3: a deciding model goes first, then one that can use tools; one that can do neither

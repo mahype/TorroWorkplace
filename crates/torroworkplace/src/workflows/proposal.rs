@@ -14,7 +14,7 @@ use torro_ipc::workflows::{DraftSpec, Package};
 use torro_ipc::{Request, Response};
 
 use super::{Error as WorkflowError, Scope, Service, download, security, templates};
-use crate::assistant::{Host, ModelAccess, Place};
+use crate::assistant::{Host, ModelAccess};
 use crate::clients::Clients;
 use crate::mail::service::MailService;
 
@@ -29,7 +29,6 @@ pub(crate) struct Input<'a> {
 
 pub(crate) enum Error {
     NoModel,
-    DataRule,
     Workflow(WorkflowError),
     Ai(AiError),
 }
@@ -47,10 +46,6 @@ impl Error {
             Self::NoModel => {
                 ("not-connected", tr("Set up an AI first: connect an AI account under Settings › AI.").to_string())
             }
-            Self::DataRule => (
-                "forbidden",
-                tr("The mail data rule does not allow the configured chat model to read this mail.").to_string(),
-            ),
             Self::Workflow(error) => return error.response(),
             Self::Ai(error) => (
                 error.code(),
@@ -114,7 +109,6 @@ pub(crate) async fn propose(
     {
         return Err(WorkflowError::Forbidden.into());
     }
-    check_data_rule(host, access.place)?;
     let selected = crate::assistant::workflow_choice(&access, effort, &descriptions, input.instruction)
         .await
         .map_err(Error::Ai)?;
@@ -127,7 +121,6 @@ pub(crate) async fn propose(
         return Err(WorkflowError::Conflict.into());
     }
     guard(&pinned, clients, &request)?;
-    check_data_rule(host, access.place)?;
     let choice = choices.get(selected).ok_or(WorkflowError::Invalid)?;
     let spec = DraftSpec {
         name: tr(choice.name).into(),
@@ -169,13 +162,6 @@ fn guard(scope: &Scope, clients: &Clients, request: &Request) -> Result<Option<R
     Ok(rights)
 }
 
-fn check_data_rule(host: &dyn Host, place: Place) -> Result<(), Error> {
-    if place != Place::Local && !host.data_rule().mail_to_cloud {
-        return Err(Error::DataRule);
-    }
-    Ok(())
-}
-
 async fn configured_model(
     host: &dyn Host,
     chat: Option<&AssistantDefault>,
@@ -190,7 +176,6 @@ async fn configured_model(
     {
         return Err(Error::NoModel);
     }
-    check_data_rule(host, access.place)?;
     Ok((access, chat.effort))
 }
 
@@ -316,7 +301,7 @@ fn mail_hosts(html: &str) -> Result<BTreeSet<String>, WorkflowError> {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use torro_core::ai::{AiModel, BoxFuture, ChatReply, ChatRequest, Provider};
+    use torro_core::ai::{AiModel, BoxFuture, ChatReply, ChatRequest, Place, Provider};
     use torro_ipc::api::{AreaRights, Level, Selection};
 
     use super::*;
@@ -330,18 +315,12 @@ mod tests {
     struct FakeHost {
         record: Arc<Record>,
         place: Place,
-        rule: Mutex<crate::assistant::DataRule>,
         missing: bool,
     }
 
     impl FakeHost {
-        fn new(place: Place, cloud: bool) -> Self {
-            Self {
-                record: Arc::default(),
-                place,
-                rule: Mutex::new(crate::assistant::DataRule { mail_to_cloud: cloud }),
-                missing: false,
-            }
+        fn new(place: Place) -> Self {
+            Self { record: Arc::default(), place, missing: false }
         }
     }
 
@@ -383,10 +362,6 @@ mod tests {
             })
         }
 
-        fn data_rule(&self) -> crate::assistant::DataRule {
-            *self.rule.lock().expect("rule")
-        }
-
         fn run<'a>(&'a self, _: Request, _: &'a str, _: bool) -> BoxFuture<'a, Response> {
             panic!("proposal must never execute a tool, grant, rule or web fallback")
         }
@@ -396,29 +371,26 @@ mod tests {
         }
     }
 
+    /// Issue #664: the configured chat model is used wherever it computes; no data rule holds the
+    /// mail back from it.
     #[tokio::test]
-    async fn only_the_configured_host_model_is_used_and_cloud_is_opt_in() {
+    async fn only_the_configured_host_model_is_used() {
         let slot = AssistantDefault {
             engine: "ai:synthetic".into(),
             model: Some("chosen".into()),
             effort: Some(Effort::High),
         };
-        let mut host = FakeHost::new(Place::Remote, false);
+        let mut host = FakeHost::new(Place::Remote);
         assert!(matches!(configured_model(&host, None).await, Err(Error::NoModel)));
         assert!(host.record.models.lock().expect("models").is_empty());
-        assert!(matches!(configured_model(&host, Some(&slot)).await, Err(Error::DataRule)));
-        assert!(host.record.requests.lock().expect("requests").is_empty());
         host.missing = true;
         let error = configured_model(&host, Some(&slot)).await.err().expect("missing slot model");
         assert!(matches!(error.response(), Response::Error { code, .. } if code == "not-connected"));
         host.missing = false;
-        *host.rule.lock().expect("rule") = crate::assistant::DataRule { mail_to_cloud: true };
-        let (access, effort) = configured_model(&host, Some(&slot)).await.expect("explicit cloud opt-in");
+        let (access, effort) = configured_model(&host, Some(&slot)).await.expect("a model elsewhere");
         assert_eq!(access.model, "chosen");
         assert_eq!(effort, Some(Effort::High));
         assert_eq!(crate::assistant::workflow_choice(&access, effort, &["Invoice PDF".into()], "").await, Ok(0));
-        *host.rule.lock().expect("rule") = crate::assistant::DataRule::default();
-        assert!(check_data_rule(&host, access.place).is_err(), "revoked cloud consent fails closed");
         assert!(
             host.record
                 .models
@@ -473,7 +445,7 @@ mod tests {
         let clients = crate::clients::tests::open_in(dir.path());
         let service = Service::memory();
         let mail = MailService::without_home();
-        let host = FakeHost::new(Place::Local, false);
+        let host = FakeHost::new(Place::Local);
         let input = Input { mail: "m:synthetic", save_target: "target1", instruction: "Invoice" };
         let mut scope = Scope::suite();
         scope.origin.without = vec![Area::Mail];
@@ -541,7 +513,7 @@ mod tests {
             .expect("target");
         let clients = crate::clients::tests::open_in(dir.path());
         let service = Service::memory();
-        let host = FakeHost::new(Place::Local, false);
+        let host = FakeHost::new(Place::Local);
         let slot = AssistantDefault { engine: "ai:synthetic".into(), model: Some("chosen".into()), effort: None };
         let input = Input { mail: &message, save_target: &target.id, instruction: "Invoice, not payment receipt" };
         let spec = propose(&host, Some(&slot), &service, &Scope::suite(), &clients, &mail, input)

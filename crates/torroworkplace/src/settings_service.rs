@@ -31,7 +31,7 @@ use torro_core::design::{self, DesignError, Part};
 use torro_core::settings::{
     self, AssistantDefault, AttachmentClick, ComponentSwitch, ComposePaper, FocusSlots, FolderChange, Language,
     ListOrderEntry, MailAppearance, MailAttachments, MailFormat, Maps, Night, PdfSettings, PdfTemplate, PdfTemplateId,
-    Reminders, Retention, SearchProviderSwitch, Settings, SetupState, ToolSwitch, Voice, WebSearch, WorkingHours, Zoom,
+    Reminders, Retention, SearchProviderSwitch, Settings, SetupState, Voice, WebSearch, WorkingHours, Zoom,
 };
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
@@ -125,19 +125,14 @@ impl SettingsStore {
     /// So is a PDF template or folder that changes and does not fit, as `set_setting` refuses it
     /// (`torro_core::settings::PdfSettings::check_changes`).
     ///
-    /// `decide_mail_to_cloud` (issue #325) is never stored unset: `new` without it – from an app
-    /// before the slots – keeps it as stored, since unset would take the old AI values over again at
-    /// the next load (`Settings::take_over_old_ai`).
+    /// `ai_slots_taken` (issue #664) is always stored set: `new` without it – from an app before the
+    /// field – would take the old AI values over again at the next load (`Settings::take_over_old_ai`).
     pub fn update(&self, new: Settings) -> Result<(), String> {
         let ids = new.hidden_collections.iter().chain(new.list_orders.keys());
         if let Some(bare) = ids.into_iter().find(|id| torro_pim::account::is_legacy_id(id)) {
             return Err(format!("{bare:?} is not a collection id; use the ids from accounts.list_accounts"));
         }
-        self.change(|settings| {
-            let stored = settings.mail_to_cloud_in(torro_core::ai::AiSlot::Decide);
-            let decide_mail_to_cloud = Some(new.decide_mail_to_cloud.unwrap_or(stored));
-            *settings = Settings { decide_mail_to_cloud, ..new }
-        })
+        self.change(|settings| *settings = Settings { ai_slots_taken: true, ..new })
     }
 
     /// Like [`SettingsStore::update`], but the hidden collections, the orders of the task lists and
@@ -149,23 +144,18 @@ impl SettingsStore {
     /// Nor does a client switch the microphone on (point 6 of "Was nie nach außen geht",
     /// task C.9): voice stays off when it is off as stored now, whatever `new` says. The core
     /// refuses such a request before (`forbidden`); this keeps it so when a person switched voice
-    /// off between that check and the write. The same holds for letting mail go to cloud models
-    /// (`mail_to_cloud`, task C.17): a client may keep it local, never let it out; and for the ways
-    /// in (`allow_api_keys`, `allow_mcp`, #231): a client may close them, never open them.
+    /// off between that check and the write.
     ///
     /// Nor which model does which function (`ai_assignments`, task E12.5): those are checked
-    /// against the accounts, the models and the data rule when they are set
+    /// against the accounts and the models when they are set
     /// (`Core::set_ai_assignment`), and a whole-settings write would go round that check. They
     /// change only through [`SettingsStore::set_ai_assignment`]. Nor the model of a slot
     /// (`ai_slots`, issue #325): `Core::set_ai_slot` checks it, and it changes only through
-    /// [`SettingsStore::set_ai_slot`]. The permission of the slot Sorting (`decide_mail_to_cloud`)
-    /// stays on only when it is on as stored and in `new`, like `mail_to_cloud`; a client from before
-    /// the slots, which sends none, switches it off – never back to unset, which would take the old
-    /// AI values over again at the next load (`Settings::take_over_old_ai`).
+    /// [`SettingsStore::set_ai_slot`]. `ai_slots_taken` is stored set, as in
+    /// [`SettingsStore::update`].
     ///
-    /// Nor does a client switch on one of the assistant's own tools (point 9, issue #225): a tool
-    /// stays on only when it is on as stored and in `new`, the PDF folder and the logos of the
-    /// templates stay as stored, and so do the allowed folders (issue #304,
+    /// Nor does a client set where the built-in tools put files (point 9, issue #225): the PDF folder
+    /// and the logos of the templates stay as stored, and so do the allowed folders (issue #304,
     /// `torro_core::settings::Tools::from_client`); the other fields of the templates come from `new`,
     /// refused like in [`SettingsStore::update`] when they do not fit.
     ///
@@ -192,12 +182,7 @@ impl SettingsStore {
             let mail_sender = settings.mail_sender.take();
             let enabled = settings.voice.enabled && new.voice.enabled;
             let voice = Voice { enabled, ..new.voice.clone() };
-            let mail_to_cloud = settings.mail_to_cloud && new.mail_to_cloud;
             let ai_slots = std::mem::take(&mut settings.ai_slots);
-            let decide_out = settings.mail_to_cloud_in(torro_core::ai::AiSlot::Decide);
-            let decide_mail_to_cloud = Some(decide_out && new.decide_mail_to_cloud.unwrap_or(false));
-            let allow_api_keys = settings.allow_api_keys && new.allow_api_keys;
-            let allow_mcp = settings.allow_mcp && new.allow_mcp;
             let reminders = Reminders { calendars, ..new.reminders.clone() };
             let tools = settings.tools.from_client(&new.tools);
             let maps = settings.maps.from_client(&new.maps);
@@ -208,11 +193,8 @@ impl SettingsStore {
                 ai_assignments: assignments,
                 list_orders,
                 voice,
-                mail_to_cloud,
                 ai_slots,
-                decide_mail_to_cloud,
-                allow_api_keys,
-                allow_mcp,
+                ai_slots_taken: true,
                 reminders,
                 mail_sender,
                 tools,
@@ -226,7 +208,7 @@ impl SettingsStore {
 
     /// Sets which account and model `function` uses, or takes the assignment back with `None`
     /// (task E12.5). The one way `ai_assignments` changes: `Core::set_ai_assignment` checks the
-    /// account, the model and the data rule before it calls this.
+    /// account and the model before it calls this.
     pub fn set_ai_assignment(
         &self,
         function: torro_core::ai::AiFunction,
@@ -245,25 +227,14 @@ impl SettingsStore {
     /// Puts `chosen` in `slot`, or empties it with `None` (issue #325, `ai.set_slot`). The one way
     /// `ai_slots` changes besides the old key `assistant_default` (the slot Chat): `Core::set_ai_slot`
     /// checks the account, the model and who asks before it calls this.
-    ///
-    /// For [`torro_core::ai::AiSlot::Decide`] the same write sets `decide_mail_to_cloud` to
-    /// `elsewhere` – whether the model chosen computes elsewhere –, so the permission follows the
-    /// choice: a model elsewhere lets sorted mail out, one here or none keeps it here (`elsewhere`
-    /// is then `false`; for `None` it is taken as `false` whatever is passed). For
-    /// [`torro_core::ai::AiSlot::Chat`] `elsewhere` is ignored: the chat's permission is
-    /// `mail_to_cloud`, which only its own switch changes.
     pub fn set_ai_slot(
         &self,
         slot: torro_core::ai::AiSlot,
         chosen: Option<torro_core::ai::SlotModel>,
-        elsewhere: bool,
     ) -> Result<(), String> {
         self.change(|settings| match slot {
             torro_core::ai::AiSlot::Chat => settings.ai_slots.chat = chosen.clone(),
-            torro_core::ai::AiSlot::Decide => {
-                settings.decide_mail_to_cloud = Some(elsewhere && chosen.is_some());
-                settings.ai_slots.decide = chosen.clone();
-            }
+            torro_core::ai::AiSlot::Decide => settings.ai_slots.decide = chosen.clone(),
         })
     }
 
@@ -602,29 +573,15 @@ enum Change {
     /// The folder of "Save to Downloads"; `None` for the system's. Who may set one is the core's
     /// check (`Core::switches_on_for_people`), as for the PDF folder.
     MailDownloadsFolder(Option<String>),
-    /// The data rule for mail (task C.17). Who may switch it on is the core's check
-    /// (`Request::kept_for_people`).
-    MailToCloud(bool),
-    /// The data rule for the mail the slot Sorting reads (issue #325), checked like
-    /// [`Change::MailToCloud`].
-    DecideMailToCloud(bool),
     /// "Mail from contacts is personal" (issue #390).
     MailContactsPersonal(bool),
     /// "Logos of known senders" (issue #453).
     MailSenderLogos(bool),
     /// Which mail categories the sidebar leaves out (task E12.10).
     HiddenCategories(Vec<torro_mail::Category>),
-    /// "Allow API keys" (#231). Who may switch it on is the core's check
-    /// (`Request::kept_for_people`).
-    AllowApiKeys(bool),
-    /// "Allow MCP" (#231), checked like [`Change::AllowApiKeys`].
-    AllowMcp(bool),
     /// A change of the reminders of events (task ER1.2): the fields it names, checked against the
     /// defaults when parsed and merged onto the stored ones when applied ([`Reminders::merged`]).
     Reminders(serde_json::Value),
-    /// One of the assistant's own tools on or off (issue #225). Who may switch it on is the core's
-    /// check (`Request::kept_for_people`).
-    ToolEnabled(ToolSwitch),
     /// The folder of new PDFs; `None` for the desktop. Who may set one is the core's check
     /// (`Core::switches_on_for_people`).
     PdfFolder(Option<String>),
@@ -716,10 +673,6 @@ impl Change {
                 Change::MailAttachmentClick(serde_json::from_value(value.clone()).map_err(invalid)?)
             }
             SettingKey::MailDownloadsFolder => Change::MailDownloadsFolder(MailAttachments::downloads_from(value)?),
-            SettingKey::MailToCloud => Change::MailToCloud(serde_json::from_value(value.clone()).map_err(invalid)?),
-            SettingKey::DecideMailToCloud => {
-                Change::DecideMailToCloud(serde_json::from_value(value.clone()).map_err(invalid)?)
-            }
             SettingKey::MailContactsPersonal => {
                 Change::MailContactsPersonal(serde_json::from_value(value.clone()).map_err(invalid)?)
             }
@@ -734,9 +687,6 @@ impl Change {
                 Reminders::default().merged(value)?;
                 Change::Reminders(value.clone())
             }
-            SettingKey::AllowApiKeys => Change::AllowApiKeys(serde_json::from_value(value.clone()).map_err(invalid)?),
-            SettingKey::AllowMcp => Change::AllowMcp(serde_json::from_value(value.clone()).map_err(invalid)?),
-            SettingKey::ToolEnabled => Change::ToolEnabled(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::PdfFolder => Change::PdfFolder(PdfSettings::folder_from(value)?),
             SettingKey::PdfTemplate => {
                 let (id, template) = PdfTemplate::from_value(value)?;
@@ -813,20 +763,15 @@ impl Change {
             Change::MailSender(sender) => settings.mail_sender = sender,
             Change::MailAttachmentClick(click) => settings.mail_attachments.click = click,
             Change::MailDownloadsFolder(folder) => settings.mail_attachments.downloads = folder,
-            Change::MailToCloud(allowed) => settings.mail_to_cloud = allowed,
-            Change::DecideMailToCloud(allowed) => settings.decide_mail_to_cloud = Some(allowed),
             Change::MailContactsPersonal(on) => settings.mail_contacts_personal = on,
             Change::MailSenderLogos(on) => settings.mail_sender_logos = on,
             Change::HiddenCategories(hidden) => settings.hidden_categories = hidden,
-            Change::AllowApiKeys(allowed) => settings.allow_api_keys = allowed,
-            Change::AllowMcp(allowed) => settings.allow_mcp = allowed,
             // Checked when parsed: what the stored ones hold cannot make the fields it names unfit.
             Change::Reminders(change) => {
                 if let Ok(merged) = settings.reminders.merged(&change) {
                     settings.reminders = merged;
                 }
             }
-            Change::ToolEnabled(switch) => settings.tools.set_on(switch.tool, switch.enabled),
             Change::PdfFolder(folder) => settings.tools.pdf.folder = folder,
             Change::PdfTemplate(id, template) => *settings.tools.pdf.template_mut(id) = template,
             Change::AllowedFolder(change) => settings.tools.change_folder(change),
@@ -1595,15 +1540,14 @@ mod tests {
         let read = store.current();
         assert_eq!(read.ai_slots.chat.map(|chosen| chosen.engine).as_deref(), Some("claude-code"));
         assert_eq!(read.ai_slots.decide.map(|chosen| chosen.engine).as_deref(), Some("ai:a"));
-        assert!(read.ai_assignments.is_empty() && read.decide_mail_to_cloud == Some(false));
+        assert!(read.ai_assignments.is_empty() && read.ai_slots_taken);
 
         store.set(SettingKey::AssistantDefault, &json!({"engine": "ai:b", "model": "qwen3:8b"})).expect("a default");
         let written: serde_json::Value = serde_json::from_str(&fs::read_to_string(&file).expect("read")).expect("json");
         assert!(written.get("assistantDefault").is_none(), "{written}");
         assert_eq!(written["aiSlots"]["chat"], json!({"engine": "ai:b", "model": "qwen3:8b"}));
         assert_eq!(written["aiSlots"]["decide"], json!({"engine": "ai:a"}));
-        store.set(SettingKey::DecideMailToCloud, &json!(true)).expect("a flag");
-        assert!(store.current().mail_to_cloud_in(torro_core::ai::AiSlot::Decide));
+        assert_eq!(written["aiSlotsTaken"], json!(true), "issue #664: never taken over again");
     }
 
     /// Issue #484: the three spacing levels are chosen; `compact` and `console` are taken as Dense.
@@ -1858,8 +1802,8 @@ mod tests {
                 compose_paper: ComposePaper::Light,
                 mail_sender: None,
                 mail_attachments: MailAttachments::default(),
-                mail_to_cloud: false,
-                decide_mail_to_cloud: Some(false),
+                legacy_decide_mail_to_cloud: None,
+                ai_slots_taken: true,
                 mail_contacts_personal: true,
                 mail_sender_logos: true,
                 reminders: Reminders::from_value(&reminders).expect("valid reminders"),
@@ -1867,8 +1811,6 @@ mod tests {
                 ai_assignments: std::collections::BTreeMap::new(),
                 hidden_categories: Vec::new(),
                 mail_actions_off: BTreeSet::new(),
-                allow_api_keys: true,
-                allow_mcp: true,
                 tools: Default::default(),
                 web_search: Default::default(),
                 workspaces: torro_core::settings::WorkspaceSettings {
@@ -1876,13 +1818,6 @@ mod tests {
                 },
             }
         );
-        Change::parse(SettingKey::MailToCloud, &json!(true)).expect("valid flag").apply(&mut settings);
-        assert!(settings.mail_to_cloud);
-        assert!(Change::parse(SettingKey::MailToCloud, &json!("yes")).is_err(), "only true or false");
-        assert!(!settings.mail_to_cloud_in(torro_core::ai::AiSlot::Decide), "the chat's rule is not Sorting's");
-        Change::parse(SettingKey::DecideMailToCloud, &json!(true)).expect("valid flag").apply(&mut settings);
-        assert_eq!(settings.decide_mail_to_cloud, Some(true));
-        assert!(Change::parse(SettingKey::DecideMailToCloud, &json!(1)).is_err(), "only true or false");
         Change::parse(SettingKey::MailContactsPersonal, &json!(false)).expect("valid flag").apply(&mut settings);
         assert!(!settings.mail_contacts_personal);
         assert!(Change::parse(SettingKey::MailContactsPersonal, &json!("off")).is_err(), "only true or false");
@@ -2040,107 +1975,29 @@ mod tests {
         assert!(!store.current().voice.enabled);
     }
 
-    /// Task C.17: a client's whole settings never let mail go to the cloud, but may keep it local.
-    #[test]
-    fn a_client_never_lets_mail_out_but_may_keep_it_local() {
-        let (_dir, store) = store();
-        let mut sent = store.current();
-        sent.mail_to_cloud = true;
-        store.update_keeping_hidden(sent.clone()).expect("written");
-        assert!(!store.current().mail_to_cloud);
-        store.set(SettingKey::MailToCloud, &json!(true)).expect("the person");
-        store.update_keeping_hidden(sent.clone()).expect("written");
-        assert!(store.current().mail_to_cloud, "on stays on");
-        sent.mail_to_cloud = false;
-        store.update_keeping_hidden(sent).expect("written");
-        assert!(!store.current().mail_to_cloud);
-    }
-
     /// Issue #325 (task MW.2): a client's whole settings never change a slot – `ai.set_slot` checks
-    /// those – and never let sorted mail out, but may keep it here. A client from before the slots
-    /// sends no `decideMailToCloud`: that keeps it off, never unset (which would take the old values
-    /// over again at the next load).
+    /// those. Issue #664: every whole write stores `aiSlotsTaken`, also one that leaves it out (an app
+    /// from before the field), so the old AI values are never taken over again.
     #[test]
-    fn a_client_keeps_the_slots_and_never_lets_sorted_mail_out() {
+    fn a_client_keeps_the_slots_and_every_write_keeps_them_taken_over() {
         use torro_core::ai::{AiSlot, SlotModel};
-        let (_dir, store) = store();
+        let (dir, store) = store();
         let decide = SlotModel { engine: "ai:a".into(), model: Some("nimble".into()), effort: None };
-        store.set_ai_slot(AiSlot::Decide, Some(decide.clone()), true).expect("a slot");
-        assert!(store.current().mail_to_cloud_in(AiSlot::Decide), "the slot elsewhere let it out");
+        store.set_ai_slot(AiSlot::Decide, Some(decide.clone())).expect("a slot");
 
         let mut sent = store.current();
         sent.ai_slots.decide = Some(SlotModel { engine: "ai:b".into(), model: None, effort: None });
         sent.ai_slots.chat = Some(SlotModel { engine: "ai:c".into(), model: None, effort: None });
+        sent.ai_slots_taken = false;
         store.update_keeping_hidden(sent.clone()).expect("written");
-        assert_eq!(store.current().ai_slots.decide, Some(decide.clone()), "as stored");
+        assert_eq!(store.current().ai_slots.decide, Some(decide), "as stored");
         assert_eq!(store.current().ai_slots.chat, None, "as stored");
-        assert!(store.current().mail_to_cloud_in(AiSlot::Decide), "on stays on");
-
-        sent.decide_mail_to_cloud = None;
-        store.update_keeping_hidden(sent.clone()).expect("written");
-        assert_eq!(
-            store.current().decide_mail_to_cloud,
-            Some(false),
-            "an older client switches it off, never unsets it"
-        );
-        sent.decide_mail_to_cloud = Some(true);
-        store.update_keeping_hidden(sent).expect("written");
-        assert_eq!(store.current().decide_mail_to_cloud, Some(false), "a client never lets it out");
-
-        // The slot written here takes its permission along; emptied, nothing goes out.
-        store.set_ai_slot(AiSlot::Decide, Some(decide), false).expect("here");
-        assert_eq!(store.current().decide_mail_to_cloud, Some(false));
-        store.set_ai_slot(AiSlot::Decide, None, true).expect("emptied");
-        assert_eq!((store.current().ai_slots.decide, store.current().decide_mail_to_cloud), (None, Some(false)));
-        // The chat's slot leaves both permissions alone.
-        store.set(SettingKey::DecideMailToCloud, &json!(true)).expect("the person");
-        let chat = SlotModel { engine: "claude-code".into(), model: None, effort: None };
-        store.set_ai_slot(AiSlot::Chat, Some(chat.clone()), true).expect("chat");
-        let now = store.current();
-        assert_eq!((now.ai_slots.chat, now.decide_mail_to_cloud, now.mail_to_cloud), (Some(chat), Some(true), false));
-    }
-
-    /// Issue #325 (task MW.3): the person's whole settings without `decideMailToCloud` – an app from
-    /// before the slots – keep it as stored, so the file never holds it unset (which would take the old
-    /// AI values over again); with it, it is taken.
-    #[test]
-    fn the_person_s_whole_settings_never_unset_the_permission_of_sorting() {
-        use torro_core::ai::AiSlot;
-        let (dir, store) = store();
-        store.set(SettingKey::DecideMailToCloud, &json!(true)).expect("the person");
-        let mut sent = store.current();
-        sent.decide_mail_to_cloud = None;
-        store.update(sent.clone()).expect("written");
-        assert_eq!(store.current().decide_mail_to_cloud, Some(true), "kept as stored");
-        let file = std::fs::read_to_string(dir.path().join("settings.json")).expect("the file");
-        assert!(file.contains("\"decideMailToCloud\": true"), "{file}");
-
-        sent.decide_mail_to_cloud = Some(false);
-        store.update(sent.clone()).expect("written");
-        assert!(!store.current().mail_to_cloud_in(AiSlot::Decide), "taken when it is there");
-        sent.decide_mail_to_cloud = None;
+        assert!(store.current().ai_slots_taken);
         store.update(sent).expect("written");
-        assert_eq!(store.current().decide_mail_to_cloud, Some(false));
-    }
-
-    /// #231: a client's whole settings never open the API or MCP again, but may close them; the
-    /// person sets them one by one.
-    #[test]
-    fn a_client_never_opens_the_api_or_mcp_but_may_close_them() {
-        let (_dir, store) = store();
-        let mut sent = store.current();
-        sent.allow_api_keys = false;
-        sent.allow_mcp = false;
-        store.update_keeping_hidden(sent.clone()).expect("written");
-        assert!(!store.current().allow_api_keys && !store.current().allow_mcp, "closed");
-        sent.allow_api_keys = true;
-        sent.allow_mcp = true;
-        store.update_keeping_hidden(sent).expect("written");
-        assert!(!store.current().allow_api_keys && !store.current().allow_mcp, "a client does not open them");
-        store.set(SettingKey::AllowApiKeys, &json!(true)).expect("the person");
-        store.set(SettingKey::AllowMcp, &json!(true)).expect("the person");
-        assert!(store.current().allow_api_keys && store.current().allow_mcp);
-        assert!(store.set(SettingKey::AllowMcp, &json!("on")).is_err(), "only true or false");
+        let file = std::fs::read_to_string(dir.path().join("settings.json")).expect("the file");
+        assert!(file.contains("\"aiSlotsTaken\": true"), "{file}");
+        store.set_ai_slot(AiSlot::Decide, None).expect("emptied");
+        assert_eq!(store.current().ai_slots.decide, None);
     }
 
     /// An absolute path on this system, for folders and logos.
@@ -2151,16 +2008,12 @@ mod tests {
         }
     }
 
-    /// Issue #225: a tool is switched by its key, the PDF folder and a template are set and checked;
-    /// a value that does not fit is refused and changes nothing.
+    /// Issue #225: the PDF folder and a template are set and checked; a value that does not fit is
+    /// refused and changes nothing.
     #[test]
-    fn tools_are_switched_and_the_pdf_settings_set_and_checked() {
-        use torro_core::settings::{Paper, ToolId};
+    fn the_pdf_settings_are_set_and_checked() {
+        use torro_core::settings::Paper;
         let (_dir, store) = store();
-        store.set(SettingKey::ToolEnabled, &json!({"tool": "pdf", "enabled": true})).expect("on");
-        assert!(store.current().tools.is_on(ToolId::Pdf));
-        store.set(SettingKey::ToolEnabled, &json!({"tool": "pdf", "enabled": false})).expect("off");
-        assert!(!store.current().tools.is_on(ToolId::Pdf));
         let folder = absolute("/Users/anna/PDFs");
         store.set(SettingKey::PdfFolder, &json!(folder)).expect("a folder");
         assert_eq!(store.current().tools.pdf.folder, Some(folder.clone()));
@@ -2178,9 +2031,6 @@ mod tests {
         let mut unknown = letter.to_value(PdfTemplateId::Letter);
         unknown["template"] = json!("invoice");
         for (key, value) in [
-            (SettingKey::ToolEnabled, json!({"tool": "whiteboard", "enabled": true})),
-            (SettingKey::ToolEnabled, json!({"tool": "pdf", "enabled": true, "why": "x"})),
-            (SettingKey::ToolEnabled, json!(true)),
             (SettingKey::PdfFolder, json!("PDFs")),
             (SettingKey::PdfTemplate, too_small),
             (SettingKey::PdfTemplate, relative_logo),
@@ -2193,28 +2043,23 @@ mod tests {
         assert_eq!(store.current().tools.pdf.folder, None);
     }
 
-    /// Issue #225, point 9: a client's whole settings never switch a tool on, set a folder or a
-    /// logo; they may switch a tool off and change the other fields of a template, and the paths a
-    /// person set stay.
+    /// Issue #225, point 9: a client's whole settings never set a folder or a logo; they may change
+    /// the other fields of a template, and the paths a person set stay.
     #[test]
-    fn a_client_never_switches_a_tool_on_nor_sets_its_paths() {
-        use torro_core::settings::ToolId;
+    fn a_client_never_sets_the_paths_of_a_tool() {
         let (_dir, store) = store();
         let folder = absolute("/sync/Out");
         let logo = absolute("/pictures/logo.png");
         let mut sent = store.current();
-        sent.tools.set_on(ToolId::Pdf, true);
         sent.tools.pdf.folder = Some(folder.clone());
         sent.tools.pdf.note.logo = Some(logo.clone());
         sent.tools.pdf.note.font_size_pt = 12;
         store.update_keeping_hidden(sent.clone()).expect("written");
         let kept = store.current().tools;
-        assert!(!kept.is_on(ToolId::Pdf), "off stays off");
         assert_eq!((kept.pdf.folder, kept.pdf.note.logo), (None, None), "no path of a client");
         assert_eq!(kept.pdf.note.font_size_pt, 12, "the other fields are taken");
 
-        // The person switches it on and sets the paths: on stays on, the paths stay as they are.
-        store.set(SettingKey::ToolEnabled, &json!({"tool": "pdf", "enabled": true})).expect("the person");
+        // The person sets the paths: they stay as they are.
         store.set(SettingKey::PdfFolder, &json!(absolute("/Users/anna/PDFs"))).expect("the person");
         let mut note = PdfTemplate::standard(PdfTemplateId::Note);
         note.logo = Some(absolute("/pictures/anna.png"));
@@ -2222,11 +2067,7 @@ mod tests {
         let person = store.current().tools;
         store.update_keeping_hidden(sent.clone()).expect("written");
         let kept = store.current().tools;
-        assert!(kept.is_on(ToolId::Pdf), "on stays on");
         assert_eq!((&kept.pdf.folder, &kept.pdf.note.logo), (&person.pdf.folder, &person.pdf.note.logo));
-        sent.tools.set_on(ToolId::Pdf, false);
-        store.update_keeping_hidden(sent.clone()).expect("written");
-        assert!(!store.current().tools.is_on(ToolId::Pdf), "a client may switch it off");
         // Removing a path is an admin change like any other.
         (sent.tools.pdf.folder, sent.tools.pdf.note.logo) = (None, None);
         store.update_keeping_hidden(sent).expect("written");

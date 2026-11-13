@@ -11,8 +11,7 @@
 //!   [`ASSISTANT_BOT_TOOLS`] (task B.2: asking a bot only on the person's word, which the core
 //!   checks), and never a command kept from agents ([`Mcp::Never`]). A command of one of the
 //!   assistant's own tools (issue #225) only when the tool is in the rights' selection
-//!   ([`Rights::reaches_tool`]); callers cut that selection to the tools a person switched on first
-//!   ([`with_tools_on`]), so a tool needs both. Rights are not checked here for safety – the core
+//!   ([`Rights::reaches_tool`]); the tools are always there (issue #666). Rights are not checked here for safety – the core
 //!   checks every call – but so the model is not offered what would be `forbidden` anyway, a
 //!   command the person switched off for it (`Rights::denied`, #231) too.
 //! - **Server tools** (issue #302, task MA.6): after the catalogue's, the tools of MCP servers the
@@ -188,7 +187,7 @@ pub fn allowed(rights: Option<&Rights>, without: &[Area]) -> Vec<Arc<Tool>> {
 /// The tools of the commands a client of `kind` with `rights` may use in a conversation without the
 /// areas `without`, in catalogue order (see the module's documentation). `None` rights (no client
 /// yet): none. Contacts only with an address book in the rights. A command of one of the assistant's own tools only with the tool in
-/// [`Rights::tools`]; pass rights cut by [`with_tools_on`], so a switched-off tool is not offered. The assistant's own client ([`ASSISTANT_CLIENT`]) gets its memory and
+/// [`Rights::tools`]. The assistant's own client ([`ASSISTANT_CLIENT`]) gets its memory and
 /// [`ASSISTANT_BOT_TOOLS`] (task B.2) besides its rights, a bot's ([`torro_ipc::api::BOT_CLIENT`],
 /// task B.1) its rights only; both get [`MY_ACCESS`] (issue #134). Neither is offered any other tool
 /// of `assistant` or `bots`, and a bot no tool of `bots` (no chains; the core refuses it them).
@@ -228,23 +227,10 @@ pub fn allowed_for(kind: &str, rights: Option<&Rights>, without: &[Area], server
     catalogued.cloned().chain(served.filter_map(server_tool)).collect()
 }
 
-/// `rights` with their selection of the assistant's own tools (`Rights::tools`, issue #225) cut to
-/// the tools a person switched on (`on`, setting `tool_enabled`): what an answer of the assistant or
-/// a bot offers its model, tells it in the prompt and denies an agent go by these, so a tool is
-/// offered only with its switch **and** in the selection. "All tools" is written out first
-/// ([`Rights::reached_tools`]), so `web` stays out unless the selection names it (issue #305): the
-/// cut is never `All`.
-pub fn with_tools_on(rights: &Rights, on: &BTreeSet<ToolId>) -> Rights {
-    let mut cut = rights.clone();
-    cut.tools =
-        rights.reached_tools().common(&Selection::Only(on.iter().map(|tool| tool.name().to_string()).collect()));
-    cut
-}
-
 /// The assistant's own tools an answer may use (issue #225): each with its level in `tools`
 /// ([`ToolAccess::access`]: write for `pdf`, whose commands make and open files; read for `web` and for
-/// `files`, issue #304), the area among `areas` (not turned off for the conversation nor withheld) and
-/// the tool in the selection of `rights`, which come cut to the switched-on tools ([`with_tools_on`]).
+/// `files`, issue #304), the area among `areas` (not turned off for the conversation) and the tool in
+/// the selection of `rights` ([`Rights::reaches_tool`]).
 /// What the prompt names and what engine B leaves to the agent.
 pub fn usable_tools(rights: &Rights, areas: &[Area]) -> Vec<ToolId> {
     if !areas.contains(&Area::Tools) {
@@ -419,6 +405,13 @@ fn without_pictures(mut value: Value) -> Value {
     value
 }
 
+/// The answers of `chat.*` and `presence.*` commands that hold no text of other people (decision 6
+/// in `docs/chat.md`): `ok`, that a message went out (its id alone), that sending files began (its
+/// id alone), the caller's own prepared file and upload and how its sending goes, and errors. A
+/// positive list, so every answer added later counts as text of other people by itself.
+const CHAT_ANSWERS_OWN: &[&str] =
+    &["ok", "chat-sent", "chat-sending", "chat-prepared-file", "chat-file-upload", "chat-upload", "error"];
+
 /// An answer of `area` holds text from outside the suite: everything of contacts, of mail and of GitHub (issues,
 /// repositories of others) but errors, inbox answers that carry an entry marked `untrusted`, and
 /// task answers that carry GitHub items – an issue of a filter list (its list is `github:…`) or a
@@ -436,10 +429,8 @@ pub fn untrusted(area: Area, value: &Value) -> bool {
         Area::Workflows => !matches!(result, Some("error" | "ok" | "workflow-template" | "workflow-templates")),
         Area::Mail | Area::Github => !error,
         // Names, messages and status messages of other people (decision 5 in `docs/chat.md`); only the
-        // answers of the data rule's positive list hold none (ids, the caller's own files).
-        Area::Chat | Area::Presence => {
-            !result.is_some_and(|result| crate::assistant::data_rule::CHAT_ANSWERS_ALLOWED.contains(&result))
-        }
+        // answers of [`CHAT_ANSWERS_OWN`] hold none (ids, the caller's own files).
+        Area::Chat | Area::Presence => !result.is_some_and(|result| CHAT_ANSWERS_OWN.contains(&result)),
         // Contacts are text of other people (shared books, the system address book), every answer
         // (decision 4 in `docs/kontakte.md`).
         Area::Contacts => true,
@@ -537,11 +528,8 @@ fn cut(value: Value, chars: usize, items: usize) -> Value {
 }
 
 /// The result in a few words for the conversation's tool line, for people: how many results, or
-/// that it was done, failed or withheld.
-pub fn summary(response: &Response, withheld: bool) -> String {
-    if withheld {
-        return tr("Withheld from the model by your data rule").into();
-    }
+/// that it was done or failed.
+pub fn summary(response: &Response) -> String {
     if let Response::Error { code, .. } = response {
         return error_summary(code);
     }
@@ -632,9 +620,9 @@ pub fn allowed_with(
 }
 
 /// Why the core refused `operation` of a client of `kind` with `rights` (as stored, or narrowed by
-/// `mode`) with `forbidden` (issue #133), with the areas `without` switched off in the conversation,
-/// `never` those its engine never gets ([`crate::assistant::never_given`]) and the permission mode
-/// `mode` of the answer (issue #132): what the tool line then says ([`Lack::of_in`]). `None` without
+/// `mode`) with `forbidden` (issue #133), with the areas `without` switched off in the conversation
+/// and the permission mode `mode` of the answer (issue #132): what the tool line then says
+/// ([`Lack::of_in`]). `None` without
 /// rights and for the core's fixed refusals (the assistant driving itself, a bot it was not asked
 /// for).
 pub fn lack_in(
@@ -642,15 +630,13 @@ pub fn lack_in(
     rights: Option<&Rights>,
     operation: Operation,
     without: &[Area],
-    never: &[Area],
     mode: Mode,
 ) -> Option<Lack> {
-    Lack::of_in(kind, rights?, operation, without, never, mode)
+    Lack::of_in(kind, rights?, operation, without, mode)
 }
 
-/// The tool line's words for a call refused for `lack`, for people: `Needs write access to Mail`,
-/// `Claude Code does not get Mail (data rule)` (`engine` is the name of the engine that answers).
-pub fn lack_summary(lack: Lack, engine: &str) -> String {
+/// The tool line's words for a call refused for `lack`, for people: `Needs write access to Mail`.
+pub fn lack_summary(lack: Lack) -> String {
     let area = |area: Area| torro_settings_ui::rights::area_label(area);
     match lack {
         Lack::Area { area: a } => trf("No access to {area}", &[("area", &area(a))]),
@@ -661,12 +647,8 @@ pub fn lack_summary(lack: Lack, engine: &str) -> String {
         Lack::Outbound => tr("Sending mail is switched off").into(),
         Lack::ForPeople => tr("Only you can do this").into(),
         Lack::SwitchedOff { area: a } => trf("{area} is off in this conversation", &[("area", &area(a))]),
-        Lack::NeverToAgents { area: a } => {
-            trf("{engine} does not get {area} (data rule)", &[("engine", &engine), ("area", &area(a))])
-        }
         Lack::ReadOnly => tr("Read only in this conversation").into(),
         Lack::Denied { area: a } => trf("Turned off in {area}", &[("area", &area(a))]),
-        Lack::ToolOff { tool } => trf("{tool} is switched off", &[("tool", &tool.title())]),
         Lack::Tool { tool } => trf("No access to the tool {tool}", &[("tool", &tool.title())]),
         Lack::Extension => tr("No access to this tool of the MCP server").into(),
     }
@@ -702,8 +684,7 @@ mod tests {
     use torro_ipc::api::{AreaRights, Level, RightsTemplate};
 
     /// Issue #225: an own tool is usable only with the access it needs in `tools` (write for `pdf`, read
-    /// for `files`, issue #304), the area in the answer and the tool selected (and switched on, which the
-    /// rights come cut to).
+    /// for `files`, issue #304), the area in the answer and the tool selected.
     #[test]
     fn an_own_tool_is_usable_with_writing_the_area_and_the_selection() {
         let mut rights = Rights::assistant();
@@ -711,14 +692,16 @@ mod tests {
         rights.tools = Selection::Only(vec!["pdf".into()]);
         assert_eq!(usable_tools(&rights, &[Area::Tools]), vec![ToolId::Pdf]);
         assert!(usable_tools(&rights, &[Area::Calendar]).is_empty(), "the area turned off");
-        assert!(usable_tools(&with_tools_on(&rights, &BTreeSet::new()), &[Area::Tools]).is_empty(), "off");
+        let none = Rights { tools: Selection::Only(Vec::new()), ..rights.clone() };
+        assert!(usable_tools(&none, &[Area::Tools]).is_empty(), "not selected");
         let mut reading = rights.clone();
         reading.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
         assert!(usable_tools(&reading, &[Area::Tools]).is_empty(), "listing only: not enough for pdf");
         reading.tools = Selection::Only(vec!["pdf".into(), "files".into()]);
         assert_eq!(usable_tools(&reading, &[Area::Tools]), vec![ToolId::Files], "reading is enough for files");
         rights.tools = Selection::All;
-        assert_eq!(usable_tools(&rights, &[Area::Tools]), vec![ToolId::Pdf, ToolId::Files], "writing: both");
+        // Opened like the assistant (issue #666), "all tools" takes `web` along.
+        assert_eq!(usable_tools(&rights, &[Area::Tools]), ToolId::ALL.to_vec(), "writing: every tool");
         reading.areas.remove(&Area::Tools);
         assert!(usable_tools(&reading, &[Area::Tools]).is_empty(), "no access");
     }
@@ -785,31 +768,28 @@ mod tests {
         assert!(!with(&Rights::assistant(), &[], "mail:anna@example.org"), "no mail at all");
     }
 
-    /// Issue #305, decision 26: "all tools" cut to the switched-on ones never reaches `web`; reading in
-    /// `tools` with `web` named is enough for it, and then `pdf`, which needs writing, is not usable.
+    /// Issue #305, decision 26: "all tools" of a key never reaches `web`; reading in `tools` with `web`
+    /// named is enough for it, and then `pdf`, which needs writing, is not usable. Issue #666: the
+    /// assistant, opened, reaches `web` with "all tools".
     #[test]
     fn web_is_offered_only_when_named_and_reading_is_enough() {
-        let both = BTreeSet::from([ToolId::Pdf, ToolId::Web]);
         let mut rights = RightsTemplate::ReadAndWrite.rights();
         assert_eq!(rights.tools, Selection::All);
-        let cut = with_tools_on(&rights, &both);
-        assert!(cut.reaches_tool(ToolId::Pdf) && !cut.reaches_tool(ToolId::Web), "All does not cover web");
-        assert_eq!(usable_tools(&cut, &[Area::Tools]), vec![ToolId::Pdf]);
+        assert!(rights.reaches_tool(ToolId::Pdf) && !rights.reaches_tool(ToolId::Web), "All does not cover web");
+        assert_eq!(usable_tools(&rights, &[Area::Tools]), vec![ToolId::Pdf, ToolId::Files]);
+        let opened = Rights::assistant();
+        assert!(usable_tools(&opened, &[Area::Tools]).contains(&ToolId::Web), "the assistant's All does");
 
         rights.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
         rights.tools = Selection::Only(vec!["web".into()]);
-        let cut = with_tools_on(&rights, &both);
-        assert_eq!(usable_tools(&cut, &[Area::Tools]), vec![ToolId::Web], "reading is enough for web");
-        let offered: Vec<String> = allowed(Some(&cut), &[]).iter().map(|tool| tool.spec.name.clone()).collect();
+        assert_eq!(usable_tools(&rights, &[Area::Tools]), vec![ToolId::Web], "reading is enough for web");
+        let offered: Vec<String> = allowed(Some(&rights), &[]).iter().map(|tool| tool.spec.name.clone()).collect();
         for name in ["tools_web_search", "tools_fetch_page", "tools_list_search_providers"] {
             assert!(offered.contains(&name.to_string()), "{name}");
         }
         assert!(!offered.contains(&"tools_create_pdf".to_string()), "pdf is neither named nor writable");
         rights.tools = Selection::Only(vec!["pdf".into(), "web".into()]);
-        let cut = with_tools_on(&rights, &both);
-        assert_eq!(usable_tools(&cut, &[Area::Tools]), vec![ToolId::Web], "pdf needs writing");
-        let off = with_tools_on(&rights, &BTreeSet::from([ToolId::Pdf]));
-        assert!(usable_tools(&off, &[Area::Tools]).is_empty(), "web switched off");
+        assert_eq!(usable_tools(&rights, &[Area::Tools]), vec![ToolId::Web], "pdf needs writing");
     }
 
     use super::*;
@@ -823,28 +803,21 @@ mod tests {
         specs.iter().map(|spec| spec.name.as_str()).collect()
     }
 
-    /// Issue #225: the PDF tool's commands are offered only with the tool switched on and in the
-    /// selection, and writing to `tools`; listing the tools needs neither.
+    /// Issue #225: the PDF tool's commands are offered only with the tool selected and writing to
+    /// `tools`; listing the tools needs neither.
     #[test]
-    fn a_tool_is_offered_only_switched_on_and_selected() {
+    fn a_tool_is_offered_only_selected() {
         let mut rights = Rights::assistant();
         rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
         rights.tools = Selection::Only(vec!["pdf".into()]);
-        let offered = |rights: &Rights, on: &[ToolId]| {
-            let cut = with_tools_on(rights, &on.iter().copied().collect());
-            allowed(Some(&cut), &[]).iter().map(|tool| tool.spec.name.clone()).collect::<Vec<_>>()
-        };
-        let both = offered(&rights, &[ToolId::Pdf]);
+        let offered =
+            |rights: &Rights| allowed(Some(rights), &[]).iter().map(|tool| tool.spec.name.clone()).collect::<Vec<_>>();
+        let both = offered(&rights);
         assert!(both.contains(&"tools_create_pdf".to_string()) && both.contains(&"tools_open_file".to_string()));
         assert!(!both.contains(&"tools_save_file_as".to_string()), "never to a model");
-        let off = offered(&rights, &[]);
-        assert!(!off.contains(&"tools_create_pdf".to_string()) && off.contains(&"tools_list_tools".to_string()));
         rights.tools = Selection::Only(Vec::new());
-        assert!(!offered(&rights, &[ToolId::Pdf]).contains(&"tools_create_pdf".to_string()), "not selected");
-        rights.tools = Selection::All;
-        assert_eq!(with_tools_on(&rights, &BTreeSet::new()).tools, Selection::Only(Vec::new()));
-        let cut = with_tools_on(&rights, &BTreeSet::from([ToolId::Pdf]));
-        assert!(cut.reaches_tool(ToolId::Pdf) && cut.areas == rights.areas, "only the selection changes");
+        let off = offered(&rights);
+        assert!(!off.contains(&"tools_create_pdf".to_string()) && off.contains(&"tools_list_tools".to_string()));
     }
 
     /// Issue #132: a read-only answer is offered reading only, also of its memory and the bots; one
@@ -862,25 +835,18 @@ mod tests {
             command: named(&asking, "calendar_save_event").expect("offered").command,
             access: Access::Write,
         };
-        assert_eq!(lack_in(ASSISTANT_CLIENT, Some(&rights), save, &[], &[], Mode::ReadOnly), Some(Lack::ReadOnly));
+        assert_eq!(lack_in(ASSISTANT_CLIENT, Some(&rights), save, &[], Mode::ReadOnly), Some(Lack::ReadOnly));
         assert_eq!(
-            lack_in(ASSISTANT_CLIENT, Some(&rights), save, &[Area::Calendar], &[], Mode::ReadOnly),
+            lack_in(ASSISTANT_CLIENT, Some(&rights), save, &[Area::Calendar], Mode::ReadOnly),
             Some(Lack::SwitchedOff { area: Area::Calendar }),
             "the switch first"
         );
-        assert_eq!(lack_summary(Lack::ReadOnly, "Ollama"), tr("Read only in this conversation"));
-        // Issue #225: the tool's reasons name the tool.
+        assert_eq!(lack_summary(Lack::ReadOnly), tr("Read only in this conversation"));
+        // Issue #225: the tool's reason names the tool.
         let pdf = torro_ipc::tools::ToolId::Pdf;
-        assert_eq!(
-            lack_summary(Lack::ToolOff { tool: pdf }, "Ollama"),
-            trf("{tool} is switched off", &[("tool", &"PDF")])
-        );
-        assert_eq!(
-            lack_summary(Lack::Tool { tool: pdf }, "Ollama"),
-            trf("No access to the tool {tool}", &[("tool", &"PDF")])
-        );
+        assert_eq!(lack_summary(Lack::Tool { tool: pdf }), trf("No access to the tool {tool}", &[("tool", &"PDF")]));
         // Issue #302: a server's tool refused names no server: `Lack` carries fixed words only.
-        assert_eq!(lack_summary(Lack::Extension, "Ollama"), tr("No access to this tool of the MCP server"));
+        assert_eq!(lack_summary(Lack::Extension), tr("No access to this tool of the MCP server"));
     }
 
     /// #231: a command switched off for the assistant is not offered, its neighbours are, and what
@@ -895,11 +861,11 @@ mod tests {
         assert!(named(&tools, "assistant_remember").is_some(), "its memory is its own");
         let list = named(&allowed(Some(&Rights::assistant()), &[]), "calendar_list_events").expect("offered").command;
         let operation = Operation { command: list, access: list.access };
-        let lack = lack_in(ASSISTANT_CLIENT, Some(&rights), operation, &[], &[], Mode::Default);
+        let lack = lack_in(ASSISTANT_CLIENT, Some(&rights), operation, &[], Mode::Default);
         assert_eq!(lack, Some(Lack::Denied { area: Area::Calendar }));
         let calendar = torro_settings_ui::rights::area_label(Area::Calendar);
         assert_eq!(
-            lack_summary(Lack::Denied { area: Area::Calendar }, "Ollama"),
+            lack_summary(Lack::Denied { area: Area::Calendar }),
             trf("Turned off in {area}", &[("area", &calendar)])
         );
     }
@@ -925,10 +891,14 @@ mod tests {
         let rights = Rights::assistant();
         let tools = allowed(Some(&rights), &[]);
         let areas: BTreeSet<Area> = tools.iter().map(|tool| tool.command.area).collect();
-        assert_eq!(areas, BTreeSet::from([Area::Calendar, Area::Tasks, Area::Inbox, Area::Assistant, Area::Bots]));
+        // Issue #666: the tools come opened.
+        let expected = [Area::Calendar, Area::Tasks, Area::Inbox, Area::Assistant, Area::Bots, Area::Tools];
+        assert_eq!(areas, BTreeSet::from(expected));
         assert!(
-            tools.iter().all(|tool| tool.reads() || tool.is_memory() || tool.is_bots()),
-            "read rights, read tools, its memory and the bots"
+            tools
+                .iter()
+                .all(|tool| tool.reads() || tool.is_memory() || tool.is_bots() || tool.command.area == Area::Tools),
+            "read rights, read tools, its memory, the bots and its own tools"
         );
         // Task B.2: listing and asking bots, never making, changing or deleting one.
         let bots: Vec<&str> =
@@ -1075,12 +1045,11 @@ mod tests {
 
     #[test]
     fn summaries_count_results_or_say_what_happened() {
-        assert_eq!(summary(&Response::Ok, false), tr("Done"));
+        assert_eq!(summary(&Response::Ok), tr("Done"));
         let none = Response::Collections { collections: Vec::new() };
-        assert_eq!(summary(&none, false), trf("{count} results", &[("count", &0)]));
+        assert_eq!(summary(&none), trf("{count} results", &[("count", &0)]));
         let forbidden = Response::Error { code: "forbidden".into(), message: "no".into() };
-        assert_eq!(summary(&forbidden, false), tr("Not allowed for the assistant"));
-        assert_eq!(summary(&Response::Ok, true), tr("Withheld from the model by your data rule"));
+        assert_eq!(summary(&forbidden), tr("Not allowed for the assistant"));
         assert_eq!(error_summary("denied"), tr("You denied this"));
     }
 
@@ -1131,7 +1100,12 @@ mod tests {
         assert_eq!(server_names(&reading), ["ext_time_get_current_time"]);
         let writing = allowed_for(ASSISTANT_CLIENT, Some(&with(Level::Write)), &[], &servers);
         assert_eq!(server_names(&writing), ["ext_time_get_current_time", "ext_time_set_alarm"]);
-        assert!(server_names(&allowed_for(ASSISTANT_CLIENT, Some(&Rights::assistant()), &[], &servers)).is_empty());
+        // Issue #666: opened, a server without an entry is allowed; closed, none is.
+        let opened = allowed_for(ASSISTANT_CLIENT, Some(&Rights::assistant()), &[], &servers);
+        assert_eq!(server_names(&opened), ["ext_time_get_current_time", "ext_time_set_alarm"]);
+        let mut closed = Rights::assistant();
+        closed.close_extensions();
+        assert!(server_names(&allowed_for(ASSISTANT_CLIENT, Some(&closed), &[], &servers)).is_empty());
         assert!(
             server_names(&allowed_for(ASSISTANT_CLIENT, Some(&with(Level::Full)), &[Area::Extensions], &servers))
                 .is_empty()

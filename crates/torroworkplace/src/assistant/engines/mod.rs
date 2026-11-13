@@ -32,15 +32,10 @@
 //!   might have kept is worth nothing afterwards. So no plain key of the assistant needs to live
 //!   on disk or in the keychain for engine B.
 //! - **Rights**: requests with that key run as the assistant's client with its rights of now
-//!   minus the areas switched off in the conversation and minus `mail`: an agent sends what it
-//!   reads to its provider, and the data rule (`super::data_rule`, `docs/ki.md`: mail only to
-//!   models on the person's computers) keeps mail from it, unless the person lets mail go to
-//!   cloud models (setting `mail_to_cloud`, task C.17; read when the run starts).
-//!   Without mail rights the inbox hides the entries of mail accounts too
-//!   (`Rights::reaches_source`). The core checks this, not the agent.
+//!   minus the areas switched off in the conversation. No data rule takes more away (issue #664):
+//!   what the agent reads follows from the rights. The core checks this, not the agent.
 //! - **History**: the agent keeps no session (`--no-session-persistence`); every message carries
-//!   the conversation so far as text ([`message`]), with the answers the data rule keeps from a
-//!   model elsewhere replaced by a note (`super::model::history`). So the conversation lives only
+//!   the conversation so far as text ([`message`], `super::model::history`). So the conversation lives only
 //!   in the core's store, under its retention, and deleting it deletes it.
 //! - **Stop and limits**: `assistant.cancel` aborts the run; the child is killed with it
 //!   (`kill_on_drop`), the key taken back, the folder removed. A run that writes nothing for
@@ -87,10 +82,10 @@ use torro_ipc::api::Area;
 use torro_ipc::assistant::{Engine, EngineKind, EntryContent, Mode};
 use torro_ipc::{Key, Response};
 
-use super::data_rule::{DataRule, Place, Reader};
 use super::model::{Host, Job, command_name, history};
 use super::{Assistant, Partial, prompt, store, tools};
 use crate::client_setup::{Env, Method, TOKEN_VARIABLE, Target};
+use torro_core::ai::Place;
 
 /// A run that writes nothing for this long is stopped: longer than an MCP tool waits for a
 /// person's approval (60 s) and than a model thinks between two pieces.
@@ -104,38 +99,6 @@ const STDERR_BYTES: usize = 16 * 1024;
 
 /// At most this many characters of the agent's own words go into an error entry.
 const DETAIL_CHARS: usize = 300;
-
-/// The areas an agent never gets under the default data rule, whatever the assistant's rights say:
-/// its answers go to its provider, and the data rule keeps mail, chats and who is there on the
-/// person's computers (`docs/ki.md`, "Mail und Messenger nur lokal"; decision 6 in `docs/chat.md`).
-/// The person can let mail go to agents (task C.17, [`withheld_from_agents`]); chat and presence
-/// never ([`ALWAYS_HOME`]).
-const NEVER_TO_AGENTS: &[Area] = &[Area::Mail, Area::Chat, Area::Presence];
-
-/// The areas no switch lets out to an agent: the chats and who is there when are about other
-/// people, and the switch for mail speaks of mail alone.
-const ALWAYS_HOME: &[Area] = &[Area::Chat, Area::Presence];
-
-/// The areas a run of an agent goes without under `rule`: [`NEVER_TO_AGENTS`], or only
-/// [`ALWAYS_HOME`] once the person let mail go to cloud models.
-fn withheld_from_agents(rule: DataRule) -> &'static [Area] {
-    match rule.mail_to_cloud {
-        true => ALWAYS_HOME,
-        false => NEVER_TO_AGENTS,
-    }
-}
-
-/// The areas the engine `engine` does not get under the default data rule, whatever the
-/// assistant's rights say: [`NEVER_TO_AGENTS`] for a coding agent (`claude-code`), none for an AI
-/// account or the test engine. The gate names those of them a key was lent without as the reason of
-/// a `forbidden` (issue #133), apart from the areas switched off in a conversation; with mail let out
-/// (task C.17) a run is lent with mail, so none of them counts.
-pub fn never_given(engine: &str) -> &'static [Area] {
-    match Agent::of(engine) {
-        Some(_) => NEVER_TO_AGENTS,
-        None => &[],
-    }
-}
 
 /// A coding agent that can drive the assistant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,8 +212,7 @@ impl Agents {
     }
 
     /// The offered and installed agent with the engine id `id`; nothing in the product (issue
-    /// #219). Not [`never_given`]'s question: that one asks [`Agent::of`], so an engine id of an
-    /// older conversation keeps its data rule even though no agent is offered any more.
+    /// #219).
     pub fn find(&self, id: &str) -> Option<Agent> {
         if !self.offered {
             return None;
@@ -272,7 +234,6 @@ pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: 
         calls: HashMap::new(),
         answered: false,
         rights: None,
-        withheld: NEVER_TO_AGENTS,
     };
     let ended = run.go(host.as_ref()).await;
     match ended {
@@ -362,9 +323,6 @@ struct Running {
     /// The rights of the client the run uses, as stored when it started: why a tool was
     /// `forbidden` is told from them (issue #133).
     rights: Option<torro_ipc::api::Rights>,
-    /// The areas the run goes without whatever the rights say ([`withheld_from_agents`]), as the
-    /// data rule was when it started.
-    withheld: &'static [Area],
 }
 
 impl Running {
@@ -379,14 +337,7 @@ impl Running {
         let actor = self.job.actor.clone();
         let no_client = || if self.job.bot.is_some() { Failed::NoBotClient } else { Failed::NoClient };
         let Some(client) = host.client_of(&actor) else { return Err(no_client()) };
-        let rule = host.data_rule();
-        self.withheld = withheld_from_agents(rule);
-        let mut without = self.job.without.clone();
-        for area in self.withheld {
-            if !without.contains(area) {
-                without.push(*area);
-            }
-        }
+        let without = self.job.without.clone();
         // Lent for this conversation (task B.2): the core then knows where the agent asks a bot from,
         // and for a bot that runs for the assistant, what both clients may.
         // In the permission mode of the message (issue #132): the key, the tools and the prompt.
@@ -395,18 +346,21 @@ impl Running {
         let Some(lent) = lent else { return Err(no_client()) };
         let rights = mode.narrow(&client.rights);
         self.rights = Some(rights.clone());
-        // The assistant's own tools (issue #225): only those switched on, in the selection and with
-        // write access to `tools` are named in the prompt and left to the agent. Never the web
-        // (issue #305, "Werkzeug Web"): a lent key does not get it, the core refuses its commands
+        // The assistant's own tools (issue #225): only those in the selection and with the access
+        // they need in `tools` are named in the prompt and left to the agent. Never the web (issue
+        // #305, "Werkzeug Web"): a lent key does not get it, the core refuses its commands
         // (`forbidden`), so the prompt does not name it and the agent is denied its tools.
-        let mut on = host.tools_on();
-        on.remove(&torro_core::settings::ToolId::Web);
-        let rights = tools::with_tools_on(&rights, &on);
+        let reached = match rights.reached_tools() {
+            torro_ipc::api::Selection::Only(ids) => {
+                ids.into_iter().filter(|id| id != torro_core::settings::ToolId::Web.name()).collect()
+            }
+            torro_ipc::api::Selection::All => Vec::new(),
+        };
+        let rights = torro_ipc::api::Rights { tools: torro_ipc::api::Selection::Only(reached), ..rights };
         let areas = allowed_areas(actor.kind(), &rights, &without, mode);
         let usable = tools::usable_tools(&rights, &areas);
-        // The personality and the memory (task C.10); the prompt keeps the notes marked
-        // `local_only` from the agent, which runs elsewhere. A bot has its own personality and no
-        // memory (task B.1).
+        // The personality and the memory (task C.10). A bot has its own personality and no memory
+        // (task B.1).
         let (persona, memory) = match &self.job.bot {
             Some(bot) => (bot.personality.clone(), Vec::new()),
             None => self.assistant.persona_and_notes().await,
@@ -426,11 +380,9 @@ impl Running {
             areas: &areas,
             without: &self.job.without,
             rights: Some(&rights),
-            withheld: self.withheld,
             engine: self.agent.name(),
             model: "",
             place: Place::Remote,
-            mail_to_cloud: rule.mail_to_cloud,
             memory: &memory,
             servers: &servers,
         };
@@ -449,7 +401,7 @@ impl Running {
         let mut child = start(&command, &arguments, folder.path(), lent.key())
             .await
             .map_err(|err| Failed::Start(detail(&err.to_string(), lent.key(), &[folder.path(), &home])))?;
-        let input = claude::input(&message(&self.job, rule));
+        let input = claude::input(&message(&self.job));
         let stderr = collect(child.stderr.take());
         if let Some(mut stdin) = child.stdin.take() {
             // An agent that does not read is caught by the timeouts; its error is in its output.
@@ -533,7 +485,7 @@ impl Running {
             claude::Event::ToolResult { id, text, error } => {
                 let (name, input) = self.calls.remove(&id).unwrap_or_else(|| (String::new(), Value::Null));
                 let lack = if error { self.lack(&name, &text) } else { None };
-                let line = tool_line(&name, input, &text, error, lack, self.agent.name());
+                let line = tool_line(&name, input, &text, error, lack);
                 // A card after a command that made an item (issue #225), only for a file the register keeps
                 // as this client's: the result is the agent's text.
                 let card = match (&line, error) {
@@ -558,12 +510,10 @@ impl Running {
     }
 
     /// Why the tool `tool` (Claude Code's name of it) was refused with the error `text` (issue #133):
-    /// for `forbidden`, what the rights, the conversation's switches and the areas the run goes
-    /// without ([`Running::withheld`]) say. A command of one of the assistant's own tools the rights
-    /// allow (issue #225), as in engine A: the tool switched off now ([`Lack::ToolOff`]), else not in
-    /// the selection ([`Lack::Tool`]).
+    /// for `forbidden`, what the rights and the conversation's switches say. A command of one of the
+    /// assistant's own tools the rights allow (issue #225), as in engine A: not in the selection
+    /// ([`Lack::Tool`]).
     ///
-    /// [`Lack::ToolOff`]: torro_ipc::api::Lack::ToolOff
     /// [`Lack::Tool`]: torro_ipc::api::Lack::Tool
     fn lack(&self, tool: &str, text: &str) -> Option<torro_ipc::api::Lack> {
         use torro_ipc::api::Lack;
@@ -574,9 +524,8 @@ impl Running {
         let operation = torro_ipc::api::Operation { command: tool.command, access: tool.command.access };
         let kind = self.job.actor.kind();
         let rights = self.rights.as_ref();
-        let lack = tools::lack_in(kind, rights, operation, &self.job.without, self.withheld, self.job.mode);
+        let lack = tools::lack_in(kind, rights, operation, &self.job.without, self.job.mode);
         match (lack, torro_core::settings::ToolId::of_command(operation.command.name), rights) {
-            (None, Some(tool), Some(_)) if !self.host.tools_on().contains(&tool) => Some(Lack::ToolOff { tool }),
             (None, Some(tool), Some(rights)) if !rights.reaches_tool(tool) => Some(Lack::Tool { tool }),
             (lack, ..) => lack,
         }
@@ -608,12 +557,10 @@ fn allowed_areas(kind: &str, rights: &torro_ipc::api::Rights, without: &[Area], 
     areas
 }
 
-/// The text the agent reads: the conversation so far (the agent keeps no session), as the data
-/// `rule` lets it go to a model elsewhere, and the person's new message, which is the last entry of
-/// the job.
-fn message(job: &Job, rule: DataRule) -> String {
-    // An agent names its model only once it runs, and every model of it runs elsewhere (task S.23).
-    let mut messages = history(&job.history, &job.engine, None, Reader { place: Place::Remote, rule });
+/// The text the agent reads: the conversation so far (the agent keeps no session) and the person's
+/// new message, which is the last entry of the job.
+fn message(job: &Job) -> String {
+    let mut messages = history(&job.history);
     let new = match messages.pop() {
         Some(message) if message.role == Role::User => message.content,
         Some(message) => {
@@ -642,25 +589,18 @@ fn message(job: &Job, rule: DataRule) -> String {
 /// A tool line for the call of `tool` (Claude Code's name of it) with `input` and its result
 /// `text`: the command's catalogue name, the result in a few words, the error code of an error
 /// (`forbidden: …` as the MCP server writes it; `pending` for one that waits for a person), and
-/// why it was `forbidden` (`lack`, issue #133) in words that name the agent `engine`.
-fn tool_line(
-    tool: &str,
-    input: Value,
-    text: &str,
-    error: bool,
-    lack: Option<torro_ipc::api::Lack>,
-    engine: &str,
-) -> EntryContent {
+/// why it was `forbidden` (`lack`, issue #133).
+fn tool_line(tool: &str, input: Value, text: &str, error: bool, lack: Option<torro_ipc::api::Lack>) -> EntryContent {
     let tool = tool.strip_prefix(claude::TOOL_PREFIX).unwrap_or(tool);
     let name = if tool.is_empty() { "unknown".to_string() } else { command_name(tool) };
     let input = if input.is_null() { serde_json::json!({}) } else { input };
     if error {
         let code = error_code(text);
-        let summary = lack.map_or_else(|| tools::error_summary(&code), |lack| tools::lack_summary(lack, engine));
+        let summary = lack.map_or_else(|| tools::error_summary(&code), tools::lack_summary);
         return EntryContent::Tool { name, input, summary, error: Some(code), lack };
     }
     let summary = match serde_json::from_str::<Response>(text) {
-        Ok(response) => tools::summary(&response, false),
+        Ok(response) => tools::summary(&response),
         Err(_) => tr("Done").into(),
     };
     EntryContent::Tool { name, input, summary, error: None, lack: None }

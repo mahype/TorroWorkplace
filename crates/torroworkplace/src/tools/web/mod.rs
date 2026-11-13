@@ -168,8 +168,8 @@ impl SearchKeys for SystemKeys {
 /// alike, so rests, turns, kept answers and kept `robots.txt` hold for all; the providers' keys. The HTTP clients
 /// are built on first use: every start of the service would pay for them otherwise.
 ///
-/// The handlers answer as the commands' docs in `torro_ipc` say. The core checks the tool's switch, a client's
-/// rights and its selection before (`Lack::ToolOff`, `Lack::Tool`); nothing here waits for an approval.
+/// The handlers answer as the commands' docs in `torro_ipc` say. The core checks a client's rights and its
+/// selection before (`Lack::Tool`); nothing here waits for an approval.
 pub struct Web {
     router: Router,
     keys: Arc<dyn SearchKeys>,

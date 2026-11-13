@@ -60,7 +60,7 @@ fn client_of(clients: &Clients, id: &str) -> Option<torro_ipc::ClientInfo> {
 }
 
 #[tokio::test]
-async fn a_new_bot_gets_a_client_of_its_own_without_any_rights() {
+async fn a_new_bot_gets_a_client_of_its_own_with_only_the_tools_and_servers() {
     let dir = tempfile::tempdir().expect("temp dir");
     let (assistant, clients) = set_up(dir.path());
 
@@ -70,7 +70,8 @@ async fn a_new_bot_gets_a_client_of_its_own_without_any_rights() {
     assert_eq!(bot.instructions, "Suggest trains before flights.\nAsk for the budget.", "no control characters");
     let client = client_of(&clients, &bot.client).expect("its client");
     assert_eq!((client.name.as_str(), client.kind.as_str()), ("Travel planner", BOT_CLIENT));
-    assert_eq!(client.rights, Rights::none(), "no rights until a person grants some");
+    // Issue #666: no area until a person grants one, but every tool and MCP server is allowed.
+    assert_eq!(client.rights, Rights::none().opened(), "no data until a person grants some");
 
     // Read back whole, and listed without its texts.
     let Response::Bot { bot: read } = answer(&assistant, &clients, Request::GetBot { id: bot.id.clone() }).await else {
@@ -117,11 +118,11 @@ async fn changing_a_bot_keeps_its_client_and_rights_and_renames_the_client() {
     assert_eq!(clients.list().len(), 1, "no second client");
     assert!(!dir.path().join("config/assistant/bots").join(&bot.id).join("skills/2.md").exists());
 
-    // The person removed its client: the next save makes a new one, again without rights.
+    // The person removed its client: the next save makes a new one, again without data.
     clients.remove(&bot.client).await.expect("removed");
     let again = saved(answer(&assistant, &clients, save(Some(&bot.id), "Trip planner")).await);
     assert_ne!(again.client, bot.client);
-    assert_eq!(client_of(&clients, &again.client).map(|info| info.rights), Some(Rights::none()));
+    assert_eq!(client_of(&clients, &again.client).map(|info| info.rights), Some(Rights::none().opened()));
 }
 
 #[tokio::test]

@@ -18,7 +18,7 @@
 //! [`Clients::admit`] checks the first step of the rights (`docs/api.md`, "Prüfung im Dienst"):
 //! level and admin switch of the command's area and the commands switched off one by one
 //! ([`Rights::allows`]). Before it the core checks the way in ([`closed_door`], #231): whether the
-//! client's kind may come the way the request came, with its switch on. Collections and approval
+//! client's kind may come the way the request came. Collections and approval
 //! follow in the core ([`crate::core::Core::handle_from`]).
 //!
 //! The file is written on blocking threads (`spawn_blocking`) and the keychain on a thread of its
@@ -148,8 +148,8 @@ pub enum Refused {
     /// A known client whose rights, conversation or engine do not cover the command, with the
     /// reason (issue #133): error code `forbidden`, its message says what is missing.
     Lacks { command: &'static str, lack: Lack },
-    /// A known client whose kind may not come the way the request came, or whose way a person
-    /// turned off (#231, [`closed_door`]): error code `unauthorized`, `why` says which. Checked
+    /// A known client whose kind may not come the way the request came (#231, [`closed_door`]):
+    /// error code `unauthorized`, `why` says which. Checked
     /// before the rights, so it answers the same for every command, `system.ping` too.
     Closed { command: &'static str, why: &'static str },
 }
@@ -237,43 +237,49 @@ fn legacy_rights() -> Rights {
 /// adds how to get a key only to these, not to a known key refused for its way ([`Refused::Closed`]).
 pub const NO_KEY: &str = "needs a valid key";
 
-/// "Allow API keys" is off (#231).
-pub const API_OFF: &str = "The API is turned off in Torro Workplace, Settings › API.";
-/// "Allow MCP" is off (#231).
-pub const MCP_OFF: &str = "MCP is turned off in Torro Workplace, Settings › MCP clients.";
 /// The key of an MCP client came through the API (#231).
 pub const MCP_KEY: &str = "This key belongs to an MCP client.";
 /// A script's key came through MCP (#231).
 pub const SCRIPT_KEY: &str = "This key belongs to a script and works only through the API; an agent needs its own key from Settings › MCP clients.";
 
 /// Why a client of `kind` may not come in `door` (`None`: whichever way, for an approved command
-/// that runs now) with the switches `allow_api_keys` and `allow_mcp` as they are (#231,
-/// `docs/api.md` "Transport"); `None` when it may. The core answers `unauthorized` with the reason
-/// ([`Refused::Closed`]), before it looks at any right.
+/// that runs now) (#231, `docs/api.md` "Transport"); `None` when it may. The core answers
+/// `unauthorized` with the reason ([`Refused::Closed`]), before it looks at any right. API and MCP
+/// have no switch (issue #665): a key works as soon as a person made it, on its own way.
 ///
-/// - `script` only through the API, and only with `allow_api_keys` ([`API_OFF`], [`SCRIPT_KEY`]),
-/// - an MCP client ([`is_mcp_kind`]) only through MCP, and only with `allow_mcp` ([`MCP_OFF`],
-///   [`MCP_KEY`]),
-/// - `hook` either way, and only with `allow_mcp`: it belongs to an agent,
+/// - `script` only through the API ([`SCRIPT_KEY`]),
+/// - an MCP client ([`is_mcp_kind`]) only through MCP ([`MCP_KEY`]),
+/// - `hook` either way: it belongs to an agent,
 /// - `assistant` and `bot` are bound to neither: only they get lent keys, and the core runs them,
 /// - any other kind (from an older `clients.json`) like `script`.
-///
-/// The switch is checked before the way, so a person who turned a way off always reads that.
-pub fn closed_door(kind: &str, door: Option<Door>, allow_api_keys: bool, allow_mcp: bool) -> Option<&'static str> {
+pub fn closed_door(kind: &str, door: Option<Door>) -> Option<&'static str> {
     match kind {
-        ASSISTANT_CLIENT | BOT_CLIENT => None,
-        HOOK_CLIENT => (!allow_mcp).then_some(MCP_OFF),
+        ASSISTANT_CLIENT | BOT_CLIENT | HOOK_CLIENT => None,
         kind if is_mcp_kind(kind) => match door {
-            _ if !allow_mcp => Some(MCP_OFF),
             Some(Door::Api) => Some(MCP_KEY),
             Some(Door::Mcp) | None => None,
         },
         _ => match door {
-            _ if !allow_api_keys => Some(API_OFF),
             Some(Door::Mcp) => Some(SCRIPT_KEY),
             Some(Door::Api) | None => None,
         },
     }
+}
+
+/// Opens the assistant and every bot stored before issue #666 ([`Rights::extensions_default`] missing)
+/// the way they start now ([`Rights::opened`], decision 3 of the issue): every built-in tool and every
+/// MCP server, `web` included, also in an installation that had them closed; what a person switches off
+/// afterwards keeps its own entry. Each is opened once: the open level is stored with it. Whether any was.
+fn open_assistants(clients: &mut [Entry]) -> bool {
+    let mut opened = false;
+    for entry in clients.iter_mut() {
+        let rights = &mut entry.record.rights;
+        if matches!(entry.record.kind.as_str(), ASSISTANT_CLIENT | BOT_CLIENT) && rights.extensions_default.is_none() {
+            *rights = rights.clone().opened();
+            opened = true;
+        }
+    }
+    opened
 }
 
 /// A selection of calendars or task lists names a collection by a bare URL, as before several
@@ -527,6 +533,9 @@ impl Clients {
     /// means no clients; a damaged one is reported on stderr and leaves only the app key valid
     /// (fail closed).
     ///
+    /// The assistant and its bots stored before issue #666 are opened once ([`open_assistants`]) and
+    /// the file written, like the collection ids below.
+    ///
     /// Selections from before several accounts existed name collections by bare URL; they get
     /// the id of the account that owned them in front ([`qualify_legacy_selections`]), taken
     /// from `accounts.json` next to `file`, and the file is written once (task M1.1). When that
@@ -545,6 +554,7 @@ impl Clients {
                 {
                     qualified = qualify_legacy_selections(&mut clients, &owner);
                 }
+                qualified |= open_assistants(&mut clients);
                 State { clients, leases: Vec::new(), damaged: false }
             }
             Err(err) => {
@@ -561,7 +571,7 @@ impl Clients {
             changing: tokio::sync::Mutex::new(()),
         };
         if qualified && let Err(err) = shared.write(false) {
-            eprintln!("torroworkplace: cannot store the new collection ids of the clients: {err}");
+            eprintln!("torroworkplace: cannot store the clients brought up to date: {err}");
         }
         Ok(Clients { shared: Arc::new(shared) })
     }
@@ -604,24 +614,20 @@ impl Clients {
     }
 
     /// Why the client `id` with `key` may not send `operation` (issue #133): its stored rights, and
-    /// for a lent key the areas it was lent without, told apart into those its engine never gets
-    /// ([`crate::assistant::never_given`]) and those the person switched off in the conversation.
-    /// `None` when none of them refuses it (a refusal of the core's own).
+    /// for a lent key the areas the person switched off in the conversation. `None` when none of them
+    /// refuses it (a refusal of the core's own).
     fn lack(&self, key: &Key, id: &str, operation: Operation) -> Option<Lack> {
         let hash = hash(key.expose());
         let state = self.lock();
         let record = &state.clients.iter().find(|entry| entry.record.id == id)?.record;
         let (kind, rights) = (record.kind.clone(), record.rights.clone());
         let lease = state.leases.iter().find(|lease| same(&lease.hash, &hash));
-        let (never, without, mode) = match lease {
-            Some(lease) => (crate::assistant::never_given(&lease.engine), lease.without.clone(), lease.mode),
-            None => (&[][..], Vec::new(), Mode::Default),
+        let (switched_off, mode) = match lease {
+            Some(lease) => (lease.without.clone(), lease.mode),
+            None => (Vec::new(), Mode::Default),
         };
         drop(state);
-        // Only what the key was lent without: with mail let out (task C.17) an agent's key keeps mail.
-        let never: Vec<Area> = never.iter().filter(|area| without.contains(area)).copied().collect();
-        let switched_off: Vec<Area> = without.into_iter().filter(|area| !never.contains(area)).collect();
-        Lack::of_in(&kind, &rights, operation, &switched_off, &never, mode)
+        Lack::of_in(&kind, &rights, operation, &switched_off, mode)
     }
 
     /// Who `key` belongs to. A known client's last use is noted.
@@ -660,7 +666,7 @@ impl Clients {
         // The servers' tools need no level in the area (`Rights::allows`), only one per server: without the
         // area the key gets none of them either (F3 of the API review).
         if without.contains(&Area::Extensions) {
-            rights.extensions.clear();
+            rights.close_extensions();
         }
         let caller = Caller::Client { id: record.id.clone(), rights };
         if note_use(record, Utc::now()) {
@@ -1962,35 +1968,30 @@ pub(crate) mod tests {
         );
     }
 
-    /// #231 (`docs/api.md` "Transport"): which kind comes which way with which switch.
+    /// #231 (`docs/api.md` "Transport"): which kind comes which way; issue #665: no switch closes one.
     #[test]
-    fn each_kind_has_its_way_and_its_switch() {
+    fn each_kind_has_its_way() {
         let (api, mcp) = (Some(Door::Api), Some(Door::Mcp));
-        // Kind, way, API keys on, MCP on: the reason it is refused, if any.
+        // Kind, way: the reason it is refused, if any.
         let table = [
-            ("script", api, true, true, None),
-            ("script", mcp, true, true, Some(SCRIPT_KEY)),
-            ("script", api, false, true, Some(API_OFF)),
-            ("script", api, true, false, None),
-            ("claude-code", mcp, true, true, None),
-            ("claude-code", api, true, true, Some(MCP_KEY)),
-            ("claude-code", mcp, false, true, None),
-            ("mcp", mcp, true, false, Some(MCP_OFF)),
-            ("cursor", api, true, false, Some(MCP_OFF)),
-            ("hook", api, true, true, None),
-            ("hook", mcp, true, true, None),
-            ("hook", api, true, false, Some(MCP_OFF)),
-            ("assistant", mcp, false, false, None),
-            ("bot", api, false, false, None),
-            ("zed-editor", api, true, true, None),
-            ("zed-editor", mcp, true, true, Some(SCRIPT_KEY)),
-            ("zed-editor", api, false, true, Some(API_OFF)),
-            // An approved command runs whichever way it came, only with the switch on.
-            ("script", None, true, true, None),
-            ("codex", None, true, false, Some(MCP_OFF)),
+            ("script", api, None),
+            ("script", mcp, Some(SCRIPT_KEY)),
+            ("claude-code", mcp, None),
+            ("claude-code", api, Some(MCP_KEY)),
+            ("mcp", mcp, None),
+            ("cursor", api, Some(MCP_KEY)),
+            ("hook", api, None),
+            ("hook", mcp, None),
+            ("assistant", mcp, None),
+            ("bot", api, None),
+            ("zed-editor", api, None),
+            ("zed-editor", mcp, Some(SCRIPT_KEY)),
+            // An approved command runs whichever way it came.
+            ("script", None, None),
+            ("codex", None, None),
         ];
-        for (kind, door, api_keys, mcp_on, expected) in table {
-            assert_eq!(closed_door(kind, door, api_keys, mcp_on), expected, "{kind} {door:?} {api_keys} {mcp_on}");
+        for (kind, door, expected) in table {
+            assert_eq!(closed_door(kind, door), expected, "{kind} {door:?}");
         }
     }
 
@@ -2058,8 +2059,6 @@ pub(crate) mod tests {
         assert!(!rights.allows(Request::ListTools.operation()) && !rights.allows(create.operation()));
         assert_eq!(rights.mail_accounts, Selection::All, "the rest stays as stored");
         assert_eq!(rights.template(), None, "no longer a template, which holds the tools");
-        let assistant = Rights::assistant();
-        assert_eq!((assistant.area(Area::Tools), assistant.tools), (AreaRights::NONE, Selection::Only(vec![])));
     }
 
     /// Issue #302: a `clients.json` from before MCP servers opens neither the area `extensions` nor
@@ -2093,6 +2092,53 @@ pub(crate) mod tests {
         good.denied.insert(torro_ipc::extensions::denied_name("time", "convert_time"));
         clients.update(&id, good.clone()).await.expect("a server's id");
         assert_eq!(clients.list()[0].rights, good, "the level and the tool switched off are kept");
+    }
+
+    /// Issue #666: a `clients.json` of today opens the assistant and every bot once – every built-in
+    /// tool and MCP server, `web` too – and writes it; a key of a script or an MCP client stays as it
+    /// was, a server opens to it only by name. What a person closes afterwards stays closed.
+    #[tokio::test]
+    async fn the_assistant_and_its_bots_are_opened_once() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = clients_file(dir.path());
+        fs::create_dir_all(file.parent().expect("parent")).expect("dir");
+        let closed = serde_json::to_value(Rights::none()).expect("json");
+        let full = serde_json::to_value(RightsTemplate::FullAccess.rights()).expect("json");
+        // Each key its own hash: a hash twice makes the file count as damaged.
+        let entry = |id: &str, kind: &str, rights: &serde_json::Value, digit: &str| {
+            serde_json::json!({"id": id, "name": id, "kind": kind, "keySha256": digit.repeat(64),
+                "created": "2026-10-11T08:00:00Z", "rights": rights})
+        };
+        let old = serde_json::json!({"clients": [
+            entry("a0000001", ASSISTANT_CLIENT, &closed, "1"),
+            entry("b0000001", BOT_CLIENT, &closed, "2"),
+            entry("s0000001", "script", &full, "3"),
+            entry("m0000001", "claude-code", &full, "4"),
+        ]});
+        fs::write(&file, old.to_string()).expect("write");
+        let clients = open_in(dir.path());
+        let rights = |id: &str| clients.list().into_iter().find(|c| c.id == id).expect("listed").rights;
+        for id in ["a0000001", "b0000001"] {
+            let opened = rights(id);
+            assert_eq!(opened.extension("installed-later"), Level::Full, "{id}: a new server is allowed");
+            assert!(ToolId::ALL.into_iter().all(|tool| opened.reaches_tool(tool)), "{id}: every tool, web too");
+            assert_eq!(opened.area(Area::Calendar), AreaRights::NONE, "{id}: nothing else opens");
+        }
+        for id in ["s0000001", "m0000001"] {
+            let key = rights(id);
+            assert_eq!(key.extension("time"), Level::NoAccess, "{id}: a server by name only");
+            assert!(!key.reaches_tool(ToolId::Web), "{id}");
+        }
+        let stored = fs::read_to_string(&file).expect("written");
+        assert!(stored.contains("\"extensionsDefault\": \"full\""), "written once: {stored}");
+
+        // Closed by a person, it stays closed at the next start.
+        let mut bot = rights("b0000001");
+        bot.close_extensions();
+        clients.update("b0000001", bot).await.expect("closed");
+        let again = open_in(dir.path());
+        let bot = again.list().into_iter().find(|c| c.id == "b0000001").expect("listed").rights;
+        assert_eq!(bot.extension("time"), Level::NoAccess);
     }
 
     /// Issue #302 (task MA.5): removing a server takes its level and its tools in `denied` out of every
@@ -2661,9 +2707,8 @@ pub(crate) mod tests {
         assert_eq!(stored.address_books, rights.address_books);
     }
 
-    /// Issue #133: a `forbidden` from the gate names its cause – the engine that never gets mail, an
-    /// area switched off in the conversation, a level too low, an area not granted – and its message
-    /// tells the agent so.
+    /// Issue #133: a `forbidden` from the gate names its cause – an area switched off in the
+    /// conversation, a level too low, an area not granted – and its message tells the agent so.
     #[tokio::test]
     async fn a_refusal_of_the_gate_names_its_cause() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -2681,14 +2726,12 @@ pub(crate) mod tests {
         };
         let folders = Request::MailFolders { account: None };
 
-        // 1. Claude Code never gets mail, whatever the rights say.
+        // 1. Issue #664: an agent's key lent without mail names it as switched off, not as a data rule.
         let agent = clients.lend(&assistant.id, "claude-code", &[Area::Mail, Area::Tasks]).expect("lent");
-        let never = refused(agent.key(), &folders);
         assert_eq!(
-            never,
-            Refused::Lacks { command: "mail.list_folders", lack: Lack::NeverToAgents { area: Area::Mail } }
+            refused(agent.key(), &folders),
+            Refused::Lacks { command: "mail.list_folders", lack: Lack::SwitchedOff { area: Area::Mail } }
         );
-        assert!(message(never).contains("not given to a coding agent"));
         // 2. Switched off for this conversation, with an agent and with an AI account alike.
         let tasks = refused(agent.key(), &Request::TaskCollections);
         assert_eq!(
@@ -2719,6 +2762,28 @@ pub(crate) mod tests {
             Refused::Lacks { command: "accounts.list_accounts", lack: Lack::Area { area: Area::Accounts } }
         );
         assert!(message(accounts).contains("no access to accounts"));
+    }
+
+    /// Issue #666: the assistant opened reaches every MCP server, also one installed later; a key lent
+    /// without the servers (the conversation switched them off) reaches none of them, open or named.
+    #[tokio::test]
+    async fn a_key_lent_without_the_servers_reaches_none() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = open_in(dir.path());
+        let mut rights = Rights::assistant();
+        rights.extensions.insert("time".into(), Level::Read);
+        let (assistant, _) = clients.add("Assistant", ASSISTANT_CLIENT, rights).await.expect("added");
+        let rights_of = |key: &Key| match clients.admit(Some(key), &Request::Ping) {
+            Ok(Caller::Client { rights, .. }) => rights,
+            other => panic!("the client: {other:?}"),
+        };
+
+        let with = clients.lend(&assistant.id, "ollama", &[]).expect("lent");
+        let open = rights_of(with.key());
+        assert_eq!((open.extension("installed-later"), open.extension("time")), (Level::Full, Level::Read));
+        let without = clients.lend(&assistant.id, "ollama", &[Area::Extensions]).expect("lent");
+        let closed = rights_of(without.key());
+        assert_eq!((closed.extension("installed-later"), closed.extension("time")), (Level::NoAccess, Level::NoAccess));
     }
 
     #[tokio::test]

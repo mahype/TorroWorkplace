@@ -329,11 +329,13 @@ pub async fn answer(assistant: &Assistant, clients: &Clients, request: Request) 
     }
 }
 
-/// Makes the client of a bot named `name`: kind [`BOT_CLIENT`], no rights. Its key is made and
+/// Makes the client of a bot named `name`: kind [`BOT_CLIENT`], opened like the assistant (every built-in
+/// tool and MCP server, issue #666) and no other right. Its key is made and
 /// kept in the keychain as for every client, but nobody is given it: the core runs the bot as its
 /// client, and engine B lends a key of its own for each run.
 async fn new_client(clients: &Clients, name: &str) -> Result<String, Response> {
-    match clients.add_client(name, BOT_CLIENT, None, Rights::none()).await {
+    // Every built-in tool and MCP server, as the assistant has (issue #666): no other right.
+    match clients.add_client(name, BOT_CLIENT, None, Rights::none().opened()).await {
         Ok((info, _key)) => Ok(info.id),
         Err(err) => {
             eprintln!("torroworkplace: cannot make a client for the bot {name:?}: {err}");

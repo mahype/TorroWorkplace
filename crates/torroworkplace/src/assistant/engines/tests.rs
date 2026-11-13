@@ -23,10 +23,6 @@ struct FakeHost {
     clients: Clients,
     /// The areas every key was lent without.
     lent: Mutex<Vec<Vec<Area>>>,
-    /// The person let mail go to cloud models (task C.17).
-    mail_to_cloud: std::sync::atomic::AtomicBool,
-    /// The assistant's own tools a person switched on (issue #225).
-    tools_on: Mutex<std::collections::BTreeSet<torro_core::settings::ToolId>>,
 }
 
 impl Host for FakeHost {
@@ -44,14 +40,6 @@ impl Host for FakeHost {
 
     fn approval<'a>(&'a self, _id: &'a str) -> BoxFuture<'a, Response> {
         Box::pin(async { Response::Error { code: "not-found".into(), message: "none".into() } })
-    }
-
-    fn data_rule(&self) -> DataRule {
-        DataRule { mail_to_cloud: self.mail_to_cloud.load(std::sync::atomic::Ordering::SeqCst) }
-    }
-
-    fn tools_on(&self) -> std::collections::BTreeSet<torro_core::settings::ToolId> {
-        self.tools_on.lock().expect("lock").clone()
     }
 
     fn lend(&self, engine: &str, without: &[Area]) -> Option<crate::clients::LentKey> {
@@ -134,12 +122,7 @@ async fn install(dir: tempfile::TempDir, idle: Duration, client: bool) -> Setup 
         rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
         clients.add("Assistant", ASSISTANT_CLIENT, rights).await.expect("the assistant's client");
     }
-    let host = Arc::new(FakeHost {
-        clients,
-        lent: Mutex::new(Vec::new()),
-        mail_to_cloud: Default::default(),
-        tools_on: Default::default(),
-    });
+    let host = Arc::new(FakeHost { clients, lent: Mutex::new(Vec::new()) });
     let weak = Arc::downgrade(&host);
     let weak: std::sync::Weak<dyn Host> = weak;
     assistant.attach(weak);
@@ -284,12 +267,7 @@ fn agents_that_are_not_offered_are_no_engines_even_when_installed() {
     let agents = Agents::new(env, runs, idle, total).not_offered();
     assert!(agents.engines(true).is_empty(), "the product offers no agent (#219)");
     assert!(agents.find("claude-code").is_none(), "and no engine id finds one");
-    assert_eq!(Agent::of("claude-code"), Some(Agent::ClaudeCode), "the agent itself stays, for never_given");
-    assert_eq!(
-        never_given("claude-code"),
-        [Area::Mail, Area::Chat, Area::Presence],
-        "so an old conversation keeps its data rule"
-    );
+    assert_eq!(Agent::of("claude-code"), Some(Agent::ClaudeCode), "the agent itself stays");
 
     // The product's own constructor, so rebuilding `engines` on `Agent::ALL` cannot slip past this
     // test. The flag is read before anything is looked up, so no home directory is needed.
@@ -312,10 +290,9 @@ fn send_to_claude() -> Request {
 }
 
 /// Issue #225: a command of one of the assistant's own tools refused with `forbidden` says why on
-/// its tool line, as in engine A: the rights first, then the tool switched off, else not in the
-/// client's selection.
+/// its tool line, as in engine A: the rights first, else not in the client's selection.
 #[tokio::test]
-async fn a_refused_tool_says_whether_it_is_off_or_not_granted() {
+async fn a_refused_tool_says_whether_it_is_not_granted() {
     use torro_core::settings::ToolId;
     let input = json!({"title": "Offer", "markdown": "# Offer"});
     let transcript = [
@@ -335,24 +312,20 @@ async fn a_refused_tool_says_whether_it_is_off_or_not_granted() {
     let line_of = |lack: Lack| EntryContent::Tool {
         name: "tools.create_pdf".into(),
         input: input.clone(),
-        summary: tools::lack_summary(lack, "Claude Code"),
+        summary: tools::lack_summary(lack),
         error: Some("forbidden".into()),
         lack: Some(lack),
     };
 
-    // Not granted and switched off: the rights say why, not the switch.
+    // Not granted: the rights say why.
+    let mut closed = client.rights.clone();
+    closed.areas.remove(&Area::Tools);
+    setup.host.clients.update(&client.id, closed).await.expect("rights");
     let id = ask(&setup, None, "Make a PDF", Vec::new()).await;
     let entries = contents(&finished(&setup.assistant, &id).await);
     assert!(entries.contains(&line_of(Lack::Area { area: Area::Tools })), "{entries:?}");
 
-    // Granted, but no person switched it on.
-    setup.host.clients.update(&client.id, with_tools(Selection::All)).await.expect("rights");
-    let id = ask(&setup, None, "Make a PDF", Vec::new()).await;
-    let entries = contents(&finished(&setup.assistant, &id).await);
-    assert!(entries.contains(&line_of(Lack::ToolOff { tool: ToolId::Pdf })), "{entries:?}");
-
-    // Switched on, but not in the selection.
-    setup.host.tools_on.lock().expect("lock").insert(ToolId::Pdf);
+    // Granted, but not in the selection.
     setup.host.clients.update(&client.id, with_tools(Selection::Only(Vec::new()))).await.expect("rights");
     let id = ask(&setup, None, "Make a PDF", Vec::new()).await;
     let entries = contents(&finished(&setup.assistant, &id).await);
@@ -397,13 +370,11 @@ async fn the_stream_becomes_answers_and_tool_lines_and_the_key_stays_in_the_envi
             EntryContent::Tool {
                 name: "mail.list_folders".into(),
                 input: json!({"account": "mail:anna@example.org"}),
-                // Issue #133: the line says why, and that no change of rights helps.
-                summary: trf(
-                    "{engine} does not get {area} (data rule)",
-                    &[("engine", &"Claude Code"), ("area", &tr("Mail"))]
-                ),
+                // Issue #664: no data rule keeps mail from the agent; the rights allow it, so the core
+                // refused it for a reason of its own.
+                summary: tools::error_summary("forbidden"),
                 error: Some("forbidden".into()),
-                lack: Some(Lack::NeverToAgents { area: Area::Mail }),
+                lack: None,
             },
             answer("You have no calendars."),
         ]
@@ -442,11 +413,7 @@ async fn the_stream_becomes_answers_and_tool_lines_and_the_key_stays_in_the_envi
     assert!(setup.host.clients.admit(Some(&key), &Request::CalendarCollections).is_err(), "taken back");
     let config = after("--mcp-config").expect("the configuration");
     assert!(!Path::new(&config).exists(), "the run's folder is removed");
-    assert_eq!(
-        *setup.host.lent.lock().expect("lock"),
-        [vec![Area::Tasks, Area::Mail, Area::Chat, Area::Presence]],
-        "mail and chat never go to an agent"
-    );
+    assert_eq!(*setup.host.lent.lock().expect("lock"), [vec![Area::Tasks]], "only what the conversation switched off");
 
     // The next message carries the conversation so far: the agent keeps no session.
     let _ = ask(&setup, Some(&id), "And tomorrow?", Vec::new()).await;
@@ -458,10 +425,9 @@ async fn the_stream_becomes_answers_and_tool_lines_and_the_key_stays_in_the_envi
 }
 
 /// Issue #225 (PR review of #232): engine B leaves the PDF tool to the agent only with write access
-/// to `tools`, as engine A offers it; switched on and selected but reading only, it is denied.
+/// to `tools`, as engine A offers it; selected but reading only, it is denied.
 #[tokio::test]
 async fn an_agent_gets_the_pdf_tool_only_with_write_access() {
-    use torro_core::settings::ToolId;
     use torro_ipc::api::{AreaRights, Level, Selection};
     let denied = |arguments: &[String]| {
         let at = arguments.iter().position(|argument| argument == "--disallowedTools").expect("the flag");
@@ -469,7 +435,6 @@ async fn an_agent_gets_the_pdf_tool_only_with_write_access() {
     };
     for (level, refused) in [(Level::Write, false), (Level::Read, true)] {
         let setup = set_up(&[init(), says("Done."), done("Done.")], "", Duration::from_secs(10), true).await;
-        setup.host.tools_on.lock().expect("lock").insert(ToolId::Pdf);
         let client = setup.host.client().expect("the assistant's client");
         let mut rights = client.rights.clone();
         rights.areas.insert(Area::Tools, AreaRights { level, admin: false });
@@ -481,15 +446,12 @@ async fn an_agent_gets_the_pdf_tool_only_with_write_access() {
     }
 }
 
-/// Issue #305 ("Werkzeug Web"): a lent key never gets the web. Switched on, selected and readable,
-/// engine B still denies the agent its tools and the prompt does not name it; the PDF tool next to it
-/// stays.
+/// Issue #305 ("Werkzeug Web"): a lent key never gets the web. Selected and readable, engine B still
+/// denies the agent its tools and the prompt does not name it; the PDF tool next to it stays.
 #[tokio::test]
 async fn an_agent_never_gets_the_web() {
-    use torro_core::settings::ToolId;
     use torro_ipc::api::{AreaRights, Level, Selection};
     let setup = set_up(&[init(), says("Done."), done("Done.")], "", Duration::from_secs(10), true).await;
-    setup.host.tools_on.lock().expect("lock").extend([ToolId::Pdf, ToolId::Web]);
     let client = setup.host.client().expect("the assistant's client");
     let mut rights = client.rights.clone();
     rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
@@ -511,25 +473,22 @@ async fn an_agent_never_gets_the_web() {
     assert!(own.contains("tools_create_pdf") && !own.contains("tools_web_search"), "{own}");
 }
 
-/// Task C.17: once the person lets mail go to cloud models, the run's key is lent
-/// with mail, the agent's tools include it, and the prompt no longer says it is kept from it.
+/// Issue #664: the run's key is lent with mail, chats and who is there as the rights give them, the
+/// agent's tools include them, and the prompt does not say anything is kept from it.
 #[tokio::test]
-async fn with_mail_let_out_the_agent_gets_mail_as_the_rights_give_it() {
+async fn the_agent_gets_mail_as_the_rights_give_it() {
     let setup = set_up(&[init(), says("Two folders."), done("Two folders.")], "", Duration::from_secs(10), true).await;
-    setup.host.mail_to_cloud.store(true, std::sync::atomic::Ordering::SeqCst);
     let id = ask(&setup, None, "Which mail folders do I have?", Vec::new()).await;
     finished(&setup.assistant, &id).await;
-    // Chat and presence stay home whatever the switch for mail says (decision 6 in `docs/chat.md`).
-    assert_eq!(*setup.host.lent.lock().expect("lock"), [vec![Area::Chat, Area::Presence]], "lent with mail");
+    assert_eq!(*setup.host.lent.lock().expect("lock"), [Vec::<Area>::new()], "lent with mail");
     let arguments = setup.read("args");
     let prompt = arguments.split_once("--append-system-prompt=").map(|(_, rest)| rest).expect("the prompt");
     assert!(prompt.contains("  - mail: read"), "{prompt}");
-    assert!(!prompt.contains("not given to you"), "{prompt}");
-    assert!(prompt.contains("lets mail go to cloud models"), "{prompt}");
+    assert!(!prompt.contains("not given to you") && !prompt.contains("data rule"), "{prompt}");
 }
 
 #[tokio::test]
-async fn while_it_runs_the_key_is_the_assistants_without_mail_and_cancel_kills_the_agent() {
+async fn while_it_runs_the_key_is_the_assistants_and_cancel_kills_the_agent() {
     let setup = set_up(&[init(), piece("Thinking")], "exec sleep 30", Duration::from_secs(20), true).await;
     let id = ask(&setup, None, "Plan my week", Vec::new()).await;
 
@@ -548,8 +507,8 @@ async fn while_it_runs_the_key_is_the_assistants_without_mail_and_cancel_kills_t
     let Ok(Caller::Client { rights, .. }) = setup.host.clients.admit(Some(&key), &Request::CalendarCollections) else {
         panic!("the lent key is the assistant's");
     };
-    assert!(!rights.areas.contains_key(&Area::Mail), "mail stays with the person's computers");
-    assert!(setup.host.clients.admit(Some(&key), &Request::MailFolders { account: None }).is_err());
+    assert!(rights.areas.contains_key(&Area::Mail), "issue #664: mail as the rights give it");
+    assert!(setup.host.clients.admit(Some(&key), &Request::MailFolders { account: None }).is_ok());
 
     let pid = setup.read("pid").trim().to_string();
     assert_eq!(setup.assistant.cancel(&id, chrono::Utc::now()).await, Response::Ok);
@@ -644,7 +603,6 @@ async fn errors_become_error_entries_without_the_key() {
         "pending: waiting",
         true,
         None,
-        "Claude Code",
     );
     assert_eq!(
         line,
@@ -671,10 +629,10 @@ fn details_lose_the_key_and_stay_short() {
     assert_eq!(error_code("Claude requested permissions to use X"), "error");
 }
 
-/// Task C.10: the agent's prompt carries the personality first and the notes of the memory, but no
-/// note kept from remote models – the agent runs elsewhere.
+/// Task C.10: the agent's prompt carries the personality first and the notes of the memory; issue
+/// #664: also a note kept after reading mail, though the agent runs elsewhere.
 #[tokio::test]
-async fn the_agent_reads_the_personality_and_no_local_note() {
+async fn the_agent_reads_the_personality_and_every_note() {
     let transcript = [init(), says("Hello."), done("Hello.")];
     let setup = set_up(&transcript, "", Duration::from_secs(10), true).await;
     let change = super::super::profile::Change {
@@ -695,7 +653,7 @@ async fn the_agent_reads_the_personality_and_no_local_note() {
     assert!(prompt.starts_with(super::super::prompt::PERSONALITY_HEADING), "{prompt}");
     assert!(prompt.contains("> Answer like a ship's captain."), "{prompt}");
     assert!(prompt.contains("] Anna works in sales."), "{prompt}");
-    assert!(!arguments.contains("ACME"), "{arguments}");
+    assert!(arguments.contains("ACME"), "{arguments}");
 }
 
 /// Issue #131: the model and the effort of the message reach Claude Code's command line, and the
@@ -727,14 +685,4 @@ async fn the_model_and_the_effort_go_to_claude_code() {
     assert!(arguments.contains(&"--effort=high".to_string()), "{arguments:?}");
     let (summary, _) = read(&setup.assistant, &conversation.id, None).await;
     assert_eq!((summary.model.as_deref(), summary.effort), (Some("opus"), Some(torro_core::ai::Effort::High)));
-}
-
-/// Decision 5 in `docs/kontakte.md`: contacts are not kept from agents; what one sees is decided by
-/// the address books ticked for it alone, so a person who does not want a book at an AI provider
-/// leaves it out there.
-#[test]
-fn contacts_are_not_kept_from_agents() {
-    assert!(!NEVER_TO_AGENTS.contains(&Area::Contacts));
-    assert!(!never_given("claude-code").contains(&Area::Contacts));
-    assert!(!withheld_from_agents(DataRule::default()).contains(&Area::Contacts));
 }

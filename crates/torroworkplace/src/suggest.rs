@@ -12,9 +12,8 @@
 //! Coding agents (Claude Code) are no AI account and are passed over. Accounts with a known problem
 //! (no key on this device, a key the server refused) are passed over too.
 //!
-//! The data rule (`docs/ki.md`, principle 4; `crate::assistant::held_back`): an entry of mail,
-//! Nextcloud or Talk goes only to a model on the person's computers. Then a local AI account is
-//! taken in place of one elsewhere; with none the answer is `not-connected` and says why.
+//! The entry goes to that AI wherever it computes (issue #664, `docs/ki.md`, principle 4): no data
+//! rule holds an entry of mail, Nextcloud or Talk back.
 //!
 //! The entry's text is data from outside the suite (security rule 5): the prompt puts it between
 //! `<message>` and `</message>` (a closing tag inside it is broken up) and tells the model never to
@@ -36,8 +35,6 @@ use torro_ipc::{
     SUGGESTION_TITLE_MAX, TaskSuggestion,
 };
 use torro_pim::EventTime;
-
-use crate::assistant::Place;
 
 /// The most characters of an entry's text the model reads: enough for a long mail, short enough
 /// for a small local model's context.
@@ -98,8 +95,6 @@ pub fn offered_lists(names: Vec<String>) -> Vec<String> {
 pub struct Candidate {
     /// The account's id (`ai:ollama@localhost:11434`), its engine id too.
     pub id: String,
-    /// Where its model runs (`crate::assistant::place_of`).
-    pub place: Place,
     /// Something is known against it (no key on this device, a refused key): it is passed over.
     pub problem: bool,
 }
@@ -121,8 +116,6 @@ pub struct Chosen {
 pub enum SuggestError {
     /// No AI account is set up (or every one has a problem).
     NoAi,
-    /// The entry may go only to a model on the person's computers, and no such account is set up.
-    NoLocalAi,
     /// The AI server failed.
     Ai(AiError),
     /// The answer holds no suggestion.
@@ -137,11 +130,6 @@ impl SuggestError {
             SuggestError::NoAi => {
                 ("not-connected", tr("Set up an AI first: connect an AI account under Settings › AI.").to_string())
             }
-            SuggestError::NoLocalAi => (
-                "not-connected",
-                tr("Mail, Nextcloud and Talk go only to an AI on this computer. Connect a local AI such as Ollama.")
-                    .to_string(),
-            ),
             SuggestError::Ai(err) => (err.code(), err.to_string()),
             SuggestError::Unreadable => {
                 ("error", tr("The AI's answer held no suggestion. Try again or pick another model.").to_string())
@@ -152,27 +140,18 @@ impl SuggestError {
 }
 
 /// The AI to ask among `accounts` (in their order): the person's `default` when its engine is one
-/// of them, with its model and effort; else the first. Accounts with a problem are passed over, and
-/// with `local_only` (the data rule, module docs) every one whose model runs elsewhere.
-/// [`SuggestError::NoLocalAi`] when the rule left none of those there were, else
-/// [`SuggestError::NoAi`].
-pub fn choose(
-    accounts: &[Candidate],
-    default: Option<&AssistantDefault>,
-    local_only: bool,
-) -> Result<Chosen, SuggestError> {
+/// of them, with its model and effort; else the first. Accounts with a problem are passed over;
+/// [`SuggestError::NoAi`] when none is left.
+pub fn choose(accounts: &[Candidate], default: Option<&AssistantDefault>) -> Result<Chosen, SuggestError> {
     let working: Vec<&Candidate> = accounts.iter().filter(|account| !account.problem).collect();
-    let allowed: Vec<&Candidate> =
-        working.iter().copied().filter(|account| !local_only || account.place == Place::Local).collect();
     if let Some(default) = default
-        && allowed.iter().any(|account| account.id == default.engine)
+        && working.iter().any(|account| account.id == default.engine)
     {
         return Ok(Chosen { engine: default.engine.clone(), model: default.model.clone(), effort: default.effort });
     }
-    match allowed.first() {
+    match working.first() {
         Some(first) => Ok(Chosen { engine: first.id.clone(), model: None, effort: None }),
-        None if working.is_empty() => Err(SuggestError::NoAi),
-        None => Err(SuggestError::NoLocalAi),
+        None => Err(SuggestError::NoAi),
     }
 }
 
@@ -744,30 +723,25 @@ mod tests {
         assert!(cut_down < torro_ipc::mail::MAX_FOCUS_CHARS, "cut to the limit: {cut_down}");
     }
 
-    fn candidate(id: &str, place: Place, problem: bool) -> Candidate {
-        Candidate { id: id.into(), place, problem }
+    fn candidate(id: &str, problem: bool) -> Candidate {
+        Candidate { id: id.into(), problem }
     }
 
+    /// Issue #664: the person's default comes first, also for mail and wherever it computes.
     #[test]
-    fn the_default_ai_comes_first_and_the_data_rule_keeps_mail_local() {
+    fn the_default_ai_comes_first() {
         let (ollama, openrouter) = ("ai:ollama@localhost:11434", "ai:openrouter@openrouter.ai");
-        let both = [candidate(ollama, Place::Local, false), candidate(openrouter, Place::Remote, false)];
+        let both = [candidate(ollama, false), candidate(openrouter, false)];
         let default =
             AssistantDefault { engine: openrouter.into(), model: Some("qwen/qwen3-14b".into()), effort: None };
-        let picked = choose(&both, Some(&default), false).expect("an AI");
+        let picked = choose(&both, Some(&default)).expect("an AI");
         assert_eq!((picked.engine.as_str(), picked.model.as_deref()), (openrouter, Some("qwen/qwen3-14b")));
-        // Mail stays local: the default elsewhere is passed over for the local account.
-        assert_eq!(
-            choose(&both, Some(&default), true).expect("an AI"),
-            Chosen { engine: ollama.into(), model: None, effort: None }
-        );
         // A coding agent as default is no AI account: the first account.
         let agent = AssistantDefault { engine: "claude-code".into(), model: None, effort: None };
-        assert_eq!(choose(&both, Some(&agent), false).expect("an AI").engine, ollama);
-        let remote = [candidate(openrouter, Place::Remote, false)];
-        assert_eq!(choose(&remote, None, true), Err(SuggestError::NoLocalAi));
-        assert_eq!(choose(&[candidate(ollama, Place::Local, true)], None, false), Err(SuggestError::NoAi), "a problem");
-        assert_eq!(choose(&[], None, false), Err(SuggestError::NoAi));
+        assert_eq!(choose(&both, Some(&agent)).expect("an AI").engine, ollama);
+        assert_eq!(choose(&[candidate(openrouter, false)], None).expect("an AI").engine, openrouter);
+        assert_eq!(choose(&[candidate(ollama, true)], None), Err(SuggestError::NoAi), "a problem");
+        assert_eq!(choose(&[], None), Err(SuggestError::NoAi));
         assert_eq!(
             SuggestError::NoAi.response(),
             Response::Error {
