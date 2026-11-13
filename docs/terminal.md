@@ -158,9 +158,9 @@ Pfade außerhalb als Argument bekommt, ist ohne Sandbox ein Befund der Heuristik
   Befehl ausführen; die Nachricht zählt nicht als fremder Inhalt. Es erscheint die Karte, die Person entscheidet. Der
   Bereich `assistant` ist bei fremden Clients standardmäßig aus (Entscheidung 7).
 - **Restgefahr:** Was ein Befehl **selbst** ausgibt (eine Datei, die er liest, eine Antwort aus dem Netz), ist
-  ebenfalls fremd, sobald es ein Modell erreicht. Die Ausgabe eines Befehls könnte deshalb wie ein Treffer der Websuche zählen (offen, Entscheidung 4):
+  ebenfalls fremd, sobald es ein Modell erreicht. Die Ausgabe eines Befehls könnte deshalb wie ein Treffer der Websuche zählen (offen, Frage 4 unten):
   Nach einem Befehl, dessen Ausgabe Inhalte von außen enthalten kann (`curl`, `git log`, ein Test), ist die
-  Unterhaltung nicht mehr sauber. Das Konzept lässt die Frage offen, ob jede Ausgabe so zählt (Entscheidung 4 unten);
+  Unterhaltung nicht mehr sauber. Das Konzept lässt die Frage offen, ob jede Ausgabe so zählt (Frage 4 unten);
   die strenge Antwort („ja“) macht das Werkzeug fast nutzlos für lange Aufgaben, die lockere lässt eine Lücke.
 
 ## Umgebung und Ausgabe
@@ -180,7 +180,7 @@ Pfade außerhalb als Argument bekommt, ist ohne Sandbox ein Befund der Heuristik
 
 ## Bots, API, MCP und geplante Läufe
 
-- **Bots** wie der Assistent: Falls Bots das Terminal bekommen (Entscheidung 10): Ein Bot hat sein eigenes Terminal-Recht nur mit Haken (Abschnitt „Rechte“); im Auftrag
+- **Bots** wie der Assistent: Falls Bots das Terminal bekommen (Frage 10 unten): Ein Bot hat sein eigenes Terminal-Recht nur mit Haken (Abschnitt „Rechte“); im Auftrag
   des Hauptbots gilt die Schnittmenge beider Rechte, und die Freigabe läuft in der Unterhaltung des Hauptbots, wo die
   Person sie sieht. Fremde Inhalte aus beiden Läufen zählen (wie bei der Websuche).
 - **Clients über API und MCP** haben **in Stufe 1 kein Terminal.** Sie haben keine Unterhaltung und deshalb keine
@@ -211,7 +211,7 @@ Pfade außerhalb als Argument bekommt, ist ohne Sandbox ein Befund der Heuristik
   weder setzen noch erweitern; auch **zurücknehmen** geht nur mit dem App-Schlüssel, denn der Haken liegt in der Auswahl des Clients
   (`clients.update_client`, `clients.*` ist nur mit dem App-Schlüssel erreichbar). Anders als beim Mikrofon und bei den
   Websuche-Anbietern (`settings.set_setting`) gibt es keinen Weg für Agenten, nicht einmal zum Abschalten; das ist
-  strenger als nötig, aber ohne neue Logik. Ob ein eigener Abschalt-Weg sinnvoll ist, ist Entscheidung 11.
+  strenger als nötig, aber ohne neue Logik. Ob ein eigener Abschalt-Weg sinnvoll ist, ist Frage 11 unten.
 - **Warnung im Rechte-Editor** (Assistent › Einstellungen › „API and MCP“ › „Used by the assistant“): neben dem
   Schalter „Terminal“ steht, was er heißt: „Lets the assistant run programs on this computer as you. Torro can't
   fully limit what they do.“, und ob eine Sandbox gilt. Der Schalter steht beim Anlegen eines Bots aus.
@@ -229,7 +229,7 @@ Pfade außerhalb als Argument bekommt, ist ohne Sandbox ein Befund der Heuristik
 | Befehl freigeben („Allow once“, „in this conversation“, „Deny“) | Karte im Chat | `approvals.decide_approval` (gibt es) | **Never** (Punkt 3) |
 | Haken „Terminal“ für einen Client setzen | Assistent › „Used by the assistant“ (Assistent und Bots); bei API- und MCP-Clients nicht wählbar | `clients.update_client` · Admin | **Never** (Punkt 2) |
 | „Immer erlaubt“-Liste ändern (Stufe 2) | Assistent › „Used by the assistant“ | `clients.update_client` · Admin | **Never** (Punkt 2) |
-| Grenzen (Zeit, Ausgabe, Hintergrundbefehle) | – | – (in Stufe 1 feste Werte des Kerns; Zahlen: Entscheidung 2; ob sie später einstellbar sind, entscheidet ein Mensch mit | – |
+| Grenzen (Zeit, Ausgabe, Hintergrundbefehle) | – | – (in Stufe 1 feste Werte des Kerns; Zahlen: Frage 2 unten; ob sie später einstellbar sind, entscheidet ein Mensch) | – |
 
 `Never` ist nur, was in „Was nie nach außen geht“ in [api.md](api.md) steht: den Haken setzen und die „Immer“-Liste
 ändern (Punkt 2: kein Agent ändert Rechte) und die Freigabe entscheiden (Punkt 3). Alles andere hat ein MCP-Tool. Ein
@@ -260,6 +260,8 @@ fremder Client sieht `tools_run_command` in Stufe 1 trotzdem nicht, weil sein Re
 - **Eine neue Freigabe nach fremden Inhalten (wie bei der Websuche):** siehe „Fremde Inhalte“.
 
 ## Entscheidungen für Menschen
+
+(„Frage n unten“ meint diese Liste; „Entscheidung n“ ohne Zusatz meint die Liste in [assistent.md](assistent.md).)
 
 Diese Fragen kann nur ein Mensch beantworten; der Plan lässt sie offen.
 
@@ -294,5 +296,5 @@ Hier nur benannt, **nicht angelegt**; sie entstehen nach den Antworten auf die E
 - `docs/api.md` anpassen: Der Satz „Eine Sandbox gegen Programme desselben Nutzers ist nicht Ziel“ in „Grenze des Modells“ gilt
   mit Stufe 2 nicht mehr für das Terminal
 - Freigaben für das Terminal: Aktion der Benachrichtigung ausnehmen und Sprache ausschließen; Abschalt-Weg für Agenten
-  (eigener Request oder eigene Einstellung, Entscheidung 11)
+  (eigener Request oder eigene Einstellung, Frage 11 unten)
 - Rechte-Klasse „nie in alle“ (`ToolId`, `Rights::reached_tools`, Rechte-Editor, Warnung)
