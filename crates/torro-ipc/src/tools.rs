@@ -6,11 +6,10 @@
 //! `web` has its types in [`crate::web`].
 //!
 //! A tool is a skill of the suite's own, made first for the assistant and its bots and granted like
-//! any area (the templates of the rights include it). Each has a switch, the setting `tool_enabled` (`torro_core::settings::Tools`), which only a person
-//! switches on (point 9 of "Was nie nach außen geht" in `docs/api.md`), and a place in the rights:
-//! the area `tools` with the tools a client may use ([`crate::api::Rights::tools`]). A command of a
-//! tool ([`ToolId::of_command`]) runs only when both allow it; otherwise the core answers
-//! `forbidden` ([`crate::api::Lack::ToolOff`], [`crate::api::Lack::Tool`]).
+//! any area (the templates of the rights include it). The tools are always there (issue #666); their
+//! place in the rights is the area `tools` with the tools a client may use
+//! ([`crate::api::Rights::tools`]). A command of a tool ([`ToolId::of_command`]) runs only when they
+//! allow it; otherwise the core answers `forbidden` ([`crate::api::Lack::Tool`]).
 //!
 //! The core keeps a register of every file a tool made (`<data>/tools/files.json`). `tools.open_file`,
 //! `tools.save_file_as`, attachments of drafts and `apps.open_app` with `file:<id>` take only files of
@@ -113,12 +112,10 @@ pub struct ToolInfo {
     pub name: String,
     /// What it does, one sentence in the suite's language, for people.
     pub description: String,
-    /// A person switched it on in Torro Workplace under MCP servers (`tool_enabled`).
-    pub enabled: bool,
     /// The key that asked may use it: the tool's level in `tools` ([`ToolAccess::access`]: write for
     /// `pdf`, whose commands make and open files; read for `web` and `files`) and the tool in its
     /// selection (`web` only when named, `crate::api::Rights::reaches_tool`). Always `true` for the app
-    /// key. The tool works for the key only when this and `enabled` are true.
+    /// key.
     pub allowed: bool,
 }
 
@@ -241,13 +238,7 @@ mod tests {
         let json = serde_json::to_value(&file).expect("json");
         assert_eq!(json["template"], "report");
         assert_eq!(serde_json::from_value::<FileInfo>(json).expect("reads"), file);
-        let tool = ToolInfo {
-            id: ToolId::Pdf,
-            name: "PDF".into(),
-            description: "Makes PDFs.".into(),
-            enabled: false,
-            allowed: true,
-        };
+        let tool = ToolInfo { id: ToolId::Pdf, name: "PDF".into(), description: "Makes PDFs.".into(), allowed: true };
         assert_eq!(serde_json::to_value(&tool).expect("json")["id"], "pdf");
     }
 }

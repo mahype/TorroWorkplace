@@ -24,7 +24,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::api::{Access, Area, Confirm, Level, Operation, Outbound, Rights, Selection};
-use crate::tools::ToolId;
 use crate::{Request, Response};
 
 /// At most this many characters in a message to the assistant (`assistant.send_message`).
@@ -159,6 +158,9 @@ impl Mode {
                     held.admin = false;
                 }
                 for level in rights.extensions.values_mut() {
+                    *level = (*level).min(Level::Read);
+                }
+                if let Some(level) = &mut rights.extensions_default {
                     *level = (*level).min(Level::Read);
                 }
                 rights.outbound = Outbound::Never;
@@ -414,8 +416,8 @@ pub struct Note {
 /// a test can compare it with what the person set (`clients.list_clients`).
 ///
 /// For the assistant's engines and the bots the core narrows the stored rights the way it checks
-/// every other command: without the areas the engine never gets ([`MyAccess::withheld`]) and those
-/// switched off in the conversation ([`MyAccess::switched_off`]), and for a bot that runs for the
+/// every other command: without the areas switched off in the conversation
+/// ([`MyAccess::switched_off`]), and for a bot that runs for the
 /// assistant to what both clients may (`Rights::common`, task B.2). Only the person changes rights,
 /// with the app key; nothing here is a secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -427,10 +429,6 @@ pub struct MyAccess {
     /// (`ai:ollama@localhost:11434`) or an agent (`claude-code`); `None` for a client's own key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine: Option<String>,
-    /// The areas the engine never gets, whatever the rights say: `mail` for a coding agent (the
-    /// data rule keeps it on the person's computers).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub withheld: Vec<Area>,
     /// The areas the person switched off for this conversation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub switched_off: Vec<Area>,
@@ -438,26 +436,12 @@ pub struct MyAccess {
     /// it already. Left out for [`Mode::Default`].
     #[serde(default, skip_serializing_if = "Mode::is_default")]
     pub mode: Mode,
-    /// The assistant's own tools a person switched on (issue #225, setting `tool_enabled`), whatever
-    /// the rights say. A tool's command runs only when it is here **and** in
-    /// [`Rights::tools`](crate::api::Rights::tools): a tool missing here is switched off
-    /// ([`crate::api::Lack::ToolOff`], only the person switches it on), one missing there is not
-    /// granted ([`crate::api::Lack::Tool`]). Left out by older cores.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tools_on: Option<Vec<ToolId>>,
 }
 
 impl MyAccess {
-    /// `rights` as they are for a client's own key: nothing withheld or switched off, no word on the
-    /// tools' switches ([`MyAccess::with_tools_on`]).
+    /// `rights` as they are for a client's own key: nothing switched off.
     pub fn of(rights: Rights, engine: Option<String>) -> MyAccess {
-        MyAccess { rights, engine, withheld: Vec::new(), switched_off: Vec::new(), mode: Mode::Default, tools_on: None }
-    }
-
-    /// `self` naming `tools` as the tools switched on now ([`MyAccess::tools_on`]).
-    pub fn with_tools_on(mut self, tools: Vec<ToolId>) -> MyAccess {
-        self.tools_on = Some(tools);
-        self
+        MyAccess { rights, engine, switched_off: Vec::new(), mode: Mode::Default }
     }
 
     /// `self` in the permission mode `mode` (issue #132): the rights narrowed ([`Mode::narrow`]) and
@@ -468,27 +452,15 @@ impl MyAccess {
         self
     }
 
-    /// `self` with the areas `areas` withheld by the engine: closed ([`close`]) and listed in
-    /// [`MyAccess::withheld`] once, in the order of the areas.
-    pub fn withholding(mut self, areas: &[Area]) -> MyAccess {
-        for area in areas {
-            close(&mut self.rights, *area);
-        }
-        self.withheld.extend(areas);
-        self.withheld.sort();
-        self.withheld.dedup();
-        self
-    }
-
     /// `self` with the areas `areas` switched off as well: closed ([`close`]) and listed in
-    /// [`MyAccess::switched_off`] once, in the order of the areas, unless withheld already. Engine A
+    /// [`MyAccess::switched_off`] once, in the order of the areas. Engine A
     /// checks the conversation's switches itself before a call reaches the core, so it adds them to
     /// the core's answer here.
     pub fn switching_off(mut self, areas: &[Area]) -> MyAccess {
         for area in areas {
             close(&mut self.rights, *area);
         }
-        self.switched_off.extend(areas.iter().filter(|area| !self.withheld.contains(area)));
+        self.switched_off.extend(areas);
         self.switched_off.sort();
         self.switched_off.dedup();
         self
@@ -496,9 +468,8 @@ impl MyAccess {
 }
 
 /// Takes `area` out of `rights` with what it selects: an area the client does not get here names
-/// none of its calendars, lists, address books, repositories, mail accounts, tools or MCP servers either (a mail
-/// account's id is its address, which the data rule keeps from an agent), and without mail no mail
-/// account's inbox source.
+/// none of its calendars, lists, address books, repositories, mail accounts, tools or MCP servers either, and
+/// without mail no mail account's inbox source.
 fn close(rights: &mut Rights, area: Area) {
     rights.areas.remove(&area);
     let nothing = || Selection::Only(Vec::new());
@@ -514,7 +485,7 @@ fn close(rights: &mut Rights, area: Area) {
         Area::Tools => rights.tools = nothing(),
         // Switched off for a conversation, the area takes every server's tools with it: their
         // command is `extensions.call_tool` (issue #302).
-        Area::Extensions => rights.extensions.clear(),
+        Area::Extensions => rights.close_extensions(),
         Area::Mail => {
             rights.mail_accounts = nothing();
             if let Selection::Only(keys) = &mut rights.inbox_sources {
@@ -730,47 +701,29 @@ mod tests {
         assert_eq!((access.mode, access.rights), (Mode::ReadOnly, read));
     }
 
-    /// Issue #134: an area withheld or switched off is closed with what it selects, and listed once.
+    /// Issue #134: an area switched off is closed with what it selects, and listed once.
     #[test]
     fn closed_areas_name_nothing_of_theirs() {
         let mut rights = Rights::assistant();
         rights.areas.insert(Area::Mail, crate::api::AreaRights { level: crate::api::Level::Read, admin: false });
         rights.mail_accounts = Selection::Only(vec!["mail:anna@mailbox.org".into()]);
         rights.inbox_sources = Selection::Only(vec!["mail:anna@mailbox.org".into(), "agent:claude-code".into()]);
-        let access = MyAccess::of(rights, Some("claude-code".into())).withholding(&[Area::Mail]).switching_off(&[
-            Area::Tasks,
-            Area::Mail,
-            Area::Tasks,
-        ]);
-        assert_eq!(
-            (access.withheld.as_slice(), access.switched_off.as_slice()),
-            (&[Area::Mail][..], &[Area::Tasks][..])
-        );
+        let access =
+            MyAccess::of(rights, Some("claude-code".into())).switching_off(&[Area::Tasks, Area::Mail, Area::Tasks]);
+        assert_eq!(access.switched_off.as_slice(), &[Area::Tasks, Area::Mail][..]);
         assert!(!access.rights.areas.contains_key(&Area::Mail) && !access.rights.areas.contains_key(&Area::Tasks));
         assert_eq!(access.rights.mail_accounts, Selection::Only(Vec::new()), "no address");
         assert_eq!(access.rights.task_lists, Selection::Only(Vec::new()));
         assert_eq!(access.rights.inbox_sources, Selection::Only(vec!["agent:claude-code".into()]));
         assert_eq!(access.rights.calendars, Selection::All, "the rest stays");
 
-        // Issue #302: `extensions` switched off takes every server's level with it.
+        // Issue #302: `extensions` switched off takes every server's level with it; issue #666: the
+        // open level for servers without an entry too.
         let mut servers = Rights::assistant();
         servers.extensions = [("time".to_string(), crate::api::Level::Read)].into();
         let access = MyAccess::of(servers, None).switching_off(&[Area::Extensions]);
         assert!(access.rights.extensions.is_empty());
-    }
-
-    /// Issue #225: the switched-on tools travel apart from the rights, left out when the core says
-    /// nothing of them, so an agent tells a switched-off tool from one it was not granted.
-    #[test]
-    fn the_switched_on_tools_are_named_apart_from_the_rights() {
-        let quiet = MyAccess::of(Rights::assistant(), None);
-        assert!(serde_json::to_value(&quiet).expect("json").get("tools_on").is_none(), "left out");
-        let on = quiet.clone().with_tools_on(vec![ToolId::Pdf]);
-        let json = serde_json::to_value(&on).expect("json");
-        assert_eq!(json["tools_on"], serde_json::json!(["pdf"]));
-        assert_eq!(serde_json::from_value::<MyAccess>(json).expect("reads"), on);
-        let none = quiet.with_tools_on(Vec::new()).withholding(&[Area::Tools]);
-        assert_eq!(none.tools_on, Some(Vec::new()), "none switched on is said too");
+        assert_eq!(access.rights.extension("new"), crate::api::Level::NoAccess);
     }
 
     #[test]

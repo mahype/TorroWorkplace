@@ -187,21 +187,18 @@ pub struct Settings {
     /// a kind added later starts on. An id no kind has any more is kept and ignored.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub mail_actions_off: BTreeSet<String>,
-    /// The data rule for mail (task C.17, `docs/ki.md` principle 4): `false` (the default) keeps
-    /// mail with models on the person's own computers; `true` lets it go to models elsewhere
-    /// (OpenRouter, a provider's server) as well. Only a person switches it on
-    /// (`settings.set_setting mail_to_cloud`, app key only); any client allowed to change settings
-    /// may switch it off.
+    /// The data rule of the slot Sorting from before issue #664 (`decideMailToCloud`): only read from
+    /// a file of an older version, never written. A file that has it was written by a version with the
+    /// slots, so [`Settings::take_over_old_ai`] takes nothing over from it. The rule itself is gone:
+    /// what a model reads follows from the rights and the model chosen (issue #663).
+    #[serde(default, rename = "decideMailToCloud", skip_serializing)]
+    #[schemars(skip)]
+    pub legacy_decide_mail_to_cloud: Option<bool>,
+    /// Whether the AI choices of a file from before the slots were taken over (issue #664,
+    /// [`Settings::take_over_old_ai`]): `false` only in a file of a version before this field, so
+    /// loading takes the old choices over once and sets it; every write of this version stores `true`.
     #[serde(default)]
-    pub mail_to_cloud: bool,
-    /// The data rule for the slot Sorting (issue #325, `aiSlots.decide`): `true` lets the mail it
-    /// sorts go to a model elsewhere, `false` keeps it on this computer; `mailToCloud` stays the
-    /// rule of the chat. Only a person switches it on (`settings.set_setting decide_mail_to_cloud`,
-    /// app key only; choosing a model elsewhere for Sorting sets it with the choice); any client
-    /// allowed to change settings may switch it off. Missing only in a file of a version before the
-    /// slots, which loading fills in (`Settings::take_over_old_ai`); counts as `false` until then.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub decide_mail_to_cloud: Option<bool>,
+    pub ai_slots_taken: bool,
     /// "Mail from contacts is personal" (issue #390, `docs/kategorien.md` "Vorrang"): while on,
     /// new mail from an address in the person's address books goes to the group Personal ("From
     /// people") before any model, which may then only choose within that group. Mail filters,
@@ -228,20 +225,10 @@ pub struct Settings {
     #[serde(default = "Maps::unnamed", deserialize_with = "lenient_maps")]
     #[schemars(transform = without_default)]
     pub maps: Maps,
-    /// "Allow API keys" (#231, `docs/api.md` "Transport"): while off, the core refuses every key of
-    /// the kind `script` (`unauthorized`). On unless a person turned it off; only a person turns it
-    /// on again (`settings.set_setting allow_api_keys`, app key only), any client allowed to change
-    /// settings may turn it off.
-    #[serde(default = "on")]
-    pub allow_api_keys: bool,
-    /// "Allow MCP" (#231): while off, the core refuses every key of an MCP client and of a hook
-    /// (`unauthorized`). On unless a person turned it off; turned on again only by a person, like
-    /// [`Settings::allow_api_keys`].
-    #[serde(default = "on")]
-    pub allow_mcp: bool,
-    /// The assistant's own tools (issue #225, `docs/assistent.md` "Eigene Werkzeuge"): which ones a
-    /// person switched on and how the PDF tool sets its pages ([`Tools`]). Read leniently: a value
-    /// that does not read gives the defaults (every tool off), never a settings file that fails.
+    /// The suite's built-in tools (issue #225, `docs/assistent.md` "Eigene Werkzeuge"): how the PDF
+    /// tool sets its pages and the folders the file tools may reach ([`Tools`]). The tools are always
+    /// there (issue #666); who may use them is a matter of rights. Read leniently: a value that does
+    /// not read gives the defaults, never a settings file that fails.
     #[serde(default, deserialize_with = "lenient")]
     pub tools: Tools,
     /// The web search of the tool `web` (issue #305, `docs/assistent.md` "Werkzeug Web"): which search
@@ -767,29 +754,20 @@ impl Settings {
         }
     }
 
-    /// Whether mail may go to a model elsewhere for `slot` (issue #325): the chat's rule
-    /// [`Settings::mail_to_cloud`] for [`crate::ai::AiSlot::Chat`], [`Settings::decide_mail_to_cloud`]
-    /// (`false` while unset) for [`crate::ai::AiSlot::Decide`].
-    pub fn mail_to_cloud_in(&self, slot: crate::ai::AiSlot) -> bool {
-        match slot {
-            crate::ai::AiSlot::Chat => self.mail_to_cloud,
-            crate::ai::AiSlot::Decide => self.decide_mail_to_cloud.unwrap_or(false),
-        }
-    }
-
     /// Takes the AI choices of a file from before the slots over (issue #325), once, right after it
     /// was read: `assistantDefault` becomes the slot Chat; the assignment of `inbox.categorize` that
     /// is switched on (and names an account) becomes the slot Sorting and is no exception any more –
-    /// one switched off stays, so sorting stays off; `decideMailToCloud` becomes
-    /// [`Settings::mail_to_cloud`] when a slot Sorting was taken over (the person had let that very
-    /// model read mail), else `false`.
+    /// one switched off stays, so sorting stays off.
     ///
-    /// A file this version wrote already has `decideMailToCloud`; then nothing is taken over, so an
-    /// assignment of `inbox.categorize` set later stays the exception it is. A slot that is set is
-    /// never written over. `assistantDefault` is dropped in any case: it is never written again.
+    /// A file a version with the slots wrote has [`Settings::ai_slots_taken`] (or, before issue #664,
+    /// `decideMailToCloud`); then nothing is taken over, so an assignment of `inbox.categorize` set
+    /// later stays the exception it is. A slot that is set is never written over. `assistantDefault`
+    /// and `decideMailToCloud` are dropped in any case, and `ai_slots_taken` is set afterwards: the
+    /// next load takes nothing over again.
     pub fn take_over_old_ai(&mut self) {
         let legacy = self.legacy_assistant_default.take();
-        if self.decide_mail_to_cloud.is_some() {
+        let written_with_slots = self.legacy_decide_mail_to_cloud.take().is_some();
+        if std::mem::replace(&mut self.ai_slots_taken, true) || written_with_slots {
             return;
         }
         if self.ai_slots.chat.is_none() {
@@ -797,19 +775,14 @@ impl Settings {
         }
         let function = crate::ai::AiFunction::InboxCategorize;
         let ready = self.ai_assignments.get(&function).filter(|assigned| assigned.is_ready()).cloned();
-        let taken = match (ready, &self.ai_slots.decide) {
-            (Some(assigned), None) => {
-                self.ai_assignments.remove(&function);
-                self.ai_slots.decide = assigned.engine.map(|engine| crate::ai::SlotModel {
-                    engine,
-                    model: assigned.model,
-                    effort: assigned.effort,
-                });
-                true
-            }
-            _ => false,
-        };
-        self.decide_mail_to_cloud = Some(taken && self.mail_to_cloud);
+        if let (Some(assigned), None) = (ready, &self.ai_slots.decide) {
+            self.ai_assignments.remove(&function);
+            self.ai_slots.decide = assigned.engine.map(|engine| crate::ai::SlotModel {
+                engine,
+                model: assigned.model,
+                effort: assigned.effort,
+            });
+        }
     }
 }
 
@@ -848,9 +821,9 @@ impl Default for Settings {
             compose_paper: ComposePaper::default(),
             mail_sender: None,
             mail_attachments: MailAttachments::default(),
-            mail_to_cloud: false,
+            legacy_decide_mail_to_cloud: None,
             // Written by this version: nothing to take over from before the slots.
-            decide_mail_to_cloud: Some(false),
+            ai_slots_taken: true,
             mail_contacts_personal: on(),
             mail_sender_logos: on(),
             reminders: Reminders::default(),
@@ -858,8 +831,6 @@ impl Default for Settings {
             ai_assignments: BTreeMap::new(),
             hidden_categories: Vec::new(),
             mail_actions_off: BTreeSet::new(),
-            allow_api_keys: on(),
-            allow_mcp: on(),
             tools: Tools::default(),
             web_search: WebSearch::default(),
             workspaces: WorkspaceSettings::default(),
@@ -1485,17 +1456,6 @@ impl ToolId {
     }
 }
 
-/// The value of the setting `tool_enabled` (`settings.set_setting`): one tool and whether it is
-/// on. Only a person switches a tool on (point 9 of "Was nie nach außen geht" in `docs/api.md`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ToolSwitch {
-    /// The tool: `pdf`, `web` or `files`.
-    pub tool: ToolId,
-    /// `true` switches it on, `false` off.
-    pub enabled: bool,
-}
-
 /// One of the three fixed page templates of the PDF tool (decision 16 in `docs/assistent.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -1755,14 +1715,11 @@ impl PdfSettings {
     }
 }
 
-/// The assistant's own tools (issue #225): which are switched on, and the settings of each.
+/// The suite's built-in tools (issue #225): the settings of each. The tools themselves are always
+/// there (issue #666); who may use one is a matter of rights.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Tools {
-    /// The tools a person switched on; every other one is off, also one added later. A name this
-    /// version does not know is dropped when the file is read.
-    #[serde(skip_serializing_if = "BTreeSet::is_empty", deserialize_with = "known_names")]
-    pub enabled: BTreeSet<ToolId>,
     /// The PDF tool. Boxed: three templates would make [`Settings`], which requests carry whole
     /// (`settings.update_settings`), much larger than every other request.
     pub pdf: Box<PdfSettings>,
@@ -1848,43 +1805,26 @@ impl FolderChange {
 }
 
 impl Tools {
-    /// Whether `tool` is switched on.
-    pub fn is_on(&self, tool: ToolId) -> bool {
-        self.enabled.contains(&tool)
-    }
-
-    /// Switches `tool` on or off.
-    pub fn set_on(&mut self, tool: ToolId, on: bool) {
-        if on {
-            self.enabled.insert(tool);
-        } else {
-            self.enabled.remove(&tool);
-        }
-    }
-
     /// Whether going from these tools (as stored) to `new` does what only a person may (point 9 of
-    /// "Was nie nach außen geht"): switch a tool on, set a folder other than the stored one, set
-    /// a logo other than the stored one, or change the allowed folders in any way (adding, removing, another
-    /// access, issue #304). Removing the PDF folder or a logo is no such change. The core refuses a client's
+    /// "Was nie nach außen geht"): set a folder other than the stored one, set a logo other than the
+    /// stored one, or change the allowed folders in any way (adding, removing, another access, issue
+    /// #304). Removing the PDF folder or a logo is no such change. The core refuses a client's
     /// `settings.update_settings` with it.
     pub fn needs_a_person(&self, new: &Tools) -> bool {
-        let switches_on = !new.enabled.is_subset(&self.enabled);
         let set_anew = |stored: &Option<String>, new: &Option<String>| new.is_some() && new != stored;
         let folder = set_anew(&self.pdf.folder, &new.pdf.folder);
         let logo =
             PdfTemplateId::ALL.into_iter().any(|id| set_anew(&self.pdf.template(id).logo, &new.pdf.template(id).logo));
-        switches_on || folder || logo || new.folders != self.folders
+        folder || logo || new.folders != self.folders
     }
 
     /// `sent` as a client may store it over these tools (as stored), for `settings.update_settings`:
-    /// a tool stays on only when it is on in both; the folder and each logo are removed when `sent`
-    /// removes them and otherwise stay as stored; the other fields of the templates are taken from
-    /// `sent`; the allowed folders stay as stored, whatever `sent` says (issue #304). So a client removes a
-    /// PDF path like any admin change, and a person who switched a tool off or removed a path between the
-    /// core's check and the write is not undone.
+    /// the folder and each logo are removed when `sent` removes them and otherwise stay as stored; the
+    /// other fields of the templates are taken from `sent`; the allowed folders stay as stored, whatever
+    /// `sent` says (issue #304). So a client removes a PDF path like any admin change, and a person who
+    /// removed a path between the core's check and the write is not undone.
     pub fn from_client(&self, sent: &Tools) -> Tools {
         let mut tools = sent.clone();
-        tools.enabled = self.enabled.intersection(&sent.enabled).copied().collect();
         tools.pdf.folder = kept_or_removed(&self.pdf.folder, &sent.pdf.folder);
         for id in PdfTemplateId::ALL {
             tools.pdf.template_mut(id).logo = kept_or_removed(&self.pdf.template(id).logo, &sent.pdf.template(id).logo);
@@ -2654,8 +2594,8 @@ mod tests {
 
     /// Issue #325: a file from before the slots is taken over when it loads – `assistantDefault`
     /// as the slot Chat, the assignment of `inbox.categorize` that is on as the slot Sorting (and
-    /// no exception any more), the data rule of Sorting from `mailToCloud` only with that slot –
-    /// and `assistantDefault` is never written again.
+    /// no exception any more) – and `assistantDefault` is never written again. Issue #664: taken
+    /// over once only, also when the file comes from a version with `decideMailToCloud`.
     #[test]
     fn a_file_from_before_the_slots_is_taken_over_when_it_loads() {
         use crate::ai::{AiFunction, AiSlot, Effort};
@@ -2679,27 +2619,29 @@ mod tests {
         let decide = read.ai_slots.get(AiSlot::Decide).expect("the assignment became the slot");
         assert_eq!((decide.engine.as_str(), decide.model.as_deref()), ("ai:ollama@localhost:11434", Some("nimble")));
         assert!(!read.ai_assignments.contains_key(&AiFunction::InboxCategorize), "no exception any more");
-        assert_eq!(read.decide_mail_to_cloud, Some(true), "the person had let that model read mail");
-        assert!(read.mail_to_cloud_in(AiSlot::Decide) && read.mail_to_cloud_in(AiSlot::Chat));
         assert_eq!(read.legacy_assistant_default, None);
+        assert!(read.ai_slots_taken);
 
         let written = serde_json::to_value(&read).expect("json");
         assert!(written.get("assistantDefault").is_none(), "never written again");
-        assert_eq!(written["decideMailToCloud"], serde_json::json!(true));
+        assert!(written.get("mailToCloud").is_none() && written.get("decideMailToCloud").is_none(), "#664");
+        assert_eq!(written["aiSlotsTaken"], serde_json::json!(true));
         assert_eq!(load(&written.to_string()), read, "taken over once: the new file reads as it is");
 
-        // Switched off, the assignment stays and so sorting stays off; without a slot taken over the
-        // rule of Sorting is off whatever the chat's says.
+        // Switched off, the assignment stays and so sorting stays off.
         let off = on.replace(r#""enabled": true"#, r#""enabled": false"#);
         let read = load(&format!(r#"{{"mailToCloud": true, "aiAssignments": {{"inbox.categorize": {off}}}}}"#));
         assert!(read.ai_slots.is_empty());
         assert!(!read.ai_assignments[&AiFunction::InboxCategorize].enabled, "kept, still off");
-        assert_eq!(read.decide_mail_to_cloud, Some(false));
-        assert!(read.mail_to_cloud_in(AiSlot::Chat) && !read.mail_to_cloud_in(AiSlot::Decide));
 
-        // Taken over with the chat's rule off: Sorting keeps mail here too.
-        let read = load(&format!(r#"{{"aiAssignments": {{"inbox.categorize": {on}}}}}"#));
-        assert!(read.ai_slots.decide.is_some() && read.decide_mail_to_cloud == Some(false));
+        // A file of a version with the slots but before #664 has `decideMailToCloud`: its assignment
+        // of `inbox.categorize` is an exception set later, not taken over.
+        let read = load(&format!(r#"{{"decideMailToCloud": false, "aiAssignments": {{"inbox.categorize": {on}}}}}"#));
+        assert!(read.ai_slots.is_empty() && read.ai_assignments.contains_key(&AiFunction::InboxCategorize));
+        assert!(read.ai_slots_taken && read.legacy_decide_mail_to_cloud.is_none());
+        let written = serde_json::to_value(&read).expect("json");
+        assert!(written.get("decideMailToCloud").is_none(), "never written again");
+        assert_eq!(load(&written.to_string()), read, "and not taken over at the next load either");
     }
 
     /// Issue #325: a file without old AI values reads as it would without the takeover, and one this
@@ -2855,8 +2797,8 @@ mod tests {
             compose_paper: ComposePaper::Light,
             mail_sender: None,
             mail_attachments: MailAttachments::default(),
-            mail_to_cloud: false,
-            decide_mail_to_cloud: Some(false),
+            legacy_decide_mail_to_cloud: None,
+            ai_slots_taken: true,
             mail_contacts_personal: true,
             mail_sender_logos: true,
             reminders: Reminders::default(),
@@ -2864,8 +2806,6 @@ mod tests {
             ai_assignments: BTreeMap::new(),
             hidden_categories: Vec::new(),
             mail_actions_off: BTreeSet::new(),
-            allow_api_keys: true,
-            allow_mcp: true,
             tools: Tools::default(),
             web_search: WebSearch::default(),
             workspaces: WorkspaceSettings::default(),
@@ -2930,30 +2870,27 @@ mod tests {
         assert!(value(serde_json::json!(3)).is_err());
     }
 
-    /// Task C.17: mail stays with local models unless a person switched it on.
+    /// Issues #664, #665, #666: a file with the switches and rules that are gone (`mailToCloud`,
+    /// `decideMailToCloud`, `allowApiKeys`, `allowMcp`, `tools.enabled`) still loads, and they are
+    /// never written again.
     #[test]
-    fn mail_stays_local_unless_switched_on() {
-        let dir = TempDir::new("mail-to-cloud");
+    fn a_file_with_the_old_switches_still_loads() {
+        let dir = TempDir::new("old-switches");
         let path = dir.file("settings.json");
-        assert!(!Settings::default().mail_to_cloud);
-        fs::write(&path, r#"{"language":"german"}"#).expect("write");
-        assert!(!load_from(&path).mail_to_cloud, "a file from before the setting keeps mail local");
-        fs::write(&path, r#"{"mailToCloud":true}"#).expect("write");
-        assert!(load_from(&path).mail_to_cloud);
-    }
-
-    /// #231: API keys and MCP work unless a person turned them off, also with a file from before.
-    #[test]
-    fn api_keys_and_mcp_are_allowed_unless_turned_off() {
-        let dir = TempDir::new("doors");
-        let path = dir.file("settings.json");
-        assert!(Settings::default().allow_api_keys && Settings::default().allow_mcp);
-        fs::write(&path, r#"{"language":"german"}"#).expect("write");
-        let before = load_from(&path);
-        assert!(before.allow_api_keys && before.allow_mcp, "a file from before the switches keeps both ways open");
-        fs::write(&path, r#"{"allowApiKeys":false,"allowMcp":false}"#).expect("write");
-        let off = load_from(&path);
-        assert!(!off.allow_api_keys && !off.allow_mcp);
+        fs::write(
+            &path,
+            r#"{"language":"german","mailToCloud":true,"decideMailToCloud":true,"allowApiKeys":false,
+                "allowMcp":false,"tools":{"enabled":["pdf","web"],"folders":[{"path":"/home/a","access":"read"}]}}"#,
+        )
+        .expect("write");
+        let read = load_from(&path);
+        assert_eq!(read.language, Language::German, "the rest of the file is read");
+        assert_eq!(read.tools.folders.len(), 1);
+        let written = serde_json::to_value(&read).expect("json");
+        for gone in ["mailToCloud", "decideMailToCloud", "allowApiKeys", "allowMcp"] {
+            assert!(written.get(gone).is_none(), "{gone} is never written again: {written}");
+        }
+        assert!(written["tools"].get("enabled").is_none(), "{written}");
     }
 
     #[test]
@@ -3148,8 +3085,8 @@ mod tests {
                 click: AttachmentClick::SaveAs,
                 downloads: Some("/Users/anna/Ablage".into()),
             },
-            mail_to_cloud: true,
-            decide_mail_to_cloud: Some(true),
+            legacy_decide_mail_to_cloud: None,
+            ai_slots_taken: true,
             mail_contacts_personal: false,
             mail_sender_logos: false,
             reminders: Reminders {
@@ -3162,10 +3099,7 @@ mod tests {
             ai_assignments: BTreeMap::new(),
             hidden_categories: Vec::new(),
             mail_actions_off: BTreeSet::new(),
-            allow_api_keys: false,
-            allow_mcp: false,
             tools: Tools {
-                enabled: BTreeSet::from([ToolId::Pdf]),
                 pdf: Box::new(PdfSettings { folder: Some("/Users/anna/PDFs".into()), ..PdfSettings::default() }),
                 folders: vec![AllowedFolder { path: "/Users/anna/Documents".into(), access: FolderAccess::Read }],
             },
@@ -3617,12 +3551,11 @@ mod tests {
         }
     }
 
-    /// Issue #225: every tool is off, the PDF folder unset and the three templates as planned
-    /// until a person changes them; a file from before the tools reads so too.
+    /// Issue #225: the PDF folder unset and the three templates as planned until a person changes
+    /// them; a file from before the tools reads so too.
     #[test]
-    fn tools_start_off_with_the_three_standard_templates() {
+    fn tools_start_with_the_three_standard_templates() {
         let tools = Settings::default().tools;
-        assert!(tools.enabled.is_empty() && !tools.is_on(ToolId::Pdf));
         assert_eq!(tools.pdf.folder, None);
         let letter = tools.pdf.template(PdfTemplateId::Letter);
         assert_eq!((letter.paper, letter.margins_mm, letter.font_size_pt), (Paper::A4, [25; 4], 11));
@@ -3786,22 +3719,20 @@ mod tests {
         }
     }
 
-    /// A damaged tools entry costs the defaults (every tool off), never the other settings; a tool
-    /// this version does not know is dropped.
+    /// A damaged tools entry costs the defaults, never the other settings; the switches of before
+    /// issue #666 (`enabled`) are passed over.
     #[test]
     fn tools_are_read_leniently() {
         let dir = TempDir::new("tools");
         let path = dir.file("settings.json");
         fs::write(&path, r#"{"language":"german","tools":{"enabled":["pdf","whiteboard"]}}"#).expect("write");
         let loaded = load_from(&path);
-        assert_eq!(loaded.tools.enabled, BTreeSet::from([ToolId::Pdf]), "the unknown one is dropped");
         assert_eq!(*loaded.tools.pdf, PdfSettings::default(), "left out, so the defaults");
         fs::write(&path, r#"{"language":"german","tools":{"enabled":["pdf"],"pdf":{"letter":7}}}"#).expect("write");
         let loaded = load_from(&path);
         assert_eq!(loaded.language, Language::German, "the other settings stay");
-        assert_eq!(loaded.tools, Tools::default(), "a damaged entry is the defaults: every tool off");
+        assert_eq!(loaded.tools, Tools::default(), "a damaged entry is the defaults");
         let mut tools = Tools::default();
-        tools.set_on(ToolId::Pdf, true);
         tools.pdf.folder = Some(absolute("/docs"));
         let settings = Settings { tools: tools.clone(), ..Settings::default() };
         let written = serde_json::to_string(&settings).expect("json");
@@ -3912,15 +3843,11 @@ mod tests {
         assert_eq!(sent.check_changes(&by_hand), Ok(()));
     }
 
-    /// Point 9: switching a tool on and setting a folder or a logo other than the stored ones is a
-    /// person's; switching off, removing and every other field are not. A client's whole settings
-    /// keep the switches it could not turn on and the stored paths.
+    /// Point 9: setting a folder or a logo other than the stored ones is a person's; removing and every
+    /// other field are not. A client's whole settings keep the stored paths.
     #[test]
-    fn only_people_switch_tools_on_and_set_their_paths() {
+    fn only_people_set_the_paths_of_tools() {
         let stored = Tools::default();
-        let mut on = stored.clone();
-        on.set_on(ToolId::Pdf, true);
-        assert!(stored.needs_a_person(&on) && !on.needs_a_person(&stored), "on, but off is anyone's");
         let mut folder = stored.clone();
         folder.pdf.folder = Some(absolute("/sync/Out"));
         assert!(stored.needs_a_person(&folder) && !folder.needs_a_person(&folder), "a new folder, not the same");
@@ -3935,15 +3862,12 @@ mod tests {
 
         // What a client's whole settings leave of it.
         let mut person = stored.clone();
-        person.set_on(ToolId::Pdf, true);
         person.pdf.folder = Some(absolute("/Users/anna/PDFs"));
         person.pdf.template_mut(PdfTemplateId::Letter).logo = Some(absolute("/pictures/letter.png"));
         let mut sent = fields.clone();
-        sent.set_on(ToolId::Pdf, true);
         sent.pdf.folder = Some(absolute("/sync/Out"));
         sent.pdf.template_mut(PdfTemplateId::Note).logo = Some(absolute("/pictures/other.png"));
         let kept = stored.from_client(&sent);
-        assert!(!kept.is_on(ToolId::Pdf), "off stays off");
         assert_eq!((kept.pdf.folder.as_deref(), kept.pdf.template(PdfTemplateId::Note).logo.as_deref()), (None, None));
         assert_eq!(kept.pdf.template(PdfTemplateId::Report), fields.pdf.template(PdfTemplateId::Report), "the fields");
         let kept = person.from_client(&sent);
@@ -3951,10 +3875,8 @@ mod tests {
         assert_eq!(kept.pdf.letter.logo, None, "removed, as the client sent none");
         assert_eq!(kept.pdf.note.logo, None, "and no logo of the client's");
         let kept = person.from_client(&Tools::default());
-        assert!(!kept.is_on(ToolId::Pdf), "a client may switch it off");
-        assert_eq!((kept.pdf.folder, kept.pdf.letter.logo), (None, None), "and remove the paths");
+        assert_eq!((kept.pdf.folder, kept.pdf.letter.logo), (None, None), "a client may remove the paths");
         let kept = person.from_client(&person);
-        assert!(kept.is_on(ToolId::Pdf), "on stays on");
         assert_eq!(kept, person, "the stored paths stay");
     }
 
