@@ -94,18 +94,24 @@ pub fn framed(width: Option<u32>, height: Option<u32>, max_width: f32, max_heigh
 }
 
 /// Where the tiles of a grid of `count` pictures stand in `width`, `gap` between them, and how high
-/// the grid is: two side by side, three as a large one at the left and two at the right, four and
-/// more as two by two (the fourth tile says how many more there are). Whole pixels; the last
-/// column and row take what rounding leaves.
-pub fn album_tiles(count: usize, width: f32, gap: f32) -> (Vec<Rectangle>, f32) {
+/// the grid is (at most `max_height`): two side by side, three as a large one at the left and two at
+/// the right, four and more as two by two (the fourth tile says how many more there are). Tiles are
+/// square while the height allows, else flatter. Whole pixels; the last column and row take what
+/// rounding leaves.
+pub fn album_tiles(count: usize, width: f32, gap: f32, max_height: f32) -> (Vec<Rectangle>, f32) {
     let width = width.round();
+    // Two rows share what the height allows; a row is never higher than it is wide.
+    let row = |natural: f32| natural.min(((max_height - gap) / 2.0).floor());
     match count {
         0 => (Vec::new(), 0.0),
-        1 => (vec![Rectangle::new(iced::Point::ORIGIN, iced::Size::new(width, width))], width),
+        1 => {
+            let high = width.min(max_height.floor());
+            (vec![Rectangle { x: 0.0, y: 0.0, width, height: high }], high)
+        }
         2 => {
             let first = ((width - gap) / 2.0).floor();
             let second = width - gap - first;
-            let high = first;
+            let high = first.min(max_height.floor());
             let tiles = vec![
                 Rectangle { x: 0.0, y: 0.0, width: first, height: high },
                 Rectangle { x: first + gap, y: 0.0, width: second, height: high },
@@ -115,26 +121,28 @@ pub fn album_tiles(count: usize, width: f32, gap: f32) -> (Vec<Rectangle>, f32) 
         3 => {
             let small = ((width - gap) / 3.0).floor();
             let large = width - gap - small;
-            let high = 2.0 * small + gap;
+            let high = row(small);
+            let total = 2.0 * high + gap;
             let right = large + gap;
             let tiles = vec![
-                Rectangle { x: 0.0, y: 0.0, width: large, height: high },
-                Rectangle { x: right, y: 0.0, width: small, height: small },
-                Rectangle { x: right, y: small + gap, width: small, height: small },
+                Rectangle { x: 0.0, y: 0.0, width: large, height: total },
+                Rectangle { x: right, y: 0.0, width: small, height: high },
+                Rectangle { x: right, y: high + gap, width: small, height: high },
             ];
-            (tiles, high)
+            (tiles, total)
         }
         _ => {
             let first = ((width - gap) / 2.0).floor();
             let second = width - gap - first;
-            let at = first + gap;
+            let (top, bottom) = (row(first), row(second));
+            let (at, down) = (first + gap, top + gap);
             let tiles = vec![
-                Rectangle { x: 0.0, y: 0.0, width: first, height: first },
-                Rectangle { x: at, y: 0.0, width: second, height: first },
-                Rectangle { x: 0.0, y: at, width: first, height: second },
-                Rectangle { x: at, y: at, width: second, height: second },
+                Rectangle { x: 0.0, y: 0.0, width: first, height: top },
+                Rectangle { x: at, y: 0.0, width: second, height: top },
+                Rectangle { x: 0.0, y: down, width: first, height: bottom },
+                Rectangle { x: at, y: down, width: second, height: bottom },
             ];
-            (tiles, at + second)
+            (tiles, down + bottom)
         }
     }
 }
@@ -182,9 +190,21 @@ fn picture<'a>(
             .width(width)
             .height(height)
             .content_fit(ContentFit::Cover)
-            .border_radius(corners)
+            .border_radius(image_corners(corners))
             .into(),
         _ => placeholder(which, width, height, corners),
+    }
+}
+
+/// `corners` as the image shader of `iced_wgpu` 0.14 reads them: it rounds a picture's corners
+/// mirrored through its centre (unlike a container), so the top left one is asked for as the bottom
+/// right one. Drop this once Iced draws them in place.
+fn image_corners(corners: border::Radius) -> border::Radius {
+    border::Radius {
+        top_left: corners.bottom_right,
+        top_right: corners.bottom_left,
+        bottom_right: corners.top_left,
+        bottom_left: corners.top_right,
     }
 }
 
@@ -671,7 +691,7 @@ mod tests {
     #[test]
     fn grid_tiles_fill_the_width_without_overlapping() {
         for count in 2..=6 {
-            let (tiles, high) = album_tiles(count, 343.0, 2.0);
+            let (tiles, high) = album_tiles(count, 343.0, 2.0, 400.0);
             assert_eq!(tiles.len(), count.min(4), "{count}");
             for (at, tile) in tiles.iter().enumerate() {
                 assert!(tile.x >= 0.0 && tile.y >= 0.0, "{count}: {tile:?}");
@@ -687,19 +707,25 @@ mod tests {
             let right = tiles.iter().map(|tile| tile.x + tile.width).fold(0.0, f32::max);
             assert_eq!(right, 343.0, "{count}: the grid is as wide as asked");
         }
-        let (three, high) = album_tiles(3, 343.0, 2.0);
+        let (three, high) = album_tiles(3, 343.0, 2.0, 400.0);
         assert!(three[0].width > three[1].width && three[0].height == high, "the first is the large one");
-        assert_eq!(album_tiles(4, 343.0, 2.0).1, 343.0, "two by two is square");
+        assert_eq!(album_tiles(4, 343.0, 2.0, 400.0).1, 343.0, "two by two is square");
+        let (wide, high) = album_tiles(4, 440.0, 2.0, 400.0);
+        assert!(high <= 400.0 && wide[3].y + wide[3].height == high, "never higher than allowed: {high}");
+        assert!(album_tiles(2, 900.0, 2.0, 400.0).1 <= 400.0);
     }
 
     #[test]
     fn only_outer_corners_of_a_grid_are_round() {
-        let (tiles, high) = album_tiles(4, 343.0, 2.0);
+        let (tiles, high) = album_tiles(4, 343.0, 2.0, 400.0);
         let round = radius::md();
         assert_eq!(tile_corners(tiles[0], 343.0, high, false).top_left, round);
         assert_eq!(tile_corners(tiles[0], 343.0, high, false).bottom_right, 0.0);
         assert_eq!(tile_corners(tiles[3], 343.0, high, false).bottom_right, round);
         assert_eq!(tile_corners(tiles[3], 343.0, high, true).bottom_right, 0.0, "a caption follows");
+        let asked = tile_corners(tiles[0], 343.0, high, false);
+        let drawn = image_corners(asked);
+        assert_eq!((drawn.bottom_right, drawn.top_left), (asked.top_left, asked.bottom_right), "mirrored for Iced");
     }
 
     #[test]

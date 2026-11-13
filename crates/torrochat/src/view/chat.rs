@@ -50,6 +50,10 @@ use crate::timeline::{self, Item};
 /// wrote it reads from where it stands.
 const BUBBLE_SHARE: f32 = 0.78;
 
+/// The joint between the tiles of a grid: two hairlines in every spacing step, so it never reads
+/// as a crack.
+const ALBUM_GAP: f32 = 2.0 * HAIRLINE;
+
 /// The stroke left of a quote: as wide as the bar that marks a chosen row (two hairlines).
 const QUOTE_STROKE: f32 = 2.0 * HAIRLINE;
 
@@ -63,7 +67,7 @@ fn editor_heights() -> (f32, f32) {
 /// How wide a message may stand in the history.
 #[derive(Debug, Clone, Copy)]
 struct Room {
-    /// A bubble at most ([`BUBBLE_SHARE`] of the history).
+    /// A bubble at most: [`BUBBLE_SHARE`] of the history, leaving "Reply" and "…" their place.
     bubble: f32,
     /// A picture filling its bubble at most: within the bubble, [`size::list()`] and the room left
     /// beside "Reply" and "…".
@@ -293,11 +297,11 @@ impl App {
                 .into();
         }
         let width = self.history_width(chat).min(size::content_max());
-        let bubble = width * BUBBLE_SHARE;
-        // A picture fills its bubble, but leaves "Reply" and "…" their place beside it (the history's
-        // padding and the buttons with their gaps) and the bubble its edge around it.
+        // A bubble leaves "Reply" and "…" their place beside it (the history's padding and the
+        // buttons with their gaps); a picture fills it inside its edge.
         let beside = width - 2.0 * space::l() - tools_width() - 2.0 * space::xs();
-        let picture = (bubble.min(beside) - 2.0 * HAIRLINE).min(size::list()).floor();
+        let bubble = (width * BUBBLE_SHARE).min(beside);
+        let picture = (bubble - 2.0 * HAIRLINE).min(size::list()).floor();
         let room = Room { bubble, picture };
         let group = self.conversation(chat).is_some_and(|c| c.kind != torro_chat::ConversationKind::Direct);
         let today = timeline::day_of(chrono::Utc::now());
@@ -417,7 +421,7 @@ impl App {
         let marked = members.iter().any(|member| chat.files.highlight.as_deref() == Some(member.id.as_str()));
         let width = room.picture;
         let below = self.caption_parts(chat, newest, width - 2.0 * space::m());
-        let (rects, high) = super::files::album_tiles(tiles.len(), width, space::xs() / 2.0);
+        let (rects, high) = super::files::album_tiles(tiles.len(), width, ALBUM_GAP, size::panel());
         let edge = bubble_edge(own, marked);
         let more = tiles.len().checked_sub(rects.len()).filter(|more| *more > 0);
         let mut layers: Vec<Element<'a, Message>> = Vec::new();
