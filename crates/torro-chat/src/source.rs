@@ -302,9 +302,9 @@ pub trait ChatSource: Send + Sync {
         limit: Option<u32>,
     ) -> impl Future<Output = Result<SharedPage, ChatError>> + Send;
 
-    /// `chat.show_card` ("Show preview"): the card of the first link of the message `id`, fetched by
+    /// `chat.show_card` ("Show once"): the card of the first link of the message `id`, fetched by
     /// the account's server; `None` when there is none. Later pages of `chat.get_messages` carry it
-    /// in `cards`.
+    /// in `cards`. [`ChatError::Unsupported`] for a provider Settings › Privacy blocks (issue #672).
     fn show_card(&self, id: String) -> impl Future<Output = Result<Option<LinkCard>, ChatError>> + Send;
 
     // -- Calls (stage 6b) ---------------------------------------------------------------------

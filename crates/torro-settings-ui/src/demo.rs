@@ -169,6 +169,8 @@ impl Demo {
             hidden_collections: vec![SHARED_CALENDAR.into()],
             reminders,
             tools,
+            // Issue #672: a few providers decided on, so Privacy shows its list.
+            privacy: crate::privacy::demo(),
             ..Settings::default()
         };
         Demo {
@@ -239,6 +241,7 @@ impl Demo {
                 Rights {
                     denied: ["calendar.list_reminders".to_string(), "ext.time.convert_time".to_string()].into(),
                     extensions: [("time".to_string(), Level::Read)].into(),
+                    address_books: Selection::Only(vec![crate::accounts::demo::DEMO_BOOK.into()]),
                     ..Rights::assistant()
                 },
             ),
@@ -1439,6 +1442,9 @@ impl Backend for Demo {
             }
             Request::CalendarCollections => Response::Collections { collections: self.collections(true) },
             Request::TaskCollections => Response::Collections { collections: self.collections(false) },
+            Request::ListAddressBooks { .. } => {
+                Response::AddressBooks { books: crate::accounts::demo::address_books() }
+            }
             Request::ListSources => Response::Sources { sources: self.sources() },
             Request::ListSaveTargets { .. } => self.save_targets_answer(),
             // A change of a save target is answered as stored, under a new id or its own, and noted;

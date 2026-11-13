@@ -1232,6 +1232,7 @@ pub mod tests {
                 ("torro-calendar", "torrocalendar", false),
                 ("torro-assistant", "torroassistant", false),
                 ("torro-chat", "torrochat", false),
+                ("torro-contacts", "torrocontacts", false),
             ]
         );
     }

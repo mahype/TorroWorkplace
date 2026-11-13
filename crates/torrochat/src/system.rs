@@ -99,7 +99,7 @@ pub fn link_host(link: &str) -> Option<String> {
 }
 
 /// Whether `link` goes to the account's own server: those links get their card from the core by
-/// themselves, every other one only after "Show preview" (decision 23).
+/// themselves, every other one as Settings › Privacy says (decision 23, issue #672).
 pub fn is_own_link(account: &str, link: &str) -> bool {
     let own = account_server(account).and_then(|server| server.split('/').next()).map(str::to_ascii_lowercase);
     own.is_some_and(|own| link_host(link).as_deref() == Some(own.as_str()))

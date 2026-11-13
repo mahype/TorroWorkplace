@@ -16,9 +16,11 @@
 //!   never an SVG. Fetched files lie in the chat's own folder, `<cache>/chat-attachments/<account
 //!   hash>/` (0700, files 0600), and go after [`FETCHED_FOR`].
 //! - **Link cards** of links to the account's own server are resolved by themselves when an app
-//!   reads messages; any other only with `chat.show_card`, a person's click: the server fetches the
-//!   address, and its owner might learn when the message was read. A client's read resolves
-//!   nothing.
+//!   reads messages. Any other follows Settings › Privacy (issue #672), because the server fetches
+//!   the address and its owner might learn when the message was read: by itself for a provider
+//!   allowed or at "Always show"; for one not asked yet the message names it (`foreign`) and the card
+//!   comes with `chat.show_card`, a person's click ("Show once"); never for one blocked or at "Never
+//!   show", where a card held from before is left out too. A client's read resolves nothing.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::Write;
@@ -29,8 +31,9 @@ use std::time::{Duration, SystemTime};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use chrono::Local;
-use torro_chat::{ChatError, LinkCard, MessagePage, split_message};
+use torro_chat::{ChatError, ForeignProvider, LinkCard, MessagePage, split_message};
 use torro_core::i18n::{tr, trf};
+use torro_core::privacy::Decision;
 use torro_ipc::Response;
 use torro_ipc::chat::{
     ChatAttachment, ChatPicture, FileData, MAX_APP_ATTACHMENT_BYTES, MAX_CLIENT_ATTACHMENT_BYTES, MAX_SHARED,
@@ -60,7 +63,7 @@ pub const PREVIEWS_PER_ACCOUNT: u64 = 64 * 1024 * 1024;
 /// The most link cards kept.
 pub const CARDS_KEPT: usize = 2000;
 
-/// The most cards of links to the own server resolved by one read of an app.
+/// The most cards resolved by one read of an app: links to the own server and to providers allowed.
 const CARDS_PER_READ: usize = 5;
 
 /// How long a fetched file stays in the chat's folder.
@@ -164,6 +167,35 @@ pub fn first_link(text: &str) -> Option<String> {
     let link = link.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '}', '>', '"', '\'']);
     let url = url::Url::parse(link).ok()?;
     (url.scheme() == "https" && url.host_str().is_some()).then(|| link.to_string())
+}
+
+/// What a message's first link is (issue #672).
+enum Link {
+    /// To the account's own server: its card is resolved for an app by itself.
+    Own,
+    /// To another server: what Settings › Privacy decides for its provider.
+    Other(Decision),
+}
+
+impl Link {
+    /// Whether its card is resolved by itself when an app reads the message.
+    fn loads(&self) -> bool {
+        matches!(self, Link::Own | Link::Other(Decision::Load))
+    }
+}
+
+/// Whether Settings › Privacy turned the card of `link` off (issue #672): a link to another server than
+/// `server` whose provider is blocked, or any such link at "Never show". An empty link (a card without
+/// one) counts as another server's.
+fn turned_off(privacy: &torro_core::privacy::Privacy, link: &str, server: &str) -> bool {
+    !torro_nextcloud::same_origin(link, server) && privacy.decide(&host_of(link)) == Decision::Skip
+}
+
+/// The host of `link` as the suite compares hosts ([`torro_core::privacy::normalize_host`]); empty when it
+/// has none.
+fn host_of(link: &str) -> String {
+    let host = url::Url::parse(link).ok().and_then(|url| url.host_str().map(str::to_string)).unwrap_or_default();
+    torro_core::privacy::normalize_host(&host)
 }
 
 /// The card of `link` from what the server resolved.
@@ -273,12 +305,18 @@ impl ChatService {
         if !sees_pictures(caller) {
             return no_picture_right();
         }
-        let image = self.held().cards.get(id).and_then(|card| card.image.clone());
-        let Some(image) = image else { return error_response(&ChatError::NotFound) };
         let remote = match self.remote(account).await {
             Ok(remote) => remote,
             Err(err) => return error_response(&err),
         };
+        // No picture of a card Settings › Privacy turned off (issue #672): it is left out of the messages.
+        let privacy = self.privacy();
+        let server = remote.server();
+        let image = self.held().cards.get(id).and_then(|card| {
+            let link = card.card.as_ref().map(|card| card.url.as_str()).unwrap_or_default();
+            if turned_off(&privacy, link, &server) { None } else { card.image.clone() }
+        });
+        let Some(image) = image else { return error_response(&ChatError::NotFound) };
         let key = format!("card:{image}");
         if let Some(picture) = self.held().preview(account, &key) {
             return picture_answer(picture);
@@ -432,7 +470,7 @@ impl ChatService {
         }
         let pictures = sees_pictures(caller);
         if kind == Some(SharedKind::Link) {
-            return self.shared_links(conversation, before, limit);
+            return self.shared_links(conversation, before, limit, &remote.server());
         }
         if !caps.shared {
             return error_response(&unsupported("This server cannot list what a conversation shared."));
@@ -457,7 +495,10 @@ impl ChatService {
     }
 
     /// The links with a card in `conversation`, from the cards the core holds (Talk does not list links).
-    fn shared_links(&self, conversation: &str, before: Option<u64>, limit: u32) -> Response {
+    fn shared_links(&self, conversation: &str, before: Option<u64>, limit: u32, server: &str) -> Response {
+        // A card of a provider Settings › Privacy blocks, or of any other at "Never show", is left out as
+        // in the messages (issue #672).
+        let privacy = self.privacy();
         let held = self.held();
         let mut items: Vec<(u64, SharedItem)> = held
             .cards
@@ -465,6 +506,9 @@ impl ChatService {
             .filter_map(|(id, card)| {
                 let (of, number) = split_message(id)?;
                 let card = card.card.as_ref()?;
+                if turned_off(&privacy, &card.url, server) {
+                    return None;
+                }
                 (of == conversation && before.is_none_or(|before| number < before)).then(|| {
                     let item = SharedItem {
                         message: id.clone(),
@@ -500,26 +544,47 @@ impl ChatService {
     }
 
     /// `page` of `conversation` as `caller` gets it: the cards the core holds on its messages, and
-    /// for an app first the cards of links to the account's own server; without the right to picture
-    /// content no `blurhash`.
+    /// for an app first the cards of links to the account's own server and to providers Settings ›
+    /// Privacy allows (issue #672), and the provider of a link not asked about yet (`foreign`); a card
+    /// of a provider it blocks is left out for everyone. Without the right to picture content no
+    /// `blurhash`.
     pub(super) async fn decorate(
         self: &Arc<Self>,
         conversation: &str,
         mut page: MessagePage,
         caller: Caller<'_>,
     ) -> MessagePage {
+        let privacy = self.privacy();
+        let server = match torro_chat::split_conversation(conversation) {
+            Some((account, _)) => self.remote(account).await.ok().map(|remote| (remote.server(), remote)),
+            None => None,
+        };
+        // What each message's first link is, by message id: one to the own server, or the decision
+        // for its provider. Without the server (signed out) every link counts as another's.
+        let links: BTreeMap<String, (String, Link)> = page
+            .messages
+            .iter()
+            .filter_map(|message| {
+                let link = first_link(&message.text)?;
+                let own = server.as_ref().is_some_and(|(server, _)| torro_nextcloud::same_origin(&link, server));
+                let kind = match own {
+                    true => Link::Own,
+                    false => Link::Other(privacy.decide(&host_of(&link))),
+                };
+                Some((message.id.clone(), (link, kind)))
+            })
+            .collect();
         if matches!(caller.reach, Reach::Suite)
-            && let Some((account, _)) = torro_chat::split_conversation(conversation)
-            && let Ok(remote) = self.remote(account).await
+            && let Some((_, remote)) = &server
         {
-            let server = remote.server();
+            // In the order of the page, as before the settings (the map is ordered by the ids' text).
             let open: Vec<(String, String)> = {
                 let held = self.held();
                 page.messages
                     .iter()
-                    .filter(|message| !held.cards.contains_key(&message.id))
-                    .filter_map(|message| Some((message.id.clone(), first_link(&message.text)?)))
-                    .filter(|(_, link)| torro_nextcloud::same_origin(link, &server))
+                    .filter_map(|message| Some((&message.id, links.get(&message.id)?)))
+                    .filter(|(id, (_, kind))| kind.loads() && !held.cards.contains_key(*id))
+                    .map(|(id, (link, _))| (id.clone(), link.clone()))
                     .take(CARDS_PER_READ)
                     .collect()
             };
@@ -533,19 +598,37 @@ impl ChatService {
             }
         }
         let pictures = sees_pictures(caller);
+        let app = matches!(caller.reach, Reach::Suite);
         let held = self.held();
         for message in &mut page.messages {
-            if let Some(card) = held.cards.get(&message.id).and_then(|card| card.card.clone()) {
-                message.cards = vec![card];
+            let kind = links.get(&message.id).map(|(_, kind)| kind);
+            let blocked = matches!(kind, Some(Link::Other(Decision::Skip)));
+            match held.cards.get(&message.id) {
+                Some(card) if !blocked => {
+                    if let Some(card) = &card.card {
+                        message.cards = vec![card.clone()];
+                    }
+                }
+                // Asked about only where a person can answer, and only while no card is there.
+                None if app => {
+                    if let Some(Link::Other(Decision::Ask(provider))) = kind {
+                        message.foreign =
+                            Some(ForeignProvider { key: provider.key.clone(), name: provider.name.clone() });
+                    }
+                }
+                _ => {}
             }
             if !pictures {
                 message.files.iter_mut().for_each(|file| file.blurhash = None);
             }
         }
+        drop(held);
         page
     }
 
-    /// `chat.show_card`: the card of the first link of the message `id`, whatever server it is on.
+    /// `chat.show_card`: the card of the first link of the message `id`, whatever server it is on;
+    /// `unsupported` for a provider Settings › Privacy blocks or while it says "Never show" (issue
+    /// #672).
     pub async fn show_card(self: &Arc<Self>, id: &str) -> Response {
         let (account, token, number) = match super::service::message_of(id) {
             Ok(found) => found,
@@ -563,6 +646,10 @@ impl ChatService {
             Err(err) => return error_response(&err),
         };
         let Some(link) = first_link(&message.text) else { return error_response(&ChatError::NotFound) };
+        let own = torro_nextcloud::same_origin(&link, &remote.server());
+        if !own && self.privacy().decide(&host_of(&link)) == Decision::Skip {
+            return refused("unsupported", tr("Content from this provider is turned off in Settings › Privacy."));
+        }
         let card = match remote.resolve(&link).await {
             Ok(Some(reference)) => card_of(&link, reference),
             Ok(None) => Card { card: None, image: None },

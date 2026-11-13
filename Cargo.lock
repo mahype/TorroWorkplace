@@ -7271,6 +7271,7 @@ version = "0.1.0"
 dependencies = [
  "fontdb",
  "keyring",
+ "psl",
  "roxmltree 0.21.1",
  "schemars",
  "serde",
@@ -7386,6 +7387,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "url",
 ]
 
 [[package]]
@@ -7508,6 +7510,7 @@ dependencies = [
  "iced",
  "serde_json",
  "tokio",
+ "torro-contacts",
  "torro-core",
  "torro-gui",
  "torro-inbox",
@@ -7608,6 +7611,22 @@ dependencies = [
  "torro-gui",
  "torro-ipc",
  "winresource",
+]
+
+[[package]]
+name = "torrocontacts"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "iced",
+ "image",
+ "rfd",
+ "tempfile",
+ "tokio",
+ "torro-contacts",
+ "torro-core",
+ "torro-gui",
+ "torro-ipc",
 ]
 
 [[package]]

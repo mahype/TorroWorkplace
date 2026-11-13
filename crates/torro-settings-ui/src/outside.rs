@@ -82,14 +82,15 @@ pub fn sections(app: AppId) -> Vec<Section> {
 }
 
 /// What the page loads for `app`: the clients, and what the selections of its areas offer – the
-/// calendars, the task lists (whose GitHub filter lists name the repositories), the inbox sources, the
-/// accounts (mail accounts, and the account a calendar or list belongs to).
+/// calendars, the task lists (whose GitHub filter lists name the repositories), the address books, the
+/// inbox sources, the accounts (mail accounts, and the account a calendar or list belongs to).
 pub fn wanted(app: AppId) -> Vec<Request> {
     let mut wanted = vec![Request::ListClients, Request::Accounts];
     for area in areas(app) {
         let request = match area {
             Area::Calendar => Request::CalendarCollections,
             Area::Tasks | Area::Github => Request::TaskCollections,
+            Area::Contacts => Request::ListAddressBooks { account: None },
             Area::Inbox => Request::ListSources,
             _ => continue,
         };
@@ -182,6 +183,7 @@ fn belongs(message: &rights::Message, areas: &[Area]) -> bool {
         M::Level(area, _) | M::Admin(area, _) | M::Expand(area) => areas.contains(area),
         M::Command(name, _) => CATALOGUE.iter().any(|command| command.name == *name && areas.contains(&command.area)),
         M::All(pick, _) | M::Tick(pick, ..) => areas.contains(&pick.area()),
+        M::HiddenBook(..) => areas.contains(&Area::Contacts),
         M::AddRepo => areas.contains(&Pick::GithubRepos.area()),
         M::Outbound(_) => areas.contains(&Area::Mail),
         M::ImageContent(_) => areas.contains(&Area::Chat),
@@ -483,9 +485,10 @@ mod tests {
     /// Every app but the control centre has the section, with its own areas only.
     #[test]
     fn every_app_but_the_control_centre_has_the_section() {
-        // The chat (issue #643) has no settings of its own yet, so no section here either.
+        // The chat (issue #643) and the contacts (issue #352) have no settings of their own yet, so no
+        // section here either.
         for app in AppId::ALL {
-            let without = *app == AppId::WORKPLACE || *app == AppId::CHAT;
+            let without = [AppId::WORKPLACE, AppId::CHAT, AppId::CONTACTS].contains(app);
             assert_eq!(sections(*app).is_empty(), without, "{}", app.window_class);
             if !without {
                 assert_eq!(sections(*app)[0].id, "api-mcp");

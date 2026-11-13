@@ -425,6 +425,7 @@ fn known(data: &Data) -> rights::Known<'_> {
     rights::Known {
         calendars: &data.calendars,
         task_lists: &data.task_lists,
+        address_books: &data.address_books,
         sources: &data.sources,
         clients: &data.clients,
         accounts: &data.accounts,

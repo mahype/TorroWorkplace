@@ -696,3 +696,35 @@ fn a_chat_window_keeps_its_glance_at_the_contact_list_size() {
     app.size = CONTACTS_SIZE;
     assert_eq!(app.view_class(), SizeClass::Mini);
 }
+
+/// Issue #672: a link to another provider not asked about yet asks; "Never for …" stores the choice and
+/// leaves only the link, "Always allow …" brings the card, and a failure says why in the calm line.
+#[test]
+fn a_link_to_another_provider_asks_and_the_answer_is_kept() {
+    use crate::app::files::FilesMsg;
+    use torro_core::privacy::ProviderChoice;
+    let grids = torro_chat::message_id(torro_chat::demo::DESIGN, 11);
+    let decided = |app: &mut App, choice: ProviderChoice, result: Result<(), ChatError>| {
+        let msg = FilesMsg::Decided("example.com".into(), choice, result);
+        let _ = app.update(Message::Chat(Msg::Files(msg)));
+    };
+
+    let mut app = loaded(start(&["--open", "files"]));
+    let asked = message(&app, &grids).foreign.clone().expect("example.com is asked about");
+    assert_eq!(asked.name, "example.com");
+    decided(&mut app, ProviderChoice::Blocked, Err(ChatError::Other("Not allowed.".into())));
+    assert!(message(&app, &grids).foreign.is_some(), "still asked after a failure");
+    assert_eq!(chat(&app).note.as_ref().map(|note| note.text.as_str()), Some("Not allowed."));
+    block_on(app.backend.clone().set_provider("example.com".into(), ProviderChoice::Blocked)).expect("kept");
+    decided(&mut app, ProviderChoice::Blocked, Ok(()));
+    assert!(message(&app, &grids).foreign.is_none() && message(&app, &grids).cards.is_empty(), "only the link");
+
+    let mut app = loaded(start(&["--open", "files"]));
+    block_on(app.backend.clone().set_provider("example.com".into(), ProviderChoice::Allowed)).expect("kept");
+    decided(&mut app, ProviderChoice::Allowed, Ok(()));
+    assert!(message(&app, &grids).foreign.is_none());
+    assert_eq!(chat(&app).files.cards.get(&grids), Some(&crate::app::files::CardAsk::Asking), "the card comes");
+    let card = block_on(app.backend.clone().show_card(grids.clone())).expect("a card");
+    let _ = app.update(Message::Chat(Msg::Files(FilesMsg::Card(grids.clone(), Ok(card)))));
+    assert_eq!(message(&app, &grids).cards.first().map(|card| card.domain.as_str()), Some("example.com"));
+}

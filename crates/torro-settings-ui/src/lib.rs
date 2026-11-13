@@ -15,6 +15,8 @@
 //!   the header bar with the path, the page, and the sending and loading around it.
 //! * [`suite`] – the pages of the whole suite, Appearance and General (issue #408): the control
 //!   centre shows them, and so does an app while the main application is not installed.
+//! * [`privacy`] – the suite's page Privacy (issue #672): what loads from other providers in Chat and
+//!   Mail, shown where Appearance is.
 //! * [`accounts`] – Accounts and AI (issue #410): the control centre shows them with every
 //!   provider, an app with the ones it uses behind its gear ([`Host::with_accounts`]); the accounts
 //!   stay one for the whole suite, in the daemon.
@@ -64,6 +66,7 @@ pub mod inbox;
 pub mod mail;
 pub mod outside;
 pub mod parts;
+pub mod privacy;
 pub mod rights;
 pub mod suite;
 
@@ -166,6 +169,10 @@ pub struct Data {
     /// The task lists the suite shows, GitHub filter lists included (`tasks.list_lists`): what the
     /// rights editor offers under "Task lists" and, from their searches, "GitHub repositories".
     pub task_lists: Vec<Collection>,
+    /// The address books of every account, the hidden ones too (`contacts.list_address_books`, issue
+    /// #353): what the rights editor offers under "Address books" and "Hidden address books", and what
+    /// an account's page counts under "Contacts".
+    pub address_books: Vec<torro_contacts::AddressBook>,
     /// Which AI account and model each function uses (`ai.list_assignments`, task E12.10): the
     /// mail window's section "Categorization" reads and changes the one for sorting mail.
     pub assignments: Vec<torro_ipc::AiAssignmentInfo>,
@@ -340,6 +347,7 @@ impl Data {
                     }
                 }
             }
+            Response::AddressBooks { books } => self.address_books = books,
             Response::Sources { sources } => self.sources = sources,
             Response::SaveTargets { targets, downloads, .. } => {
                 self.save_targets = targets;

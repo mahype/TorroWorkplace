@@ -319,10 +319,15 @@ dahinter rückten um eins.
     Nextcloud“ bleibt im Menü und ist der Weg für noch größere Videos. Kein
     GStreamer und kein FFmpeg in den Paketen; ein Player im Fenster wird ein eigenes Issue, wenn Videos im Alltag
     häufig sind.
-23. **Link-Karten fremder Seiten erst auf Klick** (entschieden vom Menschen am 2026-11-11, im Review von #636). Talk-Web
-    löst den ersten Link beim Anzeigen auf; dabei ruft der eigene Server die fremde URL ab, und wer eine eindeutige URL
-    schickt, erfährt, wann gelesen wurde. Darum bekommen nur Links auf den eigenen Nextcloud-Server ihre Karte von
-    selbst, alle anderen nach einem Klick auf „Show preview“ (`chat.show_card`, nur Menschen).
+23. **Link-Karten fremder Seiten nach Settings › Privacy** (entschieden vom Menschen am 2026-11-11, im Review von #636;
+    seit #672 Teil der zentralen Freigabe fremder Inhalte, `docs/settings.md`, Abschnitt „Privacy“). Talk-Web löst den
+    ersten Link beim Anzeigen auf; dabei ruft der eigene Server die fremde URL ab, und wer eine eindeutige URL schickt,
+    erfährt, wann gelesen wurde. Darum bekommen nur Links auf den eigenen Nextcloud-Server ihre Karte immer von selbst.
+    Für jeden anderen Link entscheidet die Stufe in Settings › Privacy: bei „Always show“ und für einen erlaubten
+    Anbieter kommt die Karte von selbst, bei „Never show“ und für einen gesperrten nie (nur der Link im Text). Bei
+    „Ask“ (Standard) fragt das Chatfenster für einen Anbieter, über den noch niemand entschieden hat, an der Stelle der
+    Karte: „Show once“ (`chat.show_card`, nur Menschen, speichert nichts), „Always allow <Anbieter>“ und „Never for
+    <Anbieter>“ (beide `settings.set_setting privacy_provider`, nur Menschen).
 24. **Fassungen der Entwürfe gewählt** (vom Menschen am 2026-11-11, beim Durchsehen der Entwürfe zu #636):
     - **Gruppenchats:** Umschalter „People | Groups“ oben in der Kontaktliste (Entscheidung 17).
     - **Klingeln:** kleines Fenster mittig (`torro-chat-ring`), keine Benachrichtigung.
@@ -526,8 +531,10 @@ Unterhaltung gemerkt werden können, siehe „Schweben“):
     Decoder): Zeile mit Symbol der Art, Name, Größe und Art, Knöpfe „Open“, „Download“, „Open in Nextcloud“
     (`hide-download`: nur „Open in Nextcloud“).
   - **Link-Karte** unter einer Nachricht mit Link: Bild vom eigenen Server, Titel, Domain; nur der erste Link einer
-    Nachricht, wie in Talk-Web. Links auf den eigenen Nextcloud-Server bekommen sie von selbst, andere erst nach einem
-    Klick auf „Show preview“ unter dem Link (Entscheidung 23). Ohne Karte bleibt der Link im Text.
+    Nachricht, wie in Talk-Web. Links auf den eigenen Nextcloud-Server bekommen sie von selbst, andere nach Settings ›
+    Privacy (Entscheidung 23, #672). Bei „Ask“ steht statt der Karte ein ruhiger Satz „This message shows content from
+    <Anbieter>.“ mit den Knöpfen „Show once“, „Always allow <Anbieter>“ und „Never for <Anbieter>“; die Antwort gilt
+    für alle Nachrichten des Anbieters im Fenster. Ohne Karte bleibt der Link im Text.
 - **Eingabe:** mehrzeilig, Enter sendet, Shift+Enter bricht um. `@` öffnet Vorschläge. Ein Zähler erscheint ab
   90 % der Höchstlänge. Im Menü „Send without notification“. Ab Stufe 4 links die Büroklammer („Attach file“, Dialog
   des Systems), Ziehen einer Datei auf das Fenster (die ganze Fläche wird zur Ablage, „Drop to send to Anna Berg“)
@@ -650,7 +657,7 @@ Bereich `chat`:
 | 4 | `chat.get_attachment { id, file }` (Datei einer Nachricht in den Anhangsordner des Chats, Pfad, Größe, Art; wie `mail.get_attachment`) | Read | `chat_get_attachment` |
 | 4 | `chat.save_attachment { id, file, to }` (`to`: `downloads`, `{ "target": … }`, `file` und `folder` **nur Menschen**) | Write | `chat_save_attachment` |
 | 4 | `chat.list_shared { conversation, kind?, before?, limit? }` (`kind`: `media`, `file`, `voice`, `link`, …; höchstens 100) | Read | `chat_list_shared` |
-| 4 | `chat.show_card { id }` (Link-Karte zum ersten Link der Nachricht holen, „Show preview“; der Server ruft dafür die fremde URL ab) | Write | `Never` (nur Menschen, siehe Vorschlag für `api.md`) |
+| 4 | `chat.show_card { id }` (Link-Karte zum ersten Link der Nachricht holen, „Show once“; der Server ruft dafür die fremde URL ab; `unsupported` für einen gesperrten Anbieter und bei „Never show“, #672) | Write | `Never` (nur Menschen, siehe Vorschlag für `api.md`) |
 | 4 | `chat.get_messages` mit dem neuen Feld `cards` (Link-Karten aus dem Cache) und der Eingabe `around` (Nachrichten um eine Kennung, für „Show in chat“; Erweiterung) | Read | `chat_get_messages` (vorhanden) |
 | 5 | `chat.send_message` mit `items` und `fields` (Erweiterung, TL2) | Write + **nach außen** + Read der Inhalte | `chat_send_message` (vorhanden) |
 | 6 | `chat.get_call { conversation }` (läuft ein Anruf, klingelt es, seit wann, wie viele sind drin, ob der Mensch dabei ist; keine Namen, keine Geräte, kein Bild) | Read | `chat_get_call` |
@@ -853,7 +860,8 @@ auf dem Server), steht in [chat-machbarkeit.md](chat-machbarkeit.md#dateien-und-
 | Open, Download, Video öffnen | `chat.get_attachment`, `chat.save_attachment` | `chat_get_attachment`, `chat_save_attachment` (nur Downloads oder ein Ablageziel) |
 | Medien-Übersicht | `chat.list_shared` | `chat_list_shared` |
 | Link-Karten | Feld `cards` in `chat.get_messages` | `chat_get_messages` |
-| „Show preview“ an einem fremden Link | `chat.show_card` | keins: nur Menschen (Entscheidung 23) |
+| „Show once“ an einem fremden Link | `chat.show_card` | keins: nur Menschen (Entscheidung 23) |
+| „Always allow …“ / „Never for …“ an einem fremden Link (#672) | `settings.set_setting privacy_provider` | keins: nur Menschen (`api.md`, Punkt 14) |
 | Sprachnachricht abspielen (Datei über `get_attachment`, Wellenform im Fenster), Video im Programm des Systems | Abspielen selbst ist nur Oberfläche, ohne Befehl (Entscheidungen 19, 22) | – |
 | „Show in chat“ aus der Medien-Übersicht | `chat.get_messages` mit `around` | `chat_get_messages` |
 
@@ -958,9 +966,13 @@ Nach der Entscheidung leert der Kern Dateinamen und Bytes wie den Text (Datensch
   der Nachricht und der Datei, Name, Größe, Art, Autor und Zeit, alles `untrusted`.
 - **Link-Karten** stehen als Feld `cards` in `chat.get_messages` (Titel, Beschreibung, Domain, ob ein Bild da ist),
   `untrusted`. Von selbst löst der Kern nur Links auf den Ursprung des eigenen Kontos über `references/resolve` auf
-  (Dateien, Deck, Talk), wenn er Nachrichten für ein offenes Chatfenster lädt (App-Schlüssel). Jeden anderen Link erst
-  mit `chat.show_card { id }` („Show preview“): Sonst riefe der eigene Server beim bloßen Anzeigen die fremde URL ab,
-  und wer eine eindeutige URL schickt, erführe, wann gelesen wurde (Entscheidung 23). Das Ergebnis hält der Kern im
+  (Dateien, Deck, Talk), wenn er Nachrichten für ein offenes Chatfenster lädt (App-Schlüssel). Jeden anderen Link nach
+  Settings › Privacy (#672, `torro_core::privacy`): von selbst bei „Always show“ und für einen erlaubten Anbieter
+  (zusammen mit den eigenen höchstens fünf je Lesen), nie bei „Never show“ und für einen gesperrten – dann lässt der
+  Kern auch eine schon gehaltene Karte weg, für jeden Leser –, sonst nennt er in der Nachricht den Anbieter (Feld
+  `foreign`, nur für den App-Schlüssel), und die Karte kommt erst mit `chat.show_card { id }` („Show once“): Sonst
+  riefe der eigene Server beim bloßen Anzeigen die fremde URL ab, und wer eine eindeutige URL schickt, erführe, wann
+  gelesen wurde (Entscheidung 23). Die Einstellung liest der Kern bei jedem Lesen neu. Das Ergebnis hält der Kern im
   Cache. Ein Read eines Clients löst kein neues `resolve` aus, sonst könnte ein Agent den Server Links nachschlagen
   lassen. Das Bild der Karte kommt über
   `chat.get_preview` mit der Kennung der Nachricht und `card: true`.
