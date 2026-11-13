@@ -8733,6 +8733,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Kind", "Art"),
     ("No other writable book", "Kein anderes beschreibbares Adressbuch"),
     (
+        "The picture was not set: another contact is open now.",
+        "Das Bild wurde nicht gesetzt: Inzwischen ist ein anderer Kontakt offen.",
+    ),
+    (
         "Not a date: write 15.04.1990, or 15.04. without the year. It is not saved.",
         "Kein Datum: Schreib 15.04.1990, oder 15.04. ohne Jahr. Es wird nicht gespeichert.",
     ),
