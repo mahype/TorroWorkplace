@@ -87,6 +87,9 @@ use crate::parts::{confirm, row_frame, setting_row, switch};
 pub const APPEARANCE: &str = "appearance";
 /// See [`APPEARANCE`].
 pub const GENERAL: &str = "general";
+/// The section word of the page Privacy (issue #672, [`crate::privacy`]), which stands between
+/// Appearance and General.
+pub const PRIVACY: &str = "privacy";
 
 /// The pages' own state: the lists, the open dropdown, the reasons shown, the question open.
 #[derive(Debug, Default)]

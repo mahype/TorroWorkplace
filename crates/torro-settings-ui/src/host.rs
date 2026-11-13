@@ -48,9 +48,10 @@
 //! # The suite's pages (issue #408)
 //!
 //! While the main application is not installed the app says so when it makes the host
-//! ([`Host::with_memory`]): the host then adds the sections Appearance and General after the app's
-//! own ([`SUITE_SECTIONS`]), in place of the two links into the control centre, and shows and runs
-//! them itself ([`crate::suite`]) – the app's page for them is not drawn. What they change goes
+//! ([`Host::with_memory`]): the host then adds the sections Appearance, Privacy (issue #672) and
+//! General after the app's own ([`SUITE_SECTIONS`]), in place of the two links into the control
+//! centre, and shows and runs them itself ([`crate::suite`], [`crate::privacy`]) – the app's page for
+//! them is not drawn. What they change goes
 //! through the app's [`Backend`] like everything else; the zoom, a design, a font or a colour scheme
 //! is one `settings.set_setting`, which the app's windows follow as they follow the control centre.
 //!
@@ -108,7 +109,7 @@ use torro_ipc::{Request, Response};
 use crate::accounts::{self, Group};
 use crate::outside;
 use crate::parts::notice;
-use crate::{Action, Backend, Data, Memory, background, suite};
+use crate::{Action, Backend, Data, Memory, background, privacy, suite};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -133,9 +134,12 @@ const LINKS: [(&str, Icon, &str); 2] =
     [("appearance", Icon::Sun, "Appearance"), ("general", shell::SETTINGS_ICON, "All settings")];
 
 /// The suite's pages as sections of an app without the main application (issue #408), after its own:
-/// the same words, icons and names as the two [`LINKS`] they stand in for.
-pub const SUITE_SECTIONS: [Section; 2] = [
+/// the same words, icons and names as the two [`LINKS`] they stand in for, and Privacy between them
+/// (issue #672) with the word, icon and name the control centre gives it. With the main application
+/// Privacy has no link of its own: "All settings ↗" leads there.
+pub const SUITE_SECTIONS: [Section; 3] = [
     Section { id: suite::APPEARANCE, icon: Icon::Sun, label: "Appearance" },
+    Section { id: suite::PRIVACY, icon: Icon::EyeOff, label: "Privacy" },
     Section { id: suite::GENERAL, icon: shell::SETTINGS_ICON, label: "General" },
 ];
 
@@ -350,6 +354,9 @@ pub enum Message {
     Loaded(Box<Data>),
     /// What a widget of the suite's pages reported ([`SUITE_SECTIONS`]).
     Suite(suite::Message),
+    /// What a widget of the suite's page Privacy reported (issue #672): one change, sent at once
+    /// ([`privacy::update`]).
+    Privacy(privacy::Message),
     /// The designs, fonts and colour schemes for the suite's page Appearance came back.
     Looks(Box<suite::Lists>),
     /// A file of a listed font is loaded, so its entry in the font dropdown is written in it; the
@@ -1232,6 +1239,10 @@ impl Host {
                     other => other,
                 }
             }
+            Message::Privacy(message) => match self.suite {
+                Some(_) => self.act(Action::send(privacy::update(message))),
+                None => Outcome::None,
+            },
             Message::Suite(message) => {
                 let Some(state) = self.suite.as_mut() else { return Outcome::None };
                 let action = suite::update(state, message, &self.data.settings);
@@ -1336,11 +1347,12 @@ impl Host {
         let page = match self.suite.as_ref().filter(|_| self.on_suite_page()) {
             Some(state) => {
                 let settings = &self.data.settings;
-                let body = match self.current - self.own {
-                    0 => suite::appearance(state, settings),
-                    _ => suite::general(settings),
+                let body = match self.current().id {
+                    suite::APPEARANCE => suite::appearance(state, settings).map(Message::Suite),
+                    suite::PRIVACY => privacy::view(settings).map(Message::Privacy),
+                    _ => suite::general(settings).map(Message::Suite),
                 };
-                Page::new(body.map(move |message| wrap(Message::Suite(message))))
+                Page::new(body.map(wrap))
             }
             None => match self.accounts.as_ref().filter(|_| self.on_accounts_page()) {
                 Some(state) => self.accounts_page(state, class, wrap),
@@ -2000,7 +2012,10 @@ mod tests {
         let (host, _) = Host::with_memory(backend, sections(), vec![Request::Settings], Memory::default(), true);
         let mut host = host.with_accounts(AppId::CALENDAR, &[Group::Nextcloud, Group::Mail], true);
         let ids: Vec<&str> = host.sections().iter().map(|section| section.id).collect();
-        assert_eq!(ids, ["calendars", "reminders", "accounts", "ai", suite::APPEARANCE, suite::GENERAL]);
+        assert_eq!(
+            ids,
+            ["calendars", "reminders", "accounts", "ai", suite::APPEARANCE, suite::PRIVACY, suite::GENERAL]
+        );
         assert!(host.wanted.contains(&Request::Accounts) && !host.wanted.contains(&Request::ListSources));
         let accounts = crate::accounts::demo::demo_data().accounts;
         host.update::<()>(Message::Loaded(Box::new(Data { accounts, ..Data::default() })));
@@ -2167,13 +2182,14 @@ mod tests {
         let backend: Arc<dyn Backend> = Arc::new(Demo::new());
         let (mut alone, _) = Host::with_memory(Arc::clone(&backend), sections(), Vec::new(), Memory::default(), true);
         let ids: Vec<&str> = alone.sections().iter().map(|section| section.id).collect();
-        assert_eq!(ids, ["calendars", "reminders", "appearance", "general"]);
+        assert_eq!(ids, ["calendars", "reminders", "appearance", "privacy", "general"]);
         assert!(alone.wanted.contains(&Request::Settings), "the pages show the settings");
         assert!(alone.open("appearance") && alone.on_suite_page());
+        assert!(alone.open("privacy") && alone.on_suite_page());
         assert!(alone.open("general") && alone.on_suite_page());
         assert!(alone.open("reminders") && !alone.on_suite_page());
         for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
-            for id in ["appearance", "general"] {
+            for id in ["appearance", "privacy", "general"] {
                 alone.open(id);
                 let _ = alone.view(class, page(), |message| message);
             }
@@ -2181,7 +2197,7 @@ mod tests {
 
         let (mut with_main, _) = Host::with_memory(backend, sections(), Vec::new(), Memory::default(), false);
         assert_eq!(with_main.sections().len(), 2, "the app's own sections only");
-        assert!(!with_main.open("appearance") && !with_main.open("general"));
+        assert!(!with_main.open("appearance") && !with_main.open("privacy") && !with_main.open("general"));
         let link: Outcome<()> = with_main.update(Message::Link(0));
         assert!(matches!(link, Outcome::ControlCentre(ref section) if section == "appearance"));
     }
@@ -2209,10 +2225,10 @@ mod tests {
         installed::set(&apps, false);
         assert!(host.suite_arrived().is_some(), "the settings the pages show are loaded");
         let ids: Vec<&str> = host.sections().iter().map(|section| section.id).collect();
-        assert_eq!(ids, ["calendars", "reminders", "appearance", "general"]);
+        assert_eq!(ids, ["calendars", "reminders", "appearance", "privacy", "general"]);
         assert!(host.wanted.contains(&Request::Settings));
         assert!(host.open("appearance") && host.on_suite_page());
-        assert!(host.suite_arrived().is_none() && host.sections().len() == 4, "once");
+        assert!(host.suite_arrived().is_none() && host.sections().len() == 5, "once");
 
         // With the main application the guess was right: the links stay.
         let backend: Arc<dyn Backend> = Arc::new(Demo::new());
@@ -2247,13 +2263,47 @@ mod tests {
             Section { id: "voice", icon: Icon::Bell, label: "Voice" },
         ];
         let ids: Vec<&str> = suite_sections(&own).iter().map(|section| section.id).collect();
-        assert_eq!(ids, ["appearance", "suite-general"]);
+        assert_eq!(ids, ["appearance", "privacy", "suite-general"]);
         let backend: Arc<dyn Backend> = Arc::new(Demo::new());
         let (mut host, _) = Host::with_memory(backend, own, Vec::new(), Memory::default(), true);
         assert!(host.open("general") && !host.on_suite_page(), "the app's own General");
         assert!(host.open("suite-general") && host.on_suite_page());
         let ids: Vec<&str> = suite_sections(&sections()).iter().map(|section| section.id).collect();
-        assert_eq!(ids, ["appearance", "general"], "no clash, the words of the control centre");
+        assert_eq!(ids, ["appearance", "privacy", "general"], "no clash, the words of the control centre");
+    }
+
+    /// Issue #672: without the main application the app shows Privacy between Appearance and General
+    /// and draws it in every form; each of its changes is work for the backend (its request is
+    /// [`crate::privacy::update`]'s, tested there). With the main application there is no such section:
+    /// the control centre has the page, and a stray message sends nothing.
+    #[test]
+    fn privacy_stands_without_the_main_application() {
+        use torro_core::privacy::{ForeignContent, ProviderChoice};
+
+        let backend: Arc<dyn Backend> = Arc::new(Demo::new());
+        let (mut host, _) = Host::with_memory(backend, sections(), Vec::new(), Memory::default(), true);
+        assert!(host.open(suite::PRIVACY) && host.on_suite_page());
+        assert_eq!(host.current().icon, Icon::EyeOff);
+        let settings = torro_core::settings::Settings { privacy: crate::privacy::demo(), ..Default::default() };
+        host.update::<()>(Message::Loaded(Box::new(Data { settings, ..Data::default() })));
+        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
+            let _: Frame<'_, Message> = host.view(class, page(), |m| m);
+        }
+        let messages = [
+            crate::privacy::Message::Content(ForeignContent::Never),
+            crate::privacy::Message::Provider("youtube".into(), Some(ProviderChoice::Blocked)),
+            crate::privacy::Message::Provider("youtube".into(), None),
+        ];
+        for message in messages {
+            let outcome = host.update::<()>(Message::Privacy(message.clone()));
+            assert!(matches!(outcome, Outcome::Work(_)), "{message:?} sends its request");
+        }
+
+        let backend: Arc<dyn Backend> = Arc::new(Demo::new());
+        let (mut main_app, _) = Host::with_memory(backend, sections(), Vec::new(), Memory::default(), false);
+        assert!(!main_app.open(suite::PRIVACY), "with the main application the control centre has it");
+        let stray = crate::privacy::Message::Content(ForeignContent::Always);
+        assert!(matches!(main_app.update::<()>(Message::Privacy(stray)), Outcome::None));
     }
 
     /// Issue #408: every action of the suite's pages sends exactly its own request through the
