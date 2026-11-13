@@ -70,8 +70,8 @@ pub struct Privacy {
     /// Whether content from other providers is loaded; `ask` unless changed.
     #[serde(default)]
     pub content: ForeignContent,
-    /// The providers a person allowed or blocked, by their key ([`Provider::key`]): `youtube` for a
-    /// known service, else the domain or IP address. At most [`MAX_PROVIDERS`].
+    /// The providers a person allowed or blocked, by their key: `youtube` for a known service, else the
+    /// domain or IP address. At most 1000 (`MAX_PROVIDERS`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub providers: BTreeMap<String, ProviderChoice>,
 }

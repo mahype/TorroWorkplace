@@ -258,7 +258,7 @@ pub struct Settings {
     pub workspaces: WorkspaceSettings,
     /// Content from other providers (issue #672, Settings › Privacy): whether pictures of a mail, link
     /// previews and embedded videos in the chat load always, after asking (the default) or never, and the
-    /// providers a person allowed or blocked ([`crate::privacy::Privacy`]). Only a person changes it
+    /// providers a person allowed or blocked (`torro_core::privacy::Privacy`). Only a person changes it
     /// (`settings.set_setting privacy_content` and `privacy_provider`, app key only). Read leniently: an
     /// entry that does not fit is dropped, a value that does not read gives the defaults.
     #[serde(
