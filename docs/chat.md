@@ -569,7 +569,7 @@ der Liste `FLOATING_WINDOWS` in `torro-core` (`app.rs`): je Fenster das Programm
 und seine Klasse. Heute sind das Chat-, Klingel- und Bildfenster des Chats (`torrochat --conversation`, `--ring`,
 `--viewer`) und der Dialog nach „Workspace speichern…“ (`torroworkplace ui --template`). Ein späteres Anruf- oder
 Gerätefenster bekommt dort einen Eintrag und schwebt dann unter jedem Fenster-Manager; ein Test in
-`torrochat/src/launch.rs` verlangt den Eintrag für jeden Fenster-Schalter des Chats. Einen Request dafür gibt es nicht.
+`torrochat/src/launch.rs` nennt jede Fensterart des Chats und verlangt für jede außer der Kontaktliste den Eintrag. Einen Request dafür gibt es nicht.
 - **Hyprland:** `float_dialogs` setzt je Klasse eine Regel `float = true, center = true`, bevor das Fenster öffnet:
   beim Start des Kerns, vor jedem Klingelfenster und jedem Dialog und nach jedem Neuladen der Konfiguration
   (`ConfigReloaded` in `torro-wm`), das Laufzeit-Regeln verwirft. Ein Chatfenster an einem gemerkten Ort bräuchte
@@ -583,7 +583,8 @@ Gerätefenster bekommt dort einen Eintrag und schwebt dann unter jedem Fenster-M
   `torro-setups`). Dafür hat der Trait `WindowManager` die Methode `float_window`: AeroSpace
   `layout --window-id <id> floating`, GlazeWM `command --id <id> set-floating --centered`. Fenster anderer
   Programme fragt der Kern nicht ab. Endet der Ereignisstrom (Fenster-Manager neu gestartet), abonniert der Kern
-  nach 10 s neu.
+  nach 10 s neu. Bei jedem Abonnieren lässt er zuerst die schon offenen, gekachelten Fenster dieser Art schweben:
+  die aus der Lücke und die, die ein neu gestarteter Fenster-Manager wieder als Kachel eingeordnet hat.
   - Der Fenstertitel scheidet aus, weil er übersetzt wird und den Namen der Unterhaltung trägt; ein eigenes Bündel
     je Fensterart wäre viel Aufwand beim Paketbau.
   - Der Kern ändert die Konfiguration von AeroSpace und GlazeWM nicht. Darum steht ein neues Fenster einen
