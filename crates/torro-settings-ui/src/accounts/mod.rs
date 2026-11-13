@@ -3873,9 +3873,9 @@ fn contacts_group<'a>(account: &AccountInfo, data: &dyn Seen) -> Option<Element<
         1 => Some(tr("1 of them hidden").to_string()),
         n => Some(trf("{n} of them hidden", &[("n", &n)])),
     };
-    let count = widgets::ellipsized_end(typo::body(), all.to_string(), theme::text_2);
+    let count = typo::text(typo::body().tabular(), torro_gui::units::format_count(all as u64)).style(theme::text_2);
     let row = setting_row(None, tr("Address books"), detail, count);
-    let footer = tr("Agents see only the address books you choose on their page.");
+    let footer = tr("You choose which address books an agent sees under MCP clients, on its page.");
     Some(widgets::group(tr("Contacts"), vec![row], Some(footer.to_string())))
 }
 

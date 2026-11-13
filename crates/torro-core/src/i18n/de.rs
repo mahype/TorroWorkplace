@@ -8871,11 +8871,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("1 contact", "1 Kontakt"),
     ("{n} contacts", "{n} Kontakte"),
     ("Hidden address books", "Ausgeblendete Adressbücher"),
-    ("Never part of All. Tick each one by name.", "Gehören nie zu „Alle“. Jedes einzeln anhaken."),
+    ("Never included in “All”. Switch each one on by name.", "Gehören nie zu „Alle“. Jedes einzeln einschalten."),
     ("1 of them hidden", "1 davon ausgeblendet"),
     ("{n} of them hidden", "{n} davon ausgeblendet"),
     (
-        "Agents see only the address books you choose on their page.",
-        "Agenten sehen nur die Adressbücher, die du auf ihrer Seite wählst.",
+        "You choose which address books an agent sees under MCP clients, on its page.",
+        "Welche Adressbücher ein Agent sieht, wählst du unter MCP-Clients auf seiner Seite.",
     ),
 ];

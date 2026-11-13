@@ -1036,7 +1036,7 @@ fn book_candidate(book: &torro_contacts::AddressBook, known: &Known) -> Candidat
         .map_or(book.account.as_str(), |account| account.label.as_str());
     let contacts = match book.count {
         1 => tr("1 contact").to_string(),
-        n => trf("{n} contacts", &[("n", &n)]),
+        n => trf("{n} contacts", &[("n", &torro_gui::units::format_count(u64::from(n)))]),
     };
     let label = if book.display_name.trim().is_empty() { book.name.clone() } else { book.display_name.clone() };
     Candidate::plain(book.id.clone(), label, Some(format!("{account} · {contacts}")))
@@ -1340,7 +1340,7 @@ fn hidden_group<'a>(rights: &Rights, known: &Known, column: Option<f32>) -> Opti
             pressable(row, Some(Message::HiddenBook(id, !ticked)))
         })
         .collect();
-    let footer = tr("Never part of All. Tick each one by name.");
+    let footer = tr("Never included in “All”. Switch each one on by name.");
     Some(widgets::group(tr("Hidden address books"), rows, Some(footer.to_string())))
 }
 
@@ -2823,7 +2823,7 @@ mod tests {
         let offered = candidates(Pick::AddressBooks, &fixture.known(), &Selection::All);
         let ids: Vec<&str> = offered.iter().map(|candidate| candidate.id.as_str()).collect();
         assert_eq!(ids, [BOOK, TEAM]);
-        let contacts = trf("{n} contacts", &[("n", &124)]);
+        let contacts = trf("{n} contacts", &[("n", &"124")]);
         assert_eq!(offered[0].label, "Contacts");
         assert_eq!(offered[0].detail, Some(format!("anna@cloud.example.org · {contacts}")));
         let hidden = hidden_candidates(&fixture.known(), &Rights::none());
