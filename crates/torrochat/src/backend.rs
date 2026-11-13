@@ -13,6 +13,7 @@ use torro_chat::{
     Outgoing, OwnStatus, Person, Picture, PreparedFile, PreviewSize, SaveTo, SearchHit, Sending, SharedKind,
     SharedPage, Status, StatusChange, UploadProgress, Uploaded,
 };
+use torro_core::privacy::ProviderChoice;
 use torro_ipc::chat::ChatClient;
 use torro_ipc::{Request, Response, SettingKey};
 
@@ -361,11 +362,33 @@ impl Backend {
         }
     }
 
-    /// `chat.show_card` ("Show preview").
+    /// `chat.show_card` ("Show once").
     pub async fn show_card(self, id: String) -> Result<Option<LinkCard>, ChatError> {
         match self {
             Backend::Core(core) => core.show_card(id).await,
             Backend::Demo(demo) => demo.show_card(id).await,
+        }
+    }
+
+    /// "Always allow …" or "Never for …" under a link (issue #672): `settings.set_setting
+    /// privacy_provider` with the provider's key, which only the app key may send. The demo keeps it in
+    /// memory and writes no settings.
+    pub async fn set_provider(self, key: String, choice: ProviderChoice) -> Result<(), ChatError> {
+        match self {
+            Backend::Core(core) => {
+                let value = serde_json::json!({"provider": key, "choice": choice});
+                let request = Request::SetSetting { key: SettingKey::PrivacyProvider, value };
+                match torro_ipc::client::call(&core.socket, &request).await {
+                    Ok(Response::Ok) => Ok(()),
+                    Ok(Response::Error { message, .. }) => Err(ChatError::Other(message)),
+                    Ok(_) => Err(ChatError::Other("unexpected answer".into())),
+                    Err(err) => Err(ChatError::Other(err.to_string())),
+                }
+            }
+            Backend::Demo(demo) => {
+                demo.decide_provider(&key, choice == ProviderChoice::Allowed);
+                Ok(())
+            }
         }
     }
 
