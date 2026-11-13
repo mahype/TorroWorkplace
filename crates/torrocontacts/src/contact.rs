@@ -48,7 +48,15 @@ pub fn safe_link(link: &str) -> Option<&str> {
             || matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
     };
     let query = matches!(scheme.as_str(), "mailto" | "sms") && rest.contains(['?', '&']);
-    (SAFE_SCHEMES.contains(&scheme.as_str()) && !rest.is_empty() && !link.chars().any(hidden) && !query).then_some(link)
+    // A number to call or text is a number: a `+` in front and digits, nothing a phone would dial as a
+    // code (`tel:*21*123#`).
+    let number = |rest: &str| {
+        let digits = rest.strip_prefix('+').unwrap_or(rest);
+        !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
+    };
+    let not_a_number = matches!(scheme.as_str(), "tel" | "sms") && !number(rest);
+    let safe = SAFE_SCHEMES.contains(&scheme.as_str()) && !rest.is_empty() && !link.chars().any(hidden);
+    (safe && !query && !not_a_number).then_some(link)
 }
 
 /// The `tel:` address of a number: only `+` (in front) and digits stay, so a text cannot become a
@@ -374,6 +382,9 @@ mod tests {
             "ftp://x",
             "mailto:x@y.org?body=hi&cc=z@y.org",
             "sms:+49?body=hi",
+            "tel:*21*123#",
+            "tel:+49 30 1234",
+            "sms:12a",
             "https://example.org/\u{202E}gpj.exe",
             "https://exa\u{200B}mple.org",
             "https://example.org/\u{0}",
