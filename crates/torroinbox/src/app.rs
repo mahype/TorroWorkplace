@@ -5038,7 +5038,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![
             iced::time::every(REFRESH).map(|_| Message::Tick),
-            iced::system::theme_changes().map(Message::SystemMode),
+            torro_gui::theme::system_mode_changes().map(Message::SystemMode),
             iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
             // Another screen, another scale: the HTML of a mail is drawn for it (task M9.7).
             iced::event::listen_with(|event, _, _| match event {

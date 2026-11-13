@@ -1341,7 +1341,7 @@ impl Ui {
             self.accounts.busy() || self.setup.as_ref().is_some_and(setup::State::busy) || apps::job_runs(&self.data);
         let every = if busy { Duration::from_secs(1) } else { Duration::from_secs(3) };
         let mut all = vec![
-            iced::system::theme_changes().map(Message::SystemMode),
+            torro_gui::theme::system_mode_changes().map(Message::SystemMode),
             iced::event::listen_with(keys),
             iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
             self.zoom.subscription().map(Message::Zoom),

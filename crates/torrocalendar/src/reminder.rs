@@ -477,7 +477,7 @@ impl App {
     pub fn subscription(&self) -> Subscription<Message> {
         let mut all = vec![
             iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
-            iced::system::theme_changes().map(Message::SystemMode),
+            torro_gui::theme::system_mode_changes().map(Message::SystemMode),
             iced::event::listen_with(key),
         ];
         // The demo stands still, so its pictures can be compared.

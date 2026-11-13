@@ -207,7 +207,7 @@ fontdb = { version = "0.23.0", default-features = false, features = ["std", "fs"
 block2 = "0.6.2"
 objc2 = "0.6.3"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSButton", "NSControl", "NSGraphics", "NSResponder", "NSScreen", "NSView", "NSWindow"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSArray", "NSGeometry", "NSNotification", "NSObject", "NSOperation", "NSString"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSArray", "NSGeometry", "NSNotification", "NSObject", "NSOperation", "NSString", "NSUserDefaults"] }
 raw-window-handle = "0.6.2"
 # The tray symbol of a design pack (torroworkplace, L.3): an SVG rastered for each tray size. The version Iced 0.14
 # already brings for its SVG widget; no text, system fonts or raster images: a tray symbol needs none of them.

@@ -1156,7 +1156,7 @@ impl App {
     pub fn subscription(&self) -> Subscription<Message> {
         let every = if self.connected() { Duration::from_secs(60) } else { Duration::from_secs(2) };
         let mut subscriptions = vec![
-            iced::system::theme_changes().map(Message::SystemMode),
+            torro_gui::theme::system_mode_changes().map(Message::SystemMode),
             iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
             // Zoom keys work everywhere, glance views and the open detail included.
             self.zoom.subscription().map(Message::Zoom),
