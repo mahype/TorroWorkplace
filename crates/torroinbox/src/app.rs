@@ -1692,6 +1692,9 @@ pub enum Open {
     /// "All" with its first invitation open (in the reader of the wide window, else the
     /// panel), so its card with Accept · Maybe · Decline shows.
     Invitation,
+    /// "All" with the newsletter whose picture lies on another server open (issue #672), so the
+    /// question "Images from … are not loaded." shows over it.
+    Images,
     /// "All" with the mail of the most suggestions open (issue #603): their cards with Accept and
     /// Dismiss over its text.
     Suggestions,
@@ -1922,7 +1925,7 @@ impl Open {
                 | Self::SaveShortened
         )
     }
-    const ALL: [(&'static str, Open); 135] = [
+    const ALL: [(&'static str, Open); 136] = [
         ("workflow-setup", Open::WorkflowSetup),
         ("workflow-template", Open::WorkflowTemplate),
         ("workflow-test", Open::WorkflowTest),
@@ -1969,6 +1972,7 @@ impl Open {
         ("attachments", Open::Attachments),
         ("invitations", Open::Invitations),
         ("invitation", Open::Invitation),
+        ("images", Open::Images),
         ("suggestions", Open::Suggestions),
         ("ask", Open::Ask),
         ("ask-card", Open::AskCard),
@@ -4784,6 +4788,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     | Open::MailContextLow
                     | Open::Invitations
                     | Open::Invitation
+                    | Open::Images
                     | Open::Suggestions
                     | Open::Ask
                     | Open::AskCard
@@ -15940,6 +15945,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 let invites = |message: &&MessageSummary| message.invite.is_some();
                 let first = self.messages.iter().find(invites).or(self.messages.first());
                 self.cursor = first.map(|message| message.id.clone());
+                self.reading = self.cursor.is_some();
+            }
+            // The demo's newsletter with a picture on another server (issue #672), so the question shows.
+            Some(Open::Images) => {
+                let images = self.messages.iter().find(|message| message.id == "m:w14").or(self.messages.first());
+                self.cursor = images.map(|message| message.id.clone());
                 self.reading = self.cursor.is_some();
             }
             // The mail with the most suggestions (issue #603), so their cards show.
@@ -28132,6 +28143,15 @@ mod tests {
         assert_eq!((ask.len(), ask[0].key.as_str(), load.len()), (1, "mailer.example", 0));
         let question = |app: &App<DemoSource>| app.reading().as_ref().and_then(mail::images_question).is_some();
         assert!(question(&app), "the question over the mail");
+        // The whole window as the demo state `images` shows it: "Show once" answers with its message.
+        let mut shot = loaded(&["--view", "mail", "--open", "images"]);
+        let _ = shot.update(Message::Resized(WIDE));
+        self::load(&mut shot);
+        deliver_letter(&mut shot, "m:w14");
+        let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), WIDE, shot.view());
+        ui.click(tr("Show once").to_owned()).expect("Show once can be clicked");
+        let messages: Vec<_> = ui.into_messages().collect();
+        assert!(matches!(messages.as_slice(), [Message::ShowImagesOnce(id)] if id == "m:w14"), "{messages:?}");
         draw_everywhere(&mut app);
 
         let _ = app.update(Message::ShowImagesOnce("m:w14".into()));

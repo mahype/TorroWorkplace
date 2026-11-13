@@ -78,6 +78,7 @@ use iced::widget::{center, column, container, responsive, row, rule, scrollable,
 use iced::{Alignment, Color, Element, Fill, Padding, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trc, trf};
+use torro_core::privacy::ProviderChoice;
 use torro_core::settings::{AttachmentClick, MailAppearance, MailFormat};
 use torro_core::shortcuts::System;
 use torro_gui::icon::{self, Icon};
@@ -3830,7 +3831,7 @@ pub(crate) fn images_question<'a>(reading: &Reading<'a>) -> Option<Element<'a, M
     let Some(Ok(mail)) = reading.loaded else { return None };
     let asked = &mail.external.as_ref()?.ask;
     let keys: Vec<String> = asked.iter().map(|provider| provider.key.clone()).collect();
-    let decide = |choice| Message::DecideImages(mail.summary.id.clone(), keys.clone(), choice);
+    let decide = |choice: ProviderChoice| Message::DecideImages(mail.summary.id.clone(), keys.clone(), choice);
     let (title, detail, allow, block) = match asked.as_slice() {
         [] => return None,
         [one] => (
@@ -3850,11 +3851,10 @@ pub(crate) fn images_question<'a>(reading: &Reading<'a>) -> Option<Element<'a, M
         }
     };
     let actions = vec![
-        widgets::PageAction::new(tr("Show once"), Some(Message::ShowImagesOnce(mail.summary.id.clone()))),
-        widgets::PageAction::new(allow, Some(decide(torro_core::privacy::ProviderChoice::Allowed)))
-            .style(style::button::ghost),
-        widgets::PageAction::new(block, Some(decide(torro_core::privacy::ProviderChoice::Blocked)))
-            .style(style::button::ghost),
+        widgets::PageAction::new(tr("Show once"), Some(Message::ShowImagesOnce(mail.summary.id.clone())))
+            .icon(Icon::Eye),
+        widgets::PageAction::new(allow, Some(decide(ProviderChoice::Allowed))).style(style::button::ghost),
+        widgets::PageAction::new(block, Some(decide(ProviderChoice::Blocked))).style(style::button::ghost),
     ];
     Some(widgets::question_card(Icon::Image, title, detail, actions))
 }
@@ -4843,10 +4843,11 @@ fn html_view<'a>(html: HtmlReading<'a>) -> HtmlView<'a, Message> {
     HtmlView::new(html.content).scheme(html.scheme).scale(html.scale).on_link(Message::HtmlLink)
 }
 
-/// The note under a mail shown as HTML: it comes from outside, no scripts run. "Copy text" stands in
+/// The note under a mail shown as HTML: it comes from outside, no scripts run, its pictures from the web load as
+/// Settings › Privacy allows (issue #672). "Copy text" stands in
 /// the rail's "More" (task E14.3) and the panel's footer (task E9.4), not beside it.
 fn html_note<'a>() -> Element<'a, Message> {
-    note(tr("Mail from outside the suite: no scripts run, pictures from the web are loaded."))
+    note(tr("Mail from outside the suite: no scripts run, pictures from the web load as Settings › Privacy allows."))
 }
 
 /// The text in `level`, to select with the mouse and copy (issue #119, [`Selectable`]), then the
