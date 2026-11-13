@@ -704,8 +704,7 @@ pub(crate) async fn save_draft(mail: &MailService, reach: Reach<'_>, draft: Draf
 /// `error` for an attachment over 25 MiB or an address that is no address.
 ///
 /// A client may also attach its own files of the tools' register `tools` (issue #225, decision 19):
-/// `Some` only when the core lets it (the PDF tool switched on, read access to `tools`, `pdf` in
-/// its selection). Such a file goes in only while it is what the core wrote, checked on the bytes
+/// `Some` only when the core lets it (read access to `tools`, `pdf` in its selection). Such a file goes in only while it is what the core wrote, checked on the bytes
 /// read; else `forbidden` as for any other file outside.
 pub(crate) async fn save_draft_with(
     mail: &MailService,

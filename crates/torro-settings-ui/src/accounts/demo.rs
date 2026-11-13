@@ -198,14 +198,13 @@ pub fn demo_data() -> Data {
                 effort: Some(torro_core::ai::Effort::High),
             }),
             // Issue #325: mail is sorted in the cloud, by a chat model through the fallback, so the
-            // group "Models" says where mail goes (with the consent, issue #424).
+            // group "Models" says where mail goes.
             decide: Some(torro_core::ai::SlotModel {
                 engine: DEMO_OPENROUTER.into(),
                 model: Some("qwen/qwen3-235b-a22b".into()),
                 effort: None,
             }),
         },
-        decide_mail_to_cloud: Some(true),
         // Issue #672: a few providers decided on, so Privacy shows its list.
         privacy: crate::privacy::demo(),
         ..Settings::default()
@@ -594,7 +593,7 @@ pub fn demo_network_models() -> Vec<AiModel> {
         .collect()
 }
 
-/// Ollama on this computer as an AI account (task MW.8, `--open ai-models`): the suggestions then run
+/// Ollama on this computer as an AI account (task MW.8): the suggestions then run
 /// there, one after a download. Not in [`demo_data`] itself: the add-account dialog's demo finds Ollama
 /// unconnected.
 pub fn demo_ollama(data: &mut Data) {

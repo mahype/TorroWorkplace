@@ -11,9 +11,7 @@
 //! dialog (`wizard.rs`, task S.6) at that provider's first step; the header bar has no button of
 //! its own. Mail also offers "Import from TorroMail…" ([`Message::ImportTorroMail`]) while
 //! TorroMail has an account to take over: the page asks for TorroMail's accounts when it opens
-//! ([`opened`]) and after the dialog closes, not with every reload. Under AI stands the data rule
-//! "Chat may read mail outside this computer" (`settings.set_setting mail_to_cloud`, task C.17), for the
-//! assistant and all its bots.
+//! ([`opened`]) and after the dialog closes, not with every reload.
 //!
 //! **One page, many doors (issue #410).** The page, the add-account dialog ([`wizard`]) and the
 //! sign-ins ([`connect`]) live in this library, so the control centre and every app show the same
@@ -22,15 +20,14 @@
 //! the daemon, one for the whole suite. What the page reads comes through [`Seen`], what it wants
 //! done goes out as an [`Action`]; the demo's samples and answers are [`demo`].
 //!
-//! **What an app window shows of AI (issue #547, decision 5 of #528).** The control centre shows the
-//! whole section. In an app window with the main application installed, the page keeps the AI
-//! accounts and the app's own slot – Mail its *Sorting*; the assistant sets *Chat* under General,
-//! where its effort is – and points at the control centre for the rest ("Open Torro Workplace",
-//! [`Message::ControlCentre`]): the other slots, the data rule, and on an AI account's page its
-//! model switches. Without the main application an app window is the only place, so it keeps
-//! everything but what the app sets elsewhere (the assistant's *Chat*). [`ai_parts`] decides.
+//! **What an app window shows of AI (issue #547, decision 5 of #528; issue #664).** The control centre
+//! sets up: the AI accounts and, on an account's page, its models on and off; it chooses no model for
+//! anything. The choice belongs to the app that uses it: Mail's *Sorting* stands in the mail window's
+//! AI section, the assistant's *Chat* under its General, with its effort. With the main application
+//! installed, an app window points at the control centre for the rest ("Open Torro Workplace",
+//! [`Message::ControlCentre`]): on an AI account's page its model switches. [`ai_parts`] decides.
 //!
-//! **The two slots (issue #325, task MW.8).** Above the data rule the AI section has the group
+//! **The two slots (issue #325, task MW.8).** Where a window shows one, the AI section has the group
 //! "Models" ([`slots_group`]): the computer as measured, then *Chat* and *Sorting*, each with the
 //! model chosen as a pick list of the models turned on that serve the slot ("None" empties it,
 //! `ai.set_slot`) – *Sorting* as a button with a menu in sections instead (issue #421,
@@ -43,10 +40,8 @@
 //! (`ai.set_model_enabled`) and put in the slot (`ai.set_slot`). A step that fails stops the chain and
 //! shows why with "Retry". These requests go with [`Action::AskAi`] and come back tagged ([`Asked`],
 //! [`ai_answered`]), so an answer is never taken for another one's. Where *Sorting* sends mail to a
-//! model elsewhere – chosen or suggested –, the group says so. A model in the cloud for *Sorting*,
-//! picked or suggested, asks first (issue #424, [`consent_dialog`]): "Use" is the consent, which the
-//! core stores with the slot (`decide_mail_to_cloud`); a model here or "None" takes it back. There is
-//! no switch of its own for it; a model in the cloud without it says that it waits for the person.
+//! model elsewhere – chosen or suggested –, the group says so. A model in the cloud is chosen like
+//! any other, without a question (issue #664): where it runs is said by its cloud and that sentence.
 //!
 //! A detail page per account has groups for the status ("Sync now"), the calendars and task lists
 //! (a switch each for showing them in the apps, read-only ones marked) and the connection, and
@@ -116,7 +111,7 @@
 //! Requests: `Sync`, `RemoveAccount { id }`, `ConnectCalDav` / `ConnectMail` for "Change
 //! password…", `ConnectMail` for "Server settings…", `UpdateMailAccount` for the services of a mail
 //! account, `OpenApp` for the buttons that open a window, `TorroMailAccounts` for the import,
-//! `SetSetting { key: MailToCloud }` for the data rule, `AiModels` /
+//! `AiModels` /
 //! `SetModelEnabled` for an AI account's models, and for the slots `AiRecommend`, `PullAiModel`,
 //! `AiPulls`, `CancelAiPull`, `SetAiSlot` and – before a model goes into Sorting – `AiAssignments` and
 //! `SetAiAssignment`, which take a stored exception of sorting back. The pure parts (relative time, status text,
@@ -150,7 +145,7 @@ use torro_inbox::item::SourceHealth;
 use torro_inbox::{SourceKind, SourceRef};
 use torro_ipc::{
     AccountInfo, AiPull, AiPullState, AiRecommendation, MailView, NtfyTopicView, NtfyView, Request, Response,
-    ServiceState, SettingKey, SlotSuggestion, TopicName, TorroMailAccount,
+    ServiceState, SlotSuggestion, TopicName, TorroMailAccount,
 };
 use torro_mail::{MailFormat, Notify, Role, Security, Services};
 use torro_pim::AccountState;
@@ -191,7 +186,7 @@ pub enum Action {
     /// that has just opened ([`widgets::DROPDOWN_SEARCH`], issue #554).
     Focus(&'static str),
     /// Open the control centre at this section (issue #547): "Open Torro Workplace" of an app
-    /// window's AI section, where the models, the other slots and the data rule are set.
+    /// window's AI section, where the AI accounts and their models are set.
     ControlCentre(String),
 }
 
@@ -302,8 +297,6 @@ pub struct State {
     /// The words in the search field of the open model menu (*Sorting* or *Chat*, issue #554): from
     /// [`widgets::SEARCH_FROM`] models on the menu filters by them.
     model_query: String,
-    /// A choice of *Sorting* in the cloud waiting for the question before it (issue #424).
-    pub cloud_consent: Option<CloudConsent>,
     /// The providers the list offers (issue #410): `None` every one, in the order of [`Group::ALL`],
     /// and the kinds of account none of them holds – the control centre's overview; an app names
     /// the ones it uses ([`State::with_providers`]).
@@ -329,8 +322,7 @@ impl State {
     }
 
     /// Whether the page stands in the mail window (issue #545): there AI shows only the slot that
-    /// sorts mail ([`ai_parts`]). The chat belongs to the assistant and the data rule to the suite, and
-    /// mail has no chat they would hold for.
+    /// sorts mail ([`ai_parts`]). The chat belongs to the assistant.
     fn in_mail(&self) -> bool {
         self.window == Some(AppId::INBOX_MAIL.window_class)
     }
@@ -466,7 +458,7 @@ pub enum Asked {
 }
 
 impl Asked {
-    /// The answer may have changed the settings (a slot, `decideMailToCloud`, a model turned on): the
+    /// The answer may have changed the settings (a slot, a model turned on): the
     /// shell reloads after it. Reading answers do not, so polling every second stays light.
     pub fn changes(&self) -> bool {
         matches!(self, Asked::Slot(_) | Asked::Setup { changes: true, .. })
@@ -681,9 +673,6 @@ pub enum Message {
     Add(wizard::Provider),
     /// "Import from TorroMail…" of the group Mail (task S.30): the dialog at TorroMail's accounts.
     ImportTorroMail,
-    /// The switch of the data rule under AI (task C.17, moved here with S.30): whether cloud models
-    /// read the mail the assistant and its bots may read – a setting of the suite, not a right.
-    MailToCloud(bool),
     Wizard(wizard::Message),
     /// A provider in the column or the chips of the list (task S.37), by the key of its group
     /// ([`Listed::key`]): the list shows its accounts.
@@ -778,27 +767,9 @@ pub enum Message {
     Recommend,
     /// "Retry" after a step failed: what started it, again.
     RetrySlot,
-    /// "Use" in the question before *Sorting* takes a model in the cloud (issue #424): the choice
-    /// waiting for it ([`State::cloud_consent`]) goes on; the core lets the mail out with the slot.
-    ConfirmCloud,
-    /// "Cancel" in that question, a click next to it, or Escape: nothing changes.
-    CancelCloud,
     /// "Open Torro Workplace" in an app window's AI section (issue #547): the control centre at
     /// this section.
     ControlCentre(&'static str),
-}
-
-/// A choice of *Sorting* in the cloud waiting for its question (issue #424): what "Use" carries out –
-/// [`Message::PickSlot`] or [`Message::UseSuggestion`] –, and the account and model it was made for,
-/// kept from the moment of the click, so a suggestion that changes meanwhile is not taken instead.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CloudConsent {
-    pub then: Message,
-    pub engine: String,
-    pub model: Option<String>,
-    /// What the question calls the model and its provider.
-    pub name: String,
-    pub provider: String,
 }
 
 /// A choice in a slot's list (task MW.8): a model of an AI account, or "None" (both `None`). Two
@@ -823,8 +794,7 @@ impl fmt::Display for SlotChoice {
 }
 
 /// What Escape means on this page right now: close the add-account dialog, the password or server
-/// dialog or the remove confirmation, else the question before a model in the cloud sorts mail, else
-/// the menu of *Sorting*.
+/// dialog or the remove confirmation, else the menu of *Sorting* or *Chat*.
 pub fn escape(state: &State) -> Option<Message> {
     if let Some(wizard) = &state.wizard {
         // The dialog's own dropdown first (issue #554), then the dialog.
@@ -839,8 +809,6 @@ pub fn escape(state: &State) -> Option<Message> {
         Some(Message::CloseLogin)
     } else if state.confirm_remove {
         Some(Message::CancelRemove)
-    } else if state.cloud_consent.is_some() {
-        Some(Message::CancelCloud)
     } else if state.sorting_menu {
         Some(Message::CloseSortingMenu)
     } else if state.chat_menu {
@@ -879,7 +847,6 @@ pub fn leave(state: &mut State) {
     // Accounts and AI share the layer: a menu left open would float over the other section.
     state.sorting_menu = false;
     state.chat_menu = false;
-    state.cloud_consent = None;
     // The section asks again when it opens; a chain under way and the downloads go on in the core.
     state.slots.asked = false;
     state.slots.asked_models.clear();
@@ -905,10 +872,6 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
             let (wizard, ask) = wizard::State::torromail();
             state.wizard = Some(wizard);
             ask
-        }
-        // The app key's: only a person lets mail out (task C.17, `Request::kept_for_people`).
-        Message::MailToCloud(on) => {
-            Action::Send(Request::SetSetting { key: SettingKey::MailToCloud, value: serde_json::Value::Bool(on) })
         }
         // An account may have come from TorroMail or gone: the import asks again.
         Message::Wizard(wizard::Message::Close) => {
@@ -949,19 +912,11 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
             state.models_page.show_closed = on;
             Action::None
         }
-        // A model in the cloud for *Sorting* asks first (issue #424): choosing it is the consent.
+        // A model elsewhere is chosen like any other (issue #664): no question before it.
         Message::PickSlot(slot, choice) => {
             state.sorting_menu = false;
             state.chat_menu = false;
-            if state.slots.using.is_none()
-                && picks_cloud(state, data, slot, &choice)
-                && let Some(engine) = choice.engine.clone()
-            {
-                let model = choice.model.clone();
-                state.cloud_consent = Some(consent(state, data, Message::PickSlot(slot, choice), engine, model, None));
-                return Action::None;
-            }
-            pick_slot(state, data, slot, choice, false)
+            pick_slot(state, data, slot, choice)
         }
         // Opening a model menu empties its search and gives the field the focus (issue #554).
         Message::ToggleSortingMenu => {
@@ -986,39 +941,7 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
             state.sorting_menu = false;
             Action::None
         }
-        Message::UseSuggestion(slot) => {
-            let elsewhere = suggestion_of(state, slot).filter(|suggestion| !suggestion.local).cloned();
-            if state.slots.using.is_none()
-                && slot == AiSlot::Decide
-                && let Some(suggestion) = elsewhere
-                && let Some(engine) = suggestion.engine.clone()
-            {
-                let provider = Some(suggestion.provider.name().to_string());
-                let then = Message::UseSuggestion(slot);
-                state.cloud_consent = Some(consent(state, data, then, engine, suggestion.model, provider));
-                return Action::None;
-            }
-            use_suggestion(state, data, slot)
-        }
-        Message::ConfirmCloud => match state.cloud_consent.take() {
-            Some(CloudConsent { then: Message::PickSlot(slot, choice), .. }) => {
-                pick_slot(state, data, slot, choice, true)
-            }
-            // Only the suggestion the person said yes to: one that changed meanwhile asks anew.
-            Some(CloudConsent { then: Message::UseSuggestion(slot), engine, model, .. }) => {
-                let same = suggestion_of(state, slot)
-                    .is_some_and(|now| now.engine.as_deref() == Some(engine.as_str()) && now.model == model);
-                match same {
-                    true => use_suggestion(state, data, slot),
-                    false => Action::None,
-                }
-            }
-            _ => Action::None,
-        },
-        Message::CancelCloud => {
-            state.cloud_consent = None;
-            Action::None
-        }
+        Message::UseSuggestion(slot) => use_suggestion(state, data, slot),
         Message::CancelPull(slot, id) => ask_ai(Asked::Cancel(slot, id.clone()), Request::CancelAiPull { id }),
         Message::PollPulls => poll_pulls(state),
         Message::Recommend => recommend(state),
@@ -1281,7 +1204,8 @@ fn ai_accounts(data: &dyn Seen) -> impl Iterator<Item = &AccountInfo> {
 /// lacks – the suggestion and the downloads once per opening, and the models of every AI account
 /// not asked for yet (`all`, as an account's page asks, so both share [`State::models`]). The shell
 /// calls it when the section is chosen, with every good reload while it is open, and at a start on
-/// it. Without an AI account there is no group, so nothing is asked.
+/// it. Without an AI account there is no group, so nothing is asked. Where the page shows no slot
+/// (issue #664, [`ai_parts`]) the answers stay unused; the slots' tests run on the plain state.
 pub fn ai_shown(state: &mut State, data: &dyn Seen) -> Action {
     let accounts: Vec<String> = ai_accounts(data).map(|account| account.id.clone()).collect();
     if accounts.is_empty() {
@@ -1403,25 +1327,13 @@ fn displaced(data: &dyn Seen, slot: AiSlot) -> Option<torro_core::ai::AiAssignme
     stored.filter(|held| slot == AiSlot::Decide && held.engine.is_some()).cloned()
 }
 
-/// Whether `choice` for `slot` asks before it is set (issue #424): a model in the cloud for *Sorting*
-/// ([`sorts_elsewhere`]) or one at Ollama its list lacks, unless the slot has it already with the consent. Asked for every other model
-/// in the cloud too, since the consent is given to one provider.
-fn picks_cloud(state: &State, data: &dyn Seen, slot: AiSlot, choice: &SlotChoice) -> bool {
-    let Some(engine) = choice.engine.as_deref().filter(|_| slot == AiSlot::Decide) else { return false };
-    let consented =
-        holds(data, slot, Some(engine), choice.model.as_deref()) && data.settings().mail_to_cloud_in(AiSlot::Decide);
-    sorts_elsewhere(data, &state.models, engine, choice.model.as_deref()) && !consented
-}
-
 /// A choice in a slot's list: `ai.set_slot` at once – for Sorting the stored exception taken back first,
 /// from the data of the press, which is now –, with "Retry" sending the same choice. Nothing while
-/// another chain runs, or for what the slot has already while no exception stands in its way – unless
-/// the person just said yes to it in the cloud (`confirmed`, issue #424): the slot holds it without the
-/// consent, which setting it again gives.
-fn pick_slot(state: &mut State, data: &dyn Seen, slot: AiSlot, choice: SlotChoice, confirmed: bool) -> Action {
+/// another chain runs, or for what the slot has already while no exception stands in its way.
+fn pick_slot(state: &mut State, data: &dyn Seen, slot: AiSlot, choice: SlotChoice) -> Action {
     let displaces = displaced(data, slot);
     let held = holds(data, slot, choice.engine.as_deref(), choice.model.as_deref());
-    if state.slots.using.is_some() || (held && displaces.is_none() && !confirmed) {
+    if state.slots.using.is_some() || (held && displaces.is_none()) {
         return Action::None;
     }
     state.slots.failed = None;
@@ -2271,15 +2183,13 @@ pub fn menu_open(state: &State) -> bool {
         || state.servers.is_some()
         || state.topic.is_some()
         || state.login.is_some()
-        || state.confirm_remove
-        || state.cloud_consent.is_some();
+        || state.confirm_remove;
     !dialog && (state.chat_menu || state.sorting_menu)
 }
 
 /// The page's dialog over the whole window: the add-account dialog, else the password dialog, else
-/// the server dialog, else the "Remove this account?" confirmation, else the question before a model in
-/// the cloud sorts mail ([`consent_dialog`]), else the menu of *Sorting* ([`sorting_menu`]); `None`
-/// while none is open.
+/// the server dialog, else the "Remove this account?" confirmation, else the menu of *Chat* or
+/// *Sorting* ([`sorting_menu`]); `None` while none is open.
 pub fn overlay<'a>(state: &'a State, data: &'a dyn Seen) -> Option<Element<'a, Message>> {
     if let Some(wizard) = &state.wizard {
         let content = wizard::view(wizard, data).map(Message::Wizard);
@@ -2307,9 +2217,6 @@ pub fn overlay<'a>(state: &'a State, data: &'a dyn Seen) -> Option<Element<'a, M
         return Some(login_dialog(change, view));
     }
     if !state.confirm_remove {
-        if let Some(pending) = &state.cloud_consent {
-            return Some(consent_dialog(pending));
-        }
         if state.chat_menu {
             return Some(chat_menu(state, data));
         }
@@ -2327,35 +2234,6 @@ pub fn overlay<'a>(state: &'a State, data: &'a dyn Seen) -> Option<Element<'a, M
         Message::Remove,
         Message::CancelRemove,
     ))
-}
-
-/// The question before *Sorting* takes a model in the cloud (issue #424, [`crate::parts::cloud_consent`]),
-/// with the names kept from the click ([`consent`]).
-fn consent_dialog<'a>(pending: &CloudConsent) -> Element<'a, Message> {
-    crate::parts::cloud_consent(&pending.name, &pending.provider, Message::ConfirmCloud, Message::CancelCloud)
-}
-
-/// The choice `then` of `model` at `engine` waiting for its question: the model by its name as the lists
-/// show it, the provider by its AI account's name unless one is given (a suggestion's provider); an
-/// account that picks its model itself is named by the provider alone.
-fn consent(
-    state: &State,
-    data: &dyn Seen,
-    then: Message,
-    engine: String,
-    model: Option<String>,
-    provider: Option<String>,
-) -> CloudConsent {
-    let account = ai_accounts(data).find(|account| account.id == engine).map(|account| account.label.clone());
-    let provider = provider.or(account).unwrap_or_else(|| engine.clone());
-    let listed =
-        model.as_deref().and_then(|id| state.models.get(&engine)?.iter().find(|known| same_model(&known.id, id)));
-    let name = match (listed, &model) {
-        (Some(known), _) => shown_id(&known.name),
-        (None, Some(id)) => shown_id(id),
-        (None, None) => provider.clone(),
-    };
-    CloudConsent { then, engine, model, name, provider }
 }
 
 /// "Change password": who it is for, the masked field, a refusal under it, "Cancel" and the primary
@@ -2802,7 +2680,6 @@ fn list<'a>(
             let stacked = stacked || room.width < size::form_max();
             column![]
                 .push(slots_group(state, data, &parts.slots, stacked))
-                .push(parts.data_rule.then(|| data_rule_group(data)))
                 .push(parts.refer.then(refer_group))
                 .spacing(layout::section_gap())
                 .into()
@@ -2813,53 +2690,42 @@ fn list<'a>(
 }
 
 /// What the AI section shows besides the accounts (issue #547, decision 5 of #528): the slots of
-/// its group "Models", the data rule, or the row that opens the control centre instead.
+/// its group "Models", or the row that opens the control centre.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AiParts {
     /// The slots of the group "Models"; none leaves the group out.
     pub slots: Vec<AiSlot>,
-    /// The data rule "Chat may read mail outside this computer".
-    pub data_rule: bool,
-    /// "Open Torro Workplace" ([`refer_group`]) in place of what the control centre sets; on an AI
-    /// account's page also in place of its model switches.
+    /// "Open Torro Workplace" ([`refer_group`]), where the AI accounts and their models are set up;
+    /// on an AI account's page also in place of its model switches.
     pub refer: bool,
 }
 
 /// What the AI section shows in `window` (by its class; `None` in the control centre) while the main
-/// application is installed or not (`main_app`):
+/// application is installed or not (`main_app`). The choice of a model belongs to the app that uses
+/// it (issue #664): the control centre sets up accounts and models only, and has no slot.
 ///
-/// - The control centre: everything.
-/// - An app window with the main application: only the app's own slot – Mail's *Sorting* – and the
-///   row to the control centre for the rest; the assistant sets *Chat* under General.
-/// - An app window without it: every slot – but *Chat* in the assistant, which sets it under General
-///   with its effort – and the data rule, since there is no other place.
-/// - The mail window, with or without it: only *Sorting* and never the data rule (issue #545): mail
-///   has no chat, so neither the chat's slot nor its rule hold there.
+/// - The control centre: the accounts, no slot.
+/// - The mail window: its *Sorting*. The assistant sets *Chat* under General, with its effort; every
+///   other window has no slot.
+/// - An app window with the main application: the row to the control centre besides, where the AI
+///   accounts and their models are set up.
 pub fn ai_parts(window: Option<&str>, main_app: bool) -> AiParts {
-    let Some(window) = window else { return AiParts { slots: AiSlot::ALL.to_vec(), data_rule: true, refer: false } };
-    if !main_app && window == AppId::INBOX_MAIL.window_class {
-        return AiParts { slots: vec![AiSlot::Decide], data_rule: false, refer: false };
-    }
-    if main_app {
-        let slots = match window == AppId::INBOX_MAIL.window_class {
-            true => vec![AiSlot::Decide],
-            false => Vec::new(),
-        };
-        return AiParts { slots, data_rule: false, refer: true };
-    }
-    let assistant = window == AppId::ASSISTANT.window_class;
-    let slots = AiSlot::ALL.into_iter().filter(|slot| !(assistant && *slot == AiSlot::Chat)).collect();
-    AiParts { slots, data_rule: true, refer: false }
+    let Some(window) = window else { return AiParts { slots: Vec::new(), refer: false } };
+    let slots = match window == AppId::INBOX_MAIL.window_class {
+        true => vec![AiSlot::Decide],
+        false => Vec::new(),
+    };
+    AiParts { slots, refer: main_app }
 }
 
 /// "Torro Workplace" in an app window's AI section with the main application (issue #547): one row
-/// that opens the control centre at AI, with the arrow of another window, where the models, the other
-/// slots and the data rule are set for the whole suite.
+/// that opens the control centre at AI, with the arrow of another window, where the AI accounts and
+/// their models are set up for the whole suite.
 fn refer_group<'a>() -> Element<'a, Message> {
     let arrow: Element<'a, Message> = icon::icon(Icon::ArrowUpRight, icon::SIZE)
         .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) })
         .into();
-    let detail = tr("Models and the data rule are set there for the whole suite.");
+    let detail = tr("AI accounts and their models are set there for the whole suite.");
     let line = setting_row(None, tr("Open Torro Workplace"), Some(detail.to_string()), arrow);
     widgets::group(tr("Torro Workplace"), vec![pressable(line, Some(Message::ControlCentre("ai")))], None)
 }
@@ -2922,25 +2788,6 @@ fn add_row<'a>(group: Group, import: bool) -> Element<'a, Message> {
     row_frame(on_axis(buttons.into()), false)
 }
 
-/// The data rule in the AI section (task C.17, here since S.30): mail outside this computer –
-/// off, the chat reads mail only with AI on this computer via loopback; on, with models elsewhere too.
-/// The sentence under the group says that the switch holds for the assistant and every bot. *Sorting*
-/// has no switch of its own (issue #424): choosing a model in the cloud for it, after its question, is
-/// the consent, and a model here or "None" keeps the mail here again.
-fn data_rule_group<'a>(data: &dyn Seen) -> Element<'a, Message> {
-    let settings = data.settings();
-    let switch =
-        toggler(settings.mail_to_cloud).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::MailToCloud);
-    let detail = match settings.mail_to_cloud {
-        false => tr("Off: the chat reads mail only with AI on this computer"),
-        true => tr("Mail goes to the model's provider and can't be taken back"),
-    };
-    let rows =
-        vec![setting_row(None, tr("Chat may read mail outside this computer"), Some(detail.to_string()), switch)];
-    let footer = tr("The switch holds for the assistant and all its bots, whatever their rights allow.");
-    widgets::group(tr("Data rule"), rows, Some(footer.to_string()))
-}
-
 /// What sorts mail now (review of #325), for the sentence under *Sorting* of where mail goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SortingNow<'a> {
@@ -2983,13 +2830,10 @@ fn sorting_now<'a>(data: &'a dyn Seen, models: &BTreeMap<String, Vec<AiModel>>) 
     SortingNow::Elsewhere(name, seat)
 }
 
-/// Where *Sorting* sends mail while it may (`decide_mail_to_cloud`): the provider and the seat of the
-/// model that sorts now ([`SortingNow::Elsewhere`]). `None` while mail stays here, nothing sorts (no
-/// model, the exception switched off) or that model computes on this computer.
+/// Where *Sorting* sends mail: the provider and the seat of the model that sorts now
+/// ([`SortingNow::Elsewhere`]). `None` while nothing sorts (no model, the exception switched off) or
+/// that model computes on this computer.
 fn sorting_place<'a>(data: &'a dyn Seen, models: &BTreeMap<String, Vec<AiModel>>) -> Option<(&'a str, &'static str)> {
-    if !data.settings().mail_to_cloud_in(AiSlot::Decide) {
-        return None;
-    }
     match sorting_now(data, models) {
         SortingNow::Elsewhere(name, seat) => Some((name, seat)),
         SortingNow::Here | SortingNow::Nothing => None,
@@ -3054,14 +2898,14 @@ fn slots_group<'a>(
         if slot == AiSlot::Decide
             && let Some((provider, seat)) = sorting_place(data, &state.models)
         {
-            rows.push(mail_note(provider, seat, chat_note_off(state, data)));
+            rows.push(mail_note(provider, seat));
         }
         if let Some(suggestion) = suggestion_of(state, slot).filter(|suggestion| {
             !holds(data, slot, suggestion.engine.as_deref(), suggestion.model.as_deref()) || suggestion.engine.is_none()
         }) {
             rows.push(suggestion_row(state, suggestion, stacked));
             if slot == AiSlot::Decide && !suggestion.local {
-                rows.push(mail_note(suggestion.provider.name(), &suggestion.seat, chat_note_off(state, data)));
+                rows.push(mail_note(suggestion.provider.name(), &suggestion.seat));
             }
         }
     }
@@ -3194,9 +3038,7 @@ fn by_chat_note() -> &'static str {
 
 /// The line under a slot's name: "Saving…" while a choice is on its way; "Turned off at Ollama"
 /// (with the alert, `true`) while the model it holds is not among those turned on ([`held_model`]);
-/// for *Sorting* with a model in the cloud but without the consent (an old setting, or an agent kept
-/// the mail here; issue #424) "Waiting for your OK – mail stays here" with the alert – choosing it
-/// again asks; else what the slot is for, for *Sorting* with a chat model "· Answers in a fixed
+/// else what the slot is for, for *Sorting* with a chat model "· Answers in a fixed
 /// format, slower".
 fn slot_detail(state: &State, data: &dyn Seen, slot: AiSlot) -> (String, bool) {
     let busy = state.slots.using.as_ref().is_some_and(|using| using.slot == slot && !using.step.downloading());
@@ -3214,9 +3056,6 @@ fn slot_detail(state: &State, data: &dyn Seen, slot: AiSlot) -> (String, bool) {
         _ if slot == AiSlot::Decide && sorting_switched_off(data) => {
             (tr("Switched off – choose a model to switch it on").to_string(), true)
         }
-        _ if slot == AiSlot::Decide && waits_for_consent(state, data) => {
-            (tr("Waiting for your OK – mail stays here").to_string(), true)
-        }
         Held::On(model) if slot == AiSlot::Decide && model.decides_by_chat() => {
             (format!("{} · {}", slot_about(slot), by_chat_note()), false)
         }
@@ -3229,21 +3068,6 @@ fn slot_detail(state: &State, data: &dyn Seen, slot: AiSlot) -> (String, bool) {
 fn sorting_switched_off(data: &dyn Seen) -> bool {
     let exception = data.settings().ai_assignments.get(&AiFunction::InboxCategorize);
     exception.is_some_and(|own| own.engine.is_some() && !own.enabled)
-}
-
-/// *Sorting* holds a model in the cloud ([`sorts_elsewhere`]) while its permission is off (issue #424):
-/// the core sorts nothing with it until the person chooses it again and says yes. Not while an exception
-/// switched on sorts instead of the slot.
-fn waits_for_consent(state: &State, data: &dyn Seen) -> bool {
-    let settings = data.settings();
-    let exception = settings.ai_assignments.get(&AiFunction::InboxCategorize);
-    if exception.is_some_and(|own| own.engine.is_some() && own.enabled) {
-        return false;
-    }
-    settings.ai_slots.get(AiSlot::Decide).is_some_and(|chosen| {
-        sorts_elsewhere(data, &state.models, &chosen.engine, chosen.model.as_deref())
-            && !settings.mail_to_cloud_in(AiSlot::Decide)
-    })
 }
 
 /// What a slot holds, as far as its account's list says.
@@ -3545,21 +3369,11 @@ fn failure_row<'a>(failure: &'a SlotFailure, stacked: bool) -> Element<'a, Messa
     }
 }
 
-/// Whether the note under Sorting leaves out "The chat still gets no mail.": while the chat may read
-/// mail, and in the mail window, which has no chat (issue #545).
-fn chat_note_off(state: &State, data: &dyn Seen) -> bool {
-    data.settings().mail_to_cloud || state.in_mail()
-}
-
 /// Where *Sorting* sends mail, said where the choice is made: "Mail goes to OpenRouter (Cloud · US) for
-/// sorting only." and, while the chat may read none, "The chat still gets no mail." As high as the rows
-/// around it ([`row_frame`]); wraps rather than cutting off: it is the one sentence here that must be
-/// read whole.
-fn mail_note<'a>(provider: &str, seat: &str, chat_reads_mail: bool) -> Element<'a, Message> {
-    let mut sentence = mail_sentence(provider, seat);
-    if !chat_reads_mail {
-        sentence = format!("{sentence} {}", tr("The chat still gets no mail."));
-    }
+/// sorting only." As high as the rows around it ([`row_frame`]); wraps rather than cutting off: it is
+/// the one sentence here that must be read whole.
+fn mail_note<'a>(provider: &str, seat: &str) -> Element<'a, Message> {
+    let sentence = mail_sentence(provider, seat);
     let mark = icon::icon(Icon::Cloud, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
     let line = typo::text(typo::meta(), sentence).style(theme::text_2).width(Fill);
     row_frame(row![mark, line].spacing(space::m()).align_y(Alignment::Center), false)
@@ -5114,7 +4928,7 @@ mod tests {
     /// Issue #545: in the mail window AI shows only the slot that sorts and no data rule; the control
     /// centre and the assistant keep both slots and the rule.
     #[test]
-    fn the_mail_window_shows_only_sorting_and_no_data_rule() {
+    fn the_mail_window_shows_only_sorting() {
         let mut data = demo_data();
         demo_ollama(&mut data);
         for window in [None, Some(AppId::INBOX_MAIL), Some(AppId::ASSISTANT)] {
@@ -5127,12 +4941,8 @@ mod tests {
                 for main_app in [false, true] {
                     let parts = ai_parts(state.window, main_app);
                     assert_eq!(parts.slots, [AiSlot::Decide], "{main_app}: only Sorting");
-                    assert!(!parts.data_rule, "{main_app}: no data rule");
                 }
             }
-            // In mail the note under Sorting never names the chat; elsewhere it follows the data rule.
-            let expected = if state.in_mail() { true } else { data.settings().mail_to_cloud };
-            assert_eq!(chat_note_off(&state, &data), expected, "{window:?}");
             drop(list(&state, &data, Utc::now(), None, true, false));
         }
     }
@@ -5166,19 +4976,6 @@ mod tests {
                 assert!(alert, "with the alert");
             }
             assert_ne!(slot_detail(&state, &data, AiSlot::Chat).0, tr("Switched off – choose a model to switch it on"));
-        }
-    }
-
-    /// Task S.30: the data rule stands under AI and its switch sends the setting, never a right.
-    #[test]
-    fn the_data_rule_under_ai_sends_the_setting() {
-        let data = Data::default();
-        for on in [true, false] {
-            let action = update(&mut State::default(), Message::MailToCloud(on), &data);
-            let Action::Send(Request::SetSetting { key, value }) = action else { panic!("a setting") };
-            assert_eq!((key, value), (SettingKey::MailToCloud, serde_json::json!(on)));
-            let settings = Settings { mail_to_cloud: on, ..Settings::default() };
-            drop(data_rule_group(&Data { settings, ..Data::default() }));
         }
     }
 
@@ -5972,16 +5769,11 @@ mod tests {
                 assert!(sorts_elsewhere(&data, &state.models, &engine, id));
                 let choice =
                     SlotChoice { engine: Some(engine.clone()), model: id.map(str::to_string), label: "LAN".into() };
-                assert!(picks_cloud(&state, &data, AiSlot::Decide, &choice));
+                // Issue #664: chosen at once, without a question.
                 assert!(matches!(
-                    update(&mut state, Message::PickSlot(AiSlot::Decide, choice.clone()), &data),
-                    Action::None
+                    update(&mut state, Message::PickSlot(AiSlot::Decide, choice), &data),
+                    Action::AskAi(..)
                 ));
-                assert!(state.cloud_consent.is_some());
-                assert!(matches!(update(&mut state, Message::CancelCloud, &data), Action::None));
-                assert!(state.cloud_consent.is_none());
-                update(&mut state, Message::PickSlot(AiSlot::Decide, choice), &data);
-                assert!(matches!(update(&mut state, Message::ConfirmCloud, &data), Action::AskAi(..)));
                 state.slots.using = None;
             }
             assert!(sorts_elsewhere(&data, &state.models, "ai:ollama@unknown", None));
@@ -6593,80 +6385,36 @@ mod tests {
         assert!(asked.changes() && !Asked::Pulls.changes());
     }
 
-    /// Issue #424: a model in the cloud for Sorting asks before it is set – picked or suggested –, and
-    /// asks for each other one too; "Cancel" sends nothing, "Use" what the choice sends. Held without the
-    /// consent, the slot says that it waits, and picking it again asks and sets it. A model here and the
-    /// chat's slot never ask.
+    /// Issue #664: a model in the cloud for Sorting is set at once – picked or suggested –, without a
+    /// question; the slot holding one says what it is for, not that it waits.
     #[test]
-    fn a_model_in_the_cloud_for_sorting_asks_first() {
-        let (mut state, mut data) = shown(false);
+    fn a_model_in_the_cloud_for_sorting_is_set_at_once() {
+        let (mut state, data) = shown(false);
         let deepseek = SlotChoice {
             engine: Some(DEMO_OPENROUTER.into()),
             model: Some("deepseek/deepseek-chat-v3.1".into()),
             label: "DeepSeek V3.1".into(),
         };
-        let pick = |choice: &SlotChoice| Message::PickSlot(AiSlot::Decide, choice.clone());
         let _ = update(&mut state, Message::ToggleSortingMenu, &data);
-        assert!(asks(update(&mut state, pick(&deepseek), &data)).is_empty(), "nothing before the answer");
-        assert!(!state.sorting_menu && state.cloud_consent.is_some() && overlay(&state, &data).is_some());
-        assert!(matches!(escape(&state), Some(Message::CancelCloud)));
-        assert!(asks(update(&mut state, Message::CancelCloud, &data)).is_empty(), "Cancel changes nothing");
-        assert!(state.cloud_consent.is_none() && state.slots.using.is_none());
-
-        let _ = update(&mut state, pick(&deepseek), &data);
-        let (_, request) = ask(update(&mut state, Message::ConfirmCloud, &data));
+        let (_, request) = ask(update(&mut state, Message::PickSlot(AiSlot::Decide, deepseek.clone()), &data));
         let wanted = Some("deepseek/deepseek-chat-v3.1".to_string());
         assert_eq!(
             request,
             Request::SetAiSlot { slot: AiSlot::Decide, engine: deepseek.engine.clone(), model: wanted, effort: None }
         );
-        assert!(state.cloud_consent.is_none());
-
-        // Held without the consent (an agent kept the mail here): it waits, and picking it again asks.
-        let (mut state, _) = shown(false);
-        let (_, chosen) = slot_choices(&state, &data, AiSlot::Decide);
-        assert!(!slot_detail(&state, &data, AiSlot::Decide).1, "the demo sorts with the consent");
-        data.settings.decide_mail_to_cloud = Some(false);
-        let waiting = slot_detail(&state, &data, AiSlot::Decide);
-        assert_eq!(waiting, (tr("Waiting for your OK – mail stays here").to_string(), true));
+        assert!(!state.sorting_menu && overlay(&state, &data).is_none());
+        let (state, _) = shown(false);
+        assert!(!slot_detail(&state, &data, AiSlot::Decide).1, "nothing waits");
         draw_ai(&state, &data);
-        // An exception switched on sorts instead of the slot: nothing waits then.
-        let mut local = data.clone();
-        with_exception(&mut local, DEMO_OLLAMA, "nimble:latest", true);
-        assert!(!slot_detail(&state, &local, AiSlot::Decide).1);
-        assert!(asks(update(&mut state, pick(&chosen), &data)).is_empty() && state.cloud_consent.is_some());
-        let (_, request) = ask(update(&mut state, Message::ConfirmCloud, &data));
-        assert!(matches!(request, Request::SetAiSlot { slot: AiSlot::Decide, .. }), "held, set again: {request:?}");
 
-        // A model here and the chat ask nothing.
-        let (mut state, _) = shown(false);
-        let here = SlotChoice { engine: Some(DEMO_OLLAMA.into()), model: Some("qwen3:8b".into()), label: "q".into() };
-        let (_, request) = ask(update(&mut state, pick(&here), &data));
-        assert!(matches!(request, Request::SetAiSlot { slot: AiSlot::Decide, .. }) && state.cloud_consent.is_none());
-        let (mut state, _) = shown(false);
-        let chat = Message::PickSlot(AiSlot::Chat, deepseek.clone());
-        assert!(!asks(update(&mut state, chat, &data)).is_empty() && state.cloud_consent.is_none());
-
-        // A suggestion in the cloud asks before its chain starts.
+        // A suggestion in the cloud starts its chain at once.
         let (mut state, _) = shown(false);
         if let Some(recommendation) = state.slots.recommendation.as_mut() {
             for suggestion in recommendation.slots.iter_mut().filter(|suggestion| suggestion.slot == AiSlot::Decide) {
                 suggestion.local = false;
             }
         }
-        assert!(asks(update(&mut state, Message::UseSuggestion(AiSlot::Decide), &data)).is_empty());
-        assert!(state.cloud_consent.is_some() && overlay(&state, &data).is_some());
-        // A suggestion that changed while it asked is not taken instead of the one said yes to.
-        let mut changed = State { cloud_consent: state.cloud_consent.clone(), ..State::default() };
-        changed.slots.recommendation = state.slots.recommendation.clone();
-        if let Some(recommendation) = changed.slots.recommendation.as_mut() {
-            for suggestion in recommendation.slots.iter_mut().filter(|suggestion| suggestion.slot == AiSlot::Decide) {
-                suggestion.model = Some("another".into());
-            }
-        }
-        assert!(asks(update(&mut changed, Message::ConfirmCloud, &data)).is_empty());
-        assert!(changed.slots.using.is_none() && changed.cloud_consent.is_none());
-        assert!(!asks(update(&mut state, Message::ConfirmCloud, &data)).is_empty(), "the chain starts");
+        assert!(!asks(update(&mut state, Message::UseSuggestion(AiSlot::Decide), &data)).is_empty());
         assert!(state.slots.using.is_some());
     }
 
@@ -6810,10 +6558,10 @@ mod tests {
         draw_ai(&state, &data);
     }
 
-    /// Sorting's place in the data rule and under "Models", and why "Use suggestion" waits.
+    /// Sorting's place under "Models", and why "Use suggestion" waits.
     #[test]
     fn the_rows_name_where_mail_goes_and_what_waits() {
-        let (mut state, mut data) = shown(true);
+        let (mut state, data) = shown(true);
         assert_eq!(sorting_place(&data, &state.models), Some(("OpenRouter", tr("Cloud · US"))));
         let _ = update(&mut state, Message::UseSuggestion(AiSlot::Chat), &data);
         draw_ai(&state, &data);
@@ -6821,8 +6569,6 @@ mod tests {
         assert_eq!(waits_for(using), trf("Wait until the download for {slot} has finished", &[("slot", &tr("Chat"))]));
         let saving = Using { step: UseStep::Set, ..using.clone() };
         assert_eq!(waits_for(&saving), trf("Wait until {slot} is saved", &[("slot", &tr("Chat"))]));
-        data.settings.decide_mail_to_cloud = Some(false);
-        assert_eq!(sorting_place(&data, &state.models), None, "mail stays here");
     }
 
     /// The computer in one line, the share of a download, and the group in every state.
@@ -7026,13 +6772,12 @@ mod tests {
         assert_eq!(sorting_place(&data, &state.models), None, "switched off, nothing sorts");
         with_exception(&mut data, DEMO_OLLAMA, "nimble:latest", true);
         assert_eq!(sorting_place(&data, &state.models), None);
-        data.settings.decide_mail_to_cloud = Some(false);
+        // Issue #664: no permission holds it back; elsewhere is where mail goes.
         with_exception(&mut data, DEMO_OPENROUTER, "qwen/qwen3-235b-a22b", true);
-        assert_eq!(sorting_place(&data, &state.models), None, "the permission is off");
+        assert_eq!(sorting_place(&data, &state.models), cloud);
 
         // What sorts now (R4): a model here only while it sorts; nothing while the exception is off or the
         // slot is empty.
-        data.settings.decide_mail_to_cloud = Some(true);
         with_exception(&mut data, DEMO_OLLAMA, "nimble:latest", true);
         // nimble is off at the demo's Ollama: then it sorts nothing.
         assert_eq!(sorting_now(&data, &state.models), SortingNow::Nothing, "turned off at its account");
@@ -7109,28 +6854,22 @@ mod tests {
         assert!(matches!(*failure.retry, Message::PollPulls), "{:?}", failure.retry);
     }
 
-    /// Issue #547 (decision 5 of #528): the control centre shows the whole AI section; an app window
-    /// with the main application only its own slot and the row to the control centre; without it every
-    /// slot and the data rule – but the assistant's *Chat*, which it sets under General.
+    /// Issue #664: the control centre sets up accounts and models and chooses no model for anything;
+    /// the mail window shows its *Sorting*, the assistant sets *Chat* under General, every other window
+    /// has no slot. With the main application an app window has the row to the control centre.
     #[test]
     fn an_app_window_shows_of_ai_what_it_sets_itself() {
         let (mail, assistant, calendar) =
             (AppId::INBOX_MAIL.window_class, AppId::ASSISTANT.window_class, AppId::CALENDAR.window_class);
-        let all = AiParts { slots: AiSlot::ALL.to_vec(), data_rule: true, refer: false };
-        assert_eq!(ai_parts(None, true), all, "the control centre");
-        assert_eq!(ai_parts(None, false), all);
-        assert_eq!(ai_parts(Some(mail), true), AiParts { slots: vec![AiSlot::Decide], data_rule: false, refer: true });
-        assert_eq!(ai_parts(Some(assistant), true), AiParts { slots: Vec::new(), data_rule: false, refer: true });
-        assert_eq!(ai_parts(Some(calendar), true), AiParts { slots: Vec::new(), data_rule: false, refer: true });
-        // Issue #545: mail has no chat, so neither the chat's slot nor the data rule, also without it.
-        let sorting = AiParts { slots: vec![AiSlot::Decide], data_rule: false, refer: false };
-        assert_eq!(ai_parts(Some(mail), false), sorting, "without the main application: only Sorting");
-        assert_eq!(ai_parts(Some(calendar), false), all);
-        assert_eq!(
-            ai_parts(Some(assistant), false),
-            AiParts { slots: vec![AiSlot::Decide], data_rule: true, refer: false },
-            "the assistant sets Chat under General"
-        );
+        let none = AiParts { slots: Vec::new(), refer: false };
+        assert_eq!(ai_parts(None, true), none, "the control centre: no slot");
+        assert_eq!(ai_parts(None, false), none);
+        assert_eq!(ai_parts(Some(mail), true), AiParts { slots: vec![AiSlot::Decide], refer: true });
+        assert_eq!(ai_parts(Some(assistant), true), AiParts { slots: Vec::new(), refer: true });
+        assert_eq!(ai_parts(Some(calendar), true), AiParts { slots: Vec::new(), refer: true });
+        assert_eq!(ai_parts(Some(mail), false), AiParts { slots: vec![AiSlot::Decide], refer: false });
+        assert_eq!(ai_parts(Some(calendar), false), none);
+        assert_eq!(ai_parts(Some(assistant), false), none, "the assistant sets Chat under General");
 
         // The pages build in every window, the slots group left out where it has no slot.
         let (_, data) = shown(false);

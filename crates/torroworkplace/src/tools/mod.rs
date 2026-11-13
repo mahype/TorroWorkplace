@@ -12,8 +12,8 @@
 //! - `organize`: the commands of the tool `files` – list, find, make a folder, copy, move (task WD.2), move to the
 //!   trash (task WD.3).
 //!
-//! [`Tools`] answers the `tools.*` requests (task WZ.4). The core checks before: the tool's switch for every key
-//! (`Lack::ToolOff`), for a client its rights and selection (`Lack::Tool`) and that a file is its own; the handlers
+//! [`Tools`] answers the `tools.*` requests (task WZ.4). The core checks before: for a client its rights and
+//! selection (`Lack::Tool`) and that a file is its own; the tools are always there (issue #666). The handlers
 //! here take the maker of a file ([`Maker`]) and never reach another client's files. Nothing here logs a title, a
 //! path or content: only the kind of an error.
 
@@ -324,17 +324,16 @@ fn client_files(current: Option<crate::client_setup::Env>, home: Option<&Path>) 
     }
 }
 
-/// `tools.list_tools` for `reach`: every tool with whether a person switched it on (`settings`) and whether the
-/// key may use it: the app key always; a client with the tool's level in `tools` ([`ToolAccess::access`]: write
-/// for `pdf`, read for `web` and `files`) and the tool in its selection (`web` only when named, `Rights::reaches_tool`).
-pub fn list(settings: &torro_core::settings::Tools, reach: Reach<'_>) -> Response {
+/// `tools.list_tools` for `reach`: every tool with whether the key may use it: the app key always; a client with
+/// the tool's level in `tools` ([`ToolAccess::access`]: write for `pdf`, read for `web` and `files`) and the tool
+/// in its selection (`web` only when named or for rights opened like the assistant's, `Rights::reaches_tool`).
+pub fn list(reach: Reach<'_>) -> Response {
     let tools = ToolId::ALL
         .into_iter()
         .map(|id| ToolInfo {
             id,
             name: id.title().to_string(),
             description: description(id).to_string(),
-            enabled: settings.is_on(id),
             allowed: match reach {
                 Reach::Suite => true,
                 Reach::Client(rights) => rights.area(Area::Tools).allows(id.access()) && rights.reaches_tool(id),
@@ -355,11 +354,11 @@ fn description(id: ToolId) -> &'static str {
     }
 }
 
-/// Whether a client with `rights` reaches the files the tools made (its own, the register's rule): the PDF tool
-/// switched on in `settings`, read access to `tools` and `pdf` in its selection. For drafts' attachments; the
-/// commands of the tool check their switch and rights themselves.
-pub fn reaches_files(settings: &torro_core::settings::Tools, rights: &Rights) -> bool {
-    settings.is_on(ToolId::Pdf) && rights.area(Area::Tools).allows(Access::Read) && rights.reaches_tool(ToolId::Pdf)
+/// Whether a client with `rights` reaches the files the tools made (its own, the register's rule): read access to
+/// `tools` and `pdf` in its selection. For drafts' attachments; the commands of the tool check their rights
+/// themselves.
+pub fn reaches_files(rights: &Rights) -> bool {
+    rights.area(Area::Tools).allows(Access::Read) && rights.reaches_tool(ToolId::Pdf)
 }
 
 /// The `error` for a `tools.create_pdf` beyond its limits, which the core gives before anyone is asked to approve
@@ -666,56 +665,47 @@ pub(crate) mod tests {
         assert_eq!(code(&tools.save_file_as(&mine.id, &copied.to_string_lossy()).await), "not-found");
     }
 
+    /// Issue #666: the list says whether the key may use each tool; the tools are always there.
     #[test]
-    fn the_list_says_switch_and_access() {
-        let mut settings = torro_core::settings::Tools::default();
-        let listed = |settings: &torro_core::settings::Tools, reach: Reach<'_>| match list(settings, reach) {
+    fn the_list_says_the_access() {
+        let listed = |reach: Reach<'_>| match list(reach) {
             Response::Tools { tools } => tools,
             other => panic!("expected tools, got {other:?}"),
         };
-        let suite = listed(&settings, Reach::Suite);
+        let suite = listed(Reach::Suite);
         assert_eq!(suite.iter().map(|tool| tool.id).collect::<Vec<_>>(), ToolId::ALL);
-        assert_eq!((suite[0].id, suite[0].enabled, suite[0].allowed), (ToolId::Pdf, false, true));
+        assert_eq!((suite[0].id, suite[0].allowed), (ToolId::Pdf, true));
         assert_eq!(suite[0].description, tr(description(ToolId::Pdf)));
         assert_eq!((suite[1].id, suite[1].name.as_str(), suite[1].allowed), (ToolId::Web, "Web", true));
-        assert_eq!((suite[2].id, suite[2].enabled, suite[2].allowed), (ToolId::Files, false, true));
+        assert_eq!((suite[2].id, suite[2].allowed), (ToolId::Files, true));
         assert_eq!((suite[2].name.as_str(), suite[2].description.as_str()), ("Files", description(ToolId::Files)));
-        settings.set_on(ToolId::Pdf, true);
         let mut rights = RightsTemplate::ReadOnly.rights();
-        assert!(!listed(&settings, Reach::Client(&rights))[0].allowed, "reading only");
+        assert!(!listed(Reach::Client(&rights))[0].allowed, "reading only");
         rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
         rights.tools = Selection::Only(Vec::new());
-        assert!(!listed(&settings, Reach::Client(&rights))[0].allowed, "not in the selection");
+        assert!(!listed(Reach::Client(&rights))[0].allowed, "not in the selection");
         rights.tools = Selection::Only(vec!["pdf".into()]);
-        let client = listed(&settings, Reach::Client(&rights));
-        assert!(client[0].allowed && client[0].enabled);
-        assert!(client[1..].iter().all(|tool| !tool.allowed && !tool.enabled), "the others: neither selected nor on");
+        let client = listed(Reach::Client(&rights));
+        assert!(client[0].allowed);
+        assert!(client[1..].iter().all(|tool| !tool.allowed), "the others are not selected");
     }
 
     /// Issue #304: `files` is allowed with read access to `tools` (listing and finding change nothing) and the
-    /// tool in the selection; its switch is its own.
+    /// tool in the selection.
     #[test]
     fn files_are_allowed_with_reading_and_the_selection() {
-        let mut settings = torro_core::settings::Tools::default();
-        settings.set_on(ToolId::Files, true);
-        let files =
-            |settings: &torro_core::settings::Tools, rights: &Rights| match list(settings, Reach::Client(rights)) {
-                Response::Tools { tools } => tools.into_iter().find(|tool| tool.id == ToolId::Files).expect("listed"),
-                other => panic!("expected tools, got {other:?}"),
-            };
+        let files = |rights: &Rights| match list(Reach::Client(rights)) {
+            Response::Tools { tools } => tools.into_iter().find(|tool| tool.id == ToolId::Files).expect("listed"),
+            other => panic!("expected tools, got {other:?}"),
+        };
         let mut rights = RightsTemplate::ReadOnly.rights();
         rights.tools = Selection::Only(vec!["files".into()]);
-        let read = files(&settings, &rights);
-        assert!(read.allowed && read.enabled, "reading is enough");
+        assert!(files(&rights).allowed, "reading is enough");
         rights.tools = Selection::Only(vec!["pdf".into()]);
-        assert!(!files(&settings, &rights).allowed, "not in the selection");
+        assert!(!files(&rights).allowed, "not in the selection");
         rights.tools = Selection::All;
         rights.areas.remove(&Area::Tools);
-        assert!(!files(&settings, &rights).allowed, "no access to tools");
-        settings.set_on(ToolId::Files, false);
-        rights.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
-        let off = files(&settings, &rights);
-        assert!(off.allowed && !off.enabled, "allowed, but switched off");
+        assert!(!files(&rights).allowed, "no access to tools");
     }
 
     /// API review of issue #304: without a view of this process (`Env::current` is `None`) the files with client
@@ -757,8 +747,7 @@ pub(crate) mod tests {
     /// not stand for it.
     #[test]
     fn the_list_allows_web_with_reading_and_its_name() {
-        let settings = torro_core::settings::Tools::default();
-        let allowed = |rights: &Rights| match list(&settings, Reach::Client(rights)) {
+        let allowed = |rights: &Rights| match list(Reach::Client(rights)) {
             Response::Tools { tools } => tools.iter().map(|tool| (tool.id, tool.allowed)).collect::<Vec<_>>(),
             other => panic!("expected tools, got {other:?}"),
         };
@@ -784,17 +773,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn files_are_reached_with_switch_reading_and_selection() {
-        let mut settings = torro_core::settings::Tools::default();
+    fn files_are_reached_with_reading_and_selection() {
         let mut rights = RightsTemplate::ReadOnly.rights();
         rights.tools = Selection::Only(vec!["pdf".into()]);
-        assert!(!reaches_files(&settings, &rights), "switched off");
-        settings.set_on(ToolId::Pdf, true);
-        assert!(reaches_files(&settings, &rights));
+        assert!(reaches_files(&rights));
         rights.tools = Selection::Only(Vec::new());
-        assert!(!reaches_files(&settings, &rights), "not selected");
+        assert!(!reaches_files(&rights), "not selected");
         rights.tools = Selection::All;
         rights.areas.remove(&Area::Tools);
-        assert!(!reaches_files(&settings, &rights), "no access to tools");
+        assert!(!reaches_files(&rights), "no access to tools");
     }
 }

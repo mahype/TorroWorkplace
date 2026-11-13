@@ -253,10 +253,6 @@ pub fn refusal_hint(area: Option<Area>, lack: Option<Lack>, who: Answerer<'_>) -
             tr("This conversation is read only. Pick another mode under the message field to let it change things.")
                 .to_owned()
         }
-        Lack::NeverToAgents { area } => trf(
-            "{area} never goes to coding agents like Claude Code: your data rule keeps it on your computers. Choose an AI account on this computer for it.",
-            &[("area", &name(area))],
-        ),
         Lack::Denied { area } => match who {
             Answerer::Assistant => trf("You turned this off for the assistant in {area}.", &[("area", &name(area))]),
             Answerer::Bot(Some(bot)) => {
@@ -264,9 +260,6 @@ pub fn refusal_hint(area: Option<Area>, lack: Option<Lack>, who: Answerer<'_>) -
             }
             Answerer::Bot(None) => trf("You turned this off in {area}.", &[("area", &name(area))]),
         },
-        Lack::ToolOff { tool } => {
-            trf("The tool {tool} is switched off in the control centre under MCP servers.", &[("tool", &tool.title())])
-        }
         Lack::Tool { tool } => trf("The assistant may not use the tool {tool}.", &[("tool", &tool.title())]),
         // Issue #302: the level for the server, or the tool switched off; both are its rights.
         Lack::Extension => tr("The assistant may not use this tool of the MCP server.").to_owned(),
@@ -574,15 +567,10 @@ mod tests {
         assert!(hint(Lack::Outbound).1, "sending is a switch of the rights");
         let off = hint(Lack::SwitchedOff { area: Area::Mail });
         assert_eq!(off, (named("You switched off {area} for this conversation."), false));
-        let (never, change) = hint(Lack::NeverToAgents { area: Area::Mail });
-        assert!(!change && never.contains("Claude Code"), "{never}");
         assert!(!hint(Lack::ForPeople).1);
-        // Issue #225: a tool switched off is the person's switch under MCP servers (task MA.7), a
-        // tool not granted its rights.
+        // Issue #225: a tool not granted is its rights.
         let pdf = torro_ipc::tools::ToolId::Pdf;
         let tool = |text: &'static str| trf(text, &[("tool", &"PDF")]);
-        let off = hint(Lack::ToolOff { tool: pdf });
-        assert_eq!(off, (tool("The tool {tool} is switched off in the control centre under MCP servers."), false));
         let not_granted = hint(Lack::Tool { tool: pdf });
         assert_eq!(not_granted, (tool("The assistant may not use the tool {tool}."), true));
         assert_eq!(area_name(Area::Tools), tr("Tools"));

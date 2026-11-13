@@ -271,7 +271,7 @@ pub fn rank(
 }
 
 /// `suggestions` without what they know from mail (issue #460), for a reader that may not read it
-/// (a model elsewhere under the data rule, a conversation with mail switched off): no address known
+/// (a conversation with mail switched off): no address known
 /// only from mail, no dates of mail, and the contacts in the order they have without mail –
 /// favourites, groups, the rest, each by name.
 pub fn without_mail(suggestions: &[RecipientSuggestion]) -> Vec<RecipientSuggestion> {

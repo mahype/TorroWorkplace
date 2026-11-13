@@ -159,7 +159,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `presence` ³⁰ | `list_people`, `find_people`, `get_own_status` | `add_person`, `remove_person`, `set_own_status` (nach außen) | | |
 | `workflows` (#556) | Vorlagen, Abläufe, Regeln, Läufe, Dokumentstücke und lokale Vorschau (siehe unten) | Entwürfe, getestete Abläufe, Start/Abbruch, Öffnen/Zeigen | Ablauf/Regel entfernen | Regeln verwalten; Dauergrant erteilen/widerrufen **nur App-Schlüssel** |
 | `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav`, `connect_mail` und `reconfigure_mail` (die letzten fünf **nur App-Schlüssel**, Punkt 5 unten), `set_search_key` (**nur App-Schlüssel**, Punkt 5, #305) |
-| `settings` | `get_settings`, `list_designs` ⁹, `list_fonts` ⁹, `list_color_schemes` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
+| `settings` ³¹ | `get_settings`, `list_designs` ⁹, `list_fonts` ⁹, `list_color_schemes` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `ai` | `list_models` ²¹, `list_assignments`, `find_local_servers` | | | `set_assignment`, `set_model_enabled` ²¹ |
 | `apps` | `list_apps`, `list_catalog`, `app_job`, `list_announcements` (#485) | `open_app` ¹³, `check_updates`, `cancel_app_job`, `dismiss_announcement` (#485) | | `uninstall_app`, `install_app` und `update_apps` (die letzten zwei **nur App-Schlüssel**, Punkt 11 unten, #411) |
 | `tools` ²² | `list_tools`, `web_search`, `fetch_page`, `list_search_providers` ²², `list_folder`, `find_files` | `create_pdf`, `open_file`, `save_file_as` (**nur App-Schlüssel**, Punkt 9 unten), `create_folder`, `copy_file`, `move_file` | `trash_file` | |
@@ -849,10 +849,12 @@ Accounts.“), und `assistant.list_engines` nennt das Konto nicht. Ein entfernte
 (Punkt 6 unten). Freigaben nennen Konto, Modell und Ort aus der Liste des Kerns; das Protokoll nur Konto und
 `enabled`, nie den Modellnamen.
 
-²² **Eigene Werkzeuge des Assistenten** (Issue #225, [assistent.md](assistent.md) „Eigene Werkzeuge“):
-Jedes Werkzeug hat einen Schalter (Einstellung `tool_enabled`, einschalten nur Menschen, Punkt 9) und eine
-Auswahl in den Rechten (`Rights::tools`). Ein Befehl eines Werkzeugs läuft nur, wenn beides stimmt, sonst
-`forbidden` (`Lack::ToolOff` bzw. `Lack::Tool`), geprüft vor der Freigabe und bei ihrer Ausführung noch einmal.
+²² **Eingebaute Werkzeuge** (Issue #225, [assistent.md](assistent.md) „Eigene Werkzeuge“): Die Werkzeuge sind
+immer da (seit #666). Bis dahin hatte jedes einen Schalter (Einstellung `tool_enabled`, einschalten nur Menschen,
+Punkt 9; abgelehnt mit `Lack::ToolOff`), der für jeden Client galt; Schalter, `Lack::ToolOff` und das Feld `enabled`
+in `list_tools` sind entfallen ([Versionen](#versionen)). Ein Befehl eines Werkzeugs läuft für einen Client, wenn
+seine Auswahl in den Rechten (`Rights::tools`) das Werkzeug erreicht, sonst `forbidden` (`Lack::Tool`), geprüft vor
+der Freigabe und bei ihrer Ausführung noch einmal.
 `open_file`, `save_file_as`, `apps.open_app` mit `file:` und Anhänge in `mail.save_draft` nehmen nur Dateien
 aus dem Register des Kerns; ein Client nur solche, die er selbst erzeugt hat. `allowed` in `list_tools` heißt für
 `pdf` Schreibrecht in `tools`, für `files` Leserecht (`torro_ipc::tools::access_to_use`).
@@ -865,9 +867,13 @@ und antwortet mit dem entstandenen Pfad (`file-path`). `list_folder` und `find_f
 `folder-entries` und `truncated` an ihren Grenzen (500 Einträge; 200 Treffer, 10 Ebenen, 50.000 angesehene
 Einträge). `trash_file` ist `Delete` und fragt **immer** einen Menschen, auch bei „Ask first: Never“. Protokoll und
 Log nennen weder Pfade noch Suchbegriffe.
-Das Werkzeug `web` (#305) braucht nur Lesen, muss aber in der Auswahl einzeln angehakt sein („All“ reicht nicht,
-`ToolId::needs_naming`): `web_search` und `fetch_page` schicken Suchwörter und Adressen aus dem Rechner, im
-Gespräch des Assistenten erst nach einem Ja je Unterhaltung. `list_search_providers` gehört zu keinem Werkzeug.
+Das Werkzeug `web` (#305) braucht nur Lesen, muss aber für einen Key in der Auswahl einzeln angehakt sein („All“
+reicht nicht, `ToolId::needs_naming`): `web_search` und `fetch_page` schicken Suchwörter und Adressen aus dem Rechner,
+im Gespräch des Assistenten erst nach einem Ja je Unterhaltung. Ausnahme seit #666: Rechte, die geöffnet wurden
+(`extensionsDefault` gesetzt, `Rights::opened`; Assistent und Bots), erreichen mit „All“ auch `web`
+(`Rights::reached_tools`), auch nachdem alle Server wieder geschlossen sind: Server und Web sind zweierlei. Die
+SearXNG-Adresse sehen sie trotzdem nicht; die bekommt nur ein Key, für den ein Mensch `web` angekreuzt hat. Ein Key mit *Full access* erreicht `web` weiter nicht. `list_search_providers` gehört zu
+keinem Werkzeug.
 
 ²³ **Tasten und Laden beim Start** (Issue #243, [tasks/workspaces.md](tasks/workspaces.md)): Je Eigenschaft einer
 Vorlage ein Befehl, damit nichts Ausgelassenes verloren geht; der Name bleibt bei `rename_template`.
@@ -901,8 +907,8 @@ die ganze Serie.
 Aufgaben [tasks/mcp-anbindungen.md](tasks/mcp-anbindungen.md)): Der Dienst ist MCP-Client fremder Server (Programm über
 stdio oder Adresse über Streamable HTTP). Der Bereich `extensions` verwaltet sie (auflisten, Katalog, ausschalten,
 entfernen) und steht in den Vorlagen wie jeder Bereich. Die Werkzeuge eines Servers dagegen öffnet keine Stufe in
-`extensions`, sondern eine **Stufe je Server** (`Rights::extensions`, Kennung → Stufe, fehlt = Kein Zugriff; siehe
-„Rechte“). `list_tools` und `call_tool` brauchen deshalb keine Stufe im Bereich; der Dienst prüft je Server
+`extensions`, sondern eine **Stufe je Server** (`Rights::extensions`, Kennung → Stufe; fehlt sie, gilt die Grundstufe
+`extensionsDefault`, ohne sie Kein Zugriff, #666; siehe „Rechte“). `list_tools` und `call_tool` brauchen deshalb keine Stufe im Bereich; der Dienst prüft je Server
 (`Rights::allows_extension`). `call_tool` steht im Katalog mit `Delete`, gebraucht wird aber der Zugriff des
 Werkzeugs (`Read`, `Write` oder `Delete` aus dem Katalog-Eintrag, ohne Angabe `Delete`; Hinweise des Servers zählen
 nicht), auch für Freigaben und Nur-Lese-Unterhaltungen. Nach außen heißt jedes Werkzeug `ext_<id>_<werkzeug>`;
@@ -923,11 +929,12 @@ Was gebaut ist und dabei genauer wurde als oben (Details: [erweiterungen.md › 
   nach außen wirkt (z. B. ein Kommentar auf GitHub), nur über die Stufe auf; „Nach außen“ hält es nicht. Umgekehrt
   wartet ein Write-Werkzeug bei „Nach außen: Mit Freigabe“ nicht auf eine Freigabe, sondern nur bei „Freigabe
   vorher: Bei jeder Änderung“; sonst bleibt, die Stufe auf Lesen zu setzen oder das Werkzeug zu sperren.
-- **Datenregel:** Antworten von Server-Werkzeugen haben keine eigene Regel. Sie gehen an das Modell, das antwortet,
-  auch an ein Modell, das woanders rechnet (Cloud). Anders als Mail: Die geht nur mit „Mail to cloud models“ an ein
-  solches Modell (Aufgabe C.17), und eine Notiz nach gelesener Mail bleibt lokal (`local_only`,
-  `Answering::kept_local`). Wirksam ist bei Servern allein die Stufe je Server: Wer nicht will, dass Antworten eines
-  Servers ein Modell anderswo erreichen, gibt dem Assistenten bzw. dem Client für diesen Server keine Stufe.
+- **Keine Datenregel:** Antworten von Server-Werkzeugen gehen an das Modell, das antwortet, auch an ein Modell, das
+  woanders rechnet (Cloud). Seit #664 gilt das für jede Antwort, auch für Mail; bis dahin ging Mail nur mit „Mail to
+  cloud models“ an ein solches Modell (Aufgabe C.17), und eine Notiz nach gelesener Mail blieb lokal (`local_only`).
+  Wirksam ist bei Servern allein die Stufe je Server: Wer nicht will, dass Antworten eines Servers ein Modell anderswo
+  erreichen, schaltet den Server für den Assistenten bzw. den Bot aus (Assistent › API and MCP › „Used by the
+  assistant“) oder gibt dem Client keine Stufe.
 - **Abschalten für eine Unterhaltung:** Wird der Bereich `extensions` abgeschaltet, sind auch alle Server aus.
 - **Sichtbarkeit:** Ein Schlüssel, der nicht der App-Schlüssel ist, sieht in `extensions.list_extensions` und
   `extensions.get_extension` nur Server, für die er eine Stufe hat, und deren Einrichtung geschwärzt (Argumente und
@@ -1008,10 +1015,10 @@ ab Werk mit Freigabe) sind `send_message`, `create_conversation`, `edit_message`
 `presence.set_own_status`; die Freigabe zeigt den Namen der Unterhaltung aus dem Kern und den Text, der wirklich
 geht, und behält nach der Entscheidung keins von beidem. Dafür gilt je Client eine Drossel von 30 Befehlen je Stunde
 und 5 je Minute (`busy`). Lesen ändert nichts auf dem Server (kein Lesestand, keine Benachrichtigung, kein Status).
-Nachrichten, Namen und Statusnachrichten sind `untrusted`. Der Kern hält Nachrichten und Status nur im Speicher. Beide
-Bereiche gehen nie an einen Coding-Agenten als Antrieb des Assistenten und nie an ein Modell anderswo
-(`NEVER_TO_AGENTS`, Datenregel), auch nicht mit dem Schalter für Mail; ein geliehener Schlüssel ohne `chat` verliert
-auch die Eingangsquellen `talk:*`.
+Nachrichten, Namen und Statusnachrichten sind `untrusted`. Der Kern hält Nachrichten und Status nur im Speicher. Was
+ein Modell davon liest, folgt seit #664 allein aus den Rechten (bis dahin hielten `NEVER_TO_AGENTS` und die Datenregel
+beide Bereiche von einem Coding-Agenten als Antrieb und von Modellen anderswo fern); ein geliehener Schlüssel ohne
+`chat` verliert auch die Eingangsquellen `talk:*`.
 **Dateien und Medien** (Stufe 4, [chat.md](chat.md) „Dateien und Medien“): Senden geht in zwei Schritten. Vorbereiten
 (`prepare_file`, `upload_file` in Stücken von höchstens 256 KiB, 25 MiB je Datei) hält die Datei nur im Speicher des
 Kerns unter einer Lease (unfertig 10 Minuten, fertig eine Stunde nach der letzten Nutzung, zusammen höchstens 100 MiB,
@@ -1043,6 +1050,16 @@ for incoming calls“, ab Werk an, `Admin` in `settings`): Der Kern fragt dann a
 Kontos mit Talk ab und öffnet für jeden Anruf einmal `torrochat --ring=<unterhaltung>`, direkt und nicht über
 `apps.open_app`, damit kein Client den Rechner klingeln lassen kann.
 
+³¹ **Keine stillen Sperren** (Issues #664, #665, #666, [settings.md](settings.md) „Die Regel“). `set_setting` nimmt
+`mail_to_cloud` und `decide_mail_to_cloud` (Datenregel für Mail, Aufgabe C.17 und #325), `allow_api_keys` und
+`allow_mcp` (Schalter für API und MCP, #231) und `tool_enabled` (Schalter je eingebautem Werkzeug, #225) nicht mehr
+an; die Felder dazu fehlen in `get_settings`. Ebenso sind das Feld `mail_to_cloud` der Plätze in
+`ai.list_assignments`, `enabled` in `tools.list_tools` und `withheld` und `tools_on` in `assistant.my_access`
+entfallen ([Versionen](#versionen)). Was ein Modell liest, folgt aus Rechten und Modellwahl
+([ki.md](ki.md), Grundsatz 4); ein Key wirkt, sobald ein Mensch ihn angelegt hat; die Werkzeuge sind immer da, wer sie
+nutzt, regeln die Rechte (Fußnote 22). Alte Einstellungsdateien laden weiter, die Felder werden ignoriert. Neu ist
+`aiSlotsTaken`: Die alten KI-Felder einer Datei von vor den Plätzen (#325) werden genau einmal übernommen.
+
 ²⁸ **Kontakte** (Issue #351, Konzept [kontakte.md](kontakte.md)): Rechte gelten je Adressbuch,
 `Rights.address_books` mit Kennungen `<konto-id>/<name>`; fehlt das Feld in alten Rechten, ist kein Buch frei. Die
 Vorlagen setzen nur die Stufe und öffnen kein Buch; ein Mensch hakt die Bücher an. Ausgeblendete Bücher
@@ -1050,18 +1067,18 @@ Vorlagen setzen nur die Stufe und öffnen kein Buch; ein Mensch hakt die Bücher
 stehen, auch bei `All`. Bücher außerhalb der Auswahl gibt es für den Client nicht (`not-found`), ausgefiltert vor dem
 Lesen. `update_contact` überschreibt Felder des Menschen und ist `Delete`; `add_to_contact` ergänzt nur (neue Werte
 hinter den bestehenden, nie bevorzugt) und ist `Write`. `resolve_conflict` ist mit `mine` oder `theirs` `Delete`,
-mit `both` `Write` (`Request::operation()`). Alle Kontaktfelder, Buch- und Gruppennamen sind `untrusted`. **`contacts`
-steht nicht in `NEVER_TO_AGENTS`:** Anders als Mail regelt bei Kontakten allein die Auswahl der Bücher, was ein Agent
-sieht; wer ein Buch nicht bei einem KI-Anbieter haben will, lässt es dort weg (Entscheidung 5 in
-[kontakte.md](kontakte.md)).
+mit `both` `Write` (`Request::operation()`). Alle Kontaktfelder, Buch- und Gruppennamen sind `untrusted`. **Bei
+Kontakten regelt allein die Auswahl der Bücher, was ein Agent sieht** (seit #664 bei jedem Bereich so; bis dahin stand
+Mail in `NEVER_TO_AGENTS`, Kontakte nie): Wer ein Buch nicht bei einem KI-Anbieter haben will, lässt es dort weg
+(Entscheidung 5 in [kontakte.md](kontakte.md)).
 **Empfänger-Vorschläge** (`contacts.suggest_recipients`, Issue #460) sind `Read` im Bereich `contacts`, lesen aber
 auch Mail: Kontakte nur aus den Büchern der Auswahl, Adressen aus Mails (Empfänger im Ordner Gesendet, Absender
 persönlicher Mails; nie Listen, Newsletter oder automatische Mails) nur aus den Konten, die der Client lesen darf
 (Lesezugriff auf `mail` und das Konto, wie `mail.search_messages`). Ohne dieses Recht kommen nur Kontakte, nach Name.
 Die eigenen Adressen der Konten kommen nie vor. Ins Protokoll kommt je gelesenem Mail-Konto `account:<id>`, nie der
-Suchtext. Alle Felder sind `untrusted`. Mit `contacts_only` kommt nichts aus Mails; der Assistent setzt es, wo Mail nicht hin
-darf (ein Modell anderswo ohne `mail_to_cloud`, Mail im Gespräch ausgeschaltet), damit auch die Auswahl der Kontakte
-nicht verrät, wem der Mensch oft schreibt.
+Suchtext. Alle Felder sind `untrusted`. Mit `contacts_only` kommt nichts aus Mails; der Assistent setzt es, wenn Mail im
+Gespräch ausgeschaltet ist (bis #664 auch für ein Modell anderswo ohne `mail_to_cloud`), damit auch die Auswahl der
+Kontakte nicht verrät, wem der Mensch oft schreibt.
 
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
 keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als
@@ -1106,7 +1123,7 @@ Die folgende Vertragsübersicht ist kein Auslieferungs- oder Gesamtprüfungsnach
 die Befehle mailabhängig: Mail/Read, Kontoauswahl, ursprünglicher Träger und effektive
 Origin-/Narrowing-Schnittmenge gelten vor dem Lesen und nach Pending erneut. Ein Zielbezeichner gibt
 keinen Ordner frei; die bestehenden Ablagerechte bleiben nötig. App-Bearbeitung erweitert nie einen
-Client-Auftrag. Ergebnisse und Gesprächsverlauf unterliegen der Mail-Datenregel und `without Mail`;
+Client-Auftrag. Ergebnisse und Gesprächsverlauf unterliegen `without Mail` (die Mail-Datenregel entfiel mit #664);
 mailabgeleitete Daten bleiben `untrusted`.
 
 `run` mit `test: true` ist ein **echter bestätigter Download samt Ablage**, kein Preview; der
@@ -1225,28 +1242,6 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    die Zusage nicht: Jedes Fenster der Suite hält den App-Schlüssel, und ein Mensch drückt den
    Schalter.
 
-   Ebenso **Mail an Cloud-Modelle geben** (Datenregel, Aufgabe C.17, Schalter „Mail to cloud models“):
-   `settings.set_setting`
-   mit `mail_to_cloud: true` und ein `settings.update_settings`, das es einschalten würde, bekommen
-   von jedem Client `forbidden`, auch mit Admin-Rechten; sonst könnte sich ein Agent selbst Mail
-   verschaffen. `mail_to_cloud: false` ist eine gewöhnliche Admin-Änderung (Tests
-   `only_people_let_mail_go_to_the_cloud` in `torro-ipc` und
-   `only_people_let_mail_go_to_the_cloud_and_agents_may_keep_it_local` im Kern).
-
-   Ebenso **Mail an Cloud-Modelle für Sortieren geben** (#325, `decide_mail_to_cloud`, der Platz `decide`
-   in [ki.md](ki.md), „Erlaubnis je Platz“): `settings.set_setting` mit `decide_mail_to_cloud: true` und ein
-   `settings.update_settings`, das es einschalten würde, bekommen von jedem Client `forbidden`, auch mit
-   Admin-Rechten. Dasselbe gilt für `ai.set_slot` mit `slot: decide` und einem Modell, das anderswo rechnet,
-   und für `ai.set_assignment` der Funktion `inbox.categorize` mit einem solchen Modell – auch ausgeschaltet
-   (`enabled: false`), außer es nennt Konto und Modell, die gerade sortieren (die Ausnahme, sonst der Platz), damit
-   kein Agent eine Ausnahme vorbereitet, die die Person später einschaltet; ohne Modell zählt ein Konto auf diesem
-   Computer als hier, weil „Automatic“ dort nur Modelle hier nimmt (nie `:cloud`), ein Konto anderswo als anderswo –
-   sowie für `inbox.start_category_job` mit
-   einem Modell anderswo, das nicht das gerade geltende ist, und für das Fortsetzen eines solchen Auftrags
-   (`inbox.control_category_job`): Die Zustimmung gilt
-   einem Anbieter, und kein Agent leitet sie auf einen anderen um. `decide_mail_to_cloud: false` ist eine
-   gewöhnliche Admin-Änderung. Geprüft wird beim Setzen und beim Aufruf.
-
    Ebenso **Websuche-Anbieter einschalten und SearXNG-Adresse setzen** (Werkzeug `web`, #305,
    [assistent.md](assistent.md) „Werkzeug Web“): Suchwörter gehen an die eingeschalteten Anbieter, die
    SearXNG-Adresse kann ins lokale Netz zeigen. `settings.set_setting` mit `search_provider` und `enabled`
@@ -1280,13 +1275,25 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    des Modells, den nur der Kern kennt: Er prüft ihn aus seiner Liste des Kontos (im Zweifel „anderswo“), nicht
    `Request::kept_for_people`. Ausschalten und das Anschalten eines Modells, das hier rechnet, sind gewöhnliche
    Admin-Änderungen mit Freigabe (Test `only_people_turn_on_a_model_elsewhere_and_agents_switch_with_approval` im
-   Kern).
+   Kern). Mit dem nächsten Absatz ist das die Schutzregel, die nach #663 bleibt ([ki.md](ki.md), Grundsatz 4).
 
-   Ebenso **API und MCP einschalten** (#231, Schalter „Allow API keys“ und „Allow MCP“, Einstellungen
-   `allow_api_keys` und `allow_mcp`): `settings.set_setting` mit `true` und ein `settings.update_settings`, das
-   einen davon einschalten würde, bekommen von jedem Client `forbidden`; ausschalten ist eine gewöhnliche
-   Admin-Änderung. Sonst könnte ein Client mit Admin-Rechten einen Weg wieder öffnen, den ein Mensch geschlossen
-   hat.
+   Ebenso **ein Modell anderswo fürs Sortieren wählen** (#325, [ki.md](ki.md), „Modell anderswo“): `ai.set_slot` mit
+   `slot: decide` und einem Modell, das anderswo rechnet, `ai.set_assignment` der Funktion `inbox.categorize` mit
+   einem solchen Modell – auch ausgeschaltet (`enabled: false`), außer es nennt Konto und Modell, die gerade
+   sortieren (die Ausnahme, sonst der Platz), damit kein Agent eine Ausnahme vorbereitet, die die Person später
+   einschaltet; ohne Modell zählt ein Konto auf diesem Computer als hier, weil „Automatic“ dort nur Modelle hier
+   nimmt (nie `:cloud`), ein Konto anderswo als anderswo –, `inbox.start_category_job` mit einem Modell anderswo,
+   das nicht das gerade geltende ist, und das Fortsetzen eines solchen Auftrags (`inbox.control_category_job`)
+   bekommen von jedem Client `forbidden`, auch mit Admin-Rechten und nach einer Freigabe. Die Wahl gilt einem
+   Anbieter, und kein Agent leitet die Mail auf einen anderen um. Geprüft wird beim Setzen und beim Aufruf. Ein
+   Mensch wählt ein solches Modell seit #664 ohne Rückfrage, und der Freigabe-Text von `ai.set_slot` sagt nicht
+   mehr, dass sortierte Mail auf diesem Rechner bleibt.
+
+   **Entfallen mit #664 und #665:** Hier standen auch **Mail an Cloud-Modelle geben** (`mail_to_cloud`, Datenregel,
+   Aufgabe C.17, Schalter „Mail to cloud models“), **Mail an Cloud-Modelle für Sortieren geben**
+   (`decide_mail_to_cloud`, #325) und **API und MCP einschalten** (`allow_api_keys`, `allow_mcp`, #231). Die
+   Einstellungen gibt es nicht mehr ([Versionen](#versionen)): Was ein Modell liest, folgt aus Rechten und
+   Modellwahl, und ein Key wirkt, sobald ein Mensch ihn angelegt hat.
 7. **Einen Bot für den Assistenten bestätigen** (`assistant.confirm_bot`, B.2): nur mit dem
    App-Schlüssel. Der Assistent fragt einen Bot nur, wenn die Person ihn in ihrer letzten Nachricht
    nennt oder seinen Vorschlag bestätigt; diese Bestätigung gibt nie ein Agent oder Modell. Das
@@ -1300,15 +1307,13 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    und `Rights::allows_request` geben einem Client `forbidden`, auch mit Admin-Rechten (Skript-Schlüssel
    können Admin haben). Ohne `logs` ist der Befehl gewöhnliches Lesen im Bereich `system` (Version,
    System; Konten nur mit Leserecht in `accounts`).
-9. **Eine Datei an einen frei gewählten Ort sichern, ein eigenes Werkzeug des Assistenten einschalten und die
-   freigegebenen Ordner verwalten**
+9. **Eine Datei an einen frei gewählten Ort sichern und die freigegebenen Ordner verwalten**
    ([assistent.md](assistent.md) „Eigene Werkzeuge“): `tools.save_file_as` („Save as…“ auf der Datei-Karte im
    Chat) nur mit dem App-Schlüssel, also nur durch einen Menschen, der das Ziel im Dialog des Systems wählt
    (`Mcp::Never`). Sonst gäbe ein Agent dem Kern einen Pfad, und „Dateien und Shell bleiben immer aus“
-   (Entscheidung 6 in [assistent.md](assistent.md)) wäre umgangen. Ein Werkzeug schaltet wie das Mikrofon nur
-   ein Mensch ein: `settings.set_setting` mit `tool_enabled` und `enabled: true` und ein
-   `settings.update_settings`, das ein Werkzeug einschalten würde, bekommen von jedem Client `forbidden`, auch
-   mit Admin-Rechten (`Request::kept_for_people`); ausschalten ist eine gewöhnliche Admin-Änderung. Aus demselben
+   (Entscheidung 6 in [assistent.md](assistent.md)) wäre umgangen. Bis #666 schaltete hier auch nur ein Mensch ein
+   eigenes Werkzeug ein (`tool_enabled`); seitdem sind die Werkzeuge immer da, und wer sie nutzt, regeln die Rechte
+   (Fußnote 22). Aus demselben
    Grund wie bei „Save as…“ setzen nur Menschen den **Ablage-Ordner** (`pdf_folder`) und das **Logo** einer
    Vorlage (`pdf_template`): Beides sind Pfade, das Logo liest eine Datei in eine PDF, und ein Ordner in einem
    synchronisierten Verzeichnis brächte Inhalte ohne Sende-Freigabe vom Rechner. Der Dienst vergleicht mit dem
@@ -1446,12 +1451,24 @@ MCP-Tool dafür: Agenten ändern nie Rechte („Was nie nach außen geht“, Pun
   allen Auswahlen (M2.7b); wird dieselbe Adresse später neu verbunden, bekommt kein Agent seinen
   Zugriff von selbst zurück.
 - **Je MCP-Server eine Stufe** (Issue #302, Fußnote ²⁵): `Rights::extensions` (Kennung des Servers → Kein Zugriff ·
-  Lesen · Lesen und Schreiben · Voll; fehlt sie, kein Zugriff). Sie deckt die Werkzeuge des Servers nach ihrem
-  Zugriff ab; was auf Freigabe wartet, entscheidet allein dieser Zugriff, nicht „Nach außen“ (Fußnote ²⁵). Keine
-  Vorlage öffnet einen Server, auch *Full access* nicht (wie Assistent und Bots), und auch die
-  Stufe im Bereich `extensions` nicht. Ein einzelnes Werkzeug lässt sich sperren: `ext.<id>.<werkzeug>` in
-  `Rights::denied`. Wird ein Server entfernt, fällt er mit seinen gesperrten Werkzeugen aus den Rechten aller
-  Clients.
+  Lesen · Lesen und Schreiben · Voll). Fehlt der Eintrag, gilt die **Grundstufe** `Rights::extensionsDefault` (#666,
+  optional; fehlt auch sie, kein Zugriff); ein Eintrag „Kein Zugriff“ sperrt einen Server auch bei offener
+  Grundstufe. Die Stufe deckt die Werkzeuge des Servers nach ihrem Zugriff ab; was auf Freigabe wartet, entscheidet
+  allein dieser Zugriff, nicht „Nach außen“ (Fußnote ²⁵). Keine Vorlage öffnet einen Server, auch *Full access*
+  nicht, und auch die Stufe im Bereich `extensions` nicht. Nur Assistent und Bots starten offen (`Rights::opened`:
+  Grundstufe Voll, alle eingebauten Werkzeuge, Bereich `tools` Voll, ein vorhandener Admin-Schalter bleibt; seit #666 die Startrechte von
+  `Rights::assistant()` und jedem Bot, den der Mensch anlegt (einer, den ein Client anlegt, startet geschlossen,
+  `close_extensions`); Rechte von Assistent und Bots ohne Grundstufe öffnet der Kern einmal,
+  beim Laden, beim Anlegen (auch mit einer Vorlage) und bei `clients.update_client` (`Rights::opened_once`); dabei
+  ersetzt `opened` auch eine engere
+  Auswahl der Werkzeuge und den Bereich `tools`, gewollt nach Entscheidung 3 von #666: Wer weniger will, schaltet es
+  danach unter „Used by the assistant“ aus, und das bleibt). Keys von
+  API- und MCP-Clients behalten keine Grundstufe (`Rights::for_kind`); ein Server öffnet sich für sie nur mit Namen.
+  Ein geliehener Schlüssel ohne `extensions`, eine Freigabe, die einengt, und ein Gespräch, das den Bereich
+  abschaltet, schließen alle Server (`close_extensions`: Liste leer, Grundstufe Kein Zugriff). Der Nur-Lese-Modus
+  deckelt die Grundstufe auf Lesen, eine Schnittmenge (`Rights::common`) nimmt je Server und für die Grundstufe die
+  niedrigere. Ein einzelnes Werkzeug lässt sich sperren: `ext.<id>.<werkzeug>` in `Rights::denied`. Wird ein Server
+  entfernt, fällt er mit seinen gesperrten Werkzeugen aus den Rechten aller Clients.
 - **Freigabe vorher**: Nie · Beim Löschen (Standard) · Bei jeder Änderung.
 - **Nach außen** (Mail senden, M2.1): Nie · Mit Freigabe (Standard, in allen Vorlagen) · Frei. Senden ist kein
   gewöhnliches Schreiben: Es verlässt den Rechner und lässt sich nicht zurückholen. Es gilt die strengere
@@ -1461,7 +1478,7 @@ MCP-Tool dafür: Agenten ändern nie Rechte („Was nie nach außen geht“, Pun
 
 ### Prüfung im Dienst
 
-Für jede Anfrage: Schlüssel → Client → Weg und Schalter passen (#231, siehe „Transport“) →
+Für jede Anfrage: Schlüssel → Client → Weg passt (#231, siehe „Transport“; die Schalter entfielen mit #665) →
 `Request::operation()` → Stufe im Bereich reicht und Befehl nicht gesperrt? → Sammlung freigegeben? →
 Freigabe nötig? → ausführen → protokollieren. Rechte werden bei der
 Ausführung einer Freigabe **noch einmal** geprüft.
@@ -1564,19 +1581,18 @@ Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](a
   Angabe `api` (verträglich, ältere Programme schicken es nicht). `torroworkplace mcp`
   und der Hook-Befehl `torroworkplace hook` (er gehört zur Anbindung eines Agenten und nimmt ohne Schlüsseldatei
   `TORRO_TOKEN`, das ein Agent-Key sein kann) setzen `mcp`, alle anderen setzen nichts. Der Kern prüft direkt nach dem Schlüssel, vor den Rechten (auch bei `ping` mit Schlüssel und noch
-  einmal, bevor eine Freigabe ausgeführt wird), ob Art, Weg und Schalter passen:
-  - Art `script`: nur über `api` und nur mit „Allow API keys“ (Einstellung `allow_api_keys`, Standard an).
+  einmal, bevor eine Freigabe ausgeführt wird), ob Art und Weg passen (`clients::closed_door`). Die Schalter „Allow
+  API keys“ und „Allow MCP“ (`allow_api_keys`, `allow_mcp`) davor sind mit #665 entfallen:
+  - Art `script`: nur über `api`.
   - MCP-Clients (`claude-code`, `codex`, `gemini`, `claude-desktop`, `cursor`, `opencode`, `open-webui`, `zed`,
-    `cline`, `continue`, `cherry-studio`, `librechat`, `mcp`): nur über `mcp` und nur
-    mit „Allow MCP“ (`allow_mcp`, Standard an).
-  - Art `hook`: über beide Wege, nur mit „Allow MCP“, weil er zu einem Agenten gehört.
-  - Die Arten `assistant` und `bot` (nur sie bekommen geliehene Schlüssel): mit einem geliehenen Schlüssel an keinen
-    Schalter gebunden. Ihr eigener, gespeicherter Schlüssel wird nicht mehr herausgegeben; kommt doch einer (aus
-    einer früheren Version, in der ein Agent ihn in `TORRO_TOKEN` trug), gilt er wie der eines MCP-Clients.
+    `cline`, `continue`, `cherry-studio`, `librechat`, `mcp`): nur über `mcp`.
+  - Art `hook`: über beide Wege, weil er zu einem Agenten gehört.
+  - Die Arten `assistant` und `bot` (nur sie bekommen geliehene Schlüssel): mit einem geliehenen Schlüssel über beide
+    Wege. Ihr eigener, gespeicherter Schlüssel wird nicht mehr herausgegeben; kommt doch einer (aus einer früheren
+    Version, in der ein Agent ihn in `TORRO_TOKEN` trug), gilt er wie der eines MCP-Clients.
   - Jede andere Art (etwa aus einer älteren `clients.json`): wie `script`. `clients.create_client` nimmt nur die
     genannten Arten an.
-  - Passt es nicht: `unauthorized` mit einem Satz, der sagt, was in Torro Workplace aus ist bzw. welcher Weg
-    erwartet wird. Kein Eintrag in eine Freigabe; das Protokoll vermerkt Client, Befehl und `unauthorized`.
+  - Passt es nicht: `unauthorized` mit einem Satz, der sagt, welcher Weg erwartet wird. Kein Eintrag in eine Freigabe; das Protokoll vermerkt Client, Befehl und `unauthorized`.
   - `via` ist eine Angabe des Programms, keine Prüfung (siehe „Was der Schlüssel schützt“): Sie verhindert
     Fehlbedienung, nicht bösartigen Code unter demselben Benutzer.
 - **Später, abschaltbar:** HTTP auf `127.0.0.1` (Standard aus, Port in den Einstellungen), dieselben
@@ -1622,19 +1638,34 @@ Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](a
   wählen (`true`), wie die Oberfläche; vorher war es `false`. Wer die KI heraushalten will, gibt `model: false` an. Das
   Feld bleibt optional, `v` ändert sich nicht. Folge: In einer Gruppe, die der KI schon 20 Kategorien anbietet, endet ein
   Aufruf ohne `model`, der bisher durchging, mit `error`; mit `model: false` geht er weiter durch.
+- **Ausnahme Schalter und Datenregel (Issues #664, #665, #666):** Entfernt sind, **ohne** `v: 2`, wie bei Issue #339:
+  die Schlüssel `mail_to_cloud`, `decide_mail_to_cloud`, `allow_api_keys`, `allow_mcp` und `tool_enabled` von
+  `settings.set_setting`; die Felder `mailToCloud`, `decideMailToCloud`, `allowApiKeys`, `allowMcp` und
+  `tools.enabled` der Einstellungen (`settings.get_settings`, `settings.update_settings`); das Feld `mail_to_cloud`
+  der Plätze in `ai.list_assignments`, `enabled` der Werkzeuge in `tools.list_tools` sowie `withheld` und `tools_on`
+  von `assistant.my_access`; die Gründe `never_to_agents` und `tool_off` in `lack`. Grund: Die Datenregel, die
+  Schalter für API und MCP und die Werkzeug-Schalter gibt es nicht mehr ([ki.md](ki.md), Grundsatz 4;
+  [settings.md](settings.md), „Die Regel“). Ein Dienst, der sie weiter annähme, müsste eine Sperre vortäuschen, die
+  nichts mehr sperrt. Folgen: `settings.set_setting` mit einem alten Schlüssel ergibt `error`, über MCP lehnt
+  `settings_set_setting` ihn als unbekannten Wert ab. Ein altes Feld in `settings.update_settings` bleibt ohne Wirkung.
+  Alte Einstellungsdateien laden weiter; die alten Felder werden ignoriert und nicht mehr geschrieben. Neu und optional sind `aiSlotsTaken` in den Einstellungen (die alten
+  KI-Felder wurden einmal übernommen) und `extensionsDefault` in den Rechten (Grundstufe für MCP-Server ohne
+  Eintrag, Fußnote ²⁵). Die Antworten `not-connected` wegen der Datenregel (Chat zu einer Mail,
+  `assistant.check_about`, Vorschläge, Sortieren, Workflows) entfallen.
 - MCP-Toolnamen sind stabil wie API-Namen. Im MCP wird `pending` nach 60 Sekunden Warten als
   Tool-Fehler mit Code `pending` und der Kennung der Freigabe gemeldet (siehe „Freigaben“).
 
-## Steuerzentrale: Abschnitte „API“ und „MCP clients“
+## Steuerzentrale: Abschnitte „API clients“ und „MCP clients“
 
 Seit #231; ersetzt den Abschnitt „Agents & API“ (vorher „AI & agents“). Aufbau und Gründe:
 [settings.md › Accounts, API und MCP](settings.md#accounts-api-und-mcp-231). Der eigene Assistent und seine
-Bots stehen nicht hier, sondern im Assistent-Fenster unter Access.
+Bots stehen nicht hier, sondern im Assistent-Fenster unter Access und „API and MCP“ (#666). Bis #665 hieß „API
+clients“ nur „API“, und beide Abschnitte hatten einen Schalter („Allow API keys“, „Allow MCP“).
 
-- **API:** Schalter „Allow API keys“; Liste der Keys (Name, Rechte in Worten, „zuletzt benutzt vor …“, Status
-  nur bei Abweichung); „Create key“ fragt Name und Vorlage und zeigt den Key einmal zum Kopieren.
-- **MCP:** Schalter „Allow MCP“ mit der Befehlszeile zum Kopieren; Liste der verbundenen Clients (Name, Art,
-  Rechte in Worten, zuletzt benutzt); Hook-Clients erscheinen nicht als eigene Zeile.
+- **API clients:** Liste der Keys (Name, Rechte in Worten, „zuletzt benutzt vor …“, Status nur bei Abweichung);
+  „Create key“ fragt Name und Vorlage und zeigt den Key einmal zum Kopieren.
+- **MCP clients:** die Befehlszeile zum Kopieren; Liste der verbundenen Clients (Name, Art, Rechte in Worten,
+  zuletzt benutzt); Hook-Clients erscheinen nicht als eigene Zeile.
 - **„Connect client“** (MCP) öffnet einen Assistenten:
   1. **Welcher Client:** Liste der bekannten Clients; erkannt, welche installiert sind; dazu „Other MCP
      client“ (Art `mcp`, Key einmal zum Kopieren samt Befehlszeile).
@@ -1654,7 +1685,7 @@ Bots stehen nicht hier, sondern im Assistent-Fenster unter Access.
      wieder heraus, aber nur, was der Assistent selbst eingetragen hat (`client_setup.json`).
   4. **Fertig:** „Restart Claude Code to use Torro Workplace.“
 - **Detailseite eines Keys bzw. Clients**: der gemeinsame Rechte-Editor (Stufe je Bereich, aufgeklappt ein
-  Schalter je Befehl: unter API mit dem Endpunkt-Namen, unter MCP clients mit dem Tool-Namen), Sammlungen, Freigabe
+  Schalter je Befehl: unter API clients mit dem Endpunkt-Namen, unter MCP clients mit dem Tool-Namen), Sammlungen, Freigabe
   vorher, letzte Aktionen, „Create new key“ (alter wird ungültig), „Revoke…“ (API) bzw. „Disconnect…“ (MCP;
   bestätigt; entfernt den Schlüssel aus dem Client, wenn möglich). Unter MCP zusätzlich die Gruppe „Notification
   Hub“: Schalter „Report when waiting or done“ legt den Hook-Client an und schreibt die Hooks bzw. nimmt beides
@@ -1707,6 +1738,7 @@ Getroffen am 2026-10-19 (#231):
 10. **Sperrliste je Befehl** (`Rights::denied`) unter der Stufe statt Schalter allein. Kein neuer Befehl:
     Sie reist mit `clients.update_client` in den ganzen Rechten.
 11. **Weg im Umschlag** (`via`) und die Schalter `allow_api_keys`, `allow_mcp`; einschalten nur Menschen.
+    **Überholt durch #665** für die Schalter: Sie sind entfallen, der Weg im Umschlag bleibt.
 12. **Rechte von Assistent und Bots im Assistent-Fenster**; der Kern gibt für die Arten `assistant` und `bot`
     keinen Schlüssel heraus (`clients.create_client` antwortet für `assistant` ohne Key, `clients.new_key` ist für
     beide `unsupported`), damit kein Schlüssel in einen App-Prozess gelangt.

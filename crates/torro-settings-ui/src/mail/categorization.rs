@@ -639,10 +639,10 @@ fn account_label(data: &Data, id: &str) -> String {
         .unwrap_or_else(|| id.trim_start_matches("mail:").to_string())
 }
 
-/// Whether a model sorts mail now (PR review of #463): one is in effect, on, and not waiting for the
-/// consent that mail leaves this computer. Else a run cannot apply it.
+/// Whether a model sorts mail now (PR review of #463): one is in effect and on. Else a run cannot
+/// apply it.
 fn model_sorts(data: &Data) -> bool {
-    assigned_off(data).is_none() && matches!(chosen(data), Chosen::Here(_) | Chosen::Cloud { waiting: false, .. })
+    assigned_off(data).is_none() && matches!(chosen(data), Chosen::Here(_) | Chosen::Cloud { .. })
 }
 
 /// Where the model that sorts stands, as the page says it.
@@ -652,8 +652,8 @@ enum Chosen {
     Off,
     /// `name` on this computer.
     Here(String),
-    /// `name` in the cloud; `waiting` without the consent, so the core sorts nothing with it yet.
-    Cloud { name: String, provider: String, waiting: bool },
+    /// `name` in the cloud, at `provider`.
+    Cloud { name: String, provider: String },
 }
 
 /// The model in effect as the page names it.
@@ -671,11 +671,7 @@ fn chosen(data: &Data) -> Chosen {
         (None, None) => account_label(data, &engine),
     };
     match elsewhere(data, &engine, held.model.as_deref()) {
-        true => Chosen::Cloud {
-            name,
-            provider: account_label(data, &engine),
-            waiting: !data.settings.mail_to_cloud_in(AiSlot::Decide),
-        },
+        true => Chosen::Cloud { name, provider: account_label(data, &engine) },
         false => Chosen::Here(name),
     }
 }
@@ -922,7 +918,6 @@ fn ai_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
             "The model runs on this computer. No mail leaves it; nothing is moved or deleted, and you can change any category by hand.",
         )
         .to_string(),
-        Chosen::Cloud { waiting: true, .. } => tr("Waiting for your OK – mail stays on this computer until you choose the model again.").to_string(),
         Chosen::Cloud { provider, .. } => trf(
             "The model reads your mail at {provider}. Nothing is moved or deleted, and you can change any category by hand.",
             &[("provider", provider)],
@@ -1480,7 +1475,7 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
 pub fn scene(name: &str) -> Option<Vec<Message>> {
     Some(match name {
         "ai" => vec![Message::Tab(1)],
-        "waiting" => vec![Message::Tab(1)],
+        "network" => vec![Message::Tab(1)],
         "categories" => Vec::new(),
         "category" => vec![Message::Editor(editor::Message::EditCategory(Category::Invoice))],
         // Issue #506: the page of Phishing with its trusted senders.
@@ -1579,7 +1574,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_mail_demos_offer_network_models_and_show_waiting() {
+    async fn the_mail_demos_offer_network_models_and_say_where_they_run() {
         let data = demo().await;
         let engine = crate::accounts::demo::DEMO_NETWORK;
         let (_, _, elsewhere) = grouped(&data);
@@ -1588,13 +1583,13 @@ mod tests {
         assert!(scene("model").is_none() && scene("consent").is_none());
 
         let backend: Arc<dyn crate::Backend> = Arc::new(crate::demo::Demo::with_network_sorting());
-        let waiting = crate::load(backend, super::super::wanted()).await;
-        assert!(waiting.error.is_none(), "{:?}", waiting.error);
-        assert!(matches!(chosen(&waiting), Chosen::Cloud { waiting: true, .. }));
-        assert!(!waiting.settings.mail_to_cloud_in(AiSlot::Decide));
+        let network = crate::load(backend, super::super::wanted()).await;
+        assert!(network.error.is_none(), "{:?}", network.error);
+        // Issue #664: a model elsewhere sorts without a further OK.
+        assert!(matches!(chosen(&network), Chosen::Cloud { .. }) && model_sorts(&network));
         let mut state = State::default();
-        let _ = update::<()>(&mut state, Message::Tab(1), &waiting);
-        let _ = view(&state, &waiting);
+        let _ = update::<()>(&mut state, Message::Tab(1), &network);
+        let _ = view(&state, &network);
     }
 
     /// Issue #545: "Sort with model" names the model and leads to Settings › AI, where it is chosen;
@@ -1814,15 +1809,13 @@ mod tests {
         let answer = CategoryJobPreview { eligible: 3, request_scope: Some(newer), ..CategoryJobPreview::default() };
         answered(&mut state, &Ok(Response::CategoryJobPreview { preview: answer }));
         assert!(state.preview.is_some() && state.preview_error.is_none());
-        // A model in the cloud that waits for the consent is not applied.
-        let mut waiting = data.clone();
-        waiting.settings.ai_slots.decide = Some(torro_core::ai::SlotModel {
+        // Issue #664: a model in the cloud sorts like one here, without a further OK.
+        let mut cloud = data.clone();
+        cloud.settings.ai_slots.decide = Some(torro_core::ai::SlotModel {
             engine: "ai:openrouter@openrouter.ai".into(),
             model: Some("qwen".into()),
             effort: None,
         });
-        assert!(!model_sorts(&waiting));
-        let _ = update::<()>(&mut state, Message::OpenSort { rules_only: false }, &waiting);
-        assert!(state.sort.as_ref().is_some_and(|form| !form.model));
+        assert!(model_sorts(&cloud));
     }
 }

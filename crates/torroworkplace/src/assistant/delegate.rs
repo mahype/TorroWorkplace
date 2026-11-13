@@ -16,12 +16,9 @@
 //!   `bots.ask_bot` with "Asked {bot} · {n} steps" and the bot's conversation as `conversation` in
 //!   its input ([`with_conversation`]), so a window can open it; the model reads the bot's answer
 //!   ([`Asked::for_model`]).
-//! - **Data rule**: a conversation whose model read mail asks no bot whose model runs elsewhere (the
-//!   message could carry the mail; the model the bot really answers with, its "Automatic" resolved
-//!   as for any answer, task S.23, and a model turned off replaced by one of the same account that is
-//!   on, task S.24, both by [`super::Host::model`]); when the bot read mail, its answer is withheld from a model
-//!   elsewhere; when it read data from outside the suite, its answer is marked so, and the
-//!   assistant's conversation counts as having read it (notes then wait for a person, task C.11).
+//! - **Data from outside**: no data rule holds a bot back or withholds its answer (issue #664); when
+//!   the bot read data from outside the suite, its answer is marked so, and the assistant's
+//!   conversation counts as having read it (notes then wait for a person, task C.11).
 //! - **Stopping** the assistant's answer stops the bots it asked (`assistant.cancel`).
 //! - **No chains**: a bot's client never sends a `bots` or `assistant` command
 //!   (`torro_ipc::api::loops_back`), and a bot's conversation never asks one.
@@ -33,11 +30,10 @@ use chrono::Utc;
 use serde_json::{Value, json};
 use torro_core::i18n::trf;
 use torro_ipc::api::Area;
-use torro_ipc::assistant::{EngineKind, Entry, EntryContent};
+use torro_ipc::assistant::{Entry, EntryContent};
 use torro_ipc::bots::Bot;
 use torro_ipc::{Request, Response};
 
-use super::data_rule::{self, DataRule, Place, Reader, WITHHELD};
 use super::model::{Actor, Delegation};
 use super::{Assistant, Message, bot_refusal, failure, tools, unknown};
 use crate::account::ai::AiAccounts;
@@ -95,14 +91,14 @@ impl Assistant {
     /// B.2, [`Asking`]), with the areas switched off there (and for an agent's lent key what it was
     /// lent without) taken out. Checks that the person asked for the bot ([`Assistant::may_ask`]),
     /// runs it as [`Actor::Delegated`] in its conversation for the assistant's (new on the first
-    /// ask) and waits until the run is done. A conversation that read mail asks no bot whose model
-    /// runs elsewhere (`forbidden`, the data rule). Answers [`Response::Conversation`]
+    /// ask) and waits until the run is done; issue #664: also after mail, a bot whose model runs
+    /// elsewhere included. Answers [`Response::Conversation`]
     /// with the bot's conversation and the entries of this run, or the error answer: `forbidden`
     /// when the person did not ask, `not-found` for an unknown bot, `error` for a `conversation`
     /// other than the one kept for `main`, and what [`Assistant::refusal`] refuses (`busy`, an engine
     /// that does not answer). The core calls it after it checked the assistant's client.
     pub async fn delegate(self: &Arc<Self>, ai: &AiAccounts, from: &Asking<'_>, request: Request) -> Response {
-        let Asking { conversation: main, assistant, without, read_mail, mode } = *from;
+        let Asking { conversation: main, assistant, without, mode } = *from;
         if let Some(refused) = torro_ipc::bots::limit_refusal(&request) {
             return refused;
         }
@@ -130,21 +126,7 @@ impl Assistant {
             Ok(kind) => kind,
             Err(refused) => return refused,
         };
-        // The data rule: what the assistant's model read may be in the message, and what the rule
-        // keeps home stays on the person's computers (`read_mail` is what it keeps, task C.17).
-        let mut model = bot.model.clone();
-        if read_mail {
-            let (place, checked) = self.place_of(kind, &bot.engine, bot.model.as_deref()).await;
-            if place == Place::Remote {
-                return forbidden(
-                    "this conversation read what the person's data rule keeps from models outside this computer \
-                     (mail unless the person let it out, or messages in the inbox), and the bot answers with such a \
-                     model; do not ask it now, tell the person instead",
-                );
-            }
-            // The model checked answers, not one "Automatic" might pick anew (task S.23).
-            model = checked.or(model);
-        }
+        let model = bot.model.clone();
         // Last, as it uses up a confirmation: nothing else refuses the ask after this.
         if let Err(refused) = self.may_ask(main, &bot).await {
             return refused;
@@ -173,24 +155,6 @@ impl Assistant {
         self.get(&id, Some(before)).await
     }
 
-    /// Where the model `model` of `engine` (driven as `kind`) runs, for the data rule: the test
-    /// engine here, an agent elsewhere, an AI account where the core says for that model (task
-    /// S.23; for `None` the model "Automatic" picks) – elsewhere when it cannot tell. With the
-    /// model of the AI account that was judged, so the bot answers with that one.
-    async fn place_of(&self, kind: EngineKind, engine: &str, model: Option<&str>) -> (Place, Option<String>) {
-        match kind {
-            EngineKind::Test => (Place::Local, None),
-            EngineKind::Agent => (Place::Remote, None),
-            EngineKind::Ai => match self.host() {
-                Some(host) => host
-                    .model(engine, model)
-                    .await
-                    .map_or((Place::Remote, None), |access| (access.place, Some(access.model))),
-                None => (Place::Remote, None),
-            },
-        }
-    }
-
     /// The bot's conversation kept for the assistant's conversation `main` and `bot`, while it is
     /// still there.
     async fn kept_for(&self, main: &str, bot: &str) -> Option<String> {
@@ -210,9 +174,6 @@ pub struct Asking<'a> {
     /// The areas switched off there (and for an agent's lent key those it was lent without): the
     /// bot runs without them.
     pub without: &'a [Area],
-    /// The assistant's model read mail in this conversation: a bot whose model runs elsewhere is
-    /// not asked (the data rule).
-    pub read_mail: bool,
     /// The permission mode of the assistant's answer (issue #132): the bot runs in it as well.
     pub mode: torro_ipc::assistant::Mode,
 }
@@ -230,11 +191,6 @@ pub struct Asked {
     pub error: Option<String>,
     /// Its message for people.
     message: Option<String>,
-    /// A tool of the run read mail ([`data_rule::reads_mail`]): the answer may retell it.
-    pub read_mail: bool,
-    /// A tool of the run read the inbox or asked a bot: the answer may retell entries of Nextcloud
-    /// or Talk, which stay home even with mail let out (task C.17, [`Asked::kept`]).
-    pub read_messages: bool,
     /// A tool of the run may have read data from outside the suite ([`tools::may_have_read_untrusted`]).
     pub untrusted: bool,
 }
@@ -254,8 +210,6 @@ impl Asked {
             answer: None,
             error: None,
             message: None,
-            read_mail: false,
-            read_messages: false,
             untrusted: false,
         };
         let mut answers = Vec::new();
@@ -265,8 +219,6 @@ impl Asked {
                     asked.steps += 1;
                     // What failed read nothing.
                     if error.is_none() {
-                        asked.read_mail |= data_rule::reads_mail(name);
-                        asked.read_messages |= data_rule::kept_from(name, DataRule { mail_to_cloud: true });
                         asked.untrusted |= tools::may_have_read_untrusted(name);
                     }
                 }
@@ -291,29 +243,17 @@ impl Asked {
         }
     }
 
-    /// Whether the run read what `rule` keeps from models elsewhere: mail unless it is let out, the
-    /// inbox and other bots always.
-    pub fn kept(&self, rule: DataRule) -> bool {
-        self.read_messages || (self.read_mail && !rule.mail_to_cloud)
-    }
-
-    /// What the assistant's model read as `reader` reads: the bot's conversation, its steps and its
-    /// answer (or why it ended), shortened. A model elsewhere reads [`WITHHELD`] for an answer after
-    /// what the rule keeps home ([`Asked::kept`]); an answer after data from outside the suite is
-    /// marked so.
-    pub fn for_model(&self, reader: impl Into<Reader>) -> String {
-        let reader = reader.into();
+    /// What the assistant's model reads: the bot's conversation, its steps and its answer (or why it
+    /// ended), shortened. An answer after data from outside the suite is marked so.
+    pub fn for_model(&self) -> String {
         let mut value = json!({"result": "bot-answer", "conversation": self.conversation, "steps": self.steps});
-        let withheld = reader.place == Place::Remote && self.kept(reader.rule);
-        if withheld {
-            value["answer"] = json!(WITHHELD);
-        } else if let Some(answer) = &self.answer {
+        if let Some(answer) = &self.answer {
             value["answer"] = json!(answer);
         }
         if let Some(code) = &self.error {
             value["error"] = json!({"code": code, "message": self.message.clone().unwrap_or_default()});
         }
-        if self.untrusted && !withheld {
+        if self.untrusted {
             value = json!({"untrusted": true, "note": tools::UNTRUSTED_NOTE, "data": value});
         }
         tools::shorten(value).to_string()

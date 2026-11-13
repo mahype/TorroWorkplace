@@ -120,8 +120,8 @@ pub struct Demo {
 }
 
 impl Demo {
-    /// A saved LAN sorting choice with mail permission off (#359): the Mail AI page must show
-    /// Waiting rather than imply that a server on another device is local. Demo data only.
+    /// A saved LAN sorting choice (#359): the Mail AI page says that a server on another device reads
+    /// the mail rather than imply that it is local. Demo data only.
     pub fn with_network_sorting() -> Demo {
         let mut demo = Demo::new();
         demo.settings.ai_slots.decide = Some(AssistantDefault {
@@ -129,7 +129,6 @@ impl Demo {
             model: Some("nimble:latest".into()),
             effort: None,
         });
-        demo.settings.decide_mail_to_cloud = Some(false);
         demo
     }
 
@@ -142,10 +141,8 @@ impl Demo {
     /// A demo with the sample settings: dark, so the first look shows the suite's own look.
     pub fn new() -> Demo {
         let mut reminders = Reminders::default();
-        // The PDF tool on (task WZ.6), so Access offers it without the mark of a tool switched off.
-        // Its folder and templates are set in the control centre since task MA.7.
-        let mut tools = Tools::default();
-        tools.set_on(ToolId::Pdf, true);
+        // The PDF tool's folder and templates are set in the control centre since task MA.7.
+        let tools = Tools::default();
         reminders.calendars.insert(WORK_CALENDAR.into(), CalendarReminders::FullScreen);
         let settings = Settings {
             appearance: Appearance::Dark,
@@ -211,7 +208,8 @@ impl Demo {
     /// off, so the rights editor shows what that looks like (task S.33), and reading the MCP server
     /// "Time" with one of its tools switched off (task MA.10, [`Demo::extensions`]); and the clients of the
     /// sample bots ([`Demo::bots`]): the travel planner reads two calendars, so Access has a bot to
-    /// open (task S.34), the release helper may use nothing; and a script's key and two MCP clients for
+    /// open (task S.34), the release helper only the tools and servers every bot starts with (issue
+    /// #666); and a script's key and two MCP clients for
     /// API and MCP of an app (issue #531). The demo only pretends to switch or change them.
     fn clients(&self) -> Vec<ClientInfo> {
         let created = Utc.with_ymd_and_hms(2026, 10, 1, 9, 0, 0).single().unwrap_or_else(Utc::now);
@@ -224,7 +222,7 @@ impl Demo {
             rights,
             agent: None,
         };
-        let mut travel = Rights::none();
+        let mut travel = Rights::none().opened();
         travel.areas.insert(Area::Calendar, AreaRights { level: Level::Read, admin: false });
         travel.calendars = match self.pim_sample {
             true => Selection::Only(["Work", "Family"].into_iter().filter_map(pim_id).collect()),
@@ -246,7 +244,7 @@ impl Demo {
                 },
             ),
             client("c0000001", tr("Travel planner"), BOT_CLIENT, travel),
-            client("c0000002", tr("Release helper"), BOT_CLIENT, Rights::none()),
+            client("c0000002", tr("Release helper"), BOT_CLIENT, Rights::none().opened()),
             // For Settings › API and MCP of an app (issue #531): a script's key that reads two
             // calendars, an MCP client that writes in every app, one that may do nothing yet.
             client("d0000001", "backup-script", SCRIPT_CLIENT, backup),
@@ -723,7 +721,7 @@ impl Demo {
     }
 
     /// The sample bots of the assistant's demo (`torroassistant::demo`), so Access lists what its
-    /// sidebar does: "Release helper", which may use nothing yet, and "Travel planner".
+    /// sidebar does: "Release helper", which may use no data yet, and "Travel planner".
     fn bots(&self) -> Vec<BotSummary> {
         let release = BotSummary {
             id: "b0000002".into(),
@@ -748,9 +746,8 @@ impl Demo {
         ]
     }
 
-    /// The assistant's own tools as `tools.list_tools` lists them for the app key: switched on as the
-    /// settings say, `allowed` always (the app key may use every tool). The assistant's client has
-    /// no access to `tools` ([`Rights::assistant`]), so Access shows the tool not chosen.
+    /// The assistant's own tools as `tools.list_tools` lists them for the app key: `allowed` always
+    /// (the app key may use every tool).
     fn tools(&self) -> Vec<ToolInfo> {
         ToolId::ALL
             .into_iter()
@@ -769,7 +766,6 @@ impl Demo {
                                        you switch on.")
                     .to_string(),
                 },
-                enabled: self.settings.tools.is_on(id),
                 allowed: true,
             })
             .collect()
@@ -930,7 +926,6 @@ impl Demo {
                 slot,
                 label: slot.label().to_string(),
                 chosen: self.settings.ai_slots.get(slot).cloned(),
-                mail_to_cloud: self.settings.mail_to_cloud_in(slot),
             })
             .collect()
     }

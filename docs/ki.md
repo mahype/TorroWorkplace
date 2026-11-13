@@ -1,17 +1,18 @@
 # KI in der Suite: Konten, Modelle, Zuordnung
 
-Stand: 2026-10-27. **Diskussionsgrundlage.** Entstanden aus den Entscheidungen 8 und 9 in
-[eingang.md](eingang.md). Ergänzt den Eintrag „KI-Anbieter“ in [settings.md](settings.md).
+Stand: 2026-11-13 (#664: keine Datenregel mehr, Modellwahl nur in den Apps). **Diskussionsgrundlage.**
+Entstanden aus den Entscheidungen 8 und 9 in [eingang.md](eingang.md). Ergänzt den Eintrag „KI-Anbieter“ in
+[settings.md](settings.md).
 
 ## Zwei verschiedene Richtungen
 
 Bisher kommt KI in der Suite nur von außen: **Agenten rufen die Suite** über MCP (Claude Code,
-Codex …), Rechte in Steuerzentrale › MCP ([api.md](api.md), seit #231). Neu ist die umgekehrte Richtung:
+Codex …), Rechte in Steuerzentrale › MCP clients ([api.md](api.md), seit #231). Neu ist die umgekehrte Richtung:
 
 | Richtung | Wer ruft wen | Wo eingestellt | Beispiel |
 |---|---|---|---|
-| **Agenten** | ein Agent ruft die Suite | Steuerzentrale › MCP (Skripte: › API) | Claude Code liest den Eingang |
-| **KI-Konten** (neu) | die Suite ruft ein Modell | Steuerzentrale › AI (Anbieter einrichten; auf der Kontoseite Modelle an/aus, seit #231); welches Modell wofür: in den Einstellungen des Moduls | Der Eingang lässt eine Spur vorschlagen |
+| **Agenten** | ein Agent ruft die Suite | Steuerzentrale › MCP clients (Skripte: › API clients) | Claude Code liest den Eingang |
+| **KI-Konten** (neu) | die Suite ruft ein Modell | Steuerzentrale › AI (Anbieter einrichten; auf der Kontoseite Modelle an/aus, seit #231); welches Modell wofür: nur in der App, die es nutzt (seit #664) | Der Eingang lässt eine Spur vorschlagen |
 
 Beides bleibt getrennt. Ein Agent bekommt nie Zugriff auf die KI-Konten der Suite, und die Suite
 benutzt nie den Schlüssel eines Agenten.
@@ -27,28 +28,30 @@ benutzt nie den Schlüssel eines Agenten.
    lokales Modell), eine Tageszusammenfassung eine größere. Darum wird ein Konto, ein Modell und ein
    Aufwand gewählt – seit #325 **je Platz** (Chat, Sortieren; Abschnitt „Plätze“). Eine Funktion kann
    davon eine eigene Zuordnung als Ausnahme haben.
-4. **Daten nur dahin, wo du es erlaubt hast.** Je Quelle des Eingangs lässt sich festlegen, dass ihre
-   Inhalte nur an **lokale** Modelle gehen (z. B. Mail und Messenger ja nur lokal, GitHub darf in die
-   Cloud). Standard für Mail: nur lokal. Bis die Regeln je Quelle kommen (KI.1), gibt es dafür je Platz
-   eine Erlaubnis (Aufgabe C.17 und #325, Abschnitt „Erlaubnis je Platz“): `mail_to_cloud` für Chat, ein
-   Schalter unter „Data rule“ in der Steuerzentrale › AI, und `decide_mail_to_cloud` für Sortieren, die die
-   Wahl eines Modells in der Cloud nach einer Rückfrage gibt (#424). Einschalten kann nur die Person selbst;
-   dann lesen auch Modelle außerhalb dieses Rechners Mail, soweit die Rechte sie geben. Für entfernte Modelle bleiben Einträge von Nextcloud und Talk weiter lokal.
-   Der Schalter hieß bis Issue #219 „Mail an Claude Code und Cloud-Modelle“; Agenten als Antrieb
-   (Antrieb B in [assistent.md](assistent.md)) werden nicht mehr angeboten, die Sperre gilt aber
-   weiter für jeden Agenten-Antrieb, falls einer zurückkommt.
-   Die Regel gilt ab der nächsten Antwort; eine laufende Antwort behält, was beim Start galt.
+4. **Was ein Modell liest, folgt aus den Rechten und dem gewählten Modell** (seit #664). Es gibt keine Datenregel,
+   die still etwas zurückhält: Ein Modell bekommt, was die Rechte des Clients geben, für den es arbeitet (Assistent,
+   Bot, die Funktion eines Moduls), und rechnet dort, wo das gewählte Modell rechnet. Wer Mail nicht außerhalb dieses
+   Rechners haben will, wählt in der App ein Modell hier oder gibt das Recht nicht. Wo ein Modell rechnet, steht an
+   seiner Zeile (Wolke, Abschnitt „Elsewhere“).
+   **Überholt durch #664:** Bis dahin galt „Daten nur dahin, wo du es erlaubt hast“: Mail, Einträge von Nextcloud und
+   Talk, Notizen nach gelesener Mail (`local_only`) und Chat gingen nur an Modelle auf diesem Rechner, außer die Person
+   schaltete je Platz eine Erlaubnis ein (`mail_to_cloud` für Chat, Aufgabe C.17; `decide_mail_to_cloud` für
+   Sortieren, #325 und #424). Die Regeln je Quelle (KI.1) kommen nicht mehr.
+   **Eine Schutzregel bleibt:** Ein Modell, das außerhalb dieses Rechners rechnet, schaltet nur ein Mensch an
+   (`ai.set_model_enabled`), und nur ein Mensch wählt ein solches Modell fürs Sortieren (Abschnitt „Modell anderswo“).
+   Abschalten dürfen Agenten mit Freigabe ([api.md](api.md), Punkt 6 in „Was nie nach außen geht“). Modelle anderswo
+   sind nach dem Verbinden aus (Open First), so geht ohne Zutun nichts hinaus.
    **Lokal heißt: das Modell rechnet auf diesem Rechner über Loopback**, nicht auf einem anderen eigenen
    Gerät (#359, einschließlich Strata aus #334). Nur `localhost`, Namen unter `.localhost`, `127.0.0.0/8`
    und `::1` zählen als hier. LAN-Adressen wie `192.168.1.20`, öffentliche Adressen, andere Rechnernamen
    und eigene Nicht-Loopback-Adressen zählen als anderswo; eine fehlende Adresse ebenfalls. Es gibt keine
    DNS- oder Netzwerkkarten-Erkennung. Für Ollama und Strata muss das Modell außerdem `remote: false`
-    tragen, bei Ollama ohne Cloudnamen; LM Studio auf Loopback darf nicht `remote: true` melden.
-    Andere OpenAI-kompatible Programme brauchen positive Laufzeit-Metadaten (`remote: false`); Jan und
-    unbekannte Programme liefern sie nicht. `remote` beschreibt den Ort relativ zum Server, nicht zu diesem Rechner. Modelle
+   tragen, bei Ollama ohne Cloudnamen; LM Studio auf Loopback darf nicht `remote: true` melden.
+   Andere OpenAI-kompatible Programme brauchen positive Laufzeit-Metadaten (`remote: false`); Jan und
+   unbekannte Programme liefern sie nicht. `remote` beschreibt den Ort relativ zum Server, nicht zu diesem Rechner. Modelle
    von Ollama mit `:cloud` laufen über das lokale Ollama auf `ollama.com` und gelten als entfernt
    (`remote` in `ai.list_models`, Aufgabe S.23 in [tasks/steuerzentrale.md](tasks/steuerzentrale.md)).
-   Jede KI-Funktion bestimmt den Ort über Konto **und** Modell (`data_rule::place_of`), nachdem das
+   Jede KI-Funktion bestimmt den Ort über Konto **und** Modell (`torro_core::ai::place_of`), nachdem das
    Modell gewählt ist, auch bei „Automatic“.
 5. **Vorschlag, nie Urteil.** KI-Ergebnisse sind gekennzeichnet, das Original bleibt sichtbar,
    nichts wird von einer KI versteckt, gelöscht oder verschickt.
@@ -70,7 +73,7 @@ Modelle auf einem PC mit RTX- oder Radeon-Karte. Es ist ein Katalogeintrag, kein
 läuft auch der llama.cpp-Server und beide beantworten `/v1/models` gleich; die Suche erkennt Strata deshalb an
 `GET /health` (`"service": "strata"`, nicht hinter dem API-Schlüssel). Dessen Modell-Liste ist leer, solange
 kein Modell geladen ist. Strata sagt nicht, ob ein Modell Werkzeuge kann (`tools` bleibt unbekannt); seine Modelle
-rechnen auf diesem Rechner (`remote: false`) und unterliegen der Datenregel wie die von Ollama.
+rechnen auf diesem Rechner (`remote: false`) und zählen als hier wie die von Ollama.
 
 **Ollama Cloud** (#587) ist ein zusätzliches, unabhängiges Cloud-Konto (`ollama_cloud`,
 `ai:ollama_cloud@ollama.com`), kein Schalter am lokalen Ollama. In Konten und Erststart unter
@@ -85,7 +88,7 @@ ohne zusätzlichen `:cloud`-Suffix. Nur gemeldete Fähigkeiten werden übernomme
 und Dateigröße bleiben unbekannt. Chat/Tools/Streaming nutzen `/v1/chat/completions`, Entscheiden
 `/v1/systemone`; Cloud bekommt kein automatisch erzwungenes Abschalten des Denkens.
 Alle Modelle sind entfernt und zunächst aus, auch hinter einem Loopback-Proxy. Verbinden allein
-aktiviert kein Modell und keine Mailfreigabe. Lokales Ollama bleibt daneben unabhängig nutzbar.
+schaltet kein Modell an. Lokales Ollama bleibt daneben unabhängig nutzbar.
 Ollama kann für SystemOne einen bezahlten Tarif oder Guthaben verlangen.
 
 Quellen (08.11.2026): [Direktzugang](https://docs.ollama.com/api/openai-compatibility),
@@ -96,7 +99,7 @@ Quellen (08.11.2026): [Direktzugang](https://docs.ollama.com/api/openai-compatib
 **Jev** (Cloud · US, geschlossene Gewichte) schreibt keinen Text, es entscheidet nur: Es nimmt nur den Platz
 *Sortieren*, ein Chat damit wird mit einer Meldung abgelehnt. Eine Modell-Liste hat Jev nicht; der Kern kennt
 das eine Modell fest und prüft den Schlüssel beim Verbinden mit einer kleinen Probe-Entscheidung. Wie jedes
-Cloud-Modell ist es nach dem Verbinden aus und bekommt Mail nur mit der Erlaubnis des Platzes *Sortieren*.
+Cloud-Modell ist es nach dem Verbinden aus; anschalten und fürs Sortieren wählen kann es nur ein Mensch.
 Einzelheiten zu Preis und Schnittstelle: [kategorien.md](kategorien.md), „Das Protokoll“.
 
 Zwei Protokolle decken fast alles ab: **OpenAI-kompatibel** und **Anthropic**; zum Sortieren dazu
@@ -116,9 +119,9 @@ Modelle. Die Tabelle unten bleibt die Übersicht aller Funktionen; die Befehle `
 `ai.set_assignment` (Admin) stehen, gespeichert in `Settings::ai_assignments`. Es gibt vorerst **einen**
 Funktionsschlüssel, `inbox.categorize` (Mail einordnen, [kategorien.md](kategorien.md)); eine neue Funktion ist
 eine Variante in `torro_core::ai::AiFunction` und sonst nichts. `ai.set_assignment` prüft vor dem Speichern, dass
-das Konto besteht, das Modell anbietet, dass es entscheidet, wo die Funktion das braucht, und – solange
-`mail_to_cloud` aus ist – dass es auf diesem Rechner rechnet. Die Datenregel ist damit doppelt gesichert: beim
-Setzen und beim Aufruf.
+das Konto besteht, das Modell anbietet und dass es entscheidet, wo die Funktion das braucht. Bis #664 prüfte es
+außerdem, dass das Modell ohne `mail_to_cloud` auf diesem Rechner rechnet; heute setzt ein Modell anderswo nur ein
+Mensch (Abschnitt „Modell anderswo“).
 
 Ursprünglich geplant: Seite **„AI“** in der Steuerzentrale (erscheint erst mit einem KI-Konto). Eine Zeile je Funktion:
 
@@ -149,13 +152,15 @@ Modelle auf diesem Rechner; `ai.list_models` und `ai_list_models` liefern diesel
 Man wählt nicht mehr je Funktion ein Modell, sondern je **Platz** (`torro_core::ai::AiSlot`, Schlüssel `chat`
 und `decide`, in der Oberfläche „Chat“ und „Sorting“):
 
-| Platz | Wofür | Erlaubnis für Mail |
+| Platz | Wofür | Gewählt in |
 |---|---|---|
-| **Chat** (`chat`) | Assistent und Bots; ein neuer Chat beginnt mit dessen Modell | `mail_to_cloud` |
-| **Sortieren** (`decide`) | die kleinen Entscheidungen der Suite, heute das Einordnen der Mail (`inbox.categorize`, `AiFunction::slot()`), später weitere | `decide_mail_to_cloud` |
+| **Chat** (`chat`) | Assistent und Bots; ein neuer Chat beginnt mit dessen Modell | Assistent › General |
+| **Sortieren** (`decide`) | die kleinen Entscheidungen der Suite, heute das Einordnen der Mail (`inbox.categorize`, `AiFunction::slot()`), später weitere | Mail-Fenster › AI |
 
 - **Gespeichert** als `aiSlots` in den Einstellungen (je Platz `engine`, `model`, `effort`). Gesetzt wird ein
-  Platz mit `ai.set_slot` (Admin) oder in der Steuerzentrale › AI, Gruppe „Models“.
+  Platz mit `ai.set_slot` (Admin), in der App, die ihn nutzt, oder von der Einrichtung beim ersten Start. Die
+  Steuerzentrale › AI wählt seit #664 kein Modell mehr (vorher Gruppe „Models“ mit *Chat* und *Sorting*); sie
+  richtet nur Konten ein und schaltet Modelle an und ab.
 - **Zurückfallen:** Eine Funktion ohne eigene Zuordnung nimmt das Modell ihres Platzes. Eine eigene Zuordnung
   (`ai.set_assignment`) ist die **Ausnahme** und geht vor; sie bleibt unberührt, wenn sich der Platz ändert.
   Ist sie ausgeschaltet, sortiert die Funktion nicht; sie fällt dann nicht auf den Platz zurück.
@@ -163,10 +168,10 @@ und `decide`, in der Oberfläche „Chat“ und „Sorting“):
   - `assistantDefault` wird zum Platz *Chat*.
   - Eine eingeschaltete Zuordnung `inbox.categorize` wird zum Platz *Sortieren* und ist danach keine Ausnahme
     mehr. Eine ausgeschaltete bleibt, Sortieren bleibt also aus.
-  - `decideMailToCloud` fehlt → es wird aus `mailToCloud` übernommen, aber nur, wenn dabei ein Platz
-    *Sortieren* übernommen wurde; sonst `false`.
-  - Ein schon gesetzter Platz wird nie überschrieben. Eine Datei, die `decideMailToCloud` schon hat, übernimmt
-    nichts mehr.
+  - Ein schon gesetzter Platz wird nie überschrieben. Dass übernommen wurde, merkt sich `aiSlotsTaken` (seit
+    #664); eine Datei mit dem Merkmal oder mit `decideMailToCloud` (geschrieben mit Plätzen, vor #664) übernimmt
+    nichts, und keine Datei übernimmt zweimal. `mailToCloud` und `decideMailToCloud` werden nicht mehr
+    geschrieben; beim Laden bleiben sie ohne Wirkung.
 - **Alias:** `settings.set_setting assistant_default` bleibt für ältere Clients und schreibt den Platz *Chat*,
   ohne die Prüfung von `ai.set_slot` (auch nicht, ob das Modell eingeschaltet ist). Das Feld `assistantDefault`
   steht nicht mehr in `settings.get_settings`.
@@ -202,7 +207,7 @@ Nur namentlich verbundene reine Laufzeiten auf Loopback bekommen positive lokale
 ein ausdrückliches `remote: true` wird nicht überschrieben. Alte Reconnects erhalten den Programmmarker.
 `accounts.connect_local_ai {program, server?, key?}` ist wie `accounts.connect_ai` Admin/Never,
 auch schlüsselfrei. Ein alter Dienst darf den Befehl ablehnen; es gibt **keinen** Rückfall auf die generische
-Verbindung, der Jans Datenregel verlieren könnte. `AiProvider` und bestehende Konto-IDs bleiben gleich.
+Verbindung, der Jans Einstufung als anderswo verlieren könnte. `AiProvider` und bestehende Konto-IDs bleiben gleich.
 
 ## Empfehlung je Rechner
 
@@ -243,50 +248,42 @@ setzt nie etwas von selbst.
   auf diesem Rechner, mit der Größe aus dem Vorschlag (`download_bytes`). Ein freier Name, der einen fremden
   Registry-Host nennt, wird abgewiesen. Ollama lädt im Hintergrund; `ai.list_pulls` zeigt den Stand,
   `ai.cancel_pull` bricht ab.
-- **Oberfläche:** Steuerzentrale › AI › Models, „Use suggestion“ bei jedem Platz, mit der Größe, wenn zuerst
-  geladen werden muss. Der Knopf lädt bei Bedarf herunter und setzt dann den Platz.
+- **Oberfläche:** „Use suggestion“ beim Platz dort, wo er gewählt wird (Mail-Fenster › AI für *Sorting*, seit #664
+  nicht mehr Steuerzentrale › AI › Models), und in der Einrichtung, mit der Größe, wenn zuerst geladen werden muss.
+  Der Knopf lädt bei Bedarf herunter und setzt dann den Platz.
 
-## Erlaubnis je Platz
+## Modell anderswo (bis #664 „Erlaubnis je Platz“)
 
-Der eine Schalter aus Grundsatz 4 gilt jetzt je Platz:
+**Überholt durch #664:** Bis dahin hatte jeder Platz eine Erlaubnis für Mail, `mail_to_cloud` für *Chat* (Schalter
+„Chat may read mail outside this computer“ unter „Data rule“) und `decide_mail_to_cloud` für *Sortieren*, die die
+Wahl eines Modells anderswo nach der Rückfrage „Send mail outside this computer?“ gab (#424); ohne sie zeigte AI ›
+Sorting „Waiting for your OK – mail stays here“. Beides ist entfallen, ebenso die Rückfrage in der Einrichtung.
+Ein Modell anderswo wählt man heute wie jedes andere: Das Menü von *Sorting* zeigt es unter „Elsewhere“ mit Wolke,
+und der Satz unter dem Platz sagt, wohin Mail geht („Mail goes to {provider} ({seat}) for sorting only.“).
 
-- `mail_to_cloud` ist die Erlaubnis für **Chat**, mit der Bedeutung von bisher.
-- `decide_mail_to_cloud` ist die Erlaubnis für **Sortieren**. Sie folgt der Wahl: Setzt man für Sortieren ein
-  Modell anderswo (Cloud, Server im Netz), wird sie eingeschaltet (`ai.set_slot` setzt sie mit); wählt man ein
-  Modell hier oder „None“, wird sie zurückgenommen. Einen eigenen Schalter hat sie nicht mehr (#424): Die
-  Auswahl unter AI › Sorting (Steuerzentrale und Einstellungen des Mail-Fensters; Mail › Categorization verweist
-  seit #545 nur dorthin) bietet alle Modelle an, die
-  anderswo rechnen, unter „Elsewhere“ mit Wolke. Ein Modell dort fragt vorher
-   („Send mail outside this computer?“, „Use“/„Cancel“), auch beim Wechsel auf ein anderes, weil die Zustimmung einem
-  Anbieter gilt; erst „Use“ setzt Modell und Erlaubnis. Steht ein Modell in der Cloud im Platz, aber die
-  Erlaubnis ist aus (alte Einstellung, oder ein Agent hat sie abgeschaltet), zeigt AI › Sorting „Waiting for
-  your OK – mail stays here“ (Categorization einen gleichbedeutenden längeren Satz); es noch einmal zu wählen fragt wieder. Dieselbe Rückfrage stellt die Einrichtung,
-   wenn ihr Schalter „Sort mail“ ein ausgeschaltetes Modell anderswo wieder einschalten würde oder ein neues
-   Modell anderswo gewählt wird, auch mit vorhandener Erlaubnis. Abbrechen behält die bisherige Auswahl;
-   „Continue“ umgeht eine ausstehende Zustimmung nicht. Wohin Mail geht, sagt die Zeile unter
-  *Sortieren* in „Models“, solange das Modell, das gerade sortiert (Ausnahme vor Platz), anderswo rechnet.
-- **Einschalten nur Menschen**; ausschalten darf jeder Client mit Rechten.
+Es bleibt die Schutzregel aus Grundsatz 4:
+
+- **Anschalten nur Menschen:** Ein Modell, das anderswo rechnet, schaltet nur ein Mensch an (`ai.set_model_enabled`);
+  ausschalten darf jeder Client mit Rechten, mit Freigabe.
 - **Ein Modell anderswo für Mail-Funktionen setzt nur ein Mensch**: als Platz *Sortieren* wie als Ausnahme
-  `inbox.categorize` (`ai.set_assignment`), auch wenn die Erlaubnis schon an ist. Die Zustimmung gilt einem
-  Anbieter; kein Agent leitet sie auf einen anderen um. Ein Client bekommt dafür `forbidden`, auch nach einer
-  Freigabe – auch für eine ausgeschaltete Ausnahme (`enabled: false`) mit einem Modell anderswo, außer sie nennt
-  Konto und Modell, die gerade sortieren: Ausschalten geht so, vorbereiten nicht, sonst ginge die Mail nach dem
-  Einschalten durch die Person an den Anbieter, den der Agent gewählt hat. Ein Sortierauftrag (`inbox.start_category_job`) darf ein Modell anderswo nur nennen, wenn es
-  das ist, mit dem gerade sortiert wird; ebenso setzt ein Client einen gespeicherten Auftrag mit einem solchen Modell
-  nur fort (`inbox.control_category_job`), solange damit gerade sortiert wird.
+  `inbox.categorize` (`ai.set_assignment`). Die Wahl gilt einem Anbieter; kein Agent leitet die Mail auf einen anderen
+  um. Ein Client bekommt dafür `forbidden`, auch nach einer Freigabe – auch für eine ausgeschaltete Ausnahme
+  (`enabled: false`) mit einem Modell anderswo, außer sie nennt Konto und Modell, die gerade sortieren: Ausschalten
+  geht so, vorbereiten nicht, sonst ginge die Mail nach dem Einschalten durch die Person an den Anbieter, den der
+  Agent gewählt hat. Ein Sortierauftrag (`inbox.start_category_job`) darf ein Modell anderswo nur nennen, wenn es das
+  ist, mit dem gerade sortiert wird; ebenso setzt ein Client einen gespeicherten Auftrag mit einem solchen Modell nur
+  fort (`inbox.control_category_job`), solange damit gerade sortiert wird.
 - **„Automatic“ an einem Konto auf diesem Rechner bleibt hier.** Ohne Modell nimmt Sortieren an Ollama, LM Studio
-  oder Strata nur Modelle, die auf diesem Rechner rechnen, nie ein `:cloud`-Modell – auch bei eingeschalteter
-  Erlaubnis. Wer „Ollama hier“ wählt, wählt „hier“; die Erlaubnis gilt dem Modell, das ein Mensch gewählt hat.
-  Darum gilt so eine Wahl als Platz wie als Ausnahme als „hier“ (auch für Clients), und eine zurückgenommene
+  oder Strata nur Modelle, die auf diesem Rechner rechnen, nie ein `:cloud`-Modell. Wer „Ollama hier“ wählt, wählt
+  „hier“. Darum gilt so eine Wahl als Platz wie als Ausnahme als „hier“ (auch für Clients), und eine zurückgenommene
   Ausnahme oder ein ausgeschaltetes lokales Modell lassen die Mail nie in die Cloud fallen: Es rechnet das
   nächste Modell hier, sonst keines.
 - **„Automatic“ im LAN ist anderswo.** Nur Ollama, LM Studio und Strata auf Loopback haben die obige
-  Einschränkung. An LAN-Konten darf Automatic mit Sortiererlaubnis auch ein Cloud-Modell desselben Kontos
-  wählen. Vorhandene gespeicherte Mail-Erlaubnisse und Modellschalter bleiben unverändert; es gibt keine
-  Migration oder automatische Rücknahme. Ohne Erlaubnis geht keine Mail an das LAN-Konto. Diese Grenze
-  ist keine allgemeine Absicherung beliebiger lokaler Proxys oder Weiterleitungen.
-- **Geprüft wird zweimal:** beim Setzen und beim Aufruf. Ist die Erlaubnis aus, fragt das Einordnen kein Modell
-  anderswo; es bleibt bei `NotLocal` und ändert nichts.
+  Einschränkung. An LAN-Konten darf Automatic auch ein Cloud-Modell desselben Kontos wählen; ein solches Konto
+  wählt ohnehin nur ein Mensch. Diese Grenze ist keine allgemeine Absicherung beliebiger lokaler Proxys oder
+  Weiterleitungen.
+- **Geprüft wird beim Setzen.** Beim Aufruf fragt das Einordnen das gewählte Modell, wo es auch rechnet; die
+  Ablehnung `NotLocal` gibt es nicht mehr.
 
 ## Ersatzweg beim Sortieren
 
@@ -306,16 +303,16 @@ Einstellungen zeigt beim Ersatzweg „Answers in a fixed format, slower“.
 - Das Chat-Modell gibt **keine Konfidenz**. Seine Kategorie gilt ohne Schwellwert und ohne Zahl; was es nicht
   sinnvoll beantwortet, wird `other`.
 - Der Text der Mail bleibt im Zaun `<message>` wie bisher; die Anweisungen stehen nur im System-Text.
-- **Entscheidermodelle zuerst** (#421): Wo ein Modell zum Sortieren gewählt wird (AI, Platz *Sorting*; seit #545
-  nicht mehr in Mail-Fenster › Categorization), stehen die Entscheidermodelle oben unter „Decision models (fast)“,
+- **Entscheidermodelle zuerst** (#421): Wo ein Modell zum Sortieren gewählt wird (Mail-Fenster › AI, Platz *Sorting*;
+  seit #545 nicht mehr unter Categorization, seit #664 nicht mehr in der Steuerzentrale), stehen die Entscheidermodelle oben unter „Decision models (fast)“,
   die Chat-Modelle des Ersatzwegs darunter unter „Other models“; ein Satz sagt, dass Entscheidermodelle direkt
   antworten und viel schneller einordnen. Ohne Entscheidermodell zeigt Mail › Categorization unter „Sort with model“ die
   Zeile „No decision model“ mit dem Weg zu Einstellungen › AI, wo „Use suggestion“ eines zum Laden anbietet. Die API
   braucht dafür nichts Neues: `ai.list_models` sagt mit `decision`, welches Modell direkt entscheidet.
 
 - **Vorschläge aus Mails** (#603, [vorschlaege.md](vorschlaege.md)): Die Fragen nach Terminen und Aufgaben fahren
-  im Sortieraufruf mit, auch auf dem Ersatzweg. Das Auslesen der Felder nimmt das Modell, das sortiert, nur wenn
-  `decide_mail_to_cloud` die Mail nach außen lässt und es schreiben kann; sonst ein Modell auf diesem Rechner.
+  im Sortieraufruf mit, auch auf dem Ersatzweg. Das Auslesen der Felder nimmt das Modell, das sortiert, wenn es
+  schreiben kann, sonst das Modell für Vorschläge (seit #664 ohne Rücksicht darauf, wo es rechnet).
 
 ## API und MCP
 
@@ -324,14 +321,13 @@ Einstellungen zeigt beim Ersatzweg „Answers in a fixed format, slower“.
 | KI-Konto verbinden (lokal: Adresse; Anbieter: Schlüssel) | Accounts › Add › AI | `accounts.connect_ai` · Admin, nur App-Schlüssel | **Never** (Punkt 5: Geheimnisse nur über die Oberfläche) |
 | Modelle eines Kontos | Accounts › KI-Konto › Models | `ai.list_models` · Read | `ai_list_models` |
 | Modell an/aus (S.24) | Accounts › KI-Konto › Models, Schalter | `ai.set_model_enabled` · Admin (anschalten, was anderswo rechnet: nur Menschen) | `ai_set_model_enabled` |
-| Plätze und Zuordnungen lesen | Steuerzentrale › AI (Gruppe „Models“), Einstellungen des Moduls | `ai.list_assignments` (Feld `slots`: beide Plätze mit Modell und Erlaubnis) · Read; `settings.get_settings` (`aiSlots`, `decideMailToCloud`) · Read | `ai_list_assignments`, `settings_get_settings` |
-| Platz setzen oder leeren | Steuerzentrale › AI (Gruppe „Models“), Einstellungen des Moduls | `ai.set_slot` · Admin; ein Modell anderswo für *Sortieren* nur Menschen | `ai_set_slot` (Freigabe) |
+| Plätze und Zuordnungen lesen | Einstellungen der App (Assistent › General, Mail-Fenster › AI) | `ai.list_assignments` (Feld `slots`: beide Plätze mit Modell; `mail_to_cloud` entfiel mit #664) · Read; `settings.get_settings` (`aiSlots`) · Read | `ai_list_assignments`, `settings_get_settings` |
+| Platz setzen oder leeren | Einstellungen der App (Assistent › General, Mail-Fenster › AI), Einrichtung | `ai.set_slot` · Admin; ein Modell anderswo für *Sortieren* nur Menschen | `ai_set_slot` (Freigabe) |
 | Zuordnung ändern (Ausnahme je Funktion) | Einstellungen des Moduls | `ai.set_assignment` · Admin | `ai_set_assignment` (Admin braucht beim Agenten immer Freigabe) |
-| Empfehlung je Rechner | Steuerzentrale › AI (Gruppe „Models“) | `ai.recommend` · Read | `ai_recommend` |
-| Herunterladen | Steuerzentrale › AI, „Use suggestion“ | `ai.pull_model` · Admin; nur Modelle der Liste, nur Ollama auf diesem Rechner. Die Antwort zeigt den neuen Download als `running`; lehnt Ollama ihn sofort ab, steht er dort als `failed`; ist Ollama nicht erreichbar, kommt `offline` und nichts wird angelegt – außer er wurde inzwischen abgebrochen, dann die Liste mit ihm als `cancelled`. Antwortet der Start `busy`, hängt sich „Use suggestion“ an den laufenden Download desselben Modells | `ai_pull_model` (Freigabe) |
+| Empfehlung je Rechner | Mail-Fenster › AI, Einrichtung | `ai.recommend` · Read | `ai_recommend` |
+| Herunterladen | „Use suggestion“ (Mail-Fenster › AI, Einrichtung) | `ai.pull_model` · Admin; nur Modelle der Liste, nur Ollama auf diesem Rechner. Die Antwort zeigt den neuen Download als `running`; lehnt Ollama ihn sofort ab, steht er dort als `failed`; ist Ollama nicht erreichbar, kommt `offline` und nichts wird angelegt – außer er wurde inzwischen abgebrochen, dann die Liste mit ihm als `cancelled`. Antwortet der Start `busy`, hängt sich „Use suggestion“ an den laufenden Download desselben Modells | `ai_pull_model` (Freigabe) |
 | Stand der Downloads | dieselben Orte | `ai.list_pulls` · Read | `ai_list_pulls` |
 | Download abbrechen | „Cancel“ | `ai.cancel_pull` · Write | `ai_cancel_pull` |
-| Erlaubnis *Sortieren* | Wahl eines Modells in der Cloud mit Rückfrage (AI › Sorting, in der Steuerzentrale und im Mail-Fenster, #545); kein eigener Schalter (#424) | eingeschaltet von `ai.set_slot` bzw. `ai.set_assignment` mit einem Modell anderswo; `settings.set_setting decide_mail_to_cloud` · Admin, einschalten nur Menschen; `ai.set_slot` setzt sie mit; ausgeschaltet hält ein laufender Sortierauftrag mit einem Modell anderswo vor der nächsten Mail an (`failed`) | `settings_set_setting` nur `false` |
 | Eintrag zusammenfassen | Paneel „Summarize“ | `inbox.summarize_item` · Write (löst einen Modellaufruf aus) | `inbox_summarize_item` |
 
 Neuer Bereich `ai` im Katalog für die Einstellungen; die Funktionen selbst gehören zu dem Bereich, in
@@ -342,7 +338,9 @@ dem sie wirken (`inbox.*`), und prüfen dort die Rechte.
 Kommt **nach** E1–E3 des Eingangs. Aufgaben entstehen, wenn dieses Konzept freigegeben ist:
 
 1. **KI.1 Kern:** KI-Konten (`AccountKind::Ai`), Anbieter-Trait mit OpenAI-kompatibel und Anthropic,
-   Modell-Liste, Zuordnung je Funktion, Datenregel je Quelle, Zähler. Tests mit `httpmock`.
+   Modell-Liste, Zuordnung je Funktion, Datenregel je Quelle, Zähler. Tests mit `httpmock`. **Überholt durch
+   #664** für die Datenregel je Quelle: Sie kommt nicht; was ein Modell liest, folgt aus Rechten und Modellwahl
+   (Grundsatz 4).
 2. **KI.2 Steuerzentrale:** Anbieter „AI providers“ im Assistenten (die Zeile gibt es schon),
    lokale Anbieter oben, automatische Suche nach Ollama/LM Studio/Strata auf `localhost`; Modelle an/aus auf der Kontoseite
    unter Accounts (S.24, S.26, S.31 in [tasks/steuerzentrale.md](tasks/steuerzentrale.md); S.25 entfällt mit #231),
@@ -351,6 +349,7 @@ Kommt **nach** E1–E3 des Eingangs. Aufgaben entstehen, wenn dieses Konzept fre
 
 ## Offen
 
-1. Datenregel: Reicht „nur lokal ja/nein“ je Quelle, oder braucht es mehr (z. B. „nur Betreff“)?
+1. ~~Datenregel: Reicht „nur lokal ja/nein“ je Quelle, oder braucht es mehr (z. B. „nur Betreff“)?~~ **Überholt durch
+   #664:** keine Datenregel mehr (Grundsatz 4).
 2. Kosten-Obergrenze je Konto: nötig im ersten Schritt?
 3. Nextcloud Assistant als Anbieter gleich mit, weil das Konto schon da ist?

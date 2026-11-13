@@ -1230,19 +1230,20 @@ fn one_fits(models: &[torro_core::ai::AiModel], decides: bool) -> bool {
 }
 
 /// Whether mail given to `model` of the AI account at `provider` and `server` leaves this computer
-/// (tasks S.23, MW.2): where the model computes ([`crate::assistant::place_of`]); naming none, where
+/// (tasks S.23, MW.2): where the model computes ([`torro_core::ai::place_of`]); naming none, where
 /// Automatic is local – only a local runtime on loopback keeps it here, since its "Automatic" picks
 /// only among the models here ([`categorize::chosen`], review of issue #325).
 fn elsewhere_of(provider: torro_core::ai::AiProvider, server: &str, model: Option<&torro_core::ai::AiModel>) -> bool {
     match model {
-        Some(model) => crate::assistant::place_of(provider, server, model) != Place::Local,
+        Some(model) => torro_core::ai::place_of(provider, server, model) != Place::Local,
         None => torro_core::ai::automatic_place_of(provider, server) != Place::Local,
     }
 }
 
 /// The models of an account that count for its switches ([`Core::model_off_refusal`]): all of
-/// `models`, or with `here_only` only those that compute on this computer – where mail must stay
-/// here and no model is named, one on elsewhere would never be asked, and nothing would say why.
+/// `models`, or with `here_only` only those that compute on this computer – where "Automatic" at an
+/// account here picks only models here, one on elsewhere would never be asked, and nothing would say
+/// why.
 fn considered_models(
     provider: torro_core::ai::AiProvider,
     server: &str,
@@ -1252,14 +1253,13 @@ fn considered_models(
     models.iter().filter(|model| !here_only || !elsewhere_of(provider, server, Some(model))).cloned().collect()
 }
 
-/// The decision model to ask for sorting mail, and whether the data rule allows it (task E12.6).
-/// `Err` names why nothing is asked; the caller then leaves the mail alone.
+/// The decision model to ask for sorting mail (task E12.6). `Err` names why nothing is asked; the
+/// caller then leaves the mail alone.
 ///
 /// Reads what sorting uses ([`assignment_in_effect`]: the exception, else the slot Sorting, issue
-/// #325) and the account's models, then lets [`categorize::chosen`] weigh them –
-/// on the concrete model, not on the account (`docs/ki.md`, principle 4): a local Ollama serves
-/// cloud models too (`:cloud`), and one of those would send the mail to ollama.com. "Automatic" at an
-/// account on this computer picks only models here, also while the permission is on (review of #325).
+/// #325) and the account's models, then lets [`categorize::chosen`] weigh them. "Automatic" at an
+/// account on this computer picks only models here (review of #325): a local Ollama serves cloud
+/// models too (`:cloud`), and one of those would send the mail to ollama.com.
 ///
 /// The models carry their switches (task S.24, [`AiAccounts::mark_enabled`]): a model turned off
 /// since it was assigned is not asked, and none is asked in its place.
@@ -1278,17 +1278,13 @@ async fn decider_of(settings: &SettingsStore, ai: &AiAccounts) -> Result<(String
     let (provider, server) = ai.server(&engine).await.ok_or(categorize::Refusal::NoModel)?;
     let models = ai.models(&engine, true).await.map_err(|_| categorize::Refusal::NoModel)?;
     let models = ai.mark_enabled(&engine, models).await;
-    let here = |model: &torro_core::ai::AiModel| crate::assistant::place_of(provider, &server, model) == Place::Local;
-    // The permission of the slot Sorting (issue #325), not the chat's: an exception sorts mail too.
-    // "Automatic" at an account here stays here, whatever the permission (review of #325).
-    let local_only = !settings.mail_to_cloud_in(function.slot());
+    let here = |model: &torro_core::ai::AiModel| torro_core::ai::place_of(provider, &server, model) == Place::Local;
     let seat_here = !elsewhere_of(provider, &server, None);
-    categorize::chosen(assignment.as_ref(), &models, here, local_only, seat_here)
+    categorize::chosen(assignment.as_ref(), &models, here, seat_here)
 }
 
 /// Resolve an explicit job model, or what sorting uses ([`decider_of`]: the exception, else the slot
-/// Sorting). A selected cloud model is refused while the permission of the slot Sorting
-/// (`decide_mail_to_cloud`, issue #325) is off; no other model is substituted silently.
+/// Sorting), and whether it computes elsewhere; no other model is substituted silently.
 async fn category_job_decider(
     settings: &SettingsStore,
     ai: &AiAccounts,
@@ -1306,10 +1302,7 @@ async fn category_job_decider(
         .iter()
         .find(|model| model.id == selected.1 && model.enabled && model.can_decide())
         .ok_or(categorize::Refusal::NoModel)?;
-    let cloud = crate::assistant::place_of(provider, &server, model) != Place::Local;
-    if cloud && !settings.current().mail_to_cloud_in(torro_core::ai::AiSlot::Decide) {
-        return Err(categorize::Refusal::NotLocal);
-    }
+    let cloud = torro_core::ai::place_of(provider, &server, model) != Place::Local;
     Ok((selected, cloud))
 }
 
@@ -1474,16 +1467,10 @@ fn suggestable(
         .collect()
 }
 
-fn detection_on(
-    settings: &SettingsStore,
-    mail: &MailService,
-    cloud: bool,
-    wanted: &[&crate::actions::KindDef],
-) -> bool {
+fn detection_on(settings: &SettingsStore, mail: &MailService, wanted: &[&crate::actions::KindDef]) -> bool {
     let current = settings.current();
     current.component_on(torro_core::settings::Component::Mail)
         && mail.workflow_preparation_on()
-        && (!cloud || current.mail_to_cloud_in(torro_core::ai::AiSlot::Decide))
         && wanted.iter().all(|kind| crate::actions::looked_for(&current).iter().any(|on| on.id == kind.id))
 }
 
@@ -1745,7 +1732,7 @@ async fn category_pace(ai: &AiAccounts, (engine, model): (&str, &str)) -> Catego
     }
     let parallel = match provider {
         AiProvider::Jev => CATEGORY_PARALLEL_JEV,
-        // Inference capacity is relative to the server, unlike the mail data rule. A decision
+        // Inference capacity is relative to the server, not to where the mail goes. A decision
         // model on a LAN Ollama still runs serially on that device, not in Ollama's cloud.
         AiProvider::Ollama if model.remote != Some(false) || torro_core::ai::openai::ollama_cloud_name(&model.id) => {
             CATEGORY_PARALLEL_CLOUD
@@ -1772,16 +1759,16 @@ enum Asked {
     Stop(DecideError),
     /// One try took longer than [`CATEGORY_TIMEOUT`]: the run stops.
     TimedOut,
-    /// The run may no longer ask while the model was busy – paused, cancelled, "Keep mail here" came
-    /// or the model for sorting changed –: the mail is not sent again.
+    /// The run may no longer ask while the model was busy – paused, cancelled or the model for sorting
+    /// changed –: the mail is not sent again.
     Halted,
 }
 
 /// Asks the model about one mail of a run ([`ask_model`], issue #420): each try within
 /// [`CATEGORY_TIMEOUT`], and a model that is busy once more after each of [`CATEGORY_BUSY_WAITS`] –
 /// with several mails asked at once, a limit of requests is reached sooner. Before it asks again,
-/// `may_ask` says whether the run still may: a pause, a cancel or "Keep mail here" during the wait
-/// sends the mail nowhere (review of #420).
+/// `may_ask` says whether the run still may: a pause or a cancel during the wait sends the mail
+/// nowhere (review of #420).
 async fn ask_to_sort(
     ai: &AiAccounts,
     decider: (&str, &str),
@@ -2081,8 +2068,8 @@ impl JobRun<'_> {
 
     /// Reads one mail of `account` for the job as it was when its batch began and asks the model
     /// where the rules leave it open (issue #420): everything of [`category_job_run`] before it
-    /// writes, so that several mails can be asked at once. "Keep mail here" and a change of the model
-    /// for sorting are looked at right before each mail goes out.
+    /// writes, so that several mails can be asked at once. A change of the model for sorting is looked
+    /// at right before each mail goes out.
     ///
     /// With `apply_rules` (issue #454) the rules and filters decide first, the category higher up
     /// winning between several (`sorting`, issue #481); `found` are the enabled filters of the
@@ -2134,12 +2121,6 @@ impl JobRun<'_> {
         let personal = contact.then(|| (by_contact(), None));
         let (decided, asked) = match (ruled, self.decider) {
             (Some(category), _) => (Some((category, None)), false),
-            (None, Some(_))
-                if job.model_in_cloud == Some(true)
-                    && !self.settings.current().mail_to_cloud_in(torro_core::ai::AiSlot::Decide) =>
-            {
-                return JobMail::Stop(tr("Sorting may no longer send mail to the cloud.").to_string());
-            }
             (None, Some(held)) if left_behind(&self.settings.current(), &job.scope, held) => {
                 let why = tr("The model for Sorting changed. Resume the run to sort with the new one.");
                 return JobMail::Stop(why.to_string());
@@ -2147,18 +2128,12 @@ impl JobRun<'_> {
             (None, Some(held)) => {
                 let (engine, model) = held;
                 // The same as before the first try, at every try again.
-                let may_ask = || {
-                    self.current().is_some()
-                        && (job.model_in_cloud != Some(true)
-                            || self.settings.current().mail_to_cloud_in(torro_core::ai::AiSlot::Decide))
-                        && !left_behind(&self.settings.current(), &job.scope, held)
-                };
+                let may_ask = || self.current().is_some() && !left_behind(&self.settings.current(), &job.scope, held);
                 let kinds = crate::actions::looked_for(&self.settings.current());
                 let asked = (&facts.content, catalogue, kinds.as_slice());
                 match ask_to_sort(self.ai, (engine, model), asked, contact, may_ask).await {
                     Asked::Answer(answer) => (answer.map(|answer| (answer.category, Some(answer))).or(personal), true),
-                    // The batch ends; the next looks at the job and the permission again and stops it
-                    // with its reason.
+                    // The batch ends; the next looks at the job again and stops it with its reason.
                     Asked::Halted => return JobMail::Halted,
                     Asked::NothingToChoose => (personal, true),
                     Asked::Unread(err) => return JobMail::Unread(err),
@@ -2177,9 +2152,6 @@ impl JobRun<'_> {
 /// whose answer was written – only those still with the model then, or answered behind it but not
 /// yet written (issue #420), are asked again. Its ID and generation prevent an older worker from
 /// writing progress after a resume.
-///
-/// A run whose model computes elsewhere stops (`failed`) before the next mail once the permission of
-/// Sorting is off (`settings`, PR review of #325): "Keep mail here" holds for a run already going too.
 ///
 /// Each batch of [`CATEGORY_SECTION`] mails reads the catalogue once and asks at the pace of the model
 /// ([`category_pace`], issue #420): several mails at once where the model computes them side by side.
@@ -2608,18 +2580,10 @@ struct CatchUpRun {
 fn refused_decider(refusal: categorize::Refusal) -> Response {
     match refusal {
         categorize::Refusal::NoModel => no_decision_model(),
-        categorize::Refusal::NotLocal => Response::Error {
-            code: "not-connected".into(),
-            message: tr(
-                "Mail, Nextcloud and Talk go only to an AI on this computer. Connect a local AI such as Ollama.",
-            )
-            .to_string(),
-        },
     }
 }
 
-/// No decision model is assigned, so nothing can be sorted by one (task E12.4). The sentence is
-/// the one `inbox.suggest_task_from_item` uses when mail may only go to a local model.
+/// No decision model is assigned, so nothing can be sorted by one (task E12.4).
 fn no_decision_model() -> Response {
     Response::Error {
         code: "not-connected".into(),
@@ -3718,15 +3682,6 @@ impl Core {
         });
     }
 
-    #[cfg(test)]
-    fn workflow_categorizer(&self) -> crate::mail::inbox_feed::WorkflowCategorizer {
-        let classify = self.workflow_classifier();
-        Arc::new(move |account, message| {
-            let classify = Arc::clone(&classify);
-            Box::pin(async move { classify(account, message).await.map(|reply| reply.category) })
-        })
-    }
-
     /// Unlike the notification decider, category persistence belongs to the outbox CAS. The same
     /// model answer carries #603's findings, applied locally only after that CAS succeeds.
     fn workflow_classifier(&self) -> crate::mail::inbox_feed::WorkflowClassifier {
@@ -3770,22 +3725,12 @@ impl Core {
                     return Err(Paused);
                 }
                 let here = |model: &torro_core::ai::AiModel| {
-                    crate::assistant::place_of(provider, &server, model) == Place::Local
+                    torro_core::ai::place_of(provider, &server, model) == Place::Local
                 };
-                let local_only = !current.mail_to_cloud_in(function.slot());
-                let chosen = categorize::chosen(
-                    assignment.as_ref(),
-                    &models,
-                    here,
-                    local_only,
-                    !elsewhere_of(provider, &server, None),
-                );
-                let (engine, model) = match chosen {
-                    Ok(chosen) => chosen,
-                    Err(categorize::Refusal::NoModel) => {
-                        return Ok(crate::mail::inbox_feed::WorkflowClassification::default());
-                    }
-                    Err(_) => return Err(CategoryFailed),
+                let chosen =
+                    categorize::chosen(assignment.as_ref(), &models, here, !elsewhere_of(provider, &server, None));
+                let Ok((engine, model)) = chosen else {
+                    return Ok(crate::mail::inbox_feed::WorkflowClassification::default());
                 };
                 if inbox.category_clear_blocked().map_err(|_| CategoryFailed)? {
                     return Err(CategoryFailed);
@@ -3803,15 +3748,8 @@ impl Core {
                 if !active() {
                     return Err(Paused);
                 }
-                // Content/contact reads awaited after model selection. A cloud permission revoked
-                // meanwhile must stop the request BEFORE mail leaves the service, not only discard
-                // the model's later answer.
-                let cloud = models.iter().find(|held| held.id == model).is_none_or(|held| !here(held));
-                if cloud && !settings.current().mail_to_cloud_in(function.slot()) {
-                    return Err(CategoryFailed);
-                }
                 let kinds = crate::actions::looked_for(&settings.current());
-                let allowed = || active() && (!cloud || settings.current().mail_to_cloud_in(function.slot()));
+                let allowed = active;
                 let kind_allowed =
                     |kind: &str| crate::actions::looked_for(&settings.current()).iter().any(|on| on.id == kind);
                 let answer = match ask_model_checked(
@@ -3833,15 +3771,11 @@ impl Core {
                 if !active() {
                     return Err(Paused);
                 }
-                if cloud && !settings.current().mail_to_cloud_in(function.slot()) {
-                    return Err(CategoryFailed);
-                }
                 let category = answer.as_ref().map(|answer| answer.category);
                 let after_applied = answer.map(|mut answer| {
                     Box::pin(async move {
                         if !settings.current().component_on(torro_core::settings::Component::Mail)
                             || !mail.workflow_preparation_on()
-                            || cloud && !settings.current().mail_to_cloud_in(function.slot())
                         {
                             return;
                         }
@@ -3856,7 +3790,6 @@ impl Core {
                             let settings = current.current();
                             settings.component_on(torro_core::settings::Component::Mail)
                                 && live_mail.workflow_preparation_on()
-                                && (!cloud || settings.mail_to_cloud_in(function.slot()))
                                 && crate::actions::looked_for(&settings).iter().any(|enabled| enabled.id == kind)
                         });
                         keep_found_checked(
@@ -3880,15 +3813,9 @@ impl Core {
         if !settings.component_on(torro_core::settings::Component::Mail) {
             return false;
         }
+        // A client that runs a workflow must still be there; API and MCP have no switch (issue #665).
         let Some(id) = &scope.carrier else { return true };
-        let Some(client) = self.clients.list().into_iter().find(|client| &client.id == id) else { return false };
-        let own = [torro_ipc::api::ASSISTANT_CLIENT, torro_ipc::api::BOT_CLIENT].contains(&client.kind.as_str());
-        let kind = if own && scope.origin.engine.is_none() && scope.origin.behalf.is_none() {
-            torro_ipc::api::MCP_CLIENT
-        } else {
-            client.kind.as_str()
-        };
-        crate::clients::closed_door(kind, None, settings.allow_api_keys, settings.allow_mcp).is_none()
+        self.clients.list().iter().any(|client| &client.id == id)
     }
 
     /// The contacts (issue #351): a round once the calendar service has read its accounts and every
@@ -4145,9 +4072,8 @@ impl Core {
     /// (`docs/api.md`, "Prüfung im Dienst"):
     ///
     /// 0. the way in (#231, [`crate::clients::closed_door`]): right after the key names a client,
-    ///    before its rights and before `system.ping`, its kind must come this way with its switch on
-    ///    (`allow_api_keys`, `allow_mcp`), else `unauthorized` with the reason, logged like other
-    ///    refusals and never an approval;
+    ///    before its rights and before `system.ping`, its kind must come this way, else
+    ///    `unauthorized` with the reason, logged like other refusals and never an approval;
     /// 1. key and rights of the area ([`Clients::admit`]): `unauthorized` or `forbidden`;
     /// 2. for a client key, the collections a write or `set_collection_shown` touches: outside
     ///    its reach the answer is `not-found`, as if they did not exist;
@@ -4227,12 +4153,11 @@ impl Core {
     }
 
     /// The client of `key` and why it may not come in `door` now (#231,
-    /// [`crate::clients::closed_door`] with the switches as stored), refused as
-    /// [`Refused::Closed`] (`unauthorized`); `None` for the app key, a key the core does not know
-    /// (step 1 refuses it) and a client that may come this way. The assistant and bots are bound to
-    /// no switch only with a key the core lent them ([`Clients::lent_for`]): their own stored key is
-    /// handed out no more (#231), and one from before is checked like an MCP client's (the way it
-    /// was used: an agent with it in `TORRO_TOKEN`), so it cannot pass "Allow MCP".
+    /// [`crate::clients::closed_door`]), refused as [`Refused::Closed`] (`unauthorized`); `None` for
+    /// the app key, a key the core does not know (step 1 refuses it) and a client that may come this
+    /// way. The assistant and bots are bound to no way only with a key the core lent them
+    /// ([`Clients::lent_for`]): their own stored key is handed out no more (#231), and one from before
+    /// is checked like an MCP client's (the way it was used: an agent with it in `TORRO_TOKEN`).
     fn door_refusal(&self, key: Option<&Key>, door: Door, request: &Request) -> Option<(String, Refused)> {
         let id = self.client_of(key)?;
         let mut kind = self.client_kind(&id)?;
@@ -4240,8 +4165,7 @@ impl Core {
         if !lent && [torro_ipc::api::ASSISTANT_CLIENT, torro_ipc::api::BOT_CLIENT].contains(&kind.as_str()) {
             kind = "mcp".into();
         }
-        let settings = self.settings.current();
-        let why = crate::clients::closed_door(&kind, Some(door), settings.allow_api_keys, settings.allow_mcp)?;
+        let why = crate::clients::closed_door(&kind, Some(door))?;
         Some((id, Refused::Closed { command: request.operation().name(), why }))
     }
 
@@ -4393,7 +4317,7 @@ impl Core {
         let mut rights = rights;
         match scope {
             Some(LentFor::Conversation(conversation)) => {
-                via.asking = Some(AskedFrom { conversation, without, read_mail: false, mode });
+                via.asking = Some(AskedFrom { conversation, without, mode });
             }
             Some(LentFor::Delegated(delegation)) => {
                 // The lease took its areas out of the bot's rights already; the assistant's, narrowed
@@ -4515,7 +4439,7 @@ impl Core {
         }
         let request = crate::mail::write::with_trash_role(&self.mail, Reach::Client(&rights), request).await;
         // Point 6 (task C.9): switching the microphone on is a person's, also with every right, and
-        // so is letting mail go to the cloud (task C.17). The assistant's own memory is its own
+        // so is choosing a model elsewhere for sorting (issue #664). The assistant's own memory is its own
         // whatever its rights in `assistant` say (task C.10).
         // A suggestion of the mail a chat is about counts as reading there (issue #605, [`about_read`]).
         let checked = self.operation_about(&request, via.about.as_ref());
@@ -4538,7 +4462,7 @@ impl Core {
                 true => Some(torro_ipc::api::Lack::ForPeople),
                 false => {
                     let kind = self.client_kind(&id).unwrap_or_default();
-                    torro_ipc::api::Lack::of_in(&kind, &rights, operation, &[], &[], via.origin.mode)
+                    torro_ipc::api::Lack::of_in(&kind, &rights, operation, &[], via.origin.mode)
                 }
             };
             return Err(lack.map_or(Refused::Forbidden { command }, |lack| Refused::Lacks { command, lack }));
@@ -4557,14 +4481,12 @@ impl Core {
         // Its own access (issue #134): the rights it was admitted with, which are already narrowed
         // as for every other command, and what the request came through.
         if matches!(request, Request::MyAccess) {
-            return Ok(my_access(&rights, &via.origin, &self.settings.current().tools));
+            return Ok(my_access(&rights, &via.origin));
         }
-        // A tool of the assistant (issue #225) the rights allow: switched off it runs for nobody, and
-        // more rights would not help; then outside the client's selection, and what the tool would
-        // refuse anyway: a title or text beyond the limits, a file the client did not make. After the
-        // rights, so a client without them hears of those, not of a switch it cannot change anyway.
-        // Nobody is asked to approve any of it.
-        if let Some(refused) = self.tool_off(&request).or_else(|| tool_unselected(&rights, &request)) {
+        // A tool of the assistant (issue #225) the rights allow, outside the client's selection, and
+        // what the tool would refuse anyway: a title or text beyond the limits, a file the client did
+        // not make. Nobody is asked to approve any of it.
+        if let Some(refused) = tool_unselected(&rights, &request) {
             return Err(refused);
         }
         // A tool of an MCP server (issue #302): its server's level and the tool's switch for the client,
@@ -4602,7 +4524,6 @@ impl Core {
                 conversation: &asking.conversation,
                 assistant: &id,
                 without: &asking.without,
-                read_mail: asking.read_mail,
                 mode: asking.mode,
             };
             return Ok(self.assistant.delegate(&self.ai, &from, request).await);
@@ -4645,7 +4566,7 @@ impl Core {
         {
             let kind = self.client_kind(&id).unwrap_or_default();
             let command = request.operation().name();
-            let lack = torro_ipc::api::Lack::of_in(&kind, &rights, delete, &[], &[], via.origin.mode);
+            let lack = torro_ipc::api::Lack::of_in(&kind, &rights, delete, &[], via.origin.mode);
             return Err(lack.map_or(Refused::Forbidden { command }, |lack| Refused::Lacks { command, lack }));
         }
         // An unknown save target, or a change that could not be stored, is nothing to approve
@@ -4993,9 +4914,9 @@ impl Core {
         let mut asking = None;
         match scope {
             Scope::Own => {}
-            Scope::Asking { conversation, without, read_mail } => {
+            Scope::Asking { conversation, without } => {
                 let conversation = conversation.to_string();
-                asking = Some(AskedFrom { conversation, without: without.to_vec(), read_mail, mode });
+                asking = Some(AskedFrom { conversation, without: without.to_vec(), mode });
             }
             Scope::Delegated(delegation) => {
                 ids.extend(crate::audit::delegation_ids(&delegation.bot, &delegation.assistant));
@@ -5023,7 +4944,7 @@ impl Core {
             Some(info) => match self.extension_unseen(&info.rights, &request) {
                 Some(unseen) => Ok(unseen),
                 None => {
-                    let lack = torro_ipc::api::Lack::of_in(&info.kind, &info.rights, operation, &[], &[], origin.mode);
+                    let lack = torro_ipc::api::Lack::of_in(&info.kind, &info.rights, operation, &[], origin.mode);
                     Err(match lack {
                         Some(lack) => Refused::Lacks { command, lack },
                         None => Refused::Forbidden { command },
@@ -5944,18 +5865,9 @@ impl Core {
             return Response::Error { code: "forbidden".into(), message };
         };
         info.rights = effective;
-        // The way in as it is now (#231): an approval asked for while MCP was on does not run once a
-        // person turned it off. The command switched off meanwhile is refused with the rights below.
-        // The assistant and bots pass no switch only where the core ran them or lent their key – the
-        // approval's origin names the engine or the assistant then –, never with their stored key,
-        // which is checked like an MCP client's as at the door ([`Core::door_refusal`]).
+        // The command switched off meanwhile is refused with the rights below. API and MCP have no
+        // switch any more (issue #665), so the way an approval was asked for stays open.
         let settings = self.settings.current();
-        let run_by_core = origin.engine.is_some() || origin.behalf.is_some();
-        let own = [torro_ipc::api::ASSISTANT_CLIENT, torro_ipc::api::BOT_CLIENT].contains(&info.kind.as_str());
-        let kind = if own && !run_by_core { torro_ipc::api::MCP_CLIENT } else { info.kind.as_str() };
-        if let Some(why) = crate::clients::closed_door(kind, None, settings.allow_api_keys, settings.allow_mcp) {
-            return Refused::Closed { command, why }.response();
-        }
         let rights = &info.rights;
         let allowed =
             rights.allows_request(&request) || torro_ipc::api::allowed_by_kind(&info.kind, request.operation());
@@ -5968,9 +5880,9 @@ impl Core {
         {
             return Refused::Forbidden { command }.response();
         }
-        // A tool switched off or taken out of the selection meanwhile (issue #225); for a bot that
-        // ran for the assistant, out of what both may.
-        if let Some(refused) = self.tool_off(&request).or_else(|| tool_unselected(rights, &request)) {
+        // A tool taken out of the selection meanwhile (issue #225); for a bot that ran for the
+        // assistant, out of what both may.
+        if let Some(refused) = tool_unselected(rights, &request) {
             return refused.response();
         }
         // A tool of an MCP server (issue #302): the level for its server and the tool's switch as they are
@@ -6084,8 +5996,7 @@ impl Core {
         // A command of the tool `files` runs only on the paths the person was shown and the entries at them (issue
         // #304): resolved again and compared with them on the thread that then runs it, so nothing changes in
         // between; `conflict` without doing anything when they changed (a link exchanged, a folder moved, another
-        // entry put under the name). An approval without a fingerprint matches nothing. Its switch was checked
-        // above ([`Core::tool_off`]).
+        // entry put under the name). An approval without a fingerprint matches nothing.
         if matches!(
             request,
             Request::CreateFolder { .. }
@@ -6697,7 +6608,7 @@ impl Core {
                     settings.reminders.calendars.retain(|id, _| seen(id));
                     // Nor the SearXNG address, which often points into the person's own network, unless
                     // it reaches `web` (PR #311 review). What it sends back keeps the stored address.
-                    if !rights.reaches_tool(torro_core::settings::ToolId::Web) {
+                    if !sees_searxng(rights) {
                         settings.web_search.searxng = None;
                     }
                     // Nor the default sender when it is a mail account outside its selection (#397):
@@ -7142,8 +7053,11 @@ impl Core {
             request @ (Request::ListBots
             | Request::GetBot { .. }
             | Request::SaveBot { .. }
-            | Request::DeleteBot { .. }) => crate::bots::answer(&self.assistant, &self.clients, request).await,
-            // Profile and memory (task C.10): a note kept from remote models only for the app key
+            | Request::DeleteBot { .. }) => {
+                let by_person = matches!(reach, Reach::Suite);
+                crate::bots::answer(&self.assistant, &self.clients, request, by_person).await
+            }
+            // Profile and memory (task C.10): a note from mail only for the app key
             // and clients that may read mail.
             request @ (Request::GetProfile
             | Request::UpdateProfile { .. }
@@ -7156,7 +7070,7 @@ impl Core {
             // request came through; here only its rights. The app key may do everything.
             Request::MyAccess => match reach {
                 Reach::Client(rights) => {
-                    my_access(rights, &crate::approvals::Origin::default(), &self.settings.current().tools)
+                    my_access(rights, &crate::approvals::Origin::default())
                 }
                 Reach::Suite => Response::Error {
                     code: "unsupported".into(),
@@ -7557,8 +7471,8 @@ impl Core {
 
     /// What the mail feed uses for new mail a filter, a rule or a header sorted without a model (issue
     /// #603, decision 2): only the questions about the kinds of action looked for
-    /// ([`categorize::detect_request`]) to the model that sorts mail, under its assignment, switches
-    /// and data rule ([`decider_of`]), and what it finds kept and read out as for mail the model
+    /// ([`categorize::detect_request`]) to the model that sorts mail, under its assignment and
+    /// switches ([`decider_of`]), and what it finds kept and read out as for mail the model
     /// sorted ([`keep_found`]). Mail of the groups Info and Junk is not asked about. Nothing is asked
     /// without a model for sorting or a kind looked for; the log names the account and the error only.
     fn new_mail_detector(&self) -> crate::mail::inbox_feed::Detector {
@@ -7580,12 +7494,6 @@ impl Core {
                     return;
                 }
                 let Ok((engine, model)) = decider_of(&settings, &ai).await else { return };
-                let Some((provider, server)) = ai.server(&engine).await else { return };
-                let Ok(models) = ai.known_models(&engine, Some(&model)).await else { return };
-                let cloud = models
-                    .iter()
-                    .find(|held| held.id == model)
-                    .is_none_or(|held| crate::assistant::place_of(provider, &server, held) != Place::Local);
                 let Ok(catalogue) = inbox.catalogue() else { return };
                 let facts = match mail.sorting_facts(&account, &message).await {
                     Ok(Some(facts)) => facts,
@@ -7607,14 +7515,14 @@ impl Core {
                 if wanted.is_empty() {
                     return;
                 }
-                if !active() || cloud && !settings.current().mail_to_cloud_in(torro_core::ai::AiSlot::Decide) {
+                if !active() {
                     return;
                 }
                 let request = categorize::detect_request(&model, &facts.content, &wanted);
-                let allowed = || detection_on(&settings, &mail, cloud, &wanted);
+                let allowed = || detection_on(&settings, &mail, &wanted);
                 match ask_decider_checked(&ai, &engine, request, &allowed).await {
                     Ok(reply) => {
-                        if !active() || cloud && !settings.current().mail_to_cloud_in(torro_core::ai::AiSlot::Decide) {
+                        if !active() {
                             return;
                         }
                         let mut found = categorize::detected(&reply);
@@ -7625,7 +7533,6 @@ impl Core {
                             let settings = current.current();
                             settings.component_on(torro_core::settings::Component::Mail)
                                 && live_mail.workflow_preparation_on()
-                                && (!cloud || settings.mail_to_cloud_in(torro_core::ai::AiSlot::Decide))
                                 && crate::actions::looked_for(&settings).iter().any(|enabled| enabled.id == kind)
                         });
                         keep_found_checked(&mail, &catalogue, (&account, &message), &found, Some(&readings), allowed)
@@ -7697,15 +7604,11 @@ impl Core {
         }
     }
 
-    /// The AI that reads actions out of mail (issue #603, decision 4): the model that sorts mail when
-    /// the permission of sorting lets mail go elsewhere (`decide_mail_to_cloud`) and that model can
-    /// write – the permission was given for it, never for another model elsewhere –; else one on the
-    /// person's computers ([`Core::suggestion_ai`] with `local_only`). `Err` with the core's answer
-    /// (`not-connected`) when there is none.
+    /// The AI that reads actions out of mail (issue #603, decision 4; issue #664): the model that
+    /// sorts mail when it can write, wherever it computes; else the AI of the suggestions
+    /// ([`Core::suggestion_ai`]). `Err` with the core's answer (`not-connected`) when there is none.
     async fn action_reader(&self) -> Result<crate::suggest::Chosen, Response> {
-        if self.settings.current().decide_mail_to_cloud == Some(true)
-            && let Ok((engine, model)) = decider_of(&self.settings, &self.ai).await
-        {
+        if let Ok((engine, model)) = decider_of(&self.settings, &self.ai).await {
             let listed = self.ai.known_models(&engine, Some(&model)).await.unwrap_or_default();
             let writes = listed
                 .iter()
@@ -7715,7 +7618,7 @@ impl Core {
                 return Ok(crate::suggest::Chosen { engine, model: Some(model), effort: None });
             }
         }
-        self.suggestion_ai(true).await
+        self.suggestion_ai().await
     }
 
     /// Reads the action `kind` out of the mail `message` of `account` (issue #603) with the AI of
@@ -7942,8 +7845,8 @@ impl Core {
     }
 
     /// What the mail feed asks about a suspicious mail (issue #506): the narrow question "fraud or
-    /// spam?" ([`categorize::judge_request`]) to the model that sorts mail, under the same assignment,
-    /// switches and data rule ([`decider_of`]), once per mail. `None` when no model may be asked or
+    /// spam?" ([`categorize::judge_request`]) to the model that sorts mail, under the same assignment
+    /// and switches ([`decider_of`]), once per mail. `None` when no model may be asked or
     /// its answer says nothing: then nothing is caught. The log names the account and the error only.
     fn new_mail_judge(&self) -> crate::mail::inbox_feed::Judge {
         let (settings, ai, mail) = (self.settings.clone(), Arc::clone(&self.ai), Arc::clone(&self.mail));
@@ -7973,7 +7876,7 @@ impl Core {
 
     /// `ai.list_assignments` (task E12.5): every function of the suite, with what it uses and the
     /// words a person reads for it. Functions nobody set up come with empty fields. With both slots
-    /// (issue #325): the model of each and whether mail may go elsewhere for it.
+    /// (issue #325): the model of each.
     async fn ai_assignments(&self) -> Response {
         let settings = self.settings.current();
         let slots = torro_core::ai::AiSlot::ALL
@@ -7982,7 +7885,6 @@ impl Core {
                 slot,
                 label: slot.label().to_string(),
                 chosen: settings.ai_slots.get(slot).cloned(),
-                mail_to_cloud: settings.mail_to_cloud_in(slot),
             })
             .collect();
         let stored = settings.ai_assignments;
@@ -8009,18 +7911,15 @@ impl Core {
     ///
     /// **Mail elsewhere is the person's** (issue #325, task MW.2): an assignment that is on, for a
     /// function that reads mail, with a model elsewhere – or, naming none, an account elsewhere – is
-    /// `forbidden` for a client (`client`), also while the permission of the function's slot is on:
-    /// that consent was given to another provider. Switched off, the same unless it names what the
+    /// `forbidden` for a client (`client`). Switched off, the same unless it names what the
     /// function uses now ([`names_what_is_in_effect`], review of #325): "off" with that model is no
     /// choice, one prepared elsewhere would be the agent's once the person switches it on. The core
     /// refused it before any approval
     /// ([`Core::turns_on_elsewhere`]); this asks again with the server's list of now, so an approval
-    /// does not run past it. A person who sets one lets the slot's mail out with it
-    /// (`decide_mail_to_cloud`), as when choosing the slot itself ([`Core::set_ai_slot`]). Without a
-    /// model named, while the slot's mail stays here, only the models here count for the switches.
+    /// does not run past it. A person sets one without a further question (issue #664). Without a
+    /// model named at an account here, only the models here count for the switches.
     async fn set_ai_assignment(&self, wanted: torro_core::ai::AiAssignment, client: bool) -> Response {
         let function = wanted.function;
-        let mut lets_mail_out = false;
         if let Some(engine) = &wanted.engine {
             let Some((provider, server)) = self.ai.server(engine).await else {
                 return Response::Error {
@@ -8049,9 +7948,9 @@ impl Core {
             {
                 return Response::Error { code: "error".into(), message: cannot_decide().to_string() };
             }
-            // The data rule, on the account and the model together (task S.23): only while the
-            // assignment is on, since one switched off asks no model. Naming none, an account here is
-            // here: its "Automatic" picks only models here ([`categorize::chosen`], review of #325).
+            // Where it computes, on the account and the model together (task S.23). Naming none, an
+            // account here is here: its "Automatic" picks only models here ([`categorize::chosen`],
+            // review of #325).
             let elsewhere = elsewhere_of(provider, &server, chosen.as_ref());
             let sorts_mail = function.reads_mail() && wanted.enabled;
             // Switched off, one elsewhere is still the person's unless it is what the function uses
@@ -8067,9 +7966,6 @@ impl Core {
             {
                 return refused;
             }
-            // Only Sorting's permission comes with a choice: whether the chat reads mail elsewhere stays
-            // its own switch (issue #325), whatever function might once belong to it.
-            lets_mail_out = sorts_mail && elsewhere && function.slot() == torro_core::ai::AiSlot::Decide;
             // The switches (task S.24, #231): a model that is off is not assigned, as no module
             // offers it. Only while the assignment is on, so a person can still switch it off.
             // Without a model named at an account here only the models here count: one on elsewhere
@@ -8087,13 +7983,6 @@ impl Core {
         }
         let kept = wanted.engine.is_some().then_some(wanted);
         if let Err(err) = self.settings.set_ai_assignment(function, kept) {
-            return Response::Error { code: "error".into(), message: err };
-        }
-        // After the assignment: a moment between the two writes keeps the mail here, never lets
-        // it out early.
-        if lets_mail_out
-            && let Err(err) = self.settings.set(SettingKey::DecideMailToCloud, &serde_json::Value::Bool(true))
-        {
             return Response::Error { code: "error".into(), message: err };
         }
         self.ai_assignments().await
@@ -8156,23 +8045,20 @@ impl Core {
     }
 
     /// `ai.set_slot` (issue #325, task MW.2): puts `wanted` in `slot`, or empties it with `None`,
-    /// once [`Core::checked_slot`] let it through. For the slot Sorting the same write sets its
-    /// permission `decide_mail_to_cloud` to whether the model computes elsewhere; emptied, it is off
-    /// ([`SettingsStore::set_ai_slot`]). Answers like `ai.list_assignments`.
+    /// once [`Core::checked_slot`] let it through ([`SettingsStore::set_ai_slot`]). Answers like
+    /// `ai.list_assignments`.
     async fn set_ai_slot(
         &self,
         slot: torro_core::ai::AiSlot,
         wanted: Option<torro_core::ai::SlotModel>,
         client: bool,
     ) -> Response {
-        let elsewhere = match &wanted {
-            Some(chosen) => match self.checked_slot(slot, chosen, client).await {
-                Ok(elsewhere) => elsewhere,
-                Err(refused) => return refused,
-            },
-            None => false,
-        };
-        if let Err(err) = self.settings.set_ai_slot(slot, wanted, elsewhere) {
+        if let Some(chosen) = &wanted
+            && let Err(refused) = self.checked_slot(slot, chosen, client).await
+        {
+            return refused;
+        }
+        if let Err(err) = self.settings.set_ai_slot(slot, wanted) {
             return Response::Error { code: "error".into(), message: err };
         }
         self.ai_assignments().await
@@ -8181,9 +8067,7 @@ impl Core {
     /// Whether `wanted` may go into `slot` (task MW.2), checked like [`Core::set_ai_assignment`]: the
     /// account exists, it offers the model, the model is on (or, naming none, the account has one on –
     /// [`Core::model_off_refusal`]), and for [`torro_core::ai::AiSlot::Decide`] a model that decides or
-    /// can use tools ([`torro_core::ai::AiModel::can_decide`], task MW.3). `Ok` says whether mail sorted
-    /// with it leaves this computer ([`crate::assistant::place_of`]; naming no model, whether the
-    /// account is elsewhere) – always `false` for the slot Chat, whose permission is `mail_to_cloud`.
+    /// can use tools ([`torro_core::ai::AiModel::can_decide`], task MW.3).
     ///
     /// For the slot Chat an engine of `assistant.list_engines` that is no AI account is taken as it
     /// is: there is no list to check it against. For the slot Sorting a model elsewhere is the
@@ -8194,12 +8078,12 @@ impl Core {
         slot: torro_core::ai::AiSlot,
         wanted: &torro_core::ai::SlotModel,
         client: bool,
-    ) -> Result<bool, Response> {
+    ) -> Result<(), Response> {
         let decides = slot == torro_core::ai::AiSlot::Decide;
         let engine = &wanted.engine;
         let Some((provider, server)) = self.ai.server(engine).await else {
             if !decides && self.assistant.engines(&self.ai).await.iter().any(|known| &known.id == engine) {
-                return Ok(false);
+                return Ok(());
             }
             return Err(Response::Error {
                 code: "not-found".into(),
@@ -8240,7 +8124,7 @@ impl Core {
         {
             return Err(refused);
         }
-        Ok(elsewhere)
+        Ok(())
     }
 
     /// For a client choosing a model for a function that reads mail (task MW.2): `forbidden` with
@@ -8970,7 +8854,7 @@ impl Core {
                 job.generation += 1;
                 job.state = CategoryJobState::Running;
                 // Where the model of now computes (PR review of #325): a run without a fixed model may
-                // resume with another, and "Keep mail here" stops a run by this mark.
+                // resume with another, and a client's run elsewhere is checked by this mark.
                 job.model_in_cloud = model_in_cloud;
                 job.sorted_with = decider.as_ref().map(sorted_with);
             }
@@ -9580,9 +9464,9 @@ impl Core {
     ///
     /// In this order: the entry as `inbox.get_item` answers it to the caller (`not-found` for one it
     /// may not see, hook clients see none), its text ([`Core::text_for_ai`]), the AI
-    /// ([`crate::suggest::choose`]: the person's default of the assistant, else the first AI account;
-    /// the data rule keeps mail, Nextcloud and Talk with local models, judged by the model each
-    /// account would answer with, [`Core::suggestion_model`]), then one question to it
+    /// ([`crate::suggest::choose`]: the person's default of the assistant, else the first AI account,
+    /// each with the model it would answer with, [`Core::suggestion_model`]; issue #664: mail too),
+    /// then one question to it
     /// ([`crate::suggest::suggest`]), dates read in the person's time zone. Errors as the request
     /// says; the protocol names no text.
     ///
@@ -9617,8 +9501,7 @@ impl Core {
             lists: crate::suggest::offered_lists(lists),
             focus: None,
         };
-        let local_only = crate::assistant::held_back(&entry);
-        let chosen = match self.suggestion_ai(local_only).await {
+        let chosen = match self.suggestion_ai().await {
             Ok(chosen) => chosen,
             Err(refused) => return refused,
         };
@@ -9632,9 +9515,9 @@ impl Core {
     /// The AI and model an AI's suggestion asks (issue #120; split off for the suggestions of mail,
     /// issue #603): the person's default of the assistant, else the first AI account
     /// ([`crate::suggest::choose`]), each judged by the model it would answer with
-    /// ([`Core::suggestion_model`]); with `local_only` only one on the person's computers. Only
-    /// models that are on are asked. `Err` with the core's answer when there is none.
-    async fn suggestion_ai(&self, local_only: bool) -> Result<crate::suggest::Chosen, Response> {
+    /// ([`Core::suggestion_model`]), wherever it computes (issue #664). Only models that are on are
+    /// asked. `Err` with the core's answer when there is none.
+    async fn suggestion_ai(&self) -> Result<crate::suggest::Chosen, Response> {
         let mut default = self.settings.current().ai_slots.chat;
         if let Some(held) = default.as_mut()
             && let Some(model) = held.model.as_deref()
@@ -9652,25 +9535,18 @@ impl Core {
             }
             let problem = matches!(&account.state, AccountState::Connected { problem: Some(_), .. });
             let wanted = default.as_ref().filter(|default| default.engine == account.id);
-            // An account with a problem is passed over by `choose` anyway; it only counts for which
-            // refusal comes.
-            let place = match problem {
-                true => crate::assistant::Place::Remote,
-                false => {
-                    let wanted = wanted.and_then(|d| d.model.as_deref());
-                    match self.suggestion_model(&account.id, wanted, local_only).await {
-                        Some((place, model)) => {
-                            models.insert(account.id.clone(), model);
-                            place
-                        }
-                        None => continue,
-                    }
-                }
-            };
-            candidates.push(crate::suggest::Candidate { id: account.id, place, problem });
+            // An account with a problem is passed over by `choose` anyway.
+            if !problem {
+                let wanted = wanted.and_then(|d| d.model.as_deref());
+                match self.suggestion_model(&account.id, wanted).await {
+                    Some(model) => models.insert(account.id.clone(), model),
+                    None => continue,
+                };
+            }
+            candidates.push(crate::suggest::Candidate { id: account.id, problem });
         }
-        let chosen = crate::suggest::choose(&candidates, default.as_ref(), local_only).map_err(|err| err.response())?;
-        // The model its place was judged by is the one asked (task S.23), and only that one.
+        let chosen = crate::suggest::choose(&candidates, default.as_ref()).map_err(|err| err.response())?;
+        // The model picked here is the one asked (task S.23), and only that one.
         match models.remove(&chosen.engine) {
             Some(Ok(model)) => Ok(crate::suggest::Chosen { model: Some(model), ..chosen }),
             Some(Err(err)) => Err(crate::suggest::SuggestError::Ai(err).response()),
@@ -9679,36 +9555,30 @@ impl Core {
         }
     }
 
-    /// The model the AI account `id` would suggest with and where it runs (task S.23: a cloud model of
-    /// a local Ollama runs elsewhere): `wanted` (the model of the person's default) when it may read
-    /// the entry (it runs locally, or the entry is not `local_only`); else of its models the first
-    /// that fits ([`crate::suggest::pick_model`]) among those on the person's computer, then among
-    /// the others (elsewhere: `choose` gives an entry that stays home none of those). `wanted` is
-    /// on (the caller checks); the others are picked among the models that are on and may chat
-    /// (task S.24).
+    /// The model the AI account `id` would suggest with: `wanted` (the model of the person's default);
+    /// else of its models the first that fits ([`crate::suggest::pick_model`]) among those on the
+    /// person's computer, then among the others. `wanted` is on (the caller checks); the others are
+    /// picked among the models that are on and may chat (task S.24).
     ///
     /// `None` when none of those fits, or the account is gone: it is no candidate, so no model that
-    /// is off is ever asked in its place (PR review #242). Elsewhere with the list's error when its
-    /// models cannot be listed: chosen, the answer is that error.
+    /// is off is ever asked in its place (PR review #242). The list's error when its models cannot be
+    /// listed: chosen, the answer is that error.
     async fn suggestion_model(
         &self,
         id: &str,
         wanted: Option<&str>,
-        local_only: bool,
-    ) -> Option<(crate::assistant::Place, Result<String, torro_core::ai::AiError>)> {
-        use crate::assistant::Place;
+    ) -> Option<Result<String, torro_core::ai::AiError>> {
         let (provider, server) = self.ai.server(id).await?;
-        let place = |model: &torro_core::ai::AiModel| crate::assistant::place_of(provider, &server, model);
+        let place = |model: &torro_core::ai::AiModel| torro_core::ai::place_of(provider, &server, model);
         let models = self.ai.known_models(id, wanted).await;
         if let Some(wanted) = wanted
-            && let Ok((model, at)) = crate::assistant::ModelAccess::choose(models.clone(), Some(wanted), place)
-            && (at == Place::Local || !local_only)
+            && let Ok((model, _)) = crate::assistant::ModelAccess::choose(models.clone(), Some(wanted), place)
         {
-            return Some((at, Ok(model)));
+            return Some(Ok(model));
         }
         let models = match models {
             Ok(models) => models,
-            Err(err) => return Some((Place::Remote, Err(err))),
+            Err(err) => return Some(Err(err)),
         };
         // A model that only decides (nimble) is on for the mail sorting, never asked to suggest.
         let on = self
@@ -9718,10 +9588,7 @@ impl Core {
             .into_iter()
             .filter(|model| model.enabled && model.tools != Some(false));
         let (local, elsewhere): (Vec<_>, Vec<_>) = on.partition(|model| place(model) == Place::Local);
-        if let Ok(model) = crate::suggest::pick_model(local) {
-            return Some((Place::Local, Ok(model)));
-        }
-        crate::suggest::pick_model(elsewhere).ok().map(|model| (Place::Remote, Ok(model)))
+        crate::suggest::pick_model(local).or_else(|_| crate::suggest::pick_model(elsewhere)).ok().map(Ok)
     }
 
     /// What an AI reads of `entry` (issue #120): for a mail entry the whole text of its newest mail,
@@ -10000,16 +9867,11 @@ impl Core {
                 Ok(crate::chat::media::Source::Path(path))
             }
             torro_ipc::chat::FileSource::Registered { file } => {
-                let settings = self.settings.current();
-                if let Reach::Client(rights) = reach {
-                    if !settings.tools.is_on(ToolId::Pdf) {
-                        let lack = torro_ipc::api::Lack::ToolOff { tool: ToolId::Pdf };
-                        return Err(Refused::Lacks { command, lack }.response());
-                    }
-                    if !crate::tools::reaches_files(&settings.tools, rights) {
-                        let lack = torro_ipc::api::Lack::Tool { tool: ToolId::Pdf };
-                        return Err(Refused::Lacks { command, lack }.response());
-                    }
+                if let Reach::Client(rights) = reach
+                    && !crate::tools::reaches_files(rights)
+                {
+                    let lack = torro_ipc::api::Lack::Tool { tool: ToolId::Pdf };
+                    return Err(Refused::Lacks { command, lack }.response());
                 }
                 let maker = client.map_or(Maker::App, Maker::Client);
                 let entry = self
@@ -10910,9 +10772,7 @@ impl Core {
             crate::apps::Target::File { id } => {
                 let reaches = match (reach, maker) {
                     (Reach::Suite, _) => true,
-                    (Reach::Client(rights), Maker::Client(_)) => {
-                        crate::tools::reaches_files(&self.settings.current().tools, rights)
-                    }
+                    (Reach::Client(rights), Maker::Client(_)) => crate::tools::reaches_files(rights),
                     (Reach::Client(_), Maker::App) => false,
                 };
                 let file = match reaches {
@@ -11489,15 +11349,12 @@ impl Core {
     }
 
     /// The register of the tools' files when `reach` may attach its own files of it to drafts (issue
-    /// #225): a client with the PDF tool switched on, read access to `tools` and `pdf` in its
-    /// selection ([`crate::tools::reaches_files`]). `None` for every other client, and for the app
+    /// #225): a client with read access to `tools` and `pdf` in its selection ([`crate::tools::reaches_files`]). `None` for every other client, and for the app
     /// key, which may attach any file anyway.
     fn tool_files(&self, reach: Reach<'_>) -> Option<&crate::tools::Register> {
         match reach {
             Reach::Suite => None,
-            Reach::Client(rights) => {
-                crate::tools::reaches_files(&self.settings.current().tools, rights).then(|| self.tools.register())
-            }
+            Reach::Client(rights) => crate::tools::reaches_files(rights).then(|| self.tools.register()),
         }
     }
 
@@ -11571,8 +11428,8 @@ impl Core {
     /// of the conversation's client – the assistant's own, or the bot's for a conversation with a bot
     /// – for a client cut to its own rights ([`torro_ipc::api::Rights::common`]); the app key adds
     /// no rights of its own, so it never sees more than that client. A file shows only while that
-    /// client may reach the tools' files ([`crate::tools::reaches_files`]: the tool switched on,
-    /// `tools` readable, `pdf` selected) and the register keeps it as that client's and intact;
+    /// client may reach the tools' files ([`crate::tools::reaches_files`]: `tools`
+    /// readable, `pdf` selected) and the register keeps it as that client's and intact;
     /// every other card is unavailable, also without such a client (none set up, the bot deleted).
     /// A suggestion of a mail (issue #605) shows while the mail has it open, read with the same rights
     /// ([`Core::held_suggestions`]). `not-found` for an unknown conversation, `error` for an id beyond its
@@ -11593,16 +11450,13 @@ impl Core {
                 None => None,
             },
         };
-        let settings = self.settings.current();
         let rights = client.as_ref().map(|client| match reach {
             Reach::Suite => client.rights.clone(),
             Reach::Client(asker) => client.rights.common(asker),
         });
         let held = self.held_suggestions(&entries, rights.as_ref()).await;
-        let maker = client
-            .zip(rights)
-            .filter(|(_, rights)| crate::tools::reaches_files(&settings.tools, rights))
-            .map(|(client, _)| client.id);
+        let maker =
+            client.zip(rights).filter(|(_, rights)| crate::tools::reaches_files(rights)).map(|(client, _)| client.id);
         let register = self.tools.register().clone();
         let resolved = tokio::task::spawn_blocking(move || {
             crate::assistant::cards::resolve(&entries, &register, maker.as_deref(), &held)
@@ -11611,18 +11465,6 @@ impl Core {
             Ok(cards) => Response::Cards { cards },
             Err(err) => Response::Error { code: "error".into(), message: format!("cannot read the cards: {err}") },
         }
-    }
-
-    /// `forbidden` with [`torro_ipc::api::Lack::ToolOff`] for a command of one of the assistant's
-    /// own tools while a person has it switched off (issue #225, setting `tool_enabled`): for every
-    /// client and the app key, whatever the rights say. A client's rights are checked before it, so
-    /// one without them hears of those ([`Core::handle_client`], [`Core::run_approved`]). `None` for
-    /// every other request.
-    fn tool_off(&self, request: &Request) -> Option<Refused> {
-        let command = request.operation().name();
-        let tool = torro_core::settings::ToolId::of_command(command)?;
-        let on = self.settings.current().tools.is_on(tool);
-        (!on).then_some(Refused::Lacks { command, lack: torro_ipc::api::Lack::ToolOff { tool } })
     }
 
     /// What a tool's command of the client `maker` would be refused with anyway, before anyone is
@@ -11646,19 +11488,15 @@ impl Core {
     }
 
     /// The `tools.*` requests (issue #225, task WZ.4) for `reach`, files made and reached as
-    /// `maker`: the switch once more (for the app key too, [`Core::tool_off`]), then the handlers
-    /// of [`crate::tools`] with the settings of now. `tools.save_file_as` is the app key's only.
+    /// `maker`: the handlers of [`crate::tools`] with the settings of now. `tools.save_file_as` is the app key's only.
     /// The commands of the tool `files` (issue #304) run within the allowed folders of now
     /// ([`crate::tools::Tools::organize`]); `tools.trash_file` with the system's trash (task WD.3).
     /// `by_person` (task WEB.5): the address of a `tools.fetch_page` is one the person wrote in the
     /// conversation of the assistant's answer, so `robots.txt` does not hold; `false` for everyone else.
     async fn tools_request(&self, request: Request, reach: Reach<'_>, maker: Maker<'_>, by_person: bool) -> Response {
-        if let Some(refused) = self.tool_off(&request) {
-            return refused.response();
-        }
         let settings = self.settings.current();
         match (request, maker) {
-            (Request::ListTools, _) => crate::tools::list(&settings.tools, reach),
+            (Request::ListTools, _) => crate::tools::list(reach),
             (Request::CreatePdf { title, markdown, template }, maker) => {
                 self.tools.create_pdf(title, markdown, template, &settings, maker).await
             }
@@ -11679,7 +11517,7 @@ impl Core {
             (Request::ListSearchProviders, _) => {
                 let with_address = match reach {
                     Reach::Suite => true,
-                    Reach::Client(rights) => rights.reaches_tool(torro_core::settings::ToolId::Web),
+                    Reach::Client(rights) => sees_searxng(rights),
                 };
                 self.tools.web().list(&settings.web_search, with_address).await
             }
@@ -12669,7 +12507,7 @@ impl Core {
     }
 
     /// Whether `request` from a client turns on a model that computes elsewhere (task S.24): only a
-    /// person may, like letting mail go to the cloud (`docs/api.md`, "Was nie nach außen geht", 6),
+    /// person may, like choosing one elsewhere for sorting (`docs/api.md`, "Was nie nach außen geht", 6),
     /// since every module would then send it what it reads. Where the model computes is the account's
     /// list in the core ([`AiAccounts::runs_elsewhere`], in doubt elsewhere). Turning a model off, and
     /// turning on one that computes here, are ordinary admin commands. The list's error when the core
@@ -12680,8 +12518,7 @@ impl Core {
     ///
     /// Choosing a model elsewhere for what reads mail is the person's too (issue #325, task MW.2):
     /// `ai.set_slot decide` with a model elsewhere, and `ai.set_assignment` that is on for a function
-    /// that reads mail ([`torro_core::ai::AiFunction::reads_mail`]) with one – also while the
-    /// permission is on, since it was given to another provider; switched off too, unless it names what
+    /// that reads mail ([`torro_core::ai::AiFunction::reads_mail`]) with one; switched off too, unless it names what
     /// the function uses now ([`names_what_is_in_effect`]), so no agent prepares one the person later
     /// switches on. Naming no model, the account's seat
     /// decides ([`elsewhere_of`]): "Automatic" at an account here picks only models here
@@ -12903,15 +12740,14 @@ impl Core {
             let Some(chosen) = settings.ai_slots.get(slot).cloned() else { continue };
             match chosen.model {
                 Some(model) => used.push((chosen.engine, model)),
-                None => automatic.push((chosen.engine, Automatic::for_slot(slot, settings.mail_to_cloud_in(slot)))),
+                None => automatic.push((chosen.engine, Automatic::for_slot(slot))),
             }
         }
         for assigned in settings.ai_assignments.values().filter(|assigned| assigned.is_ready()) {
             let Some(engine) = assigned.engine.clone() else { continue };
-            let mail_to_cloud = settings.mail_to_cloud_in(assigned.function.slot());
             match assigned.model.clone() {
                 Some(model) => used.push((engine, model)),
-                None => automatic.push((engine, Automatic::for_function(assigned.function, mail_to_cloud))),
+                None => automatic.push((engine, Automatic::for_function(assigned.function))),
             }
         }
         for bot in self.assistant.bots().list().await {
@@ -12929,9 +12765,8 @@ impl Core {
     /// settings, and is refused like `settings.set_setting` with `true`
     /// ([`torro_ipc::api::Rights::allows_request`], which judges by the value alone):
     ///
-    /// - `settings.update_settings` that switches on what is off: the microphone (point 6), mail to cloud
-    ///   models (`mail_to_cloud`, task C.17; for the slot Sorting `decide_mail_to_cloud`, issue #325), the ways in (`allow_api_keys`, `allow_mcp`, #231), a tool of
-    ///   the assistant (point 9, issue #225); or that sets the PDF folder or a template's logo to a path
+    /// - `settings.update_settings` that switches on what is off: the microphone (point 6) or the
+    ///   heartbeat of the presence; or that sets the PDF folder or a template's logo to a path
     ///   other than the stored one (`torro_core::settings::Tools::needs_a_person`); or that turns maps on
     ///   or names another search or tile service than the stored one (task TE.1,
     ///   `torro_core::settings::Maps::needs_a_person`; without `maps` the stored ones stay); or that
@@ -12955,14 +12790,6 @@ impl Core {
                 on(settings.voice.enabled, now.voice.enabled)
                     // The heartbeat of the presence (`docs/chat.md`, decision 10).
                     || on(settings.presence_heartbeat, now.presence_heartbeat)
-                    || on(settings.mail_to_cloud, now.mail_to_cloud)
-                    // The permission of the slot Sorting (issue #325).
-                    || on(
-                        settings.mail_to_cloud_in(torro_core::ai::AiSlot::Decide),
-                        now.mail_to_cloud_in(torro_core::ai::AiSlot::Decide),
-                    )
-                    || on(settings.allow_api_keys, now.allow_api_keys)
-                    || on(settings.allow_mcp, now.allow_mcp)
                     || now.tools.needs_a_person(&settings.tools)
                     // Maps on, or another search or tile service (task TE.1).
                     || now.maps.needs_a_person(&settings.maps)
@@ -13321,7 +13148,7 @@ impl crate::assistant::Host for Core {
 
     /// First the model, then where it runs (task S.23): the model asked or "Automatic" among the
     /// account's models as last listed ([`AiAccounts::known_models`], asked anew only for a model
-    /// the list lacks), then [`crate::assistant::place_of`] for that model. Only models turned on
+    /// the list lacks), then [`torro_core::ai::place_of`] for that model. Only models turned on
     /// count (task S.24, [`crate::assistant::ModelAccess::choose_on`]).
     fn model<'a>(
         &'a self,
@@ -13333,8 +13160,8 @@ impl crate::assistant::Host for Core {
             let server = self.ai.server(engine).await;
             // An account removed meanwhile counts as elsewhere: nothing of mail goes to it.
             let place = |described: &torro_core::ai::AiModel| match &server {
-                Some((kind, server)) => crate::assistant::place_of(*kind, server, described),
-                None => crate::assistant::Place::Remote,
+                Some((kind, server)) => torro_core::ai::place_of(*kind, server, described),
+                None => torro_core::ai::Place::Remote,
             };
             // Only models turned on count (task S.24): one asked that is off gives way to
             // "Automatic" among those of this account that are on.
@@ -13351,16 +13178,6 @@ impl crate::assistant::Host for Core {
             let (model, place) = crate::assistant::ModelAccess::choose_on(listed, model, asked_on, place, off)?;
             Ok(crate::assistant::ModelAccess { provider, model, place })
         })
-    }
-
-    /// The setting `mail_to_cloud` as it is now (task C.17).
-    fn data_rule(&self) -> crate::assistant::DataRule {
-        crate::assistant::DataRule { mail_to_cloud: self.settings.current().mail_to_cloud }
-    }
-
-    /// The tools a person switched on now (issue #225, setting `tool_enabled`).
-    fn tools_on(&self) -> std::collections::BTreeSet<torro_core::settings::ToolId> {
-        self.settings.current().tools.enabled
     }
 
     /// The server tools a client with `rights` may call now (issue #302, task MA.6), as
@@ -13600,10 +13417,9 @@ impl crate::assistant::Host for Core {
         request: Request,
         engine: &'a str,
         untrusted: bool,
-        read_mail: bool,
         without: &'a [Area],
     ) -> torro_core::ai::BoxFuture<'a, Response> {
-        let scope = Scope::Asking { conversation: main, without, read_mail };
+        let scope = Scope::Asking { conversation: main, without };
         Box::pin(self.handle_as(
             self.assistant_client(),
             request,
@@ -13624,7 +13440,7 @@ impl crate::assistant::Host for Core {
         engine: &'a str,
         untrusted: bool,
     ) -> torro_core::ai::BoxFuture<'a, Response> {
-        let scope = Scope::Asking { conversation: from.main, without: from.without, read_mail: from.read_mail };
+        let scope = Scope::Asking { conversation: from.main, without: from.without };
         Box::pin(self.handle_as(self.assistant_client(), request, engine, untrusted, scope, from.mode, (None, None)))
     }
 }
@@ -13635,7 +13451,7 @@ enum Scope<'a> {
     Own,
     /// The assistant answering in its conversation `conversation`, without the areas `without`: a
     /// `bots.ask_bot` is checked against what the person said there.
-    Asking { conversation: &'a str, without: &'a [Area], read_mail: bool },
+    Asking { conversation: &'a str, without: &'a [Area] },
     /// A bot's run for the assistant.
     Delegated(&'a crate::assistant::Delegation),
 }
@@ -13648,8 +13464,6 @@ struct AskedFrom {
     /// The areas switched off there (and for a lent key those it was lent without): the bot runs
     /// without them.
     without: Vec<Area>,
-    /// The assistant's model read mail there (never with a lent key: lent without mail).
-    read_mail: bool,
     /// The permission mode of the assistant's answer (issue #132): the bot runs in it as well.
     mode: Mode,
 }
@@ -13813,30 +13627,30 @@ fn decided_ids(request: &Request, origin: &crate::approvals::Origin) -> Vec<Stri
     ids
 }
 
-/// Whether `reach` may see notes of the assistant's memory kept from remote models
+/// Whether `reach` may see notes of the assistant's memory that come from mail
 /// ([`torro_ipc::assistant::Note::local_only`], task C.10): the suite, and a client with read access
-/// to mail – such a note may retell a mail. A key lent to an agent never has mail.
+/// to mail – such a note may retell a mail.
 /// `assistant.my_access` (issue #134) for a client admitted with `rights` (already narrowed as the
 /// core checks its commands: by the areas of a lent key, and for a bot that runs for the assistant to
-/// what both may), the request coming as `origin` says: the engine, and its areas split into those the
-/// engine never gets ([`crate::assistant::never_given`]) – as far as the run went without them, which
-/// it does not with mail let out (task C.17) – and those switched off in the conversation.
-fn my_access(
-    rights: &torro_ipc::api::Rights,
-    origin: &crate::approvals::Origin,
-    tools: &torro_core::settings::Tools,
-) -> Response {
-    let never_given = origin.engine.as_deref().map_or(&[][..], crate::assistant::never_given);
-    let never: Vec<Area> = never_given.iter().filter(|area| origin.without.contains(area)).copied().collect();
-    let never = never.as_slice();
-    let switched_off: Vec<Area> = origin.without.iter().filter(|area| !never.contains(area)).copied().collect();
-    // "All tools" written out without `web` (issue #305, decision 26): `web` only when named.
-    let rights = torro_ipc::api::Rights { tools: rights.reached_tools(), ..rights.clone() };
+/// what both may), the request coming as `origin` says: the engine, and the areas switched off in the
+/// conversation.
+fn my_access(rights: &torro_ipc::api::Rights, origin: &crate::approvals::Origin) -> Response {
+    // "All tools" written out (issue #305, decision 26): `web` only when named. Rights opened like
+    // the assistant's (issue #666) reach every tool, also one added later, so they keep "all".
+    let every = torro_core::settings::ToolId::ALL.into_iter().all(|tool| rights.reaches_tool(tool));
+    let tools = if every && rights.tools == Selection::All { Selection::All } else { rights.reached_tools() };
+    let rights = torro_ipc::api::Rights { tools, ..rights.clone() };
     let access = torro_ipc::assistant::MyAccess::of(rights, origin.engine.clone());
-    // The tools a person switched on (issue #225), so an agent tells a switched-off tool from one
-    // outside its selection.
-    let access = access.with_tools_on(tools.enabled.iter().copied().collect());
-    Response::MyAccess { access: access.withholding(never).switching_off(&switched_off).in_mode(origin.mode) }
+    Response::MyAccess { access: access.switching_off(&origin.without).in_mode(origin.mode) }
+}
+
+/// Whether a client with `rights` sees the SearXNG address, which often points into the person's own
+/// network (PR #311 review): only a key a person ticked `web` for. Rights opened like the assistant's
+/// (issue #666) reach `web` with "all tools", but they and the keys lent with them search only in a
+/// conversation with the person's yes ([`Core::web_gate`]), and need no address for that (review of
+/// #663).
+fn sees_searxng(rights: &torro_ipc::api::Rights) -> bool {
+    rights.reaches_tool(torro_core::settings::ToolId::Web) && rights.extensions_default.is_none()
 }
 
 /// Whether `request` is a command of the tool `files` (issue #304): `tools.list_folder`, `find_files`,
@@ -15640,12 +15454,11 @@ mod tests {
     }
 
     /// #231 (`docs/api.md` "Transport"): a script comes through the API, an MCP client through MCP,
-    /// a hook either way; a kind from an older `clients.json` is checked like a script. With "Allow
-    /// API keys" off the script is refused and the agent is not; with "Allow MCP" off the agent and
-    /// the hook are, a key lent to the assistant is not. A closed way refuses `system.ping` too,
-    /// with the reason, and the log has the line.
+    /// a hook either way; a kind from an older `clients.json` is checked like a script. Issue #665:
+    /// no switch closes a way any more. A closed way refuses `system.ping` too, with the reason, and
+    /// the log has the line.
     #[tokio::test]
-    async fn each_kind_comes_its_way_while_its_switch_is_on() {
+    async fn each_kind_comes_its_way() {
         let dir = tempfile::tempdir().expect("temp dir");
         let core = audited(dir.path());
         let rights = RightsTemplate::ReadOnly.rights();
@@ -15683,30 +15496,6 @@ mod tests {
         };
         assert!(message.contains(crate::clients::MCP_KEY), "{message}");
 
-        let switch = |key, on: bool| Request::SetSetting { key, value: serde_json::json!(on) };
-        assert_eq!(core.handle(switch(SettingKey::AllowApiKeys, false)).await, Response::Ok);
-        let Response::Error { code, message } = ask_via(&core, Some(&script_key), Door::Api, Request::Ping).await
-        else {
-            panic!("refused");
-        };
-        assert_eq!((code.as_str(), message.contains(crate::clients::API_OFF)), ("unauthorized", true), "{message}");
-        assert_eq!(ping_via(&core, &old, Door::Api).await, "unauthorized");
-        assert_eq!(ping_via(&core, &agent, Door::Mcp).await, "pong", "MCP stays open");
-        assert_eq!(ping_via(&core, &hook, Door::Mcp).await, "pong");
-
-        assert_eq!(core.handle(switch(SettingKey::AllowApiKeys, true)).await, Response::Ok);
-        assert_eq!(core.handle(switch(SettingKey::AllowMcp, false)).await, Response::Ok);
-        let Response::Error { message, .. } = ask_via(&core, Some(&agent), Door::Mcp, Request::Ping).await else {
-            panic!("refused");
-        };
-        assert!(message.contains(crate::clients::MCP_OFF), "{message}");
-        for door in [Door::Api, Door::Mcp] {
-            assert_eq!(ping_via(&core, &hook, door).await, "unauthorized", "{door:?}");
-            assert_eq!(ping_via(&core, &other, door).await, "unauthorized", "{door:?}");
-            assert_eq!(ping_via(&core, lent.key(), door).await, "pong", "the assistant is bound to no switch");
-            assert_eq!(ping_via(&core, &stored, door).await, "unauthorized", "not its stored key");
-        }
-        assert_eq!(ping_via(&core, &script_key, Door::Api).await, "pong", "the API stays open");
         assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
 
         let logged = audit_lines(dir.path());
@@ -15745,31 +15534,20 @@ mod tests {
             assert!(entries.iter().any(|entry| entry.client.as_deref() == Some(&client.id)
                 && entry.command == "system.ping"
                 && entry.result == "ok"));
-            assert_eq!(
-                core.handle(Request::SetSetting { key: SettingKey::AllowMcp, value: serde_json::json!(false) }).await,
-                Response::Ok
-            );
-            assert_eq!(ping_via(&core, &key, Door::Mcp).await, "unauthorized");
-            assert_eq!(
-                core.handle(Request::SetSetting { key: SettingKey::AllowMcp, value: serde_json::json!(true) }).await,
-                Response::Ok
-            );
         }
     }
 
-    /// #231: an approval asked for while the command was on and MCP open runs after "Allow" only if
-    /// both still hold: switched off meanwhile it is `forbidden`, with MCP off `unauthorized`.
+    /// #231: an approval asked for while the command was on runs after "Allow" only if it still is:
+    /// switched off meanwhile it is `forbidden`.
     #[tokio::test]
-    async fn an_approval_does_not_run_once_its_command_or_its_way_is_turned_off() {
+    async fn an_approval_does_not_run_once_its_command_is_turned_off() {
         let dir = tempfile::tempdir().expect("temp dir");
         let core = core(dir.path());
         save_template(&core, "dev");
-        save_template(&core, "review");
         let app_key = crate::clients::tests::app_key(dir.path());
         let (id, key) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
         let delete = |id: &str| Request::DeleteTemplate { id: id.into() };
         let first = waits(ask(&core, Some(&key), delete("dev")).await);
-        let second = waits(ask(&core, Some(&key), delete("review")).await);
         let outcome = |approval: torro_ipc::ApprovalInfo| match approval.state {
             torro_ipc::ApprovalState::Done { response } => code(&response).to_string(),
             other => panic!("expected a run, got {other:?}"),
@@ -15777,82 +15555,11 @@ mod tests {
 
         let mut narrowed = RightsTemplate::ReadAndWrite.rights();
         narrowed.denied = ["workspaces.delete_template".to_string()].into();
-        let update = Request::UpdateClient { id: id.clone(), rights: narrowed };
+        let update = Request::UpdateClient { id, rights: narrowed };
         assert_eq!(ask(&core, Some(&app_key), update).await, Response::Ok);
         let allowed = approval(ask(&core, Some(&app_key), decide(&first.id, true)).await);
         assert_eq!(outcome(allowed), "forbidden");
         assert!(core.store.load("dev").is_ok(), "not deleted");
-
-        let update = Request::UpdateClient { id, rights: RightsTemplate::ReadAndWrite.rights() };
-        assert_eq!(ask(&core, Some(&app_key), update).await, Response::Ok);
-        let off = Request::SetSetting { key: SettingKey::AllowMcp, value: serde_json::json!(false) };
-        assert_eq!(core.handle(off).await, Response::Ok);
-        let allowed = approval(ask(&core, Some(&app_key), decide(&second.id, true)).await);
-        assert_eq!(outcome(allowed), "unauthorized");
-        assert!(core.store.load("review").is_ok(), "not deleted");
-    }
-
-    /// #231: an approval asked for with the assistant's stored key (handed out before #231, used like
-    /// an MCP client's) does not run once MCP is off, as no request with it would; one asked for with
-    /// a key the core lent the assistant is bound to no switch and runs.
-    #[tokio::test]
-    async fn an_approval_of_a_stored_assistant_key_does_not_pass_allow_mcp() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let core = core(dir.path());
-        save_template(&core, "dev");
-        save_template(&core, "review");
-        let app_key = crate::clients::tests::app_key(dir.path());
-        let rights = RightsTemplate::ReadAndWrite.rights();
-        let (assistant, stored) =
-            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, rights).await.expect("added");
-        let lent = core.clients.lend(&assistant.id, "claude-code", &[]).expect("lent");
-        let delete = |id: &str| Request::DeleteTemplate { id: id.into() };
-        let by_stored = waits(ask_via(&core, Some(&stored), Door::Mcp, delete("dev")).await);
-        let by_lent = waits(ask_via(&core, Some(lent.key()), Door::Mcp, delete("review")).await);
-
-        let off = Request::SetSetting { key: SettingKey::AllowMcp, value: serde_json::json!(false) };
-        assert_eq!(core.handle(off).await, Response::Ok);
-        let ran = |approval: torro_ipc::ApprovalInfo| match approval.state {
-            torro_ipc::ApprovalState::Done { response } => *response,
-            other => panic!("expected a run, got {other:?}"),
-        };
-        let allowed = ran(approval(ask(&core, Some(&app_key), decide(&by_stored.id, true)).await));
-        assert_eq!(code(&allowed), "unauthorized", "the stored key is checked like an MCP client's");
-        assert!(core.store.load("dev").is_ok(), "not deleted");
-        let allowed = ran(approval(ask(&core, Some(&app_key), decide(&by_lent.id, true)).await));
-        assert_eq!(allowed, Response::Ok, "a lent key passes");
-        assert!(core.store.load("review").is_err(), "deleted");
-    }
-
-    /// #231: no client opens the API or MCP again, also with every right in `settings`; closing
-    /// them is an admin change that waits for a person.
-    #[tokio::test]
-    async fn only_people_open_the_api_and_mcp_and_clients_may_close_them() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let core = core(dir.path());
-        let app_key = crate::clients::tests::app_key(dir.path());
-        let mut rights = RightsTemplate::FullAccess.rights();
-        rights.areas.insert(Area::Settings, AreaRights { level: Level::Full, admin: true });
-        let (_, agent) = client(&core, rights.clone()).await;
-        let (_, script) = core.clients.add("Backup", "script", rights).await.expect("added");
-        let switch = |key, on: bool| Request::SetSetting { key, value: serde_json::json!(on) };
-        for (key, setting) in [(&script, SettingKey::AllowMcp), (&agent, SettingKey::AllowApiKeys)] {
-            assert_eq!(code(&ask(&core, Some(key), switch(setting, true)).await), "forbidden", "{setting:?}");
-        }
-        let mut whole = settings(&core).await;
-        assert_eq!(core.handle(switch(SettingKey::AllowApiKeys, false)).await, Response::Ok);
-        whole.allow_api_keys = true;
-        let refused = ask(&core, Some(&agent), Request::UpdateSettings { settings: whole }).await;
-        assert_eq!(code(&refused), "forbidden", "the whole settings do not open it either");
-        assert!(!settings(&core).await.allow_api_keys);
-        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
-
-        let asked = waits(ask(&core, Some(&agent), switch(SettingKey::AllowMcp, false)).await);
-        assert!(settings(&core).await.allow_mcp, "not before a person allows it");
-        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
-        assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
-        assert!(!settings(&core).await.allow_mcp, "closed once the person allowed it");
-        assert_eq!(ask(&core, Some(&app_key), switch(SettingKey::AllowMcp, true)).await, Response::Ok);
     }
 
     /// The approval a `pending` answer names; panics on any other answer.
@@ -16646,15 +16353,15 @@ mod tests {
         assert_eq!(code(&ask(&core, Some(&outsider), Request::ListCatalog).await), "forbidden");
     }
 
-    /// Issue #225, point 9 of "Was nie nach außen geht": no client switches a tool of the assistant
-    /// on, sets the PDF folder or a template's logo, not with every right, neither one setting at a
-    /// time nor with the whole settings, and nobody is asked to approve it. Switching off, removing
-    /// a path, keeping the stored one and the other fields of a template are admin changes like any
-    /// other, after approval. Only the app key switches on and sets paths.
+    /// Issue #225, point 9 of "Was nie nach außen geht": no client sets the PDF folder or a
+    /// template's logo, not with every right, neither one setting at a time nor with the whole
+    /// settings, and nobody is asked to approve it. Removing a path, keeping the stored one and the
+    /// other fields of a template are admin changes like any other, after approval. Only the app key
+    /// sets paths.
     #[tokio::test]
-    async fn only_people_switch_tools_on_and_set_their_paths() {
+    async fn only_people_set_the_paths_of_tools() {
         use serde_json::json;
-        use torro_core::settings::{PdfTemplate, PdfTemplateId, ToolId};
+        use torro_core::settings::{PdfTemplate, PdfTemplateId};
         use torro_ipc::SettingKey;
         let dir = tempfile::tempdir().expect("temp dir");
         let core = core(dir.path());
@@ -16666,10 +16373,6 @@ mod tests {
         let app_key = crate::clients::tests::app_key(dir.path());
         let folder = dir.path().join("PDFs").to_string_lossy().into_owned();
         let logo = dir.path().join("logo.png").to_string_lossy().into_owned();
-        let switch = |on: bool| Request::SetSetting {
-            key: SettingKey::ToolEnabled,
-            value: json!({"tool": ToolId::Pdf.name(), "enabled": on}),
-        };
         let folder_to = |path: Option<&str>| Request::SetSetting { key: SettingKey::PdfFolder, value: json!(path) };
         let note_with = |logo: Option<&str>| {
             let mut note = PdfTemplate::standard(PdfTemplateId::Note);
@@ -16677,29 +16380,26 @@ mod tests {
             Request::SetSetting { key: SettingKey::PdfTemplate, value: note.to_value(PdfTemplateId::Note) }
         };
 
-        for refused in [switch(true), folder_to(Some(&folder)), note_with(Some(&logo))] {
+        for refused in [folder_to(Some(&folder)), note_with(Some(&logo))] {
             assert_eq!(code(&ask(&core, Some(&key), refused.clone()).await), "forbidden", "{refused:?}");
         }
         let read = settings(&core).await;
-        let mut on = read.clone();
-        on.tools.set_on(ToolId::Pdf, true);
         let mut with_folder = read.clone();
         with_folder.tools.pdf.folder = Some(folder.clone());
         let mut with_logo = read.clone();
         with_logo.tools.pdf.letter.logo = Some(logo.clone());
-        for whole in [on, with_folder, with_logo] {
+        for whole in [with_folder, with_logo] {
             let update = Request::UpdateSettings { settings: whole };
             assert_eq!(code(&ask(&core, Some(&key), update).await), "forbidden");
         }
         assert_eq!(settings(&core).await.tools, read.tools, "nothing changed");
         assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
 
-        // The person switches it on and sets the paths.
-        for request in [switch(true), folder_to(Some(&folder)), note_with(Some(&logo))] {
+        // The person sets the paths.
+        for request in [folder_to(Some(&folder)), note_with(Some(&logo))] {
             assert_eq!(ask(&core, Some(&app_key), request).await, Response::Ok);
         }
         let set = settings(&core).await;
-        assert!(set.tools.is_on(ToolId::Pdf));
         assert_eq!(
             (set.tools.pdf.folder.as_deref(), set.tools.pdf.note.logo.as_deref()),
             (Some(&*folder), Some(&*logo))
@@ -16710,14 +16410,13 @@ mod tests {
             assert!(asked.command.starts_with("settings."), "{}", asked.command);
         }
 
-        // Off and removing: admin changes, run once the person allows them.
-        for request in [switch(false), folder_to(None), note_with(None)] {
+        // Removing: admin changes, run once the person allows them.
+        for request in [folder_to(None), note_with(None)] {
             let asked = waits(ask(&core, Some(&key), request).await);
             let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
             assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
         }
         let tools = settings(&core).await.tools;
-        assert!(!tools.is_on(ToolId::Pdf), "off once the person allowed it");
         assert_eq!((tools.pdf.folder, tools.pdf.note.logo, tools.pdf.note.font_size_pt), (None, None, 9));
     }
 
@@ -16832,11 +16531,11 @@ mod tests {
         assert!(!core.mail.sender_logos().on());
     }
 
-    /// Issue #304, task WD.1: the commands of the tool `files` go by its switch and selection like the PDF
+    /// Issue #304, task WD.1: the commands of the tool `files` go by its selection like the PDF
     /// tool's. Listing and finding need read access to `tools` only; without an allowed folder there is
     /// nothing to list and nothing to move to the trash.
     #[tokio::test]
-    async fn the_files_tool_goes_by_its_switch_and_selection() {
+    async fn the_files_tool_goes_by_its_selection() {
         use torro_core::settings::ToolId;
         let dir = tempfile::tempdir().expect("temp dir");
         let core = core(dir.path());
@@ -16845,23 +16544,13 @@ mod tests {
         rights.tools = Selection::Only(vec!["pdf".into()]);
         let (id, key) = client(&core, rights.clone()).await;
         let list = || Request::ListFolder { path: None };
-        let switch = |on: bool| Request::SetSetting {
-            key: torro_ipc::SettingKey::ToolEnabled,
-            value: serde_json::json!({"tool": "files", "enabled": on}),
-        };
 
-        let off = Lack::ToolOff { tool: ToolId::Files }.message();
-        for key in [&key, &app_key] {
-            let refused = ask(&core, Some(key), list()).await;
-            assert!(code(&refused) == "forbidden" && message(&refused).contains(&off), "{refused:?}");
-        }
-        assert_eq!(ask(&core, Some(&app_key), switch(true)).await, Response::Ok);
         let refused = ask(&core, Some(&key), list()).await;
         let not_granted = Lack::Tool { tool: ToolId::Files }.message();
         assert!(code(&refused) == "forbidden" && message(&refused).contains(&not_granted), "{refused:?}");
         let Response::Tools { tools } = ask(&core, Some(&key), Request::ListTools).await else { panic!("the tools") };
         let files = tools.iter().find(|tool| tool.id == ToolId::Files).expect("listed");
-        assert_eq!((files.enabled, files.allowed), (true, false));
+        assert!(!files.allowed);
 
         rights.tools = Selection::Only(vec!["files".into()]);
         core.clients.update(&id, rights.clone()).await.expect("updated");
@@ -16880,7 +16569,7 @@ mod tests {
         assert_eq!(code(&ask(&core, Some(&app_key), Request::TrashFile { path: path() }).await), "not-found");
     }
 
-    /// A core whose tool `files` is switched on with `folder` allowed for reading and writing, and a client of
+    /// A core whose tool `files` has `folder` allowed for reading and writing, and a client of
     /// `rights` (issue #304, task WD.2).
     async fn files_core(dir: &std::path::Path, folder: &std::path::Path, rights: Rights) -> (Core, Key, Key) {
         files_core_with(dir, folder, rights, crate::tools::tests::Room::new().tools()).await
@@ -16896,12 +16585,9 @@ mod tests {
         let core = core(dir).with_tools(tools);
         let app_key = crate::clients::tests::app_key(dir);
         let folder = folder.to_string_lossy().into_owned();
-        for (key, value) in [
-            (torro_ipc::SettingKey::ToolEnabled, serde_json::json!({"tool": "files", "enabled": true})),
-            (torro_ipc::SettingKey::AllowedFolder, serde_json::json!({"path": folder, "access": "read_write"})),
-        ] {
-            assert_eq!(ask(&core, Some(&app_key), Request::SetSetting { key, value }).await, Response::Ok);
-        }
+        let key = torro_ipc::SettingKey::AllowedFolder;
+        let value = serde_json::json!({"path": folder, "access": "read_write"});
+        assert_eq!(ask(&core, Some(&app_key), Request::SetSetting { key, value }).await, Response::Ok);
         let (_, key) = client(&core, rights).await;
         (core, key, app_key)
     }
@@ -18083,22 +17769,14 @@ mod tests {
         }
     }
 
-    /// The person switches the PDF tool on or off.
-    async fn switch_pdf(core: &Core, on: bool) {
-        let value = serde_json::json!({"tool": "pdf", "enabled": on});
-        let set = Request::SetSetting { key: torro_ipc::SettingKey::ToolEnabled, value };
-        assert_eq!(core.handle(set).await, Response::Ok);
-    }
-
     fn make_pdf(title: &str) -> Request {
         Request::CreatePdf { title: title.into(), markdown: "# Offer\n\nÄpfel für Müller.".into(), template: None }
     }
 
-    /// Issue #225, task WZ.4: a command of the PDF tool runs only with its switch and, for a client,
-    /// with the tool in its selection; both are checked before anyone is asked to approve it and
-    /// again when it runs. Switched off it is `forbidden` for the app key too.
+    /// Issue #225, task WZ.4: a command of the PDF tool runs for a client only with the tool in its
+    /// selection, checked before anyone is asked to approve it and again when it runs.
     #[tokio::test]
-    async fn the_pdf_tool_runs_only_switched_on_and_selected() {
+    async fn the_pdf_tool_runs_only_selected() {
         let dir = tempfile::tempdir().expect("temp dir");
         let room = crate::tools::tests::Room::new();
         let core = core(dir.path()).with_tools(room.tools());
@@ -18108,21 +17786,10 @@ mod tests {
         let (id, key) = client(&core, rights.clone()).await;
         let nothing_asked = || async { core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty() };
 
-        // Off: refused for every key with the reason, nobody asked; listing still works.
-        let off = torro_ipc::api::Lack::ToolOff { tool: torro_core::settings::ToolId::Pdf }.message();
-        for key in [&key, &app_key] {
-            let refused = ask(&core, Some(key), make_pdf("Offer")).await;
-            assert_eq!(code(&refused), "forbidden");
-            assert!(message(&refused).contains(&off), "{refused:?}");
-        }
-        assert_eq!(code(&core.handle(Request::OpenFile { file: "1a2b3c4d".into() }).await), "forbidden");
-        assert!(nothing_asked().await, "nothing to approve");
         let Response::Tools { tools } = ask(&core, Some(&key), Request::ListTools).await else { panic!("the tools") };
-        assert_eq!((tools[0].enabled, tools[0].allowed), (false, true));
-        assert_eq!(std::fs::read_dir(room.desktop()).expect("listed").count(), 0, "nothing written");
+        assert!(tools[0].allowed);
 
-        // On, but not in the client's selection: refused with that reason, nobody asked.
-        switch_pdf(&core, true).await;
+        // Not in the client's selection: refused with that reason, nobody asked.
         rights.tools = Selection::Only(Vec::new());
         core.clients.update(&id, rights.clone()).await.expect("updated");
         let refused = ask(&core, Some(&key), make_pdf("Offer")).await;
@@ -18143,28 +17810,20 @@ mod tests {
         let file = made_file(&response);
         assert_eq!(std::path::PathBuf::from(&file.path), room.desktop().join("Offer.pdf"));
 
-        // Taken out of the selection after the ask: refused when it runs; switched off likewise.
+        // Taken out of the selection after the ask: refused when it runs.
         let asked = waits(ask(&core, Some(&key), make_pdf("Offer")).await);
         rights.tools = Selection::Only(Vec::new());
         core.clients.update(&id, rights.clone()).await.expect("updated");
         let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
         let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("ran: {allowed:?}") };
         assert_eq!(code(&response), "forbidden");
-        rights.tools = Selection::All;
-        core.clients.update(&id, rights.clone()).await.expect("updated");
-        let asked = waits(ask(&core, Some(&key), make_pdf("Offer")).await);
-        switch_pdf(&core, false).await;
-        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
-        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("ran: {allowed:?}") };
-        assert_eq!(code(&response), "forbidden");
         assert_eq!(std::fs::read_dir(room.desktop()).expect("listed").count(), 1, "only the allowed one");
     }
 
-    /// Issue #225 (review): a client whose rights do not cover a tool's command hears of its rights,
-    /// not of the switch, also while the tool is switched off; only with the rights does the switch
-    /// count, and then the selection. Nobody is asked to approve any of it.
+    /// Issue #225 (review): a client whose rights do not cover a tool's command hears of its rights;
+    /// only with the rights does the selection count. Nobody is asked to approve any of it.
     #[tokio::test]
-    async fn a_tool_refuses_for_the_rights_before_the_switch() {
+    async fn a_tool_refuses_for_the_rights_before_the_selection() {
         let dir = tempfile::tempdir().expect("temp dir");
         let room = crate::tools::tests::Room::new();
         let core = core(dir.path()).with_tools(room.tools());
@@ -18179,31 +17838,27 @@ mod tests {
             assert!(message(&refused).contains(&lack.message()), "{lack:?}: {refused:?}");
         };
 
-        // Off, and no access to `tools` at all, then only read access: the rights say why.
+        // No access to `tools` at all, then only read access: the rights say why.
         refused_for(Lack::Area { area: Area::Tools }).await;
         rights.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
         core.clients.update(&id, rights.clone()).await.expect("updated");
         refused_for(Lack::Level { area: Area::Tools, needs: Access::Write }).await;
-        // Allowed by the rights: the switch, then (switched on) the selection.
+        // Allowed by the rights: the selection.
         rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
         rights.tools = Selection::Only(Vec::new());
         core.clients.update(&id, rights.clone()).await.expect("updated");
-        refused_for(Lack::ToolOff { tool: pdf }).await;
-        switch_pdf(core, true).await;
         refused_for(Lack::Tool { tool: pdf }).await;
         assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing asked");
     }
 
     /// Issue #225, task WZ.4: a client reaches only the files it made, the person all of them; only
     /// the app key saves a copy elsewhere; a file changed behind the core's back is gone for all.
-    /// `assistant.my_access` names the switched-on tools.
     #[tokio::test]
     async fn the_tools_files_are_their_makers() {
         let dir = tempfile::tempdir().expect("temp dir");
         let room = crate::tools::tests::Room::new();
         let core = audited(dir.path()).with_tools(room.tools());
         let app_key = crate::clients::tests::app_key(dir.path());
-        switch_pdf(&core, true).await;
         let (_, first) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
         let (_, second) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
 
@@ -18223,13 +17878,6 @@ mod tests {
         assert_eq!(code(&ask(&core, Some(&app_key), save("00000000")).await), "not-found");
         assert_eq!(ask(&core, Some(&app_key), save(&mine.id)).await, Response::Ok);
 
-        let assistant = core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant()).await;
-        let (_, assistant) = assistant.expect("the assistant's client");
-        let Response::MyAccess { access } = ask(&core, Some(&assistant), Request::MyAccess).await else {
-            panic!("the access")
-        };
-        assert_eq!(access.tools_on, Some(vec![torro_core::settings::ToolId::Pdf]));
-
         std::fs::write(&mine.path, b"%PDF exchanged").expect("exchanged");
         assert_eq!(code(&ask(&core, Some(&first), open(&mine.id)).await), "not-found");
         assert_eq!(code(&ask(&core, Some(&app_key), open(&mine.id)).await), "not-found");
@@ -18240,15 +17888,13 @@ mod tests {
     }
 
     /// Task WZ.8: `apps.open_app` with `file:<id>` opens a new mail with a file of the register: the
-    /// person's any, a client's only its own while the PDF tool is on, `tools` readable and `pdf`
-    /// selected. An unknown id and another client's file are `not-found` before anyone is asked;
+    /// person's any, a client's only its own with `tools` readable and `pdf` selected. An unknown id and another client's file are `not-found` before anyone is asked;
     /// an approval names the title the register keeps, and the log neither title nor path.
     #[tokio::test]
     async fn a_tools_file_goes_to_a_new_mail_only_for_its_maker() {
         let dir = tempfile::tempdir().expect("temp dir");
         let room = crate::tools::tests::Room::new();
         let core = audited(dir.path()).with_tools(room.tools());
-        switch_pdf(&core, true).await;
         let rights = RightsTemplate::ReadAndWrite.rights();
         let (maker, first) = client(&core, rights.clone()).await;
         let (other, second) = client(&core, rights.clone()).await;
@@ -18272,9 +17918,6 @@ mod tests {
         let mut unreadable = rights.clone();
         unreadable.areas.remove(&Area::Tools);
         assert_eq!(refused(open_in(Reach::Client(&unreadable), Maker::Client(&maker)).await), "not-found");
-        switch_pdf(&core, false).await;
-        assert_eq!(refused(open_in(Reach::Client(&rights), Maker::Client(&maker)).await), "not-found", "off");
-        switch_pdf(&core, true).await;
 
         // Through the API: refused before anyone is asked; a wrong app or form is `error`.
         let open = |app: &str, target: &str| Request::OpenApp { app: app.into(), target: Some(target.into()) };
@@ -18293,44 +17936,6 @@ mod tests {
         let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("the log");
         assert!(log.contains("apps.open_app"), "{log}");
         assert!(!log.contains("Offer") && !log.contains(&*room.dir.path().to_string_lossy()), "{log}");
-    }
-
-    /// Task C.17: no client lets mail go to cloud models, not with every right,
-    /// neither one setting at a time nor with the whole settings; keeping it local again is an
-    /// admin change like any other, after approval. Only the app key switches it on.
-    #[tokio::test]
-    async fn only_people_let_mail_go_to_the_cloud_and_agents_may_keep_it_local() {
-        use torro_ipc::SettingKey;
-        let dir = tempfile::tempdir().expect("temp dir");
-        let core = core(dir.path());
-        let mut rights = RightsTemplate::FullAccess.rights();
-        for area in Area::ALL {
-            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
-        }
-        let (_, key) = client(&core, rights).await;
-        let app_key = crate::clients::tests::app_key(dir.path());
-        let rule = |on: bool| Request::SetSetting { key: SettingKey::MailToCloud, value: serde_json::json!(on) };
-
-        let refused = ask(&core, Some(&key), rule(true)).await;
-        assert_eq!(code(&refused), "forbidden");
-        let mut whole = settings(&core).await;
-        whole.mail_to_cloud = true;
-        assert_eq!(
-            code(&ask(&core, Some(&key), Request::UpdateSettings { settings: whole.clone() }).await),
-            "forbidden"
-        );
-        assert!(!settings(&core).await.mail_to_cloud, "still local");
-        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
-
-        assert_eq!(ask(&core, Some(&app_key), rule(true)).await, Response::Ok);
-        assert!(settings(&core).await.mail_to_cloud);
-        let asked = waits(ask(&core, Some(&key), Request::UpdateSettings { settings: whole }).await);
-        assert_eq!(asked.command, "settings.update_settings", "with mail out, the settings as read change nothing");
-
-        let asked = waits(ask(&core, Some(&key), rule(false)).await);
-        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
-        assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
-        assert!(!settings(&core).await.mail_to_cloud, "local again once the person allowed it");
     }
 
     /// Task TE.1: no client turns maps on or names another tile or search service, not with every
@@ -18490,8 +18095,7 @@ mod tests {
     }
 
     /// Issue #305, decisions 20 and 26, task WEB.4: the web's commands are checked like the PDF
-    /// tool's – the switch for everyone, `web` only when a person named it in the client's
-    /// selection, reading in `tools` is enough – and then run without asking anyone, also for a
+    /// tool's – `web` only when a person named it in the client's selection, reading in `tools` is enough – and then run without asking anyone, also for a
     /// client asking before every change. No provider on is `not-connected`. The log names the
     /// commands, never the words or the address. `tools.list_tools` and `assistant.my_access`
     /// never let "all tools" stand for `web`.
@@ -18519,12 +18123,6 @@ mod tests {
             assert!(message(&refused).contains(&lack.message()), "{lack:?}: {refused:?}");
         };
 
-        let off = Lack::ToolOff { tool: ToolId::Web };
-        refused_for(search(), off).await;
-        assert_eq!(code(&ask(core, Some(&app_key), search()).await), "forbidden", "off for the person too");
-        let value = serde_json::json!({"tool": "web", "enabled": true});
-        let on = Request::SetSetting { key: torro_ipc::SettingKey::ToolEnabled, value };
-        assert_eq!(core.handle(on).await, Response::Ok);
         refused_for(search(), Lack::Tool { tool: ToolId::Web }).await;
         refused_for(fetch(), Lack::Tool { tool: ToolId::Web }).await;
         let access = my_access_of(&ask(core, Some(key), Request::MyAccess).await);
@@ -18568,12 +18166,11 @@ mod tests {
     /// SearXNG without them.
     #[tokio::test]
     async fn only_a_client_reaching_the_web_sees_the_searxng_address() {
-        use torro_core::settings::{SearchProviderId, ToolId};
+        use torro_core::settings::SearchProviderId;
         let dir = tempfile::tempdir().expect("temp dir");
         let core = with_web(dir.path(), crate::tools::web::testing::offline());
         let app_key = crate::clients::tests::app_key(dir.path());
         let mut whole = Box::new(settings(&core).await);
-        whole.tools.set_on(ToolId::Web, true);
         whole.web_search.searxng = Some("http://192.168.1.20:8888".into());
         let update = Request::UpdateSettings { settings: *whole };
         assert_eq!(Box::pin(ask(&core, Some(&app_key), update)).await, Response::Ok);
@@ -18610,6 +18207,17 @@ mod tests {
         assert_eq!(searxng(&app_key).await, named, "the person's settings");
         for asker in [&key, &app_key] {
             assert_eq!(stored(asker).await.as_deref(), Some("http://192.168.1.20:8888"));
+        }
+        // Review of #663: the assistant, opened, reaches web with "all tools", but searches only in a
+        // conversation with the person's yes and sees no address, with its own key or a lent one.
+        let mut assistant = Rights::assistant();
+        assistant.areas.insert(Area::Settings, AreaRights { level: Level::Read, admin: false });
+        let (client, own) =
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, assistant).await.expect("the assistant");
+        let lent = core.clients.lend(&client.id, "claude-code", &[Area::Extensions]).expect("lent");
+        for asker in [&own, lent.key()] {
+            assert_eq!(searxng(asker).await.0, None, "no address for opened rights");
+            assert_eq!(stored(asker).await, None);
         }
     }
 
@@ -18661,7 +18269,6 @@ mod tests {
     /// Markdown marked as text from outside, without asking anyone.
     #[tokio::test]
     async fn a_client_reads_a_page_only_as_robots_txt_allows() {
-        use torro_core::settings::ToolId;
         let server = httpmock::MockServer::start_async().await;
         server
             .mock_async(|when, then| {
@@ -18681,9 +18288,6 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let fetcher = crate::tools::web::testing::fetcher_on(server.port(), &["lisbon.example.org"]);
         let core = with_web(dir.path(), crate::tools::web::testing::offline().with_fetcher(fetcher));
-        let mut on = settings(&core).await;
-        on.tools.set_on(ToolId::Web, true);
-        assert_eq!(core.handle(Request::UpdateSettings { settings: on }).await, Response::Ok);
         let mut rights = RightsTemplate::ReadOnly.rights();
         rights.tools = Selection::Only(vec!["web".into()]);
         let (_, key) = client(&core, rights).await;
@@ -27893,7 +27497,7 @@ mod tests {
         let local = waits(ask(&core, Some(&key), remember("ACME wants 400 €.", true)).await);
         assert_eq!(
             local.summary,
-            trf("Remember for the assistant, on this computer only: \"{note}\"", &[("note", &"ACME wants 400 €.")])
+            trf("Remember for the assistant, from mail: \"{note}\"", &[("note", &"ACME wants 400 €.")])
         );
         assert_eq!(asked.summary, trf("Forget the assistant's note \"{note}\"", &[("note", &"Anna works in sales.")]));
         for request in [Request::GetProfile, Request::ListConversations] {
@@ -28179,7 +27783,8 @@ mod tests {
 
     /// Task B.1, "Keine Ketten": a bot's client gets `forbidden` for every command of `bots` and
     /// `assistant`, with its key and as the bot's answer runs its tools, whatever rights a person gave
-    /// it; what its rights allow elsewhere works. A bot starts without any rights.
+    /// it; what its rights allow elsewhere works. A bot starts without any area, with every tool and
+    /// MCP server (issue #666).
     #[tokio::test]
     async fn a_bots_client_never_reaches_bots_or_the_assistant() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -28187,7 +27792,7 @@ mod tests {
         let core = audited(dir.path()).with_assistant(assistant);
         let bot = bot_of(core.handle(new_bot("Travel planner")).await);
         let info = core.clients.list().into_iter().find(|info| info.id == bot.client).expect("its client");
-        assert_eq!((info.kind.as_str(), &info.rights), (torro_ipc::api::BOT_CLIENT, &Rights::none()));
+        assert_eq!((info.kind.as_str(), &info.rights), (torro_ipc::api::BOT_CLIENT, &Rights::none().opened()));
         let (_, key) = core.clients.new_key(&bot.client).await.expect("a key to try it with");
         assert_eq!(code(&ask(&core, Some(&key), Request::CalendarCollections).await), "forbidden", "no rights");
 
@@ -28262,7 +27867,10 @@ mod tests {
         let made = core.assistant.bots().list().await;
         assert_eq!(made.iter().map(|bot| bot.name.as_str()).collect::<Vec<_>>(), ["Release helper", "Travel planner"]);
         let helper = core.clients.list().into_iter().find(|info| info.id == made[0].client).expect("its client");
-        assert_eq!(helper.rights, Rights::none(), "a proposed bot has no rights either");
+        // Review of #663: the assistant proposed it, a client, so it starts closed to tools and servers too.
+        let mut closed = Rights::none();
+        closed.close_extensions();
+        assert_eq!(helper.rights, closed, "a proposed bot has no rights either");
 
         for request in [
             Request::GetBot { id: travel.id.clone() },
@@ -28361,8 +27969,6 @@ mod tests {
         assert_eq!(code(&ask(&core, Some(&client_key), connect.clone()).await), "forbidden");
         let Response::Account { account } = core.handle(connect).await else { panic!("connected") };
         let engine = &account.id;
-        assert!(!core.settings.current().mail_to_cloud_in(AiSlot::Chat));
-        assert!(!core.settings.current().mail_to_cloud_in(AiSlot::Decide));
         let models = core.ai.models(engine, true).await.expect("models");
         assert!(core.ai.mark_enabled(engine, models).await.iter().all(|m| !m.enabled));
         let turn_on = switch(engine, "clef:27b", true);
@@ -28371,7 +27977,7 @@ mod tests {
         assert_eq!(core.handle(turn_on).await, Response::Ok);
         for model in [Some("clef:27b"), None] {
             let slot = SlotModel { engine: engine.clone(), model: model.map(str::to_string), effort: None };
-            assert_eq!(core.checked_slot(AiSlot::Decide, &slot, false).await, Ok(true));
+            assert_eq!(core.checked_slot(AiSlot::Decide, &slot, false).await, Ok(()));
             assert_eq!(
                 code(&core.checked_slot(AiSlot::Decide, &slot, true).await.expect_err("client refused")),
                 "forbidden"
@@ -28384,19 +27990,18 @@ mod tests {
                 core.handle(set_slot(AiSlot::Decide, Some(engine), model)).await,
                 Response::AiAssignments { .. }
             ));
-            assert!(core.settings.current().mail_to_cloud_in(AiSlot::Decide));
-            assert!(!core.settings.current().mail_to_cloud_in(AiSlot::Chat), "permissions remain separate");
-            core.handle(Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(false) })
-                .await;
             let scope = CategoryJobScope {
                 engine: Some(engine.clone()),
                 model: model.map(str::to_string),
                 ..Default::default()
             };
+            // Issue #664: a model elsewhere sorts, counted as elsewhere; naming none is no model.
             assert_eq!(
-                category_job_decider(&core.settings, &core.ai, &scope).await,
-                Err(if model.is_some() { categorize::Refusal::NotLocal } else { categorize::Refusal::NoModel })
+                category_job_decider(&core.settings, &core.ai, &scope).await.map(|(_, cloud)| cloud),
+                if model.is_some() { Ok(true) } else { Err(categorize::Refusal::NoModel) }
             );
+            // A run naming a model elsewhere that does not sort now is the person's alone.
+            assert!(matches!(core.handle(set_slot(AiSlot::Decide, None, None)).await, Response::AiAssignments { .. }));
             let scope = CategoryJobScope { model: Some("clef:27b".into()), ..scope };
             let start = Request::StartCategoryJob { scope: scope.clone() };
             assert_eq!(core.turns_on_elsewhere(&start, Reach::Suite).await, Ok(true));
@@ -28430,7 +28035,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn network_runtimes_require_mail_permission_for_models_and_automatic() {
+    async fn network_runtimes_count_as_elsewhere_for_models_and_automatic() {
         use torro_core::ai::{AiModel, AiSlot};
         for provider in AiProvider::LOCAL {
             let dir = tempfile::tempdir().expect("temp dir");
@@ -28477,33 +28082,23 @@ mod tests {
                 let assignment = set_sorting(Some(&engine), model, true);
                 assert_eq!(code(&core.handle_within(assignment, Reach::Client(&rights)).await), "forbidden");
                 assert!(matches!(core.handle(request).await, Response::AiAssignments { .. }));
-                assert!(core.settings.current().mail_to_cloud_in(AiSlot::Decide));
-                let picked = decider_of(&core.settings, &core.ai).await.expect("permitted");
+                let picked = decider_of(&core.settings, &core.ai).await.expect("a decider");
                 assert_eq!(picked.0, engine);
                 if provider == AiProvider::Ollama && model.is_none() {
-                    assert_eq!(picked.1, "nimble:cloud", "LAN Automatic may choose cloud with saved permission");
+                    assert_eq!(picked.1, "nimble:cloud", "LAN Automatic may choose cloud");
                 }
-                let off = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(false) };
-                assert_eq!(core.handle(off).await, Response::Ok);
-                assert!(decider_of(&core.settings, &core.ai).await.is_err(), "no permitted decider");
                 let scope = torro_ipc::inbox::CategoryJobScope {
                     engine: Some(engine.clone()),
                     model: Some("nimble".into()),
                     ..Default::default()
                 };
-                assert_eq!(
-                    category_job_decider(&core.settings, &core.ai, &scope).await,
-                    Err(categorize::Refusal::NotLocal)
-                );
-                let on = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(true) };
-                assert_eq!(core.handle(on).await, Response::Ok);
-                assert!(category_job_decider(&core.settings, &core.ai, &scope).await.expect("permitted job").1);
+                assert!(category_job_decider(&core.settings, &core.ai, &scope).await.expect("a job model").1);
             }
         }
     }
 
     #[tokio::test]
-    async fn network_sorting_sends_no_mail_without_permission_and_keeps_saved_permissions() {
+    async fn network_sorting_sends_mail_without_a_permission() {
         use torro_core::ai::AiSlot;
         let dir = tempfile::tempdir().expect("temp dir");
         let jev = httpmock::MockServer::start_async().await;
@@ -28534,28 +28129,13 @@ mod tests {
             serde_json::from_value(serde_json::json!({"method":"mail.search_messages", "limit":10})).expect("search");
         let Response::MailMessages { messages, .. } = core.handle(search).await else { panic!("mail") };
         let id = messages.first().expect("mail").id.clone();
-        for permission in [false, true] {
-            for key in [SettingKey::MailToCloud, SettingKey::DecideMailToCloud] {
-                assert_eq!(
-                    core.handle(Request::SetSetting { key, value: serde_json::json!(permission) }).await,
-                    Response::Ok
-                );
-            }
-            // Reopen both stores: no startup migration removes or grants permission.
-            core.settings = SettingsStore::at(dir.path().join("config/settings.json"));
-            core.ai = Arc::new(make_ai());
-            core.ai.load().await.expect("reopened accounts");
-            assert_eq!(core.settings.current().mail_to_cloud, permission);
-            assert_eq!(core.settings.current().mail_to_cloud_in(AiSlot::Decide), permission);
-            let response = core.handle(Request::ClassifyItem { id: id.clone() }).await;
-            if permission {
-                assert!(matches!(response, Response::ItemCategory { .. }), "{response:?}");
-                assert_eq!(calls.calls_async().await, 1);
-            } else {
-                assert!(!matches!(response, Response::ItemCategory { .. }));
-                assert_eq!(calls.calls_async().await, 0, "no mail sent");
-            }
-        }
+        // Issue #664: reopened, the slot sorts with the model in the network; no permission holds it.
+        core.settings = SettingsStore::at(dir.path().join("config/settings.json"));
+        core.ai = Arc::new(make_ai());
+        core.ai.load().await.expect("reopened accounts");
+        let response = core.handle(Request::ClassifyItem { id }).await;
+        assert!(matches!(response, Response::ItemCategory { .. }), "{response:?}");
+        assert_eq!(calls.calls_async().await, 1);
     }
 
     use torro_core::ai::AiProvider;
@@ -29052,90 +28632,6 @@ mod tests {
         assert!(!left_behind(&with("ai:ollama", Some("qwen3:8b")), &own, &held), "its own model");
     }
 
-    /// PR review of #325: "Keep mail here" holds for a run already going – a run whose model computes
-    /// elsewhere stops before the next mail once the permission of Sorting is off, and sends it nothing.
-    #[tokio::test]
-    async fn keeping_mail_here_stops_a_run_elsewhere_before_the_next_mail() {
-        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
-        use torro_core::ai::AiSlot;
-        use torro_ipc::inbox::{CategoryJobScope, CategoryJobState};
-
-        let dir = tempfile::tempdir().expect("temp dir");
-        let keys = MemoryTokens::default();
-        let imap = FakeImap::start(MAIL_PASSWORD).await;
-        for (id, subject) in [("m1", "Invoice 7"), ("m2", "Invoice 8")] {
-            let raw = format!(
-                "From: Bernd <bernd@example.org>\r\nTo: anna@example.org\r\nSubject: {subject}\r\nDate: {}\r\n\
-                 Message-ID: <{id}@example.org>\r\nContent-Type: text/plain\r\n\r\nPlease pay.\r\n",
-                Utc::now().to_rfc2822()
-            );
-            imap.add("INBOX", &raw, &[]);
-        }
-        let anna = mail_account("anna@example.org", &imap.endpoint);
-        store_accounts(dir.path(), &keys, &[(&anna, MAIL_PASSWORD)]);
-        let mail = service_in(dir.path(), &keys);
-        mail.reload().await;
-        mail.sync_all(Reach::Suite).await.expect("synced");
-
-        let openrouter = crate::account::ai::tests::fake_openrouter().await;
-        let arguments = serde_json::json!({"category": "invoice", "needs_reply": false, "urgency": 1}).to_string();
-        let chat = openrouter
-            .mock_async(|when, then| {
-                when.method("POST").path("/api/v1/chat/completions");
-                // Slow enough that the person switches the permission off while the first mail is asked.
-                then.status(200).delay(std::time::Duration::from_millis(600)).json_body(serde_json::json!({
-                    "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
-                        "role": "assistant", "content": "",
-                        "tool_calls": [{"id": "call_1", "type": "function",
-                                        "function": {"name": "answer", "arguments": arguments}}]
-                    }}]
-                }));
-            })
-            .await;
-        let core = Core {
-            ai: Arc::new(crate::account::ai::tests::service(dir.path(), &keys, Vec::new())),
-            ..audited(dir.path())
-        }
-        .with_mail(mail);
-        let remote = core
-            .ai
-            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), torro_core::account::Secret::new(AI_KEY))
-            .await
-            .expect("openrouter");
-        assert_eq!(core.handle(turn_on(&remote.id, "qwen/qwen3-14b")).await, Response::Ok);
-        let slot = set_slot(AiSlot::Decide, Some(&remote.id), Some("qwen/qwen3-14b"));
-        assert!(matches!(core.handle(slot).await, Response::AiAssignments { .. }));
-        assert!(core.settings.current().mail_to_cloud_in(AiSlot::Decide), "the person let sorted mail out");
-
-        let start = Request::StartCategoryJob { scope: CategoryJobScope::default() };
-        let answer = core.handle(start).await;
-        assert!(
-            matches!(&answer, Response::CategoryJob { job: Some(job) } if job.model_in_cloud == Some(true)),
-            "{answer:?}"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        let keep = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(false) };
-        assert_eq!(core.handle(keep).await, Response::Ok);
-
-        let mut ended = None;
-        for _ in 0..200 {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let Response::CategoryJob { job: Some(job) } = core.handle(Request::GetCategoryJob { id: None }).await
-            else {
-                panic!("the run")
-            };
-            if job.state != CategoryJobState::Running {
-                ended = Some(job);
-                break;
-            }
-        }
-        let job = ended.expect("the run ends");
-        assert_eq!(job.state, CategoryJobState::Failed);
-        assert_eq!(job.errors, [tr("Sorting may no longer send mail to the cloud.").to_string()]);
-        // The first mail may have been asked before the switch, never the second.
-        assert!(chat.calls_async().await <= 1, "the second mail went nowhere");
-    }
-
     /// Task E12.6: runs are numbered, so a stop asked for while one starts is never swallowed.
     #[test]
     fn a_backlog_run_that_was_told_to_stop_stays_stopped() {
@@ -29160,8 +28656,7 @@ mod tests {
         Request::SetModelEnabled { account: account.into(), model: model.into(), enabled: true }
     }
 
-    /// Issue #325 (task MW.1): `ai.list_assignments` names both slots with their model and their
-    /// mail permission – the old key `assistant_default` writes the slot Chat – and the commands
+    /// Issue #325 (task MW.1): `ai.list_assignments` names both slots with their model – the old key `assistant_default` writes the slot Chat – and the commands
     /// still to come answer `unsupported` (`ai.set_slot` works from MW.2 on).
     #[tokio::test]
     async fn the_slots_are_listed_and_the_new_commands_wait_for_their_tasks() {
@@ -29171,16 +28666,11 @@ mod tests {
         let default = serde_json::json!({"engine": "ai:ollama@localhost:11434", "model": "qwen3:8b"});
         let set = Request::SetSetting { key: SettingKey::AssistantDefault, value: default };
         assert_eq!(core.handle(set).await, Response::Ok);
-        let cloud = Request::SetSetting { key: SettingKey::MailToCloud, value: serde_json::json!(true) };
-        assert_eq!(core.handle(cloud).await, Response::Ok);
         let Response::AiAssignments { slots, .. } = core.handle(Request::AiAssignments).await else {
             panic!("assignments")
         };
-        let listed: Vec<_> = slots.iter().map(|info| (info.slot, info.label.as_str(), info.mail_to_cloud)).collect();
-        assert_eq!(
-            listed,
-            [(AiSlot::Chat, AiSlot::Chat.label(), true), (AiSlot::Decide, AiSlot::Decide.label(), false)]
-        );
+        let listed: Vec<_> = slots.iter().map(|info| (info.slot, info.label.as_str())).collect();
+        assert_eq!(listed, [(AiSlot::Chat, AiSlot::Chat.label()), (AiSlot::Decide, AiSlot::Decide.label())]);
         let chat = slots[0].chosen.as_ref().expect("the old key wrote the chat");
         assert_eq!((chat.engine.as_str(), chat.model.as_deref()), ("ai:ollama@localhost:11434", Some("qwen3:8b")));
         assert_eq!(slots[1].chosen, None);
@@ -29386,7 +28876,7 @@ mod tests {
 
         assert_eq!(core.handle(Request::AiRecommend).await, answer, "the same again");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "measured once per run");
-        let unset = [(None, None, false), (None, None, false)];
+        let unset = [(None, None), (None, None)];
         assert_eq!(slots_of(&core.handle(Request::AiAssignments).await), unset, "a suggestion sets nothing");
     }
 
@@ -29508,14 +28998,14 @@ mod tests {
         }
     }
 
-    /// The slots as `answer` lists them: engine and model of each, and its mail permission.
-    fn slots_of(answer: &Response) -> Vec<(Option<String>, Option<String>, bool)> {
+    /// The slots as `answer` lists them: engine and model of each.
+    fn slots_of(answer: &Response) -> Vec<(Option<String>, Option<String>)> {
         let Response::AiAssignments { slots, .. } = answer else { panic!("assignments: {answer:?}") };
         slots
             .iter()
             .map(|info| {
                 let chosen = info.chosen.as_ref();
-                (chosen.map(|held| held.engine.clone()), chosen.and_then(|held| held.model.clone()), info.mail_to_cloud)
+                (chosen.map(|held| held.engine.clone()), chosen.and_then(|held| held.model.clone()))
             })
             .collect()
     }
@@ -29536,16 +29026,16 @@ mod tests {
 
         assert_eq!(decider_of(&core.settings, &core.ai).await, Err(categorize::Refusal::NoModel), "nothing set");
         let answer = core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nimble"))).await;
-        assert_eq!(slots_of(&answer), [(None, None, false), (some(&engine), some("nimble"), false)]);
+        assert_eq!(slots_of(&answer), [(None, None), (some(&engine), some("nimble"))]);
         assert_eq!(decider_of(&core.settings, &core.ai).await, Ok((engine.clone(), "nimble".to_string())));
         let Response::Categorization { categorization } = core.handle(Request::GetCategorization).await else {
             panic!("categorization")
         };
         assert!(categorization.enabled && categorization.model.as_deref() == Some("nimble"), "the slot is on");
 
-        // The chat's slot takes the account alone; the permissions stay as they are.
+        // The chat's slot takes the account alone.
         let answer = core.handle(set_slot(AiSlot::Chat, Some(&engine), None)).await;
-        assert_eq!(slots_of(&answer)[0], (some(&engine), None, false));
+        assert_eq!(slots_of(&answer)[0], (some(&engine), None));
 
         // Checked like an assignment. A model with tools sorts through the fallback (task MW.3); one
         // that can do neither is refused.
@@ -29554,7 +29044,7 @@ mod tests {
             tr("This model can neither decide nor use tools. Pick one that can, like nimble or qwen3 on Ollama.");
         assert_eq!(refused, Response::Error { code: "error".into(), message: neither.to_string() });
         let answer = core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("qwen3:8b"))).await;
-        assert_eq!(slots_of(&answer)[1], (some(&engine), some("qwen3:8b"), false), "qwen3 answers in a fixed format");
+        assert_eq!(slots_of(&answer)[1], (some(&engine), some("qwen3:8b")), "qwen3 answers in a fixed format");
         core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nimble"))).await;
         assert_eq!(code(&core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nope"))).await), "error");
         let nowhere = set_slot(AiSlot::Chat, Some("ai:ollama@nowhere.example"), None);
@@ -29572,9 +29062,8 @@ mod tests {
         let answer = core.handle(set_sorting(Some(&engine), Some("nimble:cloud"), true)).await;
         assert!(matches!(answer, Response::AiAssignments { .. }), "{answer:?}");
         assert_eq!(decider_of(&core.settings, &core.ai).await, Ok((engine.clone(), "nimble:cloud".to_string())));
-        assert!(core.settings.current().mail_to_cloud_in(AiSlot::Decide), "the person let it out with it");
         let answer = core.handle(set_slot(AiSlot::Decide, Some(&engine), None)).await;
-        assert_eq!(slots_of(&answer)[1], (some(&engine), None, false), "the slot keeps mail here");
+        assert_eq!(slots_of(&answer)[1], (some(&engine), None), "Automatic");
         let Response::AiAssignments { assignments, .. } = answer else { panic!("assignments") };
         assert_eq!(assignments[0].assignment.model.as_deref(), Some("nimble:cloud"), "the exception stays");
         // Switched off, the exception keeps sorting off, whatever the slot says.
@@ -29585,14 +29074,13 @@ mod tests {
         assert_eq!(decider_of(&core.settings, &core.ai).await, Ok((engine.clone(), "nimble".to_string())));
 
         let answer = core.handle(set_slot(AiSlot::Decide, None, None)).await;
-        assert_eq!(slots_of(&answer)[1], (None, None, false), "emptied");
+        assert_eq!(slots_of(&answer)[1], (None, None), "emptied");
         assert_eq!(decider_of(&core.settings, &core.ai).await, Err(categorize::Refusal::NoModel));
     }
 
     /// Issue #325 (task MW.2): a model elsewhere for sorting mail is the person's alone – as the slot
-    /// Sorting and as the exception, for a client even while the permission is on, and also when an
-    /// approval runs on to the handler. The person's choice lets the mail out, a model here takes it
-    /// back, a client may do that and switch the permission off but never on.
+    /// Sorting and as the exception, and also when an approval runs on to the handler (issue #664:
+    /// the protective rule that stays). A client may choose a model here, with the person's approval.
     #[tokio::test]
     async fn only_people_choose_a_model_elsewhere_for_sorting_mail() {
         use torro_core::ai::AiSlot;
@@ -29622,13 +29110,11 @@ mod tests {
         let cloud = set_slot(AiSlot::Decide, Some(&engine), Some("nimble:cloud"));
         assert_eq!(from_client(cloud.clone()).await.err(), Some(refused("ai.set_slot")));
         assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
-        // The person: set, and the mail of Sorting may go out with it.
+        // The person: set.
         let answer = ask(&core, Some(&app_key), cloud.clone()).await;
-        assert_eq!(slots_of(&answer)[1], (some(&engine), some("nimble:cloud"), true));
-        assert_eq!(core.settings.current().decide_mail_to_cloud, Some(true));
-        assert!(!core.settings.current().mail_to_cloud, "the chat's permission is its own");
+        assert_eq!(slots_of(&answer)[1], (some(&engine), some("nimble:cloud")));
 
-        // With the permission on, still refused: as the slot, as the exception, and in the handler an
+        // Still refused for the client: as the slot, as the exception, and in the handler an
         // approval would run on to.
         assert_eq!(from_client(cloud.clone()).await.err(), Some(refused("ai.set_slot")));
         let exception = set_sorting(Some(&engine), Some("nimble:cloud"), true);
@@ -29643,55 +29129,18 @@ mod tests {
         assert!(matches!(answer, Response::AiAssignments { .. }), "{answer:?}");
         core.handle(set_sorting(None, None, false)).await;
 
-        // A client turns the permission on with no write of the whole settings either.
-        let mut sent = core.settings.current();
-        sent.decide_mail_to_cloud = Some(true);
-        core.handle(Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(false) }).await;
-        let update = Request::UpdateSettings { settings: sent };
-        assert_eq!(code(&ask(&core, Some(&key), update).await), "forbidden");
-        ask(&core, Some(&app_key), cloud.clone()).await;
-
-        // A model here takes the permission back, also from a client – with the person's approval,
-        // as every admin command of `ai`.
+        // A model here, also from a client – with the person's approval, as every admin command of `ai`.
         let asked = waits(ask(&core, Some(&key), set_slot(AiSlot::Decide, Some(&engine), Some("nimble"))).await);
         let done = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
         let torro_ipc::ApprovalState::Done { response } = done.state else { panic!("expected done, got {done:?}") };
-        assert_eq!(slots_of(&response)[1], (some(&engine), some("nimble"), false));
-        assert_eq!(core.settings.current().decide_mail_to_cloud, Some(false));
+        assert_eq!(slots_of(&response)[1], (some(&engine), some("nimble")));
     }
 
-    /// Issue #325 (task MW.2): with the permission of the slot Sorting off, a model elsewhere in the
-    /// slot is not asked when mail is sorted – the data rule holds at the call too – and the chat's
-    /// permission does not open it.
+    /// Issue #323: Jev is a model elsewhere like every cloud model; issue #664: chosen for Sorting it
+    /// is asked without a permission, and `inbox.classify_item` takes its category as the model's,
+    /// with its confidence.
     #[tokio::test]
-    async fn with_the_permission_of_sorting_off_no_model_elsewhere_is_asked() {
-        use torro_core::ai::AiSlot;
-        let dir = tempfile::tempdir().expect("temp dir");
-        let ollama = fake_ollama_deciding_here_and_elsewhere().await;
-        let core = core_with_ai(dir.path(), &MemoryTokens::default(), Vec::new());
-        let account = core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await;
-        let engine = account.expect("ollama").id;
-        assert_eq!(core.handle(switch(&engine, "nimble:cloud", true)).await, Response::Ok);
-        core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nimble:cloud"))).await;
-        assert_eq!(decider_of(&core.settings, &core.ai).await, Ok((engine.clone(), "nimble:cloud".to_string())));
-
-        let set = |key: SettingKey, on: bool| Request::SetSetting { key, value: serde_json::json!(on) };
-        assert_eq!(core.handle(set(SettingKey::DecideMailToCloud, false)).await, Response::Ok);
-        assert_eq!(core.handle(set(SettingKey::MailToCloud, true)).await, Response::Ok);
-        assert_eq!(decider_of(&core.settings, &core.ai).await, Err(categorize::Refusal::NotLocal));
-        let scope = torro_ipc::inbox::CategoryJobScope {
-            engine: Some(engine.clone()),
-            model: Some("nimble:cloud".into()),
-            ..Default::default()
-        };
-        assert_eq!(category_job_decider(&core.settings, &core.ai, &scope).await, Err(categorize::Refusal::NotLocal));
-    }
-
-    /// Issue #323: Jev is a model elsewhere like every cloud model. With the permission of the slot
-    /// Sorting off it is not asked; with it on, `inbox.classify_item` takes its category as the
-    /// model's, with its confidence.
-    #[tokio::test]
-    async fn jev_sorts_mail_only_with_the_permission_of_sorting() {
+    async fn jev_sorts_mail_once_chosen() {
         use crate::mail::service::tests::{mail_account, service_in, store_accounts};
         use torro_core::ai::AiSlot;
 
@@ -29744,17 +29193,7 @@ mod tests {
         let Response::MailMessages { messages, .. } = core.handle(search.clone()).await else { panic!("a page") };
         let id = messages.first().expect("the mail").id.clone();
 
-        // The permission off: refused, and Jev is not asked.
-        let off = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(false) };
-        assert_eq!(core.handle(off).await, Response::Ok);
-        assert_eq!(decider_of(&core.settings, &core.ai).await, Err(categorize::Refusal::NotLocal));
-        let refused = core.handle(Request::ClassifyItem { id: id.clone() }).await;
-        assert!(!matches!(refused, Response::ItemCategory { .. }), "{refused:?}");
-        assert_eq!(decides.calls_async().await, probes, "Jev was not asked");
-
-        // The permission on: Jev decides, and the category is the model's.
-        let on = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(true) };
-        assert_eq!(core.handle(on).await, Response::Ok);
+        // Jev decides, and the category is the model's.
         let answer = core.handle(Request::ClassifyItem { id }).await;
         assert!(matches!(answer, Response::ItemCategory { .. }), "{answer:?}");
         assert_eq!(decides.calls_async().await, probes + 1, "asked once");
@@ -29865,7 +29304,7 @@ mod tests {
     }
 
     /// Issue #420: a core whose inbox holds one mail for each of `subjects`, the first the newest, and
-    /// that sorts with Jev on `jev`, mail let out for sorting. The fake IMAP server comes along: it must
+    /// that sorts with Jev on `jev`. The fake IMAP server comes along: it must
     /// outlive the run.
     async fn core_sorting_with_jev(
         dir: &std::path::Path,
@@ -29904,45 +29343,7 @@ mod tests {
         assert_eq!(core.handle(switch(&engine, torro_core::ai::JEV_MODEL, true)).await, Response::Ok);
         let slot = set_slot(AiSlot::Decide, Some(&engine), Some(torro_core::ai::JEV_MODEL));
         assert!(matches!(core.handle(slot).await, Response::AiAssignments { .. }));
-        let out = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(true) };
-        assert_eq!(core.handle(out).await, Response::Ok);
         (core, imap)
-    }
-
-    #[tokio::test]
-    async fn workflow_categorizer_rechecks_cloud_permission_before_sending_after_content_wait() {
-        let dir = tempfile::tempdir().expect("isolated home");
-        let server = httpmock::MockServer::start_async().await;
-        let (decides, _) = crate::account::ai::tests::mock_jev(&server).await;
-        let (core, _imap) = core_sorting_with_jev(dir.path(), &server, &["Synthetic invoice".into()]).await;
-        let message = crate::mail::save::tests::message_id(&core.mail, "Synthetic invoice").await;
-        let (account, store) = core.mail.stores(Reach::Suite).await.into_iter().next().expect("local account");
-        let (entered, blocked) = tokio::sync::oneshot::channel();
-        let (release, held) = std::sync::mpsc::channel();
-        let holding = tokio::spawn(async move {
-            store
-                .run(move |_| {
-                    let _ = entered.send(());
-                    held.recv().expect("release local content read");
-                    Ok(())
-                })
-                .await
-        });
-        blocked.await.expect("content store is held");
-        let before = decides.calls_async().await;
-        let categorizer = core.workflow_categorizer();
-        let mut decision = categorizer(account, message);
-        assert!(
-            futures_util::poll!(decision.as_mut()).is_pending(),
-            "local content read must wait after model selection"
-        );
-        core.settings
-            .set(SettingKey::DecideMailToCloud, &serde_json::json!(false))
-            .expect("revoke cloud while waiting");
-        release.send(()).expect("release content");
-        holding.await.expect("store task").expect("store access");
-        assert_eq!(decision.await, Err(crate::mail::store::WorkflowMailFailure::CategoryFailed));
-        assert_eq!(decides.calls_async().await, before, "revocation must stop the send, not merely discard an answer");
     }
 
     /// Jev on `server` answering every decision after `delay` (issue #420), as
@@ -30324,41 +29725,6 @@ mod tests {
         assert_eq!(busy.calls_async().await, 1 + CATEGORY_BUSY_WAITS.len() + 1, "asked again after each wait");
     }
 
-    /// Review of #420: "Keep mail here" while a busy Jev is waited for stops the job with its reason,
-    /// and the mail is not sent again.
-    #[tokio::test]
-    async fn keeping_mail_here_while_jev_is_busy_stops_the_job_without_asking_again() {
-        use torro_ipc::inbox::CategoryJobState;
-        let dir = tempfile::tempdir().expect("temp dir");
-        let jev = httpmock::MockServer::start_async().await;
-        let decides = mock_jev_after(&jev, std::time::Duration::ZERO, None).await;
-        let mut gate = GatedJev::start(&jev).await;
-        let (core, _imap) = core_sorting_with_jev_at(dir.path(), &gate.base, &["Hello 1".to_string()]).await;
-        decides.delete_async().await;
-        // Hold the first actual request until the person has kept mail here.
-        let busy = jev
-            .mock_async(|when, then| {
-                when.method("POST").path("/v1/systemone");
-                then.status(429).json_body(serde_json::json!({}));
-            })
-            .await;
-
-        let start = Request::StartCategoryJob { scope: torro_ipc::inbox::CategoryJobScope::default() };
-        gate.arm();
-        assert!(matches!(core.handle(start).await, Response::CategoryJob { job: Some(_) }));
-        gate.wait_for(1).await;
-        let keep = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(false) };
-        assert_eq!(core.handle(keep).await, Response::Ok);
-        gate.release.add_permits(1);
-
-        let job = job_ended(&core, std::time::Duration::from_secs(10)).await;
-        assert_eq!(job.state, CategoryJobState::Failed);
-        assert_eq!(job.errors, [tr("Sorting may no longer send mail to the cloud.").to_string()]);
-        assert_eq!(busy.calls_async().await, 1, "not asked again");
-        let [progress] = job.accounts.as_slice() else { panic!("one account") };
-        assert_eq!(progress.processed, 0, "the mail waits for the next run");
-    }
-
     /// The backlog run once it has ended (issue #420), waited for up to `within`: how much of Anna's
     /// mail it looks at and how much it went through.
     async fn backlog_ended(core: &Core, within: std::time::Duration) -> (u64, u64) {
@@ -30559,8 +29925,8 @@ mod tests {
     }
 
     /// Review of #430: Jev is a model elsewhere, so only people choose it for sorting mail – an agent
-    /// with every right is refused it as the slot Sorting and as the exception, also while the
-    /// permission is on, before anything is approved.
+    /// with every right is refused it as the slot Sorting and as the exception, before anything is
+    /// approved.
     #[tokio::test]
     async fn only_people_choose_jev_for_sorting_mail() {
         use torro_core::ai::AiSlot;
@@ -30584,20 +29950,16 @@ mod tests {
         };
         let slot = set_slot(AiSlot::Decide, Some(&engine), Some(torro_core::ai::JEV_MODEL));
         let exception = set_sorting(Some(&engine), Some(torro_core::ai::JEV_MODEL), true);
-        for permission in [false, true] {
-            let set = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(permission) };
-            assert_eq!(core.handle(set).await, Response::Ok);
-            assert_eq!(from_agent(slot.clone()).await.err(), Some(refused("ai.set_slot")), "{permission}");
-            assert_eq!(from_agent(exception.clone()).await.err(), Some(refused("ai.set_assignment")), "{permission}");
-        }
+        assert_eq!(from_agent(slot).await.err(), Some(refused("ai.set_slot")));
+        assert_eq!(from_agent(exception).await.err(), Some(refused("ai.set_assignment")));
         assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
         assert!(core.settings.current().ai_slots.decide.is_none() && core.settings.current().ai_assignments.is_empty());
     }
 
     /// Review of issue #325: a client that names a model for a sorting run gets one elsewhere only when
     /// it is what sorting uses now – before any approval and in the handler an approval runs on to –,
-    /// since the permission of Sorting was given to that model, not to whichever an agent names. A
-    /// model on this computer, and the model in effect, still go.
+    /// since the person chose that model, not whichever an agent names. A model on this computer, and
+    /// the model in effect, still go.
     #[tokio::test]
     async fn a_client_sorts_mail_elsewhere_only_with_the_model_sorting_uses() {
         use torro_core::ai::AiSlot;
@@ -30607,10 +29969,8 @@ mod tests {
         let account = core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await;
         let engine = account.expect("ollama").id;
         assert_eq!(core.handle(switch(&engine, "nimble:cloud", true)).await, Response::Ok);
-        // The person sorts with the model here and lets sorted mail out all the same.
+        // The person sorts with the model here.
         core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nimble"))).await;
-        let permission = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(true) };
-        assert_eq!(core.handle(permission).await, Response::Ok);
         let (id, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
         let info = core.clients.list().into_iter().find(|info| info.id == id).expect("the client");
         let job = |model: &str| Request::StartCategoryJob {
@@ -30687,8 +30047,6 @@ mod tests {
         core.inbox.save_category_job(&job).expect("saved");
         core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nimble"))).await;
         // … and lets sorted mail out all the same.
-        let permission = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(true) };
-        assert_eq!(core.handle(permission).await, Response::Ok);
         let (client_id, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
         let info = core.clients.list().into_iter().find(|info| info.id == client_id).expect("the client");
         let resume = Request::ControlCategoryJob { id: id.clone(), action: CategoryJobControl::Resume };
@@ -30728,7 +30086,7 @@ mod tests {
         *core.category_worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 
         // PR review of #325: a run without a fixed model, started here, resumes with what sorts now –
-        // elsewhere – and carries that mark, by which "Keep mail here" stops it.
+        // elsewhere – and carries that mark.
         let mut free = job.clone();
         free.id = core.inbox.new_category_job_id().expect("an id");
         free.scope.model = None;
@@ -30745,8 +30103,8 @@ mod tests {
     }
 
     /// Review of issue #325: "Automatic" at an account on this computer picks only models here, also
-    /// while the permission of Sorting is on – the permission was given to the model the person chose,
-    /// never to a `:cloud` model the account lists first. So a client may set it like any model here.
+    /// while a model elsewhere sorted before – never a `:cloud` model the account lists first. So a
+    /// client may set it like any model here.
     #[tokio::test]
     async fn automatic_at_an_account_here_stays_here_for_clients_and_people() {
         use torro_core::ai::AiSlot;
@@ -30756,9 +30114,8 @@ mod tests {
         let account = core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await;
         let engine = account.expect("ollama").id;
         assert_eq!(core.handle(switch(&engine, "nimble:cloud", true)).await, Response::Ok);
-        // The person lets sorted mail out, for a model of their choice.
+        // The person sorts with a model elsewhere of their choice.
         core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nimble:cloud"))).await;
-        assert!(core.settings.current().mail_to_cloud_in(AiSlot::Decide));
         let mut rights = RightsTemplate::FullAccess.rights();
         for area in Area::ALL {
             rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
@@ -30824,7 +30181,7 @@ mod tests {
     }
 
     /// Review of issue #325, F1: the slot Sorting on "Automatic" at the Ollama here, an exception the
-    /// person set elsewhere (which turned the permission on); a client takes the exception back – an
+    /// person set elsewhere; a client takes the exception back – an
     /// ordinary admin command –, and the slot sorts again with the model here, never with
     /// `nimble:cloud`, which the account lists first.
     #[tokio::test]
@@ -30837,10 +30194,9 @@ mod tests {
         let engine = account.expect("ollama").id;
         assert_eq!(core.handle(switch(&engine, "nimble:cloud", true)).await, Response::Ok);
         let answer = core.handle(set_slot(AiSlot::Decide, Some(&engine), None)).await;
-        assert_eq!(slots_of(&answer)[1], (Some(engine.clone()), None, false), "the slot keeps mail here");
+        assert_eq!(slots_of(&answer)[1], (Some(engine.clone()), None), "Automatic");
         let answer = core.handle(set_sorting(Some(&engine), Some("nimble:cloud"), true)).await;
         assert!(matches!(answer, Response::AiAssignments { .. }), "{answer:?}");
-        assert!(core.settings.current().mail_to_cloud_in(AiSlot::Decide), "the person let it out");
 
         let mut rights = RightsTemplate::FullAccess.rights();
         for area in Area::ALL {
@@ -30857,7 +30213,7 @@ mod tests {
 
     /// Review of issue #325, F1: with the model here that decides turned off, "Automatic" at the Ollama
     /// here falls on the next model here (the fallback with tools), then on none – never on
-    /// `nimble:cloud`, also with the permission of Sorting on.
+    /// `nimble:cloud`.
     #[tokio::test]
     async fn turning_the_model_here_off_never_lets_automatic_fall_on_a_model_elsewhere() {
         use torro_core::ai::AiSlot;
@@ -30868,8 +30224,6 @@ mod tests {
         let engine = account.expect("ollama").id;
         assert_eq!(core.handle(switch(&engine, "nimble:cloud", true)).await, Response::Ok);
         core.handle(set_slot(AiSlot::Decide, Some(&engine), None)).await;
-        let permission = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(true) };
-        assert_eq!(core.handle(permission).await, Response::Ok);
         assert_eq!(decider_of(&core.settings, &core.ai).await, Ok((engine.clone(), "nimble".to_string())));
 
         assert_eq!(core.handle(switch(&engine, "nimble", false)).await, Response::Ok);
@@ -30880,11 +30234,10 @@ mod tests {
         assert_eq!(category_job_decider(&core.settings, &core.ai, &job).await, Err(categorize::Refusal::NoModel));
     }
 
-    /// Task E12.5: a function is assigned a model, only a deciding one is taken for mail, and
-    /// while `mail_to_cloud` is off no model that runs elsewhere is taken – so no agent can route
-    /// mail past the data rule.
+    /// Task E12.5: a function is assigned a model, only a deciding one is taken for mail, and one
+    /// that is off is refused.
     #[tokio::test]
-    async fn a_function_takes_only_a_deciding_model_and_one_on_this_computer() {
+    async fn a_function_takes_only_a_deciding_model_that_is_on() {
         use torro_core::ai::AiFunction;
 
         let dir = tempfile::tempdir().expect("temp dir");
@@ -30956,7 +30309,7 @@ mod tests {
     }
 
     /// #231 (task S.24): `ai.set_assignment` takes no model that is off – not even from an agent
-    /// with admin rights in `ai`, and not with `mail_to_cloud` on – and an account with no model on
+    /// with admin rights in `ai` – and an account with no model on
     /// is refused too. A model turned off after it was assigned is not asked: mail stays without a
     /// category rather than going to it or to another model.
     #[tokio::test]
@@ -30975,10 +30328,6 @@ mod tests {
         };
         let Response::Account { account } = core.handle(connect).await else { panic!("connected") };
         let engine = account.id;
-        // The person lets mail go to cloud models – for sorting, the permission of the slot Sorting
-        // (issue #325) –: the switches alone must still hold.
-        let cloud = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(true) };
-        assert_eq!(ask(&core, Some(&app_key), cloud).await, Response::Ok);
 
         let set = |model: Option<&str>, enabled: bool| Request::SetAiAssignment {
             function: AiFunction::InboxCategorize,
@@ -31237,10 +30586,6 @@ mod tests {
             Host::approval(&*self.core, id)
         }
 
-        fn tools_on(&self) -> std::collections::BTreeSet<torro_core::settings::ToolId> {
-            Host::tools_on(&*self.core)
-        }
-
         fn knows_file<'a>(
             &'a self,
             actor: &'a crate::assistant::Actor,
@@ -31279,10 +30624,9 @@ mod tests {
             request: Request,
             engine: &'a str,
             untrusted: bool,
-            read_mail: bool,
             without: &'a [Area],
         ) -> torro_core::ai::BoxFuture<'a, Response> {
-            Host::ask_bot(&*self.core, main, request, engine, untrusted, read_mail, without)
+            Host::ask_bot(&*self.core, main, request, engine, untrusted, without)
         }
 
         // The permission mode (issue #132) as the core applies it.
@@ -31537,10 +30881,10 @@ mod tests {
     }
 
     /// Issue #225, task WZ.4, end to end with a scripted model (engine A): `tools_create_pdf` is
-    /// offered and named in the prompt only while the tool is switched on and in the assistant's
-    /// selection; listing the tools needs neither.
+    /// offered and named in the prompt only while the tool is in the assistant's selection; listing the
+    /// tools does not need it.
     #[tokio::test]
-    async fn the_model_is_offered_the_pdf_tool_only_switched_on_and_selected() {
+    async fn the_model_is_offered_the_pdf_tool_only_selected() {
         let dir = tempfile::tempdir().expect("temp dir");
         let ollama = fake_ollama().await;
         let script = Script::new(Vec::new());
@@ -31584,9 +30928,7 @@ mod tests {
             }
         };
 
-        assert_eq!(offered_now("Make a PDF").await, (false, true, false), "switched off");
-        switch_pdf(&core, true).await;
-        assert_eq!(offered_now("Make a PDF").await, (true, true, true), "on and selected");
+        assert_eq!(offered_now("Make a PDF").await, (true, true, true), "selected");
         rights.tools = Selection::Only(Vec::new());
         core.clients.update(&client, rights).await.expect("updated");
         assert_eq!(offered_now("Make a PDF").await, (false, true, false), "not selected");
@@ -31647,7 +30989,6 @@ mod tests {
         let weak = Arc::downgrade(&host);
         let weak: std::sync::Weak<dyn Host> = weak;
         core.assistant.attach(weak);
-        switch_pdf(&core, true).await;
 
         // Made: the tool line, then its card.
         let made = tell(&core, &engine, "Write the offer as a PDF").await;
@@ -31676,15 +31017,17 @@ mod tests {
         assert!(!Host::knows_file(&*core, &crate::assistant::Actor::Bot("b0b0b0b0".into()), &file.id).await);
 
         // Refused: the tool line says so, and no card follows.
-        switch_pdf(&core, false).await;
+        let mut unselected = rights.clone();
+        unselected.tools = Selection::Only(Vec::new());
+        core.clients.update(&assistant_client.id, unselected).await.expect("updated");
         let refused = tell(&core, &engine, "Once more").await;
         let entries = conversation_until(&core, &refused, |running, _| !running).await;
         assert!(entries.iter().any(|entry| matches!(&entry.content, EntryContent::Tool { error: Some(_), .. })));
         assert!(!entries.iter().any(|entry| matches!(entry.content, EntryContent::Card { .. })), "{entries:?}");
         assert!(cards_of(&core, None, &refused).await.is_empty());
         let unavailable = || vec![torro_ipc::assistant::CardEntry { seq: cards[0].seq, card: Card::Unavailable }];
-        assert_eq!(cards_of(&core, None, &made).await, unavailable(), "switched off");
-        switch_pdf(&core, true).await;
+        assert_eq!(cards_of(&core, None, &made).await, unavailable(), "not selected");
+        core.clients.update(&assistant_client.id, rights.clone()).await.expect("selected again");
 
         // Another client sees the card only within its own rights; the assistant's client never asks.
         let mut reading = RightsTemplate::ReadOnly.rights();
@@ -31744,7 +31087,6 @@ mod tests {
         let weak = Arc::downgrade(&host);
         let weak: std::sync::Weak<dyn Host> = weak;
         core.assistant.attach(weak);
-        switch_pdf(&core, true).await;
         let mut rights = reading(&[]);
         rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
         rights.tools = Selection::Only(vec!["pdf".into()]);
@@ -31807,7 +31149,7 @@ mod tests {
     }
 
     /// [`assistant_core`] for the web's tests: the assistant reads mail and the web ([`web_reader`]),
-    /// the tool `web` is on, and so is the search provider `provider` plays; pages come from `pages`.
+    /// and the search provider `provider` plays is on; pages come from `pages`.
     async fn web_core(
         dir: &std::path::Path,
         ollama: &httpmock::MockServer,
@@ -31819,11 +31161,6 @@ mod tests {
         let web = crate::tools::web::testing::offline().with_providers(vec![provider.clone()]).with_fetcher(fetcher);
         let tools = crate::tools::Tools::new(crate::tools::Roots::default()).with_web(web);
         let (core, host, engine, client) = assistant_core_with(dir, ollama, web_reader(), script, Some(tools)).await;
-        let on = Request::SetSetting {
-            key: SettingKey::ToolEnabled,
-            value: serde_json::json!({"tool": "web", "enabled": true}),
-        };
-        assert_eq!(core.handle(on).await, Response::Ok);
         let switch = serde_json::json!({"provider": provider.id.name(), "enabled": true});
         assert_eq!(
             core.handle(Request::SetSetting { key: SettingKey::SearchProvider, value: switch }).await,
@@ -32049,10 +31386,10 @@ mod tests {
     }
 
     /// Issue #305, task WEB.5: a bot asks for the web in its own conversation as the assistant does,
-    /// with its own client. Without the tool's switch or outside the selection the model is not
-    /// offered the web, and a call is `forbidden` before anyone is asked.
+    /// with its own client. Outside the selection the model is not offered the web, and a call is
+    /// `forbidden` before anyone is asked.
     #[tokio::test]
-    async fn a_bot_asks_for_the_web_and_nobody_is_asked_without_switch_or_selection() {
+    async fn a_bot_asks_for_the_web_and_nobody_is_asked_outside_the_selection() {
         let dir = tempfile::tempdir().expect("temp dir");
         let (ollama, pages) = (fake_ollama().await, lisbon_pages().await);
         let mojeek = provider();
@@ -32061,8 +31398,6 @@ mod tests {
             search("Lisbon trams"),
             search("Tram 28"),
             says("Found them."),
-            search("Lisbon trams"),
-            says("The web is off."),
             search("Lisbon trams"),
             says("I may not search."),
         ]);
@@ -32089,31 +31424,16 @@ mod tests {
         conversation_until(&core, &conversation.id, |running, _| !running).await;
         assert_eq!((approvals_asked(&core).await, mojeek.calls()), (1, 2), "asked once in the bot's conversation");
         let offered = |at: usize| script.asked()[at].tools.iter().any(|tool| tool.name == "tools_web_search");
-        assert!(offered(0), "switched on and selected");
+        assert!(offered(0), "selected");
 
-        // Switched off: not offered, and refused before anyone is asked.
-        let off = Request::SetSetting {
-            key: SettingKey::ToolEnabled,
-            value: serde_json::json!({"tool": "web", "enabled": false}),
-        };
-        assert_eq!(core.handle(off).await, Response::Ok);
-        let off_at = script.asked().len();
+        // Not in the assistant's selection: not offered, and refused before anyone is asked.
+        let mut unselected = reading(&[Area::Mail, Area::Tools]);
+        unselected.tools = Selection::Only(vec!["pdf".into()]);
+        core.clients.update(&client, unselected).await.expect("updated");
+        let unselected_at = script.asked().len();
         let id = tell(&core, &engine, "Search Lisbon trams").await;
         let entries = conversation_until(&core, &id, |running, _| !running).await;
         assert_eq!(tool_lines(&entries), [("tools.web_search".to_string(), Some("forbidden".to_string()))]);
-        assert!(!offered(off_at), "not offered while off");
-
-        // On again, but not in the assistant's selection: the same.
-        let on = Request::SetSetting {
-            key: SettingKey::ToolEnabled,
-            value: serde_json::json!({"tool": "web", "enabled": true}),
-        };
-        assert_eq!(core.handle(on).await, Response::Ok);
-        core.clients.update(&client, reading(&[Area::Mail, Area::Tools])).await.expect("updated");
-        let unselected_at = script.asked().len();
-        tell_in(&core, &engine, &id, "Please search").await;
-        let entries = conversation_until(&core, &id, |running, _| !running).await;
-        assert_eq!(tool_lines(&entries)[1], ("tools.web_search".to_string(), Some("forbidden".to_string())));
         assert!(!offered(unselected_at), "not offered outside the selection");
         assert_eq!((approvals_asked(&core).await, mojeek.calls()), (1, 2), "nobody asked, nothing sent");
     }
@@ -32244,14 +31564,12 @@ mod tests {
             serde_json::from_str(&read_by_model(&script, "assistant_my_access")).expect("json for the model");
         let access: torro_ipc::assistant::MyAccess =
             serde_json::from_value(read["access"].clone()).expect("the access");
-        let mut expected = set.clone();
+        // As the core stores them: opened once (issue #666), so "all tools" stays "all", web too.
+        let mut expected = set.for_kind(torro_ipc::api::ASSISTANT_CLIENT);
         expected.areas.remove(&Area::Calendar);
         expected.calendars = Selection::Only(Vec::new());
-        // "All tools" written out without `web`, which only a person's tick grants (issue #305).
-        expected.tools = set.reached_tools();
         assert_eq!(access.rights, expected, "no calendar of the area switched off either");
         assert_eq!((access.engine.as_deref(), access.switched_off), (Some(engine.as_str()), vec![Area::Calendar]));
-        assert!(access.withheld.is_empty(), "an AI account on this computer gets mail");
         let engine_id = format!("engine:{engine}");
         let logged: Vec<_> =
             audit_lines(dir.path()).into_iter().map(|line| (line.command, line.ids, line.result)).collect();
@@ -32275,10 +31593,10 @@ mod tests {
     }
 
     /// Issue #134 for an agent (engine B): with the lent key the access is the assistant's rights
-    /// without mail (not given to an agent under the default data rule) and without what the conversation switched off; with
-    /// its own key exactly what the person set; the app key may do everything and gets `unsupported`.
+    /// without what the conversation switched off; with its own key exactly what the person set; the
+    /// app key may do everything and gets `unsupported`.
     #[tokio::test]
-    async fn a_lent_key_tells_its_access_without_what_it_never_gets() {
+    async fn a_lent_key_tells_its_access_without_what_is_switched_off() {
         let dir = tempfile::tempdir().expect("temp dir");
         let core = audited(dir.path());
         let mut rights = Rights::assistant();
@@ -32297,10 +31615,10 @@ mod tests {
         expected.inbox_sources = Selection::Only(Vec::new());
         assert_eq!(access.rights, expected, "no mail account, no address");
         assert_eq!(access.engine.as_deref(), Some("claude-code"));
-        assert_eq!((access.withheld, access.switched_off), (vec![Area::Mail], vec![Area::Tasks]));
+        assert_eq!(access.switched_off, vec![Area::Tasks, Area::Mail]);
 
         let mine = my_access_of(&ask(&core, Some(&own), Request::MyAccess).await);
-        assert_eq!((mine.rights, mine.engine, mine.withheld), (rights, None, Vec::new()));
+        assert_eq!((mine.rights, mine.engine, mine.switched_off), (rights, None, Vec::new()));
         assert_eq!(code(&core.handle(Request::MyAccess).await), "unsupported");
         // Another agent reads its own only with the area `assistant`, as every assistant command.
         let (_, agent) = client(&core, RightsTemplate::FullAccess.rights()).await;
@@ -32788,10 +32106,10 @@ mod tests {
         let Response::Conversation { conversation, .. } = core.handle(to_bot(&bot.id, None)).await else {
             panic!("the person chats with the bot")
         };
-        let from_bot = Host::ask_bot(core, &conversation.id, ask_bot(&bot.id), "test", false, false, &[]).await;
+        let from_bot = Host::ask_bot(core, &conversation.id, ask_bot(&bot.id), "test", false, &[]).await;
         assert_eq!(code(&from_bot), "forbidden", "a bot's conversation never asks one");
         // Switched off in the conversation: no bots at all.
-        let off = Host::ask_bot(core, &main, ask_bot(&bot.id), "test", false, false, &[Area::Bots]).await;
+        let off = Host::ask_bot(core, &main, ask_bot(&bot.id), "test", false, &[Area::Bots]).await;
         assert_eq!(code(&off), "forbidden");
         // Without the assistant's client, or another one, the bot runs with nothing.
         core.clients.remove(&client.id).await.expect("removed");
@@ -32822,7 +32140,7 @@ mod tests {
         let confirm = Request::ConfirmBot { conversation: main.clone(), bot: bot.id.clone() };
         assert_eq!(confirm.operation().command.mcp, torro_ipc::api::Mcp::Never);
 
-        let asking = || Host::ask_bot(&core, &main, ask_bot(&bot.id), "test", false, false, &[]);
+        let asking = || Host::ask_bot(&core, &main, ask_bot(&bot.id), "test", false, &[]);
         assert_eq!(code(&asking().await), "forbidden", "not named, not confirmed");
         for key in [&own_key, &agent_key] {
             assert_eq!(code(&ask(&core, Some(key), confirm.clone()).await), "forbidden");
@@ -32838,7 +32156,7 @@ mod tests {
         // Confirmed again, the bot goes on in the same conversation; another one is refused.
         assert_eq!(core.handle(confirm.clone()).await, Response::Ok);
         let other = Request::AskBot { bot: bot.id.clone(), text: "Hi".into(), conversation: Some(main.clone()) };
-        assert_eq!(code(&Host::ask_bot(&core, &main, other, "test", false, false, &[]).await), "error");
+        assert_eq!(code(&Host::ask_bot(&core, &main, other, "test", false, &[]).await), "error");
         let Response::Conversation { conversation: again, .. } = asking().await else { panic!("it ran again") };
         assert_eq!(again.id, conversation.id, "one conversation with the bot per conversation");
         // Unknown conversations and bots, and a conversation with a bot, are nothing to confirm.
@@ -32851,7 +32169,7 @@ mod tests {
         // Named in the person's last message, it needs no confirmation.
         let named = said(&core, "What does the Travel Planner say?").await;
         assert!(matches!(
-            Host::ask_bot(&core, &named, ask_bot(&bot.id), "test", false, false, &[]).await,
+            Host::ask_bot(&core, &named, ask_bot(&bot.id), "test", false, &[]).await,
             Response::Conversation { .. }
         ));
         // An agent with every right in the assistant cannot name the bot for the person: only the
@@ -32869,14 +32187,14 @@ mod tests {
         };
         assert!(matches!(ask(&core, Some(&agent_key), by_agent).await, Response::Conversation { .. }));
         conversation_until(&core, &named, |running, _| !running).await;
-        let after_agent = Host::ask_bot(&core, &named, ask_bot(&bot.id), "test", false, false, &[]).await;
+        let after_agent = Host::ask_bot(&core, &named, ask_bot(&bot.id), "test", false, &[]).await;
         assert_eq!(code(&after_agent), "forbidden");
     }
 
-    /// Task B.2, the data rule: a conversation whose model read mail asks no bot whose model runs
-    /// elsewhere (the message may carry the mail); a bot on this computer it may.
+    /// Task B.2, issue #664: a conversation whose model read mail asks a bot whose model runs
+    /// elsewhere as one on this computer: no data rule holds it back.
     #[tokio::test]
-    async fn after_mail_the_assistant_asks_no_bot_elsewhere() {
+    async fn after_mail_the_assistant_asks_a_bot_elsewhere_too() {
         let dir = tempfile::tempdir().expect("temp dir");
         let keys = MemoryTokens::default();
         let openrouter = fake_openrouter().await;
@@ -32898,18 +32216,17 @@ mod tests {
         let here = bot_with(&core, "Packing helper", torro_ipc::assistant::TEST_ENGINE, reading(&[])).await;
         let main = said(&core, "Ask the travel planner and the packing helper").await;
 
-        let refused = Host::ask_bot(&*core, &main, ask_bot(&elsewhere.id), "test", false, true, &[]).await;
-        let Response::Error { code, message } = refused else { panic!("refused") };
-        assert_eq!(code, "forbidden");
-        assert!(message.contains("mail"), "{message}");
-        let local = Host::ask_bot(&*core, &main, ask_bot(&here.id), "test", false, true, &[]).await;
+        // Issue #664: no data rule keeps the bot elsewhere from being asked.
+        let remote = Host::ask_bot(&*core, &main, ask_bot(&elsewhere.id), "test", false, &[]).await;
+        assert!(matches!(remote, Response::Conversation { .. }), "{remote:?}");
+        let local = Host::ask_bot(&*core, &main, ask_bot(&here.id), "test", false, &[]).await;
         assert!(matches!(local, Response::Conversation { .. }), "{local:?}");
     }
 
     /// Task S.23: a bot without a model answers with what "Automatic" picks – the local model of a
-    /// mixed Ollama – so it may be asked after mail; a bot set to the cloud model may not.
+    /// mixed Ollama; issue #664: a bot set to the cloud model is asked after mail too.
     #[tokio::test]
-    async fn after_mail_a_bot_on_the_cloud_model_of_ollama_is_not_asked() {
+    async fn after_mail_a_bot_on_the_cloud_model_of_ollama_is_asked_too() {
         let dir = tempfile::tempdir().expect("temp dir");
         let keys = MemoryTokens::default();
         let ollama = fake_ollama_with_cloud(true).await;
@@ -32933,10 +32250,9 @@ mod tests {
         let cloud = bot_of(core.handle(save).await);
         let main = said(&core, "Ask the travel planner and the packing helper").await;
 
-        let refused = Host::ask_bot(&*core, &main, ask_bot(&cloud.id), "test", false, true, &[]).await;
-        let Response::Error { code, message } = refused else { panic!("refused: {refused:?}") };
-        assert!(code == "forbidden" && message.contains("mail"), "the data rule: {message}");
-        let local = Host::ask_bot(&*core, &main, ask_bot(&automatic.id), "test", false, true, &[]).await;
+        let asked = Host::ask_bot(&*core, &main, ask_bot(&cloud.id), "test", false, &[]).await;
+        assert!(matches!(asked, Response::Conversation { .. }), "{asked:?}");
+        let local = Host::ask_bot(&*core, &main, ask_bot(&automatic.id), "test", false, &[]).await;
         let Response::Conversation { entries, .. } = local else { panic!("asked: {local:?}") };
         let answered: Vec<Option<&str>> = entries
             .iter()
@@ -33226,11 +32542,11 @@ mod tests {
     }
 
     /// Task S.24: with the local model off and only the cloud model of the same Ollama on,
-    /// "Automatic" takes the cloud model and the data rule counts it as elsewhere: a bot without a
-    /// model is not asked after mail. A model asked that is off gives way. With nothing on the
+    /// "Automatic" takes the cloud model, counted as elsewhere; issue #664: a bot without a model is
+    /// asked after mail all the same. A model asked that is off gives way. With nothing on the
     /// account is no engine, and a message or a bot's ask with it is `unsupported`.
     #[tokio::test]
-    async fn automatic_takes_the_only_model_on_and_the_data_rule_follows_it() {
+    async fn automatic_takes_the_only_model_on() {
         let dir = tempfile::tempdir().expect("temp dir");
         let keys = MemoryTokens::default();
         let ollama = fake_ollama_with_cloud(true).await;
@@ -33253,9 +32569,8 @@ mod tests {
             .expect("the assistant");
         let automatic = bot_with(&core, "Packing helper", &account.id, reading(&[Area::Calendar])).await;
         let main = said(&core, "Ask the packing helper").await;
-        let refused = Host::ask_bot(&*core, &main, ask_bot(&automatic.id), "test", false, true, &[]).await;
-        let Response::Error { code, message } = refused else { panic!("refused: {refused:?}") };
-        assert!(code == "forbidden" && message.contains("mail"), "the data rule: {message}");
+        let asked = Host::ask_bot(&*core, &main, ask_bot(&automatic.id), "test", false, &[]).await;
+        assert!(matches!(asked, Response::Conversation { .. }), "{asked:?}");
 
         assert_eq!(core.handle(switch(&account.id, "glm-5.3:cloud", false)).await, Response::Ok);
         let Response::Engines { engines } = core.handle(Request::ListEngines).await else { panic!("engines") };
@@ -33276,7 +32591,7 @@ mod tests {
         assert_eq!(core.handle(send).await, Response::Error { code: "unsupported".into(), message: off.clone() });
         let asked = Request::AskBot { bot: automatic.id.clone(), text: "Hello".into(), conversation: None };
         assert_eq!(core.handle(asked).await, Response::Error { code: "unsupported".into(), message: off.clone() });
-        let delegated = Host::ask_bot(&*core, &main, ask_bot(&automatic.id), "test", false, false, &[]).await;
+        let delegated = Host::ask_bot(&*core, &main, ask_bot(&automatic.id), "test", false, &[]).await;
         assert_eq!(delegated, Response::Error { code: "unsupported".into(), message: off });
     }
 
@@ -33456,7 +32771,7 @@ mod tests {
         assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing asked");
     }
 
-    /// Task C.2: the core reports Ollama as local and OpenRouter as elsewhere, for the data rule.
+    /// Task C.2: the core reports Ollama as local and OpenRouter as elsewhere.
     /// Task S.23: the core decides by account and model – a cloud model of a local Ollama runs
     /// elsewhere, "Automatic" takes the local one, and without `/api/tags` every model is elsewhere.
     #[tokio::test]
@@ -33831,8 +33146,8 @@ mod tests {
         /// Issue #605: `assistant.check_about` answers what a new chat about the mail would be refused with, for the
         /// panel to show its hint on opening, and stores nothing: ok when it may run (reading the
         /// assistant's area is enough), `forbidden` without an assistant that reads the account,
-        /// `not-found` for a caller that cannot see the mail and for a mail the account does not hold,
-        /// `not-connected` for a model elsewhere under the data rule.
+        /// `not-found` for a caller that cannot see the mail and for a mail the account does not hold;
+        /// a model elsewhere is ok too (issue #664).
         #[tokio::test]
         async fn checking_a_chat_about_a_mail_answers_as_sending_would() {
             let Invited { _dir: dir, core, id, app_key, .. } = invited().await;
@@ -33861,8 +33176,9 @@ mod tests {
             reading.mail_accounts = Selection::Only(vec![ANNA.into()]);
             core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, reading).await.expect("added");
             assert_eq!(ask(&core, Some(&app_key), local.clone()).await, Response::Ok);
+            // Issue #664: no data rule, the model elsewhere may answer about the mail too.
             let cloud = check("glm-5.3:cloud", &mail);
-            assert_eq!(code(&ask(&core, Some(&app_key), cloud).await), "not-connected", "the data rule");
+            assert_eq!(ask(&core, Some(&app_key), cloud).await, Response::Ok, "no data rule");
             let gone = torro_ipc::assistant::MailRef { account: ANNA.into(), id: "m:gone".into() };
             assert_eq!(code(&ask(&core, Some(&app_key), check("qwen3:8b", &gone)).await), "not-found");
 
@@ -34577,10 +33893,11 @@ mod tests {
     }
 
     /// Acceptance of issue #120 through the core: the default AI of the assistant answers with its
-    /// model, a date in the text becomes the due date; a mail entry goes to the local AI only, and
-    /// without any AI the answer says to set one up. Nothing is saved, nothing reaches the log.
+    /// model, a date in the text becomes the due date; issue #664: a mail entry goes to the same
+    /// model, and without any AI the answer says to set one up. Nothing is saved, nothing reaches the
+    /// log.
     #[tokio::test]
-    async fn an_ai_suggests_a_task_or_event_of_an_entry_and_mail_stays_local() {
+    async fn an_ai_suggests_a_task_or_event_of_an_entry_mail_too() {
         let dir = tempfile::tempdir().expect("temp dir");
         let keys = MemoryTokens::default();
         let core = core_with_ai(dir.path(), &keys, Vec::new());
@@ -34628,7 +33945,7 @@ mod tests {
         assert_eq!(suggestion.model, "qwen/qwen3-14b", "the default's model");
         assert_eq!((remote.calls_async().await, local.calls_async().await), (1, 1));
 
-        // A mail entry: the local AI, whatever the default says.
+        // A mail entry: the default too, though it computes elsewhere.
         let mail = crate::inbox::NewMail {
             account: "mail:anna@example.org".into(),
             message: "m:1".into(),
@@ -34649,26 +33966,26 @@ mod tests {
         let filed = core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
         let asked = ask(&core, Some(&app_key), Request::SuggestEventFromItem { id: filed.clone() }).await;
         let Response::EventSuggestion { suggestion } = asked else { panic!("a suggestion: {asked:?}") };
-        let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 20).expect("valid date");
-        assert_eq!((suggestion.start, suggestion.end), (Some(torro_pim::EventTime::Date(day)), None));
-        assert!(suggestion.engine.starts_with("ai:ollama@"), "{}", suggestion.engine);
-        assert_eq!((remote.calls_async().await, local.calls_async().await), (1, 2), "mail never went out");
+        assert_eq!((suggestion.engine.as_str(), suggestion.model.as_str()), (engine.as_str(), "qwen/qwen3-14b"));
+        assert_eq!((remote.calls_async().await, local.calls_async().await), (2, 1), "no data rule held it");
 
-        // Without the local AI, mail has none to go to.
-        let gone = Request::RemoveAccount { id: suggestion.engine.clone() };
-        assert_eq!(ask(&core, Some(&app_key), gone).await, Response::Ok);
+        // Without any AI, mail has none to go to.
+        let ollama_id = format!("ai:ollama@127.0.0.1:{}", ollama.port());
+        for id in [engine.clone(), ollama_id] {
+            assert_eq!(ask(&core, Some(&app_key), Request::RemoveAccount { id }).await, Response::Ok);
+        }
         let refused = ask(&core, Some(&app_key), suggest(&filed)).await;
         assert_eq!(code(&refused), "not-connected");
-        assert_eq!(remote.calls_async().await, 1);
+        assert_eq!(remote.calls_async().await, 2);
         assert_eq!(code(&ask(&core, Some(&app_key), suggest("nothing")).await), "not-found");
         // Nothing was saved: the entries are open as they were.
         assert!(entry_state(&core, &entry).is_open() && entry_state(&core, &filed).is_open());
     }
 
-    /// Task S.23: the person's default is the cloud model of a local Ollama. A mail entry goes to
-    /// its local model, an entry that may leave the computer to the default's model.
+    /// Task S.23: the person's default is the cloud model of a local Ollama; issue #664: a mail entry
+    /// goes to the default's model like any other entry, once it is on.
     #[tokio::test]
-    async fn a_mail_entry_is_suggested_by_the_local_model_of_an_ollama_with_cloud_models() {
+    async fn a_mail_entry_is_suggested_by_the_default_model_of_an_ollama_with_cloud_models() {
         let dir = tempfile::tempdir().expect("temp dir");
         let keys = MemoryTokens::default();
         let core = core_with_ai(dir.path(), &keys, Vec::new());
@@ -34708,11 +34025,11 @@ mod tests {
                 }
             }
         };
-        assert_eq!(suggested(filed.clone()).await, "qwen3:8b", "mail stays on this computer");
         // The cloud model is off until someone turns it on (task S.24, #231): "Automatic" then.
+        assert_eq!(suggested(filed.clone()).await, "qwen3:8b", "the default's model is off");
         assert_eq!(suggested(posted_entry(&core).await).await, "qwen3:8b", "the default's model is off");
         assert_eq!(ask(&core, Some(&app_key), turn_on(&account.id, "glm-5.3:cloud")).await, Response::Ok);
-        assert_eq!(suggested(filed).await, "qwen3:8b", "mail stays on this computer");
+        assert_eq!(suggested(filed).await, "glm-5.3:cloud", "the default's model, mail too");
         assert_eq!(suggested(posted_entry(&core).await).await, "glm-5.3:cloud", "the default's model");
     }
 
@@ -35558,12 +34875,12 @@ mod tests {
         let wanted = vec![crate::actions::kind("event").expect("kind")];
         let request = categorize::detect_request(&model, &content, &wanted);
         let before = decides.calls_async().await;
-        assert!(detection_on(&core.settings, &core.mail, true, &wanted));
+        assert!(detection_on(&core.settings, &core.mail, &wanted));
         assert!(matches!(
             core.handle(Request::SetActionKind { kind: "event".into(), enabled: false }).await,
             Response::ActionKinds { .. }
         ));
-        let allowed = || detection_on(&core.settings, &core.mail, true, &wanted);
+        let allowed = || detection_on(&core.settings, &core.mail, &wanted);
         assert!(ask_decider_checked(&core.ai, &engine, request, &allowed).await.is_err());
         assert_eq!(
             decides.calls_async().await,
@@ -35619,8 +34936,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workflow_merge_fixed_detector_rechecks_mail_and_cloud_permissions_after_waiting_for_content() {
-        for mail_off in [false, true] {
+    async fn workflow_merge_fixed_detector_rechecks_the_mail_switch_after_waiting_for_content() {
+        {
             let dir = tempfile::tempdir().expect("temp dir");
             let jev = httpmock::MockServer::start_async().await;
             let decides = mock_jev_finding(&jev, &["event"]).await;
@@ -35642,11 +34959,7 @@ mod tests {
             blocked.await.expect("store held");
             let mut detecting = core.new_mail_detector()(account.clone(), message.clone());
             assert!(futures_util::poll!(detecting.as_mut()).is_pending());
-            if mail_off {
-                core.mail.set_workflow_switch(Arc::new(|| false));
-            } else {
-                core.settings.set(SettingKey::DecideMailToCloud, &serde_json::json!(false)).expect("cloud revoked");
-            }
+            core.mail.set_workflow_switch(Arc::new(|| false));
             release.send(()).expect("release");
             holding.await.expect("holding task").expect("store access");
             detecting.await;
@@ -35656,12 +34969,12 @@ mod tests {
     }
 
     /// Acceptance of issue #603 (Erledigt 2, 3, 7): the sorting of new mail finds an event, keeps it
-    /// `reading` and puts the mail in the queue; the reader fills it in with the local AI – never the
-    /// chat account elsewhere, which sorting has no permission for – and `mail.list_suggestions`
-    /// lists it `ready` with its fields. Accepting closes it; a dismissed kind stays closed when the
-    /// mail is sorted again.
+    /// `reading` and puts the mail in the queue; the reader fills it in with the chat's model – issue
+    /// #664: also one elsewhere, no data rule keeps it here – and `mail.list_suggestions` lists it
+    /// `ready` with its fields. Accepting closes it; a dismissed kind stays closed when the mail is
+    /// sorted again.
     #[tokio::test]
-    async fn new_mail_gets_a_suggestion_read_out_by_the_local_ai_only() {
+    async fn new_mail_gets_a_suggestion_read_out_by_the_chats_model() {
         let dir = tempfile::tempdir().expect("temp dir");
         let jev = httpmock::MockServer::start_async().await;
         let decides = mock_jev_finding(&jev, &["event"]).await;
@@ -35686,17 +34999,16 @@ mod tests {
         let held = core.mail.suggestions(&account, &message).await.expect("read");
         assert_eq!(held[0].state, torro_ipc::actions::SuggestionState::Unfilled, "no AI: no error, no fields");
 
-        // A local AI and a chat account elsewhere: sorting may send mail out, but Jev cannot write,
-        // so the reading stays here.
+        // A local AI and a chat account elsewhere: Jev cannot write, so the chat's model reads it out.
         let (ollama, openrouter) = (fake_ollama().await, fake_openrouter().await);
-        let local = answers_chat(
-            &ollama,
-            "/v1/chat/completions",
+        let local = answers_chat(&ollama, "/v1/chat/completions", r#"{"title": "Here"}"#).await;
+        let remote = answers_chat(
+            &openrouter,
+            "/api/v1/chat/completions",
             r#"{"title": "Kick-off", "start": "2026-11-14T10:00", "end": "2026-11-14T11:00", "location": "Room 2",
                 "reason": "Anna invites you"}"#,
         )
         .await;
-        let remote = answers_chat(&openrouter, "/api/v1/chat/completions", r#"{"title": "Elsewhere"}"#).await;
         for (provider, server, key) in [
             (AiProvider::Ollama, ollama.url("/v1"), torro_ipc::Secret::default()),
             (AiProvider::OpenRouter, openrouter.url("/api/v1"), torro_ipc::Secret::new(AI_KEY)),
@@ -35722,7 +35034,7 @@ mod tests {
         let event = suggestion.event.expect("an event");
         assert_eq!((event.title.as_str(), event.location.as_deref()), ("Kick-off", Some("Room 2")));
         assert_eq!(suggestion.reason.as_deref(), Some("Anna invites you"));
-        assert_eq!((local.calls_async().await, remote.calls_async().await), (1, 0), "only the AI here");
+        assert_eq!((local.calls_async().await, remote.calls_async().await), (0, 1), "the chat's model");
         let list = Request::ListSuggestions { account: account.clone(), id: message.clone() };
         let Response::Suggestions { suggestions } = core.handle(list.clone()).await else { panic!("listed") };
         assert_eq!(suggestions[0].event.as_ref().map(|event| event.title.as_str()), Some("Kick-off"));

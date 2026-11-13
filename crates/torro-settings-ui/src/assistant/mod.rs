@@ -17,9 +17,9 @@
 //! Bots"): since issue #231 what the assistant and its bots may use is chosen in their own window,
 //! with the rights editor of [`crate::rights`]. Only [`access`] sends `clients.*` beyond reading the
 //! list – `clients.update_client`, and `clients.create_client` / `clients.remove_client` for the
-//! kind `assistant` –, never `clients.new_key`; no other section shows rights or the data rule for
-//! mail, which lives under the control centre's AI section. Tests watch over both
-//! (`no_section_touches_clients_rights_or_the_data_rule`, `access::tests`).
+//! kind `assistant` –, never `clients.new_key`; no other section shows rights. "API and MCP" ([`crate::outside`]) changes
+//! only the tools and servers of the assistant and its bots. Tests watch over both
+//! (`no_section_touches_clients_rights`, `access::tests`).
 //!
 //! While the assistant is off, every section but General and Access says in one sentence that it
 //! stands ready once it is on ([`off_group`]).
@@ -478,13 +478,13 @@ mod tests {
     }
 
     /// Task S.17, narrowed by task S.34: no section but Access switches the assistant on or off,
-    /// changes what a client may use or shows the data rule, and none ever hands out a key. Every
+    /// changes what a client may use, and none ever hands out a key. Every
     /// `clients.*` request but the reading `ListClients` is named here, and the rights editor
     /// (`rights::`, which holds `UpdateClient` and `api::Rights`); Access is watched by its own
     /// test (`access::tests::access_sends_only_what_it_may`), which allows it what the boundary
     /// does and never a new key.
     #[test]
-    fn no_section_touches_clients_rights_or_the_data_rule() {
+    fn no_section_touches_clients_rights() {
         // Spelled in pieces: this test's own words are not what it looks for.
         let forbidden = [
             ["Create", "Client"].concat(),

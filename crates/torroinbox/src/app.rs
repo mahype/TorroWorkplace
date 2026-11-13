@@ -1873,8 +1873,8 @@ pub enum Open {
     CategorizationFilter,
     /// … with a run of "Sort existing mail" going, its line under the head.
     CategorizationRunning,
-    /// #359: a saved model elsewhere without the permission, waiting for the person's OK.
-    CategorizationWaiting,
+    /// #359: a saved model on another device of the network sorts; since #664 without a further OK.
+    CategorizationNetwork,
     /// "All" of the mail window with the menu of the account field open (issue #455).
     MailAccounts,
     /// Four mail accounts, all active, with the drawer open and the account menu closed (#566).
@@ -2055,7 +2055,7 @@ impl Open {
         ("categorization-sort", Open::CategorizationSort),
         ("categorization-filter", Open::CategorizationFilter),
         ("categorization-running", Open::CategorizationRunning),
-        ("categorization-waiting", Open::CategorizationWaiting),
+        ("categorization-network", Open::CategorizationNetwork),
         ("mail-accounts", Open::MailAccounts),
         ("mail-accounts-many", Open::MailAccountsMany),
         ("mail-accounts-selected", Open::MailAccountsSelected),
@@ -2087,7 +2087,7 @@ impl Open {
             Open::CategorizationSort => Some("sort"),
             Open::CategorizationFilter => Some("filter"),
             Open::CategorizationRunning => Some("running"),
-            Open::CategorizationWaiting => Some("waiting"),
+            Open::CategorizationNetwork => Some("network"),
             _ => None,
         }
     }
@@ -9970,7 +9970,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 let problem = trf("The {service} server refused the password.", &[("service", &"IMAP")]);
                 Arc::new(torro_settings_ui::demo::Demo::with_mail_problem(problem))
             }
-            Source::Demo(_) if self.launch.open == Some(Open::CategorizationWaiting) => {
+            Source::Demo(_) if self.launch.open == Some(Open::CategorizationNetwork) => {
                 Arc::new(torro_settings_ui::demo::Demo::with_network_sorting())
             }
             Source::Demo(_) => Arc::new(torro_settings_ui::demo::Demo::new()),

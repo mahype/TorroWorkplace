@@ -296,9 +296,8 @@ impl Envelope {
 /// The way a request reaches the core (#231, `via` in the [`Envelope`]): the API (scripts, the
 /// suite's own programs, `ctl`) or MCP (`torroworkplace mcp` and the hooks of coding agents).
 ///
-/// The core checks right after the key whether the client's kind may come this way and whether
-/// its switch is on (`allow_api_keys`, `allow_mcp`): a script only over the API, an agent only
-/// over MCP, a hook client over both (`docs/api.md`, "Transport"). It is what the program says,
+/// The core checks right after the key whether the client's kind may come this way: a script only
+/// over the API, an agent only over MCP, a hook client over both (`docs/api.md`, "Transport"). It is what the program says,
 /// not a proof: it keeps a key from being used in the wrong place, not malicious code of the same
 /// user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -353,7 +352,7 @@ pub enum Request {
     #[serde(rename = "workflows.get_workflow")]
     GetWorkflow { id: String },
     /// Asks the configured chat model for a bounded draft from mail, a target and an optional instruction.
-    /// Returns WorkflowDraft; not-connected without a model, forbidden under mail data rules.
+    /// Returns WorkflowDraft; not-connected without a model, forbidden without the rights for the mail.
     #[serde(rename = "workflows.propose_workflow")]
     ProposeWorkflow { mail: String, save_target: String, instruction: String },
     /// Stores a validated, inactive draft. No test, grant or rule is created.
@@ -381,7 +380,7 @@ pub enum Request {
     /// Repeat explicitly requests a new generation; ordinary retries are deduplicated across versions/rules.
     #[serde(rename = "workflows.run")]
     RunWorkflow { id: String, revision: u32, mail: String, test: bool, repeat: bool },
-    /// Reachable runs, optionally for one workflow/mail. Content is untrusted and subject to mail data rules.
+    /// Reachable runs, optionally for one workflow/mail. Content is untrusted and within the caller's rights.
     #[serde(rename = "workflows.list_runs")]
     ListWorkflowRuns { workflow: Option<String>, mail: Option<String> },
     /// One reachable run; unknown/foreign ids are not-found.
@@ -963,7 +962,7 @@ pub enum Request {
     /// not listed yet: the models the rule had on are kept on then, so the list is asked for.
     ///
     /// Turning on a model that computes elsewhere (`remote`, or any model of a provider in the cloud)
-    /// is the person's alone, like `mail_to_cloud` (`docs/api.md`, "Was nie nach außen geht", 6):
+    /// is the person's alone (`docs/api.md`, "Was nie nach außen geht", 6):
     /// every client key gets `forbidden`, whatever its rights. Turning one off, and turning on a
     /// model that computes on this computer, are admin commands of `ai` with approval; the approval
     /// names account, model and where it computes as the core lists them.
@@ -2192,8 +2191,8 @@ pub enum Request {
     /// reaches a shell. A window open already cannot be told to show something else yet, so a
     /// target always starts a new window. Codes besides the above: `not-found` for a mail or task
     /// the caller may not see (a client needs read access to `mail` and the account, or to `tasks`
-    /// and the task's list; for a file one it made itself, the tool switched on, read access to
-    /// `tools` and the tool in its selection; for a template read access to `workspaces`) or that
+    /// and the task's list; for a file one it made itself, read access to `tools` and the tool in
+    /// its selection; for a template read access to `workspaces`) or that
     /// is gone or changed; `error` for a target of another form or longer than
     /// 1000 bytes.
     #[serde(rename = "apps.open_app")]
@@ -2342,7 +2341,8 @@ pub enum Request {
     /// [`Response::Ok`]; an unknown id is `not-found`. A selection that names a collection by a
     /// bare URL instead of its id is `error` and changes nothing. Names in
     /// [`api::Rights::denied`] that the catalogue does not know, and `system.ping`, are dropped
-    /// ([`api::deniable`]).
+    /// ([`api::deniable`]). The rights are narrowed to the client's kind ([`api::Rights::for_kind`]):
+    /// [`api::Rights::extensions_default`] stays only for the assistant and its bots (issue #666).
     #[serde(rename = "clients.update_client")]
     UpdateClient { id: String, rights: Rights },
     /// Gives the client `id` a new key, answered with [`Response::ClientKey`]; the old key stops
@@ -2611,15 +2611,13 @@ pub enum Request {
     /// The AI is the person's default of the assistant (`settings` › `aiSlots.chat`, issues
     /// #131, #325) when that is an AI account, else the first AI account (`accounts.list_accounts`, kind
     /// `ai`). The entry's title, text and sender go to it as data, never as instructions; for a
-    /// mail entry the whole mail when the store holds or can fetch it. The data rule of the
-    /// assistant holds (`docs/ki.md`, principle 4): an entry of mail, Nextcloud or Talk goes only to
-    /// a model on the person's computers – a local AI account is taken instead of one elsewhere.
-    /// Only models turned on are asked (task S.24): an account with none on that can chat is passed
+    /// mail entry the whole mail when the store holds or can fetch it, wherever the model computes
+    /// (issue #664). Only models turned on are asked (task S.24): an account with none on that can chat is passed
     /// over, and a closed model on is taken where it is the only one (PR review #242).
     ///
     /// Errors: `not-found` for an unknown id or an entry of a source the client may not see (hook
-    /// clients see none); `not-connected` when no AI account with a model on is set up, or none the
-    /// data rule lets read the entry; the AI server's errors (`offline`, `auth`, `busy`, `error`); `error` when
+    /// clients see none); `not-connected` when no AI account with a model on is set up; the AI
+    /// server's errors (`offline`, `auth`, `busy`, `error`); `error` when
     /// its answer is no suggestion.
     #[serde(rename = "inbox.suggest_task_from_item")]
     SuggestTaskFromItem {
@@ -2636,7 +2634,7 @@ pub enum Request {
     /// dialog of "Make event"):
     /// answered with [`Response::EventSuggestion`] – a title, when it starts and ends, where, and
     /// who takes part. Nothing is saved: the person checks the suggestion and makes the event with
-    /// `inbox.create_event_from_item`. The AI, the data rule and the errors as for
+    /// `inbox.create_event_from_item`. The AI and the errors as for
     /// `inbox.suggest_task_from_item`.
     #[serde(rename = "inbox.suggest_event_from_item")]
     SuggestEventFromItem {
@@ -2810,9 +2808,7 @@ pub enum Request {
     /// tools through the fallback (task MW.3), which answers in a fixed format. Choosing a model
     /// elsewhere – or, naming none, an account elsewhere – for a function that reads mail, while the
     /// assignment is on, is the person's alone (`docs/api.md`, "Was nie nach außen geht", 6): every
-    /// client key gets `forbidden`, even while `decide_mail_to_cloud` is on, since that consent was
-    /// given to another provider. A person who chooses one lets the mail out with it and so sets
-    /// `decide_mail_to_cloud`.
+    /// client key gets `forbidden`. A person chooses one without a further question (issue #664).
     ///
     /// Error codes: `not-found` for a function this version does not know or an account that does
     /// not exist; `error` for a model the account does not offer, and for a function that needs a
@@ -2847,9 +2843,7 @@ pub enum Request {
     /// is turned on, and for `decide` a model that decides or, through the fallback (task MW.3), can
     /// use tools and answers in a fixed format. Choosing a model elsewhere for
     /// `decide` is the person's alone (`docs/api.md`, "Was nie nach außen geht", 6): every client
-    /// key gets `forbidden`, even while `decide_mail_to_cloud` is on, since that consent was given to
-    /// another provider. The same write sets `decide_mail_to_cloud` to whether the model runs
-    /// elsewhere.
+    /// key gets `forbidden`. A person chooses one without a further question (issue #664).
     ///
     /// Error codes: `not-found` for an account that does not exist; `error` for a model the account
     /// does not offer or one that cannot do what the slot needs; `unsupported` for a model that is
@@ -2979,8 +2973,8 @@ pub enum Request {
     },
     /// Asks the decision model what a mail is, again ([`Response::ItemCategory`], task E12.4):
     /// unlike the automatic run this **overwrites a category the person set by hand** – whoever
-    /// presses the button wants exactly that. `not-connected` when no decision model is assigned
-    /// or the data rule leaves none on this computer, `unsupported` for an entry without mail.
+    /// presses the button wants exactly that. `not-connected` when no decision model is assigned,
+    /// `unsupported` for an entry without mail.
     /// A message's id (`m:…`) asks about that one mail, entry or none.
     #[serde(rename = "inbox.classify_item")]
     ClassifyItem {
@@ -3862,8 +3856,8 @@ pub enum Request {
     /// The core remembers who wrote a draft: a client key replaces and sends only its own drafts,
     /// any other (also one the person wrote) is `not-found` (security rule 2). Files
     /// (`DraftAttachment::File`) are taken from the app key anywhere, from a client key only out of
-    /// the core's attachment folder or, while it reaches the tools' files (issue #225: the PDF tool
-    /// switched on, read access to `tools`, `pdf` in its selection), a PDF it made itself with
+    /// the core's attachment folder or, while it reaches the tools' files (issue #225: read access to
+    /// `tools`, `pdf` in its selection), a PDF it made itself with
     /// [`Request::CreatePdf`] (the path from its answer) as the core wrote it; never through a
     /// symbolic link and at most 25 MiB each; any other path is `forbidden` (security rule 1). A
     /// draft with `html` (issue #125) is stored
@@ -4052,11 +4046,10 @@ pub enum Request {
     /// is kept: `mail.list_suggestions` lists it from now on, also one dismissed before. Nothing is
     /// created.
     ///
-    /// The AI is the one that sorts mail when the permission of sorting (`decide_mail_to_cloud`)
-    /// lets mail go to a model elsewhere and it can chat; else a model on this computer
-    /// (`docs/ki.md`, principle 4). The mail goes to it as data, never as instructions; the answer
-    /// is data too. Codes: `not-found` for an account or a mail the caller may not see, or an
-    /// unknown kind; `not-connected` when no model may read the mail; the AI server's errors
+    /// The AI is the one that sorts mail (issue #664: wherever it computes). The mail goes to it as
+    /// data, never as instructions; the answer is data too. Codes: `not-found` for an account or a
+    /// mail the caller may not see, or an unknown kind; `not-connected` when no model is set up to
+    /// read it; the AI server's errors
     /// (`offline`, `auth`, `busy`, `error`); `error` for ids over 300 bytes or an answer that is no
     /// suggestion.
     #[serde(rename = "mail.extract_action")]
@@ -4194,8 +4187,7 @@ pub enum Request {
         /// without it keeps its own, one with another is `error`. Its answers may only read and
         /// suggest (`mail.extract_action`), whatever the assistant's rights allow beyond that, and the
         /// assistant reads the mail first. Needs the assistant's read access to that mail account
-        /// (`forbidden` otherwise, nothing stored), a caller that sees the account (`not-found`), and a
-        /// model the data rule lets read mail (`not-connected`).
+        /// (`forbidden` otherwise, nothing stored) and a caller that sees the account (`not-found`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         about: Option<assistant::MailRef>,
     },
@@ -4203,8 +4195,7 @@ pub enum Request {
     /// of [`Request::SendMessage`] with `about` for a new conversation, without storing anything or asking a
     /// model, so a window can say why before the person types. [`Response::Ok`] when it would be taken; otherwise
     /// the error `assistant.send_message` would answer: `not-found` for a mail or account the caller may not see
-    /// or an unknown engine, `forbidden` when the assistant may not read that mail account, `not-connected` when
-    /// the data rule keeps mail from the model, `unsupported` for an engine that cannot chat about a mail (a
+    /// or an unknown engine, `forbidden` when the assistant may not read that mail account, `unsupported` for an engine that cannot chat about a mail (a
     /// coding agent, an AI account with no model on or while the core has not started), `error` for a limit
     /// ([`assistant::limit_refusal`]).
     #[serde(rename = "assistant.check_about")]
@@ -4283,13 +4274,12 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         personality: Option<String>,
     },
-    /// The notes of the assistant's memory, oldest first ([`Response::Memories`]). A note kept from
-    /// remote models ([`Note::local_only`]) is listed only for the app key and clients with read
-    /// access to mail. Never fails; an empty list when the memory cannot be read.
+    /// The notes of the assistant's memory, oldest first ([`Response::Memories`]). A note from mail
+    /// ([`Note::local_only`]) is listed only for the app key and clients with read access to mail. Never fails; an empty list when the memory cannot be read.
     #[serde(rename = "assistant.list_memories")]
     ListMemories,
     /// What the client that asks may do now (issue #134): its rights as they apply to this
-    /// request, after the areas its engine never gets, those switched off in the conversation and,
+    /// request, after the areas switched off in the conversation and,
     /// for a bot that runs for the assistant, what both clients may ([`Response::MyAccess`]). For a
     /// client key only; the app key gets `unsupported` (it may do everything). Changes nothing.
     #[serde(rename = "assistant.my_access")]
@@ -4306,8 +4296,9 @@ pub enum Request {
         /// The id of the note this one replaces.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         replaces: Option<String>,
-        /// Keep the note from models outside this computer ([`Note::local_only`]). A note that
-        /// replaces such a note stays so.
+        /// The note comes from mail ([`Note::local_only`]): it waits for the person's approval and
+        /// is listed only for clients that may read mail. Since issue #664 every model reads every
+        /// note. A note that replaces such a note stays so.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         local_only: bool,
     },
@@ -4411,12 +4402,11 @@ pub enum Request {
     },
 
     // The assistant's own tools (issue #225, `docs/assistent.md` "Eigene Werkzeuge"; wire types in
-    // [`tools`]). A command of a tool ([`tools::ToolId::of_command`]) runs only while a person has
-    // the tool switched on (setting `tool_enabled`) and, for a client, with the tool in its
-    // selection ([`api::Rights::tools`]); otherwise `forbidden`, for every client and for the app
-    // key alike when the tool is off.
-    /// Every tool of the assistant with whether a person switched it on and whether the key that
-    /// asks may use it ([`Response::Tools`]). Never fails.
+    // [`tools`]). The tools are always there (issue #666); a command of a tool
+    // ([`tools::ToolId::of_command`]) runs for a client only with the tool in its selection
+    // ([`api::Rights::tools`]), otherwise `forbidden`.
+    /// Every built-in tool with whether the key that asks may use it ([`Response::Tools`]). Never
+    /// fails.
     #[serde(rename = "tools.list_tools")]
     ListTools,
     /// Sets a PDF from `markdown` with the page template `template` and saves it in the folder the
@@ -4608,9 +4598,9 @@ pub enum Request {
     /// comes besides. Search words go only to switched-on providers. Answered with
     /// [`Response::SearchResults`]: hits that are text from outside (`untrusted`), never instructions.
     /// In a conversation of the assistant a person approves the web once per conversation; clients over
-    /// API and MCP need the tool switched on and `web` in their selection, and nothing waits.
+    /// API and MCP need `web` in their selection, and nothing waits.
     ///
-    /// Codes: `forbidden` while the tool is off or `web` is outside the client's selection,
+    /// Codes: `forbidden` while `web` is outside the client's selection,
     /// `not-connected` when no provider is on, `busy` while every switched-on provider rests after a
     /// block or limit, `auth` when only providers without their key are on, `offline`, `error` for
     /// blank search words, more than [`web::MAX_QUERY_CHARS`] characters or a `count` above
@@ -4953,8 +4943,7 @@ pub enum SettingKey {
     /// It writes the slot `chat` (issue #325): an alias of `ai.set_slot` with the slot `chat`, kept
     /// for older clients, without that command's checks – not even whether the model is turned on.
     /// The engine is not checked here: an engine that is not offered when a chat starts is passed
-    /// over. That keeps the data rule: no function that reads mail takes the slot `chat`, and the
-    /// assistant and its bots check `mail_to_cloud` when they run.
+    /// over.
     AssistantDefault,
     /// Where the first-run setup stands (task W.1, `docs/einrichtung.md`): `"pending"` (start it
     /// again), `"skipped"` (put off: the overview offers to continue) or `"done"` (finished).
@@ -4993,20 +4982,6 @@ pub enum SettingKey {
     /// Account id (`mail:<address>`) used as the sender of a new mail. `null` restores the first
     /// available account. Replies and forwards keep their message's account unless chosen anew.
     MailSender,
-    /// The data rule for mail (task C.17): `false` (the default) keeps mail with models on the
-    /// person's own computers; `true` lets it go to models elsewhere as well, and to any coding
-    /// agent that drives the assistant where one is offered (none since task C.18, issue #219).
-    /// Only the app key may send `true` – a person in the control centre (point 6 of "Was nie nach
-    /// außen geht", `docs/api.md`); a client gets `forbidden`, whatever its rights, so no agent
-    /// can let mail out to itself. Any client allowed to change settings may send `false`.
-    MailToCloud,
-    /// The data rule for the slot Sorting (issue #325, `ai.set_slot decide`): `false` keeps the mail
-    /// it sorts with models on the person's own computers; `true` lets it go to the model elsewhere
-    /// chosen for Sorting. `mail_to_cloud` stays the rule of the chat. Choosing a model for Sorting
-    /// sets it along. Only the app key may send `true` – a person in the control centre (point 6 of
-    /// "Was nie nach außen geht", `docs/api.md`); a client gets `forbidden`, whatever its rights.
-    /// Any client allowed to change settings may send `false`.
-    DecideMailToCloud,
     /// "Mail from contacts is personal" (issue #390): `true` (the default) or `false`. While on,
     /// new mail from an address in the address books goes to the group Personal before any model;
     /// mail filters, sorting rules, newsletters, invitations and automatic replies still come first.
@@ -5027,22 +5002,6 @@ pub enum SettingKey {
     /// of category keys, e.g. `["spam", "auto_reply"]`. An empty list shows every category that
     /// occurs. A key this version does not know is dropped when the file is read.
     HiddenCategories,
-    /// "Allow API keys" (#231, Settings › API): `true` (the default) or `false`. Off, every key of
-    /// the kind `script` is refused with `unauthorized`. Only the app key may send `true` – a
-    /// person in the control centre (point 6 of "Was nie nach außen geht", `docs/api.md`); a
-    /// client gets `forbidden`, whatever its rights. Any client allowed to change settings may
-    /// send `false`.
-    AllowApiKeys,
-    /// "Allow MCP" (#231, Settings › MCP): `true` (the default) or `false`. Off, every key of an
-    /// MCP client and of a hook is refused with `unauthorized`. Only the app key may send `true`,
-    /// like [`SettingKey::AllowApiKeys`]; any client allowed to change settings may send `false`.
-    AllowMcp,
-    /// Switches one of the assistant's own tools on or off (issue #225): `{"tool": "pdf" | "web",
-    /// "enabled": false}` (`torro_core::settings::ToolSwitch`). Only the app key may switch a tool
-    /// on – a person in Torro Workplace under MCP servers (point 9 of "Was nie nach außen geht",
-    /// `docs/api.md`); a client gets `forbidden` for anything but `"enabled": false`, whatever its
-    /// rights. Any client allowed to change settings may switch a tool off.
-    ToolEnabled,
     /// The folder new PDFs are saved in: an absolute path, or `null` (or `""`) for the desktop
     /// (`torro_core::settings::PdfSettings::folder`). Only the app key may set a folder other than
     /// the one stored (point 9); any client allowed to change settings may send `null`.
@@ -6590,7 +6549,7 @@ pub struct AiAssignmentInfo {
 }
 
 /// One slot with its model (`ai.list_assignments`, issue #325): the slot, the words a person reads
-/// for it, the model chosen and whether mail may go elsewhere for it.
+/// for it and the model chosen.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AiSlotInfo {
     pub slot: torro_core::ai::AiSlot,
@@ -6600,9 +6559,6 @@ pub struct AiSlotInfo {
     /// is empty.
     #[serde(flatten)]
     pub chosen: Option<torro_core::ai::SlotModel>,
-    /// Mail may go to a model elsewhere for this slot: `mail_to_cloud` for `chat`,
-    /// `decide_mail_to_cloud` for `decide`.
-    pub mail_to_cloud: bool,
 }
 
 /// What Torro suggests on this computer ([`Request::AiRecommend`], issue #325). Only words and ids:
@@ -7596,18 +7552,17 @@ mod tests {
         use torro_core::ai::{AiSlot, SlotModel};
         let chosen =
             SlotModel { engine: "ai:ollama@localhost:11434".into(), model: Some("nimble".into()), effort: None };
-        let full =
-            AiSlotInfo { slot: AiSlot::Decide, label: "Sorting".into(), chosen: Some(chosen), mail_to_cloud: false };
+        let full = AiSlotInfo { slot: AiSlot::Decide, label: "Sorting".into(), chosen: Some(chosen) };
         let json = serde_json::to_value(&full).expect("json");
         assert_eq!(
             json,
             serde_json::json!({"slot": "decide", "label": "Sorting", "engine": "ai:ollama@localhost:11434",
-                "model": "nimble", "mail_to_cloud": false})
+                "model": "nimble"})
         );
         assert_eq!(serde_json::from_value::<AiSlotInfo>(json).expect("back"), full);
-        let empty = AiSlotInfo { slot: AiSlot::Chat, label: "Chat".into(), chosen: None, mail_to_cloud: true };
+        let empty = AiSlotInfo { slot: AiSlot::Chat, label: "Chat".into(), chosen: None };
         let json = serde_json::to_value(&empty).expect("json");
-        assert_eq!(json, serde_json::json!({"slot": "chat", "label": "Chat", "mail_to_cloud": true}));
+        assert_eq!(json, serde_json::json!({"slot": "chat", "label": "Chat"}));
         assert_eq!(serde_json::from_value::<AiSlotInfo>(json).expect("back"), empty);
 
         let older: Response =

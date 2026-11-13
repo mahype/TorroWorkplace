@@ -10,7 +10,7 @@
 //! (task S.23): Ollama's cloud models
 //! run on `ollama.com` through the local Ollama, so its model list says so per model
 //! ([`AiModel::remote`]), and the core keeps the last list per account ([`AiAccounts::known_models`])
-//! so the data rule need not ask the server at every message. The accounts are kept like the GitHub accounts
+//! so the core need not ask the server at every message where a model computes. The accounts are kept like the GitHub accounts
 //! ([`super::github`]): the list in `accounts.json` (kind `ai`, the server's base address in
 //! `server`, the kind of server in `Account::ai`), the API key in the system keychain under the
 //! account id, loaded once in the background ([`AiAccounts::start`]).
@@ -27,7 +27,7 @@
 //! from the lists the servers give: `<config>/ai-models.json` (0600, written whole and atomically,
 //! [`torro_core::ai::ModelSwitches`]; never written over while it does not read, `Switches::damaged`). Listing a server's models never sets [`AiModel::enabled`];
 //! the core marks a list it answers with ([`AiAccounts::mark_enabled`]). Where a model computes,
-//! which the rule at the start needs, is the data rule's word ([`crate::assistant::place_of`]).
+//! is said by [`torro_core::ai::place_of`]: only people turn on a model elsewhere.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -771,7 +771,7 @@ struct Slot {
     checked: Option<DateTime<Utc>>,
     problem: Option<String>,
     /// All its models as the server last listed them ([`AiAccounts::models`]); `None` until it did.
-    /// What the data rule reads where a model runs ([`AiAccounts::known_models`]).
+    /// Where each model runs, as the core reads it ([`AiAccounts::known_models`]).
     models: Option<Vec<AiModel>>,
 }
 
@@ -903,24 +903,17 @@ pub struct Automatic {
     /// open weights, on this computer first, with tools).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub chat: bool,
-    /// A function that needs a decision model, with mail allowed to the cloud: the first model that
-    /// decides, as sorting mail took it – at an account on this computer the first that decides here
-    /// ([`Automatic::picks`]).
+    /// A function that needs a decision model: the first model that decides, as sorting mail takes
+    /// it – at an account on this computer the first that decides here ([`Automatic::picks`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub decides: bool,
-    /// The same while mail may not leave this computer: the first model that decides and computes here.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub decides_here: bool,
 }
 
 impl Automatic {
-    /// What "Automatic" was used for at a function: its decision model for one that needs one
-    /// (only one on this computer for a function that reads mail while `mail_to_cloud` is off), else
-    /// the model a chat takes. `mail_to_cloud` is the permission of the function's slot (issue #325,
-    /// `Settings::mail_to_cloud_in(function.slot())`), not the chat's.
-    pub fn for_function(function: ai::AiFunction, mail_to_cloud: bool) -> Automatic {
+    /// What "Automatic" was used for at a function: its decision model for one that needs one, else
+    /// the model a chat takes.
+    pub fn for_function(function: ai::AiFunction) -> Automatic {
         match function.needs_decision() {
-            true if function.reads_mail() && !mail_to_cloud => Automatic { decides_here: true, ..Automatic::default() },
             true => Automatic { decides: true, ..Automatic::default() },
             false => Automatic { chat: true, ..Automatic::default() },
         }
@@ -928,25 +921,17 @@ impl Automatic {
 
     /// What "Automatic" is used for at a slot (issue #325) with no model named: the chat's model for
     /// [`ai::AiSlot::Chat`]; for [`ai::AiSlot::Decide`] what sorting mail takes – the first model
-    /// that decides, only one on this computer while `mail_to_cloud` (the slot's permission,
-    /// `Settings::mail_to_cloud_in`) is off.
-    pub fn for_slot(slot: ai::AiSlot, mail_to_cloud: bool) -> Automatic {
+    /// that decides (issue #664: wherever it computes; at an account on this computer one here).
+    pub fn for_slot(slot: ai::AiSlot) -> Automatic {
         match slot {
             ai::AiSlot::Chat => Automatic { chat: true, ..Automatic::default() },
-            ai::AiSlot::Decide => match mail_to_cloud {
-                false => Automatic { decides_here: true, ..Automatic::default() },
-                true => Automatic { decides: true, ..Automatic::default() },
-            },
+            ai::AiSlot::Decide => Automatic { decides: true, ..Automatic::default() },
         }
     }
 
     /// Both uses together: every pick of either.
     fn and(self, other: Automatic) -> Automatic {
-        Automatic {
-            chat: self.chat || other.chat,
-            decides: self.decides || other.decides,
-            decides_here: self.decides_here || other.decides_here,
-        }
+        Automatic { chat: self.chat || other.chat, decides: self.decides || other.decides }
     }
 
     /// The models of `models` (all of the account's, as its server lists them) that "Automatic"
@@ -958,10 +943,10 @@ impl Automatic {
     pub fn picks(
         self,
         models: &[AiModel],
-        place: impl Fn(&AiModel) -> crate::assistant::Place,
+        place: impl Fn(&AiModel) -> torro_core::ai::Place,
         seat_here: bool,
     ) -> Vec<AiModel> {
-        let here = |model: &AiModel| place(model) == crate::assistant::Place::Local;
+        let here = |model: &AiModel| place(model) == torro_core::ai::Place::Local;
         let decides = |model: &&AiModel| model.decision == Some(true);
         let mut picks = Vec::new();
         if self.chat {
@@ -970,18 +955,15 @@ impl Automatic {
         if self.decides {
             picks.extend(models.iter().filter(decides).find(|model| !seat_here || here(model)).cloned());
         }
-        if self.decides_here {
-            picks.extend(models.iter().filter(decides).find(|model| here(model)).cloned());
-        }
         picks
     }
 }
 
 /// Whether `model` of the account at `server` (its kind and base address, `None` when it is gone)
-/// computes on this computer, as the data rule says ([`crate::assistant::place_of`]).
+/// computes on this computer ([`torro_core::ai::place_of`]).
 fn computes_here(server: Option<&(AiProvider, String)>, model: &AiModel) -> bool {
     server.is_some_and(|(provider, base)| {
-        crate::assistant::place_of(*provider, base, model) == crate::assistant::Place::Local
+        torro_core::ai::place_of(*provider, base, model) == torro_core::ai::Place::Local
     })
 }
 
@@ -1126,7 +1108,7 @@ impl AiAccounts {
         self.slots.read().await.iter().any(|slot| slot.account.id == id)
     }
 
-    /// The kind of server and the base address of the account `id`, for the assistant's data rule
+    /// The kind of server and the base address of the account `id`
     /// (task C.2: where its model runs); `None` for an id that is no AI account.
     pub async fn server(&self, id: &str) -> Option<(AiProvider, String)> {
         let slots = self.slots.read().await;
@@ -1252,7 +1234,7 @@ impl AiAccounts {
                 tr("An API key is only sent over https or to this computer. Use an https address.").into(),
             ));
         }
-        // Strata's models count as computed on this computer (the data rule), so only a server that
+        // Strata's models count as computed on this computer, so only a server that
         // says it is Strata may be connected as one.
         if provider == AiProvider::Strata
             && !OpenAiCompatible::new(self.http()?.clone(), provider, &base, None).is_strata().await
@@ -1344,13 +1326,13 @@ impl AiAccounts {
         let Some(switches) = held.as_mut() else { return };
         let Some(automatic) = switches.automatic.get(id).copied() else { return };
         let Some((provider, base)) = server else { return };
-        let place = |model: &AiModel| crate::assistant::place_of(provider, &base, model);
+        let place = |model: &AiModel| torro_core::ai::place_of(provider, &base, model);
         let mut changed = switches.clone();
         changed.automatic.remove(id);
         let mut kept = 0;
-        let seat_here = torro_core::ai::automatic_place_of(provider, &base) == crate::assistant::Place::Local;
+        let seat_here = torro_core::ai::automatic_place_of(provider, &base) == torro_core::ai::Place::Local;
         for model in automatic.picks(models, place, seat_here) {
-            if !changed.held.is_on(id, &model, place(&model) == crate::assistant::Place::Local) {
+            if !changed.held.is_on(id, &model, place(&model) == torro_core::ai::Place::Local) {
                 changed.held.turn_on(id, &model.id);
                 kept += 1;
             }
@@ -1407,7 +1389,7 @@ impl AiAccounts {
     }
 
     /// All models of the account `id` as its server last listed them ([`AiAccounts::models`]), asked
-    /// now when it never did or when the list lacks `model`: what the data rule needs to know where
+    /// now when it never did or when the list lacks `model`: what the core needs to know where
     /// a model runs ([`AiModel::remote`], task S.23) without asking the server at every message. It
     /// lives as long as the capabilities of the same list: until the account is listed again (the
     /// apps do with `ai.list_models`) or connected anew. Errors as [`AiAccounts::models`].
@@ -2168,21 +2150,20 @@ pub(crate) mod tests {
         }
     }
 
+    /// Issue #664: "Automatic" for sorting at a LAN account keeps its decision model on, with no
+    /// rule that would keep the mail here.
     #[tokio::test]
-    async fn network_automatic_takeover_respects_the_saved_mail_rule() {
-        for allowed in [false, true] {
-            let dir = tempfile::tempdir().expect("temp dir");
-            let keys = MemoryTokens::default();
-            let mock = fake_deciding_ollama().await;
-            let ai =
-                AiAccounts::new(Some(accounts_file(dir.path())), Arc::new(keys), Some(network_http(&mock)), Vec::new());
-            let base = format!("http://gpu.example.test:{}/v1", mock.port());
-            let account = ai.connect(AiProvider::Ollama, Some(&base), Secret::default()).await.expect("LAN account");
-            let automatic = Automatic::for_slot(ai::AiSlot::Decide, allowed);
-            ai.keep_used_models_on(Vec::new(), vec![(account.id.clone(), automatic)]).await.expect("noted Automatic");
-            let enabled = on(&ai, &account.id).await;
-            assert_eq!(enabled, if allowed { vec!["nimble".to_string()] } else { Vec::new() });
-        }
+    async fn network_automatic_takeover_keeps_the_decision_model_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let mock = fake_deciding_ollama().await;
+        let ai =
+            AiAccounts::new(Some(accounts_file(dir.path())), Arc::new(keys), Some(network_http(&mock)), Vec::new());
+        let base = format!("http://gpu.example.test:{}/v1", mock.port());
+        let account = ai.connect(AiProvider::Ollama, Some(&base), Secret::default()).await.expect("LAN account");
+        let automatic = Automatic::for_slot(ai::AiSlot::Decide);
+        ai.keep_used_models_on(Vec::new(), vec![(account.id.clone(), automatic)]).await.expect("noted Automatic");
+        assert_eq!(on(&ai, &account.id).await, ["nimble"]);
     }
 
     /// The service on `dir/config/accounts.json` and `keys`, looking for local servers at `local`.
@@ -2635,7 +2616,7 @@ pub(crate) mod tests {
     }
 
     /// Task S.23: a cloud model of Ollama runs elsewhere, a local one does not; without `/api/tags`
-    /// every model counts as elsewhere. The list is kept, so the data rule does not ask again.
+    /// every model counts as elsewhere. The list is kept, so the core does not ask again.
     #[tokio::test]
     async fn ollama_says_which_models_run_elsewhere_and_without_tags_all_do() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -3535,7 +3516,7 @@ pub(crate) mod tests {
     }
 
     /// Issue #322: the models of Strata run on this computer (`remote: false`) and are not described
-    /// by the server beyond their names (`tools` stays `null`), so the data rule counts them as local.
+    /// by the server beyond their names (`tools` stays `null`), so they count as local.
     #[tokio::test]
     async fn the_models_of_strata_run_on_this_computer_and_say_nothing_of_tools() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -3844,7 +3825,7 @@ pub(crate) mod tests {
     /// tools; for sorting mail the first model that decides, here only where mail may not leave.
     #[test]
     fn automatic_picks_what_it_took_before_the_switches() {
-        use crate::assistant::Place;
+        use torro_core::ai::Place;
         let model = |id: &str, tools: bool, open: bool, decides: bool, remote: bool| AiModel {
             tools: Some(tools),
             open_weights: Some(open),
@@ -3863,10 +3844,9 @@ pub(crate) mod tests {
         let ids = |uses: Automatic| uses.picks(&models, place, false).into_iter().map(|m| m.id).collect::<Vec<_>>();
         assert_eq!(ids(Automatic { chat: true, ..Automatic::default() }), ["here-tools"]);
         assert_eq!(ids(Automatic { decides: true, ..Automatic::default() }), ["cloud-decides"]);
-        assert_eq!(ids(Automatic { decides_here: true, ..Automatic::default() }), ["here-decides"]);
-        let both = Automatic { chat: true, ..Automatic::default() }
-            .and(Automatic { decides_here: true, ..Automatic::default() });
-        assert_eq!(ids(both), ["here-tools", "here-decides"]);
+        let both =
+            Automatic { chat: true, ..Automatic::default() }.and(Automatic { decides: true, ..Automatic::default() });
+        assert_eq!(ids(both), ["here-tools", "cloud-decides"]);
         assert!(Automatic::default().picks(&models, place, false).is_empty());
         // Review of #325: at an account on this computer "Automatic" sorted only with models here
         // (`categorize::chosen`), so that is the one kept on – `nimble`, never `nimble:cloud` before it.
@@ -3877,12 +3857,10 @@ pub(crate) mod tests {
         assert_eq!(kept(true), ["nimble"]);
         assert_eq!(kept(false), ["nimble:cloud"], "an account elsewhere picks as it lists");
         let sorting = ai::AiFunction::InboxCategorize;
-        assert_eq!(Automatic::for_function(sorting, false), Automatic { decides_here: true, ..Automatic::default() });
-        assert_eq!(Automatic::for_function(sorting, true), Automatic { decides: true, ..Automatic::default() });
+        assert_eq!(Automatic::for_function(sorting), Automatic { decides: true, ..Automatic::default() });
         // Issue #325: a slot as the functions it serves.
-        assert_eq!(Automatic::for_slot(ai::AiSlot::Chat, true), Automatic { chat: true, ..Automatic::default() });
-        assert_eq!(Automatic::for_slot(ai::AiSlot::Decide, false), Automatic::for_function(sorting, false));
-        assert_eq!(Automatic::for_slot(ai::AiSlot::Decide, true), Automatic::for_function(sorting, true));
+        assert_eq!(Automatic::for_slot(ai::AiSlot::Chat), Automatic { chat: true, ..Automatic::default() });
+        assert_eq!(Automatic::for_slot(ai::AiSlot::Decide), Automatic::for_function(sorting));
     }
 
     /// #231: an account used with "Automatic" before the switches keeps that model on at its first

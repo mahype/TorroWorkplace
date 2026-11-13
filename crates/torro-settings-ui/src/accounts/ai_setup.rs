@@ -45,8 +45,6 @@ pub struct State {
     ways: bool,
     error: Option<String>,
     queue: Vec<(AiSlot, AiCandidate)>,
-    consent: bool,
-    allowed_remote: Option<(String, String)>,
     current: Option<(AiSlot, AiCandidate)>,
     pull: Option<String>,
     demo: bool,
@@ -79,8 +77,6 @@ impl Default for State {
             ways: false,
             error: None,
             queue: Vec::new(),
-            consent: false,
-            allowed_remote: None,
             current: None,
             pull: None,
             demo: false,
@@ -108,7 +104,6 @@ pub enum Message {
     ChooseModel(AiSlot, usize),
     KeyPage,
     Use,
-    Confirm,
     Cancel,
     Retry,
     /// The dropdown of "Choose a provider" opens, closes or is clicked next to.
@@ -159,8 +154,6 @@ pub fn leave(state: &mut State) {
     state.key = Secret::default();
     state.error = None;
     state.form = None;
-    state.consent = false;
-    state.allowed_remote = None;
     state.queue.clear();
     state.current = None;
     state.pull = None;
@@ -176,18 +169,16 @@ pub fn connected(state: &State) -> bool {
     state.selected.is_some()
 }
 
-/// The host's Enter/Continue must not leave an open connection form or a consent decision.
+/// The host's Enter/Continue must not leave an open connection form.
 pub fn primary(state: &State) -> Option<Message> {
-    (state.form.is_some() || state.consent || state.current.is_some() || matches!(state.flight, Some(Work::Connect)))
+    (state.form.is_some() || state.current.is_some() || matches!(state.flight, Some(Work::Connect)))
         .then_some(Message::Submit)
 }
 
 /// The host describes the same action as Enter, without offering a no-op button during work.
 pub fn primary_label(state: &State) -> Option<(&'static str, bool)> {
     primary(state)?;
-    Some(if state.consent {
-        (tr("Send mail outside this computer?"), false)
-    } else if state.current.is_some() || state.pull.is_some() {
+    Some(if state.current.is_some() || state.pull.is_some() {
         (tr("Preparing model…"), false)
     } else if state.flight.is_some() {
         (tr("Connecting…"), false)
@@ -196,14 +187,9 @@ pub fn primary_label(state: &State) -> Option<(&'static str, bool)> {
     })
 }
 
-/// A pending mail decision replaces the long overview rather than being appended below it.
-pub fn awaiting_consent(state: &State) -> bool {
-    state.consent
-}
-
-/// The first-run host also gives the new cloud form its own short page.
+/// The first-run host gives the new cloud form its own short page.
 pub fn foreground(state: &State) -> bool {
-    state.consent || state.form.as_ref().is_some_and(|(provider, _, _)| *provider == AiProvider::OllamaCloud)
+    state.form.as_ref().is_some_and(|(provider, _, _)| *provider == AiProvider::OllamaCloud)
 }
 
 fn key_reentry(state: &State) -> Option<&'static str> {
@@ -219,14 +205,6 @@ pub fn allow_sorting(state: &mut State, allowed: bool) {
     state.sorting = allowed;
     if !allowed {
         state.queue.retain(|(slot, _)| *slot != AiSlot::Decide);
-        if state.consent {
-            state.consent = false;
-            state.allowed_remote = None;
-            state.queue.clear();
-            if state.current.as_ref().is_some_and(|(slot, _)| *slot == AiSlot::Decide) {
-                state.current = None;
-            }
-        }
     }
 }
 
@@ -248,7 +226,7 @@ pub fn status(state: &State) -> Option<&'static str> {
 }
 
 pub fn subscription(state: &State) -> Subscription<Message> {
-    if !state.demo && state.form.is_none() && !state.consent {
+    if !state.demo && state.form.is_none() {
         let interval = if !state.active {
             Duration::from_millis(1)
         } else if state.pull.is_some() {
@@ -271,7 +249,6 @@ fn may_change_account(state: &State) -> bool {
         && state.current.is_none()
         && state.queue.is_empty()
         && state.pull.is_none()
-        && !state.consent
 }
 
 fn select_account(state: &mut State, id: String, data: &dyn Seen) {
@@ -347,7 +324,7 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
             Action::None
         }
         Message::Tick if !state.active => open(state),
-        Message::Tick if state.flight.is_some() || state.form.is_some() || state.consent => Action::None,
+        Message::Tick if state.flight.is_some() || state.form.is_some() => Action::None,
         Message::Tick if state.pull.is_some() => send(state, Work::Pulls, Request::AiPulls),
         Message::Tick if state.selected.is_some() => refresh(state),
         Message::Retry if state.form.is_some() => update(state, Message::Submit, data),
@@ -431,7 +408,7 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
             }
             Action::None
         }
-        Message::ChooseModel(slot, index) if state.current.is_none() && !state.consent => {
+        Message::ChooseModel(slot, index) if state.current.is_none() => {
             let known = state.recommendation.as_ref().is_some_and(|r| {
                 r.preparations.iter().any(|p| {
                     Some(&p.account) == state.selected.as_ref() && p.slot == slot && index < p.candidates.len()
@@ -466,29 +443,9 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
             if state.queue.is_empty() {
                 return Action::None;
             }
-            state.allowed_remote = None;
-            state.consent = state.queue.iter().any(|(slot, c)| *slot == AiSlot::Decide && !c.local);
-            if state.consent {
-                return Action::None;
-            }
-            next(state)
-        }
-        Message::Confirm if state.consent => {
-            state.consent = false;
-            if let (Some(account), Some((AiSlot::Decide, candidate))) = (&state.selected, &state.current) {
-                state.allowed_remote = Some((account.clone(), candidate.model.clone()));
-                return send(state, Work::List, Request::AiModels { account: account.clone(), all: true });
-            }
-            if let (Some(account), Some((_, candidate))) =
-                (&state.selected, state.queue.iter().find(|(s, c)| *s == AiSlot::Decide && !c.local))
-            {
-                state.allowed_remote = Some((account.clone(), candidate.model.clone()));
-            }
             next(state)
         }
         Message::Cancel => {
-            state.consent = false;
-            state.allowed_remote = None;
             state.queue.clear();
             if let Some(id) = state.pull.take() {
                 return send(state, Work::Cancel, Request::CancelAiPull { id });
@@ -554,7 +511,6 @@ pub fn can_use_suggestion(state: &State, data: &dyn Seen, replace: bool, only: O
     !matches!(state.flight, Some(Work::Connect | Work::Enable | Work::Set | Work::Pull | Work::List | Work::Check))
         && state.current.is_none()
         && state.queue.is_empty()
-        && !state.consent
         && state.form.is_none()
         && !suggestion(state, data, replace, only).is_empty()
 }
@@ -574,7 +530,7 @@ pub fn differs(state: &State, data: &dyn Seen) -> bool {
 
 /// "Use suggestion" of the first-run setup (issue #326): takes the [`suggested_account`] and prepares
 /// its suggested models one after the other, as "Use suggestion" on the page does – downloads, turns
-/// on and puts each into its slot; a model for Sorting elsewhere asks first ([`awaiting_consent`]).
+/// on and puts each into its slot, also a model for Sorting elsewhere (issue #664: without a question).
 /// With `replace` also slots already chosen, with `only` just that slot. Read-only work that runs is
 /// superseded.
 pub fn use_suggestion(state: &mut State, data: &dyn Seen, replace: bool, only: Option<AiSlot>) -> Action {
@@ -595,11 +551,6 @@ pub fn use_suggestion(state: &mut State, data: &dyn Seen, replace: bool, only: O
     }
     state.active = true;
     state.queue = suggestion(state, data, replace, only);
-    state.allowed_remote = None;
-    state.consent = state.queue.iter().any(|(slot, c)| *slot == AiSlot::Decide && !c.local);
-    if state.consent {
-        return Action::None;
-    }
     next(state)
 }
 
@@ -643,7 +594,6 @@ pub fn answered(state: &mut State, owner: u64, run: u64, result: &Result<Respons
     if !state.sorting && state.current.as_ref().is_some_and(|(slot, _)| *slot == AiSlot::Decide) {
         state.current = None;
         state.pull = None;
-        state.allowed_remote = None;
         return next(state);
     }
     state.error = None;
@@ -714,28 +664,13 @@ pub fn answered(state: &mut State, owner: u64, run: u64, result: &Result<Respons
             }
         }
         (Work::List, Ok(Response::AiModels { account, models })) if Some(account) == state.selected.as_ref() => {
-            let Some((slot, candidate)) = state.current.as_ref() else { return Action::None };
+            let Some((_, candidate)) = state.current.as_ref() else { return Action::None };
             let Some(model) = models.iter().find(|m| super::same_model(&m.id, &candidate.model)) else {
                 state.current = None;
                 state.queue.clear();
                 state.error = Some(tr("Load the suggested model in the program first.").into());
                 return Action::None;
             };
-            let remote = super::ai_provider(account).is_none_or(|provider| {
-                torro_core::ai::place_of(provider, &state.base, model) != torro_core::ai::Place::Local
-            });
-            let allowed = state
-                .allowed_remote
-                .as_ref()
-                .is_some_and(|(a, m)| a == account && super::same_model(m, &candidate.model));
-            if *slot == AiSlot::Decide && remote && !allowed {
-                if let Some((_, candidate)) = state.current.as_mut() {
-                    candidate.local = false;
-                    candidate.model = model.id.clone();
-                }
-                state.consent = true;
-                return Action::None;
-            }
             if let Some((_, candidate)) = state.current.as_mut() {
                 candidate.model = model.id.clone();
             }
@@ -814,8 +749,6 @@ pub fn overlay(state: &State) -> Option<Element<'_, Message>> {
 pub fn escape(state: &State) -> Option<Message> {
     if state.menus.open().is_some() {
         Some(Message::Menus(DropdownEvent::Close))
-    } else if state.consent {
-        Some(Message::Cancel)
     } else if state.form.is_some() && state.flight.is_none() {
         Some(Message::Back)
     } else {
@@ -847,7 +780,6 @@ fn setup_row<'a>(
 fn can_use(state: &State, data: &dyn Seen) -> bool {
     state.flight.is_none()
         && state.current.is_none()
-        && !state.consent
         && state.recommendation.as_ref().is_some_and(|r| {
             r.preparations
                 .iter()
@@ -865,9 +797,6 @@ fn can_use(state: &State, data: &dyn Seen) -> bool {
 }
 
 fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a, Message> {
-    if state.consent {
-        return consent_view(state, data);
-    }
     if state.form.as_ref().is_some_and(|(provider, _, _)| *provider == AiProvider::OllamaCloud) {
         return cloud_form(state);
     }
@@ -1187,7 +1116,7 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
                     suggestions.push(setup_row(
                         narrow,
                         tr("Computation location unknown"),
-                        Some(tr("Mail needs your explicit permission.").into()),
+                        Some(tr("Mail may leave this computer.").into()),
                         iced::widget::Space::new(),
                     ));
                 }
@@ -1216,7 +1145,7 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
         }
         if !suggestions.is_empty() {
             let title = if cloud { tr("Suggested models") } else { tr("Our suggestion for this PC") };
-            let hint = cloud.then(|| tr("Mail needs your explicit permission.").to_string());
+            let hint = cloud.then(|| tr("Mail may leave this computer.").to_string());
             parts = parts.push(widgets::group(title, suggestions, hint));
             if !state.hosted {
                 parts = parts.push(widgets::text_button(
@@ -1351,7 +1280,7 @@ fn hosted_view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message>
     if !rows.is_empty() {
         let footer = match decide_local {
             true => tr("Your mail stays on this computer."),
-            false => tr("Mail needs your explicit permission."),
+            false => tr("Mail may leave this computer."),
         };
         parts = parts.push(widgets::group(tr("Our suggestion for this PC"), rows, Some(footer.to_string())));
     }
@@ -1513,7 +1442,7 @@ fn cloud_form(state: &State) -> Element<'_, Message> {
 
 /// Both hosts put this sole cloud-form action row in their fixed footer, outside the scroller.
 pub fn cloud_form_actions(state: &State) -> Option<Element<'_, Message>> {
-    if !state.form.as_ref().is_some_and(|(provider, _, _)| *provider == AiProvider::OllamaCloud) || state.consent {
+    if !state.form.as_ref().is_some_and(|(provider, _, _)| *provider == AiProvider::OllamaCloud) {
         return None;
     }
     let ready = state.flight.is_none();
@@ -1530,44 +1459,6 @@ pub fn cloud_form_actions(state: &State) -> Option<Element<'_, Message>> {
     Some(actions.into())
 }
 
-fn consent_view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
-    let model = state
-        .current
-        .as_ref()
-        .or_else(|| state.queue.iter().find(|(slot, _)| *slot == AiSlot::Decide))
-        .map(|(_, candidate)| candidate.model.as_str())
-        .unwrap_or_default();
-    let account = data
-        .accounts()
-        .iter()
-        .find(|a| Some(&a.id) == state.selected.as_ref())
-        .map(|a| a.label.as_str())
-        .or_else(|| state.selected.as_deref().and_then(super::ai_provider).map(AiProvider::name))
-        .or(state.selected.as_deref())
-        .unwrap_or_default();
-    let question = trf(
-        "{model} reads your mail at {provider} outside this computer. Use it?",
-        &[("model", &model), ("provider", &account)],
-    );
-    let actions = iced::widget::row![
-        widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Cancel)),
-        widgets::text_button(None, tr("Use"), style::button::primary, Some(Message::Confirm)),
-    ]
-    .spacing(space::s());
-    column![
-        typo::text(typo::title(), tr("Send mail outside this computer?")),
-        column![
-            typo::text(typo::body(), question),
-            typo::text(typo::body(), tr("Mail goes to this model outside this computer and cannot be taken back."))
-                .style(theme::text_2),
-        ]
-        .spacing(space::s()),
-        actions,
-    ]
-    .spacing(space::l())
-    .into()
-}
-
 /// Deterministic, non-network states for headless design inspection.
 pub fn demo(state: &mut State, scenario: &str, data: &dyn Seen) {
     state.demo = true;
@@ -1579,7 +1470,6 @@ pub fn demo(state: &mut State, scenario: &str, data: &dyn Seen) {
     state.selected = None;
     state.key = Secret::default();
     state.error = None;
-    state.consent = false;
     state.queue.clear();
     state.current = None;
     state.pull = None;
@@ -1612,7 +1502,7 @@ pub fn demo(state: &mut State, scenario: &str, data: &dyn Seen) {
                 state.error = Some(torro_core::ai::AiError::Auth.to_string());
             }
         }
-        "cloud-empty" | "cloud-connected" | "cloud-consent" => {
+        "cloud-empty" | "cloud-connected" => {
             let account = "ai:ollama_cloud@ollama.com".to_string();
             state.selected = Some(account.clone());
             state.base = "https://ollama.com/v1".into();
@@ -1633,11 +1523,6 @@ pub fn demo(state: &mut State, scenario: &str, data: &dyn Seen) {
                         }],
                     });
                 }
-            }
-            if scenario == "cloud-consent" {
-                let candidate = recommendation.preparations[1].candidates[0].clone();
-                state.queue = vec![(AiSlot::Decide, candidate)];
-                state.consent = true;
             }
         }
         "found" => state.found.push(AiServer {
@@ -1686,29 +1571,22 @@ pub fn demo(state: &mut State, scenario: &str, data: &dyn Seen) {
         "form" => {
             state.form = Some((AiProvider::OpenAiCompatible, Some("jan".into()), "http://127.0.0.1:1337/v1".into()));
         }
-        "consent" | "download" => {
-            let remote = scenario == "consent";
-            let account =
-                if remote { "ai:openai_compatible@localhost:1337" } else { "ai:ollama@localhost:11434" }.to_string();
+        "download" => {
+            let account = "ai:ollama@localhost:11434".to_string();
             state.selected = Some(account.clone());
             let candidate = AiCandidate {
                 model: "qwen3:4b".into(),
                 size_bytes: 2_497_293_931,
                 fits: true,
-                local: !remote,
-                preparation: if remote { AiPreparationKind::Ready } else { AiPreparationKind::OllamaPull },
-                by_chat: remote,
+                local: true,
+                preparation: AiPreparationKind::OllamaPull,
+                by_chat: false,
             };
-            let slot = if remote { AiSlot::Decide } else { AiSlot::Chat };
+            let slot = AiSlot::Chat;
             recommendation.preparations =
                 vec![torro_ipc::AiPreparation { account, slot, candidates: vec![candidate.clone()] }];
-            if remote {
-                state.queue = vec![(slot, candidate)];
-                state.consent = true;
-            } else {
-                state.current = Some((slot, candidate));
-                state.pull = Some("demo-download".into());
-            }
+            state.current = Some((slot, candidate));
+            state.pull = Some("demo-download".into());
         }
         "error" => state.error = Some(tr("The local AI search could not start.").into()),
         // The first-run setup's suggestion (issue #326): Ollama found and connected, both models to download.
@@ -1748,7 +1626,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cloud_primary_feedback_distinguishes_forms_work_and_explicit_consent() {
+    fn cloud_primary_feedback_distinguishes_forms_and_work() {
         let data = super::super::demo::demo_data();
         let mut state = State::default();
         demo(&mut state, "cloud-form", &data);
@@ -1758,13 +1636,7 @@ mod tests {
         demo(&mut state, "cloud-running", &data);
         assert!(cloud_form_actions(&state).is_some(), "the same row reports work without a second action");
         assert_eq!(primary_label(&state), Some((tr("Connecting…"), false)));
-        demo(&mut state, "cloud-consent", &data);
-        assert!(foreground(&state) && awaiting_consent(&state));
-        assert!(cloud_form_actions(&state).is_none(), "connection actions never compete with consent");
-        assert_eq!(primary_label(&state), Some((tr("Send mail outside this computer?"), false)));
-        assert!(matches!(update(&mut state, Message::Submit, &data), Action::None));
-        assert!(state.consent && state.flight.is_none(), "Enter never supplies consent");
-        update(&mut state, Message::Cancel, &data);
+        demo(&mut state, "cloud-connected", &data);
         assert!(cloud_form_actions(&state).is_none());
         assert!(!foreground(&state) && primary_label(&state).is_none());
         demo(&mut state, "download", &data);
@@ -1886,7 +1758,8 @@ mod tests {
     }
 
     #[test]
-    fn external_models_are_never_pulled_and_remote_sorting_waits_for_consent() {
+    /// Issue #664: a model elsewhere for Sorting is prepared without a question.
+    fn external_models_are_never_pulled_and_remote_sorting_asks_nothing() {
         let mut data = super::super::demo::demo_data();
         data.settings.ai_slots.decide = None;
         data.settings.ai_slots.chat = None;
@@ -1909,16 +1782,11 @@ mod tests {
         state.recommendation = Some(r.clone());
         assert!(!can_use(&state, &data));
         assert!(matches!(update(&mut state, Message::Use, &data), Action::None));
-        assert!(
-            !state.consent && state.flight.is_none() && state.error.is_none(),
-            "external loading is a normal waiting state"
-        );
+        assert!(state.flight.is_none() && state.error.is_none(), "external loading is a normal waiting state");
         r.preparations[0].candidates[0].preparation = AiPreparationKind::Ready;
         state.recommendation = Some(r.clone());
         assert!(can_use(&state, &data));
-        update(&mut state, Message::Use, &data);
-        assert!(state.consent && state.flight.is_none());
-        let (_, _, request) = tag(update(&mut state, Message::Confirm, &data));
+        let (_, _, request) = tag(update(&mut state, Message::Use, &data));
         assert!(
             matches!(request, Request::AiModels { .. }),
             "even ready external models are freshly listed, never pulled"
@@ -1926,7 +1794,7 @@ mod tests {
     }
 
     #[test]
-    fn changed_location_waits_for_consent_and_newer_slot_choices_survive() {
+    fn changed_location_asks_nothing_and_newer_slot_choices_survive() {
         let candidate = AiCandidate {
             model: "qwen3:4b".into(),
             size_bytes: 2_497_293_931,
@@ -1949,23 +1817,18 @@ mod tests {
             enabled: true,
             ..torro_core::ai::AiModel::named("qwen3:4b")
         }];
-        assert!(matches!(
-            answered(&mut state, owner, 0, &Ok(Response::AiModels { account: account.clone(), models })),
-            Action::None
-        ));
-        assert!(state.consent && state.flight.is_none(), "fresh remote evidence cannot silently grant mail permission");
-        state.consent = false;
-        state.flight = Some(Work::Check);
+        let (_, run, request) =
+            tag(answered(&mut state, owner, 0, &Ok(Response::AiModels { account: account.clone(), models })));
+        assert!(matches!(request, Request::AiAssignments), "issue #664: a model elsewhere goes on without a question");
         let answer = Response::AiAssignments {
             assignments: vec![],
             slots: vec![torro_ipc::AiSlotInfo {
                 slot: AiSlot::Decide,
                 label: tr("Sorting").into(),
                 chosen: Some(torro_core::ai::SlotModel { engine: "newer-choice".into(), model: None, effort: None }),
-                mail_to_cloud: false,
             }],
         };
-        let (_, _, request) = tag(answered(&mut state, owner, 0, &Ok(answer)));
+        let (_, _, request) = tag(answered(&mut state, owner, run, &Ok(answer)));
         assert!(matches!(request, Request::AiRecommend), "a newer occupied slot is not overwritten");
         assert!(state.current.is_none());
     }
@@ -2008,11 +1871,8 @@ mod tests {
         };
         let owner = lan.owner;
         let models = vec![torro_core::ai::AiModel { enabled: true, ..torro_core::ai::AiModel::named("nimble") }];
-        assert!(matches!(
-            answered(&mut lan, owner, 0, &Ok(Response::AiModels { account: elsewhere, models })),
-            Action::None
-        ));
-        assert!(lan.consent, "a stale local candidate never overrides the actual LAN address");
+        let (_, _, request) = tag(answered(&mut lan, owner, 0, &Ok(Response::AiModels { account: elsewhere, models })));
+        assert!(matches!(request, Request::AiAssignments), "the LAN model goes on to its slot");
     }
 
     #[test]
@@ -2096,14 +1956,14 @@ mod tests {
         let mut data = super::super::demo::demo_data();
         data.settings.ai_slots.decide = None;
         let mut state = State::default();
-        demo(&mut state, "consent", &data);
-        update(&mut state, Message::Cancel, &data);
+        demo(&mut state, "ready", &data);
         let recommendation = state.recommendation.as_mut().expect("recommendation");
-        recommendation.preparations[0].candidates[0].local = true;
+        recommendation.preparations[0].slot = AiSlot::Decide;
+        recommendation.preparations[0].candidates[0].by_chat = true;
         allow_sorting(&mut state, false);
         assert!(!can_use(&state, &data));
         assert!(matches!(update(&mut state, Message::Use, &data), Action::None));
-        assert!(state.flight.is_none() && state.current.is_none() && !state.consent);
+        assert!(state.flight.is_none() && state.current.is_none());
 
         allow_sorting(&mut state, true);
         let (owner, run, request) = tag(update(&mut state, Message::Use, &data));

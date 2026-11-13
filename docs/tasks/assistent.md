@@ -233,6 +233,8 @@ C.18 ──┬── C.19 (Demo)        (Antrieb B nicht mehr angeboten, Issue #
 - [x] erledigt (Datenregel fest: Mail und Mail-Einträge des Eingangs nur an Ollama, LM Studio oder einen Server auf
   diesem Rechner, KI.1 ersetzt `assistant/data_rule.rs`; Werkzeuge über `Host::run` als Client des Assistenten;
   Systemprompt vorläufig in `assistant/prompt.rs`, C.3 ersetzt ihn)
+- **Überholt durch #664:** Die Datenregel entfällt mit `assistant/data_rule.rs`; was ein Modell liest, folgt nur
+  aus den Rechten und dem gewählten Modell ([ki.md](../ki.md), Grundsatz 4).
 - **Modell:** Opus · **Braucht:** C.1 · **Dateien:** `crates/torroworkplace/src/assistant/**`; nachgetragen
   (Koordination): `crates/torroworkplace/src/{core,audit}.rs` (`Host` für den Kern, `Core::start` mit `Arc`,
   Protokoll mit Antrieb), `crates/torroworkplace/src/account/ai.rs` (`AiAccounts::server`),
@@ -497,6 +499,8 @@ C.18 ──┬── C.19 (Demo)        (Antrieb B nicht mehr angeboten, Issue #
   nennt; Claude Code sah Talk- und Nextcloud-Einträge seiner Quellen schon vorher). Der Schalter heißt seit C.20
   (Issue #219) „Mail to cloud models“, weil Antrieb B nicht mehr angeboten wird (C.18); was er sperrt, ist
   unverändert — `Lack::NeverToAgents` gilt weiter für jeden Agenten-Antrieb.
+- **Überholt durch #664:** `mail_to_cloud`, `decide_mail_to_cloud` und `Lack::NeverToAgents` sind entfallen; alte
+  Einstellungsdateien laden weiter ([ki.md](../ki.md), Grundsatz 4).
 - **Modell:** Opus · **Braucht:** C.14, C.16 · **Dateien:** `crates/torro-core/src/{settings,i18n/de}.rs`,
   `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroworkplace/src/{core,clients,settings_service}.rs`,
   `crates/torroworkplace/src/assistant/**`, `crates/torroworkplace/src/ui/{assistant,agents,bots,general}.rs`,

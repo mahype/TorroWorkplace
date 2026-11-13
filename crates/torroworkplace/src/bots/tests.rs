@@ -60,24 +60,26 @@ fn client_of(clients: &Clients, id: &str) -> Option<torro_ipc::ClientInfo> {
 }
 
 #[tokio::test]
-async fn a_new_bot_gets_a_client_of_its_own_without_any_rights() {
+async fn a_new_bot_gets_a_client_of_its_own_with_only_the_tools_and_servers() {
     let dir = tempfile::tempdir().expect("temp dir");
     let (assistant, clients) = set_up(dir.path());
 
-    let bot = saved(answer(&assistant, &clients, save(None, "  Travel planner ")).await);
+    let bot = saved(answer(&assistant, &clients, save(None, "  Travel planner "), true).await);
     assert!(bot.id.len() == 8 && bot.id.bytes().all(|byte| byte.is_ascii_hexdigit()), "{}", bot.id);
     assert_eq!((bot.name.as_str(), bot.avatar.as_str()), ("Travel planner", "letter"), "cleaned, the letter");
     assert_eq!(bot.instructions, "Suggest trains before flights.\nAsk for the budget.", "no control characters");
     let client = client_of(&clients, &bot.client).expect("its client");
     assert_eq!((client.name.as_str(), client.kind.as_str()), ("Travel planner", BOT_CLIENT));
-    assert_eq!(client.rights, Rights::none(), "no rights until a person grants some");
+    // Issue #666: no area until a person grants one, but every tool and MCP server is allowed.
+    assert_eq!(client.rights, Rights::none().opened(), "no data until a person grants some");
 
     // Read back whole, and listed without its texts.
-    let Response::Bot { bot: read } = answer(&assistant, &clients, Request::GetBot { id: bot.id.clone() }).await else {
+    let Response::Bot { bot: read } = answer(&assistant, &clients, Request::GetBot { id: bot.id.clone() }, true).await
+    else {
         panic!("the bot")
     };
     assert_eq!(read, bot);
-    let listed = answer(&assistant, &clients, Request::ListBots).await;
+    let listed = answer(&assistant, &clients, Request::ListBots, true).await;
     assert_eq!(listed, Response::Bots { bots: vec![bot.summary()] });
 
     // On disk: its folder 0700, its files 0600, the texts readable.
@@ -99,8 +101,8 @@ async fn a_new_bot_gets_a_client_of_its_own_without_any_rights() {
 async fn changing_a_bot_keeps_its_client_and_rights_and_renames_the_client() {
     let dir = tempfile::tempdir().expect("temp dir");
     let (assistant, clients) = set_up(dir.path());
-    let bot = saved(answer(&assistant, &clients, save(None, "Travel planner")).await);
-    let mut granted = Rights::none();
+    let bot = saved(answer(&assistant, &clients, save(None, "Travel planner"), true).await);
+    let mut granted = Rights::none().opened();
     granted.areas.insert(torro_ipc::api::Area::Calendar, AreaRights { level: Level::Read, admin: false });
     clients.update(&bot.client, granted.clone()).await.expect("a person grants it reading calendars");
 
@@ -109,7 +111,7 @@ async fn changing_a_bot_keeps_its_client_and_rights_and_renames_the_client() {
         skills.truncate(1);
         *avatar = Some("sun".into());
     }
-    let changed = saved(answer(&assistant, &clients, change).await);
+    let changed = saved(answer(&assistant, &clients, change, true).await);
     assert_eq!((changed.id.as_str(), changed.client.as_str()), (bot.id.as_str(), bot.client.as_str()));
     assert_eq!((changed.name.as_str(), changed.avatar.as_str(), changed.skills.len()), ("Trip planner", "sun", 1));
     let client = client_of(&clients, &bot.client).expect("the same client");
@@ -117,11 +119,27 @@ async fn changing_a_bot_keeps_its_client_and_rights_and_renames_the_client() {
     assert_eq!(clients.list().len(), 1, "no second client");
     assert!(!dir.path().join("config/assistant/bots").join(&bot.id).join("skills/2.md").exists());
 
-    // The person removed its client: the next save makes a new one, again without rights.
+    // The person removed its client: the next save makes a new one, again without data.
     clients.remove(&bot.client).await.expect("removed");
-    let again = saved(answer(&assistant, &clients, save(Some(&bot.id), "Trip planner")).await);
+    let again = saved(answer(&assistant, &clients, save(Some(&bot.id), "Trip planner"), true).await);
     assert_ne!(again.client, bot.client);
-    assert_eq!(client_of(&clients, &again.client).map(|info| info.rights), Some(Rights::none()));
+    assert_eq!(client_of(&clients, &again.client).map(|info| info.rights), Some(Rights::none().opened()));
+}
+
+/// Review of #663: a bot a client makes starts closed to every tool and MCP server, and the core does
+/// not open it later; only the person's bot starts opened.
+#[tokio::test]
+async fn a_bot_a_client_makes_starts_closed() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (assistant, clients) = set_up(dir.path());
+    let bot = saved(answer(&assistant, &clients, save(None, "Travel planner"), false).await);
+    let rights = client_of(&clients, &bot.client).expect("its client").rights;
+    assert_eq!(rights.extension("installed-later"), Level::NoAccess);
+    assert!(torro_core::settings::ToolId::ALL.into_iter().all(|tool| !rights.reaches_tool(tool)), "no tool");
+    assert!(rights.areas.is_empty(), "no area either");
+    let again = crate::clients::tests::open_in(dir.path());
+    let stored = again.list().into_iter().find(|info| info.id == bot.client).expect("stored").rights;
+    assert_eq!(stored, rights, "not opened at the next start");
 }
 
 #[tokio::test]
@@ -129,8 +147,8 @@ async fn deleting_a_bot_removes_its_client_and_folder_and_keeps_its_conversation
     let dir = tempfile::tempdir().expect("temp dir");
     let (assistant, clients) = set_up(dir.path());
     let ai = crate::assistant::tests::no_ai(dir.path());
-    let bot = saved(answer(&assistant, &clients, save(None, "Travel planner")).await);
-    let other = saved(answer(&assistant, &clients, save(None, "Release helper")).await);
+    let bot = saved(answer(&assistant, &clients, save(None, "Travel planner"), true).await);
+    let other = saved(answer(&assistant, &clients, save(None, "Release helper"), true).await);
 
     // A direct chat with the bot (the test engine runs no tool).
     let send = Request::SendMessage {
@@ -149,12 +167,12 @@ async fn deleting_a_bot_removes_its_client_and_folder_and_keeps_its_conversation
     };
     assert_eq!((conversation.bot.as_deref(), conversation.bot_deleted), (Some(bot.id.as_str()), false));
 
-    assert_eq!(answer(&assistant, &clients, Request::DeleteBot { id: bot.id.clone() }).await, Response::Ok);
+    assert_eq!(answer(&assistant, &clients, Request::DeleteBot { id: bot.id.clone() }, true).await, Response::Ok);
     assert!(client_of(&clients, &bot.client).is_none(), "its client is gone");
     assert!(client_of(&clients, &other.client).is_some(), "the other bot's stays");
     assert!(!dir.path().join("config/assistant/bots").join(&bot.id).exists(), "its folder is gone");
-    assert_eq!(code(&answer(&assistant, &clients, Request::GetBot { id: bot.id.clone() }).await), "not-found");
-    assert_eq!(code(&answer(&assistant, &clients, Request::DeleteBot { id: bot.id.clone() }).await), "not-found");
+    assert_eq!(code(&answer(&assistant, &clients, Request::GetBot { id: bot.id.clone() }, true).await), "not-found");
+    assert_eq!(code(&answer(&assistant, &clients, Request::DeleteBot { id: bot.id.clone() }, true).await), "not-found");
 
     // The conversation stays, marked as of a deleted bot; it cannot be continued.
     let listed: Vec<ConversationSummary> =
@@ -185,19 +203,22 @@ async fn deleting_a_bot_removes_its_client_and_folder_and_keeps_its_conversation
 async fn bots_keep_their_limits() {
     let dir = tempfile::tempdir().expect("temp dir");
     let (assistant, clients) = set_up(dir.path());
-    assert_eq!(code(&answer(&assistant, &clients, save(None, " ")).await), "error", "a name");
-    assert_eq!(code(&answer(&assistant, &clients, save(Some("0a0b0c0d"), "Bot")).await), "not-found");
-    assert_eq!(code(&answer(&assistant, &clients, Request::GetBot { id: "../config".into() }).await), "not-found");
+    assert_eq!(code(&answer(&assistant, &clients, save(None, " "), true).await), "error", "a name");
+    assert_eq!(code(&answer(&assistant, &clients, save(Some("0a0b0c0d"), "Bot"), true).await), "not-found");
+    assert_eq!(
+        code(&answer(&assistant, &clients, Request::GetBot { id: "../config".into() }, true).await),
+        "not-found"
+    );
     assert!(clients.list().is_empty(), "nothing refused makes a client");
 
     for n in 0..MAX_BOTS {
-        saved(answer(&assistant, &clients, save(None, &format!("Bot {n}"))).await);
+        saved(answer(&assistant, &clients, save(None, &format!("Bot {n}")), true).await);
     }
-    let refused = answer(&assistant, &clients, save(None, "One too many")).await;
+    let refused = answer(&assistant, &clients, save(None, "One too many"), true).await;
     assert_eq!(code(&refused), "error");
     assert!(assistant.bots().refusal(&save(None, "One too many")).await.is_some(), "refused before an approval");
     assert_eq!(clients.list().len(), MAX_BOTS, "and no client for it");
-    let Response::Bots { bots } = answer(&assistant, &clients, Request::ListBots).await else { panic!("bots") };
+    let Response::Bots { bots } = answer(&assistant, &clients, Request::ListBots, true).await else { panic!("bots") };
     assert_eq!(bots.len(), MAX_BOTS);
     assert!(bots.windows(2).all(|pair| pair[0].name.to_lowercase() <= pair[1].name.to_lowercase()), "by name");
 }
@@ -207,9 +228,9 @@ async fn without_a_folder_nothing_is_stored() {
     let dir = tempfile::tempdir().expect("temp dir");
     let assistant = Assistant::new(None, Some(Duration::ZERO), |_| Ok(()));
     let clients = crate::clients::tests::open_in(dir.path());
-    assert_eq!(code(&answer(&assistant, &clients, save(None, "Travel planner")).await), "error");
+    assert_eq!(code(&answer(&assistant, &clients, save(None, "Travel planner"), true).await), "error");
     assert!(clients.list().is_empty(), "no client without a bot");
-    assert_eq!(answer(&assistant, &clients, Request::ListBots).await, Response::Bots { bots: Vec::new() });
+    assert_eq!(answer(&assistant, &clients, Request::ListBots, true).await, Response::Bots { bots: Vec::new() });
 }
 
 /// Task B.2: the assistant asks a bot only when the person's last message names it (any case, with
@@ -251,7 +272,7 @@ async fn asking_a_bot_starts_its_conversation() {
     let dir = tempfile::tempdir().expect("temp dir");
     let (assistant, clients) = set_up(dir.path());
     let ai = crate::assistant::tests::no_ai(dir.path());
-    let bot = saved(answer(&assistant, &clients, save(None, "Travel planner")).await);
+    let bot = saved(answer(&assistant, &clients, save(None, "Travel planner"), true).await);
     let ask = Request::AskBot { bot: bot.id.clone(), text: "Plan Lisbon".into(), conversation: None };
     let Response::Conversation { conversation, entries } = crate::assistant::answer(&assistant, &ai, ask).await else {
         panic!("a conversation")

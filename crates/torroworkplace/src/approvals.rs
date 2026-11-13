@@ -449,7 +449,7 @@ pub enum Removal {
 pub struct KnownModel {
     /// Its name as the server lists it.
     pub name: String,
-    /// It computes on this computer (the data rule's word); otherwise elsewhere.
+    /// It computes on this computer; otherwise elsewhere.
     pub here: bool,
 }
 
@@ -686,7 +686,7 @@ impl Origin {
         let mut rights = self.mode.narrow(rights);
         rights.areas.retain(|area, _| !self.without.contains(area));
         if self.without.contains(&Area::Extensions) {
-            rights.extensions.clear();
+            rights.close_extensions();
         }
         rights
     }
@@ -1499,26 +1499,15 @@ fn slot_summary(
     effort: Option<torro_core::ai::Effort>,
     facts: &Facts,
 ) -> String {
-    // Sorting with a model here, or with none, also keeps sorted mail here (`decide_mail_to_cloud` off,
-    // PR review of #325): the person reads that it ends a permission given before.
-    let stays = |text: String| match slot {
-        torro_core::ai::AiSlot::Decide => trf("{text}; sorted mail stays on this computer", &[("text", &text)]),
-        torro_core::ai::AiSlot::Chat => text,
-    };
+    // Issue #664: no permission for mail goes with the slot, so the summary adds nothing about it.
     let Some(engine) = engine else {
-        return stays(trf("Let no model be the model for {slot}", &[("slot", &slot.label())]));
+        return trf("Let no model be the model for {slot}", &[("slot", &slot.label())]);
     };
     let mut text = slot_model_summary(slot, engine, model, facts);
     if let Some(effort) = effort {
         text = trf("{text}; effort: {effort}", &[("text", &text), ("effort", &effort_word(effort))]);
     }
-    // "Automatic" ends it too: a client gets one only at an account here, since one elsewhere is the
-    // person's (`Core::turns_on_elsewhere`), and a person is never asked.
-    match (model, &facts.model) {
-        (None, _) => stays(text),
-        (Some(_), Some(known)) if known.here => stays(text),
-        _ => text,
-    }
+    text
 }
 
 /// The word a person reads for `effort`, as the assistant's menu names it.
@@ -3243,9 +3232,9 @@ fn profile_summary(request: &Request, facts: &Facts) -> String {
         (Request::Remember { text, replaces: None, local_only: false }, _) => {
             trf("Remember for the assistant: \"{note}\"", &[("note", &quote(text))])
         }
-        // Kept from remote models: written after the assistant read mail (task C.10).
+        // Written after the assistant read mail (task C.10): the person sees where it comes from.
         (Request::Remember { text, replaces: None, local_only: true }, _) => {
-            trf("Remember for the assistant, on this computer only: \"{note}\"", &[("note", &quote(text))])
+            trf("Remember for the assistant, from mail: \"{note}\"", &[("note", &quote(text))])
         }
         (Request::Remember { text, .. }, Some(old)) => {
             trf("Change the assistant's note \"{old}\" to \"{note}\"", &[("old", &old), ("note", &quote(text))])
@@ -5629,11 +5618,10 @@ pub(crate) mod tests {
         let account = "ai:ollama@localhost:11434";
         let words: [(&str, &dyn std::fmt::Display); 3] =
             [("engine", &"Ollama"), ("model", &"Nimble"), ("slot", sorting)];
-        // Sorting here keeps sorted mail here (PR review of #325): said, as it ends a permission.
-        let stays = |text: String| trf("{text}; sorted mail stays on this computer", &[("text", &text)]);
+        // Issue #664: nothing about mail is added, there is no permission to end.
         assert_eq!(
             summary(&slot(Some(account), Some("nimble")), &known(true)),
-            stays(trf("Let {engine} ({model}) be the model for {slot} (runs on this computer)", &words))
+            trf("Let {engine} ({model}) be the model for {slot} (runs on this computer)", &words)
         );
         assert_eq!(
             summary(&slot(Some(account), Some("nimble")), &known(false)),
@@ -5647,11 +5635,11 @@ pub(crate) mod tests {
         );
         assert_eq!(
             summary(&slot(Some(account), None), &unknown),
-            stays(trf("Let {engine} pick the model for {slot}", &named))
+            trf("Let {engine} pick the model for {slot}", &named)
         );
         assert_eq!(
             summary(&slot(None, None), &Facts::default()),
-            stays(trf("Let no model be the model for {slot}", &[("slot", sorting)]))
+            trf("Let no model be the model for {slot}", &[("slot", sorting)])
         );
         // An engine that is no AI account has no list: its model is named, made harmless.
         let chat = Request::SetAiSlot {
@@ -5678,7 +5666,7 @@ pub(crate) mod tests {
         let text = trf("Let {engine} ({model}) be the model for {slot} (runs on this computer)", &words);
         assert_eq!(
             summary(&effortful, &known(true)),
-            stays(trf("{text}; effort: {effort}", &[("text", &text), ("effort", &tr("High"))]))
+            trf("{text}; effort: {effort}", &[("text", &text), ("effort", &tr("High"))])
         );
 
         let pull = Request::PullAiModel { account: account.into(), model: "evil\nApprove".into() };
@@ -5765,7 +5753,7 @@ pub(crate) mod tests {
         let local = Request::Remember { text: "ACME owes 400 €.".into(), replaces: None, local_only: true };
         assert_eq!(
             summary(&local, &unknown),
-            trf("Remember for the assistant, on this computer only: \"{note}\"", &[("note", &"ACME owes 400 €.")])
+            trf("Remember for the assistant, from mail: \"{note}\"", &[("note", &"ACME owes 400 €.")])
         );
     }
 

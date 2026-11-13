@@ -46,7 +46,7 @@ bleibt liegen; die Spalte unten beschreibt, was er tut, falls er je zurückkommt
 | Anbieter, in dieser Reihenfolge | 1. **Ollama** und andere lokale Server (OpenAI-kompatibel, ohne Schlüssel) · 2. **OpenRouter** (OpenAI-kompatibel, ein Schlüssel, Filter „open weights“) · 3. eigener Server · 4. Mistral, Anthropic, OpenAI, Google | Claude Code, Codex, Gemini CLI |
 | Werkzeuge | der Kern gibt dem Modell die Befehle aus dem Katalog als Werkzeuge (Function Calling) und führt sie selbst aus | der Agent spricht mit `torroworkplace mcp`, wie heute |
 | Kontext | Skill als Systemprompt | Skill als zusätzlicher Systemprompt (`--append-system-prompt`) |
-| Daten | lokal bleiben lokal; Datenregel je Quelle aus [ki.md](ki.md) gilt (Mail standardmäßig nur an lokale Modelle, Schalter `mail_to_cloud` aus C.17) | gehen an den Anbieter des Agenten; Mail nur mit dem Schalter `mail_to_cloud` (C.17) |
+| Daten | gehen an das gewählte Modell, soweit die Rechte sie geben ([ki.md](ki.md), Grundsatz 4; bis #664 galt die Datenregel je Quelle mit dem Schalter `mail_to_cloud` aus C.17) | gehen an den Anbieter des Agenten, soweit die Rechte sie geben (bis #664 Mail nur mit `mail_to_cloud`) |
 | Voraussetzung | KI.1 aus [ki.md](ki.md) (KI-Konten im Kern) | Agent installiert und verbunden |
 
 **Vorschlag:** C beginnt mit **A**: KI.1 wird dafür vorgezogen, zuerst mit dem OpenAI-kompatiblen
@@ -90,7 +90,8 @@ Agenten im Terminal.
   (*Read only*, *Read and write*, *Full access*); vorausgewählt ist nur *Read only* für
   Kalender, Aufgaben und Eingang.
 - **Ändern jederzeit** im Assistent-Fenster › Einstellungen › Access (seit #231, vorher in der
-  Steuerzentrale), derselbe Rechte-Editor wie für die Clients unter API und MCP, und aus dem Chat heraus über
+  Steuerzentrale; eingebaute Werkzeuge und MCP-Server seit #666 unter „API and MCP“ › „Used by the assistant“),
+  derselbe Rechte-Editor wie für die Clients unter API clients und MCP clients, und aus dem Chat heraus über
   einen Hinweis „The assistant has no access to Mail. Change…“, wenn ein Werkzeug `forbidden` meldet. Wirkt ab der
   nächsten Anfrage, auch mitten in einer Unterhaltung.
 - **Je Unterhaltung enger, nie weiter:** Im Eingabefeld lassen sich Bereiche für diese Unterhaltung
@@ -146,8 +147,10 @@ soweit freigegeben).
   in den Einstellungen des Assistenten (Zahnrad › Profile › Memory) einsehbar, änderbar und
   löschbar. Nichts wird heimlich gemerkt.
   Hat die Unterhaltung fremde Daten gelesen (Mail, GitHub, Einträge von Agenten und Skripten), braucht jede
-  neue Notiz eine Freigabe, damit kein Text von außen unbemerkt in den Prompt gelangt; Notizen, die ein lokales
-  Modell nach dem Lesen von Mail anlegt, bleiben „Nur auf diesem Computer“ (C.10, C.11).
+  neue Notiz eine Freigabe, damit kein Text von außen unbemerkt in den Prompt gelangt (C.11). Bis #664 blieben
+  Notizen, die ein lokales Modell nach dem Lesen von Mail anlegte, „Nur auf diesem Computer“ (`local_only`, C.10);
+  seitdem setzt der Kern die Marke nicht mehr, und alle Notizen gehen an das gewählte Modell, auch anderswo. Eine
+  alte Notiz mit der Marke sieht ein Client nur mit Leserecht auf Mail.
 
 ## Begrenzte Mail-Abläufe (#556)
 
@@ -159,9 +162,9 @@ Träger, `Origin`, `Narrowing`, Rechte-Schnittmenge und `without Mail` gelten ü
 und spätere Läufe weiter; ein Klick in der App macht daraus keinen Auftrag mit höheren App-Rechten.
 
 „Create workflow with AI…“ verwendet ausschließlich das konfigurierte Chat-Modell über den bestehenden
-Modellzugang. Fehlt es, folgt `not-connected`, kein anderer Anbieter, Browser oder Webabruf. Die
-Mail-Datenregel gilt vor und nach dem Modellaufruf, ebenso für Workflow-Antworten und deren späteren
-Gesprächsverlauf. Mailabgeleitete Beschreibungen, Bedingungen, Ergebnisse und Modellantworten sind
+Modellzugang. Fehlt es, folgt `not-connected`, kein anderer Anbieter, Browser oder Webabruf. Eine
+Mail-Datenregel vor und nach dem Modellaufruf gibt es seit #664 nicht mehr: Was das Modell liest, folgt aus
+Rechten und Modellwahl, auch für Workflow-Antworten und deren späteren Gesprächsverlauf. Mailabgeleitete Beschreibungen, Bedingungen, Ergebnisse und Modellantworten sind
 `untrusted`, niemals Anweisungen oder eine Erlaubnis für weitere Zugriffe. Private Token-URLs werden
 nicht in persistente Pakete übernommen. Nur `list_templates` und `get_template` sind öffentliche,
 mailfreie Metadatenabfragen.
@@ -201,7 +204,7 @@ mittel und schmal deckt es die Mail ab („‹ Mail“ führt zurück). Entwurf:
   Das Mail-Leserecht des Assistenten auf dem Konto reicht; für eine andere Mail, in anderen Chats und
   über API und MCP braucht es weiter Schreibrecht.
 - **Die Mail liest der Kern vorab.** Vor der ersten Antwort ruft er `mail.get_message` wie ein Werkzeug
-  auf (Rechte, Datenregel, Werkzeugzeile). Frühere Mails holt das Modell nur auf Abruf über
+  auf (Rechte, Werkzeugzeile). Frühere Mails holt das Modell nur auf Abruf über
   `mail.get_thread` und `mail.search_messages`; das hält den Kontext lokaler Modelle klein.
 - **Vorschläge als Karte.** Was das Modell über `mail.extract_action` ausliest (die Worte der Person als
   `focus`), wird ein Vorschlag der Mail wie in [vorschlaege.md](vorschlaege.md) und erscheint als Karte
@@ -215,8 +218,9 @@ mittel und schmal deckt es die Mail ab („‹ Mail“ führt zurück). Entwurf:
   `forbidden` und das Paneel zeigt einen Hinweis mit „Open assistant“. Den Hinweis zeigt es schon beim
   Öffnen: `assistant.check_about` (Read) prüft mit Antrieb, Modell und Mail dasselbe wie
   `assistant.send_message` mit `about` für eine neue Unterhaltung, ohne etwas zu speichern oder ein Modell
-  zu fragen. Kennt ein älterer Kern den Befehl nicht, öffnet das Paneel wie zuvor, und erst „Send“ sagt es. Hält die Datenregel Mail vom
-  gewählten Modell fern: `not-connected`. Mit Bot oder fremdem Antrieb: `unsupported`. Für einen
+  zu fragen. Kennt ein älterer Kern den Befehl nicht, öffnet das Paneel wie zuvor, und erst „Send“ sagt es. Ein Modell
+  anderswo ist seit #664 kein Grund mehr für `not-connected` (vorher hielt die Datenregel Mail von ihm fern). Mit Bot
+  oder fremdem Antrieb: `unsupported`. Für einen
   Client, der das Konto selbst nicht sieht, gibt es die Unterhaltung nicht: Sie fehlt in der Liste, und
   jeder Befehl, der sie nennt, antwortet `not-found`, denn ihre Einträge erzählen, was in der Mail steht.
 
@@ -243,8 +247,11 @@ Agenten mit eigenem Profil, die auf ein Fachgebiet zugeschnitten sind, z. B. „
 - **Keine Ketten:** Ein Bot kann keine weiteren Bots fragen (Tiefe 1), damit nichts im Kreis läuft
   und man jeden Schritt nachvollziehen kann.
 - **Anlegen:** in der App des Assistenten. Der Hauptbot kann einen Bot **vorschlagen**
-  (Name, Beschreibung, Persönlichkeit, Anweisungen), ein neuer Bot hat aber keine Rechte, bis der
-  Mensch sie vergibt (Punkt 2 in „Was nie nach außen geht“). Wer einen Bot selbst anlegt, vergibt
+  (Name, Beschreibung, Persönlichkeit, Anweisungen), ein neuer Bot hat aber keine Rechte an Daten, bis der
+  Mensch sie vergibt (Punkt 2 in „Was nie nach außen geht“). Eingebaute Werkzeuge und MCP-Server darf ein Bot,
+  den der Mensch anlegt, seit #666 von Anfang an, bis er sie unter „API and MCP“ abschaltet. Ein Bot, den ein
+  Client anlegt (auch ein Vorschlag des Hauptbots), startet auch dafür geschlossen (Review von #663): Kein
+  Programm verschafft sich über einen Bot Server oder Werkzeuge. Wer einen Bot selbst anlegt, vergibt
   die Rechte gleich im Bot-Editor (Abschnitt „Access“: Stufe je Bereich und „Ask first“, B.5);
   welche Kalender, Konten und Repositories, Senden und Admin-Befehle stellt man im Assistent-Fenster
   unter Einstellungen › Access bei diesem Bot ein.
@@ -385,22 +392,26 @@ Auswahl, Briefing, Person.
 ## Eigene Werkzeuge
 
 Stand: 2026-10-19, Issue #225. Bisher kann der Assistent nur, was die Suite kann. Dazu kommen **eigene
-Werkzeuge**: Fähigkeiten, die nur dem Assistenten (und den Bots) gehören, je eine mit Schalter und eigenen
-Einstellungen. Das erste macht **PDFs**. Weitere Werkzeuge kommen als eigene Issues auf diesen Rahmen.
+Werkzeuge**: Fähigkeiten, die nur dem Assistenten (und den Bots) gehören, je eine mit eigenen Einstellungen (bis
+#666 auch mit Schalter). Das erste macht **PDFs**. Weitere Werkzeuge kommen als eigene Issues auf diesen Rahmen.
 
-### Schalter und Rechte sind zwei Dinge
+### Die Rechte entscheiden (bis #666: Schalter und Rechte)
 
-- **Schalter** (Steuerzentrale › MCP servers › Built-in tools, Einstellung `tool_enabled`; seit #302 steht er dort,
-  der Assistent zeigt unter Tools nur noch einen Verweis): ob es das Werkzeug auf diesem
-  Rechner gibt. Standard aus. Ist es aus, lehnt der Kern seine Befehle für **jeden** Client ab (`forbidden`,
-  Grund „switched off in the assistant's settings“), und kein Modell bekommt es angeboten. Einschalten nur der
-  Mensch (Punkt 9 in „Was nie nach außen geht“, [api.md](api.md)), wie das Mikrofon.
-- **Rechte** (Rechte-Editor: Assistent › Einstellungen › Access für Assistent und Bots, Steuerzentrale › API
-  bzw. MCP für Schlüssel und MCP-Clients): neuer Bereich `tools` mit Stufe und einer **Auswahl der
-  Werkzeuge** (`Rights::tools`, wie Mail-Konten und Quellen des Eingangs). Neue Bereiche starten geschlossen:
-  vorhandene Clients, der Assistent beim ersten Start und neue Bots haben keinen Zugriff. In den Vorlagen
-  *Read only* (nur auflisten), *Read and write* und *Full access* ist der Bereich wie jeder andere.
-- Angeboten wird ein Werkzeug nur, wenn **beides** stimmt. Das gilt für Antrieb A (Liste der Werkzeuge), für
+- **Kein Schalter mehr** (#666): Bis dahin hatte jedes Werkzeug einen Schalter (Steuerzentrale › MCP servers ›
+  Built-in tools, Einstellung `tool_enabled`, Standard aus, einschalten nur der Mensch), der für **jeden** Client
+  galt (`forbidden` mit `Lack::ToolOff`). Ob ein Werkzeug fehlte, weil der Schalter aus war oder weil die Rechte
+  es nicht gaben, fand man so schwer. Die Werkzeuge sind jetzt immer da; unter MCP servers richtet man sie nur ein
+  (Ordner, Vorlagen, Suchanbieter).
+- **Rechte:** Bereich `tools` mit Stufe und einer **Auswahl der Werkzeuge** (`Rights::tools`, wie Mail-Konten und
+  Quellen des Eingangs). Für Assistent und Bots im Assistent-Fenster unter „API and MCP“ › **„Used by the
+  assistant“** (#666): ein Auswahlfeld (Assistant, je Bot), je Werkzeug ein Schalter (Ausschalten macht aus „alle“
+  die Liste ohne dieses Werkzeug) und „Show commands“; der Hinweis sagt „New servers are allowed until you switch
+  them off here, new tools as long as every tool is on.“. Für Schlüssel und MCP-Clients unter Steuerzentrale › API clients bzw. MCP clients.
+- **Standard:** Assistent und Bots, die der Mensch anlegt, starten mit allen Werkzeugen, `web` eingeschlossen (`Rights::opened`), und
+  Rechte ohne Grundstufe öffnet der Kern einmal so (beim Laden, Anlegen und Ändern); abschalten tut der Mensch. Schlüssel von API- und MCP-Clients
+  starten geschlossen; in den Vorlagen *Read only* (nur auflisten), *Read and write* und *Full access* ist der
+  Bereich wie jeder andere.
+- Angeboten wird ein Werkzeug nur, wenn die Rechte es erreichen. Das gilt für Antrieb A (Liste der Werkzeuge), für
   Antrieb B (`--disallowedTools`) und für jeden Client über API und MCP. Bots arbeiten mit ihrem eigenen Client,
   im Auftrag des Hauptbots mit der Schnittmenge.
 - `tools.create_pdf` ist `Write` ohne eigene Freigabe-Regel (entschieden): Es fragt nur, wenn die Person beim
@@ -453,10 +464,9 @@ des Assistenten (der Titel steht ohnehin in der Werkzeugzeile), öffnen, sichern
 
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
-| Werkzeuge auflisten (Schalter, erlaubt) | Steuerzentrale › MCP servers › Built-in tools; Auswahl im Rechte-Editor (Access, API, MCP clients) | `tools.list_tools` · Read | `tools_list_tools` |
-| Werkzeug an-/abschalten | Steuerzentrale › MCP servers › Built-in tools | `settings.set_setting tool_enabled` · Admin | **Never** fürs Einschalten (Punkt 9), ausschalten über `settings_set_setting` |
+| Werkzeuge auflisten (erlaubt) | Steuerzentrale › MCP servers › Built-in tools; Assistent › API and MCP › „Used by the assistant“ | `tools.list_tools` · Read | `tools_list_tools` |
 | Ablage-Ordner, Vorlagen | ebenda | `settings.set_setting pdf_folder`, `pdf_template` · Admin | `settings_set_setting`; Ordner und Logo setzen nur Menschen (Punkt 9), alle übrigen Felder auch Agenten |
-| Welche Werkzeuge ein Client darf | Assistent › Einstellungen › Access; Steuerzentrale › API, MCP clients | `clients.update_client` · Admin | **Never** (Punkt 2) |
+| Welche Werkzeuge ein Client darf | Assistent › API and MCP › „Used by the assistant“ (Assistent und Bots, #666; vorher Access); Steuerzentrale › API clients, MCP clients | `clients.update_client` · Admin | **Never** (Punkt 2) |
 | PDF erstellen | Chat: Werkzeugzeile und Datei-Karte | `tools.create_pdf` · Write | `tools_create_pdf` |
 | PDF öffnen | „Open“ auf der Karte | `tools.open_file` · Write | `tools_open_file` |
 | PDF an einen Ort sichern | „Save as…“ auf der Karte | `tools.save_file_as` · Write, nur App-Schlüssel | **Never** (Punkt 9) |
@@ -512,7 +522,7 @@ Website. Darum wählt die Person die Dienste selbst und gibt in jeder Unterhaltu
 - Treffer und Seiten sind **fremder Text** (`untrusted`): Danach braucht jede neue Notiz des Gedächtnisses eine
   Freigabe wie nach Mail (C.11).
 
-**Freigabe einmal je Unterhaltung** (in der Planung entschieden). Zuerst gelten Schalter, Rechte und Auswahl wie
+**Freigabe einmal je Unterhaltung** (in der Planung entschieden). Zuerst gelten Rechte und Auswahl wie
 immer (sonst `forbidden`); dann fragt die erste Websuche oder Seite einer Unterhaltung, auch wenn die Rechte für
 Lesen sonst nie fragen: „Search the web and read web pages in "Trip to Lisbon"? Search words go to DuckDuckGo and
 Wikipedia.“, darunter, was beim Ja zuerst läuft („First: search for "…"“ bzw. „read a page on example.com“). Ein Ja
@@ -527,21 +537,24 @@ Adresse). Bots fragen in ihrer Unterhaltung genauso; im Auftrag des Hauptbots gi
 Unterhaltung des Hauptbots, fremde Daten aus beiden Läufen zählen. Geplante Läufe ohne
 Menschen gibt es noch nicht; kommen sie, bekommen sie die Websuche nicht, bis das entschieden ist.
 
-**Clients über API und MCP** haben keine Unterhaltung: Für sie gelten nur Schalter, Rechte und die Auswahl (`web`),
+**Clients über API und MCP** haben keine Unterhaltung: Für sie gelten nur Rechte und die Auswahl (`web`),
 wie bei jedem Lesebefehl, ohne Freigabe (in der Planung entschieden; „Ask first“ fragt bei Lesebefehlen nie).
 
 **`web` nur ausdrücklich** (in der Planung entschieden): Die Vorlagen geben im Bereich `tools` „alle Werkzeuge“
-(`Selection::All`). Das deckt `web` **nicht** ab; ein Client bekommt es nur, wenn ein Mensch `web` in seiner Auswahl
-ankreuzt. Sonst dürfte jeder vorhandene Agent mit *Read only* ab dem Einschalten still Daten nach draußen schicken.
-Das gilt auch in jeder Schnittmenge (eingeschaltete Werkzeuge, Bot im Auftrag des Hauptbots) und in
-`assistant.my_access`. Wer `web` für einen Client ankreuzt, der Mail lesen darf, sieht im Rechte-Editor eine Warnung
+(`Selection::All`). Das deckt `web` für Schlüssel von API- und MCP-Clients **nicht** ab; so ein Client bekommt es nur,
+wenn ein Mensch `web` in seiner Auswahl ankreuzt. Sonst dürfte jeder vorhandene Agent mit *Read only* still Daten nach
+draußen schicken. **Seit #666** starten Assistent und Bots dagegen offen (`Rights::opened`, Grundstufe für MCP-Server
+gesetzt; sie bleibt es, auch wenn alle Server geschlossen werden): Bei ihnen deckt „alle“ auch `web`, und ein Mensch schaltet es unter „Used by the assistant“ ab;
+die Freigabe je Unterhaltung bleibt. In einer Schnittmenge (Bot im Auftrag des Hauptbots, `assistant.my_access`)
+erreicht „alle“ `web` nur, wenn beide Seiten offen sind (`Rights::reached_tools`, `Rights::common`). Wer `web` für einen Client ankreuzt, der Mail lesen darf, sieht im Rechte-Editor eine Warnung
 wie bei „Send on my behalf“. Den Agenten-Antrieb (B) gibt
 es nicht mehr; ein geliehener Schlüssel bekommt die Websuche nicht.
 
 **Einrichtung:** Seit #326 hat die Einrichtung keinen Schritt „Web search“ mehr ([einrichtung.md](einrichtung.md)): Die
 Websuche bleibt aus und wird in Steuerzentrale › MCP servers › Built-in tools › Search providers eingeschaltet (seit dem
-Merge mit #302 dort, vorher Assistent › Einstellungen › Tools). Wer dort einen Anbieter einschaltet, schaltet das
-Werkzeug ein; das Leserecht für `web` gibt ein Mensch dem Assistenten in dessen Rechten.
+Merge mit #302 dort, vorher Assistent › Einstellungen › Tools). Ohne eingeschalteten Anbieter sucht `web` nicht; das
+Werkzeug selbst ist seit #666 immer da, und Assistent und Bots dürfen es, bis ein Mensch es unter „Used by the
+assistant“ abschaltet.
 
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
@@ -550,15 +563,15 @@ Werkzeug ein; das Leserecht für `web` gibt ein Mensch dem Assistenten in dessen
 | Anbieter anzeigen (wohin, Bedingungen, Schlüssel gespeichert/fehlt) | Steuerzentrale › MCP servers › Built-in tools › Search providers | `tools.list_search_providers` · Read | `tools_list_search_providers` |
 | Anbieter ein-/ausschalten, SearXNG-Adresse | ebenda | `settings.set_setting search_provider`, `searxng_address` · Admin | `settings_set_setting` nur fürs Ausschalten und Entfernen; einschalten und Adresse setzen nur Menschen (Punkt 6) |
 | Schlüssel eines Anbieters speichern oder entfernen | Steuerzentrale › MCP servers › Built-in tools › Search providers | `accounts.set_search_key` · Admin, nur App-Schlüssel | **Never** (Punkt 5) |
-| Werkzeug `web` an-/abschalten, Auswahl | wie beim PDF | `settings.set_setting tool_enabled`, `clients.update_client` | wie beim PDF |
+| Auswahl `web` (ob ein Client es nutzt) | wie beim PDF | `clients.update_client` · Admin | wie beim PDF |
 
 Aufgaben: [tasks/assistent.md](tasks/assistent.md), WEB.1–WEB.7.
 ### Werkzeug Dateien
 
-Stand: 2026-10-24, Issue #304. Das zweite eigene Werkzeug (`files`, Schalter „Organize files“) ordnet Dateien auf dem
+Stand: 2026-10-24, Issue #304. Das zweite eigene Werkzeug (`files`, bis #666 mit dem Schalter „Organize files“) ordnet Dateien auf dem
 Rechner: Ordner auflisten, nach Namen suchen, Ordner anlegen, kopieren, verschieben, umbenennen, in den Papierkorb
 legen. Den **Inhalt** einer Datei liest oder ändert es nicht; das machen Dokument-Werkzeuge wie ArtCraft (#303).
-Torro bekommt keinen eigenen Dateimanager: In der Oberfläche liegen nur Schalter, Ordnerliste und Freigabe-Karten.
+Torro bekommt keinen eigenen Dateimanager: In der Oberfläche liegen nur Ordnerliste und Freigabe-Karten.
 
 - **Freigegebene Ordner** (Steuerzentrale › MCP servers, Gruppe „Allowed folders“; seit dem Merge mit #302 dort, Einstellung
   `allowed_folder`): eine gemeinsame Liste für alle Werkzeuge, die mit Dateien arbeiten; die ArtCraft-Apps (#303)
@@ -614,12 +627,12 @@ Torro bekommt keinen eigenen Dateimanager: In der Oberfläche liegen nur Schalte
 | Kopieren | ebenso | `tools.copy_file` · Write | `tools_copy_file` |
 | Verschieben, umbenennen | ebenso | `tools.move_file` · Write | `tools_move_file` |
 | In den Papierkorb | Freigabe-Karte, immer | `tools.trash_file` · Delete | `tools_trash_file` |
-| Werkzeug an-/abschalten | Steuerzentrale › MCP servers › Built-in tools | `settings.set_setting tool_enabled` · Admin | wie beim PDF-Werkzeug |
+| Ob ein Client es nutzt | wie beim PDF-Werkzeug | `clients.update_client` · Admin | wie beim PDF-Werkzeug |
 | Freigegebene Ordner verwalten | Steuerzentrale › MCP servers, „Allowed folders“ | `settings.set_setting allowed_folder` · Admin, nur App-Schlüssel | **Never** (Punkt 9) |
 
 Die Entscheidung 6 („Dateien und Shell beim Agent-Antrieb immer aus“) bleibt: Sie meint die eingebauten Werkzeuge
-eines Agenten wie Claude Code. Das Werkzeug Dateien ist ein Befehl des Kerns mit Schalter, Rechten, Ordnergrenzen
-und Freigaben.
+eines Agenten wie Claude Code. Das Werkzeug Dateien ist ein Befehl des Kerns mit Rechten, Ordnergrenzen und
+Freigaben.
 
 Aufgaben: [tasks/assistent.md](tasks/assistent.md), WD.1–WD.4.
 
@@ -692,7 +705,7 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | Gedächtnis lesen / ergänzen / löschen | ebenda › Memory; im Chat „Remember …“ | `assistant.list_memories` · Read, `assistant.remember` · Write, `assistant.forget` · Delete | `assistant_list_memories`, `assistant_remember`, `assistant_forget` |
 | Eigene Rechte kennen (Issue #134) | im Chat „Welche Rechte hast du?“ (Prompt-Zusammenfassung); die Person sieht sie in Assistent › Einstellungen › Access | `assistant.my_access` · Read (Assistent und Bots durch ihre Art, andere Clients mit `assistant`) | `assistant_my_access` |
 | **Stufe 2:** Bots auflisten | Seitenleiste „Bots“ | `bots.list_bots` · Read | `bots_list_bots` |
-| **Stufe 2:** Bot anlegen/ändern (ohne Rechte) | Bot-Editor | `bots.save_bot` · Write | `bots_save_bot` |
+| **Stufe 2:** Bot anlegen/ändern (ohne Rechte an Daten; von einem Client angelegt auch ohne Werkzeuge und Server) | Bot-Editor | `bots.save_bot` · Write | `bots_save_bot` |
 | **Stufe 2:** Bot löschen | Bot-Editor | `bots.delete_bot` · Delete | `bots_delete_bot` |
 | **Stufe 2:** Bot fragen | Chat mit dem Bot; Hauptbot gibt ab | `bots.ask_bot` · Write (startet einen Modelllauf) | `bots_ask_bot` |
 | **Stufe 2:** Rechte eines Bots | Bot-Editor › Access (Stufen je Bereich, „Ask first“, B.5); alles Feinere in Assistent › Einstellungen › Access bei diesem Bot | `clients.list_clients` · Admin, `clients.update_client` · Admin (gibt es, nur App-Schlüssel) | **Never** (Punkt 2) |
@@ -738,7 +751,9 @@ Getroffen am 2026-10-13.
    in #79“): Die Werkzeuge erlaubter Server stehen dem Assistenten, seinen Bots und den MCP-Clients offen, je Server
    nur mit einer Stufe, je Werkzeug nur nach Zustimmung der Person (Steuerzentrale › MCP servers, Abschnitt „Your
    own servers“ bzw. „Catalog“). Ein Server mit Datei- oder Shell-Werkzeugen weicht Entscheidung 6 nur mit Recht und
-   Freigabe der Person auf; von selbst tut er es nicht.
+   Freigabe der Person auf; von selbst tut er es nicht. Seit #666 haben Assistent und Bots eine offene Grundstufe:
+   Einen Server, dem die Person zugestimmt hat, dürfen sie, bis sie ihn unter „API and MCP“ abschaltet; Clients von
+   außen nur mit einer Stufe für ihn.
 10. **Mikrofon** einschalten ist neuer Punkt 6 in „Was nie nach außen geht“.
 11. **Weckwort** zum Start fest („Hey Torro“), frei wählbar in einer späteren Aufgabe.
 
@@ -755,7 +770,8 @@ Getroffen am 2026-10-14 (Abschnitt „Karten im Chat“).
 Getroffen am 2026-10-19 (Abschnitt „Eigene Werkzeuge“, Issue #225).
 
 15. **Eigene Werkzeuge** haben einen Schalter (Einstellung, nur der Mensch schaltet ein) und einen Bereich `tools`
-    in den Rechten mit Auswahl der Werkzeuge; angeboten wird nur, was beides erlaubt.
+    in den Rechten mit Auswahl der Werkzeuge; angeboten wird nur, was beides erlaubt. **Überholt durch #666** für den
+    Schalter: Die Werkzeuge sind immer da, es entscheiden die Rechte; Assistent und Bots starten mit allen.
 16. **PDF:** Markdown vom Modell, Satz nach drei festen Vorlagen des Kerns in `settings.json`, Bibliothek printpdf;
     Ablage im gesetzten Ordner, sonst Schreibtisch, sonst Home-Verzeichnis; nie überschreiben; der Pfad wird genannt.
 17. **Karten-Grundlage** kommt mit der Datei-Karte: `EntryContent::Card` und `assistant.get_cards`.
@@ -764,11 +780,11 @@ Getroffen am 2026-10-19 (Abschnitt „Eigene Werkzeuge“, Issue #225).
 
 Getroffen am 2026-10-24 (Abschnitt „Werkzeug Web“, Issue #305).
 
-20. **Ein Werkzeug `web`** für Websuche und Seite lesen, beide `Read`; ein Schalter, eine Freigabe für beide.
+20. **Ein Werkzeug `web`** für Websuche und Seite lesen, beide `Read`; ein Schalter (bis #666), eine Freigabe für beide.
 21. **Mehrere Anbieter mit Schalter, feste Reihenfolge mit Rückfall;** Wikipedia kommt zusätzlich dazu. Wörter gehen nur
     an eingeschaltete Anbieter. Einschalten und Adressen setzen nur Menschen, Schlüssel nur über die Oberfläche.
 22. **Freigabe einmal je Unterhaltung,** neu, sobald die Unterhaltung nach dem Ja fremde Daten gelesen hat; im
-    Speicher des Dienstes. Clients über API und MCP: nur Schalter, Rechte und Auswahl.
+    Speicher des Dienstes. Clients über API und MCP: nur Rechte und Auswahl (bis #666 auch der Schalter).
 23. **Seite lesen** nur ins öffentliche Internet, `robots.txt` für Adressen des Modells, nicht für Adressen der
     Person. Eigener `robots.txt`-Leser statt `texting_robots` (alte Abhängigkeiten); Hauptinhalt und Markdown mit
     `dom_smoothie`, ohne `htmd` (bringt eine weitere `html5ever`-Fassung).
@@ -776,7 +792,8 @@ Getroffen am 2026-10-24 (Abschnitt „Werkzeug Web“, Issue #305).
 25. **Einrichtungsschritt „Web search“** schaltete mit dem Anbieter das Werkzeug ein und gab dem Assistenten mit
     vorbelegtem Haken das Leserecht für `web`; mit #326 entfallen, die Websuche bleibt bis zur Wahl unter MCP servers aus.
 26. **„Alle Werkzeuge“ deckt `web` nicht ab,** auch nicht in Schnittmengen; `web` braucht einen Haken eines Menschen
-    in der Auswahl des Clients.
+    in der Auswahl des Clients. **Seit #666** gilt das für Keys von API- und MCP-Clients; Assistent und Bots starten
+    offen und erreichen mit „alle“ auch `web`, bis ein Mensch es abschaltet.
 Getroffen am 2026-10-24 (Abschnitt „Werkzeug Dateien“, Issue #304).
 
 27. **Freigegebene Ordner** sind eine gemeinsame Liste für alle Werkzeuge mit Dateien (auch ArtCraft, #303), je

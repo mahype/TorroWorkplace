@@ -9,8 +9,9 @@
 //!
 //! **Nothing here is sent for tools any more:** the one row, a link to another window like the others
 //! of these settings (an arrow, the whole row pressable), only opens the control centre at that
-//! section ([`crate::Action::ControlCentre`] with [`CONTROL_CENTRE_SECTION`]). What the assistant may
-//! use stays its rights, which Access in this window edits (task S.34).
+//! section ([`crate::Action::ControlCentre`] with [`CONTROL_CENTRE_SECTION`]), where the tools are set
+//! up. Which of them the assistant and its bots may use is set under "API and MCP" in this window
+//! ("Used by the assistant", issue #666).
 
 use iced::widget::svg;
 use iced::{Element, Theme};

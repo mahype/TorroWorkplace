@@ -26,17 +26,16 @@
 //! - **Rights** are the core's ([`crate::core::Core::handle_from`]): the area `assistant` for the
 //!   caller, and never for the assistant's own client (`torro_ipc::api::loops_back`). An answer
 //!   works with the assistant's own client: every tool runs through [`Host::run`], with that
-//!   client's rights, collections and approvals, and the data rule ([`data_rule`]) decides what of
-//!   the results the model reads.
+//!   client's rights, collections and approvals. What the model reads follows from those rights and
+//!   the model chosen (issue #664): no data rule holds a result back.
 //! - **Audit**: the core logs the conversation id and the engine, never a text
 //!   ([`crate::audit::ids`]); the lines of the assistant's tools name the engine too.
 //! - **Profile and memory** (task C.10, [`profile`]): `<config>/assistant/` holds the name,
 //!   description and picture, the personality (`persona.md`) and the notes (`memory.md`), all
 //!   0600, changed under one lock ([`Assistant::own`]). Every answer reads them anew: the
 //!   personality first in the prompt, the notes in its generated part ([`prompt`]). A note marked
-//!   [`Note::local_only`] – written by a model on this computer after it read mail – reaches no
-//!   remote model or agent ([`data_rule`]) and no client without read access to mail
-//!   ([`answer_own`]'s `sees_local`). The assistant's own client may read, add and forget notes,
+//!   [`Note::local_only`] by an older version (issue #664: no longer set) reaches no client without
+//!   read access to mail ([`answer_own`]'s `sees_local`). The assistant's own client may read, add and forget notes,
 //!   nothing else of its area (`torro_ipc::api::own_memory`).
 //!
 //! - **Bots** (task B.1, [`crate::bots`]): a conversation may be with a bot (`bots.ask_bot`, or
@@ -56,14 +55,13 @@
 //!   with `about` starts a conversation that keeps the mail ([`ConversationSummary::about`]) for good; a later
 //!   message without it goes on with that mail, one with another is `error` ([`Assistant::about_for`]). Only
 //!   with the assistant (not a bot) and engine A, only while the assistant's own client may read that mail
-//!   account (`forbidden`) and only with a model the data rule lets read mail (`not-connected`); refused, nothing
+//!   account (`forbidden`), with any model (issue #664); refused, nothing
 //!   is stored. The answer reads the mail first and only reads and suggests ([`model`]). The caller's own reach
 //!   to the mail the core checks ([`crate::core::Core::handle_from`]).
 //!
 //! What goes to a client never names a path; the core's log does.
 
 pub(crate) mod cards;
-mod data_rule;
 mod delegate;
 mod engines;
 mod model;
@@ -99,12 +97,11 @@ use torro_setups::launch::{Launcher, SystemLauncher};
 
 use crate::account::ai::AiAccounts;
 use crate::bots::Bots;
-pub use data_rule::{DataRule, Place, held_back, place_of};
 pub use delegate::Asking;
-pub use engines::never_given;
 pub(crate) use model::workflow_choice;
 pub use model::{Actor, AskedIn, Delegation, Host, Limits, ModelAccess};
 use store::{Conversation, Line};
+pub use torro_core::ai::Place;
 
 /// The environment variable that makes a running core offer the test engine: `1`.
 pub const TEST_ENGINE_VAR: &str = "TORRO_TEST_ENGINE";
@@ -464,8 +461,7 @@ impl Assistant {
 
     /// Why the `assistant.send_message` `request` would be refused anyway, checked before anyone is asked to approve
     /// it: an engine that does not answer for `actor` ([`Assistant::engine`]), and for a chat about a mail (issue
-    /// #605) what [`Assistant::about_for`] refuses (the assistant's read access to the account, the data rule, a bot
-    /// or an agent, mail switched off, another mail than the conversation's). `bot`: the bot it names, as stored.
+    /// #605) what [`Assistant::about_for`] refuses (the assistant's read access to the account, a bot or an agent, mail switched off, another mail than the conversation's). `bot`: the bot it names, as stored.
     async fn message_refusal(
         &self,
         ai: &AiAccounts,
@@ -566,10 +562,7 @@ impl Assistant {
     /// - `unsupported` with a bot or a coding agent (engine B, `kind`): only the assistant's model reads it;
     /// - `error` with mail switched off for the conversation (`without`);
     /// - `forbidden` when the assistant's own client may not read mail or not that account
-    ///   ([`torro_ipc::api::Rights::reaches_mail_account`]), also when there is no such client or core yet;
-    /// - `not-connected` for engine A when the model it answers with runs elsewhere and the person's data rule
-    ///   keeps mail on their computers ([`Host::data_rule`]); a model that cannot be had is left to the answer,
-    ///   which fails with its error.
+    ///   ([`torro_ipc::api::Rights::reaches_mail_account`]), also when there is no such client or core yet.
     async fn about_for(
         &self,
         message: &Message,
@@ -608,20 +601,6 @@ impl Assistant {
             return Err(refusal(
                 "forbidden",
                 "the assistant may not read this mail account; a person can allow it in the assistant's access",
-            ));
-        }
-        // A model that cannot be had now is left to the answer, which fails with its error; should it get one
-        // after all, the data rule still holds: the mail is read through the tools and screened for the model's
-        // place ([`data_rule::for_model`] with its `Reader`), so a model elsewhere reads "withheld" only.
-        if let (EngineKind::Ai, Some(host)) = (kind, host)
-            && let Ok(access) = host.model(&message.engine, message.model.as_deref()).await
-            && access.place != Place::Local
-            && !host.data_rule().mail_to_cloud
-        {
-            return Err(refusal(
-                "not-connected",
-                "the person's data rule keeps mail on their computers, and this model runs elsewhere; choose a \
-                 model on this computer",
             ));
         }
         Ok(Some(about))
@@ -1123,8 +1102,8 @@ impl Assistant {
         }
     }
 
-    /// What an answer reads of the profile and the memory: the personality and every note. The
-    /// prompt keeps notes marked [`Note::local_only`] from remote models itself ([`prompt::system`]).
+    /// What an answer reads of the profile and the memory: the personality and every note, those
+    /// from mail too ([`Note::local_only`], issue #664: every model reads them).
     async fn persona_and_notes(&self) -> (String, Vec<Note>) {
         (self.profile().await.personality, self.notes().await)
     }
@@ -1692,7 +1671,7 @@ pub(crate) mod tests {
             instructions: String::new(),
             skills: Vec::new(),
         };
-        let bot = match crate::bots::answer(&assistant, &clients, save).await {
+        let bot = match crate::bots::answer(&assistant, &clients, save, true).await {
             Response::Bot { bot } => bot,
             other => panic!("expected a bot, got {other:?}"),
         };

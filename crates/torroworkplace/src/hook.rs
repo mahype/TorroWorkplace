@@ -1463,11 +1463,6 @@ mod tests {
         assert!(matches!(&sent, Ok(Outcome::Sent(_))), "{sent:?}");
         let api = torro_ipc::client::call_with_key(&socket, Some(&Key::new(token.as_str())), &Request::Ping).await;
         assert!(matches!(&api, Ok(Response::Error { code, .. }) if code == "unauthorized"), "{api:?}");
-
-        let off = Request::SetSetting { key: torro_ipc::SettingKey::AllowMcp, value: serde_json::json!(false) };
-        assert!(matches!(torro_ipc::client::call(&socket, &off).await, Ok(Response::Ok)));
-        let refused = report(token).await.expect("ran");
-        assert!(matches!(&refused, Err(HookError::Refused { code, .. }) if code == "unauthorized"), "{refused:?}");
     }
 
     /// A core in `dir` serving its socket (`dir/state/core.sock`, the app key next to it) with a

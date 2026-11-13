@@ -118,10 +118,10 @@ pub enum Section {
     Apps,
     Accounts,
     Ai,
-    /// Programs that use Torro Workplace with a key: "Allow API keys" and the keys with their
-    /// rights (task S.35).
+    /// "API clients": programs that use Torro Workplace with a key, and the keys with their rights
+    /// (task S.35).
     Api,
-    /// Agents and apps that use Torro Workplace through MCP: "Allow MCP", the command, the clients
+    /// Agents and apps that use Torro Workplace through MCP: the command, the clients
     /// with their rights and their hooks (task S.35). `--section agents` opens it too.
     Mcp,
     /// What the suite runs for its clients beyond its own commands: the built-in tools (moved here
@@ -167,7 +167,7 @@ impl Section {
             Section::Apps => tr("Apps"),
             Section::Accounts => tr("Accounts"),
             Section::Ai => tr("AI"),
-            Section::Api => tr("API"),
+            Section::Api => tr("API clients"),
             // Who uses the suite through MCP (its clients), and the MCP servers the suite uses itself;
             // the words of `--section` stay `mcp` and `connections`, so calls keep working.
             Section::Mcp => tr("MCP clients"),
@@ -830,38 +830,6 @@ impl Ui {
                 messages.extend(ai.map(|account| Message::Accounts(accounts::Message::Open(account.id.clone()))));
                 messages
             }
-            // Ollama on this computer, the chat's "Use suggestion" pressed: its download runs (task MW.8).
-            Open::AiModels => {
-                self.data.accounts.push(accounts::demo::demo_ollama_account());
-                vec![
-                    Message::Select(Section::Ai),
-                    Message::Accounts(accounts::Message::UseSuggestion(torro_core::ai::AiSlot::Chat)),
-                ]
-            }
-            // nimble is off in the demo: switched on at Ollama's page, as a person would, so the menu has a
-            // decision model to put first.
-            Open::SortingMenu | Open::SortingCloud => {
-                self.data.accounts.push(accounts::demo::demo_ollama_account());
-                let ollama = accounts::demo::DEMO_OLLAMA.to_string();
-                let mut messages = vec![
-                    Message::Select(Section::Ai),
-                    Message::Accounts(accounts::Message::Open(ollama)),
-                    Message::Accounts(accounts::Message::SetModel("nimble:latest".into(), true)),
-                    Message::Accounts(accounts::Message::Back),
-                    Message::Accounts(accounts::Message::ToggleSortingMenu),
-                ];
-                // Issue #424: another model of OpenRouter than the one that sorts asks before it does.
-                if matches!(open, Open::SortingCloud) {
-                    let choice = accounts::SlotChoice {
-                        engine: Some(accounts::demo::DEMO_NETWORK.into()),
-                        model: Some("nimble:latest".into()),
-                        label: "nimble".into(),
-                    };
-                    let pick = accounts::Message::PickSlot(torro_core::ai::AiSlot::Decide, choice);
-                    messages.push(Message::Accounts(pick));
-                }
-                messages
-            }
             Open::GithubDetail => {
                 let github = accounts::listed(&self.data.accounts).find(|account| account.kind == "github");
                 let mut messages = vec![Message::Select(Section::Accounts)];
@@ -945,10 +913,6 @@ impl Ui {
                 self.data.clients.retain(|client| api::Home::of(client) != Some(api::Home::Api));
                 vec![Message::Select(Section::Api)]
             }
-            Open::ApiOff => {
-                self.data.settings.allow_api_keys = false;
-                vec![Message::Select(Section::Api)]
-            }
             Open::ApiDetail | Open::ApiNewKey | Open::ApiRevoke => {
                 let script = self.data.clients.iter().find(|client| client.kind == "script").map(|c| c.id.clone());
                 let page = |message| Message::Api(api::Message::Page(message));
@@ -977,10 +941,6 @@ impl Ui {
             Open::McpEmpty => {
                 self.data.clients.retain(|client| api::Home::of(client) != Some(api::Home::Mcp));
                 self.data.clients.retain(|client| client.kind != torro_ipc::api::HOOK_CLIENT);
-                vec![Message::Select(Section::Mcp)]
-            }
-            Open::McpOff => {
-                self.data.settings.allow_mcp = false;
                 vec![Message::Select(Section::Mcp)]
             }
             // Without Claude Code its hook client has no agent any more.
@@ -1895,10 +1855,6 @@ impl Ui {
                 model: model.clone(),
                 effort: *effort,
             });
-            if *slot == torro_core::ai::AiSlot::Decide {
-                let elsewhere = chosen.as_ref().is_some_and(|chosen| !accounts::demo::demo_is_local(&chosen.engine));
-                self.data.settings.decide_mail_to_cloud = Some(elsewhere);
-            }
             match slot {
                 torro_core::ai::AiSlot::Chat => self.data.settings.ai_slots.chat = chosen,
                 torro_core::ai::AiSlot::Decide => self.data.settings.ai_slots.decide = chosen,
@@ -3111,12 +3067,6 @@ mod tests {
             assert!(remove.has_top_row(), "{size:?}: the dialog lies over the top row");
             let _ = remove.view();
         }
-
-        // A menu is no dialog (design review of #554): the open "Sorting" menu dims nothing.
-        let mut sorting = started(&["--demo", "--open", "sorting-menu"]);
-        let _ = sorting.update(Message::Resized(Size::new(1600.0, 1000.0)));
-        assert!(sorting.page_overlay().is_some(), "the menu is open");
-        assert_eq!(sorting.cover(), Cover::Nothing, "and leaves the window undimmed");
     }
 
     /// Issue #604: the sidebar and the providers' column of Accounts are dragged inside their limits,
@@ -3754,10 +3704,6 @@ mod tests {
             let empty = started(&["--demo", "--open", state]);
             assert_eq!((empty.section, empty.trail(section)), (section, Trail::None), "{state}");
         }
-        let off = started(&["--demo", "--open", "api-off"]);
-        assert!(!off.data.settings.allow_api_keys && off.data.settings.allow_mcp);
-        let off = started(&["--demo", "--open", "mcp-off"]);
-        assert!(off.data.settings.allow_api_keys && !off.data.settings.allow_mcp);
     }
 
     /// Task S.35: "Create key" and "Connect client" run through the demo without touching
@@ -3796,8 +3742,6 @@ mod tests {
         let id = "3fa9c1d2".to_string();
         let open = Message::Mcp(mcp::Message::Page(api::PageMessage::Open(id.clone())));
         assert_eq!(real.update(open).units(), 1, "clients.activity");
-        assert_eq!(real.update(Message::Api(api::Message::Allow(false))).units(), 1, "settings.set_setting");
-        assert_eq!(real.update(Message::Mcp(mcp::Message::Allow(false))).units(), 1, "settings.set_setting");
         assert_eq!(real.update(Message::Select(Section::Mcp)).units(), 1, "opening MCP reads the hook notes");
         assert_eq!(real.perform(Action::Copy("torro_x".into())).units(), 1, "the clipboard");
         let mut demo = started(&["--demo"]);
@@ -3843,7 +3787,7 @@ mod tests {
         assert_eq!(instance_of(&page.launch), None, "a start with a page opens a window of its own");
         let full = started(&["--demo", "--open", "connections"]);
         assert_eq!(full.section, Section::Connections);
-        assert!(full.data.settings.tools.pdf.folder.is_some() && full.data.tools.iter().all(|tool| tool.enabled));
+        assert!(full.data.settings.tools.pdf.folder.is_some() && !full.data.tools.is_empty());
         assert_eq!(full.trail(Section::Connections), Trail::Count(connections::count(&full.data)));
         // Issue #548: the list opens on the tab of the demo's GitHub, which stopped after errors; the
         // two other tabs open as states of their own.
@@ -3857,7 +3801,6 @@ mod tests {
         }
         let mut empty = started(&["--demo", "--open", "connections-empty"]);
         assert_eq!((empty.section, empty.trail(Section::Connections)), (Section::Connections, Trail::None));
-        assert!(!connections::assistant_may_use(&empty.data, torro_core::settings::ToolId::Pdf));
         // The demo opens no chooser and sends nothing; "Templates" opens the page below the list,
         // with its name in the header and Escape back.
         let choose = Message::Connections(connections::Message::Choose(connections::Chooser::Folder));
@@ -3960,7 +3903,7 @@ mod tests {
         assert_eq!(Section::Connections.label(), tr("MCP servers"));
         assert_eq!(Section::Mcp.label(), tr("MCP clients"));
         let labels: Vec<&str> = Section::ALL.iter().map(|section| section.label()).collect();
-        assert!(labels.contains(&tr("API")) && labels.contains(&tr("MCP clients")));
+        assert!(labels.contains(&tr("API clients")) && labels.contains(&tr("MCP clients")));
         let nav: Vec<Section> = Section::nav().collect();
         assert!(!nav.contains(&Section::General), "General sits at the foot");
         assert_eq!(nav.len(), Section::ALL.len() - 1);
@@ -4091,7 +4034,6 @@ mod tests {
             "wizard-ai-cloud-error",
             "wizard-ai-cloud-empty",
             "wizard-ai-cloud-connected",
-            "wizard-ai-cloud-consent",
         ] {
             let mail = started(&["--demo", "--open", state]);
             let expected = if state.starts_with("wizard-ai") { Section::Ai } else { Section::Accounts };
@@ -4106,29 +4048,6 @@ mod tests {
         assert_eq!(ai.section, Section::Ai);
         assert_eq!(ai.accounts.selected.as_deref(), Some(accounts::demo::DEMO_NETWORK));
         assert!(ai.accounts.models.contains_key(accounts::demo::DEMO_NETWORK) && !ai.accounts.models_page.loading);
-        // Task MW.8: the group "Models" with the chat's download running and its chain waiting for it.
-        let models = started(&["--demo", "--open", "ai-models"]);
-        assert_eq!(models.section, Section::Ai);
-        let using = models.accounts.slots.using.as_ref().expect("the chat's suggestion is in use");
-        assert_eq!(using.step, accounts::UseStep::Pull(Some("p1".into())));
-        assert!(
-            models.accounts.slots.recommendation.is_some()
-                && models.accounts.models.contains_key(accounts::demo::DEMO_OLLAMA)
-        );
-        // Issue #421: the menu of Sorting open, with nimble switched on at Ollama as a decision model.
-        let sorting = started(&["--demo", "--open", "sorting-menu"]);
-        assert_eq!(sorting.section, Section::Ai);
-        assert!(sorting.accounts.sorting_menu && sorting.accounts.selected.is_none());
-        assert!(sorting.page_overlay().is_some());
-        let sections = accounts::sorting_sections(&sorting.accounts, &sorting.data);
-        assert!(sections.fast.iter().any(|choice| choice.model.as_deref() == Some("nimble:latest")), "{sections:?}");
-        assert!(sections.other.iter().any(|choice| choice.model.as_deref() == Some("qwen3:8b")), "{sections:?}");
-        // Issue #424: another model in the cloud asks before it sorts; nothing is sent until "Use".
-        let cloud = started(&["--demo", "--open", "sorting-cloud"]);
-        assert!(!cloud.accounts.sorting_menu && cloud.accounts.cloud_consent.is_some());
-        assert!(cloud.page_overlay().is_some(), "the question lies over the window");
-        let decide = cloud.data.settings.ai_slots.decide.as_ref().and_then(|slot| slot.model.as_deref());
-        assert_eq!(decide, Some("qwen/qwen3-235b-a22b"), "the slot is unchanged while it asks");
         let section = started(&["--demo", "--section", "ai"]);
         assert!(section.accounts.slots.recommendation.is_some(), "a start on AI asks as choosing it does");
         let github = started(&["--demo", "--open", "scopes-detail"]);

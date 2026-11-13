@@ -383,8 +383,8 @@ impl Judging {
 /// Asks a decision model what the mail `message` of `account` is and keeps the answer with it
 /// (task E12.6); `Ok(None)` when nothing could be said. The third argument says the mail is a
 /// contact's, in Personal already: the model then only chooses within that group (issue #390). The
-/// core wires `Core::decide_new_mail` in here, so the feed need not know about AI accounts,
-/// assignments or the data rule.
+/// core wires `Core::decide_new_mail` in here, so the feed need not know about AI accounts or
+/// assignments.
 pub type Decider = Arc<
     dyn Fn(String, String, bool) -> std::pin::Pin<Box<dyn Future<Output = Option<MailCategory>> + Send>> + Send + Sync,
 >;
@@ -1180,8 +1180,8 @@ pub struct Verdict {
 
 /// Asks the model the narrow question "fraud or spam?" about the mail `message` of `account`
 /// (second argument) with the warning signs found (issue #506); `None` when nothing could be asked
-/// or read – no model, the data rule, an error. The core wires `Core::new_mail_judge` in here, with
-/// the model and the permission of sorting.
+/// or read – no model, an error. The core wires `Core::new_mail_judge` in here, with the model of
+/// sorting.
 pub type Judge = Arc<
     dyn Fn(String, String, Vec<WarningSign>) -> std::pin::Pin<Box<dyn Future<Output = Option<Verdict>> + Send>>
         + Send

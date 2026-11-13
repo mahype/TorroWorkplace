@@ -20,9 +20,9 @@
 //!   asked in – a number new for each panel and each "+" –, and an answer of another round (another
 //!   mail's panel, the conversation before "+") is dropped, never merged into the chat open now.
 //! - **Hints instead of a chat** ([`Hint`], [`hint_for`]): no AI set up, the assistant may not read
-//!   the mail (`forbidden`, with "Open assistant"), the data rule keeps mail from the chosen model
-//!   (`not-connected`), or a model that cannot chat about a mail (`unsupported`) – on opening, or when
-//!   "Send" is refused.
+//!   the mail (`forbidden`, with "Open assistant"), or a model that cannot chat about a mail
+//!   (`unsupported`) – on opening, or when "Send" is refused. No data rule keeps the mail from a model
+//!   (issue #664).
 //! - **Where it stands** (the app decides, `App::ask_layout`): wide beside the mail, medium and
 //!   narrow over it with "‹ Mail" back ([`view`]).
 //!
@@ -140,8 +140,6 @@ pub enum Hint {
     NoAi,
     /// `forbidden`: the assistant may not read the mail's account.
     NoRight,
-    /// `not-connected`: the data rule keeps mail from the chosen model.
-    NotLocal,
     /// `unsupported`: the chosen engine cannot chat about a mail (a coding agent, a bot).
     Unsupported,
     /// Anything else the core said, in its words.
@@ -157,7 +155,6 @@ impl Hint {
                 tr("The assistant may not read this mail. Allow it in the assistant's settings under Access.")
                     .to_owned()
             }
-            Hint::NotLocal => tr("This AI may not read mail. Choose a model on this computer.").to_owned(),
             Hint::Unsupported => {
                 tr("This AI can't chat about a mail. Choose an AI account in Settings › AI.").to_owned()
             }
@@ -170,17 +167,16 @@ impl Hint {
         match self {
             Hint::NoAi | Hint::Unsupported => Some((tr("Open settings"), Event::OpenSettings)),
             Hint::NoRight => Some((tr("Open assistant"), Event::OpenAssistant)),
-            Hint::NotLocal | Hint::Failed(_) => None,
+            Hint::Failed(_) => None,
         }
     }
 }
 
-/// The hint for a refusal of the core (issue #605): `forbidden`, `not-connected` and `unsupported`
-/// have their own; any other code shows the core's words.
+/// The hint for a refusal of the core (issue #605): `forbidden` and `unsupported` have their own; any
+/// other code shows the core's words.
 pub fn hint_for(refusal: &Refusal) -> Hint {
     match refusal.code.as_str() {
         "forbidden" => Hint::NoRight,
-        "not-connected" => Hint::NotLocal,
         "unsupported" => Hint::Unsupported,
         _ => Hint::Failed(refusal.message.clone()),
     }
@@ -514,17 +510,16 @@ pub async fn open(call: Call, about: MailRef) -> Result<Opened, Refusal> {
         Response::Engines { engines } => chat::ordered(engines),
         other => return Err(Refusal::unexpected(&other)),
     };
-    let (default, mail_to_cloud) = match call(Request::Settings).await {
-        Ok(Response::Settings { settings }) => (settings.ai_slots.chat, settings.mail_to_cloud),
-        // An old core or none: the default data rule, mail stays on this computer.
-        _ => (None, false),
+    let default = match call(Request::Settings).await {
+        Ok(Response::Settings { settings }) => settings.ai_slots.chat,
+        _ => None,
     };
     let conversations = match call(Request::ListConversations).await? {
         Response::Conversations { conversations } => conversations,
         other => return Err(Refusal::unexpected(&other)),
     };
     let preferred = chat::preferred_choice(default.as_ref(), &conversations, &engines, |_| None);
-    let preferred = mail_choice(preferred, &engines, mail_to_cloud)?;
+    let preferred = ai_choice(preferred, &engines);
     let Some(newest) = newest_about(&conversations, &about).cloned() else {
         check_about(&call, preferred.as_ref(), &about).await?;
         return Ok(Opened { choice: preferred, conversation: None, cards: Vec::new() });
@@ -538,7 +533,7 @@ pub async fn open(call: Call, about: MailRef) -> Result<Opened, Refusal> {
     let own = engines
         .iter()
         .find(|engine| engine.id == summary.engine)
-        .filter(|engine| reads_mail(engine, summary.model.as_deref(), mail_to_cloud))
+        .filter(|engine| chats_about_mail(engine))
         .map(|_| (Choice { engine: summary.engine.clone(), model: summary.model.clone() }, summary.effort));
     let choice = own.or(preferred);
     check_about(&call, choice.as_ref(), &about).await?;
@@ -566,45 +561,28 @@ pub async fn check_about(
     }
 }
 
-/// Whether `engine` with `model` may chat about a mail (review of #605): an AI account – no coding
-/// agent, no test engine, which the core refuses with `unsupported` –, and with mail kept on this
-/// computer (`mail_to_cloud` off, the default data rule) one on this computer whose model is no cloud
-/// model of Ollama, which the core would refuse with `not-connected`. `None` lets the account pick.
-pub fn reads_mail(engine: &Engine, model: Option<&str>, mail_to_cloud: bool) -> bool {
-    if engine.kind != EngineKind::Ai {
-        return false;
-    }
-    mail_to_cloud || (chat::is_local(engine) && !model.is_some_and(torro_core::ai::openai::ollama_cloud_name))
+/// Whether `engine` may chat about a mail (review of #605): an AI account – no coding agent, no test
+/// engine, which the core refuses with `unsupported`. Wherever its model computes (issue #664).
+pub fn chats_about_mail(engine: &Engine) -> bool {
+    engine.kind == EngineKind::Ai
 }
 
 /// What answers the chat about a mail (review of #605): the assistant's own choice (`preferred`)
-/// while it may read the mail ([`reads_mail`]), else the first engine of `engines` (in the order of
-/// `chat::ordered`, this computer first) that may, letting it pick its model. `Ok(None)` without any
-/// AI account (the hint "Set up an AI…"); `not-connected` when there are AI accounts but the data rule
-/// keeps mail from all of them (the hint "This AI may not read mail…").
-pub fn mail_choice(
-    preferred: Option<(Choice, Option<Effort>)>,
-    engines: &[Engine],
-    mail_to_cloud: bool,
-) -> Result<Option<(Choice, Option<Effort>)>, Refusal> {
+/// while it is an AI account ([`chats_about_mail`]), else the first AI account of `engines` (in the
+/// order of `chat::ordered`, this computer first), letting it pick its model. `None` without any AI
+/// account (the hint "Set up an AI…").
+pub fn ai_choice(preferred: Option<(Choice, Option<Effort>)>, engines: &[Engine]) -> Option<(Choice, Option<Effort>)> {
     let fits = |choice: &(Choice, Option<Effort>)| {
-        engines
-            .iter()
-            .find(|engine| engine.id == choice.0.engine)
-            .is_some_and(|engine| reads_mail(engine, choice.0.model.as_deref(), mail_to_cloud))
+        engines.iter().find(|engine| engine.id == choice.0.engine).is_some_and(chats_about_mail)
     };
     if let Some(preferred) = preferred.filter(fits) {
-        return Ok(Some(preferred));
+        return Some(preferred);
     }
     let ordered = chat::ordered(engines.to_vec());
-    if let Some(engine) = ordered.iter().find(|engine| reads_mail(engine, None, mail_to_cloud)) {
-        return Ok(Some((Choice { engine: engine.id.clone(), model: None }, None)));
-    }
-    if engines.iter().any(|engine| engine.kind == EngineKind::Ai) {
-        let message = "The data rule keeps mail from every AI account set up.";
-        return Err(Refusal { code: "not-connected".to_owned(), message: message.to_owned() });
-    }
-    Ok(None)
+    ordered
+        .iter()
+        .find(|engine| chats_about_mail(engine))
+        .map(|engine| (Choice { engine: engine.id.clone(), model: None }, None))
 }
 
 /// A request answered with a conversation (`assistant.send_message`, `assistant.get_conversation`).
@@ -1206,7 +1184,7 @@ mod tests {
     fn a_hint_follows_the_code_of_the_refusal() {
         let refusal = |code: &str| Refusal { code: code.to_owned(), message: "The core's words".to_owned() };
         assert_eq!(hint_for(&refusal("forbidden")), Hint::NoRight);
-        assert_eq!(hint_for(&refusal("not-connected")), Hint::NotLocal);
+        assert_eq!(hint_for(&refusal("not-connected")), Hint::Failed("The core's words".to_owned()));
         assert_eq!(hint_for(&refusal("unsupported")), Hint::Unsupported);
         assert_eq!(hint_for(&refusal("offline")), Hint::Failed("The core's words".to_owned()));
         assert_eq!(
@@ -1216,8 +1194,6 @@ mod tests {
         assert!(matches!(Hint::NoRight.action(), Some((label, Event::OpenAssistant)) if label == tr("Open assistant")));
         assert!(matches!(Hint::NoAi.action(), Some((_, Event::OpenSettings))));
         assert_eq!(Hint::NoAi.text(), tr("Set up an AI in Settings › AI first."));
-        assert_eq!(Hint::NotLocal.text(), tr("This AI may not read mail. Choose a model on this computer."));
-        assert!(Hint::NotLocal.action().is_none(), "nothing in reach helps");
     }
 
     #[test]
@@ -1311,10 +1287,10 @@ mod tests {
         let _ = ask.update(Event::Opened(round, opened));
         assert_eq!(ask.phase, Phase::Ready);
 
-        let not_local = Refusal { code: "not-connected".to_owned(), message: "kept".to_owned() };
-        let (call, _) = checking_core(Err(not_local));
+        let unsupported = Refusal { code: "unsupported".to_owned(), message: "no chat".to_owned() };
+        let (call, _) = checking_core(Err(unsupported));
         let refused = block_on(open(call, mail_ref("m:1"))).expect_err("refused");
-        assert_eq!(hint_for(&refused), Hint::NotLocal);
+        assert_eq!(hint_for(&refused), Hint::Unsupported);
         // An older core without the command: nothing in the way.
         let old = Refusal::error("malformed request: unknown method or arguments that do not fit it");
         let (call, _) = checking_core(Err(old));
@@ -1413,10 +1389,10 @@ mod tests {
         assert_eq!(ask.phase, Phase::Ready);
     }
 
-    /// Review of #605: the chat about a mail answers with an AI account that may read it – the
-    /// assistant's own choice where it may, else the first such account, this computer first.
+    /// Review of #605: the chat about a mail answers with an AI account – the assistant's own choice
+    /// where it is one, else the first account, this computer first; issue #664: wherever it computes.
     #[test]
-    fn the_chat_answers_with_an_ai_that_may_read_the_mail() {
+    fn the_chat_answers_with_an_ai_account() {
         let engine =
             |id: &str, kind| Engine { id: id.to_owned(), kind, name: id.to_owned(), problem: None, models: Vec::new() };
         let local = engine("ai:ollama@localhost:11434", EngineKind::Ai);
@@ -1425,23 +1401,18 @@ mod tests {
         let pick =
             |id: &str, model: Option<&str>| (Choice { engine: id.to_owned(), model: model.map(str::to_owned) }, None);
         let engines = vec![agent.clone(), cloud.clone(), local.clone()];
-        let chosen = |preferred, rule| mail_choice(preferred, &engines, rule).expect("a choice").map(|(c, _)| c);
-        // A coding agent never; mail kept on this computer: the local account.
-        assert_eq!(chosen(Some(pick("claude-code", None)), false), Some(pick(&local.id, None).0));
-        assert_eq!(chosen(Some(pick(&cloud.id, Some("qwen/qwen3"))), false), Some(pick(&local.id, None).0));
-        // The assistant's own local choice stays, with its model; not an Ollama cloud model.
-        assert_eq!(chosen(Some(pick(&local.id, Some("qwen3:8b"))), false), Some(pick(&local.id, Some("qwen3:8b")).0));
-        assert_eq!(chosen(Some(pick(&local.id, Some("gpt-oss:120b-cloud"))), false), Some(pick(&local.id, None).0));
-        // Mail let out: the cloud account the person chose stays.
-        assert_eq!(
-            chosen(Some(pick(&cloud.id, Some("qwen/qwen3"))), true),
-            Some(pick(&cloud.id, Some("qwen/qwen3")).0)
-        );
-        // Only accounts elsewhere under the default rule: the hint that this AI may not read mail.
-        let refused = mail_choice(None, &[cloud.clone(), agent.clone()], false).expect_err("kept from them");
-        assert_eq!(hint_for(&refused), Hint::NotLocal);
+        let chosen = |preferred| ai_choice(preferred, &engines).map(|(c, _)| c);
+        // A coding agent never: the first AI account, this computer first.
+        assert_eq!(chosen(Some(pick("claude-code", None))), Some(pick(&local.id, None).0));
+        // The assistant's own choice stays with its model, here or elsewhere, an Ollama cloud model too.
+        assert_eq!(chosen(Some(pick(&local.id, Some("qwen3:8b")))), Some(pick(&local.id, Some("qwen3:8b")).0));
+        let ollama_cloud = pick(&local.id, Some("gpt-oss:120b-cloud"));
+        assert_eq!(chosen(Some(ollama_cloud.clone())), Some(ollama_cloud.0));
+        assert_eq!(chosen(Some(pick(&cloud.id, Some("qwen/qwen3")))), Some(pick(&cloud.id, Some("qwen/qwen3")).0));
+        // Only an account elsewhere: it answers.
+        assert_eq!(ai_choice(None, &[cloud.clone(), agent.clone()]).map(|(c, _)| c), Some(pick(&cloud.id, None).0));
         // No AI account at all: "Set up an AI…".
-        assert_eq!(mail_choice(Some(pick("claude-code", None)), &[agent], false), Ok(None));
+        assert_eq!(ai_choice(Some(pick("claude-code", None)), &[agent]), None);
     }
 
     /// Review of #605: in the demo, a message after "+" starts its own conversation.

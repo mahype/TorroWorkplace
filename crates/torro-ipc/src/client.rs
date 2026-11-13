@@ -41,8 +41,8 @@ pub async fn call_with_key(path: &Path, key: Option<&Key>, request: &Request) ->
 }
 
 /// [`call_with_key`] that tells the core the way the request came (`via`, #231): `torroworkplace
-/// mcp` and `torroworkplace hook` send [`Door::Mcp`], so the core lets their agents' keys in only
-/// while "Allow MCP" is on and refuses a script's key there. Everything else is as for
+/// mcp` and `torroworkplace hook` send [`Door::Mcp`], so the core lets their agents' keys in and
+/// refuses a script's key there. Everything else is as for
 /// [`call_with_key`].
 pub async fn call_with_key_via(
     path: &Path,

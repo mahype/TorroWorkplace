@@ -1,6 +1,8 @@
 //! MCP servers (task MA.7 in `docs/tasks/mcp-anbindungen.md`, issue #302): what the suite runs
 //! for its clients beyond its own commands – its built-in tools and the MCP servers it is a client of.
-//! The assistant's settings only point here since this task (`torro_settings_ui::assistant::tools`).
+//! Here the tools and servers are set up only (issue #666): who may use them is set by the clients'
+//! rights – API and MCP clients in their sections, the assistant and its bots under Assistant › API
+//! and MCP.
 //!
 //! The list has three tabs (issue #548, `widgets::tabs`), so the long page splits into what belongs
 //! together: **Built-in** (Allowed folders and Built-in tools), **Catalog** and **Your servers**. Until
@@ -12,9 +14,9 @@
 //! ```text
 //! Built-in
 //! Allowed folders    a row per folder the tools that work with files may reach, Read or Read and write · Add folder…
-//! Built-in tools     Organize files (switch) · whether the assistant may use it · No allowed folders (while none)
-//!                    Make PDFs (switch) · whether the assistant may use it · Folder · Templates ›
-//!                    Search the web (switch) · whether the assistant may use it · Search providers ›
+//! Built-in tools     Files · No allowed folders (while none)
+//!                    PDF · Folder · Templates ›
+//!                    Web · Search providers ›
 //!   › PDF templates  Letter · Report · Note: paper, margins, font size, header, footer, page numbers, logo
 //!   › Search providers  a group per provider of the tool `web` (`torro_settings_ui::assistant::web`)
 //! Catalog
@@ -23,12 +25,9 @@
 //! Your own servers   a row per server a person added, with its status
 //! ```
 //!
-//! **Built-in tools** moved here unchanged from the assistant (task WZ.6): the switch
-//! (`settings.set_setting tool_enabled`) says whether a tool exists on this computer, for every
-//! client; what a client may use is its rights. The row "may use it" only reads the assistant's
-//! client (`clients.list_clients`, loaded by the shell) and brings the assistant's window to the
-//! front, where Access sets its rights ([`ClientTarget::request`]); nothing here writes a client.
-//! Only a person switches a tool on and sets a path (point 9 of "Was nie nach außen geht" in
+//! **Built-in tools** moved here from the assistant (task WZ.6): each tool with what it does and
+//! its settings. The tools are always there (issue #666): no switch, and what a client may use is
+//! its rights; nothing here writes a client. Only a person sets a path (point 9 of "Was nie nach außen geht" in
 //! `docs/api.md`): this window has the app key, and folder and logo come from the system's choosers,
 //! which only the shell opens ([`Action::Pick`] with a [`Chooser`], [`pick`]); it hands the path
 //! back as [`Message::Picked`]. Every change of a template field sends `settings.set_setting
@@ -75,8 +74,7 @@
 //! person's files (issue #303, ArtCraft: [`CatalogEntry::folder`]) has the group "Folder" in Overview: the
 //! folder chosen for it or "No folder chosen", and "Choose…" with a menu of the allowed folders and "None"
 //! (`extensions.set_folder`, [`Message::SetFolder`]); a refusal shows above the page. One without a bound of its own
-//! (GridCraft, [`FolderCheck::TorroOnly`]) says so there, in its catalog row and its dialogs. Who may use it is set per
-//! client (API, MCP clients, the assistant's Access), never here. The sidebar marks the section while a
+//! (GridCraft, [`FolderCheck::TorroOnly`]) says so there, in its catalog row and its dialogs. The sidebar marks the section while a
 //! server waits for its tools or stopped after errors ([`alert`]).
 //!
 //! Every request of this section goes out as [`Action::AskConnections`] with what it is for
@@ -122,20 +120,19 @@ use torro_gui::widgets::{
     self, Align, Anchor, DROPDOWN_SEARCH, Dropdown, DropdownEvent, MenuItem, MenuSection, Placement, Status as Dot,
 };
 use torro_gui::{style, typo};
-use torro_ipc::api::{ASSISTANT_CLIENT, Area};
 use torro_ipc::extensions::{
     CatalogEntry, CrashReason, ExtensionInfo, ExtensionTool, FolderCheck, InstallFrom, MAX_ID_CHARS, ParseError,
     Prerequisite, ServerSpec, Source, Status, ToolState, Value, blocked_env, parse_mcp_servers, valid_env_name,
     valid_header_name, valid_id,
 };
-use torro_ipc::tools::{ToolAccess, ToolInfo};
+use torro_ipc::tools::ToolInfo;
 use torro_ipc::{Request, Response, Secret, SettingKey};
 use torro_settings_ui::assistant::web;
 use torro_settings_ui::rights::{first_sentence, plain, tool_level};
 
 use super::{
-    Action, ClientTarget, Data, Header, chevron, confirm, dialog, field, notice, pressable, row_frame, segments,
-    segments_width, setting_row, stacking_row, switch,
+    Action, Data, Header, chevron, confirm, dialog, field, notice, pressable, row_frame, segments, segments_width,
+    setting_row, stacking_row, switch,
 };
 
 /// The file endings the logo chooser offers, as `PdfTemplate::check` takes them.
@@ -771,14 +768,10 @@ pub enum Chooser {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
-    /// The switch of a tool: on or off for every client (`tool_enabled`).
-    Switch(ToolId, bool),
     /// "Read" or "Read and write" of the allowed folder with this path (task WD.4).
     SetFolderAccess(String, FolderAccess),
     /// "Remove" at the allowed folder with this path.
     RemoveFolder(String),
-    /// "The assistant may not use it": the assistant's window, whose Access sets its rights.
-    Access,
     /// "Choose…" at the folder or at a template's logo: the shell opens the system's chooser.
     Choose(Chooser),
     /// The chooser closed: the path chosen, `None` when it was cancelled.
@@ -909,8 +902,6 @@ pub enum Message {
 
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     match message {
-        Message::Switch(tool, on) => Action::Send(switch_request(tool, on)),
-        Message::Access => Action::Send(ClientTarget::Assistant.request()),
         Message::Choose(chooser) => {
             state.problem = None;
             Action::Pick(chooser)
@@ -1683,14 +1674,6 @@ pub async fn pick(chooser: Chooser) -> Option<PathBuf> {
 
 // ----- Requests ----------------------------------------------------------------------------------
 
-/// `settings.set_setting tool_enabled` for `tool`: exactly one request per flip of its switch.
-pub fn switch_request(tool: ToolId, on: bool) -> Request {
-    Request::SetSetting {
-        key: SettingKey::ToolEnabled,
-        value: serde_json::json!({ "tool": tool.name(), "enabled": on }),
-    }
-}
-
 /// `settings.set_setting allowed_folder` for the folder at `path` (task WD.4): with `access` it is allowed (or its
 /// access changed), without it removed. Only a person sends it (point 9).
 pub fn allowed_folder_request(path: &str, access: Option<FolderAccess>) -> Request {
@@ -1835,16 +1818,14 @@ fn list_labels(data: &Data) -> Vec<(String, Option<u64>)> {
     ]
 }
 
-/// "Built-in tools": per tool its switch with what it does and whether the assistant may use it, for
-/// the PDF tool the folder its files go to and the row to its templates, for the tool `web` the row to
-/// its search providers.
+/// "Built-in tools": per tool what it does, for the PDF tool the folder its files go to and the row to
+/// its templates, for the tool `web` the row to its search providers. No switch (issue #666).
 fn tools_group<'a>(data: &'a Data, words: bool) -> Element<'a, Message> {
     let mut rows = Vec::new();
     for info in page_order(&data.tools) {
-        rows.push(switch_row(info));
-        rows.push(access_row(data, info.id));
+        rows.push(builtin_row(info));
         if works_in_allowed_folders(info.id) && data.settings.tools.folders.is_empty() {
-            rows.push(no_folder_row(no_folder_flagged(data), words));
+            rows.push(no_folder_row(words));
         }
         if info.id == ToolId::Pdf {
             rows.push(folder_row(data, words));
@@ -1857,16 +1838,14 @@ fn tools_group<'a>(data: &'a Data, words: bool) -> Element<'a, Message> {
     if rows.is_empty() {
         rows.push(setting_row(None, tr("No tools"), None, Space::new()));
     }
-    let footer = tr(
-        "A tool works only while it is on here and a client's rights allow it. Only you can switch it on and choose the folder and the logos.",
-    );
+    let footer =
+        tr("Who may use a tool is set by the rights of each client. Only you can choose the folder and the logos.");
     widgets::group(tr("Built-in tools"), rows, Some(footer.to_string()))
 }
 
-/// A tool's switch, with what it does below its name.
-fn switch_row(info: &ToolInfo) -> Element<'_, Message> {
-    let id = info.id;
-    wrapping_row(switch_label(id), info.description.as_str(), switch(info.enabled, move |on| Message::Switch(id, on)))
+/// A tool by its name, with what it does below it.
+fn builtin_row(info: &ToolInfo) -> Element<'_, Message> {
+    wrapping_row(info.name.as_str(), info.description.as_str(), Space::new())
 }
 
 /// A row whose line below the label wraps instead of being cut: what a tool does is a sentence a
@@ -1896,32 +1875,6 @@ fn tall_padding() -> [f32; 2] {
 /// high as the rows around it.
 fn tall_strut() -> Space {
     Space::new().height(size::header() - space::m())
-}
-
-/// What the switch of a tool is called.
-fn switch_label(id: ToolId) -> &'static str {
-    match id {
-        ToolId::Pdf => tr("Make PDFs"),
-        ToolId::Web => tr("Search the web"),
-        ToolId::Files => tr("Organize files"),
-    }
-}
-
-/// Whether the assistant may use the tool: a green dot, or an orange one (the tool may be on, but
-/// the assistant may not use it: something to do) and a row that brings the assistant's window to
-/// the front, where Access chooses its rights – the arrow of another window.
-fn access_row<'a>(data: &Data, id: ToolId) -> Element<'a, Message> {
-    if assistant_may_use(data, id) {
-        return setting_row(Some(widgets::status_dot(Dot::Ok)), tr("The assistant may use it"), None, Space::new());
-    }
-    let detail = tr("Allow it in the assistant under Access");
-    let row = setting_row(
-        Some(widgets::status_dot(Dot::Attention)),
-        tr("The assistant may not use it"),
-        Some(detail.to_string()),
-        arrow(),
-    );
-    pressable(row, Some(Message::Access))
 }
 
 /// "Folder": where new PDFs go, the desktop without one; "Choose…" and, with one, "Use desktop".
@@ -1990,26 +1943,16 @@ fn folder_mark<'a>() -> Element<'a, Message> {
     icon::icon(Icon::Folder, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_2) }).into()
 }
 
-/// Under the tool `files` while no folder is allowed: it works in none yet, with "Add folder…" right there; an orange
-/// dot when the assistant may use the tool (something to do), else the folder mark.
-fn no_folder_row<'a>(flagged: bool, words: bool) -> Element<'a, Message> {
+/// Under the tool `files` while no folder is allowed: it works in none yet, with "Add folder…" right there and an
+/// orange dot, since that is left to do.
+fn no_folder_row<'a>(words: bool) -> Element<'a, Message> {
     let add = Message::Choose(Chooser::AllowedFolder);
     let button = match words {
         true => widgets::text_button(Some(Icon::Plus), tr("Add folder…"), style::button::ghost, Some(add)),
         false => widgets::icon_button(Icon::Plus, tr("Add folder…"), Some(add)),
     };
     let detail = tr("The tool works only in allowed folders.");
-    let mark = match flagged {
-        true => widgets::status_dot(Dot::Attention),
-        false => folder_mark(),
-    };
-    setting_row(Some(mark), tr("No allowed folders"), Some(detail.to_string()), button)
-}
-
-/// Whether "No allowed folders" carries the orange dot: once the assistant may use the tool `files`, the missing
-/// folder is what is left to do; before, the row to its Access has the one dot of the tool.
-fn no_folder_flagged(data: &Data) -> bool {
-    assistant_may_use(data, ToolId::Files)
+    setting_row(Some(widgets::status_dot(Dot::Attention)), tr("No allowed folders"), Some(detail.to_string()), button)
 }
 
 /// What the allowed folders' group says below it.
@@ -2426,8 +2369,7 @@ fn status_group<'a>(
         status_row(widgets::status_dot(dot), word, status_detail(server, never_allowed), switch),
         source_row(page, data, server, words),
     ];
-    let footer = tr("Who may use it: API, MCP clients and the assistant's Access.");
-    widgets::group(tr("Status"), rows, Some(footer.to_string()))
+    widgets::group(tr("Status"), rows, None)
 }
 
 /// A row with a mark, a label and a sentence below it that wraps instead of being cut ([`wrapping_row`]
@@ -2959,7 +2901,7 @@ fn secret_field<'a>(install: &'a Install, secret: &'a torro_ipc::extensions::Cat
 
 /// The tools the installed server reported, each with its state, access and what it says it does,
 /// and "Allow tools" for exactly this list; "Not now" leaves it installed and switched off, its
-/// page has the same button. Who may use it is the clients' rights. The head names the catalog
+/// page has the same button. The head names the catalog
 /// `entry`'s facts, or for a server of one's own (`None`) what runs.
 pub fn tools_dialog<'a>(
     install: &'a Install,
@@ -2987,8 +2929,6 @@ pub fn tools_dialog<'a>(
             .style(theme::text_2)
             .wrapping(Wrapping::WordOrGlyph),
         widgets::group(tr("Tools"), rows, footer),
-        typo::text(typo::meta(), tr("Who may use it: API, MCP clients and the assistant's Access."))
-            .style(theme::text_2),
     ]
     .spacing(space::l());
     let allow = allow_button(server, install.busy, false, true);
@@ -3393,13 +3333,6 @@ fn failed_row<'a>(what: &'a str, why: &str) -> Element<'a, Message> {
     setting_row(Some(alert.into()), what, Some(why.to_string()), retry)
 }
 
-/// The arrow at the end of a row that leads to another window: 16, `text_3`.
-fn arrow<'a>() -> Element<'a, Message> {
-    icon::icon(Icon::ArrowUpRight, icon::SIZE)
-        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) })
-        .into()
-}
-
 // ----- Pure parts (unit-tested) ------------------------------------------------------------------
 
 /// How a server stands, as a dot and a word: what a person decides first (tools to review), what
@@ -3577,17 +3510,6 @@ pub fn address(spec: &ServerSpec) -> String {
     }
 }
 
-/// Whether the assistant may use `tool`, after its client's rights as `clients.list_clients` lists
-/// them: the level the tool needs in `tools` (`ToolAccess::access`: writing for `pdf`, reading for `web`) and the
-/// tool in its selection – `web` only when it is ticked by name, never through "All" (`Rights::reaches_tool`).
-/// The switch is the other half. `false` while the assistant is off (it has no client).
-pub fn assistant_may_use(data: &Data, tool: ToolId) -> bool {
-    data.clients
-        .iter()
-        .find(|client| client.kind == ASSISTANT_CLIENT)
-        .is_some_and(|client| client.rights.area(Area::Tools).allows(tool.access()) && client.rights.reaches_tool(tool))
-}
-
 /// "Letter", "Report", "Note": the template's name, told apart from the paper "US Letter" and a
 /// note of the memory.
 pub fn template_name(id: PdfTemplateId) -> &'static str {
@@ -3676,8 +3598,7 @@ impl fmt::Display for Points {
 
 #[cfg(test)]
 mod tests {
-    use torro_core::settings::ToolSwitch;
-    use torro_ipc::api::{Level, Selection};
+    use torro_ipc::api::Area;
     use torro_ipc::extensions::{CatalogEntry, CrashReason, Prerequisite};
     use torro_ipc::web::SearchProviderId;
 
@@ -3706,22 +3627,6 @@ mod tests {
                 PdfTemplate::from_value(value).expect("a whole template the core takes")
             }
             other => panic!("expected pdf_template, got {other:?}"),
-        }
-    }
-
-    /// Task MA.7: the switch sends exactly one `set_setting tool_enabled`, both ways, which the core
-    /// reads back.
-    #[test]
-    fn the_switch_sends_exactly_one_set_setting() {
-        let data = data();
-        let mut state = State::default();
-        for on in [true, false] {
-            let request = one(update(&mut state, Message::Switch(ToolId::Pdf, on), &data));
-            let Request::SetSetting { key: SettingKey::ToolEnabled, value } = &request else {
-                panic!("expected tool_enabled, got {request:?}")
-            };
-            let switch: ToolSwitch = serde_json::from_value(value.clone()).expect("the core reads it");
-            assert_eq!(switch, ToolSwitch { tool: ToolId::Pdf, enabled: on });
         }
     }
 
@@ -3846,8 +3751,6 @@ mod tests {
         let data = data();
         let mut state = State::default();
         let messages = [
-            Message::Switch(ToolId::Pdf, true),
-            Message::Access,
             Message::Choose(Chooser::Folder),
             Message::Picked(Chooser::Folder, Some(PathBuf::from("/tmp/pdfs"))),
             Message::UseDesktop,
@@ -3866,8 +3769,6 @@ mod tests {
             Message::Picked(Chooser::AllowedFolder, Some(PathBuf::from("/home/anna/Invoices"))),
             Message::SetFolderAccess("/home/anna/Documents".into(), FolderAccess::ReadWrite),
             Message::RemoveFolder("/home/anna/Documents".into()),
-            Message::Switch(ToolId::Files, true),
-            Message::Switch(ToolId::Web, true),
             Message::SearchProviders,
             Message::Web(web::Message::Switch(SearchProviderId::Brave, true)),
             Message::Web(web::Message::TypeKey(SearchProviderId::Brave, Secret::new("key"))),
@@ -3906,7 +3807,7 @@ mod tests {
     fn the_web_has_its_providers_on_a_page_of_their_own() {
         let mut data = data();
         launch::demo_connections(&mut data);
-        assert!(data.tools.iter().any(|tool| tool.id == ToolId::Web && tool.enabled));
+        assert!(data.tools.iter().any(|tool| tool.id == ToolId::Web));
         let mut state = State::default();
         for class in [SizeClass::Wide, SizeClass::Narrow] {
             let _ = view(&state, &data, class);
@@ -3985,24 +3886,6 @@ mod tests {
         }
     }
 
-    /// Sight check of WD.4: one orange dot in the files tool's rows. While the assistant may not use the tool, the
-    /// row that leads to Access has it and "No allowed folders" shows the folder icon; once it may, the missing
-    /// folder is what is left to do.
-    #[test]
-    fn the_files_tool_has_one_orange_dot_at_most() {
-        let mut empty = data();
-        empty.settings.tools.folders.clear();
-        fn assistant(data: &mut Data) -> &mut torro_ipc::api::Rights {
-            &mut data.clients.iter_mut().find(|client| client.kind == ASSISTANT_CLIENT).expect("the assistant").rights
-        }
-        assistant(&mut empty).set_level(Area::Tools, Level::NoAccess, Vec::new);
-        assert!(!assistant_may_use(&empty, ToolId::Files));
-        assert!(!no_folder_flagged(&empty), "the row to Access has the dot");
-        assistant(&mut empty).set_level(Area::Tools, Level::Read, Vec::new);
-        assistant(&mut empty).tools = Selection::All;
-        assert!(no_folder_flagged(&empty), "allowed, the missing folder has it");
-    }
-
     /// Sight check of WD.4: with as many folders as may be allowed, the sentence below the list says why "Add
     /// folder…" stands disabled; below that it does not.
     #[test]
@@ -4020,43 +3903,6 @@ mod tests {
         assert_eq!(AccessChoice(FolderAccess::ReadWrite).to_string(), tr("Read and write"));
         assert_eq!(file_name("/home/anna/Documents"), "Documents");
         assert_eq!(file_name("/"), "/", "a folder without a name shows its path");
-    }
-
-    /// Task WEB.6: the tool `web` needs reading in `tools` and `web` ticked by name; "All" tools is not enough, as
-    /// it is for the PDF tool.
-    #[test]
-    fn the_assistant_may_use_the_web_only_when_it_is_ticked() {
-        let mut data = data();
-        let rights =
-            &mut data.clients.iter_mut().find(|client| client.kind == ASSISTANT_CLIENT).expect("the assistant").rights;
-        rights.set_level(Area::Tools, Level::Read, Vec::new);
-        rights.tools = Selection::All;
-        assert!(!assistant_may_use(&data, ToolId::Web), "All tools does not include web");
-        let rights =
-            &mut data.clients.iter_mut().find(|client| client.kind == ASSISTANT_CLIENT).expect("the assistant").rights;
-        rights.tools = Selection::Only(vec!["web".into()]);
-        assert!(assistant_may_use(&data, ToolId::Web), "reading is enough for web");
-        assert!(!assistant_may_use(&data, ToolId::Pdf), "PDF needs writing and its own tick");
-    }
-
-    /// The assistant may use a tool with write access to `tools` and the tool chosen; reading or a
-    /// selection without it is not enough, and an assistant that is off may use nothing.
-    #[test]
-    fn whether_the_assistant_may_use_it_follows_its_rights() {
-        let mut data = data();
-        assert!(assistant_may_use(&data, ToolId::Pdf), "the demo's assistant may make PDFs");
-        fn rights(data: &mut Data) -> &mut torro_ipc::api::Rights {
-            &mut data.clients.iter_mut().find(|client| client.kind == ASSISTANT_CLIENT).expect("the assistant").rights
-        }
-        rights(&mut data).tools = Selection::Only(Vec::new());
-        assert!(!assistant_may_use(&data, ToolId::Pdf), "not in the selection");
-        rights(&mut data).tools = Selection::All;
-        rights(&mut data).set_level(Area::Tools, Level::Read, Vec::new);
-        assert!(!assistant_may_use(&data, ToolId::Pdf), "reading only");
-        rights(&mut data).set_level(Area::Tools, Level::Write, || vec!["pdf".into()]);
-        assert!(assistant_may_use(&data, ToolId::Pdf));
-        data.clients.retain(|client| client.kind != ASSISTANT_CLIENT);
-        assert!(!assistant_may_use(&data, ToolId::Pdf), "the assistant is off");
     }
 
     /// A server's status in words, with the dot's colour as the second sign: what a person must do

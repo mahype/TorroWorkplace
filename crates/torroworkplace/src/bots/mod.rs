@@ -6,9 +6,11 @@
 //!   [`torro_ipc::bots::MAX_BOTS`]. Read from disk on every use: there are few, and a person may
 //!   edit the text files by hand.
 //! - **A client of its own** ([`torro_ipc::api::BOT_CLIENT`]): the first `bots.save_bot` makes it
-//!   with [`torro_ipc::api::Rights::none`]; only a person grants it more (`clients.update_client`,
-//!   app key only). A rename of the bot renames its client, so approvals name it as the person
-//!   knows it; a client the person removed is made anew, again without rights, on the next save.
+//!   without any area; saved by the person it is opened like the assistant (every built-in tool and
+//!   MCP server, issue #666), saved by a client closed to them too (review of #663: no client gets
+//!   servers through a bot it made). Only a person grants it more (`clients.update_client`, app key
+//!   only). A rename of the bot renames its client, so approvals name it as the person knows it; a
+//!   client the person removed is made anew on the next save, the same way.
 //!   `bots.delete_bot` removes the client first (its key stops at once), then the folder.
 //! - **Chats** are the assistant's (`crate::assistant`): a conversation started with a bot keeps
 //!   its id, runs with the bot's client, its prompt and its engine; `bots.ask_bot` and
@@ -206,11 +208,12 @@ impl Bots {
         }
     }
 
-    /// `bots.save_bot` once its limits were checked: a new bot with a client of its own without
-    /// rights, or the bot `draft.id` replaced whole (its client kept, renamed with it, or made anew
-    /// without rights when the person removed it). Answers with the bot as stored. A client made
+    /// `bots.save_bot` once its limits were checked: a new bot with a client of its own without any
+    /// area (opened to tools and servers only when `by_person`, [`new_client`]), or the bot `draft.id`
+    /// replaced whole (its client kept, renamed with it, or made anew the same way when the person
+    /// removed it). Answers with the bot as stored. A client made
     /// here is taken back when the bot cannot be stored.
-    pub async fn save(&self, clients: &Clients, draft: Draft) -> Response {
+    pub async fn save(&self, clients: &Clients, draft: Draft, by_person: bool) -> Response {
         let Some(dir) = self.dir.clone() else { return failure(NO_PLACE) };
         let _changing = self.changing.lock().await;
         let mut made = None;
@@ -227,8 +230,8 @@ impl Bots {
                         eprintln!("torroworkplace: cannot rename the client of the bot {}: {err}", bot.id);
                     }
                 } else {
-                    // The person removed its client: a new one, again without any rights.
-                    match new_client(clients, &bot.name).await {
+                    // The person removed its client: a new one, again without any area.
+                    match new_client(clients, &bot.name, by_person).await {
                         Ok(client) => bot.client = client.clone(),
                         Err(refused) => return refused,
                     }
@@ -246,7 +249,7 @@ impl Bots {
                     Err(err) => return failure(&err),
                 };
                 let name = clean_line(&draft.name, MAX_NAME_CHARS);
-                let client = match new_client(clients, &name).await {
+                let client = match new_client(clients, &name, by_person).await {
                     Ok(client) => client,
                     Err(refused) => return refused,
                 };
@@ -299,10 +302,11 @@ impl Bots {
 }
 
 /// Answers `bots.list_bots`, `bots.get_bot`, `bots.save_bot` and `bots.delete_bot`, for the app key
-/// and for a client the core admitted (`crate::core::Core::handle_from`). `bots.ask_bot` is the
-/// assistant's (`crate::assistant::answer`). What would be refused anyway comes first
-/// ([`Bots::refusal`]); the handlers check again under their lock.
-pub async fn answer(assistant: &Assistant, clients: &Clients, request: Request) -> Response {
+/// and for a client the core admitted (`crate::core::Core::handle_from`); `by_person` for the app key
+/// (a bot it makes starts opened, [`Bots::save`]). `bots.ask_bot` is the assistant's
+/// (`crate::assistant::answer`). What would be refused anyway comes first ([`Bots::refusal`]); the
+/// handlers check again under their lock.
+pub async fn answer(assistant: &Assistant, clients: &Clients, request: Request, by_person: bool) -> Response {
     let bots = assistant.bots();
     if let Some(refused) = bots.refusal(&request).await {
         return refused;
@@ -314,7 +318,7 @@ pub async fn answer(assistant: &Assistant, clients: &Clients, request: Request) 
             None => no_bot(&id),
         },
         request @ Request::SaveBot { .. } => match Draft::of(request) {
-            Some(draft) => bots.save(clients, draft).await,
+            Some(draft) => bots.save(clients, draft, by_person).await,
             None => failure("no bot to save"),
         },
         Request::DeleteBot { id } => match bots.delete(clients, &id).await {
@@ -329,11 +333,22 @@ pub async fn answer(assistant: &Assistant, clients: &Clients, request: Request) 
     }
 }
 
-/// Makes the client of a bot named `name`: kind [`BOT_CLIENT`], no rights. Its key is made and
-/// kept in the keychain as for every client, but nobody is given it: the core runs the bot as its
-/// client, and engine B lends a key of its own for each run.
-async fn new_client(clients: &Clients, name: &str) -> Result<String, Response> {
-    match clients.add_client(name, BOT_CLIENT, None, Rights::none()).await {
+/// Makes the client of a bot named `name`: kind [`BOT_CLIENT`] without any area. Made by the person
+/// (`opened`) it is opened like the assistant (every built-in tool and MCP server, issue #666); made
+/// by a client it is closed to them too (`close_extensions`, so the core never opens it), so no client
+/// reaches through a bot what it was not given (review of #663). Its key is made and kept in the
+/// keychain as for every client, but nobody is given it: the core runs the bot as its client, and
+/// engine B lends a key of its own for each run.
+async fn new_client(clients: &Clients, name: &str, opened: bool) -> Result<String, Response> {
+    let rights = match opened {
+        true => Rights::none().opened(),
+        false => {
+            let mut closed = Rights::none();
+            closed.close_extensions();
+            closed
+        }
+    };
+    match clients.add_client(name, BOT_CLIENT, None, rights).await {
         Ok((info, _key)) => Ok(info.id),
         Err(err) => {
             eprintln!("torroworkplace: cannot make a client for the bot {name:?}: {err}");

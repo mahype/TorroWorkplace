@@ -1179,7 +1179,7 @@ impl Host {
                     // message, so no other section's answer settles it.
                     Action::Send(requests) => {
                         self.notice = None;
-                        let send = outside::send(Arc::clone(&self.backend), requests, state.areas());
+                        let send = outside::send(Arc::clone(&self.backend), requests, state.app());
                         Outcome::Work(Task::perform(send, Message::OutsideDone))
                     }
                     other => self.act(other),
@@ -1190,7 +1190,7 @@ impl Host {
                 let next = match self.outside.as_mut() {
                     Some(state) => match outside::done::<A>(state, &result) {
                         Action::Send(requests) => {
-                            let send = outside::send(Arc::clone(&self.backend), requests, state.areas());
+                            let send = outside::send(Arc::clone(&self.backend), requests, state.app());
                             Some(Task::perform(send, Message::OutsideDone))
                         }
                         _ => None,
@@ -1414,6 +1414,12 @@ impl Host {
             let state = self.accounts.as_ref().filter(|_| self.on_accounts_page() && !on_list)?;
             let layer = accounts::overlay(state, &self.data)?;
             Some(layer.map(move |message| wrap(Message::Accounts(Box::new(message)))))
+        });
+        // The dropdown of API and MCP's "Used by the assistant" (issue #666).
+        let overlay = overlay.or_else(|| {
+            let state = self.outside.as_ref().filter(|_| self.on_outside_page() && !on_list)?;
+            let layer = outside::overlay(state, &self.data)?;
+            Some(layer.map(move |message| wrap(Message::Outside(Box::new(message)))))
         });
         Frame { header, body, overlay }
     }

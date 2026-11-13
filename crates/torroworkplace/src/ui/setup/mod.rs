@@ -180,14 +180,6 @@ pub struct State {
     sort_model: Option<(String, String)>,
     /// "Use the chat model" on the page Sorting: the chat model sorts, answering in a fixed form.
     sort_by_chat: bool,
-    /// The question before sorting turns on a model elsewhere (issue #424), while it is open: the model's
-    /// and the provider's names.
-    asking_cloud: Option<(String, String)>,
-    /// Account/model behind the question; nothing is selected until Use.
-    pending_sort: Option<(String, Option<String>, bool)>,
-    /// The question is about the chat model ("Use the chat model").
-    pending_by_chat: bool,
-    confirmed_sort: Option<(String, Option<String>)>,
     /// The dropdown that is open: the chat model or the decision model for mail (issue #554).
     menus: Dropdown<SetupMenu>,
 }
@@ -225,10 +217,6 @@ impl State {
             sort_mail: None,
             sort_model: None,
             sort_by_chat: false,
-            asking_cloud: None,
-            pending_sort: None,
-            pending_by_chat: false,
-            confirmed_sort: None,
             menus: Dropdown::default(),
         }
     }
@@ -383,10 +371,6 @@ pub enum Message {
     SortByChat,
     /// "Add key" of Jev on the page Sorting: the key form of the AI page.
     ConnectJev,
-    /// "Use" in the question before sorting turns on a model elsewhere (issue #424).
-    UseCloud,
-    /// "Cancel" in that question, a click next to it, or Escape: the choice stays as it was.
-    CancelCloud,
     /// Choose a decision model for mail from the connected AI accounts. Closes its dropdown.
     SortModel(String, String),
     /// The trigger or the menu of a dropdown of the setup (issue #554).
@@ -423,18 +407,15 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Outcome {
     }
 }
 
-/// A model is on its way after "Use suggestion": downloaded, turned on or put into its slot. A question
-/// about mail that waits is not work; it stays on the page AI.
+/// A model is on its way after "Use suggestion": downloaded, turned on or put into its slot.
 pub(super) fn ai_working(state: &State) -> bool {
-    ai_setup::preparing(&state.ai_setup) && !ai_setup::awaiting_consent(&state.ai_setup)
+    ai_setup::preparing(&state.ai_setup)
 }
 
 /// Whether Enter on the page Connect belongs to the shared AI page: its connection form is open or a
-/// connection runs. A question about mail or a model on its way does not take it.
+/// connection runs. A model on its way does not take it.
 fn ai_form_open(state: &State) -> bool {
-    ai_setup::primary(&state.ai_setup).is_some()
-        && !ai_setup::awaiting_consent(&state.ai_setup)
-        && !ai_setup::preparing(&state.ai_setup)
+    ai_setup::primary(&state.ai_setup).is_some() && !ai_setup::preparing(&state.ai_setup)
 }
 
 fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
@@ -446,15 +427,7 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
     // A finished sign-in is noticed before the message counts.
     observe(state, data);
     match message {
-        Message::AiSetup(message) => {
-            let confirm = message == ai_setup::Message::Confirm;
-            let action = act(ai_setup::update(&mut state.ai_setup, message, data));
-            // "Use" in the question after "Use suggestion": on to Appearance as without the question.
-            if confirm && state.step == Step::Ai && state.ai_page == AiPage::Connect && ai_working(state) {
-                state.forward();
-            }
-            stay(action)
-        }
+        Message::AiSetup(message) => stay(act(ai_setup::update(&mut state.ai_setup, message, data))),
         // While a request of the mail path or a Nextcloud sign-in waits, the point stays: answers do not say
         // which request they are for, so only the one that waits may send.
         Message::Go(_) if state.waiting() => stay(Action::None),
@@ -577,31 +550,15 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
             true => stay(Action::Focus(DROPDOWN_SEARCH.into())),
             false => stay(Action::None),
         },
-        // Turning on what sorted last in the cloud asks first, as the mail settings do (issue #424).
-        Message::SortMail(true) if !mail_sorting_on(state, data) && cloud_to_turn_on(state, data).is_some() => {
-            state.asking_cloud = cloud_to_turn_on(state, data);
-            let held = mail_sorting_in_effect(data);
-            state.pending_sort = held.engine.map(|engine| (engine, held.model, true));
-            state.pending_by_chat = false;
-            stay(Action::None)
-        }
         Message::SortMail(on) => {
-            state.asking_cloud = None;
-            state.pending_sort = None;
             if !on {
-                state.confirmed_sort = None;
                 state.sort_by_chat = false;
             }
             state.sort_mail = Some(on);
             stay(Action::None)
         }
         Message::SortByChat => {
-            let Some((engine, model)) = chat_choice(state, data) else { return stay(Action::None) };
-            state.asking_cloud = None;
-            state.pending_sort = None;
-            if needs_sort_consent(state, data, &engine, Some(&model)) {
-                ask_sort_consent(state, data, engine, Some(model), true);
-                state.pending_by_chat = true;
+            if chat_choice(state, data).is_none() {
                 return stay(Action::None);
             }
             state.sort_by_chat = true;
@@ -611,38 +568,8 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
         Message::ConnectJev => {
             stay(act(ai_setup::update(&mut state.ai_setup, ai_setup::Message::Online(AiProvider::Jev), data)))
         }
-        Message::UseCloud => {
-            if state.asking_cloud.take().is_some()
-                && let Some((engine, model, enabled)) = state.pending_sort.take()
-            {
-                match std::mem::take(&mut state.pending_by_chat) {
-                    true => state.sort_by_chat = true,
-                    false => {
-                        state.sort_by_chat = false;
-                        state.sort_model = model.clone().map(|model| (engine.clone(), model));
-                    }
-                }
-                state.confirmed_sort = Some((engine, model));
-                state.sort_mail = Some(enabled);
-            }
-            stay(Action::None)
-        }
-        Message::CancelCloud => {
-            state.asking_cloud = None;
-            state.pending_sort = None;
-            state.pending_by_chat = false;
-            stay(Action::None)
-        }
         Message::SortModel(engine, model) => {
             state.menus.close();
-            state.asking_cloud = None;
-            state.pending_sort = None;
-            state.pending_by_chat = false;
-            state.confirmed_sort = None;
-            if needs_sort_consent(state, data, &engine, Some(&model)) {
-                ask_sort_consent(state, data, engine, Some(model), true);
-                return stay(Action::None);
-            }
             state.sort_by_chat = false;
             state.sort_model = Some((engine, model));
             state.sort_mail = Some(true);
@@ -682,7 +609,6 @@ fn next(state: &mut State, data: &Data) -> Outcome {
             stay(act(ai_setup::update(&mut state.ai_setup, ai_setup::Message::Submit, data)))
         }
         Step::Ai => match state.ai_page {
-            AiPage::Connect if ai_setup::awaiting_consent(&state.ai_setup) => stay(Action::None),
             // A slot chosen ("Keep") or a model already on its way: on without changing anything.
             AiPage::Connect if keeps(data) || ai_working(state) => {
                 state.forward();
@@ -727,29 +653,17 @@ fn use_suggestion(state: &mut State, data: &Data, replace: bool) -> Outcome {
         return Outcome::Stay(Action::None);
     }
     let action = act(ai_setup::use_suggestion(&mut state.ai_setup, data, replace, None));
-    if !ai_setup::awaiting_consent(&state.ai_setup) {
-        state.forward();
-    }
+    state.forward();
     Outcome::Stay(action)
 }
 
-/// "Continue" on the page Sorting: what it chose for sorting mail ([`mail_sorting_request`]), after the
-/// question where a model elsewhere would read the mail; then on to Appearance.
+/// "Continue" on the page Sorting: what it chose for sorting mail ([`mail_sorting_request`]), also a
+/// model elsewhere without a question (issue #664); then on to Appearance.
 fn sort_and_go_on(state: &mut State, data: &Data) -> Outcome {
-    if state.asking_cloud.is_some() || ai_models_wait(data) {
+    if ai_models_wait(data) {
         return Outcome::Stay(Action::None);
     }
     let assignment = mail_sorting_request(state, data);
-    if let Some(request) = &assignment
-        && let Some((engine, model)) = sorting_target(request, data)
-        && needs_sort_consent(state, data, engine, model)
-    {
-        let enabled = !matches!(request, Request::SetAiAssignment { enabled: false, .. });
-        let by_chat = state.sort_by_chat;
-        ask_sort_consent(state, data, engine.to_string(), model.map(str::to_string), enabled);
-        state.pending_by_chat = by_chat;
-        return Outcome::Stay(Action::None);
-    }
     state.forward();
     Outcome::Stay(assignment.map_or(Action::None, Action::Send))
 }
@@ -913,8 +827,7 @@ fn sort_choice(state: &State, data: &Data) -> Option<(String, String)> {
     selected_mail_decider(state, data).map(|(account, model)| (account.clone(), model.id.clone()))
 }
 
-/// Every enabled decision model the menu offers, including those that need consent. Defaults
-/// are restricted separately in [`selected_mail_decider`], never by hiding a remote option.
+/// Every enabled decision model the menu offers, here and elsewhere (issue #664).
 fn mail_deciders(data: &Data) -> Vec<(&String, &AiModel)> {
     data.ai_models
         .iter()
@@ -976,57 +889,23 @@ fn selected_mail_decider<'a>(state: &State, data: &'a Data) -> Option<(&'a Strin
             })
             .map(|(account, model)| (account, model));
     }
-    let candidates: Vec<_> = mail_deciders(data)
-        .into_iter()
-        .filter(|(account, model)| {
-            data.settings.mail_to_cloud_in(AiSlot::Decide)
-                || sorting_place(data, account, Some(&model.id)) == crate::assistant::Place::Local
-        })
-        .collect();
+    let candidates = mail_deciders(data);
     let held = mail_sorting_in_effect(data);
     if let Some(engine) = &held.engine {
         return candidates.into_iter().find(|(account, candidate)| {
             *account == engine && held.model.as_ref().is_none_or(|model| candidate.id == *model)
         });
     }
-    candidates.into_iter().next()
-}
-
-/// What the switch "on" would turn on in the cloud without the person's consent (issue #424): the
-/// exception switched off that "on" switches on again when the step offers no model of its own, while
-/// Sorting's permission is off – if it computes elsewhere, as the data rule weighs it (`place_of`): a
-/// listed model by where it runs, one the list lacks in doubt elsewhere, naming none ("Automatic") by
-/// the account's seat. Its model's and provider's names for the question; `None` when nothing needs
-/// asking, as for a model here the step does not offer (a chat model, one turned off).
-fn cloud_to_turn_on(state: &State, data: &Data) -> Option<(String, String)> {
-    if data.settings.mail_to_cloud_in(AiSlot::Decide) || sort_choice(state, data).is_some() {
-        return None;
-    }
-    let held = stored_mail_exception(data).filter(|held| !held.enabled)?;
-    let engine = held.engine.clone()?;
-    let listed = held
-        .model
-        .as_deref()
-        .and_then(|id| data.ai_models.iter().find(|(account, model)| *account == engine && model.id == id));
-    let elsewhere = sorting_place(data, &engine, held.model.as_deref()) != crate::assistant::Place::Local;
-    if !elsewhere {
-        return None;
-    }
-    let account = data
-        .accounts
+    // A model elsewhere is offered (issue #664), but a model here is recommended first.
+    let here = candidates
         .iter()
-        .find(|account| account.id == engine)
-        .map_or_else(|| engine.clone(), |account| account.label.clone());
-    let model = match (listed, &held.model) {
-        (Some((_, model)), _) => model.name.clone(),
-        (None, Some(id)) => id.clone(),
-        (None, None) => account.clone(),
-    };
-    Some((model, account))
+        .find(|(account, model)| sorting_place(data, account, Some(&model.id)) == torro_core::ai::Place::Local);
+    here.or(candidates.first()).copied()
 }
 
-/// Resolve the same account address and model evidence as the daemon, never the provider's seat.
-fn sorting_place(data: &Data, engine: &str, model: Option<&str>) -> crate::assistant::Place {
+/// Where a model of `engine` computes, from the same account address and model evidence as the core,
+/// never the provider's seat: naming none ("Automatic"), by the account's seat.
+fn sorting_place(data: &Data, engine: &str, model: Option<&str>) -> torro_core::ai::Place {
     use torro_core::ai::{Place, automatic_place_of, place_of};
     let provider = torro_settings_ui::accounts::ai_provider(engine);
     let server = data.accounts.iter().find(|account| account.id == engine).map_or("", |account| match &account.state {
@@ -1044,49 +923,6 @@ fn sorting_place(data: &Data, engine: &str, model: Option<&str>) -> crate::assis
             place_of(provider, server, listed.map_or(&unknown, |(_, model)| model))
         }
     }
-}
-
-fn sorting_target<'a>(request: &'a Request, data: &Data) -> Option<(&'a str, Option<&'a str>)> {
-    if let Request::SetAiAssignment { engine, model, enabled: false, .. } = request {
-        let held = mail_sorting_in_effect(data);
-        // Switching off the current target is not a new remote selection. Preparing a different
-        // disabled target is: it could be switched on later with a saved permission.
-        if engine == &held.engine && model == &held.model {
-            return None;
-        }
-    }
-    match request {
-        Request::SetAiSlot { engine: Some(engine), model, .. }
-        | Request::SetAiAssignment { engine: Some(engine), model, .. } => Some((engine, model.as_deref())),
-        _ => None,
-    }
-}
-
-fn needs_sort_consent(state: &State, data: &Data, engine: &str, model: Option<&str>) -> bool {
-    if sorting_place(data, engine, model) == crate::assistant::Place::Local {
-        return false;
-    }
-    let matches = |choice: &(String, Option<String>)| choice.0 == engine && choice.1.as_deref() == model;
-    if state.confirmed_sort.as_ref().is_some_and(matches) {
-        return false;
-    }
-    let held = mail_sorting_in_effect(data);
-    !(data.settings.mail_to_cloud_in(AiSlot::Decide)
-        && held.engine.as_deref() == Some(engine)
-        && held.model.as_deref() == model)
-}
-
-fn ask_sort_consent(state: &mut State, data: &Data, engine: String, model: Option<String>, enabled: bool) {
-    let account = data.accounts.iter().find(|account| account.id == engine);
-    let name = model
-        .as_deref()
-        .and_then(|id| data.ai_models.iter().find(|(account, model)| *account == engine && model.id == id))
-        .map(|(_, model)| model.name.clone())
-        .or_else(|| model.clone())
-        .unwrap_or_else(|| tr("Automatic").to_string());
-    let provider = account.map_or_else(|| engine.clone(), |account| account.label.clone());
-    state.asking_cloud = Some((name, provider));
-    state.pending_sort = Some((engine, model, enabled));
 }
 
 /// What "Continue" on the page Sorting sends for sorting mail, as main's mail settings weigh it (issue
@@ -1121,11 +957,7 @@ fn mail_sorting_request(state: &State, data: &Data) -> Option<Request> {
         let engine = held.engine.clone().filter(|_| !held.enabled && stored_mail_exception(data).is_some())?;
         return Some(exception(engine, held.model.clone(), true));
     };
-    if held.enabled
-        && held.engine.as_deref() == Some(engine.as_str())
-        && held.model.as_deref() == Some(model.as_str())
-        && (data.settings.mail_to_cloud_in(AiSlot::Decide)
-            || sorting_place(data, &engine, Some(&model)) == crate::assistant::Place::Local)
+    if held.enabled && held.engine.as_deref() == Some(engine.as_str()) && held.model.as_deref() == Some(model.as_str())
     {
         return None;
     }
@@ -1146,9 +978,6 @@ pub fn escape(state: &State) -> Option<Message> {
     }
     if let Some(dialog) = &state.dialog {
         return Some(Message::Dialog(wizard::escape(dialog).unwrap_or(wizard::Message::Close)));
-    }
-    if state.asking_cloud.is_some() {
-        return Some(Message::CancelCloud);
     }
     if state.step == Step::Ai
         && let Some(close) = ai_setup::escape(&state.ai_setup)
@@ -1276,9 +1105,6 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data, looks: &'a suite::State) ->
             None => layer,
         });
     }
-    if let Some((model, provider)) = &state.asking_cloud {
-        return Some(torro_settings_ui::parts::cloud_consent(model, provider, Message::UseCloud, Message::CancelCloud));
-    }
     if let Some(menu) = pages::menu(state, data) {
         return Some(menu);
     }
@@ -1309,11 +1135,6 @@ pub fn body<'a>(state: &'a State, data: &'a Data, looks: &'a suite::State, class
 /// second way where the step has one, and the primary button. Narrow they stand one under the other, the
 /// primary button first.
 fn footer<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
-    if state.step == Step::Ai && ai_setup::awaiting_consent(&state.ai_setup) {
-        return container(typo::text(typo::meta(), tr("Mail needs your explicit permission.")).style(theme::text_2))
-            .padding(layout::row_padding())
-            .into();
-    }
     let status: Option<Element<'a, Message>> = match (&state.error, state.missing) {
         (Some(error), _) => Some(problem(error.clone())),
         (None, Some(missing)) => Some(problem(missing.to_string())),
@@ -1586,9 +1407,7 @@ mod tests {
         let mut setup = sort_state();
         update(&mut setup, Message::ChatModel(engine.clone(), "llama3.1:8b".into()), &data);
         update(&mut setup, Message::SortByChat, &data);
-        // The demo's Ollama is not among its accounts, so it counts as elsewhere: the question first.
-        assert!(setup.asking_cloud.is_some() && !setup.sort_by_chat);
-        update(&mut setup, Message::UseCloud, &data);
+        // Issue #664: the demo's Ollama counts as elsewhere, and it is taken without a question.
         assert!(setup.sort_by_chat);
         let sent = requests(update(&mut setup, Message::Next, &data));
         assert!(
@@ -1693,9 +1512,6 @@ mod tests {
         assert_eq!(pages::primary(&setup, &data), (tr("Preparing model…"), false, true));
         assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::None)));
         assert!(matches!(update(&mut setup, Message::Later, &data), Outcome::Stay(Action::None)));
-        let mut asking = state(Step::Ai);
-        ai_setup::demo(&mut asking.ai_setup, "cloud-consent", &data);
-        assert!(!ai_working(&asking), "a question is no work");
     }
 
     /// The primary button says what is missing when pressed too early, and the note goes with the next step
@@ -1774,9 +1590,6 @@ mod tests {
         assert_eq!(pages::primary(&setup, &data), (tr("Connecting…"), false, true));
         assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::None)));
         assert_eq!(setup.step, Step::Ai);
-        ai_setup::demo(&mut setup.ai_setup, "cloud-consent", &data);
-        assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::None)));
-        assert_eq!(setup.step, Step::Ai);
     }
 
     #[test]
@@ -1786,21 +1599,11 @@ mod tests {
         data.settings.ai_slots.decide = None;
         data.settings.ai_assignments.remove(&AiFunction::InboxCategorize);
         let mut setup = sort_state();
-        ai_setup::demo(&mut setup.ai_setup, "consent", &data);
-        update(&mut setup, Message::AiSetup(ai_setup::Message::Cancel), &data);
+        ai_setup::demo(&mut setup.ai_setup, "ready", &data);
         update(&mut setup, Message::SortMail(false), &data);
         assert!(!mail_sorting_on(&setup, &data));
-        assert!(matches!(
-            update(&mut setup, Message::AiSetup(ai_setup::Message::Use), &data),
-            Outcome::Stay(Action::None)
-        ));
-        assert!(
-            matches!(
-                update(&mut setup, Message::AiSetup(ai_setup::Message::Confirm), &data),
-                Outcome::Stay(Action::None)
-            ),
-            "sorting stays opted out, even if a stale confirmation message arrives"
-        );
+        let _ = update(&mut setup, Message::AiSetup(ai_setup::Message::Use), &data);
+        assert!(!mail_sorting_on(&setup, &data), "sorting stays opted out");
     }
 
     /// The AI step recommends a local model for sorting mail and stores it as main's mail settings
@@ -1821,7 +1624,6 @@ mod tests {
         let mut data = data();
         data.settings.ai_slots.decide = None;
         data.settings.ai_assignments.remove(&AiFunction::InboxCategorize);
-        data.settings.decide_mail_to_cloud = Some(false);
         let mut local_account =
             data.accounts.iter().find(|account| account.kind == "ai").expect("demo AI account").clone();
         local_account.id = local.clone();
@@ -1921,48 +1723,26 @@ mod tests {
                 enabled: false,
             },
         );
-        // Issue #424: without Sorting's permission it asks first; "Cancel" leaves it off.
+        // Issue #664: on again without a question, also for a model elsewhere.
         let mut on = sort_state();
         update(&mut on, Message::SortMail(true), &cloud_off);
-        assert!(
-            overlay(&on, &cloud_off, &suite::State::default()).is_some()
-                && matches!(escape(&on), Some(Message::CancelCloud))
-        );
-        update(&mut on, Message::CancelCloud, &cloud_off);
-        assert!(!mail_sorting_on(&on, &cloud_off) && overlay(&on, &cloud_off, &suite::State::default()).is_none());
-        update(&mut on, Message::SortMail(true), &cloud_off);
-        update(&mut on, Message::UseCloud, &cloud_off);
+        assert!(overlay(&on, &cloud_off, &suite::State::default()).is_none() && mail_sorting_on(&on, &cloud_off));
         let sent = requests(update(&mut on, Message::Next, &cloud_off));
         assert!(
             matches!(&sent[..], [Request::SetAiAssignment { engine: Some(engine), enabled: true, .. }] if *engine == cloud),
             "{sent:?}"
         );
-        // A model here the step does not offer (turned off) asks nothing: no mail leaves.
-        let mut here_off = cloud_off.clone();
-        if let Some(held) = here_off.settings.ai_assignments.get_mut(&AiFunction::InboxCategorize) {
-            held.engine = Some(local.clone());
-            held.model = Some("off".into());
-        }
-        let mut on = sort_state();
-        update(&mut on, Message::SortMail(true), &here_off);
-        assert!(on.asking_cloud.is_none() && mail_sorting_on(&on, &here_off));
-        // With the permission on, it was said yes to already: on without a question.
-        let mut allowed = cloud_off.clone();
-        allowed.settings.decide_mail_to_cloud = Some(true);
-        let mut on = sort_state();
-        update(&mut on, Message::SortMail(true), &allowed);
-        assert!(on.asking_cloud.is_none() && mail_sorting_on(&on, &allowed));
 
-        data.settings.decide_mail_to_cloud = Some(true);
-        assert_eq!(mail_deciders(&data).len(), 3, "the cloud model needs Sorting's mail permission");
         data.ai_models.clear();
         let mut empty = sort_state();
         assert!(matches!(update(&mut empty, Message::Next, &data), Outcome::Stay(Action::None)));
         assert_eq!(empty.step, Step::Appearance, "no model is not silently assigned");
     }
 
+    /// Issue #664: a model on another computer of the network is chosen and continued like one here;
+    /// an exception switched off there is switched on again with the model recommended, as here.
     #[test]
-    fn network_sorting_selection_waits_for_bound_consent_and_next_cannot_bypass_it() {
+    fn network_sorting_is_chosen_without_a_question() {
         for provider in AiProvider::LOCAL.into_iter().chain([AiProvider::OllamaCloud]) {
             let mut data = data();
             let mut account = data.accounts.iter().find(|account| account.kind == "ai").expect("AI").clone();
@@ -1990,56 +1770,18 @@ mod tests {
             data.settings.ai_assignments.clear();
             data.settings.ai_slots.decide =
                 Some(torro_core::ai::SlotModel { engine: engine.clone(), model: Some("first".into()), effort: None });
-            for permission in [false, true] {
-                data.settings.decide_mail_to_cloud = Some(permission);
-                assert_eq!(mail_deciders(&data).len(), 2, "the actual menu offers LAN models before consent too");
-                if !permission {
-                    assert!(
-                        selected_mail_decider(&sort_state(), &data).is_none(),
-                        "remote is never a new default without permission"
-                    );
-                }
-                if !permission {
-                    let mut waiting = sort_state();
-                    torro_settings_ui::accounts::ai_setup::demo(&mut waiting.ai_setup, "medium", &data);
-                    update(&mut waiting, Message::SortModel(engine.clone(), "first".into()), &data);
-                    assert!(waiting.asking_cloud.is_some());
-                    update(&mut waiting, Message::UseCloud, &data);
-                    let sent = requests(update(&mut waiting, Message::Next, &data));
-                    assert!(
-                        matches!(&sent[..], [Request::SetAiSlot { model: Some(model), .. }] if model == "first"),
-                        "Use must also grant the missing permission for the unchanged model"
-                    );
-                }
-                let mut setup = sort_state();
-                torro_settings_ui::accounts::ai_setup::demo(&mut setup.ai_setup, "medium", &data);
-                assert!(matches!(
-                    update(&mut setup, Message::SortModel(engine.clone(), "second".into()), &data),
-                    Outcome::Stay(Action::None)
-                ));
-                assert!(setup.sort_model.is_none() && setup.asking_cloud.is_some());
-                assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::None)));
-                assert_eq!(setup.step, Step::Ai);
-                update(&mut setup, Message::CancelCloud, &data);
-                assert!(setup.sort_model.is_none() && setup.confirmed_sort.is_none());
-                update(&mut setup, Message::SortModel(engine.clone(), "second".into()), &data);
-                update(&mut setup, Message::UseCloud, &data);
-                assert_eq!(setup.sort_model, Some((engine.clone(), "second".into())));
-                // Changing even to another model at the same account invalidates this consent.
-                update(&mut setup, Message::SortModel(engine.clone(), "unlisted".into()), &data);
-                assert!(setup.asking_cloud.is_some() && setup.confirmed_sort.is_none());
-                update(&mut setup, Message::CancelCloud, &data);
-                // The old selection is retained, but needs a fresh confirmation at Continue.
-                assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::None)));
-                assert_eq!(setup.step, Step::Ai);
-                update(&mut setup, Message::UseCloud, &data);
-                let sent = requests(update(&mut setup, Message::Next, &data));
-                assert!(
-                    matches!(&sent[..], [Request::SetAiSlot { engine: Some(sent_engine), model: Some(model), .. }] if sent_engine == &engine && model == "second")
-                );
-            }
-            assert_eq!(sorting_place(&data, &engine, None), crate::assistant::Place::Remote);
-            data.settings.decide_mail_to_cloud = Some(false);
+            assert_eq!(mail_deciders(&data).len(), 2);
+            assert_eq!(sorting_place(&data, &engine, None), torro_core::ai::Place::Remote);
+            let mut setup = sort_state();
+            torro_settings_ui::accounts::ai_setup::demo(&mut setup.ai_setup, "medium", &data);
+            update(&mut setup, Message::SortModel(engine.clone(), "second".into()), &data);
+            assert_eq!(setup.sort_model, Some((engine.clone(), "second".into())));
+            let sent = requests(update(&mut setup, Message::Next, &data));
+            assert!(
+                matches!(&sent[..], [Request::SetAiSlot { engine: Some(sent_engine), model: Some(model), .. }] if sent_engine == &engine && model == "second"),
+                "{sent:?}"
+            );
+
             data.settings.ai_slots.decide = None;
             data.settings.ai_assignments.insert(
                 AiFunction::InboxCategorize,
@@ -2054,21 +1796,21 @@ mod tests {
             let mut setup = sort_state();
             torro_settings_ui::accounts::ai_setup::demo(&mut setup.ai_setup, "medium", &data);
             update(&mut setup, Message::SortMail(true), &data);
-            assert!(setup.asking_cloud.is_some(), "LAN Automatic asks too");
-            assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::None)));
-            update(&mut setup, Message::UseCloud, &data);
             let sent = requests(update(&mut setup, Message::Next, &data));
-            assert!(matches!(&sent[..], [Request::SetAiAssignment { model: None, enabled: true, .. }]));
+            assert!(
+                matches!(&sent[..], [Request::SetAiAssignment { model: Some(model), enabled: true, .. }] if model == "first"),
+                "{sent:?}"
+            );
         }
     }
 
+    /// Issue #664: "off" stores the target it names as it is, and turning the current one off too.
     #[test]
-    fn preparing_a_disabled_network_target_requires_consent_but_switching_off_does_not() {
+    fn switching_a_network_target_off_is_stored_as_it_is() {
         let mut data = data();
         let engine = torro_settings_ui::accounts::demo::DEMO_NETWORK.to_string();
         data.settings.ai_slots.decide = None;
         data.settings.ai_assignments.clear();
-        data.settings.decide_mail_to_cloud = Some(true);
         data.ai_models = vec![(
             engine.clone(),
             AiModel { decision: Some(true), remote: Some(false), enabled: true, ..AiModel::named("nimble") },
@@ -2076,27 +1818,18 @@ mod tests {
         let mut setup = sort_state();
         torro_settings_ui::accounts::ai_setup::demo(&mut setup.ai_setup, "medium", &data);
         update(&mut setup, Message::SortMail(false), &data);
-        assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::None)));
-        assert_eq!(setup.step, Step::Ai);
-        assert!(setup.asking_cloud.is_some(), "a disabled target can send mail after a later re-enable");
-        update(&mut setup, Message::CancelCloud, &data);
-        assert!(setup.sort_model.is_none());
-        update(&mut setup, Message::Next, &data);
-        update(&mut setup, Message::UseCloud, &data);
-        assert_eq!(setup.sort_mail, Some(false), "confirming the destination does not enable sorting");
         let sent = requests(update(&mut setup, Message::Next, &data));
         assert!(
-            matches!(&sent[..], [Request::SetAiAssignment { engine: Some(sent), model: Some(model), enabled: false, .. }] if sent == &engine && model == "nimble")
+            matches!(&sent[..], [Request::SetAiAssignment { engine: Some(sent), model: Some(model), enabled: false, .. }] if sent == &engine && model == "nimble"),
+            "{sent:?}"
         );
 
         data.settings.ai_slots.decide =
             Some(torro_core::ai::SlotModel { engine, model: Some("nimble".into()), effort: None });
-        data.settings.decide_mail_to_cloud = Some(false);
         let mut setup = sort_state();
         torro_settings_ui::accounts::ai_setup::demo(&mut setup.ai_setup, "medium", &data);
         update(&mut setup, Message::SortMail(false), &data);
         let sent = requests(update(&mut setup, Message::Next, &data));
         assert!(matches!(&sent[..], [Request::SetAiAssignment { enabled: false, .. }]));
-        assert!(setup.asking_cloud.is_none(), "turning the current target off is always safe");
     }
 }
