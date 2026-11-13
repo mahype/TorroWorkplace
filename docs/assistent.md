@@ -405,8 +405,8 @@ Werkzeuge**: Fähigkeiten, die nur dem Assistenten (und den Bots) gehören, je e
 - **Rechte:** Bereich `tools` mit Stufe und einer **Auswahl der Werkzeuge** (`Rights::tools`, wie Mail-Konten und
   Quellen des Eingangs). Für Assistent und Bots im Assistent-Fenster unter „API and MCP“ › **„Used by the
   assistant“** (#666): ein Auswahlfeld (Assistant, je Bot), je Werkzeug ein Schalter (Ausschalten macht aus „alle“
-  die Liste ohne dieses Werkzeug) und „Show commands“; der Hinweis sagt „New tools and servers are allowed until you
-  switch them off here.“. Für Schlüssel und MCP-Clients unter Steuerzentrale › API clients bzw. MCP clients.
+  die Liste ohne dieses Werkzeug) und „Show commands“; der Hinweis sagt „New servers are allowed until you switch
+  them off here, new tools as long as every tool is on.“. Für Schlüssel und MCP-Clients unter Steuerzentrale › API clients bzw. MCP clients.
 - **Standard:** Assistent und Bots, die der Mensch anlegt, starten mit allen Werkzeugen, `web` eingeschlossen (`Rights::opened`), und
   Rechte ohne Grundstufe öffnet der Kern einmal so (beim Laden, Anlegen und Ändern); abschalten tut der Mensch. Schlüssel von API- und MCP-Clients
   starten geschlossen; in den Vorlagen *Read only* (nur auflisten), *Read and write* und *Full access* ist der

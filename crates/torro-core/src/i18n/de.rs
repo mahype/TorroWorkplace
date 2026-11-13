@@ -4682,11 +4682,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Sending mail is switched off", "Mail senden ist ausgeschaltet"),
     ("Only you can do this", "Das kannst nur du"),
     ("{area} is off in this conversation", "{area} ist in dieser Unterhaltung aus"),
-    // Task C.17: the data rule for mail under Mail of the assistant and its bots.
-    (
-        "Off: the chat reads mail only with AI on your own computers",
-        "Aus: Der Chat liest Mail nur mit KI auf deinen eigenen Rechnern",
-    ),
     ("The assistant needs full access to {area} for this.", "Der Assistent braucht dafür vollen Zugriff auf {area}."),
     ("The assistant needs write access to {area} for this.", "Der Assistent braucht dafür Schreibzugriff auf {area}."),
     ("The assistant needs admin rights for {area}.", "Der Assistent braucht Admin-Rechte für {area}."),
