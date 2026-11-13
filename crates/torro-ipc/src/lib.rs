@@ -1965,7 +1965,7 @@ pub enum Request {
         /// The picture of the message's link card instead of a file.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         card: bool,
-        /// `small` (256 pixels, when left out) or `large` (1600).
+        /// `small` (256 pixels, when left out), `medium` (1024) or `large` (1600).
         #[serde(default)]
         size: chat::PreviewSize,
     },
