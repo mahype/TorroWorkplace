@@ -248,7 +248,8 @@ impl App {
                 trailing.push(widgets::anchored(&anchors.group_by, button));
             }
         }
-        let new = self.new_book().map(|_| Message::NewContact(None, None));
+        // Off while a contact is edited: its input is never dropped for a new one.
+        let new = self.new_book().filter(|_| !self.editing()).map(|_| Message::NewContact(None, None));
         trailing.push(if narrow {
             widgets::compact_button(Icon::Plus, tr("New contact"), style::button::primary, new)
         } else {
@@ -299,8 +300,15 @@ impl App {
 
     fn list_view<'a>(&'a self, anchors: &Anchors) -> Element<'a, Message> {
         let body: Element<'a, Message> = if self.contacts.is_empty() {
-            // "New contact" stands in the header already.
-            calm(Some(Icon::Users), tr("No contacts yet."), tr("Contacts of your address books show up here."), None)
+            let new = self.new_book().map(|_| {
+                widgets::text_button(
+                    Some(Icon::Plus),
+                    tr("New contact"),
+                    style::button::secondary,
+                    (!self.editing()).then_some(Message::NewContact(None, None)),
+                )
+            });
+            calm(Some(Icon::Users), tr("No contacts yet."), tr("Contacts of your address books show up here."), new)
         } else {
             let rows = self.rows_view(anchors);
             if rows.is_empty() {
@@ -400,8 +408,13 @@ impl App {
     /// The "+" of a head: a new contact in that group or book; none by town, and none where no book may
     /// be written.
     fn add_here(&self, key: &Key) -> Option<Message> {
+        if self.editing() {
+            return None;
+        }
         match key {
-            Key::Group(name) => self.new_book().map(|_| Message::NewContact(None, Some(name.clone()))),
+            Key::Group(name) => {
+                self.book_of_group(name).map(|book| Message::NewContact(Some(book), Some(name.clone())))
+            }
             Key::NoGroup => self.new_book().map(|_| Message::NewContact(None, None)),
             Key::Book(id) => {
                 self.book(id).filter(|b| b.writable).map(|b| Message::NewContact(Some(b.id.clone()), None))
@@ -492,8 +505,15 @@ impl App {
         picture: Option<&'a iced::widget::image::Handle>,
         colours: theme::Palette,
     ) -> contact::Look<'a> {
+        // The book's groups as `contacts.list_groups` names them, else those of the loaded contacts.
         let (known, on) = match &detail.contact {
-            Some(contact) => (self.groups_of(&contact.book), contact.groups.clone()),
+            Some(contact) => {
+                let known = match &detail.known {
+                    Some((book, names)) if *book == contact.book => names.clone(),
+                    _ => self.groups_of(&contact.book),
+                };
+                (known, contact.groups.clone())
+            }
             None => (Vec::new(), Vec::new()),
         };
         contact::Look {
@@ -535,13 +555,28 @@ impl App {
             }
             Menu::Nav => {
                 let mut views = vec![View::All, View::Favorites, View::Recent, View::Birthdays];
-                views.extend(self.books.iter().map(|b| View::Book(b.id.clone())));
+                // The books with their groups, as the sidebar has them.
+                let mut nested = vec![false; views.len()];
+                for book in &self.books {
+                    views.push(View::Book(book.id.clone()));
+                    nested.push(false);
+                    for name in self.groups_of(&book.id) {
+                        views.push(View::Group(book.id.clone(), name));
+                        nested.push(true);
+                    }
+                }
                 let items = views
                     .into_iter()
-                    .map(|view| {
+                    .zip(nested)
+                    .map(|(view, nested)| {
                         let current = self.view == view;
-                        MenuItem::new(Mark::Icon(self.view_icon(&view)), self.view_name(&view), Message::Show(view))
-                            .current(current)
+                        let item = MenuItem::new(
+                            Mark::Icon(self.view_icon(&view)),
+                            self.view_name(&view),
+                            Message::Show(view),
+                        )
+                        .current(current);
+                        if nested { item.nested() } else { item }
                     })
                     .collect();
                 let mut sections = vec![MenuSection::new(items)];

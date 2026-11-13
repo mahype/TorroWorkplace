@@ -14,7 +14,8 @@
 //! initials, given name quiet and family name strong, the star of a favourite, the lock of a read-only
 //! book and the marks of a change not yet on the server or in conflict; under the name position ·
 //! company. Mail over number to the right of it, the town at the end. Below 1100 the town goes, below
-//! 900 mail and number. Moving the pointer over a row shows Mail, Call and Copy – each only with a value.
+//! 900 the number (the mail address stays, on one line, so a medium window is not half empty), below 600
+//! the mail address too. Moving the pointer over a row shows Mail, Call and Copy – each only with a value.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 

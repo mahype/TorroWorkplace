@@ -96,11 +96,13 @@ pub fn mini(app: &App) -> Element<'_, Message> {
             ]
             .spacing(space::s())
             .align_y(Alignment::Center);
-            if let Some(link) = contact.email.as_deref().and_then(contact::mail_link) {
-                line = line.push(widgets::icon_button(Icon::Mail, tr("Mail"), Some(Message::OpenUri(link))));
+            if contact.email.as_deref().and_then(contact::mail_link).is_some() {
+                let mail = Message::QuickMail(contact.id.clone());
+                line = line.push(widgets::icon_button(Icon::Mail, tr("Mail"), Some(mail)));
             }
-            if let Some(link) = contact.phone.as_deref().and_then(contact::tel_link) {
-                line = line.push(widgets::icon_button(Icon::Phone, tr("Call"), Some(Message::OpenUri(link))));
+            if contact.phone.as_deref().and_then(contact::tel_link).is_some() {
+                let call = Message::QuickCall(contact.id.clone());
+                line = line.push(widgets::icon_button(Icon::Phone, tr("Call"), Some(call)));
             }
             container(line).center_y(size::row_sidebar()).into()
         });

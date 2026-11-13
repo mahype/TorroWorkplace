@@ -361,8 +361,7 @@ impl Draft {
 
     /// Whether the form holds nothing a new contact could be made of.
     pub fn is_blank(&self) -> bool {
-        let changes = self.changes();
-        changes.name.is_none() && changes.org.is_none() && changes.emails.is_none() && changes.phones.is_none()
+        self.changes().is_empty()
     }
 
     /// The quiet line under `field`, while its value looks wrong and the person left it or tried to

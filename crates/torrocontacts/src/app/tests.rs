@@ -139,7 +139,10 @@ async fn done_sends_only_what_changed_and_keeps_the_form_on_a_conflict() {
     assert!(draft.saving);
     assert_eq!(draft.changes().names(), ["org"]);
     // The server says the contact changed meanwhile: the form stays with the person's input.
-    let _ = app.update(Message::Saved(Err(torro_contacts::ContactsError::Conflict { server_vcard: None, etag: None })));
+    let _ = app.update(Message::Saved(
+        id.clone(),
+        Err(torro_contacts::ContactsError::Conflict { server_vcard: None, etag: None }),
+    ));
     let draft = app.detail.as_ref().and_then(|d| d.draft.clone()).expect("kept");
     assert!(!draft.saving);
     assert_eq!(draft.org, "Berg Consulting");
@@ -148,7 +151,7 @@ async fn done_sends_only_what_changed_and_keeps_the_form_on_a_conflict() {
     let _ = app.update(Message::Refetched(fresh));
     let saved = app.backend.update_contact(id.clone(), draft.etag.clone().unwrap_or_default(), draft.changes()).await;
     assert!(saved.is_ok(), "{saved:?}");
-    let _ = app.update(Message::Saved(saved));
+    let _ = app.update(Message::Saved(id.clone(), saved));
     assert!(!app.editing());
     assert_eq!(app.open_contact().and_then(|c| c.org.as_deref()), Some("Berg Consulting"));
 }
@@ -170,8 +173,8 @@ async fn a_conflict_is_resolved_with_the_choice() {
     assert_eq!(contact.state, torro_contacts::ContactState::Conflict);
     let _ = app.update(Message::Resolve(Keep::Theirs));
     assert!(app.detail.as_ref().is_some_and(|d| d.busy), "the buttons wait");
-    let kept = app.backend.resolve_conflict(id, Keep::Theirs, contact.etag.clone().unwrap_or_default()).await;
-    let _ = app.update(Message::Resolved(kept));
+    let kept = app.backend.resolve_conflict(id.clone(), Keep::Theirs, contact.etag.clone().unwrap_or_default()).await;
+    let _ = app.update(Message::Resolved(id, kept));
     let now = app.open_contact().expect("still open");
     assert_eq!(now.state, torro_contacts::ContactState::Synced);
     assert!(!app.detail.as_ref().is_some_and(|d| d.busy));
@@ -220,4 +223,103 @@ async fn open_states_apply_once_after_loading() {
     assert_eq!(app.view, View::Birthdays);
     let app = loaded(&["--demo", "--open", "by-city"]).await;
     assert_eq!(app.group_by, GroupBy::City);
+}
+
+/// A summary of the demo with other groups, for the cases the demo does not have.
+fn regroup(app: &mut App, uid: &str, groups: &[&str]) {
+    let contact = app.contacts.iter_mut().find(|c| c.id.ends_with(&format!("/{uid}"))).expect("in the demo");
+    contact.groups = groups.iter().map(|g| (*g).to_owned()).collect();
+}
+
+#[tokio::test]
+async fn the_cursor_reaches_every_contact_when_one_stands_under_two_groups() {
+    let mut app = loaded(&["--demo"]).await;
+    regroup(&mut app, "demo-01", &["Family", "Work"]);
+    let rows = app.rows();
+    let unique: HashSet<&String> = rows.iter().collect();
+    assert_eq!(rows.len(), unique.len(), "each contact once");
+    assert_eq!(rows.len(), 40);
+    for _ in 0..rows.len() {
+        let _ = app.update(Message::Key(Press::Down));
+    }
+    assert_eq!(app.cursor.as_ref(), rows.last(), "↓ walks to the end");
+}
+
+#[tokio::test]
+async fn an_answer_about_another_contact_leaves_the_panel_alone() {
+    let mut app = loaded(&["--demo"]).await;
+    let anna = opened(&mut app, "demo-01").await;
+    let _ = app.update(Message::AddGroup("Work".into()));
+    let changed = app
+        .backend
+        .add_to_group(anna.clone(), app.open_contact().and_then(|c| c.etag.clone()).unwrap_or_default(), "Work".into())
+        .await;
+    let max = opened(&mut app, "demo-06").await;
+    let _ = app.update(Message::Changed(anna, changed));
+    assert_eq!(app.open_contact().map(|c| c.id.clone()), Some(max), "Max stays open, not Anna");
+}
+
+#[tokio::test]
+async fn nothing_kept_after_a_conflict_closes_the_panel() {
+    let mut app = loaded(&["--demo"]).await;
+    let id = opened(&mut app, "demo-04").await;
+    let _ = app.update(Message::Resolved(id, Ok(Vec::new())));
+    assert!(app.detail.is_none());
+}
+
+#[tokio::test]
+async fn a_contact_in_conflict_is_not_edited_by_key() {
+    let mut app = loaded(&["--demo"]).await;
+    let _ = opened(&mut app, "demo-04").await;
+    let _ = app.update(Message::Key(Press::Edit));
+    assert!(!app.editing());
+}
+
+#[tokio::test]
+async fn a_new_contact_with_only_an_address_is_created() {
+    let mut app = loaded(&["--demo"]).await;
+    let _ = app.update(Message::NewContact(None, None));
+    let _ = app.update(Message::Draft(edit::Msg::Add(List::Address)));
+    let _ = app.update(Message::Draft(edit::Msg::Text(edit::Field::Town(0), "Kiel".into())));
+    let _ = app.update(Message::Done);
+    assert!(app.detail.as_ref().and_then(|d| d.draft.as_ref()).is_some_and(|d| d.saving), "sent, not dropped");
+}
+
+#[tokio::test]
+async fn new_contact_waits_while_another_is_edited() {
+    let mut app = loaded(&["--demo"]).await;
+    let id = opened(&mut app, "demo-01").await;
+    let _ = app.update(Message::Edit);
+    let _ = app.update(Message::NewContact(None, None));
+    assert!(app.is_open(&id) && app.editing(), "the form with its input stays");
+}
+
+#[tokio::test]
+async fn folded_months_stay_apart_from_the_groups() {
+    let mut app = loaded(&["--demo"]).await;
+    let _ = app.update(Message::Fold(Key::Month(2026, 11)));
+    assert!(app.folded(&Key::Month(2026, 11)));
+    assert!(app.collapsed.get(&GroupBy::Group).is_none_or(|words| words.is_empty()));
+}
+
+#[tokio::test]
+async fn an_older_search_answer_does_not_filter_a_new_text() {
+    let mut app = loaded(&["--demo"]).await;
+    let _ = app.update(Message::Search("an".into()));
+    let ids = backend::search(app.backend.clone(), "an".into()).await;
+    let _ = app.update(Message::Found("an".into(), ids));
+    let narrowed = app.shown().len();
+    let _ = app.update(Message::Search("a".into()));
+    assert!(app.shown().len() >= narrowed, "the names holding \"a\" until its answer comes");
+    let _ = app.update(Message::Found("a".into(), Err(torro_contacts::ContactsError::Offline)));
+    assert!(app.found.is_none());
+}
+
+#[tokio::test]
+async fn groups_are_one_without_case_and_new_contacts_go_where_the_group_is() {
+    let mut app = loaded(&["--demo"]).await;
+    regroup(&mut app, "demo-01", &["work"]);
+    let groups = app.groups_of(torro_contacts::demo::CONTACTS);
+    assert_eq!(groups.iter().filter(|g| g.eq_ignore_ascii_case("work")).count(), 1, "{groups:?}");
+    assert_eq!(app.book_of_group("Work").as_deref(), Some(torro_contacts::demo::CONTACTS));
 }

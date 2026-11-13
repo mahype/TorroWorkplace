@@ -124,6 +124,8 @@ pub struct Detail {
     pub new_in: Option<(String, Option<String>)>,
     /// What the group input holds.
     pub group_text: String,
+    /// The groups of the contact's book as `contacts.list_groups` names them (book id, names).
+    pub known: Option<(String, Vec<String>)>,
     /// A change is out: buttons that change the contact wait.
     pub busy: bool,
     /// Why the last change failed.
@@ -138,6 +140,7 @@ impl Detail {
             draft: None,
             new_in: None,
             group_text: String::new(),
+            known: None,
             busy: false,
             error: None,
         }
@@ -219,6 +222,8 @@ pub enum Message {
 
     // -- The contact
     Fetched(String, Result<Contact, ContactsError>),
+    /// The groups of a book, for the suggestions of the open contact (`contacts.list_groups`).
+    Groups(String, Vec<String>),
     /// "Retry" after the open contact could not be fetched.
     Refetch,
     Close,
@@ -227,17 +232,18 @@ pub enum Message {
     ToggleFavorite,
     Favorited(String, bool, Result<(), ContactsError>),
     MoveTo(String),
-    Moved(Result<Moved, ContactsError>),
+    Moved(String, Result<Moved, ContactsError>),
     AskDelete,
     Delete,
-    Deleted(Result<(), ContactsError>),
+    Deleted(String, Result<(), ContactsError>),
     CloseDialog,
     GroupText(String),
     AddGroup(String),
     RemoveGroup(String),
-    Changed(Result<Contact, ContactsError>),
+    /// The answer to a change of the contact with this id (group, picture).
+    Changed(String, Result<Contact, ContactsError>),
     Resolve(Keep),
-    Resolved(Result<Vec<Contact>, ContactsError>),
+    Resolved(String, Result<Vec<Contact>, ContactsError>),
     /// `contacts.mark_used` answered; nothing to show either way.
     Used,
 
@@ -251,7 +257,7 @@ pub enum Message {
     ToggleAddField,
     Cancel,
     Done,
-    Saved(Result<Contact, ContactsError>),
+    Saved(String, Result<Contact, ContactsError>),
     Refetched(Result<Contact, ContactsError>),
     Created(Option<String>, Result<Contact, ContactsError>),
     ChoosePhoto,
@@ -295,6 +301,8 @@ pub struct App {
     pub(crate) view: View,
     pub(crate) group_by: GroupBy,
     pub(crate) collapsed: HashMap<GroupBy, BTreeSet<String>>,
+    /// The months folded in "Birthdays"; not kept between starts.
+    pub(crate) collapsed_months: BTreeSet<String>,
     pub(crate) search: String,
     search_asked: u64,
     /// The ids the core found for `search` (the text they belong to); `None` while it asks or nothing
@@ -370,6 +378,7 @@ impl App {
                 _ => GroupBy::Group,
             },
             collapsed: HashMap::new(),
+            collapsed_months: BTreeSet::new(),
             search: String::new(),
             search_asked: 0,
             found: None,
@@ -520,16 +529,40 @@ impl App {
 
     /// The groups of the book `id`, by name.
     pub fn groups_of(&self, id: &str) -> Vec<String> {
-        let mut names: BTreeSet<String> = BTreeSet::new();
+        // One name per group without case ("Work" and "work" are one), the first spelling met.
+        let mut names: Vec<String> = Vec::new();
         for contact in self.contacts.iter().filter(|c| c.book == id) {
-            names.extend(contact.groups.iter().map(|g| g.trim().to_owned()).filter(|g| !g.is_empty()));
+            for group in contact.groups.iter().map(|g| g.trim()).filter(|g| !g.is_empty()) {
+                if !names.iter().any(|known| known.eq_ignore_ascii_case(group)) {
+                    names.push(group.to_owned());
+                }
+            }
         }
-        names.into_iter().collect()
+        names.sort_by_key(|n| n.to_lowercase());
+        names
+    }
+
+    /// The book a new contact of the group `name` goes into: the one shown when it holds the group, else
+    /// the first writable book that does, else [`App::new_book`].
+    pub fn book_of_group(&self, name: &str) -> Option<String> {
+        let holds = |book: &AddressBook| {
+            book.writable
+                && self
+                    .contacts
+                    .iter()
+                    .any(|c| c.book == book.id && c.groups.iter().any(|g| g.trim().eq_ignore_ascii_case(name)))
+        };
+        let shown = match &self.view {
+            View::Book(id) | View::Group(id, _) => self.book(id).filter(|b| holds(b)),
+            _ => None,
+        };
+        shown.or_else(|| self.books.iter().find(|b| holds(b))).map(|b| b.id.clone()).or_else(|| self.new_book())
     }
 
     /// The contacts of the view, as far as the search lets them through, in no particular order.
     pub fn shown(&self) -> Vec<&ContactSummary> {
-        let found = self.found.as_ref().filter(|(text, _)| !text.is_empty()).map(|(_, ids)| ids);
+        // Only the answer to what the field holds now; until it comes, the names that hold the text.
+        let found = self.found.as_ref().filter(|(text, _)| text.as_str() == self.search.trim()).map(|(_, ids)| ids);
         let searching = !self.search.trim().is_empty();
         let passes = |contact: &&ContactSummary| match (searching, found) {
             (false, _) => true,
@@ -567,7 +600,7 @@ impl App {
 
     /// The ids of the rows in the order the list shows them, folded heads left out: what ↑ and ↓ walk.
     pub fn rows(&self) -> Vec<String> {
-        match &self.view {
+        let rows: Vec<String> = match &self.view {
             View::Recent => self.shown().into_iter().map(|c| c.id.clone()).collect(),
             View::Birthdays => {
                 let birthdays = self.shown_birthdays();
@@ -585,13 +618,19 @@ impl App {
                     .flat_map(|head| head.members.into_iter().map(|c| c.id.clone()))
                     .collect()
             }
-        }
+        };
+        // A contact under two groups stands in the list twice; the cursor walks it once, so ↑ and ↓
+        // reach every contact.
+        let mut seen = HashSet::new();
+        rows.into_iter().filter(|id| seen.insert(id.clone())).collect()
     }
 
     /// Whether the head `key` is folded in the present grouping.
     pub fn folded(&self, key: &Key) -> bool {
-        let by = if matches!(key, Key::Month(..)) { GroupBy::Group } else { self.group_by };
-        self.collapsed.get(&by).is_some_and(|words| words.contains(&key.word()))
+        if matches!(key, Key::Month(..)) {
+            return self.collapsed_months.contains(&key.word());
+        }
+        self.collapsed.get(&self.group_by).is_some_and(|words| words.contains(&key.word()))
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -719,13 +758,19 @@ impl App {
                 }
             }
             Message::Fold(key) => {
-                let by = if matches!(key, Key::Month(..)) { GroupBy::Group } else { self.group_by };
-                let words = self.collapsed.entry(by).or_default();
                 let word = key.word();
+                if matches!(key, Key::Month(..)) {
+                    if !self.collapsed_months.remove(&word) {
+                        self.collapsed_months.insert(word);
+                    }
+                    return Task::none();
+                }
+                let by = self.group_by;
+                let words = self.collapsed.entry(by).or_default();
                 if !words.remove(&word) {
                     words.insert(word);
                 }
-                if !self.backend.is_demo() && !matches!(key, Key::Month(..)) {
+                if !self.backend.is_demo() {
                     let names: Vec<String> = words.iter().cloned().collect();
                     return ui_state::save_names_task(APP, by.collapsed_key(), names);
                 }
@@ -763,7 +808,11 @@ impl App {
                 }
                 match result {
                     Ok(ids) => self.found = Some((text, ids.into_iter().collect())),
-                    Err(err) => self.notify(failed(&err)),
+                    // The names that hold the text stand in for the core's answer.
+                    Err(err) => {
+                        self.found = None;
+                        self.notify(failed(&err));
+                    }
                 }
                 self.cursor = self.rows().first().cloned();
             }
@@ -789,10 +838,17 @@ impl App {
             Message::QuickCopy(id) => {
                 self.menu = None;
                 let text = self.summary(&id).map(copy_text).unwrap_or_default();
-                return self.update(Message::CopyText(text));
+                return Task::batch([self.update(Message::CopyText(text)), self.mark_used(id)]);
             }
 
             Message::Fetched(id, result) => return self.fetched(id, result),
+            Message::Groups(book, names) => {
+                if let Some(detail) = &mut self.detail
+                    && detail.contact.as_ref().is_some_and(|c| c.book == book)
+                {
+                    detail.known = Some((book, names));
+                }
+            }
             Message::Refetch => {
                 if let Some(detail) = &mut self.detail {
                     detail.error = None;
@@ -857,9 +913,18 @@ impl App {
                 };
                 self.set_busy(true);
                 let backend = self.backend.clone();
-                return Task::perform(async move { backend.move_contact(id, etag, book).await }, Message::Moved);
+                let asked = id.clone();
+                return Task::perform(async move { backend.move_contact(asked, etag, book).await }, move |result| {
+                    Message::Moved(id.clone(), result)
+                });
             }
-            Message::Moved(result) => {
+            // An answer about a contact no longer open only brings the list up to date.
+            Message::Moved(id, _) | Message::Deleted(id, _) | Message::Changed(id, _) | Message::Resolved(id, _)
+                if !self.is_open(&id) =>
+            {
+                return self.load();
+            }
+            Message::Moved(_, result) => {
                 self.set_busy(false);
                 match result {
                     Ok(moved) => {
@@ -891,9 +956,12 @@ impl App {
                 };
                 self.set_busy(true);
                 let backend = self.backend.clone();
-                return Task::perform(async move { backend.delete_contact(id, etag).await }, Message::Deleted);
+                let asked = id.clone();
+                return Task::perform(async move { backend.delete_contact(asked, etag).await }, move |result| {
+                    Message::Deleted(id.clone(), result)
+                });
             }
-            Message::Deleted(result) => {
+            Message::Deleted(_, result) => {
                 self.set_busy(false);
                 match result {
                     Ok(()) => {
@@ -924,7 +992,10 @@ impl App {
                 }
                 self.set_busy(true);
                 let backend = self.backend.clone();
-                return Task::perform(async move { backend.add_to_group(id, etag, name).await }, Message::Changed);
+                let asked = id.clone();
+                return Task::perform(async move { backend.add_to_group(asked, etag, name).await }, move |result| {
+                    Message::Changed(id.clone(), result)
+                });
             }
             Message::RemoveGroup(name) => {
                 let Some((id, etag)) = self.open_contact().map(|c| (c.id.clone(), c.etag.clone().unwrap_or_default()))
@@ -933,9 +1004,13 @@ impl App {
                 };
                 self.set_busy(true);
                 let backend = self.backend.clone();
-                return Task::perform(async move { backend.remove_from_group(id, etag, name).await }, Message::Changed);
+                let asked = id.clone();
+                return Task::perform(
+                    async move { backend.remove_from_group(asked, etag, name).await },
+                    move |result| Message::Changed(id.clone(), result),
+                );
             }
-            Message::Changed(result) => {
+            Message::Changed(_, result) => {
                 self.set_busy(false);
                 match result {
                     Ok(contact) => {
@@ -960,16 +1035,29 @@ impl App {
                 };
                 self.set_busy(true);
                 let backend = self.backend.clone();
-                return Task::perform(async move { backend.resolve_conflict(id, keep, etag).await }, Message::Resolved);
+                let asked = id.clone();
+                return Task::perform(
+                    async move { backend.resolve_conflict(asked, keep, etag).await },
+                    move |result| Message::Resolved(id.clone(), result),
+                );
             }
-            Message::Resolved(result) => {
+            Message::Resolved(_, result) => {
                 self.set_busy(false);
                 match result {
                     Ok(kept) => {
-                        if let (Some(detail), Some(first)) = (&mut self.detail, kept.into_iter().next()) {
-                            detail.id = Some(first.id.clone());
-                            detail.contact = Some(first);
-                            detail.error = None;
+                        match (&mut self.detail, kept.into_iter().next()) {
+                            (Some(detail), Some(first)) => {
+                                detail.id = Some(first.id.clone());
+                                detail.contact = Some(first);
+                                detail.error = None;
+                            }
+                            // Nothing stays (the server's version was a deletion): the panel closes.
+                            (_, None) => {
+                                self.detail = None;
+                                self.large = None;
+                                self.notify(tr("The contact is gone."));
+                            }
+                            (None, Some(_)) => {}
                         }
                         return self.load();
                     }
@@ -979,6 +1067,8 @@ impl App {
             Message::Used => {}
 
             Message::Edit => return self.edit(),
+            // Unsaved input is never dropped for a new contact: the form is closed first.
+            Message::NewContact(..) if self.editing() => {}
             Message::NewContact(book, group) => {
                 self.menu = None;
                 let Some(book) = book.filter(|b| self.book(b).is_some_and(|b| b.writable)).or_else(|| self.new_book())
@@ -996,6 +1086,7 @@ impl App {
                     }),
                     new_in: Some((book, group)),
                     group_text: String::new(),
+                    known: None,
                     busy: false,
                     error: None,
                 });
@@ -1024,7 +1115,8 @@ impl App {
                 }
             }
             Message::Done => return self.done(),
-            Message::Saved(result) => return self.saved(result),
+            Message::Saved(id, _) if !self.is_open(&id) => return self.load(),
+            Message::Saved(_, result) => return self.saved(result),
             Message::Refetched(result) => {
                 if let (Ok(contact), Some(detail)) = (result, &mut self.detail)
                     && detail.id.as_deref() == Some(contact.id.as_str())
@@ -1050,9 +1142,10 @@ impl App {
                         self.set_busy(true);
                         let backend = self.backend.clone();
                         let etag = created.etag.clone().unwrap_or_default();
+                        let asked = id.clone();
                         tasks.push(Task::perform(
-                            async move { backend.add_to_group(id, etag, group).await },
-                            Message::Changed,
+                            async move { backend.add_to_group(asked, etag, group).await },
+                            move |result| Message::Changed(id.clone(), result),
                         ));
                     }
                     return Task::batch(tasks);
@@ -1156,6 +1249,11 @@ impl App {
     }
 
     /// The contact open in the panel, once fetched.
+    /// Whether the contact `id` is the one open in the panel.
+    pub fn is_open(&self, id: &str) -> bool {
+        self.detail.as_ref().and_then(|d| d.id.as_deref()) == Some(id)
+    }
+
     pub fn open_contact(&self) -> Option<&Contact> {
         self.detail.as_ref()?.contact.as_ref()
     }
@@ -1226,6 +1324,8 @@ impl App {
         match result {
             Ok(contact) => {
                 let picture = self.large_photo(&contact);
+                let groups = self.list_groups(contact.book.clone());
+                let picture = Task::batch([picture, groups]);
                 if let Some(detail) = &mut self.detail {
                     detail.contact = Some(contact);
                 }
@@ -1242,6 +1342,19 @@ impl App {
                 Task::none()
             }
         }
+    }
+
+    /// Asks for the groups of `book` (`contacts.list_groups`), the suggestions of the group input; a
+    /// failure leaves the suggestions to the groups of the loaded contacts.
+    fn list_groups(&self, book: String) -> Task<Message> {
+        let backend = self.backend.clone();
+        let asked = book.clone();
+        Task::perform(async move { backend.list_groups(Some(asked)).await }, move |result| {
+            let mut names: Vec<String> = result.unwrap_or_default().into_iter().map(|g| g.name).collect();
+            names.sort_by_key(|n| n.to_lowercase());
+            names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+            Message::Groups(book.clone(), names)
+        })
     }
 
     /// Asks for the large picture of `contact`, when it has one and it is not here yet.
@@ -1263,7 +1376,8 @@ impl App {
     fn edit(&mut self) -> Task<Message> {
         let Some(detail) = &mut self.detail else { return Task::none() };
         let Some(contact) = &detail.contact else { return Task::none() };
-        if detail.draft.is_some() || contact.readonly {
+        // A contact in conflict is settled first (its buttons), never edited.
+        if detail.draft.is_some() || contact.readonly || contact.state == torro_contacts::ContactState::Conflict {
             return Task::none();
         }
         let draft = Draft::of(contact);
@@ -1303,7 +1417,10 @@ impl App {
         let etag = draft.etag.clone().unwrap_or_default();
         draft.saving = true;
         draft.error = None;
-        Task::perform(async move { backend.update_contact(id, etag, changes).await }, Message::Saved)
+        let asked = id.clone();
+        Task::perform(async move { backend.update_contact(asked, etag, changes).await }, move |result| {
+            Message::Saved(id.clone(), result)
+        })
     }
 
     fn saved(&mut self, result: Result<Contact, ContactsError>) -> Task<Message> {
@@ -1343,7 +1460,10 @@ impl App {
         self.set_busy(true);
         self.large = None;
         let backend = self.backend.clone();
-        Task::perform(async move { backend.set_photo(id, etag, bytes).await }, Message::Changed)
+        let asked = id.clone();
+        Task::perform(async move { backend.set_photo(asked, etag, bytes).await }, move |result| {
+            Message::Changed(id.clone(), result)
+        })
     }
 
     fn loaded(&mut self, result: Result<Loaded, ContactsError>) -> Task<Message> {
@@ -1372,8 +1492,26 @@ impl App {
         {
             self.view = View::All;
         }
+        // Pictures of contacts that have none any more, or another one, are dropped.
+        let pictures: HashMap<String, String> =
+            self.contacts.iter().filter_map(|c| c.photo.as_ref().map(|p| (c.id.clone(), p.version.clone()))).collect();
+        self.photos.retain(|id, (version, _)| pictures.get(id) == Some(version));
         let open = self.apply_open();
-        Task::batch([open, self.fetch_photos()])
+        // The open contact follows the load (a change synced, a conflict found), unless it is edited or
+        // a change of it is out.
+        let follow = match &self.detail {
+            Some(detail) if detail.draft.is_none() && !detail.busy && detail.contact.is_some() => self.refetch(),
+            _ => Task::none(),
+        };
+        // A running search asks again, so a contact new on the list is found too.
+        let search = if self.search.trim().is_empty() {
+            Task::none()
+        } else {
+            self.search_asked += 1;
+            let asked = self.search_asked;
+            self.update(Message::SearchDue(asked))
+        };
+        Task::batch([open, self.fetch_photos(), follow, search])
     }
 
     /// `--demo --open <state>`: what the state asks for, once, after the first load. The last three set
