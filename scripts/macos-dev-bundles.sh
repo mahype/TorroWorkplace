@@ -34,9 +34,8 @@ version="$(awk '/^\[workspace.package\]/ { inside = 1; next } /^\[/ { inside = 0
 [ -n "$version" ] || { echo "macos-dev-bundles.sh: no version in Cargo.toml" >&2; exit 1; }
 
 # One line per bundle: program file in the bundle | program in target/debug | bundle id suffix | title | agent app |
-# icon in packaging/macos/icons (empty: none yet, the chat has no PNG) | embeds the service. Program file, id suffix
-# (the window class) and title follow AppId::program_file, window_class and display_name in
-# crates/torro-core/src/app.rs; the reminder follows
+# icon in packaging/macos/icons | embeds the service. Program file, id suffix (the window class) and title follow
+# AppId::program_file, window_class and display_name in crates/torro-core/src/app.rs; the reminder follows
 # torrocalendar's reminder (task ER2.2), shows the calendar's icon and has no service (the calendar's bundle has it).
 apps='torroworkplace|torroworkplace|torro-workplace|Torro Workplace|0|torro-workplace|1
 torroinbox|torroinbox|torro-inbox|Torro Notification Hub|0|torro-inbox|1
@@ -45,7 +44,7 @@ torro-inbox-notifications|torro-inbox-notifications|torro-inbox-notifications|To
 torrocalendar|torrocalendar|torro-calendar|Torro Calendar|0|torro-calendar|1
 torrotasks|torrotasks|torro-tasks|Torro Tasks|0|torro-tasks|1
 torroassistant|torroassistant|torro-assistant|Torro Assistant|0|torro-assistant|1
-torrochat|torrochat|torro-chat|Torro Chat|0||1
+torrochat|torrochat|torro-chat|Torro Chat|0|torro-chat|1
 torro-reminder|torrocalendar|torro-reminder|Torro Reminder|1|torro-calendar|0'
 
 missing=""
@@ -84,7 +83,7 @@ while IFS='|' read -r file program appid title agent icon service; do
     embed=""
     [ "$service" = 1 ] && embed="$service_dir/Torro Workplace Service.app"
     AGENT_APP="$agent" EMBED_APP="$embed" "$make_app" "$file" "$appid" "$title" "$version" "$programs/$program" \
-        "$out" ${icon:+"$icons/$icon.png"} >/dev/null
+        "$out" "$icons/$icon.png" >/dev/null
     # Signing the program in a bundle signs the bundle; the embedded service is signed already.
     sign_bundle "$out/$title.app" "$out/$title.app/Contents/MacOS/$file"
     echo "$out/$title.app"
