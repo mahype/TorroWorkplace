@@ -521,6 +521,29 @@ pub async fn stored_appearance(source: &Source) -> Result<Appearance, String> {
     }
 }
 
+/// The desktop's light/dark preference as it changes: what every app feeds into its `system_mode`
+/// (`.map(Message::SystemMode)`), in place of `iced::system::theme_changes()` (issue #662).
+///
+/// On macOS Iced pins a window to the mode of its theme, and a pinned window is no longer told that
+/// the system changed; so the system's own setting is read every [`SYSTEM_MODE_POLL`] as well
+/// ([`torro_appkit::system_is_dark`]). Elsewhere it is Iced's notice alone.
+pub fn system_mode_changes() -> iced::Subscription<Mode> {
+    let notices = iced::system::theme_changes();
+    if torro_appkit::system_is_dark().is_none() {
+        return notices;
+    }
+    let polled = iced::time::every(SYSTEM_MODE_POLL).map(|_| system_mode().unwrap_or(Mode::None));
+    iced::Subscription::batch([notices, polled])
+}
+
+/// How often [`system_mode_changes`] reads the system's preference on macOS.
+pub const SYSTEM_MODE_POLL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The system's preference now, where it can be read without a window (macOS), else `None`.
+pub fn system_mode() -> Option<Mode> {
+    torro_appkit::system_is_dark().map(|dark| if dark { Mode::Dark } else { Mode::Light })
+}
+
 /// The Iced theme for `appearance`. `system` is the desktop's preference as Iced reports it
 /// (`iced::system::theme()` once at start, `iced::system::theme_changes()` afterwards); it only
 /// matters for [`Appearance::System`], and `Mode::None` counts as dark.
@@ -795,6 +818,14 @@ pub mod size {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #662: where the system's preference can be read, it is a light or dark mode, never "none".
+    #[test]
+    fn the_system_mode_is_light_or_dark_when_it_can_be_read() {
+        let mode = system_mode();
+        assert_eq!(mode.is_some(), cfg!(target_os = "macos"));
+        assert!(mode.is_none_or(|mode| matches!(mode, Mode::Light | Mode::Dark)));
+    }
 
     fn surfaces(p: &Palette) -> [(&'static str, Color); 6] {
         [

@@ -976,7 +976,7 @@ impl App {
         // Faster while waiting for a sign-in in the browser.
         let every = if self.connected() { Duration::from_secs(60) } else { Duration::from_secs(2) };
         let tick = iced::time::every(every).map(|_| Message::Tick);
-        let system = iced::system::theme_changes().map(Message::SystemMode);
+        let system = torro_gui::theme::system_mode_changes().map(Message::SystemMode);
         let resize = iced::window::resize_events().map(|(_, size)| Message::Resized(size));
         // Zoom keys work everywhere, glance views and open panels included.
         // The design pack polls the core every 2 s itself and wakes the window only for a change.

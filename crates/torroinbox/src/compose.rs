@@ -3546,7 +3546,7 @@ impl<S: ComposeSource + 'static> Window<S> {
 
     pub fn subscription(&self) -> Subscription<Message> {
         let mut all = vec![
-            iced::system::theme_changes().map(Message::SystemMode),
+            torro_gui::theme::system_mode_changes().map(Message::SystemMode),
             iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
             // The zoom keys work in every state, the glance included.
             self.zoom.subscription().map(Message::Zoom),
