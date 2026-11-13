@@ -8620,7 +8620,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Add one with New contact.", "Leg einen mit „Neuer Kontakt“ an."),
     ("Add to group", "Zu Gruppe hinzufügen"),
     ("Address book", "Adressbuch"),
-    ("Address books", "Adressbücher"),
     ("All contacts", "Alle Kontakte"),
     ("Anniversary", "Jahrestag"),
     ("Birthday", "Geburtstag"),
