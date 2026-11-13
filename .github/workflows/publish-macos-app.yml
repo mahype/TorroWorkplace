@@ -71,6 +71,8 @@ jobs:
           - { bin: torrocalendar, service: "1", appid: torro-calendar, title: Torro Calendar, arch: x86_64, runner: macos-15-intel }
           - { bin: torrotasks, service: "1", appid: torro-tasks, title: Torro Tasks, arch: aarch64, runner: macos-14 }
           - { bin: torrotasks, service: "1", appid: torro-tasks, title: Torro Tasks, arch: x86_64, runner: macos-15-intel }
+          - { bin: torrochat, service: "1", appid: torro-chat, title: Torro Chat, arch: aarch64, runner: macos-14 }
+          - { bin: torrochat, service: "1", appid: torro-chat, title: Torro Chat, arch: x86_64, runner: macos-15-intel }
           # The reminder over the whole screen (task ER2.2): the calendar's binary as an agent app, without the service
           # (the calendar's bundle carries it).
           # Its icon is the calendar's (packaging/macos/icons/, task AP.7); every other bundle has the icon of its appid.
@@ -259,7 +261,7 @@ jobs:
           identity="$(security find-identity -v -p codesigning "$keychain" | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
           test -n "$identity"
           echo "MACOS_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
-      - name: Build seven signed, notarised and stapled images
+      - name: Build eight signed, notarised and stapled images
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}

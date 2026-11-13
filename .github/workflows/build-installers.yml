@@ -29,7 +29,7 @@ jobs:
           echo "6d7f9a28b2f397934403950fcbba83f598b08d02edbe79a0815b3b4897341750  $RUNNER_TEMP/nfpm.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/nfpm.tar.gz" -C "$RUNNER_TEMP" nfpm
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-      - name: Build 48 native packages (eight per architecture and format)
+      - name: Build 54 native packages (nine per architecture and format)
         run: python3 packaging/installers.py build-linux --tag "$TAG" --input input --output out
       - name: Offline packaging tests
         run: python3 -m unittest discover -s packaging/tests
@@ -62,7 +62,7 @@ jobs:
           $process = Start-Process $installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$destination") -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw 'Inno Setup installation failed' }
           "ISCC=$destination\ISCC.exe" >> $env:GITHUB_ENV
-      - name: Build seven all-users setups
+      - name: Build eight all-users setups
         shell: pwsh
         run: |
           python packaging/installers.py build-windows --tag $env:TAG --input input --output out

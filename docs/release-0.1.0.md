@@ -1,6 +1,6 @@
 # Anleitung: Version 0.1.0 veröffentlichen
 
-Stand: 2026-11-08. **Nur für Maintainer. Kein veröffentlichter Release-Nachweis.** Agenten starten
+Stand: 2026-11-13. **Nur für Maintainer. Kein veröffentlichter Release-Nachweis.** Agenten starten
 keinen Release, setzen keine Tags und ändern keine Secrets. Details: [release.md](release.md).
 
 ## Vor dem Tag
@@ -26,11 +26,11 @@ Toolfehler oder fehlendem Installer gibt es keinen absichtlich unvollständigen 
 ## Downloads prüfen
 
 - [Release-Seite](https://github.com/mahype/TorroWorkplace/releases/tag/v0.1.0): `downloads.md` und
-  `installers-manifest.json`, 69 Installer und 69 zugehörige `.sha256` vorhanden und eindeutig zugeordnet.
-- Linux: je Architektur acht DEB, acht RPM, acht pacman-Pakete. Die Downloadtabelle verlinkt die
+  `installers-manifest.json`, 78 Installer und 78 zugehörige `.sha256` vorhanden und eindeutig zugeordnet.
+- Linux: je Architektur neun DEB, neun RPM, neun pacman-Pakete. Die Downloadtabelle verlinkt die
   notwendigen Begleitpakete desselben Formats und derselben Architektur.
-- Windows: sieben `<bin>-0.1.0-x86_64-pc-windows-msvc-setup.exe`, systemweit, unsigniert.
-- macOS: 14 `<bin>-0.1.0-<target>.dmg`, dazu weiterhin 16 `.app.zip` einschließlich Reminder.
+- Windows: acht `<bin>-0.1.0-x86_64-pc-windows-msvc-setup.exe`, systemweit, unsigniert.
+- macOS: 16 `<bin>-0.1.0-<target>.dmg`, dazu weiterhin 18 `.app.zip` einschließlich Reminder.
 - Bisherige Programmarchive, Skriptinstaller, Formeln, Lizenzen und Prüfsummen bleiben vorhanden.
 
 Je App/System/Architektur: Installieren, Start, Upgrade, Entfernen, erhaltene persönliche Daten und

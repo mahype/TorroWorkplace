@@ -39,6 +39,7 @@ The first maintainer release and platform verification are still pending.
 | `crates/torroinbox`, `crates/torro-inbox-*` | Inbox, mail and notification views |
 | `crates/torro-mail*` | Mail model, IMAP and backup components |
 | `crates/torroassistant` | AI assistant app |
+| `crates/torrochat` | Nextcloud Talk chat app |
 | `crates/torro-contacts` | Contacts support |
 | `crates/torrotasks` | Tasks app (`torrotasks`) |
 | `crates/torrocalendar` | Calendar app (`torrocalendar`) |

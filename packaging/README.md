@@ -10,7 +10,7 @@ here is a draft until the maintainer has created the repositories and secrets li
 | `aur/` | `PKGBUILD.core.in` (`torroworkplace-bin`: the service, program and systemd unit), `PKGBUILD.in` (a `-bin` package per app, each depending on `torroworkplace-bin`), `PKGBUILD.main.in` (`torro-workplace`: the main application's `.desktop` entry and icon), `PKGBUILD.suite.in` (`torro-suite` meta package for all of them) | `.github/workflows/publish-aur.yml` |
 | `macos/` | `make-app.sh`, `Info.plist.in`, `icons/` (1024 px PNG per app): wrap a GUI binary into a `.app`, optionally with an embedded bundle (the core's service) | `.github/workflows/publish-macos-app.yml`, `scripts/macos-dev-bundles.sh` |
 | `windows/` | `.ico` per program, embedded by each crate's `build.rs`; all-users Inno `setup.iss` | `cargo build`, `installers.py build-windows` |
-| `homebrew/` | meta formula `torro-suite.rb` and `Brewfile` for the tap (the formulae of the seven programs come from `dist`; each app's formula depends on `torroworkplace`) | copy into `mahype/homebrew-torro` once |
+| `homebrew/` | meta formula `torro-suite.rb` and `Brewfile` for the tap (per-program formulae come from `dist`; each app's formula depends on `torroworkplace`) | copy into `mahype/homebrew-torro` once |
 | `scoop/` | one Scoop manifest per app (its zip plus `torroworkplace`), `torroworkplace.json` for the main application, `torro-suite.json` for all (Windows, later) | copy into `mahype/scoop-torro` once |
 
 ## Install locally
@@ -41,6 +41,7 @@ The names come from `AppId` in `crates/torro-core/src/app.rs`; the suite finds t
 | Calendar | `torrocalendar` | `torro-calendar` | `Torro Calendar.app` |
 | Tasks | `torrotasks` | `torro-tasks` | `Torro Tasks.app` |
 | Assistant | `torroassistant` | `torro-assistant` | `Torro Assistant.app` |
+| Chat | `torrochat` | `torro-chat` | `Torro Chat.app` |
 | Reminder | `torrocalendar`, as `torro-reminder` | `torro-reminder` | `Torro Reminder.app` (agent) |
 
 The bundle id is `io.github.mahype.<window class>`, the service's `io.github.mahype.torro-workplace-service` in every
@@ -50,6 +51,8 @@ without a release, build the workspace and run `scripts/macos-dev-bundles.sh [fo
 `target/debug/bundles`); it makes the eight bundles, seven of them with the service inside, and signs them with the
 development identity when there is one (`scripts/macos-dev-cert.sh`), else ad hoc. What to check by hand with them:
 "Von Hand prüfen" in [docs/lebenszyklus.md](../docs/lebenszyklus.md).
+That development helper and the existing AUR/Homebrew/Scoop suite templates retain their previous
+scope; they are not the native eight-app release matrix or proof that Chat is included in each old helper.
 
 The per-app Homebrew formulae are not written by hand: `dist` generates them on every release
 (see `dist-workspace.toml`); their dependency on `torroworkplace` comes from `[package.metadata.dist.dependencies.homebrew]`
@@ -57,7 +60,7 @@ in each app crate's `Cargo.toml`.
 
 ## Native downloads (#589)
 
-`apps.json` is the seven-app installer matrix (stable identity, actual program, launch arguments and
+`apps.json` is the eight-app installer matrix (stable identity, actual program, launch arguments and
 companions). `installers.py` supports Python 3.10+ (including Ubuntu 22.04), uses only the standard
 library and never downloads or publishes:
 
@@ -69,12 +72,12 @@ python3 installers.py downloads --tag v0.1.0 --input ../target/installers --outp
 ```
 
 Run from this directory. Builders require dist archives, their `.sha256`, and `plan-dist-manifest.json`
-for exactly the requested tag and seven apps. Supply nFPM **2.48.0** (`NFPM`) or Inno Setup **7.1.1**
+for exactly the requested tag and eight apps. Supply nFPM **2.48.0** (`NFPM`) or Inno Setup **7.1.1**
 (`ISCC`) after checking the pinned hashes in `build-installers.yml`. `verify`/`downloads` need the
-merged Linux/Windows manifests, all native packages/Setups, and 14 signed/stapled DMGs with checksums.
+merged Linux/Windows manifests, all native packages/Setups, and 16 signed/stapled DMGs with checksums.
 Outputs are staged until the requested matrix succeeds; unsafe archive paths/links are rejected.
 
-Linux: eight packages per format and architecture, not eight copies of the service. Each program's
+Linux: nine packages per format and architecture, not eight copies of the service. Each program's
 adjacent `<program>.torro-package.json` declares schema 1, manager (`deb`, `rpm`, `pacman`), package and
 canonical `/usr/bin/<program>` path. The core owns its marker; the Workplace launcher-only package
 does not claim that file. Windows Setup owns the corresponding `.exe.torro-package.json` and SemVer

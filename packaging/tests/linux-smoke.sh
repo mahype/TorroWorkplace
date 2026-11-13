@@ -19,7 +19,7 @@ files() {
 }
 mapfile -t old_files < <(files "$older")
 mapfile -t new_files < <(files "$newer")
-[ "${#old_files[@]}" = 8 ] && [ "${#new_files[@]}" = 8 ]
+[ "${#old_files[@]}" = 9 ] && [ "${#new_files[@]}" = 9 ]
 case "$format" in
   deb)
     dpkg --compare-versions 0.1.0~rc.10-1 lt 0.1.0-1
@@ -52,7 +52,7 @@ mkdir -p /home/smoke/.local/share/torrotasks
 printf 'personal data\n' > /home/smoke/.local/share/torrotasks/preserve.txt
 test -f /usr/lib/systemd/user/torroworkplace.service
 test -f /usr/share/applications/torro-workplace.desktop
-for program in torroworkplace torroinbox torro-inbox-mail torro-inbox-notifications torrocalendar torrotasks torroassistant; do
+for program in torroworkplace torroinbox torro-inbox-mail torro-inbox-notifications torrocalendar torrotasks torroassistant torrochat; do
   test -x "/usr/bin/$program"
   test -f "/usr/bin/$program.torro-package.json"
   "/usr/bin/$program" --version
@@ -60,7 +60,7 @@ done
 remove_packages torro-inbox-mail-bin torro-inbox-notifications-bin
 test -x /usr/bin/torroinbox
 test -x /usr/bin/torrocalendar
-remove_packages torroinbox-bin torrocalendar-bin torrotasks-bin torroassistant-bin torro-workplace
+remove_packages torroinbox-bin torrocalendar-bin torrotasks-bin torroassistant-bin torrochat-bin torro-workplace
 test -x /usr/bin/torroworkplace
 test ! -e /usr/share/applications/torro-workplace.desktop
 remove_packages torroworkplace-bin

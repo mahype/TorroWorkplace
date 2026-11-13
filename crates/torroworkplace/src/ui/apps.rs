@@ -948,7 +948,7 @@ pub fn reveal(app: AppId, path: Option<&str>) -> Result<(), String> {
 }
 
 /// The demo's catalog (`--demo --section apps`): checked just now, Calendar and Mail with an update,
-/// Tasks and the App Feed up to date, the Notification Hub from a package manager, the Assistant
+/// Tasks and the App Feed up to date, the Notification Hub from a package manager, Assistant and Chat
 /// missing, and the main application up to date.
 pub fn demo_catalog(now: DateTime<Utc>) -> AppCatalog {
     let entry = |app: AppId, installed: Option<&str>, available: &str, state: CatalogState| CatalogApp {
@@ -993,6 +993,7 @@ pub fn demo_catalog(now: DateTime<Utc>) -> AppCatalog {
             hub,
             feed,
             entry(AppId::ASSISTANT, None, "0.2.0", CatalogState::Available),
+            entry(AppId::CHAT, None, "0.2.0", CatalogState::Available),
         ],
         job: None,
     }
@@ -1068,6 +1069,15 @@ mod tests {
         demo_catalog(Utc::now())
     }
 
+    #[test]
+    fn the_catalog_demo_covers_every_released_app() {
+        let catalog = catalog();
+        let shown: std::collections::BTreeSet<_> =
+            std::iter::once(&catalog.main).chain(&catalog.apps).map(|app| app.window_class.as_str()).collect();
+        let expected: std::collections::BTreeSet<_> = AppId::ALL.iter().map(|app| app.window_class).collect();
+        assert_eq!(shown, expected);
+    }
+
     /// Opening the section asks the core to check GitHub (decision 2); the footer says so until the
     /// answer came, which replaces the catalog.
     #[test]
@@ -1078,7 +1088,7 @@ mod tests {
         let mut loaded = Loaded::default();
         checked(&mut state, &mut loaded, &Ok(Response::AppCatalog { catalog: catalog() }));
         assert!(!state.checking);
-        assert_eq!(loaded.catalog.listed().map(|catalog| catalog.apps.len()), Some(6));
+        assert_eq!(loaded.catalog.listed().map(|catalog| catalog.apps.len()), Some(AppId::ALL.len() - 1));
         // A refusal keeps what was there.
         let mut state = State { checking: true, ..State::default() };
         checked(&mut state, &mut loaded, &Err("no answer".into()));
@@ -1168,7 +1178,7 @@ mod tests {
 
         let listed = data.app_catalog.catalog.listed().expect("listed");
         let found = |query: &str| listed.apps.iter().filter(|app| matches(app, query)).count();
-        assert_eq!(found(""), 6);
+        assert_eq!(found(""), listed.apps.len());
         assert_eq!(found("CALDAV"), 1, "without regard to case, in the sentence");
         assert_eq!(found(&tr("What do I need to do?").to_lowercase()), 1, "the question");
         assert_eq!(found("zzz"), 0);

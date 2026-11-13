@@ -3,7 +3,9 @@
 import io
 import json
 from pathlib import Path
+import re
 import stat
+import struct
 import subprocess
 import sys
 import tarfile
@@ -78,8 +80,9 @@ class Installers(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
 
-    def test_seven_identities_and_program_launch_arguments_match_rust_and_desktop(self):
-        self.assertEqual(len(pkg.apps()), 7)
+    def test_eight_identities_and_program_launch_arguments_match_rust_and_desktop(self):
+        self.assertEqual(len(pkg.apps()), 8)
+        self.assertIn("torrochat", {a["program"] for a in pkg.apps()})
         rust = (pkg.ROOT.parent / "crates/torro-core/src/app.rs").read_text()
         for app in pkg.apps():
             self.assertIn('"' + app["id"] + '"', rust)
@@ -96,6 +99,21 @@ class Installers(unittest.TestCase):
         expected = pkg.hashlib.sha256(path.read_bytes()).hexdigest()
         with patch.object(pkg.hashlib, "file_digest", None, create=True):
             self.assertEqual(pkg.digest(path), expected)
+
+    def test_native_icon_resources_cover_all_apps(self):
+        for app in pkg.apps():
+            with self.subTest(app=app["id"]):
+                png = (pkg.ROOT / "macos/icons" / (app["id"] + ".png")).read_bytes()
+                self.assertEqual(png[:8], b"\x89PNG\r\n\x1a\n")
+                self.assertEqual(struct.unpack(">II", png[16:24]), (1024, 1024))
+                ico = (pkg.ROOT / "windows" / (app["id"] + ".ico")).read_bytes()
+                self.assertEqual(struct.unpack("<HHH", ico[:6]), (0, 1, 7))
+                for index, size in enumerate((16, 24, 32, 48, 64, 128, 256)):
+                    width, height, _, _, _, _, length, offset = struct.unpack_from("<BBBBHHII", ico, 6 + index * 16)
+                    self.assertEqual((width or 256, height or 256), (size, size))
+                    frame = ico[offset:offset + length]
+                    self.assertEqual(frame[:8], b"\x89PNG\r\n\x1a\n")
+                    self.assertEqual(struct.unpack(">II", frame[16:24]), (size, size))
 
     def test_native_packages_have_unique_ownership_dependencies_and_markers(self):
         owners = set()
@@ -117,7 +135,7 @@ class Installers(unittest.TestCase):
                 self.assertIn("torroworkplace-bin (>= 0.1.0~rc.1-1)", config["depends"])
             if app and app["requires"]:
                 self.assertIn("torroinbox-bin", required)
-        self.assertEqual(len([p for p in owners if p.startswith("/usr/bin/") and not p.endswith(".json")]), 7)
+        self.assertEqual(len([p for p in owners if p.startswith("/usr/bin/") and not p.endswith(".json")]), 8)
 
     def test_stable_and_rc_native_versions(self):
         for fmt in pkg.FORMATS:
@@ -150,6 +168,14 @@ class Installers(unittest.TestCase):
         pkg.source_plan(self.root, "v0.1.0")
         with self.assertRaises(ValueError):
             pkg.source_plan(self.root, "v0.2.0")
+        plan_path = self.root / "plan-dist-manifest.json"
+        original = json.loads(plan_path.read_text())
+        for releases in [original["releases"][:-1], original["releases"] + [original["releases"][0]],
+                         original["releases"] + [{"app_name": "foreign", "app_version": "0.1.0"}]]:
+            plan_path.write_text(json.dumps({**original, "releases": releases}))
+            with self.assertRaises(ValueError):
+                pkg.source_plan(self.root, "v0.1.0")
+        plan_path.write_text(json.dumps(original))
         scratch = self.root / "scratch"
         scratch.mkdir()
         for target in [*pkg.LINUX, pkg.WINDOWS]:
@@ -179,7 +205,7 @@ class Installers(unittest.TestCase):
 
     def test_matrix_downloads_and_companions(self):
         complete(self.root)
-        self.assertEqual(len(pkg.verified_entries(self.root, "v0.1.0")), 69)
+        self.assertEqual(len(pkg.verified_entries(self.root, "v0.1.0")), 78)
         pkg.downloads(self.root, self.root, "v0.1.0")
         text = (self.root / "downloads.md").read_text()
         self.assertIn("torroinbox-bin", text)
@@ -187,6 +213,18 @@ class Installers(unittest.TestCase):
         self.assertIn(".dmg)", text)
         self.assertIn("-setup.exe)", text)
         self.assertIn(".pkg.tar.zst)", text)
+        self.assertIn("torrochat-bin", text)
+        self.assertIn("torrochat-0.1.0-x86_64-pc-windows-msvc-setup.exe", text)
+
+    def test_macos_bundle_jobs_cover_every_native_app_and_architecture(self):
+        workflow = (pkg.ROOT.parent / ".github/workflows/publish-macos-app.yml").read_text()
+        entries = re.findall(r"- \{ bin: ([^,]+), service: \"1\", appid: ([^,]+), title: ([^,]+), arch: ([^,]+),", workflow)
+        actual = {(program, appid, title, arch) for program, appid, title, arch in entries}
+        expected = {(a["program"], a["id"], a["title"], arch) for a in pkg.apps() for arch in ("aarch64", "x86_64")}
+        self.assertEqual(actual, expected)
+        self.assertEqual(len(entries), len(expected))
+        for app in pkg.apps():
+            self.assertTrue((pkg.ROOT / "macos/icons" / (app["id"] + ".png")).is_file(), app["id"])
 
     def test_incomplete_empty_corrupt_duplicate_or_wrong_tag_matrix_fails(self):
         complete(self.root)
@@ -271,8 +309,8 @@ class Installers(unittest.TestCase):
 
         with patch.object(pkg.subprocess, "run", side_effect=compiler_version), patch.object(pkg, "run", side_effect=compiler):
             pkg.build_windows(self.root, out, "v0.1.0")
-        self.assertEqual(len(set(compiled)), 7)
-        self.assertEqual(len(list(out.glob("*-setup.exe"))), 7)
+        self.assertEqual(len(set(compiled)), 8)
+        self.assertEqual(len(list(out.glob("*-setup.exe"))), 8)
 
     def test_windows_builder_rejects_wrong_or_failed_compiler_version(self):
         source_plan(self.root)

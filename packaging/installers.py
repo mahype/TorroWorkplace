@@ -30,8 +30,8 @@ FORMATS = ("deb", "rpm", "archlinux")
 def apps():
     value = json.loads((ROOT / "apps.json").read_text())
     result = value["apps"]
-    if value["schema"] != 1 or len(result) != 7 or len({a["program"] for a in result}) != 7:
-        raise ValueError("expected seven unique apps")
+    if value["schema"] != 1 or len(result) != 8 or len({a["program"] for a in result}) != 8 or len({a["id"] for a in result}) != 8:
+        raise ValueError("expected eight unique apps")
     return result
 
 
@@ -75,8 +75,8 @@ def checksum(path):
 def source_plan(folder, tag):
     plan = json.loads(regular(folder / "plan-dist-manifest.json").read_text())
     releases = {r["app_name"]: r["app_version"] for r in plan["releases"]}
-    if plan["announcement_tag"] != tag or releases != {a["program"]: version(tag) for a in apps()}:
-        raise ValueError("dist source plan does not match tag and seven-app matrix")
+    if plan["announcement_tag"] != tag or len(plan["releases"]) != len(apps()) or releases != {a["program"]: version(tag) for a in apps()}:
+        raise ValueError("dist source plan does not match tag and eight-app matrix")
     return plan
 
 

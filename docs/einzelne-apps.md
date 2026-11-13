@@ -106,7 +106,7 @@ Jede App gibt es einzeln, und jede bringt den Dienst mit. Einzelheiten zum Bauen
 | Linux (AUR) | Jedes App-Paket hängt an `torroworkplace-bin` (nur Dienst und systemd-Einheit), Mail und App Feed auch an `torroinbox-bin`. Die Hauptanwendung ist das eigene Paket `torro-workplace` (Starter-Eintrag und Icon), `torro-suite` zieht alle. |
 | Homebrew | Jede Formel hängt an `mahype/torro/torroworkplace`, Mail und App Feed auch an `torroinbox`. |
 | Windows (Scoop) | Jedes Manifest lädt die eigene `.zip` und `torroworkplace` dazu (Mail und App Feed auch `torroinbox`), Verknüpfung nur für die eigene App. `torroworkplace.json` ist die Hauptanwendung, `torro-suite.json` alle. |
-| Linux (direkte DEB/RPM/pacman, #589) | Acht Pakete je Format/Architektur: Dienst `torroworkplace-bin`, Steuerzentralen-Starter `torro-workplace`, sechs App-Pakete. Dienst mindestens gleicher Version, Mail/App Feed auch Hub. Keine neue Paketquelle. |
+| Linux (direkte DEB/RPM/pacman, #589) | Neun Pakete je Format/Architektur: Dienst `torroworkplace-bin`, Steuerzentralen-Starter `torro-workplace`, sieben App-Pakete einschließlich Chat. Dienst mindestens gleicher Version, Mail/App Feed auch Hub. Keine neue Paketquelle. |
 | Windows (Setup, #589) | Systemweiter Installer je App: eigener Starter/Uninstaller, Dienst und Hub gemeinsam und referenzgezählt; Administratorrechte, keine erhöhten App-Starts oder Datenlöschung. |
 | macOS (DMG, #589) | App-Bündel mit Dienst; Mail/App Feed zusätzlich Hub, Kalender Reminder. Alle angezeigten Apps nach Applications ziehen. Image und Bündel signiert, notarisiert und geheftet. |
 

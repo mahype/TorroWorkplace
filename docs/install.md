@@ -3,8 +3,8 @@
 **Downloads:** [GitHub Releases](https://github.com/mahype/TorroWorkplace/releases/latest). Dort die
 Tabelle **App downloads** oder `downloads.md` öffnen und App, Betriebssystem und Architektur wählen.
 Solange kein Maintainer-Release veröffentlicht ist, gibt es noch keine geprüften Installer-Downloads.
-Sieben Apps: Torro Workplace (Steuerzentrale), Notification Hub, Workplace Mail, App Feed, Calendar,
-Tasks und Assistant. Jede läuft ohne Steuerzentrale; Dienst und nötige Begleitprogramme kommen mit.
+Acht Apps: Torro Workplace (Steuerzentrale), Notification Hub, Workplace Mail, App Feed, Calendar,
+Tasks, Assistant und Chat. Jede läuft ohne Steuerzentrale; Dienst und nötige Begleitprogramme kommen mit.
 
 ## macOS: Disk-Image
 
@@ -55,7 +55,7 @@ Wähle **ein** Format und **eine** Architektur für alle zusammengehörigen Down
 
 Zu jedem App-Paket braucht es **`torroworkplace-bin` mindestens derselben Version**. Mail und App Feed
 brauchen außerdem `torroinbox-bin`. Die Downloadtabelle verlinkt diese Begleitpakete. Die Steuerzentrale
-ist `torro-workplace` (nur Starter/Icon) plus Dienstpaket. Alle sechs anderen Apps heißen `<bin>-bin`.
+ist `torro-workplace` (nur Starter/Icon) plus Dienstpaket. Alle sieben anderen Apps heißen `<bin>-bin`.
 Beispiel für einen leeren Downloadordner, der ausschließlich die gewählte App samt Begleitpaketen in
 einer Version/Architektur enthält:
 

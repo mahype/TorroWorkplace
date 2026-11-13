@@ -69,7 +69,7 @@ foreach ($reverse in @($false, $true)) {
     Write-Output ("Removal order reverse=$reverse : installing RC baseline")
     foreach ($app in $apps) { Run-Installer (Setup-For $Older $app.program) }
     Check-Payload @($apps | ForEach-Object { $_.id })
-    Write-Output 'PASS: all seven RC apps installed and matching runtime versions verified'
+    Write-Output "PASS: all $($apps.Count) RC apps installed and matching runtime versions verified"
     $beforeLocked = @(Get-ChildItem $root -Recurse -File | Get-FileHash | Sort-Object Path | ForEach-Object { "$($_.Path):$($_.Hash)" })
     $beforeUninstall = Uninstall-Metadata
     $lock = [IO.File]::Open((Join-Path $root 'torroworkplace.exe'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
@@ -92,7 +92,7 @@ foreach ($reverse in @($false, $true)) {
     foreach ($app in $apps) { Run-Installer (Setup-For $Newer $app.program) }
     $remaining = @($apps | ForEach-Object { $_.id })
     Check-Payload $remaining
-    Write-Output 'PASS: all seven Stable upgrades/repeats and matching runtime versions verified'
+    Write-Output "PASS: all $($apps.Count) Stable upgrades/repeats and matching runtime versions verified"
     # A stable shared service must reject an older RC before modifying any files.
     $before = (Get-FileHash (Join-Path $root 'torroworkplace.exe')).Hash
     $process = Start-Process (Setup-For $Older 'torroworkplace') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru

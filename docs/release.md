@@ -1,28 +1,28 @@
 # Release-Pipeline
 
-Stand: 2026-11-09, #589. **Noch kein veröffentlichter Installer-Nachweis.** Der Code bereitet die
+Stand: 2026-11-13, #589. **Noch kein veröffentlichter Installer-Nachweis.** Der Code bereitet die
 Downloads vor; erst ein Maintainer-Release mit Plattformprüfungen belegt die vollständige Auslieferung.
 Anleitung für Nutzer: [install.md](install.md). Maintainer-Ablauf: [release-0.1.0.md](release-0.1.0.md).
 
 ## Artefakte und Begleitpakete
 
-`packaging/apps.json` nennt die sieben stabilen App-IDs, Programme, Startargumente und Abhängigkeiten:
-Workplace, Notification Hub, Workplace Mail, App Feed, Calendar, Tasks und Assistant. Bundle-ID bleibt
+`packaging/apps.json` nennt die acht stabilen App-IDs, Programme, Startargumente und Abhängigkeiten:
+Workplace, Notification Hub, Workplace Mail, App Feed, Calendar, Tasks, Assistant und Chat. Bundle-ID bleibt
 `io.github.mahype.<app-id>`, die des Dienstes `io.github.mahype.torro-workplace-service`.
 
 | Plattform | Installierbarer Download | Inhalt |
 |---|---|---|
 | macOS arm64 / Intel | `<bin>-<version>-<target>.dmg` | signierte, notarisierte, geheftete App; Mail/App Feed zusätzlich Hub, Calendar zusätzlich Reminder; jede App mit eingebettetem Dienst |
 | Windows x64 | `<bin>-<version>-x86_64-pc-windows-msvc-setup.exe` | unsignierter Inno-Setup-Installer für alle Benutzer, App, Dienst, bei Mail/App Feed Hub |
-| Linux amd64 / arm64 | native nFPM-Namen, `.deb`, `.rpm`, `.pkg.tar.zst` | acht Pakete je Ziel und Format: Dienst, Workplace-Starter und sechs Apps |
+| Linux amd64 / arm64 | native nFPM-Namen, `.deb`, `.rpm`, `.pkg.tar.zst` | neun Pakete je Ziel und Format: Dienst, Workplace-Starter und sieben Apps |
 
 Linux besitzt `torroworkplace-bin` allein das Programm `/usr/bin/torroworkplace` und
-`/usr/lib/systemd/user/torroworkplace.service`. `torro-workplace` besitzt nur Starter und Icon. Die sechs
+`/usr/lib/systemd/user/torroworkplace.service`. `torro-workplace` besitzt nur Starter und Icon. Die sieben
 `<bin>-bin`-Pakete besitzen jeweils Programm, Paketmarker, Starter und Icon. Jedes App-Paket braucht den
 Dienst mindestens derselben nativen Version; Mail/App Feed auch `torroinbox-bin`. Kein doppelter
 Dateibesitz, keine Root-Dienststarts, kein automatisches Aktivieren der Nutzereinheit oder Autostart.
 
-Die Pipeline verlangt **69 Installer**: 48 Linux-Pakete, 14 DMGs und sieben Setups. Dazu gehören je Datei
+Die Pipeline verlangt **78 Installer**: 54 Linux-Pakete, 16 DMGs und acht Setups. Dazu gehören je Datei
 `.sha256`, ein maschinenlesbares `installers-manifest.json` und `downloads.md` mit eindeutig zugeordneten
 Links einschließlich Begleitpaketen derselben Architektur und desselben Formats. Die Downloadtabelle
 steht auch in den Release-Notizen. Native Linux-Namen kommen direkt von nFPM, nicht von geratenen Namen.
@@ -46,18 +46,18 @@ Nur ein Versions-Tag startet `release.yml`, keine PR- oder manuellen Trigger der
 Versionen laufen gemeinsam: `vMAJOR.MINOR.PATCH` oder `vMAJOR.MINOR.PATCH-rc.N`. Die Installer akzeptieren
 keine anderen Tagformen; Komponenten sind wegen Windows auf 65534 begrenzt.
 
-1. `dist` **0.32.0** plant alle sieben Programme für fünf Ziele. `custom-ci` prüft Linux, macOS und Windows.
+1. `dist` **0.32.0** plant alle acht Programme für fünf Ziele. `custom-ci` prüft Linux, macOS und Windows.
 2. `build-local-artifacts` baut auf Ubuntu 22.04 (x86_64/arm64), macOS 14 (arm64), macOS 15 Intel und
    Windows 2022 die Archive. Linux-Basis: glibc **>= 2.35**, dynamische Grafikloader für X11/Wayland.
 3. `build-global-artifacts` erzeugt die bisherigen Skriptinstaller, Formeln und Gesamtprüfsummen.
 4. Globale Artefakt-Jobs (auch bei RCs):
    - `publish-macos-app.yml::macos-app` lädt **Workflow-Artefakte**, prüft Tag und SHA-256, baut die
      Bündel mit `make-app.sh`, signiert innen nach außen, notarisiert und heftet. Ein Folgejob baut mit
-     `make-dmg.sh` sieben Images je Architektur: Applications-Link, englische Ziehanleitung, benötigte
+      `make-dmg.sh` acht Images je Architektur: Applications-Link, englische Ziehanleitung, benötigte
      Partner-Bündel. Auch DMGs werden signiert, notarisiert, geheftet und validiert. Temporäre Mounts
      werden aufgeräumt. App-Archivnamen, Dienst und Bundle-IDs bleiben unverändert.
    - `build-installers.yml` nutzt nFPM **2.48.0** und Inno Setup **7.1.1**, deren Download-SHA-256 im
-     Workflow feststeht. `installers.py` prüft die sieben Quellen im dist-Plan, Tag und Quellprüfsummen,
+      Workflow feststeht. `installers.py` prüft die acht Quellen im dist-Plan, Tag und Quellprüfsummen,
      lehnt Pfadausbrüche, Links und Sonderdateien ab und arbeitet temporär. Tool-/Eingabefehler liefern
      Exit ungleich 0, keine teilweise fertige Ausgangsmatrix.
 5. `host` verlangt **Erfolg aller Pflichtjobs** einschließlich `custom-ci`; „skipped“ reicht nicht.
@@ -144,6 +144,11 @@ Ein nFPM-Bau mit kleinen Testprogrammen prüft echte Paketmetadaten, **nicht** d
 
 Lokales Protokoll 2026-11-08/09 (OpenCode-Umsetzung, nFPM 2.48.0; erste Paketläufe mit Testprogrammen,
 echte Programmprüfungen unten ausdrücklich gekennzeichnet):
+Diese Nachweise betreffen die damaligen sieben Apps ohne Chat. Nach Abgleich mit `main` wurde die
+Erweiterung um Chat am 13.11.2026 ausdrücklich bestätigt; alte Sieben-App-Ergebnisse sind **kein**
+acht-App- oder Chat-Plattformnachweis. Die Hardware-/Desktop-Nachtests laufen als Folge-Issues
+[Linux #668](https://github.com/mahype/TorroWorkplace/issues/668) und
+[Windows #669](https://github.com/mahype/TorroWorkplace/issues/669), jeweils für die tatsächlich geprüfte Matrix.
 Die realen Programmpayloads wurden vor der zusätzlich freigegebenen Client-Sperrkorrektur gebaut;
 sie belegen die Installer-/Ladeprüfungen, nicht einen vollständigen Release-Bau des späteren Quellstands.
 
@@ -169,10 +174,29 @@ sie belegen die Installer-/Ladeprüfungen, nicht einen vollständigen Release-Ba
 | Notarisierte macOS-Images, Gatekeeper | weiterhin offen: Developer-ID lokal verfügbar und verwendet, Notarisierungszugang bisher nur als GitHub-Secrets; kein lokales Profil und kein Release-Workflow gestartet |
 | Erstes veröffentlichtes Release | offen, kein Release gestartet |
 
+### Erweiterung um Chat am 13.11.2026
+
+Der aktuelle `main` wurde vor der PR-Vorbereitung übernommen. Die bestätigte Acht-App-Erweiterung steht
+als [Umsetzungsergänzung in #589](https://github.com/mahype/TorroWorkplace/issues/589#issuecomment-6851963504).
+
+| Prüfung | Ergebnis / Grenze |
+|---|---|
+| Echter `dist plan --tag v0.1.0` | exakt acht Programme einschließlich `torrochat`; native Sollmatrix 78 |
+| Offline-Verträge | 18 Tests grün: Matrix/Downloads, Chat, Ablehnung fehlender/doppelter/fremder Plan-Einträge, vollständige macOS-Jobmatrix und native Icon-Ressourcen |
+| nFPM 2.48.0 / Inno 7.1.1 | alle 54 Linux-Pakete und acht Windows-Setups mit **Platzhalter-Payloads** gebaut; Paketierungs-/Compiler-Nachweis, kein neuer App-Laufzeitnachweis |
+| Chat für Windows | `cargo xwin check --locked -p torrochat --target x86_64-pc-windows-msvc` mit statischer CRT grün, einschließlich neuem Icon-/Versions-Buildskript; kein nativer GUI- oder Installationsnachweis |
+| Vollständige lokale CI / Deutsch | `scripts/ci-local.sh` und `TORRO_LANG=de cargo test --workspace` nach korrigierten Demo-Zählannahmen grün; 18 Offline-Verträge zusätzlich unter tatsächlichem Python 3.10 grün |
+| Katalog-Demo / Sichtprüfung | Regression deckt exakt `AppId::ALL` einschließlich Chat ab; unabhängiger Reviewer hat alle zwölf frischen PNGs (hell/dunkel, sechs Größen) und das Chat-Icon gelesen: keine neuen Muss-Funde. Mini/Leiste zeigen die bestehende Workplace-Übersicht; kein Desktop-/UAC-/Gatekeeper-Nachweis |
+| API-/Katalogschutz | unabhängige statische Prüfung ohne Blocker: bestehende Request-/MCP-Wege und Rechte, native Marker, Preflight aller Ziele/Abhängigkeiten und Setup-Cleanup-Sperre. Zusätzlicher gezielter Cleanup-Regressionstest wurde als nichtblockierende Testanregung genannt |
+
+Die alten Sieben-App-Laufzeitnachweise bleiben oben unverändert. Neue Hardware-/Desktop-Prüfungen
+einschließlich Chat sind in #668/#669 offen; macOS-Notarisierung, Gatekeeper und der veröffentlichte
+Release-Nachweis bleiben ebenfalls offen. Keinen lokalen Testbau als veröffentlichtes Release ausweisen.
+
 `packaging/tests/linux-smoke.sh` prüft in einem **wegwerfbaren Container** Metadaten, Installieren,
 Wiederholung, Upgrade RC→Stable und Entfernen mit verbleibendem Dienst und erhaltenen Daten.
 `windows-smoke.ps1` läuft nur in einer **frischen Windows-x64-VM** mit Administratorrechten und
-`TORRO_INSTALLER_SMOKE=1`: alle sieben Apps, Wiederholung, Upgrade, Downgrade-Abweisung, beide
+`TORRO_INSTALLER_SMOKE=1`: alle acht Apps, Wiederholung, Upgrade, Downgrade-Abweisung, beide
 Entfernungsreihenfolgen, gemeinsame Dateien bis zum letzten Besitzer; installierte echte Programme müssen
 mit `--version` laden und exakt zur Versions-Begleitdatei passen (30-Sekunden-Grenze). Nie am
 Arbeitsrechner ausführen. Der lokale Windows-Testbau muss wie dist 0.32.0 mit

@@ -12,9 +12,13 @@ executable, together with product name, version and publisher. Explorer, the tas
 | `torro-calendar.ico` | `torrocalendar` | Torro Calendar |
 | `torro-tasks.ico` | `torrotasks` | Torro Tasks |
 | `torro-assistant.ico` | `torroassistant` | Torro Assistant |
+| `torro-chat.ico` | `torrochat` | Torro Chat |
 
 Each `.ico` holds the sizes 16, 24, 32, 48, 64, 128 and 256 as PNG images with transparency (valid for Windows Vista
 and later), largest last.
+
+Chat's native icons are derived from its existing `linux/icons/torro-chat.svg`: the Windows ICO keeps
+the flat crop; the macOS PNG restores the suite's 1024 canvas, 100-pixel body inset and drop shadow.
 
 ## Where they come from
 
@@ -54,7 +58,7 @@ Windows SDK with MSVC, or `llvm-rc` when cross building).
 ## All-users Setup (#589)
 
 `setup.iss` is compiled with integrity-pinned Inno Setup **7.1.1** by `../installers.py build-windows`.
-Seven stable AppIds (`io.github.mahype.<app-id>`), each with its own uninstall log/directory and Start
+Eight stable AppIds (`io.github.mahype.<app-id>`), each with its own uninstall log/directory and Start
 menu entry. Installation is x64/admin-only into the fixed `{autopf64}\TorroWorkplace` directory;
 Workplace's shortcut passes `ui`. Other apps do not silently add the control-centre shortcut.
 
