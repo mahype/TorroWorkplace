@@ -1,0 +1,1492 @@
+//! The state of the contacts window and what every click and answer does ([`App::update`]).
+//!
+//! The window holds no logic of the core: every change is a command of `contacts` through
+//! [`Backend`], and what it shows is what the core answered. It loads everything once
+//! ([`backend::load`]) and again after every change and every minute ([`REFRESH`]), not while a contact
+//! is being edited. Pictures come in batches of [`PHOTO_BATCH`] and are kept per contact and version.
+//!
+//! What the person sees ([`View`]): all contacts, the favourites, the ones used last, the birthdays of
+//! the coming year, a book or a group of a book. The list groups by group, town or book
+//! ([`GroupBy`]); the choice and the folded heads are kept in `ui.json`. The search asks the core
+//! ([`backend::search`]) [`SEARCH_PAUSE`] after the last key.
+
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use chrono::{Local, NaiveDate};
+use iced::theme::Mode;
+use iced::widget::image::Handle;
+use iced::widget::operation;
+use iced::{Point, Size, Subscription, Task, Theme, keyboard};
+use torro_contacts::{
+    AddressBook, Birthday, Contact, ContactSummary, ContactsError, ContactsSource, Keep, Moved, PhotoSize,
+};
+use torro_core::AppId;
+use torro_core::i18n::{tr, trf};
+use torro_gui::design::{self, Follow};
+use torro_gui::layout::{self, SizeClass};
+use torro_gui::shell::{self, SidebarMode, Switcher};
+use torro_gui::source::Source;
+use torro_gui::split::{self, Split, SplitEvent};
+use torro_gui::theme::{self, Appearance};
+use torro_gui::ui_state::{self, UiState};
+use torro_gui::widgets;
+use torro_gui::zoom::{self, Zoom};
+use torro_ipc::contacts::MAX_PHOTO_BYTES;
+
+use crate::backend::{self, Backend, Loaded};
+use crate::contact;
+use crate::edit::{self, Draft, List};
+use crate::launch::{Launch, Open};
+use crate::list::{GroupBy, Key};
+
+/// The window's identity: class `torro-contacts`, binary `torrocontacts`, state in `torrocontacts/`.
+pub const APP: AppId = AppId::CONTACTS;
+
+/// How often the window loads again on its own.
+pub const REFRESH: Duration = Duration::from_secs(60);
+
+/// How long the search waits after the last key before it asks the core.
+pub const SEARCH_PAUSE: Duration = Duration::from_millis(150);
+
+/// How many small pictures one ask fetches.
+pub const PHOTO_BATCH: usize = 20;
+
+/// How often the notice at the bottom checks whether its time is up.
+const NOTICE_TICK: Duration = Duration::from_millis(500);
+
+/// The longest edge of a picture the window sends (`contacts.set_photo`): larger ones are scaled down.
+pub const PHOTO_EDGE: u32 = 512;
+
+/// The search field over the list, and the one of the mini tile.
+pub const SEARCH: &str = "contacts-search";
+
+/// The key of the grouping in `ui.json`.
+pub const GROUP_BY_KEY: &str = "group_by";
+
+/// The keys of the widths the person drags, in `ui.json`.
+pub const SIDEBAR_WIDTH: &str = "sidebar";
+pub const PANEL_WIDTH: &str = "panel";
+
+/// What the list shows (the sidebar's rows).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub enum View {
+    #[default]
+    All,
+    Favorites,
+    /// The contacts used last, the latest first, without heads.
+    Recent,
+    /// The birthdays of the coming year by month.
+    Birthdays,
+    /// One address book (its id).
+    Book(String),
+    /// One group of a book (book id, name).
+    Group(String, String),
+}
+
+/// An open menu.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Menu {
+    /// "Group by" in the header.
+    GroupBy,
+    /// The navigation of a narrow window, top left.
+    Nav,
+    /// The "…" of the contact's head.
+    More,
+    /// "Move to", the books the contact may go to.
+    Move,
+    /// The kind of a value in the form.
+    Kind(List, usize),
+    /// "+ Add field" in the form.
+    AddField,
+    /// The menu of a row at the pointer.
+    Row(String, Point),
+}
+
+/// An open dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dialog {
+    /// "Delete contact?"
+    Delete,
+}
+
+/// The contact in the side panel.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Detail {
+    /// Its id; `None` for a contact being written.
+    pub id: Option<String>,
+    /// The whole contact once fetched.
+    pub contact: Option<Contact>,
+    /// The form while it is being edited or written.
+    pub draft: Option<Draft>,
+    /// A new contact goes into this book (and this group).
+    pub new_in: Option<(String, Option<String>)>,
+    /// What the group input holds.
+    pub group_text: String,
+    /// A change is out: buttons that change the contact wait.
+    pub busy: bool,
+    /// Why the last change failed.
+    pub error: Option<String>,
+}
+
+impl Detail {
+    fn of(id: String) -> Detail {
+        Detail {
+            id: Some(id),
+            contact: None,
+            draft: None,
+            new_in: None,
+            group_text: String::new(),
+            busy: false,
+            error: None,
+        }
+    }
+}
+
+/// The short notice at the bottom ("Copied").
+#[derive(Debug, Clone)]
+pub struct Notice {
+    pub text: String,
+    pub shown: Instant,
+}
+
+/// A key the list answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Press {
+    /// `/`, Ctrl+F (⌘F): to the search.
+    Search,
+    Up,
+    Down,
+    Enter,
+    /// Ctrl+E (⌘E): edit the open contact.
+    Edit,
+    /// `[`: the sidebar.
+    Sidebar,
+}
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    // -- The window
+    CoreReady,
+    Resized(Size),
+    DragWindow,
+    Raise,
+    Appearance(Result<Appearance, String>),
+    SystemMode(Mode),
+    Zoom(zoom::Message),
+    Design(design::Message),
+    Escape,
+    Tick,
+    NoticeTick(Instant),
+    Key(Press),
+    UiState(UiState),
+    StoredGroupBy(Option<String>),
+    StoredCollapsed(GroupBy, Vec<String>),
+    StoredWidths(HashMap<String, f32>),
+    ToggleSidebar,
+    CloseMenu,
+    SidebarWidth(SplitEvent),
+    PanelWidth(SplitEvent),
+    Switcher(Switcher),
+    OpenWorkplace,
+    Opened(Result<(), String>),
+    Retry,
+
+    // -- Data
+    Loaded(Result<Loaded, ContactsError>),
+    Photos(Vec<(String, String, Option<Vec<u8>>)>),
+    LargePhoto(String, String, Option<Vec<u8>>),
+
+    // -- The list
+    Show(View),
+    ToggleMenu(Menu),
+    GroupBy(GroupBy),
+    Fold(Key),
+    Search(String),
+    SearchDue(u64),
+    Found(String, Result<Vec<String>, ContactsError>),
+    Hover(Option<String>),
+    Open(String),
+    RowMenu(String, Point),
+    QuickMail(String),
+    QuickCall(String),
+    QuickCopy(String),
+
+    // -- The contact
+    Fetched(String, Result<Contact, ContactsError>),
+    Close,
+    OpenUri(String),
+    CopyText(String),
+    ToggleFavorite,
+    Favorited(String, bool, Result<(), ContactsError>),
+    MoveTo(String),
+    Moved(Result<Moved, ContactsError>),
+    AskDelete,
+    Delete,
+    Deleted(Result<(), ContactsError>),
+    CloseDialog,
+    GroupText(String),
+    AddGroup(String),
+    RemoveGroup(String),
+    Changed(Result<Contact, ContactsError>),
+    Resolve(Keep),
+    Resolved(Result<Vec<Contact>, ContactsError>),
+    /// `contacts.mark_used` answered; nothing to show either way.
+    Used,
+
+    // -- Editing
+    Edit,
+    NewContact(Option<String>, Option<String>),
+    Draft(edit::Msg),
+    ToggleKind(List, usize),
+    ToggleAddField,
+    Cancel,
+    Done,
+    Saved(Result<Contact, ContactsError>),
+    Refetched(Result<Contact, ContactsError>),
+    Created(Option<String>, Result<Contact, ContactsError>),
+    ChoosePhoto,
+    PhotoChosen(Option<Result<Vec<u8>, String>>),
+    RemovePhoto,
+    FileDropped(PathBuf),
+}
+
+pub struct App {
+    pub(crate) backend: Backend,
+    /// The suite behind the window: appearance, zoom, design, opening other apps (none with `--demo`).
+    pub(crate) suite: Source,
+    pub(crate) launch: Launch,
+    pub(crate) size: Size,
+    pub(crate) appearance: Appearance,
+    pub(crate) system_mode: Mode,
+    pub(crate) zoom: Zoom,
+    pub(crate) design: Follow,
+    pub(crate) today: NaiveDate,
+
+    pub(crate) sidebar: SidebarMode,
+    pub(crate) drawer: bool,
+    pub(crate) side: Split,
+    pub(crate) panel_split: Split,
+
+    pub(crate) books: Vec<AddressBook>,
+    pub(crate) contacts: Vec<ContactSummary>,
+    pub(crate) birthdays: Vec<Birthday>,
+    pub(crate) recent: Vec<String>,
+    /// The first load came (or failed and was shown).
+    pub(crate) loaded: bool,
+    /// A load is out: the timer asks again only after its answer.
+    pub(crate) loading: bool,
+    /// Why the first load failed, in words for people; a later failure keeps what was there.
+    pub(crate) error: Option<String>,
+    /// `--open` was applied once after the first load.
+    applied: bool,
+
+    pub(crate) view: View,
+    pub(crate) group_by: GroupBy,
+    pub(crate) collapsed: HashMap<GroupBy, BTreeSet<String>>,
+    pub(crate) search: String,
+    search_asked: u64,
+    /// The ids the core found for `search` (the text they belong to); `None` while it asks or nothing
+    /// is typed.
+    pub(crate) found: Option<(String, HashSet<String>)>,
+    pub(crate) cursor: Option<String>,
+    pub(crate) hover: Option<String>,
+    pub(crate) menu: Option<Menu>,
+    pub(crate) dialog: Option<Dialog>,
+    pub(crate) detail: Option<Detail>,
+    pub(crate) notice: Option<Notice>,
+
+    /// Small pictures per contact id: their version and the picture (`None`: not to be had, asked
+    /// again only for another version).
+    pub(crate) photos: HashMap<String, (String, Option<Handle>)>,
+    photos_busy: bool,
+    /// The large picture of the open contact: id, version, picture.
+    pub(crate) large: Option<(String, String, Handle)>,
+}
+
+/// The message of a failed load or change, for people.
+pub fn failed(err: &ContactsError) -> String {
+    match err {
+        ContactsError::Offline => tr("The server cannot be reached. Changes wait until it can.").to_owned(),
+        ContactsError::Auth => tr("The server refused the sign-in. Check the account in Torro Workplace.").to_owned(),
+        ContactsError::ReadOnly => tr("This address book is read-only.").to_owned(),
+        ContactsError::TooLarge => tr("The server refuses a contact this large.").to_owned(),
+        ContactsError::NotFound => tr("The contact is gone.").to_owned(),
+        ContactsError::Conflict { .. } => tr("This contact changed meanwhile. Check and save again.").to_owned(),
+        ContactsError::Unsupported(text) | ContactsError::Other(text) => text.clone(),
+    }
+}
+
+impl App {
+    pub fn new(backend: Backend, suite: Source, launch: Launch) -> (App, Task<Message>) {
+        let open = launch.open;
+        let app = App {
+            backend,
+            zoom: Zoom::for_source(&suite),
+            design: Follow::for_source(&suite),
+            suite,
+            size: torro_gui::window(APP).size,
+            appearance: Appearance::System,
+            system_mode: Mode::None,
+            today: Local::now().date_naive(),
+            sidebar: SidebarMode::default(),
+            drawer: false,
+            side: Split::default(),
+            panel_split: Split::default(),
+            books: Vec::new(),
+            contacts: Vec::new(),
+            birthdays: Vec::new(),
+            recent: Vec::new(),
+            loaded: false,
+            loading: false,
+            error: None,
+            applied: false,
+            view: View::All,
+            group_by: match open {
+                Some(Open::ByCity) => GroupBy::City,
+                Some(Open::ByBook) => GroupBy::Book,
+                _ => GroupBy::Group,
+            },
+            collapsed: HashMap::new(),
+            search: String::new(),
+            search_asked: 0,
+            found: None,
+            cursor: None,
+            hover: None,
+            menu: None,
+            dialog: None,
+            detail: None,
+            notice: None,
+            photos: HashMap::new(),
+            photos_busy: false,
+            large: None,
+            launch,
+        };
+        let suite = app.suite.clone();
+        let mut tasks = vec![
+            // The first load waits for a core that is still starting (issue #206).
+            Task::perform(async move { suite.ready().await }, |_| Message::CoreReady),
+            app.fetch_appearance(),
+            app.zoom.fetch().map(Message::Zoom),
+            app.design.fetch().map(Message::Design),
+            iced::system::theme().map(Message::SystemMode),
+            iced::window::latest().and_then(iced::window::size).map(Message::Resized),
+            torro_gui::place_traffic_lights(),
+        ];
+        // The demo stores nothing and reads nothing of the person's: its pictures stay the same.
+        if !app.backend.is_demo() {
+            tasks.push(ui_state::load_task(APP).map(Message::UiState));
+            tasks.push(ui_state::load_choice_task(APP, GROUP_BY_KEY.into()).map(Message::StoredGroupBy));
+            tasks.push(ui_state::load_splits_task(APP).map(Message::StoredWidths));
+            for by in GroupBy::ALL {
+                tasks.push(
+                    ui_state::load_names_task(APP, by.collapsed_key())
+                        .map(move |names| Message::StoredCollapsed(by, names)),
+                );
+            }
+        }
+        (app, Task::batch(tasks))
+    }
+
+    /// The window's title.
+    pub fn title(&self) -> String {
+        match &self.detail {
+            Some(Detail { contact: Some(contact), .. }) => trf("Contacts · {name}", &[("name", &contact.shown_name())]),
+            _ => tr("Contacts").to_owned(),
+        }
+    }
+
+    /// The Iced theme: the appearance of `--appearance`, else the stored one, with "System" following
+    /// the desktop.
+    pub fn theme(&self) -> Theme {
+        theme::for_appearance(self.launch.appearance.unwrap_or(self.appearance), self.system_mode)
+    }
+
+    /// The factor the whole window draws at: the suite-wide zoom.
+    pub fn scale_factor(&self) -> f32 {
+        self.zoom.factor()
+    }
+
+    /// The window's size class.
+    pub fn class(&self) -> SizeClass {
+        layout::of(self.size)
+    }
+
+    /// The room under the top row, in layout units.
+    pub fn content_size(&self) -> Size {
+        shell::below_top_row(self.size, self.zoom.factor())
+    }
+
+    /// Whether a contact is being edited or written: the timer does not load then.
+    pub fn editing(&self) -> bool {
+        self.detail.as_ref().is_some_and(|detail| detail.draft.is_some())
+    }
+
+    pub fn subscription(&self) -> Subscription<Message> {
+        let mut subscriptions = vec![
+            iced::system::theme_changes().map(Message::SystemMode),
+            iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
+            self.zoom.subscription().map(Message::Zoom),
+            self.design.subscription().map(Message::Design),
+            // A second start brings this window to the front (issue #279).
+            torro_gui::instance::subscription().map(|()| Message::Raise),
+            iced::time::every(REFRESH).map(|_| Message::Tick),
+        ];
+        let glance = matches!(self.class(), SizeClass::Mini | SizeClass::Strip);
+        if !glance {
+            if self.menu.is_some() || self.dialog.is_some() || self.detail.is_some() || self.drawer {
+                subscriptions.push(widgets::escape().map(|()| Message::Escape));
+            }
+            if self.dialog.is_none() {
+                subscriptions.push(iced::event::listen_with(key_press));
+            }
+            // A picture dropped on the window while a contact is edited becomes its picture.
+            if self.editing() {
+                subscriptions.push(iced::event::listen_with(file_drop));
+            }
+        }
+        if self.notice.is_some() {
+            subscriptions.push(iced::time::every(NOTICE_TICK).map(Message::NoticeTick));
+        }
+        if self.side.dragging {
+            subscriptions.push(split::release().map(|()| Message::SidebarWidth(SplitEvent::Release)));
+        }
+        if self.panel_split.dragging {
+            subscriptions.push(split::release().map(|()| Message::PanelWidth(SplitEvent::Release)));
+        }
+        Subscription::batch(subscriptions)
+    }
+
+    fn fetch_appearance(&self) -> Task<Message> {
+        let suite = self.suite.clone();
+        Task::perform(async move { theme::stored_appearance(&suite).await }, Message::Appearance)
+    }
+
+    /// Loads everything again ([`backend::load`]).
+    pub fn load(&mut self) -> Task<Message> {
+        self.loading = true;
+        Task::perform(backend::load(self.backend.clone()), Message::Loaded)
+    }
+
+    fn notify(&mut self, text: impl Into<String>) {
+        self.notice = Some(Notice { text: text.into(), shown: Instant::now() });
+    }
+
+    /// The contact of the list with `id`.
+    pub fn summary(&self, id: &str) -> Option<&ContactSummary> {
+        self.contacts.iter().find(|contact| contact.id == id)
+    }
+
+    /// The book with `id`.
+    pub fn book(&self, id: &str) -> Option<&AddressBook> {
+        self.books.iter().find(|book| book.id == id)
+    }
+
+    /// The book a new contact goes into: the one shown, when it may be written, else the first that may.
+    pub fn new_book(&self) -> Option<String> {
+        let shown = match &self.view {
+            View::Book(id) | View::Group(id, _) => Some(id.as_str()),
+            _ => None,
+        };
+        shown
+            .and_then(|id| self.book(id))
+            .filter(|book| book.writable)
+            .or_else(|| self.books.iter().find(|book| book.writable))
+            .map(|book| book.id.clone())
+    }
+
+    /// The groups of the book `id`, by name.
+    pub fn groups_of(&self, id: &str) -> Vec<String> {
+        let mut names: BTreeSet<String> = BTreeSet::new();
+        for contact in self.contacts.iter().filter(|c| c.book == id) {
+            names.extend(contact.groups.iter().map(|g| g.trim().to_owned()).filter(|g| !g.is_empty()));
+        }
+        names.into_iter().collect()
+    }
+
+    /// The contacts of the view, as far as the search lets them through, in no particular order.
+    pub fn shown(&self) -> Vec<&ContactSummary> {
+        let found = self.found.as_ref().filter(|(text, _)| !text.is_empty()).map(|(_, ids)| ids);
+        let searching = !self.search.trim().is_empty();
+        let passes = |contact: &&ContactSummary| match (searching, found) {
+            (false, _) => true,
+            (true, Some(ids)) => ids.contains(&contact.id),
+            // The answer is not there yet: the names that start with what is typed.
+            (true, None) => contact.display_name.to_lowercase().contains(&self.search.trim().to_lowercase()),
+        };
+        match &self.view {
+            View::All | View::Birthdays => self.contacts.iter().filter(passes).collect(),
+            View::Favorites => self.contacts.iter().filter(|c| c.favorite).filter(passes).collect(),
+            View::Recent => self.recent.iter().filter_map(|id| self.summary(id)).filter(passes).collect(),
+            View::Book(id) => self.contacts.iter().filter(|c| &c.book == id).filter(passes).collect(),
+            View::Group(book, name) => self
+                .contacts
+                .iter()
+                .filter(|c| &c.book == book && c.groups.iter().any(|g| g.trim().eq_ignore_ascii_case(name)))
+                .filter(passes)
+                .collect(),
+        }
+    }
+
+    /// The birthdays the view "Birthdays" lists, as far as the search lets them through.
+    pub fn shown_birthdays(&self) -> Vec<&Birthday> {
+        let ids: HashSet<&str> = self.shown().into_iter().map(|c| c.id.as_str()).collect();
+        self.birthdays.iter().filter(|b| ids.contains(b.contact.id.as_str())).collect()
+    }
+
+    /// The birthdays within the next 14 days: the count of the sidebar.
+    pub fn soon(&self) -> usize {
+        self.birthdays
+            .iter()
+            .filter(|b| (b.next - self.today).num_days() <= i64::from(torro_ipc::contacts::BIRTHDAY_DAYS))
+            .count()
+    }
+
+    /// The ids of the rows in the order the list shows them, folded heads left out: what ↑ and ↓ walk.
+    pub fn rows(&self) -> Vec<String> {
+        match &self.view {
+            View::Recent => self.shown().into_iter().map(|c| c.id.clone()).collect(),
+            View::Birthdays => {
+                let birthdays = self.shown_birthdays();
+                crate::list::birthday_heads(&birthdays)
+                    .into_iter()
+                    .filter(|(key, _, _)| !self.folded(key))
+                    .flat_map(|(_, _, members)| members.into_iter().map(|b| b.contact.id.clone()))
+                    .collect()
+            }
+            _ => {
+                let shown = self.shown();
+                crate::list::heads(&shown, self.group_by, &self.books)
+                    .into_iter()
+                    .filter(|head| !self.folded(&head.key))
+                    .flat_map(|head| head.members.into_iter().map(|c| c.id.clone()))
+                    .collect()
+            }
+        }
+    }
+
+    /// Whether the head `key` is folded in the present grouping.
+    pub fn folded(&self, key: &Key) -> bool {
+        let by = if matches!(key, Key::Month(..)) { GroupBy::Group } else { self.group_by };
+        self.collapsed.get(&by).is_some_and(|words| words.contains(&key.word()))
+    }
+
+    pub fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::CoreReady => return self.load(),
+            Message::Resized(size) => self.size = size,
+            Message::DragWindow => return torro_gui::drag_window(),
+            Message::Raise => return torro_gui::instance::bring_to_front(),
+            Message::Appearance(Ok(appearance)) => self.appearance = appearance,
+            // The core may be starting up; keep the colours we have.
+            Message::Appearance(Err(_)) => {}
+            Message::SystemMode(mode) => self.system_mode = mode,
+            Message::Design(message) => {
+                if let Some(task) = self.design.update(message) {
+                    return task.map(Message::Design);
+                }
+            }
+            Message::Zoom(message) => {
+                let before = self.zoom.factor();
+                let task = self.zoom.update(message).map(Message::Zoom);
+                if self.zoom.factor() != before {
+                    // The window keeps its pixels, so its logical size changes with the zoom.
+                    self.size = zoom::rescale(self.size, before, self.zoom.factor());
+                }
+                return task;
+            }
+            Message::Escape => return self.escape(),
+            Message::Tick => {
+                self.today = Local::now().date_naive();
+                if !self.loading && !self.editing() {
+                    return Task::batch([self.load(), self.fetch_appearance()]);
+                }
+            }
+            Message::NoticeTick(now) => {
+                if self.notice.as_ref().is_some_and(|n| now.saturating_duration_since(n.shown) >= widgets::TOAST_FOR) {
+                    self.notice = None;
+                }
+            }
+            Message::Key(press) => return self.key(press),
+            Message::UiState(state) => self.sidebar = state.sidebar,
+            Message::StoredGroupBy(word) => {
+                if let Some(by) = word.as_deref().and_then(GroupBy::from_word) {
+                    self.group_by = by;
+                }
+            }
+            Message::StoredCollapsed(by, names) => {
+                self.collapsed.entry(by).or_insert_with(|| names.into_iter().collect());
+            }
+            Message::StoredWidths(widths) => {
+                self.side.restore(widths.get(SIDEBAR_WIDTH).copied());
+                self.panel_split.restore(widths.get(PANEL_WIDTH).copied());
+            }
+            Message::ToggleSidebar => {
+                if self.class() == SizeClass::Wide {
+                    self.sidebar = self.sidebar.toggled();
+                    if !self.backend.is_demo() {
+                        return ui_state::save_task(APP, UiState { sidebar: self.sidebar });
+                    }
+                } else {
+                    self.drawer = !self.drawer;
+                }
+            }
+            Message::CloseMenu => {
+                self.menu = None;
+                self.drawer = false;
+            }
+            Message::SidebarWidth(event) => {
+                let limits = shell::sidebar_limits(self.content_size().width, split::min_pane());
+                if self.side.update(event, limits) && !self.backend.is_demo() {
+                    return ui_state::save_split_task(APP, SIDEBAR_WIDTH.into(), self.side.chosen);
+                }
+            }
+            Message::PanelWidth(event) => {
+                let limits = torro_gui::panel::beside_limits(self.list_room());
+                if self.panel_split.update(event, limits) && !self.backend.is_demo() {
+                    return ui_state::save_split_task(APP, PANEL_WIDTH.into(), self.panel_split.chosen);
+                }
+            }
+            Message::Switcher(Switcher::New) => return self.update(Message::NewContact(None, None)),
+            Message::Switcher(Switcher::Search) => return operation::focus(SEARCH),
+            Message::OpenWorkplace => {
+                let suite = self.suite.clone();
+                return Task::perform(async move { suite.open_app(AppId::WORKPLACE.binary).await }, Message::Opened);
+            }
+            Message::Opened(result) => {
+                if let Err(err) = result {
+                    self.notify(err);
+                }
+            }
+            Message::Retry => {
+                self.error = None;
+                self.loaded = false;
+                return self.load();
+            }
+
+            Message::Loaded(result) => return self.loaded(result),
+            Message::Photos(batch) => {
+                self.photos_busy = false;
+                for (id, version, bytes) in batch {
+                    let picture = bytes.as_deref().and_then(picture);
+                    self.photos.insert(id, (version, picture));
+                }
+                return self.fetch_photos();
+            }
+            Message::LargePhoto(id, version, bytes) => {
+                if let Some(handle) = bytes.as_deref().and_then(picture) {
+                    self.large = Some((id, version, handle));
+                }
+            }
+
+            Message::Show(view) => {
+                self.view = view;
+                self.menu = None;
+                self.drawer = false;
+                self.cursor = None;
+            }
+            Message::ToggleMenu(menu) => {
+                self.menu = if self.menu.as_ref() == Some(&menu) { None } else { Some(menu) };
+            }
+            Message::GroupBy(by) => {
+                self.group_by = by;
+                self.menu = None;
+                if !self.backend.is_demo() {
+                    return ui_state::save_choice_task(APP, GROUP_BY_KEY.into(), by.word().into());
+                }
+            }
+            Message::Fold(key) => {
+                let by = if matches!(key, Key::Month(..)) { GroupBy::Group } else { self.group_by };
+                let words = self.collapsed.entry(by).or_default();
+                let word = key.word();
+                if !words.remove(&word) {
+                    words.insert(word);
+                }
+                if !self.backend.is_demo() && !matches!(key, Key::Month(..)) {
+                    let names: Vec<String> = words.iter().cloned().collect();
+                    return ui_state::save_names_task(APP, by.collapsed_key(), names);
+                }
+            }
+            Message::Search(text) => {
+                self.search = text;
+                self.search_asked += 1;
+                if self.search.trim().is_empty() {
+                    self.found = None;
+                    return Task::none();
+                }
+                let asked = self.search_asked;
+                return Task::perform(
+                    async move {
+                        tokio::time::sleep(SEARCH_PAUSE).await;
+                        asked
+                    },
+                    Message::SearchDue,
+                );
+            }
+            Message::SearchDue(asked) => {
+                if asked != self.search_asked || self.search.trim().is_empty() {
+                    return Task::none();
+                }
+                let text = self.search.trim().to_owned();
+                let backend = self.backend.clone();
+                let query = text.clone();
+                return Task::perform(backend::search(backend, query), move |result| {
+                    Message::Found(text.clone(), result)
+                });
+            }
+            Message::Found(text, result) => {
+                if text != self.search.trim() {
+                    return Task::none();
+                }
+                match result {
+                    Ok(ids) => self.found = Some((text, ids.into_iter().collect())),
+                    Err(err) => self.notify(failed(&err)),
+                }
+                self.cursor = self.rows().first().cloned();
+            }
+            Message::Hover(id) => self.hover = id,
+            Message::Open(id) => {
+                self.menu = None;
+                return self.open(id);
+            }
+            Message::RowMenu(id, at) => {
+                self.cursor = Some(id.clone());
+                self.menu = Some(Menu::Row(id, at));
+            }
+            Message::QuickMail(id) => {
+                self.menu = None;
+                let link = self.summary(&id).and_then(|c| c.email.as_deref()).and_then(contact::mail_link);
+                return self.quick(id, link);
+            }
+            Message::QuickCall(id) => {
+                self.menu = None;
+                let link = self.summary(&id).and_then(|c| c.phone.as_deref()).and_then(contact::tel_link);
+                return self.quick(id, link);
+            }
+            Message::QuickCopy(id) => {
+                self.menu = None;
+                let text = self.summary(&id).map(copy_text).unwrap_or_default();
+                return self.update(Message::CopyText(text));
+            }
+
+            Message::Fetched(id, result) => return self.fetched(id, result),
+            Message::Close => {
+                self.detail = None;
+                self.menu = None;
+                self.large = None;
+            }
+            Message::OpenUri(uri) => {
+                if let Err(err) = contact::open_uri(&uri) {
+                    self.notify(err);
+                }
+                if let Some(id) = self.detail.as_ref().and_then(|d| d.id.clone()) {
+                    return self.mark_used(id);
+                }
+            }
+            Message::CopyText(text) => {
+                self.menu = None;
+                if text.is_empty() {
+                    return Task::none();
+                }
+                self.notify(tr("Copied"));
+                return iced::clipboard::write(text);
+            }
+            Message::ToggleFavorite => {
+                self.menu = None;
+                let Some((id, favorite)) = self.open_contact().map(|c| (c.id.clone(), !c.favorite)) else {
+                    return Task::none();
+                };
+                self.set_busy(true);
+                let backend = self.backend.clone();
+                let asked = id.clone();
+                return Task::perform(async move { backend.set_favorite(asked, favorite).await }, move |result| {
+                    Message::Favorited(id.clone(), favorite, result)
+                });
+            }
+            Message::Favorited(id, favorite, result) => {
+                self.set_busy(false);
+                match result {
+                    Ok(()) => {
+                        if let Some(contact) =
+                            self.detail.as_mut().and_then(|d| d.contact.as_mut()).filter(|c| c.id == id)
+                        {
+                            contact.favorite = favorite;
+                        }
+                        if let Some(summary) = self.contacts.iter_mut().find(|c| c.id == id) {
+                            summary.favorite = favorite;
+                        }
+                        return self.load();
+                    }
+                    Err(err) => self.change_failed(&err),
+                }
+            }
+            Message::MoveTo(book) => {
+                self.menu = None;
+                let Some((id, etag)) = self.open_contact().map(|c| (c.id.clone(), c.etag.clone().unwrap_or_default()))
+                else {
+                    return Task::none();
+                };
+                self.set_busy(true);
+                let backend = self.backend.clone();
+                return Task::perform(async move { backend.move_contact(id, etag, book).await }, Message::Moved);
+            }
+            Message::Moved(result) => {
+                self.set_busy(false);
+                match result {
+                    Ok(moved) => {
+                        if moved.left_in_source {
+                            self.notify(tr("The old address book kept the contact too."));
+                        }
+                        let id = moved.contact.id.clone();
+                        if let Some(detail) = &mut self.detail {
+                            detail.id = Some(id);
+                            detail.contact = Some(moved.contact);
+                        }
+                        return self.load();
+                    }
+                    Err(err) => self.change_failed(&err),
+                }
+            }
+            Message::AskDelete => {
+                self.menu = None;
+                if self.open_contact().is_some() {
+                    self.dialog = Some(Dialog::Delete);
+                }
+            }
+            Message::CloseDialog => self.dialog = None,
+            Message::Delete => {
+                self.dialog = None;
+                let Some((id, etag)) = self.open_contact().map(|c| (c.id.clone(), c.etag.clone().unwrap_or_default()))
+                else {
+                    return Task::none();
+                };
+                self.set_busy(true);
+                let backend = self.backend.clone();
+                return Task::perform(async move { backend.delete_contact(id, etag).await }, Message::Deleted);
+            }
+            Message::Deleted(result) => {
+                self.set_busy(false);
+                match result {
+                    Ok(()) => {
+                        self.detail = None;
+                        self.large = None;
+                        self.notify(tr("Contact deleted"));
+                        return self.load();
+                    }
+                    Err(err) => self.change_failed(&err),
+                }
+            }
+            Message::GroupText(text) => {
+                if let Some(detail) = &mut self.detail {
+                    detail.group_text = text;
+                }
+            }
+            Message::AddGroup(name) => {
+                let name = name.trim().to_owned();
+                if name.is_empty() {
+                    return Task::none();
+                }
+                let Some((id, etag)) = self.open_contact().map(|c| (c.id.clone(), c.etag.clone().unwrap_or_default()))
+                else {
+                    return Task::none();
+                };
+                if let Some(detail) = &mut self.detail {
+                    detail.group_text.clear();
+                }
+                self.set_busy(true);
+                let backend = self.backend.clone();
+                return Task::perform(async move { backend.add_to_group(id, etag, name).await }, Message::Changed);
+            }
+            Message::RemoveGroup(name) => {
+                let Some((id, etag)) = self.open_contact().map(|c| (c.id.clone(), c.etag.clone().unwrap_or_default()))
+                else {
+                    return Task::none();
+                };
+                self.set_busy(true);
+                let backend = self.backend.clone();
+                return Task::perform(async move { backend.remove_from_group(id, etag, name).await }, Message::Changed);
+            }
+            Message::Changed(result) => {
+                self.set_busy(false);
+                match result {
+                    Ok(contact) => {
+                        if let Some(detail) = &mut self.detail {
+                            detail.error = None;
+                            detail.contact = Some(contact);
+                        }
+                        return self.load();
+                    }
+                    Err(err) => {
+                        self.change_failed(&err);
+                        return self.refetch();
+                    }
+                }
+            }
+            Message::Resolve(keep) => {
+                let Some((id, etag)) = self.open_contact().map(|c| (c.id.clone(), c.etag.clone().unwrap_or_default()))
+                else {
+                    return Task::none();
+                };
+                self.set_busy(true);
+                let backend = self.backend.clone();
+                return Task::perform(async move { backend.resolve_conflict(id, keep, etag).await }, Message::Resolved);
+            }
+            Message::Resolved(result) => {
+                self.set_busy(false);
+                match result {
+                    Ok(kept) => {
+                        if let (Some(detail), Some(first)) = (&mut self.detail, kept.into_iter().next()) {
+                            detail.id = Some(first.id.clone());
+                            detail.contact = Some(first);
+                            detail.error = None;
+                        }
+                        return self.load();
+                    }
+                    Err(err) => self.change_failed(&err),
+                }
+            }
+            Message::Used => {}
+
+            Message::Edit => return self.edit(),
+            Message::NewContact(book, group) => {
+                self.menu = None;
+                let Some(book) = book.filter(|b| self.book(b).is_some_and(|b| b.writable)).or_else(|| self.new_book())
+                else {
+                    self.notify(tr("No address book here may be written."));
+                    return Task::none();
+                };
+                self.large = None;
+                self.detail = Some(Detail {
+                    id: None,
+                    contact: None,
+                    draft: Some(Draft::empty()),
+                    new_in: Some((book, group)),
+                    group_text: String::new(),
+                    busy: false,
+                    error: None,
+                });
+            }
+            Message::Draft(msg) => {
+                if let Some(draft) = self.detail.as_mut().and_then(|d| d.draft.as_mut()) {
+                    draft.update(msg);
+                }
+                self.menu = None;
+            }
+            Message::ToggleKind(list, index) => return self.update(Message::ToggleMenu(Menu::Kind(list, index))),
+            Message::ToggleAddField => return self.update(Message::ToggleMenu(Menu::AddField)),
+            Message::Cancel => {
+                self.menu = None;
+                match &mut self.detail {
+                    Some(detail) if detail.id.is_none() => self.detail = None,
+                    Some(detail) => detail.draft = None,
+                    None => {}
+                }
+            }
+            Message::Done => return self.done(),
+            Message::Saved(result) => return self.saved(result),
+            Message::Refetched(result) => {
+                if let (Ok(contact), Some(detail)) = (result, &mut self.detail)
+                    && detail.id.as_deref() == Some(contact.id.as_str())
+                {
+                    if let Some(draft) = &mut detail.draft {
+                        draft.etag = contact.etag.clone();
+                    }
+                    detail.contact = Some(contact);
+                }
+            }
+            Message::Created(group, result) => match result {
+                Ok(created) => {
+                    let id = created.id.clone();
+                    if let Some(detail) = &mut self.detail {
+                        detail.id = Some(id.clone());
+                        detail.contact = Some(created.clone());
+                        detail.draft = None;
+                        detail.new_in = None;
+                    }
+                    self.notify(tr("Contact created"));
+                    let mut tasks = vec![self.load(), self.mark_used(id.clone())];
+                    if let Some(group) = group {
+                        self.set_busy(true);
+                        let backend = self.backend.clone();
+                        let etag = created.etag.clone().unwrap_or_default();
+                        tasks.push(Task::perform(
+                            async move { backend.add_to_group(id, etag, group).await },
+                            Message::Changed,
+                        ));
+                    }
+                    return Task::batch(tasks);
+                }
+                Err(err) => {
+                    if let Some(draft) = self.detail.as_mut().and_then(|d| d.draft.as_mut()) {
+                        draft.saving = false;
+                        draft.error = Some(failed(&err));
+                    }
+                }
+            },
+            Message::ChoosePhoto => {
+                return Task::perform(choose_photo(), Message::PhotoChosen);
+            }
+            Message::PhotoChosen(None) => {}
+            Message::PhotoChosen(Some(Err(err))) => self.notify(err),
+            Message::PhotoChosen(Some(Ok(bytes))) => return self.set_photo(Some(bytes)),
+            Message::RemovePhoto => return self.set_photo(None),
+            Message::FileDropped(path) => {
+                return Task::perform(async move { Some(read_photo(&path)) }, Message::PhotoChosen);
+            }
+        }
+        Task::none()
+    }
+
+    /// The width of the content beside the sidebar (or rail), as the person dragged the sidebar.
+    pub fn list_room(&self) -> f32 {
+        let size = self.content_size();
+        let class = self.class();
+        match shell::sidebar_mode(class, self.sidebar) {
+            Some(SidebarMode::Expanded) => {
+                let limits = shell::sidebar_limits(size.width, split::min_pane());
+                (size.width - self.side.width(limits) - layout::inset()).max(0.0)
+            }
+            _ => shell::content_width(class, self.sidebar, size.width),
+        }
+    }
+
+    /// The width of the open panel beside the list (wide only), else `None`.
+    pub fn panel_room(&self) -> Option<f32> {
+        (self.detail.is_some() && torro_gui::panel::mode_for(self.class()) == torro_gui::panel::PanelMode::Beside)
+            .then(|| self.panel_split.width(torro_gui::panel::beside_limits(self.list_room())))
+    }
+
+    /// The width the list gets.
+    pub fn list_width(&self) -> f32 {
+        crate::list::list_width(self.list_room(), self.panel_room())
+    }
+
+    fn escape(&mut self) -> Task<Message> {
+        if self.menu.is_some() {
+            self.menu = None;
+        } else if self.dialog.is_some() {
+            self.dialog = None;
+        } else if self.drawer {
+            self.drawer = false;
+        } else if self.editing() {
+            return self.update(Message::Cancel);
+        } else if self.detail.is_some() {
+            self.detail = None;
+            self.large = None;
+        }
+        Task::none()
+    }
+
+    fn key(&mut self, press: Press) -> Task<Message> {
+        match press {
+            Press::Search => operation::focus(SEARCH),
+            Press::Sidebar => self.update(Message::ToggleSidebar),
+            Press::Edit => self.edit(),
+            Press::Up | Press::Down => {
+                if self.editing() {
+                    return Task::none();
+                }
+                let rows = self.rows();
+                let at = self.cursor.as_ref().and_then(|id| rows.iter().position(|row| row == id));
+                let down = press == Press::Down;
+                let next = match at {
+                    None if down => 0,
+                    None => rows.len().saturating_sub(1),
+                    Some(at) if down => (at + 1).min(rows.len().saturating_sub(1)),
+                    Some(at) => at.saturating_sub(1),
+                };
+                self.cursor = rows.get(next).cloned();
+                Task::none()
+            }
+            Press::Enter => match self.cursor.clone().or_else(|| self.rows().first().cloned()) {
+                Some(id) if !self.editing() => self.open(id),
+                _ => Task::none(),
+            },
+        }
+    }
+
+    /// The contact open in the panel, once fetched.
+    pub fn open_contact(&self) -> Option<&Contact> {
+        self.detail.as_ref()?.contact.as_ref()
+    }
+
+    fn set_busy(&mut self, busy: bool) {
+        if let Some(detail) = &mut self.detail {
+            detail.busy = busy;
+            if busy {
+                detail.error = None;
+            }
+        }
+    }
+
+    fn change_failed(&mut self, err: &ContactsError) {
+        match &mut self.detail {
+            Some(detail) => detail.error = Some(failed(err)),
+            None => self.notify(failed(err)),
+        }
+    }
+
+    /// Opens the contact `id` in the panel: fetched whole, marked as used, its large picture asked for.
+    fn open(&mut self, id: String) -> Task<Message> {
+        if self.editing() {
+            return Task::none();
+        }
+        self.cursor = Some(id.clone());
+        if self.detail.as_ref().and_then(|d| d.id.as_deref()) == Some(id.as_str()) {
+            return Task::none();
+        }
+        self.detail = Some(Detail::of(id.clone()));
+        self.large = None;
+        let backend = self.backend.clone();
+        let asked = id.clone();
+        let fetch = Task::perform(async move { backend.get_contact(asked).await }, move |result| {
+            Message::Fetched(id.clone(), result)
+        });
+        let used = self.cursor.clone().map(|id| self.mark_used(id)).unwrap_or_else(Task::none);
+        Task::batch([fetch, used])
+    }
+
+    fn refetch(&self) -> Task<Message> {
+        let Some(id) = self.detail.as_ref().and_then(|d| d.id.clone()) else { return Task::none() };
+        let backend = self.backend.clone();
+        let asked = id.clone();
+        Task::perform(async move { backend.get_contact(asked).await }, move |result| {
+            Message::Fetched(id.clone(), result)
+        })
+    }
+
+    fn mark_used(&self, id: String) -> Task<Message> {
+        let backend = self.backend.clone();
+        Task::perform(async move { backend.mark_used(id).await }, |_| Message::Used)
+    }
+
+    /// Mail or Call of a row: the system's program, and the contact counts as used.
+    fn quick(&mut self, id: String, link: Option<String>) -> Task<Message> {
+        let Some(link) = link else { return Task::none() };
+        if let Err(err) = contact::open_uri(&link) {
+            self.notify(err);
+        }
+        self.mark_used(id)
+    }
+
+    fn fetched(&mut self, id: String, result: Result<Contact, ContactsError>) -> Task<Message> {
+        let Some(detail) = self.detail.as_mut().filter(|d| d.id.as_deref() == Some(id.as_str())) else {
+            return Task::none();
+        };
+        match result {
+            Ok(contact) => {
+                let photo = contact.photo.clone();
+                detail.contact = Some(contact);
+                let mut tasks = Vec::new();
+                if self.launch.open == Some(Open::Edit) && !self.applied_edit() {
+                    tasks.push(self.edit());
+                }
+                if let Some(photo) = photo {
+                    let backend = self.backend.clone();
+                    let (asked, version) = (id.clone(), photo.version.clone());
+                    tasks.push(Task::perform(
+                        async move { backend.get_photo(asked, PhotoSize::Large).await.ok() },
+                        move |bytes| Message::LargePhoto(id.clone(), version.clone(), bytes),
+                    ));
+                }
+                Task::batch(tasks)
+            }
+            Err(err) => {
+                detail.error = Some(failed(&err));
+                Task::none()
+            }
+        }
+    }
+
+    /// `--open edit` turns the form on once, for its picture.
+    fn applied_edit(&self) -> bool {
+        self.detail.as_ref().is_some_and(|d| d.draft.is_some())
+    }
+
+    fn edit(&mut self) -> Task<Message> {
+        let Some(detail) = &mut self.detail else { return Task::none() };
+        let Some(contact) = &detail.contact else { return Task::none() };
+        if detail.draft.is_some() || contact.readonly {
+            return Task::none();
+        }
+        detail.draft = Some(Draft::of(contact));
+        Task::none()
+    }
+
+    /// "Done": a new contact is created, a changed one updated with only what changed; nothing changed,
+    /// the form just closes.
+    fn done(&mut self) -> Task<Message> {
+        self.menu = None;
+        let Some(detail) = &mut self.detail else { return Task::none() };
+        let Some(draft) = &mut detail.draft else { return Task::none() };
+        if draft.saving {
+            return Task::none();
+        }
+        draft.tried = true;
+        let changes = draft.changes();
+        let backend = self.backend.clone();
+        if let Some((book, group)) = detail.new_in.clone() {
+            if draft.is_blank() {
+                self.detail = None;
+                return Task::none();
+            }
+            draft.saving = true;
+            draft.error = None;
+            return Task::perform(async move { backend.create_contact(book, changes).await }, move |result| {
+                Message::Created(group.clone(), result)
+            });
+        }
+        if changes.is_empty() {
+            detail.draft = None;
+            return Task::none();
+        }
+        let Some(id) = detail.id.clone() else { return Task::none() };
+        let etag = draft.etag.clone().unwrap_or_default();
+        draft.saving = true;
+        draft.error = None;
+        Task::perform(async move { backend.update_contact(id, etag, changes).await }, Message::Saved)
+    }
+
+    fn saved(&mut self, result: Result<Contact, ContactsError>) -> Task<Message> {
+        let Some(detail) = &mut self.detail else { return Task::none() };
+        match result {
+            Ok(contact) => {
+                detail.contact = Some(contact);
+                detail.draft = None;
+                detail.error = None;
+                self.load()
+            }
+            // Changed elsewhere meanwhile: the form stays, the contact is fetched again for its new
+            // version, and the person checks and saves again.
+            Err(err @ ContactsError::Conflict { .. }) => {
+                if let Some(draft) = &mut detail.draft {
+                    draft.saving = false;
+                    draft.error = Some(failed(&err));
+                }
+                let Some(id) = detail.id.clone() else { return Task::none() };
+                let backend = self.backend.clone();
+                Task::perform(async move { backend.get_contact(id).await }, Message::Refetched)
+            }
+            Err(err) => {
+                if let Some(draft) = &mut detail.draft {
+                    draft.saving = false;
+                    draft.error = Some(failed(&err));
+                }
+                Task::none()
+            }
+        }
+    }
+
+    fn set_photo(&mut self, bytes: Option<Vec<u8>>) -> Task<Message> {
+        let Some((id, etag)) = self.open_contact().map(|c| (c.id.clone(), c.etag.clone().unwrap_or_default())) else {
+            return Task::none();
+        };
+        self.set_busy(true);
+        self.large = None;
+        let backend = self.backend.clone();
+        Task::perform(async move { backend.set_photo(id, etag, bytes).await }, Message::Changed)
+    }
+
+    fn loaded(&mut self, result: Result<Loaded, ContactsError>) -> Task<Message> {
+        self.loading = false;
+        match result {
+            Ok(loaded) => {
+                self.books = loaded.books;
+                self.contacts = loaded.contacts;
+                self.birthdays = loaded.birthdays;
+                self.recent = loaded.recent;
+                self.loaded = true;
+                self.error = None;
+            }
+            Err(err) => {
+                if !self.loaded {
+                    self.error = Some(failed(&err));
+                    self.loaded = true;
+                } else {
+                    self.notify(failed(&err));
+                }
+            }
+        }
+        // A view whose book is gone falls back to all contacts.
+        if let View::Book(id) | View::Group(id, _) = &self.view
+            && self.book(id).is_none()
+        {
+            self.view = View::All;
+        }
+        let open = self.apply_open();
+        Task::batch([open, self.fetch_photos()])
+    }
+
+    /// `--demo --open <state>`: what the state asks for, once, after the first load. The last three set
+    /// what a load could bring (no contacts, no account, a failure).
+    fn apply_open(&mut self) -> Task<Message> {
+        if self.applied {
+            return Task::none();
+        }
+        self.applied = true;
+        let Some(open) = self.launch.open else { return Task::none() };
+        let mut tasks = Vec::new();
+        match open {
+            Open::GroupMenu => self.menu = Some(Menu::GroupBy),
+            Open::Search | Open::MiniSearch => tasks.push(self.update(Message::Search("an".into()))),
+            Open::New => tasks.push(self.update(Message::NewContact(None, None))),
+            Open::Birthdays => self.view = View::Birthdays,
+            Open::Empty => {
+                self.contacts.clear();
+                self.birthdays.clear();
+                self.recent.clear();
+            }
+            Open::NoAccount => {
+                self.books.clear();
+                self.contacts.clear();
+                self.birthdays.clear();
+            }
+            Open::Error => self.error = Some(failed(&ContactsError::Offline)),
+            Open::List | Open::ByCity | Open::ByBook => {}
+            Open::Contact
+            | Open::Edit
+            | Open::Conflict
+            | Open::Readonly
+            | Open::Pending
+            | Open::Delete
+            | Open::Move => {}
+        }
+        if let Some(uid) = open.contact() {
+            let suffix = format!("/{uid}");
+            if let Some(id) = self.contacts.iter().find(|c| c.id.ends_with(&suffix)).map(|c| c.id.clone()) {
+                tasks.push(self.open(id));
+            }
+            match open {
+                Open::Delete => self.dialog = Some(Dialog::Delete),
+                Open::Move => self.menu = Some(Menu::Move),
+                _ => {}
+            }
+        }
+        Task::batch(tasks)
+    }
+
+    /// The next batch of small pictures: contacts with a picture whose version is not here yet.
+    fn fetch_photos(&mut self) -> Task<Message> {
+        if self.photos_busy {
+            return Task::none();
+        }
+        let wanted: Vec<(String, String)> = self
+            .contacts
+            .iter()
+            .filter_map(|c| c.photo.as_ref().map(|p| (c.id.clone(), p.version.clone())))
+            .filter(|(id, version)| self.photos.get(id).is_none_or(|(have, _)| have != version))
+            .take(PHOTO_BATCH)
+            .collect();
+        if wanted.is_empty() {
+            return Task::none();
+        }
+        self.photos_busy = true;
+        let backend = self.backend.clone();
+        Task::perform(
+            async move {
+                let mut batch = Vec::new();
+                for (id, version) in wanted {
+                    let bytes = backend.get_photo(id.clone(), PhotoSize::Small).await.ok();
+                    batch.push((id, version, bytes));
+                }
+                batch
+            },
+            Message::Photos,
+        )
+    }
+}
+
+/// A picture the core sent (PNG or JPEG), decoded here as the chat does, so it draws at once; `None`
+/// for bytes that are no picture.
+pub fn picture(bytes: &[u8]) -> Option<Handle> {
+    let decoded = image::load_from_memory(bytes).ok()?.to_rgba8();
+    Some(Handle::from_rgba(decoded.width(), decoded.height(), decoded.into_raw()))
+}
+
+/// What "Copy" of a row puts on the clipboard: the name, the main mail address and number, a line each.
+pub fn copy_text(contact: &ContactSummary) -> String {
+    [Some(contact.display_name.clone()), contact.email.clone(), contact.phone.clone()]
+        .into_iter()
+        .flatten()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The keys of the list (see [`Press`]), only those no widget took: a text field types `/` itself.
+fn key_press(event: iced::Event, status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
+    let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event else { return None };
+    let command = modifiers.command();
+    // Ctrl+F and Ctrl+E work from a field too.
+    match key.as_ref() {
+        keyboard::Key::Character("f") if command => return Some(Message::Key(Press::Search)),
+        keyboard::Key::Character("e") if command => return Some(Message::Key(Press::Edit)),
+        _ => {}
+    }
+    if status == iced::event::Status::Captured {
+        return None;
+    }
+    if shell::is_sidebar_key(&key, modifiers) {
+        return Some(Message::Key(Press::Sidebar));
+    }
+    if command || modifiers.alt() {
+        return None;
+    }
+    match key.as_ref() {
+        keyboard::Key::Character("/") => Some(Message::Key(Press::Search)),
+        keyboard::Key::Named(keyboard::key::Named::ArrowUp) => Some(Message::Key(Press::Up)),
+        keyboard::Key::Named(keyboard::key::Named::ArrowDown) => Some(Message::Key(Press::Down)),
+        keyboard::Key::Named(keyboard::key::Named::Enter) => Some(Message::Key(Press::Enter)),
+        _ => None,
+    }
+}
+
+/// A file dropped on the window.
+fn file_drop(event: iced::Event, _status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
+    match event {
+        iced::Event::Window(iced::window::Event::FileDropped(path)) => Some(Message::FileDropped(path)),
+        _ => None,
+    }
+}
+
+/// The system's dialog "Choose picture"; the picture scaled for sending ([`prepare_photo`]). `None`
+/// when the person cancels.
+async fn choose_photo() -> Option<Result<Vec<u8>, String>> {
+    let file = rfd::AsyncFileDialog::new()
+        .set_title(tr("Choose picture"))
+        .add_filter(tr("Pictures"), &["png", "jpg", "jpeg"])
+        .pick_file()
+        .await?;
+    Some(prepare_photo(&file.read().await))
+}
+
+/// The picture at `path`, scaled for sending.
+fn read_photo(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    let bytes = std::fs::read(path).map_err(|_| tr("The picture could not be read.").to_owned())?;
+    prepare_photo(&bytes)
+}
+
+/// A picture as the core takes it: decoded (PNG or JPEG), scaled down to at most [`PHOTO_EDGE`] on its
+/// longer edge, as JPEG, and no larger than [`MAX_PHOTO_BYTES`].
+pub fn prepare_photo(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let picture = image::load_from_memory(bytes).map_err(|_| tr("This is no picture Torro can read.").to_owned())?;
+    let picture = if picture.width() > PHOTO_EDGE || picture.height() > PHOTO_EDGE {
+        picture.resize(PHOTO_EDGE, PHOTO_EDGE, image::imageops::FilterType::Lanczos3)
+    } else {
+        picture
+    };
+    let mut out = std::io::Cursor::new(Vec::new());
+    picture
+        .to_rgb8()
+        .write_to(&mut out, image::ImageFormat::Jpeg)
+        .map_err(|_| tr("The picture could not be saved.").to_owned())?;
+    let out = out.into_inner();
+    if out.len() > MAX_PHOTO_BYTES {
+        return Err(tr("The picture is too large.").to_owned());
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests;
