@@ -528,8 +528,10 @@ Unterhaltung gemerkt werden können, siehe „Schweben“):
     Dateien derselben Nachricht bleiben im Rahmen der Blase. Ein Klick öffnet „Bild groß“.
   - **Mehrere Bilder** (#674): Talk macht aus jeder Datei eine eigene Nachricht. Bilder einer Person, die direkt
     aufeinander folgen und höchstens eine Minute auseinander liegen, stehen deshalb als **Raster** in einer
-    randlosen Blase: zwei nebeneinander, drei als ein großes links und zwei rechts, vier und mehr als 2 × 2, ab fünf
-    mit „+N“ (die Zahl der nicht gezeigten) auf dem vierten. Teil des Rasters ist eine Nachricht ohne Zitat mit
+    randlosen Blase: zwei nebeneinander, drei als ein großes links und zwei rechts, vier als 2 × 2, höchstens
+    `size::panel()` hoch. Nach vier Bildern beginnt ein neues Raster, damit jedes Bild seine Kachel und damit das
+    Menü seiner Nachricht behält (bei der Umsetzung entschieden). Nur eine einzelne Nachricht mit mehr als vier
+    Bildern zeigt 2 × 2 mit „+N“ (die Zahl der nicht gezeigten) auf dem vierten. Teil des Rasters ist eine Nachricht ohne Zitat mit
     genau einem Bild mit Vorschau (kein Video, kein SVG), deren Text leer ist oder nur den Dateinamen nennt; nur die
     letzte darf eine eigene Beschriftung tragen, sie beendet das Raster. Kein Tagestrenner und kein „New“
     dazwischen. Eine Nachricht mit mehreren Dateien, alle Bilder mit Vorschau, ist allein ein Raster. Antworten,

@@ -21,6 +21,10 @@ pub const RUN_GAP: Duration = Duration::minutes(5);
 /// message of each file sent at once and stamps each when it is shared, so they come seconds apart.
 pub const ALBUM_GAP: Duration = Duration::seconds(60);
 
+/// The most pictures of several messages in one grid: a fifth starts the next, so every picture
+/// keeps its tile and with it its message's menu.
+pub const ALBUM_MAX: usize = 4;
+
 /// The longest word after `@` that still asks for suggestions; a longer one is no mention.
 const MENTION_MAX: usize = 40;
 
@@ -98,7 +102,7 @@ fn runs(messages: &[Message], new_after: Option<u64>) -> Vec<Item<'_>> {
 
 /// `items` with pictures sent at once joined into [`Item::Album`]: two or more pictures in a row
 /// ([`album_picture`]) of one run, each within [`ALBUM_GAP`] of the one before and no divider
-/// between them; the first with a caption of its own ends the grid. A message with several files,
+/// between them, at most [`ALBUM_MAX`]; the first with a caption of its own ends the grid. A message with several files,
 /// all pictures with a preview, is a grid of its own.
 fn albums(items: Vec<Item<'_>>) -> Vec<Item<'_>> {
     let mut out = Vec::with_capacity(items.len());
@@ -122,7 +126,7 @@ fn albums(items: Vec<Item<'_>>) -> Vec<Item<'_>> {
         let joins = pending
             .last()
             .is_some_and(|&(before, _, _)| same_run(before, message) && message.at - before.at <= ALBUM_GAP);
-        if !joins {
+        if !joins || pending.len() >= ALBUM_MAX {
             flush_album(&mut out, &mut pending);
         }
         pending.push((message, first, last));
@@ -407,6 +411,22 @@ mod tests {
         }
         let mixed = kinds(&items(&messages, None));
         assert!(!mixed.iter().any(|kind| kind.starts_with('[')), "{mixed:?}");
+    }
+
+    #[test]
+    fn a_fifth_picture_starts_the_next_grid() {
+        let mut messages = design();
+        let caption = std::mem::replace(&mut numbered(&mut messages, 16).text, "Header D.png".into());
+        let mut more = Vec::new();
+        for number in 17..=18 {
+            let mut next = numbered(&mut messages, 16).clone();
+            next.id = torro_chat::message_id(DESIGN, number);
+            more.push(next);
+        }
+        more[1].text = caption;
+        messages.extend(more);
+        let kinds = kinds(&items(&messages, None));
+        assert_eq!(kinds[kinds.len() - 2..], ["[13,14,15,16]<", "[17,18]>"], "{kinds:?}");
     }
 
     #[test]
