@@ -281,6 +281,8 @@ pub struct App {
     pub(crate) error: Option<String>,
     /// `--open` was applied once after the first load.
     applied: bool,
+    /// `--open edit`: the first contact fetched opens in the form.
+    edit_on_fetch: bool,
 
     pub(crate) view: View,
     pub(crate) group_by: GroupBy,
@@ -342,6 +344,7 @@ impl App {
             loading: false,
             error: None,
             applied: false,
+            edit_on_fetch: open == Some(Open::Edit),
             view: View::All,
             group_by: match open {
                 Some(Open::ByCity) => GroupBy::City,
@@ -911,11 +914,13 @@ impl App {
                 self.set_busy(false);
                 match result {
                     Ok(contact) => {
+                        // A new picture (or none) shows large at once.
+                        let picture = self.large_photo(&contact);
                         if let Some(detail) = &mut self.detail {
                             detail.error = None;
                             detail.contact = Some(contact);
                         }
-                        return self.load();
+                        return Task::batch([self.load(), picture]);
                     }
                     Err(err) => {
                         self.change_failed(&err);
@@ -1171,37 +1176,44 @@ impl App {
     }
 
     fn fetched(&mut self, id: String, result: Result<Contact, ContactsError>) -> Task<Message> {
-        let Some(detail) = self.detail.as_mut().filter(|d| d.id.as_deref() == Some(id.as_str())) else {
+        if self.detail.as_ref().and_then(|d| d.id.as_deref()) != Some(id.as_str()) {
             return Task::none();
-        };
+        }
         match result {
             Ok(contact) => {
-                let photo = contact.photo.clone();
-                detail.contact = Some(contact);
-                let mut tasks = Vec::new();
-                if self.launch.open == Some(Open::Edit) && !self.applied_edit() {
-                    tasks.push(self.edit());
+                let picture = self.large_photo(&contact);
+                if let Some(detail) = &mut self.detail {
+                    detail.contact = Some(contact);
                 }
-                if let Some(photo) = photo {
-                    let backend = self.backend.clone();
-                    let (asked, version) = (id.clone(), photo.version.clone());
-                    tasks.push(Task::perform(
-                        async move { backend.get_photo(asked, PhotoSize::Large).await.ok() },
-                        move |bytes| Message::LargePhoto(id.clone(), version.clone(), bytes),
-                    ));
+                // `--open edit` turns the form on once, for its picture.
+                if std::mem::take(&mut self.edit_on_fetch) {
+                    return Task::batch([self.edit(), picture]);
                 }
-                Task::batch(tasks)
+                picture
             }
             Err(err) => {
-                detail.error = Some(failed(&err));
+                if let Some(detail) = &mut self.detail {
+                    detail.error = Some(failed(&err));
+                }
                 Task::none()
             }
         }
     }
 
-    /// `--open edit` turns the form on once, for its picture.
-    fn applied_edit(&self) -> bool {
-        self.detail.as_ref().is_some_and(|d| d.draft.is_some())
+    /// Asks for the large picture of `contact`, when it has one and it is not here yet.
+    fn large_photo(&mut self, contact: &Contact) -> Task<Message> {
+        let Some(photo) = &contact.photo else {
+            self.large = None;
+            return Task::none();
+        };
+        if self.large.as_ref().is_some_and(|(id, version, _)| *id == contact.id && *version == photo.version) {
+            return Task::none();
+        }
+        let backend = self.backend.clone();
+        let (id, asked, version) = (contact.id.clone(), contact.id.clone(), photo.version.clone());
+        Task::perform(async move { backend.get_photo(asked, PhotoSize::Large).await.ok() }, move |bytes| {
+            Message::LargePhoto(id.clone(), version.clone(), bytes)
+        })
     }
 
     fn edit(&mut self) -> Task<Message> {
