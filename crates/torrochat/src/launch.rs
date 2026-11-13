@@ -366,8 +366,9 @@ mod tests {
 
     /// Issue #667: every window but the contact list has its entry in the core's list of floating
     /// windows, so AeroSpace and GlazeWM float it as it appears. The `match` names every kind of
-    /// [`Window`]: a new one (a call or device window) does not compile here until its flag is named,
-    /// and then fails until it is entered in `FLOATING_WINDOWS`.
+    /// [`Window`], so a new one (a call or device window) does not compile here until its flag is
+    /// named; whoever names it adds its start to `starts` too, and the count at the end fails as long as
+    /// `FLOATING_WINDOWS` and `starts` differ.
     #[test]
     fn every_side_window_is_a_floating_window() {
         use torro_core::app::{CHAT_CONVERSATION_CLASS, CHAT_RING_CLASS, CHAT_VIEWER_CLASS, FLOATING_WINDOWS};
