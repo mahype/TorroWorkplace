@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Duration};
 
 use super::{ME, text};
-use crate::files::{PreparedFile, SharedItem, SharedKind, UploadProgress, UploadState};
+use crate::files::{PreparedFile, PreviewSize, SharedItem, SharedKind, UploadProgress, UploadState};
 use crate::model::{FileRef, LinkCard, Message, MessageKind};
 use crate::source::ChatError;
 
@@ -21,6 +21,10 @@ pub const DESIGN: &str = "nextcloud:anna@cloud.example.org/design4sync";
 
 /// The longer side of a large picture of the demo: enough for the viewer, quick to draw.
 const LARGE_EDGE: u32 = 800;
+
+/// The longer side of a picture in the history (`chat.get_preview` medium): smaller than the real
+/// 1024, so the demo stays quick to draw, yet sharp at the history's largest size.
+const MEDIUM_EDGE: u32 = 640;
 
 /// The longer side of a small picture (`chat.get_preview` small).
 const SMALL_EDGE: u32 = 256;
@@ -40,8 +44,9 @@ fn file(id: &str, name: &str, size: u64, content_type: &str, preview: bool, edge
     }
 }
 
-/// The messages 3 to 12 of [`DESIGN`], four hours to a little over three before `now`: older than
-/// the sample's other recent messages, so the order of the conversations stays as it was.
+/// The messages 3 to 16 of [`DESIGN`], four hours to a little over three before `now`: older than
+/// the sample's other recent messages, so the order of the conversations stays as it was. Gesa's
+/// last four are pictures sent at once (13 to 16), which the chat window shows as one grid.
 pub(super) fn design_media(now: DateTime<chrono::Utc>) -> Vec<Message> {
     let ago = |minutes: i64| now - Duration::minutes(minutes);
     let shared = |number: u64, user: &str, name: &str, minutes: i64, caption: &str, file: FileRef| {
@@ -126,6 +131,38 @@ pub(super) fn design_media(now: DateTime<chrono::Utc>) -> Vec<Message> {
         palette,
         grids,
         shared(12, "elif", elif, 196, "logo.svg", file("5112", "logo.svg", 12_288, "image/svg+xml", false, None)),
+        shared(
+            13,
+            "gesa",
+            gesa,
+            195,
+            "Header A.png",
+            file("5113", "Header A.png", 964_812, "image/png", true, Some((1600, 900))),
+        ),
+        shared(
+            14,
+            "gesa",
+            gesa,
+            195,
+            "Header B.png",
+            file("5114", "Header B.png", 812_302, "image/png", true, Some((1200, 1200))),
+        ),
+        shared(
+            15,
+            "gesa",
+            gesa,
+            195,
+            "Header C.jpg",
+            file("5115", "Header C.jpg", 402_771, "image/jpeg", true, Some((900, 1200))),
+        ),
+        shared(
+            16,
+            "gesa",
+            gesa,
+            195,
+            "Options for the new header",
+            file("5116", "Header D.png", 1_102_448, "image/png", true, Some((1600, 1000))),
+        ),
     ]
 }
 
@@ -288,9 +325,13 @@ pub(super) fn fitted(width: u32, height: u32, edge: u32) -> (u32, u32) {
     (scale(width), scale(height))
 }
 
-/// The edge of a picture for `large`.
-pub(super) fn edge(large: bool) -> u32 {
-    if large { LARGE_EDGE } else { SMALL_EDGE }
+/// The edge of a picture of `size`.
+pub(super) fn edge(size: PreviewSize) -> u32 {
+    match size {
+        PreviewSize::Small => SMALL_EDGE,
+        PreviewSize::Medium => MEDIUM_EDGE,
+        PreviewSize::Large => LARGE_EDGE,
+    }
 }
 
 /// A picture of the sample as PNG, `width` × `height`: a soft diagonal blend of two colours picked by
@@ -348,6 +389,10 @@ mod tests {
         assert_eq!(kind_of_bytes(&png), ("image/png", Some((40, 25))));
         assert_eq!(fitted(1600, 1000, 256), (256, 160));
         assert_eq!(fitted(100, 50, 256), (100, 50));
+        assert!(
+            edge(PreviewSize::Small) < edge(PreviewSize::Medium)
+                && edge(PreviewSize::Medium) < edge(PreviewSize::Large)
+        );
         assert_eq!(DESIGN, crate::model::conversation_id(super::super::ACCOUNT, "design4sync"));
     }
 
