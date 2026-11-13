@@ -2437,6 +2437,7 @@ mod tests {
             Request::GetMail { id, include_body: true, include_html } => Response::MailMessage {
                 message: Message {
                     warnings: Vec::new(),
+                    external: None,
                     summary: summary(&id, "f:inbox"),
                     cc: Vec::new(),
                     reply_to: Vec::new(),

@@ -2983,6 +2983,10 @@ impl Core {
         // Tests bring their own mail accounts (`Core::with_mail`); none may reach the user's.
         let mail = if cfg!(test) { MailService::without_home() } else { MailService::system() };
         let mail = Arc::new(mail.with_calendars(Arc::clone(&pim)));
+        // What a mail's HTML may load (issue #672); `Core::with_mail` sets it for a mail service of a
+        // test.
+        let privacy = settings.clone();
+        mail.set_privacy(Arc::new(move || privacy.current().privacy));
         let contacts = Arc::new(ContactsService::system(Arc::clone(&pim)));
         let chat = Arc::new(ChatService::system(Arc::clone(&pim)));
         // Settings › Privacy (issue #672), read afresh for every page of messages.
@@ -3506,6 +3510,8 @@ impl Core {
     /// part of a mail account from this core's calendar service, as the user's does.
     #[cfg(test)]
     pub(crate) fn with_mail(mut self, mail: MailService) -> Core {
+        let privacy = self.settings.clone();
+        mail.set_privacy(Arc::new(move || privacy.current().privacy));
         self.mail = Arc::new(mail.with_calendars(Arc::clone(&self.pim)));
         self
     }
@@ -4056,9 +4062,14 @@ impl Core {
     /// from `accounts_file` (task E4.1, [`crate::mail::inbox_feed`]). Part of [`Core::start`],
     /// before the mail sync starts, so no change is missed.
     pub(crate) fn start_mail_feed(&self, accounts_file: Option<std::path::PathBuf>) {
-        // "Logos of known senders" (issue #453), read afresh for every mail and every answer.
+        // "Logos of known senders" (issue #453), read afresh for every mail and every answer; "Never show"
+        // of Settings › Privacy stops them too (issue #672): the switch that stops everything.
         let settings = self.settings.clone();
-        self.mail.set_logo_switch(Arc::new(move || settings.current().mail_sender_logos));
+        self.mail.set_logo_switch(Arc::new(move || {
+            let now = settings.current();
+            now.mail_sender_logos && now.privacy.content != torro_core::privacy::ForeignContent::Never
+        }));
+
         crate::mail::inbox_feed::start_with(
             Arc::clone(&self.inbox),
             Arc::clone(&self.mail),
@@ -16757,6 +16768,25 @@ mod tests {
         let stored = settings(&core).await.privacy;
         assert_eq!(stored.content, ForeignContent::Never);
         assert_eq!(stored.providers.get("youtube"), Some(&ProviderChoice::Blocked));
+    }
+
+    /// Issue #672, decision 3: "Never show" stops the logos of senders too, whatever "Logos of known
+    /// senders" says; the other levels leave them to that switch.
+    #[tokio::test]
+    async fn never_show_stops_the_logos_of_senders() {
+        use serde_json::json;
+        use torro_ipc::SettingKey;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        core.start_mail_feed(None);
+        let set = |key, value| core.settings.set(key, &value).expect("set");
+        assert!(core.mail.sender_logos().on(), "on unless turned off");
+        set(SettingKey::PrivacyContent, json!("never"));
+        assert!(!core.mail.sender_logos().on());
+        set(SettingKey::PrivacyContent, json!("always"));
+        assert!(core.mail.sender_logos().on());
+        set(SettingKey::MailSenderLogos, json!(false));
+        assert!(!core.mail.sender_logos().on());
     }
 
     /// Issue #304, task WD.1: the commands of the tool `files` go by its switch and selection like the PDF

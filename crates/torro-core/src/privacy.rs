@@ -12,7 +12,7 @@
 //! - [`Privacy::decide`] is the one rule every part of the suite follows; the service decides, the windows
 //!   only ask.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 
 use schemars::JsonSchema;
@@ -84,6 +84,10 @@ pub struct Provider {
     /// Its name for people: `YouTube`, else the key.
     pub name: String,
 }
+
+/// What Settings › Privacy says now, read afresh for every use: what the services of the core are
+/// given to ask (the settings file in the core, a fixed value in tests).
+pub type Reader = std::sync::Arc<dyn Fn() -> Privacy + Send + Sync>;
 
 /// What to do with content of one host.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -261,6 +265,38 @@ pub fn provider_of(host: &str) -> Option<Provider> {
     valid_key(domain).then(|| Provider { key: domain.to_string(), name: domain.to_string() })
 }
 
+/// What a mail whose HTML names `hosts` may load (issue #672, `mail.get_message`), by the rule of
+/// [`Privacy::decide`]: everything at "Always show"; at "Ask" the hosts of allowed providers in `load`
+/// and the providers not asked about yet in `ask`, each with its hosts; a blocked provider, a host
+/// without one and everything at "Never show" in neither. `None` without hosts: nothing to load.
+pub fn external_content(privacy: &Privacy, hosts: &BTreeSet<String>) -> Option<torro_mail::ExternalContent> {
+    if hosts.is_empty() {
+        return None;
+    }
+    let mut external =
+        torro_mail::ExternalContent { all: privacy.content == ForeignContent::Always, ..Default::default() };
+    if external.all {
+        return Some(external);
+    }
+    let mut ask: BTreeMap<Provider, BTreeSet<String>> = BTreeMap::new();
+    for host in hosts {
+        match privacy.decide(host) {
+            Decision::Load => {
+                external.load.insert(normalize_host(host));
+            }
+            Decision::Ask(provider) => {
+                ask.entry(provider).or_default().insert(normalize_host(host));
+            }
+            Decision::Skip => {}
+        }
+    }
+    external.ask = ask
+        .into_iter()
+        .map(|(provider, hosts)| torro_mail::ExternalProvider { key: provider.key, name: provider.name, hosts })
+        .collect();
+    Some(external)
+}
+
 /// The name of the provider with `key`, for the list in the settings: a [`KNOWN`] service's, else the key.
 pub fn name_of(key: &str) -> String {
     KNOWN.iter().find(|known| known.key == key).map_or_else(|| key.to_string(), |known| known.name.to_string())
@@ -350,6 +386,34 @@ mod tests {
         }
         privacy.providers = (0..=MAX_PROVIDERS).map(|n| (format!("p{n}.example"), ProviderChoice::Blocked)).collect();
         assert!(privacy.check_providers().is_err(), "one more than the most");
+    }
+
+    #[test]
+    fn a_mail_loads_what_the_level_and_the_list_allow() {
+        let hosts: BTreeSet<String> =
+            ["i.ytimg.com", "img.mailchimp.com", "track.mailchimp.com", "cdn.example.org", "localhost"]
+                .into_iter()
+                .map(String::from)
+                .collect();
+        assert_eq!(external_content(&Privacy::default(), &BTreeSet::new()), None, "nothing to load");
+        let mut privacy = Privacy::default();
+        privacy.providers.insert("youtube".into(), ProviderChoice::Allowed);
+        privacy.providers.insert("example.org".into(), ProviderChoice::Blocked);
+        let asked = external_content(&privacy, &hosts).expect("hosts");
+        assert!(!asked.all);
+        assert_eq!(asked.load, BTreeSet::from(["i.ytimg.com".to_string()]));
+        assert_eq!(asked.ask.len(), 1, "the blocked one and the host without provider are in neither");
+        assert_eq!((asked.ask[0].key.as_str(), asked.ask[0].name.as_str()), ("mailchimp.com", "mailchimp.com"));
+        assert_eq!(
+            asked.ask[0].hosts,
+            BTreeSet::from(["img.mailchimp.com".to_string(), "track.mailchimp.com".to_string()])
+        );
+        privacy.content = ForeignContent::Always;
+        let always = external_content(&privacy, &hosts).expect("hosts");
+        assert!(always.all && always.ask.is_empty());
+        privacy.content = ForeignContent::Never;
+        let never = external_content(&privacy, &hosts).expect("hosts");
+        assert!(!never.all && never.load.is_empty() && never.ask.is_empty());
     }
 
     #[test]

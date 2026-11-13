@@ -4,6 +4,8 @@
 //! `m:<random>`) and resolves them to account, folder path and UID itself. A message keeps its id
 //! when it is moved, so a client may hold on to it. Clients never build or take apart an id.
 
+use std::collections::BTreeSet;
+
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -294,6 +296,41 @@ pub struct Message {
     /// words about data from outside: they say what looks wrong, not that the mail is fraud.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<crate::warning::WarningSign>,
+    /// What the HTML would load from other servers and what Settings › Privacy says about it (issue #672,
+    /// [`ExternalContent`]). Filled by `mail.get_message` only, when it hands out `html` that names
+    /// pictures or styles on the web; `None` everywhere else. A window that draws the HTML loads from the
+    /// hosts it allows and nothing else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external: Option<ExternalContent>,
+}
+
+/// The pictures and styles of a mail on other servers (issue #672): loading one tells its server that,
+/// and when, the mail was read. What may load follows Settings › Privacy.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ExternalContent {
+    /// Settings › Privacy says "Always show": everything the HTML names loads.
+    #[serde(default)]
+    pub all: bool,
+    /// The hosts that may load now (providers the person allowed), in small letters.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub load: BTreeSet<String>,
+    /// The providers not asked about yet, with their hosts: they load only after the person answers
+    /// ("Show once" in the window, or "Always allow …" in Settings › Privacy). Empty at "Always show" and
+    /// "Never show"; a provider the person blocked is in neither list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ask: Vec<ExternalProvider>,
+}
+
+/// One provider of a mail's pictures not asked about yet (issue #672).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ExternalProvider {
+    /// Its key in Settings › Privacy (`settings.set_setting privacy_provider`): its domain, an IP address
+    /// or `youtube`.
+    pub key: String,
+    /// Its name for people.
+    pub name: String,
+    /// The hosts of the mail that belong to it.
+    pub hosts: BTreeSet<String>,
 }
 
 /// One attachment of a message, without its content (`mail.get_attachment` fetches it).

@@ -300,6 +300,8 @@ impl ReadMessage {
         let has_attachments = self.has_attachments();
         Message {
             warnings: Vec::new(),
+            // Filled by the core in `mail.get_message` only (issue #672).
+            external: None,
             summary: MessageSummary {
                 caught: false,
                 id: place.id,

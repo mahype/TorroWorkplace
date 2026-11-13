@@ -72,11 +72,8 @@ enum Remotes {
     Fixed(Vec<(String, Arc<fake::Server>)>),
 }
 
-/// What Settings › Privacy says now (issue #672, `torro_core::privacy`), read afresh for every use.
-pub type PrivacyReader = Arc<dyn Fn() -> torro_core::privacy::Privacy + Send + Sync>;
-
 /// The reader the service asks; `ask` with nobody on the list until [`ChatService::set_privacy`].
-struct Privacy(RwLock<PrivacyReader>);
+struct Privacy(RwLock<torro_core::privacy::Reader>);
 
 impl Default for Privacy {
     fn default() -> Privacy {
@@ -145,7 +142,7 @@ impl ChatService {
 
     /// Sets what says whether content from other providers loads (`privacy` of the settings, issue
     /// #672); without it every provider is asked about.
-    pub fn set_privacy(&self, reader: PrivacyReader) {
+    pub fn set_privacy(&self, reader: torro_core::privacy::Reader) {
         *self.privacy.0.write().unwrap_or_else(PoisonError::into_inner) = reader;
     }
 

@@ -93,6 +93,107 @@ pub fn valid_cid(id: &str) -> bool {
     !id.is_empty() && id.len() <= 250 && id.bytes().all(|c| c.is_ascii_alphanumeric() || b"@._+-".contains(&c))
 }
 
+/// The hosts a received mail's HTML would load from (issue #672): every `http` and `https` address in
+/// `src`, `srcset` (each candidate), `background` and `poster`, and in CSS – `url(…)` and `@import` of a
+/// `<style>` element and of `style` attributes. Hosts as the suite compares them: small letters,
+/// Punycode, without port and the dot at the end (`url::Url::host_str`, then
+/// `torro_core::privacy::normalize_host`'s rule). Relative addresses, `cid:` and `data:` load nothing
+/// from elsewhere and are left out.
+///
+/// Meant for the HTML the core cleaned (task M8.1), so a tag it misreads is rare; what it misses is not
+/// loaded by the mail window (which loads only the hosts it is given), so a miss keeps a picture away
+/// rather than letting one through.
+pub fn external_hosts(html: &str) -> std::collections::BTreeSet<String> {
+    let mut hosts = std::collections::BTreeSet::new();
+    let mut take = |address: &str| {
+        if let Some(host) = web_host(address) {
+            hosts.insert(host);
+        }
+    };
+    let mut rest = html;
+    while let Some(at) = rest.find('<') {
+        rest = &rest[at..];
+        rest = match token(rest) {
+            Token::Comment(after) | Token::Declaration(after) | Token::Close { after, .. } | Token::Text(after) => {
+                after
+            }
+            Token::Open { name, attrs, after } => {
+                for (attr, value) in &attrs {
+                    match attr.as_str() {
+                        "src" | "background" | "poster" => take(value),
+                        "srcset" => value
+                            .split(',')
+                            .filter_map(|candidate| candidate.split_whitespace().next())
+                            .for_each(&mut take),
+                        "style" => css_addresses(value).iter().for_each(|address| take(address)),
+                        _ => {}
+                    }
+                }
+                if name == "style" {
+                    let lower = after.to_ascii_lowercase();
+                    let end = lower.find("</style").unwrap_or(after.len());
+                    css_addresses(&after[..end]).iter().for_each(|address| take(address));
+                    &after[end..]
+                } else {
+                    after
+                }
+            }
+        };
+    }
+    hosts
+}
+
+/// The host of `address` when it is an absolute `http` or `https` address, as [`external_hosts`] keeps
+/// it.
+fn web_host(address: &str) -> Option<String> {
+    let url = url::Url::parse(address.trim()).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = url.host_str()?;
+    let host = host.strip_prefix('[').and_then(|inner| inner.strip_suffix(']')).unwrap_or(host);
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    (!host.is_empty()).then_some(host)
+}
+
+/// The addresses CSS names: the argument of every `url(…)` and the string after `@import`, quotes and
+/// spaces taken off. Escapes are not undone: an address written with them is left as it is and most
+/// likely does not parse, which loads nothing.
+fn css_addresses(css: &str) -> Vec<String> {
+    let lower = css.to_ascii_lowercase();
+    let mut found = Vec::new();
+    let mut at = 0;
+    while let Some(start) = lower[at..].find("url(") {
+        let open = at + start + "url(".len();
+        let close = lower[open..].find(')').map_or(css.len(), |end| open + end);
+        found.push(unquoted(&css[open..close]));
+        at = close.min(css.len());
+    }
+    let mut at = 0;
+    while let Some(start) = lower[at..].find("@import") {
+        let after = at + start + "@import".len();
+        let rest = css[after..].trim_start();
+        // `@import url(…)` was taken above; a bare string is the other way to write it.
+        if let Some(quote @ ('"' | '\'')) = rest.chars().next() {
+            let inner = &rest[1..];
+            found.push(inner[..inner.find(quote).unwrap_or(inner.len())].to_owned());
+        }
+        at = after;
+    }
+    found
+}
+
+/// `text` without the spaces around it and one pair of quotes.
+fn unquoted(text: &str) -> String {
+    let text = text.trim();
+    for quote in ['"', '\''] {
+        if let Some(inner) = text.strip_prefix(quote).and_then(|rest| rest.strip_suffix(quote)) {
+            return inner.trim().to_owned();
+        }
+    }
+    text.to_owned()
+}
+
 /// Every kept image reference, in document order.
 pub fn image_refs(html: &str) -> Vec<String> {
     to_blocks(html)
@@ -1477,6 +1578,42 @@ mod tests {
         assert!(matches!(blocks.last(), Some(super::HtmlBlock::Image { quoted: true, .. })));
     }
     use super::*;
+
+    /// Issue #672: every place a received mail names a picture or a style sheet on the web, by host.
+    #[test]
+    fn external_hosts_are_found_wherever_the_html_names_them() {
+        let html = r#"<html><head><style>
+            @import "https://Fonts.Example.COM./a.css";
+            @import url('https://import.example.org:8443/b.css');
+            .hero { background-image: url( "https://bg.example.net/x.png" ) }
+            .rel { background: url(/relative.png) }
+            </style></head><body background="http://body.example.org/b.gif">
+            <img src="https://track.mailchimp.com/open?u=1" alt="">
+            <img srcset="https://a.cdn.example/1x.png 1x, https://b.cdn.example/2x.png 2x">
+            <video poster="https://poster.example.org/p.jpg"></video>
+            <p style="background: URL(https://inline.example.org/i.png)">Hi</p>
+            <img src="cid:logo@example.org"><img src="data:image/png;base64,AAAA">
+            <img src="//schemeless.example.org/x.png"><a href="https://link.example.org/">a link loads nothing</a>
+            <img src="https://[2001:db8::1]/v6.png"><img src="javascript:alert(1)">
+            </body></html>"#;
+        let hosts: Vec<String> = external_hosts(html).into_iter().collect();
+        assert_eq!(
+            hosts,
+            [
+                "2001:db8::1",
+                "a.cdn.example",
+                "b.cdn.example",
+                "bg.example.net",
+                "body.example.org",
+                "fonts.example.com",
+                "import.example.org",
+                "inline.example.org",
+                "poster.example.org",
+                "track.mailchimp.com",
+            ]
+        );
+        assert!(external_hosts("<p>Only text, no pictures.</p>").is_empty());
+    }
 
     #[test]
     fn scripts_styles_images_and_handlers_go_and_formatting_stays() {
