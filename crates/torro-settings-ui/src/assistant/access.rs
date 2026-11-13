@@ -6,9 +6,11 @@
 //! ```text
 //! Access       Status            the assistant on or off
 //!              Start from        while it is off: the starting points of its rights ([`Preset`])
-//!              What the assistant may use   the rights editor's access group and "Ask first"
+//!              What the assistant may use   the rights editor's access group and "Ask first", without
+//!                                           the built-in tools and MCP servers (Assistant › API and MCP,
+//!                                           issue #666)
 //!              Turn off assistant…          while it is on, after a question; last, as what destroys
-//! Selections   the calendars, lists, accounts … of each area it may use ([`rights::Part`])
+//! Selections   the calendars, lists, accounts … of each area it may use ([`rights::Part`]), not the tools
 //! Bots         a row per bot; it opens the rights editor of the bot's own client
 //! ```
 //!
@@ -32,8 +34,10 @@
 //! - Of all sections only this one sends `clients.*` beyond reading the list: `clients.update_client`
 //!   (the editor), and for the kind `assistant` only `clients.create_client` and
 //!   `clients.remove_client`. The one other page is API and MCP of every app (`crate::outside`, issue
-//!   #531), which sends only `clients.update_client`, only for keys of scripts and MCP clients. Never `clients.new_key` – the core runs the assistant's and the bots'
-//!   tools itself with their clients' rights, so nobody needs their keys.
+//!   #531), which sends only `clients.update_client`: for keys of scripts and MCP clients, and for the
+//!   assistant and its bots only their tools and MCP servers (issue #666). Never `clients.new_key` – the
+//!   core runs the assistant's and the bots' tools itself with their clients' rights, so nobody needs
+//!   their keys.
 //! - Everything goes out as [`crate::Action::Send`], whose answers the host drops unread
 //!   (`crate::send`): a key that a core would still hand back with `clients.create_client` never
 //!   reaches this section. Since task S.32 the core answers with `Response::Client`, without one.

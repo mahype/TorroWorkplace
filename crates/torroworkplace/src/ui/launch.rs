@@ -39,7 +39,7 @@ pub enum Open {
     ConnectOpenWebuiKeyboard,
     /// Accounts without any account (task S.30): every group with only its sentence and "Add".
     AccountsEmpty,
-    /// The AI section with its accounts, "Add" and the data rule.
+    /// The AI section with its accounts and "Add".
     AccountsAi,
     /// The add-account dialog as Nextcloud's "Add" opens it: the server address.
     WizardNextcloud,
@@ -66,17 +66,6 @@ pub enum Open {
     /// The detail page of the demo's AI account (OpenRouter, task KI.1a) with its models, as the
     /// demo lists them (task S.31, [`demo_models`]): search, "Show closed models" and switches.
     AiDetail,
-    /// The AI section's group "Models" (issue #325, task MW.8) with Ollama on this computer
-    /// ([`demo_ollama`]): the suggestion for *Chat* downloading (its "Use suggestion" pressed, waiting
-    /// for the download that runs), the one for *Sorting* ready, and *Sorting* in the cloud.
-    AiModels,
-    /// The AI section with Ollama on this computer ([`demo_ollama`]), its decision model nimble
-    /// switched on there, and the menu of *Sorting* open (issue #421): "None", "Decision models
-    /// (fast)" and "Other models".
-    SortingMenu,
-    /// The same, then another model of OpenRouter picked for *Sorting* (issue #424): the question
-    /// before a model in the cloud sorts mail, with "Cancel" and "Use".
-    SortingCloud,
     /// The detail page of the demo's ntfy account (task E5.14): its topics and its login.
     NtfyDetail,
     /// The ntfy account's page with the dialog of its first topic (rename, unsubscribe).
@@ -114,8 +103,6 @@ pub enum Open {
     ApprovalsEmpty,
     /// API without any key (task S.35): the group "Keys" with only its sentence.
     ApiEmpty,
-    /// API with "Allow API keys" off.
-    ApiOff,
     /// The page of the demo script's key: the rights editor with endpoints, its activity.
     ApiDetail,
     /// The dialog with a new key for the demo script, shown once.
@@ -128,8 +115,6 @@ pub enum Open {
     CreateKeyDone,
     /// MCP without any client: "Connected clients" with only its sentence.
     McpEmpty,
-    /// MCP with "Allow MCP" off.
-    McpOff,
     /// The page of the demo agent Codex with rights of its own (levels, admin switch, selections)
     /// and its calendar area open with one command switched off (task S.33).
     McpDetail,
@@ -256,9 +241,8 @@ impl Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 154] = [
+    pub const ALL: [(&'static str, Open); 146] = [
         ("setup-ai-form", Open::AiSetup("form")),
-        ("setup-ai-consent", Open::AiSetup("consent")),
         ("setup-ai-download", Open::AiSetup("download")),
         ("setup-ai-warning", Open::AiSetup("warning")),
         ("setup-ai-ready", Open::AiSetup("ready")),
@@ -275,7 +259,6 @@ impl Open {
         ("setup-ai-cloud-error", Open::AiSetup("cloud-error")),
         ("setup-ai-cloud-empty", Open::AiSetup("cloud-empty")),
         ("setup-ai-cloud-connected", Open::AiSetup("cloud-connected")),
-        ("setup-ai-cloud-consent", Open::AiSetup("cloud-consent")),
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
@@ -311,7 +294,6 @@ impl Open {
         ("wizard-ai-cloud-error", Open::WizardAi(wizard::Demo::AiCloud("cloud-error"))),
         ("wizard-ai-cloud-empty", Open::WizardAi(wizard::Demo::AiCloud("cloud-empty"))),
         ("wizard-ai-cloud-connected", Open::WizardAi(wizard::Demo::AiCloud("cloud-connected"))),
-        ("wizard-ai-cloud-consent", Open::WizardAi(wizard::Demo::AiCloud("cloud-consent"))),
         ("wizard-ntfy", Open::WizardMail(wizard::Demo::NtfyServer)),
         ("wizard-ntfy-topics", Open::WizardMail(wizard::Demo::NtfyTopics)),
         ("wizard-ntfy-invalid", Open::WizardMail(wizard::Demo::NtfyInvalid)),
@@ -321,9 +303,6 @@ impl Open {
         ("account-detail", Open::AccountDetail),
         ("scopes-detail", Open::GithubDetail),
         ("account-detail-ai", Open::AiDetail),
-        ("ai-models", Open::AiModels),
-        ("sorting-menu", Open::SortingMenu),
-        ("sorting-cloud", Open::SortingCloud),
         ("ntfy-detail", Open::NtfyDetail),
         ("ntfy-topic", Open::NtfyTopic),
         ("ntfy-login", Open::NtfyLogin),
@@ -340,14 +319,12 @@ impl Open {
         ("workspaces-unsupported", Open::WorkspacesUnsupported),
         ("approvals-empty", Open::ApprovalsEmpty),
         ("api-empty", Open::ApiEmpty),
-        ("api-off", Open::ApiOff),
         ("api-detail", Open::ApiDetail),
         ("api-new-key", Open::ApiNewKey),
         ("api-revoke", Open::ApiRevoke),
         ("create-key", Open::CreateKey),
         ("create-key-done", Open::CreateKeyDone),
         ("mcp-empty", Open::McpEmpty),
-        ("mcp-off", Open::McpOff),
         ("mcp-detail", Open::McpDetail),
         ("mcp-hooks", Open::McpHooks),
         ("mcp-new-key", Open::McpNewKey),
@@ -777,7 +754,7 @@ pub fn demo_data() -> Data {
         task_lists,
         address_books: shared.address_books,
         sources,
-        tools: demo_tools(&torro_core::settings::Tools::default()),
+        tools: demo_tools(),
         status: Some(Status {
             version: env!("CARGO_PKG_VERSION").into(),
             backend: "hyprland".into(),
@@ -995,24 +972,21 @@ fn demo_blocked_note(tools: &[&str]) -> String {
     )
 }
 
-/// `--open connections` (task MA.7): the PDF tool on, a folder of its own and a logo in the report
-/// template, so every row of "Built-in tools" and the templates shows; the tool `web` on with DuckDuckGo
-/// and Wikipedia (task WEB.6); the tool `files` on with two allowed folders, one to read and one to write
+/// `--open connections` (task MA.7): the PDF tool with a folder of its own and a logo in the report
+/// template, so every row of "Built-in tools" and the templates shows; the tool `web` with DuckDuckGo
+/// and Wikipedia (task WEB.6); the tool `files` with two allowed folders, one to read and one to write
 /// (task WD.4). Paths only: the demo reads no file and stores no key.
 pub fn demo_connections(data: &mut Data) {
-    use torro_core::settings::{AllowedFolder, FolderAccess, PdfTemplateId, ToolId};
+    use torro_core::settings::{AllowedFolder, FolderAccess, PdfTemplateId};
     use torro_ipc::web::SearchProviderId;
     let tools = &mut data.settings.tools;
-    tools.set_on(ToolId::Pdf, true);
-    tools.set_on(ToolId::Web, true);
-    tools.set_on(ToolId::Files, true);
     tools.folders = vec![
         AllowedFolder { path: "/home/anna/Documents".into(), access: FolderAccess::Read },
         AllowedFolder { path: "/home/anna/Projects/Invoices".into(), access: FolderAccess::ReadWrite },
     ];
     tools.pdf.folder = Some("/home/anna/Documents/PDFs".into());
     tools.pdf.template_mut(PdfTemplateId::Report).logo = Some("/home/anna/Pictures/acme-logo.png".into());
-    data.tools = demo_tools(&data.settings.tools);
+    data.tools = demo_tools();
     for info in &mut data.search_providers {
         if matches!(info.id, SearchProviderId::Duckduckgo | SearchProviderId::Wikipedia) {
             info.enabled = true;
@@ -1265,10 +1239,9 @@ pub fn demo_saved() -> TemplateSummary {
     }
 }
 
-/// The assistant's own tools as the core lists them for the app key (task WZ.7), switched on as
-/// `settings` says; the demo's settings leave PDF off, so the rights editor shows that state too.
-fn demo_tools(settings: &torro_core::settings::Tools) -> Vec<torro_ipc::tools::ToolInfo> {
-    match crate::tools::list(settings, crate::pim::Reach::Suite) {
+/// The built-in tools as the core lists them for the app key (task WZ.7).
+fn demo_tools() -> Vec<torro_ipc::tools::ToolInfo> {
+    match crate::tools::list(crate::pim::Reach::Suite) {
         torro_ipc::Response::Tools { tools } => tools,
         _ => Vec::new(),
     }
@@ -1337,6 +1310,7 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
         confirm: Confirm::Never,
         denied: Default::default(),
         extensions: Default::default(),
+        extensions_default: None,
     };
     let mut assistant = Rights::assistant();
     set(&mut assistant, Area::Calendar, Level::Write, false);

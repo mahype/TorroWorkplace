@@ -4808,9 +4808,7 @@ mod tests {
             categorization::offered(data).into_iter().map(|(_, model)| model.id).collect()
         };
         let all = ["nimble", "qwen3:8b", "glm:cloud", "qwen/qwen3-14b", "gemma", "mine", "unknown", "far"];
-        assert_eq!(ids(&data), all, "mail stays here, and the cloud is offered all the same");
-        data.settings.decide_mail_to_cloud = Some(true);
-        assert_eq!(ids(&data), all);
+        assert_eq!(ids(&data), all, "here and in the cloud");
         let names = |part: Vec<(String, AiModel)>| -> Vec<String> { part.into_iter().map(|(_, m)| m.id).collect() };
         let (fast, other, cloud) = categorization::grouped(&data);
         assert_eq!(names(fast), ["nimble"]);
@@ -4873,7 +4871,7 @@ mod tests {
             let decision = Some(tools == Some(false));
             (engine.to_string(), AiModel { decision, tools, remote: Some(remote), enabled: true, ..AiModel::named(id) })
         };
-        let mut data = Data {
+        let data = Data {
             decider_models: vec![
                 model(jev, torro_core::ai::JEV_MODEL, Some(false), true),
                 model(ollama, "nimble", Some(false), false),
@@ -4881,7 +4879,6 @@ mod tests {
             ],
             ..local_model_data()
         };
-        data.settings.decide_mail_to_cloud = Some(true);
         let ids = |part: Vec<(String, AiModel)>| -> Vec<String> {
             part.into_iter().map(|(engine, model)| format!("{engine} {}", model.id)).collect()
         };

@@ -1,10 +1,9 @@
-//! API (task S.35 in `docs/tasks/steuerzentrale.md`, concept in `docs/settings.md` › "API"):
+//! API clients (task S.35 in `docs/tasks/steuerzentrale.md`, concept in `docs/settings.md` › "API clients"):
 //! programs that use Torro Workplace with a key – scripts and the like, the client kind `script` –
 //! and the page of a client every section of programs shares ([`Page`]), which MCP (`mcp.rs`) uses
 //! too.
 //!
-//! - **"API":** the switch "Allow API keys" (`settings.set_setting allow_api_keys`). Off, the core
-//!   refuses every key of a script; only a person turns it on again (`Request::kept_for_people`).
+//! - No switch before the keys (issue #665): a key works as soon as a person made it.
 //! - **"Keys":** a row per key – name, its rights in words ([`rights_summary`]), when it was last
 //!   used –, which opens its page. "Create key" in the header opens the dialog of
 //!   `agent_wizard.rs` on its path "Script" ([`agent_wizard::State::key`]): name, template, the key
@@ -23,7 +22,7 @@
 //! keeps the draft; the shell hands every answer and reload to the page first ([`answered`],
 //! [`loaded`]), so no control jumps back for a moment.
 //!
-//! Requests: `settings.set_setting` (the switch), `clients.create_client` ("Create key"),
+//! Requests: `clients.create_client` ("Create key"),
 //! `clients.update_client` (the rights), `clients.activity` (opening a page), `clients.new_key`,
 //! `clients.remove_client` ("Revoke…"). The clients come from `clients.list_clients`, the
 //! candidates of the selections from what the shell loaded into [`Data`]. Only the app key may send
@@ -42,7 +41,7 @@ use torro_gui::widgets::{self, Status};
 use torro_gui::{style, typo};
 use torro_inbox::AgentKind;
 use torro_ipc::api::{ASSISTANT_CLIENT, BOT_CLIENT, HOOK_CLIENT, MCP_CLIENT, SCRIPT_CLIENT, is_mcp_kind};
-use torro_ipc::{ActivityEntry, ClientInfo, IssuedKey, Request, Response, SettingKey};
+use torro_ipc::{ActivityEntry, ClientInfo, IssuedKey, Request, Response};
 use torro_settings_ui::rights::{self, Naming, control_column, in_column, rights_summary};
 
 use super::accounts::{on_axis, relative_time};
@@ -350,12 +349,9 @@ impl Page {
     }
 
     /// A client in the section's list: name, then what it is where the name does not say it (MCP),
-    /// its rights in words and when it was last used; the row opens its page. While the section's
-    /// switch is off (`refused`) the line starts with that the core refuses the client
-    /// ([`refused_text`]), so the list does not look as if it worked.
-    pub fn row<'a>(&self, client: &'a ClientInfo, now: DateTime<Utc>, refused: bool) -> Element<'a, PageMessage> {
-        let mut parts: Vec<String> = refused.then(|| refused_text(self.home).to_string()).into_iter().collect();
-        parts.extend(kind_word(self.home, client));
+    /// its rights in words and when it was last used; the row opens its page.
+    pub fn row<'a>(&self, client: &'a ClientInfo, now: DateTime<Utc>) -> Element<'a, PageMessage> {
+        let mut parts: Vec<String> = kind_word(self.home, client).into_iter().collect();
         parts.push(rights_summary(rights::shown(&self.rights, client), &client.kind));
         parts.push(last_used_text(client.last_used, now));
         let row = setting_row(None, client.name.as_str(), Some(parts.join(" · ")), chevron());
@@ -473,15 +469,6 @@ pub fn kind_label(client: &ClientInfo) -> String {
 fn kind_word(home: Home, client: &ClientInfo) -> Option<String> {
     let kind = kind_label(client);
     (home == Home::Mcp && kind != client.name).then_some(kind)
-}
-
-/// The start of a client's line in the list while the section's switch is off: the core refuses
-/// every key of a script while "Allow API keys" is off, every MCP client while "Allow MCP" is.
-pub fn refused_text(home: Home) -> &'static str {
-    match home {
-        Home::Api => tr("Refused while API keys are off"),
-        Home::Mcp => tr("Refused while MCP is off"),
-    }
 }
 
 /// A command of the audit log (its catalogue name) as the section names commands: the endpoint
@@ -661,19 +648,6 @@ pub fn primary<'a, M: Clone + 'a>(class: SizeClass, label: &'a str, message: M) 
     }
 }
 
-/// A switch of a section's way in ("Allow API keys", "Allow MCP"), with the line under it that says
-/// what on and off mean.
-pub fn allow_row<'a, M: Clone + 'a>(
-    label: &'a str,
-    on: bool,
-    on_line: &'a str,
-    off_line: &'a str,
-    change: impl Fn(bool) -> M + 'a,
-) -> Element<'a, M> {
-    let detail = if on { on_line } else { off_line };
-    setting_row(None, label, Some(detail.to_string()), torro_settings_ui::parts::switch(on, change))
-}
-
 // ----- The API section ----------------------------------------------------------------------
 
 /// Page state of API.
@@ -694,8 +668,6 @@ impl Default for State {
 #[derive(Debug, Clone)]
 pub enum Message {
     Page(PageMessage),
-    /// The switch "Allow API keys".
-    Allow(bool),
     /// "Create key" in the header.
     Create,
     Wizard(agent_wizard::Message),
@@ -704,10 +676,6 @@ pub enum Message {
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     match message {
         Message::Page(message) => state.page.update(message, data),
-        // Turning it on is the app key's only (`Request::kept_for_people`), which this window has.
-        Message::Allow(on) => {
-            Action::Send(Request::SetSetting { key: SettingKey::AllowApiKeys, value: serde_json::Value::Bool(on) })
-        }
         Message::Create => {
             state.wizard = Some(agent_wizard::State::key());
             Action::None
@@ -772,26 +740,17 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     }
 }
 
-/// The list: the switch, then the keys.
+/// The list: the keys (issue #665: no switch before them).
 fn list<'a>(state: &'a State, data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
-    let allow = allow_row(
-        tr("Allow API keys"),
-        data.settings.allow_api_keys,
-        tr("Scripts and programs with a key can use Torro Workplace"),
-        tr("Every key of a script or program is refused"),
-        Message::Allow,
-    );
-    let footer = tr("Programs reach Torro Workplace on this computer only. Only you can turn this on again.");
-    let switch = widgets::group(tr("API"), vec![allow], Some(footer.to_string()));
-    let refused = !data.settings.allow_api_keys;
     let mut rows: Vec<Element<'a, Message>> =
-        listed(data, Home::Api).map(|client| state.page.row(client, now, refused).map(Message::Page)).collect();
+        listed(data, Home::Api).map(|client| state.page.row(client, now).map(Message::Page)).collect();
     if rows.is_empty() {
         rows.push(add_row(tr("Create key…"), Message::Create));
     }
-    let footer = tr("Scripts and other programs that use the API with their own key.");
-    let keys = widgets::group(tr("Keys"), rows, Some(footer.to_string()));
-    column![switch, keys].spacing(layout::section_gap()).into()
+    let footer = tr(
+        "Scripts and other programs that use the API with their own key. They reach Torro Workplace on this computer only.",
+    );
+    widgets::group(tr("Keys"), rows, Some(footer.to_string()))
 }
 
 /// A key's page: the shared parts of [`Page`], the controls in `slot`; the rights beside the key and
@@ -1035,7 +994,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn create_key_opens_the_dialog_and_the_switch_sends_the_setting() {
+    fn create_key_opens_the_dialog() {
         let data = data();
         let mut state = State::default();
         assert_eq!(header(&state, &data, SizeClass::Wide).actions.len(), 1, "Create key");
@@ -1044,13 +1003,6 @@ pub(super) mod tests {
         assert!(matches!(escape(&state), Some(Message::Wizard(agent_wizard::Message::Close))));
         let _ = update(&mut state, Message::Wizard(agent_wizard::Message::Close), &data);
         assert!(state.wizard.is_none());
-        for on in [false, true] {
-            let action = update(&mut state, Message::Allow(on), &data);
-            assert!(matches!(
-                action,
-                Action::Send(Request::SetSetting { key: SettingKey::AllowApiKeys, ref value }) if *value == serde_json::Value::Bool(on)
-            ));
-        }
         let detail = opened("s1", &data);
         assert!(header(&detail, &data, SizeClass::Narrow).actions.is_empty(), "a page has no primary button");
     }
@@ -1076,22 +1028,15 @@ pub(super) mod tests {
         assert!(state.page.activity.is_none(), "another client's activity is not shown");
     }
 
-    /// #231: the activity names commands as the section does, and a switched-off section says so in
-    /// every row of its list.
+    /// #231: the activity names commands as the section does.
     #[test]
     fn activity_and_rows_speak_the_section_s_language() {
         assert_eq!(command_label(Home::Api, "calendar.list_events"), "calendar.list_events");
         assert_eq!(command_label(Home::Mcp, "calendar.list_events"), "calendar_list_events");
-        assert_eq!(refused_text(Home::Api), tr("Refused while API keys are off"));
-        assert_eq!(refused_text(Home::Mcp), tr("Refused while MCP is off"));
-        let mut data = data();
+        let data = data();
         let state = State::default();
-        let now = Utc::now();
-        for allowed in [true, false] {
-            data.settings.allow_api_keys = allowed;
-            drop(view(&state, &data));
-            drop(state.page.row(&data.clients[2], now, !allowed));
-        }
+        drop(view(&state, &data));
+        drop(state.page.row(&data.clients[2], Utc::now()));
         drop(view(&State::default(), &Data::default()));
     }
 

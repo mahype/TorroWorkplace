@@ -1,11 +1,10 @@
-//! MCP (task S.35 in `docs/tasks/steuerzentrale.md`, concept in `docs/settings.md` › "MCP"):
+//! MCP clients (task S.35 in `docs/tasks/steuerzentrale.md`, concept in `docs/settings.md` › "MCP clients"):
 //! coding agents and apps that use Torro Workplace through `torroworkplace mcp`, each with its own
 //! key, and the hooks with which an agent reports to the Notification Hub.
 //!
-//! - **"Torro's MCP server":** the switch "Allow MCP" (`settings.set_setting allow_mcp`). Off, the core
-//!   refuses every MCP client and its hooks; only a person turns it on again
-//!   (`Request::kept_for_people`). Below it the command a client runs, to copy for one set up by
-//!   hand ([`client_setup::mcp_command`], the key in `TORRO_TOKEN`).
+//! - **"Torro's MCP server":** the command a client runs, to copy for one set up by hand
+//!   ([`client_setup::mcp_command`], the key in `TORRO_TOKEN`). No switch before it (issue #665): a
+//!   client works as soon as a person connected it.
 //! - **"Connected clients":** a row per MCP client (`api::MCP_KINDS`: Claude Code, Codex, Gemini
 //!   CLI, Claude Desktop, Cursor, "Other MCP client"), which opens its page, and a row "Hooks
 //!   without an agent" for every hook client whose agent is gone ([`orphans`]), with "Remove".
@@ -47,10 +46,10 @@ use torro_gui::theme::{Palette, palette, size, space};
 use torro_gui::{style, widgets};
 use torro_inbox::AgentKind;
 use torro_ipc::api::{HOOK_CLIENT, RightsTemplate, is_mcp_kind};
-use torro_ipc::{ClientInfo, Request, Response, SettingKey};
+use torro_ipc::{ClientInfo, Request, Response};
 use torro_settings_ui::rights::{control_column, in_column};
 
-use super::api::{self, Home, Page, PageMessage, add_row, allow_row, primary};
+use super::api::{self, Home, Page, PageMessage, add_row, primary};
 use super::{Action, Data, Header, agent_wizard, confirm, dialog, setting_row};
 use crate::client_setup::{self, HookNote, Job, Outcome, Target};
 
@@ -145,8 +144,6 @@ struct HookProblem {
 #[derive(Debug, Clone)]
 pub enum Message {
     Page(PageMessage),
-    /// The switch "Allow MCP".
-    Allow(bool),
     /// "Copy" next to the command.
     CopyCommand,
     /// Typing into the command's field changes nothing.
@@ -174,10 +171,6 @@ pub fn opened() -> Action {
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     match message {
         Message::Page(message) => state.page.update(message, data),
-        // Turning it on is the app key's only (`Request::kept_for_people`), which this window has.
-        Message::Allow(on) => {
-            Action::Send(Request::SetSetting { key: SettingKey::AllowMcp, value: serde_json::Value::Bool(on) })
-        }
         Message::CopyCommand => {
             state.copied = true;
             Action::Copy(state.command.clone())
@@ -489,41 +482,27 @@ fn list<'a>(state: &'a State, data: &'a Data, now: DateTime<Utc>) -> Element<'a,
     let unread = state.notes_problem.as_deref().map(|problem| {
         super::notice(trf("What Connect client set up could not be read: {problem}", &[("problem", &problem)]))
     });
-    let refused = !data.settings.allow_mcp;
     let mut rows: Vec<Element<'a, Message>> =
-        api::listed(data, Home::Mcp).map(|client| state.page.row(client, now, refused).map(Message::Page)).collect();
+        api::listed(data, Home::Mcp).map(|client| state.page.row(client, now).map(Message::Page)).collect();
     rows.extend(orphans(data, state.notes.as_deref()).map(orphan_row));
     if rows.is_empty() {
         rows.push(add_row(tr("Connect client…"), Message::Connect));
     }
     let footer = tr("Coding agents and apps that use Torro Workplace through MCP, each with its own key.");
     let clients = widgets::group(tr("Connected clients"), rows, Some(footer.to_string()));
-    column![]
-        .push(problem)
-        .push(unread)
-        .push(server_group(state, data))
-        .push(clients)
-        .spacing(layout::section_gap())
-        .into()
+    column![].push(problem).push(unread).push(server_group(state)).push(clients).spacing(layout::section_gap()).into()
 }
 
-/// "Torro's MCP server": the switch and, under "Command", the command to copy – its row as high as the
-/// label and the field need, 12 above and below like a wrapping row.
-fn server_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let allow = allow_row(
-        tr("Allow MCP"),
-        data.settings.allow_mcp,
-        tr("Connected clients can use Torro Workplace through MCP"),
-        tr("Every MCP client and its hooks are refused"),
-        Message::Allow,
-    );
+/// "Torro's MCP server": the command to copy – its row as high as the field needs, 12 above and
+/// below like a wrapping row.
+fn server_group(state: &State) -> Element<'_, Message> {
     let command = agent_wizard::command_line(&state.command, state.copied, Message::CopyCommand, Message::KeepCommand);
     let command = container(command).width(Fill).padding([space::m(), space::l()]).into();
     let footer = trf(
-        "The command for a client you set up yourself; it takes the client's key as {variable}. Only you can turn MCP on again.",
+        "The command for a client you set up yourself; it takes the client's key as {variable}.",
         &[("variable", &client_setup::TOKEN_VARIABLE)],
     );
-    widgets::group(tr("Torro's MCP server"), vec![allow, command], Some(footer))
+    widgets::group(tr("Torro's MCP server"), vec![command], Some(footer))
 }
 
 /// A hook client whose agent is gone: what it is, and "Remove".
@@ -824,17 +803,10 @@ mod tests {
     }
 
     #[test]
-    fn the_server_group_switches_and_copies_the_command() {
+    fn the_server_group_copies_the_command() {
         let data = data();
         let mut state = State::default();
         assert_eq!(header(&state, &data, SizeClass::Wide).actions.len(), 1, "Connect client");
-        for on in [false, true] {
-            let action = update(&mut state, Message::Allow(on), &data);
-            assert!(matches!(
-                action,
-                Action::Send(Request::SetSetting { key: SettingKey::AllowMcp, ref value }) if *value == serde_json::Value::Bool(on)
-            ));
-        }
         let copy = update(&mut state, Message::CopyCommand, &data);
         assert!(matches!(copy, Action::Copy(ref command) if command.ends_with(" mcp")), "{copy:?}");
         assert!(state.copied);

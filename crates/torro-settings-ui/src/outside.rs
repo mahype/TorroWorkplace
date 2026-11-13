@@ -2,11 +2,21 @@
 //! programs and agents outside the suite may do in **this** app's area, behind its own gear.
 //!
 //! ```text
-//! API keys          a row per key of a script: its name, what it may here ("Calendar: Read · 2 calendars")
-//! MCP clients       a row per MCP client (Claude Code, Codex …), the same
-//!                   a row opens the client: the rights editor for this app's areas only
-//! Torro Workplace   where keys are made and clients connected (only with the main application)
+//! API keys               a row per key of a script: its name, what it may here ("Calendar: Read · 2 calendars")
+//! MCP clients            a row per MCP client (Claude Code, Codex …), the same
+//!                        a row opens the client: the rights editor for this app's areas only
+//! Used by the assistant  (the assistant only, issue #666) for [Assistant ▾ | a bot]: per built-in tool and
+//!                        MCP server a switch and "Show commands" (`rights::Part::Servers`)
+//! Torro Workplace        API clients ↗ · MCP clients ↗, where keys are made and clients connected
+//!                        (only with the main application)
 //! ```
+//!
+//! **Used by the assistant** (issue #666): what the app itself may use of the MCP servers and built-in
+//! tools, down to single commands. Only the assistant uses them so far, for itself and each bot, which
+//! keep their rights of their own; the dropdown chooses whose ([`Message::UsedBy`]). Allowed unless a
+//! person switched something off: the core opens the assistant and its bots to every tool and server
+//! (`Rights::opened`). Here the page also changes the assistant's or a bot's client – only its tools,
+//! servers and their commands ([`merged_used`]), never another right.
 //!
 //! Every app shows only its own areas ([`areas`]): the calendar `calendar`, the tasks app `tasks` and
 //! `github`, the Notification Hub and the App Feed `inbox`, mail `mail`, the assistant `assistant` and
@@ -21,9 +31,10 @@
 //! no agent ever changes them: there is no MCP tool for this page. Like Assistant › Access the page
 //! keeps to a rule of the code, which its tests watch over:
 //!
-//! - It sends only `clients.update_client`, only for a client of the kind `script` or an MCP kind
-//!   ([`torro_ipc::api::is_mcp_kind`]) – never for the assistant, a bot or a hook, never
-//!   `clients.create_client`, `clients.remove_client` or `clients.new_key`. Making keys and connecting
+//! - It sends only `clients.update_client`, for a client of the kind `script` or an MCP kind
+//!   ([`torro_ipc::api::is_mcp_kind`]) only the app's areas, for the assistant or a bot only its tools and
+//!   servers – never for a hook, never `clients.create_client`, `clients.remove_client` or
+//!   `clients.new_key`. Making keys and connecting
 //!   clients stays in the control centre (in a single app without it: issue #538).
 //! - It changes only the rights of [`areas`]: a control of any other area is dropped before it reaches
 //!   the editor, and "Ask first" is not shown.
@@ -42,6 +53,7 @@
 
 use iced::widget::{column, responsive, svg};
 use iced::{Element, Length, Theme};
+use torro_gui::widgets::{Align, DROPDOWN_SEARCH, Dropdown, DropdownEvent, MenuItem, MenuSection};
 
 use std::sync::Arc;
 use torro_core::AppId;
@@ -50,7 +62,8 @@ use torro_gui::icon::{self, Icon};
 use torro_gui::layout;
 use torro_gui::theme::palette;
 use torro_gui::widgets;
-use torro_ipc::api::{Area, CATALOGUE, SCRIPT_CLIENT, is_mcp_kind};
+use torro_ipc::api::{ASSISTANT_CLIENT, Area, BOT_CLIENT, CATALOGUE, SCRIPT_CLIENT, is_mcp_kind};
+use torro_ipc::tools::ToolId;
 
 use torro_ipc::api::Rights;
 use torro_ipc::{ClientInfo, Request, Response};
@@ -86,6 +99,10 @@ pub fn sections(app: AppId) -> Vec<Section> {
 /// inbox sources, the accounts (mail accounts, and the account a calendar or list belongs to).
 pub fn wanted(app: AppId) -> Vec<Request> {
     let mut wanted = vec![Request::ListClients, Request::Accounts];
+    // What "Used by the assistant" lists (issue #666): the tools, the servers and the bots.
+    if uses_servers(app) {
+        wanted.extend([Request::ListTools, Request::ListExtensions, Request::ListBots]);
+    }
     for area in areas(app) {
         let request = match area {
             Area::Calendar => Request::CalendarCollections,
@@ -99,6 +116,12 @@ pub fn wanted(app: AppId) -> Vec<Request> {
         }
     }
     wanted
+}
+
+/// Whether `app` itself uses MCP servers and built-in tools, so the page shows "Used by the assistant"
+/// (issue #666): the assistant, for itself and its bots. Other apps get it once they use them.
+pub fn uses_servers(app: AppId) -> bool {
+    app == AppId::ASSISTANT
 }
 
 /// The page's state: the app, the client open below the section, the editor and whether its save is on
@@ -115,12 +138,25 @@ pub struct State {
     sending: bool,
     /// A list of clients came back well since the settings opened ([`waiting`]).
     fresh: bool,
+    /// Whose tools and servers "Used by the assistant" shows: `None` the assistant's, else a bot's by its
+    /// id (issue #666).
+    used: Option<String>,
+    /// The dropdown of "Used by the assistant".
+    menus: Dropdown<()>,
 }
 
 impl State {
     /// The page of `app`.
     pub fn new(app: AppId) -> State {
-        State { app, open: None, rights: rights::State::default(), sending: false, fresh: false }
+        State {
+            app,
+            open: None,
+            rights: rights::State::default(),
+            sending: false,
+            fresh: false,
+            used: None,
+            menus: Dropdown::default(),
+        }
     }
 
     /// The areas this page shows ([`areas`]).
@@ -140,6 +176,12 @@ pub enum Message {
     ControlCentre(&'static str),
     /// A control of the rights editor, its clock included ([`subscription`]).
     Rights(rights::Message),
+    /// The dropdown of "Used by the assistant" (issue #666).
+    UsedMenu(DropdownEvent<()>),
+    /// A choice in it: `None` the assistant, else a bot by its id.
+    UsedBy(Option<String>),
+    /// A switch of "Used by the assistant": a tool, a server or one of their commands.
+    Used(rights::Message),
 }
 
 /// Whether a client of `kind` is edited here: a script's key or an MCP client. The assistant, the bots
@@ -187,8 +229,36 @@ fn belongs(message: &rights::Message, areas: &[Area]) -> bool {
         M::AddRepo => areas.contains(&Pick::GithubRepos.area()),
         M::Outbound(_) => areas.contains(&Area::Mail),
         M::ImageContent(_) => areas.contains(&Area::Chat),
-        M::Confirm(_) | M::ServerLevel(..) | M::ExpandServer(_) | M::ServerTool(..) => false,
+        M::Confirm(_)
+        | M::ServerLevel(..)
+        | M::ExpandServer(_)
+        | M::ServerTool(..)
+        | M::Server(..)
+        | M::Tool(..)
+        | M::ExpandTool(_) => false,
         M::RepoInput(_) | M::Clock(_) => true,
+    }
+}
+
+/// Whether a control belongs to "Used by the assistant" (issue #666): a tool's or a server's switch, a
+/// command of a built-in tool or a server's tool, and what only changes what is shown.
+fn belongs_used(message: &rights::Message) -> bool {
+    use rights::Message as M;
+    match message {
+        M::Tool(..) | M::Server(..) | M::ServerTool(..) | M::ExpandTool(_) | M::ExpandServer(_) | M::Clock(_) => true,
+        M::Command(name, _) => ToolId::of_command(name).is_some(),
+        _ => false,
+    }
+}
+
+/// The client "Used by the assistant" shows ([`State::used`]): the assistant's, or the bot's.
+fn used_client<'a>(state: &State, data: &'a Data) -> Option<&'a ClientInfo> {
+    match &state.used {
+        None => data.clients.iter().find(|client| client.kind == ASSISTANT_CLIENT),
+        Some(bot) => {
+            let client = &data.bots.iter().find(|summary| &summary.id == bot)?.client;
+            data.clients.iter().find(|held| &held.id == client && held.kind == BOT_CLIENT)
+        }
     }
 }
 
@@ -222,7 +292,34 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             false => Action::None,
         },
         Message::Rights(message) => edit(state, message, data),
+        Message::UsedMenu(event) => match state.menus.update(event) {
+            true => Action::Focus(DROPDOWN_SEARCH),
+            false => Action::None,
+        },
+        Message::UsedBy(used) => {
+            state.menus.close();
+            let action = save(state);
+            state.used = used;
+            action
+        }
+        Message::Used(message) => edit_used(state, message, data),
     }
+}
+
+/// Hands a switch of "Used by the assistant" on to the editor for the client chosen there
+/// ([`used_client`]) and saves it as [`edit`] does.
+fn edit_used<A>(state: &mut State, message: rights::Message, data: &Data) -> Action<A> {
+    if !uses_servers(state.app) || !belongs_used(&message) || waiting(state) {
+        return Action::None;
+    }
+    let Some(client) = used_client(state, data) else { return Action::None };
+    let shows_only = matches!(message, rights::Message::ExpandTool(_) | rights::Message::ExpandServer(_));
+    if !shows_only && rights::waiting_for(&state.rights).is_some_and(|id| id != client.id) {
+        return Action::None;
+    }
+    let known = Known::of(data);
+    let _: Action<A> = rights::update(&mut state.rights, message, Some(client), &known);
+    save(state)
 }
 
 /// Hands a control of the editor on (see [`update`]).
@@ -271,8 +368,25 @@ pub fn merged(fresh: &Rights, edited: &Rights, areas: &[Area]) -> Rights {
     rights
 }
 
+/// `edited` – what "Used by the assistant" shows for the assistant or a bot – brought into `fresh`, what
+/// the core holds for it now (issue #666): the built-in tools it reaches, its MCP servers with the level
+/// of those without an entry, and which of their commands are switched off; everything else stays as in
+/// `fresh`.
+pub fn merged_used(fresh: &Rights, edited: &Rights) -> Rights {
+    let mut rights = fresh.clone();
+    rights.tools = edited.tools.clone();
+    rights.extensions = edited.extensions.clone();
+    rights.extensions_default = edited.extensions_default;
+    let used =
+        |name: &String| ToolId::of_command(name).is_some() || torro_ipc::extensions::parse_denied_name(name).is_some();
+    rights.denied.retain(|name| !used(name));
+    rights.denied.extend(edited.denied.iter().filter(|name| used(name)).cloned());
+    rights
+}
+
 /// Sends what the page saves (`clients.update_client`), each time over the rights the core holds right
-/// then ([`merged`]): asks `clients.list_clients`, takes the client by its id and changes only `areas`.
+/// then ([`merged`]): asks `clients.list_clients`, takes the client by its id and changes only `areas` –
+/// for the assistant or a bot only its tools and servers ([`merged_used`]).
 /// A client that is gone fails with what the core says; any other request goes as it is. Stops at the
 /// first failure, as `crate::apply` does.
 pub async fn send(backend: Arc<dyn Backend>, requests: Vec<Request>, areas: &'static [Area]) -> Result<(), String> {
@@ -282,13 +396,19 @@ pub async fn send(backend: Arc<dyn Backend>, requests: Vec<Request>, areas: &'st
                 let fresh = match backend.call(Request::ListClients).await? {
                     // A key or an MCP client only, checked here too: whatever the page let through, the
                     // assistant, a bot or a hook is never changed from here.
-                    Response::Clients { clients } => {
-                        clients.into_iter().find(|client| client.id == id && editable(&client.kind))
-                    }
+                    Response::Clients { clients } => clients.into_iter().find(|client| {
+                        client.id == id
+                            && (editable(&client.kind)
+                                || [ASSISTANT_CLIENT, BOT_CLIENT].contains(&client.kind.as_str()))
+                    }),
                     _ => None,
                 };
                 let Some(fresh) = fresh else { return Err(tr("This client no longer exists.").to_string()) };
-                Request::UpdateClient { id, rights: merged(&fresh.rights, &rights, areas) }
+                let rights = match editable(&fresh.kind) {
+                    true => merged(&fresh.rights, &rights, areas),
+                    false => merged_used(&fresh.rights, &rights),
+                };
+                Request::UpdateClient { id, rights }
             }
             other => other,
         };
@@ -340,12 +460,29 @@ pub fn loaded(state: &mut State, data: &Data) {
 /// stays and goes with the clock.
 pub fn leave(state: &mut State) {
     state.open = None;
+    state.menus.close();
     rights::leave(&mut state.rights);
 }
 
-/// What Escape means here: back from a client's page to the list. `None` leaves it to the host.
+/// What Escape means here: close the dropdown of "Used by the assistant", else back from a client's page
+/// to the list. `None` leaves it to the host.
 pub fn escape(state: &State) -> Option<Message> {
+    if state.menus.open().is_some() {
+        return Some(Message::UsedMenu(DropdownEvent::Close));
+    }
     state.open.is_some().then_some(Message::Back)
+}
+
+/// The open dropdown of "Used by the assistant" (issue #666): the assistant and each bot.
+pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+    state.menus.open()?;
+    let assistant = MenuItem::plain(tr("Assistant"), Message::UsedBy(None)).current(state.used.is_none());
+    let bots = data.bots.iter().map(|bot| {
+        let chosen = state.used.as_deref() == Some(bot.id.as_str());
+        MenuItem::plain(bot.name.as_str(), Message::UsedBy(Some(bot.id.clone()))).current(chosen)
+    });
+    let items = std::iter::once(assistant).chain(bots).collect();
+    Some(state.menus.view(&(), vec![MenuSection::new(items)], widgets::menu_width(), Align::End, Message::UsedMenu))
 }
 
 /// The editor's clock while a draft waits; none at rest.
@@ -391,8 +528,42 @@ fn list<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     if !mcp.is_empty() {
         groups.push(widgets::group(tr("MCP clients"), mcp.into_iter().map(row).collect(), None));
     }
-    groups.push(foot(tr("Create keys and connect clients in Torro Workplace."), "mcp"));
+    if uses_servers(state.app) {
+        groups.push(used_group(state, data));
+    }
+    groups.push(foot_list());
     column(groups).spacing(layout::section_gap()).into()
+}
+
+/// "Used by the assistant" (issue #666): whose tools and servers – the assistant or a bot, in a
+/// dropdown –, then per built-in tool and MCP server a switch and "Show commands" ([`rights::Part::Servers`]).
+fn used_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let name = match &state.used {
+        None => tr("Assistant").to_string(),
+        Some(bot) => {
+            data.bots.iter().find(|summary| &summary.id == bot).map_or_else(|| bot.clone(), |b| b.name.clone())
+        }
+    };
+    let chooser = state.menus.button((), name, Message::UsedMenu);
+    let who = setting_row(None, tr("For"), Some(tr("The assistant and each bot have their own.").to_string()), chooser);
+    let mut parts = vec![widgets::group(tr("Used by the assistant"), vec![who], None)];
+    match used_client(state, data) {
+        Some(client) if !waiting(state) => {
+            let rights = rights::shown(&state.rights, client);
+            let editor = rights::view_part(
+                &state.rights,
+                rights,
+                &client.kind,
+                Known::of(data),
+                Naming::Tools,
+                tr("Used by the assistant"),
+                rights::Part::Servers,
+            );
+            parts.push(editor.map(Message::Used));
+        }
+        _ => parts.push(updating_group(tr("Used by the assistant"))),
+    }
+    column(parts).spacing(layout::section_gap()).into()
 }
 
 /// A client's page: the editor for this app's areas, then the way to its other rights.
@@ -423,9 +594,39 @@ fn client_page<'a>(state: &'a State, data: &'a Data, client: &'a ClientInfo) -> 
 
 /// "Updating…" in place of a client's editor until the fresh list of clients is in.
 fn updating<'a>(kind: &str) -> Element<'a, Message> {
-    let title = if kind == SCRIPT_CLIENT { tr("API keys") } else { tr("MCP clients") };
+    updating_group(if kind == SCRIPT_CLIENT { tr("API keys") } else { tr("MCP clients") })
+}
+
+/// A group `title` that says "Updating…".
+fn updating_group<'a>(title: &'a str) -> Element<'a, Message> {
     let line = setting_row(None, tr("Updating…"), None, iced::widget::Space::new());
     widgets::group(title, vec![line], None)
+}
+
+/// The foot of the list (issue #665): with the main application one row each to "API clients" and "MCP
+/// clients" in Torro Workplace, where keys are made and clients connected; without it the sentence.
+fn foot_list<'a>() -> Element<'a, Message> {
+    if !torro_gui::installed::main_app() {
+        let line =
+            setting_row(None, tr("Keys and clients are created in Torro Workplace."), None, iced::widget::Space::new());
+        return widgets::group(tr("Torro Workplace"), vec![line], None);
+    }
+    let row = |label: &'a str, detail: &'a str, section: &'static str| {
+        let line = setting_row(None, label, Some(detail.to_string()), arrow());
+        pressable(line, Some(Message::ControlCentre(section)))
+    };
+    let rows = vec![
+        row(tr("API clients"), tr("Create keys for scripts and programs"), "api"),
+        row(tr("MCP clients"), tr("Connect coding agents and apps"), "mcp"),
+    ];
+    widgets::group(tr("Torro Workplace"), rows, None)
+}
+
+/// The arrow of a row that opens another window.
+fn arrow<'a>() -> Element<'a, Message> {
+    icon::icon(Icon::ArrowUpRight, icon::SIZE)
+        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) })
+        .into()
 }
 
 /// The foot of a page: where keys, clients and other rights are made. With the main application a
@@ -437,10 +638,7 @@ fn foot<'a>(sentence: &'static str, section: &'static str) -> Element<'a, Messag
             setting_row(None, tr("Keys and clients are created in Torro Workplace."), None, iced::widget::Space::new());
         return widgets::group(tr("Torro Workplace"), vec![line], None);
     }
-    let arrow: Element<'a, Message> = icon::icon(Icon::ArrowUpRight, icon::SIZE)
-        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) })
-        .into();
-    let line = setting_row(None, tr("Open Torro Workplace"), Some(sentence.to_string()), arrow);
+    let line = setting_row(None, tr("Open Torro Workplace"), Some(sentence.to_string()), arrow());
     widgets::group(tr("Torro Workplace"), vec![pressable(line, Some(Message::ControlCentre(section)))], None)
 }
 
@@ -498,6 +696,44 @@ mod tests {
         assert_eq!(areas(AppId::INBOX_MAIL), [Area::Mail, Area::Workflows]);
         assert_eq!(areas(AppId::INBOX_NOTIFICATIONS), areas(AppId::INBOX));
         assert!(AppId::ALL.iter().all(|app| !areas(*app).contains(&Area::Contacts)), "contacts stay shared");
+    }
+
+    /// Issue #666: in the assistant's window "Used by the assistant" switches a tool or a server for the
+    /// assistant, or for the bot the dropdown chose, and sends only that client's tools and servers; a
+    /// control of another area is not taken there, and another app has no such group.
+    #[tokio::test]
+    async fn used_by_the_assistant_switches_tools_and_servers_of_the_one_chosen() {
+        let data = data(AppId::ASSISTANT).await;
+        assert!(wanted(AppId::ASSISTANT).contains(&Request::ListBots));
+        assert!(!wanted(AppId::CALENDAR).contains(&Request::ListBots));
+        let assistant = data.clients.iter().find(|client| client.kind == ASSISTANT_CLIENT).expect("assistant");
+        let mut state = State::new(AppId::ASSISTANT);
+        clients_fresh(&mut state);
+        let pdf_off = || Message::Used(rights::Message::Tool(ToolId::Pdf, false));
+        let sent = requests(update(&mut state, pdf_off(), &data));
+        assert!(
+            matches!(&sent[..], [Request::UpdateClient { id, rights }]
+                if *id == assistant.id && !rights.reaches_tool(ToolId::Pdf) && rights.areas == assistant.rights.areas),
+            "{sent:?}"
+        );
+        let _ = done::<()>(&mut state, &Ok(()));
+        let level = Message::Used(rights::Message::Level(Area::Calendar, Level::Full));
+        assert!(requests(update(&mut state, level, &data)).is_empty(), "no area under Used by the assistant");
+
+        // The bot chosen in the dropdown: its own client, the assistant's stays as it is.
+        let bot = data.bots.iter().find(|bot| bot.id == "b0000001").expect("the travel planner");
+        let _ = update::<()>(&mut state, Message::UsedBy(Some(bot.id.clone())), &data);
+        let server = Message::Used(rights::Message::Server("time".into(), false));
+        let sent = requests(update(&mut state, server, &data));
+        assert!(
+            matches!(&sent[..], [Request::UpdateClient { id, rights }]
+                if *id == bot.client && rights.extension("time") == Level::NoAccess && rights.extension("later") == Level::Full),
+            "{sent:?}"
+        );
+
+        let mut calendar = State::new(AppId::CALENDAR);
+        clients_fresh(&mut calendar);
+        assert!(requests(update(&mut calendar, pdf_off(), &data)).is_empty(), "the calendar has no such group");
     }
 
     /// The rows say what a client may do in the app's areas, in words.
@@ -654,10 +890,20 @@ mod tests {
         let gone = Request::UpdateClient { id: "gone".into(), rights: edited.clone() };
         let backend: Arc<dyn Backend> = demo.clone();
         assert!(send(backend, vec![gone], areas(AppId::CALENDAR)).await.is_err());
-        // Nor is the assistant changed, also when asked by its id (review of PR #550).
+        // The assistant only in its tools and servers (issue #666), also when asked by its id with other
+        // rights (review of PR #550).
         let assistant = data.clients.iter().find(|client| client.kind == ASSISTANT_CLIENT).expect("the assistant");
+        let theirs = Request::UpdateClient { id: assistant.id.clone(), rights: edited.clone() };
+        let backend: Arc<dyn Backend> = demo.clone();
+        send(backend, vec![theirs], areas(AppId::CALENDAR)).await.expect("saved");
+        let sent = demo.sent();
+        let Some(Request::UpdateClient { rights, .. }) = sent.last() else { panic!("{sent:?}") };
+        assert_eq!(*rights, merged_used(&assistant.rights, &edited));
+        assert_eq!(rights.areas, assistant.rights.areas, "no area of the assistant changes from here");
+        assert_eq!(rights.confirm, assistant.rights.confirm);
+        // Nor a client the core does not list as a key, an MCP client, the assistant or a bot.
         let before = demo.sent().len();
-        let theirs = Request::UpdateClient { id: assistant.id.clone(), rights: edited };
+        let theirs = Request::UpdateClient { id: "h0000001".into(), rights: edited };
         let backend: Arc<dyn Backend> = demo.clone();
         assert!(send(backend, vec![theirs], areas(AppId::CALENDAR)).await.is_err());
         assert!(!demo.sent()[before..].iter().any(|request| matches!(request, Request::UpdateClient { .. })));

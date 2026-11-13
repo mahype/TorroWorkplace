@@ -1403,6 +1403,12 @@ impl Host {
             let layer = accounts::overlay(state, &self.data)?;
             Some(layer.map(move |message| wrap(Message::Accounts(Box::new(message)))))
         });
+        // The dropdown of API and MCP's "Used by the assistant" (issue #666).
+        let overlay = overlay.or_else(|| {
+            let state = self.outside.as_ref().filter(|_| self.on_outside_page() && !on_list)?;
+            let layer = outside::overlay(state, &self.data)?;
+            Some(layer.map(move |message| wrap(Message::Outside(Box::new(message)))))
+        });
         Frame { header, body, overlay }
     }
 

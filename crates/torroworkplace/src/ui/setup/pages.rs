@@ -819,10 +819,7 @@ fn done<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         None => line(false, Step::Cloud, tr("Not set up").to_string(), set_up(Step::Cloud)),
     };
     let slots = &data.settings.ai_slots;
-    // A question about mail that came up while the setup went on is answered on the point AI.
-    let asking = ai_setup::awaiting_consent(&state.ai_setup);
     let ai_row = match (slots.chat.is_some() || slots.decide.is_some(), super::ai_working(state)) {
-        _ if asking => line(false, Step::Ai, tr("Mail needs your explicit permission.").to_string(), set_up(Step::Ai)),
         (_, true) => {
             line(true, Step::Ai, tr("Preparing model…").to_string(), open(tr("Open Assistant"), AppId::ASSISTANT))
         }

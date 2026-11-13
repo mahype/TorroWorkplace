@@ -210,10 +210,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "This AI can't chat about a mail. Choose an AI account in Settings › AI.",
         "Diese KI kann nicht über eine Mail chatten. Wähle unter Einstellungen › KI ein KI-Konto.",
     ),
-    (
-        "This AI may not read mail. Choose a model on this computer.",
-        "Diese KI darf keine Mail lesen. Wähle ein Modell auf diesem Rechner.",
-    ),
     ("{kind} · Accept it in Mail", "{kind} · In E-Mail annehmen"),
     ("Open in Mail", "In E-Mail öffnen"),
     // Paddle invoice copies (#598).
@@ -509,10 +505,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Die Entwurfsvorschau zeigt die genaue Domain aus der gewählten Mail.",
     ),
     ("The invoice link has expired.", "Der Rechnungslink ist abgelaufen."),
-    (
-        "The mail data rule does not allow the configured chat model to read this mail.",
-        "Die Mail-Datenregel erlaubt dem eingestellten Chat-Modell nicht, diese Mail zu lesen.",
-    ),
     ("The response is not the expected document type.", "Die Antwort entspricht nicht dem erwarteten Dokumenttyp."),
     (
         "The save target is missing. Choose an existing target before testing.",
@@ -624,10 +616,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Get program", "Programm herunterladen"),
     ("Load in your AI program", "Im KI-Programm laden"),
     ("Load the suggested model in the program first.", "Lade das vorgeschlagene Modell zuerst im Programm."),
-    (
-        "Mail goes to this model outside this computer and cannot be taken back.",
-        "Mail geht an dieses Modell außerhalb dieses Rechners und lässt sich nicht zurückholen.",
-    ),
     ("Mail needs your explicit permission.", "Für Mail ist deine ausdrückliche Zustimmung nötig."),
     ("May be too large for this computer", "Möglicherweise zu groß für diesen Rechner"),
     ("Model list unavailable", "Modellliste nicht verfügbar"),
@@ -741,19 +729,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Prepare images before attaching them.", "Bereite Bilder vor dem Anhängen vor."),
     // Mail data rule: Loopback only (#359, #334).
     ("{model} · outside this computer", "{model} · außerhalb dieses Computers"),
-    ("Chat may read mail outside this computer", "Chat darf Mail außerhalb dieses Computers lesen"),
     ("Elsewhere", "Anderswo"),
-    (
-        "Off: the chat reads mail only with AI on this computer",
-        "Aus: Der Chat liest Mail nur mit KI auf diesem Computer",
-    ),
     ("Outside this computer", "Außerhalb dieses Computers"),
     ("Outside this computer at {provider}", "Außerhalb dieses Computers bei {provider}"),
-    ("Send mail outside this computer?", "E-Mails außerhalb dieses Computers senden?"),
-    (
-        "{model} reads your mail at {provider} outside this computer. Use it?",
-        "{model} liest deine E-Mails bei {provider} außerhalb dieses Computers. Verwenden?",
-    ),
     // Open MCP clients (#539).
     (
         "The copied configuration contains this key. Keep it private; it is shown only until you finish setup.",
@@ -2502,8 +2480,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Hooks melden der Mitteilungszentrale, worauf ein Agent wartet oder was er fertig hat. Sie sehen nichts.",
     ),
     (
-        "Scripts and other programs that use the API with their own key.",
-        "Skripte und andere Programme, die die API mit eigenem Schlüssel nutzen.",
+        "Scripts and other programs that use the API with their own key. They reach Torro Workplace on this computer only.",
+        "Skripte und andere Programme, die die API mit eigenem Schlüssel nutzen. Sie erreichen Torro Workplace nur auf diesem Rechner.",
     ),
     ("Reports for", "Meldet für"),
     ("No agent", "Kein Agent"),
@@ -4092,7 +4070,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "The model gave no answer. Try again or choose another model.",
         "Das Modell hat nicht geantwortet. Versuche es noch einmal oder wähle ein anderes Modell.",
     ),
-    ("Withheld from the model by your data rule", "Durch deine Datenregel dem Modell vorenthalten"),
     ("You denied this", "Von dir abgelehnt"),
     ("{count} results", "{count} Ergebnisse"),
     // Skill for agents (C.8)
@@ -4708,16 +4685,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Sending mail is switched off", "Mail senden ist ausgeschaltet"),
     ("Only you can do this", "Das kannst nur du"),
     ("{area} is off in this conversation", "{area} ist in dieser Unterhaltung aus"),
-    ("{engine} does not get {area} (data rule)", "{engine} bekommt {area} nicht (Datenregel)"),
     // Task C.17: the data rule for mail under Mail of the assistant and its bots.
     ("Mail to cloud models", "Mail an Cloud-Modelle"),
     (
         "Off: the chat reads mail only with AI on your own computers",
         "Aus: Der Chat liest Mail nur mit KI auf deinen eigenen Rechnern",
-    ),
-    (
-        "Mail goes to the model's provider and can't be taken back",
-        "Mail geht an den Anbieter des Modells und lässt sich nicht zurückholen",
     ),
     ("The assistant needs full access to {area} for this.", "Der Assistent braucht dafür vollen Zugriff auf {area}."),
     ("The assistant needs write access to {area} for this.", "Der Assistent braucht dafür Schreibzugriff auf {area}."),
@@ -4819,10 +4791,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Deine KI um einen Termin aus {entry} bitten; nichts wird gespeichert",
     ),
     ("Asking your AI…", "Deine KI wird gefragt …"),
-    (
-        "Mail, Nextcloud and Talk go only to an AI on this computer. Connect a local AI such as Ollama.",
-        "Mail, Nextcloud und Talk gehen nur an eine KI auf diesem Computer. Verbinde eine lokale KI wie Ollama.",
-    ),
     ("No suggestion: {why}", "Kein Vorschlag: {why}"),
     ("Set up an AI first", "Richte zuerst eine KI ein"),
     (
@@ -5958,10 +5926,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Das Modell läuft auf diesem Computer. Keine Mail verlässt ihn; nichts wird verschoben oder gelöscht, und du kannst jede Kategorie von Hand ändern.",
     ),
     (
-        "Waiting for your OK – mail stays on this computer until you choose the model again.",
-        "Wartet auf dein OK – die Mails bleiben auf diesem Computer, bis du das Modell noch einmal wählst.",
-    ),
-    (
         "The model reads your mail at {provider}. Nothing is moved or deleted, and you can change any category by hand.",
         "Das Modell liest deine Mails bei {provider}. Nichts wird verschoben oder gelöscht, und du kannst jede Kategorie von Hand ändern.",
     ),
@@ -6239,26 +6203,15 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Connect client", "Client verbinden"),
     ("Connected clients", "Verbundene Clients"),
     (
-        "Connected clients can use Torro Workplace through MCP",
-        "Verbundene Clients können Torro Workplace über MCP nutzen",
-    ),
-    (
         "Copy it into your program's configuration now. It is shown only this once; Torro Workplace keeps only a fingerprint of it.",
         "Kopiere ihn jetzt in die Konfiguration deines Programms. Er wird nur dieses eine Mal gezeigt; Torro Workplace behält nur einen Fingerabdruck davon.",
     ),
-    ("Data rule", "Datenregel"),
     ("Disconnect this client?", "Diesen Client trennen?"),
     (
         "Each bot has rights of its own. A new bot may use nothing until you allow it here.",
         "Jeder Bot hat eigene Rechte. Ein neuer Bot darf nichts nutzen, bis du es hier erlaubst.",
     ),
-    ("Every key of a script or program is refused", "Jeder Schlüssel eines Skripts oder Programms wird abgewiesen"),
-    ("Every MCP client and its hooks are refused", "Jeder MCP-Client und seine Hooks werden abgewiesen"),
     ("Hide commands", "Befehle ausblenden"),
-    (
-        "The switch holds for the assistant and all its bots, whatever their rights allow.",
-        "Der Schalter gilt für den Assistenten und alle seine Bots, was immer ihre Rechte erlauben.",
-    ),
     ("Hooks without an agent", "Hooks ohne Agent"),
     ("Import from TorroMail", "Aus TorroMail übernehmen"),
     ("Import from TorroMail…", "Aus TorroMail übernehmen…"),
@@ -6273,6 +6226,24 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Manage models…", "Modelle verwalten…"),
     ("MCP client", "MCP-Client"),
     ("MCP clients", "MCP-Clients"),
+    // Control centre sets up, the apps rule the access (#663, #665, #666).
+    ("API clients", "API-Clients"),
+    ("Create keys for scripts and programs", "Schlüssel für Skripte und Programme anlegen"),
+    ("Connect coding agents and apps", "Coding-Agenten und Apps verbinden"),
+    ("Used by the assistant", "Vom Assistenten genutzt"),
+    ("The assistant and each bot have their own.", "Der Assistent und jeder Bot haben eigene."),
+    (
+        "New tools and servers are allowed until you switch them off here.",
+        "Neue Werkzeuge und Server sind erlaubt, bis du sie hier ausschaltest.",
+    ),
+    (
+        "No MCP servers yet. Each one you add in Torro Workplace under MCP servers is allowed here.",
+        "Noch keine MCP-Server. Jeder, den du in Torro Workplace unter MCP-Server hinzufügst, ist hier erlaubt.",
+    ),
+    (
+        "Who may use a tool is set by the rights of each client. Only you can choose the folder and the logos.",
+        "Wer ein Werkzeug nutzen darf, legen die Rechte jedes Clients fest. Nur du kannst den Ordner und die Logos wählen.",
+    ),
     ("Torro's MCP server", "Torros MCP-Server"),
     ("Models", "Modelle"),
     (
@@ -6298,10 +6269,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Only your program holds it", "Nur dein Programm kennt ihn"),
     ("Other MCP client", "Anderer MCP-Client"),
     (
-        "Programs reach Torro Workplace on this computer only. Only you can turn this on again.",
-        "Programme erreichen Torro Workplace nur auf diesem Rechner. Nur du kannst das wieder einschalten.",
-    ),
-    (
         "Put this command into the client's configuration and pass the key as {variable}. The key is shown only this once; Torro Workplace keeps only a fingerprint of it.",
         "Trage diesen Befehl in die Konfiguration des Clients ein und übergib den Schlüssel als {variable}. Der Schlüssel wird nur dieses eine Mal gezeigt; Torro Workplace behält nur einen Fingerabdruck davon.",
     ),
@@ -6312,10 +6279,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     (
         "Save the bot once more in its editor; until then it may use nothing.",
         "Speichere den Bot noch einmal in seinem Editor; bis dahin darf er nichts nutzen.",
-    ),
-    (
-        "Scripts and programs with a key can use Torro Workplace",
-        "Skripte und Programme mit Schlüssel können Torro Workplace nutzen",
     ),
     ("Search models", "Modelle suchen"),
     ("Show closed models", "Geschlossene Modelle zeigen"),
@@ -6329,8 +6292,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Der Bot nutzt nur, was du ihm unter Zugriff erlaubt hast.",
     ),
     (
-        "The command for a client you set up yourself; it takes the client's key as {variable}. Only you can turn MCP on again.",
-        "Der Befehl für einen Client, den du selbst einrichtest; er bekommt den Schlüssel des Clients als {variable}. Nur du kannst MCP wieder einschalten.",
+        "The command for a client you set up yourself; it takes the client's key as {variable}.",
+        "Der Befehl für einen Client, den du selbst einrichtest; er bekommt den Schlüssel des Clients als {variable}.",
     ),
     (
         "The hooks could not be taken out of the agent's settings",
@@ -6369,8 +6332,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Assistant settings after the suite's rules (#547).
     ("Keep", "Aufbewahren"),
     (
-        "Models and the data rule are set there for the whole suite.",
-        "Modelle und Datenregel stellst du dort für die ganze Suite ein.",
+        "AI accounts and their models are set there for the whole suite.",
+        "KI-Konten und ihre Modelle stellst du dort für die ganze Suite ein.",
     ),
     ("Name and picture", "Name und Bild"),
     ("Nothing to choose while no area has access.", "Nichts zu wählen, solange kein Bereich Zugriff hat."),
@@ -6378,9 +6341,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Selections", "Auswahl"),
     ("Turn on models in Torro Workplace › AI.", "Schalte Modelle unter Torro Workplace › KI an."),
     ("Turned off in Torro Workplace › AI", "Abgeschaltet unter Torro Workplace › KI"),
-    ("{text}; sorted mail stays on this computer", "{text}; sortierte Mail bleibt auf diesem Rechner"),
     ("Let {engine} ({model}) be the model for {slot}", "{engine} ({model}) für {slot} nehmen"),
-    ("Sorting may no longer send mail to the cloud.", "Sortieren darf keine Mail mehr in die Cloud schicken."),
     (
         "The model for Sorting changed. Resume the run to sort with the new one.",
         "Das Modell fürs Sortieren hat sich geändert. Setz den Lauf fort, um mit dem neuen zu sortieren.",
@@ -6414,12 +6375,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{provider} does not offer the model {model}.", "{provider} bietet das Modell {model} nicht an."),
     // The assistant's own tools (WZ.2-WZ.4, #225): area, refusals, the PDF tool's errors and approvals
     ("The assistant's own tools, such as making PDFs", "Eigene Werkzeuge des Assistenten, etwa PDFs erstellen"),
-    (
-        "The tool {tool} is switched off in the control centre under MCP servers.",
-        "Das Werkzeug {tool} ist in der Steuerzentrale unter MCP-Server ausgeschaltet.",
-    ),
     ("The assistant may not use the tool {tool}.", "Der Assistent darf das Werkzeug {tool} nicht verwenden."),
-    ("{tool} is switched off", "{tool} ist ausgeschaltet"),
     ("No access to the tool {tool}", "Kein Zugriff auf das Werkzeug {tool}"),
     ("Page {n} of {m}", "Seite {n} von {m}"),
     (
@@ -6464,9 +6420,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("template|Note", "Notiz"),
     // The PDF tool's settings (WZ.6, #225), in the control centre since MA.7
     ("No tools", "Keine Werkzeuge"),
-    ("Make PDFs", "PDFs erstellen"),
-    ("The assistant may use it", "Der Assistent darf es verwenden"),
-    ("The assistant may not use it", "Der Assistent darf es nicht verwenden"),
     ("Desktop", "Schreibtisch"),
     ("Use desktop", "Schreibtisch verwenden"),
     ("Choose…", "Wählen…"),
@@ -6794,8 +6747,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     // Design review #231
     ("Command", "Befehl"),
-    ("Refused while API keys are off", "Abgelehnt, solange API-Schlüssel aus sind"),
-    ("Refused while MCP is off", "Abgelehnt, solange MCP aus ist"),
     ("Create key…", "Schlüssel erstellen…"),
     ("Connect client…", "Client verbinden…"),
     (
@@ -7333,11 +7284,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Control centre › MCP servers, and the assistant's Tools that moved there (MA.7, #302)
     ("Built-in tools", "Eingebaute Werkzeuge"),
     ("Built-in", "Eingebaut"),
-    (
-        "A tool works only while it is on here and a client's rights allow it. Only you can switch it on and choose the folder and the logos.",
-        "Ein Werkzeug arbeitet nur, solange es hier eingeschaltet ist und die Rechte eines Clients es erlauben. Nur du kannst es einschalten und den Ordner und die Logos wählen.",
-    ),
-    ("Allow it in the assistant under Access", "Im Assistenten unter Zugriff erlauben"),
     ("PDF templates", "PDF-Vorlagen"),
     ("Catalog", "Katalog"),
     (
@@ -7577,10 +7523,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     (
         "What a call of each tool needs. None is offered until you allow the tools it reports.",
         "Was ein Aufruf jedes Werkzeugs braucht. Keins wird angeboten, bevor du die gemeldeten Werkzeuge erlaubst.",
-    ),
-    (
-        "Who may use it: API, MCP clients and the assistant's Access.",
-        "Wer ihn nutzen darf: API, MCP-Clients und Zugriff im Assistenten.",
     ),
     ("{name} gets it when it starts next.", "{name} bekommt es beim nächsten Start."),
     (
@@ -7872,16 +7814,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Decision models answer directly and sort mail much faster than chat models.",
         "Entscheidungsmodelle antworten direkt und ordnen E-Mails viel schneller ein als Chat-Modelle.",
     ),
-    // Choosing a model in the cloud for sorting is the consent, after one question (issue #424); "On this
-    // computer", "Cancel" and "Use" stand above.
-    ("In the cloud", "In der Cloud"),
-    ("Sort mail in the cloud?", "E-Mails in der Cloud einordnen?"),
-    (
-        "{model} reads your mail at {provider} in the cloud. Use it?",
-        "{model} liest deine E-Mails bei {provider} in der Cloud. Übernehmen?",
-    ),
     ("Switched off – choose a model to switch it on", "Ausgeschaltet – wähle ein Modell, um es einzuschalten"),
-    ("Waiting for your OK – mail stays here", "Wartet auf dein OK – E-Mails bleiben hier"),
     // The tiers and reasons of the recommended models (MW.5, issue #325); "Medium", "This computer" and
     // "Needs {program}" stand above.
     ("Mac with large memory", "Mac mit viel Arbeitsspeicher"),
@@ -7936,7 +7869,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("The assistant and its bots", "Der Assistent und seine Bots"),
     ("Sorts mail into categories", "Sortiert Mail in Kategorien"),
     ("Mail goes to {provider} ({seat}) for sorting only.", "Mail geht nur zum Sortieren an {provider} ({seat})."),
-    ("The chat still gets no mail.", "Der Chat bekommt weiterhin keine Mail."),
     ("Suggested: {model}", "Vorschlag: {model}"),
     ("Use suggestion", "Vorschlag nutzen"),
     ("Use suggestion · {size}", "Vorschlag nutzen · {size}"),
@@ -8399,7 +8331,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("1 mail account", "1 Mail-Konto"),
     ("1 source", "1 Quelle"),
     ("API keys", "API-Schlüssel"),
-    ("Create keys and connect clients in Torro Workplace.", "Schlüssel und Clients legst du in Torro Workplace an."),
     ("Keys and clients are created in Torro Workplace.", "Schlüssel und Clients werden in Torro Workplace angelegt."),
     ("No program uses the API or MCP yet.", "Noch nutzt kein Programm die API oder MCP."),
     ("Open Torro Workplace", "Torro Workplace öffnen"),

@@ -27,10 +27,14 @@
 //!   (`ext.<id>.<tool>` in [`Rights::denied`]). A server switched off under MCP servers gets a
 //!   mark in the attention colour; without any server a sentence says where they are added.
 //! - **"Ask first"** (never, on delete, on every change) and the **selections** of calendars, task
-//!   lists, GitHub repositories, inbox sources, mail accounts and the assistant's own tools (task
-//!   WZ.7; "All" or the switched-on ones, [`Pick`]) for each area the rights reach; a tool that is
-//!   switched off under MCP servers (task MA.7) gets a mark in the attention colour. What they
-//!   offer comes from [`Known`], which the window that shows the editor fills from its own data.
+//!   lists, GitHub repositories, inbox sources, mail accounts and the built-in tools (task WZ.7;
+//!   "All" or those ticked, [`Pick`]) for each area the rights reach. What they offer comes from
+//!   [`Known`], which the window that shows the editor fills from its own data.
+//! - **What the assistant and its bots use** (issue #666, [`Part::Servers`]): per built-in tool and per
+//!   MCP server one switch, allowed unless a person switched it off, each with "Show commands" over
+//!   [`Rights::denied`]. A tool's switch is its place in [`Rights::tools`] (off turns "All" into the
+//!   list without it); a server's is its entry in [`Rights::extensions`] against
+//!   [`Rights::extensions_default`] ([`Message::Server`]).
 //! - **`web` only by name** (issue #305, task WEB.6): "All" tools never includes a tool that must be ticked by name
 //!   ([`ToolId::needs_naming`], the web search). With "All" its row stands unticked under the choice; ticking it
 //!   makes "All" a selection of every tool, itself included. "Selected" from "All" and switching the area on tick
@@ -66,7 +70,7 @@ use torro_ipc::api::{
     RightsTemplate, Selection, active_level, has_command, levels, shows_area,
 };
 use torro_ipc::extensions::{self, ExtensionInfo, ExtensionTool, ToolState};
-use torro_ipc::tools::{ToolId, ToolInfo};
+use torro_ipc::tools::{ToolAccess, ToolId, ToolInfo};
 use torro_ipc::{AccountInfo, ClientInfo, Request, Response};
 use torro_pim::Collection;
 
@@ -93,6 +97,8 @@ pub struct State {
     open: BTreeSet<Area>,
     /// The MCP servers, by id, whose tools are shown ("Show commands" of a server's row).
     open_servers: BTreeSet<String>,
+    /// The built-in tools whose commands are shown ([`Part::Servers`], issue #666).
+    open_tools: BTreeSet<ToolId>,
 }
 
 /// Rights the editor changed, on their way to the core.
@@ -118,7 +124,7 @@ enum Phase {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Naming {
     /// The catalogue name, which is the API's endpoint: `calendar.list_events`. For keys of
-    /// scripts and programs (control centre › API).
+    /// scripts and programs (control centre › API clients).
     Endpoints,
     /// The MCP tool name ([`Command::tool_name`]): `calendar_list_events`. For MCP clients
     /// (control centre › MCP) and for the assistant and its bots, whose tools carry these names.
@@ -358,8 +364,18 @@ pub enum Message {
     Command(&'static str, bool),
     /// A segment of an MCP server's level (task MA.10): the server's id ([`ExtensionInfo::id`]) and
     /// the level. [`Level::NoAccess`] takes the server out of [`Rights::extensions`] (missing is no
-    /// access); every other level is stored for it.
+    /// access) – or, for rights open to servers without an entry ([`Rights::extensions_default`],
+    /// issue #666), stores it as closed; every other level is stored for it.
     ServerLevel(String, Level),
+    /// The switch of an MCP server under "Used by the assistant" (issue #666, [`Part::Servers`]): the
+    /// server's id and whether the client may use it. On takes a closing entry out (the open level
+    /// applies again) or, for rights without one, stores [`Level::Full`]; off closes it.
+    Server(String, bool),
+    /// The switch of a built-in tool under "Used by the assistant" (issue #666): on ticks it in
+    /// [`Rights::tools`], off takes it out – "All" becomes every tool reached but this one.
+    Tool(ToolId, bool),
+    /// "Show commands" of a built-in tool there.
+    ExpandTool(ToolId),
     /// "Show commands" or "Hide commands" of an MCP server's row, by the server's id: opens or closes
     /// the list of its tools.
     ExpandServer(String),
@@ -392,7 +408,7 @@ pub fn update<A>(state: &mut State, message: Message, client: Option<&ClientInfo
             }
             _ => Action::None,
         },
-        Message::RepoInput(_) | Message::Expand(_) | Message::ExpandServer(_) => {
+        Message::RepoInput(_) | Message::Expand(_) | Message::ExpandServer(_) | Message::ExpandTool(_) => {
             view_only(state, message);
             Action::None
         }
@@ -416,7 +432,7 @@ pub fn update<A>(state: &mut State, message: Message, client: Option<&ClientInfo
 pub fn change(state: &mut State, rights: &mut Rights, kind: &str, message: Message, known: &Known) -> bool {
     match message {
         Message::Clock(_) => false,
-        Message::RepoInput(_) | Message::Expand(_) | Message::ExpandServer(_) => {
+        Message::RepoInput(_) | Message::Expand(_) | Message::ExpandServer(_) | Message::ExpandTool(_) => {
             view_only(state, message);
             false
         }
@@ -430,6 +446,7 @@ fn view_only(state: &mut State, message: Message) {
         Message::RepoInput(text) => state.repo_input = text,
         Message::Expand(area) => toggle(&mut state.open, area),
         Message::ExpandServer(id) => toggle(&mut state.open_servers, id),
+        Message::ExpandTool(tool) => toggle(&mut state.open_tools, tool),
         _ => {}
     }
 }
@@ -494,6 +511,10 @@ pub fn change_rights(
         }
         Message::Command(name, on) if switchable(name, kind) => switch(&mut rights.denied, name, on),
         Message::ServerLevel(id, level) if shows_area(Area::Extensions, kind) => match level {
+            // Open rights reach a server without an entry: closing it needs one.
+            Level::NoAccess if rights.extensions_base() != Level::NoAccess => {
+                rights.extensions.insert(id, Level::NoAccess);
+            }
             Level::NoAccess => {
                 rights.extensions.remove(&id);
             }
@@ -501,6 +522,28 @@ pub fn change_rights(
                 rights.extensions.insert(id, level);
             }
             _ => {}
+        },
+        Message::Server(id, on) if shows_area(Area::Extensions, kind) => {
+            let open = rights.extensions_base() != Level::NoAccess;
+            match (on, open) {
+                (true, true) | (false, false) => {
+                    rights.extensions.remove(&id);
+                }
+                (true, false) if known.extensions.iter().any(|server| server.id == id) => {
+                    rights.extensions.insert(id, Level::Full);
+                }
+                (true, false) => {}
+                (false, true) => {
+                    rights.extensions.insert(id, Level::NoAccess);
+                }
+            }
+        }
+        Message::Tool(tool, on) if shows_area(Area::Tools, kind) => match on {
+            true => tick(&mut rights.tools, tool.name().to_string(), true),
+            false => {
+                let Selection::Only(ids) = rights.reached_tools() else { return false };
+                rights.tools = Selection::Only(ids.into_iter().filter(|id| id != tool.name()).collect());
+            }
         },
         Message::ServerTool(id, tool, on) if shows_area(Area::Extensions, kind) => {
             let name = extensions::denied_name(&id, &tool);
@@ -1205,21 +1248,14 @@ fn chat_candidates(known: &Known) -> Vec<Candidate> {
         .collect()
 }
 
-/// The assistant's own tools (`tools.list_tools`, task WZ.7): the id is what the core checks a
-/// command against ([`Rights::reaches_tool`]), the name what people call it ("PDF"). Below it what
-/// the tool does, or, while it is switched off under MCP servers (task MA.7), that it is:
-/// granted, it still does nothing until the person switches it on there.
+/// The built-in tools (`tools.list_tools`, task WZ.7): the id is what the core checks a command
+/// against ([`Rights::reaches_tool`]), the name what people call it ("PDF"), below it what the tool
+/// does. The tools are always there (issue #666): granted, a tool works.
 fn tool_candidates(known: &Known) -> Vec<Candidate> {
     known
         .tools
         .iter()
-        .map(|tool| {
-            let detail = match tool.enabled {
-                true => tool.description.clone(),
-                false => tr("Off under MCP servers").to_string(),
-            };
-            Candidate::plain(tool.id.name().to_string(), tool.name.clone(), Some(detail))
-        })
+        .map(|tool| Candidate::plain(tool.id.name().to_string(), tool.name.clone(), Some(tool.description.clone())))
         .collect()
 }
 
@@ -1230,12 +1266,6 @@ pub fn named_under_all(pick: Pick, known: &Known) -> Vec<Candidate> {
         Pick::Tools => tool_candidates(known).into_iter().filter(|candidate| by_name_only(&candidate.id)).collect(),
         _ => Vec::new(),
     }
-}
-
-/// Whether the tool `id` is known and switched off under MCP servers (`tools.list_tools`):
-/// granted, it still does nothing.
-fn tool_off(known: &Known, id: &str) -> bool {
-    known.tools.iter().any(|tool| tool.id.name() == id && !tool.enabled)
 }
 
 // ----- Views --------------------------------------------------------------------------------
@@ -1260,14 +1290,20 @@ pub fn view<'a>(
 }
 
 /// A part of the editor, for a page that shows it under tabs (issue #547, the assistant's Access):
-/// what the client may do, or what it may reach in each area.
+/// what the client may do, what it may reach in each area, or which built-in tools and MCP servers it
+/// uses (issue #666, the assistant's API and MCP). The control centre shows the whole editor
+/// ([`view`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Part {
-    /// The access group titled as [`view`] titles it, and "Ask first".
+    /// The access group titled as [`view`] titles it, without the tools and the MCP servers, and "Ask
+    /// first".
     Access,
     /// The selection of each area the rights reach (calendars, task lists, repositories, inbox
-    /// sources, mail accounts, tools).
+    /// sources, mail accounts), without the tools.
     Selections,
+    /// The built-in tools and the MCP servers, each with a switch and "Show commands"
+    /// ([`servers_groups`]).
+    Servers,
 }
 
 /// One [`Part`] of the editor, laid out as [`view`] lays out the whole: the same groups, the same
@@ -1285,14 +1321,19 @@ pub fn view_part<'a>(
     responsive(move |size| {
         let column_at = control_column(size.width);
         let groups = match part {
-            Part::Access => vec![
-                access_group(state, rights, &known, column_at, kind, naming, title, None),
-                confirm_group(rights.confirm, column_at),
-            ],
+            Part::Access => {
+                let areas: Vec<Area> =
+                    Area::ALL.into_iter().filter(|area| !matches!(area, Area::Tools | Area::Extensions)).collect();
+                vec![
+                    access_group(state, rights, &known, column_at, kind, naming, title, Some(&areas)),
+                    confirm_group(rights.confirm, column_at),
+                ]
+            }
             Part::Selections => {
-                let groups = selection_groups(state, rights, &known, column_at);
+                let groups: Vec<_> = selection_groups(state, rights, &known, column_at, &[Pick::Tools]);
                 if groups.is_empty() { vec![no_selection_group()] } else { groups }
             }
+            Part::Servers => servers_groups(state, rights, &known, naming, column_at),
         };
         column(groups).spacing(torro_gui::layout::section_gap()).into()
     })
@@ -1300,15 +1341,19 @@ pub fn view_part<'a>(
     .into()
 }
 
-/// The selection of each area `rights` reach, in the order of [`Pick::ALL`].
+/// The selection of each area `rights` reach, in the order of [`Pick::ALL`], but those of `left_out`.
 fn selection_groups<'a>(
     state: &'a State,
     rights: &Rights,
     known: &Known,
     column: Option<f32>,
+    left_out: &[Pick],
 ) -> Vec<Element<'a, Message>> {
     let mut groups = Vec::new();
-    for pick in Pick::ALL.into_iter().filter(|pick| rights.area(pick.area()).level != Level::NoAccess) {
+    for pick in Pick::ALL
+        .into_iter()
+        .filter(|pick| rights.area(pick.area()).level != Level::NoAccess && !left_out.contains(pick))
+    {
         groups.push(selection_group(&state.repo_input, pick, rights, known, column));
         // Right behind the address books: the ones that are never part of "All" (issue #353).
         if pick == Pick::AddressBooks {
@@ -1350,6 +1395,72 @@ fn no_selection_group<'a>() -> Element<'a, Message> {
     widgets::group(tr("Selections"), vec![row_frame(line, false)], None)
 }
 
+/// [`Part::Servers`] (issue #666): "Built-in tools" with a switch per tool ([`Message::Tool`], on while
+/// the rights reach it) and "Show commands" with the tool's commands, then "MCP servers" with a switch per
+/// installed server ([`Message::Server`]) and "Show commands" with the tools of a server it uses. The
+/// switches start on for the assistant and its bots ([`Rights::opened`]); what a person switches off
+/// stays off.
+fn servers_groups<'a>(
+    state: &'a State,
+    rights: &Rights,
+    known: &Known,
+    naming: Naming,
+    column: Option<f32>,
+) -> Vec<Element<'a, Message>> {
+    let mut tools = Vec::new();
+    for info in known.tools {
+        let tool = info.id;
+        let on = rights.reaches_tool(tool) && rights.area(Area::Tools).allows(ToolAccess::access(tool));
+        let switch =
+            toggler(on).size(style::CHECK_SIZE).style(style::toggler).on_toggle(move |on| Message::Tool(tool, on));
+        let row = setting_row(None, info.name.clone(), Some(info.description.clone()), in_column(switch, column));
+        tools.push(pressable(row, Some(Message::Tool(tool, !on))));
+        let listed: Vec<&'static Command> = CATALOGUE
+            .iter()
+            .filter(|command| command.mcp == Mcp::Tool && ToolId::of_command(command.name) == Some(tool))
+            .copied()
+            .collect();
+        if on && !listed.is_empty() {
+            let shown = state.open_tools.contains(&tool);
+            tools.push(disclosure_row(indent(), shown, Message::ExpandTool(tool)));
+            if shown {
+                tools.extend(listed.into_iter().map(|command| command_row(command, rights, naming, column)));
+            }
+        }
+    }
+    if tools.is_empty() {
+        tools.push(row_frame(typo::text(typo::body(), tr("No tools")).style(theme::text_3), false));
+    }
+    let mut servers = Vec::new();
+    for server in known.extensions {
+        let on = rights.extension(&server.id) != Level::NoAccess;
+        let id = server.id.clone();
+        let switch = toggler(on)
+            .size(style::CHECK_SIZE)
+            .style(style::toggler)
+            .on_toggle(move |on| Message::Server(id.clone(), on));
+        let row = setting_row(None, server.name.clone(), Some(server_detail(server)), in_column(switch, column));
+        servers.push(pressable(row, Some(Message::Server(server.id.clone(), !on))));
+        let listed = server_tools(server, rights);
+        if !listed.is_empty() {
+            let shown = state.open_servers.contains(&server.id);
+            servers.push(disclosure_row(indent(), shown, Message::ExpandServer(server.id.clone())));
+            if shown {
+                servers.extend(listed.into_iter().map(|tool| server_tool_row(tool, rights, naming, column)));
+            }
+        }
+    }
+    if servers.is_empty() {
+        let words = tr("No MCP servers yet. Each one you add in Torro Workplace under MCP servers is allowed here.");
+        servers.push(row_frame(typo::text(typo::body(), words).style(theme::text_3), false));
+    }
+    let footer = tr("New tools and servers are allowed until you switch them off here.");
+    vec![
+        widgets::group(tr("Built-in tools"), tools, None),
+        widgets::group(tr("MCP servers"), servers, Some(footer.to_string())),
+    ]
+}
+
 /// The groups of the editor for `rights` of a client of `kind`: the access group titled `title`
 /// (levels, admin switches, sending, the commands of every open area), "Ask first", and the
 /// selection of each area the rights reach (calendars, task lists, repositories, inbox sources,
@@ -1368,7 +1479,7 @@ pub fn groups<'a>(
         access_group(state, rights, known, column, kind, naming, title, None),
         confirm_group(rights.confirm, column),
     ];
-    groups.extend(selection_groups(state, rights, known, column));
+    groups.extend(selection_groups(state, rights, known, column, &[]));
     groups
 }
 
@@ -1765,13 +1876,9 @@ fn selection_group<'a>(
                 false,
             ));
         }
-        // A tool switched off under MCP servers gets a mark in the attention colour; the other
-        // tools keep its room, so the names line up.
-        let any_off = pick == Pick::Tools && offered.iter().any(|candidate| tool_off(known, &candidate.id));
         rows.extend(offered.into_iter().map(|candidate| {
             let ticked = selection.contains(&candidate.id);
-            let off = any_off.then(|| tool_off(known, &candidate.id));
-            candidate_row(pick, candidate, ticked, off, column)
+            candidate_row(pick, candidate, ticked, None, column)
         }));
         if pick == Pick::GithubRepos {
             rows.push(add_repo_row(repo_input));
@@ -1925,20 +2032,14 @@ mod tests {
         ]
     }
 
-    /// The tool PDF as `tools.list_tools` lists it for the app key, switched on or not.
-    fn pdf(enabled: bool) -> ToolInfo {
-        ToolInfo { id: ToolId::Pdf, name: "PDF".into(), description: "Makes PDFs.".into(), enabled, allowed: true }
+    /// The tool PDF as `tools.list_tools` lists it for the app key.
+    fn pdf() -> ToolInfo {
+        ToolInfo { id: ToolId::Pdf, name: "PDF".into(), description: "Makes PDFs.".into(), allowed: true }
     }
 
     /// The tool web as `tools.list_tools` lists it for the app key.
-    fn web(enabled: bool) -> ToolInfo {
-        ToolInfo {
-            id: ToolId::Web,
-            name: "Web".into(),
-            description: "Searches the web.".into(),
-            enabled,
-            allowed: true,
-        }
+    fn web() -> ToolInfo {
+        ToolInfo { id: ToolId::Web, name: "Web".into(), description: "Searches the web.".into(), allowed: true }
     }
 
     fn client(id: &str, name: &str, kind: &str, rights: Rights) -> ClientInfo {
@@ -2025,7 +2126,7 @@ mod tests {
                 account("", "mail", "signing-in@example.org"),
                 account("mail:anna@work.example.net", "mail", "anna@work.example.net"),
             ],
-            tools: vec![pdf(false)],
+            tools: vec![pdf()],
             extensions: servers(),
         }
     }
@@ -2349,30 +2450,25 @@ mod tests {
         assert_eq!(rights.tools, Selection::Only(Vec::new()));
         assert_eq!(rights.area(Area::Tools).level, Level::Write, "the level stays");
 
-        // On the assistant's first start the choice gets the same, nothing is sent.
+        // On the assistant's first start the choice gets the same, nothing is sent (issue #666: the
+        // assistant starts with every tool; without them it is as for a key).
         let mut choice = Rights::assistant();
+        choice.areas.remove(&Area::Tools);
+        choice.tools = Selection::Only(Vec::new());
         let message = Message::Level(Area::Tools, Level::Write);
         assert!(change(&mut State::default(), &mut choice, ASSISTANT_CLIENT, message, &fixture.known()));
         assert_eq!(choice.tools, Selection::Only(vec!["pdf".into()]));
     }
 
-    /// Task WZ.7: a tool is offered by its id and name; below it what it does, or that it is switched
-    /// off under MCP servers (task MA.7), since granted it still does nothing there.
+    /// Task WZ.7: a tool is offered by its id and name, below it what it does; issue #666: the tools are
+    /// always there, no switch to mark.
     #[test]
-    fn tools_are_offered_with_what_they_do_or_that_they_are_off() {
-        let mut fixture = fixture();
+    fn tools_are_offered_with_what_they_do() {
+        let fixture = fixture();
         let offered = candidates(Pick::Tools, &fixture.known(), &Selection::All);
         assert_eq!(offered.iter().map(|c| (c.id.as_str(), c.label.as_str())).collect::<Vec<_>>(), [("pdf", "PDF")]);
-        assert_eq!(offered[0].detail.as_deref(), Some(tr("Off under MCP servers")));
+        assert_eq!(offered[0].detail.as_deref(), Some("Makes PDFs."));
         assert!(offered[0].color.is_none());
-        assert!(tool_off(&fixture.known(), "pdf"), "so its row gets the attention mark");
-        assert!(!tool_off(&fixture.known(), "chart"), "a tool the core does not know is not off, it is gone");
-        fixture.tools = vec![pdf(true)];
-        assert_eq!(
-            candidates(Pick::Tools, &fixture.known(), &Selection::All)[0].detail.as_deref(),
-            Some("Makes PDFs.")
-        );
-        assert!(!tool_off(&fixture.known(), "pdf"));
         // A tool the core no longer knows stays in the list to be unticked.
         let stale = Selection::Only(vec!["pdf".into(), "chart".into()]);
         let all = candidates(Pick::Tools, &fixture.known(), &stale);
@@ -2388,7 +2484,7 @@ mod tests {
     #[test]
     fn web_is_only_ever_ticked_by_name() {
         let mut fixture = fixture();
-        fixture.tools = vec![pdf(true), web(false)];
+        fixture.tools = vec![pdf(), web()];
         let known = fixture.known();
         let mut repo = String::new();
         let mut change =
@@ -2437,7 +2533,7 @@ mod tests {
         rights.areas.insert(Area::Mail, AreaRights { level: Level::NoAccess, admin: false });
         assert!(!sends_outside(&rights), "no mail, nothing read to send");
         let mut fixture = fixture();
-        fixture.tools = vec![pdf(true), web(true)];
+        fixture.tools = vec![pdf(), web()];
         for tools in [Selection::All, Selection::Only(vec!["web".into()])] {
             let mut rights = RightsTemplate::ReadOnly.rights();
             rights.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
@@ -2966,6 +3062,34 @@ mod tests {
         let mut hook = State::default();
         let _ = send(&mut hook, &fixture, "h1", Message::ServerLevel("time".into(), Level::Read));
         assert!(hook.draft.is_none());
+    }
+
+    /// Issue #666: under "Used by the assistant" a server's switch writes no entry while the rights are
+    /// open (off is an entry `none`) and `full` while they are closed (off takes it out); a server not
+    /// installed is not switched on. A built-in tool's switch takes it out of "all tools" by writing
+    /// the others, `web` with them while the rights are open, and ticks it again.
+    #[test]
+    fn used_servers_and_tools_switch_by_the_open_rights() {
+        let fixture = fixture();
+        let known = fixture.known();
+        let mut input = String::new();
+        let mut apply = |rights: &mut Rights, message| change_rights(rights, BOT_CLIENT, message, &known, &mut input);
+        let mut opened = Rights::none().opened();
+        assert!(apply(&mut opened, Message::Server("notes".into(), false)));
+        assert_eq!(opened.extension("notes"), Level::NoAccess);
+        assert!(apply(&mut opened, Message::Server("notes".into(), true)));
+        assert!(opened.extensions.is_empty() && opened.extension("notes") == Level::Full, "open again");
+        let mut closed = Rights::none();
+        assert!(apply(&mut closed, Message::Server("notes".into(), true)));
+        assert_eq!(closed.extension("notes"), Level::Full);
+        assert!(!apply(&mut closed, Message::Server("gone".into(), true)), "not installed");
+        assert!(apply(&mut closed, Message::Server("notes".into(), false)));
+        assert!(closed.extensions.is_empty());
+
+        assert!(apply(&mut opened, Message::Tool(ToolId::Pdf, false)));
+        assert_eq!(opened.tools, Selection::Only(vec!["web".into(), "files".into()]));
+        assert!(apply(&mut opened, Message::Tool(ToolId::Pdf, true)));
+        assert!(ToolId::ALL.into_iter().all(|tool| opened.reaches_tool(tool)));
     }
 
     /// Task MA.10: a tool's switch writes `ext.<id>.<tool>` into `Rights::denied` and takes it out
