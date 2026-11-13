@@ -2935,13 +2935,13 @@ mod tests {
         let fixture = fixture();
         let state = State::default();
         let mut rights = Rights::none();
-        assert!(selection_groups(&state, &rights, &fixture.known(), None).is_empty());
+        assert!(selection_groups(&state, &rights, &fixture.known(), None, &[]).is_empty());
         rights.areas.insert(Area::Contacts, AreaRights { level: Level::Read, admin: false });
-        assert_eq!(selection_groups(&state, &rights, &fixture.known(), None).len(), 2, "books and hidden books");
+        assert_eq!(selection_groups(&state, &rights, &fixture.known(), None, &[]).len(), 2, "books and hidden books");
         let bare = Known { address_books: &fixture.address_books[..2], ..fixture.known() };
-        assert_eq!(selection_groups(&state, &rights, &bare, None).len(), 1, "no hidden book, no group");
+        assert_eq!(selection_groups(&state, &rights, &bare, None, &[]).len(), 1, "no hidden book, no group");
         rights.hidden_address_books = vec![RECENT.into()];
-        assert_eq!(selection_groups(&state, &rights, &bare, None).len(), 2, "one that is named but gone");
+        assert_eq!(selection_groups(&state, &rights, &bare, None, &[]).len(), 2, "one that is named but gone");
     }
 
     #[test]
