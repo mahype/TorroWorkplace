@@ -230,7 +230,7 @@ aus einem Guss wirkt:
 - **Abstandsstufen** (#484): Comfort und Dense ändern die Skala, die Abstände nach Rolle (außer `inset`) und die
   Höhen; Breiten (`sidebar`, `list`, `props`, `panel`, `content_max`, `reading_max` …) bleiben. Werte
   Comfort / Standard / Dense: Mail-Zeile 116 / 100 / 78, andere Eingangszeile 92 / 80 / 56, Aufgabenzeile
-  56 / 48 / 42, Seitenleistenzeile 36 / 32 / 28, `control_sm` 40 / 36 / 30, `control` 42 / 38 / 32, `control_lg`
+  56 / 48 / 42, Kontaktzeile 68 / 60 / 52, Seitenleistenzeile 36 / 32 / 28, `control_sm` 40 / 36 / 30, `control` 42 / 38 / 32, `control_lg`
   44 / 40 / 36, Kopfleiste 64 / 64 / 48, Stunde 56 / 48 / 40, `page_padding` 32 / 24 / 16, `panel_padding` 20 / 16 / 12,
   `row_padding` 24×32 / 18×24 / 6×16, `section_gap` 32 / 24 / 16, `item_gap` 14 / 10 / 6, `reading_padding`
   64×80 / 52×64 / 32×40, Skala `[4,10,16,20,32,40]` / `[4,8,12,16,24,32]` / `[2,6,8,12,16,24]`, `rail` 64 / 60 / 52,
@@ -254,6 +254,7 @@ aus einem Guss wirkt:
 | `size::tile_sm()` / `size::tile()` / `size::tile_lg()` | 20 / 28 / 36 | Quellen-Kachel (`widgets::source_tile`, E8.2): neben Wörtern / Hinweiszeile, Spaltenkopf / Anhang, Kopf einer App-Karte |
 | `size::row_sidebar()` | 32 | Seitenleisten- und Menüzeile (Menü 30) |
 | `size::row_group()` | 40 | Gruppenkopf in Listen („Overdue 2“), mit Platz für seinen „+“-Knopf |
+| `size::row_contact()` | 60 | Kontaktzeile (#352): Name und Funktion auf zwei Zeilen, Mail, Nummer und Ort daneben; Comfort 68, Dense 52 |
 | `size::header()` | 64 | Kopfleiste |
 | `size::sidebar()` | 240 | Seitenleiste (Standard, ziehbar) |
 | `size::props()` | 300 | Eigenschaften-Spalte (Standard, ziehbar) |

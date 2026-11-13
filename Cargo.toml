@@ -27,6 +27,7 @@ members = [
     "crates/torro-inbox-notifications",
     "crates/torroassistant",
     "crates/torrochat",
+    "crates/torrocontacts",
     "crates/torro-htmlview",
 ]
 # Spikes are their own Cargo projects (task M9.4): their dependencies touch neither the workspace nor CI.

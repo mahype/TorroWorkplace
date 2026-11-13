@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Torro Contacts
+GenericName=Contacts
+Comment=Address books from Nextcloud for the tiled desktop
+Exec=torrocontacts
+Icon=torro-contacts
+Terminal=false
+Categories=Office;ContactManagement;
+# Must equal the window class / Wayland app id set in torro-core (AppId::CONTACTS).
+StartupWMClass=torro-contacts

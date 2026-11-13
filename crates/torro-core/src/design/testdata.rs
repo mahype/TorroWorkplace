@@ -187,6 +187,7 @@ pub(super) fn standard_of_the_table() -> Design {
             row_notice: 80.0,
             row_sidebar: 32.0,
             row_group: 40.0,
+            row_contact: 60.0,
             header: 64.0,
             sidebar: 240.0,
             props: 300.0,

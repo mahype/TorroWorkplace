@@ -41,6 +41,7 @@ The first maintainer release and platform verification are still pending.
 | `crates/torroassistant` | AI assistant app |
 | `crates/torrochat` | Nextcloud Talk chat app |
 | `crates/torro-contacts` | Contacts support |
+| `crates/torrocontacts` | Contacts app (`torrocontacts`) |
 | `crates/torrotasks` | Tasks app (`torrotasks`) |
 | `crates/torrocalendar` | Calendar app (`torrocalendar`) |
 | `apps/workspace-setups` | Reference: the earlier Omarchy plugin for workspace templates, being rebuilt in Rust |

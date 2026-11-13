@@ -137,6 +137,7 @@ row_message = 100   # a mail row: avatar 40, three lines of 22 centred above its
 row_notice = 80     # any other inbox row: two lines of 22 centred above its hairline, 17.5 to spare above and below
 row_sidebar = 32    # sidebar and menu rows
 row_group = 40      # the head of a group: holds its "+" button (control_sm 36) between its lines
+row_contact = 60    # a contact row: name and position, two lines of 22 with 8 above and below
 header = 64         # the header bar
 sidebar = 240       # the sidebar
 props = 300         # the properties column
