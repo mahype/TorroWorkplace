@@ -445,7 +445,7 @@ pub fn differences(mine: &Contact, theirs: &Contact) -> Vec<Difference> {
             mine.birthday.map(|b| b.to_string()).unwrap_or_default(),
             theirs.birthday.map(|b| b.to_string()).unwrap_or_default(),
         ),
-        (tr("Note"), mine.note.clone().unwrap_or_default(), theirs.note.clone().unwrap_or_default()),
+        (tr("Notes"), mine.note.clone().unwrap_or_default(), theirs.note.clone().unwrap_or_default()),
         (tr("Groups"), mine.groups.join(", "), theirs.groups.join(", ")),
     ];
     rows.into_iter()
@@ -587,11 +587,20 @@ pub fn form<'a>(draft: &'a Draft, anchors: &Anchors, open: Option<Open>) -> Elem
                 }
             }
         }
-        sections = sections.push(group);
+        // A field without values takes no room ("+ Add field" brings it).
+        let filled = match list {
+            List::Email => !draft.emails.is_empty(),
+            List::Phone => !draft.phones.is_empty(),
+            List::Url => !draft.urls.is_empty(),
+            List::Address => !draft.addresses.is_empty(),
+        };
+        if filled {
+            sections = sections.push(group);
+        }
     }
     let more = column![
         line(label(tr("Birthday")), input("1990-04-15", &draft.birthday, Field::Birthday), draft.hint(Field::Birthday)),
-        line(label(tr("Note")), input(tr("Note"), &draft.note, Field::Note), None),
+        line(label(tr("Notes")), input(tr("Notes"), &draft.note, Field::Note), None),
     ]
     .spacing(space::s());
     let add =
@@ -784,6 +793,6 @@ mod tests {
         let phone = rows.iter().find(|d| d.label == tr("Phone")).expect("phone");
         assert!(phone.differs);
         assert!(rows.iter().filter(|d| d.label != tr("Phone")).all(|d| !d.differs));
-        assert!(rows.iter().all(|d| d.label != tr("Note")), "empty in both, left out");
+        assert!(rows.iter().all(|d| d.label != tr("Notes")), "empty in both, left out");
     }
 }

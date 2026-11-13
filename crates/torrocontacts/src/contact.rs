@@ -158,7 +158,8 @@ pub fn body<'a>(contact: &'a Contact, look: Look<'a>) -> Element<'a, Message> {
                     (!look.busy).then_some(Message::Resolve(torro_contacts::Keep::Both))
                 ),
             ]
-            .spacing(space::s());
+            .spacing(space::s())
+            .wrap();
             parts = parts.push(torro_gui::panel::inset(
                 column![
                     band(
@@ -227,7 +228,7 @@ pub fn body<'a>(contact: &'a Contact, look: Look<'a>) -> Element<'a, Message> {
     }
     if let Some(note) = contact.note.as_deref().filter(|n| !n.trim().is_empty()) {
         parts = parts.push(widgets::prop_section(
-            tr("Note"),
+            tr("Notes"),
             vec![torro_gui::panel::inset(typo::text(typo::body(), note).wrapping(Wrapping::WordOrGlyph))],
         ));
     }

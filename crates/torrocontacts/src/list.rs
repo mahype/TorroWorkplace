@@ -372,7 +372,8 @@ pub fn contact_row<'a>(contact: &'a ContactSummary, look: RowLook<'a>) -> Elemen
     }
     let end = look.end.clone().or_else(|| look.columns.city.then(|| contact.locality.clone().unwrap_or_default()));
     if let Some(end) = end {
-        cells = cells.push(container(widgets::ellipsized(typo::meta(), end, theme::text_3)).width(end_width()));
+        let width = if look.end.is_some() { birthday_width() } else { end_width() };
+        cells = cells.push(container(widgets::ellipsized(typo::meta(), end, theme::text_3)).width(width));
     }
     let id = contact.id.clone();
     let line = widgets::list_row_sized(cells, size::row_contact(), 0.0, look.selected, Some(Message::Open(id.clone())));
@@ -391,6 +392,11 @@ pub fn contact_row<'a>(contact: &'a ContactSummary, look: RowLook<'a>) -> Elemen
 /// The width of the town at the end of a row: half a sidebar (120 in the standard design).
 pub fn end_width() -> f32 {
     size::sidebar() / 2.0
+}
+
+/// The width of "turns 40 · 18 Nov" at the end of a row of "Birthdays": three quarters of a sidebar.
+pub fn birthday_width() -> f32 {
+    size::sidebar() * 0.75
 }
 
 /// The bar a row shows under the pointer: Mail, Call and Copy, each only with a value.
@@ -452,10 +458,10 @@ pub fn head<'a>(
     mouse_area(head).on_press(fold).interaction(mouse::Interaction::Pointer).into()
 }
 
-/// "turns 40 · Tue 18" (or "Tue 18" without a year of birth) at the end of a row of "Birthdays".
+/// "turns 40 · 18 Nov" (or "18 Nov" without a year of birth) at the end of a row of "Birthdays"; the
+/// month's head says which month, so the day needs no weekday.
 pub fn birthday_end(birthday: &Birthday, today: chrono::NaiveDate) -> String {
-    let day =
-        if birthday.next == today { tr("Today").to_owned() } else { datetime::format_short_date(birthday.next, today) };
+    let day = if birthday.next == today { tr("Today").to_owned() } else { datetime::format_day_month(birthday.next) };
     match birthday.turns {
         Some(turns) => trf("turns {n} · {day}", &[("n", &turns), ("day", &day)]),
         None => day,

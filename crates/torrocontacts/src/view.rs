@@ -288,23 +288,15 @@ impl App {
 
     fn list_view<'a>(&'a self, anchors: &Anchors) -> Element<'a, Message> {
         let body: Element<'a, Message> = if self.contacts.is_empty() {
-            let empty =
-                widgets::empty_state(tr("No contacts yet."), tr("Contacts of your address books show up here."));
-            match self.new_book() {
-                Some(_) => column![
-                    empty,
-                    widgets::text_button(
-                        Some(Icon::Plus),
-                        tr("New contact"),
-                        style::button::secondary,
-                        Some(Message::NewContact(None, None))
-                    )
-                ]
-                .spacing(space::l())
-                .align_x(Alignment::Center)
-                .into(),
-                None => empty,
-            }
+            let new = self.new_book().map(|_| {
+                widgets::text_button(
+                    Some(Icon::Plus),
+                    tr("New contact"),
+                    style::button::secondary,
+                    Some(Message::NewContact(None, None)),
+                )
+            });
+            calm(Some(Icon::Users), tr("No contacts yet."), tr("Contacts of your address books show up here."), new)
         } else {
             let rows = self.rows_view(anchors);
             if rows.is_empty() {
@@ -319,7 +311,7 @@ impl App {
                     }
                     _ => (tr("No contacts here."), tr("Add one with New contact.")),
                 };
-                widgets::empty_state(title, hint)
+                calm(None, title, hint, None)
             } else {
                 scrollable(column(rows))
                     .height(Fill)
@@ -555,7 +547,13 @@ impl App {
                     .map(|b| {
                         MenuItem::new(Mark::Icon(Icon::BookUser), b.display_name.clone(), Message::MoveTo(b.id.clone()))
                     })
-                    .collect();
+                    .collect::<Vec<_>>();
+                // The menu never stands empty: without a book to go to, it says so.
+                let items = if items.is_empty() {
+                    vec![MenuItem::plain(tr("No other address book may be written."), Message::CloseMenu)]
+                } else {
+                    items
+                };
                 (anchors.more.clone(), Placement::Below(Align::End), vec![MenuSection::titled(tr("Move to"), items)])
             }
             Menu::Kind(list, index) => {
@@ -650,7 +648,11 @@ impl App {
             ),
         ]
         .spacing(space::s());
-        container(dialog::frame(head, body, foot, space::l())).padding(space::xl()).into()
+        container(dialog::frame(head, body, foot, space::l()))
+            .width(Fill)
+            .padding(layout::panel_padding())
+            .style(style::container::popover)
+            .into()
     }
 }
 
@@ -662,20 +664,41 @@ pub fn account_name(account: &str) -> String {
 
 /// Without an account with an address book: what to do, and the way to the control centre.
 fn no_account<'a>() -> Element<'a, Message> {
-    let content = column![
-        tinted(Icon::BookUser, size::tile_lg(), |p| p.text_3),
-        widgets::empty_state(
-            tr("Connect an account in Torro Workplace"),
-            tr("Your contacts come from the address books of your accounts, such as Nextcloud.")
-        ),
-        widgets::text_button(
+    calm(
+        Some(Icon::BookUser),
+        tr("Connect an account in Torro Workplace"),
+        tr("Your contacts come from the address books of your accounts, such as Nextcloud."),
+        Some(widgets::text_button(
             Some(Icon::ArrowUpRight),
             tr("Open Torro Workplace"),
             style::button::secondary,
-            Some(Message::OpenWorkplace)
-        ),
-    ]
-    .spacing(space::l())
-    .align_x(Alignment::Center);
-    container(content).width(Fill).height(Fill).center(Fill).into()
+            Some(Message::OpenWorkplace),
+        )),
+    )
+}
+
+/// A calm state in the middle of its room: an icon, what is (or is not) here, what to do, and a button
+/// for it – as `widgets::empty_state`, with the button right under the words.
+fn calm<'a>(
+    mark: Option<Icon>,
+    title: &'a str,
+    hint: &'a str,
+    action: Option<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    let mut content = column![].spacing(space::m()).align_x(Alignment::Center).max_width(size::form_max() / 2.0);
+    if let Some(mark) = mark {
+        content = content.push(tinted(mark, size::tile_lg(), |p| p.text_3));
+    }
+    content = content.push(
+        column![
+            typo::text(typo::body_strong(), title).align_x(Alignment::Center),
+            typo::text(typo::body(), hint).style(theme::text_2).align_x(Alignment::Center),
+        ]
+        .spacing(space::xs())
+        .align_x(Alignment::Center),
+    );
+    if let Some(action) = action {
+        content = content.push(action);
+    }
+    container(content).width(Fill).height(Fill).center(Fill).padding(space::xl()).into()
 }
