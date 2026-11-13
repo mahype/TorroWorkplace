@@ -4080,7 +4080,7 @@ Connects a new agent or script with the rights of a template, or with the rights
 
 Zugriff `admin` · kein MCP-Tool, nur App-Schlüssel
 
-Replaces the rights of a client, the commands switched off one by one (`denied`) included; names of commands that do not exist, and system.ping, are dropped. `extensionsDefault` (the level of every MCP server without an entry) is kept only for the assistant and its bots, which start opened; for other clients it is dropped. They apply from its next request.
+Replaces the rights of a client, the commands switched off one by one (`denied`) included; names of commands that do not exist, and system.ping, are dropped. `extensionsDefault` (the level of every MCP server without an entry) is kept only for the assistant and its bots, which start opened: their rights without it are opened at once (every tool and server); for other clients it is dropped. They apply from its next request.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|

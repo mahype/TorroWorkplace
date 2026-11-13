@@ -337,8 +337,8 @@ MCP-Clients an. Der Server spricht nie mit Torro, hat keinen eigenen Schlüssel 
   access* nicht. Ein einzelnes Werkzeug sperrt `ext.<id>.<werkzeug>` in `Rights::denied`. Kein `Area` je Server.
 - **Standard für Assistent und Bots (#666):** Sie starten mit der Grundstufe Voll (`Rights::opened`): Jeder Server, dem
   die Person zugestimmt hat, steht ihnen offen, auch einer, der später dazukommt, bis die Person ihn im Assistenten
-  unter „API and MCP“ › „Used by the assistant“ abschaltet (Eintrag „Kein Zugriff“). Bestehende Clients von Assistent
-  und Bots öffnet der Kern einmal beim Laden so. Keys von API- und MCP-Clients bekommen keine Grundstufe: Ein Server
+  unter „API and MCP“ › „Used by the assistant“ abschaltet (Eintrag „Kein Zugriff“). Rechte von Assistent und Bots ohne Grundstufe öffnet
+  der Kern einmal so, beim Laden, beim Anlegen und beim Ändern (`Rights::opened_once`). Keys von API- und MCP-Clients bekommen keine Grundstufe: Ein Server
   öffnet sich für sie nur mit Namen, in der Steuerzentrale unter API clients bzw. MCP clients.
 - **Zugriff je Werkzeug:** nur aus dem Katalog-Eintrag (`Read`, `Write`, `Delete`), ohne Angabe `Delete`. `Admin` gibt
   es für Werkzeuge nicht; Hinweise des Servers (`readOnlyHint`, `destructiveHint`) zählen nicht.

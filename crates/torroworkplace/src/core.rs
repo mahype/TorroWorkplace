@@ -6581,7 +6581,7 @@ impl Core {
                     settings.reminders.calendars.retain(|id, _| seen(id));
                     // Nor the SearXNG address, which often points into the person's own network, unless
                     // it reaches `web` (PR #311 review). What it sends back keeps the stored address.
-                    if !rights.reaches_tool(torro_core::settings::ToolId::Web) {
+                    if !sees_searxng(rights) {
                         settings.web_search.searxng = None;
                     }
                     // Nor the default sender when it is a mail account outside its selection (#397):
@@ -11487,7 +11487,7 @@ impl Core {
             (Request::ListSearchProviders, _) => {
                 let with_address = match reach {
                     Reach::Suite => true,
-                    Reach::Client(rights) => rights.reaches_tool(torro_core::settings::ToolId::Web),
+                    Reach::Client(rights) => sees_searxng(rights),
                 };
                 self.tools.web().list(&settings.web_search, with_address).await
             }
@@ -13580,6 +13580,15 @@ fn my_access(rights: &torro_ipc::api::Rights, origin: &crate::approvals::Origin)
     let rights = torro_ipc::api::Rights { tools, ..rights.clone() };
     let access = torro_ipc::assistant::MyAccess::of(rights, origin.engine.clone());
     Response::MyAccess { access: access.switching_off(&origin.without).in_mode(origin.mode) }
+}
+
+/// Whether a client with `rights` sees the SearXNG address, which often points into the person's own
+/// network (PR #311 review): only a key a person ticked `web` for. Rights opened like the assistant's
+/// (issue #666) reach `web` with "all tools", but they and the keys lent with them search only in a
+/// conversation with the person's yes ([`Core::web_gate`]), and need no address for that (review of
+/// #663).
+fn sees_searxng(rights: &torro_ipc::api::Rights) -> bool {
+    rights.reaches_tool(torro_core::settings::ToolId::Web) && rights.extensions_default.is_none()
 }
 
 /// Whether `request` is a command of the tool `files` (issue #304): `tools.list_folder`, `find_files`,
@@ -18081,6 +18090,17 @@ mod tests {
         assert_eq!(searxng(&app_key).await, named, "the person's settings");
         for asker in [&key, &app_key] {
             assert_eq!(stored(asker).await.as_deref(), Some("http://192.168.1.20:8888"));
+        }
+        // Review of #663: the assistant, opened, reaches web with "all tools", but searches only in a
+        // conversation with the person's yes and sees no address, with its own key or a lent one.
+        let mut assistant = Rights::assistant();
+        assistant.areas.insert(Area::Settings, AreaRights { level: Level::Read, admin: false });
+        let (client, own) =
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, assistant).await.expect("the assistant");
+        let lent = core.clients.lend(&client.id, "claude-code", &[Area::Extensions]).expect("lent");
+        for asker in [&own, lent.key()] {
+            assert_eq!(searxng(asker).await.0, None, "no address for opened rights");
+            assert_eq!(stored(asker).await, None);
         }
     }
 

@@ -701,8 +701,8 @@ sofort, immer nur eine zur Zeit, weil sie ihre Einstellungen ohne Abschied schli
   `tools`; Ausschalten macht aus „alle“ die Liste ohne dieses Werkzeug), je MCP-Server ein Schalter (aus heißt ein
   Eintrag „No access“, an nimmt ihn heraus) und je Eintrag „Show commands“ über die Sperrliste. Der Hinweis sagt:
   „New tools and servers are allowed until you switch them off here.“ Grund: Assistent und Bots starten offen
-  (`Rights::opened`: jedes Werkzeug, auch `web`, und jeder Server mit voller Stufe über `extensionsDefault`); ältere
-  Clients von Assistent und Bots öffnet der Kern einmal beim Laden so. Schlüssel von API- und MCP-Clients bleiben
+  (`Rights::opened`: jedes Werkzeug, auch `web`, und jeder Server mit voller Stufe über `extensionsDefault`); Rechte von
+  Assistent und Bots ohne Grundstufe öffnet der Kern einmal so (beim Laden, Anlegen und Ändern). Schlüssel von API- und MCP-Clients bleiben
   geschlossen: Ein Server öffnet sich für sie nur mit Namen.
 
 ### Assistent und Bots

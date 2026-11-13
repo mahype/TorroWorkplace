@@ -869,9 +869,10 @@ Einträge). `trash_file` ist `Delete` und fragt **immer** einen Menschen, auch b
 Log nennen weder Pfade noch Suchbegriffe.
 Das Werkzeug `web` (#305) braucht nur Lesen, muss aber für einen Key in der Auswahl einzeln angehakt sein („All“
 reicht nicht, `ToolId::needs_naming`): `web_search` und `fetch_page` schicken Suchwörter und Adressen aus dem Rechner,
-im Gespräch des Assistenten erst nach einem Ja je Unterhaltung. Ausnahme seit #666: Rechte, die für MCP-Server offen
-sind (`extensionsDefault` über Kein Zugriff, `Rights::opened`; Assistent und Bots), erreichen mit „All“ auch `web`
-(`Rights::reached_tools`). Ein Key mit *Full access* erreicht `web` weiter nicht. `list_search_providers` gehört zu
+im Gespräch des Assistenten erst nach einem Ja je Unterhaltung. Ausnahme seit #666: Rechte, die geöffnet wurden
+(`extensionsDefault` gesetzt, `Rights::opened`; Assistent und Bots), erreichen mit „All“ auch `web`
+(`Rights::reached_tools`), auch nachdem alle Server wieder geschlossen sind: Server und Web sind zweierlei. Die
+SearXNG-Adresse sehen sie trotzdem nicht; die bekommt nur ein Key, für den ein Mensch `web` angekreuzt hat. Ein Key mit *Full access* erreicht `web` weiter nicht. `list_search_providers` gehört zu
 keinem Werkzeug.
 
 ²³ **Tasten und Laden beim Start** (Issue #243, [tasks/workspaces.md](tasks/workspaces.md)): Je Eigenschaft einer
@@ -1441,8 +1442,10 @@ MCP-Tool dafür: Agenten ändern nie Rechte („Was nie nach außen geht“, Pun
   Grundstufe. Die Stufe deckt die Werkzeuge des Servers nach ihrem Zugriff ab; was auf Freigabe wartet, entscheidet
   allein dieser Zugriff, nicht „Nach außen“ (Fußnote ²⁵). Keine Vorlage öffnet einen Server, auch *Full access*
   nicht, und auch die Stufe im Bereich `extensions` nicht. Nur Assistent und Bots starten offen (`Rights::opened`:
-  Grundstufe Voll, alle eingebauten Werkzeuge, Bereich `tools` Voll ohne Admin; seit #666 die Startrechte von
-  `Rights::assistant()` und jedem neuen Bot, bestehende ohne Grundstufe öffnet der Kern einmal beim Laden; dabei ersetzt `opened` auch eine engere
+  Grundstufe Voll, alle eingebauten Werkzeuge, Bereich `tools` Voll, ein vorhandener Admin-Schalter bleibt; seit #666 die Startrechte von
+  `Rights::assistant()` und jedem neuen Bot; Rechte von Assistent und Bots ohne Grundstufe öffnet der Kern einmal,
+  beim Laden, beim Anlegen (auch mit einer Vorlage) und bei `clients.update_client` (`Rights::opened_once`); dabei
+  ersetzt `opened` auch eine engere
   Auswahl der Werkzeuge und den Bereich `tools`, gewollt nach Entscheidung 3 von #666: Wer weniger will, schaltet es
   danach unter „Used by the assistant“ aus, und das bleibt). Keys von
   API- und MCP-Clients behalten keine Grundstufe (`Rights::for_kind`); ein Server öffnet sich für sie nur mit Namen.

@@ -406,7 +406,7 @@ Werkzeuge**: Fähigkeiten, die nur dem Assistenten (und den Bots) gehören, je e
   die Liste ohne dieses Werkzeug) und „Show commands“; der Hinweis sagt „New tools and servers are allowed until you
   switch them off here.“. Für Schlüssel und MCP-Clients unter Steuerzentrale › API clients bzw. MCP clients.
 - **Standard:** Assistent und neue Bots starten mit allen Werkzeugen, `web` eingeschlossen (`Rights::opened`), und
-  bestehende öffnet der Kern einmal beim Laden so; abschalten tut der Mensch. Schlüssel von API- und MCP-Clients
+  Rechte ohne Grundstufe öffnet der Kern einmal so (beim Laden, Anlegen und Ändern); abschalten tut der Mensch. Schlüssel von API- und MCP-Clients
   starten geschlossen; in den Vorlagen *Read only* (nur auflisten), *Read and write* und *Full access* ist der
   Bereich wie jeder andere.
 - Angeboten wird ein Werkzeug nur, wenn die Rechte es erreichen. Das gilt für Antrieb A (Liste der Werkzeuge), für
@@ -542,7 +542,7 @@ wie bei jedem Lesebefehl, ohne Freigabe (in der Planung entschieden; „Ask firs
 (`Selection::All`). Das deckt `web` für Schlüssel von API- und MCP-Clients **nicht** ab; so ein Client bekommt es nur,
 wenn ein Mensch `web` in seiner Auswahl ankreuzt. Sonst dürfte jeder vorhandene Agent mit *Read only* still Daten nach
 draußen schicken. **Seit #666** starten Assistent und Bots dagegen offen (`Rights::opened`, Grundstufe für MCP-Server
-über Kein Zugriff): Bei ihnen deckt „alle“ auch `web`, und ein Mensch schaltet es unter „Used by the assistant“ ab;
+gesetzt; sie bleibt es, auch wenn alle Server geschlossen werden): Bei ihnen deckt „alle“ auch `web`, und ein Mensch schaltet es unter „Used by the assistant“ ab;
 die Freigabe je Unterhaltung bleibt. In einer Schnittmenge (Bot im Auftrag des Hauptbots, `assistant.my_access`)
 erreicht „alle“ `web` nur, wenn beide Seiten offen sind (`Rights::reached_tools`, `Rights::common`). Wer `web` für einen Client ankreuzt, der Mail lesen darf, sieht im Rechte-Editor eine Warnung
 wie bei „Send on my behalf“. Den Agenten-Antrieb (B) gibt

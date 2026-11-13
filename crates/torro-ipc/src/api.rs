@@ -624,7 +624,8 @@ impl Rights {
     /// These rights opened the way the assistant and its bots start (issue #666, decision 3): every
     /// MCP server at [`Level::Full`] ([`Rights::extensions_default`]), every built-in tool, `web`
     /// included ([`Selection::All`] with the open level, [`Rights::reached_tools`]), and the area
-    /// `tools` at full, without its admin switch. A person closes what they do not want.
+    /// `tools` at full (an admin switch a person gave stays, none is added). A person closes what they
+    /// do not want.
     pub fn opened(mut self) -> Rights {
         self.extensions_default = Some(Level::Full);
         self.tools = Selection::All;
@@ -4229,8 +4230,8 @@ static UPDATE_CLIENT: Command = Command {
     mcp: Mcp::Never,
     description: "Replaces the rights of a client, the commands switched off one by one (`denied`) included; \
                   names of commands that do not exist, and system.ping, are dropped. `extensionsDefault` (the level of \
-                  every MCP server without an entry) is kept only for the assistant and its bots, which start opened; \
-                  for other clients it is dropped. They apply from its next request.",
+                  every MCP server without an entry) is kept only for the assistant and its bots, which start opened: \
+                  their rights without it are opened at once (every tool and server); for other clients it is dropped. They apply from its next request.",
 };
 
 static NEW_KEY: Command = Command {
