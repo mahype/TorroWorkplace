@@ -174,7 +174,7 @@ fn media_tile<'a>(chat: &'a ChatState, index: usize, item: &'a SharedItem, edge:
     let key: PictureKey = (item.message.clone(), item.file.clone());
     let video = item.content_type.starts_with("video/");
     let which = if video { Icon::Video } else { Icon::Image };
-    let picture: Element<'a, Message> = match chat.files.picture(&key) {
+    let picture: Element<'a, Message> = match chat.files.thumb(&key) {
         Some(Shown::Ready(handle)) => iced::widget::image(handle.clone())
             .width(edge)
             .height(edge)

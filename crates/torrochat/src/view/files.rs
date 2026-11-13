@@ -6,11 +6,13 @@
 //! the drop zone over the window.
 //!
 //! A preview stands in the size of the picture from the first frame on (a calm placeholder until it
-//! came), so nothing jumps; it is at most [`size::sidebar()`] on its longer side.
+//! came), so nothing jumps (issue #674, draft `docs/prototypes/chat-bilder/`): at most
+//! [`size::list()`] wide and [`size::panel()`] high ([`framed`]). Pictures sent at once stand as a
+//! grid ([`album_tiles`]), each tile filled with its picture.
 
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, column, container, image, mouse_area, row, stack};
-use iced::{Alignment, Background, Color, ContentFit, Element, Fill, Theme, border, mouse};
+use iced::{Alignment, Background, Color, ContentFit, Element, Fill, Rectangle, Theme, border, mouse};
 use torro_chat::{FileRef, LinkCard, Message as ChatMessage, MessageKind};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
@@ -77,44 +79,130 @@ pub fn kind_icon(content_type: &str) -> Icon {
     }
 }
 
-/// `width` × `height` fitted into a square of `edge`; without pixels a 4 : 3 frame.
-pub fn fitted(width: Option<u32>, height: Option<u32>, edge: f32) -> (f32, f32) {
+/// `width` × `height` scaled into `max_width` × `max_height`, keeping the shape and never larger
+/// than the picture itself; without pixels a 4 : 3 frame as wide as allowed (at most `max_height`).
+pub fn framed(width: Option<u32>, height: Option<u32>, max_width: f32, max_height: f32) -> (f32, f32) {
     match (width, height) {
         (Some(w), Some(h)) if w > 0 && h > 0 => {
             let (w, h) = (w as f32, h as f32);
-            let scale = (edge / w.max(h)).min(1.0);
+            let scale = (max_width / w).min(max_height / h).min(1.0);
             // Whole pixels, so the frame does not blur its edge.
             ((w * scale).round(), (h * scale).round())
         }
-        _ => (edge, edge * 3.0 / 4.0),
+        _ => (max_width.round(), (max_width * 3.0 / 4.0).min(max_height).round()),
     }
 }
 
-/// The calm stand-in of a picture until it came: `selected`, radius `sm`, its kind's icon.
-fn placeholder<'a>(which: Icon, width: f32, height: f32) -> Element<'a, Message> {
+/// Where the tiles of a grid of `count` pictures stand in `width`, `gap` between them, and how high
+/// the grid is: two side by side, three as a large one at the left and two at the right, four and
+/// more as two by two (the fourth tile says how many more there are). Whole pixels; the last
+/// column and row take what rounding leaves.
+pub fn album_tiles(count: usize, width: f32, gap: f32) -> (Vec<Rectangle>, f32) {
+    let width = width.round();
+    match count {
+        0 => (Vec::new(), 0.0),
+        1 => (vec![Rectangle::new(iced::Point::ORIGIN, iced::Size::new(width, width))], width),
+        2 => {
+            let first = ((width - gap) / 2.0).floor();
+            let second = width - gap - first;
+            let high = first;
+            let tiles = vec![
+                Rectangle { x: 0.0, y: 0.0, width: first, height: high },
+                Rectangle { x: first + gap, y: 0.0, width: second, height: high },
+            ];
+            (tiles, high)
+        }
+        3 => {
+            let small = ((width - gap) / 3.0).floor();
+            let large = width - gap - small;
+            let high = 2.0 * small + gap;
+            let right = large + gap;
+            let tiles = vec![
+                Rectangle { x: 0.0, y: 0.0, width: large, height: high },
+                Rectangle { x: right, y: 0.0, width: small, height: small },
+                Rectangle { x: right, y: small + gap, width: small, height: small },
+            ];
+            (tiles, high)
+        }
+        _ => {
+            let first = ((width - gap) / 2.0).floor();
+            let second = width - gap - first;
+            let at = first + gap;
+            let tiles = vec![
+                Rectangle { x: 0.0, y: 0.0, width: first, height: first },
+                Rectangle { x: at, y: 0.0, width: second, height: first },
+                Rectangle { x: 0.0, y: at, width: first, height: second },
+                Rectangle { x: at, y: at, width: second, height: second },
+            ];
+            (tiles, at + second)
+        }
+    }
+}
+
+/// The corners of `tile` in a grid `width` × `height` that touch the bubble's rounded edge: rounded
+/// with `md` like the bubble, the bottom ones only when nothing stands under the grid.
+pub fn tile_corners(tile: Rectangle, width: f32, height: f32, text_below: bool) -> border::Radius {
+    let round = radius::md();
+    let (left, top) = (tile.x <= 0.0, tile.y <= 0.0);
+    let (right, bottom) = (tile.x + tile.width >= width, tile.y + tile.height >= height && !text_below);
+    let corner = |on: bool| if on { round } else { 0.0 };
+    border::Radius {
+        top_left: corner(left && top),
+        top_right: corner(right && top),
+        bottom_right: corner(right && bottom),
+        bottom_left: corner(left && bottom),
+    }
+}
+
+/// The calm stand-in of a picture until it came: `selected`, its kind's icon, with `corners`.
+fn placeholder<'a>(which: Icon, width: f32, height: f32, corners: border::Radius) -> Element<'a, Message> {
+    // Centred in its own size: a filling centre would take the whole grid in a stack.
     container(tinted(which, icon::SIZE, |p| p.text_3))
-        .width(width)
-        .height(height)
-        .center(Fill)
-        .style(|t: &Theme| container::Style {
+        .center_x(width)
+        .center_y(height)
+        .style(move |t: &Theme| container::Style {
             background: Some(Background::Color(palette(t).selected)),
-            border: border::rounded(radius::sm()),
+            border: border::rounded(corners),
             ..container::Style::default()
         })
         .into()
 }
 
-/// `shown` in `width` × `height`, filling the frame, or the placeholder with `which`.
-fn picture<'a>(shown: Option<&Shown>, which: Icon, width: f32, height: f32) -> Element<'a, Message> {
+/// `shown` in `width` × `height`, filling the frame, or the placeholder with `which`; a preview that
+/// failed keeps the placeholder, so the frame stays.
+fn picture<'a>(
+    shown: Option<&Shown>,
+    which: Icon,
+    width: f32,
+    height: f32,
+    corners: border::Radius,
+) -> Element<'a, Message> {
     match shown {
         Some(Shown::Ready(handle)) => image(handle.clone())
             .width(width)
             .height(height)
             .content_fit(ContentFit::Cover)
-            .border_radius(radius::sm())
+            .border_radius(corners)
             .into(),
-        _ => placeholder(which, width, height),
+        _ => placeholder(which, width, height, corners),
     }
+}
+
+/// The "+N" over the fourth tile of a grid of more than four pictures: a round `menu` disc like the
+/// play mark.
+fn more_mark<'a>(more: usize) -> Element<'a, Message> {
+    container(typo::text(typo::body_strong().tabular(), trf("+{count}", &[("count", &more)])).wrapping(Wrapping::None))
+        .center(size::control_sm())
+        .style(|t: &Theme| {
+            let p = palette(t);
+            container::Style {
+                background: Some(Background::Color(p.menu)),
+                border: border::rounded(size::control_sm() / 2.0).color(p.line_strong).width(HAIRLINE),
+                text_color: Some(p.text),
+                ..container::Style::default()
+            }
+        })
+        .into()
 }
 
 /// The play mark over a video's preview: a round `menu` disc with a line, the play icon in `text`.
@@ -150,7 +238,9 @@ fn file_meta(file: &FileRef, no_preview: bool) -> String {
 }
 
 impl App {
-    /// One file of a message in the history, at most `room` wide.
+    /// One file of a message in the history inside a bubble's padding, at most `room` wide: a
+    /// preview in its frame ([`framed`] in `room`, at most [`size::list()`] × [`size::panel()`]), a
+    /// voice message or a line.
     pub(super) fn file_part<'a>(
         &'a self,
         chat: &'a ChatState,
@@ -160,23 +250,10 @@ impl App {
     ) -> Element<'a, Message> {
         let key: PictureKey = (message.id.clone(), Some(file.id.clone()));
         let shown = chat.files.picture(&key);
-        let (id, file_id) = (message.id.clone(), file.id.clone());
         match look(message, file, shown) {
-            Look::Picture => {
-                let (w, h) = fitted(file.width, file.height, size::sidebar().min(room));
-                let view = wrap(FilesMsg::View(id, file_id));
-                clickable(picture(shown, Icon::Image, w, h), view, trf("Show {name} large", &[("name", &file.name)]))
-            }
-            Look::Video => {
-                let (w, h) = fitted(file.width, file.height, size::sidebar().min(room));
-                let frame =
-                    stack![picture(shown, Icon::Video, w, h), container(play_mark()).center(Fill)].width(w).height(h);
-                let (press, tip) = if file.hide_download {
-                    (wrap(FilesMsg::Nextcloud(file_id)), tr("Opens in Nextcloud: the sender turned downloads off"))
-                } else {
-                    (wrap(FilesMsg::Open(id, file_id)), tr("Opens in your video player"))
-                };
-                clickable(frame.into(), press, trf("{name} · {what}", &[("name", &file.name), ("what", &tip)]))
+            Look::Picture | Look::Video => {
+                let (w, h) = framed(file.width, file.height, room.min(size::list()), size::panel());
+                self.preview_part(chat, message, file, w, h, radius::sm().into())
             }
             // A line takes the bubble's room (at most a panel's width): its name gets what the buttons
             // leave, instead of a bubble that shrinks around it.
@@ -186,6 +263,60 @@ impl App {
                 container(self.file_line(chat, message, file, visual)).width(room.min(size::panel())).into()
             }
         }
+    }
+
+    /// The preview of a picture or video of a message in `width` × `height` with `corners`: a click
+    /// shows a picture large or opens a video in the system's player (with its play mark).
+    pub(super) fn preview_part<'a>(
+        &'a self,
+        chat: &'a ChatState,
+        message: &'a ChatMessage,
+        file: &'a FileRef,
+        width: f32,
+        height: f32,
+        corners: border::Radius,
+    ) -> Element<'a, Message> {
+        let key: PictureKey = (message.id.clone(), Some(file.id.clone()));
+        let shown = chat.files.picture(&key);
+        let (id, file_id) = (message.id.clone(), file.id.clone());
+        if !file.content_type.starts_with("video/") {
+            let view = wrap(FilesMsg::View(id, file_id));
+            let tip = trf("Show {name} large", &[("name", &file.name)]);
+            return clickable(picture(shown, Icon::Image, width, height, corners), view, tip);
+        }
+        let frame = stack![picture(shown, Icon::Video, width, height, corners), container(play_mark()).center(Fill)]
+            .width(width)
+            .height(height);
+        let (press, tip) = if file.hide_download {
+            (wrap(FilesMsg::Nextcloud(file_id)), tr("Opens in Nextcloud: the sender turned downloads off"))
+        } else {
+            (wrap(FilesMsg::Open(id, file_id)), tr("Opens in your video player"))
+        };
+        clickable(frame.into(), press, trf("{name} · {what}", &[("name", &file.name), ("what", &tip)]))
+    }
+
+    /// A tile of a grid: the picture of `file` filling `tile` with `corners`, a click shows it large;
+    /// with `more` the number of pictures the grid does not show over it.
+    pub(super) fn album_tile<'a>(
+        &'a self,
+        chat: &'a ChatState,
+        message: &'a ChatMessage,
+        file: &'a FileRef,
+        tile: Rectangle,
+        corners: border::Radius,
+        more: Option<usize>,
+    ) -> Element<'a, Message> {
+        let key: PictureKey = (message.id.clone(), Some(file.id.clone()));
+        let shown = chat.files.picture(&key);
+        let face = picture(shown, Icon::Image, tile.width, tile.height, corners);
+        let face: Element<'a, Message> = match more {
+            Some(more) => {
+                stack![face, container(more_mark(more)).center(Fill)].width(tile.width).height(tile.height).into()
+            }
+            None => face,
+        };
+        let view = wrap(FilesMsg::View(message.id.clone(), file.id.clone()));
+        clickable(face, view, trf("Show {name} large", &[("name", &file.name)]))
     }
 
     /// A voice message: play (in the system's player), "Voice message" and its size, Download.
@@ -316,7 +447,7 @@ impl App {
         let mut parts: Vec<Element<'a, Message>> = Vec::new();
         if card.image {
             let key: PictureKey = (message.id.clone(), None);
-            parts.push(picture(chat.files.picture(&key), Icon::Image, width, width / 2.0));
+            parts.push(picture(chat.files.picture(&key), Icon::Image, width, width / 2.0, radius::sm().into()));
         }
         let mut words = column![widgets::ellipsized(typo::body_strong(), card.title.as_str(), theme::text)];
         if let Some(description) = card.description.as_deref().filter(|text| !text.trim().is_empty()) {
@@ -529,11 +660,46 @@ mod tests {
     }
 
     #[test]
-    fn previews_keep_their_shape_inside_the_edge() {
-        assert_eq!(fitted(Some(1600), Some(1000), 240.0), (240.0, 150.0));
-        assert_eq!(fitted(Some(900), Some(1200), 240.0), (180.0, 240.0));
-        assert_eq!(fitted(Some(100), Some(50), 240.0), (100.0, 50.0), "small pictures stay small");
-        assert_eq!(fitted(None, None, 240.0), (240.0, 180.0));
+    fn previews_keep_their_shape_inside_the_frame() {
+        assert_eq!(framed(Some(1600), Some(1000), 343.0, 400.0), (343.0, 214.0));
+        assert_eq!(framed(Some(900), Some(1200), 343.0, 400.0), (300.0, 400.0), "upright: the height limits");
+        assert_eq!(framed(Some(100), Some(50), 343.0, 400.0), (100.0, 50.0), "small pictures stay small");
+        assert_eq!(framed(None, None, 343.0, 400.0), (343.0, 257.0));
+        assert_eq!(framed(None, None, 600.0, 400.0), (600.0, 400.0), "without pixels the height is capped");
+    }
+
+    #[test]
+    fn grid_tiles_fill_the_width_without_overlapping() {
+        for count in 2..=6 {
+            let (tiles, high) = album_tiles(count, 343.0, 2.0);
+            assert_eq!(tiles.len(), count.min(4), "{count}");
+            for (at, tile) in tiles.iter().enumerate() {
+                assert!(tile.x >= 0.0 && tile.y >= 0.0, "{count}: {tile:?}");
+                assert!(tile.x + tile.width <= 343.0 && tile.y + tile.height <= high, "{count}: {tile:?} in {high}");
+                for other in &tiles[at + 1..] {
+                    let apart = tile.x + tile.width <= other.x
+                        || other.x + other.width <= tile.x
+                        || tile.y + tile.height <= other.y
+                        || other.y + other.height <= tile.y;
+                    assert!(apart, "{count}: {tile:?} and {other:?}");
+                }
+            }
+            let right = tiles.iter().map(|tile| tile.x + tile.width).fold(0.0, f32::max);
+            assert_eq!(right, 343.0, "{count}: the grid is as wide as asked");
+        }
+        let (three, high) = album_tiles(3, 343.0, 2.0);
+        assert!(three[0].width > three[1].width && three[0].height == high, "the first is the large one");
+        assert_eq!(album_tiles(4, 343.0, 2.0).1, 343.0, "two by two is square");
+    }
+
+    #[test]
+    fn only_outer_corners_of_a_grid_are_round() {
+        let (tiles, high) = album_tiles(4, 343.0, 2.0);
+        let round = radius::md();
+        assert_eq!(tile_corners(tiles[0], 343.0, high, false).top_left, round);
+        assert_eq!(tile_corners(tiles[0], 343.0, high, false).bottom_right, 0.0);
+        assert_eq!(tile_corners(tiles[3], 343.0, high, false).bottom_right, round);
+        assert_eq!(tile_corners(tiles[3], 343.0, high, true).bottom_right, 0.0, "a caption follows");
     }
 
     #[test]

@@ -21,6 +21,8 @@
 //!   Enter saves; a deletion on its way says "Deleting…"; what the core refused or holds for
 //!   approval stands in a calm line above the composer ([`crate::app::chat::Note`]).
 
+use std::collections::BTreeMap;
+
 use iced::widget::text::{Rich, Span, Wrapping};
 use iced::widget::text_editor::{Binding, KeyPress};
 use iced::widget::{
@@ -56,6 +58,93 @@ fn editor_heights() -> (f32, f32) {
     let line = typo::line_height(typo::body());
     let pad = style::INPUT_PADDING.top + style::INPUT_PADDING.bottom;
     (2.0 * line + pad, 6.0 * line + pad)
+}
+
+/// How wide a message may stand in the history.
+#[derive(Debug, Clone, Copy)]
+struct Room {
+    /// A bubble at most ([`BUBBLE_SHARE`] of the history).
+    bubble: f32,
+    /// A picture filling its bubble at most: within the bubble, [`size::list()`] and the room left
+    /// beside "Reply" and "…".
+    picture: f32,
+}
+
+/// "Reply" and "…" beside a bubble under the pointer, with the gap between them.
+fn tools_width() -> f32 {
+    size::control_sm() + space::xs() + size::control_sm()
+}
+
+/// The edge of a bubble: the others' stand off the panel with a line, the person's own on
+/// `selected` without one, unless "Show in chat" marks it.
+fn bubble_edge(own: bool, marked: bool) -> f32 {
+    if own && !marked { 0.0 } else { HAIRLINE }
+}
+
+/// A bubble around `content`, at most `max` wide: the others' on `raised` with a line, the person's
+/// own on `selected`; a marked one with the stronger line.
+fn bubble<'a>(
+    content: Element<'a, Message>,
+    own: bool,
+    marked: bool,
+    padding: Padding,
+    max: f32,
+) -> Element<'a, Message> {
+    container(content)
+        .padding(padding)
+        .max_width(max)
+        .style(move |t: &Theme| {
+            let p = palette(t);
+            let edge = if marked { p.line_selected } else { p.line };
+            container::Style {
+                background: Some(Background::Color(if own { p.selected } else { p.raised })),
+                border: border::rounded(theme::radius::md()).color(edge).width(bubble_edge(own, marked)),
+                text_color: Some(p.text),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// The text and link card under a flush picture or grid `width` wide, with the bubble's padding.
+fn caption_block<'a>(parts: Vec<Element<'a, Message>>, width: f32) -> Element<'a, Message> {
+    container(column(parts).spacing(space::xs())).padding([space::s(), space::m()]).width(width).into()
+}
+
+/// The one picture or video of `message` that stands flush in its bubble, in its frame: no quote,
+/// exactly one file showing its preview, and in its frame at least as wide as a sidebar – a smaller
+/// picture keeps the bubble's padding around it.
+fn flush_preview<'a>(
+    chat: &ChatState,
+    message: &'a torro_chat::Message,
+    room: Room,
+) -> Option<(&'a torro_chat::FileRef, f32, f32)> {
+    let [file] = message.files.as_slice() else { return None };
+    if message.reply_to.is_some() || message.kind == MessageKind::Deleted {
+        return None;
+    }
+    let shown = chat.files.picture(&(message.id.clone(), Some(file.id.clone())));
+    if !matches!(super::files::look(message, file, shown), super::files::Look::Picture | super::files::Look::Video) {
+        return None;
+    }
+    let (width, height) = super::files::framed(file.width, file.height, room.picture, size::panel());
+    (width >= size::sidebar()).then_some((file, width, height))
+}
+
+/// The reactions of `members` counted together, by emoji: how many gave it and the member the
+/// person gave it to, if any.
+fn reactions_of<'a>(members: &[&'a torro_chat::Message]) -> BTreeMap<&'a str, (u64, Option<&'a torro_chat::Message>)> {
+    let mut all: BTreeMap<&'a str, (u64, Option<&'a torro_chat::Message>)> = BTreeMap::new();
+    for &member in members {
+        for (emoji, count) in &member.reactions {
+            let entry = all.entry(emoji.as_str()).or_insert((0, None));
+            entry.0 += count;
+            if member.own_reactions.iter().any(|own| own == emoji) {
+                entry.1 = Some(member);
+            }
+        }
+    }
+    all
 }
 
 impl App {
@@ -194,6 +283,10 @@ impl App {
         }
         let width = self.size.width.min(size::content_max());
         let bubble = width * BUBBLE_SHARE;
+        // A picture fills its bubble, but leaves "Reply" and "…" their place beside it: the history's
+        // padding and the buttons with their gaps.
+        let beside = width - 2.0 * space::l() - tools_width() - 2.0 * space::xs();
+        let room = Room { bubble, picture: bubble.min(size::list()).min(beside).floor() };
         let group = self.conversation(chat).is_some_and(|c| c.kind != torro_chat::ConversationKind::Direct);
         let today = timeline::day_of(chrono::Utc::now());
         let mut lines: Vec<Element<'a, Message>> = Vec::new();
@@ -215,8 +308,9 @@ impl App {
                 Item::New => new_divider(),
                 Item::System(message) => system_line(message),
                 Item::Message { message, first, last } => {
-                    self.message_line(chat, message, first, last, group, bubble, anchors)
+                    self.message_line(chat, message, first, last, group, room, anchors)
                 }
+                Item::Album { tiles, first, last } => self.album_line(chat, &tiles, first, last, group, room, anchors),
             });
         }
         let content = column(lines).spacing(space::xs()).padding([space::m(), space::l()]).width(Fill);
@@ -233,8 +327,9 @@ impl App {
     }
 
     /// One message: the author's name above the first of a run (in groups, not the person's own),
-    /// the bubble with the quote, the text and the files, the time below the last of a run. Under
-    /// the pointer it offers "Reply" beside the bubble; right-clicked its menu.
+    /// the bubble with the quote, the files and the text, the time below the last of a run. A single
+    /// picture or video stands flush in its bubble, the caption under it (issue #674, decision 1);
+    /// everything else inside the bubble's padding.
     #[allow(clippy::too_many_arguments)]
     fn message_line<'a>(
         &'a self,
@@ -243,48 +338,144 @@ impl App {
         first: bool,
         last: bool,
         group: bool,
-        bubble_max: f32,
+        room: Room,
         anchors: &Anchors,
     ) -> Element<'a, Message> {
         let own = message.author.own;
+        // "Show in chat" marks the message it went to.
+        let marked = chat.files.highlight.as_deref() == Some(message.id.as_str());
+        if let Some((file, width, height)) = flush_preview(chat, message, room) {
+            let below = self.caption_parts(chat, message, width - 2.0 * space::m());
+            let edge = bubble_edge(own, marked);
+            let round = theme::radius::md() - edge;
+            let corners = border::Radius {
+                top_left: round,
+                top_right: round,
+                bottom_right: if below.is_empty() { round } else { 0.0 },
+                bottom_left: if below.is_empty() { round } else { 0.0 },
+            };
+            let mut content = column![self.preview_part(chat, message, file, width, height, corners)];
+            if !below.is_empty() {
+                content = content.push(caption_block(below, width));
+            }
+            let bubble = bubble(content.into(), own, marked, Padding::new(edge), room.bubble);
+            return self.message_frame(chat, &[message], bubble, first, last, group, room, anchors);
+        }
         let mut parts: Vec<Element<'a, Message>> = Vec::new();
         if let Some(quote) = &message.reply_to {
             parts.push(quote_block(&quote.author, &quote.text));
         }
         // Inside the bubble: what is left of its width after its padding.
-        let room = bubble_max - 2.0 * space::m();
+        let inside = room.bubble - 2.0 * space::m();
         if message.kind == MessageKind::Deleted {
             parts.push(typo::text(typo::body(), tr("This message was deleted.")).style(theme::text_3).into());
         } else {
             // Files first, the text under them as their caption (stage 4), as Talk shows it.
-            parts.extend(message.files.iter().map(|file| self.file_part(chat, message, file, room)));
-            let caption_is_name = message.files.len() == 1 && message.text == message.files[0].name;
-            if !message.text.trim().is_empty() && !caption_is_name && message.kind != MessageKind::Voice {
-                parts.push(message_text(&message.text, &message.mentions));
-            }
-            parts.extend(self.link_part(chat, message, room));
+            parts.extend(message.files.iter().map(|file| self.file_part(chat, message, file, inside)));
+            parts.extend(self.caption_parts(chat, message, inside));
         }
-        // "Show in chat" marks the message it went to.
-        let marked = chat.files.highlight.as_deref() == Some(message.id.as_str());
-        let bubble = container(column(parts).spacing(space::xs()))
-            .padding([space::s(), space::m()])
-            .max_width(bubble_max)
-            .style(move |t: &Theme| {
-                let p = palette(t);
-                // The person's own stand on `selected` without an edge; the others' need the line
-                // to stand off the panel.
-                let (edge, width) = match (marked, own) {
-                    (true, _) => (p.line_selected, HAIRLINE),
-                    (false, true) => (p.line, 0.0),
-                    (false, false) => (p.line, HAIRLINE),
-                };
-                container::Style {
-                    background: Some(Background::Color(if own { p.selected } else { p.raised })),
-                    border: border::rounded(theme::radius::md()).color(edge).width(width),
-                    text_color: Some(p.text),
-                    ..container::Style::default()
+        let content = column(parts).spacing(space::xs()).into();
+        let bubble = bubble(content, own, marked, Padding::from([space::s(), space::m()]), room.bubble);
+        self.message_frame(chat, &[message], bubble, first, last, group, room, anchors)
+    }
+
+    /// Pictures sent at once as one grid in one flush bubble (issue #674, decision 2): the tiles of
+    /// [`super::files::album_tiles`], the caption of the last message under them. A click on a tile shows its
+    /// picture large; the right button opens the menu of its own message. Reply, "…", reactions and
+    /// the time belong to the last message.
+    #[allow(clippy::too_many_arguments)]
+    fn album_line<'a>(
+        &'a self,
+        chat: &'a ChatState,
+        tiles: &[(&'a torro_chat::Message, &'a torro_chat::FileRef)],
+        first: bool,
+        last: bool,
+        group: bool,
+        room: Room,
+        anchors: &Anchors,
+    ) -> Element<'a, Message> {
+        let mut members: Vec<&'a torro_chat::Message> = Vec::new();
+        for (message, _) in tiles {
+            if members.last().is_none_or(|before| before.id != message.id) {
+                members.push(message);
+            }
+        }
+        let Some(&newest) = members.last() else { return Space::new().into() };
+        let own = newest.author.own;
+        let marked = members.iter().any(|member| chat.files.highlight.as_deref() == Some(member.id.as_str()));
+        let width = room.picture;
+        let below = self.caption_parts(chat, newest, width - 2.0 * space::m());
+        let (rects, high) = super::files::album_tiles(tiles.len(), width, space::xs() / 2.0);
+        let edge = bubble_edge(own, marked);
+        let more = tiles.len().checked_sub(rects.len()).filter(|more| *more > 0);
+        let mut layers: Vec<Element<'a, Message>> = Vec::new();
+        for (at, (rect, (message, file))) in rects.iter().zip(tiles).enumerate() {
+            let mut corners = super::files::tile_corners(*rect, width, high, !below.is_empty());
+            for corner in
+                [&mut corners.top_left, &mut corners.top_right, &mut corners.bottom_right, &mut corners.bottom_left]
+            {
+                *corner = (*corner - edge).max(0.0);
+            }
+            let plus = if at + 1 == rects.len() { more } else { None };
+            let mut tile = self.album_tile(chat, message, file, *rect, corners, plus);
+            if message.id != newest.id {
+                let id = message.id.clone();
+                tile = widgets::context_area(tile, move |at| Message::Chat(Msg::MessageMenu(id.clone(), at)));
+                let menu_here = matches!(&self.menu, Some(Menu::Message { id, at: Some(_), .. }) if *id == message.id);
+                if menu_here {
+                    tile = widgets::anchored(&anchors.message, tile);
                 }
-            });
+            }
+            layers.push(container(tile).padding(Padding::ZERO.top(rect.y).left(rect.x)).into());
+        }
+        let grid = iced::widget::Stack::with_children(layers).width(width).height(high);
+        let mut content = column![grid];
+        if !below.is_empty() {
+            content = content.push(caption_block(below, width));
+        }
+        let bubble = bubble(content.into(), own, marked, Padding::new(edge), room.bubble);
+        self.message_frame(chat, &members, bubble, first, last, group, room, anchors)
+    }
+
+    /// What stands under a message's files: its text (unless it only names its one file, or it is a
+    /// voice message) and its link card, at most `room` wide.
+    fn caption_parts<'a>(
+        &'a self,
+        chat: &'a ChatState,
+        message: &'a torro_chat::Message,
+        room: f32,
+    ) -> Vec<Element<'a, Message>> {
+        let mut parts: Vec<Element<'a, Message>> = Vec::new();
+        if message.kind == MessageKind::Deleted {
+            return parts;
+        }
+        let caption_is_name = message.files.len() == 1 && message.text == message.files[0].name;
+        if !message.text.trim().is_empty() && !caption_is_name && message.kind != MessageKind::Voice {
+            parts.push(message_text(&message.text, &message.mentions));
+        }
+        parts.extend(self.link_part(chat, message, room));
+        parts
+    }
+
+    /// Around a bubble of `members` (one message, or the messages of a grid, the oldest first): the
+    /// author's name above the first of a run (in groups, not the person's own), "Reply" and "…"
+    /// beside the bubble under the pointer, the reactions, and the time below the last of a run.
+    /// Right-clicked it opens the menu of the last member. Reactions of a grid count together; a
+    /// click goes to the member with the person's own reaction, else to the last.
+    #[allow(clippy::too_many_arguments)]
+    fn message_frame<'a>(
+        &'a self,
+        chat: &'a ChatState,
+        members: &[&'a torro_chat::Message],
+        bubble: Element<'a, Message>,
+        first: bool,
+        last: bool,
+        group: bool,
+        room: Room,
+        anchors: &Anchors,
+    ) -> Element<'a, Message> {
+        let Some(&message) = members.last() else { return Space::new().into() };
+        let own = message.author.own;
         let hovered = chat.hover.as_deref() == Some(message.id.as_str());
         // The "…" stays while its menu is open, so the menu keeps its place.
         let more_here = matches!(&self.menu, Some(Menu::Message { id, at: None, .. }) if *id == message.id);
@@ -305,7 +496,7 @@ impl App {
             tools.spacing(space::xs()).align_y(Alignment::Center).into()
         } else {
             // As wide as the two buttons, so the bubble does not move when they come.
-            Space::new().width(size::control_sm() + space::xs() + size::control_sm()).into()
+            Space::new().width(tools_width()).into()
         };
         let line: Element<'a, Message> = if own {
             row![Space::new().width(Fill), tools, bubble].spacing(space::xs()).align_y(Alignment::Center).into()
@@ -318,22 +509,24 @@ impl App {
             column = column.push(typo::text(typo::caption(), message.author.name.as_str()).style(theme::text_3));
         }
         column = column.push(line);
-        let change = chat.changing.get(&message.id).copied();
-        if !message.reactions.is_empty() {
-            let chips = message
-                .reactions
-                .iter()
-                .map(|(emoji, count)| {
-                    let given = message.own_reactions.iter().any(|own| own == emoji);
+        let reactions = reactions_of(members);
+        if !reactions.is_empty() {
+            let chips = reactions
+                .into_iter()
+                .map(|(emoji, (count, given))| {
+                    let target = given.unwrap_or(message);
                     // A reaction on its way takes no second click until the core answered.
-                    reaction_chip(&message.id, emoji, *count, given, change.is_none())
+                    let free = !chat.changing.contains_key(&target.id);
+                    reaction_chip(&target.id, emoji, count, given.is_some(), free)
                 })
                 .collect();
-            column = column.push(container(widgets::chip_row(chips)).max_width(bubble_max));
+            column = column.push(container(widgets::chip_row(chips)).max_width(room.bubble));
         }
-        if change == Some(Change::Delete) {
+        let deleting = members.iter().any(|member| chat.changing.get(&member.id) == Some(&Change::Delete));
+        let editing = chat.editing.as_ref().is_some_and(|editing| members.iter().any(|member| member.id == editing.id));
+        if deleting {
             column = column.push(typo::text(typo::micro(), tr("Deleting…")).style(theme::text_3));
-        } else if chat.editing.as_ref().is_some_and(|editing| editing.id == message.id) {
+        } else if editing {
             column = column.push(typo::text(typo::micro(), tr("Editing below")).style(theme::text_3));
         } else if last {
             let mut time = timeline::time_label(message.at);
