@@ -201,7 +201,8 @@ pub enum Message {
     Retry,
 
     // -- Data
-    Loaded(Result<Loaded, ContactsError>),
+    /// A load came back; the number says which, so an older one never overwrites a newer.
+    Loaded(u64, Result<Loaded, ContactsError>),
     Photos(Vec<(String, String, Option<Vec<u8>>)>),
     LargePhoto(String, String, Option<Vec<u8>>),
 
@@ -261,7 +262,8 @@ pub enum Message {
     Refetched(Result<Contact, ContactsError>),
     Created(Option<String>, Result<Contact, ContactsError>),
     ChoosePhoto,
-    PhotoChosen(Option<Result<Vec<u8>, String>>),
+    /// A picture chosen or dropped for the contact with this id.
+    PhotoChosen(String, Option<Result<Vec<u8>, String>>),
     RemovePhoto,
     FileDropped(PathBuf),
 }
@@ -293,6 +295,8 @@ pub struct App {
     pub(crate) loading: bool,
     /// Why the first load failed, in words for people; a later failure keeps what was there.
     pub(crate) error: Option<String>,
+    /// The number of the last load asked for ([`Message::Loaded`]).
+    load_asked: u64,
     /// `--open` was applied once after the first load.
     applied: bool,
     /// `--open edit`: the first contact fetched opens in the form.
@@ -370,6 +374,7 @@ impl App {
             loading: false,
             error: None,
             applied: false,
+            load_asked: 0,
             edit_on_fetch: open == Some(Open::Edit),
             view: View::All,
             group_by: match open {
@@ -497,7 +502,9 @@ impl App {
     /// Loads everything again ([`backend::load`]).
     pub fn load(&mut self) -> Task<Message> {
         self.loading = true;
-        Task::perform(backend::load(self.backend.clone()), Message::Loaded)
+        self.load_asked += 1;
+        let asked = self.load_asked;
+        Task::perform(backend::load(self.backend.clone()), move |result| Message::Loaded(asked, result))
     }
 
     fn notify(&mut self, text: impl Into<String>) {
@@ -723,7 +730,9 @@ impl App {
                 return self.load();
             }
 
-            Message::Loaded(result) => return self.loaded(result),
+            // An answer to an older load than the last one asked for is dropped: the newer one comes.
+            Message::Loaded(asked, _) if asked < self.load_asked => {}
+            Message::Loaded(_, result) => return self.loaded(result),
             Message::Photos(batch) => {
                 self.photos_busy = false;
                 for (id, version, bytes) in batch {
@@ -1124,6 +1133,8 @@ impl App {
             }
             Message::ToggleKind(list, index) => return self.update(Message::ToggleMenu(Menu::Kind(list, index))),
             Message::ToggleAddField => return self.update(Message::ToggleMenu(Menu::AddField)),
+            // While "Saving…" runs, the form waits for the answer: its error or the saved contact.
+            Message::Cancel if self.detail.as_ref().and_then(|d| d.draft.as_ref()).is_some_and(|d| d.saving) => {}
             Message::Cancel => {
                 self.menu = None;
                 match &mut self.detail {
@@ -1182,15 +1193,23 @@ impl App {
                     }
                 }
             },
+            // The picture belongs to the contact it was chosen for, whichever is open when it comes.
             Message::ChoosePhoto => {
-                return Task::perform(choose_photo(), Message::PhotoChosen);
+                let Some(id) = self.open_contact().map(|c| c.id.clone()) else { return Task::none() };
+                return Task::perform(choose_photo(), move |picture| Message::PhotoChosen(id.clone(), picture));
             }
-            Message::PhotoChosen(None) => {}
-            Message::PhotoChosen(Some(Err(err))) => self.notify(err),
-            Message::PhotoChosen(Some(Ok(bytes))) => return self.set_photo(Some(bytes)),
+            Message::PhotoChosen(_, None) => {}
+            Message::PhotoChosen(_, Some(Err(err))) => self.notify(err),
+            Message::PhotoChosen(id, Some(Ok(_))) if !self.is_open(&id) => {
+                self.notify(tr("The picture was not set: another contact is open now."));
+            }
+            Message::PhotoChosen(_, Some(Ok(bytes))) => return self.set_photo(Some(bytes)),
             Message::RemovePhoto => return self.set_photo(None),
             Message::FileDropped(path) => {
-                return Task::perform(async move { Some(read_photo(&path)) }, Message::PhotoChosen);
+                let Some(id) = self.open_contact().map(|c| c.id.clone()) else { return Task::none() };
+                return Task::perform(async move { Some(read_photo(&path)) }, move |picture| {
+                    Message::PhotoChosen(id.clone(), picture)
+                });
             }
         }
         Task::none()

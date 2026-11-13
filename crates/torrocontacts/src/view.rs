@@ -464,7 +464,12 @@ impl App {
                     widgets::text_button(Some(Icon::Check), tr("Done"), style::button::secondary, Some(Message::Done))
                 };
                 panel::panel(path, title, body, Message::Close).footer(vec![
-                    widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::Cancel)),
+                    widgets::text_button(
+                        None,
+                        tr("Cancel"),
+                        style::button::ghost,
+                        (!draft.saving).then_some(Message::Cancel),
+                    ),
                     Space::new().width(Fill).into(),
                     done,
                 ])

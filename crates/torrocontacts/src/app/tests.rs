@@ -19,7 +19,9 @@ pub(super) fn today() -> NaiveDate {
 async fn loaded(words: &[&str]) -> App {
     let mut app = started(words);
     let result = backend::load(app.backend.clone()).await;
-    let _ = app.update(Message::Loaded(result));
+    let asked = app.load_asked + 1;
+    app.load_asked = asked;
+    let _ = app.update(Message::Loaded(asked, result));
     app
 }
 
@@ -66,7 +68,7 @@ async fn the_states_after_loading() {
 #[tokio::test]
 async fn a_later_failure_keeps_the_list() {
     let mut app = loaded(&["--demo"]).await;
-    let _ = app.update(Message::Loaded(Err(torro_contacts::ContactsError::Offline)));
+    let _ = app.update(Message::Loaded(app.load_asked, Err(torro_contacts::ContactsError::Offline)));
     assert_eq!(app.contacts.len(), 40);
     assert!(app.error.is_none());
     assert!(app.notice.is_some());
@@ -346,7 +348,8 @@ async fn a_late_created_answer_leaves_another_panel_alone() {
     let _ = app.update(Message::Done);
     let fields = app.detail.as_ref().and_then(|d| d.draft.as_ref()).map(|d| d.changes()).expect("form");
     let created = app.backend.create_contact(torro_contacts::demo::CONTACTS.into(), fields).await;
-    let _ = app.update(Message::Escape);
+    // The panel's ✕ still closes it while saving.
+    let _ = app.update(Message::Close);
     let anna = opened(&mut app, "demo-01").await;
     let _ = app.update(Message::Created(None, created));
     assert!(app.is_open(&anna), "Anna stays open");
@@ -363,4 +366,33 @@ async fn a_new_picture_while_editing_moves_the_form_to_the_new_version() {
     let new = changed.as_ref().ok().and_then(|c| c.etag.clone());
     let _ = app.update(Message::Changed(id, changed));
     assert_eq!(app.detail.as_ref().and_then(|d| d.draft.as_ref()).and_then(|d| d.etag.clone()), new);
+}
+
+#[tokio::test]
+async fn an_older_load_never_overwrites_a_newer() {
+    let mut app = loaded(&["--demo"]).await;
+    let old = app.load_asked;
+    let _ = app.load();
+    let _ = app.update(Message::Loaded(old, Ok(backend::Loaded::default())));
+    assert_eq!(app.contacts.len(), 40, "the older answer is dropped");
+}
+
+#[tokio::test]
+async fn saving_waits_for_its_answer() {
+    let mut app = loaded(&["--demo"]).await;
+    let _ = app.update(Message::NewContact(None, None));
+    let _ = app.update(Message::Draft(edit::Msg::Text(edit::Field::Given, "Max".into())));
+    let _ = app.update(Message::Done);
+    let _ = app.update(Message::Cancel);
+    assert!(app.editing(), "Cancel waits while saving");
+}
+
+#[tokio::test]
+async fn a_picture_chosen_for_another_contact_is_not_set() {
+    let mut app = loaded(&["--demo"]).await;
+    let anna = opened(&mut app, "demo-01").await;
+    let _ = opened(&mut app, "demo-06").await;
+    let _ = app.update(Message::PhotoChosen(anna, Some(Ok(vec![1, 2, 3]))));
+    assert!(app.detail.as_ref().is_some_and(|d| !d.busy), "nothing sent");
+    assert!(app.notice.is_some());
 }
