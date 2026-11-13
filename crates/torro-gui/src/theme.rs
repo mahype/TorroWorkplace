@@ -529,19 +529,30 @@ pub async fn stored_appearance(source: &Source) -> Result<Appearance, String> {
 /// ([`torro_appkit::system_is_dark`]). Elsewhere it is Iced's notice alone.
 pub fn system_mode_changes() -> iced::Subscription<Mode> {
     let notices = iced::system::theme_changes();
-    if torro_appkit::system_is_dark().is_none() {
-        return notices;
+    #[cfg(target_os = "macos")]
+    {
+        if torro_appkit::system_is_dark().is_none() {
+            return notices;
+        }
+        let polled = iced::time::every(SYSTEM_MODE_POLL).map(|_| system_mode().unwrap_or(Mode::None));
+        iced::Subscription::batch([notices, polled])
     }
-    let polled = iced::time::every(SYSTEM_MODE_POLL).map(|_| system_mode().unwrap_or(Mode::None));
-    iced::Subscription::batch([notices, polled])
+    #[cfg(not(target_os = "macos"))]
+    notices
 }
 
 /// How often [`system_mode_changes`] reads the system's preference on macOS.
+#[cfg(target_os = "macos")]
 pub const SYSTEM_MODE_POLL: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The system's preference now, where it can be read without a window (macOS), else `None`.
 pub fn system_mode() -> Option<Mode> {
-    torro_appkit::system_is_dark().map(|dark| if dark { Mode::Dark } else { Mode::Light })
+    #[cfg(target_os = "macos")]
+    {
+        torro_appkit::system_is_dark().map(|dark| if dark { Mode::Dark } else { Mode::Light })
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
 }
 
 /// The Iced theme for `appearance`. `system` is the desktop's preference as Iced reports it
