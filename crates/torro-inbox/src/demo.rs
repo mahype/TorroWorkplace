@@ -826,6 +826,11 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
             ..MessageTraits::default()
         },
         invitation: false,
+        // What the core would say with Settings › Privacy as it starts, "Ask" (issue #672).
+        external: letter.html.and_then(|html| {
+            let hosts = torro_mail::html::external_hosts(html);
+            torro_core::privacy::external_content(&torro_core::privacy::Privacy::default(), &hosts)
+        }),
     }
 }
 
@@ -963,8 +968,10 @@ You get this mail because you are a member at shop.example.<br>
 </table>
 </div>"#;
 
-/// The HTML part of the demo's newsletter with text and HTML (`m:w14`): short, no pictures.
+/// The HTML part of the demo's newsletter with text and HTML (`m:w14`): short, with one picture on
+/// another server, so the reader asks before it loads (issue #672, Settings › Privacy at "Ask").
 const WINTER_JACKETS_HTML: &str = r#"<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:8px 0">
+<p style="margin:0 0 12px 0"><img src="https://img.mailer.example/shop/winter.jpg" width="560" height="180" alt="Winter jackets"></p>
 <h1 style="font-size:24px;line-height:30px;color:#18191b;margin:0 0 12px 0">Winter jackets are here</h1>
 <p style="font-size:15px;line-height:22px;color:#2b2d31;margin:0 0 12px 0">Members get <b>free shipping</b> until Friday.</p>
 <p style="margin:0"><a href="https://shop.example/winter" style="color:#3b6ef0">See the collection</a></p>

@@ -7,7 +7,7 @@
 #   TORRO_PROGRAMS_DIR=target/release scripts/macos-dev-bundles.sh   programs from another folder (issue #629)
 #
 # Makes the bundles with packaging/macos/make-app.sh, named and laid out as torro_gui::source::bundle_program and
-# SERVICE_PROGRAM look for them (`<AppId::display_name>.app/Contents/MacOS/<AppId::program_file>`): the seven apps,
+# SERVICE_PROGRAM look for them (`<AppId::display_name>.app/Contents/MacOS/<AppId::program_file>`): the eight apps,
 # each with the core's service as an agent bundle inside (`Contents/Library/LoginItems/Torro Workplace Service.app`,
 # issue #411, like the release in .github/workflows/publish-macos-app.yml), and the reminder without it. Each is
 # signed with the development identity (scripts/macos-dev-sign.sh, the embedded service before the outer bundle); without that
@@ -44,11 +44,12 @@ torro-inbox-notifications|torro-inbox-notifications|torro-inbox-notifications|To
 torrocalendar|torrocalendar|torro-calendar|Torro Calendar|0|torro-calendar|1
 torrotasks|torrotasks|torro-tasks|Torro Tasks|0|torro-tasks|1
 torroassistant|torroassistant|torro-assistant|Torro Assistant|0|torro-assistant|1
+torrochat|torrochat|torro-chat|Torro Chat|0|torro-chat|1
 torro-reminder|torrocalendar|torro-reminder|Torro Reminder|1|torro-calendar|0'
 
 missing=""
 for program in torroworkplace torroinbox torro-inbox-mail torro-inbox-notifications torrocalendar torrotasks \
-    torroassistant; do
+    torroassistant torrochat; do
     [ -x "$programs/$program" ] || missing="$missing $program"
 done
 if [ -n "$missing" ]; then

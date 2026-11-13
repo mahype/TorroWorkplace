@@ -17,6 +17,9 @@
 //!   [`attachments`].
 //! - Sharing items of the suite (stage 5): contacts as a card in [`share`].
 //! - Calls (stage 6b): ringing, declining and leaving in [`calls`]; the call runs in the browser.
+//! - Content from other providers (issue #672): link cards of other servers follow Settings › Privacy,
+//!   read afresh for every page ([`ChatService::set_privacy`]).
+//! - The chat's windows float under AeroSpace and GlazeWM too ([`float`], issue #667).
 //!
 //! Logs name an account's id and a code, never a name, a text or a token.
 
@@ -25,6 +28,7 @@ pub mod cache;
 pub mod calls;
 #[cfg(test)]
 pub mod fake;
+pub mod float;
 pub mod live;
 pub mod media;
 pub mod remote;
@@ -34,7 +38,7 @@ pub mod talk;
 pub mod throttle;
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
 use torro_chat::ChatError;
 
@@ -70,6 +74,21 @@ enum Remotes {
     Fixed(Vec<(String, Arc<fake::Server>)>),
 }
 
+/// The reader the service asks; `ask` with nobody on the list until [`ChatService::set_privacy`].
+struct Privacy(RwLock<torro_core::privacy::Reader>);
+
+impl Default for Privacy {
+    fn default() -> Privacy {
+        Privacy(RwLock::new(Arc::new(torro_core::privacy::Privacy::default)))
+    }
+}
+
+impl std::fmt::Debug for Privacy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Privacy")
+    }
+}
+
 /// See the module docs.
 #[derive(Debug)]
 pub struct ChatService {
@@ -86,6 +105,8 @@ pub struct ChatService {
     held: Mutex<attachments::Held>,
     /// The chat's own folder for fetched files (`<cache>/chat-attachments`); `None` without a home.
     attachments: Option<PathBuf>,
+    /// Whether link cards of other servers load (issue #672).
+    privacy: Privacy,
 }
 
 impl ChatService {
@@ -117,7 +138,20 @@ impl ChatService {
             media: Mutex::new(media::Store::default()),
             held: Mutex::new(attachments::Held::default()),
             attachments: None,
+            privacy: Privacy::default(),
         }
+    }
+
+    /// Sets what says whether content from other providers loads (`privacy` of the settings, issue
+    /// #672); without it every provider is asked about.
+    pub fn set_privacy(&self, reader: torro_core::privacy::Reader) {
+        *self.privacy.0.write().unwrap_or_else(PoisonError::into_inner) = reader;
+    }
+
+    /// What Settings › Privacy says now.
+    pub(crate) fn privacy(&self) -> torro_core::privacy::Privacy {
+        let reader = Arc::clone(&self.privacy.0.read().unwrap_or_else(PoisonError::into_inner));
+        reader()
     }
 
     /// Waits until `caller` may read the server: at once for the apps, one read at a time for each

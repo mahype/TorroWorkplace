@@ -117,6 +117,12 @@ pub fn size_command(first: &WindowId, split: Split) -> Result<String, WmError> {
     Ok(format!("command --id {} size --{axis} {percent:.0}%", container_id(first)?))
 }
 
+/// `command --id <id> set-floating --centered` (issue #667): takes the window out of the tiling and
+/// centres it on its monitor, as GlazeWM's own floating key does with `toggle-floating --centered`.
+pub fn floating_command(window: &WindowId) -> Result<String, WmError> {
+    Ok(format!("command --id {} set-floating --centered", container_id(window)?))
+}
+
 /// `command focus --monitor <index>`: GlazeWM focuses the workspace the monitor at `index` shows. The
 /// index counts in the order of `query monitors`, which is GlazeWM's own order of monitors.
 pub fn focus_monitor_command(index: usize) -> String {
@@ -188,6 +194,10 @@ impl WindowManager for GlazeWm {
     async fn focus_monitor(&self, monitor: &str) -> Result<(), WmError> {
         let index = monitor_index(&self.monitors().await?, monitor)?;
         self.command(&focus_monitor_command(index)).await
+    }
+
+    async fn float_window(&self, window: &WindowId) -> Result<(), WmError> {
+        self.command(&floating_command(window)?).await
     }
 }
 
@@ -264,6 +274,7 @@ mod tests {
             tiling_direction_command(&code, SplitDirection::TopBottom),
             Ok(format!("command --id {CODE} set-tiling-direction vertical"))
         );
+        assert_eq!(floating_command(&code), Ok(format!("command --id {CODE} set-floating --centered")));
     }
 
     #[test]
@@ -292,6 +303,8 @@ mod tests {
     fn ids_and_names_glazewm_cannot_parse_are_refused() {
         assert!(matches!(focus_command(&window("0x55d0 --x")), Err(WmError::NotFound(_))));
         assert!(matches!(close_command(&window("")), Err(WmError::NotFound(_))));
+        assert!(floating_command(&window("512")).is_ok(), "digits are hex digits");
+        assert!(matches!(floating_command(&window("chat window")), Err(WmError::NotFound(_))));
         for name in ["", "dev docs", "-1", "tab\tname"] {
             assert!(
                 matches!(move_command(&window(CODE), &workspace(name)), Err(WmError::Unsupported(_))),
@@ -333,6 +346,16 @@ mod tests {
                 format!("command --id {CODE} close"),
             ]
         );
+    }
+
+    /// Issue #667: a chat window is floated, centred, by its container id.
+    #[tokio::test]
+    async fn float_window_sends_set_floating() {
+        let fake = fake().await;
+        let wm = GlazeWm { port: fake.port };
+        assert_eq!(wm.float_window(&window(CODE)).await, Ok(()));
+        assert!(matches!(wm.float_window(&window("--x")).await, Err(WmError::NotFound(_))));
+        assert_eq!(fake.received(), vec![format!("command --id {CODE} set-floating --centered")]);
     }
 
     #[tokio::test]

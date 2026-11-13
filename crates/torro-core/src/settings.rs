@@ -243,6 +243,17 @@ pub struct Settings {
     #[serde(default, deserialize_with = "lenient")]
     #[schemars(transform = without_default)]
     pub workspaces: WorkspaceSettings,
+    /// Content from other providers (issue #672, Settings › Privacy): whether pictures of a mail, link
+    /// previews and embedded videos in the chat load always, after asking (the default) or never, and the
+    /// providers a person allowed or blocked (`torro_core::privacy::Privacy`). Only a person changes it
+    /// (`settings.set_setting privacy_content` and `privacy_provider`, app key only). Read leniently: an
+    /// entry that does not fit is dropped, a value that does not read gives the defaults.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::privacy::Privacy::is_default",
+        deserialize_with = "crate::privacy::lenient"
+    )]
+    pub privacy: crate::privacy::Privacy,
 }
 
 /// What the suite does with workspace templates (issue #243, `settings.set_setting
@@ -834,6 +845,7 @@ impl Default for Settings {
             tools: Tools::default(),
             web_search: WebSearch::default(),
             workspaces: WorkspaceSettings::default(),
+            privacy: crate::privacy::Privacy::default(),
         }
     }
 }
@@ -2809,6 +2821,7 @@ mod tests {
             tools: Tools::default(),
             web_search: WebSearch::default(),
             workspaces: WorkspaceSettings::default(),
+            privacy: crate::privacy::Privacy::default(),
         };
         assert_eq!(load_from(&path), expected);
     }
@@ -3108,6 +3121,10 @@ mod tests {
                 searxng: Some("http://192.168.1.20:8080".into()),
             },
             workspaces: WorkspaceSettings { modifiers: ShortcutModifiers::CtrlShift },
+            privacy: crate::privacy::Privacy {
+                content: crate::privacy::ForeignContent::Never,
+                providers: BTreeMap::from([("youtube".into(), crate::privacy::ProviderChoice::Allowed)]),
+            },
         };
         save_to(&path, &first).expect("save");
         assert_eq!(load_from(&path), first);

@@ -349,6 +349,7 @@ impl ChatSource for ChatClient {
     ) -> Result<Picture, ChatError> {
         let size = match size {
             WindowSize::Small => PreviewSize::Small,
+            WindowSize::Medium => PreviewSize::Medium,
             WindowSize::Large => PreviewSize::Large,
         };
         match self.ask(Request::ChatGetPreview { id, file, card, size }).await? {
@@ -595,7 +596,11 @@ mod tests {
             }),
             Request::ChatCancelUpload { id } => done(demo.cancel_upload(id).await),
             Request::ChatGetPreview { id, file, card, size } => {
-                let size = if size == PreviewSize::Large { WindowSize::Large } else { WindowSize::Small };
+                let size = match size {
+                    PreviewSize::Small => WindowSize::Small,
+                    PreviewSize::Medium => WindowSize::Medium,
+                    PreviewSize::Large => WindowSize::Large,
+                };
                 demo.preview(id, file, card, size).await.map(|picture| Response::ChatPicture {
                     picture: ChatPicture {
                         content_type: picture.content_type,

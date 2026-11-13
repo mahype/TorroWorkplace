@@ -166,6 +166,8 @@ impl Demo {
             hidden_collections: vec![SHARED_CALENDAR.into()],
             reminders,
             tools,
+            // Issue #672: a few providers decided on, so Privacy shows its list.
+            privacy: crate::privacy::demo(),
             ..Settings::default()
         };
         Demo {

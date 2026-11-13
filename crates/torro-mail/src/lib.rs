@@ -48,8 +48,8 @@ pub use category::{
 };
 pub use filter::{FILE_ONLY_TRASH, FILTER_QUERY_MAX, FILTERS_MAX, FilterActions, FilterFile, MailFilter};
 pub use message::{
-    AttachmentInfo, Draft, DraftAttachment, Flag, Folder, ImageSize, ImageSource, InvitationAnswer, Invite,
-    MailAddress, MailPile, Message, MessageSummary, MessageTraits, Role,
+    AttachmentInfo, Draft, DraftAttachment, ExternalContent, ExternalProvider, Flag, Folder, ImageSize, ImageSource,
+    InvitationAnswer, Invite, MailAddress, MailPile, Message, MessageSummary, MessageTraits, Role,
 };
 pub use order::Order;
 pub use save_target::{

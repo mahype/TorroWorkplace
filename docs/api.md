@@ -1395,6 +1395,20 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
     und verrät das dauerhaft allen Kollegen. Ausschalten darf jeder Client mit Admin in `settings`. Anrufe,
     Kamera und Mikrofon im Chat kommen mit dem Klingeln und dem Anruffenster dazu (Stufe 6 des Konzepts).
 
+14. **Fremde Inhalte freigeben** (Issue #672, [settings.md](settings.md), Abschnitt „Privacy“): die Stufe
+    (`settings.set_setting privacy_content`: `always`, `ask`, `never`) und die Anbieterliste
+    (`settings.set_setting privacy_provider`) ändert nur der App-Schlüssel, also ein Mensch in Settings › Privacy
+    oder mit „Always allow …“ / „Never for …“ in Chat und Mail. Jeder Wert, auch strenger und auch das Vergessen
+    eines Anbieters, bekommt von jedem Client `forbidden`, auch mit Admin-Rechten, und niemand wird um eine Freigabe
+    gefragt (`Request::kept_for_people`, wie die freigegebenen Ordner in Punkt 9 und das Einschalten eines
+    MCP-Servers in Punkt 10). Ein Client, der die ganzen Einstellungen schreibt, behält das gespeicherte `privacy`.
+    Grund: Was geladen wird, verrät Dritten, dass und wann die Person liest; darüber entscheidet sie selbst, und
+    kein Agent soll ihr eine Rückfrage abnehmen oder aufzwingen. Lesen dürfen Agenten den Stand
+    (`settings.get_settings`, Feld `privacy`). „Show once“ im Chat ist `chat.show_card` (ohnehin `Mcp::Never`); in der
+    Mail hat es keinen Befehl, weil nur das Fenster lädt und nichts gespeichert wird. `mail.save_message_as` (PDF,
+    Bild) lädt externe Bilder nur nach der gespeicherten Einstellung, „Show once“ zählt dort nicht, weil auch Agenten
+    speichern dürfen.
+
 Allgemein gilt: Jeder Befehl mit `Mcp::Never` ist nur mit dem App-Schlüssel erlaubt. `Rights::allows`
 setzt das durch (seit G.1), auch ein Script-Schlüssel mit Admin-Rechten bekommt `forbidden`.
 

@@ -205,6 +205,8 @@ pub fn demo_data() -> Data {
                 effort: None,
             }),
         },
+        // Issue #672: a few providers decided on, so Privacy shows its list.
+        privacy: crate::privacy::demo(),
         ..Settings::default()
     };
     Data { accounts, settings, sources, address_books: address_books(), ..Data::default() }

@@ -869,7 +869,16 @@ async fn get_message(
         message.text = None;
     }
     message.html = if include_html { html } else { None };
+    // What the HTML handed out may load from other servers (issue #672), as Settings › Privacy says now.
+    message.external = message.html.as_deref().and_then(|html| external_of(&mail.privacy(), html));
     Ok(Response::MailMessage { message })
+}
+
+/// What `html` may load from other servers by `privacy` (issue #672): every host at "Always show"; at
+/// "Ask" those of allowed providers, and the providers not asked about yet with their hosts; nothing at
+/// "Never show" ([`torro_core::privacy::external_content`]). `None` when it names nothing on the web.
+pub(crate) fn external_of(privacy: &torro_core::privacy::Privacy, html: &str) -> Option<torro_mail::ExternalContent> {
+    torro_core::privacy::external_content(privacy, &torro_mail::html::external_hosts(html))
 }
 
 /// The cleaned HTML the store keeps of the message, `None` when it keeps none or cannot be read: for
@@ -2167,6 +2176,61 @@ pub(crate) mod tests {
              <img src=\"cid:logo@example.com\"><script>x()</script>\r\n--a--\r\n--r\r\n\
              Content-Type: image/png\r\nContent-ID: <logo@example.com>\r\nContent-Disposition: inline\r\n\r\nPNG\r\n--r--\r\n"
         )
+    }
+
+    /// Issue #672: `mail.get_message` says with the HTML what it would load from other servers, as
+    /// Settings › Privacy says now – the providers not asked about yet with their hosts at "Ask", the
+    /// allowed ones' hosts to load, everything at "Always show", nothing at "Never show" –, and nothing
+    /// without the HTML or for HTML without pictures on the web.
+    #[tokio::test]
+    async fn a_message_says_what_its_html_would_load_from_other_servers() {
+        use torro_core::privacy::{ForeignContent, Privacy, ProviderChoice};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let date = Utc::now().to_rfc2822();
+        server.add(
+            "INBOX",
+            &format!(
+                "From: Shop <news@shop.example>\r\nTo: anna@example.org\r\nSubject: Sale\r\nDate: {date}\r\n\
+                 Message-ID: <sale@shop.example>\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n\
+                 <p>Sale</p><img src=\"https://img.mailchimp.com/a.png\"><img src=\"https://open.mailchimp.com/o.gif\">\
+                 <img src=\"https://i.ytimg.com/vi/x/0.jpg\"><img src=\"https://cdn.blocked.example/b.png\">\r\n"
+            ),
+            &[],
+        );
+        server.add("INBOX", &mail_with_html(), &[]);
+        let service = synced(dir.path(), &server).await;
+        let setting = Arc::new(std::sync::Mutex::new(Privacy::default()));
+        let read_setting = Arc::clone(&setting);
+        service.set_privacy(Arc::new(move || read_setting.lock().expect("setting").clone()));
+        let sale = id_of(&service, "Sale").await;
+        setting.lock().expect("setting").providers = [
+            ("youtube".to_string(), ProviderChoice::Allowed),
+            ("blocked.example".to_string(), ProviderChoice::Blocked),
+        ]
+        .into_iter()
+        .collect();
+        let asked = message(answer(&service, Reach::Suite, get_html(&sale)).await).external.expect("external");
+        assert!(!asked.all);
+        assert_eq!(asked.load.iter().map(String::as_str).collect::<Vec<_>>(), ["i.ytimg.com"]);
+        assert_eq!(asked.ask.len(), 1, "the blocked provider is in neither list");
+        assert_eq!(asked.ask[0].name, "mailchimp.com");
+        assert_eq!(
+            asked.ask[0].hosts.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["img.mailchimp.com", "open.mailchimp.com"]
+        );
+
+        setting.lock().expect("setting").content = ForeignContent::Always;
+        let always = message(answer(&service, Reach::Suite, get_html(&sale)).await).external.expect("external");
+        assert!(always.all && always.ask.is_empty());
+        setting.lock().expect("setting").content = ForeignContent::Never;
+        let never = message(answer(&service, Reach::Suite, get_html(&sale)).await).external.expect("external");
+        assert!(!never.all && never.load.is_empty() && never.ask.is_empty());
+
+        // Nothing without the HTML, nor for HTML whose pictures are its own.
+        assert_eq!(message(answer(&service, Reach::Suite, get(&sale, true)).await).external, None);
+        let weekly = id_of(&service, "Weekly").await;
+        assert_eq!(message(answer(&service, Reach::Suite, get_html(&weekly)).await).external, None);
     }
 
     /// Task M8.1: the HTML comes only with `include_html`, cleaned, from the store; a text kept

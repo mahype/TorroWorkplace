@@ -1964,7 +1964,7 @@ pub enum Request {
         /// The picture of the message's link card instead of a file.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         card: bool,
-        /// `small` (256 pixels, when left out) or `large` (1600).
+        /// `small` (256 pixels, when left out), `medium` (1024) or `large` (1600).
         #[serde(default)]
         size: chat::PreviewSize,
     },
@@ -2010,9 +2010,10 @@ pub enum Request {
         #[schemars(range(min = 1, max = 100))]
         limit: Option<u32>,
     },
-    /// Fetches the card of the first link of a message ("Show preview", [`Response::ChatCard`]):
-    /// the account's server asks the link's address for it, so its owner may learn when it was read.
-    /// App key only: a person decides.
+    /// Fetches the card of the first link of a message ("Show once", [`Response::ChatCard`]): the
+    /// account's server asks the link's address for it, so its owner may learn when it was read. App
+    /// key only: a person decides. `unsupported` for a provider Settings › Privacy blocks and while it
+    /// says "Never show" (issue #672); nothing is stored about the provider.
     #[serde(rename = "chat.show_card")]
     ChatShowCard {
         /// The message (`<conversation>/<number>`).
@@ -5057,6 +5058,21 @@ pub enum SettingKey {
     /// is off), `offline` when it cannot be reached, `busy` when its limiter asks to wait. `null` and
     /// the stored address are not asked. `settings.update_settings` checks only the form.
     SearxngAddress,
+    /// Whether content from other providers loads (issue #672, Settings › Privacy): `"always"`, `"ask"`
+    /// (the default: providers a person allowed load, blocked ones never, a new one is asked about where
+    /// its content would stand) or `"never"` (nothing loads and nothing is asked, whatever the list says).
+    /// It covers the pictures of mail, link previews and embedded videos in the chat, and with `"never"`
+    /// also the logos of senders (`torro_core::privacy::ForeignContent`). Only the app key, whatever the
+    /// value – a person in Settings › Privacy (point 14 of "Was nie nach außen geht", `docs/api.md`); a
+    /// client gets `forbidden`.
+    PrivacyContent,
+    /// One provider of the list of Settings › Privacy (issue #672, `torro_core::privacy::ProviderChange`):
+    /// `{"provider": "youtube", "choice": "allowed" | "blocked" | null}`, the provider's key as
+    /// `settings.get_settings` lists it under `privacy.providers` (`youtube` for YouTube, else a domain
+    /// such as `mailchimp.com` or an IP address). `null` takes it off the list, so it is asked about again.
+    /// At most 1000 providers. Only the app key, whatever the value, like
+    /// [`SettingKey::PrivacyContent`]; a client gets `forbidden`.
+    PrivacyProvider,
 }
 
 /// A place `calendar.search_places` found (task TE.5). Label and detail come from the person's own

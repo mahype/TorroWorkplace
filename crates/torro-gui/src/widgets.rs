@@ -331,10 +331,61 @@ fn line_label<'a, M: 'a>(level: typo::Level, label: impl IntoFragment<'a>) -> El
 
 /// The colour an icon inside a button of `style` takes: the button's text colour at rest.
 fn button_icon<'a, M: 'a>(which: Icon, edge: f32, style: ButtonStyle, on: bool) -> Element<'a, M> {
+    if let Some(strokes) = bar_strokes(which) {
+        return iced::widget::canvas(BarIcon { strokes, style, on }).width(edge).height(edge).into();
+    }
     icon(which, edge)
         .style(move |t, _| svg::Style { color: Some(style(t, button::Status::Active).text_color) })
         .opacity(icon_opacity(on))
         .into()
+}
+
+/// The straight strokes of an icon that is only bars, on Lucide's 24 × 24 grid: − is one, + two.
+fn bar_strokes(which: Icon) -> Option<&'static [[(f32, f32); 2]]> {
+    match which {
+        Icon::Minus => Some(&[[(5.0, 12.0), (19.0, 12.0)]]),
+        Icon::Plus => Some(&[[(5.0, 12.0), (19.0, 12.0)], [(12.0, 5.0), (12.0, 19.0)]]),
+        _ => None,
+    }
+}
+
+/// − and + drawn as lines instead of the SVG (issue #661): an SVG is rasterized to whole pixels
+/// (`ceil(size × scale)`) and drawn with the nearest pixel, its box snapped to the pixel grid. At a
+/// zoom such as 90 % the box can come out one pixel smaller than the raster, and the single column
+/// or row that makes a one-pixel bar goes missing, so the − or one bar of the + vanished depending
+/// on where the button sat. A line is drawn at its exact place and needs no raster.
+struct BarIcon {
+    strokes: &'static [[(f32, f32); 2]],
+    style: ButtonStyle,
+    on: bool,
+}
+
+impl<M> iced::widget::canvas::Program<M> for BarIcon {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &iced::Renderer,
+        theme: &Theme,
+        bounds: iced::Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry> {
+        use iced::widget::canvas::{Frame, LineCap, Path, Stroke};
+        // The colour and fade of `button_icon`'s SVG: the button's text colour at rest, faded when off.
+        let mut color = (self.style)(theme, button::Status::Active).text_color;
+        color.a *= icon_opacity(self.on);
+        // Lucide draws on 24 units with a stroke of 1.75 and round caps (`icon::tests`).
+        let unit = bounds.width / 24.0;
+        let mut frame = Frame::new(renderer, bounds.size());
+        for [(x1, y1), (x2, y2)] in self.strokes {
+            frame.stroke(
+                &Path::line(Point::new(x1 * unit, y1 * unit), Point::new(x2 * unit, y2 * unit)),
+                Stroke::default().with_width(1.75 * unit).with_line_cap(LineCap::Round).with_color(color),
+            );
+        }
+        vec![frame.into_geometry()]
+    }
 }
 
 /// The opacity of the icon in a button that is `on` or off (issue #168): an icon's tint keeps no
@@ -7679,6 +7730,26 @@ mod badge {
 
 #[cfg(test)]
 mod tests {
+    /// Issue #661: − and + are drawn as lines (`BarIcon`), and they match the SVGs of the icon set.
+    #[test]
+    fn minus_and_plus_are_bars_like_their_svgs() {
+        use crate::icon::Icon;
+        assert_eq!(super::bar_strokes(Icon::Minus).map(<[_]>::len), Some(1));
+        assert_eq!(super::bar_strokes(Icon::Plus).map(<[_]>::len), Some(2));
+        assert!(super::bar_strokes(Icon::Search).is_none(), "other icons stay SVGs");
+        for (which, paths) in
+            [(Icon::Minus, ["M5 12h14"].as_slice()), (Icon::Plus, ["M5 12h14", "M12 5v14"].as_slice())]
+        {
+            let svg = match which {
+                Icon::Minus => include_str!("../assets/icons/minus.svg"),
+                _ => include_str!("../assets/icons/plus.svg"),
+            };
+            for path in paths {
+                assert!(svg.contains(&format!(r#"d="{path}""#)), "{which:?}: the SVG draws {path}");
+            }
+        }
+    }
+
     /// Issue #476: the key hint on a primary button is light on red in both modes – the key in
     /// `on_accent`, its frame at half of it – and fades like the button when it is off.
     #[test]

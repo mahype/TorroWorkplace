@@ -1276,6 +1276,10 @@ pub struct MailService {
     /// that says whose they are; shared by every mailbox.
     logos: Arc<SenderLogos>,
     check: Arc<SenderCheck>,
+    /// What Settings › Privacy says (issue #672): which hosts the HTML of a mail may load from
+    /// (`external` of `mail.get_message`, saving as PDF or image). "Ask" with nobody on the list until
+    /// [`MailService::set_privacy`].
+    privacy: std::sync::RwLock<torro_core::privacy::Reader>,
 }
 
 /// The web the logos are fetched from: the system's, but never in tests, which must not reach the
@@ -1373,6 +1377,7 @@ impl MailService {
             progress_wake: Arc::new(Notify::new()),
             logos: Arc::new(SenderLogos::new(dirs_logos, logo_web())),
             check: Arc::new(sender_check()),
+            privacy: std::sync::RwLock::new(Arc::new(torro_core::privacy::Privacy::default)),
         }
     }
 
@@ -1385,6 +1390,17 @@ impl MailService {
     /// are on. Off, mail is neither checked nor its logo fetched or handed out.
     pub fn set_logo_switch(&self, switch: LogoSwitch) {
         self.logos.set_switch(switch);
+    }
+
+    /// Sets what says what loads from other providers (`privacy` of the settings, issue #672).
+    pub fn set_privacy(&self, reader: torro_core::privacy::Reader) {
+        *self.privacy.write().unwrap_or_else(PoisonError::into_inner) = reader;
+    }
+
+    /// What Settings › Privacy says now.
+    pub fn privacy(&self) -> torro_core::privacy::Privacy {
+        let reader = Arc::clone(&self.privacy.read().unwrap_or_else(PoisonError::into_inner));
+        reader()
     }
 
     /// This service with its own logos and DKIM check, for tests. Before the first mailbox opens.

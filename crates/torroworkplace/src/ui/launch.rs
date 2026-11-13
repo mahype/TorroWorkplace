@@ -1787,7 +1787,7 @@ mod tests {
         let err = Launch::parse(&args(&["--section", "mail"])).expect_err("unknown section");
         assert!(
             err.to_string().ends_with(
-                "valid values: overview, apps, accounts, ai, api, mcp, connections, approvals, workspaces, appearance, general, assistant, bot:<id>, agents, inbox"
+                "valid values: overview, apps, accounts, ai, api, mcp, connections, approvals, workspaces, appearance, privacy, general, assistant, bot:<id>, agents, inbox"
             ),
             "{err}"
         );

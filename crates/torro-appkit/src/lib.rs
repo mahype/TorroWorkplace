@@ -96,6 +96,24 @@ pub fn cover_screen<W: HasWindowHandle + ?Sized>(window: &W, screen: usize, key:
     }
 }
 
+/// Whether the system is set to dark mode, read from the user's global preferences (`AppleInterfaceStyle`).
+/// `None` on other systems, where Iced's own notices (`iced::system::theme_changes`) are enough.
+///
+/// Why not ask the window: Iced pins every window to the mode of its theme (`window.set_theme`),
+/// and a pinned window no longer hears that the system changed, so with "System" selected the colours
+/// stayed where they were (issue #662). The preference is the system's, whatever the window shows. It
+/// needs no main thread and no `unsafe`.
+pub fn system_is_dark() -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(mac::system_is_dark())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod mac {
     use std::ptr::NonNull;
@@ -109,7 +127,9 @@ mod mac {
         NSWindowDidBecomeKeyNotification, NSWindowDidEndLiveResizeNotification, NSWindowDidExitFullScreenNotification,
         NSWindowDidResignKeyNotification, NSWindowDidResizeNotification, NSWindowStyleMask,
     };
-    use objc2_foundation::{NSNotification, NSNotificationCenter, NSNotificationName, NSPoint};
+    use objc2_foundation::{
+        NSNotification, NSNotificationCenter, NSNotificationName, NSPoint, NSString, NSUserDefaults, ns_string,
+    };
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     use super::{Error, Position};
@@ -125,6 +145,13 @@ mod mac {
         #[allow(unsafe_code)]
         let view: &NSView = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
         view.window().ok_or(Error::NoWindow)
+    }
+
+    pub(super) fn system_is_dark() -> bool {
+        // "Dark" when dark mode is on; the key is missing in light mode.
+        let style: Option<Retained<NSString>> =
+            NSUserDefaults::standardUserDefaults().stringForKey(ns_string!("AppleInterfaceStyle"));
+        style.is_some_and(|style| style.to_string().eq_ignore_ascii_case("dark"))
     }
 
     pub(super) fn screen_count() -> usize {
@@ -228,5 +255,11 @@ mod tests {
     fn errors_say_what_is_missing() {
         assert_eq!(Error::NotAppKit.to_string(), "the window is not an AppKit window");
         assert_eq!(Error::NotMainThread.to_string(), "not on the main thread");
+    }
+
+    /// Issue #662: macOS answers (light or dark), other systems leave it to Iced's own notices.
+    #[test]
+    fn the_system_mode_is_read_on_macos_only() {
+        assert_eq!(system_is_dark().is_some(), cfg!(target_os = "macos"));
     }
 }

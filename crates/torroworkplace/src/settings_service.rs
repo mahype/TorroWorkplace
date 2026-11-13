@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
 use torro_core::design::{self, DesignError, Part};
+use torro_core::privacy::{ForeignContent, ProviderChange};
 use torro_core::settings::{
     self, AssistantDefault, AttachmentClick, ComponentSwitch, ComposePaper, FocusSlots, FolderChange, Language,
     ListOrderEntry, MailAppearance, MailAttachments, MailFormat, Maps, Night, PdfSettings, PdfTemplate, PdfTemplateId,
@@ -169,6 +170,9 @@ impl SettingsStore {
     /// Nor does a client switch a web search provider on or set another SearXNG address (issue #305):
     /// a provider stays on only when on as stored and in `new`, the address stays as stored
     /// (`torro_core::settings::WebSearch::from_client`).
+    ///
+    /// Nor what loads from other providers (point 14, issue #672): `privacy` stays as stored, whatever
+    /// `new` says.
     pub fn update_keeping_hidden(&self, new: Settings) -> Result<(), String> {
         self.change(|settings| {
             let hidden = std::mem::take(&mut settings.hidden_collections);
@@ -188,6 +192,7 @@ impl SettingsStore {
             let maps = settings.maps.from_client(&new.maps);
             let mail_attachments = settings.mail_attachments.from_client(&new.mail_attachments);
             let web_search = settings.web_search.from_client(&new.web_search);
+            let privacy = std::mem::take(&mut settings.privacy);
             *settings = Settings {
                 hidden_collections: hidden,
                 ai_assignments: assignments,
@@ -201,6 +206,7 @@ impl SettingsStore {
                 maps,
                 mail_attachments,
                 web_search,
+                privacy,
                 ..new
             };
         })
@@ -251,11 +257,16 @@ impl SettingsStore {
     /// one, read under the same lock as the write. The core refuses a new path before (point 9,
     /// `Core::switches_on_for_people`); this keeps a path a person removed between that check and
     /// the write removed. The allowed
-    /// folders are never a client's (point 9, issue #304): the core refuses them before
-    /// (`Request::kept_for_people`), and this refuses them too.
+    /// folders are never a client's (point 9, issue #304), nor is what loads from other providers (point
+    /// 14, issue #672): the core refuses them before (`Request::kept_for_people`), and this refuses them
+    /// too.
     pub fn set_by_client(&self, key: SettingKey, value: &serde_json::Value) -> Result<(), String> {
         if key == SettingKey::AllowedFolder {
             return Err("only a person manages the allowed folders".into());
+        }
+        // Nor what loads from other providers (point 14, issue #672), in either direction.
+        if matches!(key, SettingKey::PrivacyContent | SettingKey::PrivacyProvider) {
+            return Err("only a person decides what loads from other providers".into());
         }
         let change = Change::parse(key, value)?;
         self.change(|settings| change.limited_for_clients(settings).apply(settings))
@@ -408,6 +419,10 @@ impl SettingsStore {
         new.maps.check_changes(&old.maps)?;
         // And the SearXNG address (issue #305), on the same rule.
         new.web_search.check_changes(&old.web_search)?;
+        // And the list of providers (issue #672): at most `MAX_PROVIDERS`, on both ways in.
+        if new.privacy.providers != old.privacy.providers {
+            new.privacy.check_providers()?;
+        }
         let file = self.file.as_deref().ok_or("no home directory, so no settings file")?;
         save_to(file, &new)?;
         if let Some(enabled) = self.login_item_change(&old, &new) {
@@ -604,6 +619,12 @@ enum Change {
     /// (`Core::switches_on_for_people`).
     SearxngAddress(Option<String>),
     MailSender(Option<String>),
+    /// Whether content from other providers loads (issue #672). Only a person's
+    /// (`Request::kept_for_people`, [`SettingsStore::set_by_client`]).
+    PrivacyContent(ForeignContent),
+    /// One provider allowed, blocked or forgotten (issue #672), checked like [`Change::PrivacyContent`];
+    /// the list's limit is checked after it is applied ([`torro_core::privacy::Privacy::check_providers`]).
+    PrivacyProvider(ProviderChange),
 }
 
 impl Change {
@@ -705,6 +726,10 @@ impl Change {
                 Change::SearchProvider(serde_json::from_value(value.clone()).map_err(invalid)?)
             }
             SettingKey::SearxngAddress => Change::SearxngAddress(WebSearch::address_from(value)?),
+            SettingKey::PrivacyContent => {
+                Change::PrivacyContent(serde_json::from_value(value.clone()).map_err(invalid)?)
+            }
+            SettingKey::PrivacyProvider => Change::PrivacyProvider(ProviderChange::from_value(value)?),
         })
     }
 
@@ -785,6 +810,8 @@ impl Change {
             }
             Change::SearchProvider(switch) => settings.web_search.set_on(switch.provider, switch.enabled),
             Change::SearxngAddress(address) => settings.web_search.searxng = address,
+            Change::PrivacyContent(content) => settings.privacy.content = content,
+            Change::PrivacyProvider(change) => settings.privacy.change_provider(change),
         }
     }
 }
@@ -1816,6 +1843,7 @@ mod tests {
                 workspaces: torro_core::settings::WorkspaceSettings {
                     modifiers: torro_core::settings::ShortcutModifiers::CtrlShift,
                 },
+                privacy: Default::default(),
             }
         );
         Change::parse(SettingKey::MailContactsPersonal, &json!(false)).expect("valid flag").apply(&mut settings);
@@ -2253,6 +2281,58 @@ mod tests {
 
     /// The most allowed folders (issue #304).
     const MAX_ALLOWED: usize = torro_core::settings::MAX_ALLOWED_FOLDERS;
+
+    /// Issue #672, point 14: a person sets the level and the list one provider at a time; a client
+    /// changes neither, one at a time nor with whole settings; the list keeps at most 1000.
+    #[test]
+    fn content_from_other_providers_is_a_persons() {
+        use torro_core::privacy::{ForeignContent, MAX_PROVIDERS, ProviderChoice};
+        let (_dir, store) = store();
+        assert_eq!(store.current().privacy.content, ForeignContent::Ask, "ask unless changed");
+        store.set(SettingKey::PrivacyContent, &json!("never")).expect("set");
+        store.set(SettingKey::PrivacyProvider, &json!({"provider": "youtube", "choice": "allowed"})).expect("set");
+        store
+            .set(SettingKey::PrivacyProvider, &json!({"provider": "mailchimp.com", "choice": "blocked"}))
+            .expect("set");
+        store.set(SettingKey::PrivacyProvider, &json!({"provider": "mailchimp.com", "choice": null})).expect("gone");
+        let stored = store.current().privacy;
+        assert_eq!(stored.content, ForeignContent::Never);
+        assert_eq!(stored.providers, std::collections::BTreeMap::from([("youtube".into(), ProviderChoice::Allowed)]));
+        for (key, value) in [
+            (SettingKey::PrivacyContent, json!("sometimes")),
+            (SettingKey::PrivacyProvider, json!({"provider": "You Tube", "choice": "allowed"})),
+            (SettingKey::PrivacyProvider, json!({"provider": "youtube"})),
+        ] {
+            assert!(store.set(key, &value).is_err(), "{value}");
+        }
+
+        // A client: neither key, whatever the value, and whole settings keep the stored ones.
+        assert!(store.set_by_client(SettingKey::PrivacyContent, &json!("always")).is_err());
+        assert!(store.set_by_client(SettingKey::PrivacyContent, &json!("never")).is_err());
+        let removal = json!({"provider": "youtube", "choice": null});
+        assert!(store.set_by_client(SettingKey::PrivacyProvider, &removal).is_err());
+        let mut sent = store.current();
+        sent.privacy = Default::default();
+        sent.quiet_when_busy = !sent.quiet_when_busy;
+        store.update_keeping_hidden(sent.clone()).expect("written");
+        let kept = store.current();
+        assert_eq!(kept.privacy, stored, "the stored ones stay");
+        assert_eq!(kept.quiet_when_busy, sent.quiet_when_busy, "the rest is taken");
+
+        // At most 1000, on both ways in.
+        let mut full = store.current();
+        full.privacy.providers =
+            (0..MAX_PROVIDERS).map(|n| (format!("p{n}.example"), ProviderChoice::Blocked)).collect();
+        store.update(full.clone()).expect("fits");
+        let one_more = json!({"provider": "more.example", "choice": "blocked"});
+        assert!(store.set(SettingKey::PrivacyProvider, &one_more).is_err_and(|why| why.contains("1000")));
+        full.privacy.providers.insert("more.example".into(), ProviderChoice::Allowed);
+        assert!(store.update(full).is_err());
+        assert_eq!(store.current().privacy.providers.len(), MAX_PROVIDERS, "nothing written");
+        // Changing one already there and forgetting one still work at the limit.
+        store.set(SettingKey::PrivacyProvider, &json!({"provider": "p0.example", "choice": "allowed"})).expect("fits");
+        store.set(SettingKey::PrivacyProvider, &json!({"provider": "p1.example", "choice": null})).expect("fits");
+    }
 
     /// Issue #225, point 9: one setting at a time, a client keeps or removes a path but never sets
     /// a new one, even when the core's check saw the stored one and a person changed it meanwhile.

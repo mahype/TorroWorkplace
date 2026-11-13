@@ -43,6 +43,20 @@ fn loaded(mut app: App) -> App {
 }
 
 #[test]
+fn theme_follows_the_stored_appearance_and_the_desktop() {
+    let mut app = start(&[]);
+    let _ = app.update(Message::SystemMode(iced::theme::Mode::Light));
+    assert_eq!(app.theme(), torro_gui::theme::light(), "System follows the desktop");
+    let _ = app.update(Message::Appearance(Ok(Appearance::Dark)));
+    assert_eq!(app.theme(), torro_gui::theme::theme(), "Dark ignores a light desktop");
+    let _ = app.update(Message::Appearance(Err("core is starting".into())));
+    assert_eq!(app.theme(), torro_gui::theme::theme(), "a failed ask keeps the appearance");
+    let _ = app.update(Message::Appearance(Ok(Appearance::Light)));
+    let _ = app.update(Message::SystemMode(iced::theme::Mode::Dark));
+    assert_eq!(app.theme(), torro_gui::theme::light(), "Light ignores a dark desktop");
+}
+
+#[test]
 fn the_contact_list_lists_people_by_group_and_the_cursor_walks_them() {
     let mut app = loaded(start(&[]));
     assert_eq!(app.title(), tr("Contacts"));
@@ -695,4 +709,36 @@ fn a_chat_window_keeps_its_glance_at_the_contact_list_size() {
     let mut app = start(&["--conversation", BEN]);
     app.size = CONTACTS_SIZE;
     assert_eq!(app.view_class(), SizeClass::Mini);
+}
+
+/// Issue #672: a link to another provider not asked about yet asks; "Never for …" stores the choice and
+/// leaves only the link, "Always allow …" brings the card, and a failure says why in the calm line.
+#[test]
+fn a_link_to_another_provider_asks_and_the_answer_is_kept() {
+    use crate::app::files::FilesMsg;
+    use torro_core::privacy::ProviderChoice;
+    let grids = torro_chat::message_id(torro_chat::demo::DESIGN, 11);
+    let decided = |app: &mut App, choice: ProviderChoice, result: Result<(), ChatError>| {
+        let msg = FilesMsg::Decided("example.com".into(), choice, result);
+        let _ = app.update(Message::Chat(Msg::Files(msg)));
+    };
+
+    let mut app = loaded(start(&["--open", "files"]));
+    let asked = message(&app, &grids).foreign.clone().expect("example.com is asked about");
+    assert_eq!(asked.name, "example.com");
+    decided(&mut app, ProviderChoice::Blocked, Err(ChatError::Other("Not allowed.".into())));
+    assert!(message(&app, &grids).foreign.is_some(), "still asked after a failure");
+    assert_eq!(chat(&app).note.as_ref().map(|note| note.text.as_str()), Some("Not allowed."));
+    block_on(app.backend.clone().set_provider("example.com".into(), ProviderChoice::Blocked)).expect("kept");
+    decided(&mut app, ProviderChoice::Blocked, Ok(()));
+    assert!(message(&app, &grids).foreign.is_none() && message(&app, &grids).cards.is_empty(), "only the link");
+
+    let mut app = loaded(start(&["--open", "files"]));
+    block_on(app.backend.clone().set_provider("example.com".into(), ProviderChoice::Allowed)).expect("kept");
+    decided(&mut app, ProviderChoice::Allowed, Ok(()));
+    assert!(message(&app, &grids).foreign.is_none());
+    assert_eq!(chat(&app).files.cards.get(&grids), Some(&crate::app::files::CardAsk::Asking), "the card comes");
+    let card = block_on(app.backend.clone().show_card(grids.clone())).expect("a card");
+    let _ = app.update(Message::Chat(Msg::Files(FilesMsg::Card(grids.clone(), Ok(card)))));
+    assert_eq!(message(&app, &grids).cards.first().map(|card| card.domain.as_str()), Some("example.com"));
 }

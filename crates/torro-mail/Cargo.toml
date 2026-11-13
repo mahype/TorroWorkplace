@@ -14,6 +14,8 @@ workspace = true
 # `accounts.json` with these types.
 [dependencies]
 chrono.workspace = true
+# The hosts a received mail's HTML loads from (issue #672, `html::external_hosts`).
+url.workspace = true
 schemars.workspace = true
 serde.workspace = true
 

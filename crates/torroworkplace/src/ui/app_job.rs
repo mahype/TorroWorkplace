@@ -340,7 +340,7 @@ impl Window {
 
     fn subscription(&self) -> Subscription<Event> {
         let mut all = vec![
-            iced::system::theme_changes().map(Event::SystemMode),
+            torro_gui::theme::system_mode_changes().map(Event::SystemMode),
             iced::event::listen_with(keys),
             iced::window::close_requests().map(|_| Event::Close),
             self.zoom.subscription().map(Event::Zoom),

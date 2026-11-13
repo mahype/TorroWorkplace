@@ -5,7 +5,7 @@
 
 use chrono::{DateTime, Local, Utc};
 use torro_core::AppId;
-use torro_core::app::{WORKPLACE_BUNDLE_ID, WORKPLACE_DIALOG_CLASS};
+use torro_core::app::{FLOATING_WINDOWS, WORKPLACE_BUNDLE_ID, WORKPLACE_DIALOG_CLASS};
 use torro_wm::{Rect, Window, WindowManager};
 
 use crate::layout::infer_tree;
@@ -156,6 +156,25 @@ pub fn suite_single_instance(class: &str, command: &[String]) -> bool {
         return false;
     };
     AppId::ALL.iter().filter(|entry| entry.binary == app.binary).any(|entry| args == entry.args)
+}
+
+/// The window class of the floating window ([`FLOATING_WINDOWS`]) that a window of `class` started with
+/// `command` is (issue #667): the first entry whose binary is the window's app ([`suite_app`]) and whose
+/// flag the start arguments carry, alone (`--viewer a/b`) or with its value (`--conversation=<id>`).
+///
+/// AeroSpace and GlazeWM name every window of `torrochat` alike, so the core floats a new window when
+/// this finds its class. `None` for an empty command, a program outside the suite or a start without
+/// such a flag, e.g. the contact list (`torrochat`) or the control centre (`torroworkplace ui`).
+pub fn floating_window_class(class: &str, command: &[String]) -> Option<&'static str> {
+    let app = suite_app(class)?;
+    let args = start_args(command)?;
+    let carries = |flag: &str| {
+        args.iter().any(|arg| arg == flag || arg.strip_prefix(flag).is_some_and(|rest| rest.starts_with('=')))
+    };
+    FLOATING_WINDOWS
+        .iter()
+        .find(|window| window.binary == app.binary && carries(window.flag))
+        .map(|window| window.class)
 }
 
 /// The arguments `command` passes to the program it starts, `--view=mail` split into `--view`,
@@ -434,6 +453,56 @@ mod tests {
         }
         assert_eq!(strategy_for("torro-tasks", &words(&["torrotasks", "--task=abc"])), Strategy::New);
         assert_eq!(strategy_for("Spotify", &words(&["spotify"])), Strategy::Move, "other single instances stay");
+    }
+
+    /// Issue #667: the side windows of the chat and the core's dialog are known by their start command,
+    /// under every name AeroSpace and GlazeWM give them; the contact list and the control centre are not.
+    #[test]
+    fn a_floating_window_is_known_by_its_flag() {
+        use torro_core::app::{CHAT_CONVERSATION_CLASS, CHAT_RING_CLASS, CHAT_VIEWER_CLASS};
+
+        let chat_bundle = "io.github.mahype.torro-chat";
+        let chat_app = "/Applications/Torro Chat.app";
+        let floating = [
+            (
+                chat_bundle,
+                words(&["open", "-n", "-a", chat_app, "--args", "--conversation=ben"]),
+                CHAT_CONVERSATION_CLASS,
+            ),
+            ("torrochat.exe", words(&["C:\\Torro\\torrochat.exe", "--ring=call-7"]), CHAT_RING_CLASS),
+            ("torrochat", words(&["/usr/bin/torrochat", "--viewer", "ben/photo.jpg"]), CHAT_VIEWER_CLASS),
+            (
+                WORKPLACE_BUNDLE_ID,
+                words(&[
+                    "open",
+                    "-n",
+                    "-a",
+                    "/Applications/Torro Workplace.app",
+                    "--args",
+                    "ui",
+                    "--template=dev",
+                    "--saved",
+                ]),
+                WORKPLACE_DIALOG_CLASS,
+            ),
+            ("torroworkplace.exe", words(&["torroworkplace.exe", "ui", "--template", "dev"]), WORKPLACE_DIALOG_CLASS),
+        ];
+        for (class, command, expected) in floating {
+            assert_eq!(floating_window_class(class, &command), Some(expected), "{class} {command:?}");
+        }
+        let tiled = [
+            (chat_bundle, words(&["open", "-n", "-a", chat_app])),
+            ("torrochat", words(&["/usr/bin/torrochat", "--demo"])),
+            ("torrochat", words(&["/usr/bin/torrochat", "--conversations"])),
+            (WORKPLACE_BUNDLE_ID, words(&["open", "-n", "-a", "/Applications/Torro Workplace.app", "--args", "ui"])),
+            ("torroworkplace", words(&["torroworkplace", "ui"])),
+            ("io.github.mahype.torro-tasks", words(&["torrotasks", "--conversation=ben"])),
+            ("foot", words(&["foot", "--conversation=ben"])),
+            (chat_bundle, Vec::new()),
+        ];
+        for (class, command) in tiled {
+            assert_eq!(floating_window_class(class, &command), None, "{class} {command:?}");
+        }
     }
 
     #[test]

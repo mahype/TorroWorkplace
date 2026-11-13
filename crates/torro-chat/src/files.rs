@@ -16,9 +16,11 @@ use chrono::{DateTime, Utc};
 /// How large a preview [`crate::ChatSource::preview`] asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum PreviewSize {
-    /// At most 256 pixels on the longer side: the history and the media overview.
+    /// At most 256 pixels on the longer side: link cards and the media overview.
     #[default]
     Small,
+    /// At most 1024 pixels: a picture in the chat window's history.
+    Medium,
     /// At most 1600 pixels: a picture shown large.
     Large,
 }

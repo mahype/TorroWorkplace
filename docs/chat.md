@@ -314,10 +314,15 @@ dahinter rückten um eins.
     Nextcloud“ bleibt im Menü und ist der Weg für noch größere Videos. Kein
     GStreamer und kein FFmpeg in den Paketen; ein Player im Fenster wird ein eigenes Issue, wenn Videos im Alltag
     häufig sind.
-23. **Link-Karten fremder Seiten erst auf Klick** (entschieden vom Menschen am 2026-11-11, im Review von #636). Talk-Web
-    löst den ersten Link beim Anzeigen auf; dabei ruft der eigene Server die fremde URL ab, und wer eine eindeutige URL
-    schickt, erfährt, wann gelesen wurde. Darum bekommen nur Links auf den eigenen Nextcloud-Server ihre Karte von
-    selbst, alle anderen nach einem Klick auf „Show preview“ (`chat.show_card`, nur Menschen).
+23. **Link-Karten fremder Seiten nach Settings › Privacy** (entschieden vom Menschen am 2026-11-11, im Review von #636;
+    seit #672 Teil der zentralen Freigabe fremder Inhalte, `docs/settings.md`, Abschnitt „Privacy“). Talk-Web löst den
+    ersten Link beim Anzeigen auf; dabei ruft der eigene Server die fremde URL ab, und wer eine eindeutige URL schickt,
+    erfährt, wann gelesen wurde. Darum bekommen nur Links auf den eigenen Nextcloud-Server ihre Karte immer von selbst.
+    Für jeden anderen Link entscheidet die Stufe in Settings › Privacy: bei „Always show“ und für einen erlaubten
+    Anbieter kommt die Karte von selbst, bei „Never show“ und für einen gesperrten nie (nur der Link im Text). Bei
+    „Ask“ (Standard) fragt das Chatfenster für einen Anbieter, über den noch niemand entschieden hat, an der Stelle der
+    Karte: „Show once“ (`chat.show_card`, nur Menschen, speichert nichts), „Always allow <Anbieter>“ und „Never for
+    <Anbieter>“ (beide `settings.set_setting privacy_provider`, nur Menschen).
 24. **Fassungen der Entwürfe gewählt** (vom Menschen am 2026-11-11, beim Durchsehen der Entwürfe zu #636):
     - **Gruppenchats:** Umschalter „People | Groups“ oben in der Kontaktliste (Entscheidung 17).
     - **Klingeln:** kleines Fenster mittig (`torro-chat-ring`), keine Benachrichtigung.
@@ -427,7 +432,8 @@ roh darin: Sie sind fremder Text und kämen sonst ungeprüft zu einem Agenten.
     gebaut. Nie über eine URL aus der Antwort von Talk oder aus `openGraphObject` (`thumb`, `link`): Ein Bild von
     einem fremden Server verriete, wann und wo der Mensch die Nachricht liest. Gibt es kein Bild vom eigenen Server,
     gibt es keins.
-  - **Nur im Speicher** (Entscheidung 21): höchstens 64 MiB Vorschauen je Konto. Geöffnete Anhänge liegen in einem
+  - **Nur im Speicher** (Entscheidung 21): höchstens 64 MiB Vorschauen je Konto (mit `medium` im Verlauf grob 200 bis
+    400 Bilder; ältere fallen heraus und kommen beim Zurückscrollen neu vom Server). Geöffnete Anhänge liegen in einem
     eigenen Ordner des Chats, `<cache>/chat-attachments/<konto>/` (Ordner 0700, Dateien 0600, nach einem Tag
     gelöscht), nicht im Anhangsordner der Mail: `mail.save_draft` nimmt jede Datei aus jenem Ordner an und prüft nur
     den Ort, ein Agent mit `mail`, aber ohne `chat`, hängte sonst Chat-Bilder an einen Entwurf. `mail.save_draft` nimmt
@@ -512,17 +518,39 @@ Unterhaltung gemerkt werden können, siehe „Schweben“):
   Einfaches Markdown (fett, kursiv, Code, Links). Trenner „New“ beim Lesestand. Systemnachrichten klein in `TEXT_3`,
   verpasste Anrufe mit Icon. Nach oben scrollen lädt ältere. Dateien je nach Art (Stufe 4, ab Stufe 3 alle als
   Datei-Zeile):
-  - **Bild:** Vorschau (höchstens 220 × 220, Seitenverhältnis aus `width`/`height`, bis sie da ist ein ruhiger
-    Platzhalter in der Größe, damit nichts springt), darunter die Beschriftung. Ein Klick öffnet „Bild groß“.
-  - **Video:** Vorschaubild mit Abspielknopf, wenn der Server eins hat; die Dauer nur, wenn der Kern sie kennt
-    (Talk liefert keine). Ein Klick öffnet das Video im Programm des Systems (Entscheidung 22), der Tooltip sagt es.
+  - **Bild** (#674, Entwurf [`docs/prototypes/chat-bilder/`](prototypes/chat-bilder/index.html), Fassung B):
+    randlos bis an den Rand der Blase, höchstens so breit wie die Blase und `size::list()` (440) und so hoch wie
+    `size::panel()` (400), Seitenverhältnis aus `width`/`height`, nie größer als das Bild selbst. Die Blase lässt
+    daneben Platz für „Reply“ und „…“ (neben einer offenen Medien-Übersicht zählt nur der Verlauf); im Chatfenster mit 440 Breite ist ein Querformat so 322 × 201 groß, ein
+    Hochformat 300 × 400. Die Vorschau kommt als `medium` (1024 Pixel), damit sie auf Retina scharf ist; bis sie
+    da ist, steht ein ruhiger Platzhalter in der Größe, damit nichts springt. Die Beschriftung steht mit dem Rand
+    der Blase darunter. Ein Bild mit Zitat, ein Bild unter 240 Breite (`size::sidebar()`) und Bilder neben anderen
+    Dateien derselben Nachricht bleiben im Rahmen der Blase. Ein Klick öffnet „Bild groß“.
+  - **Mehrere Bilder** (#674): Talk macht aus jeder Datei eine eigene Nachricht. Bilder einer Person, die direkt
+    aufeinander folgen und höchstens eine Minute auseinander liegen, stehen deshalb als **Raster** in einer
+    randlosen Blase: zwei nebeneinander, drei als ein großes links und zwei rechts, vier als 2 × 2, höchstens
+    `size::panel()` hoch. Nach vier Bildern beginnt ein neues Raster, damit jedes Bild seine Kachel und damit das
+    Menü seiner Nachricht behält (bei der Umsetzung entschieden). Nur eine einzelne Nachricht mit mehr als vier
+    Bildern zeigt 2 × 2 mit „+N“ (die Zahl der nicht gezeigten) auf dem vierten. Teil des Rasters ist eine Nachricht ohne Zitat mit
+    genau einem Bild mit Vorschau (kein Video, kein SVG), deren Text leer ist oder nur den Dateinamen nennt; nur die
+    letzte darf eine eigene Beschriftung tragen, sie beendet das Raster. Kein Tagestrenner und kein „New“
+    dazwischen. Eine Nachricht mit mehreren Dateien, alle Bilder mit Vorschau, ist allein ein Raster. Antworten,
+    „…“, die Zeit und die Beschriftung gehören zur letzten Nachricht; die Reaktionen aller zählen zusammen, ein
+    Klick gilt der mit der eigenen Reaktion, sonst der letzten. Ein Klick auf eine Kachel öffnet „Bild groß“ bei
+    diesem Bild, ein Rechtsklick das Menü ihrer eigenen Nachricht (etwa „Delete for everyone“ nur für dieses Bild).
+    Kommt eine Vorschau nicht, bleibt ihr Platzhalter stehen, damit das Raster nicht zerfällt.
+  - **Video:** Vorschaubild mit Abspielknopf, wenn der Server eins hat, randlos wie ein Bild, aber nie im Raster;
+    die Dauer nur, wenn der Kern sie kennt (Talk liefert keine). Ein Klick öffnet das Video im Programm des
+    Systems (Entscheidung 22), der Tooltip sagt es.
   - **Sprachnachricht:** Abspielknopf, Wellenform, Dauer; spielt im Chatfenster (Entscheidung 19).
   - **Andere Datei** und jeder **Rückfall ohne Vorschau** (keine Vorschau, SVG, `hide-download`, Format ohne
     Decoder): Zeile mit Symbol der Art, Name, Größe und Art, Knöpfe „Open“, „Download“, „Open in Nextcloud“
     (`hide-download`: nur „Open in Nextcloud“).
   - **Link-Karte** unter einer Nachricht mit Link: Bild vom eigenen Server, Titel, Domain; nur der erste Link einer
-    Nachricht, wie in Talk-Web. Links auf den eigenen Nextcloud-Server bekommen sie von selbst, andere erst nach einem
-    Klick auf „Show preview“ unter dem Link (Entscheidung 23). Ohne Karte bleibt der Link im Text.
+    Nachricht, wie in Talk-Web. Links auf den eigenen Nextcloud-Server bekommen sie von selbst, andere nach Settings ›
+    Privacy (Entscheidung 23, #672). Bei „Ask“ steht statt der Karte ein ruhiger Satz „This message shows content from
+    <Anbieter>.“ mit den Knöpfen „Show once“, „Always allow <Anbieter>“ und „Never for <Anbieter>“; die Antwort gilt
+    für alle Nachrichten des Anbieters im Fenster. Ohne Karte bleibt der Link im Text.
 - **Eingabe:** mehrzeilig, Enter sendet, Shift+Enter bricht um. `@` öffnet Vorschläge. Ein Zähler erscheint ab
   90 % der Höchstlänge. Im Menü „Send without notification“. Ab Stufe 4 links die Büroklammer („Attach file“, Dialog
   des Systems), Ziehen einer Datei auf das Fenster (die ganze Fläche wird zur Ablage, „Drop to send to Anna Berg“)
@@ -559,20 +587,33 @@ computer“), Mikrofon mit Pegel, Lautsprecher mit „Play test sound“, Schalt
 Ohne Gerät oder ohne Recht dazu steht der Weg zur Systemeinstellung da. Ein neu eingestecktes Gerät erscheint
 sofort in der Liste, gewechselt wird nur hier.
 
-**Schweben je Fenster-Manager** (Entscheidung 16): Der Kern setzt die Regeln für die festen Klassen des Chats
-beim Start selbst über `torro-wm`, wie heute für `WORKPLACE_DIALOG_CLASS`; einen Request dafür gibt es nicht:
-- **Hyprland:** `float_dialogs` gibt es schon (Regel `float = true, center = true` je Klasse). Ein Neuladen der
-  Konfiguration verwirft Laufzeit-Regeln (`ConfigReloaded` in `torro-wm`); der Kern muss sie darauf neu setzen,
-  das tut er heute für keine Klasse und kommt mit Stufe 3 dazu. Das reicht für Klingel-, Anruf- und Gerätefenster. Ein Chatfenster an einem
-  gemerkten Ort bräuchte eine Regel ohne `center` und ein Verschieben durch den Kern (unter Wayland darf das
-  Programm sein Fenster nicht selbst setzen, [modes.md](modes.md)); das ist eine neue Methode am Trait
-  `WindowManager`, dessen Schnittstelle festgelegt ist, also eine Rückfrage in Stufe 3. Bis dahin öffnen
-  Chatfenster mittig.
-- **AeroSpace und GlazeWM:** `float_dialogs` tut dort heute nichts, und die „Klasse“ ist die Bundle-ID bzw. der
-  Prozessname: Alle Fenster von `torrochat` teilen sie, auch die Kontaktliste. Unterscheiden ließen sie sich nur am
-  Fenstertitel (AeroSpace `on-window-detected` mit `window-title-regex-substring`, GlazeWM `window_rules` mit
-  `window_title`) oder indem Chat- und Anruffenster ein eigener Prozess bzw. ein eigenes Bündel werden. Welcher Weg,
-  klärt Stufe 3 mit Rückfrage; bis dahin schweben sie dort nicht von selbst.
+**Schweben je Fenster-Manager** (Entscheidung 16, #667): Welche Fenster der Suite schweben, steht an einer Stelle,
+der Liste `FLOATING_WINDOWS` in `torro-core` (`app.rs`): je Fenster das Programm, der Schalter, mit dem es startet,
+und seine Klasse. Heute sind das Chat-, Klingel- und Bildfenster des Chats (`torrochat --conversation`, `--ring`,
+`--viewer`) und der Dialog nach „Workspace speichern…“ (`torroworkplace ui --template`). Ein späteres Anruf- oder
+Gerätefenster bekommt dort einen Eintrag und schwebt dann unter jedem Fenster-Manager; ein Test in
+`torrochat/src/launch.rs` nennt jede Fensterart des Chats und verlangt für jede außer der Kontaktliste den Eintrag. Einen Request dafür gibt es nicht.
+- **Hyprland:** `float_dialogs` setzt je Klasse eine Regel `float = true, center = true`, bevor das Fenster öffnet:
+  beim Start des Kerns, vor jedem Klingelfenster und jedem Dialog und nach jedem Neuladen der Konfiguration
+  (`ConfigReloaded` in `torro-wm`), das Laufzeit-Regeln verwirft. Ein Chatfenster an einem gemerkten Ort bräuchte
+  eine Regel ohne `center` und ein Verschieben durch den Kern (unter Wayland darf das Programm sein Fenster nicht
+  selbst setzen, [modes.md](modes.md)). Bis dahin öffnen Chatfenster mittig.
+- **AeroSpace und GlazeWM:** Hier ist die „Klasse“ die Bundle-ID bzw. der Prozessname, alle Fenster von `torrochat`
+  teilen sie, auch die Kontaktliste. Der Kern erkennt ein Fenster deshalb an seinem **Startbefehl**: Er folgt den
+  Ereignissen des Fenster-Managers (`chat/float.rs`), liest bei jedem neuen Fenster eines Programms der Suite den
+  Befehl seines Prozesses (`torro_setups::launch::command_for`, wie beim Speichern eines Workspaces) und lässt es
+  schweben, wenn der Befehl einen Schalter aus `FLOATING_WINDOWS` trägt (`floating_window_class` in
+  `torro-setups`). Dafür hat der Trait `WindowManager` die Methode `float_window`: AeroSpace
+  `layout --window-id <id> floating`, GlazeWM `command --id <id> set-floating --centered`. Fenster anderer
+  Programme fragt der Kern nicht ab. Endet der Ereignisstrom (Fenster-Manager neu gestartet), abonniert der Kern
+  nach 10 s neu. Bei jedem Abonnieren lässt er zuerst die schon offenen, gekachelten Fenster dieser Art schweben:
+  die aus der Lücke und die, die ein neu gestarteter Fenster-Manager wieder als Kachel eingeordnet hat.
+  - Der Fenstertitel scheidet aus, weil er übersetzt wird und den Namen der Unterhaltung trägt; ein eigenes Bündel
+    je Fensterart wäre viel Aufwand beim Paketbau.
+  - Der Kern ändert die Konfiguration von AeroSpace und GlazeWM nicht. Darum steht ein neues Fenster einen
+    Augenblick als Kachel da, bevor es schwebt; nur eine Regel in der Konfiguration würde das vermeiden.
+  - GlazeWM setzt das Fenster in die Mitte. AeroSpace kennt keinen Befehl dafür; dort bleibt es an der Stelle und in
+    der Größe seiner kurzen Kachel.
 - **Ohne Kachel-Manager** (macOS ohne AeroSpace, Windows ohne GlazeWM, GNOME, KDE) schweben die Fenster ohnehin.
 
 **Notification Hub (Stufe 1)**, Paneel eines Talk-Eintrags:
@@ -628,11 +669,11 @@ Bereich `chat`:
 | 4 | `chat.send_message` mit `files` (Kennungen aus `prepare_file`, Erweiterung) | Write + **nach außen** | `chat_send_message` (vorhanden) |
 | 4 | `chat.get_upload { id }` (Fortschritt des Sendens: Bytes, Stand, Fehler) | Read | `chat_get_upload` |
 | 4 | `chat.cancel_upload { id }` (Senden abbrechen, die halbe Datei auf dem Server löschen) | Write | `chat_cancel_upload` |
-| 4 | `chat.get_preview { id, file?, card?, size }` (`id` die Nachricht, `file` eine Datei dieser Nachricht oder `card: true` das Bild ihrer Link-Karte, `size` `small` oder `large`; gibt ein Rasterbild zurück) | Read | `chat_get_preview` (liefert ein Bild) |
+| 4 | `chat.get_preview { id, file?, card?, size }` (`id` die Nachricht, `file` eine Datei dieser Nachricht oder `card: true` das Bild ihrer Link-Karte, `size` `small`, `medium` oder `large`; gibt ein Rasterbild zurück) | Read | `chat_get_preview` (liefert ein Bild) |
 | 4 | `chat.get_attachment { id, file }` (Datei einer Nachricht in den Anhangsordner des Chats, Pfad, Größe, Art; wie `mail.get_attachment`) | Read | `chat_get_attachment` |
 | 4 | `chat.save_attachment { id, file, to }` (`to`: `downloads`, `{ "target": … }`, `file` und `folder` **nur Menschen**) | Write | `chat_save_attachment` |
 | 4 | `chat.list_shared { conversation, kind?, before?, limit? }` (`kind`: `media`, `file`, `voice`, `link`, …; höchstens 100) | Read | `chat_list_shared` |
-| 4 | `chat.show_card { id }` (Link-Karte zum ersten Link der Nachricht holen, „Show preview“; der Server ruft dafür die fremde URL ab) | Write | `Never` (nur Menschen, siehe Vorschlag für `api.md`) |
+| 4 | `chat.show_card { id }` (Link-Karte zum ersten Link der Nachricht holen, „Show once“; der Server ruft dafür die fremde URL ab; `unsupported` für einen gesperrten Anbieter und bei „Never show“, #672) | Write | `Never` (nur Menschen, siehe Vorschlag für `api.md`) |
 | 4 | `chat.get_messages` mit dem neuen Feld `cards` (Link-Karten aus dem Cache) und der Eingabe `around` (Nachrichten um eine Kennung, für „Show in chat“; Erweiterung) | Read | `chat_get_messages` (vorhanden) |
 | 5 | `chat.send_message` mit `items` und `fields` (Erweiterung, TL2) | Write + **nach außen** + Read der Inhalte | `chat_send_message` (vorhanden) |
 | 6 | `chat.get_call { conversation }` (läuft ein Anruf, klingelt es, seit wann, wie viele sind drin, ob der Mensch dabei ist; keine Namen, keine Geräte, kein Bild) | Read | `chat_get_call` |
@@ -663,9 +704,9 @@ Bereich `presence` (Rechte: Stufe in `presence` und eigene Auswahl `presence_acc
 | 2 | `presence.set_own_status { account, status, message?, icon?, clear_at? }` | Write + **nach außen** | `presence_set_own_status` |
 | 2 | `settings.set_setting` mit `presence_heartbeat` (Heartbeat) | Admin (`settings`); `true` **nur Menschen** | `settings_set_setting` (vorhanden) |
 
-Es gibt keinen Befehl für das Schweben der Fenster: Der Kern setzt die Regeln für die festen Fensterklassen des
-Chats beim Start selbst, wie heute für `WORKPLACE_DIALOG_CLASS`. So kann auch kein Client fremde Klassen schweben
-lassen. Eingeklappte Gruppen merkt die Kontaktliste in `ui.json` (`torro_gui::ui_state`); Größe und Ort heute
+Es gibt keinen Befehl für das Schweben der Fenster: Der Kern lässt die Fenster aus `FLOATING_WINDOWS` selbst
+schweben, unter Hyprland per Regel, unter AeroSpace und GlazeWM beim Erscheinen (siehe Fenster, „Schweben je
+Fenster-Manager“). So kann auch kein Client fremde Fenster schweben lassen. Eingeklappte Gruppen merkt die Kontaktliste in `ui.json` (`torro_gui::ui_state`); Größe und Ort heute
 nicht (siehe Fenster, „Schweben“).
 
 **Vorgeschlagener Punkt 11 für [„Was nie nach außen geht“](api.md#was-nie-nach-außen-geht)** (`api.md` nimmt
@@ -808,7 +849,8 @@ Entscheidung 13: selbst gebaut. Was die Machbarkeit dazu ergab, steht in
   und im Eingang. `notification-state` braucht es dafür nicht. **Auflegen** antwortet `ok`, solange der Anruf im
   Browser läuft.
 - **Start des Fensters:** Für jeden Anruf, der neu klingelt, startet der Kern einmal `torrochat
-  --ring=<unterhaltung>` (`apps::Opened::Ring`) und lässt die Klassen des Chats vorher schweben. Gewählt statt eines
+  --ring=<unterhaltung>` (`apps::Opened::Ring`) und setzt unter Hyprland vorher die Regeln für die Klassen des Chats;
+  unter AeroSpace und GlazeWM schwebt das Fenster beim Erscheinen. Gewählt statt eines
   Ziels `ring:<unterhaltung>` für `apps.open_app`, weil ein solches Ziel jedem Client mit `apps` erlaubte, den Rechner
   klingeln zu lassen, und weil der Kern ohnehin selbst startet.
 - Keiner der drei Befehle ist `Never`; `chat-call` zählt wie jede Chat-Antwort als fremder Text (Entscheidung 6; bis #664
@@ -835,7 +877,8 @@ auf dem Server), steht in [chat-machbarkeit.md](chat-machbarkeit.md#dateien-und-
 | Open, Download, Video öffnen | `chat.get_attachment`, `chat.save_attachment` | `chat_get_attachment`, `chat_save_attachment` (nur Downloads oder ein Ablageziel) |
 | Medien-Übersicht | `chat.list_shared` | `chat_list_shared` |
 | Link-Karten | Feld `cards` in `chat.get_messages` | `chat_get_messages` |
-| „Show preview“ an einem fremden Link | `chat.show_card` | keins: nur Menschen (Entscheidung 23) |
+| „Show once“ an einem fremden Link | `chat.show_card` | keins: nur Menschen (Entscheidung 23) |
+| „Always allow …“ / „Never for …“ an einem fremden Link (#672) | `settings.set_setting privacy_provider` | keins: nur Menschen (`api.md`, Punkt 14) |
 | Sprachnachricht abspielen (Datei über `get_attachment`, Wellenform im Fenster), Video im Programm des Systems | Abspielen selbst ist nur Oberfläche, ohne Befehl (Entscheidungen 19, 22) | – |
 | „Show in chat“ aus der Medien-Übersicht | `chat.get_messages` mit `around` | `chat_get_messages` |
 
@@ -919,7 +962,8 @@ Nach der Entscheidung leert der Kern Dateinamen und Bytes wie den Text (Datensch
   und Pfad auf dem Server kommen nur aus dem Cache. Sonst öffnete `/core/preview?fileId=` bzw. WebDAV jedem Client
   mit `chat` den ganzen Speicher des Menschen (Test: fremde `fileId` → `not-found`).
 - `chat.get_preview` holt `/index.php/core/preview` mit der `fileId` aus dem Cache (nie eine URL aus der Antwort),
-  `small` 256 und `large` 1600 Pixel an der längeren Kante, `a=1`; mit `card: true` das Bild der Link-Karte über die
+  `small` 256 (Link-Karten, Medien-Übersicht), `medium` 1024 (Verlauf, #674) und `large` 1600 („Bild groß“) Pixel an
+  der längeren Kante, `a=1`; mit `card: true` das Bild der Link-Karte über die
   Referenz-ID aus dem Cache der Nachricht, nie aus der Eingabe. Ohne `preview-available`, ohne Bild oder bei SVG
   `not-found`. Das MCP-Tool gibt das Bild als Bildinhalt zurück.
 - **`hide-download`** gilt für jeden Weg: Bei so geteilten Dateien antworten `get_attachment` und `save_attachment`
@@ -940,9 +984,13 @@ Nach der Entscheidung leert der Kern Dateinamen und Bytes wie den Text (Datensch
   der Nachricht und der Datei, Name, Größe, Art, Autor und Zeit, alles `untrusted`.
 - **Link-Karten** stehen als Feld `cards` in `chat.get_messages` (Titel, Beschreibung, Domain, ob ein Bild da ist),
   `untrusted`. Von selbst löst der Kern nur Links auf den Ursprung des eigenen Kontos über `references/resolve` auf
-  (Dateien, Deck, Talk), wenn er Nachrichten für ein offenes Chatfenster lädt (App-Schlüssel). Jeden anderen Link erst
-  mit `chat.show_card { id }` („Show preview“): Sonst riefe der eigene Server beim bloßen Anzeigen die fremde URL ab,
-  und wer eine eindeutige URL schickt, erführe, wann gelesen wurde (Entscheidung 23). Das Ergebnis hält der Kern im
+  (Dateien, Deck, Talk), wenn er Nachrichten für ein offenes Chatfenster lädt (App-Schlüssel). Jeden anderen Link nach
+  Settings › Privacy (#672, `torro_core::privacy`): von selbst bei „Always show“ und für einen erlaubten Anbieter
+  (zusammen mit den eigenen höchstens fünf je Lesen), nie bei „Never show“ und für einen gesperrten – dann lässt der
+  Kern auch eine schon gehaltene Karte weg, für jeden Leser –, sonst nennt er in der Nachricht den Anbieter (Feld
+  `foreign`, nur für den App-Schlüssel), und die Karte kommt erst mit `chat.show_card { id }` („Show once“): Sonst
+  riefe der eigene Server beim bloßen Anzeigen die fremde URL ab, und wer eine eindeutige URL schickt, erführe, wann
+  gelesen wurde (Entscheidung 23). Die Einstellung liest der Kern bei jedem Lesen neu. Das Ergebnis hält der Kern im
   Cache. Ein Read eines Clients löst kein neues `resolve` aus, sonst könnte ein Agent den Server Links nachschlagen
   lassen. Das Bild der Karte kommt über
   `chat.get_preview` mit der Kennung der Nachricht und `card: true`.
@@ -1085,8 +1133,9 @@ angepasst.
   „Oberflächen lesen und schreiben nichts selbst“, erste Aufgabe der Stufe 6. Die Wahl „Selbst gebaut“ vom
   2026-11-06 setzt sie voraus (ohne sie gibt es kein eigenes Anruffenster); festgeschrieben in `api.md` wird sie
   erst nach ausdrücklicher Bestätigung.
-- **Schweben unter AeroSpace und GlazeWM, Ort der Chatfenster unter Hyprland, ein Fenster je Unterhaltung über
-  `apps.open_app`:** Stufe 3, jeweils mit Rückfrage, weil Schnittstellen von `torro-wm` bzw. `OpenApp` sich ändern.
+- **Ort der Chatfenster unter Hyprland, ein Fenster je Unterhaltung über `apps.open_app`:** jeweils mit Rückfrage,
+  weil Schnittstellen von `torro-wm` bzw. `OpenApp` sich ändern. Das Schweben unter AeroSpace und GlazeWM ist mit
+  #667 geklärt (Fenster, „Schweben je Fenster-Manager“).
 - **Ist TURN auf dem eigenen Server eingerichtet?** Zeigt nur eine angemeldete Abfrage; klärt der Versuch.
 - **Matrix oder Slack als weitere Anbieter:** Die Bereiche `chat` und `presence` und das Modell in `torro-chat`
   sind dafür offen. Ein eigener Plan, wenn es so weit ist.

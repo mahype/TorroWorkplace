@@ -10,13 +10,17 @@
 //! - **Sending:** Enter sends the ready files with the text as caption (`chat.send_message` with
 //!   `files`). The place of the files then shows the progress (`chat.get_upload` every
 //!   [`UPLOAD_POLL`]) with ✕ (`chat.cancel_upload`). A sending that failed says why there.
-//! - **History:** previews come with `chat.get_preview` (small) as soon as a page arrives; until
-//!   then a calm placeholder of the same size stands there. "Open" fetches the file
+//! - **History:** previews come with `chat.get_preview` as soon as a page arrives, `medium` for
+//!   pictures and videos (sharp at the history's largest size, issue #674), `small` for link cards;
+//!   until then a calm placeholder of the same size stands there. "Open" fetches the file
 //!   (`chat.get_attachment`) and opens it with the system's program, "Download" saves it to
-//!   Downloads (`chat.save_attachment`), "Save as…" asks the system's dialog first. "Show preview"
-//!   asks for the card of a foreign link (`chat.show_card`).
+//!   Downloads (`chat.save_attachment`), "Save as…" asks the system's dialog first. Under a link to
+//!   another provider not asked about yet (issue #672), "Show once" asks for its card
+//!   (`chat.show_card`), "Always allow …" and "Never for …" put the provider on the list of Settings ›
+//!   Privacy (`settings.set_setting privacy_provider`).
 //! - **Shared media:** a column at the side (`chat.list_shared`) with the tabs Media, Files, Voice
-//!   and Links; "Show in chat" loads the messages around the item (`chat.get_messages` with
+//!   and Links, its tiles from `small` previews ([`FilesState::thumb`]), or the history's picture
+//!   when that came already; "Show in chat" loads the messages around the item (`chat.get_messages` with
 //!   `around`) and marks it.
 //!
 //! What the core refuses (a file shared without download, a server that cannot) is said in the calm
@@ -37,6 +41,7 @@ use torro_chat::{
 };
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
+use torro_core::privacy::ProviderChoice;
 use torro_gui::split::{self, Split, SplitEvent};
 use torro_gui::theme::size;
 use torro_gui::ui_state;
@@ -120,7 +125,7 @@ pub enum Busy {
     Saving,
 }
 
-/// "Show preview" of a foreign link.
+/// "Show once" of a foreign link.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CardAsk {
     Asking,
@@ -180,9 +185,11 @@ pub struct FilesState {
     next_key: u64,
     pub upload: Option<Upload>,
     pub pictures: HashMap<PictureKey, Shown>,
+    /// The small previews of the shared media, apart from the history's larger ones.
+    pub thumbs: HashMap<PictureKey, Shown>,
     /// File actions under way: (message, file).
     pub busy: BTreeMap<(String, String), Busy>,
-    /// "Show preview" asked or answered without a card, by message.
+    /// "Show once" asked or answered without a card, by message.
     pub cards: BTreeMap<String, CardAsk>,
     pub media: Option<MediaPanel>,
     /// The width of the shared media, as the person dragged it.
@@ -217,6 +224,12 @@ impl FilesState {
         self.pictures.get(key)
     }
 
+    /// The picture of `key` for the shared media: the history's once it is there, else the small one
+    /// as far as it came.
+    pub fn thumb(&self, key: &PictureKey) -> Option<&Shown> {
+        self.pictures.get(key).filter(|shown| matches!(shown, Shown::Ready(_))).or_else(|| self.thumbs.get(key))
+    }
+
     fn key(&mut self) -> u64 {
         self.next_key += 1;
         self.next_key
@@ -246,6 +259,8 @@ pub enum FilesMsg {
     Cancelled(Result<(), ChatError>),
     DismissUpload,
     Picture(PictureKey, Result<Picture, ChatError>),
+    /// A small preview of the shared media came.
+    Thumb(PictureKey, Result<Picture, ChatError>),
     /// "Open" (and "Play"): the file `(message, file)`.
     Open(String, String),
     Fetched(String, String, Result<Fetched, ChatError>),
@@ -258,9 +273,13 @@ pub enum FilesMsg {
     /// "Open in Nextcloud": the file's id.
     Nextcloud(String),
     OpenLink(String),
-    /// "Show preview" of the message's foreign link.
+    /// "Show once" of the message's foreign link.
     ShowCard(String),
     Card(String, Result<Option<LinkCard>, ChatError>),
+    /// "Always allow …" or "Never for …" (issue #672): the provider's key and the choice for Settings
+    /// › Privacy.
+    Decide(String, ProviderChoice),
+    Decided(String, ProviderChoice, Result<(), ChatError>),
     /// A picture clicked: the window "Picture large".
     View(String, String),
     ToggleMedia,
@@ -500,6 +519,13 @@ impl App {
                 };
                 files.pictures.insert(key, shown);
             }
+            FilesMsg::Thumb(key, result) => {
+                let shown = match result {
+                    Ok(picture) => system::picture_handle(&picture.bytes).map_or(Shown::Missing, Shown::Ready),
+                    Err(_) => Shown::Missing,
+                };
+                files.thumbs.insert(key, shown);
+            }
             FilesMsg::Open(message, file) => {
                 if files.busy.contains_key(&(message.clone(), file.clone())) {
                     return Task::none();
@@ -568,6 +594,7 @@ impl App {
                     let image = card.image;
                     if let Some(held) = chat.messages.iter_mut().find(|held| held.id == message) {
                         held.cards = vec![card];
+                        held.foreign = None;
                     }
                     if image {
                         return self.want_pictures();
@@ -580,6 +607,28 @@ impl App {
                     files.cards.remove(&message);
                     self.file_note(file_failed(&err));
                 }
+            },
+            FilesMsg::Decide(key, choice) => {
+                return Task::perform(backend.set_provider(key.clone(), choice), move |result| {
+                    wrap(FilesMsg::Decided(key.clone(), choice, result))
+                });
+            }
+            // Every message of the window that asked about the provider asks no more: an allowed one
+            // fetches its card (as the core will by itself from now on), a blocked one keeps its link.
+            FilesMsg::Decided(key, choice, result) => match result {
+                Ok(()) => {
+                    let mut asked = Vec::new();
+                    for held in chat.messages.iter_mut() {
+                        if held.foreign.as_ref().is_some_and(|provider| provider.key == key) {
+                            held.foreign = None;
+                            asked.push(held.id.clone());
+                        }
+                    }
+                    if choice == ProviderChoice::Allowed {
+                        return Task::batch(asked.into_iter().map(|id| self.files_update(FilesMsg::ShowCard(id))));
+                    }
+                }
+                Err(err) => self.file_note(super::chat_failed(&err)),
             },
             FilesMsg::View(message, file) => {
                 self.menu = None;
@@ -759,34 +808,41 @@ impl App {
     }
 
     /// Asks for the previews the history and the shared media show and do not have yet: pictures
-    /// and videos with a preview, pictures of link cards (small).
+    /// and videos of the history `medium`, pictures of link cards `small`, the shared media `small`
+    /// (unless the history's picture is there already).
     pub(crate) fn want_pictures(&mut self) -> Task<Message> {
         let backend = self.backend.clone();
         let Some(chat) = self.chat.as_mut() else { return Task::none() };
-        let mut wanted: Vec<PictureKey> = Vec::new();
+        let mut wanted: Vec<(PictureKey, PreviewSize)> = Vec::new();
         for message in &chat.messages {
             for file in &message.files {
                 if crate::view::has_preview(file) {
-                    wanted.push((message.id.clone(), Some(file.id.clone())));
+                    wanted.push(((message.id.clone(), Some(file.id.clone())), PreviewSize::Medium));
                 }
             }
             if message.cards.first().is_some_and(|card| card.image) {
-                wanted.push((message.id.clone(), None));
-            }
-        }
-        if let Some(panel) = &chat.files.media {
-            for item in panel.items.iter().filter(|item| item.preview && item.kind == SharedKind::Media) {
-                wanted.push((item.message.clone(), item.file.clone()));
+                wanted.push(((message.id.clone(), None), PreviewSize::Small));
             }
         }
         let mut tasks: Vec<Task<Message>> = Vec::new();
-        for key in wanted {
+        for (key, size) in wanted {
             if chat.files.pictures.contains_key(&key) {
                 continue;
             }
             chat.files.pictures.insert(key.clone(), Shown::Loading);
-            let task = backend.clone().preview(key.0.clone(), key.1.clone(), PreviewSize::Small);
+            let task = backend.clone().preview(key.0.clone(), key.1.clone(), size);
             tasks.push(Task::perform(task, move |result| wrap(FilesMsg::Picture(key.clone(), result))));
+        }
+        if let Some(panel) = &chat.files.media {
+            for item in panel.items.iter().filter(|item| item.preview && item.kind == SharedKind::Media) {
+                let key: PictureKey = (item.message.clone(), item.file.clone());
+                if chat.files.thumb(&key).is_some() {
+                    continue;
+                }
+                chat.files.thumbs.insert(key.clone(), Shown::Loading);
+                let task = backend.clone().preview(key.0.clone(), key.1.clone(), PreviewSize::Small);
+                tasks.push(Task::perform(task, move |result| wrap(FilesMsg::Thumb(key.clone(), result))));
+            }
         }
         Task::batch(tasks)
     }
