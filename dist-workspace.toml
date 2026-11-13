@@ -23,11 +23,13 @@ targets = [
 # Publish the formulae to the tap after the GitHub Release is created.
 # Needs the secret HOMEBREW_TAP_TOKEN and the existing tap repository.
 # publish-jobs = ["homebrew"]
+# Signed bundles/DMGs and native installers must exist BEFORE host creates the release, including RCs.
 # Signed and notarised .app bundles for macOS (.github/workflows/publish-macos-app.yml). Needs the
 # signing secrets and the repository variable MACOS_APP_ENABLED=true, see docs/release.md.
 # The AUR packages (.github/workflows/publish-aur.yml): skipped until the repository variable AUR_ENABLED is 'true'
 # and the AUR secrets exist, see docs/release.md.
-publish-jobs = ["./publish-macos-app", "./publish-aur"]
+global-artifacts-jobs = ["./publish-macos-app", "./build-installers"]
+publish-jobs = ["./publish-aur"]
 # Before anything is built: clippy, design check and tests on Linux, macOS and Windows (.github/workflows/ci.yml).
 # A failing check stops the release.
 plan-jobs = ["./ci"]
@@ -42,10 +44,10 @@ install-updater = false
 # Pull requests start no workflow at all: GitHub Actions costs money, checks run locally (scripts/ci-local.sh).
 pr-run-mode = "skip"
 
-# The macOS job downloads the released binaries and uploads the .app bundles, so it needs write access to
-# the release contents (a called workflow cannot have more rights than its caller grants).
+# Custom build jobs only read repository/workflow artifacts; only host may publish.
 [dist.github-custom-job-permissions]
-"publish-macos-app" = { contents = "write" }
+"publish-macos-app" = { contents = "read" }
+"build-installers" = { contents = "read" }
 # The AUR job only reads the repository (templates); it pushes to the AUR with its own SSH key. Without this entry dist
 # would grant every custom publish job id-token and packages write.
 "publish-aur" = { contents = "read" }

@@ -308,9 +308,12 @@ impl Catalog {
             return Err(CatalogError::Conflict(trf("{app} is installed already.", &[("app", &app.display_name)])));
         }
         refuse_managed(app, &scan)?;
-        let stored = self.fresh_release().await?;
         let mut apps: Vec<AppId> = requires(app).into_iter().filter(|needed| scan.found(*needed).is_none()).collect();
         apps.push(app);
+        for target in &apps {
+            self.preflight(*target, &scan)?;
+        }
+        let stored = self.fresh_release().await?;
         let items = apps.iter().map(|app| self.item(*app, None, &stored)).collect::<Result<Vec<_>, _>>()?;
         self.start(AppJobKind::Install, items, &[app], app, false)
     }
@@ -331,13 +334,25 @@ impl Catalog {
         // The main application restarts the service, so it goes last.
         apps.sort_by_key(|app| (*app == AppId::WORKPLACE, AppId::ALL.iter().position(|known| known == app)));
         let scan = installed::scan(&self.inner.env, &self.inner.versions).await;
+        // Ownership is checked for the complete graph before even refreshing persisted release
+        // metadata: a later managed target or missing companion must not leave a partial operation.
+        for app in &apps {
+            if scan.found(*app).is_none() {
+                return Err(CatalogError::Conflict(trf("{app} is not installed.", &[("app", &app.display_name)])));
+            }
+            self.preflight(*app, &scan)?;
+            for needed in requires(*app) {
+                if scan.found(needed).is_none() {
+                    self.preflight(needed, &scan)?;
+                }
+            }
+        }
         let stored = self.fresh_release().await?;
         let mut items = Vec::new();
         for app in &apps {
             let Some(found) = scan.found(*app) else {
                 return Err(CatalogError::Conflict(trf("{app} is not installed.", &[("app", &app.display_name)])));
             };
-            refuse_managed(*app, &scan)?;
             let entry = entry(&self.inner.env, *app, &scan, &stored);
             if entry.state != CatalogState::Update {
                 return Err(CatalogError::Conflict(trf("{app} has no update.", &[("app", &app.display_name)])));
@@ -367,6 +382,7 @@ impl Catalog {
             return Err(CatalogError::Conflict(trf("{app} is not installed.", &[("app", &app.display_name)])));
         };
         refuse_managed(app, &scan)?;
+        self.preflight(app, &scan)?;
         if let Some(user) =
             AppId::ALL.iter().find(|other| requires(**other).contains(&app) && scan.found(**other).is_some())
         {
@@ -402,6 +418,7 @@ impl Catalog {
     pub async fn watch(self) {
         if self.inner.env.platform == Platform::Windows
             && let Some(dir) = self.inner.env.exe.as_deref().and_then(Path::parent)
+            && !installed::setup_directory(&dir.join("torroworkplace.exe"), self.inner.env.platform)
         {
             install::sweep_old(dir);
         }
@@ -426,6 +443,33 @@ impl Catalog {
         }
         if !self.inner.jobs.idle() {
             return Err(CatalogError::Busy);
+        }
+        Ok(())
+    }
+
+    /// Inspect every object and actual destination before starting any job, including automatically
+    /// added dependencies. A service's origin only applies to missing apps, never to an unrelated
+    /// installed copy elsewhere. Looking here performs no writes (not even launcher creation).
+    fn preflight(&self, app: AppId, scan: &Scan) -> Result<(), CatalogError> {
+        refuse_managed(app, scan)?;
+        let env = &self.inner.env;
+        if env.platform == Platform::MacOs {
+            return Ok(());
+        }
+        let old = scan.found(app).map(|found| found.path.as_path());
+        let dir = old.or(env.exe.as_deref()).and_then(Path::parent);
+        if let Some(dir) = dir {
+            for part in parts(app, env.platform) {
+                let path = dir.join(env.platform.program_file(part.program));
+                let manager = installed::manager_on_disk(&path, env.platform);
+                if manager.is_some() || installed::setup_directory(&path, env.platform) {
+                    let manager = manager.unwrap_or(installed::Manager::Setup);
+                    return Err(CatalogError::Conflict(trf(
+                        "{manager} looks after {app}; use its command.",
+                        &[("manager", &manager.name()), ("app", &app.display_name)],
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -1086,6 +1130,81 @@ pub(crate) mod tests {
         assert_eq!(install, Some("scoop install torrotasks"));
         assert_eq!(code(catalog.install("torrotasks").await), Some("conflict"));
         assert_eq!(code(catalog.uninstall("torrocalendar", false).await), Some("conflict"));
+    }
+
+    #[tokio::test]
+    async fn preflight_checks_missing_dependencies_and_all_update_targets_before_writing() {
+        let dir = tempfile::tempdir().expect("dir");
+        let env =
+            env_in(dir.path(), Platform::Windows, &[("torro-inbox-mail", "0.1.0"), ("torrotasks", "0.1.0")], true);
+        let service = put_program(&env, "torroworkplace");
+        installed::tests::put_marker(&service, "setup");
+        // An unrelated self-managed copy remains self-managed despite the native service.
+        let foreign = dir.path().join("foreign");
+        std::fs::create_dir_all(&foreign).expect("foreign");
+        let mail = foreign.join("torro-inbox-mail.exe");
+        std::fs::write(&mail, "old mail").expect("mail");
+        let tasks = put_program(&env, "torrotasks");
+        installed::tests::put_marker(&tasks, "setup");
+        let mut env = env;
+        env.dirs.push(foreign);
+        let server = MockServer::start_async().await;
+        serve(
+            &server,
+            "0.2.0",
+            &[
+                windows_file("torro-inbox-mail", b"MZ mail"),
+                windows_file("torroinbox", b"MZ hub"),
+                windows_file("torrotasks", b"MZ tasks"),
+            ],
+        )
+        .await;
+        let catalog = catalog_at(env, &server);
+        let scan = installed::scan(&catalog.inner.env, &catalog.inner.versions).await;
+        assert_eq!(scan.manager(AppId::INBOX_MAIL), None);
+        // Missing hub would be put beside the native service, even though Mail itself is foreign.
+        assert_eq!(code(catalog.update(&["torro-inbox-mail".into()]).await), Some("conflict"));
+        assert_eq!(code(catalog.update(&["torro-inbox-mail".into(), "torrotasks".into()]).await), Some("conflict"));
+        assert_eq!(code(catalog.install("torroassistant").await), Some("conflict"));
+        assert_eq!(code(catalog.uninstall("torrotasks", true).await), Some("conflict"));
+        assert!(catalog.inner.jobs.idle());
+        assert!(catalog.inner.releases.stored().checked.is_none(), "preflight must precede persisted release checks");
+        assert_eq!(std::fs::read_to_string(mail).expect("mail"), "old mail");
+        assert!(!service.parent().expect("bin").join("torroinbox.exe").exists());
+        assert!(!dir.path().join("Programs").exists());
+    }
+
+    #[tokio::test]
+    async fn preflight_protects_actual_destination_even_when_path_finds_another_copy() {
+        let dir = tempfile::tempdir().expect("dir");
+        let env = env_in(dir.path(), Platform::Windows, &[], true);
+        let service = put_program(&env, "torroworkplace");
+        let target = service.parent().expect("bin").join("torroassistant.exe");
+        // The target itself is absent, but its package-owned marker is still present.
+        installed::tests::put_marker(&target, "setup");
+        let server = MockServer::start_async().await;
+        let catalog = catalog_at(env, &server);
+        assert_eq!(code(catalog.install("torroassistant").await), Some("conflict"));
+        assert!(catalog.inner.jobs.idle());
+        assert!(!target.exists());
+    }
+
+    #[tokio::test]
+    async fn a_later_managed_update_target_rejects_the_whole_job_before_release_io() {
+        let dir = tempfile::tempdir().expect("dir");
+        let env = env_in(dir.path(), Platform::Linux, &[("torrotasks", "0.1.0"), ("torrocalendar", "0.1.0")], true);
+        put_program(&env, "torroworkplace");
+        let tasks = put_program(&env, "torrotasks");
+        let calendar = put_program(&env, "torrocalendar");
+        installed::tests::put_marker(&calendar, "deb");
+        let before = std::fs::read(&tasks).expect("before");
+        let server = MockServer::start_async().await;
+        // No release endpoint: the refusal must happen even offline, without persisting a check.
+        let catalog = catalog_at(env, &server);
+        assert_eq!(code(catalog.update(&["torrotasks".into(), "torrocalendar".into()]).await), Some("conflict"));
+        assert!(catalog.inner.jobs.idle());
+        assert!(catalog.inner.releases.stored().checked.is_none());
+        assert_eq!(std::fs::read(tasks).expect("after"), before);
     }
 
     #[tokio::test]

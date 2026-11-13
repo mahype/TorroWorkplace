@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "apps": [
+    {"id": "torro-workplace", "program": "torroworkplace", "title": "Torro Workplace", "args": ["ui"], "requires": []},
+    {"id": "torro-inbox", "program": "torroinbox", "title": "Torro Notification Hub", "args": [], "requires": []},
+    {"id": "torro-inbox-mail", "program": "torro-inbox-mail", "title": "Torro Workplace Mail", "args": [], "requires": ["torroinbox"]},
+    {"id": "torro-inbox-notifications", "program": "torro-inbox-notifications", "title": "Torro App Feed", "args": [], "requires": ["torroinbox"]},
+    {"id": "torro-calendar", "program": "torrocalendar", "title": "Torro Calendar", "args": [], "requires": []},
+    {"id": "torro-tasks", "program": "torrotasks", "title": "Torro Tasks", "args": [], "requires": []},
+    {"id": "torro-assistant", "program": "torroassistant", "title": "Torro Assistant", "args": [], "requires": []},
+    {"id": "torro-chat", "program": "torrochat", "title": "Torro Chat", "args": [], "requires": []}
+  ]
+}

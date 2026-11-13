@@ -1,0 +1,74 @@
+# Native Linux/Windows installers from dist's workflow artifacts, before host publishes anything.
+name: Build native installers
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    env:
+      TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: input
+          merge-multiple: true
+      - name: Install integrity-pinned nFPM 2.48.0
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -fLsS https://github.com/goreleaser/nfpm/releases/download/v2.48.0/nfpm_2.48.0_Linux_x86_64.tar.gz -o "$RUNNER_TEMP/nfpm.tar.gz"
+          echo "6d7f9a28b2f397934403950fcbba83f598b08d02edbe79a0815b3b4897341750  $RUNNER_TEMP/nfpm.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/nfpm.tar.gz" -C "$RUNNER_TEMP" nfpm
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Build 54 native packages (nine per architecture and format)
+        run: python3 packaging/installers.py build-linux --tag "$TAG" --input input --output out
+      - name: Offline packaging tests
+        run: python3 -m unittest discover -s packaging/tests
+      - uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-installers-linux
+          path: out/*
+          if-no-files-found: error
+  windows:
+    runs-on: windows-2022
+    env:
+      TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: input
+          merge-multiple: true
+      - name: Install integrity-pinned Inno Setup 7.1.1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path $env:RUNNER_TEMP 'inno.exe'
+          Invoke-WebRequest 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe' -OutFile $installer
+          if ((Get-FileHash $installer -Algorithm SHA256).Hash.ToLower() -ne '8a5a6711c3766a6e5fb74f280ba0e3551e719ce94538d901fdbd1f8f9920b3f0') { throw 'Inno Setup checksum mismatch' }
+          $destination = Join-Path $env:RUNNER_TEMP 'inno'
+          $process = Start-Process $installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$destination") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'Inno Setup installation failed' }
+          "ISCC=$destination\ISCC.exe" >> $env:GITHUB_ENV
+      - name: Build eight all-users setups
+        shell: pwsh
+        run: |
+          python packaging/installers.py build-windows --tag $env:TAG --input input --output out
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-installers-windows
+          path: out/*
+          if-no-files-found: error

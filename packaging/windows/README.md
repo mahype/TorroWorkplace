@@ -12,9 +12,13 @@ executable, together with product name, version and publisher. Explorer, the tas
 | `torro-calendar.ico` | `torrocalendar` | Torro Calendar |
 | `torro-tasks.ico` | `torrotasks` | Torro Tasks |
 | `torro-assistant.ico` | `torroassistant` | Torro Assistant |
+| `torro-chat.ico` | `torrochat` | Torro Chat |
 
 Each `.ico` holds the sizes 16, 24, 32, 48, 64, 128 and 256 as PNG images with transparency (valid for Windows Vista
 and later), largest last.
+
+Chat's native icons are derived from its existing `linux/icons/torro-chat.svg`: the Windows ICO keeps
+the flat crop; the macOS PNG restores the suite's 1024 canvas, 100-pixel body inset and drop shadow.
 
 ## Where they come from
 
@@ -50,3 +54,43 @@ Check the result: the file has seven entries, and each is a PNG of the size in i
 
 `build.rs` only does something when the build target is Windows; it needs a resource compiler there (`rc.exe` from the
 Windows SDK with MSVC, or `llvm-rc` when cross building).
+
+## All-users Setup (#589)
+
+`setup.iss` is compiled with integrity-pinned Inno Setup **7.1.1** by `../installers.py build-windows`.
+Eight stable AppIds (`io.github.mahype.<app-id>`), each with its own uninstall log/directory and Start
+menu entry. Installation is x64/admin-only into the fixed `{autopf64}\TorroWorkplace` directory;
+Workplace's shortcut passes `ui`. Other apps do not silently add the control-centre shortcut.
+
+Each Setup includes its executable, the service and (Mail/App Feed) the Hub. Shared executables,
+native markers and SemVer companion files use `sharedfile uninsnosharedfileprompt 64bit`, with
+`UninstallLogMode=append`, so repeating/upgrading one app and uninstalling another retain components
+until the last owner goes. Preflight rejects downgrades, missing/inconsistent markers and foreign files
+before copying. `/DIR` and saved nonstandard destinations are rejected. Declining Restart Manager
+closure aborts before installation. After its close attempt an exclusive-access check covers every
+payload program, version and marker before the first program is copied; unresolved locks abort.
+Per-file hash/version checks also prevent Skip from advancing metadata beyond an old executable. Setup
+never starts an app elevated, installs a system service, or removes personal data.
+
+Inno swallows Before/AfterInstall and Check exceptions. Closing the wizard also failed in the native
+noninteractive silent test, despite reporting success and changing uninstall files. Callbacks now only
+record safety failures. Mandatory code constants propagate `Abort` outside those swallowed handlers:
+the `[Dirs]` name after Restart Manager and before uninstall metadata, each payload destination, and
+an unconditional final external source after the last callback. The final source is a nonexistent file
+with `skipifsourcedoesntexist` and `ExternalSize: 0`, so success copies nothing and avoids eager size
+probing. No Check/component/task may skip this final guard. `/NOCANCEL` and `/LOADINF` remain rejected.
+The unchanged production Calendar Setup returned failure with unchanged payload/uninstall hashes and
+uninstall registry metadata in the focused native lock test. Injected executable/final-marker exceptions
+also returned failure without publishing uninstall metadata; the executable failure did not advance its
+version sidecar. Existing payloads were not fully restored (one/five files changed respectively), so a
+damaged installation after a late failure must be removed before reinstalling. A full lifecycle rerun
+passed with the production RC/Stable Setups after preserving and uninstalling fixtures from an OS-reboot-
+interrupted run: all seven programs loaded with matching versions, repeat/upgrade, unsafe-INF/locked-upgrade
+and downgrade refusal, both removal orders, shared-file lifetimes and retained test data. This is native
+guest-agent SYSTEM evidence, not interactive UAC, SmartScreen or companion-function verification.
+
+Unsigned by decision: users may see SmartScreen. `tests/windows-smoke.ps1` (relative to `packaging/`)
+must be run only in a fresh disposable x64 Windows VM as administrator, with older RC and newer stable
+Setups. It tests all apps, repeat/upgrade, downgrade refusal, both uninstall orders and shared lifetimes.
+UAC, SmartScreen, app start and locked-file cancellation still need manual verification. See
+[installation](../../docs/install.md) and [release gates](../../docs/release.md).

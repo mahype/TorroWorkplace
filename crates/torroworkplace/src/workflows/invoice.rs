@@ -675,11 +675,11 @@ fn extract_with(
     // No unaccounted visible text outside the invoice. Only witnessed navigation/editor/metadata is excluded,
     // and the text of the inline styles and scripts profile 2 has accepted, which is code, not visible text.
     for (index, node) in tree.nodes.iter().enumerate() {
-        if node.tag.is_empty()
-            && !normalize(&node.text).is_empty()
-            && !beneath(&tree, index, *root)
-            && !known_outside(&tree, index)
-            && !(profile == 2 && code_text(&tree, node))
+        if !(!node.tag.is_empty()
+            || normalize(&node.text).is_empty()
+            || beneath(&tree, index, *root)
+            || known_outside(&tree, index)
+            || profile == 2 && code_text(&tree, node))
         {
             return Err(Error::Unsupported);
         }

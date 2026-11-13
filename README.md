@@ -15,6 +15,14 @@ and control-centre functionality. This is not a declaration of production readin
 feature completeness. For current scope and open work, see [roadmap](docs/roadmap.md),
 [core architecture](docs/core.md), [vision](docs/vision.md) and the [issue workflow](docs/issue-workflow.md).
 
+## Downloads and installation
+
+Choose an app and your platform in [GitHub Releases](https://github.com/mahype/TorroWorkplace/releases/latest)
+(`downloads.md` / **App downloads**). Native downloads are prepared for macOS (DMG), Windows x64
+(all-users Setup) and Linux (DEB, RPM, direct pacman packages for Arch/Omarchy; AUR remains).
+See the [installation guide](docs/install.md) for companion packages, checksums, updates and removal.
+The first maintainer release and platform verification are still pending.
+
 ## What's in here
 
 | Path | What |
@@ -31,12 +39,13 @@ feature completeness. For current scope and open work, see [roadmap](docs/roadma
 | `crates/torroinbox`, `crates/torro-inbox-*` | Inbox, mail and notification views |
 | `crates/torro-mail*` | Mail model, IMAP and backup components |
 | `crates/torroassistant` | AI assistant app |
+| `crates/torrochat` | Nextcloud Talk chat app |
 | `crates/torro-contacts` | Contacts support |
 | `crates/torrotasks` | Tasks app (`torrotasks`) |
 | `crates/torrocalendar` | Calendar app (`torrocalendar`) |
 | `apps/workspace-setups` | Reference: the earlier Omarchy plugin for workspace templates, being rebuilt in Rust |
 | `integrations/` | Window rules and launchers for Hyprland, AeroSpace, Omarchy widgets |
-| `packaging/` | AUR, Homebrew, later Scoop |
+| `packaging/` | Per-app DMG/Setup/DEB/RPM/pacman builders, AUR, Homebrew and Scoop templates |
 | `docs/` | Vision, research, architecture, app catalog, roadmap |
 
 Every app is a client of the core and offers the same outside interface: a GUI (Iced), and

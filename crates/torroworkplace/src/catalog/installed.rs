@@ -139,6 +139,12 @@ pub enum Manager {
     Aur,
     Homebrew,
     Scoop,
+    Deb,
+    Rpm,
+    Pacman,
+    Setup,
+    /// An unreadable or inconsistent native marker still protects its files.
+    Invalid,
 }
 
 impl Manager {
@@ -148,6 +154,11 @@ impl Manager {
             Manager::Aur => "AUR",
             Manager::Homebrew => "Homebrew",
             Manager::Scoop => "Scoop",
+            Manager::Deb => "DEB",
+            Manager::Rpm => "RPM",
+            Manager::Pacman => "pacman",
+            Manager::Setup => "Windows Setup",
+            Manager::Invalid => "native installer",
         }
     }
 
@@ -172,6 +183,18 @@ impl Manager {
                 format!("scoop update {program}"),
                 format!("scoop uninstall {program}"),
             ),
+            Manager::Deb | Manager::Rpm | Manager::Pacman | Manager::Setup | Manager::Invalid => {
+                let downloads = "https://github.com/mahype/TorroWorkplace/releases/latest".to_string();
+                let package = if app == AppId::WORKPLACE { "torro-workplace".into() } else { format!("{program}-bin") };
+                let uninstall = match self {
+                    Manager::Deb => format!("sudo apt remove {package}"),
+                    Manager::Rpm => format!("sudo dnf remove {package}"),
+                    Manager::Pacman => format!("sudo pacman -R {package}"),
+                    Manager::Setup => "control appwiz.cpl".into(),
+                    _ => downloads.clone(),
+                };
+                (downloads.clone(), downloads, uninstall)
+            }
         };
         ManagedBy { manager: self.name().into(), install, update, uninstall }
     }
@@ -196,10 +219,70 @@ pub fn manager_of(path: &Path, platform: Platform, exists: impl Fn(&Path) -> boo
 }
 
 /// [`manager_of`] the path as found and as it really is (a link of Homebrew's `bin` into its cellar).
-fn manager_on_disk(path: &Path, platform: Platform) -> Option<Manager> {
+pub(super) fn manager_on_disk(path: &Path, platform: Platform) -> Option<Manager> {
+    if platform != Platform::MacOs
+        && let Some(manager) = native_marker(path, platform)
+    {
+        return Some(manager);
+    }
     let real = std::fs::canonicalize(path).ok();
+    if platform != Platform::MacOs
+        && let Some(manager) = real.as_deref().and_then(|real| native_marker(real, platform))
+    {
+        return Some(manager);
+    }
     let exists = |path: &Path| path.is_file();
     manager_of(path, platform, exists).or_else(|| real.and_then(|real| manager_of(&real, platform, exists)))
+}
+
+/// Native installers own one marker beside each program. Never fall back to self-management when
+/// a marker is broken: that would turn a damaged install into permission to overwrite it.
+fn native_marker(path: &Path, platform: Platform) -> Option<Manager> {
+    let marker = path.with_file_name(format!("{}.torro-package.json", path.file_name()?.to_string_lossy()));
+    match std::fs::symlink_metadata(&marker) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(_) => return Some(Manager::Invalid),
+        Ok(meta) if !meta.is_file() || meta.len() > 4096 => return Some(Manager::Invalid),
+        Ok(_) => {}
+    }
+    let read = || -> Option<Manager> {
+        let value: serde_json::Value = serde_json::from_slice(&std::fs::read(marker).ok()?).ok()?;
+        if value.get("schema")?.as_u64()? != 1 {
+            return None;
+        }
+        let manager = match (platform, value.get("manager")?.as_str()?) {
+            (Platform::Linux, "deb") => Manager::Deb,
+            (Platform::Linux, "rpm") => Manager::Rpm,
+            (Platform::Linux, "pacman") => Manager::Pacman,
+            (Platform::Windows, "setup") => Manager::Setup,
+            _ => return None,
+        };
+        let program = path.file_stem()?.to_str()?;
+        let package = if program == "torroworkplace" { "torroworkplace-bin".into() } else { format!("{program}-bin") };
+        let expected_package = if manager == Manager::Setup { program } else { package.as_str() };
+        if value.get("package")?.as_str()? != expected_package {
+            return None;
+        }
+        let declared = Path::new(value.get("program")?.as_str()?);
+        // Canonical parents also protect a not-yet-installed target in an installer-owned folder.
+        let canonical = |p: &Path| {
+            std::fs::canonicalize(p)
+                .ok()
+                .or_else(|| Some(std::fs::canonicalize(p.parent()?).ok()?.join(p.file_name()?)))
+        };
+        (canonical(declared)? == canonical(path)?).then_some(manager)
+    };
+    Some(read().unwrap_or(Manager::Invalid))
+}
+
+/// A Setup owns its common directory too: the catalog must not sweep `.old` or put missing apps
+/// beside its service. Linux ownership is per package/program, not an entire system bin directory.
+pub(super) fn setup_directory(path: &Path, platform: Platform) -> bool {
+    platform == Platform::Windows
+        && path.parent().is_some_and(|dir| {
+            manager_on_disk(&dir.join("torroworkplace.exe"), platform)
+                .is_some_and(|manager| matches!(manager, Manager::Setup | Manager::Invalid))
+        })
 }
 
 /// One installed app.
@@ -431,6 +514,67 @@ pub(crate) mod tests {
             ("scoop install torrotasks", "scoop update torrotasks")
         );
         assert_eq!(scoop.uninstall, "scoop uninstall torrotasks");
+    }
+
+    pub(crate) fn put_marker(path: &Path, manager: &str) {
+        let program = path.file_stem().expect("program").to_str().expect("utf8");
+        let package = if manager == "setup" { program.to_string() } else { format!("{program}-bin") };
+        let marker =
+            path.with_file_name(format!("{}.torro-package.json", path.file_name().expect("name").to_string_lossy()));
+        std::fs::write(
+            marker,
+            serde_json::json!({
+                "schema": 1, "manager": manager, "package": package, "program": path
+            })
+            .to_string(),
+        )
+        .expect("marker");
+    }
+
+    #[test]
+    fn native_markers_validate_paths_and_fail_closed() {
+        let dir = tempfile::tempdir().expect("dir");
+        for (platform, name, manager, expected) in [
+            (Platform::Linux, "torrocalendar", "deb", Manager::Deb),
+            (Platform::Linux, "torrocalendar", "rpm", Manager::Rpm),
+            (Platform::Linux, "torrocalendar", "pacman", Manager::Pacman),
+            (Platform::Windows, "torrocalendar.exe", "setup", Manager::Setup),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, "program").expect("program");
+            put_marker(&path, manager);
+            assert_eq!(manager_on_disk(&path, platform), Some(expected));
+            let marker = path.with_file_name(format!("{name}.torro-package.json"));
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&marker).expect("read")).expect("json");
+            value["program"] = serde_json::json!(dir.path().join("other"));
+            std::fs::write(&marker, value.to_string()).expect("mismatch");
+            assert_eq!(manager_on_disk(&path, platform), Some(Manager::Invalid));
+            std::fs::write(&marker, "broken").expect("broken");
+            assert_eq!(manager_on_disk(&path, platform), Some(Manager::Invalid));
+            std::fs::remove_file(marker).expect("remove");
+            assert_eq!(manager_on_disk(&path, platform), None);
+        }
+        assert_eq!(Manager::Deb.commands(AppId::CALENDAR).uninstall, "sudo apt remove torrocalendar-bin");
+        assert_eq!(Manager::Rpm.commands(AppId::WORKPLACE).uninstall, "sudo dnf remove torro-workplace");
+        assert_eq!(Manager::Pacman.commands(AppId::TASKS).uninstall, "sudo pacman -R torrotasks-bin");
+        assert_eq!(Manager::Setup.commands(AppId::TASKS).uninstall, "control appwiz.cpl");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_markers_also_protect_canonical_programs_behind_path_links() {
+        let dir = tempfile::tempdir().expect("dir");
+        let real = dir.path().join("torrocalendar");
+        std::fs::write(&real, "program").expect("program");
+        put_marker(&real, "deb");
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).expect("bin");
+        let link = bin.join("torrocalendar");
+        std::os::unix::fs::symlink(&real, &link).expect("link");
+        assert_eq!(manager_on_disk(&link, Platform::Linux), Some(Manager::Deb));
+        std::fs::write(bin.join("torrocalendar.torro-package.json"), "broken").expect("broken");
+        assert_eq!(manager_on_disk(&link, Platform::Linux), Some(Manager::Invalid));
     }
 
     /// An [`Env`] for `platform` in `dir`: the service in `dir/bin`, bundles in `dir/Applications`,
