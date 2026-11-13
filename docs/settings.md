@@ -111,13 +111,14 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 | **Approvals** | Was Agenten zur Freigabe vorlegen, und was entschieden wurde | v1 |
 | **Workspaces** | Fenstermanager, Tasten 1 … 0 mit wählbarem Modifikator, Vorlagen bearbeiten, aktualisieren, löschen, beim Anmelden laden. Strategie je Fenster später; die F1–F10 der alten App sind verworfen. Siehe [Workspaces (#243)](#workspaces-243) | #243 (WS.6), Rest später |
 | **Appearance** | Abstände (Komfort, Standard, Dicht), Schrift, Farben (Farbschema, hell/dunkel), Zoom ([design-pakete.md](design-pakete.md)); gilt für alle Apps, die Apps verweisen hierher | v1 |
+| **Privacy** | Inhalte fremder Anbieter (#672): ob eingebettete Videos, Link-Vorschauen im Chat und externe Bilder in Mails immer, nach Rückfrage (Standard) oder nie geladen werden, und die Anbieter, über die jemand entschieden hat (`--section privacy`). Siehe [Privacy (#672)](#privacy-672) | #672 |
 | **General** | Sprache (System / English / Deutsch als Segmente, #548), Start beim Anmelden (dort auch der Schalter für Workspaces und seit #548 „Run setup again“). Die frühere Gruppe **Apps** (je App „On“ und „Open“) ist seit #411 der Abschnitt **Apps** | v1 |
 | **Updates** | Steht seit #411 im Abschnitt Apps: der Dienst prüft täglich und beim Öffnen von Apps, ohne Schalter; „⟳“ prüft sofort, der Fuß zeigt, wann zuletzt geprüft wurde | #411 |
 | **Diagnostics** | Log-Datei, Sync-Protokoll, Verbindung testen | später |
 | **Help** | Kurzanleitung, Tastenkürzel, Links | später |
 
 Die Seitenleiste hat **eine** Liste: Overview, Apps (#411), Accounts, AI, API, MCP clients, MCP servers (#302), Approvals, Workspaces,
-Appearance; General am Fuß (#231). Die heutigen Seiten **Apps**, **Assistant** und **Notification Hub** entfallen (entschieden
+Appearance, Privacy (#672); General am Fuß (#231). Die heutigen Seiten **Apps**, **Assistant** und **Notification Hub** entfallen (entschieden
 2026-10-16, #210): Apps geht in General auf, die Einstellungen von Assistent und Eingang ziehen in deren Fenster.
 Mit #231 ziehen die Rechte von Assistent und Bots in das Fenster des Assistenten. Die Datenregel steht
 seit 2026-10-20 unter AI; „Agents & API“ entfällt. Seit #411 gibt es wieder einen Abschnitt **Apps**, jetzt als App-Katalog gleich nach Overview; die Gruppe Apps unter General entfällt.
@@ -788,6 +789,38 @@ derselben Anmeldung lädt nichts ein zweites Mal (Merker `startup.json` im State
 
 Die F1–F10 der alten Python-App (`SUPER + F1` … `F10`) sind verworfen; es gibt die Tasten 1 … 0.
 
+## Privacy (#672)
+
+Eine Stelle für die ganze Suite bestimmt, ob **Inhalte fremder Anbieter** geladen werden: eingebettete Videos
+(YouTube, #673), Vorschauen fremder Links im Chat und externe Bilder in Mails. Wer das nicht will, schaltet es hier für
+alles ab. Es gibt keine Einstellung je App oder je Konto. Der Dienst entscheidet (`torro_core::privacy`), die
+Oberflächen fragen nur nach.
+
+- **Content from other providers** als Segment mit drei Stufen:
+  - **Always show:** alles wird geladen, ohne Rückfrage.
+  - **Ask** (Standard, auch für bestehende Nutzer nach dem Update): erlaubte Anbieter laden, gesperrte nie, bei einem
+    neuen fragt die Stelle des Inhalts nach.
+  - **Never show:** nichts wird geladen, nichts gefragt, auch nicht für erlaubte Anbieter; die Absender-Logos der
+    Mail kommen dann auch nicht mehr (der Schalter stellt wirklich alles ab).
+- **Providers:** nur Anbieter, über die jemand entschieden hat („Always allow …“, „Never for …“ in Chat und Mail);
+  Lesen schreibt nichts in die Einstellungen. Je Zeile der Name, „Allowed | Blocked“ und ✕ „Forget provider“
+  (danach wird wieder gefragt). Leer: „Providers appear here when you allow or block one in Chat or Mail.“ Höchstens
+  1000 Anbieter.
+- **Anbieter:** der Server, der vom Laden erfährt, nach seiner registrierbaren Domain (`news.mailchimp.com` →
+  `mailchimp.com`, Public Suffix List), eine IP-Adresse als sie selbst; bekannte Dienste mit mehreren Domains stehen
+  unter einem Namen (YouTube: `youtube.com`, `youtu.be`, `youtube-nocookie.com`, `ytimg.com`). In der Mail zählt der
+  Server der Bilder, nicht der Absender.
+- **Rückfrage an der Stelle des Inhalts:** „Show once“ (nur dieser Inhalt, nichts wird gespeichert), „Always allow
+  <Anbieter>“, „Never for <Anbieter>“. Chat: [chat.md](chat.md), Entscheidung 23; Mail: [mail.md](mail.md),
+  Entscheidung 8. „Save as PDF/image“ einer Mail lädt nur, was die gespeicherte Einstellung erlaubt.
+- **Ablage:** `privacy` in `settings.json`: `{"content": "always" | "ask" | "never", "providers": {"youtube":
+  "allowed", "mailchimp.com": "blocked"}}`, nachsichtig gelesen (ein Eintrag, der nicht passt, fällt weg).
+- **API und MCP:** lesen über `settings.get_settings` (Feld `privacy`); ändern nur Menschen mit
+  `settings.set_setting privacy_content` und `privacy_provider` ([api.md](api.md), „Was nie nach außen geht“, Punkt
+  14). Ein Client, der die ganzen Einstellungen schreibt, behält das gespeicherte `privacy`.
+- Die Seite steht in der Steuerzentrale vor General und in einer App ohne Hauptanwendung wie Appearance in deren
+  Einstellungen. Die Kommandozeilen-Oberfläche lädt nie externe Bilder.
+
 ## Kalender und Listen pro Fenster (später)
 
 Jedes App-Fenster bekommt ein eigenes **Fenster-Profil**: welche Kalender bzw. Listen es zeigt,
@@ -888,6 +921,13 @@ ihre Zeile hat.
 | Zoom (Zoom out, Zoom in, Reset) | Größe aller Fenster | Appearance › Interface; Strg/⌘ +, −, 0 in jeder App | `zoom` | `set_setting zoom` | alle | bleibt, Suite |
 | Show mail as (Formatted, Plain text) | wie eine HTML-Mail im Leser zuerst erscheint | Appearance › Mail | `mailView` | `set_setting mail_view` | Mail | umziehen nach Mail |
 | Mail colors (Like the app, Light, Dark) | Farben des Mail-Inhalts im Leser | Appearance › Mail | `mailAppearance` | `set_setting mail_appearance` | Mail | umziehen nach Mail |
+
+### Privacy
+
+| Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
+|---|---|---|---|---|---|---|
+| Content from other providers (Always show, Ask, Never show) | ob Inhalte fremder Anbieter in Chat und Mail laden (#672) | Privacy | `privacy.content` | `set_setting privacy_content` (nur Menschen), lesen `get_settings` | alle | Suite |
+| Providers (Allowed, Blocked, Forget provider) | Liste der entschiedenen Anbieter | Privacy; Rückfrage in Chat und Mail | `privacy.providers` | `set_setting privacy_provider` (nur Menschen), lesen `get_settings` | alle | Suite |
 
 ### Apps
 
