@@ -8675,6 +8675,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("No contacts here.", "Hier sind keine Kontakte."),
     ("No contacts used yet.", "Noch keine Kontakte genutzt."),
     ("No contacts yet.", "Noch keine Kontakte."),
+    ("No other address book may be written.", "In kein anderes Adressbuch darf geschrieben werden."),
     ("No favorite matches.", "Kein Favorit passt."),
     ("No favorites yet.", "Noch keine Favoriten."),
     ("No group", "Ohne Gruppe"),
