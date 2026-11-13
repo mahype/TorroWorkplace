@@ -1,6 +1,6 @@
 //! What the history of a chat window shows, worked out apart from the widgets so it can be tested:
-//! the messages with day dividers, the divider "New" after the last read message and the runs of one
-//! author ([`items`]); mentions while typing ([`mention_query`], [`with_mention`]) and in a message
+//! the messages with day dividers, the divider "New" after the last read message, the runs of one
+//! author and the pictures sent at once as one grid ([`items`], [`Item::Album`]); mentions while typing ([`mention_query`], [`with_mention`]) and in a message
 //! ([`pieces`]), and the text that goes out ([`outgoing`]); stage 7: which messages can be changed
 //! and reacted to ([`is_changeable`], [`is_reactable`]), a reaction given or taken back
 //! ([`apply_reaction`]) and a deletion as the history shows it ([`apply_deleted`]).
@@ -10,12 +10,16 @@
 //! into the other for the mentions the person picked from the suggestions, nothing else.
 
 use chrono::{DateTime, Duration, NaiveDate, Utc};
-use torro_chat::{Mention, Message, MessageKind};
+use torro_chat::{FileRef, Mention, Message, MessageKind};
 use torro_core::i18n::tr;
 use torro_gui::datetime;
 
 /// Messages of one author closer than this stand together, with one name above and one time below.
 pub const RUN_GAP: Duration = Duration::minutes(5);
+
+/// Pictures of one author closer than this stand together as one grid (issue #674): Talk makes a
+/// message of each file sent at once and stamps each when it is shared, so they come seconds apart.
+pub const ALBUM_GAP: Duration = Duration::seconds(60);
 
 /// The longest word after `@` that still asks for suggestions; a longer one is no mention.
 const MENTION_MAX: usize = 40;
@@ -33,6 +37,10 @@ pub enum Item<'a> {
     /// A message of a person. `first`: the first of a run (the author's name goes above it in a
     /// group); `last`: the last of a run (the time goes below it).
     Message { message: &'a Message, first: bool, last: bool },
+    /// Pictures sent at once, as one grid (issue #674): each picture with its message, the oldest
+    /// first; only the last may carry a caption. Replying, reactions and "…" go to the last message.
+    /// `first` and `last` as for [`Item::Message`], the grid counting as one entry of its run.
+    Album { tiles: Vec<(&'a Message, &'a FileRef)>, first: bool, last: bool },
 }
 
 /// The local day of `at`.
@@ -41,9 +49,15 @@ pub fn day_of(at: DateTime<Utc>) -> NaiveDate {
 }
 
 /// The history of `messages` (the oldest first): a day divider before the first message of each
-/// day, "New" before the first message of someone else after the message number `new_after`, and
-/// runs of one author ([`RUN_GAP`], no divider between them).
+/// day, "New" before the first message of someone else after the message number `new_after`, runs
+/// of one author ([`RUN_GAP`], no divider between them) and pictures sent at once as one grid
+/// ([`albums`]).
 pub fn items(messages: &[Message], new_after: Option<u64>) -> Vec<Item<'_>> {
+    albums(runs(messages, new_after))
+}
+
+/// The history without grids: every message on its own.
+fn runs(messages: &[Message], new_after: Option<u64>) -> Vec<Item<'_>> {
     let mut items = Vec::with_capacity(messages.len() + 4);
     let mut day = None;
     let mut new_shown = false;
@@ -80,6 +94,89 @@ pub fn items(messages: &[Message], new_after: Option<u64>) -> Vec<Item<'_>> {
         *last = true;
     }
     items
+}
+
+/// `items` with pictures sent at once joined into [`Item::Album`]: two or more pictures in a row
+/// ([`album_picture`]) of one run, each within [`ALBUM_GAP`] of the one before and no divider
+/// between them; the first with a caption of its own ends the grid. A message with several files,
+/// all pictures with a preview, is a grid of its own.
+fn albums(items: Vec<Item<'_>>) -> Vec<Item<'_>> {
+    let mut out = Vec::with_capacity(items.len());
+    let mut pending: Vec<(&Message, bool, bool)> = Vec::new();
+    for item in items {
+        let Item::Message { message, first, last } = item else {
+            flush_album(&mut out, &mut pending);
+            out.push(item);
+            continue;
+        };
+        if let Some(tiles) = own_album(message) {
+            flush_album(&mut out, &mut pending);
+            out.push(Item::Album { tiles, first, last });
+            continue;
+        }
+        let Some(file) = album_picture(message) else {
+            flush_album(&mut out, &mut pending);
+            out.push(Item::Message { message, first, last });
+            continue;
+        };
+        let joins = pending
+            .last()
+            .is_some_and(|&(before, _, _)| same_run(before, message) && message.at - before.at <= ALBUM_GAP);
+        if !joins {
+            flush_album(&mut out, &mut pending);
+        }
+        pending.push((message, first, last));
+        if has_caption(message, file) {
+            flush_album(&mut out, &mut pending);
+        }
+    }
+    flush_album(&mut out, &mut pending);
+    out
+}
+
+/// What `pending` holds goes out: two or more pictures as a grid, a single one as its message.
+fn flush_album<'a>(out: &mut Vec<Item<'a>>, pending: &mut Vec<(&'a Message, bool, bool)>) {
+    match pending.as_slice() {
+        [] => {}
+        [(message, first, last)] => out.push(Item::Message { message, first: *first, last: *last }),
+        [(_, first, _), .., (_, _, last)] => {
+            let (first, last) = (*first, *last);
+            let tiles = pending.iter().map(|(message, _, _)| (*message, &message.files[0])).collect();
+            out.push(Item::Album { tiles, first, last });
+        }
+    }
+    pending.clear();
+}
+
+/// The picture of a message that can stand in a grid: a message of a person, no reply, exactly one
+/// file, a picture the server draws a preview of.
+fn album_picture(message: &Message) -> Option<&FileRef> {
+    match message.files.as_slice() {
+        [file] if message.kind == MessageKind::Message && message.reply_to.is_none() && is_album_file(file) => {
+            Some(file)
+        }
+        _ => None,
+    }
+}
+
+/// A message with several files, all pictures with a preview: its pictures as a grid of their own.
+fn own_album(message: &Message) -> Option<Vec<(&Message, &FileRef)>> {
+    let grid = message.kind == MessageKind::Message
+        && message.reply_to.is_none()
+        && message.files.len() >= 2
+        && message.files.iter().all(is_album_file);
+    grid.then(|| message.files.iter().map(|file| (message, file)).collect())
+}
+
+/// A picture the server draws a preview of; videos, SVGs and pictures without one stand alone.
+fn is_album_file(file: &FileRef) -> bool {
+    crate::view::has_preview(file) && file.content_type.starts_with("image/")
+}
+
+/// Whether `message` says more than the name of its picture: such a caption ends a grid.
+fn has_caption(message: &Message, file: &FileRef) -> bool {
+    let text = message.text.trim();
+    !text.is_empty() && text != file.name
 }
 
 /// The first web link of `text` (`https://` or `http://` up to the next space): the one a link card
@@ -234,7 +331,7 @@ pub fn pieces(text: &str, mentions: &[Mention]) -> Vec<(String, bool)> {
 mod tests {
     use iced::futures::executor::block_on;
     use torro_chat::ChatSource;
-    use torro_chat::demo::{BEN, DemoSource, TEAM};
+    use torro_chat::demo::{BEN, DESIGN, DemoSource, TEAM};
 
     use super::*;
 
@@ -253,8 +350,73 @@ mod tests {
                 Item::Message { message, first, last } => {
                     format!("{}{}{}", message.number(), if *first { "<" } else { "" }, if *last { ">" } else { "" })
                 }
+                Item::Album { tiles, first, last } => {
+                    let numbers: Vec<String> = tiles.iter().map(|(message, _)| message.number().to_string()).collect();
+                    format!("[{}]{}{}", numbers.join(","), if *first { "<" } else { "" }, if *last { ">" } else { "" })
+                }
             })
             .collect()
+    }
+
+    /// The demo's "Design sync": Gesa's four header pictures, sent at once, are 13 to 16.
+    fn design() -> Vec<Message> {
+        page(DESIGN).messages
+    }
+
+    fn numbered(messages: &mut [Message], number: u64) -> &mut Message {
+        messages.iter_mut().find(|message| message.number() == number).expect("the message")
+    }
+
+    #[test]
+    fn pictures_sent_at_once_are_one_grid() {
+        let messages = design();
+        let kinds = kinds(&items(&messages, None));
+        assert_eq!(kinds.last().map(String::as_str), Some("[13,14,15,16]<>"), "one entry of its run: {kinds:?}");
+        assert!(kinds.contains(&"3<>".to_string()), "a single picture stays a message: {kinds:?}");
+    }
+
+    #[test]
+    fn a_caption_ends_the_grid() {
+        let mut messages = design();
+        numbered(&mut messages, 14).text = "This one?".into();
+        let kinds = kinds(&items(&messages, None));
+        assert_eq!(kinds[kinds.len() - 2..], ["[13,14]<", "[15,16]>"], "{kinds:?}");
+    }
+
+    #[test]
+    fn a_minute_and_a_second_apart_is_no_grid() {
+        let mut messages = design();
+        for number in 14..=16 {
+            numbered(&mut messages, number).at += ALBUM_GAP + Duration::seconds(1);
+        }
+        let kinds = kinds(&items(&messages, None));
+        assert_eq!(kinds[kinds.len() - 2..], ["13<", "[14,15,16]>"], "{kinds:?}");
+    }
+
+    #[test]
+    fn quotes_videos_and_svgs_never_stand_in_a_grid() {
+        let mut messages = design();
+        let reply = numbered(&mut messages, 3).id.clone();
+        numbered(&mut messages, 14).reply_to =
+            Some(torro_chat::Quote { id: reply, author: "Gesa Lange".into(), text: "First drafts".into() });
+        let quoted = kinds(&items(&messages, None));
+        assert_eq!(quoted[quoted.len() - 3..], ["13<", "14", "[15,16]>"], "the quote stands alone: {quoted:?}");
+        let mut messages = design();
+        for (number, kind) in [(14, "video/mp4"), (15, "image/svg+xml")] {
+            numbered(&mut messages, number).files[0].content_type = kind.into();
+        }
+        let mixed = kinds(&items(&messages, None));
+        assert!(!mixed.iter().any(|kind| kind.starts_with('[')), "{mixed:?}");
+    }
+
+    #[test]
+    fn several_pictures_of_one_message_are_a_grid() {
+        let mut messages = design();
+        let extra = numbered(&mut messages, 14).files[0].clone();
+        let three = numbered(&mut messages, 3);
+        three.files.push(extra);
+        let kinds = kinds(&items(&messages, None));
+        assert!(kinds.contains(&"[3,3]<>".to_string()), "{kinds:?}");
     }
 
     #[test]
