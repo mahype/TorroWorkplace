@@ -52,9 +52,10 @@ mod tests {
 
     #[test]
     fn every_app_but_the_control_centre_belongs_to_a_component() {
-        // The chat (issue #643) has no component of its own yet: whether it gets one is open.
+        // The chat (issue #643) and the contacts (issue #352) have no component of their own yet:
+        // whether they get one is open.
         for app in AppId::ALL {
-            let without = *app == AppId::WORKPLACE || *app == AppId::CHAT;
+            let without = [AppId::WORKPLACE, AppId::CHAT, AppId::CONTACTS].contains(app);
             assert_eq!(of(*app).is_none(), without, "{}", app.window_class);
         }
         assert_eq!(of(AppId::INBOX_MAIL), Some(Component::Mail), "the mail window is mail, not the hub");

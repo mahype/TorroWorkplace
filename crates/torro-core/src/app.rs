@@ -134,6 +134,16 @@ impl AppId {
         args: &[],
     };
 
+    /// The contacts app (issue #352, `docs/kontakte.md`): contacts grouped in a list, the contact in a
+    /// side panel, editing, birthdays.
+    pub const CONTACTS: AppId = AppId {
+        window_class: "torro-contacts",
+        binary: "torrocontacts",
+        dir: "torrocontacts",
+        display_name: "Torro Contacts",
+        args: &[],
+    };
+
     /// Every app of the suite, in launcher order. Of the entries sharing a binary, the one the
     /// binary starts without arguments comes first: a lookup by binary finds it.
     pub const ALL: &'static [AppId] = &[
@@ -145,6 +155,7 @@ impl AppId {
         AppId::CALENDAR,
         AppId::ASSISTANT,
         AppId::CHAT,
+        AppId::CONTACTS,
     ];
 
     /// The entry of [`AppId::ALL`] that `name` names: a window class (`torro-inbox-mail`) names its
@@ -269,7 +280,8 @@ mod tests {
                 "torrotasks",
                 "torrocalendar",
                 "torroassistant",
-                "torrochat"
+                "torrochat",
+                "torrocontacts"
             ]
         );
         assert_eq!(AppId::INBOX_MAIL.binary, "torroinbox", "apps.list_apps answers as before");

@@ -462,7 +462,7 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Ablageziel ändern (#290) | Einstellungen › Mail › Attachments | `mail.update_save_target` · Admin; anderer Ordner nur mit dem App-Schlüssel | `mail_update_save_target` (Ordner wie gespeichert) |
 | Ablageziel entfernen (#290) | Einstellungen › Mail › Attachments | `mail.remove_save_target` · Admin | `mail_remove_save_target` |
 | Anhänge speichern (#290) | Dreieck-Menü, „Save all ▾“, Kontextmenü der Liste, Klick auf den Namen | `mail.save_attachments` · Write; `to: file`/`folder` nur mit dem App-Schlüssel | `mail_save_attachments` (nur Downloads oder ein Ziel) |
-| Mail als PDF oder Bild speichern (#501) | Gruppe „Save“ (Diskette) der Leiste: „Save as PDF“, „Save as image“; Kontextmenü der Liste: „Save mail as ›“ | `mail.save_message_as` · Write (gezeichnet wie im Leser, immer hell; PDF aus A4-Bildseiten, höchstens 50 Seiten; PNG höchstens 30 000 Pixel hoch; externe Bilder werden geladen); `to: file`/`folder` nur mit dem App-Schlüssel | `mail_save_message_as` (nur Downloads oder ein Ziel) |
+| Mail als PDF oder Bild speichern (#501) | Gruppe „Save“ (Diskette) der Leiste: „Save as PDF“, „Save as image“; Kontextmenü der Liste: „Save mail as ›“ | `mail.save_message_as` · Write (gezeichnet wie im Leser, immer hell; PDF aus A4-Bildseiten, höchstens 50 Seiten; PNG höchstens 30 000 Pixel hoch; externe Bilder nur nach Settings › Privacy: alle bei „Always show“, die erlaubter Anbieter bei „Ask“, keine bei „Never show“; „Show once“ des Fensters zählt nicht, #672); `to: file`/`folder` nur mit dem App-Schlüssel | `mail_save_message_as` (nur Downloads oder ein Ziel) |
 | Vollständige Mail als EML speichern (#553) | Dieselben Menüs: „Save as EML“, auch bei fehlgeschlagenem Laden des Lesetexts, sobald die Zusammenfassung bekannt ist; Downloads, „Save as…“, Ablageziele | `mail.save_message_as`, `format: eml` · Write; Vorschau `mail.list_save_targets`, `export_only: true` · Read, ohne Bodyabruf | `mail_save_message_as`, `mail_list_save_targets`; nur Downloads oder Ziel-ID |
 | Filter auflisten (#339) | Einstellungen › Categorization: auf der Seite der Kategorie, die er setzt, sonst unter „Other filters“ (#481) | `mail.list_filters` · Read | `mail_list_filters` |
 | Filter anlegen, ändern, ein- und ausschalten (#339) | „+ Rule“ › „Filter from a search…“ auf der Seite einer Kategorie, „New filter…“ unter Other filters, Klick auf die Zeile, Schalter der Zeile; „Create filter…“ an einer Mail, „Create filter from search…“ am Suchfeld | `mail.create_filter`, `mail.update_filter` · Admin | `mail_create_filter`, `mail_update_filter` |
@@ -937,8 +937,18 @@ freigegeben ist. M1 steht in [tasks/github.md](tasks/github.md), M7a schon in
    unter Windows), weil Iced kein HTML zeichnet und sich unter Wayland keine Webview in ein Iced-Fenster
    einbetten lässt. *Geschichte:* Das Fenster gilt nicht mehr, Entscheidung 9 ersetzt es; mit M9.9 ist es
    samt WebKitGTK entfernt. Es bleibt: keine Skripte (Bereinigung im Kern), Links öffnen im Standard-Browser.
-   **Externe Bilder werden immer geladen**, wie bei Gmail oder Apple Mail; dem Absender verrät das, dass
-   und wann die Mail geöffnet wurde. Eingebettete Bilder (`cid:`) liefert der Kern über
+   *Geschichte:* Externe Bilder wurden zuerst immer geladen, wie bei Gmail oder Apple Mail. **Seit #672 lädt
+   das Fenster sie nur, wie Settings › Privacy es sagt** (`docs/settings.md`, Abschnitt „Privacy“), weil das
+   dem Server der Bilder verrät, dass und wann die Mail gelesen wurde: bei „Always show“ alle, bei „Never show“
+   keine (auch keine neuen Absender-Logos), bei „Ask“ (Standard) die Bilder erlaubter Anbieter. Als Anbieter
+   zählt der Server der Bilder, nach seiner Domain, nicht der Absender. `mail.get_message` nennt dafür im Feld
+   `external`, was das HTML laden würde (`all`, `load` und die noch offenen Anbieter in `ask`, je mit ihren
+   Hosts); das Fenster lädt nur von diesen Hosts, auch bei Weiterleitungen (`torro_htmlview::Web`). Für offene
+   Anbieter steht unter dem Kopf der Mail eine Rückfrage: „Images from <Anbieter> are not loaded.“ mit
+   „Show once“ (nur diese Mail, solange sie offen ist; nichts wird gespeichert), „Always allow …“ und „Never
+   for …“ (`settings.set_setting privacy_provider`); bei mehreren Anbietern „Images from 3 providers are not
+   loaded.“ mit den Namen und „Always allow these“ / „Never for these“. Was das Erkennen der Hosts übersieht,
+   lädt das Fenster nicht. Eingebettete Bilder (`cid:`) liefert der Kern über
    `mail.get_attachment`. Agenten bekommen weiter den Text und das HTML nur, wenn sie es ausdrücklich
    anfordern; es bleibt `untrusted`.
 9. **HTML steht im Lesebereich, nicht in einem eigenen Fenster** (entschieden 2026-10-15, ändert das Fenster

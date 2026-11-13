@@ -365,6 +365,10 @@ pub fn words(app: &str) -> (&'static str, &'static str) {
             tr("Who is there to talk to?"),
             tr("Your colleagues on Nextcloud Talk: who is online, a window per chat, files and quick replies."),
         ),
+        "torro-contacts" => (
+            tr("Who was that again?"),
+            tr("Your address books from Nextcloud: contacts by group, town or book, birthdays and favourites."),
+        ),
         _ => ("", ""),
     }
 }
@@ -949,7 +953,7 @@ pub fn reveal(app: AppId, path: Option<&str>) -> Result<(), String> {
 
 /// The demo's catalog (`--demo --section apps`): checked just now, Calendar and Mail with an update,
 /// Tasks and the App Feed up to date, the Notification Hub from a package manager, Assistant and Chat
-/// missing, and the main application up to date.
+/// missing, Contacts not in the release, and the main application up to date.
 pub fn demo_catalog(now: DateTime<Utc>) -> AppCatalog {
     let entry = |app: AppId, installed: Option<&str>, available: &str, state: CatalogState| CatalogApp {
         window_class: app.window_class.into(),
@@ -994,6 +998,8 @@ pub fn demo_catalog(now: DateTime<Utc>) -> AppCatalog {
             feed,
             entry(AppId::ASSISTANT, None, "0.2.0", CatalogState::Available),
             entry(AppId::CHAT, None, "0.2.0", CatalogState::Available),
+            // Not in the release yet (issue #352): no installers until an issue of its own.
+            CatalogApp { available: None, size: None, ..entry(AppId::CONTACTS, None, "", CatalogState::Unavailable) },
         ],
         job: None,
     }

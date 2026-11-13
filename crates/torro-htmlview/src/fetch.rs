@@ -24,6 +24,7 @@
 //! The fetches of all mails run on one small tokio runtime of this library, never on the UI thread; the
 //! picture is decoded there too (Blitz decodes in the handler).
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -39,6 +40,21 @@ pub const MAX_PICTURE_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Redirects one web request follows at most.
 const MAX_REDIRECTS: usize = 5;
+
+/// Where a mail's pictures may come from on the web (issue #672, Settings › Privacy). `data:` and `cid:`
+/// pictures are the mail's own and always load.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Web {
+    /// From every public host ("Always show").
+    All,
+    /// Only from these hosts – small letters, Punycode, without port and the dot at the end, as
+    /// `url::Url::host_str` gives them and the core lists them (`external` of `mail.get_message`) –,
+    /// also at every redirect. Every other request is refused before it goes out.
+    Hosts(BTreeSet<String>),
+    /// From nowhere: nothing goes to the network ("Never show", a mail not asked about yet, tests).
+    #[default]
+    Off,
+}
 
 /// Supplies the pictures a mail carries with it (`cid:` URLs, RFC 2392).
 ///
@@ -76,8 +92,10 @@ impl Default for Limits {
 /// Why a picture was not handed to Blitz. Only for tests and counting: nothing of it is logged with a URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FetchError {
-    /// Not `http`, `https`, `data` or `cid`, or a web URL while web pictures are off (tests).
+    /// Not `http`, `https`, `data` or `cid`, or a web URL while web pictures are off ([`Web::Off`]).
     Scheme,
+    /// A web URL, or a redirect, to a host [`Web::Hosts`] does not list (issue #672).
+    NotAllowed,
     /// The host, a redirect's host or every address a host name resolves to is not public (loopback, the
     /// local network, link-local …).
     Private,
@@ -105,6 +123,7 @@ impl fmt::Display for FetchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Scheme => write!(f, "scheme not allowed"),
+            Self::NotAllowed => write!(f, "host not allowed"),
             Self::Private => write!(f, "host not public"),
             Self::NotAPicture => write!(f, "not a picture"),
             Self::TooLarge => write!(f, "picture too large"),
@@ -147,10 +166,17 @@ struct Shared {
 }
 
 impl Fetcher {
-    pub(crate) fn new(web: bool, cid: Option<Arc<dyn CidSource>>, limits: Limits) -> Self {
-        // Built only for a mail that may fetch from the web: the demo and the tests never need it.
-        let client = if web { client().cloned() } else { None };
-        Self::build(web, client, Guard::default(), cid, limits)
+    pub(crate) fn new(web: Web, cid: Option<Arc<dyn CidSource>>, limits: Limits) -> Self {
+        // Built only for a mail that may fetch from the web: the demo and the tests never need it. A mail
+        // limited to some hosts gets a client of its own, whose redirect policy knows them.
+        match web {
+            Web::All => Self::build(true, client().cloned(), Guard::default(), cid, limits),
+            Web::Hosts(hosts) => {
+                let guard = Guard { hosts: Some(Arc::new(hosts)), ..Guard::default() };
+                Self::build(true, build_client(guard.clone()), guard, cid, limits)
+            }
+            Web::Off => Self::build(false, None, Guard::default(), cid, limits),
+        }
     }
 
     /// A fetcher that may also reach `local` – the tests' mock servers on 127.0.0.1 – with a client of its
@@ -158,7 +184,14 @@ impl Fetcher {
     /// never weakened.
     #[cfg(test)]
     pub(crate) fn reaching(local: Vec<SocketAddr>, limits: Limits) -> Self {
-        let guard = Guard { local };
+        let guard = Guard { local, hosts: None };
+        Self::build(true, build_client(guard.clone()), guard, None, limits)
+    }
+
+    /// [`Fetcher::reaching`] limited to `hosts` like [`Web::Hosts`], for tests.
+    #[cfg(test)]
+    pub(crate) fn reaching_only(local: Vec<SocketAddr>, hosts: BTreeSet<String>, limits: Limits) -> Self {
+        let guard = Guard { local, hosts: Some(Arc::new(hosts)) };
         Self::build(true, build_client(guard.clone()), guard, None, limits)
     }
 
@@ -272,6 +305,7 @@ fn reserve(shared: &Shared, bytes: u64) -> Result<(), FetchError> {
 /// A picture from the web: only from a public host, redirects followed and checked, the size limit kept while
 /// streaming.
 async fn web(shared: &Shared, url: &Url) -> Result<Vec<u8>, FetchError> {
+    shared.guard.listed(url).map_err(|NotListed| FetchError::NotAllowed)?;
     shared.guard.check(url).map_err(|Blocked| FetchError::Private)?;
     let client = shared.client.as_ref().ok_or(FetchError::NoRuntime)?;
     let mut response = client.get(url.as_str()).timeout(shared.limits.timeout).send().await.map_err(failed)?;
@@ -297,12 +331,16 @@ async fn web(shared: &Shared, url: &Url) -> Result<Vec<u8>, FetchError> {
 }
 
 /// What a failed request was: [`FetchError::Private`] when the redirect policy or the resolver refused a host
-/// ([`Blocked`] somewhere in the chain of sources), else [`FetchError::Network`].
+/// ([`Blocked`] somewhere in the chain of sources), [`FetchError::NotAllowed`] when the redirect policy refused
+/// one [`Web::Hosts`] does not list ([`NotListed`]), else [`FetchError::Network`].
 fn failed(err: reqwest::Error) -> FetchError {
     let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&err);
     while let Some(err) = source {
         if err.is::<Blocked>() {
             return FetchError::Private;
+        }
+        if err.is::<NotListed>() {
+            return FetchError::NotAllowed;
         }
         source = err.source();
     }
@@ -321,6 +359,18 @@ impl fmt::Display for Blocked {
 
 impl std::error::Error for Blocked {}
 
+/// A host [`Web::Hosts`] does not list. Travels inside reqwest's errors from the redirect policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NotListed;
+
+impl fmt::Display for NotListed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "host not allowed")
+    }
+}
+
+impl std::error::Error for NotListed {}
+
 /// Decides which hosts web requests may reach: public ones only. Checks the URL before the request and every
 /// redirect; host names are left to [`PublicResolver`], which sees the addresses they resolve to.
 #[derive(Debug, Clone, Default)]
@@ -328,9 +378,21 @@ struct Guard {
     /// Addresses reachable although they are not public: the tests' mock servers. Only
     /// [`Fetcher::reaching`] fills it, and that exists only in tests; in the app it is always empty.
     local: Vec<SocketAddr>,
+    /// The only hosts requests may reach ([`Web::Hosts`]); `None`: every public one.
+    hosts: Option<Arc<BTreeSet<String>>>,
 }
 
 impl Guard {
+    /// `Ok` unless the guard lists hosts ([`Web::Hosts`]) and `url`'s host is none of them; a URL without
+    /// host is never listed.
+    fn listed(&self, url: &Url) -> Result<(), NotListed> {
+        let Some(hosts) = &self.hosts else { return Ok(()) };
+        match url.host_str().map(host_key) {
+            Some(host) if hosts.contains(&host) => Ok(()),
+            _ => Err(NotListed),
+        }
+    }
+
     /// `Ok` for a host name other than `localhost`/`*.localhost` and for a public IP literal (IPv4-mapped
     /// IPv6 counts as its IPv4 address); `Blocked` for the rest and for a URL without host.
     fn check(&self, url: &Url) -> Result<(), Blocked> {
@@ -469,6 +531,13 @@ fn percent_decode(text: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// `host` as hosts are compared (issue #672): without the brackets of an IPv6 address and the dot at the
+/// end, in small letters – the rule of `torro_core::privacy::normalize_host` for what `Url::host_str` gives.
+fn host_key(host: &str) -> String {
+    let host = host.strip_prefix('[').and_then(|inner| inner.strip_suffix(']')).unwrap_or(host);
+    host.trim_end_matches('.').to_ascii_lowercase()
+}
+
 /// PNG, JPEG, GIF or WebP by their first bytes – the four types Blitz can decode here. Everything else (SVG,
 /// HTML, CSS, fonts, scripts) is refused whatever the server claims it is.
 pub(crate) fn is_picture(bytes: &[u8]) -> bool {
@@ -512,9 +581,14 @@ fn build_client(guard: Guard) -> Option<reqwest::Client> {
         reqwest::header::HeaderValue::from_static("image/webp,image/png,image/jpeg,image/gif;q=0.9,*/*;q=0.5"),
     );
     let limit = reqwest::redirect::Policy::limited(MAX_REDIRECTS);
-    let redirect = reqwest::redirect::Policy::custom(move |attempt| match guard.check(attempt.url()) {
-        Ok(()) => limit.redirect(attempt),
-        Err(blocked) => attempt.error(blocked),
+    let redirect = reqwest::redirect::Policy::custom(move |attempt| {
+        if let Err(not_listed) = guard.listed(attempt.url()) {
+            return attempt.error(not_listed);
+        }
+        match guard.check(attempt.url()) {
+            Ok(()) => limit.redirect(attempt),
+            Err(blocked) => attempt.error(blocked),
+        }
     });
     reqwest::Client::builder()
         .user_agent("Mozilla/5.0")
@@ -548,7 +622,7 @@ mod tests {
 
     /// The fetcher of the app: only public hosts.
     fn fetcher(limits: Limits) -> Fetcher {
-        Fetcher::new(true, None, limits)
+        Fetcher::new(Web::All, None, limits)
     }
 
     /// A fetcher that may reach `server` (on 127.0.0.1) and nothing else that is not public.
@@ -722,7 +796,7 @@ mod tests {
 
     #[test]
     fn web_pictures_can_be_off_for_tests() {
-        let fetcher = Fetcher::new(false, None, Limits::default());
+        let fetcher = Fetcher::new(Web::Off, None, Limits::default());
         assert_eq!(block(fetcher.picture(&url("https://example.com/a.png"))), Err(FetchError::Scheme));
     }
 
@@ -760,7 +834,7 @@ mod tests {
 
     #[test]
     fn asks_the_app_for_cid_pictures() {
-        let fetcher = Fetcher::new(false, Some(Arc::new(Parts)), Limits::default());
+        let fetcher = Fetcher::new(Web::Off, Some(Arc::new(Parts)), Limits::default());
         assert_eq!(block(fetcher.picture(&url("cid:logo@torro.example"))).as_deref(), Ok(PNG));
         assert_eq!(block(fetcher.picture(&url("cid:logo%40torro.example"))).as_deref(), Ok(PNG));
         assert_eq!(block(fetcher.picture(&url("cid:page@torro.example"))), Err(FetchError::NotAPicture));
@@ -770,7 +844,7 @@ mod tests {
     }
 
     fn fetcher_without_cid() -> Fetcher {
-        Fetcher::new(false, None, Limits::default())
+        Fetcher::new(Web::Off, None, Limits::default())
     }
 
     #[test]
@@ -849,7 +923,7 @@ mod tests {
         for public in ["https://example.com/a.png", "http://93.184.216.34/a.png", "https://[2606:4700::1111]/a.png"] {
             assert_eq!(open.check(&url(public)), Ok(()), "{public}");
         }
-        let local = Guard { local: vec!["127.0.0.1:8080".parse().expect("address")] };
+        let local = Guard { local: vec!["127.0.0.1:8080".parse().expect("address")], hosts: None };
         assert_eq!(local.check(&url("http://127.0.0.1:8080/a.png")), Ok(()));
         assert_eq!(local.check(&url("http://127.0.0.1:8081/a.png")), Err(Blocked), "another port");
         assert_eq!(local.check(&url("http://localhost:8080/a.png")), Err(Blocked), "a name is no exception");
@@ -884,6 +958,37 @@ mod tests {
             assert_eq!(result, Err(FetchError::Private), "{location}");
         }
         target.assert_calls(0);
+    }
+
+    /// Issue #672: a mail limited to some hosts asks only those – a host it does not list is refused
+    /// before anything goes out, a redirect to one is not followed –, and its own pictures still load.
+    #[test]
+    fn a_mail_limited_to_some_hosts_reaches_only_them() {
+        let server = MockServer::start();
+        let picture = server.mock(|when, then| {
+            when.method(GET).path("/p.png");
+            then.status(200).header("Content-Type", "image/png").body(PNG);
+        });
+        let moved = server.mock(|when, then| {
+            when.method(GET).path("/moved");
+            then.status(302).header("Location", "https://elsewhere.example/p.png");
+        });
+        let listed = BTreeSet::from(["127.0.0.1".to_string()]);
+        let fetcher = Fetcher::reaching_only(vec![*server.address()], listed, Limits::default());
+        assert_eq!(block(fetcher.picture(&url(&server.url("/p.png")))).as_deref(), Ok(PNG));
+        assert_eq!(block(fetcher.picture(&url(&server.url("/moved")))), Err(FetchError::NotAllowed));
+        moved.assert_calls(1);
+        let other =
+            Fetcher::reaching_only(vec![*server.address()], BTreeSet::from(["cdn.example".into()]), Limits::default());
+        assert_eq!(block(other.picture(&url(&server.url("/p.png")))), Err(FetchError::NotAllowed));
+        picture.assert_calls(1);
+        let data = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(PNG));
+        assert_eq!(block(other.picture(&url(&data))).as_deref(), Ok(PNG), "its own pictures load");
+        // Off reaches nowhere; the hosts are compared without case, brackets and the dot at the end.
+        let off = Fetcher::new(Web::Off, None, Limits::default());
+        assert_eq!(block(off.picture(&url(&server.url("/p.png")))), Err(FetchError::Scheme));
+        assert_eq!(host_key("CDN.Example.COM."), "cdn.example.com");
+        assert_eq!(host_key("[2001:db8::1]"), "2001:db8::1");
     }
 
     /// At most five redirects, like before the custom policy.

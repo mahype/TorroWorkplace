@@ -423,6 +423,7 @@ impl Contact {
             favorite: self.favorite,
             readonly: self.readonly,
             state: self.state,
+            groups: self.groups.clone(),
             untrusted: true,
         }
     }
@@ -460,6 +461,10 @@ pub struct ContactSummary {
     pub readonly: bool,
     #[serde(default)]
     pub state: ContactState,
+    /// The groups the contact is in (vCard `CATEGORIES`), so a list can group by them without asking
+    /// each group (issue #352).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
     /// Always `true`, as [`Contact::untrusted`].
     #[serde(default = "always_untrusted", serialize_with = "write_untrusted")]
     pub untrusted: bool,
@@ -1030,5 +1035,16 @@ mod tests {
         assert_eq!(back.phones[0].kind, FieldKind::Custom("Boat".into()));
         assert!(back.untrusted);
         assert_eq!(FieldKind::from_name("CELL"), FieldKind::Mobile);
+    }
+
+    /// Issue #352: the list line carries the groups, and leaves them out of the JSON when there are none.
+    #[test]
+    fn the_summary_carries_the_groups() {
+        let contact = Contact { groups: vec!["Family".into(), "Work".into()], ..Contact::default() };
+        assert_eq!(contact.summary().groups, vec!["Family".to_string(), "Work".to_string()]);
+        let json = serde_json::to_value(Contact::default().summary()).expect("json");
+        assert!(json.get("groups").is_none(), "{json}");
+        let back: ContactSummary = serde_json::from_value(json).expect("back");
+        assert!(back.groups.is_empty());
     }
 }

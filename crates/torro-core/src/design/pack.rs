@@ -620,7 +620,7 @@ mod tests {
 
     /// The sizes a spacing level may set (issue #484): the heights of rows and controls and the gaps
     /// of cards; widths of regions, text and the avatars stay the standard's.
-    const SPACING_SIZES: [&str; 17] = [
+    const SPACING_SIZES: [&str; 18] = [
         "control_sm",
         "control",
         "control_lg",
@@ -631,6 +631,7 @@ mod tests {
         "row_notice",
         "row_sidebar",
         "row_group",
+        "row_contact",
         "header",
         "hour",
         "card_gap",
@@ -674,6 +675,7 @@ mod tests {
         assert_eq!([s.control_sm, s.control, s.control_lg, s.control_xl], [40.0, 42.0, 44.0, 52.0]);
         assert_eq!([s.row, s.row_two, s.row_message, s.row_notice], [56.0, 64.0, 116.0, 92.0]);
         assert_eq!([s.row_sidebar, s.row_group, s.header, s.hour, s.card_gap], [36.0, 44.0, 64.0, 56.0, 16.0]);
+        assert_eq!(s.row_contact, 68.0);
         assert_eq!([s.command, s.pill, s.rail, s.rail_wide], [50.0, 44.0, 64.0, 264.0]);
         assert_eq!(comfort.density_level(), DensityLevel::Airy);
 
@@ -689,6 +691,7 @@ mod tests {
         assert_eq!([s.control_sm, s.control, s.control_lg, s.control_xl], [30.0, 32.0, 36.0, 44.0]);
         assert_eq!([s.row, s.row_two, s.row_message, s.row_notice], [42.0, 48.0, 78.0, 56.0]);
         assert_eq!([s.row_sidebar, s.row_group, s.header, s.hour, s.card_gap], [28.0, 32.0, 48.0, 40.0, 8.0]);
+        assert_eq!(s.row_contact, 52.0);
         assert_eq!([s.command, s.pill, s.rail, s.rail_wide], [40.0, 36.0, 52.0, 232.0]);
         assert_eq!(dense.density_level(), DensityLevel::Dense);
         assert_eq!(dense.list.density(), Density::Compact, "rows, never the old single line");

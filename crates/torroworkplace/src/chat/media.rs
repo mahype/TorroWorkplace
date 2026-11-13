@@ -1699,6 +1699,99 @@ mod flow {
         );
     }
 
+    /// Issue #672: cards of other servers follow Settings › Privacy. Ask names the provider not asked yet
+    /// and resolves nothing; an allowed one (or Always) comes without a click; a blocked one (or Never)
+    /// neither comes nor is asked about, a card held from before is left out and `chat.show_card` is
+    /// `unsupported`. The own server is no other provider; a client's read resolves nothing.
+    #[tokio::test]
+    async fn cards_of_other_servers_follow_the_privacy_settings() {
+        use torro_core::privacy::{ForeignContent, Privacy, ProviderChoice};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (chat, server) = service(dir.path());
+        let setting = Arc::new(std::sync::Mutex::new(Privacy::default()));
+        let read_setting = Arc::clone(&setting);
+        chat.set_privacy(Arc::new(move || read_setting.lock().expect("setting").clone()));
+        let set = |change: &dyn Fn(&mut Privacy)| change(&mut setting.lock().expect("setting"));
+        let reference =
+            |title: &str| torro_nextcloud::Reference { title: title.into(), description: None, image: None };
+        {
+            let mut state = server.state();
+            let own = "https://cloud.example.org/f/12";
+            let video = "https://www.youtube.com/watch?v=abc";
+            let blog = "https://blog.example.net/post";
+            state.references.insert(own.into(), reference("Plan.pdf"));
+            let with_picture = torro_nextcloud::Reference { image: Some("vid123".into()), ..reference("A video") };
+            state.references.insert(video.into(), with_picture);
+            state.card_pictures.insert("vid123".into(), Picture { bytes: png(), content_type: "image/png".into() });
+            state.references.insert(blog.into(), reference("A post"));
+            let list = state.messages.get_mut("ben4chat").expect("Ben");
+            list.push(super::super::remote::tests::message(6, &format!("see {own}")));
+            list.push(super::super::remote::tests::message(7, &format!("watch {video}")));
+            list.push(super::super::remote::tests::message(8, &format!("read {blog}")));
+        }
+        let read =
+            Request::ChatGetMessages { conversation: ben(), before: None, after: None, around: None, limit: None };
+        let page = |response: Response| match response {
+            Response::ChatMessages(page) => page,
+            other => panic!("messages: {other:?}"),
+        };
+        let of = |page: &torro_chat::MessagePage, n: u64| {
+            let message = page.messages.iter().find(|m| m.number() == n).expect("the message").clone();
+            (message.cards.first().map(|card| card.title.clone()), message.foreign.map(|provider| provider.name))
+        };
+
+        // Ask: the own server by itself, the others named and not resolved.
+        let asked = page(chat.handle(read.clone(), APP).await);
+        assert_eq!(of(&asked, 6), (Some("Plan.pdf".into()), None));
+        assert_eq!(of(&asked, 7), (None, Some("YouTube".into())));
+        assert_eq!(of(&asked, 8), (None, Some("example.net".into())));
+        assert_eq!(server.count("resolve"), 1, "only the own server's");
+        // A client is asked nothing and resolves nothing.
+        let seeing = rights(true);
+        let agent = Caller { reach: Reach::Client(&seeing), client: Some("agent") };
+        let theirs = page(chat.handle(read.clone(), agent).await);
+        assert_eq!(of(&theirs, 7), (None, None));
+
+        // Allowed: without a click; blocked: neither card nor question.
+        set(&|privacy| {
+            privacy.providers.insert("youtube".into(), ProviderChoice::Allowed);
+            privacy.providers.insert("example.net".into(), ProviderChoice::Blocked);
+        });
+        let decided = page(chat.handle(read.clone(), APP).await);
+        assert_eq!(of(&decided, 7), (Some("A video".into()), None));
+        assert_eq!(of(&decided, 8), (None, None));
+        assert_eq!(server.count("resolve"), 2, "the blocked one is not resolved");
+        assert_eq!(code(&chat.show_card(&message_id(&ben(), 8)).await), "unsupported");
+        let picture =
+            Request::ChatGetPreview { id: message_id(&ben(), 7), file: None, card: true, size: PreviewSize::Small };
+        assert!(
+            matches!(chat.handle(picture.clone(), APP).await, Response::ChatPicture { .. }),
+            "allowed: its picture"
+        );
+
+        // Never: nothing of other servers, also a card held from before; the own server stays.
+        set(&|privacy| privacy.content = ForeignContent::Never);
+        let never = page(chat.handle(read.clone(), APP).await);
+        assert_eq!(of(&never, 6), (Some("Plan.pdf".into()), None));
+        assert_eq!(of(&never, 7), (None, None), "the held card is left out");
+        assert_eq!(code(&chat.show_card(&message_id(&ben(), 7)).await), "unsupported");
+        let theirs = page(chat.handle(read.clone(), agent).await);
+        assert_eq!(of(&theirs, 7), (None, None), "for a client too");
+        // Nor in the shared links, nor its picture.
+        let links =
+            Request::ChatListShared { conversation: ben(), kind: Some(SharedKind::Link), before: None, limit: None };
+        let Response::ChatShared { items, .. } = chat.handle(links, APP).await else { panic!("links") };
+        assert_eq!(items.iter().map(|item| item.name.as_str()).collect::<Vec<_>>(), ["https://cloud.example.org/f/12"]);
+        assert_eq!(code(&chat.handle(picture, APP).await), "not-found");
+
+        // Always: every card without a click, the blocked one too.
+        set(&|privacy| privacy.content = ForeignContent::Always);
+        let always = page(chat.handle(read, APP).await);
+        assert_eq!(of(&always, 7), (Some("A video".into()), None));
+        assert_eq!(of(&always, 8), (Some("A post".into()), None));
+        assert_eq!(server.count("resolve"), 3);
+    }
+
     #[tokio::test]
     async fn what_a_conversation_shared_is_listed_and_messages_around_one_are_read() {
         let dir = tempfile::tempdir().expect("temp dir");

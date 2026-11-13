@@ -619,6 +619,9 @@ pub struct Size {
     pub row_notice: f32,
     pub row_sidebar: f32,
     pub row_group: f32,
+    /// A contact's row in the contacts app (issue #352): name and position on two lines, with mail,
+    /// number and town beside them. Standard 60, Comfort 68, Dense 52.
+    pub row_contact: f32,
     pub header: f32,
     pub sidebar: f32,
     pub props: f32,
@@ -663,7 +666,7 @@ pub struct Size {
 
 impl Size {
     /// Every size with its key (`"row"`), for checks and error messages.
-    pub fn entries(&self) -> [(&'static str, f32); 32] {
+    pub fn entries(&self) -> [(&'static str, f32); 33] {
         [
             ("control_sm", self.control_sm),
             ("control", self.control),
@@ -675,6 +678,7 @@ impl Size {
             ("row_notice", self.row_notice),
             ("row_sidebar", self.row_sidebar),
             ("row_group", self.row_group),
+            ("row_contact", self.row_contact),
             ("header", self.header),
             ("sidebar", self.sidebar),
             ("props", self.props),
@@ -712,6 +716,7 @@ impl Size {
             "row_notice" => &mut self.row_notice,
             "row_sidebar" => &mut self.row_sidebar,
             "row_group" => &mut self.row_group,
+            "row_contact" => &mut self.row_contact,
             "header" => &mut self.header,
             "sidebar" => &mut self.sidebar,
             "props" => &mut self.props,

@@ -13,8 +13,9 @@
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, column, container, image, mouse_area, row, stack};
 use iced::{Alignment, Background, Color, ContentFit, Element, Fill, Rectangle, Theme, border, mouse};
-use torro_chat::{FileRef, LinkCard, Message as ChatMessage, MessageKind};
+use torro_chat::{FileRef, ForeignProvider, LinkCard, Message as ChatMessage, MessageKind};
 use torro_core::i18n::{tr, trf};
+use torro_core::privacy::ProviderChoice;
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, palette, radius, size, space};
 use torro_gui::widgets::{self, TileFace, TileSize};
@@ -419,8 +420,10 @@ impl App {
         buttons
     }
 
-    /// Under a message with a link: its card, "Show preview" for a foreign link without one, or
-    /// nothing.
+    /// Under a message with a link: its card; for a link to another provider not asked about yet
+    /// (Settings › Privacy at "Ask", issue #672) the question "Show once", "Always allow …", "Never for
+    /// …"; else nothing – a blocked provider, "Never show" and a link without a card keep only the link
+    /// in the text.
     pub(super) fn link_part<'a>(
         &'a self,
         chat: &'a ChatState,
@@ -442,15 +445,7 @@ impl App {
         Some(match chat.files.cards.get(&message.id) {
             Some(CardAsk::Asking) => typo::text(typo::meta(), tr("Loading preview…")).style(theme::text_3).into(),
             Some(CardAsk::None) => typo::text(typo::meta(), tr("No preview for this link")).style(theme::text_3).into(),
-            None => {
-                let ask = widgets::text_button(
-                    Some(Icon::Eye),
-                    tr("Show preview"),
-                    style::button::ghost,
-                    Some(wrap(FilesMsg::ShowCard(message.id.clone()))),
-                );
-                widgets::with_tooltip(ask, tr("Your Nextcloud fetches the page, so the site may see when it is read."))
-            }
+            None => foreign_question(&message.id, message.foreign.as_ref()?),
         })
     }
 
@@ -634,6 +629,40 @@ fn upload_row(upload: &Upload) -> Element<'_, Message> {
     .into()
 }
 
+/// The question in place of the card of another provider's link (issue #672): what the message would
+/// load, and the three answers. "Show once" fetches only this card and keeps nothing; the other two put
+/// the provider on the list of Settings › Privacy. Quiet: words in `text_2`, ghost buttons that wrap in
+/// a narrow window.
+fn foreign_question<'a>(message: &str, provider: &ForeignProvider) -> Element<'a, Message> {
+    let name = provider.name.as_str();
+    let what = trf("This message shows content from {provider}.", &[("provider", &name)]);
+    let once = widgets::with_tooltip(
+        widgets::text_button(
+            Some(Icon::Eye),
+            tr("Show once"),
+            style::button::ghost,
+            Some(wrap(FilesMsg::ShowCard(message.to_owned()))),
+        ),
+        tr("Your Nextcloud fetches the page, so the site may see when it is read."),
+    );
+    let decide = |label: String, choice: ProviderChoice| {
+        widgets::text_button(
+            None,
+            label,
+            style::button::ghost,
+            Some(wrap(FilesMsg::Decide(provider.key.clone(), choice))),
+        )
+    };
+    let allow = decide(trf("Always allow {provider}", &[("provider", &name)]), ProviderChoice::Allowed);
+    let block = decide(trf("Never for {provider}", &[("provider", &name)]), ProviderChoice::Blocked);
+    column![
+        typo::text(typo::meta(), what).style(theme::text_2).wrapping(Wrapping::WordOrGlyph),
+        row![once, allow, block].spacing(space::xs()).wrap(),
+    ]
+    .spacing(space::xs())
+    .into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -667,6 +696,7 @@ mod tests {
             own_reactions: Vec::new(),
             edited: false,
             cards: Vec::new(),
+            foreign: None,
             untrusted: true,
         };
         assert_eq!(look(&message, &file("image/png", true), None), Look::Picture);

@@ -1,0 +1,36 @@
+[package]
+name = "torrocontacts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Contacts for the tiled desktop: address books grouped in a list, the contact in a side panel, on the torroworkplace core."
+
+[lints]
+workspace = true
+
+# Not in the release yet (issue #352): the native installers of issue #589 cover exactly eight apps, and a
+# ninth program in the dist plan would stop the release. The app catalog shows the app as unavailable until
+# an issue of its own brings its installers.
+[package.metadata.dist]
+dist = false
+
+[dependencies]
+torro-core.workspace = true
+torro-contacts.workspace = true
+torro-gui.workspace = true
+torro-ipc.workspace = true
+chrono.workspace = true
+# `image-without-codecs`: the contacts' pictures.
+iced = { workspace = true, features = ["image-without-codecs"] }
+# Turns on the decoders Iced reads the pictures with, and scales a chosen picture down to JPEG.
+image.workspace = true
+# The system's dialog "Choose picture".
+rfd.workspace = true
+# The pause before a search asks the core.
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -133,11 +133,14 @@ pub enum Section {
     /// Light or dark, the design pack and the zoom of all apps (task S.14). Opened directly with
     /// `torroworkplace ui --section appearance`.
     Appearance,
+    /// What loads from other providers in Chat and Mail, for the whole suite (issue #672,
+    /// [`torro_settings_ui::privacy`]). `--section privacy`.
+    Privacy,
     General,
 }
 
 impl Section {
-    pub const ALL: [Section; 11] = [
+    pub const ALL: [Section; 12] = [
         Section::Overview,
         Section::Apps,
         Section::Accounts,
@@ -148,6 +151,7 @@ impl Section {
         Section::Approvals,
         Section::Workspaces,
         Section::Appearance,
+        Section::Privacy,
         Section::General,
     ];
 
@@ -171,6 +175,7 @@ impl Section {
             Section::Approvals => tr("Approvals"),
             Section::Workspaces => tr("Workspaces"),
             Section::Appearance => tr("Appearance"),
+            Section::Privacy => tr("Privacy"),
             Section::General => tr("General"),
         }
     }
@@ -199,6 +204,8 @@ impl Section {
             Section::Workspaces => Icon::Layers,
             // Light and dark: the suite has no palette icon; the sun stands for how it looks.
             Section::Appearance => Icon::Sun,
+            // An eye struck through: what others may not see of the person.
+            Section::Privacy => Icon::EyeOff,
             // The settings of the suite: the sliders, as every app's settings button (issue #459).
             Section::General => shell::SETTINGS_ICON,
         }
@@ -217,6 +224,7 @@ impl Section {
             Section::Approvals => "approvals",
             Section::Workspaces => "workspaces",
             Section::Appearance => "appearance",
+            Section::Privacy => torro_settings_ui::suite::PRIVACY,
             Section::General => "general",
         }
     }
@@ -255,6 +263,9 @@ pub struct Data {
     /// Every task list, GitHub filter lists included (`tasks.list_lists`), for the selections of a
     /// client's rights.
     pub task_lists: Vec<Collection>,
+    /// Every address book, the hidden ones too (`contacts.list_address_books`), for the selections of
+    /// a client's rights and the count on an account's page.
+    pub address_books: Vec<torro_contacts::AddressBook>,
     /// The inbox sources with entries or muted (`inbox.list_sources`), for the selections of a
     /// client's rights.
     pub sources: Vec<SourceInfo>,
@@ -550,6 +561,8 @@ pub enum Message {
     Connections(connections::Message),
     Approvals(approvals::Message),
     General(general::Message),
+    /// Settings › Privacy (issue #672): one change, sent at once.
+    Privacy(torro_settings_ui::privacy::Message),
     Apps(apps::Message),
     /// The app catalog and its running job ([`load_app_catalog`]).
     AppCatalog(Box<apps::Loaded>),
@@ -1810,6 +1823,7 @@ impl Ui {
             Message::Connections(m) => connections::update(&mut self.connections, m, &self.data),
             Message::Approvals(m) => approvals::update(&mut self.approvals, m, &self.data),
             Message::General(m) => general::update(&mut self.general, m, &self.data),
+            Message::Privacy(m) => Action::Send(torro_settings_ui::privacy::update(m)),
             Message::Apps(m) => apps::update(&mut self.apps, m, &self.data),
         };
         self.perform(action)
@@ -1872,7 +1886,8 @@ impl Ui {
     /// The demo stores nothing, yet a web search provider switched in the setup shows as switched in the demo's
     /// list (issue #305): the setup's "Continue" waits until the list carries a switch, and in the demo no reload
     /// ever brings one. A model put in a slot (task MW.8) stays in it the same way, with the permission of
-    /// *Sorting* following it as the core sets it. Every other request leaves the demo's data as it is.
+    /// *Sorting* following it as the core sets it, and so does a change of Settings › Privacy (issue #672). Every
+    /// other request leaves the demo's data as it is.
     fn demo_keep(&mut self, request: &Request) {
         if let Request::SetAiSlot { slot, engine, model, effort } = request {
             let chosen = engine.clone().map(|engine| torro_core::ai::SlotModel {
@@ -1889,6 +1904,23 @@ impl Ui {
                 torro_core::ai::AiSlot::Decide => self.data.settings.ai_slots.decide = chosen,
             }
             return;
+        }
+        // Settings › Privacy (issue #672) follows a click in the demo too, so its segments can be tried.
+        if let Request::SetSetting { key, value } = request {
+            let privacy = &mut self.data.settings.privacy;
+            match key {
+                torro_ipc::SettingKey::PrivacyContent => {
+                    if let Ok(level) = serde_json::from_value(value.clone()) {
+                        privacy.content = level;
+                    }
+                }
+                torro_ipc::SettingKey::PrivacyProvider => {
+                    if let Ok(change) = torro_core::privacy::ProviderChange::from_value(value) {
+                        privacy.change_provider(change);
+                    }
+                }
+                _ => {}
+            }
         }
         let Request::SetSetting { key: torro_ipc::SettingKey::SearchProvider, value } = request else { return };
         let Ok(switch) = serde_json::from_value::<torro_core::settings::SearchProviderSwitch>(value.clone()) else {
@@ -2452,6 +2484,7 @@ impl Ui {
             Section::Connections => connections::view(&self.connections, &self.data, class).map(Message::Connections),
             Section::Approvals => approvals::view(&self.approvals, &self.data).map(Message::Approvals),
             Section::Appearance => general::appearance(&self.general, &self.data).map(Message::General),
+            Section::Privacy => torro_settings_ui::privacy::view(&self.data.settings).map(Message::Privacy),
             Section::General => general::view(&self.general, &self.data).map(Message::General),
         };
         let notices = [&self.notice, &self.data.error].into_iter().flatten().map(|problem| notice(problem.clone()));
@@ -2650,6 +2683,11 @@ fn load(with_providers: bool, ai_cache: Option<MailDeciderCache>) -> Task<Messag
             }
             if let Ok(Response::Collections { collections }) = client::call(&socket, &Request::TaskCollections).await {
                 data.task_lists = collections;
+            }
+            if let Ok(Response::AddressBooks { books }) =
+                client::call(&socket, &Request::ListAddressBooks { account: None }).await
+            {
+                data.address_books = books;
             }
             if let Ok(Response::Sources { sources }) = client::call(&socket, &Request::ListSources).await {
                 data.sources = sources;
@@ -2927,6 +2965,32 @@ mod tests {
     fn started(words: &[&str]) -> Ui {
         let args: Vec<String> = words.iter().map(|word| word.to_string()).collect();
         Ui::new(Launch::parse(&args).expect("valid parameters")).0
+    }
+
+    /// Issue #672: `--section privacy` opens Settings › Privacy with its eye struck through, before General;
+    /// the demo lists its providers, and every change is one `settings.set_setting` of the privacy keys, which
+    /// the demo follows without storing anything.
+    #[test]
+    fn privacy_opens_with_its_section_word_and_sends_its_settings() {
+        use torro_core::privacy::{ForeignContent, ProviderChoice};
+        use torro_settings_ui::privacy;
+
+        let mut demo = started(&["--demo", "--section", "privacy"]);
+        assert_eq!(demo.section, Section::Privacy);
+        assert_eq!((Section::Privacy.label(), Section::Privacy.icon()), (tr("Privacy"), Icon::EyeOff));
+        let at = |section| Section::ALL.iter().position(|each| *each == section);
+        assert_eq!(at(Section::Privacy).map(|privacy| privacy + 1), at(Section::General), "right before General");
+        assert_eq!(demo.data.settings.privacy, privacy::demo(), "the demo has providers to show");
+        for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
+            let _ = demo.window(class);
+        }
+        let _ = demo.update(Message::Privacy(privacy::Message::Content(ForeignContent::Never)));
+        assert_eq!(demo.data.settings.privacy.content, ForeignContent::Never);
+        let _ =
+            demo.update(Message::Privacy(privacy::Message::Provider("youtube".into(), Some(ProviderChoice::Blocked))));
+        assert_eq!(demo.data.settings.privacy.providers.get("youtube"), Some(&ProviderChoice::Blocked));
+        let _ = demo.update(Message::Privacy(privacy::Message::Provider("youtube".into(), None)));
+        assert!(!demo.data.settings.privacy.providers.contains_key("youtube"), "forgotten");
     }
 
     /// Issues #264, #473, #475: on an account's page the sidebar and the menu list every account
@@ -3869,7 +3933,7 @@ mod tests {
     }
 
     /// The sidebar is the suite's own list – Overview, Accounts, AI, API, MCP,
-    /// Approvals, Workspaces, Appearance, with General at its foot. Apps, Assistant, the
+    /// Approvals, Workspaces, Appearance, Privacy (issue #672), with General at its foot. Apps, Assistant, the
     /// Notification Hub and the old section of agents and scripts are gone from it; their words lead to the sections that
     /// took them over.
     #[test]
@@ -3888,10 +3952,11 @@ mod tests {
                 "approvals",
                 "workspaces",
                 "appearance",
+                "privacy",
                 "general"
             ]
         );
-        assert_eq!(Section::ALL.len(), 11, "Apps joined after Overview (issue #411)");
+        assert_eq!(Section::ALL.len(), 12, "Apps joined after Overview (issue #411), Privacy before General (#672)");
         assert_eq!(Section::Connections.label(), tr("MCP servers"));
         assert_eq!(Section::Mcp.label(), tr("MCP clients"));
         let labels: Vec<&str> = Section::ALL.iter().map(|section| section.label()).collect();

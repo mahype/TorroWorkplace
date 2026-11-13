@@ -27,7 +27,8 @@
 //! ```
 //!
 //! Pictures: `http`/`https` through the workspace's `reqwest` (rustls, no cookies, no `Referer`, redirects
-//! followed), `data:` decoded here, `cid:` from the app through [`CidSource`]. Only PNG, JPEG, GIF and WebP
+//! followed) from where [`Web`] allows – every public host, only the hosts Settings › Privacy allows (issue
+//! #672, also at every redirect) or none –, `data:` decoded here, `cid:` from the app through [`CidSource`]. Only PNG, JPEG, GIF and WebP
 //! (recognised by their first bytes, never SVG), at most [`MAX_PICTURE_BYTES`] (10 MiB) per picture and 50 MiB
 //! per mail. Only public hosts: no loopback, no local network, no link-local, neither directly nor through a
 //! redirect or a host name that resolves there. Nothing is logged about a mail: no URL, no text, no content id.
@@ -38,7 +39,7 @@ mod recolor;
 mod widget;
 
 pub use content::{Content, Snapshot};
-pub use fetch::{CidSource, MAX_PICTURE_BYTES};
+pub use fetch::{CidSource, MAX_PICTURE_BYTES, Web};
 pub use widget::HtmlView;
 
 /// The colours a mail is drawn in. Only the mail's content follows it, never the rest of the window.

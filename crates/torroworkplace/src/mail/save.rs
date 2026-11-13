@@ -1437,6 +1437,17 @@ pub fn export_plan(
     plan
 }
 
+/// Where the pictures of a mail saved as PDF or picture may load from (issue #672): every public host at
+/// "Always show", the hosts of allowed providers at "Ask", nowhere at "Never show" or when nothing is
+/// allowed ([`super::read::external_of`]).
+fn web_for(privacy: &torro_core::privacy::Privacy, html: &str) -> torro_htmlview::Web {
+    match super::read::external_of(privacy, html) {
+        Some(external) if external.all => torro_htmlview::Web::All,
+        Some(external) if !external.load.is_empty() => torro_htmlview::Web::Hosts(external.load),
+        _ => torro_htmlview::Web::Off,
+    }
+}
+
 /// `mail.save_message_as`: in this order the path of `to: file | folder` (`error` unless absolute, one
 /// line, at most [`MAX_PATH_BYTES`]), the message in the stores `reach` sees (`not-found`), the place
 /// (an unknown target, a missing folder: `not-found`), then the message fetched once, drawn
@@ -1489,11 +1500,15 @@ async fn save_message(
         cc: message.cc.clone(),
         date: summary.date,
     };
+    // Its external pictures only from where Settings › Privacy allows (issue #672): every host at
+    // "Always show", the allowed providers' at "Ask", none at "Never show". "Show once" of the mail
+    // window is not stored and does not count here; agents save too.
+    let web = read.html.as_deref().map_or(torro_htmlview::Web::Off, |html| web_for(&mail.privacy(), html));
     let body = match read.html {
         Some(html) => super::export::Body::Html { html, raw: Arc::new(raw), parts: read.attachments },
         None => super::export::Body::Text(read.text),
     };
-    let drawn = super::export::draw(head, body, format, true)
+    let drawn = super::export::draw(head, body, format, web)
         .await
         .map_err(|()| failed("error", tr("The mail could not be drawn.")))?;
     let (account, months) = (account_name(mail, &located.account).await, month_names());
@@ -1575,6 +1590,27 @@ pub(crate) mod tests {
     use crate::mail::sync::fake::FakeImap;
 
     const ANNA: &str = "mail:anna@example.org";
+
+    /// Issue #672: a mail saved as PDF or picture loads its pictures from every host at "Always show",
+    /// from the allowed providers' at "Ask" and from nowhere at "Never show" or with none allowed.
+    #[test]
+    fn a_saved_mail_loads_only_what_the_privacy_settings_allow() {
+        use torro_core::privacy::{ForeignContent, Privacy, ProviderChoice};
+        use torro_htmlview::Web;
+        let html = r#"<img src="https://i.ytimg.com/a.jpg"><img src="https://img.mailchimp.com/b.png">"#;
+        let mut privacy = Privacy::default();
+        assert_eq!(web_for(&privacy, html), Web::Off, "nobody allowed: \"Show once\" does not count");
+        privacy.providers.insert("youtube".into(), ProviderChoice::Allowed);
+        assert_eq!(web_for(&privacy, html), Web::Hosts(["i.ytimg.com".to_string()].into()));
+        privacy.content = ForeignContent::Always;
+        assert_eq!(web_for(&privacy, html), Web::All);
+        privacy.content = ForeignContent::Never;
+        assert_eq!(web_for(&privacy, html), Web::Off);
+        assert_eq!(
+            web_for(&Privacy { content: ForeignContent::Always, ..Privacy::default() }, "<p>Text</p>"),
+            Web::Off
+        );
+    }
 
     #[test]
     fn streamed_original_verification_checks_all_bytes_and_both_ends() {

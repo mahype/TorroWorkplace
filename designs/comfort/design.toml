@@ -45,6 +45,7 @@ row_message = 116   # a mail row: three lines of 22 with 24.5 to spare above and
 row_notice = 92     # any other inbox row: two lines of 22 with 23.5 to spare above and below
 row_sidebar = 36    # sidebar and menu rows
 row_group = 44      # the head of a group: holds its "+" button (control_sm 40)
+row_contact = 68    # a contact row: two lines of 22 with 12 above and below
 header = 64         # the header bar: as high as the standard's, it already holds control_sm 40
 hour = 56           # an hour in the calendar
 card_gap = 16       # between cards and the parts of a card

@@ -26,7 +26,7 @@ use peniko::Fill;
 use peniko::kurbo::{Affine, Rect};
 
 use crate::Scheme;
-use crate::fetch::{CidSource, Fetcher, Limits};
+use crate::fetch::{CidSource, Fetcher, Limits, Web};
 use crate::recolor::{DarkScene, Recolor};
 
 /// Mail clients' defaults on top of the browser's: a sans-serif face when the mail names none, and long
@@ -356,19 +356,26 @@ impl Content {
     /// Parses `html` (cleaned by the core) and starts loading its pictures from the web and `data:` URLs.
     /// `cid:` pictures stay empty; use [`Content::with_cid`] when the mail has inline parts.
     pub fn new(html: &str) -> Self {
-        Self::build(html, Fetcher::new(true, None, Limits::default()))
+        Self::with_web(html, None, Web::All)
     }
 
     /// Like [`Content::new`], with `cid:` pictures from `source` (asked on a worker thread).
     pub fn with_cid(html: &str, source: Arc<dyn CidSource>) -> Self {
-        Self::build(html, Fetcher::new(true, Some(source), Limits::default()))
+        Self::with_web(html, Some(source), Web::All)
     }
 
     /// Like [`Content::with_cid`] (or [`Content::new`] with `None`), but web pictures stay empty: nothing goes
-    /// to the network. For tests, previews and examples; the reader uses [`Content::new`] or
-    /// [`Content::with_cid`], because external pictures are always loaded (decision 8 in `docs/mail.md`).
+    /// to the network. For tests, previews and examples, and for a mail whose external pictures are not
+    /// allowed (issue #672).
     pub fn offline(html: &str, source: Option<Arc<dyn CidSource>>) -> Self {
-        Self::build(html, Fetcher::new(false, source, Limits::default()))
+        Self::with_web(html, source, Web::Off)
+    }
+
+    /// Parses `html` and loads its pictures from where `web` allows (issue #672, Settings › Privacy: every
+    /// public host, only some, or none), `cid:` ones from `source`. What the mail window and saving as PDF
+    /// or picture use, with the hosts the core named in `external` of `mail.get_message`.
+    pub fn with_web(html: &str, source: Option<Arc<dyn CidSource>>, web: Web) -> Self {
+        Self::build(html, Fetcher::new(web, source, Limits::default()))
     }
 
     pub(crate) fn build(html: &str, fetcher: Fetcher) -> Self {

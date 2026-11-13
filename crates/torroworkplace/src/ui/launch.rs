@@ -775,6 +775,7 @@ pub fn demo_data() -> Data {
         clients: demo_clients(now, first_calendar),
         calendars,
         task_lists,
+        address_books: shared.address_books,
         sources,
         tools: demo_tools(&torro_core::settings::Tools::default()),
         status: Some(Status {
@@ -1346,18 +1347,18 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
     // Its own tools (task WZ.7), so its page shows the selection of tools.
     set(&mut assistant, Area::Tools, Level::Write, false);
     assistant.tools = Selection::Only(vec!["pdf".into()]);
+    // One address book of its own, so its page shows the selection of address books (issue #353).
+    assistant.address_books = Selection::Only(vec![accounts::demo::DEMO_BOOK.into()]);
+    // Claude Code sees the book and, by name, the hidden "Recently contacted".
+    let mut claude = RightsTemplate::ReadAndWrite.rights();
+    claude.address_books = Selection::Only(vec![accounts::demo::DEMO_BOOK.into()]);
+    claude.hidden_address_books = vec![accounts::demo::DEMO_RECENT_BOOK.into()];
     // The travel planner (task B.3): reads calendars, writes tasks, nothing else.
     let mut travel = Rights::none();
     set(&mut travel, Area::Calendar, Level::Read, false);
     set(&mut travel, Area::Tasks, Level::Write, false);
     vec![
-        client(
-            DEMO_CLAUDE,
-            "Claude Code",
-            "claude-code",
-            RightsTemplate::ReadAndWrite.rights(),
-            Some(now - Duration::minutes(5)),
-        ),
+        client(DEMO_CLAUDE, "Claude Code", "claude-code", claude, Some(now - Duration::minutes(5))),
         client("7b2e4f10", "Codex", "codex", codex, Some(now - Duration::days(2))),
         client(DEMO_HOOKS, "Claude Code hooks", HOOK_CLIENT, Rights::hook(), Some(now - Duration::minutes(1))),
         client("e8a07b35", "backup", "script", backup, None),
@@ -1812,7 +1813,7 @@ mod tests {
         let err = Launch::parse(&args(&["--section", "mail"])).expect_err("unknown section");
         assert!(
             err.to_string().ends_with(
-                "valid values: overview, apps, accounts, ai, api, mcp, connections, approvals, workspaces, appearance, general, assistant, bot:<id>, agents, inbox"
+                "valid values: overview, apps, accounts, ai, api, mcp, connections, approvals, workspaces, appearance, privacy, general, assistant, bot:<id>, agents, inbox"
             ),
             "{err}"
         );
