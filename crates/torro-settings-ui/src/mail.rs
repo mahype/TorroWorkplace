@@ -503,7 +503,7 @@ pub mod accounts {
     use chrono::{DateTime, Local, Utc};
     use iced::Alignment;
     use iced::Length;
-    use iced::widget::{column, container, responsive, row, space as blank, text_editor};
+    use iced::widget::{column, container, responsive, row, space as blank, text_editor, toggler};
     use torro_core::i18n::trf;
     use torro_gui::datetime::{format_exact, format_moment, format_time};
     use torro_gui::theme::{self, size, space};
@@ -646,6 +646,9 @@ pub mod accounts {
         OpenStorage,
         /// "Server settings": the account's tab with its servers, login and password.
         ServerSettings,
+        /// The switch at the end of an account's row in the list (issue #670): the account's mail
+        /// service on or off, as on its page, without opening it.
+        SetMail(String, bool),
         /// "Add mail account…" under the list (issue #410): the add-account dialog at a mail account.
         Add,
         /// "Import from TorroMail…": the dialog at TorroMail's accounts.
@@ -1061,6 +1064,23 @@ pub mod accounts {
                 state.saving = true;
                 Action::send(request)
             }
+            Message::SetMail(id, on) => match mail_of(data, &id) {
+                Some(mail) if mail.settings.services.mail != on => {
+                    // Only the mail service: calendars and tasks of the account stay as they are.
+                    let services = torro_mail::Services { mail: on, ..mail.settings.services };
+                    Action::send(Request::UpdateMailAccount {
+                        id,
+                        sender_name: None,
+                        signature: None,
+                        signature_format: None,
+                        notify: None,
+                        services: Some(services),
+                        folder_roles: None,
+                        format: None,
+                    })
+                }
+                _ => Action::None,
+            },
             Message::Format(format) => change(state, data, |mail| {
                 (format != mail.settings.format).then(|| MailChange { format: Some(format), ..MailChange::default() })
             }),
@@ -1440,9 +1460,12 @@ pub mod accounts {
                 let stats = data.mail_stats.iter().find(|stats| stats.account == account.id);
                 let sync = mail.mail.last_sync.or_else(|| stats.and_then(|stats| stats.last_sync));
                 // As the suite's Accounts says it (design review of #410): a dot and "Last synced …".
-                let (sync_status, sync_label) = match sync_problem(mail, stats) {
-                    Some(_) => (Status::Error, tr("Sync problem").to_string()),
-                    None => (Status::Ok, crate::accounts::last_synced_text(sync, now)),
+                let on = mail.settings.services.mail;
+                // A switched-off account is never synced: "Turned off" says so (issue #670).
+                let (sync_status, sync_label) = match (on, sync_problem(mail, stats)) {
+                    (false, _) => (Status::Inactive, tr("Turned off").to_string()),
+                    (true, Some(_)) => (Status::Error, tr("Sync problem").to_string()),
+                    (true, None) => (Status::Ok, crate::accounts::last_synced_text(sync, now)),
                 };
                 (account, mail, stats, sync_status, sync_label)
             })
@@ -1456,13 +1479,25 @@ pub mod accounts {
                 let address = account.label.clone();
                 let id = account.id.clone();
                 let stats = stats.cloned();
+                let on = mail.settings.services.mail;
+                let switch_id = id.clone();
                 let entry = responsive(move |room| {
-                    let inventory = inventory_content(stats.as_ref());
+                    let inventory = inventory_content(stats.as_ref(), on);
+                    // Its own press: a click on the switch never opens the page (issue #670).
+                    let switch = {
+                        let id = switch_id.clone();
+                        toggler(on)
+                            .size(style::CHECK_SIZE)
+                            .style(style::toggler)
+                            .on_toggle(move |on| Message::SetMail(id.clone(), on))
+                    };
                     // Without a sender name the address alone, centred in the row (design review of #410).
                     let sender =
                         (!name.is_empty()).then(|| typo::text(typo::meta(), name.clone()).style(theme::text_2));
-                    let name_col =
-                        column![typo::text(typo::body_strong(), address.clone())].push(sender).spacing(space::xs());
+                    let title = typo::text(typo::body_strong(), address.clone());
+                    let title = if on { title } else { title.style(theme::text_3) };
+                    let sender = sender.filter(|_| on);
+                    let name_col = column![title].push(sender).spacing(space::xs());
                     // One line, cut with "…" where the column is too narrow (design review of #410).
                     let sync_col = row![
                         widgets::status_dot(sync_status),
@@ -1471,10 +1506,19 @@ pub mod accounts {
                     .spacing(space::s())
                     .align_y(Alignment::Center);
                     if room.width < 680.0 {
-                        container(column![name_col, inventory, sync_col].spacing(space::m()))
-                            .width(Length::Fill)
-                            .padding([space::m(), space::l()])
-                            .into()
+                        container(
+                            column![
+                                row![name_col.width(Length::Fill), switch]
+                                    .spacing(space::m())
+                                    .align_y(Alignment::Center),
+                                inventory,
+                                sync_col
+                            ]
+                            .spacing(space::m()),
+                        )
+                        .width(Length::Fill)
+                        .padding([space::m(), space::l()])
+                        .into()
                     } else {
                         // The parts 3 : 4 : 3 up to the reading width; wider, inventory and sync keep
                         // that width and the name gets the rest (issue #464).
@@ -1485,6 +1529,7 @@ pub mod accounts {
                                 container(inventory).width(inventory_width),
                                 // Room for its longest line beside the dot (issue #545).
                                 sync_col.width(sync_width),
+                                switch,
                                 chevron(),
                             ]
                             .spacing(space::l())
@@ -1519,9 +1564,10 @@ pub mod accounts {
         column![widgets::group(tr("Mail"), rows, None), widgets::mail_coverage_legend()].spacing(space::m()).into()
     }
 
-    fn inventory_content<'a>(stats: Option<&MailAccountStats>) -> Element<'a, Message> {
+    fn inventory_content<'a>(stats: Option<&MailAccountStats>, on: bool) -> Element<'a, Message> {
         let Some(stats) = stats else {
-            return typo::text(typo::meta(), tr("Statistics are not available yet.")).style(theme::text_2).into();
+            let none = typo::text(typo::meta(), tr("Statistics are not available yet."));
+            return if on { none.style(theme::text_2) } else { none.style(theme::text_3) }.into();
         };
         let online = stats.known_mail_bytes.map(format_bytes);
         let local = stats.offline_mail_bytes.map(format_bytes);
@@ -1529,12 +1575,12 @@ pub mod accounts {
             (Some(local), Some(online)) => trf("{local} of {online} online", &[("local", &local), ("online", &online)]),
             _ => tr("Mail sizes are being collected").to_string(),
         };
-        let mut content = column![
-            typo::text(typo::body_strong(), heading),
-            typo::text(typo::meta(), trf("{n} emails total", &[("n", &format_count(stats.messages))]))
-                .style(theme::text_2),
-        ]
-        .spacing(space::xs());
+        // A switched-off account is dimmed all through (issue #670).
+        let heading = typo::text(typo::body_strong(), heading);
+        let heading = if on { heading } else { heading.style(theme::text_3) };
+        let total = typo::text(typo::meta(), trf("{n} emails total", &[("n", &format_count(stats.messages))]));
+        let total = if on { total.style(theme::text_2) } else { total.style(theme::text_3) };
+        let mut content = column![heading, total].spacing(space::xs());
         if let (Some(total), Some(actual), Some(planned), Some(indexed)) = (
             stats.known_mail_bytes,
             stats.offline_mail_bytes,
@@ -2052,7 +2098,7 @@ pub mod accounts {
     /// the page that manages them.
     fn storage_card<'a>(stats: &MailAccountStats) -> Element<'a, Message> {
         let body = column![
-            inventory_content(Some(stats)),
+            inventory_content(Some(stats), true),
             widgets::mail_coverage_legend(),
             typo::text(
                 typo::meta(),
@@ -2604,6 +2650,33 @@ pub mod accounts {
                     format: Some(MailFormat::Plain),
                 })
             );
+        }
+
+        /// Issue #670: the switch in the list turns only the mail service of that row's account, with
+        /// no account open, and says nothing when the account is in that state already.
+        #[test]
+        fn the_list_switch_sets_only_the_mail_service() {
+            let (data, mut state) = (data(), State::default());
+            let id = "mail:anna@example.org".to_string();
+            let same: Action<()> = update(&mut state, Message::SetMail(id.clone(), true), &data);
+            assert_eq!(same, Action::None, "it is on already");
+            let off: Action<()> = update(&mut state, Message::SetMail(id.clone(), false), &data);
+            assert_eq!(
+                off,
+                Action::send(Request::UpdateMailAccount {
+                    id,
+                    sender_name: None,
+                    signature: None,
+                    signature_format: None,
+                    notify: None,
+                    services: Some(torro_mail::Services { mail: false, ..torro_mail::Services::default() }),
+                    folder_roles: None,
+                    format: None,
+                })
+            );
+            let unknown: Action<()> =
+                update(&mut state, Message::SetMail("mail:nobody@example.org".into(), false), &data);
+            assert_eq!(unknown, Action::None, "an account the data does not hold");
         }
 
         /// "Use this folder" sends only that role with its path.
