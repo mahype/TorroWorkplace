@@ -10,13 +10,15 @@
 //! - **Sending:** Enter sends the ready files with the text as caption (`chat.send_message` with
 //!   `files`). The place of the files then shows the progress (`chat.get_upload` every
 //!   [`UPLOAD_POLL`]) with ✕ (`chat.cancel_upload`). A sending that failed says why there.
-//! - **History:** previews come with `chat.get_preview` (small) as soon as a page arrives; until
-//!   then a calm placeholder of the same size stands there. "Open" fetches the file
+//! - **History:** previews come with `chat.get_preview` as soon as a page arrives, `medium` for
+//!   pictures and videos (sharp at the history's largest size, issue #674), `small` for link cards;
+//!   until then a calm placeholder of the same size stands there. "Open" fetches the file
 //!   (`chat.get_attachment`) and opens it with the system's program, "Download" saves it to
 //!   Downloads (`chat.save_attachment`), "Save as…" asks the system's dialog first. "Show preview"
 //!   asks for the card of a foreign link (`chat.show_card`).
 //! - **Shared media:** a column at the side (`chat.list_shared`) with the tabs Media, Files, Voice
-//!   and Links; "Show in chat" loads the messages around the item (`chat.get_messages` with
+//!   and Links, its tiles from `small` previews ([`FilesState::thumb`]), or the history's picture
+//!   when that came already; "Show in chat" loads the messages around the item (`chat.get_messages` with
 //!   `around`) and marks it.
 //!
 //! What the core refuses (a file shared without download, a server that cannot) is said in the calm
@@ -180,6 +182,8 @@ pub struct FilesState {
     next_key: u64,
     pub upload: Option<Upload>,
     pub pictures: HashMap<PictureKey, Shown>,
+    /// The small previews of the shared media, apart from the history's larger ones.
+    pub thumbs: HashMap<PictureKey, Shown>,
     /// File actions under way: (message, file).
     pub busy: BTreeMap<(String, String), Busy>,
     /// "Show preview" asked or answered without a card, by message.
@@ -217,6 +221,12 @@ impl FilesState {
         self.pictures.get(key)
     }
 
+    /// The small picture of `key` for the shared media, as far as it came; without one asked for,
+    /// the history's picture once it is there.
+    pub fn thumb(&self, key: &PictureKey) -> Option<&Shown> {
+        self.thumbs.get(key).or_else(|| self.pictures.get(key).filter(|shown| matches!(shown, Shown::Ready(_))))
+    }
+
     fn key(&mut self) -> u64 {
         self.next_key += 1;
         self.next_key
@@ -246,6 +256,8 @@ pub enum FilesMsg {
     Cancelled(Result<(), ChatError>),
     DismissUpload,
     Picture(PictureKey, Result<Picture, ChatError>),
+    /// A small preview of the shared media came.
+    Thumb(PictureKey, Result<Picture, ChatError>),
     /// "Open" (and "Play"): the file `(message, file)`.
     Open(String, String),
     Fetched(String, String, Result<Fetched, ChatError>),
@@ -499,6 +511,13 @@ impl App {
                     Err(_) => Shown::Missing,
                 };
                 files.pictures.insert(key, shown);
+            }
+            FilesMsg::Thumb(key, result) => {
+                let shown = match result {
+                    Ok(picture) => system::picture_handle(&picture.bytes).map_or(Shown::Missing, Shown::Ready),
+                    Err(_) => Shown::Missing,
+                };
+                files.thumbs.insert(key, shown);
             }
             FilesMsg::Open(message, file) => {
                 if files.busy.contains_key(&(message.clone(), file.clone())) {
@@ -759,34 +778,41 @@ impl App {
     }
 
     /// Asks for the previews the history and the shared media show and do not have yet: pictures
-    /// and videos with a preview, pictures of link cards (small).
+    /// and videos of the history `medium`, pictures of link cards `small`, the shared media `small`
+    /// (unless the history's picture is there already).
     pub(crate) fn want_pictures(&mut self) -> Task<Message> {
         let backend = self.backend.clone();
         let Some(chat) = self.chat.as_mut() else { return Task::none() };
-        let mut wanted: Vec<PictureKey> = Vec::new();
+        let mut wanted: Vec<(PictureKey, PreviewSize)> = Vec::new();
         for message in &chat.messages {
             for file in &message.files {
                 if crate::view::has_preview(file) {
-                    wanted.push((message.id.clone(), Some(file.id.clone())));
+                    wanted.push(((message.id.clone(), Some(file.id.clone())), PreviewSize::Medium));
                 }
             }
             if message.cards.first().is_some_and(|card| card.image) {
-                wanted.push((message.id.clone(), None));
-            }
-        }
-        if let Some(panel) = &chat.files.media {
-            for item in panel.items.iter().filter(|item| item.preview && item.kind == SharedKind::Media) {
-                wanted.push((item.message.clone(), item.file.clone()));
+                wanted.push(((message.id.clone(), None), PreviewSize::Small));
             }
         }
         let mut tasks: Vec<Task<Message>> = Vec::new();
-        for key in wanted {
+        for (key, size) in wanted {
             if chat.files.pictures.contains_key(&key) {
                 continue;
             }
             chat.files.pictures.insert(key.clone(), Shown::Loading);
-            let task = backend.clone().preview(key.0.clone(), key.1.clone(), PreviewSize::Small);
+            let task = backend.clone().preview(key.0.clone(), key.1.clone(), size);
             tasks.push(Task::perform(task, move |result| wrap(FilesMsg::Picture(key.clone(), result))));
+        }
+        if let Some(panel) = &chat.files.media {
+            for item in panel.items.iter().filter(|item| item.preview && item.kind == SharedKind::Media) {
+                let key: PictureKey = (item.message.clone(), item.file.clone());
+                if chat.files.thumb(&key).is_some() {
+                    continue;
+                }
+                chat.files.thumbs.insert(key.clone(), Shown::Loading);
+                let task = backend.clone().preview(key.0.clone(), key.1.clone(), PreviewSize::Small);
+                tasks.push(Task::perform(task, move |result| wrap(FilesMsg::Thumb(key.clone(), result))));
+            }
         }
         Task::batch(tasks)
     }
