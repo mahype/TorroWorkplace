@@ -4067,6 +4067,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Der Assistent hat nach {steps} Schritten aufgehört, ohne fertig zu werden. Frag noch einmal, damit er weitermacht.",
     ),
     (
+        "The assistant called {tool} three times with the same input and stopped so it does not go round in circles. Ask again in other words to let it go on.",
+        "Der Assistent hat {tool} dreimal mit derselben Eingabe aufgerufen und aufgehört, damit er sich nicht im Kreis dreht. Frag mit anderen Worten noch einmal, damit er weitermacht.",
+    ),
+    (
         "The model gave no answer. Try again or choose another model.",
         "Das Modell hat nicht geantwortet. Versuche es noch einmal oder wähle ein anderes Modell.",
     ),

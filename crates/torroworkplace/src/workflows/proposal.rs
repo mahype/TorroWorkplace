@@ -358,6 +358,7 @@ mod tests {
                     model: model.unwrap_or("configured-automatic").into(),
                     provider: Box::new(FakeProvider(Arc::clone(&self.record))),
                     place: self.place,
+                    context: None,
                 })
             })
         }

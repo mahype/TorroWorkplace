@@ -62,6 +62,7 @@
 //! What goes to a client never names a path; the core's log does.
 
 pub(crate) mod cards;
+mod compact;
 mod delegate;
 mod engines;
 mod model;
@@ -671,7 +672,7 @@ impl Assistant {
         if message.from.is_none() {
             state.said.insert(id.clone(), said);
         }
-        let history = conversation.entries.clone();
+        let (history, results) = (conversation.entries.clone(), conversation.results.clone());
         state.conversations.insert(id.clone(), conversation);
         let (engine, model, effort, without, mode) =
             (message.engine, message.model, message.effort, message.without, message.mode);
@@ -688,6 +689,7 @@ impl Assistant {
             without,
             mode,
             history,
+            results,
             partial: Arc::default(),
             actor,
             bot: message.bot,
@@ -745,7 +747,7 @@ impl Assistant {
                 error: None,
                 lack: None,
             };
-            if !assistant.add_to_run(&conversation, run, tool, false).await {
+            if !assistant.add_to_run(&conversation, run, tool, false, None).await {
                 return;
             }
             tokio::time::sleep(step).await;
@@ -753,7 +755,7 @@ impl Assistant {
                 "This is the test engine. It answers every message the same way, without a model and without tools.",
             );
             let answer = EntryContent::Answer { text: text.to_string(), engine: by, model: None };
-            assistant.add_to_run(&conversation, run, answer, true).await;
+            assistant.add_to_run(&conversation, run, answer, true, None).await;
         });
         let partial = Arc::default();
         state.running.insert(id.to_string(), Run { id: run, task: task.abort_handle(), engine, partial });
@@ -822,8 +824,9 @@ impl Assistant {
     /// Adds `content` to conversation `id` while the run `run` is still its running answer; a
     /// `last` one ends the run. An answer takes the place of the growing one. `false` when the run
     /// was stopped or replaced meanwhile, or the entry could not be stored (the run then ends with
-    /// nothing more).
-    async fn add_to_run(&self, id: &str, run: u64, content: EntryContent, last: bool) -> bool {
+    /// nothing more). `result` is what the model read of a tool line (issue #701): written with the entry, so a
+    /// later turn sends it again ([`store::Line::Result`]).
+    async fn add_to_run(&self, id: &str, run: u64, content: EntryContent, last: bool, result: Option<String>) -> bool {
         let mut state = self.state().await;
         if state.running.get(id).is_none_or(|running| running.id != run) {
             return false;
@@ -832,7 +835,11 @@ impl Assistant {
             state.running.remove(id);
             return false;
         };
-        if self.write(id, vec![Line::Entry { entry: entry.clone() }]).await.is_err() {
+        let mut lines = vec![Line::Entry { entry: entry.clone() }];
+        if let Some(text) = result {
+            lines.push(Line::Result { seq: entry.seq, text });
+        }
+        if self.write(id, lines.clone()).await.is_err() {
             state.running.remove(id);
             return false;
         }
@@ -842,7 +849,7 @@ impl Assistant {
             running.clear();
         }
         if let Some(conversation) = state.conversations.get_mut(id) {
-            conversation.apply(Line::Entry { entry });
+            lines.into_iter().for_each(|line| conversation.apply(line));
         }
         if last {
             state.running.remove(id);
