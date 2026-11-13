@@ -1318,7 +1318,8 @@ impl Request {
     /// the slot Sorting reads), `allow_api_keys` or `allow_mcp` (#231, a way a person
     /// closed) to anything but `false`, or `tool_enabled` (point 9, issue #225) or `search_provider`
     /// (point 6, issue #305, a web search provider) with `enabled` anything but `false`, or
-    /// `allowed_folder` (point 9, issue #304) with any value, or `maps` (task TE.1, the place search and
+    /// `allowed_folder` (point 9, issue #304) or `privacy_content` and `privacy_provider` (point 14, issue
+    /// #672) with any value, or `maps` (task TE.1, the place search and
     /// the map) with `enabled` anything but `false` or with `geocoder` or `tiles` at all, or
     /// `extensions.set_enabled` with `enabled: true` (point 10, issue #302: a server runs as the person).
     /// A value that is no boolean, a tool switch without `enabled`, or `maps` that is no object counts as
@@ -1354,6 +1355,11 @@ impl Request {
             }
             // Managing the allowed folders is granting rights (point 9, issue #304): removing too.
             Request::SetSetting { key: crate::SettingKey::AllowedFolder, .. } => true,
+            // What loads from other providers is the person's (point 14, issue #672): stricter too, so no
+            // agent decides about it in either direction.
+            Request::SetSetting { key: crate::SettingKey::PrivacyContent | crate::SettingKey::PrivacyProvider, .. } => {
+                true
+            }
             // Turning maps on or naming a service sends what people type and where they meet to
             // others (task TE.1); a value that is no object is refused, not tried.
             Request::SetSetting { key: crate::SettingKey::Maps, value } => match value.as_object() {
@@ -3877,7 +3883,8 @@ static GET_SETTINGS: Command = Command {
                   assistant's own tools (`tools`: the ones switched on in \
                   `enabled`, the PDF folder and the templates `letter`, `report` and `note`) and the web search \
                   providers switched on (`webSearch`; its SearXNG address only for a key that reaches the tool \
-                  `web`).",
+                  `web`) and whether content from other providers loads (`privacy`: `content` \"always\", \
+                  \"ask\" or \"never\", and the `providers` a person allowed or blocked, by key).",
 };
 
 static SET_SETTING: Command = Command {
@@ -3960,7 +3967,9 @@ static SET_SETTING: Command = Command {
                   is for a person, so send the stored one or null) – `allowed_folder`, the folders the tool `files` \
                   works in, is for a person only, adding and removing alike – or `workspace_shortcuts` (the modifiers held with \
                   a digit key to load the template that has it: \"super_alt\", \"super_ctrl\", \"ctrl_alt\" or \
-                  \"ctrl_shift\"; on macOS Super is Command and Alt is Option; the keys are bound anew at once).",
+                  \"ctrl_shift\"; on macOS Super is Command and Alt is Option; the keys are bound anew at once) – \
+                  `privacy_content` and `privacy_provider`, whether pictures of mail, link previews and videos \
+                  from other providers load, are for a person only, whatever the value.",
 };
 
 static SET_COLLECTION_SHOWN: Command = Command {
@@ -4051,7 +4060,8 @@ static UPDATE_SETTINGS: Command = Command {
     description: "Replaces all suite-wide settings at once. Prefer set_setting and set_collection_shown: they \
                   change one value and keep changes others made meanwhile. Settings without `font` or \
                   `colorScheme` keep the stored ones. `design` takes a spacing level (\"torro\", \"comfort\", \
-                  \"dense\"); \"compact\" and \"console\" are stored as \"dense\", any other id as \"torro\".",
+                  \"dense\"); \"compact\" and \"console\" are stored as \"dense\", any other id as \"torro\". \
+                  `privacy` is a person's: what a client sends there is ignored and the stored one stays.",
 };
 
 static LIST_APPS: Command = Command {
@@ -8572,7 +8582,9 @@ mod tests {
                 "workspace_shortcuts",
                 "maps",
                 "search_provider",
-                "searxng_address"
+                "searxng_address",
+                "privacy_content",
+                "privacy_provider"
             ]
         );
 
@@ -9449,6 +9461,37 @@ mod tests {
         assert!(SET_SETTING.description.contains("`allowed_folder`"));
         let read: SettingKey = serde_json::from_value(serde_json::json!("allowed_folder")).expect("a key");
         assert_eq!(read, SettingKey::AllowedFolder);
+    }
+
+    /// Issue #672, point 14: what loads from other providers is a person's alone, whatever the value –
+    /// stricter and removing too – and whatever the client's rights.
+    #[test]
+    fn only_people_decide_about_content_from_other_providers() {
+        let requests = [
+            Request::SetSetting { key: SettingKey::PrivacyContent, value: serde_json::json!("never") },
+            Request::SetSetting { key: SettingKey::PrivacyContent, value: serde_json::json!("always") },
+            Request::SetSetting { key: SettingKey::PrivacyContent, value: serde_json::json!(null) },
+            Request::SetSetting {
+                key: SettingKey::PrivacyProvider,
+                value: serde_json::json!({"provider": "youtube", "choice": "blocked"}),
+            },
+            Request::SetSetting {
+                key: SettingKey::PrivacyProvider,
+                value: serde_json::json!({"provider": "youtube", "choice": null}),
+            },
+        ];
+        for request in &requests {
+            assert!(request.kept_for_people(), "{request:?}");
+            let mut rights = RightsTemplate::FullAccess.rights();
+            for area in Area::ALL {
+                rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+            }
+            assert!(!rights.allows_request(request), "{request:?}");
+        }
+        assert!(SET_SETTING.description.contains("`privacy_provider`"));
+        assert!(GET_SETTINGS.description.contains("`privacy`"));
+        let read: SettingKey = serde_json::from_value(serde_json::json!("privacy_provider")).expect("a key");
+        assert_eq!(read, SettingKey::PrivacyProvider);
     }
 
     /// Issue #304: listing and finding read, making, copying and moving write, the trash deletes. The

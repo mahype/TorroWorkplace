@@ -5098,6 +5098,21 @@ pub enum SettingKey {
     /// is off), `offline` when it cannot be reached, `busy` when its limiter asks to wait. `null` and
     /// the stored address are not asked. `settings.update_settings` checks only the form.
     SearxngAddress,
+    /// Whether content from other providers loads (issue #672, Settings › Privacy): `"always"`, `"ask"`
+    /// (the default: providers a person allowed load, blocked ones never, a new one is asked about where
+    /// its content would stand) or `"never"` (nothing loads and nothing is asked, whatever the list says).
+    /// It covers the pictures of mail, link previews and embedded videos in the chat, and with `"never"`
+    /// also the logos of senders (`torro_core::privacy::ForeignContent`). Only the app key, whatever the
+    /// value – a person in Settings › Privacy (point 14 of "Was nie nach außen geht", `docs/api.md`); a
+    /// client gets `forbidden`.
+    PrivacyContent,
+    /// One provider of the list of Settings › Privacy (issue #672, `torro_core::privacy::ProviderChange`):
+    /// `{"provider": "youtube", "choice": "allowed" | "blocked" | null}`, the provider's key as
+    /// `settings.get_settings` lists it under `privacy.providers` (`youtube` for YouTube, else a domain
+    /// such as `mailchimp.com` or an IP address). `null` takes it off the list, so it is asked about again.
+    /// At most 1000 providers. Only the app key, whatever the value, like
+    /// [`SettingKey::PrivacyContent`]; a client gets `forbidden`.
+    PrivacyProvider,
 }
 
 /// A place `calendar.search_places` found (task TE.5). Label and detail come from the person's own

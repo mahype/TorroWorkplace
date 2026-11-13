@@ -16718,6 +16718,42 @@ mod tests {
         assert!(settings(&core).await.tools.folders.is_empty(), "the person removes it");
     }
 
+    /// Issue #672, point 14: what loads from other providers is a person's alone. A client with every
+    /// right gets `forbidden` for both keys whatever the value and nobody is asked; the app key sets both
+    /// (whole settings of a client keep the stored ones: `SettingsStore::update_keeping_hidden`).
+    #[tokio::test]
+    async fn only_people_decide_about_content_from_other_providers() {
+        use serde_json::json;
+        use torro_core::privacy::{ForeignContent, ProviderChoice};
+        use torro_ipc::SettingKey;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights).await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let level = |value: &str| Request::SetSetting { key: SettingKey::PrivacyContent, value: json!(value) };
+        let provider = |choice: serde_json::Value| Request::SetSetting {
+            key: SettingKey::PrivacyProvider,
+            value: json!({"provider": "youtube", "choice": choice}),
+        };
+        for refused in [level("never"), level("always"), provider(json!("allowed")), provider(json!(null))] {
+            let answer = ask(&core, Some(&key), refused.clone()).await;
+            assert_eq!(code(&answer), "forbidden", "{refused:?}");
+            assert!(message(&answer).contains(&Lack::ForPeople.message()), "{answer:?}");
+        }
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+        assert!(settings(&core).await.privacy.is_default());
+
+        assert_eq!(ask(&core, Some(&app_key), level("never")).await, Response::Ok);
+        assert_eq!(ask(&core, Some(&app_key), provider(json!("blocked"))).await, Response::Ok);
+        let stored = settings(&core).await.privacy;
+        assert_eq!(stored.content, ForeignContent::Never);
+        assert_eq!(stored.providers.get("youtube"), Some(&ProviderChoice::Blocked));
+    }
+
     /// Issue #304, task WD.1: the commands of the tool `files` go by its switch and selection like the PDF
     /// tool's. Listing and finding need read access to `tools` only; without an allowed folder there is
     /// nothing to list and nothing to move to the trash.
