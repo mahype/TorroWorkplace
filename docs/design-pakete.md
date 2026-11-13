@@ -165,6 +165,7 @@ row_message = 76               # Mail-Zeile im Eingang; bestimmt auch die Dichte
 row_notice = 56                # andere Zeile im Eingang
 row_sidebar = 28               # Seitenleisten- und Menüzeile
 row_group = 32                 # Gruppenkopf in Listen
+row_contact = 52               # Kontaktzeile (zwei Zeilen: Name, Funktion)
 header = 48                    # Kopfleiste
 sidebar = 216                  # Seitenleiste
 props = 280                    # Eigenschaften-Spalte
@@ -353,7 +354,7 @@ eingebauten Designs prüft ein Test die Regeln beim Bauen.
 | Schrift | jede Stufe 11–40 groß; Zeilenhöhe ≥ Größe und ≤ 2 × Größe; `body` 12–18; `read` von `body` bis 20; `hero` 32–72 und `countdown` 20–48 (Erinnerung im Vollbild, ER1.5); jedes genutzte Gewicht hat eine Datei in der genutzten Schrift; `regular` ist Pflicht für `[fonts.text]` |
 | Layout-Abstände | `inset` 0–24; Innenränder 0–48; `reading_padding` je 0–80; `section_gap` 8–64; `item_gap` 2–24 |
 | Abstände | `space` aufsteigend, 2–64; `radius` nicht fallend (gleiche Stufen erlaubt, z. B. 4/4/4/4), 0–16 |
-| Maße | Bedienelemente (`control_sm` … `control_xl`) und `row_group` ≥ 24 (Klickziel); `row` 24–64; `row_two` 24–96; `row_message` 24–120 und `row_notice` 24–96 (Zeilen des Eingangs; die Form `line` braucht nur eine Zeile von 24); `row_sidebar` 24–40; `header` 32–64; `sidebar` 180–320; `props`, `panel` 280–520; `list`, `list_medium` 280–640; `rail` 40–80 und mindestens `control_lg` (der Knopf der Leiste passt hinein); `rail_wide` 180–320; `reading_max` 480–1200; `content_max` 560–1200; Karten (E8.2): `card_gap` 4–32, `avatar` und `avatar_lg` 24–64, `tile_sm` 16–32, `tile` 20–48, `tile_lg` 24–64, Avatare und Kacheln von klein nach groß wachsend; Mail-Fenster (E11.1): `command` 32–64, `pill` 28–64. Einstellungsseiten (#464) haben keine Obergrenze: `form_max` bestimmt ihre Spalten-Umbrüche (zwei ab 2 × `form_max` + `section_gap`, drei ab 3 × `form_max` + 2 × `section_gap`), `content_max` die Textbreite ihrer Zeilen und die Breite der Wertspalten einer Tabelle |
+| Maße | Bedienelemente (`control_sm` … `control_xl`) und `row_group` ≥ 24 (Klickziel); `row` 24–64; `row_two` und `row_contact` 24–96; `row_message` 24–120 und `row_notice` 24–96 (Zeilen des Eingangs; die Form `line` braucht nur eine Zeile von 24); `row_sidebar` 24–40; `header` 32–64; `sidebar` 180–320; `props`, `panel` 280–520; `list`, `list_medium` 280–640; `rail` 40–80 und mindestens `control_lg` (der Knopf der Leiste passt hinein); `rail_wide` 180–320; `reading_max` 480–1200; `content_max` 560–1200; Karten (E8.2): `card_gap` 4–32, `avatar` und `avatar_lg` 24–64, `tile_sm` 16–32, `tile` 20–48, `tile_lg` 24–64, Avatare und Kacheln von klein nach groß wachsend; Mail-Fenster (E11.1): `command` 32–64, `pill` 28–64. Einstellungsseiten (#464) haben keine Obergrenze: `form_max` bestimmt ihre Spalten-Umbrüche (zwei ab 2 × `form_max` + `section_gap`, drei ab 3 × `form_max` + 2 × `section_gap`), `content_max` die Textbreite ihrer Zeilen und die Breite der Wertspalten einer Tabelle |
 | Listen | `[list] style` nur `rows`, `line`, `cards` und `selection` nur `bar`, `fill` (ein anderes Wort lehnt schon das Lesen mit Zeilennummer ab); `avatar` 0 (aus) oder 20–48; `preview_lines` 1–2 |
 | Farbschema nur dunkel | mit `dark_only = true` kein `[colors.light]`; geprüft wird nur die dunkle Palette |
 | Dateien | Pfade nur innerhalb des Paketordners, keine Links nach außen; `design.toml` ≤ 64 KB, SVG ≤ 256 KB, PNG ≤ 2 MB, Schrift ≤ 5 MB, Paket ≤ 20 MB |
@@ -785,7 +786,7 @@ Farben oder Mail-Darstellung. Die Suite bringt genau drei Stufen mit:
 
 - **Die Regel:** Komfort und Dicht setzen nur `[space]`, `[layout]` (ohne `inset`) und die Höhen unter `[size]`
   (`control_sm`, `control`, `control_lg`, `control_xl`, `row`, `row_two`, `row_message`, `row_notice`, `row_sidebar`,
-  `row_group`, `header`, `hour`, `card_gap`, `command`, `pill`, `rail`, `rail_wide`). Schriftstufen (Größe und
+  `row_group`, `row_contact`, `header`, `hour`, `card_gap`, `command`, `pill`, `rail`, `rail_wide`). Schriftstufen (Größe und
   Zeilenhöhe), Radien, Breiten (`sidebar`, `list`, `props`, `panel`, `content_max`, `reading_max` …) und `[list]` erben
   sie vom Standard. Der Text bleibt also in jeder Stufe gleich groß; nur der Rand um ihn wächst oder schrumpft.
 - **Eingebaut, eine Datei je Stufe:** `designs/torro/design.toml`, `designs/comfort/design.toml`,
@@ -811,6 +812,7 @@ Farben oder Mail-Darstellung. Die Suite bringt genau drei Stufen mit:
 | `size.row_notice` (andere Eingangszeile) | 92 | 80 | 56 |
 | `size.row` (Aufgabenzeile) | 56 | 48 | 42 |
 | `size.row_two` · `row_group` | 64 · 44 | 56 · 40 | 48 · 32 |
+| `size.row_contact` (Kontaktzeile, #352) | 68 | 60 | 52 |
 | `size.row_sidebar` | 36 | 32 | 28 |
 | `size.control_sm` (Knopf) · `control` (Eingabe) | 40 · 42 | 36 · 38 | 30 · 32 |
 | `size.control_lg` · `control_xl` | 44 · 52 | 40 · 48 | 36 · 44 |
