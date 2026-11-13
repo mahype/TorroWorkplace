@@ -217,6 +217,11 @@ pub trait Seen {
     fn error(&self) -> Option<&str>;
     /// Whether `app` is installed on this computer: what "Used by …" names of an account.
     fn installed(&self, app: AppId) -> bool;
+    /// The address books of every account (`contacts.list_address_books`, issue #353), hidden ones
+    /// included: what the group "Contacts" of an account's page counts. None until they are known.
+    fn address_books(&self) -> &[torro_contacts::AddressBook] {
+        &[]
+    }
 }
 
 impl Seen for crate::Data {
@@ -239,6 +244,10 @@ impl Seen for crate::Data {
     /// As the core said last (`torro_gui::installed`): an app reads it there, like its switcher.
     fn installed(&self, app: AppId) -> bool {
         torro_gui::installed::is_installed(app)
+    }
+
+    fn address_books(&self) -> &[torro_contacts::AddressBook] {
+        &self.address_books
     }
 }
 
@@ -3771,12 +3780,17 @@ fn detail<'a>(
                 _ => (collections_moved(state, data), None),
             };
             let status = Some(status_group(account, data, now));
+            let contacts = contacts_group(account, data);
             let sources = sources_moved(state, account, data);
             match wide {
-                true => {
-                    page_blocks(vec![vec![status, collections, sources], vec![connection_group(account)], vec![rights]])
+                true => page_blocks(vec![
+                    vec![status, collections, contacts, sources],
+                    vec![connection_group(account)],
+                    vec![rights],
+                ]),
+                false => {
+                    page_blocks(vec![vec![status, rights, collections, contacts, sources, connection_group(account)]])
                 }
-                false => page_blocks(vec![vec![status, rights, collections, sources, connection_group(account)]]),
             }
         })
     })
@@ -3837,6 +3851,32 @@ fn collections_moved<'a>(state: &State, data: &dyn Seen) -> Option<Element<'a, M
         ],
         tr("Calendars and lists are chosen in Calendar and Tasks, in their settings."),
     )
+}
+
+/// How many address books `account` brings and how many of them are hidden by default (issue #353).
+fn book_counts(account: &AccountInfo, books: &[torro_contacts::AddressBook]) -> (usize, usize) {
+    let own = books.iter().filter(|book| book.account == account.id);
+    own.fold((0, 0), |(all, hidden), book| (all + 1, hidden + usize::from(book.hidden_by_default)))
+}
+
+/// "Contacts" (issue #353): how many address books the account brings, and how many of them are
+/// hidden – the system address book and "Recently contacted", which an agent reaches only when its
+/// rights name them. Which agents see which book is chosen on each agent's page. `None` for an
+/// account without address books (GitHub, mail, AI, ntfy, a server without Contacts).
+fn contacts_group<'a>(account: &AccountInfo, data: &dyn Seen) -> Option<Element<'a, Message>> {
+    let (all, hidden) = book_counts(account, data.address_books());
+    if all == 0 {
+        return None;
+    }
+    let detail = match hidden {
+        0 => None,
+        1 => Some(tr("1 of them hidden").to_string()),
+        n => Some(trf("{n} of them hidden", &[("n", &n)])),
+    };
+    let count = widgets::ellipsized_end(typo::body(), all.to_string(), theme::text_2);
+    let row = setting_row(None, tr("Address books"), detail, count);
+    let footer = tr("Agents see only the address books you choose on their page.");
+    Some(widgets::group(tr("Contacts"), vec![row], Some(footer.to_string())))
 }
 
 /// In place of the switches of a GitHub or Nextcloud account's notifications: they are switched on
@@ -6242,6 +6282,25 @@ mod tests {
         assert!(
             beside.iter().any(|(mark, name, press)| *name == ai.label && press.is_none() && *mark == Icon::Sparkles)
         );
+    }
+
+    /// Issue #353: the group "Contacts" of an account's page counts its address books and how many of
+    /// them are hidden; an account without any – GitHub, mail, a second server – has no group.
+    #[test]
+    fn a_page_counts_the_address_books_of_the_account() {
+        let data = demo::demo_data();
+        let of_kind = |kind: &str| data.accounts.iter().find(|account| account.kind == kind).expect(kind);
+        let nextcloud = of_kind("nextcloud");
+        assert_eq!(book_counts(nextcloud, &data.address_books), (4, 2));
+        assert!(contacts_group(nextcloud, &data).is_some());
+        for kind in ["github", "mail", "ai", "ntfy"] {
+            assert_eq!(book_counts(of_kind(kind), &data.address_books), (0, 0), "{kind}");
+            assert!(contacts_group(of_kind(kind), &data).is_none(), "{kind}");
+        }
+        let work = data.accounts.iter().find(|account| account.id == "nextcloud:anna@work.example.net").expect("work");
+        assert!(contacts_group(work, &data).is_none(), "the other server brings none");
+        let none = Data { address_books: Vec::new(), ..data.clone() };
+        assert!(contacts_group(nextcloud, &none).is_none(), "not known yet");
     }
 
     /// Issue #410: an account's page says which installed apps use it, by name in alphabetical

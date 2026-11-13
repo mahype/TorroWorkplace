@@ -208,7 +208,34 @@ pub fn demo_data() -> Data {
         decide_mail_to_cloud: Some(true),
         ..Settings::default()
     };
-    Data { accounts, settings, sources, ..Data::default() }
+    Data { accounts, settings, sources, address_books: address_books(), ..Data::default() }
+}
+
+/// The id of the sample's address book "Contacts" (`contacts.list_address_books`, issue #353): what
+/// the demo clients tick.
+pub const DEMO_BOOK: &str = "nextcloud:anna@cloud.example.org/contacts";
+/// The id of the sample's hidden book "Recently contacted".
+pub const DEMO_RECENT_BOOK: &str = "nextcloud:anna@cloud.example.org/z-app-generated--contactsinteraction--recent";
+
+/// The sample address books of the first Nextcloud account (issue #353): two the suite shows and the
+/// two Nextcloud generates, which are hidden unless a client's rights name them.
+pub fn address_books() -> Vec<torro_contacts::AddressBook> {
+    let book = |name: &str, display_name: &str, count: u32, hidden: bool| torro_contacts::AddressBook {
+        id: format!("nextcloud:anna@cloud.example.org/{name}"),
+        account: "nextcloud:anna@cloud.example.org".into(),
+        name: name.into(),
+        display_name: display_name.into(),
+        count,
+        writable: !hidden,
+        hidden_by_default: hidden,
+        untrusted: true,
+    };
+    vec![
+        book("contacts", "Contacts", 124, false),
+        book("team", "Team", 38, false),
+        book("z-server-generated--system", "System address book", 1204, true),
+        book("z-app-generated--contactsinteraction--recent", "Recently contacted", 57, true),
+    ]
 }
 
 /// The label of an AI account as the core gives it (`account::ai::label` there): the provider's
