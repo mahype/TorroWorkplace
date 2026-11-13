@@ -34,6 +34,33 @@ pub const CHAT_RING_CLASS: &str = "torro-chat-ring";
 /// `docs/chat.md`, decision 24). No app of its own, so not in [`AppId::ALL`]; it floats.
 pub const CHAT_VIEWER_CLASS: &str = "torro-chat-viewer";
 
+/// A kind of window of the suite that floats over the tiled windows instead of being tiled (issue #667,
+/// decision 16 in `docs/chat.md`): `binary` started with `flag` opens it, and it carries `class`.
+///
+/// Window managers that cannot match on a window's class tell these windows apart from their app's
+/// other windows only by the start command: AeroSpace and GlazeWM name every window of `torrochat`,
+/// the contact list too, by its bundle id or process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FloatingWindow {
+    /// The binary that opens the window, as in [`AppId::binary`].
+    pub binary: &'static str,
+    /// The flag of the start command that opens this window, e.g. `--conversation` (given as
+    /// `--conversation=<id>` or `--conversation <id>`).
+    pub flag: &'static str,
+    /// The window class (app id) the window carries.
+    pub class: &'static str,
+}
+
+/// Every window of the suite that floats. A new floating window (a call or device window of the chat)
+/// is entered here and floats under every window manager without anything else to change: Hyprland
+/// gets a rule per class, AeroSpace and GlazeWM float the window when it appears.
+pub const FLOATING_WINDOWS: [FloatingWindow; 4] = [
+    FloatingWindow { binary: "torrochat", flag: "--conversation", class: CHAT_CONVERSATION_CLASS },
+    FloatingWindow { binary: "torrochat", flag: "--ring", class: CHAT_RING_CLASS },
+    FloatingWindow { binary: "torrochat", flag: "--viewer", class: CHAT_VIEWER_CLASS },
+    FloatingWindow { binary: "torroworkplace", flag: "--template", class: WORKPLACE_DIALOG_CLASS },
+];
+
 /// An app of the suite, or one kind of window of an app with several ([`AppId::INBOX_MAIL`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AppId {
@@ -223,6 +250,19 @@ mod tests {
         assert_eq!(AppId::find(CHAT_CONVERSATION_CLASS), None, "a chat window is no app of its own");
         for class in [CHAT_CONVERSATION_CLASS, CHAT_RING_CLASS, CHAT_VIEWER_CLASS] {
             assert!(class.starts_with("torro-chat-"), "{class}");
+        }
+    }
+
+    /// Issue #667: a floating window is opened by an app's binary and carries no app's window class.
+    #[test]
+    fn floating_windows_belong_to_an_app_and_have_classes_of_their_own() {
+        for window in FLOATING_WINDOWS {
+            assert!(AppId::ALL.iter().any(|app| app.binary == window.binary), "{}", window.binary);
+            assert_eq!(AppId::find(window.class), None, "{} is no app", window.class);
+            assert!(window.flag.starts_with("--"), "{}", window.flag);
+        }
+        for (i, window) in FLOATING_WINDOWS.iter().enumerate() {
+            assert!(FLOATING_WINDOWS[i + 1..].iter().all(|other| other.class != window.class), "{}", window.class);
         }
     }
 
