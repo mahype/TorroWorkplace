@@ -4142,7 +4142,7 @@ impl Core {
         let mut scope = None;
         if let Some((key, engine)) = key.and_then(|key| self.clients.lent_for(key).map(|engine| (key, engine))) {
             ids.push(crate::audit::engine_id(&engine));
-            // A bot that runs for the assistant (task B.2): the log names the bot and the assistant.
+            // A bot that runs for another client (task B.2, issue #698): the log names the bot and the caller.
             scope = self.lent_scope(key);
             if let Some(LentFor::Delegated(delegation)) = &scope {
                 ids.extend(crate::audit::delegation_ids(&delegation.bot, &delegation.caller));
@@ -4230,7 +4230,8 @@ impl Core {
     ///   for it (task B.2, handled before this in [`Core::handle_client`]): here, never,
     /// - it proposes new bots only, never changes one (`bots.save_bot` with an `id`),
     /// - any client chats with a bot through `assistant.send_message` only with write access to
-    ///   `bots` as well, as `bots.ask_bot` needs: either way the bot works with its own rights.
+    ///   `bots` as well, as `bots.ask_bot` needs: either way the bot works with what both it and the
+    ///   client may (issue #698).
     ///
     /// A bot's client never gets this far with a `bots` or `assistant` command
     /// ([`torro_ipc::api::loops_back`]).
@@ -5968,11 +5969,11 @@ impl Core {
             let message = format!("the client that asked for {command} was removed meanwhile");
             return Response::Error { code: "forbidden".into(), message };
         };
-        // A bot that ran for the assistant (task B.2): what both may now, never more.
+        // A bot that ran for another client (task B.2, issue #698): what both may now, never more.
         let behalf =
             origin.behalf.as_ref().and_then(|behalf| self.clients.list().into_iter().find(|info| info.id == *behalf));
         let Some(effective) = origin.effective(&info.rights, behalf.as_ref().map(|info| &info.rights)) else {
-            let message = format!("the assistant that the bot asked {command} for was removed meanwhile");
+            let message = format!("the client the bot asked {command} for was removed meanwhile");
             return Response::Error { code: "forbidden".into(), message };
         };
         info.rights = effective;

@@ -171,8 +171,8 @@ pub trait Host: Send + Sync {
 
     /// [`Host::client`] for `actor`: the assistant's own client, or the bot's client (kind
     /// `torro_ipc::api::BOT_CLIENT`) with its rights as stored now; `None` when it is not there.
-    /// For [`Actor::Delegated`] (task B.2) the bot's client with the rights both it and the
-    /// assistant's client have now ([`torro_ipc::api::Rights::common`]), without the areas of
+    /// For [`Actor::Delegated`] (task B.2, issue #698) the bot's client with the rights both it and the
+    /// calling client have now ([`torro_ipc::api::Rights::common`]), without the areas of
     /// [`Delegation::without`]; `None` when either client is not there.
     fn client_of(&self, actor: &Actor) -> Option<ClientInfo> {
         match actor {
@@ -291,8 +291,8 @@ pub trait Host: Send + Sync {
     ///    provider is on (`not-connected`), an address that is no `http`/`https` address with a host
     ///    (`unsupported`);
     /// 3. the person's yes to the web for the client and `web.conversation`: the client is the
-    ///    actor's – for [`Actor::Delegated`] the assistant's, whose conversation that is
-    ///    ([`Delegation::conversation`]). Without one, or with one given before the conversation read
+    ///    actor's – for [`Actor::Delegated`] the caller's, with the assistant's conversation that asked
+    ///    ([`Delegation::conversation`]) or, for a client from outside (issue #698), the bot's own. Without one, or with one given before the conversation read
     ///    data from outside while `web.outside` is set now, the command waits for a person
     ///    ([`Response::Pending`]) whatever the rights say, as reading never asks otherwise
     ///    ([`crate::approvals::web_question`] says what). The approval keeps `web`
