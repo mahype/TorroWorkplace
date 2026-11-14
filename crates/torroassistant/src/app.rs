@@ -759,7 +759,10 @@ impl App {
             hover: None,
             archive_open: open == Some(Open::Archive),
             // Without a sidebar the bot's menu hangs in the drawer.
-            drawer: matches!(open, Some(Open::Drawer | Open::BotMenu)),
+            drawer: matches!(
+                open,
+                Some(Open::Drawer | Open::BotMenu | Open::RowMenu | Open::RecentMenu | Open::Archive)
+            ),
             sidebar: SidebarMode::default(),
             side: Split::default(),
             notice: None,
