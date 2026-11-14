@@ -640,10 +640,10 @@ pub struct Origin {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub without: Vec<Area>,
     /// The client a bot ran for (task B.2): the assistant's own client, when the assistant asked
-    /// the bot. An allowed command then runs with what both the asking client and this one may at
-    /// that moment ([`Rights::common`]), each without [`Origin::without`], and not at all once
-    /// this client was removed – so a person's "Allow" never gives the bot more than the assistant
-    /// had. `None` for every other request.
+    /// the bot, or a client from outside that asked it or wrote to it (issue #698). An allowed command
+    /// then runs with what both the asking client and this one may at that moment ([`Rights::common`]),
+    /// each without [`Origin::without`], and not at all once this client was removed – so a person's
+    /// "Allow" never gives the bot more than its caller had. `None` for every other request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behalf: Option<String>,
     /// The permission mode of the assistant's answer that asked (issue #132): an allowed command
@@ -699,8 +699,8 @@ impl Origin {
     }
 
     /// The rights an allowed command of a client with `rights` runs with: [`Origin::narrow`]ed, and
-    /// for a bot that ran for the assistant (task B.2, [`Origin::behalf`]) in common with the
-    /// assistant's client's rights `behalf` (narrowed the same way). `None` when [`Origin::behalf`]
+    /// for a bot that ran for another client (task B.2, issue #698, [`Origin::behalf`]) in common with
+    /// that client's rights `behalf` (narrowed the same way). `None` when [`Origin::behalf`]
     /// names a client and `behalf` is `None` (it was removed): then nothing runs.
     pub fn effective(&self, rights: &Rights, behalf: Option<&Rights>) -> Option<Rights> {
         let own = self.narrow(rights);

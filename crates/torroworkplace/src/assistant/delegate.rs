@@ -113,10 +113,10 @@ impl Assistant {
         let delegation = Delegation {
             bot: bot.id.clone(),
             client: bot.client.clone(),
-            assistant: assistant.to_string(),
+            caller: assistant.to_string(),
             without: without.to_vec(),
             mode,
-            conversation: main.to_string(),
+            conversation: Some(main.to_string()),
         };
         let asking = Request::AskBot { bot: bot.id.clone(), text: text.clone(), conversation: kept.clone() };
         if let Some(refused) = self.refusal(ai, &asking).await {
@@ -142,7 +142,7 @@ impl Assistant {
             mode: torro_ipc::assistant::Mode::Default,
             bot: Some(bot.clone()),
             // The assistant's model wrote it, not the person (issue #305).
-            from: Some(delegation.assistant.clone()),
+            from: Some(delegation.caller.clone()),
             on_behalf: Some(delegation),
         };
         let started = self.send(message, kind, Utc::now()).await;

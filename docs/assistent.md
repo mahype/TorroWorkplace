@@ -857,7 +857,7 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | **Stufe 2:** Bots auflisten | Seitenleiste „Bots“ | `bots.list_bots` · Read | `bots_list_bots` |
 | **Stufe 2:** Bot anlegen/ändern (ohne Rechte an Daten; von einem Client angelegt auch ohne Werkzeuge und Server) | Bot-Editor | `bots.save_bot` · Write | `bots_save_bot` |
 | **Stufe 2:** Bot löschen | Bot-Editor | `bots.delete_bot` · Delete | `bots_delete_bot` |
-| **Stufe 2:** Bot fragen | Chat mit dem Bot; Hauptbot gibt ab | `bots.ask_bot` · Write (startet einen Modelllauf) | `bots_ask_bot` |
+| **Stufe 2:** Bot fragen | Chat mit dem Bot; Hauptbot gibt ab | `bots.ask_bot` · Write (startet einen Modelllauf; für einen Client mit dem, was Bot und Client beide dürfen, #698) | `bots_ask_bot` |
 | **Stufe 2:** Rechte eines Bots | Bot-Editor › Access (Stufen je Bereich, „Ask first“, B.5); alles Feinere in Assistent › Einstellungen › Access bei diesem Bot | `clients.list_clients` · Admin, `clients.update_client` · Admin (gibt es, nur App-Schlüssel) | **Never** (Punkt 2) |
 | Freigabe im Chat entscheiden | Karte „Allow“/„Deny“, auf Entwurfs- und Eintragskarten „Send“/„Discard“ bzw. „Delete“/„Keep“ | `approvals.decide_approval` (gibt es) | **Never** (Punkt 3) |
 | Einträge als Karten zeigen | Karten im Verlauf | `assistant.show_items` · Write (nur Kennungen aus dieser Unterhaltung, max. 10) | `assistant_show_items` |
@@ -868,6 +868,12 @@ Neue Bereiche `assistant` und (Stufe 2) `bots` im Katalog. Ein Bot (Client `bot`
 `bots` nichts (keine Ketten); der Hauptbot darf `bots.list_bots` und `bots.ask_bot`. Ein fremder Agent, der `assistant_send_message` darf, lässt
 damit den Assistenten mit **dessen** Rechten arbeiten. Darum ist der Bereich `assistant` für andere
 Clients standardmäßig „Kein Zugriff“, auch in der Vorlage *Full access* (entschieden); man schaltet ihn je Agent bewusst an.
+Einen Bot dagegen, den ein fremder Client fragt (`bots.ask_bot`) oder dem er schreibt (`assistant.send_message` mit
+`bot`), lässt der Dienst nur mit dem arbeiten, was Bot und Client beide dürfen (`Rights::common`, wie beim
+Assistenten, Issue #698): Server, Werkzeuge und Bereiche, die der Client nicht hat, bleiben auch dem Bot zu; die
+Websuche braucht das Ja des Menschen in der Unterhaltung des Bots, und das Protokoll nennt den Client als
+Auftraggeber (`for:<client>`). Schreibt ein Client einen Bot um, öffnet ihm das also nichts. Chats des Menschen mit
+einem Bot laufen weiter mit den Rechten des Bots.
 
 ## Reihenfolge
 
