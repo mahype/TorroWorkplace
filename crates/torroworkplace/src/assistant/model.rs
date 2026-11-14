@@ -1729,6 +1729,7 @@ pub(crate) mod tests {
             tools,
             open_weights: None,
             context: None,
+            max_output: None,
             parameters: None,
             quantization: None,
             size: None,
@@ -2960,7 +2961,7 @@ pub(crate) mod tests {
         let calls = |step: usize| asked[step].messages.iter().filter(|message| !message.tool_calls.is_empty()).count();
         assert_eq!((calls(1), calls(2)), (1, 2), "the calls stay");
         for request in &asked {
-            anthropic_takes(&torro_core::ai::anthropic::chat_body(request, true));
+            anthropic_takes(&torro_core::ai::anthropic::chat_body(request, None, true));
         }
     }
 
@@ -3755,8 +3756,11 @@ pub(crate) mod tests {
             };
             finished(&assistant, &id).await;
 
-            let bodies: Vec<Value> =
-                script.asked().iter().map(|request| torro_core::ai::anthropic::chat_body(request, true)).collect();
+            let bodies: Vec<Value> = script
+                .asked()
+                .iter()
+                .map(|request| torro_core::ai::anthropic::chat_body(request, None, true))
+                .collect();
             assert_eq!(bodies.len(), 2, "{effort:?}: the read, then two steps of the model");
             for body in &bodies {
                 anthropic_takes(body);

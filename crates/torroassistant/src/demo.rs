@@ -1032,6 +1032,7 @@ fn models(account: &str) -> Option<Vec<AiModel>> {
         tools,
         open_weights: Some(true),
         context: None,
+        max_output: None,
         parameters: None,
         quantization: None,
         size: None,
