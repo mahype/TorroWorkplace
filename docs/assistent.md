@@ -675,7 +675,8 @@ neben `files`, weil der Inhalt dabei an den Anbieter des Modells geht (Entscheid
 - **Nur Text** (Entscheidung 33): reguläre Dateien in UTF-8 ohne NUL-Byte, höchstens 10 MiB. Ordner, Binärdateien und
   zu große Dateien sind `unsupported`; PDF und Office-Dateien bleiben bei den ArtCraft-Werkzeugen (#303). Eine
   Byte-Order-Mark lässt das Lesen weg, eine Änderung behält sie.
-- **Lesen seitenweise:** ganze Zeilen bis 10.000 Zeichen ab `from_line`, damit eine Seite in die 16.000 Zeichen einer
+- **Lesen seitenweise:** ganze Zeilen bis 10.000 Zeichen ab `from_line`, gezählt wie im JSON (Zeilenumbruch und
+  Anführungszeichen zählen doppelt), damit eine Seite in die 16.000 Zeichen einer
   Antwort an das Modell passt; eine Seite geht ganz an das Modell, nicht nur ihr Anfang wie andere lange Texte. Nur
   eine einzelne längere Zeile wird geschnitten. Die Antwort nennt die Zeilenzahl, ob mehr folgt (`more`), ab welcher
   Zeile es weitergeht (`next_line`) und die **Version**: den SHA-256 der Bytes.

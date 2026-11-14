@@ -235,10 +235,13 @@ fn planned(allowed: &Allowed, request: &Request) -> Result<Option<Planned>, Cont
                 many if !all => return Err(ContentError::Ambiguous(many)),
                 _ => {}
             }
-            let new_text = old.text.replace(find.as_str(), replace);
-            if new_text.len() as u64 > MAX_TEXT_FILE_BYTES {
+            // The size the change makes, before it is made: a short text replaced many times by a long one must not
+            // take the core's memory first.
+            let size = (old.text.len() - hits.len() * find.len()) as u64 + (hits.len() as u64) * replace.len() as u64;
+            if size > MAX_TEXT_FILE_BYTES {
                 return Err(FolderError::Unsupported(TOO_BIG).into());
             }
+            let new_text = old.text.replace(find.as_str(), replace);
             let entry = EntryId::of(&file).map(|id| format!("{id:?}")).unwrap_or_default();
             let paths = PathFacts { from: Some(file.to_string_lossy().into_owned()), to: None };
             let what = crate::audit::hashed(&format!("{find}\0{replace}\0{all}"));
@@ -325,7 +328,7 @@ fn version_of(bytes: &[u8]) -> String {
 }
 
 /// One page of the text file `file` from line `from_line` (counting from 1): whole lines, each with its line break, up
-/// to [`MAX_PAGE_CHARS`] characters; a first line longer than that is cut. Past the last line the text is empty.
+/// to [`MAX_PAGE_CHARS`] characters as JSON writes them ([`escaped`]); a first line longer than that is cut. Past the last line the text is empty.
 fn read(file: &Path, from_line: u32) -> Result<FileText, FolderError> {
     let TextFile { text, version, .. } = text_file(file)?;
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
@@ -333,11 +336,14 @@ fn read(file: &Path, from_line: u32) -> Result<FileText, FolderError> {
     let start = usize::try_from(from_line.saturating_sub(1)).unwrap_or(usize::MAX);
     let (mut page, mut chars, mut end) = (String::new(), 0usize, start);
     for line in lines.iter().skip(start) {
-        let count = line.chars().count();
+        let count: usize = line.chars().map(escaped).sum();
         if chars + count > MAX_PAGE_CHARS {
             if end == start {
                 // A single line longer than a page: cut, and the next page starts after it.
-                page.extend(line.chars().take(MAX_PAGE_CHARS));
+                let mut room = MAX_PAGE_CHARS;
+                page.extend(
+                    line.chars().take_while(|c| room.checked_sub(escaped(*c)).map(|left| room = left).is_some()),
+                );
                 end += 1;
             }
             break;
@@ -348,6 +354,17 @@ fn read(file: &Path, from_line: u32) -> Result<FileText, FolderError> {
     }
     let next_line = (end < lines.len()).then(|| u32::try_from(end + 1).unwrap_or(u32::MAX));
     Ok(FileText::new(file.to_string_lossy().into_owned(), page, from_line, total, next_line, version))
+}
+
+/// How many characters `c` takes in JSON: two for a quote, a backslash and the usual control characters (`\n`), six
+/// for another control character (`\u0001`), else one. A page is measured so (`MAX_PAGE_CHARS`), as the model gets it
+/// as JSON within 16,000 characters: a file of many line breaks or quotes would else not fit and be cut.
+fn escaped(c: char) -> usize {
+    match c {
+        '"' | '\\' | '\n' | '\r' | '\t' | '\u{8}' | '\u{c}' => 2,
+        c if u32::from(c) < 0x20 => 6,
+        _ => 1,
+    }
 }
 
 /// The lines of the text files in `folder` and below that hold `text`, without regard to case, by path and line; the
@@ -473,8 +490,8 @@ fn write(allowed: &Allowed, target: &Path, text: &str) -> Result<PathBuf, Folder
 }
 
 /// Replaces the text file `file`, read at version `read`, with `text` (after a byte order mark when `bom`): written whole
-/// to a temporary file in the same folder, made readable by its owner only and given the rights of the old file once
-/// written, then renamed over it, so the file is never half written and its text never open to others meanwhile. Just
+/// to a temporary file in the same folder, made readable by its owner only, then renamed over it and given the rights of
+/// the old file, so the file is never half written and its text never open to others meanwhile. Just
 /// before the rename the file is read again: changed since (an editor saved it), nothing is replaced and the answer is
 /// `conflict`. Answers the new version.
 fn replace_file(allowed: &Allowed, file: &Path, read: &str, text: &str, bom: bool) -> Result<String, ContentError> {
@@ -504,10 +521,7 @@ fn replace_file(allowed: &Allowed, file: &Path, read: &str, text: &str, bom: boo
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(failed(err)),
         };
-        let written = out
-            .write_all(&bytes)
-            .and_then(|()| out.sync_all())
-            .and_then(|()| fs::set_permissions(&temporary, permissions.clone()));
+        let written = out.write_all(&bytes).and_then(|()| out.sync_all());
         drop(out);
         let gone = |err: ContentError| {
             let _ = fs::remove_file(&temporary);
@@ -526,6 +540,9 @@ fn replace_file(allowed: &Allowed, file: &Path, read: &str, text: &str, bom: boo
         if let Err(err) = fs::rename(&temporary, file) {
             return gone(failed(err));
         }
+        // The rights of the old file only now: on Windows a read-only temporary file could neither replace the old
+        // one nor be removed again.
+        fs::set_permissions(file, permissions).map_err(failed)?;
         return Ok(version_of(&bytes));
     }
     Err(FolderError::Invalid(ALL_TAKEN).into())
@@ -566,20 +583,60 @@ pub fn diff(old: &str, hits: &[(usize, usize)], replace: &str) -> Vec<String> {
     // Groups of whole lines, each with the hits in it.
     let mut groups: Vec<Group> = Vec::new();
     for &(from, to) in hits {
-        let first = line_of(from);
-        let mut last = line_of(to.saturating_sub(1).max(from));
-        // What stands before the next line once replaced: text without a line break there joins it (a whole line
-        // removed only moves the next one up).
-        let head = format!("{}{replace}", &old[starts[first]..from]);
-        if to > from && to < old.len() && old.as_bytes()[to - 1] == b'\n' && !head.is_empty() && !head.ends_with('\n') {
-            last = line_of(to);
-        }
+        let (first, last) = (line_of(from), line_of(to.saturating_sub(1).max(from)));
         match groups.last_mut() {
             Some((_, end, inside)) if first <= *end + 1 => {
                 *end = (*end).max(last);
                 inside.push((from, to));
             }
             _ => groups.push((first, last, vec![(from, to)])),
+        }
+    }
+    // The new text of a group's lines (`from` to the end of its last line).
+    let replaced = |first: usize, last: usize, inside: &[(usize, usize)]| {
+        let (from, to) = (starts[first], starts.get(last + 1).copied().unwrap_or(old.len()));
+        let mut new = String::new();
+        let mut at = from;
+        for &(hit_from, hit_to) in inside {
+            new.push_str(&old[at..hit_from]);
+            new.push_str(replace);
+            at = hit_to;
+        }
+        new.push_str(&old[at..to]);
+        new
+    };
+    // A group whose new text ends without a line break before a next line joins that line: it is touched too, and so
+    // is a group it then reaches. Worked out from the new text, so the card shows what the core writes.
+    let mut joined: Vec<Group> = Vec::new();
+    for group in groups {
+        let mut group = match joined.pop() {
+            Some(previous) if group.0 <= previous.1 + 1 => {
+                (previous.0, previous.1.max(group.1), [previous.2, group.2].concat())
+            }
+            Some(previous) => {
+                joined.push(previous);
+                group
+            }
+            None => group,
+        };
+        loop {
+            let new = replaced(group.0, group.1, &group.2);
+            if group.1 + 1 >= lines || new.is_empty() || new.ends_with('\n') {
+                break;
+            }
+            group.1 += 1;
+        }
+        joined.push(group);
+    }
+    // Joining may have reached the next group: merge again.
+    let mut groups: Vec<Group> = Vec::new();
+    for group in joined {
+        match groups.last_mut() {
+            Some(previous) if group.0 <= previous.1 + 1 => {
+                previous.1 = previous.1.max(group.1);
+                previous.2.extend(group.2);
+            }
+            _ => groups.push(group),
         }
     }
     let mut shown: Vec<String> = Vec::new();
@@ -596,14 +653,7 @@ pub fn diff(old: &str, hits: &[(usize, usize)], replace: &str) -> Vec<String> {
             shown.push(format!("  {}", excerpt(line_text(line), 0)));
         }
         let (from, to) = (starts[first], starts.get(last + 1).copied().unwrap_or(old.len()));
-        let mut new = String::new();
-        let mut at = from;
-        for (hit_from, hit_to) in inside {
-            new.push_str(&old[at..hit_from]);
-            new.push_str(replace);
-            at = hit_to;
-        }
-        new.push_str(&old[at..to]);
+        let new = replaced(first, last, &inside);
         // Where old and new part, in characters from the start of the group.
         let parting = old[from..to].chars().zip(new.chars()).take_while(|(a, b)| a == b).count();
         let mut offset = 0;
@@ -737,8 +787,9 @@ mod tests {
         write_raw(&place, "home/Documents/long.md", line.repeat(25).as_bytes());
         let first = read_page(&place, "home/Documents/long.md", None).expect("read");
         assert_eq!((first.from_line, first.total_lines, first.more), (1, 25, true));
-        assert_eq!(first.text.chars().count(), 10_000, "ten whole lines");
-        assert_eq!(first.next_line, Some(11), "where to read on");
+        // Nine whole lines: as JSON each line break counts two, so a tenth would pass the page.
+        assert_eq!(first.text.chars().count(), 9_000, "nine whole lines");
+        assert_eq!(first.next_line, Some(10), "where to read on");
         assert!(first.untrusted && first.version == version_of(line.repeat(25).as_bytes()));
         let last = read_page(&place, "home/Documents/long.md", Some(21)).expect("read");
         assert_eq!((last.text.lines().count(), last.more), (5, false));
@@ -752,6 +803,11 @@ mod tests {
         assert_eq!((cut.text.chars().count(), cut.next_line), (MAX_PAGE_CHARS, Some(2)));
         assert_eq!(read_page(&place, "home/Documents/one.txt", Some(2)).expect("read").text, "end\n");
 
+        // Measured as JSON writes it: a page of quotes and line breaks reaches the model whole (review of #705).
+        write_raw(&place, "home/Documents/table.csv", "\"1\",\"2\"\r\n".repeat(2_000).as_bytes());
+        let table = read_page(&place, "home/Documents/table.csv", None).expect("read");
+        let page = serde_json::to_value(Response::FileText { file: table.clone() }).expect("json");
+        assert!(page.to_string().chars().count() < 12_000 && table.next_line.is_some());
         // A byte order mark is left out of the text, not of the version.
         write_raw(&place, "home/Documents/bom.txt", "\u{feff}Hallo\n".as_bytes());
         let bom = read_page(&place, "home/Documents/bom.txt", None).expect("read");
@@ -959,6 +1015,9 @@ mod tests {
         assert_eq!(diff(text, &both, "X"), ["  a", "- b", "+ X", "  c", "  d", "- e", "+ X", "  f"]);
         // A hit whose line break the replacement drops joins the next line.
         assert_eq!(diff("a\nb\n", &hits("a\nb\n", "a\n"), "a "), ["- a", "- b", "+ a b"]);
+        // Joined by an earlier hit of the same group: the line after it is touched too (review of #705).
+        assert_eq!(diff("ax\nx\nc", &hits("ax\nx\nc", "x\n"), ""), ["- ax", "- x", "- c", "+ ac"]);
+        assert_eq!(diff("a\n\nc", &hits("a\n\nc", "\n"), ""), ["- a", "- ", "- c", "+ ac"]);
         // In a long line the part around the change shows, so old and new never look the same.
         let long = format!("{}word{}\n", "x".repeat(400), "y".repeat(200));
         let shown = diff(&long, &hits(&long, "word"), "WORD");

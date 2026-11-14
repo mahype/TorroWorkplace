@@ -77,8 +77,9 @@ pub const MAX_NAME_PATTERN_CHARS: usize = 200;
 /// bytes (10 MiB, issue #705); a bigger one is `unsupported` (and passed over by the search).
 pub const MAX_TEXT_FILE_BYTES: u64 = 10 * 1024 * 1024;
 
-/// At most this many characters in one page of `tools.read_file` ([`FileText::text`]): answers to the model
-/// are cut at 16,000 characters, so a page stays well below and a longer file is read in steps.
+/// At most this many characters in one page of `tools.read_file` ([`FileText::text`]), counted as JSON writes them (a
+/// line break or a quote counts two): answers to the model are cut at 16,000 characters, so a page stays well below
+/// and a longer file is read in steps.
 pub const MAX_PAGE_CHARS: usize = 10_000;
 
 /// At most this many bytes of text `tools.write_file` writes (1 MiB); a change by `tools.edit_file` may make a file of
