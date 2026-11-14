@@ -5,6 +5,9 @@
 //!   closes.
 //! - `--open <state>`: start in a state ([`Open`]), for the pictures of the visual check; needs
 //!   `--demo` (without it the start ends with exit code 64).
+//! - `--contact=<id>`: open this contact once the first load came, as a click on it would (issue
+//!   #356: the core starts the window so for "Open contact"); an id the list does not hold leaves the
+//!   list alone.
 //! - `--appearance light|dark|system`: this process only, nothing is stored.
 //! - `--design <id>`, `--font <id>`, `--color-scheme <id>`: draw with this design, font or colour
 //!   scheme; need `--demo`.
@@ -54,11 +57,17 @@ pub enum Open {
     NoAccount,
     /// The first load failed (set after loading).
     Error,
+    /// The view "Duplicates" with Anna Berg twice (issue #726).
+    Duplicates,
+    /// The dialog "Import vCard" with sample numbers, without a file (issue #725).
+    Import,
+    /// The dialog "Merge contacts?" for Anna Berg (issue #726).
+    Merge,
 }
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 18] = [
+    pub const ALL: [(&'static str, Open); 21] = [
         ("list", Open::List),
         ("by-city", Open::ByCity),
         ("by-book", Open::ByBook),
@@ -77,6 +86,9 @@ impl Open {
         ("empty", Open::Empty),
         ("no-account", Open::NoAccount),
         ("error", Open::Error),
+        ("duplicates", Open::Duplicates),
+        ("import", Open::Import),
+        ("merge", Open::Merge),
     ];
 
     /// The uid of the demo contact this state opens in the side panel, if it opens one.
@@ -96,6 +108,8 @@ impl Open {
 pub struct Launch {
     pub demo: bool,
     pub open: Option<Open>,
+    /// `--contact=<id>`: the contact to open after the first load.
+    pub contact: Option<String>,
     pub appearance: Option<Appearance>,
     pub design: Option<String>,
     pub font: Option<String>,
@@ -164,6 +178,8 @@ impl Launch {
                 None => return Err(unknown("--open", word, Open::ALL.iter().map(|(name, _)| *name).collect())),
             },
         };
+        // Not only for the demo: the core starts the window with it.
+        let contact = flag_value(args, "--contact")?.map(str::trim).filter(|id| !id.is_empty()).map(str::to_owned);
         let appearance = match flag_value(args, "--appearance")? {
             None => None,
             Some("light") => Some(Appearance::Light),
@@ -185,7 +201,7 @@ impl Launch {
         let design = part("--design", design::Part::Design)?;
         let font = part("--font", design::Part::Font)?;
         let color_scheme = part("--color-scheme", design::Part::ColorScheme)?;
-        Ok(Launch { demo, open, appearance, design, font, color_scheme })
+        Ok(Launch { demo, open, contact, appearance, design, font, color_scheme })
     }
 }
 
@@ -221,5 +237,17 @@ mod tests {
         assert_eq!(Launch::parse(&args(&["--design", "dense"])), Err(LaunchError::NeedsDemo("--design")));
         assert!(Launch::parse(&args(&["--appearance", "blue"])).is_err());
         assert_eq!(Launch::parse(&args(&[])).expect("plain"), Launch::default());
+    }
+
+    /// Issue #356: `--contact` needs no demo and takes both spellings.
+    #[test]
+    fn a_contact_to_open() {
+        let id = "nextcloud:anna@cloud/contacts/demo-01";
+        let launch = Launch::parse(&args(&[&format!("--contact={id}")])).expect("valid");
+        assert_eq!(launch.contact.as_deref(), Some(id));
+        assert!(!launch.demo);
+        assert_eq!(Launch::parse(&args(&["--contact", id])).expect("valid").contact.as_deref(), Some(id));
+        assert_eq!(Launch::parse(&args(&["--contact="])).expect("valid").contact, None, "an empty id is none");
+        assert_eq!(Launch::parse(&args(&["--contact"])), Err(LaunchError::MissingValue("--contact")));
     }
 }

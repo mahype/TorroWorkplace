@@ -6,7 +6,8 @@
 //! is being edited. Pictures come in batches of [`PHOTO_BATCH`] and are kept per contact and version.
 //!
 //! What the person sees ([`View`]): all contacts, the favourites, the ones used last, the birthdays of
-//! the coming year, a book or a group of a book. The list groups by group, town or book
+//! the coming year, the contacts that look like one person ([`crate::duplicates`]), a book or a group
+//! of a book. The "…" of the header imports and exports vCard files ([`crate::transfer`]). The list groups by group, town or book
 //! ([`GroupBy`]); the choice and the folded heads are kept in `ui.json`. The search asks the core
 //! ([`backend::search`]) [`SEARCH_PAUSE`] after the last key.
 
@@ -20,7 +21,8 @@ use iced::widget::image::Handle;
 use iced::widget::{operation, text_editor};
 use iced::{Point, Size, Subscription, Task, Theme, keyboard};
 use torro_contacts::{
-    AddressBook, Birthday, Contact, ContactSummary, ContactsError, ContactsSource, Keep, Moved, PhotoSize,
+    AddressBook, Birthday, Contact, ContactSummary, ContactsError, ContactsSource, DuplicateGroup, Imported, Keep,
+    Merged, Moved, PhotoSize,
 };
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
@@ -37,9 +39,11 @@ use torro_ipc::contacts::MAX_PHOTO_BYTES;
 
 use crate::backend::{self, Backend, Loaded};
 use crate::contact;
+use crate::duplicates::{self, Merge};
 use crate::edit::{self, Draft, List};
 use crate::launch::{Launch, Open};
 use crate::list::{GroupBy, Key};
+use crate::transfer::{self, Import, Scope};
 
 /// The window's identity: class `torro-contacts`, binary `torrocontacts`, state in `torrocontacts/`.
 pub const APP: AppId = AppId::CONTACTS;
@@ -79,6 +83,8 @@ pub enum View {
     Recent,
     /// The birthdays of the coming year by month.
     Birthdays,
+    /// The contacts that look like one person, by group (issue #726).
+    Duplicates,
     /// One address book (its id).
     Book(String),
     /// One group of a book (book id, name).
@@ -90,6 +96,10 @@ pub enum View {
 pub enum Menu {
     /// "Group by" in the header.
     GroupBy,
+    /// The "…" of the header: import and export (issue #725).
+    Header,
+    /// The address books of the dialog "Import vCard".
+    ImportBook,
     /// The navigation of a narrow window, top left.
     Nav,
     /// The "…" of the contact's head.
@@ -109,6 +119,10 @@ pub enum Menu {
 pub enum Dialog {
     /// "Delete contact?"
     Delete,
+    /// "Import vCard" ([`App::import`]).
+    Import,
+    /// "Merge contacts?" ([`App::merge`]).
+    Merge,
 }
 
 /// The contact in the side panel.
@@ -266,6 +280,33 @@ pub enum Message {
     PhotoChosen(String, Option<Result<Vec<u8>, String>>),
     RemovePhoto,
     FileDropped(PathBuf),
+
+    // -- Import and export (issue #725)
+    /// "Import vCard…": the system's dialog picks the file.
+    ImportVcard,
+    ImportChosen(Option<PathBuf>),
+    /// Another address book in the dialog: the trial run counts again.
+    ImportBook(String),
+    /// A trial run answered; the number says which, so one for another book is dropped.
+    ImportCounted(u64, Result<Imported, ContactsError>),
+    /// "Import {n}".
+    ImportConfirm,
+    Imported(Result<Imported, ContactsError>),
+    /// "Export…" of the header: what the view shows.
+    Export,
+    /// "Export vCard…" of the open contact.
+    ExportContact,
+    /// The export wrote its file (`None`: the person cancelled the save dialog).
+    Exported(Option<Result<u32, String>>),
+
+    // -- Duplicates (issue #726)
+    /// "Keep" of a card: the group ([`duplicates::key`]) and the contact that stays.
+    Keep(String, String),
+    NotDuplicates(String),
+    Dismissed(Result<(), ContactsError>),
+    AskMerge(String),
+    Merge,
+    MergedContacts(Result<Merged, ContactsError>),
 }
 
 pub struct App {
@@ -289,6 +330,16 @@ pub struct App {
     pub(crate) contacts: Vec<ContactSummary>,
     pub(crate) birthdays: Vec<Birthday>,
     pub(crate) recent: Vec<String>,
+    /// The groups of duplicates ([`crate::duplicates`]).
+    pub(crate) duplicates: Vec<DuplicateGroup>,
+    /// The contact the person keeps per group ([`duplicates::key`]); a group without stays with its first.
+    pub(crate) keep: HashMap<String, String>,
+    /// The dialog "Import vCard" while it is open.
+    pub(crate) import: Option<Import>,
+    /// The number of the last trial run asked for ([`Message::ImportCounted`]).
+    import_asked: u64,
+    /// The dialog "Merge contacts?" while it is open.
+    pub(crate) merge: Option<Merge>,
     /// The first load came (or failed and was shown).
     pub(crate) loaded: bool,
     /// A load is out: the timer asks again only after its answer.
@@ -370,6 +421,11 @@ impl App {
             contacts: Vec::new(),
             birthdays: Vec::new(),
             recent: Vec::new(),
+            duplicates: Vec::new(),
+            keep: HashMap::new(),
+            import: None,
+            import_asked: 0,
+            merge: None,
             loaded: false,
             loading: false,
             error: None,
@@ -578,6 +634,11 @@ impl App {
             View::All | View::Birthdays => self.contacts.iter().filter(passes).collect(),
             View::Favorites => self.contacts.iter().filter(|c| c.favorite).filter(passes).collect(),
             View::Recent => self.recent.iter().filter_map(|id| self.summary(id)).filter(passes).collect(),
+            View::Duplicates => {
+                let ids: HashSet<&str> =
+                    self.duplicates.iter().flat_map(|g| g.contacts.iter().map(|c| c.id.as_str())).collect();
+                self.contacts.iter().filter(|c| ids.contains(c.id.as_str())).filter(passes).collect()
+            }
             View::Book(id) => self.contacts.iter().filter(|c| &c.book == id).filter(passes).collect(),
             View::Group(book, name) => self
                 .contacts
@@ -606,6 +667,8 @@ impl App {
     pub fn rows(&self) -> Vec<String> {
         let rows: Vec<String> = match &self.view {
             View::Recent => self.shown().into_iter().map(|c| c.id.clone()).collect(),
+            // The cards of the duplicates are no rows: the cursor has nothing to walk there.
+            View::Duplicates => Vec::new(),
             View::Birthdays => {
                 let birthdays = self.shown_birthdays();
                 crate::list::birthday_heads(&birthdays)
@@ -968,7 +1031,7 @@ impl App {
                     self.dialog = Some(Dialog::Delete);
                 }
             }
-            Message::CloseDialog => self.dialog = None,
+            Message::CloseDialog => self.close_dialog(),
             Message::Delete => {
                 self.dialog = None;
                 let Some((id, etag)) = self.open_contact().map(|c| (c.id.clone(), c.etag.clone().unwrap_or_default()))
@@ -1211,6 +1274,173 @@ impl App {
                     Message::PhotoChosen(id.clone(), picture)
                 });
             }
+
+            Message::ImportVcard => {
+                self.menu = None;
+                return Task::perform(transfer::choose_vcard(), Message::ImportChosen);
+            }
+            Message::ImportChosen(None) => {}
+            Message::ImportChosen(Some(path)) => {
+                let Some(book) = self.new_book() else {
+                    self.notify(tr("No address book here may be written."));
+                    return Task::none();
+                };
+                self.import = Some(Import { path, book, asked: 0, counts: None, busy: false, error: None });
+                self.dialog = Some(Dialog::Import);
+                return self.count_import();
+            }
+            Message::ImportBook(book) => {
+                self.menu = None;
+                let writable = self.book(&book).is_some_and(|b| b.writable);
+                match &mut self.import {
+                    Some(import) if writable && !import.busy && import.book != book => import.book = book,
+                    _ => return Task::none(),
+                }
+                return self.count_import();
+            }
+            Message::ImportCounted(asked, result) => {
+                if let Some(import) = self.import.as_mut().filter(|i| i.asked == asked) {
+                    match result {
+                        Ok(counts) => {
+                            import.counts = Some(counts);
+                            import.error = None;
+                        }
+                        Err(err) => {
+                            import.counts = None;
+                            import.error = Some(transfer::import_failed(&err));
+                        }
+                    }
+                }
+            }
+            Message::ImportConfirm => {
+                let Some(import) = self.import.as_mut().filter(|i| !i.busy && i.new_count() > 0) else {
+                    return Task::none();
+                };
+                import.busy = true;
+                let task = transfer::import(self.backend.clone(), import.book.clone(), import.path.clone(), false);
+                return Task::perform(task, Message::Imported);
+            }
+            Message::Imported(result) => match result {
+                Ok(imported) => {
+                    self.import = None;
+                    if self.dialog == Some(Dialog::Import) {
+                        self.dialog = None;
+                    }
+                    self.notify(trf("{n} contacts imported", &[("n", &imported.created.to_string())]));
+                    return self.load();
+                }
+                // The dialog stays with the reason; nothing passes for done.
+                Err(err) => match &mut self.import {
+                    Some(import) => {
+                        import.busy = false;
+                        import.error = Some(transfer::import_failed(&err));
+                    }
+                    None => self.notify(transfer::import_failed(&err)),
+                },
+            },
+            Message::Export => {
+                self.menu = None;
+                let scope = self.export_scope();
+                let name = match &self.view {
+                    View::All => None,
+                    view => Some(self.view_name(view)),
+                };
+                return Task::perform(
+                    transfer::export(self.backend.clone(), scope, transfer::file_name(name.as_deref())),
+                    Message::Exported,
+                );
+            }
+            Message::ExportContact => {
+                self.menu = None;
+                let Some((id, name)) = self.open_contact().map(|c| (c.id.clone(), c.shown_name())) else {
+                    return Task::none();
+                };
+                let scope = Scope { ids: vec![id], ..Scope::default() };
+                return Task::perform(
+                    transfer::export(self.backend.clone(), scope, transfer::file_name(Some(&name))),
+                    Message::Exported,
+                );
+            }
+            Message::Exported(None) => {}
+            Message::Exported(Some(Ok(count))) => {
+                self.notify(trf("{n} contacts exported", &[("n", &count.to_string())]));
+            }
+            Message::Exported(Some(Err(err))) => self.notify(trf("Nothing was exported: {error}", &[("error", &err)])),
+
+            Message::Keep(group, id) => {
+                self.keep.insert(group, id);
+            }
+            Message::NotDuplicates(group) => {
+                let Some(ids) = self.duplicate_group(&group).map(|g| duplicates::ids_and_etags(g).0) else {
+                    return Task::none();
+                };
+                let backend = self.backend.clone();
+                return Task::perform(async move { backend.dismiss_duplicates(ids).await }, Message::Dismissed);
+            }
+            Message::Dismissed(result) => {
+                match result {
+                    Ok(()) => self.notify(tr("Marked as different people")),
+                    Err(err) => self.notify(failed(&err)),
+                }
+                return self.load();
+            }
+            Message::AskMerge(group) => {
+                if let Some(found) = self.duplicate_group(&group)
+                    && let Some(keep) = self.kept_of(found)
+                    && duplicates::blocked(found, &keep.id).is_none()
+                {
+                    self.merge = Some(Merge { group, busy: false, error: None });
+                    self.dialog = Some(Dialog::Merge);
+                }
+            }
+            Message::Merge => {
+                let Some(merge) = self.merge.as_ref().filter(|m| !m.busy) else { return Task::none() };
+                let Some(group) = self.duplicate_group(&merge.group) else { return Task::none() };
+                let Some(keep) = self.kept_of(group).map(|c| c.id.clone()) else { return Task::none() };
+                let (ids, etags) = duplicates::ids_and_etags(group);
+                if let Some(merge) = &mut self.merge {
+                    merge.busy = true;
+                    merge.error = None;
+                }
+                let backend = self.backend.clone();
+                return Task::perform(
+                    async move { backend.merge_contacts(ids, etags, keep).await },
+                    Message::MergedContacts,
+                );
+            }
+            Message::MergedContacts(result) => match result {
+                Ok(merged) => {
+                    let asked: Vec<String> = self
+                        .merge
+                        .take()
+                        .and_then(|m| self.duplicate_group(&m.group).map(|g| duplicates::ids_and_etags(g).0))
+                        .unwrap_or_default();
+                    if self.dialog == Some(Dialog::Merge) {
+                        self.dialog = None;
+                    }
+                    // A contact the merge deleted closes its panel (unless it is being edited, which keeps
+                    // the input); the kept one follows the load.
+                    let gone = |id: &str| id != merged.contact.id && !merged.left.iter().any(|l| l == id);
+                    let open = self.detail.as_ref().filter(|d| d.draft.is_none()).and_then(|d| d.id.clone());
+                    if open.is_some_and(|id| asked.contains(&id) && gone(&id)) {
+                        self.detail = None;
+                        self.large = None;
+                    }
+                    if merged.left.is_empty() {
+                        self.notify(tr("Contacts merged"));
+                    } else {
+                        self.notify(tr("Merged, but some contacts could not be deleted. They are still there."));
+                    }
+                    return self.load();
+                }
+                Err(err) => match &mut self.merge {
+                    Some(merge) => {
+                        merge.busy = false;
+                        merge.error = Some(failed(&err));
+                    }
+                    None => self.notify(failed(&err)),
+                },
+            },
         }
         Task::none()
     }
@@ -1243,7 +1473,7 @@ impl App {
         if self.menu.is_some() {
             self.menu = None;
         } else if self.dialog.is_some() {
-            self.dialog = None;
+            self.close_dialog();
         } else if self.drawer {
             self.drawer = false;
         } else if self.editing() {
@@ -1292,7 +1522,78 @@ impl App {
         }
     }
 
-    /// The contact open in the panel, once fetched.
+    /// Closes the dialog; one whose command runs waits for its answer (import, merge).
+    fn close_dialog(&mut self) {
+        let busy = match self.dialog {
+            Some(Dialog::Import) => self.import.as_ref().is_some_and(|i| i.busy),
+            Some(Dialog::Merge) => self.merge.as_ref().is_some_and(|m| m.busy),
+            Some(Dialog::Delete) | None => false,
+        };
+        if busy {
+            return;
+        }
+        match self.dialog.take() {
+            Some(Dialog::Import) => self.import = None,
+            Some(Dialog::Merge) => self.merge = None,
+            Some(Dialog::Delete) | None => {}
+        }
+    }
+
+    /// A trial run of the import for the book the dialog shows; the answer of an earlier one is dropped.
+    fn count_import(&mut self) -> Task<Message> {
+        let Some(import) = &mut self.import else { return Task::none() };
+        self.import_asked += 1;
+        let asked = self.import_asked;
+        import.asked = asked;
+        import.counts = None;
+        import.error = None;
+        let task = transfer::import(self.backend.clone(), import.book.clone(), import.path.clone(), true);
+        Task::perform(task, move |result| Message::ImportCounted(asked, result))
+    }
+
+    /// The writable books, which an import may go into.
+    pub fn writable_books(&self) -> Vec<&AddressBook> {
+        self.books.iter().filter(|b| b.writable).collect()
+    }
+
+    /// What "Export…" takes in the view shown: a book, a group of a book, every book (all contacts), or the
+    /// contacts the view lists (favourites, recent, birthdays, duplicates, and any view while the search
+    /// narrows it).
+    pub fn export_scope(&self) -> Scope {
+        let listed = || {
+            let ids: Vec<String> = match &self.view {
+                View::Birthdays => self.shown_birthdays().into_iter().map(|b| b.contact.id.clone()).collect(),
+                View::Recent => self.shown().into_iter().map(|c| c.id.clone()).collect(),
+                _ => {
+                    let mut shown: Vec<&ContactSummary> = self.shown();
+                    shown.sort_by_key(|c| crate::list::sort_key(c));
+                    shown.into_iter().map(|c| c.id.clone()).collect()
+                }
+            };
+            let mut seen = HashSet::new();
+            Scope { ids: ids.into_iter().filter(|id| seen.insert(id.clone())).collect(), ..Scope::default() }
+        };
+        if !self.search.trim().is_empty() {
+            return listed();
+        }
+        match &self.view {
+            View::All => Scope::default(),
+            View::Book(book) => Scope { book: Some(book.clone()), ..Scope::default() },
+            View::Group(book, group) => {
+                Scope { book: Some(book.clone()), group: Some(group.clone()), ..Scope::default() }
+            }
+            View::Favorites | View::Recent | View::Birthdays | View::Duplicates => listed(),
+        }
+    }
+
+    /// Whether "Export…" has something to take: the view shows at least one contact.
+    pub fn can_export(&self) -> bool {
+        match &self.view {
+            View::Birthdays => !self.shown_birthdays().is_empty(),
+            _ => !self.shown().is_empty(),
+        }
+    }
+
     /// The answer to a change of a contact that is no longer open: the list loads again, and a failure is
     /// said in the notice.
     fn answered_elsewhere(&mut self, err: Option<ContactsError>) -> Task<Message> {
@@ -1530,6 +1831,18 @@ impl App {
                 self.contacts = loaded.contacts;
                 self.birthdays = loaded.birthdays;
                 self.recent = loaded.recent;
+                self.duplicates = loaded.duplicates;
+                // A choice of "Keep" lasts while its group and its contact do.
+                let groups: HashMap<String, &DuplicateGroup> =
+                    self.duplicates.iter().map(|g| (duplicates::key(g), g)).collect();
+                self.keep.retain(|key, id| groups.get(key).is_some_and(|g| g.contacts.iter().any(|c| c.id == *id)));
+                // The merge asked about a group the load no longer brings: nothing is left to ask.
+                if self.merge.as_ref().is_some_and(|m| !m.busy && !groups.contains_key(&m.group)) {
+                    self.merge = None;
+                    if self.dialog == Some(Dialog::Merge) {
+                        self.dialog = None;
+                    }
+                }
                 self.loaded = true;
                 self.error = None;
             }
@@ -1577,6 +1890,21 @@ impl App {
             return Task::none();
         }
         self.applied = true;
+        // `--contact=<id>`: the contact opens as a click on it would; an id not on the list opens nothing.
+        if let Some(id) = self.launch.contact.clone()
+            && self.summary(&id).is_some()
+        {
+            let task = self.open(id);
+            if self.launch.open.is_none() {
+                return task;
+            }
+            return Task::batch([task, self.apply_open_state()]);
+        }
+        self.apply_open_state()
+    }
+
+    /// The state of `--demo --open`, once.
+    fn apply_open_state(&mut self) -> Task<Message> {
         let Some(open) = self.launch.open else { return Task::none() };
         let mut tasks = Vec::new();
         match open {
@@ -1595,6 +1923,27 @@ impl App {
                 self.birthdays.clear();
             }
             Open::Error => self.error = Some(load_failed(&ContactsError::Offline)),
+            Open::Duplicates => self.view = View::Duplicates,
+            // Sample numbers without a file: the picture of the dialog, nothing to import.
+            Open::Import => {
+                if let Some(book) = self.new_book() {
+                    self.import = Some(Import {
+                        path: PathBuf::from("kontakte.vcf"),
+                        book,
+                        asked: 0,
+                        counts: Some(Imported { created: 12, duplicates: 3, skipped: 1 }),
+                        busy: false,
+                        error: None,
+                    });
+                    self.dialog = Some(Dialog::Import);
+                }
+            }
+            Open::Merge => {
+                self.view = View::Duplicates;
+                if let Some(group) = self.duplicates.first().map(duplicates::key) {
+                    tasks.push(self.update(Message::AskMerge(group)));
+                }
+            }
             Open::List | Open::ByCity | Open::ByBook => {}
             Open::Contact
             | Open::Edit

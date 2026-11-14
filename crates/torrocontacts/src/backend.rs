@@ -177,7 +177,7 @@ impl ContactsSource for Backend {
         }
     }
 
-    /// The demo reads no files: the app reads the one chosen for it and sends its text.
+    /// The demo reads no files: for it the window reads the one chosen here and sends its text.
     async fn import_vcards(
         &self,
         book: String,
@@ -252,6 +252,9 @@ pub struct Loaded {
     pub birthdays: Vec<Birthday>,
     /// The ids of the contacts used last, the latest first.
     pub recent: Vec<String>,
+    /// The contacts that look like one person (`contacts.find_duplicates`, issue #726), of the books
+    /// shown only; groups with fewer than two of them left out.
+    pub duplicates: Vec<DuplicateGroup>,
 }
 
 /// Every page of `query` (the core gives at most [`PAGE`] at once).
@@ -271,7 +274,7 @@ pub async fn all_pages(backend: &Backend, mut query: ContactQuery) -> Result<Vec
 /// Loads what the window shows (step 7 of the plan): the books, every contact of the books shown, the
 /// birthdays of the coming year and the contacts used last. Books the person hides by default
 /// ([`AddressBook::hidden_by_default`]) come along, with their contacts, only when the settings say so.
-/// Birthdays and the recent list are extras: when they fail, the list still shows.
+/// Birthdays, the recent list and the duplicates are extras: when they fail, the list still shows.
 pub async fn load(backend: Backend) -> Result<Loaded, ContactsError> {
     let show_hidden = backend.show_hidden().await;
     let mut books = backend.address_books(None).await?;
@@ -286,7 +289,12 @@ pub async fn load(backend: Backend) -> Result<Loaded, ContactsError> {
         .await
         .map(|page| page.contacts.into_iter().filter(|c| shown(&c.book)).map(|c| c.id).collect())
         .unwrap_or_default();
-    Ok(Loaded { books, contacts, birthdays, recent })
+    let mut duplicates = backend.find_duplicates(None).await.unwrap_or_default();
+    for group in &mut duplicates {
+        group.contacts.retain(|contact| shown(&contact.book));
+    }
+    duplicates.retain(|group| group.contacts.len() >= 2);
+    Ok(Loaded { books, contacts, birthdays, recent, duplicates })
 }
 
 /// The ids of the contacts matching `query` (`contacts.list_contacts` with `query`): the core searches
@@ -313,6 +321,7 @@ mod tests {
         assert!(!loaded.birthdays.is_empty());
         assert!(loaded.recent.is_empty(), "nothing used yet");
         assert!(loaded.contacts.iter().any(|c| !c.groups.is_empty()), "groups come with the list");
+        assert_eq!(loaded.duplicates.len(), 1, "Anna Berg twice (issue #726)");
     }
 
     #[tokio::test]
