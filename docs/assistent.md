@@ -83,7 +83,7 @@ Was offene Modelle brauchen, damit das gut geht:
   `untrusted`, neue Notizen des Gedächtnisses warten also auch am nächsten Tag auf eine Person.
   Ergebnisse von Websuche und Seitenabruf werden nie gespeichert (die Bedingungen von Brave
   erlauben es nicht, darum für keinen Anbieter). Überschreitet der Verlauf die Hälfte des Kontextfensters des Modells
-  (laut Modell-Liste, sonst 32 000 Tokens), verdichtet der Dienst ihn selbst, ohne Modellaufruf
+  (laut Modell-Liste, sonst nach Anbieter oder Modell laut Tabelle im Kern, sonst 32 000 Tokens), verdichtet der Dienst ihn selbst, ohne Modellaufruf
   (`assistant/compact.rs`): zuerst werden ältere Ergebnisse zu ihrer Kurzzeile („12 results“),
   dann fallen ganze Schritte zwischen erster und letzter Nachricht der Person und vor den letzten
   vier Schritten weg, ersetzt durch einen Vermerk mit Zahl der Schritte und den Werkzeugen samt
