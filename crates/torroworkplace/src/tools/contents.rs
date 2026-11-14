@@ -179,7 +179,7 @@ pub fn run(allowed: &Allowed, request: &Request, approved: Option<&str>) -> Resu
             Response::FilePath { path: write(allowed, &target, &text)?.to_string_lossy().into_owned() }
         }
         Planned::Edit { file, new_text, old, .. } => {
-            let version = replace_file(allowed, &file, &new_text, old.bom)?;
+            let version = replace_file(allowed, &file, &old.version, &new_text, old.bom)?;
             Response::FileEdited { path: file.to_string_lossy().into_owned(), version }
         }
     };
@@ -346,8 +346,8 @@ fn read(file: &Path, from_line: u32) -> Result<FileText, FolderError> {
         chars += count;
         end += 1;
     }
-    let more = end < lines.len();
-    Ok(FileText::new(file.to_string_lossy().into_owned(), page, from_line, total, more, version))
+    let next_line = (end < lines.len()).then(|| u32::try_from(end + 1).unwrap_or(u32::MAX));
+    Ok(FileText::new(file.to_string_lossy().into_owned(), page, from_line, total, next_line, version))
 }
 
 /// The lines of the text files in `folder` and below that hold `text`, without regard to case, by path and line; the
@@ -472,12 +472,16 @@ fn write(allowed: &Allowed, target: &Path, text: &str) -> Result<PathBuf, Folder
     Err(FolderError::Invalid(ALL_TAKEN))
 }
 
-/// Replaces the text file `file` with `text` (after a byte order mark when `bom`): written whole to a temporary file in
-/// the same folder with the rights of the old one, then renamed over it, so the file is never half written. Answers
-/// the new version.
-fn replace_file(allowed: &Allowed, file: &Path, text: &str, bom: bool) -> Result<String, FolderError> {
-    let failed = |err: io::Error| FolderError::of_io(&err);
-    let (Some(folder), Some(name)) = (file.parent(), file.file_name()) else { return Err(FolderError::NotFound) };
+/// Replaces the text file `file`, read at version `read`, with `text` (after a byte order mark when `bom`): written whole
+/// to a temporary file in the same folder, made readable by its owner only and given the rights of the old file once
+/// written, then renamed over it, so the file is never half written and its text never open to others meanwhile. Just
+/// before the rename the file is read again: changed since (an editor saved it), nothing is replaced and the answer is
+/// `conflict`. Answers the new version.
+fn replace_file(allowed: &Allowed, file: &Path, read: &str, text: &str, bom: bool) -> Result<String, ContentError> {
+    let failed = |err: io::Error| ContentError::Folder(FolderError::of_io(&err));
+    let (Some(folder), Some(name)) = (file.parent(), file.file_name()) else {
+        return Err(FolderError::NotFound.into());
+    };
     let permissions = fs::metadata(file).map_err(failed)?.permissions();
     let bytes = match bom {
         true => [BOM.as_bytes(), text.as_bytes()].concat(),
@@ -488,7 +492,14 @@ fn replace_file(allowed: &Allowed, file: &Path, text: &str, bom: bool) -> Result
         temporary_name.push(name);
         temporary_name.push(format!(".torro-edit-{}-{number}", std::process::id()));
         let temporary = folder.join(temporary_name);
-        let mut out = match fs::OpenOptions::new().write(true).create_new(true).open(&temporary) {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut out = match options.open(&temporary) {
             Ok(out) => out,
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(failed(err)),
@@ -498,27 +509,48 @@ fn replace_file(allowed: &Allowed, file: &Path, text: &str, bom: bool) -> Result
             .and_then(|()| out.sync_all())
             .and_then(|()| fs::set_permissions(&temporary, permissions.clone()));
         drop(out);
-        // A temporary name the system finds as a locked path is never renamed over anything.
-        let renamed = written.and_then(|()| match allowed.hits_a_lock(&temporary) {
-            true => Err(io::Error::from(io::ErrorKind::NotFound)),
-            false => fs::rename(&temporary, file),
-        });
-        if let Err(err) = renamed {
+        let gone = |err: ContentError| {
             let _ = fs::remove_file(&temporary);
-            return Err(failed(err));
+            Err(err)
+        };
+        if let Err(err) = written {
+            return gone(failed(err));
+        }
+        // A temporary name the system finds as a locked path is never renamed over anything.
+        if allowed.hits_a_lock(&temporary) {
+            return gone(FolderError::NotFound.into());
+        }
+        if current_version(file).as_deref() != Some(read) {
+            return gone(ContentError::Changed);
+        }
+        if let Err(err) = fs::rename(&temporary, file) {
+            return gone(failed(err));
         }
         return Ok(version_of(&bytes));
     }
-    Err(FolderError::Invalid(ALL_TAKEN))
+    Err(FolderError::Invalid(ALL_TAKEN).into())
+}
+
+/// The version of the file at `file` now, read up to one byte past [`MAX_TEXT_FILE_BYTES`]; `None` when it cannot be
+/// read.
+fn current_version(file: &Path) -> Option<String> {
+    let mut bytes = Vec::new();
+    fs::File::open(file).ok()?.take(MAX_TEXT_FILE_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    Some(version_of(&bytes))
 }
 
 /// Lines touched by hits next to each other ([`diff`]): the first and the last line, and the hits (byte ranges) in them.
 type Group = (usize, usize, Vec<(usize, usize)>);
 
+/// At most this many characters of a line of the difference ([`excerpt`]): a longer one shows the part around where it
+/// changes, so the card never shows two lines that look the same.
+const DIFF_LINE_CHARS: usize = 160;
+
 /// The difference `replace` at `hits` (byte ranges in `old`, in order, not overlapping) makes, for the approval's card:
 /// per group of lines touched, a line of context before (`  `), the old lines (`- `), the new ones (`+ `) and a line of
-/// context after; groups apart by more than that with `…` between them. At most [`MAX_DIFF_LINES`], then a line with
-/// how many more.
+/// context after; `…` where lines between two groups are left out. A hit that ends with a line break, replaced by text
+/// that leaves something without one before the next line, joins that line, so it counts as touched. A line longer than [`DIFF_LINE_CHARS`] shows the
+/// part around where the group changes ([`excerpt`]). At most [`MAX_DIFF_LINES`], then a line with how many more.
 pub fn diff(old: &str, hits: &[(usize, usize)], replace: &str) -> Vec<String> {
     // Where each line starts, and one past the end.
     let mut starts: Vec<usize> = std::iter::once(0).chain(old.match_indices('\n').map(|(at, _)| at + 1)).collect();
@@ -528,13 +560,20 @@ pub fn diff(old: &str, hits: &[(usize, usize)], replace: &str) -> Vec<String> {
     let line_of = |byte: usize| starts.partition_point(|start| *start <= byte).saturating_sub(1);
     let line_text = |line: usize| {
         let (from, to) = (starts[line], starts.get(line + 1).copied().unwrap_or(old.len()));
-        old[from..to].trim_end_matches('\n').trim_end_matches('\r').to_string()
+        &old[from..to]
     };
     let lines = starts.len() - 1;
     // Groups of whole lines, each with the hits in it.
     let mut groups: Vec<Group> = Vec::new();
     for &(from, to) in hits {
-        let (first, last) = (line_of(from), line_of(to.saturating_sub(1).max(from)));
+        let first = line_of(from);
+        let mut last = line_of(to.saturating_sub(1).max(from));
+        // What stands before the next line once replaced: text without a line break there joins it (a whole line
+        // removed only moves the next one up).
+        let head = format!("{}{replace}", &old[starts[first]..from]);
+        if to > from && to < old.len() && old.as_bytes()[to - 1] == b'\n' && !head.is_empty() && !head.ends_with('\n') {
+            last = line_of(to);
+        }
         match groups.last_mut() {
             Some((_, end, inside)) if first <= *end + 1 => {
                 *end = (*end).max(last);
@@ -544,15 +583,17 @@ pub fn diff(old: &str, hits: &[(usize, usize)], replace: &str) -> Vec<String> {
         }
     }
     let mut shown: Vec<String> = Vec::new();
-    let mut previous_end: Option<usize> = None;
+    // The last line shown so far (a group's line of context after it, or its last line).
+    let mut shown_up_to: Option<usize> = None;
     for (first, last, inside) in groups {
-        if let Some(end) = previous_end
-            && first > end + 2
+        let before = first.checked_sub(1).filter(|line| shown_up_to.is_none_or(|end| *line > end));
+        if let (Some(end), Some(line)) = (shown_up_to, before)
+            && line > end + 1
         {
             shown.push("…".into());
         }
-        if first > 0 && previous_end.is_none_or(|end| first > end + 2) {
-            shown.push(format!("  {}", line_text(first - 1)));
+        if let Some(line) = before {
+            shown.push(format!("  {}", excerpt(line_text(line), 0)));
         }
         let (from, to) = (starts[first], starts.get(last + 1).copied().unwrap_or(old.len()));
         let mut new = String::new();
@@ -563,23 +604,50 @@ pub fn diff(old: &str, hits: &[(usize, usize)], replace: &str) -> Vec<String> {
             at = hit_to;
         }
         new.push_str(&old[at..to]);
+        // Where old and new part, in characters from the start of the group.
+        let parting = old[from..to].chars().zip(new.chars()).take_while(|(a, b)| a == b).count();
+        let mut offset = 0;
         for line in first..=last.min(lines.saturating_sub(1)) {
-            shown.push(format!("- {}", line_text(line)));
+            let text = line_text(line);
+            shown.push(format!("- {}", excerpt(text, parting.saturating_sub(offset))));
+            offset += text.chars().count();
         }
-        if !new.is_empty() {
-            for line in new.split_inclusive('\n') {
-                shown.push(format!("+ {}", line.trim_end_matches('\n').trim_end_matches('\r')));
-            }
+        offset = 0;
+        for line in new.split_inclusive('\n') {
+            shown.push(format!("+ {}", excerpt(line, parting.saturating_sub(offset))));
+            offset += line.chars().count();
         }
+        shown_up_to = Some(last);
         if last + 1 < lines {
-            shown.push(format!("  {}", line_text(last + 1)));
+            shown.push(format!("  {}", excerpt(line_text(last + 1), 0)));
+            shown_up_to = Some(last + 1);
         }
-        previous_end = Some(last + 1);
     }
     if shown.len() > MAX_DIFF_LINES {
         let more = shown.len() - MAX_DIFF_LINES;
         shown.truncate(MAX_DIFF_LINES);
         shown.push(trf("… {n} more lines", &[("n", &more.to_string())]));
+    }
+    shown
+}
+
+/// `line` without its line break, at most [`DIFF_LINE_CHARS`] characters: a longer one from a little before `at` (a
+/// character in it), with `…` where something is left out.
+fn excerpt(line: &str, at: usize) -> String {
+    let line = line.trim_end_matches('\n').trim_end_matches('\r');
+    let chars: Vec<char> = line.chars().collect();
+    if chars.len() <= DIFF_LINE_CHARS {
+        return line.to_string();
+    }
+    let start = at.saturating_sub(DIFF_LINE_CHARS / 4).min(chars.len() - DIFF_LINE_CHARS);
+    let end = start + DIFF_LINE_CHARS;
+    let mut shown = String::new();
+    if start > 0 {
+        shown.push('…');
+    }
+    shown.extend(&chars[start..end]);
+    if end < chars.len() {
+        shown.push('…');
     }
     shown
 }
@@ -670,17 +738,18 @@ mod tests {
         let first = read_page(&place, "home/Documents/long.md", None).expect("read");
         assert_eq!((first.from_line, first.total_lines, first.more), (1, 25, true));
         assert_eq!(first.text.chars().count(), 10_000, "ten whole lines");
+        assert_eq!(first.next_line, Some(11), "where to read on");
         assert!(first.untrusted && first.version == version_of(line.repeat(25).as_bytes()));
         let last = read_page(&place, "home/Documents/long.md", Some(21)).expect("read");
         assert_eq!((last.text.lines().count(), last.more), (5, false));
         let past = read_page(&place, "home/Documents/long.md", Some(99)).expect("read");
-        assert!(past.text.is_empty() && !past.more);
+        assert!(past.text.is_empty() && !past.more && past.next_line.is_none());
 
         // One line longer than a page is cut, the next page starts after it.
         let single = format!("{}\nend\n", "b".repeat(MAX_PAGE_CHARS + 5));
         write_raw(&place, "home/Documents/one.txt", single.as_bytes());
         let cut = read_page(&place, "home/Documents/one.txt", None).expect("read");
-        assert_eq!((cut.text.chars().count(), cut.more), (MAX_PAGE_CHARS, true));
+        assert_eq!((cut.text.chars().count(), cut.next_line), (MAX_PAGE_CHARS, Some(2)));
         assert_eq!(read_page(&place, "home/Documents/one.txt", Some(2)).expect("read").text, "end\n");
 
         // A byte order mark is left out of the text, not of the version.
@@ -885,6 +954,16 @@ mod tests {
         // A whole line removed shows no new line; a hit over two lines shows both.
         assert_eq!(diff(text, &hits(text, "c\n"), ""), ["  b", "- c", "  d"]);
         assert_eq!(diff(text, &hits(text, "e\nf"), "ef"), ["  d", "- e", "- f", "+ ef", "  g"]);
+        // One line between two groups shows as their context, without a gap.
+        let both: Vec<(usize, usize)> = [hits(text, "b"), hits(text, "e")].concat();
+        assert_eq!(diff(text, &both, "X"), ["  a", "- b", "+ X", "  c", "  d", "- e", "+ X", "  f"]);
+        // A hit whose line break the replacement drops joins the next line.
+        assert_eq!(diff("a\nb\n", &hits("a\nb\n", "a\n"), "a "), ["- a", "- b", "+ a b"]);
+        // In a long line the part around the change shows, so old and new never look the same.
+        let long = format!("{}word{}\n", "x".repeat(400), "y".repeat(200));
+        let shown = diff(&long, &hits(&long, "word"), "WORD");
+        assert!(shown[0].contains("word") && shown[1].contains("WORD"), "{shown:?}");
+        assert!(shown[0].starts_with("- …") && shown[0].chars().count() <= DIFF_LINE_CHARS + 4);
         // Without a line break at the end, and at most 60 lines.
         assert_eq!(diff("x", &hits("x", "x"), "y"), ["- x", "+ y"]);
         let many = "z\n".repeat(100);
