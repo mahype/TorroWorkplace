@@ -242,7 +242,17 @@ Einstellung, nicht mit `forbidden`: Das hieße für Agenten „Rechte fehlen“.
 - **Links in Kontakten** (`URL`, `IMPP`, `SOCIALPROFILE`) öffnen sich nur nach einem Klick und nur
   mit `https`, `mailto`, `tel`, `sms`, `xmpp`, `matrix`. Andere Schemata werden als Text gezeigt.
 - **Import:** eine vCard-Datei höchstens 20 MB und 10.000 Kontakte. Der Import zeigt vorher, was
-  entsteht und was eine Dublette wäre.
+  entsteht und was eine Dublette wäre (Probelauf, Issue #725). Jede neue Karte bleibt Byte für Byte, wie die Datei
+  sie schreibt; fehlt die `UID`, setzt der Dienst eine. Eine Person, die schon in einem Buch steht (gleiche `UID` im
+  Zielbuch, gleiche Mailadresse, Nummer oder Name mit Firma in einem nicht ausgeblendeten Buch, im Zielbuch oder in
+  einer früheren Karte der Datei), wird übersprungen und nie still zusammengeführt. Den Dateipfad liest nur der Kern
+  für die Apps der Suite; Agenten schicken den Text.
+- **Dubletten (Issue #726):** gleiche Mailadresse (ohne Groß/Klein), gleiche Nummer (normalisiert: `+49 171 …` und
+  `0171 …` sind gleich, wenn die Suite deutsch spricht) oder gleicher Name mit gleicher Firma. Eine Adresse oder
+  Nummer, die mehr als drei Kontakte teilen (Zentrale, `info@`), zählt nicht. Zusammenführen behält die Einzelfelder
+  des gewählten Kontakts, füllt leere aus den anderen und vereinigt Listen, ohne einen Wert der anderen bevorzugt zu
+  machen; danach werden die anderen gelöscht. „Not duplicates“ merkt sich das Paar auf diesem Gerät (Tabelle
+  `not_duplicates`, Schema 2); es geht mit Kontakt, Buch und Konto.
 
 ## Befehle
 
@@ -270,11 +280,13 @@ Bereich `contacts`:
 | KO2 | `contacts.locate_contact { id, address: usize }` (Antwort `found \| not_found \| queued \| no_consent`; Netz nur für den App-Schlüssel) | Read | `contacts_locate_contact` |
 | KO2 | `contacts.open_in_maps { id, address: usize }` (öffnet die Karten-App oder den Browser) | Write | `contacts_open_in_maps` |
 | KO3, #460 | `contacts.suggest_recipients { query, limit? }` (Kontakte, Gruppen und Adressen aus Mails, siehe unten) | Read | `contacts_suggest_recipients` |
-| KO3 | `contacts.import_vcards { book, data, dry_run }` | Write | `contacts_import_vcards` |
-| KO3 | `contacts.export_vcards { book?, ids? }` | Read | `contacts_export_vcards` |
-| KO3 | `contacts.find_duplicates { book? }` | Read | `contacts_find_duplicates` |
-| KO3 | `contacts.merge_contacts { ids, etags, keep }` | **Delete** | `contacts_merge_contacts` |
-| KO3 | `inbox.create_contact_from_item { id, book }` (Absender, vCard-Anhang) | Write (`inbox`) + Write in `contacts` | `inbox_create_contact_from_item` |
+| KO3, #725 | `contacts.import_vcards { book, data?, path?, dry_run }` (`path` nur der App-Schlüssel) | Write, mit `dry_run` Read | `contacts_import_vcards` |
+| KO3, #725 | `contacts.export_vcards { book?, group?, ids? }` | Read | `contacts_export_vcards` |
+| KO3, #726 | `contacts.find_duplicates { book? }` | Read | `contacts_find_duplicates` |
+| KO3, #726 | `contacts.merge_contacts { ids, etags, keep }` | **Delete** | `contacts_merge_contacts` |
+| KO3, #726 | `contacts.dismiss_duplicates { ids }` (nur lokal) | Write | `contacts_dismiss_duplicates` |
+| KO3, #727 | `inbox.create_contact_from_item { id, book }` (Absender, vCard-Anhang; `id` auch `m:…`) | Write (`inbox`) + Write in `contacts` | `inbox_create_contact_from_item` |
+| KO3, #727 | `apps.open_app` mit `target: "contact:<id>"` („Open contact“) | Write (`apps`) + Read in `contacts` | `apps_open_app` |
 | KO4 | `contacts.list_locations { book?, group?, bbox? }` (Pins: Kennung, Name, Koordinaten) | Read | `contacts_list_locations` |
 | KO4 | `contacts.set_location { id, etag, address: usize, lat, lon, replace }` (Pin von Hand, schreibt `GEO`) | Write, mit `replace` **Delete** | `contacts_set_location` |
 
@@ -339,8 +351,15 @@ Erläuterungen:
   - Kontoseite mit Dienst „Contacts“.
   - Rechte-Zeile `contacts` mit Adressbuch-Auswahl.
   - Abschnitt „Maps“: Kachelserver, Ortssuche an/aus mit Erklärung, Cache-Größe und „Clear“.
-- **Eingang und Mail (KO3):** Aktion „Save as contact“ bei Mails und vCard-Anhängen,
+- **Eingang und Mail (KO3):** Aktion „Save as contact“ (mit vCard-Anhang „Add contact“) in der Leiste
+  „Torro“ des Mail-Fensters, auch ohne Eintrag, und als Knopf im Fuß eines Mail-Eintrags (Issue #727); nur mit einem
+  beschreibbaren Buch (dem ersten, wie „+ Contact“ im Schreibfenster), nicht bei eigenen Entwürfen und gesendeten
+  Mails. Die Meldung sagt „Saved to contacts“ oder „Already in your contacts“ und bietet „Open contact“. Dazu die
   Empfänger-Vorschläge im Schreibfenster.
+- **Kontakte-App (KO3, Issues #725, #726):** im „…“ der Kopfleiste „Import vCard…“ (Dateiwahl, Buch, Probelauf,
+  „Import {n}“) und „Export…“ (was die Ansicht zeigt), im „…“ eines Kontakts „Export vCard…“; Ansicht „Duplicates“ in
+  der Seitenleiste mit Zahl, je Treffer die Kontakte nebeneinander (mittel und schmal untereinander) mit „Keep this
+  one“, „Not duplicates“ und „Merge…“ (der Dialog nennt, was bleibt und was endgültig gelöscht wird).
 
 **Empfänger-Vorschläge (#460, vorgezogen aus KO3):** Ab dem ersten Buchstaben in An, Cc oder Bcc fragt das
 Schreibfenster 150 ms nach der letzten Taste `contacts.suggest_recipients`. Die Reihenfolge rechnet der Dienst
