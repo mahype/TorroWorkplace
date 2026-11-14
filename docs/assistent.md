@@ -78,7 +78,10 @@ Was offene Modelle brauchen, damit das gut geht:
   spätestens eine Stunde nach Ablauf, solange der Dienst läuft und die Unterhaltung gerade nicht
   antwortet (sonst in einer späteren Runde). Wer später
   weiterredet, bekommt vom Modell keine Antwort mehr aus den alten Treffern, es sucht bei Bedarf
-  neu. Ergebnisse von Websuche und Seitenabruf werden nie gespeichert (die Bedingungen von Brave
+  neu. Hatte ein entferntes Ergebnis das Kennzeichen `untrusted`, bleibt davon ein Vermerk mit
+  nur der Nummer der Werkzeugzeile (ohne Inhalt, Issue #724): Die Unterhaltung zählt weiter als
+  `untrusted`, neue Notizen des Gedächtnisses warten also auch am nächsten Tag auf eine Person.
+  Ergebnisse von Websuche und Seitenabruf werden nie gespeichert (die Bedingungen von Brave
   erlauben es nicht, darum für keinen Anbieter). Überschreitet der Verlauf die Hälfte des Kontextfensters des Modells
   (laut Modell-Liste, sonst 32 000 Tokens), verdichtet der Dienst ihn selbst, ohne Modellaufruf
   (`assistant/compact.rs`): zuerst werden ältere Ergebnisse zu ihrer Kurzzeile („12 results“),
@@ -800,7 +803,9 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
   (etwa ein Mail-Text), bleibt kürzer: 24 Stunden nach dem Aufruf, auch in angehefteten
   Unterhaltungen und bei „forever“ (Issue #714); danach schreibt der nächste Lauf (beim Start und
   stündlich, eine antwortende Unterhaltung in einer späteren Runde) die Datei ohne diese Ergebnisse neu,
-  Nachrichten und Werkzeugzeilen bleiben. Ob die Quelle (etwa die Mail) noch
+  Nachrichten und Werkzeugzeilen bleiben. Ein als `untrusted` markiertes Ergebnis hinterlässt
+  dabei eine Zeile ohne Inhalt, die nur die Nummer der Werkzeugzeile nennt (Issue #724); ein
+  älterer Dienst überspringt sie wie jede unbekannte Zeile. Ob die Quelle (etwa die Mail) noch
   existiert, prüft der Dienst nicht; die kurze Frist deckt das ab. Ergebnisse von Websuche und
   Seitenabruf werden nie gespeichert.
 - **Protokoll** (`audit.jsonl`) wie immer ohne Inhalte: Client `assistant`, Befehl, Kennungen.
