@@ -931,7 +931,8 @@ mod tests {
         let tools = allowed(Some(&rights), &[]);
         let areas: BTreeSet<Area> = tools.iter().map(|tool| tool.command.area).collect();
         // Issue #666: the tools come opened.
-        let expected = [Area::Calendar, Area::Tasks, Area::Inbox, Area::Assistant, Area::Bots, Area::Tools];
+        let expected =
+            [Area::System, Area::Calendar, Area::Tasks, Area::Inbox, Area::Assistant, Area::Bots, Area::Tools];
         assert_eq!(areas, BTreeSet::from(expected));
         assert!(
             tools
