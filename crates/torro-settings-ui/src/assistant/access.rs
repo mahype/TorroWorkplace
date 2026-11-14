@@ -273,12 +273,24 @@ pub fn show(state: &mut State, bot: Option<String>) {
     rights::leave(&mut state.rights);
 }
 
-/// Leaves the page of a bot for the assistant's (issue #763: Access chosen in the list while a bot's
-/// rights were open below Bots), as [`show`] with `None`; the assistant's page stays as it is when
-/// no bot was open.
-pub fn leave_bot(state: &mut State) {
-    if state.bot.is_some() {
-        show(state, None);
+/// A control of the assistant's own page (issue #763): a bot's page left open below Bots is closed
+/// first – its waiting draft saved at once, as [`Message::Back`] does –, so the editor changes the
+/// assistant's rights the page shows and never the bot's. The editor's clock passes as it is: it
+/// saves whatever draft waits, whichever page is on screen. The page of a bot sends to [`update`].
+pub fn update_assistant(state: &mut State, message: Message, data: &Data) -> Action {
+    let clock = matches!(message, Message::Rights(rights::Message::Clock(_)));
+    if clock || state.bot.is_none() {
+        return update(state, message, data);
+    }
+    let saved = rights::save_now(&mut state.rights);
+    show(state, None);
+    match (saved, update(state, message, data)) {
+        (Action::Send(mut first), Action::Send(then)) => {
+            first.extend(then);
+            Action::Send(first)
+        }
+        (Action::None, then) => then,
+        (first, _) => first,
     }
 }
 

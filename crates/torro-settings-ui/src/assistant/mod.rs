@@ -258,7 +258,10 @@ pub enum Message {
     /// A tab of Voice, by its place in [`VoiceTab::ALL`]: shows that part, sends nothing.
     VoiceTab(usize),
     General(general::Message),
+    /// A control of Access, the assistant's rights ([`access::update_assistant`]).
     Access(access::Message),
+    /// A control of a bot's rights, on its page below Bots (issue #763).
+    BotAccess(access::Message),
     Profile(profile::Message),
     Skills(skills::Message),
     Bots(bots::Message),
@@ -283,7 +286,8 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::None
         }
         Message::General(message) => general::update(&mut state.general, message, data),
-        Message::Access(message) => access::update(&mut state.access, message, data),
+        Message::Access(message) => access::update_assistant(&mut state.access, message, data),
+        Message::BotAccess(message) => access::update(&mut state.access, message, data),
         Message::Profile(message) => profile::update(&mut state.profile, message, data),
         Message::Skills(message) => skills::update(&mut state.skills, message, data),
         // "Access" at a bot opens its rights on a page below Bots (issue #763).
@@ -309,7 +313,7 @@ pub fn page<'a>(state: &'a State, data: &'a Data, section: &str, class: SizeClas
         access::ID => wrap(access::page(&state.access, data, class), Message::Access),
         "skills" => skills_page(state, data, class),
         bots::BOTS => match access::bot_page(&state.access, data) {
-            Some(page) => wrap(page, Message::Access),
+            Some(page) => wrap(page, Message::BotAccess),
             None => {
                 let rights = |bot: &torro_ipc::bots::BotSummary| access::bot_rights(&state.access, data, bot);
                 wrap(Page::new(bots::view(data, class, rights)), Message::Bots)
@@ -340,7 +344,8 @@ pub fn page<'a>(state: &'a State, data: &'a Data, section: &str, class: SizeClas
 /// skill alone.
 fn skills_page<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Page<'a, Message> {
     let page = wrap(skills::page(&state.skills, data, class), Message::Skills);
-    if page.sub_page.is_some() {
+    // While the assistant is off the section is its one sentence, as every other.
+    if page.sub_page.is_some() || !is_on(data) {
         return page;
     }
     let body = column![page.body, tools::view().map(Message::Tools)].spacing(layout::section_gap());
@@ -393,15 +398,12 @@ pub fn save_now(state: &mut State) -> Action {
 }
 
 /// One of the host's own messages, as the app hands it on **before** the host takes it
-/// (`assistant::received(&mut sections, &message); host.update(message)`): a send that came back,
-/// a load, and Access chosen in the list. The host gives a section neither the answers of its requests nor the fresh data;
+/// (`assistant::received(&mut sections, &message); host.update(message)`): a send that came back
+/// and a load. The host gives a section neither the answers of its requests nor the fresh data;
 /// Access needs both to settle the editor's draft and to see its client appear ([`access::sent`],
 /// [`access::loaded`]). Every other message is left alone.
 pub fn received(state: &mut State, message: &crate::host::Message) {
     match message {
-        // Access chosen in the list shows the assistant's rights: a bot's page stands below Bots
-        // (issue #763), and the editor must not keep changing that bot under the assistant's page.
-        crate::host::Message::Select(access::ID) => access::leave_bot(&mut state.access),
         crate::host::Message::Sent { changed, result } => {
             access::sent(&mut state.access, *changed, result);
             if let Ok(data) = &**result {
@@ -471,8 +473,12 @@ pub fn closing(state: &State, data: &Data) -> Option<Message> {
 /// bot, the profile or the memory): what a row of the host's section menu sends of these pages, after
 /// which the app closes the menu (`Host::close_menu`, issue #473). Ticks and typing never do.
 pub fn leaves_page(message: &Message) -> bool {
-    matches!(message, Message::Access(access::Message::Back) | Message::Profile(profile::Message::Back))
-        || matches!(message, Message::Skills(message) if skills::leaves_page(message))
+    matches!(
+        message,
+        Message::Access(access::Message::Back)
+            | Message::BotAccess(access::Message::Back)
+            | Message::Profile(profile::Message::Back)
+    ) || matches!(message, Message::Skills(message) if skills::leaves_page(message))
 }
 
 /// One section's page with its messages wrapped in [`Message`].
@@ -770,11 +776,22 @@ mod tests {
         let name = data.bots.first().map(|summary| summary.name.clone());
         assert_eq!(below.map(|(name, _)| name), name, "the bot's name follows Bots in the path");
         assert!(page(&state, &data, access::ID, SizeClass::Wide).sub_page.is_none(), "Access is the assistant's");
-        received(&mut state, &host::Message::Select(bots::BOTS));
-        assert!(access::open_bot(&state.access, &data).is_some(), "Bots keeps its page open");
-        received(&mut state, &host::Message::Select(access::ID));
-        assert!(access::open_bot(&state.access, &data).is_none(), "Access chosen: the assistant's rights");
+        // A change on the bot's page goes to the bot; one on Access – reached by any way while the
+        // bot's page is still open – to the assistant, and the bot's waiting draft goes first.
+        let level = |area| crate::rights::Message::Level(area, torro_ipc::api::Level::Read);
+        let bot_client = data.bots.first().map(|summary| summary.client.clone()).expect("its client");
+        let assistant = client(&data).map(|info| info.id.clone()).expect("on");
+        let _ =
+            update(&mut state, Message::BotAccess(access::Message::Rights(level(torro_ipc::api::Area::Tasks))), &data);
+        let Action::Send(first) = update(&mut state, Message::Access(access::Message::Tab(0)), &data) else {
+            panic!("the bot's draft is saved")
+        };
+        assert!(matches!(&first[..], [Request::UpdateClient { id, .. }] if *id == bot_client), "{first:?}");
+        assert!(access::open_bot(&state.access, &data).is_none(), "Access shows the assistant's rights");
         assert!(page(&state, &data, bots::BOTS, SizeClass::Wide).sub_page.is_none(), "Bots shows its list");
+        let _ = update(&mut state, Message::Access(access::Message::Rights(level(torro_ipc::api::Area::Mail))), &data);
+        let Action::Send(then) = save_now(&mut state) else { panic!("the assistant's draft waits") };
+        assert!(matches!(&then[..], [Request::UpdateClient { id, .. }] if *id == assistant), "{then:?}");
         let _ = update(&mut state, Message::Bots(bots::Message::Access(bot.clone())), &data);
         show_access(&mut state, None);
         assert!(access::open_bot(&state.access, &data).is_none());
@@ -785,8 +802,8 @@ mod tests {
 
         // A change of rights waits for the clock; leaving the settings sends it now.
         let level = access::Message::Rights(crate::rights::Message::Level(
-            torro_ipc::api::Area::Mail,
-            torro_ipc::api::Level::Read,
+            torro_ipc::api::Area::Calendar,
+            torro_ipc::api::Level::Write,
         ));
         let _ = update(&mut state, Message::Access(level), &data);
         let Action::Send(sent) = save_now(&mut state) else { panic!("a draft waits") };
