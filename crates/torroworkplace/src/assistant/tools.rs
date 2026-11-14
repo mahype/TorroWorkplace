@@ -448,9 +448,11 @@ pub fn untrusted(area: Area, value: &Value) -> bool {
 /// answered with data from outside the suite ([`untrusted`]): every command of mail, GitHub and
 /// the inbox, and the task commands that read GitHub items (`tasks.list_todos` lists the issues of
 /// filter lists, `tasks.add_link` takes an issue's title), asking a bot (task B.2), and the web's
-/// search and page (issue #305). The line does not keep the answer, so this counts what might have
-/// been (task C.11). Of MCP servers (issue #302) every tool of one (`ext_…`, as the tool line keeps its
-/// name) and the commands that show a server's text ([`untrusted`]).
+/// search and page (issue #305). The service keeps a result beside its tool line (issue #701), but
+/// compaction may drop it to save room, so this still counts by the line and what might have been
+/// rather than by the result (task C.11); a result marked `untrusted` counts on its own. Of MCP
+/// servers (issue #302) every tool of one (`ext_…`, as the tool line keeps its name) and the
+/// commands that show a server's text ([`untrusted`]).
 pub fn may_have_read_untrusted(name: &str) -> bool {
     // The web's results and pages (issue #305, task WEB.5) are text of anyone on the internet.
     matches!(name, "tools.web_search" | "tools.fetch_page") || may_have_read_outside(name)
