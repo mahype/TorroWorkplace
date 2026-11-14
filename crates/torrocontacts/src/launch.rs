@@ -63,11 +63,15 @@ pub enum Open {
     Import,
     /// The dialog "Merge contacts?" for Anna Berg (issue #726).
     Merge,
+    /// The "…" of the header open: import and export (issue #725).
+    HeaderMenu,
+    /// Anna Berg open, the "…" of the contact open.
+    ContactMenu,
 }
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 21] = [
+    pub const ALL: [(&'static str, Open); 23] = [
         ("list", Open::List),
         ("by-city", Open::ByCity),
         ("by-book", Open::ByBook),
@@ -89,12 +93,14 @@ impl Open {
         ("duplicates", Open::Duplicates),
         ("import", Open::Import),
         ("merge", Open::Merge),
+        ("header-menu", Open::HeaderMenu),
+        ("contact-menu", Open::ContactMenu),
     ];
 
     /// The uid of the demo contact this state opens in the side panel, if it opens one.
     pub fn contact(self) -> Option<&'static str> {
         match self {
-            Open::Contact | Open::Edit | Open::Delete | Open::Move => Some("demo-01"),
+            Open::Contact | Open::Edit | Open::Delete | Open::Move | Open::ContactMenu => Some("demo-01"),
             Open::Conflict => Some("demo-04"),
             Open::Readonly => Some("demo-05"),
             Open::Pending => Some("demo-08"),

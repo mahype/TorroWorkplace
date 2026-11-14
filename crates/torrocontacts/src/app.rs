@@ -184,6 +184,14 @@ pub enum Press {
     Mail,
     /// `C`: call the contact under the cursor (as the row's "Call").
     Call,
+    /// ←: in "Duplicates", the card before the kept one stays instead.
+    Left,
+    /// →: in "Duplicates", the card after the kept one stays instead.
+    Right,
+    /// Space: in "Duplicates", the next card stays, after the last the first again.
+    Space,
+    /// `D`: in "Duplicates", "Mark as different" of the group under the cursor.
+    Different,
 }
 
 #[derive(Debug, Clone)]
@@ -340,6 +348,11 @@ pub struct App {
     import_asked: u64,
     /// The dialog "Merge contacts?" while it is open.
     pub(crate) merge: Option<Merge>,
+    /// The group ([`duplicates::key`]) "Mark as different" runs for: no second one is sent meanwhile,
+    /// and its "Merge…" waits.
+    pub(crate) dismissing: Option<String>,
+    /// The group of "Duplicates" under the keyboard cursor ([`duplicates::key`]).
+    pub(crate) group_cursor: Option<String>,
     /// The first load came (or failed and was shown).
     pub(crate) loaded: bool,
     /// A load is out: the timer asks again only after its answer.
@@ -348,7 +361,7 @@ pub struct App {
     pub(crate) error: Option<String>,
     /// The number of the last load asked for ([`Message::Loaded`]).
     load_asked: u64,
-    /// `--open` was applied once after the first load.
+    /// `--open` and `--contact` were applied once, after the first load that came through.
     applied: bool,
     /// `--open edit`: the first contact fetched opens in the form.
     edit_on_fetch: bool,
@@ -426,6 +439,8 @@ impl App {
             import: None,
             import_asked: 0,
             merge: None,
+            dismissing: None,
+            group_cursor: None,
             loaded: false,
             loading: false,
             error: None,
@@ -1368,16 +1383,25 @@ impl App {
             Message::Exported(Some(Err(err))) => self.notify(trf("Nothing was exported: {error}", &[("error", &err)])),
 
             Message::Keep(group, id) => {
+                self.group_cursor = Some(group.clone());
                 self.keep.insert(group, id);
             }
+            // One at a time: the answer to the first decides what the list shows next.
+            Message::NotDuplicates(_) if self.dismissing.is_some() => {}
             Message::NotDuplicates(group) => {
                 let Some(ids) = self.duplicate_group(&group).map(|g| duplicates::ids_and_etags(g).0) else {
                     return Task::none();
                 };
+                if self.merge.as_ref().is_some_and(|m| m.busy && m.group == group) {
+                    return Task::none();
+                }
+                self.group_cursor = Some(group.clone());
+                self.dismissing = Some(group);
                 let backend = self.backend.clone();
                 return Task::perform(async move { backend.dismiss_duplicates(ids).await }, Message::Dismissed);
             }
             Message::Dismissed(result) => {
+                self.dismissing = None;
                 match result {
                     Ok(()) => self.notify(tr("Marked as different people")),
                     Err(err) => self.notify(failed(&err)),
@@ -1385,7 +1409,9 @@ impl App {
                 return self.load();
             }
             Message::AskMerge(group) => {
-                if let Some(found) = self.duplicate_group(&group)
+                self.group_cursor = Some(group.clone());
+                if self.dismissing.as_deref() != Some(group.as_str())
+                    && let Some(found) = self.duplicate_group(&group)
                     && let Some(keep) = self.kept_of(found)
                     && duplicates::blocked(found, &keep.id).is_none()
                 {
@@ -1486,7 +1512,12 @@ impl App {
     }
 
     fn key(&mut self, press: Press) -> Task<Message> {
+        if self.view == View::Duplicates {
+            return self.duplicates_key(press);
+        }
         match press {
+            // Only "Duplicates" has cards to choose and groups to mark.
+            Press::Left | Press::Right | Press::Space | Press::Different => Task::none(),
             Press::Search => operation::focus(SEARCH),
             Press::Sidebar => self.update(Message::ToggleSidebar),
             Press::Edit => self.edit(),
@@ -1519,6 +1550,59 @@ impl App {
                 Some(id) if !self.editing() => self.open(id),
                 _ => Task::none(),
             },
+        }
+    }
+
+    /// The keys of "Duplicates": ↑ ↓ walk the groups, ← → and Space choose the card that stays, Enter is
+    /// "Merge…", `D` "Mark as different". Without a cursor the keys act on the first group.
+    fn duplicates_key(&mut self, press: Press) -> Task<Message> {
+        let keys: Vec<String> = self.duplicates.iter().map(duplicates::key).collect();
+        let at = self.group_cursor.as_ref().and_then(|k| keys.iter().position(|key| key == k));
+        match press {
+            Press::Search | Press::Sidebar | Press::Edit | Press::Mail | Press::Call => {
+                return match press {
+                    Press::Search => operation::focus(SEARCH),
+                    Press::Sidebar => self.update(Message::ToggleSidebar),
+                    _ => Task::none(),
+                };
+            }
+            Press::Up | Press::Down => {
+                let last = keys.len().saturating_sub(1);
+                let next = match (at, press == Press::Down) {
+                    (None, true) => 0,
+                    (None, false) => last,
+                    (Some(at), true) => (at + 1).min(last),
+                    (Some(at), false) => at.saturating_sub(1),
+                };
+                self.group_cursor = keys.get(next).cloned();
+                return Task::none();
+            }
+            _ => {}
+        }
+        let Some(key) = at.and_then(|at| keys.get(at)).or_else(|| keys.first()).cloned() else {
+            return Task::none();
+        };
+        self.group_cursor = Some(key.clone());
+        match press {
+            Press::Enter => self.update(Message::AskMerge(key)),
+            Press::Different => self.update(Message::NotDuplicates(key)),
+            Press::Left | Press::Right | Press::Space => {
+                let Some(group) = self.duplicate_group(&key) else { return Task::none() };
+                let ids: Vec<String> = group.contacts.iter().map(|c| c.id.clone()).collect();
+                let kept = self.kept_of(group).and_then(|c| ids.iter().position(|id| *id == c.id)).unwrap_or(0);
+                let last = ids.len().saturating_sub(1);
+                let next = match press {
+                    Press::Left => kept.saturating_sub(1),
+                    Press::Right => (kept + 1).min(last),
+                    _ if kept >= last => 0,
+                    _ => kept + 1,
+                };
+                match ids.get(next) {
+                    Some(id) => self.update(Message::Keep(key, id.clone())),
+                    None => Task::none(),
+                }
+            }
+            _ => Task::none(),
         }
     }
 
@@ -1577,6 +1661,9 @@ impl App {
             return listed();
         }
         match &self.view {
+            // With the hidden books shown, "All contacts" holds more than the core exports without a
+            // scope (only the books not hidden): the contacts shown go by id.
+            View::All if self.books.iter().any(|b| b.hidden_by_default) => listed(),
             View::All => Scope::default(),
             View::Book(book) => Scope { book: Some(book.clone()), ..Scope::default() },
             View::Group(book, group) => {
@@ -1825,6 +1912,7 @@ impl App {
 
     fn loaded(&mut self, result: Result<Loaded, ContactsError>) -> Task<Message> {
         self.loading = false;
+        let came = result.is_ok();
         match result {
             Ok(loaded) => {
                 self.books = loaded.books;
@@ -1836,6 +1924,10 @@ impl App {
                 let groups: HashMap<String, &DuplicateGroup> =
                     self.duplicates.iter().map(|g| (duplicates::key(g), g)).collect();
                 self.keep.retain(|key, id| groups.get(key).is_some_and(|g| g.contacts.iter().any(|c| c.id == *id)));
+                // The cursor stays on its group while the load brings it.
+                if self.group_cursor.as_ref().is_some_and(|k| !groups.contains_key(k)) {
+                    self.group_cursor = None;
+                }
                 // The merge asked about a group the load no longer brings: nothing is left to ask.
                 if self.merge.as_ref().is_some_and(|m| !m.busy && !groups.contains_key(&m.group)) {
                     self.merge = None;
@@ -1865,7 +1957,8 @@ impl App {
         let pictures: HashMap<String, String> =
             self.contacts.iter().filter_map(|c| c.photo.as_ref().map(|p| (c.id.clone(), p.version.clone()))).collect();
         self.photos.retain(|id, (version, _)| pictures.get(id) == Some(version));
-        let open = self.apply_open();
+        // `--open` and `--contact` wait for a load that came through: after a failed one there is no list.
+        let open = if came { self.apply_open() } else { Task::none() };
         // The open contact follows the load (a change synced, a conflict found), unless it is edited or
         // a change of it is out.
         let follow = match &self.detail {
@@ -1923,7 +2016,12 @@ impl App {
                 self.birthdays.clear();
             }
             Open::Error => self.error = Some(load_failed(&ContactsError::Offline)),
-            Open::Duplicates => self.view = View::Duplicates,
+            // With the cursor on the first group, so the pictures show it.
+            Open::Duplicates => {
+                self.view = View::Duplicates;
+                self.group_cursor = self.duplicates.first().map(duplicates::key);
+            }
+            Open::HeaderMenu => self.menu = Some(Menu::Header),
             // Sample numbers without a file: the picture of the dialog, nothing to import.
             Open::Import => {
                 if let Some(book) = self.new_book() {
@@ -1951,7 +2049,8 @@ impl App {
             | Open::Readonly
             | Open::Pending
             | Open::Delete
-            | Open::Move => {}
+            | Open::Move
+            | Open::ContactMenu => {}
         }
         if let Some(uid) = open.contact() {
             let suffix = format!("/{uid}");
@@ -1961,6 +2060,7 @@ impl App {
             match open {
                 Open::Delete => self.dialog = Some(Dialog::Delete),
                 Open::Move => self.menu = Some(Menu::Move),
+                Open::ContactMenu => self.menu = Some(Menu::More),
                 _ => {}
             }
         }
@@ -2047,6 +2147,10 @@ fn key_press(event: iced::Event, status: iced::event::Status, _window: iced::win
         keyboard::Key::Named(keyboard::key::Named::ArrowUp) => Some(Message::Key(Press::Up)),
         keyboard::Key::Named(keyboard::key::Named::ArrowDown) => Some(Message::Key(Press::Down)),
         keyboard::Key::Named(keyboard::key::Named::Enter) => Some(Message::Key(Press::Enter)),
+        keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => Some(Message::Key(Press::Left)),
+        keyboard::Key::Named(keyboard::key::Named::ArrowRight) => Some(Message::Key(Press::Right)),
+        keyboard::Key::Named(keyboard::key::Named::Space) => Some(Message::Key(Press::Space)),
+        keyboard::Key::Character("d") => Some(Message::Key(Press::Different)),
         _ => None,
     }
 }

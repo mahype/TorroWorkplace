@@ -167,7 +167,7 @@ pub fn dialog<'a>(import: &'a Import, books: &[&'a AddressBook], anchor: &Anchor
         widgets::busy_button(tr("Importing…"), style::button::secondary)
     } else {
         widgets::text_button(
-            Some(Icon::Upload),
+            Some(Icon::Download),
             trf("Import {n}", &[("n", &n.to_string())]),
             style::button::secondary,
             (n > 0).then_some(Message::ImportConfirm),

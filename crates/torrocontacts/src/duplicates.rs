@@ -2,9 +2,13 @@
 //!
 //! The core finds contacts that look like one person (`contacts.find_duplicates`, loaded with the list,
 //! [`crate::backend::load`]); the window shows each group under why they look alike, the contacts as
-//! cards with "Keep" (the first, the one with most fields, chosen until the person picks another),
-//! and "Not duplicates" and "Merge…". The window decides nothing about who is whom: merging and
-//! dismissing are commands of the core.
+//! cards with "Keep this one" in their head (the first, the one with most fields, chosen until the
+//! person picks another), and "Mark as different" and "Merge…". The window decides nothing about who is
+//! whom: merging and dismissing are commands of the core.
+//!
+//! Keys ([`App::duplicates_key`](crate::app::App)): ↑ ↓ walk the groups (the one under the cursor has
+//! the focus ring), ← → and Space choose the card that stays, Enter is "Merge…", `D` "Mark as
+//! different".
 //!
 //! - **Wide:** the cards of a group side by side.
 //! - **Medium and narrow:** one under the other.
@@ -14,8 +18,10 @@
 //! merge may be.
 
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, column, container, radio, row, scrollable};
-use iced::{Alignment, Element, Fill, Length};
+use std::time::Duration;
+
+use iced::widget::{Space, column, container, radio, row, scrollable, tooltip};
+use iced::{Alignment, Element, Fill, Length, Theme, border};
 use torro_contacts::{Contact, ContactState, DuplicateGroup, DuplicateReason};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
@@ -166,11 +172,27 @@ impl App {
             .into(),
             None => Space::new().width(Fill).into(),
         };
-        let dismiss = (group.contacts.len() <= MERGE_MAX && !busy).then(|| Message::NotDuplicates(name.clone()));
-        let merge = (blocked.is_none() && !busy).then(|| Message::AskMerge(name.clone()));
+        // One "Mark as different" at a time; its group's "Merge…" waits for it.
+        let marking = self.dismissing.as_deref() == Some(name.as_str());
+        let dismiss = (group.contacts.len() <= MERGE_MAX && !busy && self.dismissing.is_none())
+            .then(|| Message::NotDuplicates(name.clone()));
+        let merge = (blocked.is_none() && !busy && !marking).then(|| Message::AskMerge(name.clone()));
+        let different: Element<'a, Message> = if marking {
+            widgets::busy_button(tr("Marking…"), style::button::ghost)
+        } else {
+            key_tip(
+                widgets::text_button(None, tr("Mark as different"), style::button::ghost, dismiss),
+                tr("These are different people"),
+                "D",
+            )
+        };
         let buttons = row![
-            widgets::text_button(None, tr("Not duplicates"), style::button::ghost, dismiss),
-            widgets::text_button(Some(Icon::Users), tr("Merge…"), style::button::secondary, merge),
+            different,
+            key_tip(
+                widgets::text_button(Some(Icon::Users), tr("Merge…"), style::button::secondary, merge),
+                tr("Merge into the contact that stays"),
+                "Enter",
+            ),
         ]
         .spacing(space::s());
         // Narrow, the reason stands over the buttons, so neither is squeezed.
@@ -179,7 +201,21 @@ impl App {
         } else {
             column![reason, row![Space::new().width(Fill), buttons]].spacing(space::s()).into()
         };
-        column![title, cards, foot].spacing(space::m()).into()
+        let content = column![title, cards, foot].spacing(space::m());
+        // The group under the keyboard cursor has the focus ring; the others keep the same room, so
+        // nothing moves when the cursor walks.
+        let focused = self.group_cursor.as_deref() == Some(name.as_str());
+        container(content)
+            .width(Fill)
+            .padding(space::s())
+            .style(move |t: &Theme| {
+                let ring = if focused { theme::palette(t).focus_ring } else { iced::Color::TRANSPARENT };
+                container::Style {
+                    border: border::rounded(torro_gui::theme::radius::lg()).color(ring).width(style::FOCUS_RING_WIDTH),
+                    ..container::Style::default()
+                }
+            })
+            .into()
     }
 
     /// One contact of a group as a card: "Keep", the face and name, book · company, mail, number. A
@@ -195,14 +231,16 @@ impl App {
         let chosen = contact.id == keep;
         let pick = Message::Keep(group.to_owned(), contact.id.clone());
         let on_pick = pick.clone();
-        let body = typo::body();
-        let choice = radio(tr("Keep this one"), at, chosen.then_some(at), move |_| on_pick.clone())
-            .size(style::CHECK_SIZE)
-            .spacing(space::s())
-            .text_size(body.size)
-            .text_line_height(body.line_height)
-            .font(body.font)
-            .style(style::radio);
+        // "Keep this one" stands quietly in the head's corner: the card starts with who it is.
+        let choice = row![
+            radio("", at, chosen.then_some(at), move |_| on_pick.clone())
+                .size(style::CHECK_SIZE)
+                .spacing(0.0)
+                .style(style::radio),
+            typo::text(typo::meta(), tr("Keep this one")).style(theme::text_2).wrapping(Wrapping::None),
+        ]
+        .spacing(space::xs())
+        .align_y(Alignment::Center);
         let name = contact.shown_name();
         let picture = self.photos.get(&contact.id).and_then(|(_, p)| p.as_ref());
         let mut title =
@@ -218,12 +256,13 @@ impl App {
         let mut words = column![title].spacing(space::xs());
         let place = self.book_line(contact);
         if !place.is_empty() {
-            words = words.push(typo::text(typo::meta(), place).style(theme::text_3).wrapping(Wrapping::WordOrGlyph));
+            // One line cut with "…" (whole as tooltip), so the card heads of a group stay alike.
+            words = words.push(widgets::ellipsized(typo::meta(), place, theme::text_3));
         }
-        let head = row![face(&name, picture, size::avatar(), &colours), words.width(Fill)]
+        let head = row![face(&name, picture, size::avatar(), &colours), words.width(Fill), choice]
             .spacing(space::m())
-            .align_y(Alignment::Center);
-        let mut parts: Vec<Element<'a, Message>> = vec![choice.into(), head.into()];
+            .align_y(Alignment::Start);
+        let mut parts: Vec<Element<'a, Message>> = vec![head.into()];
         let mut reach = column![].spacing(space::xs());
         for (which, value) in [(Icon::Mail, contact.emails.first()), (Icon::Phone, contact.phones.first())] {
             if let Some(value) = value {
@@ -295,6 +334,20 @@ impl App {
             .style(style::container::popover)
             .into()
     }
+}
+
+/// `content` with `label` and the key that does the same as tooltip: the word, then the key as `kbd`
+/// (as the row actions of the suite show theirs).
+fn key_tip<'a>(content: Element<'a, Message>, label: &'a str, key: &'a str) -> Element<'a, Message> {
+    let words =
+        row![typo::text(typo::caption(), label).style(theme::text_2).wrapping(Wrapping::None), widgets::kbd(key)]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
+    let card = container(words)
+        .padding([style::KBD_PADDING.top + style::KBD_PADDING.bottom, space::s()])
+        .style(style::container::menu);
+    // The suite's tooltips wait half a second, so passing over a button shows nothing.
+    tooltip(content, card, tooltip::Position::Bottom).gap(space::xs()).delay(Duration::from_millis(500)).into()
 }
 
 #[cfg(test)]

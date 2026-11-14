@@ -728,7 +728,7 @@ impl App {
         if !contact.readonly && elsewhere {
             change.push(MenuItem::new(Mark::Icon(Icon::BookUser), tr("Move to…"), Message::ToggleMenu(Menu::Move)));
         }
-        let export = vec![MenuItem::new(Mark::Icon(Icon::Download), tr("Export vCard…"), Message::ExportContact)];
+        let export = vec![MenuItem::new(Mark::Icon(Icon::Upload), tr("Export vCard…"), Message::ExportContact)];
         let mut sections = vec![MenuSection::new(copy), MenuSection::new(export), MenuSection::new(change)];
         if !contact.readonly {
             sections.push(MenuSection::new(vec![MenuItem::new(
@@ -742,9 +742,9 @@ impl App {
 
     /// "Import vCard…" and, when the view shows someone, "Export…" (issue #725).
     fn transfer_items<'a>(&self) -> Vec<MenuItem<'a, Message>> {
-        let mut items = vec![MenuItem::new(Mark::Icon(Icon::Upload), tr("Import vCard…"), Message::ImportVcard)];
+        let mut items = vec![MenuItem::new(Mark::Icon(Icon::Download), tr("Import vCard…"), Message::ImportVcard)];
         if self.can_export() {
-            items.push(MenuItem::new(Mark::Icon(Icon::Download), tr("Export…"), Message::Export));
+            items.push(MenuItem::new(Mark::Icon(Icon::Upload), tr("Export…"), Message::Export));
         }
         items
     }
