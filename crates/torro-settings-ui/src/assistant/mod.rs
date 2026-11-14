@@ -7,6 +7,7 @@
 //!           engine, model, effort
 //! Access    what the assistant and each bot may use; the assistant on and off (task S.34)
 //! Profile   who the assistant is, and what it keeps because it was asked to (two pages below)
+//! Skills    guides for tasks that come again, read when a task fits (issue #703)
 //! Bots      the bots, each with "Edit" in the assistant and "Access" here
 //! Tools     where the assistant's own tools went: the control centre's MCP servers (task MA.7)
 //! Voice     talking by voice, speaking answers, the microphone, the programs on this computer
@@ -55,6 +56,7 @@ pub mod bots;
 pub mod general;
 pub mod history;
 pub mod profile;
+pub mod skills;
 pub mod tools;
 pub mod voice;
 /// Not a section: the search providers of the tool `web`, shown in the control centre's MCP servers next to
@@ -78,7 +80,7 @@ use crate::parts::setting_row;
 use crate::{Data, Page, Section};
 
 /// The sections, in the order of the list. [`Section::id`] is what `--settings <section>` takes.
-pub const SECTIONS: [Section; 7] = [
+pub const SECTIONS: [Section; 8] = [
     // General is first, so the gear lands on the status: what is on, and what a new chat starts
     // with.
     Section { id: "general", icon: Icon::SlidersHorizontal, label: "General" },
@@ -86,6 +88,8 @@ pub const SECTIONS: [Section; 7] = [
     // "Access…" in a bot's menu.
     Section { id: access::ID, icon: Icon::UserCheck, label: "Access" },
     Section { id: "profile", icon: Icon::User, label: "Profile" },
+    // Between who the assistant is and its bots (issue #703): what it knows how to do.
+    Section { id: "skills", icon: Icon::Lightbulb, label: "Skills" },
     // The suite has no robot icon; the sparkles stand for AI (design skill, section 5).
     Section { id: "bots", icon: Icon::Sparkles, label: "Bots" },
     // The suite has no wrench icon; the layers stand for the pages a tool sets after a template. Only
@@ -131,6 +135,7 @@ pub fn wanted() -> Vec<Request> {
         Request::ListClients,
         Request::GetProfile,
         Request::ListMemories,
+        Request::ListSkills,
         Request::ListBots,
         Request::ListTools,
         Request::ListEngines,
@@ -171,6 +176,8 @@ pub struct State {
     pub general: general::State,
     /// Profile: the typed profile, a note being written, the questions over it.
     pub profile: profile::State,
+    /// Skills: the skill being typed, the questions over the list (issue #703).
+    pub skills: skills::State,
     /// Voice: what "Say something" is doing and what it heard, and its dropdown of the microphone.
     /// Bots and History read everything from [`Data`] and keep nothing.
     pub voice: voice::State,
@@ -185,6 +192,7 @@ pub enum Message {
     General(general::Message),
     Access(access::Message),
     Profile(profile::Message),
+    Skills(skills::Message),
     Bots(bots::Message),
     Tools(tools::Message),
     Voice(voice::Message),
@@ -197,6 +205,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         Message::General(message) => general::update(&mut state.general, message, data),
         Message::Access(message) => access::update(&mut state.access, message, data),
         Message::Profile(message) => profile::update(&mut state.profile, message, data),
+        Message::Skills(message) => skills::update(&mut state.skills, message, data),
         // "Access" at a bot opens this section at that very bot.
         Message::Bots(bots::Message::Access(id)) => {
             show_access(state, Some(id));
@@ -218,6 +227,7 @@ pub fn page<'a>(state: &'a State, data: &'a Data, section: &str, class: SizeClas
     match section {
         access::ID => wrap(access::page(&state.access, data, class), Message::Access),
         "profile" => wrap(profile::page(&state.profile, data, class), Message::Profile),
+        "skills" => wrap(skills::page(&state.skills, data, class), Message::Skills),
         "bots" => wrap(Page::new(bots::view(data, class)), Message::Bots),
         "tools" => wrap(Page::new(tools::view()), Message::Tools),
         "voice" => wrap(Page::new(voice::view(&state.voice, data)), Message::Voice),
@@ -282,9 +292,11 @@ fn dropdowns_loaded(state: &mut State, data: &Data) {
 
 /// The answer to a section's [`crate::Action::Ask`], as the host handed it to the app
 /// ([`crate::Outcome::Answer`]): the section that asked makes what it can of it, every other one
-/// is left alone. Today one section asks – Voice, for what "Say something" heard.
+/// is left alone. Two sections ask – Voice, for what "Say something" heard, and Skills, for the
+/// text of the skill "Edit" opens (issue #703).
 pub fn answered(state: &mut State, result: &Result<Response, String>) {
     voice::answered(&mut state.voice, result);
+    skills::answered(&mut state.skills, result);
 }
 
 /// The dialog of the open section over the whole window, while one is open: an open dropdown of
@@ -295,6 +307,7 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
         .map(|menu| menu.map(Message::General))
         .or_else(|| voice::overlay(&state.voice, data).map(|menu| menu.map(Message::Voice)))
         .or_else(|| profile::overlay(&state.profile, data).map(|dialog| dialog.map(Message::Profile)))
+        .or_else(|| skills::overlay(&state.skills, data).map(|dialog| dialog.map(Message::Skills)))
         .or_else(|| access::overlay(&state.access, data).map(|dialog| dialog.map(Message::Access)))
 }
 
@@ -305,6 +318,7 @@ pub fn escape(state: &State) -> Option<Message> {
         .map(Message::General)
         .or_else(|| voice::escape(&state.voice).map(Message::Voice))
         .or_else(|| profile::escape(&state.profile).map(Message::Profile))
+        .or_else(|| skills::escape(&state.skills).map(Message::Skills))
         .or_else(|| access::escape(&state.access).map(Message::Access))
 }
 
@@ -316,7 +330,9 @@ pub fn escape(state: &State) -> Option<Message> {
 /// the message back as any other; after "Discard" the section closes the settings itself
 /// ([`crate::Action::Close`]), so the question and the closing stay in one place.
 pub fn closing(state: &State, data: &Data) -> Option<Message> {
-    profile::closing(&state.profile, data).map(Message::Profile)
+    profile::closing(&state.profile, data)
+        .map(Message::Profile)
+        .or_else(|| skills::closing(&state.skills).map(Message::Skills))
 }
 
 /// Whether `message` leaves the page open below a section for the section's own ("‹ Back" from a
@@ -324,6 +340,7 @@ pub fn closing(state: &State, data: &Data) -> Option<Message> {
 /// which the app closes the menu (`Host::close_menu`, issue #473). Ticks and typing never do.
 pub fn leaves_page(message: &Message) -> bool {
     matches!(message, Message::Access(access::Message::Back) | Message::Profile(profile::Message::Back))
+        || matches!(message, Message::Skills(message) if skills::leaves_page(message))
 }
 
 /// One section's page with its messages wrapped in [`Message`].
@@ -530,7 +547,7 @@ mod tests {
     /// What one load asks for, and the second round for an AI account's models.
     #[tokio::test]
     async fn the_load_asks_for_what_the_sections_show() {
-        assert_eq!(wanted().len(), 14, "one request per thing the sections read");
+        assert_eq!(wanted().len(), 15, "one request per thing the sections read");
         for offered in [
             Request::CalendarCollections,
             Request::TaskCollections,
@@ -636,7 +653,7 @@ mod tests {
     #[tokio::test]
     async fn the_sections_are_named_and_reachable_by_their_words() {
         let ids: Vec<&str> = SECTIONS.iter().map(|section| section.id).collect();
-        assert_eq!(ids, ["general", "access", "profile", "bots", "tools", "voice", "history"]);
+        assert_eq!(ids, ["general", "access", "profile", "skills", "bots", "tools", "voice", "history"]);
         assert_eq!(SECTIONS[0].name(), tr("General"));
         let (mut host, _) = Host::new(Arc::new(Demo::new()), SECTIONS.to_vec(), wanted());
         for id in ids {

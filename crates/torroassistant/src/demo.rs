@@ -814,6 +814,7 @@ fn sample_bots() -> Vec<Bot> {
             instructions: tr("Suggest trains before flights. Ask for the budget first.").into(),
             skills: vec![Skill {
                 name: tr("Packing").into(),
+                description: tr("How I pack for a trip").into(),
                 text: tr("Pack light: one bag, layers and a rain jacket.").into(),
             }],
             client: "c0000001".into(),

@@ -134,6 +134,8 @@ pub struct Data {
     pub profile: Option<Profile>,
     /// The notes of the assistant's memory, oldest first (`assistant.list_memories`).
     pub memories: Vec<Note>,
+    /// The assistant's skills by name, without their text (`assistant.list_skills`, issue #703).
+    pub skills: Vec<torro_ipc::assistant::SkillSummary>,
     /// The bots (`bots.list_bots`); none from a daemon that has none.
     pub bots: Vec<BotSummary>,
     /// The assistant's own tools (`tools.list_tools`, task WZ.6), each with whether a person
@@ -285,6 +287,7 @@ impl Data {
             Response::Clients { clients } => self.clients = clients,
             Response::Profile { profile } => self.profile = Some(profile),
             Response::Memories { notes } => self.memories = notes,
+            Response::Skills { skills } => self.skills = skills,
             Response::Bots { bots } => self.bots = bots,
             Response::Tools { tools } => self.tools = tools,
             Response::Extensions { extensions } => self.extensions = extensions,
