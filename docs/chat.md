@@ -337,7 +337,7 @@ dahinter rückten um eins.
     bestätigt). Ein Link auf ein YouTube-Video (`youtube.com/watch?v=…`, `youtu.be/…`, Shorts) gibt seiner Link-Karte
     die Kennung des Videos (`video`: `id`, `start`, `short`); das Chatfenster zeigt sie als Videokarte mit Abspielzeichen
     und „Open on YouTube“.
-    - **Wo es spielt:** Ein Klick aufs Bild öffnet auf macOS und Windows ein eigenes, schwebendes Fenster
+    - **Wo es spielt:** Ein Klick auf die Videokarte öffnet auf macOS und Windows ein eigenes, schwebendes Fenster
       (`torrochat --player=<Nachricht>`, Klasse `torro-chat-player`) mit dem Titel des Videos, 640 × 360 (Shorts
       360 × 640), nur dem Player von YouTube, der sofort abspielt. Unter Linux öffnet der Klick das Video bei YouTube
       im Browser. Verworfen: ein Player im Verlauf (er verdeckt Menüs und geht unter Linux nicht, weil Iced unter
@@ -350,9 +350,10 @@ dahinter rückten um eins.
       und Bild („YouTube video“). Bei „Never show“ und für ein gesperrtes YouTube bleibt nur der Link im Text.
     - **Datenschutzfreundlicher Modus:** Der Player lädt nur die Einbettung dieses einen Videos von
       `www.youtube-nocookie.com` (keine Cookies, bevor jemand abspielt) und behält nichts zwischen zwei Starts
-      (Inkognito). Ein Link des Players zu YouTube selbst, der ein neues Fenster öffnet (YouTube-Logo, Vorschläge), geht in
-      den Browser; jede andere Navigation, auch eines Rahmens der Seite, wird nur abgelehnt, damit der Player nie von
-      selbst einen Browser-Tab öffnet. YouTube spielt eingebettete Videos nur, wenn sich das Programm
+      (Inkognito). Ein Link des Players zu YouTube selbst (`youtube.com`, `youtu.be`: YouTube-Logo, Vorschläge) geht
+      in den Browser; jede andere Adresse, auch eines Rahmens der Seite, wird nur abgelehnt, damit der Player nie von
+      selbst einen Browser-Tab zu Dritten öffnet. (WKWebView fragt dieselbe Regel für Links und Rahmen; lüde die
+      Einbettung einen Rahmen von `youtube.com`, ginge dafür ein Tab auf. In der Probe auf macOS lud sie keinen.) YouTube spielt eingebettete Videos nur, wenn sich das Programm
       ausweist (sonst „Error 153“): Der Player schickt die Adresse der Suite (`https://io.github.mahype.torro-workplace/`)
       als `Referer`. Beim Abspielen lädt der Player auch von YouTubes Hilfs-Hosts (`ytimg.com`, `googlevideo.com`,
       `google.com`); die Freigabe von YouTube umfasst sie, sie stehen nicht einzeln in der Anbieterliste.
@@ -577,9 +578,10 @@ Unterhaltung gemerkt werden können, siehe „Schweben“):
     <Anbieter>.“ mit den Knöpfen „Show once“, „Always allow <Anbieter>“ und „Never for <Anbieter>“; die Antwort gilt
     für alle Nachrichten des Anbieters im Fenster. Ohne Karte bleibt der Link im Text.
   - **Videokarte** eines YouTube-Links (Entscheidung 25, #673): Bild in 16:9 mit Abspielzeichen, Titel (ohne Titel
-    „YouTube video“) und Domain; ein Klick spielt das Video im Player-Fenster (Tooltip „Play video“), unter Linux
-    öffnet er es bei YouTube (Tooltip „Open on YouTube“). Darunter der Knopf „Open on YouTube“ (ghost), der den Link
-    immer im Browser öffnet.
+    „YouTube video“) und Domain, so breit wie ein Bild im Verlauf; die ganze Karte ist ein Knopf (Kante beim Überfahren
+    in `LINE_SELECTED`): ein Klick spielt das Video im Player-Fenster (Tooltip „Play video“), unter Linux öffnet er es
+    bei YouTube (Tooltip „Open on YouTube“). Rechts in der Zeile der Domain der Knopf „Open on YouTube“ (ghost), der
+    den Link immer im Browser öffnet.
 - **Eingabe:** mehrzeilig, Enter sendet, Shift+Enter bricht um. `@` öffnet Vorschläge. Ein Zähler erscheint ab
   90 % der Höchstlänge. Im Menü „Send without notification“. Ab Stufe 4 links die Büroklammer („Attach file“, Dialog
   des Systems), Ziehen einer Datei auf das Fenster (die ganze Fläche wird zur Ablage, „Drop to send to Anna Berg“)

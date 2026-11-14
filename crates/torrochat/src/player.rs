@@ -52,7 +52,8 @@ pub fn playable(page: &MessagePage, id: &str) -> Result<(LinkCard, Video), Playe
 
 /// Whether the player may load `url` for `video`: only the embed of this video at YouTube's
 /// privacy-enhanced host (with any parameters) and the empty page the player starts from. Every other
-/// address, a click on the YouTube logo or a suggested video, goes to the browser instead.
+/// address is refused; one at YouTube itself ([`leads_to_youtube`]: the YouTube logo, a suggested
+/// video) opens in the browser instead.
 pub fn allowed_navigation(url: &str, video: &Video) -> bool {
     if url == "about:blank" {
         return true;

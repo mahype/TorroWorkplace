@@ -5,8 +5,9 @@
 //!   and ends ([`torro_gui::instance::claim_named_with`], `player:<message>`).
 //! - **What plays** comes from the core ([`super::playable`]); the demo plays nothing and says so.
 //! - **Only the embed of this video loads** ([`super::allowed_navigation`]); a link out of the player
-//!   to YouTube itself (the YouTube logo, a suggested video) goes to the browser, every other address
-//!   is refused. Nothing stays between starts (incognito).
+//!   to YouTube itself (the YouTube logo, a suggested video) goes to the browser
+//!   ([`super::leads_to_youtube`]), every other address is refused without a word. Nothing stays
+//!   between starts (incognito).
 //! - **YouTube wants to know who embeds its player** (else "Error 153"): the page is asked for with the
 //!   suite's address as `Referer` ([`referer`]).
 //! - Without a web view (WebView2 missing) the video opens at YouTube in the browser, exit code 1.
@@ -168,9 +169,9 @@ fn error_code(err: &ChatError) -> &'static str {
 
 /// The web view of `shown` with every rule of the window: autoplay, no developer tools, no swiping
 /// back, nothing kept between starts (incognito: what YouTube stores goes with the window), only the
-/// embed of the video, no downloads. A new window the player asks for to YouTube itself (its logo, a
-/// suggested video) opens in the browser; every other navigation, also of a frame of the page, is only
-/// refused, so the player never opens a browser tab by itself.
+/// embed of the video, no downloads. A link of the player to YouTube itself (its logo, a suggested
+/// video) opens in the browser; every other address, also of a frame of the page, is only refused, so
+/// the player never opens a browser tab to a third party.
 fn webview_builder<'a>(shown: &Shown) -> WebViewBuilder<'a> {
     let builder = WebViewBuilder::new()
         .with_incognito(true)
@@ -187,9 +188,16 @@ fn webview_builder<'a>(shown: &Shown) -> WebViewBuilder<'a> {
                 headers.insert(REFERER, value);
             }
             builder
-                // Also called for the page's frames (WKWebView): refused without a word. Links the
-                // player opens itself (its logo, a suggested video) come as new windows.
-                .with_navigation_handler(move |url| allowed_navigation(&url, &allowed))
+                // WKWebView asks here first also for a link with `target=_blank` (the player's logo) and
+                // only then for the new window, and it asks for the page's frames too: so a YouTube
+                // address goes to the browser here, any other is refused without a word.
+                .with_navigation_handler(move |url| {
+                    if allowed_navigation(&url, &allowed) {
+                        return true;
+                    }
+                    to_browser(&url);
+                    false
+                })
                 .with_new_window_req_handler(|url, _| {
                     to_browser(&url);
                     NewWindowResponse::Deny
