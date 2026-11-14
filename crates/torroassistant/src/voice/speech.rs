@@ -55,6 +55,10 @@ pub const IDLE: Duration = Duration::from_secs(10 * 60);
 /// How often a job looks whether its sound has ended.
 const POLL: Duration = Duration::from_millis(50);
 
+/// How long a stopped Qwen job may still send before its worker is ended: one that hangs (or still
+/// loads the model) must not hold back every later job, nor the graphics memory.
+const DRAIN_MOST: Duration = Duration::from_secs(60);
+
 /// The voice templates of Qwen3-TTS (step 4 of the plan of issue #745): made once with
 /// `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` from a description, 24 kHz mono, about nine seconds, with
 /// the words they say. Cloning needs both.
@@ -542,7 +546,9 @@ impl Drop for Qwen {
 /// Starts the worker of `model` with `python`; its sound comes as events on `events`.
 fn start_qwen(python: &Path, model: &str, number: u64, events: &Sender<Event>) -> Result<Qwen, String> {
     let mut child = Command::new(python)
-        .args(["-I", "-u", "-c", QWEN_SCRIPT, model])
+        // `-X utf8`: the jobs are UTF-8 on every system, also where Python would read the ANSI code page
+        // (Windows); `-I` ignores `PYTHONIOENCODING`.
+        .args(["-I", "-X", "utf8", "-u", "-c", QWEN_SCRIPT, model])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -640,6 +646,8 @@ pub struct Helper<W: FnMut(Output)> {
     next: u64,
     /// A stopped Qwen job still sends its sound; it is dropped until its end.
     draining: bool,
+    /// Since when [`Helper::draining`] holds; after [`DRAIN_MOST`] the worker is ended.
+    draining_since: Option<std::time::Instant>,
     /// A Qwen job that waits for the stopped one to end.
     pending: Option<Say>,
     /// Counts the Qwen workers started ([`Event::Qwen`]).
@@ -657,6 +665,7 @@ impl<W: FnMut(Output)> Helper<W> {
             job: Job::Idle,
             next: 0,
             draining: false,
+            draining_since: None,
             pending: None,
             workers: 0,
             write,
@@ -684,14 +693,25 @@ impl<W: FnMut(Output)> Helper<W> {
     /// Runs until the core closes the input or [`IDLE`] passes without a job.
     fn run(&mut self, events: &Receiver<Event>, sender: &Sender<Event>) {
         loop {
-            let idle = matches!(self.job, Job::Idle) && self.pending.is_none();
+            let idle = matches!(self.job, Job::Idle) && self.pending.is_none() && !self.draining;
             match events.recv_timeout(if idle { IDLE } else { POLL }) {
                 Ok(Event::Closed) | Err(RecvTimeoutError::Disconnected) => return,
-                Err(RecvTimeoutError::Timeout) if idle && !self.draining => return,
+                Err(RecvTimeoutError::Timeout) if idle => return,
                 Err(RecvTimeoutError::Timeout) => {}
                 Ok(event) => self.handle(event, sender),
             }
             self.look_at_the_end();
+            self.give_up_draining(sender);
+        }
+    }
+
+    /// A stopped Qwen job that has not ended after [`DRAIN_MOST`]: its worker goes (the graphics
+    /// memory with it), and the job that waited starts a new one.
+    fn give_up_draining(&mut self, sender: &Sender<Event>) {
+        if self.draining && self.draining_since.is_some_and(|since| since.elapsed() >= DRAIN_MOST) {
+            eprintln!("torroassistant: qwen did not stop in time, ended");
+            self.qwen = None;
+            self.drained(sender);
         }
     }
 
@@ -807,6 +827,7 @@ impl<W: FnMut(Output)> Helper<W> {
     /// A stopped Qwen job sent its end: the one that waited may start.
     fn drained(&mut self, sender: &Sender<Event>) {
         self.draining = false;
+        self.draining_since = None;
         if let Some(say) = self.pending.take() {
             self.say(say, sender);
         }
@@ -923,6 +944,7 @@ impl<W: FnMut(Output)> Helper<W> {
         {
             let told = writeln!(qwen.input, "stop {}", self.next).and_then(|()| qwen.input.flush());
             self.draining = told.is_ok();
+            self.draining_since = told.is_ok().then(std::time::Instant::now);
         }
         if let Job::Piper { synth: Some((child, _)), .. } = &mut self.job {
             let _ = child.kill();
@@ -1214,6 +1236,23 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5), "the stop does not wait for Piper");
         assert_eq!(said.borrow().as_slice(), [Output::Done]);
         assert!(matches!(helper.job, Job::Idle));
+    }
+
+    /// A stopped Qwen job that never ends is given up after [`DRAIN_MOST`]: the job that waited
+    /// goes on (here it fails, as nothing is set up).
+    #[test]
+    fn a_stopped_qwen_job_that_never_ends_is_given_up() {
+        let (sender, _events) = mpsc::channel();
+        let (mut helper, said) = helper(Found::default());
+        helper.draining = true;
+        helper.draining_since = Some(std::time::Instant::now());
+        helper.handle(say(SpeechProvider::Qwen, "Next."), &sender);
+        helper.give_up_draining(&sender);
+        assert!(helper.pending.is_some(), "still within the time");
+        helper.draining_since = std::time::Instant::now().checked_sub(DRAIN_MOST);
+        helper.give_up_draining(&sender);
+        assert!(!helper.draining && helper.pending.is_none());
+        assert!(matches!(said.borrow().last(), Some(Output::Failed { .. })), "the waiting job went on");
     }
 
     /// What a replaced or ended Qwen worker still sends belongs to no job: its end does not fail the
