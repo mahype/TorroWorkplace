@@ -675,7 +675,8 @@ pub enum ChatWindow {
 /// The `error` answer for an `assistant.*` request that breaks a limit, before anything is looked
 /// at: a message that is blank or over [`MAX_TEXT_CHARS`], a title that is blank, longer than
 /// [`MAX_TITLE_CHARS`] or more than one line, any id over [`MAX_ID_BYTES`], a note that is blank or
-/// over [`MAX_NOTE_CHARS`], a search that is blank or over [`MAX_QUERY_CHARS`] (issue #704), a skill beyond its limits ([`skill_refusal`]), and a change of the profile that changes nothing or breaks its limits
+/// over [`MAX_NOTE_CHARS`], a search that is blank or over [`MAX_QUERY_CHARS`] (issue #704), a skill beyond
+/// its limits ([`skill_refusal`]), and a change of the profile that changes nothing or breaks its limits
 /// ([`profile_refusal`]). `None` for every request within them and for every other request. The
 /// core calls it before rights, approvals and handlers, so nobody is asked to approve what would be
 /// refused anyway.
