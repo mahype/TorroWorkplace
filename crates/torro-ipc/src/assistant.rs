@@ -50,6 +50,9 @@ pub const MAX_DESCRIPTION_CHARS: usize = 200;
 /// manner and a few habits, short enough that the rules after it keep the model's attention.
 pub const MAX_PERSONALITY_CHARS: usize = 4_000;
 
+/// At most this many characters in the person's own name ([`Profile::person_name`]): one line.
+pub const MAX_PERSON_NAME_CHARS: usize = 80;
+
 /// At most this many characters in one note of the memory ([`Note::text`]).
 pub const MAX_NOTE_CHARS: usize = 500;
 
@@ -402,6 +405,11 @@ pub struct Profile {
     /// How it speaks and behaves, as the person wrote it (Markdown or plain text, at most
     /// [`MAX_PERSONALITY_CHARS`] characters); empty for none.
     pub personality: String,
+    /// The name of the person the assistant works for, as they wrote it (#702): one line, at most
+    /// [`MAX_PERSON_NAME_CHARS`] characters; empty when the assistant should not know it. It goes
+    /// into every prompt; empty from cores older than this field.
+    #[serde(default)]
+    pub person_name: String,
 }
 
 /// One note of the assistant's memory (`assistant.list_memories`, task C.10): something it keeps
@@ -637,10 +645,14 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
         }
         Request::SaveSkill { name, description, text, .. } => skill_refusal(name, description, text, true)
             .map(|message| Response::Error { code: "error".into(), message }),
-        Request::UpdateProfile { name, description, avatar, personality } => {
-            profile_refusal(name.as_deref(), description.as_deref(), avatar.as_deref(), personality.as_deref())
-                .map(|message| Response::Error { code: "error".into(), message })
-        }
+        Request::UpdateProfile { name, description, avatar, personality, person_name } => profile_refusal(
+            name.as_deref(),
+            description.as_deref(),
+            avatar.as_deref(),
+            personality.as_deref(),
+            person_name.as_deref(),
+        )
+        .map(|message| Response::Error { code: "error".into(), message }),
         _ => None,
     }
 }
@@ -648,15 +660,17 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
 /// Why a change of the profile (`assistant.update_profile`) is refused, for people; `None` when it
 /// keeps every limit: at least one field, a name that is one line and not blank, a description of
 /// one line, both within their lengths, a picture of [`AVATARS`], a personality within
-/// [`MAX_PERSONALITY_CHARS`]. Lengths count characters after trimming.
+/// [`MAX_PERSONALITY_CHARS`], the person's name one line within [`MAX_PERSON_NAME_CHARS`] (empty
+/// clears it). Lengths count characters after trimming.
 pub fn profile_refusal(
     name: Option<&str>,
     description: Option<&str>,
     avatar: Option<&str>,
     personality: Option<&str>,
+    person_name: Option<&str>,
 ) -> Option<String> {
-    if name.is_none() && description.is_none() && avatar.is_none() && personality.is_none() {
-        return Some("nothing to change: give a name, description, avatar or personality".into());
+    if name.is_none() && description.is_none() && avatar.is_none() && personality.is_none() && person_name.is_none() {
+        return Some("nothing to change: give a name, description, avatar, personality or person_name".into());
     }
     let chars = |text: &str| text.trim().chars().count();
     if let Some(name) = name {
@@ -679,6 +693,11 @@ pub fn profile_refusal(
     }
     if personality.is_some_and(|personality| chars(personality) > MAX_PERSONALITY_CHARS) {
         return Some(format!("a personality may hold at most {MAX_PERSONALITY_CHARS} characters"));
+    }
+    if let Some(person_name) = person_name
+        && (person_name.trim().lines().count() > 1 || chars(person_name) > MAX_PERSON_NAME_CHARS)
+    {
+        return Some(format!("your name is one line of at most {MAX_PERSON_NAME_CHARS} characters"));
     }
     None
 }
@@ -938,6 +957,7 @@ mod tests {
                     description: description.map(str::to_string),
                     avatar: avatar.map(str::to_string),
                     personality: personality.map(str::to_string),
+                    person_name: None,
                 }
             };
         assert_eq!(code(limit_refusal(&update(None, None, None, None))), Some("error".into()), "nothing to change");
@@ -957,6 +977,24 @@ mod tests {
         assert_eq!(code(limit_refusal(&update(None, None, None, Some(&personality)))), None);
         let personality = "a".repeat(MAX_PERSONALITY_CHARS + 1);
         assert_eq!(code(limit_refusal(&update(None, None, None, Some(&personality)))), Some("error".into()));
+    }
+
+    /// Issue #702: the person's name is one line within its length; empty clears it and counts as
+    /// a change.
+    #[test]
+    fn the_persons_name_keeps_its_limits() {
+        let named = |person_name: &str| Request::UpdateProfile {
+            name: None,
+            description: None,
+            avatar: None,
+            personality: None,
+            person_name: Some(person_name.into()),
+        };
+        assert_eq!(code(limit_refusal(&named("Anna Berg"))), None);
+        assert_eq!(code(limit_refusal(&named(""))), None, "empty clears the name");
+        assert_eq!(code(limit_refusal(&named("Anna\nBerg"))), Some("error".into()), "two lines");
+        assert_eq!(code(limit_refusal(&named(&"a".repeat(MAX_PERSON_NAME_CHARS)))), None);
+        assert_eq!(code(limit_refusal(&named(&"a".repeat(MAX_PERSON_NAME_CHARS + 1)))), Some("error".into()));
     }
 
     /// The wire format of a note: `local_only` only when set.

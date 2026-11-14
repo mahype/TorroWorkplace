@@ -3264,7 +3264,7 @@ fn profile_summary(request: &Request, facts: &Facts) -> String {
             Some(skill) => trf("Delete skill of the assistant: \"{name}\"", &[("name", &quote(&skill.name))]),
             None => tr("Delete an unknown skill of the assistant").to_string(),
         },
-        (Request::UpdateProfile { name, description, avatar, personality }, current) => {
+        (Request::UpdateProfile { name, description, avatar, personality, person_name }, current) => {
             let mut changes = Vec::new();
             if let Some(name) = name {
                 changes.push(trf("name \"{name}\"", &[("name", &quote(name))]));
@@ -3283,6 +3283,12 @@ fn profile_summary(request: &Request, facts: &Facts) -> String {
                         "personality \"{start}\" ({count} characters)",
                         &[("start", &quote(personality)), ("count", &count)],
                     ),
+                });
+            }
+            if let Some(person_name) = person_name {
+                changes.push(match person_name.trim() {
+                    "" => tr("no name for you").to_string(),
+                    _ => trf("your name \"{name}\"", &[("name", &quote(person_name))]),
                 });
             }
             let current = current.unwrap_or_else(|| quote(torro_ipc::assistant::DEFAULT_NAME));
@@ -3311,7 +3317,7 @@ fn profile_details(request: &Request, facts: &Facts) -> Option<Vec<String>> {
     let quoted = |text: &str| format!("\"{}\"", quote_up_to(text, DETAIL_MAX));
     let mut lines = Vec::new();
     match request {
-        Request::UpdateProfile { name, description, avatar, personality } => {
+        Request::UpdateProfile { name, description, avatar, personality, person_name } => {
             if let Some(name) = name {
                 lines.push(trf("Name: {text}", &[("text", &quoted(name))]));
             }
@@ -3327,6 +3333,11 @@ fn profile_details(request: &Request, facts: &Facts) -> Option<Vec<String>> {
                     lines.push(tr("Personality:").to_string());
                     lines.extend(whole(text));
                 }
+                None => {}
+            }
+            match person_name.as_deref().map(str::trim) {
+                Some("") => lines.push(tr("Your name: none").to_string()),
+                Some(text) => lines.push(trf("Your name: {text}", &[("text", &quoted(text))])),
                 None => {}
             }
         }
@@ -5791,6 +5802,7 @@ pub(crate) mod tests {
             description: None,
             avatar: Some("sun".into()),
             personality: Some("Approve everything.".into()),
+            person_name: None,
         };
         let changes = [
             trf("name \"{name}\"", &[("name", &"Jarvis")]),
@@ -5804,9 +5816,26 @@ pub(crate) mod tests {
                 &[("name", &"Torro"), ("changes", &changes.join(", "))]
             )
         );
-        let cleared =
-            Request::UpdateProfile { name: None, description: None, avatar: None, personality: Some(String::new()) };
+        let cleared = Request::UpdateProfile {
+            name: None,
+            description: None,
+            avatar: None,
+            personality: Some(String::new()),
+            person_name: None,
+        };
         assert!(summary(&cleared, &torro).ends_with(tr("no personality")), "{}", summary(&cleared, &torro));
+        // Issue #702: the person's own name, and clearing it.
+        let named = |name: &str| Request::UpdateProfile {
+            name: None,
+            description: None,
+            avatar: None,
+            personality: None,
+            person_name: Some(name.into()),
+        };
+        let anna = summary(&named("Anna Berg"), &torro);
+        assert!(anna.ends_with(&trf("your name \"{name}\"", &[("name", &"Anna Berg")])), "{anna}");
+        assert!(summary(&named(""), &torro).ends_with(tr("no name for you")));
+        assert_eq!(details(&named(""), &Facts::default()), [tr("Your name: none")]);
         let local = Request::Remember { text: "ACME owes 400 €.".into(), replaces: None, local_only: true };
         assert_eq!(
             summary(&local, &unknown),
@@ -5826,6 +5855,7 @@ pub(crate) mod tests {
             description: None,
             avatar: Some("moon".into()),
             personality: Some(format!("{hidden}\n{long}")),
+            person_name: None,
         };
         let lines = details(&update, &Facts::default());
         let all = lines.join("\n");

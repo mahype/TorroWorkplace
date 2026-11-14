@@ -1278,6 +1278,7 @@ impl PimService {
             }
             Request::Ping
             | Request::Status
+            | Request::GetHelp { .. }
             | Request::Quit
             | Request::ListTemplates
             | Request::SaveTemplate { .. }

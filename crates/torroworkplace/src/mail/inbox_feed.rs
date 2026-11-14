@@ -2643,7 +2643,7 @@ pub(crate) mod tests {
         let trash = store.run(|store| store.folder_by_role(Role::Trash)).await.expect("trash folder").expect("listed");
         assert_eq!(kept["Trash chosen"].folder, trash.id, "trash action survives person's category");
         for subject in ["Read chosen", "Trash chosen"] {
-            assert_eq!(kept[subject].category, Some(person));
+            assert_eq!(kept[subject].category, Some(person), "{subject}");
         }
         assert!(entries(&inbox).is_empty(), "read/trashed inputs should not notify");
     }

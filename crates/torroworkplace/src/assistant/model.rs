@@ -82,6 +82,13 @@ pub trait Host: Send + Sync {
     /// rights as stored now; `None` while a person has not set it up. Read anew on every call.
     fn client(&self) -> Option<ClientInfo>;
 
+    /// The name of the window manager backend the core works with (`hyprland`, `glazewm`,
+    /// `aerospace`, `unsupported`), for the line "This computer" of the prompt (issue #702,
+    /// [`prompt::Machine`]). Empty for a host without one.
+    fn window_manager(&self) -> &'static str {
+        ""
+    }
+
     /// The model `model` of the engine `engine` (an AI account id), or for `None` the one
     /// "Automatic" picks among its models ([`ModelAccess::automatic`]), and where that model runs
     /// ([`torro_core::ai::place_of`], task S.23: account **and** model; a model the account does not
@@ -662,6 +669,8 @@ pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: 
         Some(_) => Vec::new(),
         None => assistant.skill_summaries().await,
     };
+    // The person's name (issue #702) for the assistant and its bots alike: it is the same person.
+    let person = assistant.profile().await.person_name;
     // A client's message (issue #305) is data from outside like a mail, in this turn and every later
     // one: it counts for the web's yes and for the memory (C.11) alike.
     let from_client = sent_by_a_client(&job.history, &job.actor);
@@ -708,6 +717,7 @@ pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: 
         persona,
         memory,
         skills,
+        person,
         untrusted,
         outside,
         said,
@@ -734,6 +744,9 @@ struct Answering {
     memory: Vec<Note>,
     /// The assistant's skills by name, read when the answer started (issue #703); none for a bot.
     skills: Vec<torro_ipc::assistant::SkillSummary>,
+    /// The person's own name from the profile (issue #702), read when the answer started; empty
+    /// when the assistant should not know it.
+    person: String,
     /// The conversation read data from outside the suite: a tool of an earlier turn that may have
     /// ([`tools::may_have_read_untrusted`]; counted by its line when it might, also once its result was left out
     /// to save room, issue #701), an
@@ -838,6 +851,8 @@ impl Answering {
         // every thinking block to the system prompt it was written under (preserved thinking), and one rebuilt with
         // the next minute fails the step after a tool round with HTTP 400.
         let now = Local::now();
+        // This computer (issue #702), for the same reason once for the whole answer.
+        let machine = prompt::Machine::here(self.host.window_manager());
         // The system prompt and the tools of the step before, to see what changed since ([`without_thinking`]).
         let mut sent: Option<(String, Vec<torro_core::ai::ToolSpec>)> = None;
         for _ in 0..steps {
@@ -849,7 +864,8 @@ impl Answering {
                 .iter()
                 .filter(|tool| !tool.is_server())
                 .map(|tool| tool.command.area)
-                .filter(|area| !matches!(area, Area::Assistant | Area::Bots))
+                // The help (issue #702) is the one tool of `system`, no area the person granted.
+                .filter(|area| !matches!(area, Area::Assistant | Area::Bots | Area::System))
                 .collect();
             let areas: Vec<Area> = areas.into_iter().collect();
             let servers: BTreeSet<String> = allowed
@@ -861,8 +877,8 @@ impl Answering {
             let context = prompt::Context {
                 now,
                 lang: i18n::lang(),
-                // The suite keeps no name of the person yet (no setting holds one).
-                person: None,
+                machine: &machine,
+                person: Some(&self.person),
                 areas: &areas,
                 without: &self.job.without,
                 rights: rights.as_ref(),
@@ -979,14 +995,18 @@ impl Answering {
     }
 
     /// Adds the tool line `line` of the call `call` with `result`, what the model reads of it (issue #701): kept
-    /// with the line for later turns, and its summary for what a left-out stretch names. `None` when the run was
-    /// stopped meanwhile, else `result`.
+    /// with the line for later turns unless it is the web's ([`tools::kept_for_later`], issue #714), and its summary
+    /// for what a left-out stretch names. `None` when the run was stopped meanwhile, else `result`.
     async fn add_tool(&mut self, call: &str, line: EntryContent, result: String) -> Option<String> {
-        if let EntryContent::Tool { summary, .. } = &line {
-            self.summaries.insert(call.to_string(), summary.clone());
-        }
+        let kept = match &line {
+            EntryContent::Tool { name, summary, .. } => {
+                self.summaries.insert(call.to_string(), summary.clone());
+                tools::kept_for_later(name).then(|| result.clone())
+            }
+            _ => Some(result.clone()),
+        };
         let (conversation, run) = (&self.job.conversation, self.job.run);
-        self.assistant.add_to_run(conversation, run, line, false, Some(result.clone())).await.then_some(result)
+        self.assistant.add_to_run(conversation, run, line, false, kept).await.then_some(result)
     }
 
     /// Runs the tool call `call` and answers what the model reads of it; `None` when the run was
@@ -2855,6 +2875,12 @@ pub(crate) mod tests {
         listed.context = Some(200_000);
         let script = script.listing(vec![listed]);
         let (assistant, _kept) = set_up(dir.path(), Some(rights), Place::Local, Arc::clone(&script));
+        // Issue #702: the person's name from the profile.
+        let named = super::super::profile::Change {
+            person_name: Some("Anna Berg".into()),
+            ..super::super::profile::Change::default()
+        };
+        assert!(matches!(assistant.update_profile(named).await, Response::Profile { .. }));
         let id = ask(&assistant, None, "Delete my dentist appointment", Vec::new()).await;
         finished(&assistant, &id).await;
 
@@ -2863,6 +2889,11 @@ pub(crate) mod tests {
         let system = |step: usize| asked[step].messages[0].content.clone();
         assert!(!system(0).is_empty());
         assert_eq!((system(1), system(2)), (system(0), system(0)), "one system prompt per answer");
+        // Issue #702: this computer and the person's name, the same in every step.
+        for step in 0..3 {
+            assert!(system(step).contains("- This computer: "), "{}", system(step));
+            assert!(system(step).contains("- The person's name: Anna Berg."), "{}", system(step));
+        }
         assert_ne!(asked[1].tools, asked[0].tools, "find_tools loaded a tool");
         assert_eq!(asked[2].tools, asked[1].tools, "nothing loaded since");
         let thinking = |step: usize| -> Vec<Vec<Value>> {
@@ -3188,6 +3219,35 @@ pub(crate) mod tests {
         assert_eq!(webs(&host)[7], ("tools.web_search", other, false, false), "a new conversation starts afresh");
         assert_eq!(remembered(&host).len(), 1);
         assert_eq!(host.untrusted.lock().expect("lock").last(), Some(&true), "after a search a note waits");
+    }
+
+    /// Issue #714: the web's results are not kept for later turns (Brave's terms), another tool's result is.
+    #[tokio::test]
+    async fn web_results_are_not_kept() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = Script::new(vec![
+            calls_all(&[
+                ("tools_web_search", json!({"query": "Lisbon trams"})),
+                ("tools_fetch_page", json!({"url": "https://lisbon.example.org/"})),
+                ("inbox_list_items", json!({})),
+            ]),
+            says("Done."),
+        ]);
+        let (assistant, _host) = set_up(dir.path(), Some(reader()), Place::Local, Arc::clone(&script));
+        let id = ask(&assistant, None, "Search for trams.", Vec::new()).await;
+        finished(&assistant, &id).await;
+        let state = assistant.state().await;
+        let conversation = state.conversations.get(&id).expect("conversation");
+        let tool_of = |seq: &u64| {
+            conversation.entries.iter().find(|entry| entry.seq == *seq).and_then(|entry| match &entry.content {
+                EntryContent::Tool { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+        };
+        let kept: Vec<Option<String>> = conversation.results.keys().map(tool_of).collect();
+        assert_eq!(kept, [Some("inbox.list_items".to_string())], "{:?}", conversation.entries);
+        let tools = conversation.entries.iter().filter(|entry| matches!(entry.content, EntryContent::Tool { .. }));
+        assert_eq!(tools.count(), 3, "every tool line stays");
     }
 
     /// Issue #305, task WEB.5: a bot that runs for the assistant goes by the yes of the assistant's

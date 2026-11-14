@@ -2879,7 +2879,10 @@ mod tests {
         #[tokio::test]
         async fn a_catalog_entry_installs_once_its_program_is_there() {
             let dir = tempfile::tempdir().expect("temp dir");
-            let (extensions, _) = extensions_in(dir.path(), roots());
+            // No folder to look in: `uvx` is missing whatever this computer has installed (#702: with
+            // `/usr/bin` the test failed where uv is installed).
+            let nowhere = Roots { path: Vec::new(), home: None, fixed: Vec::new() };
+            let (extensions, _) = extensions_in(dir.path(), nowhere);
             let time = || InstallFrom::Catalog { entry: "time".into(), secrets: BTreeMap::new() };
             let missing = extensions.install(time()).await;
             assert_eq!(code(&missing), "unsupported");
@@ -2898,8 +2901,9 @@ mod tests {
             std::fs::write(&uvx, format!("#!/bin/sh\nexec /bin/sh '{}' \"$@\"\n", script())).expect("write");
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&uvx, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+            // The stand-in first, before a real `uvx` in `/usr/bin`.
             let mut with_uvx = roots();
-            with_uvx.fixed.push(bin);
+            with_uvx.path.insert(0, bin);
             let (extensions, _) = extensions_in(dir.path(), with_uvx);
             let installed = info(extensions.install(time()).await);
             assert_eq!(installed.source, Source::Catalog { entry: "time".into(), version: "2026.10.19".into() });
