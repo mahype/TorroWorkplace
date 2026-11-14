@@ -3,8 +3,9 @@
 //!
 //! Talking by voice on or off (`settings.set_setting voice_enabled`), the fixed wake word, "Speak
 //! answers", the speech recognition – Parakeet (recommended) or Whisper, a dropdown as well
-//! (`settings.set_setting speech_recognizer`, issue #749) –, the microphone when the recording program can list them – a Torro dropdown in the group
-//! "Voice" since issue #547, as the number of microphones is open ([`State::menus`], [`overlay`]) –,
+//! (`settings.set_setting speech_recognizer`, issue #749) –, the microphone when the recording
+//! program can list them – a Torro dropdown in the group "Voice" since issue #547, as the number of
+//! microphones is open ([`State::menus`], [`overlay`]) –,
 //! and below the four programs the listener needs with whether each was found
 //! (`settings.voice_status`).
 //!

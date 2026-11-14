@@ -25,8 +25,9 @@
 //! ([`listen`]).
 //!
 //! While it waits for the wake word, the listener keeps a few seconds in memory and nothing on
-//! disk. Parakeet gets the sound through a pipe. Only for whisper.cpp, which reads files, a sentence (or, without openWakeWord, a window
-//! of two seconds) goes to a private temporary file that is removed at once ([`audio::TempWav`]).
+//! disk. Parakeet gets the sound through a pipe. Only for whisper.cpp, which reads files, a sentence
+//! (or, without openWakeWord, a window of two seconds) goes to a private temporary file that is
+//! removed at once ([`audio::TempWav`]).
 
 pub mod audio;
 pub mod cli;
