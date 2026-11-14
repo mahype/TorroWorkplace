@@ -312,6 +312,16 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::MoveContact { id: contact, to_book, .. } => {
             vec![format!("item:{}", hashed(contact)), collection(to_book)]
         }
+        // Import and export (issue #725): the book, never the cards, the file or its path; an export of
+        // single contacts names no contact, there may be thousands.
+        Request::ImportVCards { book, .. } => vec![collection(book)],
+        Request::ExportVCards { book, .. } | Request::FindDuplicates { book } => {
+            book.iter().map(|book| collection(book)).collect()
+        }
+        // Duplicates (issue #726): each contact hashed.
+        Request::MergeContacts { ids, .. } | Request::DismissDuplicates { ids } => {
+            ids.iter().map(|contact| format!("item:{}", hashed(contact))).collect()
+        }
         // Chat and presence (`docs/chat.md`, "Kein Inhalt im Protokoll"): the account as it is, a
         // conversation's token, a message and a person hashed; never a name, a text, a status
         // message or what was searched for.
@@ -471,6 +481,8 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::CreateEventFromItem { id: entry, collection: calendar, .. } => {
             vec![random("inbox", entry), collection(calendar)]
         }
+        // The entry and the address book, never the sender or the card (issue #727).
+        Request::CreateContactFromItem { id: entry, book } => vec![random("inbox", entry), collection(book)],
         // Answering an invitation (task E8.3b): the account and the mail hashed as for sending, the
         // calendar when one is named; never the answer, the title, the times or the organizer.
         Request::RespondToInvitation { account: name, id: message, collection: calendar, .. } => {

@@ -672,7 +672,8 @@ pub fn extension_annotations(access: Access) -> ToolAnnotations {
 ///   listing, switching off and removing servers changes only the core's store, issue #302 – the
 ///   servers' own tools are not these); calendar, tasks and accounts talk to servers, so their hint is
 ///   left open, and so is it for `inbox.create_task_from_item` and `inbox.create_event_from_item`
-///   (task E8.5b), which write a task or an event to the server, and for
+///   (task E8.5b), which write a task or an event to the server, `inbox.create_contact_from_item`
+///   (issue #727), which writes a contact, and for
 ///   `inbox.suggest_task_from_item` and `inbox.suggest_event_from_item` (issue #120), which ask an
 ///   AI server – one elsewhere, as the person set it up. The reminders of the calendar
 ///   ([`STAYS_HERE`], task ER1.2) never reach a server: closed.
@@ -735,6 +736,11 @@ const STAYS_HERE: &[&str] = &[
     "contacts.mark_used",
     // Suggestions read only the address books and the mail kept on this device (issue #460).
     "contacts.suggest_recipients",
+    // Export and duplicates read the cards kept on this device; pairs said to be different people
+    // are kept here only (issues #725, #726). An import and a merge write to the server.
+    "contacts.export_vcards",
+    "contacts.find_duplicates",
+    "contacts.dismiss_duplicates",
     "calendar.list_reminders",
     "calendar.snooze_reminder",
     "calendar.dismiss_reminder",
@@ -763,6 +769,8 @@ const STAYS_HERE: &[&str] = &[
 const WRITES_TO_A_SERVER: &[&str] = &[
     "inbox.create_task_from_item",
     "inbox.create_event_from_item",
+    // A contact of a mail goes to the address book's server (issue #727).
+    "inbox.create_contact_from_item",
     "inbox.suggest_task_from_item",
     "inbox.suggest_event_from_item",
 ];
@@ -800,6 +808,8 @@ const IDEMPOTENT: &[&str] = &[
     "settings.set_collection_shown",
     "settings.update_settings",
     "apps.open_app",
+    // The same contacts apart again change nothing more (issue #726).
+    "contacts.dismiss_duplicates",
     // Hidden stays hidden (issue #485).
     "apps.dismiss_announcement",
     // Bringing the same window or page to the front again changes nothing more.

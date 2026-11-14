@@ -1167,6 +1167,8 @@ fn describe(request: &Request) -> String {
         Request::CreateEventFromItem { id, collection, .. } => {
             format!("make an event in {collection} of inbox item {id}")
         }
+        // Never the sender or the card (issue #727).
+        Request::CreateContactFromItem { id, book } => format!("make a contact in {book} of inbox item {id}"),
         // Never what the AI suggested (issue #120).
         Request::SuggestTaskFromItem { id, .. } => format!("suggest a task of inbox item {id}"),
         Request::SuggestEventFromItem { id } => format!("suggest an event of inbox item {id}"),
@@ -1361,6 +1363,13 @@ fn describe(request: &Request) -> String {
         Request::MoveContact { .. } => "move a contact".into(),
         Request::DeleteContact { .. } => "delete a contact".into(),
         Request::ResolveContactConflict { .. } => "settle a contact's conflict".into(),
+        // Never a card, a file or a path (issues #725, #726).
+        Request::ImportVCards { dry_run: true, .. } => "count the contacts of a vCard file".into(),
+        Request::ImportVCards { .. } => "import contacts".into(),
+        Request::ExportVCards { .. } => "export contacts".into(),
+        Request::FindDuplicates { .. } => "find duplicate contacts".into(),
+        Request::MergeContacts { .. } => "merge contacts".into(),
+        Request::DismissDuplicates { .. } => "keep contacts apart".into(),
         // Never a conversation's name, a text or a status message (`docs/chat.md`).
         Request::ChatListConversations { .. } => "list the chat conversations".into(),
         Request::ChatGetMessages { .. } => "read chat messages".into(),

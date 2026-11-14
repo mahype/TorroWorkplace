@@ -75,7 +75,7 @@ fn name_key(contact: &Contact) -> Option<String> {
 }
 
 /// The keys of `contact` for each reason.
-fn keys(contact: &Contact, country: Option<&str>) -> Vec<(DuplicateReason, String)> {
+pub fn keys(contact: &Contact, country: Option<&str>) -> Vec<(DuplicateReason, String)> {
     let mut keys: Vec<(DuplicateReason, String)> = Vec::new();
     for key in contact.emails.iter().filter_map(|e| mail_key(&e.value)) {
         keys.push((DuplicateReason::Mail, key));
