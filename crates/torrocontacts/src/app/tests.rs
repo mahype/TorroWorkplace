@@ -659,6 +659,23 @@ async fn the_keys_of_duplicates_wait_under_a_dialog() {
     assert!(app.merge.as_ref().is_some_and(|m| m.busy), "a running merge is not asked about again");
 }
 
+/// Review of PR #733: the narrow navigation keeps the keys of the cards; "Export…" in "Duplicates" takes
+/// the cards whatever the search of another view held.
+#[tokio::test]
+async fn duplicates_keys_wait_under_the_navigation_and_ignore_the_search() {
+    let mut app = two_groups().await;
+    let _ = app.update(Message::Show(View::Duplicates));
+    app.drawer = true;
+    let _ = app.update(Message::Key(Press::Different));
+    assert!(app.dismissing.is_none(), "nothing marked under the navigation");
+    app.drawer = false;
+    let all = app.export_scope().ids;
+    assert!(!all.is_empty());
+    app.search = "zzz nobody".into();
+    assert!(app.can_export());
+    assert_eq!(app.export_scope().ids, all, "the search of another view takes nothing away");
+}
+
 /// Review of #726: while "Mark as different" runs, no second request goes out and its "Merge…" waits.
 #[tokio::test]
 async fn marking_as_different_waits_for_its_answer() {

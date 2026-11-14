@@ -649,10 +649,12 @@ impl App {
             View::All | View::Birthdays => self.contacts.iter().filter(passes).collect(),
             View::Favorites => self.contacts.iter().filter(|c| c.favorite).filter(passes).collect(),
             View::Recent => self.recent.iter().filter_map(|id| self.summary(id)).filter(passes).collect(),
+            // The cards of "Duplicates" ignore the search: what "Export…" takes is what they show (review
+            // of #356).
             View::Duplicates => {
                 let ids: HashSet<&str> =
                     self.duplicates.iter().flat_map(|g| g.contacts.iter().map(|c| c.id.as_str())).collect();
-                self.contacts.iter().filter(|c| ids.contains(c.id.as_str())).filter(passes).collect()
+                self.contacts.iter().filter(|c| ids.contains(c.id.as_str())).collect()
             }
             View::Book(id) => self.contacts.iter().filter(|c| &c.book == id).filter(passes).collect(),
             View::Group(book, name) => self
@@ -1419,7 +1421,7 @@ impl App {
                     && let Some(keep) = self.kept_of(found)
                     && duplicates::blocked(found, &keep.id).is_none()
                 {
-                    self.merge = Some(Merge { group, busy: false, error: None });
+                    self.merge = Some(Merge { group, busy: false, error: None, sent: Vec::new() });
                     self.dialog = Some(Dialog::Merge);
                 }
             }
@@ -1431,6 +1433,8 @@ impl App {
                 if let Some(merge) = &mut self.merge {
                     merge.busy = true;
                     merge.error = None;
+                    // Kept for the answer: a load in between may already have taken the group away.
+                    merge.sent = ids.clone();
                 }
                 let backend = self.backend.clone();
                 return Task::perform(
@@ -1440,11 +1444,7 @@ impl App {
             }
             Message::MergedContacts(result) => match result {
                 Ok(merged) => {
-                    let asked: Vec<String> = self
-                        .merge
-                        .take()
-                        .and_then(|m| self.duplicate_group(&m.group).map(|g| duplicates::ids_and_etags(g).0))
-                        .unwrap_or_default();
+                    let asked: Vec<String> = self.merge.take().map(|m| m.sent).unwrap_or_default();
                     if self.dialog == Some(Dialog::Merge) {
                         self.dialog = None;
                     }
@@ -1519,7 +1519,10 @@ impl App {
         if self.view == View::Duplicates {
             // A dialog, a menu or a contact being edited keeps the keys of the cards: they would merge,
             // mark or choose under it (review of #356).
-            if self.dialog.is_some() || self.menu.is_some() || self.editing() {
+            // Nor the narrow navigation or a panel over the cards (review of #356): the person does not
+            // see the group a key would mark or merge.
+            let covered = self.drawer || (self.detail.is_some() && self.class() != SizeClass::Wide);
+            if self.dialog.is_some() || self.menu.is_some() || self.editing() || covered {
                 return match press {
                     Press::Search => operation::focus(SEARCH),
                     Press::Sidebar => self.update(Message::ToggleSidebar),

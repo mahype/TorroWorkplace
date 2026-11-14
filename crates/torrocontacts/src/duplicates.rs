@@ -44,6 +44,8 @@ pub struct Merge {
     pub busy: bool,
     /// Why the merge failed, for people.
     pub error: Option<String>,
+    /// The contacts the running merge sent, for its answer (empty until it is sent).
+    pub sent: Vec<String>,
 }
 
 /// A group's name for the window: its ids, sorted. It stays the same when a load brings the group again
