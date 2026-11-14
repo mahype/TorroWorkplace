@@ -3833,7 +3833,8 @@ static LIST_MODELS: Command = Command {
                   elsewhere relative to its server (`remote`: Ollama's cloud models compute on ollama.com), where the server tells. \
                   Direct Ollama Cloud is always remote and initially disabled, even behind loopback; missing capabilities, weights, context and disk size remain unknown. \
                   `remote: false` does not mean this computer: every LAN or public server counts as elsewhere for mail. `context` is \
-                  the tokens of one conversation, where the server tells; Ollama also names `parameters` (`8.2B`), \
+                  the tokens of one conversation, where the server tells; `max_output` the most tokens one answer \
+                  may have, where the server tells (Anthropic); Ollama also names `parameters` (`8.2B`), \
                   `quantization` (`Q4_K_M`) and `size` (bytes on the server's disk, only for models on that server, never \
                   estimated). \
                   By default only open-weights models and those the server says nothing about; `all: true` lists \
