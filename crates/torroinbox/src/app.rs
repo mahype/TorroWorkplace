@@ -3481,6 +3481,13 @@ pub struct App<S> {
     rail_pending: Option<(usize, Instant)>,
     /// When the pointer last left an open group: the next one opens at once within [`RAIL_DELAY`].
     rail_left: Option<Instant>,
+    /// The group of the rail a demo state of "Save as contact" opens (`--open torro-group`, issue
+    /// #727), held until the window knows its size and the mail is in: opened before, a resize to
+    /// another size class – the window's first size comes late – would close it again
+    /// ([`RailShape::moved`]).
+    staged_rail: Option<usize>,
+    /// The window got its size once ([`Message::Resized`]); until then it draws at its default size.
+    sized: bool,
     /// The suite-wide zoom (Ctrl + Plus / Minus / 0), the factor of the whole window.
     zoom: Zoom,
     /// Follows the design pack the suite settings name (task L.3).
@@ -5023,6 +5030,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             rail_open: None,
             rail_pending: None,
             rail_left: None,
+            staged_rail: None,
+            sized: false,
             launch,
         };
         // The size, and the traffic lights onto the title band's line (U.11).
@@ -5275,6 +5284,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if self.menu.is_some() || (shown.is_some() && self.wanted_letter() != shown) || reshaped {
             self.rail_open = None;
             self.rail_pending = None;
+        }
+        // A demo state's group opens once the rail stands where it will be drawn (issue #727).
+        if self.sized
+            && self.letter.as_ref().is_some_and(|letter| letter.loaded.is_some())
+            && let Some(at) = self.staged_rail.take()
+        {
+            self.rail_open = Some(at);
         }
         // A round of "Focus & reply" at the end of what is loaded loads the pile's next page (decision of
         // #315) – before the letter follows, so the next mail is read once it is in.
@@ -5606,7 +5622,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
             Message::Raise => return torro_gui::instance::bring_to_front(),
-            Message::Resized(size) => self.size = size,
+            Message::Resized(size) => {
+                self.size = size;
+                self.sized = true;
+            }
             Message::Loaded(view, result) => {
                 // An answer for a view the user has left since would show the wrong entries; one in
                 // the order before the last turn (task E8.15) the wrong way round.
@@ -16261,7 +16280,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     Open::MailActions => self.menu = Some(Menu::MailDisplay),
                     Open::MailGroup => self.rail_open = Some(1),
                     // Reply, File, Torro: the third group.
-                    Open::TorroGroup | Open::TorroGroupVcard => self.rail_open = Some(2),
+                    Open::TorroGroup | Open::TorroGroupVcard => self.staged_rail = Some(2),
                     // The answer the demo gives a first save, without asking it: the picture needs
                     // only the toast.
                     Open::ContactSaved => {
@@ -27682,9 +27701,16 @@ mod tests {
                 draw_everywhere(&mut app);
             }
         }
-        let app = mail_window(Density::Compact, &["--open", "torro-group-vcard"]);
+        let mut app = mail_window(Density::Compact, &["--open", "torro-group-vcard"]);
         assert_eq!(app.cursor.as_deref(), Some(mail::DEMO_VCARD_MAIL), "the mail with the card");
+        // Held until the window has its size and the mail is in (design review of #727): a first size
+        // of another class would close a group opened before.
+        assert_eq!(app.rail_open, None, "not before the size and the mail");
+        let _ = app.update(Message::Resized(Size::new(800.0, 600.0)));
+        deliver_letter(&mut app, mail::DEMO_VCARD_MAIL);
         assert_eq!(app.rail_open, Some(2), "the group Torro");
+        let _ = app.update(Message::Resized(Size::new(1600.0, 1000.0)));
+        assert_eq!(app.rail_open, None, "a later resize closes it as before");
     }
 
     #[test]

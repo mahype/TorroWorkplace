@@ -5,9 +5,10 @@
 //! - **Where:** in the mail window's rail, group "Torro" (`mail::torro_items`, also for mail without an
 //!   entry, which sends the mail's `m:…` id), and in the footer of a mail entry's panel in the hub and
 //!   the App Feed (`detail::button_groups`), an icon button beside "Make task" and "Make event".
-//! - **Its name** ([`label`]): "Add contact" when the mail carries a vCard ([`is_vcard`]: `text/vcard`,
-//!   `text/x-vcard` or a name ending in `.vcf`), else "Save as contact". The core finds the card
-//!   itself; the window only names the action after it.
+//! - **Its name** ([`label`]): "Add contact" when the core would make the contact of the mail's vCard
+//!   ([`has_vcard`]: its first attachment of type `text/vcard` or `text/x-vcard`, or named `….vcf`, at
+//!   most [`MAX_CARD_BYTES`]), else "Save as contact" – then the core saves the sender. The core finds
+//!   the card itself; the window only names the action after it, by the same rule.
 //! - **Only with a book to write to** ([`writable_book`]): the first address book that may be written
 //!   and is not hidden, the rule of the compose window's "+ Contact". The window asks for it once at
 //!   start (and again on its tick until there is one), never while it draws.
@@ -45,9 +46,15 @@ pub fn is_vcard(file: &AttachmentInfo) -> bool {
     kind == "text/vcard" || kind == "text/x-vcard" || named
 }
 
-/// Whether `mail` carries a vCard ([`is_vcard`]); also an inline part counts, as the core reads it.
+/// The largest vCard the core reads from a mail (`MAX_ATTACHED_CARD_BYTES` of the core, 1 MiB): a
+/// larger one is not read, the core saves the sender instead.
+pub const MAX_CARD_BYTES: u64 = 1024 * 1024;
+
+/// Whether the core makes the contact of `mail`'s vCard, as it picks the card: the first attachment
+/// that is one ([`is_vcard`]; also an inline part counts), and only while it is at most
+/// [`MAX_CARD_BYTES`] large – a later card is never taken in its place.
 pub fn has_vcard(mail: &Mail) -> bool {
-    mail.attachments.iter().any(is_vcard)
+    mail.attachments.iter().find(|file| is_vcard(file)).is_some_and(|card| card.size <= MAX_CARD_BYTES)
 }
 
 /// The action's name: "Add contact" for a mail with a vCard, else "Save as contact".
@@ -163,6 +170,26 @@ mod tests {
         assert!(is_vcard(&file(Some("Lena.VCF"), "application/octet-stream")));
         assert!(!is_vcard(&file(Some("budget.csv"), "text/csv")));
         assert!(!is_vcard(&file(Some("vcf.txt"), "text/plain")), "only the end of the name counts");
+    }
+
+    /// Only the first card counts, and only up to 1 MiB, as the core reads it: a larger one leaves
+    /// "Save as contact", the core saving the sender.
+    #[test]
+    fn only_the_first_card_up_to_a_mebibyte_counts() {
+        let demo = DemoSource::new(chrono::Utc::now());
+        let mut mail = DemoSource::get_mail(&demo, "m:w4").expect("a demo mail");
+        mail.attachments = vec![file(Some("budget.csv"), "text/csv")];
+        assert!(!has_vcard(&mail), "no card");
+        let mut card = file(Some("lena.vcf"), "text/vcard");
+        card.size = MAX_CARD_BYTES;
+        mail.attachments.push(card.clone());
+        assert!(has_vcard(&mail), "up to 1 MiB");
+        assert_eq!(label(has_vcard(&mail)), tr("Add contact"));
+        let mut large = card.clone();
+        large.size = MAX_CARD_BYTES + 1;
+        mail.attachments = vec![large, card];
+        assert!(!has_vcard(&mail), "the first card is too large; the second is not taken in its place");
+        assert_eq!(label(has_vcard(&mail)), tr("Save as contact"));
     }
 
     #[test]
