@@ -4053,7 +4053,8 @@ static SET_SETTING: Command = Command {
                   now), `microphone` (a name from settings_voice_status, or \"\" for the default), \
                   `speak_answers` (true, false), `speech_recognizer` (\"parakeet\", the default and \
                   faster, or \"whisper\": the program that turns speech into text), `stt_model` (absolute path \
-                  of a whisper.cpp .bin model, or \"\" for the first in the voice folder) or `voice` (absolute path of a Piper .onnx voice, or \"\") or \
+                  of a whisper.cpp .bin model, or \"\" for the first in the voice folder) or `voice` (absolute \
+                  path of a Piper .onnx voice, or \"\") or \
                   `assistant_default` (what a new chat of the assistant starts with: {\"engine\": \"<id from \
                   assistant_list_engines>\", \"model\": \"<model id>\", \"effort\": \"low\"|\"medium\"|\"high\"}, \
                   model and effort optional, or null for the one used last; it writes the slot `chat`, prefer \
