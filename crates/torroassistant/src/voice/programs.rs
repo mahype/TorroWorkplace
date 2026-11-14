@@ -304,7 +304,8 @@ impl RawPlayer {
                         .map(String::from)
                         .to_vec();
                 words.push(rate.to_string());
-                words.extend(["-ac", "1", "-i", "-"].map(String::from));
+                // `-ch_layout`: newer ffplay no longer knows `-ac` for its input.
+                words.extend(["-ch_layout", "mono", "-i", "-"].map(String::from));
                 words
             }
         };
@@ -655,7 +656,7 @@ pub mod tests {
         let play = RawPlayer { kind: RawKind::Play, program: PathBuf::from("play") };
         assert!(play.command(22_050).join(" ").ends_with("-r 22050 -e signed-integer -b 16 -c 1 -"));
         let ffplay = RawPlayer { kind: RawKind::Ffplay, program: PathBuf::from("ffplay") };
-        assert!(ffplay.command(24_000).ends_with(&["-ac", "1", "-i", "-"].map(String::from)));
+        assert!(ffplay.command(24_000).ends_with(&["-ch_layout", "mono", "-i", "-"].map(String::from)));
 
         let path = tempfile::tempdir().expect("temp dir");
         let folder = tempfile::tempdir().expect("voice folder");

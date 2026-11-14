@@ -223,10 +223,7 @@ impl<A: Assistant> Listener<'_, A> {
                 return Ended::Nothing;
             }
         };
-        // With reading aloud on, the chat window that shows the answer reads it (issue #745); spoken
-        // here as well, the two would interrupt each other.
         if voice.speak_answers
-            && !voice.read_aloud
             && let Some(words) = reply.spoken()
             && let Err(err) = self.speaker.say(&words)
         {

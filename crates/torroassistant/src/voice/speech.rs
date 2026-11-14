@@ -34,7 +34,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use serde_json::{Value, json};
-use torro_core::i18n::{tr, trf};
+use torro_core::i18n::tr;
 use torro_core::settings::{QWEN_RECOMMENDED, QWEN_VOICES, SpeechProvider, Voice};
 use torro_ipc::{SpeechMissing, SpeechOption, SpeechStatus, SpeechVoice};
 
@@ -77,7 +77,8 @@ pub const TEMPLATES: [(&str, &[u8], &str); 2] = [
 /// (`{"id", "pieces", "language", "ref_audio", "ref_text"}`) and writes its sound to standard
 /// output: the rate as u32 little endian (0 when it failed before any sound; the reason on standard
 /// error), then pieces of signed 16-bit mono, each after its length in bytes as u32, and 0 at the end.
-/// `stop <id>` ends the job between two pieces. It ends when its input closes. The libraries print
+/// `stop <id>` ends the job between two pieces. It ends as soon as its input closes, also while the
+/// model loads. The libraries print
 /// to standard output, so the sound goes to a copy of it and everything else to standard error.
 pub const QWEN_SCRIPT: &str = r#"
 import os, sys, json, struct, threading, queue
@@ -85,13 +86,6 @@ import os, sys, json, struct, threading, queue
 out = os.fdopen(os.dup(1), "wb", buffering=0)
 os.dup2(2, 1)
 sys.stdout = sys.stderr
-from faster_qwen3_tts import FasterQwen3TTS
-import numpy as np
-model = FasterQwen3TTS.from_pretrained(sys.argv[1])
-try:
-    model.warmup()
-except Exception as err:
-    print("warmup: %s" % err, file=sys.stderr, flush=True)
 jobs = queue.Queue()
 stopped = set()
 def read():
@@ -101,8 +95,17 @@ def read():
             stopped.add(line[5:])
         elif line:
             jobs.put(json.loads(line))
-    jobs.put(None)
+    # The helper is gone (also killed): end at once, even while the model loads, so the graphics
+    # memory is free.
+    os._exit(0)
 threading.Thread(target=read, daemon=True).start()
+from faster_qwen3_tts import FasterQwen3TTS
+import numpy as np
+model = FasterQwen3TTS.from_pretrained(sys.argv[1])
+try:
+    model.warmup()
+except Exception as err:
+    print("warmup failed: %s" % type(err).__name__, file=sys.stderr, flush=True)
 def put(data):
     out.write(data)
     out.flush()
@@ -363,6 +366,9 @@ enum Event {
     End,
     /// The Qwen worker ended, with the last it said on its error output.
     Gone(String),
+    /// One of the above from the Qwen worker of this number: a worker replaced meanwhile still
+    /// sends, and its events must not reach the new one's job.
+    Qwen(u64, Box<Event>),
 }
 
 /// The sound of one job as it plays.
@@ -412,8 +418,10 @@ impl Playback {
                 Ok(())
             }
             Playback::Gather { rate, bytes, player } => {
-                let file = TempWav::with_bytes(&wav_at(*rate, bytes))
-                    .map_err(|err| Output::failed("error", err.to_string()))?;
+                let file = TempWav::with_bytes(&wav_at(*rate, bytes)).map_err(|err| {
+                    eprintln!("torroassistant: {err}");
+                    Output::failed("error", tr("Reading aloud failed. Try again."))
+                })?;
                 *self = Playback::file(player, file)?;
                 Ok(())
             }
@@ -466,13 +474,10 @@ fn raw_playback(raw: &RawPlayer, rate: u32) -> Result<Playback, Output> {
 /// Starts `command` without a shell, its output dropped.
 fn start(command: &[String], stdin: Stdio) -> Result<Child, Output> {
     let (program, args) = command.split_first().ok_or_else(no_player)?;
-    Command::new(program)
-        .args(args)
-        .stdin(stdin)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|err| Output::failed("error", format!("{program}: {err}")))
+    Command::new(program).args(args).stdin(stdin).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(|err| {
+        eprintln!("torroassistant: {program}: {err}");
+        Output::failed("error", tr("The program that plays sound could not start."))
+    })
 }
 
 fn no_player() -> Output {
@@ -517,6 +522,8 @@ pub fn template(qwen: &Path, id: &str) -> Result<(PathBuf, &'static str), String
 
 /// The Qwen worker as it runs, for one model.
 struct Qwen {
+    /// Its number ([`Event::Qwen`]).
+    number: u64,
     model: String,
     child: Child,
     input: ChildStdin,
@@ -530,7 +537,7 @@ impl Drop for Qwen {
 }
 
 /// Starts the worker of `model` with `python`; its sound comes as events on `events`.
-fn start_qwen(python: &Path, model: &str, events: &Sender<Event>) -> Result<Qwen, String> {
+fn start_qwen(python: &Path, model: &str, number: u64, events: &Sender<Event>) -> Result<Qwen, String> {
     let mut child = Command::new(python)
         .args(["-I", "-u", "-c", QWEN_SCRIPT, model])
         .stdin(Stdio::piped())
@@ -558,11 +565,11 @@ fn start_qwen(python: &Path, model: &str, events: &Sender<Event>) -> Result<Qwen
         let mut output = BufReader::new(output);
         let gone = |events: &Sender<Event>| {
             let said = said.lock().unwrap_or_else(PoisonError::into_inner).clone();
-            let _ = events.send(Event::Gone(said));
+            let _ = events.send(Event::Qwen(number, Box::new(Event::Gone(said))));
         };
         loop {
             let Some(rate) = read_u32(&mut output) else { return gone(&events) };
-            if events.send(Event::Rate(rate)).is_err() {
+            if events.send(Event::Qwen(number, Box::new(Event::Rate(rate)))).is_err() {
                 return;
             }
             if rate == 0 {
@@ -571,20 +578,20 @@ fn start_qwen(python: &Path, model: &str, events: &Sender<Event>) -> Result<Qwen
             loop {
                 let Some(length) = read_u32(&mut output) else { return gone(&events) };
                 if length == 0 {
-                    let _ = events.send(Event::End);
+                    let _ = events.send(Event::Qwen(number, Box::new(Event::End)));
                     break;
                 }
                 let mut chunk = vec![0; length as usize];
                 if output.read_exact(&mut chunk).is_err() {
                     return gone(&events);
                 }
-                if events.send(Event::Chunk(chunk)).is_err() {
+                if events.send(Event::Qwen(number, Box::new(Event::Chunk(chunk)))).is_err() {
                     return;
                 }
             }
         }
     });
-    Ok(Qwen { model: model.to_string(), child, input })
+    Ok(Qwen { number, model: model.to_string(), child, input })
 }
 
 fn read_u32(reader: &mut impl Read) -> Option<u32> {
@@ -629,12 +636,25 @@ pub struct Helper<W: FnMut(Output)> {
     draining: bool,
     /// A Qwen job that waits for the stopped one to end.
     pending: Option<Say>,
+    /// Counts the Qwen workers started ([`Event::Qwen`]).
+    workers: u64,
     write: W,
 }
 
 impl<W: FnMut(Output)> Helper<W> {
     pub fn new(found: Found, folder: Option<PathBuf>, voice: Option<Voice>, write: W) -> Helper<W> {
-        Helper { found, folder, voice, qwen: None, job: Job::Idle, next: 0, draining: false, pending: None, write }
+        Helper {
+            found,
+            folder,
+            voice,
+            qwen: None,
+            job: Job::Idle,
+            next: 0,
+            draining: false,
+            pending: None,
+            workers: 0,
+            write,
+        }
     }
 
     /// The provider that reads `say`: the one named, or the core's choice ([`Say::provider`]).
@@ -670,6 +690,12 @@ impl<W: FnMut(Output)> Helper<W> {
     }
 
     fn handle(&mut self, event: Event, sender: &Sender<Event>) {
+        let event = match event {
+            Event::Qwen(number, event) if self.qwen.as_ref().is_some_and(|qwen| qwen.number == number) => *event,
+            // A worker that was replaced or ended on purpose: what it still sends belongs to no job.
+            Event::Qwen(..) => return,
+            event => event,
+        };
         match event {
             Event::Input(Input::Stop) => {
                 if self.pending.take().is_some() || !matches!(self.job, Job::Idle) {
@@ -711,7 +737,7 @@ impl<W: FnMut(Output)> Helper<W> {
                     }
                 }
             }
-            Event::Closed => {}
+            Event::Closed | Event::Qwen(..) => {}
             Event::Rate(rate) if self.draining => {
                 // A stopped job that failed sends no end.
                 if rate == 0 {
@@ -784,7 +810,9 @@ impl<W: FnMut(Output)> Helper<W> {
     fn say(&mut self, say: Say, sender: &Sender<Event>) {
         let text = speakable_up_to(&say.text, MOST_READ);
         // Something missing may have been installed since the helper started: look again, once.
-        if self.lacks(self.provider_of(&say))
+        // Without a provider named, Qwen set up meanwhile counts too, where the card is fast enough.
+        let missed_qwen = say.provider.is_none() && say.model.is_some() && self.found.qwen_python.is_none();
+        if (self.lacks(self.provider_of(&say)) || missed_qwen)
             && let Some(voice) = &self.voice
         {
             self.found = Found::detect(&Finder::system(), voice);
@@ -822,11 +850,18 @@ impl<W: FnMut(Output)> Helper<W> {
             return Err(no_player());
         }
         let voice = say.voice.as_deref().unwrap_or(QWEN_RECOMMENDED);
-        let (reference, words) = template(&qwen_folder(&folder), voice).map_err(|err| Output::failed("error", err))?;
+        let (reference, words) = template(&qwen_folder(&folder), voice).map_err(|err| {
+            eprintln!("torroassistant: no voice template: {err}");
+            Output::failed("error", tr("Reading aloud failed. Try again."))
+        })?;
         if self.qwen.as_ref().is_none_or(|qwen| qwen.model != model) {
+            // The old worker's sound is no job's any more.
             self.qwen = None;
-            self.qwen = Some(start_qwen(&python, model, sender).map_err(|err| {
-                Output::failed("error", trf("Qwen3-TTS could not start: {reason}", &[("reason", &err)]))
+            self.draining = false;
+            self.workers += 1;
+            self.qwen = Some(start_qwen(&python, model, self.workers, sender).map_err(|err| {
+                eprintln!("torroassistant: qwen did not start: {err}");
+                Output::failed("error", tr("Qwen3-TTS could not start."))
             })?);
         }
         self.next += 1;
@@ -864,7 +899,10 @@ impl<W: FnMut(Output)> Helper<W> {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|err| Output::failed("error", format!("piper: {err}")))?;
+            .map_err(|err| {
+                eprintln!("torroassistant: piper: {err}");
+                Output::failed("error", tr("Piper could not read the text."))
+            })?;
         if let Some(mut input) = child.stdin.take() {
             // Piper reads a line at a time; its input closes here, so it ends after the line.
             let _ = writeln!(input, "{}", text.replace(['\n', '\r'], " "));
@@ -1170,6 +1208,19 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5), "the stop does not wait for Piper");
         assert_eq!(said.borrow().as_slice(), [Output::Done]);
         assert!(matches!(helper.job, Job::Idle));
+    }
+
+    /// What a replaced or ended Qwen worker still sends belongs to no job: its end does not fail the
+    /// job that reads now.
+    #[test]
+    fn a_replaced_worker_is_not_heard() {
+        let (sender, _events) = mpsc::channel();
+        let (mut helper, said) = helper(Found::default());
+        helper.job = Job::Qwen { playback: None, computed: false, playing: false };
+        helper.handle(Event::Qwen(7, Box::new(Event::Gone("CUDA out of memory".into()))), &sender);
+        helper.handle(Event::Qwen(7, Box::new(Event::Chunk(vec![0; 4]))), &sender);
+        assert!(said.borrow().is_empty());
+        assert!(matches!(helper.job, Job::Qwen { .. }), "the job still reads");
     }
 
     /// A Qwen job stopped while it computes drops its remaining sound; the next one waits for its end.

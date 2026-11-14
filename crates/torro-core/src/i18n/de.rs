@@ -9183,7 +9183,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Piper could not read the text.", "Piper konnte den Text nicht vorlesen."),
     ("Piper is not installed or has no voice.", "Piper ist nicht installiert oder hat keine Stimme."),
     ("Qwen3-TTS could not read the text.", "Qwen3-TTS konnte den Text nicht vorlesen."),
-    ("Qwen3-TTS could not start: {reason}", "Qwen3-TTS ließ sich nicht starten: {reason}"),
+    ("Qwen3-TTS could not start.", "Qwen3-TTS ließ sich nicht starten."),
+    ("The program that plays sound could not start.", "Das Programm, das Ton abspielt, ließ sich nicht starten."),
+    ("There is nothing to read.", "Es gibt nichts vorzulesen."),
+    ("The text is too long to read aloud.", "Der Text ist zu lang zum Vorlesen."),
     (
         "Qwen3-TTS is not set up. Set it up in Settings › Assistant › Voice.",
         "Qwen3-TTS ist nicht eingerichtet. Richte es unter Einstellungen › Assistent › Sprache ein.",
