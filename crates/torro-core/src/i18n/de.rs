@@ -9153,7 +9153,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Couldn't change reading aloud.", "Vorlesen ließ sich nicht umstellen."),
     ("Hello, I am your assistant. This is how I sound.", "Hallo, ich bin dein Assistent. So klinge ich."),
     ("In the chat windows", "In den Chatfenstern"),
-    ("it stopped", "es wurde beendet"),
     ("Local: Piper", "Lokal: Piper"),
     ("Local: Qwen3-TTS", "Lokal: Qwen3-TTS"),
     (
@@ -9183,7 +9182,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Piper is not installed.", "Piper ist nicht installiert."),
     ("Piper is not installed or has no voice.", "Piper ist nicht installiert oder hat keine Stimme."),
     ("Qwen3-TTS could not read the text.", "Qwen3-TTS konnte den Text nicht vorlesen."),
-    ("Qwen3-TTS could not read the text: {reason}", "Qwen3-TTS konnte den Text nicht vorlesen: {reason}"),
     ("Qwen3-TTS could not start: {reason}", "Qwen3-TTS ließ sich nicht starten: {reason}"),
     (
         "Qwen3-TTS is not set up. Set it up in Settings › Assistant › Voice.",
@@ -9199,19 +9197,21 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Qwen3-TTS stopped. Try again.", "Qwen3-TTS wurde beendet. Versuch es noch einmal."),
     ("Read aloud", "Vorlesen"),
-    ("Read answers aloud", "Antworten vorlesen"),
-    ("Reading answers aloud – click to stop", "Antworten werden vorgelesen – Klick schaltet es aus"),
+    ("Read answers aloud", "Antworten im Chat vorlesen"),
+    ("Stop reading answers aloud", "Antworten nicht mehr vorlesen"),
+    ("Fast enough for local voices · {gpu}", "Schnell genug für lokale Stimmen · {gpu}"),
+    (
+        "Too slow for local voices, online voices are recommended · {gpu}",
+        "Zu langsam für lokale Stimmen, empfohlen sind Online-Stimmen · {gpu}",
+    ),
+    (
+        "Run the command once in a terminal; Copy takes it.",
+        "Führe den Befehl einmal im Terminal aus; Kopieren übernimmt ihn.",
+    ),
+    ("Reading aloud failed. Try again.", "Vorlesen hat nicht geklappt. Versuch es noch einmal."),
     ("Set up Qwen3-TTS", "Qwen3-TTS einrichten"),
     ("Stop reading aloud", "Vorlesen stoppen"),
     ("The assistant app is not installed.", "Die Assistenten-App ist nicht installiert."),
-    (
-        "This computer is fast enough for local voices ({gpu}).",
-        "Dieser Rechner ist schnell genug für lokale Stimmen ({gpu}).",
-    ),
-    (
-        "This computer is not fast enough for local voices ({gpu}); online voices are recommended.",
-        "Dieser Rechner ist nicht schnell genug für lokale Stimmen ({gpu}); empfohlen sind Online-Stimmen.",
-    ),
     ("Warm woman", "Frau, warm"),
     ("speaker|Voice", "Stimme"),
 ];

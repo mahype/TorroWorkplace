@@ -746,10 +746,8 @@ impl App {
                     None => typo::text(typo::body(), text.as_str()).into(),
                 };
                 match self.reading == Some(entry.seq) {
-                    true => row![container(answer).width(Fill), self.stop_reading_button()]
-                        .spacing(space::s())
-                        .align_y(Alignment::Start)
-                        .into(),
+                    // Its own line above the answer, so the answer keeps its width.
+                    true => column![self.stop_reading_button(), answer].spacing(space::xs()).into(),
                     false => answer,
                 }
             }
@@ -1069,7 +1067,7 @@ impl App {
     /// icon (a speaker with waves or with a cross), not by colour alone.
     fn speaker_button(&self) -> Element<'_, Message> {
         let (glyph, colour, tip): (Icon, fn(&Palette) -> iced::Color, &str) = match self.read_aloud {
-            true => (Icon::Volume2, |p| p.text_2, tr("Reading answers aloud – click to stop")),
+            true => (Icon::Volume2, |p| p.text_2, tr("Stop reading answers aloud")),
             false => (Icon::VolumeX, |p| p.text_3, tr("Read answers aloud")),
         };
         let speaker = button(container(tinted(glyph, icon::SIZE, colour)).center(Fill))
@@ -1081,15 +1079,15 @@ impl App {
         widgets::with_tooltip(speaker, tip)
     }
 
-    /// [■] beside the answer being read aloud (issue #745): stops reading at once.
+    /// "Stop reading aloud" above the answer being read (issue #745): says that it reads, with the
+    /// speaker, and stops it at once.
     fn stop_reading_button(&self) -> Element<'_, Message> {
-        let stop = button(container(tinted(Icon::Square, icon::SIZE_SM, |p| p.text_2)).center(Fill))
-            .width(size::control_sm())
-            .height(size::control_sm())
-            .padding(0)
-            .style(style::button::icon)
-            .on_press(Message::StopReading);
-        widgets::with_tooltip(stop, tr("Stop reading aloud"))
+        widgets::text_button(
+            Some(Icon::Volume2),
+            tr("Stop reading aloud"),
+            style::button::ghost,
+            Some(Message::StopReading),
+        )
     }
 
     /// The microphone of the composer (issue #699): pale while speech recognition is not set up (a

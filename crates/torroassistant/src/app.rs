@@ -970,6 +970,11 @@ impl App {
             Message::Raise => return torro_gui::instance::bring_to_front(),
             Message::Resized(size) => {
                 self.size = size;
+                // Mini and strip have no [■] at the answer: reading stops as the window shrinks into
+                // them, so it never runs on out of reach (issue #745).
+                if self.reading.is_some() && self.is_glance() {
+                    return self.stop_reading();
+                }
                 // A window that grows out of mini or strip gets its microphone (issue #699).
                 if !self.waiting && self.voice.is_none() && !self.voice_asked && !self.is_glance() {
                     return self.load_voice();

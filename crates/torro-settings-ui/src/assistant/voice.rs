@@ -377,12 +377,15 @@ fn read_aloud_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message
         None => voice_detail(data.speech.as_ref(), current),
     };
     // "Voice" as the sound of a speaker: in German the page itself is "Sprache".
-    let voice = setting_row(None, trc("speaker", "Voice"), detail, control);
+    // A preview that failed says so with a dot, not only in words (#560).
+    let dot = state.preview_failed.as_ref().map(|_| widgets::status_dot(Status::Error));
+    let voice = setting_row(dot, trc("speaker", "Voice"), detail, control);
     let mut rows = vec![on, provider, voice];
     if let Some(command) = setup_command(data.speech.as_ref(), current) {
-        let copy =
-            widgets::text_button(None, tr("Copy"), style::button::secondary, Some(Message::CopySetup(command.clone())));
-        rows.push(setting_row(None, tr("Set up Qwen3-TTS"), Some(command), copy));
+        let copy = widgets::text_button(None, tr("Copy"), style::button::secondary, Some(Message::CopySetup(command)));
+        // The command is long (paths): "Copy" takes it, the line only says what to do with it.
+        let how = tr("Run the command once in a terminal; Copy takes it.").to_string();
+        rows.push(setting_row(None, tr("Set up Qwen3-TTS"), Some(how), copy));
     }
     let footer = tr("Local voices stay on this computer. With OpenAI the text of each answer goes to OpenAI.");
     widgets::group(tr("Read aloud"), rows, Some(footer.to_string()))
@@ -565,11 +568,8 @@ fn chosen_voice(data: &Data, provider: SpeechProvider) -> String {
 pub fn provider_detail(speech: Option<&SpeechStatus>, current: SpeechProvider) -> String {
     let Some(speech) = speech else { return tr("Checking this computer…").to_string() };
     let fast = match (&speech.gpu, speech.fast_enough) {
-        (Some(gpu), true) => trf("This computer is fast enough for local voices ({gpu}).", &[("gpu", gpu)]),
-        (Some(gpu), false) => trf(
-            "This computer is not fast enough for local voices ({gpu}); online voices are recommended.",
-            &[("gpu", gpu)],
-        ),
+        (Some(gpu), true) => trf("Fast enough for local voices · {gpu}", &[("gpu", gpu)]),
+        (Some(gpu), false) => trf("Too slow for local voices, online voices are recommended · {gpu}", &[("gpu", gpu)]),
         (None, _) => tr("Local voices need an NVIDIA graphics card with at least 4 GB; online voices are recommended.")
             .to_string(),
     };
@@ -1001,7 +1001,7 @@ mod tests {
             providers: Vec::new(),
         };
         let fast = provider_detail(Some(&status(Some("RTX 4090, 24 GB"), true)), SpeechProvider::Qwen);
-        assert_eq!(fast, trf("This computer is fast enough for local voices ({gpu}).", &[("gpu", &"RTX 4090, 24 GB")]));
+        assert_eq!(fast, trf("Fast enough for local voices · {gpu}", &[("gpu", &"RTX 4090, 24 GB")]));
         let slow = provider_detail(Some(&status(None, false)), SpeechProvider::Qwen);
         assert!(slow.starts_with(tr(
             "Local voices need an NVIDIA graphics card with at least 4 GB; online voices are recommended."
