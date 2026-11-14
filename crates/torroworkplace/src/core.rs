@@ -4517,9 +4517,6 @@ impl Core {
         // Searching the conversations (issue #704) with the rights narrowed by what the conversation switched
         // off, as its access tells them: a hit after mail stays out of a chat without mail.
         if let Request::SearchConversations { query, limit } = &request {
-            if let Some(refused) = torro_ipc::assistant::limit_refusal(&request) {
-                return Ok(refused);
-            }
             let narrowed = match my_access(&rights, &via.origin) {
                 Response::MyAccess { access } => access.rights,
                 _ => rights.clone(),
@@ -11551,6 +11548,11 @@ impl Core {
         reach: Reach<'_>,
         caller: Option<&str>,
     ) -> Response {
+        // Checked here for every caller: the app key's request comes to no other check of its limits.
+        let request = Request::SearchConversations { query: query.to_owned(), limit };
+        if let Some(refused) = torro_ipc::assistant::limit_refusal(&request) {
+            return refused;
+        }
         let assistant = caller.is_some_and(|id| {
             self.clients.list().iter().any(|info| info.id == id && info.kind == torro_ipc::api::ASSISTANT_CLIENT)
         });
@@ -32087,8 +32089,9 @@ mod tests {
         assert_eq!(code(&ask(&core, Some(&without), search()).await), "forbidden", "the area is off");
         let (_, bot) = core.clients.add("Planner", torro_ipc::api::BOT_CLIENT, Rights::none()).await.expect("bot");
         assert_eq!(code(&ask(&core, Some(&bot), search()).await), "forbidden", "never for a bot");
-        let blank = Request::SearchConversations { query: " ".into(), limit: None };
-        assert_eq!(code(&ask(&core, Some(&key), blank).await), "error");
+        let blank = || Request::SearchConversations { query: " ".into(), limit: None };
+        assert_eq!(code(&ask(&core, Some(&key), blank()).await), "error");
+        assert_eq!(code(&core.handle(blank()).await), "error", "the app key's too");
 
         let text = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
         assert!(text.contains("assistant.search_conversations"), "{text}");

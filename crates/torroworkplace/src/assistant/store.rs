@@ -251,8 +251,8 @@ pub struct Found {
 
 impl Conversation {
     /// The parts that hold every one of `words` (in small letters, none empty), in order: the messages
-    /// and answers, and the title only when none of them does (it is mostly the start of the first
-    /// message). Never a result, a tool line, an approval, an error or a card: what a tool answered can
+    /// and answers, then the title (`seq` `None`), which a search shows only when none of the others is
+    /// left to show (it is mostly the start of the first message). Never a result, a tool line, an approval, an error or a card: what a tool answered can
     /// tell of an area the searcher may not read, and the other entries hold the core's words.
     ///
     /// A part is untrusted when the conversation is about a mail or with a bot, when a client sent the
@@ -283,9 +283,7 @@ impl Conversation {
                 found.push(Found { seq: Some(entry.seq), kind, snippet, untrusted, after: after.clone() });
             }
         }
-        if found.is_empty()
-            && let Some(snippet) = snippet(&self.title, words)
-        {
+        if let Some(snippet) = snippet(&self.title, words) {
             let first_sent = self.entries.iter().find_map(|entry| match &entry.content {
                 EntryContent::Message { from, .. } => Some(from.is_some()),
                 _ => None,

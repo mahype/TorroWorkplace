@@ -411,11 +411,19 @@ impl Assistant {
         conversations.sort_by(|a, b| b.updated().cmp(&a.updated()).then(a.id.cmp(&b.id)));
         let mut hits = Vec::new();
         for conversation in conversations {
-            let found =
-                conversation.find(&words).into_iter().rev().filter(|found| {
-                    scope.readable.is_none_or(|readable| found.after.iter().all(|name| readable(name)))
-                });
-            for found in found.take(HITS_PER_CONVERSATION) {
+            let (title, entries): (Vec<_>, Vec<_>) =
+                conversation.find(&words).into_iter().partition(|found| found.seq.is_none());
+            let mut found: Vec<_> = entries
+                .into_iter()
+                .rev()
+                .filter(|found| scope.readable.is_none_or(|readable| found.after.iter().all(|name| readable(name))))
+                .take(HITS_PER_CONVERSATION)
+                .collect();
+            // The title only when nothing else is left: it repeats the first message mostly.
+            if found.is_empty() {
+                found = title;
+            }
+            for found in found {
                 if hits.len() >= limit {
                     return Response::ConversationHits { hits };
                 }
@@ -2008,6 +2016,12 @@ pub(crate) mod tests {
             [("0000000000000002".to_string(), Some(2)), ("0000000000000003".to_string(), Some(1))],
             "no bot, no mail it may not read, nothing after reading mail"
         );
+        // The title stays findable when every hit in the history is left out.
+        let after_mail: Vec<(String, Option<u64>)> = hits(assistant.search("inbox", None, &narrow).await)
+            .into_iter()
+            .map(|hit| (hit.conversation, hit.seq))
+            .collect();
+        assert_eq!(after_mail, [("0000000000000002".to_string(), None)], "the title, though no entry is left");
     }
 
     #[tokio::test]
