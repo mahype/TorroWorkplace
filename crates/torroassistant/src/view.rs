@@ -72,11 +72,12 @@ struct Anchors {
 }
 
 /// What the bar of a sidebar row ("…" and the bin, issue #697) takes of the title's room: its two icon
-/// buttons with their frame, and the gap [`widgets::row_actions`] leaves to the row's end.
+/// buttons with their frame and a gap before them; the marks at the row's end it stands beside are
+/// counted apart.
 fn row_bar_room() -> f32 {
     let bar: [RowAction<'_, ()>; 2] =
         [RowAction::new(Icon::Ellipsis, "", "", ()), RowAction::new(Icon::Trash2, "", "", ())];
-    widgets::row_actions_width(&bar, false) + layout::row_padding().right - style::ITEM_PADDING.right
+    widgets::row_actions_width(&bar, false) + space::s()
 }
 
 /// A dialog's card: `title`, `content`, then "Cancel" and `confirm` at the right.
@@ -551,7 +552,12 @@ impl App {
             more = more.at(&anchors.row);
         }
         let delete = RowAction::new(Icon::Trash2, tr("Delete"), "", Message::AskDelete(id));
-        widgets::row_actions(row, vec![more, delete], menu_here, false)
+        // The bar keeps the row's own inset and leaves the mark of an answer that runs free.
+        let mut right = style::ITEM_PADDING.right;
+        if conversation.running {
+            right += icon::SIZE_SM + space::s();
+        }
+        widgets::row_actions_inset(row, vec![more, delete], menu_here, false, right)
     }
 
     // -- Header ---------------------------------------------------------------------------------
