@@ -15,6 +15,9 @@
 //! - **Lists** sort by family name, or by the name shown when there is none, the same way folded:
 //!   "König" between "Koch" and "Kurz".
 //! - **Favourites** and the **contacts used last** (at most [`RECENT_MAX`]), on this device only.
+//! - **Places** of addresses (issue #355, `contacts.locate_contact`): where the place search service
+//!   put an address, or that it found none, keyed by the contact and the SHA-256 of the address on
+//!   one line ([`line_key`]), so an address that changes is looked up anew and the old one goes.
 //!
 //! `secure_delete` is on, so removed contacts do not linger in free pages; removing an account
 //! truncates the write-ahead log as well ([`Store::forget_account`]). Errors never carry a name or
@@ -30,7 +33,7 @@ use torro_contacts::{Contact, ContactState, vcard};
 use crate::mail::{create_private, make_private};
 
 /// The newest layout this version writes (`PRAGMA user_version`).
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// The most contacts "Recent" keeps per account.
 pub const RECENT_MAX: usize = 50;
@@ -80,6 +83,38 @@ CREATE TABLE favorites (card TEXT PRIMARY KEY, account TEXT NOT NULL);
 CREATE TABLE recent (card TEXT PRIMARY KEY, account TEXT NOT NULL, used INTEGER NOT NULL);
 CREATE VIRTUAL TABLE search USING fts5(card UNINDEXED, text, digits, tokenize = 'trigram');
 ";
+
+/// Version 2 (issue #355): the places of addresses. `lat` and `lon` are NULL for an address the
+/// service did not find; `at` is when it was asked, in seconds since 1970.
+const SCHEMA_V2: &str = "
+CREATE TABLE places (
+    card TEXT NOT NULL,
+    account TEXT NOT NULL,
+    line TEXT NOT NULL,
+    lat REAL,
+    lon REAL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (card, line)
+);
+";
+
+/// What the store keeps of an address's place (issue #355).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlaceRow {
+    /// Latitude and longitude, or `None` when the service found no place.
+    pub point: Option<(f64, f64)>,
+    /// When the service was asked, in seconds since 1970.
+    pub at: i64,
+}
+
+/// The key an address's place is kept under: the SHA-256 of the address on one line, trimmed, its
+/// spaces put together and in lower case, so writing it differently by case or spaces looks it up
+/// once. The address itself is not kept twice.
+pub fn line_key(address: &torro_contacts::PostalAddress) -> String {
+    use sha2::{Digest, Sha256};
+    let line = address.one_line().split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    Sha256::digest(line.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()
+}
 
 /// Why the store failed. Never a name, an address or a number: the text may reach a log.
 #[derive(Debug)]
@@ -378,10 +413,11 @@ impl Store {
         Ok(())
     }
 
-    /// Removes a book with its contacts, queue, search entries, favourites and recents.
+    /// Removes a book with its contacts, queue, search entries, favourites, recents and places.
     pub fn remove_book(&self, id: &str) -> Result<(), StoreError> {
         let tx = self.db.unchecked_transaction()?;
         tx.execute("DELETE FROM search WHERE card IN (SELECT id FROM cards WHERE book = ?1)", [id])?;
+        tx.execute("DELETE FROM places WHERE card IN (SELECT id FROM cards WHERE book = ?1)", [id])?;
         tx.execute("DELETE FROM favorites WHERE card IN (SELECT id FROM cards WHERE book = ?1)", [id])?;
         tx.execute("DELETE FROM recent WHERE card IN (SELECT id FROM cards WHERE book = ?1)", [id])?;
         tx.execute("DELETE FROM queue WHERE book = ?1", [id])?;
@@ -391,7 +427,7 @@ impl Store {
         Ok(())
     }
 
-    /// Everything of `account`: books, contacts, queue, search, favourites, recents; then the
+    /// Everything of `account`: books, contacts, queue, search, favourites, recents, places; then the
     /// write-ahead log is truncated, so nothing of it stays in `-wal` either.
     pub fn forget_account(&self, account: &str) -> Result<(), StoreError> {
         for book in self.books(Some(account))? {
@@ -399,6 +435,7 @@ impl Store {
         }
         self.db.execute("DELETE FROM favorites WHERE account = ?1", [account])?;
         self.db.execute("DELETE FROM recent WHERE account = ?1", [account])?;
+        self.db.execute("DELETE FROM places WHERE account = ?1", [account])?;
         self.db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         Ok(())
     }
@@ -448,7 +485,8 @@ impl Store {
         Ok(rows)
     }
 
-    /// Writes a contact with its search entry and the columns derived from the vCard.
+    /// Writes a contact with its search entry and the columns derived from the vCard. Places of
+    /// addresses it no longer has go.
     pub fn put_card(&self, card: &CardRow) -> Result<(), StoreError> {
         let contact = vcard::read(&card.vcard).unwrap_or_default();
         let (text, numbers) = search_text(&contact);
@@ -484,6 +522,13 @@ impl Store {
         )?;
         tx.execute("DELETE FROM search WHERE card = ?1", [&card.id])?;
         tx.execute("INSERT INTO search (card, text, digits) VALUES (?1, ?2, ?3)", params![card.id, text, numbers])?;
+        // An address changed or removed: where the old one was is nothing to keep (and no reason to).
+        let lines: Vec<String> = contact.addresses.iter().map(|address| line_key(&address.value)).collect();
+        let kept = serde_json::to_string(&lines).unwrap_or_else(|_| "[]".into());
+        tx.execute(
+            "DELETE FROM places WHERE card = ?1 AND line NOT IN (SELECT value FROM json_each(?2))",
+            params![card.id, kept],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -491,11 +536,70 @@ impl Store {
     /// Removes a contact and its search entry; its favourite and recent marks go too.
     pub fn remove_card(&self, id: &str) -> Result<(), StoreError> {
         let tx = self.db.unchecked_transaction()?;
-        for table in ["search", "favorites", "recent", "queue"] {
+        for table in ["search", "favorites", "recent", "queue", "places"] {
             tx.execute(&format!("DELETE FROM {table} WHERE card = ?1"), [id])?;
         }
         tx.execute("DELETE FROM cards WHERE id = ?1", [id])?;
         tx.commit()?;
+        Ok(())
+    }
+
+    // ----- places -----
+
+    /// What is kept of the place of the address `line` ([`line_key`]) of the contact `card`.
+    pub fn place(&self, card: &str, line: &str) -> Result<Option<PlaceRow>, StoreError> {
+        let row = self
+            .db
+            .query_row("SELECT lat, lon, at FROM places WHERE card = ?1 AND line = ?2", [card, line], |row| {
+                let (lat, lon): (Option<f64>, Option<f64>) = (row.get(0)?, row.get(1)?);
+                Ok(PlaceRow { point: lat.zip(lon), at: row.get(2)? })
+            })
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Keeps the place of the address `line` of the contact `card` (of `account`): `point`, or that
+    /// none was found; `at` is now.
+    pub fn put_place(
+        &self,
+        card: &str,
+        account: &str,
+        line: &str,
+        point: Option<(f64, f64)>,
+        at: i64,
+    ) -> Result<(), StoreError> {
+        let (lat, lon) = (point.map(|p| p.0), point.map(|p| p.1));
+        self.db.execute(
+            "INSERT INTO places (card, account, line, lat, lon, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(card, line) DO UPDATE SET account = ?2, lat = ?4, lon = ?5, at = ?6",
+            params![card, account, line, lat, lon, at],
+        )?;
+        Ok(())
+    }
+
+    /// How many places are kept of contacts in `books`, or of every contact.
+    pub fn count_places(&self, books: Option<&[String]>) -> Result<u32, StoreError> {
+        let count: i64 = match books {
+            None => self.db.query_row("SELECT COUNT(*) FROM places", [], |row| row.get(0))?,
+            Some(books) => self.db.query_row(
+                "SELECT COUNT(*) FROM places WHERE card IN
+                     (SELECT id FROM cards WHERE book IN (SELECT value FROM json_each(?1)))",
+                [serde_json::to_string(books).unwrap_or_else(|_| "[]".into())],
+                |row| row.get(0),
+            )?,
+        };
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
+    /// Removes the places kept of contacts in `books`, or of every contact.
+    pub fn clear_places(&self, books: Option<&[String]>) -> Result<(), StoreError> {
+        match books {
+            None => self.db.execute("DELETE FROM places", [])?,
+            Some(books) => self.db.execute(
+                "DELETE FROM places WHERE card IN (SELECT id FROM cards WHERE book IN (SELECT value FROM json_each(?1)))",
+                [serde_json::to_string(books).unwrap_or_else(|_| "[]".into())],
+            )?,
+        };
         Ok(())
     }
 
@@ -712,13 +816,18 @@ fn migrate(db: &Connection) -> Result<(), StoreError> {
         return Ok(());
     }
     let tx = db.unchecked_transaction()?;
-    if let Err(err) = tx.execute_batch(SCHEMA_V1) {
+    if version < 1
+        && let Err(err) = tx.execute_batch(SCHEMA_V1)
+    {
         let text = err.to_string();
         return Err(if text.contains("fts5") || text.contains("trigram") {
             StoreError::NoFullText
         } else {
             err.into()
         });
+    }
+    if version < 2 {
+        tx.execute_batch(SCHEMA_V2)?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
@@ -936,5 +1045,84 @@ mod tests {
         let (recent, _) = store.query(&query).expect("recent");
         assert_eq!(recent.len(), RECENT_MAX);
         assert_eq!(recent[0].uid, "u59", "the latest first");
+    }
+
+    fn with_address(street: &str) -> String {
+        vcard("Berg", "+49 171 2345678", &format!("ADR;TYPE=home:;;{street};Berlin;;10115;Germany\r\n"))
+    }
+
+    #[test]
+    fn places_are_kept_per_address_and_go_with_it() {
+        let dir = tempfile::tempdir().expect("dir");
+        let store = Store::open(&dir.path().join("contacts")).expect("store");
+        let work = book("nextcloud:anna@cloud.example.org", "contacts");
+        let other = book("nextcloud:anna@cloud.example.org", "private");
+        store.put_book(&work).expect("book");
+        store.put_book(&other).expect("book");
+        let anna = card(&work.id, "a", &with_address("Example Street 1"));
+        store.put_card(&anna).expect("card");
+        store.put_card(&card(&other.id, "c", &with_address("Elsewhere 2"))).expect("card");
+        let address = |street: &str| torro_contacts::PostalAddress {
+            street: street.into(),
+            locality: "Berlin".into(),
+            postal_code: "10115".into(),
+            country: "Germany".into(),
+            ..torro_contacts::PostalAddress::default()
+        };
+        let line = line_key(&address("Example Street 1"));
+        assert_eq!(line, line_key(&address("  example   STREET 1")), "case and spaces do not count");
+        assert_eq!(line.len(), 64, "a hash, not the address");
+        store.put_place(&anna.id, &work.account, &line, Some((52.5, 13.4)), 10).expect("place");
+        store.put_place("nextcloud:anna@cloud.example.org/private/c", &work.account, "x", None, 11).expect("place");
+        assert_eq!(store.place(&anna.id, &line).expect("read"), Some(PlaceRow { point: Some((52.5, 13.4)), at: 10 }));
+        assert_eq!(store.count_places(None).expect("count"), 2);
+        assert_eq!(store.count_places(Some(std::slice::from_ref(&work.id))).expect("count"), 1);
+
+        // The same address again keeps the place, another one drops it.
+        store.put_card(&anna).expect("card");
+        assert!(store.place(&anna.id, &line).expect("read").is_some());
+        store.put_card(&card(&work.id, "a", &with_address("Other Street 9"))).expect("card");
+        assert_eq!(store.place(&anna.id, &line).expect("read"), None, "the old address goes");
+
+        store.put_place(&anna.id, &work.account, &line, None, 12).expect("place");
+        store.clear_places(Some(std::slice::from_ref(&work.id))).expect("clear");
+        assert_eq!(store.count_places(None).expect("count"), 1, "other books stay");
+        store.remove_book(&other.id).expect("removed");
+        assert_eq!(store.count_places(None).expect("count"), 0, "places go with their book");
+        store.put_place(&anna.id, &work.account, &line, None, 13).expect("place");
+        store.remove_card(&anna.id).expect("removed");
+        assert_eq!(store.count_places(None).expect("count"), 0, "and with their card");
+        store.put_place(&anna.id, &work.account, &line, None, 14).expect("place");
+        store.forget_account(&work.account).expect("forgotten");
+        assert_eq!(store.count_places(None).expect("count"), 0, "and with their account");
+    }
+
+    #[test]
+    fn a_store_of_version_one_gains_places_and_loses_nothing() {
+        let dir = tempfile::tempdir().expect("dir");
+        let folder = dir.path().join("contacts");
+        let work = book("nextcloud:anna@cloud.example.org", "contacts");
+        {
+            std::fs::create_dir_all(&folder).expect("folder");
+            let db = Connection::open(folder.join("contacts.sqlite")).expect("db");
+            db.execute_batch(SCHEMA_V1).expect("version 1");
+            db.execute_batch("PRAGMA user_version = 1").expect("version");
+            db.execute(
+                "INSERT INTO books (id, account, href, name, display_name, writable, hidden) VALUES (?1, ?2, ?3, ?4, ?4, 1, 0)",
+                params![work.id, work.account, work.href, work.name],
+            )
+            .expect("book");
+            db.execute("INSERT INTO favorites (card, account) VALUES ('x', ?1)", params![work.account])
+                .expect("favourite");
+        }
+        let store = Store::open(&folder).expect("migrated");
+        let version: i64 = store.db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
+        assert_eq!(version, 2);
+        assert_eq!(store.books(None).expect("books").len(), 1, "the book stays");
+        assert!(store.is_favorite("x").expect("favourite"), "and the favourite");
+        store.put_place("x", &work.account, "line", Some((1.0, 2.0)), 1).expect("the new table");
+        drop(store);
+        let again = Store::open(&folder).expect("opened again");
+        assert_eq!(again.count_places(None).expect("count"), 1);
     }
 }

@@ -1305,6 +1305,8 @@ fn describe(request: &Request) -> String {
         Request::ConfirmBot { bot, .. } => format!("confirm asking bot {bot}"),
         Request::VoiceStatus => "voice status".into(),
         Request::TestVoice => "voice test".into(),
+        Request::MapsStatus => "map data".into(),
+        Request::ClearMapsCache => "clear map data".into(),
         // Ids only, never a title, the content or a path (issue #225).
         Request::ListTools => "tools".into(),
         Request::CreatePdf { .. } => "make a PDF".into(),
@@ -1357,6 +1359,9 @@ fn describe(request: &Request) -> String {
         Request::AddContactToGroup { .. } => "add a contact to a group".into(),
         Request::RemoveContactFromGroup { .. } => "take a contact out of a group".into(),
         Request::MarkContactUsed { .. } => "note a contact as used".into(),
+        // Never the address or the point (issue #355).
+        Request::LocateContact { .. } => "find a contact's address on the map".into(),
+        Request::OpenContactInMaps { .. } => "open a contact's address in maps".into(),
         Request::SetContactPhoto { .. } => "change a contact's picture".into(),
         Request::MoveContact { .. } => "move a contact".into(),
         Request::DeleteContact { .. } => "delete a contact".into(),

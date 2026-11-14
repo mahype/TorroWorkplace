@@ -27,7 +27,7 @@ use torro_ipc::api::Rights;
 use torro_ipc::contacts::{BIRTHDAY_DAYS, MAX_BIRTHDAY_DAYS};
 use torro_ipc::{Request, Response};
 
-use super::store::{BookRow, CardRow, Op, Query, Queued, Store};
+use super::store::{BookRow, CardRow, Op, PlaceRow, Query, Queued, Store};
 use super::sync::{self, Sent, with};
 use super::{ContactsService, photo};
 use crate::pim::Reach;
@@ -38,6 +38,21 @@ pub const SUGGEST_CANDIDATES: usize = 200;
 
 /// The name of Nextcloud's system address book (every user of the instance), hidden by default.
 const SYSTEM_BOOK: &str = "z-server-generated--system";
+
+/// One address of a contact, for its place (issue #355, `contacts.locate_contact` and
+/// `contacts.open_in_maps`).
+#[derive(Debug, Clone)]
+pub struct AddressSpot {
+    /// The contact's id.
+    pub card: String,
+    /// The account of its book.
+    pub account: String,
+    pub address: torro_contacts::PostalAddress,
+    /// The key its place is kept under ([`super::store::line_key`]).
+    pub line: String,
+    /// The vCard's `GEO`, only for the first address: it is the contact's, not an address's.
+    pub geo: Option<torro_contacts::Geo>,
+}
 
 /// What a command needs of the store before it runs: its contact and the contact's book.
 struct Found {
@@ -205,7 +220,9 @@ impl ContactsService {
             | Request::MarkContactUsed { id }
             | Request::SetContactPhoto { id, .. }
             | Request::DeleteContact { id, .. }
-            | Request::ResolveContactConflict { id, .. } => contact_outside(id),
+            | Request::ResolveContactConflict { id, .. }
+            | Request::LocateContact { id, .. }
+            | Request::OpenContactInMaps { id, .. } => contact_outside(id),
             Request::MoveContact { id, to_book, .. } => contact_outside(id).or_else(|| book_outside(to_book)),
             _ => None,
         }
@@ -893,6 +910,53 @@ impl ContactsService {
         Ok(Response::ContactsResolved { contacts })
     }
 
+    /// The address number `index` of the contact `id` ([`AddressSpot`]); `not-found` for a contact
+    /// or an address that is not there.
+    pub fn address_spot(&self, id: &str, index: usize) -> Result<AddressSpot, ContactsError> {
+        let found = self.find(id)?;
+        let contact = vcard::read(&found.card.vcard).map_err(|_| ContactsError::NotFound)?;
+        let address =
+            contact.addresses.get(index).map(|labeled| labeled.value.clone()).ok_or(ContactsError::NotFound)?;
+        Ok(AddressSpot {
+            card: found.card.id,
+            account: found.book.account,
+            line: super::store::line_key(&address),
+            geo: contact.geo.filter(|_| index == 0),
+            address,
+        })
+    }
+
+    /// What is kept of the place of `spot`.
+    pub fn kept_place(&self, spot: &AddressSpot) -> Result<Option<PlaceRow>, ContactsError> {
+        with(self.store()?, |s| s.place(&spot.card, &spot.line))
+    }
+
+    /// Keeps the place of `spot`: `point`, or that the service found none, at `at` (seconds since
+    /// 1970).
+    pub fn keep_place(&self, spot: &AddressSpot, point: Option<(f64, f64)>, at: i64) -> Result<(), ContactsError> {
+        with(self.store()?, |s| s.put_place(&spot.card, &spot.account, &spot.line, point, at))
+    }
+
+    /// The ids of the books `reach` sees, or `None` for the person (every book).
+    fn place_books(&self, reach: Reach<'_>) -> Result<Option<Vec<String>>, ContactsError> {
+        match reach {
+            Reach::Suite => Ok(None),
+            Reach::Client(_) => Ok(Some(self.books_within(reach, None)?.into_iter().map(|book| book.id).collect())),
+        }
+    }
+
+    /// How many places of addresses are kept of contacts `reach` sees (`settings.maps_status`).
+    pub fn place_count(&self, reach: Reach<'_>) -> Result<u32, ContactsError> {
+        let books = self.place_books(reach)?;
+        with(self.store()?, |s| s.count_places(books.as_deref()))
+    }
+
+    /// Removes the places of addresses kept of contacts `reach` sees (`settings.clear_maps_cache`).
+    pub fn clear_places(&self, reach: Reach<'_>) -> Result<(), ContactsError> {
+        let books = self.place_books(reach)?;
+        with(self.store()?, |s| s.clear_places(books.as_deref()))
+    }
+
     /// The facts of a contacts request for its approval: the contact's name and book from the
     /// store, the target book, and what a change replaces. `None` for other requests.
     pub fn facts(&self, request: &Request) -> Option<crate::approvals::ContactFacts> {
@@ -921,7 +985,9 @@ impl ContactsService {
             | Request::MarkContactUsed { id }
             | Request::SetContactPhoto { id, .. }
             | Request::DeleteContact { id, .. }
-            | Request::ResolveContactConflict { id, .. } => {
+            | Request::ResolveContactConflict { id, .. }
+            | Request::LocateContact { id, .. }
+            | Request::OpenContactInMaps { id, .. } => {
                 let (contact, book) = named(id);
                 (contact, book.map(|b| b.display_name), None)
             }
