@@ -22,7 +22,7 @@ use torro_inbox::{Lane, Rule, RuleEffect, SourceInfo, SourceRef};
 use torro_ipc::api::{
     ASSISTANT_CLIENT, Access, Area, AreaRights, BOT_CLIENT, Level, Rights, RightsTemplate, SCRIPT_CLIENT, Selection,
 };
-use torro_ipc::assistant::{Engine, EngineKind, LETTER_AVATAR, Note, Profile};
+use torro_ipc::assistant::{Engine, EngineKind, LETTER_AVATAR, Note, Profile, Skill};
 use torro_ipc::bots::BotSummary;
 use torro_ipc::extensions::{ExtensionInfo, ExtensionTool, ServerSpec, Source, Status, ToolState};
 use torro_ipc::inbox::{
@@ -721,6 +721,22 @@ impl Demo {
         ]
     }
 
+    /// Two skills of the sample assistant (issue #703), by name.
+    fn skills(&self) -> Vec<Skill> {
+        vec![
+            Skill {
+                name: tr("Invoices").into(),
+                description: tr("How I sort and pay invoices").into(),
+                text: tr("Sort invoices by month. Pay those due this week first.").into(),
+            },
+            Skill {
+                name: tr("Offers").into(),
+                description: tr("How I write offers").into(),
+                text: tr("1. Greet the customer by name.\n2. Name the price and what it includes.\n3. Close with when the offer holds.").into(),
+            },
+        ]
+    }
+
     /// The sample bots of the assistant's demo (`torroassistant::demo`), so Access lists what its
     /// sidebar does: "Release helper", which may use no data yet, and "Travel planner".
     fn bots(&self) -> Vec<BotSummary> {
@@ -1213,6 +1229,11 @@ impl Backend for Demo {
             Request::ListClients => Response::Clients { clients: self.clients() },
             Request::GetProfile => Response::Profile { profile: self.profile() },
             Request::ListMemories => Response::Memories { notes: self.memories() },
+            Request::ListSkills => Response::Skills { skills: self.skills().iter().map(Skill::summary).collect() },
+            Request::GetSkill { name } => match self.skills().into_iter().find(|skill| skill.is_named(name)) {
+                Some(skill) => Response::Skill { skill },
+                None => Response::Error { code: "not-found".into(), message: format!("no skill {name:?}") },
+            },
             Request::ListBots => Response::Bots { bots: self.bots() },
             Request::ListTools => Response::Tools { tools: self.tools() },
             Request::ListExtensions => Response::Extensions { extensions: self.extensions() },

@@ -85,6 +85,11 @@ pub const ASSISTANT_BOT_TOOLS: &[&str] = &["bots.list_bots", "bots.ask_bot"];
 /// The command that tells the assistant or a bot its own rights (issue #134), offered to both.
 pub const MY_ACCESS: &str = "assistant.my_access";
 
+/// The commands of the area `assistant` a bot's model is offered besides [`MY_ACCESS`] (issue #703):
+/// reading its own skills, which the core looks up by the bot. The assistant's model gets them with
+/// its memory (`torro_ipc::api::own_memory`), with writing them as well.
+pub const BOT_SKILL_TOOLS: &[&str] = &["assistant.list_skills", "assistant.get_skill"];
+
 /// The suite's built-in help (issue #702), offered to the assistant and a bot although `system` is no
 /// area a person grants: every client may read it, and it holds nothing a client may not see.
 pub const GET_HELP: &str = "system.get_help";
@@ -132,6 +137,11 @@ impl Tool {
     /// The command is [`MY_ACCESS`] (issue #134).
     fn is_my_access(&self) -> bool {
         self.command.name == MY_ACCESS
+    }
+
+    /// The command is one of [`BOT_SKILL_TOOLS`] (issue #703).
+    fn is_bot_skill(&self) -> bool {
+        BOT_SKILL_TOOLS.contains(&self.command.name)
     }
 
     /// The command is [`GET_HELP`] (issue #702).
@@ -199,7 +209,8 @@ pub fn allowed(rights: Option<&Rights>, without: &[Area]) -> Vec<Arc<Tool>> {
 /// yet): none. Contacts only with an address book in the rights. A command of one of the assistant's own tools only with the tool in
 /// [`Rights::tools`]. The assistant's own client ([`ASSISTANT_CLIENT`]) gets its memory and
 /// [`ASSISTANT_BOT_TOOLS`] (task B.2) besides its rights, a bot's ([`torro_ipc::api::BOT_CLIENT`],
-/// task B.1) its rights only; both get [`MY_ACCESS`] (issue #134) and [`GET_HELP`] (issue #702). Neither is offered any other tool
+/// task B.1) its rights only and reading its skills ([`BOT_SKILL_TOOLS`], issue #703); both get
+/// [`MY_ACCESS`] (issue #134) and [`GET_HELP`] (issue #702). Neither is offered any other tool
 /// of `assistant` or `bots`, and a bot no tool of `bots` (no chains; the core refuses it them).
 ///
 /// After them the tools of `servers` (issue #302, what [`super::Host::extension_tools`] answers for
@@ -216,9 +227,12 @@ pub fn allowed_for(kind: &str, rights: Option<&Rights>, without: &[Area], server
         let area = tool.command.area;
         let operation = Operation { command: tool.command, access: tool.command.access };
         let granted = !matches!(area, Area::Assistant | Area::Bots) && rights.allows(operation);
+        let bot = kind == torro_ipc::api::BOT_CLIENT;
         let help = assistant_or_bot && tool.is_help();
-        let by_kind =
-            (own && (tool.is_memory() || tool.is_bots())) || (assistant_or_bot && tool.is_my_access()) || help;
+        let by_kind = (own && (tool.is_memory() || tool.is_bots()))
+            || (assistant_or_bot && tool.is_my_access())
+            || (bot && tool.is_bot_skill())
+            || help;
         let tool_reached = ToolId::of_command(tool.command.name).is_none_or(|own| rights.reaches_tool(own));
         // Contacts without a single address book ticked (how the assistant starts, decision 5 in
         // `docs/kontakte.md`) would only answer with nothing: their tools wait for a book.
@@ -242,6 +256,17 @@ pub fn allowed_for(kind: &str, rights: Option<&Rights>, without: &[Area], server
             && !without.contains(&Area::Extensions)
     });
     catalogued.cloned().chain(served.filter_map(server_tool)).collect()
+}
+
+/// `allowed` without the tools that read or delete skills when there is none to read (issue #703):
+/// the prompt names none then, and every slot of a small model counts. Saving one stays, so the
+/// person can ask for the first.
+pub fn with_skills(allowed: Vec<Arc<Tool>>, any: bool) -> Vec<Arc<Tool>> {
+    const NEED_ONE: [&str; 3] = ["assistant.list_skills", "assistant.get_skill", "assistant.delete_skill"];
+    match any {
+        true => allowed,
+        false => allowed.into_iter().filter(|tool| !NEED_ONE.contains(&tool.command.name)).collect(),
+    }
 }
 
 /// The assistant's own tools an answer may use (issue #225): each with its level in `tools`
@@ -978,7 +1003,8 @@ mod tests {
         let bot = allowed_for(torro_ipc::api::BOT_CLIENT, Some(&everything_for_a_bot), &[], &[]);
         let closed = |tool: &&Arc<Tool>| matches!(tool.command.area, Area::Assistant | Area::Bots);
         let names: Vec<&str> = bot.iter().filter(closed).map(|tool| tool.spec.name.as_str()).collect();
-        assert_eq!(names, ["assistant_my_access"], "only its own access (issue #134)");
+        // Its own access (issue #134) and reading its own skills (issue #703), never writing them.
+        assert_eq!(names, ["assistant_my_access", "assistant_list_skills", "assistant_get_skill"]);
         let own: Vec<&str> = tools
             .iter()
             .filter(|tool| tool.command.area == Area::Assistant)
@@ -986,8 +1012,17 @@ mod tests {
             .collect();
         assert_eq!(
             own,
-            ["assistant_list_memories", "assistant_my_access", "assistant_remember", "assistant_forget"],
-            "task C.10, issue #134"
+            [
+                "assistant_list_memories",
+                "assistant_my_access",
+                "assistant_remember",
+                "assistant_forget",
+                "assistant_list_skills",
+                "assistant_get_skill",
+                "assistant_save_skill",
+                "assistant_delete_skill"
+            ],
+            "task C.10, issue #134, issue #703"
         );
         assert!(allowed(Some(&rights), &[Area::Calendar]).iter().all(|tool| tool.command.area != Area::Calendar));
         assert!(allowed(Some(&rights), &[Area::Assistant]).iter().all(|tool| !tool.is_memory()), "switched off");
@@ -1023,6 +1058,17 @@ mod tests {
         assert!(named(&everything, "calendar_map_preview").is_none());
     }
 
+    /// Issue #703: without a skill, nothing to read or delete is offered; saving the first stays.
+    #[test]
+    fn the_skill_tools_wait_for_a_skill() {
+        let tools = allowed(Some(&Rights::assistant()), &[]);
+        let skill_tools = |tools: &[Arc<Tool>]| -> Vec<String> {
+            tools.iter().map(|tool| tool.spec.name.clone()).filter(|name| name.contains("_skill")).collect()
+        };
+        assert_eq!(skill_tools(&with_skills(tools.clone(), false)), ["assistant_save_skill"]);
+        assert_eq!(skill_tools(&with_skills(tools, true)).len(), 4);
+    }
+
     #[test]
     fn many_tools_or_a_small_model_get_the_reading_ones_and_find_tools() {
         let rights = RightsTemplate::ReadAndWrite.rights();
@@ -1039,6 +1085,8 @@ mod tests {
             assert!(tool.is_some_and(|tool| tool.reads() || tool.is_memory() || tool.is_bots()), "{}", spec.name);
         }
         assert!(names(&first).contains(&"assistant_remember"), "the memory is always offered");
+        assert!(names(&first).contains(&"assistant_get_skill"), "and the skills (issue #703)");
+        assert!(callable("assistant_get_skill").is_some() && callable("assistant_save_skill").is_some());
         assert!(names(&first).contains(&"bots_ask_bot"), "asking a bot needs no search (task B.2)");
 
         // What find_tools loaded comes first.

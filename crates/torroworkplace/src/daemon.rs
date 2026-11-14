@@ -1289,6 +1289,12 @@ fn describe(request: &Request) -> String {
         Request::Remember { replaces: Some(id), .. } => format!("change note {id}"),
         Request::Remember { .. } => "remember a note".into(),
         Request::Forget { id } => format!("forget note {id}"),
+        // Never a skill's name: it is the person's text (issue #703).
+        Request::ListSkills => "skills".into(),
+        Request::GetSkill { .. } => "read a skill".into(),
+        Request::SaveSkill { replaces: Some(_), .. } => "change a skill".into(),
+        Request::SaveSkill { .. } => "save a skill".into(),
+        Request::DeleteSkill { .. } => "delete a skill".into(),
         // Ids only, never a bot's name or texts (task B.1).
         Request::ListBots => "bots".into(),
         Request::GetBot { id } => format!("bot {id}"),

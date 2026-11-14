@@ -574,6 +574,10 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::GetProfile | Request::UpdateProfile { .. } | Request::ListMemories | Request::MyAccess => Vec::new(),
         Request::Remember { replaces, .. } => replaces.iter().map(|id| random("note", id)).collect(),
         Request::Forget { id: note } => vec![random("note", note)],
+        // Skills (issue #703): their names are the person's text, so none is logged.
+        Request::ListSkills | Request::GetSkill { .. } | Request::SaveSkill { .. } | Request::DeleteSkill { .. } => {
+            Vec::new()
+        }
         // Bots (task B.1): a bot by the id the core made, never its name or texts; a message to one
         // with its conversation, never the text.
         Request::ListBots | Request::SaveBot { id: None, .. } => Vec::new(),

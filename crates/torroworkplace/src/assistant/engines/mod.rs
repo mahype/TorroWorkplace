@@ -365,6 +365,11 @@ impl Running {
             Some(bot) => (bot.personality.clone(), Vec::new()),
             None => self.assistant.persona_and_notes().await,
         };
+        // Its skills by name (issue #703); a bot names its own.
+        let skills = match &self.job.bot {
+            Some(_) => Vec::new(),
+            None => self.assistant.skill_summaries().await,
+        };
         // The person's name (issue #702), for the assistant and its bots alike.
         let person = self.assistant.profile().await.person_name;
         // The servers whose tools it finds over Torro's MCP server with these rights (issue #302).
@@ -387,6 +392,7 @@ impl Running {
             model: "",
             place: Place::Remote,
             memory: &memory,
+            skills: &skills,
             servers: &servers,
         };
         let system = match &self.job.bot {

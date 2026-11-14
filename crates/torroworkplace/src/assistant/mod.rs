@@ -39,6 +39,9 @@
 //!   [`Note::local_only`] by an older version (issue #664: no longer set) reaches no client without
 //!   read access to mail ([`answer_own`]'s `sees_local`). The assistant's own client may read, add and forget notes,
 //!   nothing else of its area (`torro_ipc::api::own_memory`).
+//! - **Skills** (issue #703, [`skills`]): `<config>/assistant/skills/<8 hex>/SKILL.md`, changed under
+//!   the same lock. The prompt names each in one line; the text comes with `assistant.get_skill`. A
+//!   bot's client reads its bot's own skills ([`skills::read_answer`], answered by the core).
 //!
 //! - **Bots** (task B.1, [`crate::bots`]): a conversation may be with a bot (`bots.ask_bot`, or
 //!   `assistant.send_message` with `bot`). It keeps the bot's id ([`ConversationSummary::bot`]), runs
@@ -70,6 +73,7 @@ mod engines;
 mod model;
 pub(crate) mod profile;
 mod prompt;
+pub(crate) mod skills;
 mod store;
 mod tools;
 
@@ -90,8 +94,8 @@ use torro_core::paths::AppPaths;
 use torro_core::settings::Retention;
 use torro_ipc::api::{Access, Area};
 use torro_ipc::assistant::{
-    ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, MAX_NOTES, MailRef, Note, Profile,
-    TEST_ENGINE,
+    ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, MAX_NOTES, MAX_SKILL_CHARS,
+    MAX_SKILL_DESCRIPTION_CHARS, MAX_SKILL_NAME_CHARS, MAX_SKILLS, MailRef, Note, Profile, Skill, TEST_ENGINE,
 };
 use torro_ipc::bots::Bot;
 use torro_ipc::{Request, Response};
@@ -1136,15 +1140,116 @@ impl Assistant {
         }
     }
 
+    /// The assistant's skills by name; none when they cannot be read (the core's log says why).
+    pub async fn skills(&self) -> Vec<skills::Stored> {
+        let Some(dir) = self.config.as_deref().map(skills::folder) else { return Vec::new() };
+        blocking(move || skills::load_all(&dir)).await.unwrap_or_else(|err| {
+            eprintln!("torroworkplace: cannot read the assistant's skills: {err}");
+            Vec::new()
+        })
+    }
+
+    /// The assistant's skill `name` (without regard to case), as stored.
+    pub async fn skill(&self, name: &str) -> Option<Skill> {
+        self.skills().await.into_iter().map(|stored| stored.skill).find(|skill| skill.is_named(name))
+    }
+
+    /// What `assistant.get_skill`, `save_skill` or `delete_skill` would be refused with anyway,
+    /// checked before anyone is asked to approve it and again by the handlers: a skill that is not
+    /// there (`not-found`), a name that belongs to another skill (`conflict`), a new skill beyond
+    /// [`MAX_SKILLS`] (`error`). `None` for every other request.
+    pub async fn skill_refusal(&self, request: &Request) -> Option<Response> {
+        let (name, replaces) = match request {
+            Request::GetSkill { name } | Request::DeleteSkill { name } => {
+                return self.skill(name).await.is_none().then(|| no_skill(name));
+            }
+            Request::SaveSkill { name, replaces, .. } => (name, replaces.as_deref()),
+            _ => return None,
+        };
+        let skills = self.skills().await;
+        let named = |wanted: &str| skills.iter().any(|stored| stored.skill.is_named(wanted));
+        match replaces {
+            Some(old) if !named(old) => Some(no_skill(old)),
+            Some(old) if !torro_ipc::assistant::same_skill_name(old, name) && named(name) => Some(taken(name)),
+            None if named(name) => Some(taken(name)),
+            None if skills.len() >= MAX_SKILLS => Some(skills_full()),
+            _ => None,
+        }
+    }
+
+    /// `assistant.save_skill` once its limits were checked: a new skill, or the skill `replaces` in
+    /// its folder with the new name; names and description on one line, the text without control
+    /// characters. Answers with the skill as stored.
+    pub async fn save_skill(&self, skill: Skill, replaces: Option<&str>) -> Response {
+        let Some(dir) = self.config.as_deref().map(skills::folder) else { return failure(NO_PLACE) };
+        let _own = self.own.lock().await;
+        let request = Request::SaveSkill {
+            name: skill.name.clone(),
+            description: String::new(),
+            text: String::new(),
+            replaces: replaces.map(str::to_string),
+        };
+        if let Some(refused) = self.skill_refusal(&request).await {
+            return refused;
+        }
+        let stored = self.skills().await;
+        let id = match replaces.and_then(|old| stored.iter().find(|kept| kept.skill.is_named(old))) {
+            Some(old) => old.id.clone(),
+            None => {
+                let taken = stored.iter().map(|kept| kept.id.clone()).collect::<Vec<_>>();
+                match crate::bots::store::new_id(&taken) {
+                    Ok(id) => id,
+                    Err(err) => return failure(&err),
+                }
+            }
+        };
+        let skill = Skill {
+            name: profile::clean_line(&skill.name, MAX_SKILL_NAME_CHARS),
+            description: profile::clean_line(&skill.description, MAX_SKILL_DESCRIPTION_CHARS),
+            text: profile::clean_text(&skill.text, MAX_SKILL_CHARS),
+        };
+        let saved = skills::Stored { id, skill: skill.clone() };
+        match blocking(move || skills::save(&dir, &saved)).await {
+            Ok(()) => Response::Skill { skill },
+            Err(err) => {
+                eprintln!("torroworkplace: cannot store the assistant's skill: {err}");
+                failure("the skill cannot be stored")
+            }
+        }
+    }
+
+    /// `assistant.delete_skill`: removes the skill `name` for good.
+    pub async fn delete_skill(&self, name: &str) -> Response {
+        let Some(dir) = self.config.as_deref().map(skills::folder) else { return failure(NO_PLACE) };
+        let _own = self.own.lock().await;
+        let Some(stored) = self.skills().await.into_iter().find(|stored| stored.skill.is_named(name)) else {
+            return no_skill(name);
+        };
+        match blocking(move || skills::remove(&dir, &stored.id)).await {
+            Ok(()) => Response::Ok,
+            Err(err) => {
+                eprintln!("torroworkplace: cannot remove the assistant's skill: {err}");
+                failure("the skill cannot be deleted")
+            }
+        }
+    }
+
     /// What an answer reads of the profile and the memory: the personality and every note, those
     /// from mail too ([`Note::local_only`], issue #664: every model reads them).
     async fn persona_and_notes(&self) -> (String, Vec<Note>) {
         (self.profile().await.personality, self.notes().await)
     }
+
+    /// The assistant's skills by name, as an answer's prompt names them (issue #703).
+    async fn skill_summaries(&self) -> Vec<torro_ipc::assistant::SkillSummary> {
+        self.skills().await.iter().map(|stored| stored.skill.summary()).collect()
+    }
 }
 
 /// Answers the requests of the assistant's profile and memory (task C.10): `get_profile`,
-/// `update_profile`, `list_memories`, `remember` and `forget`, for the app key and for a client the
+/// `update_profile`, `list_memories`, `remember` and `forget`, and of its skills (issue #703:
+/// `list_skills`, `get_skill`, `save_skill`, `delete_skill`; a bot's client gets its bot's from the
+/// core instead), for the app key and for a client the
 /// core admitted. `sees_local`: the caller may see notes kept from remote models – the app key, and
 /// a client with read access to mail; for any other a note marked so behaves as if it were not
 /// there. What would be refused anyway comes first ([`Assistant::memory_refusal`]).
@@ -1153,6 +1258,9 @@ pub async fn answer_own(assistant: &Assistant, request: Request, sees_local: boo
         return refused;
     }
     if let Some(refused) = assistant.memory_refusal(&request, sees_local).await {
+        return refused;
+    }
+    if let Some(refused) = assistant.skill_refusal(&request).await {
         return refused;
     }
     match request {
@@ -1165,6 +1273,14 @@ pub async fn answer_own(assistant: &Assistant, request: Request, sees_local: boo
             assistant.remember(&text, replaces.as_deref(), local_only, sees_local).await
         }
         Request::Forget { id } => assistant.forget(&id, sees_local).await,
+        request @ (Request::ListSkills | Request::GetSkill { .. }) => {
+            let skills: Vec<Skill> = assistant.skills().await.into_iter().map(|stored| stored.skill).collect();
+            skills::read_answer(&skills, &request).unwrap_or_else(|| failure("no skill to read"))
+        }
+        Request::SaveSkill { name, description, text, replaces } => {
+            assistant.save_skill(Skill { name, description, text }, replaces.as_deref()).await
+        }
+        Request::DeleteSkill { name } => assistant.delete_skill(&name).await,
         other => failure(&format!("{} is no command of the assistant's profile", other.operation().name())),
     }
 }
@@ -1175,6 +1291,21 @@ const NO_PLACE: &str = "there is no place to keep the assistant's profile and me
 /// The `not-found` answer for note `id`.
 fn no_note(id: &str) -> Response {
     Response::Error { code: "not-found".into(), message: format!("no note {id:?}") }
+}
+
+/// The `not-found` answer for skill `name`.
+fn no_skill(name: &str) -> Response {
+    Response::Error { code: "not-found".into(), message: format!("no skill {:?}", name.trim()) }
+}
+
+/// The `conflict` answer for a skill whose name another skill has.
+fn taken(name: &str) -> Response {
+    Response::Error { code: "conflict".into(), message: format!("another skill is called {:?}", name.trim()) }
+}
+
+/// The `error` answer for a new skill beyond [`MAX_SKILLS`].
+fn skills_full() -> Response {
+    failure(&format!("the assistant has {MAX_SKILLS} skills, the most it may have; delete some first"))
 }
 
 /// The `error` answer for a new note in a full memory.

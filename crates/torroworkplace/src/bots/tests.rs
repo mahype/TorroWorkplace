@@ -34,8 +34,8 @@ fn save(id: Option<&str>, name: &str) -> Request {
         personality: "Calm and brief.".into(),
         instructions: "Suggest trains before flights.\r\nAsk for the budget.\u{1b}".into(),
         skills: vec![
-            Skill { name: "Packing".into(), text: "Pack light.".into() },
-            Skill { name: "Night trains".into(), text: "Lisbon has none.".into() },
+            Skill { name: "Packing".into(), description: String::new(), text: "Pack light.".into() },
+            Skill { name: "Night trains".into(), description: String::new(), text: "Lisbon has none.".into() },
         ],
     }
 }
@@ -84,14 +84,18 @@ async fn a_new_bot_gets_a_client_of_its_own_with_only_the_tools_and_servers() {
 
     // On disk: its folder 0700, its files 0600, the texts readable.
     let folder = dir.path().join("config/assistant/bots").join(&bot.id);
-    assert_eq!(std::fs::read_to_string(folder.join("skills/2.md")).expect("the second skill"), "Lisbon has none.\n");
+    // Issue #703: one folder per skill with its SKILL.md.
+    let skills = crate::assistant::skills::load_all(&folder.join("skills")).expect("the skills");
+    let night = skills.iter().find(|kept| kept.skill.name == "Night trains").expect("the second skill");
+    let file = format!("skills/{}/SKILL.md", night.id);
+    assert!(std::fs::read_to_string(folder.join(&file)).expect("its file").ends_with("Lisbon has none.\n"));
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = |path: &Path| std::fs::metadata(path).expect("metadata").permissions().mode() & 0o777;
         assert_eq!(mode(&dir.path().join("config/assistant/bots")), 0o700);
         assert_eq!(mode(&folder), 0o700);
-        for file in ["bot.json", "persona.md", "instructions.md", "skills/1.md", "skills/2.md"] {
+        for file in ["bot.json", "persona.md", "instructions.md", file.as_str()] {
             assert_eq!(mode(&folder.join(file)), 0o600, "{file}");
         }
     }
