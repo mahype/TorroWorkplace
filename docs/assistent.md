@@ -590,7 +590,9 @@ Aufgaben: [tasks/assistent.md](tasks/assistent.md), WEB.1–WEB.7.
 
 Stand: 2026-10-24, Issue #304. Das zweite eigene Werkzeug (`files`, bis #666 mit dem Schalter „Organize files“) ordnet Dateien auf dem
 Rechner: Ordner auflisten, nach Namen suchen, Ordner anlegen, kopieren, verschieben, umbenennen, in den Papierkorb
-legen. Den **Inhalt** einer Datei liest oder ändert es nicht; das machen Dokument-Werkzeuge wie ArtCraft (#303).
+legen. Den **Inhalt** einer Datei liest oder ändert es selbst nicht; das macht seit #705 das Werkzeug
+„File contents“ (unten, „Werkzeug Dateiinhalte“) in denselben Ordnern, PDF und Office-Dateien weiter die
+Dokument-Werkzeuge wie ArtCraft (#303).
 Torro bekommt keinen eigenen Dateimanager: In der Oberfläche liegen nur Ordnerliste und Freigabe-Karten.
 
 - **Freigegebene Ordner** (Steuerzentrale › MCP servers, Gruppe „Allowed folders“; seit dem Merge mit #302 dort, Einstellung
@@ -649,12 +651,53 @@ Torro bekommt keinen eigenen Dateimanager: In der Oberfläche liegen nur Ordnerl
 | In den Papierkorb | Freigabe-Karte, immer | `tools.trash_file` · Delete | `tools_trash_file` |
 | Ob ein Client es nutzt | wie beim PDF-Werkzeug | `clients.update_client` · Admin | wie beim PDF-Werkzeug |
 | Freigegebene Ordner verwalten | Steuerzentrale › MCP servers, „Allowed folders“ | `settings.set_setting allowed_folder` · Admin, nur App-Schlüssel | **Never** (Punkt 9) |
+| Textdatei lesen (seitenweise) | – (die Person hat ihren Editor) | `tools.read_file` · Read | `tools_read_file` |
+| Im Inhalt suchen | – | `tools.search_in_files` · Read | `tools_search_in_files` |
+| Neue Datei mit Inhalt anlegen | Freigabe-Karte, wenn der Client fragen lässt | `tools.write_file` · Write | `tools_write_file` |
+| Datei ändern (Suchen und Ersetzen) | Freigabe-Karte mit Unterschied, immer | `tools.edit_file` · Delete | `tools_edit_file` |
+
+Die vier letzten Zeilen gehören zum Werkzeug `file_contents` (unten).
 
 Die Entscheidung 6 („Dateien und Shell beim Agent-Antrieb immer aus“) bleibt: Sie meint die eingebauten Werkzeuge
 eines Agenten wie Claude Code. Das Werkzeug Dateien ist ein Befehl des Kerns mit Rechten, Ordnergrenzen und
 Freigaben.
 
 Aufgaben: [tasks/assistent.md](tasks/assistent.md), WD.1–WD.4.
+
+### Werkzeug Dateiinhalte
+
+Stand: 2026-11-13, Issue #705. Das Werkzeug `file_contents` („File contents“) liest Textdateien in den freigegebenen
+Ordnern, durchsucht sie, legt neue an und ändert vorhandene durch Suchen und Ersetzen. Es ist ein eigenes Werkzeug
+neben `files`, weil der Inhalt dabei an den Anbieter des Modells geht (Entscheidung 32).
+
+- **Grenzen wie bei `files`:** dieselben freigegebenen Ordner mit „Read“ und „Read and write“, dieselben immer
+  gesperrten Pfade, Gesperrtes und alles außerhalb ist `not-found`, Schreiben in „Read“ ist `forbidden`.
+- **Nur Text** (Entscheidung 33): reguläre Dateien in UTF-8 ohne NUL-Byte, höchstens 10 MiB. Ordner, Binärdateien und
+  zu große Dateien sind `unsupported`; PDF und Office-Dateien bleiben bei den ArtCraft-Werkzeugen (#303). Eine
+  Byte-Order-Mark lässt das Lesen weg, eine Änderung behält sie.
+- **Lesen seitenweise:** ganze Zeilen bis 10.000 Zeichen ab `from_line` (Antworten an das Modell werden bei 16.000
+  Zeichen abgeschnitten); nur eine einzelne längere Zeile wird geschnitten. Die Antwort nennt die Zeilenzahl, ob mehr
+  folgt (`more`) und die **Version**: den SHA-256 der Bytes.
+- **Suchen** nach einem Text (eine Zeile, 1 bis 200 Zeichen, ohne Groß- und Kleinschreibung) mit den Grenzen der
+  Namenssuche (10 Ebenen, 200 Treffer, 50.000 angesehene Einträge) und höchstens 256 MiB gelesen; gesperrte, binäre
+  und zu große Dateien überspringt es still. Treffer: Pfad, Zeilennummer und die Zeile, höchstens 200 Zeichen.
+- **Anlegen** überschreibt nie: Ein belegter Name bekommt einen freien (`Notizen-2.md`), höchstens 1 MiB Text. Es
+  fragt nur, wenn der Client fragen lässt (Entscheidung 34).
+- **Ändern** (Entscheidung 35) nur mit der Version aus dem Lesen: Hat sich die Datei seitdem geändert, ändert der Kern
+  nichts und antwortet `conflict`. Der gesuchte Text muss genau einmal vorkommen, sonst `error` mit der Anzahl
+  (oder `all`); fehlt er, `not-found`. Eine Änderung wartet **immer** auf einen Menschen, auch bei „Ask first:
+  Never“, weil der alte Inhalt danach weg ist (Zugriff `Delete`). Die Karte zeigt den Unterschied, so wie der Kern
+  ihn aus der gelesenen Datei berechnet hat: alte Zeilen mit `-`, neue mit `+`, je eine Zeile Umfeld, höchstens 60
+  Zeilen. Die Freigabe hängt an Pfad, Eintrag, Version und Ersetzung; ändert sich die Datei, während die Person
+  entscheidet, heißt die Antwort `conflict`. Geschrieben wird in eine temporäre Datei im selben Ordner, die dann die
+  alte ersetzt; ein harter Link auf die alte Datei behält deshalb den alten Inhalt.
+- **Nicht vertrauenswürdig:** Gelesener Inhalt und Treffer sind `untrusted`, Daten und nie Anweisungen. Wer in einer
+  Unterhaltung Dateien gelesen oder durchsucht hat, wird vor der nächsten Websuche erneut gefragt, wie nach dem
+  Lesen von Mail (Entscheidung 36): Sonst könnte eine präparierte Datei den Inhalt anderer Dateien in Suchwörtern
+  hinausschicken.
+- **Rechte:** Bereich `tools` mit `file_contents` in der Auswahl. „Alle Werkzeuge“ deckt es wie `web` nicht ab: Ein
+  API- oder MCP-Client bekommt es nur mit dem Haken eines Menschen; Assistent und Bots starten offen und haben es,
+  sobald Ordner freigegeben sind. Protokoll und Log nennen keine Pfade, Suchtexte oder Inhalte.
 
 Ein Terminal-Werkzeug, das Befehle ausführt, ist **kein** Teil davon: Es hebt den Zweck von Entscheidung 6 auf und
 braucht eigene Regeln für Freigabe, Sandbox und Rechte. Das Konzept dazu steht in [terminal.md](terminal.md)
@@ -833,3 +876,13 @@ Getroffen am 2026-10-24 (Abschnitt „Werkzeug Dateien“, Issue #304).
     Hooks starten, die Schlüsselablagen des Systems, weitere bekannte Ablagen von Zugangsdaten (Cloud, GitHub,
     Paketregister, Passwortspeicher), die Browser-Profile und der Papierkorb des Systems, auch innerhalb eines
     freigegebenen Ordners.
+
+Getroffen am 2026-11-13 (Abschnitt „Werkzeug Dateiinhalte“, Issue #705).
+
+32. **Eigenes Werkzeug** `file_contents` neben `files`, weil der Inhalt an den Anbieter des Modells geht; „Alle
+    Werkzeuge“ deckt es für Schlüssel von API- und MCP-Clients nicht ab.
+33. **Nur Textdateien** in UTF-8; PDF und Office bleiben bei den ArtCraft-Werkzeugen (#303).
+34. **Neue Datei** fragt nur, wenn der Client fragen lässt, und überschreibt nie.
+35. **Ändern** nur mit der Version aus dem Lesen, sonst `conflict`, und immer nach der Freigabe eines Menschen mit dem
+    Unterschied auf der Karte.
+36. **Nach dem Lesen von Dateien** fragt die Websuche erneut, wie nach dem Lesen von Mail.
