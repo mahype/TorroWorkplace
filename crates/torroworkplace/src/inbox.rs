@@ -865,7 +865,8 @@ impl Inbox {
                 changeable(db, id, Some(client)).map(drop)
             }
             // A contact of an entry leaves the entry as it is (issue #727): seeing it is enough. A
-            // mail without an entry (`m:…`) is checked by the core against the mail it names.
+            // mail without an entry (`m:…`), and whether the entry is a mail the client may read, the
+            // core checks against the mail store (`Core::contact_mail`).
             Request::CreateContactFromItem { id, .. } if !rules::is_message_id(id) => {
                 visible_item(db, id, Some(client)).map(drop)
             }

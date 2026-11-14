@@ -8998,6 +8998,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Merge", "Zusammenführen"),
     ("Merge contacts?", "Kontakte zusammenführen?"),
     (
+        "More than {n} contacts; export one address book or group at a time.",
+        "Mehr als {n} Kontakte; exportiere jeweils ein Adressbuch oder eine Gruppe.",
+    ),
+    (
         "Merge into {name} in {book}; deleted for good: {gone}",
         "In {name} in {book} zusammenführen; endgültig gelöscht: {gone}",
     ),

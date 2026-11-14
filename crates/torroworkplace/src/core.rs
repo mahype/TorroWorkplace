@@ -633,16 +633,19 @@ fn github_link(entry: &torro_inbox::Item) -> Option<torro_pim::model::Link> {
 }
 
 /// The vCard attached to `message` that `inbox.create_contact_from_item` takes (issue #727): the first
-/// attachment of type `text/vcard` or `text/x-vcard`, or named `*.vcf`, of at most
-/// [`crate::contacts::service::MAX_ATTACHED_CARD_BYTES`] as the message says; `None` without one.
+/// attachment of type `text/vcard` or `text/x-vcard`, or named `*.vcf`, when it has at most
+/// [`crate::contacts::service::MAX_ATTACHED_CARD_BYTES`] as the message says; `None` without one or
+/// for a larger one (the sender is saved then, as the inbox app says).
 fn vcard_attachment(message: &torro_mail::Message) -> Option<&torro_mail::AttachmentInfo> {
-    message.attachments.iter().find(|attachment| {
+    // The first vCard only, as the inbox app names the action by it: a later one would make a
+    // contact the person was not offered.
+    let first = message.attachments.iter().find(|attachment| {
         let kind = attachment.content_type.to_ascii_lowercase();
         let kind = kind.split(';').next().unwrap_or_default().trim();
         let named = attachment.filename.as_deref().is_some_and(|name| name.to_ascii_lowercase().ends_with(".vcf"));
-        (matches!(kind, "text/vcard" | "text/x-vcard") || named)
-            && attachment.size <= crate::contacts::service::MAX_ATTACHED_CARD_BYTES as u64
-    })
+        matches!(kind, "text/vcard" | "text/x-vcard") || named
+    })?;
+    (first.size <= crate::contacts::service::MAX_ATTACHED_CARD_BYTES as u64).then_some(first)
 }
 
 /// The entry's web page, when it links to one: the inbox keeps only `http`/`https` links (security
@@ -4739,6 +4742,12 @@ impl Core {
                 Some(stand_in) => self.inbox.message_refusal(&request, stand_in, Some(info)),
                 None => self.inbox.refusal(&request, Some(info)),
             }
+        {
+            return Ok(refused);
+        }
+        // Nor a contact of a mail the client may not read or of an entry that is no mail (issue #727).
+        if let (Some(info), Request::CreateContactFromItem { id, .. }) = (&inbox_client, &request)
+            && let Err(refused) = Box::pin(self.contact_mail(id, Some(info), reach)).await
         {
             return Ok(refused);
         }

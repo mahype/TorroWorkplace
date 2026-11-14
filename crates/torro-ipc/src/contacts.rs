@@ -204,7 +204,7 @@ impl ContactsSource for ContactsClient {
         ids: Vec<String>,
     ) -> Result<(String, u32), ContactsError> {
         match self.ask(Request::ExportVCards { book, group, ids }).await? {
-            Response::VCards { data, count } => Ok((data, count)),
+            Response::VCards { data, count, .. } => Ok((data, count)),
             other => Err(unexpected(other)),
         }
     }
@@ -301,9 +301,10 @@ mod tests {
             Request::ImportVCards { book, data, path, dry_run } => {
                 demo.import_vcards(book, data, path, dry_run).await.map(Response::ContactsImported)
             }
-            Request::ExportVCards { book, group, ids } => {
-                demo.export_vcards(book, group, ids).await.map(|(data, count)| Response::VCards { data, count })
-            }
+            Request::ExportVCards { book, group, ids } => demo
+                .export_vcards(book, group, ids)
+                .await
+                .map(|(data, count)| Response::VCards { data, count, untrusted: true }),
             Request::FindDuplicates { book } => {
                 demo.find_duplicates(book).await.map(|groups| Response::ContactDuplicates { groups })
             }

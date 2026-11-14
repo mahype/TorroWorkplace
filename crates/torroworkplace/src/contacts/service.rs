@@ -360,7 +360,22 @@ impl ContactsService {
             }
             None
         };
+        let read_only = |book: &BookRow| {
+            Some(error_response(&ContactsError::Unsupported(trf(
+                "The address book “{book}” is read-only.",
+                &[("book", &book.display_name)],
+            ))))
+        };
         match request {
+            // A read-only book is nothing to approve (it is checked again when the command runs).
+            Request::ImportVCards { book, .. } if self.book(book).is_ok_and(|book| !book.writable) => {
+                self.book(book).ok().and_then(|book| read_only(&book))
+            }
+            Request::MergeContacts { ids, .. }
+                if let Some(book) = ids.iter().filter_map(|id| self.find(id).ok()).find(|f| !f.book.writable) =>
+            {
+                read_only(&book.book)
+            }
             Request::ImportVCards { path: Some(_), .. } if !matches!(reach, Reach::Suite) => Some(Response::Error {
                 code: "forbidden".into(),
                 message: tr("Only the suite's apps import from a file; send the cards as `data`.").to_string(),
@@ -1180,15 +1195,30 @@ impl ContactsService {
         if dry_run || new.is_empty() {
             return Ok(Response::ContactsImported(imported));
         }
+        // All or nothing: a store failing halfway takes back what it wrote, so no answer "error" leaves
+        // contacts behind that go to the server with the next round.
+        let mut stored: Vec<String> = Vec::new();
         for (uid, raw) in &new {
-            self.store_new(&book, uid, raw)?;
+            match self.store_new(&book, uid, raw) {
+                Ok(card) => stored.push(card.id),
+                Err(err) => {
+                    let _ = with(self.store()?, |s| {
+                        for id in &stored {
+                            s.remove_card(id)?;
+                        }
+                        Ok(())
+                    });
+                    return Err(err);
+                }
+            }
         }
         // One round sends them all; offline they wait (`state: pending`).
         self.push(&book).await;
         Ok(Response::ContactsImported(imported))
     }
 
-    /// `contacts.export_vcards` (issue #725): the cards as stored, each ending its last line.
+    /// `contacts.export_vcards` (issue #725): the cards as stored, each ending its last line; at most
+    /// [`MAX_IMPORT_CARDS`], else `error`.
     fn export(
         &self,
         reach: Reach<'_>,
@@ -1221,6 +1251,13 @@ impl ContactsService {
             })
             .collect()
         };
+        // As for an import: more would fill an agent's answer or a window's memory at once.
+        if cards.len() > MAX_IMPORT_CARDS {
+            return Err(ContactsError::Other(trf(
+                "More than {n} contacts; export one address book or group at a time.",
+                &[("n", &MAX_IMPORT_CARDS)],
+            )));
+        }
         let mut data = String::new();
         for card in &cards {
             data.push_str(&card.vcard);
@@ -1228,7 +1265,7 @@ impl ContactsService {
                 data.push_str("\r\n");
             }
         }
-        Ok(Response::VCards { data, count: u32::try_from(cards.len()).unwrap_or(u32::MAX) })
+        Ok(Response::VCards { data, count: u32::try_from(cards.len()).unwrap_or(u32::MAX), untrusted: true })
     }
 
     /// The contacts of `books` as the API answers them, without group cards.
@@ -1269,8 +1306,9 @@ impl ContactsService {
 
     /// `contacts.merge_contacts` (issue #726): every contact checked first (its version, a writable
     /// book, no conflict), then `keep` written with what the others bring, then the others deleted
-    /// as `contacts.delete_contact` deletes; one whose deletion fails is named in `left`. A favourite
-    /// stays one, a picture comes from the first other when `keep` has none.
+    /// as `contacts.delete_contact` deletes; one whose deletion fails, and all of them while the
+    /// merged contact did not reach the server yet, are named in `left`. A favourite stays one, a
+    /// picture comes from the first other when `keep` has none.
     async fn merge(&self, ids: &[String], etags: &[String], keep: &str) -> Result<Response, ContactsError> {
         let mut found = Vec::new();
         for (id, etag) in ids.iter().zip(etags) {
@@ -1312,9 +1350,13 @@ impl ContactsService {
         if favorite {
             with(self.store()?, |s| s.set_favorite(&keep_id, &keep_book.account, true))?;
         }
+        // The others go only once the merged contact is on the server: while it waits (offline, a
+        // passing failure) or the server may still refuse it, they are all that is there of what
+        // they bring.
+        let written = with(self.store()?, |s| s.card(&keep_id))?.is_some_and(|card| card.state == ContactState::Synced);
         let mut left = Vec::new();
         for (one, etag) in found {
-            if Box::pin(self.delete(&one.card.id, &etag)).await.is_err() {
+            if !written || Box::pin(self.delete(&one.card.id, &etag)).await.is_err() {
                 left.push(one.card.id);
             }
         }
@@ -1930,7 +1972,7 @@ mod tests {
             ids,
         };
         let vcards = |response: Response| match response {
-            Response::VCards { data, count } => (data, count),
+            Response::VCards { data, count, .. } => (data, count),
             other => panic!("not cards: {other:?}"),
         };
         let (data, count) =
@@ -2035,6 +2077,44 @@ mod tests {
             panic!("merged")
         };
         assert_eq!(merged.left, [third]);
+    }
+
+    /// Review of #356: offline the merged contact only waits, so the others stay (`left`), and a merge
+    /// with a read-only book is refused before an approval is asked for.
+    #[tokio::test]
+    async fn an_offline_merge_deletes_nothing() {
+        let setup = setup().await;
+        setup.server.put_card(&setup.work, "anna2", &card("anna2", "Anna B.", "anna@example.org"));
+        setup.service.sync_all().await;
+        let (anna, twin) = (id("contacts", "anna"), id("contacts", "anna2"));
+        let etag = |id: String| async {
+            contact(setup.service.handle(Request::GetContact { id }, Reach::Suite).await).etag.expect("etag")
+        };
+        let merge = Request::MergeContacts {
+            ids: vec![anna.clone(), twin.clone()],
+            etags: vec![etag(anna.clone()).await, etag(twin.clone()).await],
+            keep: anna.clone(),
+        };
+        setup.server.lock().offline = true;
+        let Response::ContactsMerged(merged) = setup.service.handle(merge, Reach::Suite).await else {
+            panic!("merged")
+        };
+        assert_eq!(merged.left, std::slice::from_ref(&twin), "nothing goes while the merge waits");
+        assert_eq!(merged.contact.state, ContactState::Pending);
+        assert_eq!(code(&setup.service.handle(Request::GetContact { id: twin }, Reach::Suite).await), "ok");
+        let bob = id("team", "bob");
+        let read_only =
+            Request::MergeContacts { ids: vec![anna.clone(), bob], etags: vec!["a".into(), "b".into()], keep: anna };
+        assert!(
+            matches!(setup.service.refusal(Reach::Suite, &read_only), Some(Response::Error { code, .. }) if code == "unsupported")
+        );
+        let import = Request::ImportVCards {
+            book: format!("{ACCOUNT}/team"),
+            data: Some(String::new()),
+            path: None,
+            dry_run: false,
+        };
+        assert!(setup.service.refusal(Reach::Suite, &import).is_some());
     }
 
     /// Issues #725, #726: every book and contact the new commands name must be in reach.

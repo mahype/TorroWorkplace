@@ -546,7 +546,8 @@ const CALL_TOOL: &str = "extensions.call_tool";
 /// string, a boolean, a number (`zoom`) or an object (`night`, `working_hours`, `list_order`).
 /// Where an agent may send less than the request takes, the tool says so: `extensions.set_enabled`
 /// takes only `enabled: false` (issue #302), since switching a server on is the person's and the core
-/// answers `forbidden` to every client for `true` (`Request::kept_for_people`).
+/// answers `forbidden` to every client for `true` (`Request::kept_for_people`). `contacts.import_vcards`
+/// takes no `path` (issue #725): only the suite's apps name a file, a client sends the cards as `data`.
 fn narrow_schema(command: &str, schema: &mut JsonObject) {
     let Some(Value::Object(properties)) = schema.get_mut("properties") else { return };
     match command {
@@ -568,6 +569,12 @@ fn narrow_schema(command: &str, schema: &mut JsonObject) {
                                 Torro Workplace."
             });
             properties.insert("enabled".into(), enabled);
+        }
+        "contacts.import_vcards" => {
+            properties.remove("path");
+            if let Some(Value::Array(required)) = schema.get_mut("required") {
+                required.retain(|name| name != "path");
+            }
         }
         _ => {}
     }
@@ -2252,6 +2259,9 @@ mod tests {
             assert_eq!(hints(name).and_then(|h| h.destructive_hint), Some(true), "{name}");
         }
         assert_eq!(hints("contacts_add_to_contact").and_then(|h| h.destructive_hint), Some(false));
+        // Issue #725: an agent imports the text of a file, never a path.
+        assert!(schema("contacts_import_vcards")["properties"].get("path").is_none());
+        assert!(schema("contacts_import_vcards")["properties"].get("data").is_some());
         assert!(INSTRUCTIONS.contains("contacts_add_to_contact") && INSTRUCTIONS.contains("contacts_get_contact"));
         assert_eq!(hints("workspaces_save_template").and_then(|h| h.destructive_hint), Some(false));
     }
