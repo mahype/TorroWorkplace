@@ -762,7 +762,14 @@ impl MailStore {
             if known.contains(&store) || !path.is_file() || changed_within(&path, min_age) {
                 continue;
             }
-            if remove_files(&store).is_ok() && name.ends_with(".sqlite") {
+            // A store counts once, whichever of its files the folder lists first: removing a `-wal`
+            // takes the store with it, and its own entry is then gone (#702: the order of
+            // `read_dir` decided the count).
+            let had_store = store.is_file();
+            if had_store && changed_within(&store, min_age) {
+                continue;
+            }
+            if remove_files(&store).is_ok() && had_store {
                 removed += 1;
             }
         }
