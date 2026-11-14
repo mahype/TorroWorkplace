@@ -4238,9 +4238,10 @@ static OPEN_APP: Command = Command {
                   for the person to address and send, `template:<id>` (an id from workspaces_list_templates) the \
                   dialog to edit that workspace template's name, key and startup, `chat:<conversation>` (an id \
                   from chat_list_conversations) a chat window with that conversation and `chat:contacts` the \
-                  chat's contact list; `app` must be that app (`torroinbox` or an inbox window class for mail \
-                  and files, `torroworkplace` for a template, `torrochat` for a chat). A mail, task, template \
-                  or conversation this key may not read is `not-found`, and so is a \
+                  chat's contact list, `contact:<id>` (an id from contacts_list_contacts) that contact in the \
+                  contacts app; `app` must be that app (`torroinbox` or an inbox window class for mail \
+                  and files, `torroworkplace` for a template, `torrochat` for a chat, `torrocontacts` for a \
+                  contact). A mail, task, template, conversation or contact this key may not read is `not-found`, and so is a \
                   file this key did not make or cannot reach (the PDF tool switched off, no read access to \
                   `tools`, `pdf` not selected).",
 };

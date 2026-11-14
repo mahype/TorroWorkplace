@@ -2265,7 +2265,9 @@ pub enum Request {
     /// (issue #243, `torroworkplace ui --template=<id>`; always to edit, never the dialog after
     /// "Save workspace…", whose Cancel deletes the template), `chat:<conversation>` a chat window
     /// with that conversation (`docs/chat.md`, `torrochat --conversation=<id>`; a client needs read
-    /// access to `chat` and the account, else `not-found`) and `chat:contacts` the contact list.
+    /// access to `chat` and the account, else `not-found`), `chat:contacts` the contact list and
+    /// `contact:<id>` a contact in the contacts app (issue #727, `torrocontacts --contact=<id>`; a
+    /// client needs read access to `contacts` and the book, else `not-found`).
     /// `app` must be the app the target
     /// opens in (any inbox window for a mail, the inbox for a file, `torroworkplace` for a
     /// template), else `error`. The core checks the target and builds the arguments; nothing of it

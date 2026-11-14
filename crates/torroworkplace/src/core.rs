@@ -632,6 +632,19 @@ fn github_link(entry: &torro_inbox::Item) -> Option<torro_pim::model::Link> {
     same.then(|| torro_pim::model::Link::github(&issue.repo, issue.number))
 }
 
+/// The vCard attached to `message` that `inbox.create_contact_from_item` takes (issue #727): the first
+/// attachment of type `text/vcard` or `text/x-vcard`, or named `*.vcf`, of at most
+/// [`crate::contacts::service::MAX_ATTACHED_CARD_BYTES`] as the message says; `None` without one.
+fn vcard_attachment(message: &torro_mail::Message) -> Option<&torro_mail::AttachmentInfo> {
+    message.attachments.iter().find(|attachment| {
+        let kind = attachment.content_type.to_ascii_lowercase();
+        let kind = kind.split(';').next().unwrap_or_default().trim();
+        let named = attachment.filename.as_deref().is_some_and(|name| name.to_ascii_lowercase().ends_with(".vcf"));
+        (matches!(kind, "text/vcard" | "text/x-vcard") || named)
+            && attachment.size <= crate::contacts::service::MAX_ATTACHED_CARD_BYTES as u64
+    })
+}
+
 /// The entry's web page, when it links to one: the inbox keeps only `http`/`https` links (security
 /// rule 6), checked here once more. Links to apps and windows stay with the entry.
 fn web_link(entry: &torro_inbox::Item) -> Option<String> {
@@ -4563,9 +4576,20 @@ impl Core {
         {
             return Ok(refused);
         }
+        // Saving a mail's sender writes a contact too (issue #727): the contacts rights and the book
+        // first.
+        if let Request::CreateContactFromItem { book, .. } = &request
+            && let Some(refused) = self.contact_target_refusal(book, &rights)
+        {
+            return Ok(refused);
+        }
         let reach = Reach::Client(&rights);
         if let Some(outside) = self.out_of_reach(reach, &request).await {
             return Ok(not_reached(&request, &outside));
+        }
+        // A file to import or a request outside the limits (issues #725, #726) is nothing to approve.
+        if let Some(refused) = self.contacts.refusal(reach, &request) {
+            return Ok(refused);
         }
         // Files of the chat (stage 4): another's or a gone prepared file is nothing to approve.
         if let Some(refused) = self.chat_refusal(&request, reach, &id).await {
@@ -5483,6 +5507,21 @@ impl Core {
                 if let Request::CreateTaskFromItem { collection, .. } = &request {
                     facts.list = self.list_name(collection).await;
                 }
+                // A contact of a mail (issue #727): the book by its name, the sender or the attached
+                // vCard as the mail store holds them.
+                if let Request::CreateContactFromItem { id, book } = &request {
+                    facts.list = self
+                        .contacts
+                        .facts(&Request::CreateContact { book: book.clone(), fields: Default::default() })
+                        .and_then(|contact| contact.book);
+                    let reach = Reach::Client(rights);
+                    if let Ok((item, message)) = Box::pin(self.contact_mail(id, None, reach)).await {
+                        facts.item = facts.item.take().or(Some(item));
+                        facts.card = vcard_attachment(&message)
+                            .map(|card| card.filename.clone().unwrap_or_else(|| "contact.vcf".into()));
+                        facts.sender = message.summary.from.clone();
+                    }
+                }
                 // The piles (task E19.2): the subjects as the mail store holds them; "Not fraud" (issue
                 // #506) the senders it would trust as well.
                 if let Request::SetMailPile { .. } | Request::ReleaseMail { .. } = &request {
@@ -5505,6 +5544,10 @@ impl Core {
             }
             (_, _) => {
                 let mut facts = self.facts(&request).await;
+                // An import shows what a trial run counts with the client's reach (issue #725).
+                if let (Request::ImportVCards { .. }, Some(contact)) = (&request, facts.contact.as_mut()) {
+                    contact.imported = self.contacts.import_facts(Reach::Client(rights), &request);
+                }
                 // Ticking a link closes its issue only for a client that may (task G.6); else the
                 // summary must not say it would.
                 if let (Some(_), Some(issue)) = (&info, facts.issue.as_deref()) {
@@ -5768,7 +5811,10 @@ impl Core {
             | Request::SetContactPhoto { .. }
             | Request::MoveContact { .. }
             | Request::DeleteContact { .. }
-            | Request::ResolveContactConflict { .. }) => {
+            | Request::ResolveContactConflict { .. }
+            | Request::ImportVCards { .. }
+            | Request::MergeContacts { .. }
+            | Request::DismissDuplicates { .. }) => {
                 Facts { contact: self.contacts.facts(request).map(Box::new), ..Facts::default() }
             }
             // A conversation's name and kind and the message a command is about, from the chat
@@ -6838,6 +6884,7 @@ impl Core {
             | Request::OpenItem { .. }
             | Request::CreateTaskFromItem { .. }
             | Request::CreateEventFromItem { .. }
+            | Request::CreateContactFromItem { .. }
             | Request::SuggestTaskFromItem { .. }
             | Request::SuggestEventFromItem { .. }
             | Request::ListSources
@@ -7204,6 +7251,12 @@ impl Core {
             | Request::MoveContact { .. }
             | Request::DeleteContact { .. }
             | Request::ResolveContactConflict { .. }
+            // Import, export and duplicates (issues #725, #726).
+            | Request::ImportVCards { .. }
+            | Request::ExportVCards { .. }
+            | Request::FindDuplicates { .. }
+            | Request::MergeContacts { .. }
+            | Request::DismissDuplicates { .. }
             // Recipient suggestions (issue #460): contacts and the mail of the accounts `reach` may read.
             | Request::SuggestRecipients { .. }) => self.contacts_request(request, reach).await,
             // Chat and presence (`docs/chat.md`, issue #643); a client's reach was checked before
@@ -9267,6 +9320,10 @@ impl Core {
                 let made = EntryEvent { collection, title, start, end, location, notes };
                 self.create_event_from_item(&id, made, client, pin).await
             }
+            // Boxed: reading the mail and writing the contact would grow this poll frame.
+            Request::CreateContactFromItem { id, book } => {
+                Box::pin(self.create_contact_from_item(&id, &book, client, pin)).await
+            }
             // Boxed, as the ntfy commands above: asking each AI account for its models (task S.23)
             // would grow this match's poll frame by a whole suggestion.
             Request::SuggestTaskFromItem { id, lists } => {
@@ -9401,6 +9458,117 @@ impl Core {
         }
         let seen = self.pim.sees_task_list(Reach::Client(rights), collection).await;
         (!seen).then(|| no_collection(collection))
+    }
+
+    /// For `inbox.create_contact_from_item` of a client with `rights` (issue #727): `forbidden`
+    /// without write access in `contacts` (named as `contacts.create_contact`, which it may not use
+    /// either), `not-found` for an address book it does not reach, as for `contacts.create_contact`.
+    /// `None` when the contact may be written. Asked before the entry and an approval, and again when
+    /// the command runs.
+    fn contact_target_refusal(&self, book: &str, rights: &torro_ipc::api::Rights) -> Option<Response> {
+        if !rights.area(Area::Contacts).allows(Access::Write) {
+            return Some(Refused::Forbidden { command: "contacts.create_contact" }.response());
+        }
+        (!self.contacts.sees_book(Reach::Client(rights), book)).then(|| Response::Error {
+            code: "not-found".into(),
+            message: tr("The contact or address book does not exist.").into(),
+        })
+    }
+
+    /// The entry and the mail of `inbox.create_contact_from_item` (issue #727): for an `m:…` id that
+    /// mail, as far as `reach` reaches its account and `client` its source; for an entry's id the
+    /// entry `client` sees and its newest mail. `not-found` for what they do not reach,
+    /// `unsupported` for an entry that is no mail. The mail is read as `mail.get_message` reads it.
+    async fn contact_mail(
+        &self,
+        id: &str,
+        client: Option<&torro_ipc::ClientInfo>,
+        reach: Reach<'_>,
+    ) -> Result<(torro_inbox::Item, torro_mail::Message), Response> {
+        let (item, message) = if torro_inbox::rules::is_message_id(id) {
+            let Some(stand_in) = crate::mail::inbox_feed::message_stand_in(&self.mail, reach, id).await else {
+                return Err(refusal("not-found", "no such inbox entry or mail".into()));
+            };
+            let request = Request::CreateContactFromItem { id: id.to_string(), book: String::new() };
+            if let Some(refused) = self.inbox.message_refusal(&request, &stand_in, client) {
+                return Err(refused);
+            }
+            (stand_in, id.to_string())
+        } else {
+            let entry = self.inbox.entry_for_contact(id, client, Utc::now()).map_err(|refused| *refused)?;
+            let message = match (&entry.link, entry.source.kind) {
+                (Some(torro_inbox::Link::Mail { message }), torro_inbox::SourceKind::Mail) => message.clone(),
+                _ => {
+                    let message = tr("Only a mail has a sender to save as a contact.");
+                    return Err(refusal("unsupported", message.into()));
+                }
+            };
+            (entry, message)
+        };
+        let asked = Request::GetMail { id: message, include_body: false, include_html: false };
+        match crate::mail::read::answer(&self.mail, &self.inbox, reach, asked).await {
+            Response::MailMessage { message } => Ok((item, message)),
+            other => Err(other),
+        }
+    }
+
+    /// `inbox.create_contact_from_item` (issue #727): a contact in `book` of the mail of `id` for
+    /// `client` (`None` for the app key). In this order: the contacts rights and the book once more
+    /// ([`Core::contact_target_refusal`]), the entry or mail ([`Core::contact_mail`]), the `pin` of
+    /// an approved command, then the first vCard attached ([`vcard_attachment`], at most
+    /// [`crate::contacts::service::MAX_ATTACHED_CARD_BYTES`]) as
+    /// [`crate::contacts::ContactsService::contact_from_card`] takes it, else the sender
+    /// ([`crate::contacts::ContactsService::contact_from_sender`]). The entry stays as it is.
+    async fn create_contact_from_item(
+        &self,
+        id: &str,
+        book: &str,
+        client: Option<&torro_ipc::ClientInfo>,
+        pin: Option<EntryPin>,
+    ) -> Response {
+        if let Some(client) = client
+            && let Some(refused) = self.contact_target_refusal(book, &client.rights)
+        {
+            return refused;
+        }
+        let reach = client.map_or(Reach::Suite, |client| Reach::Client(&client.rights));
+        let (item, message) = match self.contact_mail(id, client, reach).await {
+            Ok(found) => found,
+            Err(refused) => return refused,
+        };
+        if pin.is_some_and(|pin| !pin.holds(&item)) {
+            return entry_conflict();
+        }
+        let made = match vcard_attachment(&message) {
+            Some(card) => {
+                let part = torro_mail::DraftAttachment::MailPart {
+                    message: message.summary.id.clone(),
+                    part: card.part.clone(),
+                };
+                let author = crate::mail::store::DraftAuthor::App;
+                let bytes = match crate::mail::write::attachment_of(&self.mail, reach, &part, &author, None, None).await
+                {
+                    Ok(attached) => attached.bytes,
+                    Err(err) => return err.response(),
+                };
+                if bytes.len() > crate::contacts::service::MAX_ATTACHED_CARD_BYTES {
+                    return refusal("error", tr("The attached vCard is larger than 1 MB.").into());
+                }
+                self.contacts.contact_from_card(reach, book, &String::from_utf8_lossy(&bytes)).await
+            }
+            None => {
+                let Some(from) = message.summary.from.as_ref() else {
+                    return refusal("unsupported", tr("The mail names no sender.").into());
+                };
+                self.contacts
+                    .contact_from_sender(reach, book, from.name.as_deref().unwrap_or_default(), &from.address)
+                    .await
+            }
+        };
+        match made {
+            Ok(made) => Response::ContactFromItem(Box::new(made)),
+            Err(err) => crate::contacts::service::error_response(&err),
+        }
     }
 
     /// `inbox.create_task_from_item` (task E3.5): makes a task of the entry `id` in `collection`
@@ -10872,6 +11040,17 @@ impl Core {
                 let template = if reads { self.store.load(id).ok() } else { None };
                 let template = template.ok_or_else(|| Box::new(refusal("not-found", "no such template".into())))?;
                 Ok((crate::apps::Opened::Template { id: template.id }, template.name))
+            }
+            // A contact (issue #727): one of a book the caller reaches, by the id the store holds; a
+            // client without read access to `contacts` finds none.
+            crate::apps::Target::Contact { id } => {
+                let reads = match reach {
+                    Reach::Suite => true,
+                    Reach::Client(rights) => rights.area(Area::Contacts).allows(Access::Read),
+                };
+                let found = if reads { self.contacts.named(reach, id) } else { None };
+                let (id, name) = found.ok_or_else(|| Box::new(refusal("not-found", "no such contact".into())))?;
+                Ok((crate::apps::Opened::Contact { id }, name))
             }
             // A chat window (`docs/chat.md`, stage 3): a conversation of an account the caller may
             // read chat with; for a client another account's is not there. What goes on the command
@@ -35453,5 +35632,124 @@ mod tests {
         }];
         core.seen_lists_only(&mut shown, Reach::Client(&rights)).await;
         assert_eq!(shown[0].task.as_ref().and_then(|task| task.list.clone()), None);
+    }
+
+    /// Issue #727: "Save as contact" makes a contact of a mail's sender, "Add contact" of the vCard
+    /// attached; a person there already is named with `created: false`. A client needs write access
+    /// to contacts and the book, and the mail must be one it reads; "Open contact" opens it.
+    #[tokio::test]
+    async fn a_mail_s_sender_or_card_becomes_a_contact_once() {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let date = Utc::now().to_rfc2822();
+        let plain = |n: u32, from: &str, subject: &str| {
+            format!(
+                "From: {from}\r\nTo: anna@example.org\r\nSubject: {subject}\r\nDate: {date}\r\n\
+                 Message-ID: <c{n}@example>\r\nContent-Type: text/plain\r\n\r\nText {n}\r\n"
+            )
+        };
+        server.add("INBOX", &plain(1, "Kim Neu <kim@example.org>", "Hello"), &[]);
+        server.add("INBOX", &plain(2, "<berg@friends.example>", "Lunch"), &[]);
+        let card = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:lars\r\nFN:Lars Karte\r\nEMAIL:lars@example.org\r\nEND:VCARD\r\n";
+        let attached = format!(
+            "From: Office <office@example.org>\r\nTo: anna@example.org\r\nSubject: Card\r\nDate: {date}\r\n\
+             Message-ID: <c3@example>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n\
+             --b\r\nContent-Type: text/plain\r\n\r\nHis card.\r\n\
+             --b\r\nContent-Type: text/x-vcard\r\nContent-Disposition: attachment; filename=\"lars.vcf\"\r\n\r\n\
+             {card}--b--\r\n"
+        );
+        server.add("INBOX", &attached, &[]);
+        let secrets = MemoryTokens::default();
+        store_accounts(dir.path(), &secrets, &[(&mail_account("anna@example.org", &server.endpoint), MAIL_PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let books = Arc::new(crate::contacts::sync::fake::Server::default());
+        let work = books.add_book("contacts", true, false);
+        books.add_book("privat", true, false);
+        let berg =
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:berg\r\nFN:Jo Berg\r\nEMAIL:Berg@Friends.example\r\nEND:VCARD\r\n";
+        books.put_card(&work, "berg", berg);
+        let account = "nextcloud:anna@cloud.example.org";
+        let contacts =
+            crate::contacts::ContactsService::in_dir(&dir.path().join("contacts"), vec![(account.into(), books)]);
+        contacts.sync_all().await;
+        let core = core(dir.path()).with_mail(mail).with_contacts(contacts);
+        let book = format!("{account}/contacts");
+        let search = Request::SearchMail {
+            caught: None,
+            account: Some(ANNA_MAIL.into()),
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 10,
+            cursor: None,
+            order: None,
+            sort: None,
+            snoozed: None,
+            categories: Vec::new(),
+            pile: None,
+        };
+        let Response::MailMessages { messages, .. } = core.handle(search).await else { panic!("a page") };
+        let id_of = |subject: &str| messages.iter().find(|m| m.subject == subject).map(|m| m.id.clone()).expect("mail");
+        let save = |id: String| Request::CreateContactFromItem { id, book: book.clone() };
+        let made = |answer: Response| match answer {
+            Response::ContactFromItem(made) => *made,
+            other => panic!("not a contact of a mail: {other:?}"),
+        };
+
+        let kim = made(core.handle(save(id_of("Hello"))).await);
+        assert!(kim.created);
+        assert_eq!(
+            (kim.contact.display_name.as_str(), kim.contact.emails[0].value.as_str()),
+            ("Kim Neu", "kim@example.org")
+        );
+        let again = made(core.handle(save(id_of("Hello"))).await);
+        assert_eq!((again.created, again.contact.id), (false, kim.contact.id.clone()), "nobody twice");
+        let known = made(core.handle(save(id_of("Lunch"))).await);
+        assert_eq!((known.created, known.contact.display_name.as_str()), (false, "Jo Berg"), "whatever its case");
+        let lars = made(core.handle(save(id_of("Card"))).await);
+        assert!(lars.created);
+        assert_eq!(lars.contact.display_name, "Lars Karte", "the card, not the sender");
+        assert!(!made(core.handle(save(id_of("Card"))).await).created);
+
+        // A client: write access to contacts, the book, and the mail it reads.
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
+        rights.address_books = Selection::Only(vec![book.clone()]);
+        let (_, key) = client(&core, rights.clone()).await;
+        let code = |answer: Response| match answer {
+            Response::Error { code, .. } => code,
+            other => format!("{other:?}"),
+        };
+        let privat = Request::CreateContactFromItem { id: id_of("Hello"), book: format!("{account}/privat") };
+        assert_eq!(code(ask(&core, Some(&key), privat).await), "not-found", "a book out of reach");
+        let answer = ask(&core, Some(&key), save(id_of("Hello"))).await;
+        assert!(matches!(answer, Response::ContactFromItem(_) | Response::Pending { .. }), "{answer:?}");
+        let mut no_write = rights.clone();
+        no_write
+            .areas
+            .insert(Area::Contacts, torro_ipc::api::AreaRights { level: torro_ipc::api::Level::Read, admin: false });
+        let (_, reader) = client(&core, no_write).await;
+        assert_eq!(code(ask(&core, Some(&reader), save(id_of("Hello"))).await), "forbidden");
+        let mut no_mail = rights.clone();
+        no_mail.mail_accounts = Selection::Only(Vec::new());
+        let (_, blind) = client(&core, no_mail).await;
+        assert_eq!(code(ask(&core, Some(&blind), save(id_of("Hello"))).await), "not-found", "a mail it may not read");
+
+        // "Open contact" (issue #727): the contact by the store's id, in the contacts app.
+        let target = format!("contact:{}", kim.contact.id);
+        let (opened, name) =
+            core.open_target("torrocontacts", &target, Reach::Suite, Maker::App).await.expect("opened");
+        assert_eq!(
+            (opened, name),
+            (crate::apps::Opened::Contact { id: kim.contact.id.clone() }, "Kim Neu".to_string())
+        );
+        assert!(core.open_target("torrocontacts", "contact:nowhere/x", Reach::Suite, Maker::App).await.is_err());
+        assert!(core.open_target("torrotasks", &target, Reach::Suite, Maker::App).await.is_err(), "another app");
     }
 }
