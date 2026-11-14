@@ -7,6 +7,9 @@
 //! the conversation "Voice" with the engine used last, opens the quick window and follows the
 //! answer with `assistant.get_conversation`. It sends nothing else: no request it builds can
 //! decide an approval, so no word spoken ever allows anything ([`CoreAssistant::REQUESTS`]).
+//!
+//! [`CoreSpeaker`] speaks the answers through the core (`assistant.speak`, issue #745), so "Hey
+//! Torro" answers with the provider and voice of the settings, like the chat windows.
 
 use std::time::{Duration, Instant};
 
@@ -60,6 +63,12 @@ const MOST_SPOKEN: usize = 600;
 /// `markdown` as it is read aloud: without marks (`**`, `#`, `` ` ``, list dashes), links as their
 /// text, on one line, at most [`MOST_SPOKEN`] characters, ending at a sentence where it is cut.
 pub fn speakable(markdown: &str) -> String {
+    speakable_up_to(markdown, MOST_SPOKEN)
+}
+
+/// [`speakable`] with at most `most` characters: what the chat windows read aloud (issue #745,
+/// `assistant.speak`) may be longer than what "Hey Torro" says.
+pub fn speakable_up_to(markdown: &str, most: usize) -> String {
     let mut text = String::new();
     let mut chars = markdown.chars().peekable();
     while let Some(c) = chars.next() {
@@ -80,10 +89,10 @@ pub fn speakable(markdown: &str) -> String {
     }
     let words: Vec<&str> = text.split_whitespace().filter(|word| *word != "-").collect();
     let line = words.join(" ");
-    if line.chars().count() <= MOST_SPOKEN {
+    if line.chars().count() <= most {
         return line;
     }
-    let cut: String = line.chars().take(MOST_SPOKEN).collect();
+    let cut: String = line.chars().take(most).collect();
     match cut.rfind(['.', '!', '?']) {
         Some(end) => cut[..=end].to_string(),
         None => format!("{cut}…"),
@@ -227,6 +236,40 @@ impl<A: Assistant> Listener<'_, A> {
 /// The conversation spoken messages go to.
 pub fn voice_title() -> &'static str {
     tr("Voice")
+}
+
+/// Speaks through the core (issue #745): `assistant.speak` reads the answer with the provider and
+/// voice of the settings and returns when it was read. The tone of the wake word stays here
+/// (`chime`), it needs no provider.
+pub struct CoreSpeaker<F> {
+    ask: F,
+    chime: Box<dyn Speaker>,
+}
+
+impl<F> CoreSpeaker<F>
+where
+    F: FnMut(Request) -> Result<Response, Refusal>,
+{
+    pub fn new(ask: F, chime: Box<dyn Speaker>) -> Self {
+        CoreSpeaker { ask, chime }
+    }
+}
+
+impl<F> Speaker for CoreSpeaker<F>
+where
+    F: FnMut(Request) -> Result<Response, Refusal>,
+{
+    fn say(&mut self, text: &str) -> Result<(), VoiceError> {
+        match (self.ask)(Request::Speak { text: text.to_string() }) {
+            Ok(Response::Ok) => Ok(()),
+            Ok(other) => Err(unexpected(&other)),
+            Err(refusal) => Err(VoiceError::Core(refusal)),
+        }
+    }
+
+    fn chime(&mut self) {
+        self.chime.chime();
+    }
 }
 
 /// The way to the core (see the module): `ask` sends a request, `open` shows a conversation in the
@@ -786,6 +829,31 @@ mod tests {
         assert_eq!(first_engine(&[]), None);
     }
 
+    /// Issue #745: "Hey Torro" speaks through the core with `assistant.speak` only; the tone stays
+    /// local, and a refusal is the speaker's error.
+    #[test]
+    fn answers_are_spoken_through_the_core() {
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        let log = Rc::clone(&sent);
+        let chimes = Rc::new(RefCell::new(0));
+        let mut speaker = CoreSpeaker::new(
+            move |request: Request| {
+                log.borrow_mut().push(request);
+                Ok(Response::Ok)
+            },
+            Box::new(Mouth(Rc::default(), Rc::clone(&chimes))),
+        );
+        speaker.say("Good morning.").expect("spoken");
+        speaker.chime();
+        assert_eq!(sent.borrow().as_slice(), [Request::Speak { text: "Good morning.".into() }]);
+        assert_eq!(*chimes.borrow(), 1);
+        let mut refused = CoreSpeaker::new(
+            |_| Err(Refusal::new("unsupported", "Piper is not installed or has no voice.")),
+            Box::new(Mouth(Rc::default(), Rc::default())),
+        );
+        assert!(matches!(refused.say("Hi"), Err(VoiceError::Core(refusal)) if refusal.code == "unsupported"));
+    }
+
     #[test]
     fn answers_are_read_without_markdown_and_not_too_long() {
         assert_eq!(speakable("# Today\n- **Standup** at `09:30`\n- Lunch"), "Today Standup at 09:30 Lunch");
@@ -793,6 +861,8 @@ mod tests {
         let long = "One sentence. ".repeat(100);
         let spoken = speakable(&long);
         assert!(spoken.chars().count() <= MOST_SPOKEN && spoken.ends_with('.'));
+        let read = speakable_up_to(&long, 3000);
+        assert!(read.chars().count() > MOST_SPOKEN && read.chars().count() <= 3000, "the chat reads more");
         assert_eq!(Reply::default().spoken(), None);
         let failed = Reply { failed: Some("offline".into()), ..Reply::default() };
         assert_eq!(failed.spoken().as_deref(), Some(tr("The assistant could not answer.")));

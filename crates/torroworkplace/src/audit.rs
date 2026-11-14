@@ -551,6 +551,8 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::SearchConversations { .. } => Vec::new(),
         // Voice (task C.9): no ids, never what was said.
         Request::VoiceStatus | Request::TestVoice | Request::Dictate | Request::StopDictation => Vec::new(),
+        // Reading aloud (issue #745): never the text read.
+        Request::Speak { .. } | Request::StopSpeaking | Request::SpeechStatus => Vec::new(),
         // Map data (issue #355): no ids.
         Request::MapsStatus | Request::ClearMapsCache => Vec::new(),
         // A chat about a mail (issue #605): the account and the mail hashed as for its suggestions.

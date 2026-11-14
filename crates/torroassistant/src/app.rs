@@ -183,6 +183,9 @@ pub const RENAME: &str = "assistant-rename";
 /// The section AI of the window's own settings (issue #410), where accounts are added and their
 /// models turned on.
 pub const AI_PAGE: &str = settings::AI_SECTION;
+
+/// The most of an answer the window sends to be read aloud (issue #745): what `assistant.speak` takes.
+const SPEAK_MOST: usize = 20_000;
 /// The section Voice of the window's settings, where speech recognition is set up (issue #699).
 pub const VOICE_PAGE: &str = "voice";
 
@@ -429,6 +432,16 @@ pub enum Message {
     Dictated(Result<String, Refusal>),
     /// The core took "stop dictating"; the text comes with [`Message::Dictated`].
     DictationStopped,
+    /// The speaker of the composer (issue #745): reading answers aloud on or off.
+    ToggleReadAloud,
+    /// The core took the switch, or refused it (then it goes back).
+    ReadAloudSet(bool, Result<(), Refusal>),
+    /// [■] at the answer being read (issue #745): reading stops at once.
+    StopReading,
+    /// The core took "stop reading"; [`Message::Read`] follows for the answer.
+    ReadingStopped,
+    /// The answer `seq` of the conversation was read to its end, stopped, or could not be read.
+    Read(Option<String>, u64, Result<(), Refusal>),
     /// "Manage models…" at the end of the picker and under "No model is turned on" (task S.26): the
     /// section AI of the settings ([`AI_PAGE`]), where the models of each AI account are turned on and off.
     ManageModels,
@@ -626,6 +639,20 @@ pub struct App {
     pub(crate) dictation: Dictation,
     /// How voice stands was asked once outside mini and strip.
     voice_asked: bool,
+    /// Answers are read aloud (issue #745, the setting `voice.read_aloud`).
+    pub(crate) read_aloud: bool,
+    /// The answer being read aloud now, by its number; [■] shows at it.
+    pub(crate) reading: Option<u64>,
+    /// The conversation of [`App::reading`]: numbers count per conversation.
+    pub(crate) reading_in: Option<String>,
+    /// The speaker was switched and the core has not taken it yet: settings loaded meanwhile (every
+    /// [`REFRESH`]) may still say the old value, and must not switch it back.
+    read_aloud_switching: bool,
+    /// New answers that came while the window watches and are not complete yet: each is read once
+    /// it is.
+    to_read: HashSet<u64>,
+    /// A new answer that just became complete, to read aloud ([`App::read_ready`]).
+    ready_to_read: Option<(u64, String)>,
 
     pub(crate) menu: Option<Menu>,
     pub(crate) dialog: Option<Dialog>,
@@ -738,6 +765,12 @@ impl App {
             sending: false,
             voice: None,
             voice_asked: false,
+            read_aloud: open == Some(Open::Reading),
+            reading: (open == Some(Open::Reading)).then_some(demo::READ_ANSWER),
+            reading_in: (open == Some(Open::Reading)).then(|| demo::TOOLS.to_string()),
+            read_aloud_switching: false,
+            to_read: HashSet::new(),
+            ready_to_read: None,
             dictation: if open == Some(Open::Dictating) { Dictation::Recording } else { Dictation::Idle },
             menu: match open {
                 Some(Open::Picker | Open::Effort) => Some(Menu::Picker),
@@ -977,6 +1010,11 @@ impl App {
             Message::Raise => return torro_gui::instance::bring_to_front(),
             Message::Resized(size) => {
                 self.size = size;
+                // Mini and strip have no [■] at the answer: reading stops as the window shrinks into
+                // them, so it never runs on out of reach (issue #745).
+                if self.reading.is_some() && self.is_glance() {
+                    return self.stop_reading();
+                }
                 // A window that grows out of mini or strip gets its microphone (issue #699).
                 if !self.waiting && self.voice.is_none() && !self.voice_asked && !self.is_glance() {
                     return self.load_voice();
@@ -1004,6 +1042,10 @@ impl App {
                 self.choose_default();
             }
             Message::Settings(Ok(settings)) => {
+                // The demo state `reading` shows the speaker on, whatever the demo's settings say.
+                if self.launch.open != Some(Open::Reading) && !self.read_aloud_switching {
+                    self.read_aloud = settings.voice.read_aloud;
+                }
                 self.default = settings.ai_slots.chat;
                 self.choose_default();
             }
@@ -1139,6 +1181,29 @@ impl App {
                 self.dictation = Dictation::Idle;
             }
             Message::DictationStopped => {}
+            Message::ToggleReadAloud => return self.toggle_read_aloud(),
+            Message::ReadAloudSet(on, Err(refusal)) => {
+                self.read_aloud_switching = false;
+                if self.read_aloud == on {
+                    self.read_aloud = !on;
+                }
+                self.note_failure(tr("Couldn't change reading aloud."), &refusal);
+            }
+            Message::ReadAloudSet(_, Ok(())) => self.read_aloud_switching = false,
+            Message::StopReading => return self.stop_reading(),
+            Message::ReadingStopped => {}
+            // A reading stopped by a change of conversation answers late: only its own conversation's
+            // answer is meant, and its failure is no longer worth a notice.
+            Message::Read(conversation, _, _) if conversation != self.reading_in && self.reading.is_some() => {}
+            Message::Read(conversation, seq, result) => {
+                if self.reading == Some(seq) && self.reading_in == conversation {
+                    self.reading = None;
+                }
+                if let Err(refusal) = result {
+                    let message = refusal.message.clone();
+                    self.note_failure(&message, &refusal);
+                }
+            }
             // The section AI of this window's own settings (issue #410), not the control centre.
             Message::ManageModels => {
                 self.close_menus();
@@ -1342,6 +1407,9 @@ impl App {
                     // Through the host: its open section menu or a page's own menu closes first
                     // (review of #554), else the host answers `Outcome::Close`.
                     return self.update(Message::SettingsHost(torro_settings_ui::host::Message::Back));
+                } else if self.reading.is_some() {
+                    // Reading aloud stops first (issue #745), the notice goes with the next Escape.
+                    return self.stop_reading();
                 } else {
                     self.notice = None;
                 }
@@ -1643,6 +1711,12 @@ impl App {
         self.following = false;
         match loaded {
             Ok((summary, entries)) => {
+                // Answer numbers count per conversation: what waited to be read was the one before's,
+                // and what reads stops (issue #745).
+                self.to_read.clear();
+                self.ready_to_read = None;
+                let elsewhere = self.reading.is_some() && self.reading_in.as_deref() != Some(id.as_str());
+                let stopped = if elsewhere { self.stop_reading() } else { Task::none() };
                 // An open conversation answers with its own bot (or the assistant).
                 self.bot = summary.bot.clone();
                 self.transcript = Transcript::new(summary, entries);
@@ -1655,7 +1729,7 @@ impl App {
                 }
                 self.choose_default();
                 let scroll = self.scroll_to_hit(&id).unwrap_or_else(|| self.scroll_to_newest());
-                Task::batch([self.fetch_approvals(), self.fetch_cards(), scroll])
+                Task::batch([self.fetch_approvals(), self.fetch_cards(), scroll, stopped])
             }
             Err(refusal) if refusal.code == "not-found" => self.gone(),
             Err(refusal) => {
@@ -1677,6 +1751,7 @@ impl App {
                 if self.transcript.merge(summary, entries) {
                     self.after_change(true);
                 }
+                let read = self.read_ready();
                 // A hit that waited for its entry (issue #704).
                 let hit = self.scroll_to_hit(&id).unwrap_or_else(Task::none);
                 // A new card (after `tools.create_pdf`) is resolved at once, not on the next tick.
@@ -1689,7 +1764,7 @@ impl App {
                     .map(str::to_owned)
                     .collect();
                 let tasks: Vec<Task<Message>> = new.into_iter().map(|id| self.fetch_approval(id)).collect();
-                Task::batch(tasks.into_iter().chain([cards, hit]))
+                Task::batch(tasks.into_iter().chain([cards, hit, read]))
             }
             Err(refusal) if refusal.code == "not-found" => self.gone(),
             // The next tick asks again.
@@ -1730,6 +1805,20 @@ impl App {
         // The streaming answer is gone (stopped, or stored under another number): what it showed
         // goes on under the new number, nothing is written twice.
         let mut moved = self.stream.as_ref().is_some_and(|stream| !seen.contains(&stream.seq));
+        // A new answer that came while the window watches is read aloud once the run ended, the last
+        // one only: a remark before a tool ("I'll look at your calendar") would be cut off by the
+        // answer after it (issue #745). One that was there when the conversation opened is not.
+        for (seq, _, _) in &answers {
+            if animate && !self.answers.contains_key(seq) && self.stream.as_ref().is_none_or(|s| s.seq != *seq) {
+                self.to_read.insert(*seq);
+            }
+        }
+        self.to_read.retain(|seq| seen.contains(seq));
+        if !running && !self.to_read.is_empty() {
+            let last = answers.iter().rev().find(|(seq, _, complete)| *complete && self.to_read.contains(seq));
+            self.ready_to_read = last.map(|(seq, text, _)| (*seq, text.clone()));
+            self.to_read.clear();
+        }
         for (seq, text, complete) in answers {
             if let Some(stream) = self.stream.as_mut().filter(|stream| stream.seq == seq) {
                 stream.smoother.set(&text, complete);
@@ -1887,11 +1976,13 @@ impl App {
         }
         self.bot = self.conversations.iter().find(|c| c.id == id).and_then(|c| c.bot.clone());
         self.reset_chat(Some(id));
+        // What the old conversation reads stops at once, not only once the new one loaded.
+        let stopped = self.leave_reading();
         if self.chosen != Chosen::Person {
             self.chosen = Chosen::Default;
         }
         self.choose_default();
-        self.open_current()
+        Task::batch([self.open_current(), stopped])
     }
 
     /// The sidebar's search with `text` (issue #704): from [`SEARCH_FROM`] characters on it asks the core
@@ -1961,12 +2052,16 @@ impl App {
         }
         self.reset_chat(None);
         self.choose_default();
-        operation::focus(EDITOR)
+        Task::batch([operation::focus(EDITOR), self.leave_reading()])
     }
 
     /// Leaves the open conversation for `current`: nothing of the old one stays.
     fn reset_chat(&mut self, current: Option<String>) {
         self.current = current;
+        // Answer numbers count per conversation (issue #745); what reads stops in the callers
+        // ([`App::leave_reading`]).
+        self.to_read.clear();
+        self.ready_to_read = None;
         self.transcript = Transcript::default();
         self.chat_error = None;
         self.following = false;
@@ -2021,9 +2116,11 @@ impl App {
             Ok((summary, entries)) => {
                 self.editor = Content::new();
                 self.mini.clear();
+                let mut stopped = Task::none();
                 if self.current.as_ref() != Some(&summary.id) {
                     let (without, mode) = (std::mem::take(&mut self.without), self.mode);
                     self.reset_chat(Some(summary.id.clone()));
+                    stopped = self.leave_reading();
                     (self.without, self.mode) = (without, mode);
                     self.take_without = false;
                     self.transcript = Transcript::new(summary, entries);
@@ -2031,8 +2128,9 @@ impl App {
                     self.transcript.merge(summary, entries);
                 }
                 self.after_change(true);
+                let read = self.read_ready();
                 // The person sent something: the history goes to it, wherever it was scrolled.
-                Task::batch([self.follow(), self.load_list(), self.scroll_to_newest()])
+                Task::batch([self.follow(), self.load_list(), self.scroll_to_newest(), read, stopped])
             }
             Err(refusal) => {
                 let what = match refusal.code.as_str() {
@@ -2097,6 +2195,57 @@ impl App {
                 })
             }
         }
+    }
+
+    /// The speaker of the composer (issue #745): switches reading aloud on or off for every chat
+    /// window; off also stops what is read now.
+    fn toggle_read_aloud(&mut self) -> Task<Message> {
+        self.read_aloud = !self.read_aloud;
+        self.read_aloud_switching = true;
+        let on = self.read_aloud;
+        let set = Request::SetSetting { key: torro_ipc::SettingKey::ReadAloud, value: serde_json::Value::Bool(on) };
+        let task = self.ask(set, move |result| Message::ReadAloudSet(on, result.map(drop)));
+        // Off stops only what this window reads: not "Hey Torro" or another window's preview.
+        match on || self.reading.is_none() {
+            true => task,
+            false => Task::batch([task, self.stop_reading()]),
+        }
+    }
+
+    /// Stops reading when it belongs to another conversation than the open one (issue #745).
+    fn leave_reading(&mut self) -> Task<Message> {
+        match self.reading.is_some() && self.reading_in != self.current {
+            true => self.stop_reading(),
+            false => Task::none(),
+        }
+    }
+
+    /// Stops reading aloud at once (issue #745).
+    fn stop_reading(&mut self) -> Task<Message> {
+        self.reading = None;
+        self.ask(Request::StopSpeaking, |_| Message::ReadingStopped)
+    }
+
+    /// Reads the answer that just became complete aloud, when reading aloud is on (issue #745). A
+    /// new one replaces the one being read: the core stops it.
+    fn read_ready(&mut self) -> Task<Message> {
+        let Some((seq, text)) = self.ready_to_read.take() else { return Task::none() };
+        // "Hey Torro" speaks the answers of its conversation itself, after "Speak answers": read
+        // here as well, the two would interrupt each other.
+        let spoken = self
+            .transcript
+            .summary
+            .as_ref()
+            .is_some_and(|summary| summary.title == crate::voice::listen::voice_title());
+        if !self.read_aloud || self.is_glance() || spoken {
+            return Task::none();
+        }
+        self.reading = Some(seq);
+        self.reading_in = self.current.clone();
+        // At most what the core takes; it reads the first 3000 characters anyway.
+        let text: String = text.chars().take(SPEAK_MOST).collect();
+        let conversation = self.current.clone();
+        self.ask(Request::Speak { text }, move |result| Message::Read(conversation.clone(), seq, result.map(drop)))
     }
 
     /// What was dictated goes into the field where the caret stands, nothing is sent; a space in
@@ -2609,7 +2758,7 @@ fn settings_state(open: Option<Open>) -> Option<(&'static str, Vec<settings::Mes
 /// The conversation the main window starts on in a demo state; a new chat otherwise.
 fn start_conversation(open: Option<Open>) -> Option<String> {
     match open {
-        Some(Open::Tools | Open::Menu | Open::Rename | Open::Delete) => Some(demo::TOOLS.into()),
+        Some(Open::Tools | Open::Menu | Open::Rename | Open::Delete | Open::Reading) => Some(demo::TOOLS.into()),
         Some(Open::Approval) => Some(demo::APPROVAL.into()),
         Some(Open::Streaming) => Some(demo::STREAMING.into()),
         Some(Open::Forbidden) => Some(demo::FORBIDDEN.into()),

@@ -1310,7 +1310,8 @@ pub struct Voice {
     /// for the system's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub microphone: Option<String>,
-    /// Speak the answers with Piper as well as showing them. On unless turned off.
+    /// Speak the answers after "Hey Torro" as well as showing them, with the provider and voice of
+    /// reading aloud (issue #745). On unless turned off.
     #[serde(default = "on")]
     pub speak_answers: bool,
     /// The whisper.cpp model file (`ggml-base.bin`), an absolute path; `None` for the first
@@ -1321,10 +1322,83 @@ pub struct Voice {
     /// path; `None` for the first voice found in the voice folder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<String>,
+    /// Read the assistant's answers aloud in its chat windows (issue #745, the speaker in the input
+    /// field). Off unless switched on: "Speak answers" above was on before, and the chat should not
+    /// start talking after an update. "Hey Torro" follows [`Voice::speak_answers`] instead.
+    #[serde(default)]
+    pub read_aloud: bool,
+    /// Who reads aloud (issue #745); `None` until a person chooses: then Qwen3-TTS where this computer
+    /// is fast enough and it is set up, else Piper ([`SpeechProvider`]). OpenAI only when chosen,
+    /// since the text leaves the computer.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_provider")]
+    pub speech_provider: Option<SpeechProvider>,
+    /// The voice of Qwen3-TTS, one of [`QWEN_VOICES`]; `None` for [`QWEN_RECOMMENDED`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qwen_voice: Option<String>,
+    /// The voice of OpenAI, one of [`OPENAI_VOICES`]; `None` for the first of [`OPENAI_RECOMMENDED`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai_voice: Option<String>,
 }
+
+/// Who reads the assistant's answers aloud (issue #745, `docs/assistent.md` "Vorlesen"). More may
+/// come later; a file with one this version does not know reads as `None` (the core's choice).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+pub enum SpeechProvider {
+    /// `qwen`: Qwen3-TTS on this computer, with a voice cloned from a template; needs an NVIDIA
+    /// graphics card and the Python package `faster-qwen3-tts`.
+    #[serde(rename = "qwen")]
+    Qwen,
+    /// `openai`: OpenAI's `gpt-4o-mini-tts` with the OpenAI account of Settings › AI. The text of each
+    /// answer goes to OpenAI, so only a person chooses it (`torro_ipc::Request::kept_for_people`).
+    #[serde(rename = "openai")]
+    OpenAi,
+    /// `piper`: Piper on this computer, also without a graphics card or network.
+    #[serde(rename = "piper")]
+    Piper,
+}
+
+impl SpeechProvider {
+    /// Every provider, in the order the settings offer them.
+    pub const ALL: [SpeechProvider; 3] = [SpeechProvider::Qwen, SpeechProvider::OpenAi, SpeechProvider::Piper];
+
+    /// Its name in settings and requests: `qwen`, `openai`, `piper`.
+    pub fn id(self) -> &'static str {
+        match self {
+            SpeechProvider::Qwen => "qwen",
+            SpeechProvider::OpenAi => "openai",
+            SpeechProvider::Piper => "piper",
+        }
+    }
+
+    /// Whether the text it speaks leaves this computer.
+    pub fn online(self) -> bool {
+        self == SpeechProvider::OpenAi
+    }
+}
+
+/// The voices of Qwen3-TTS (issue #745): templates that ship with the assistant, cloned for each
+/// answer, so every answer sounds alike. "Warm woman" first: it won the comparison of 14 November 2026.
+pub const QWEN_VOICES: [&str; 2] = ["warm_woman", "calm_man"];
+
+/// The Qwen voice used when none is chosen, marked "(recommended)".
+pub const QWEN_RECOMMENDED: &str = "warm_woman";
+
+/// The voices of OpenAI's speech endpoint (`POST /v1/audio/speech`, `gpt-4o-mini-tts`).
+pub const OPENAI_VOICES: [&str; 13] =
+    ["alloy", "ash", "ballad", "cedar", "coral", "echo", "fable", "marin", "nova", "onyx", "sage", "shimmer", "verse"];
+
+/// The OpenAI voices marked "(recommended)"; the first is used when none is chosen.
+pub const OPENAI_RECOMMENDED: [&str; 2] = ["marin", "cedar"];
 
 fn wake_word() -> String {
     WAKE_WORD.to_string()
+}
+
+/// A provider this version does not know (written by a newer one) reads as `None`, the core's choice,
+/// instead of making the voice settings unreadable.
+fn lenient_provider<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<SpeechProvider>, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
 }
 
 impl Default for Voice {
@@ -1336,6 +1410,10 @@ impl Default for Voice {
             speak_answers: on(),
             stt_model: None,
             voice: None,
+            read_aloud: false,
+            speech_provider: None,
+            qwen_voice: None,
+            openai_voice: None,
         }
     }
 }
@@ -1398,6 +1476,48 @@ impl Voice {
             && Path::new(path).is_absolute()
             && Path::new(path).extension().is_some_and(|found| found.eq_ignore_ascii_case(extension));
         fits.then(|| Some(path.to_string())).ok_or_else(refused)
+    }
+}
+
+impl Voice {
+    /// The Qwen voice to speak with: the chosen one, or [`QWEN_RECOMMENDED`].
+    pub fn qwen_voice_or_default(&self) -> &str {
+        self.qwen_voice.as_deref().filter(|id| QWEN_VOICES.contains(id)).unwrap_or(QWEN_RECOMMENDED)
+    }
+
+    /// The OpenAI voice to speak with: the chosen one, or the first of [`OPENAI_RECOMMENDED`].
+    pub fn openai_voice_or_default(&self) -> &str {
+        self.openai_voice.as_deref().filter(|id| OPENAI_VOICES.contains(id)).unwrap_or(OPENAI_RECOMMENDED[0])
+    }
+
+    /// The provider in `value`: `"qwen"`, `"openai"` or `"piper"`, or `null` or `""` for the core's
+    /// choice. For `settings.set_setting`.
+    pub fn speech_provider_from(value: &serde_json::Value) -> Result<Option<SpeechProvider>, String> {
+        match value {
+            serde_json::Value::Null => Ok(None),
+            serde_json::Value::String(id) if id.trim().is_empty() => Ok(None),
+            serde_json::Value::String(id) => {
+                SpeechProvider::ALL.into_iter().find(|provider| provider.id() == id.trim()).map(Some).ok_or_else(|| {
+                    format!("{value} is not a speech provider: send \"qwen\", \"openai\", \"piper\" or null")
+                })
+            }
+            _ => Err(format!("{value} is not a speech provider: send \"qwen\", \"openai\", \"piper\" or null")),
+        }
+    }
+
+    /// The voice in `value`, one of `voices`, or `null` or `""` for the recommended one. For
+    /// `settings.set_setting` with `qwen_voice` and `openai_voice`.
+    pub fn speech_voice_from(value: &serde_json::Value, voices: &[&str]) -> Result<Option<String>, String> {
+        let refused = || format!("{value} is not a voice: send one of {} or null", voices.join(", "));
+        match value {
+            serde_json::Value::Null => Ok(None),
+            serde_json::Value::String(id) if id.trim().is_empty() => Ok(None),
+            serde_json::Value::String(id) => {
+                let id = id.trim().to_lowercase();
+                voices.contains(&id.as_str()).then_some(Some(id)).ok_or_else(refused)
+            }
+            _ => Err(refused()),
+        }
     }
 }
 
@@ -2733,6 +2853,35 @@ mod tests {
         for refused in [json!("ggml-base.bin"), json!("/models/ggml-base.onnx"), json!(1)] {
             assert!(Voice::file_from(&refused, "bin").is_err(), "{refused}");
         }
+    }
+
+    /// Issue #745: reading aloud is off, the provider is the core's choice and the voices are the
+    /// recommended ones until a person chooses; a provider of a newer version reads as that choice.
+    #[test]
+    fn reading_aloud_starts_off_with_the_recommended_voices() {
+        use serde_json::json;
+        let old: Voice = serde_json::from_str("{}").expect("json");
+        assert!(!old.read_aloud && old.speech_provider.is_none());
+        assert_eq!((old.qwen_voice_or_default(), old.openai_voice_or_default()), ("warm_woman", "marin"));
+        let newer: Voice = serde_json::from_str(r#"{"speechProvider": "grok", "readAloud": true}"#).expect("json");
+        assert_eq!((newer.speech_provider, newer.read_aloud), (None, true), "the rest still reads");
+        let chosen: Voice =
+            serde_json::from_str(r#"{"speechProvider": "openai", "openaiVoice": "cedar"}"#).expect("json");
+        assert_eq!((chosen.speech_provider, chosen.openai_voice_or_default()), (Some(SpeechProvider::OpenAi), "cedar"));
+        assert_eq!(serde_json::to_value(SpeechProvider::OpenAi).expect("json"), json!("openai"));
+
+        assert_eq!(Voice::speech_provider_from(&json!("qwen")), Ok(Some(SpeechProvider::Qwen)));
+        assert_eq!(Voice::speech_provider_from(&json!(null)), Ok(None));
+        assert_eq!(Voice::speech_provider_from(&json!("")), Ok(None));
+        for refused in [json!("grok"), json!(1), json!({"provider": "qwen"})] {
+            assert!(Voice::speech_provider_from(&refused).is_err(), "{refused}");
+        }
+        assert_eq!(Voice::speech_voice_from(&json!("Marin"), &OPENAI_VOICES), Ok(Some("marin".into())));
+        assert_eq!(Voice::speech_voice_from(&json!(null), &QWEN_VOICES), Ok(None));
+        assert!(Voice::speech_voice_from(&json!("marin"), &QWEN_VOICES).is_err(), "not a Qwen voice");
+        assert!(Voice::speech_voice_from(&json!(true), &QWEN_VOICES).is_err());
+        let unknown = Voice { qwen_voice: Some("gone".into()), ..Voice::default() };
+        assert_eq!(unknown.qwen_voice_or_default(), QWEN_RECOMMENDED, "a voice no longer shipped falls back");
     }
 
     /// Task M9.5: mail shows as HTML in the suite's colours unless set otherwise; the values are

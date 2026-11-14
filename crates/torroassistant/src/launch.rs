@@ -64,6 +64,9 @@ pub enum Open {
     Mode,
     /// The composer while the microphone records (issue #699).
     Dictating,
+    /// "Plan for tomorrow" while its answer is read aloud (issue #745): the speaker on, [■] at the
+    /// answer.
+    Reading,
     /// The composer with two areas switched off: a chip for each, "2 areas off" when narrow
     /// (issue #699).
     AreasOff,
@@ -126,7 +129,7 @@ pub enum Open {
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 37] = [
+    pub const ALL: [(&'static str, Open); 38] = [
         ("new", Open::New),
         ("tools", Open::Tools),
         ("approval", Open::Approval),
@@ -136,6 +139,7 @@ impl Open {
         ("effort", Open::Effort),
         ("mode", Open::Mode),
         ("dictating", Open::Dictating),
+        ("reading", Open::Reading),
         ("areas-off", Open::AreasOff),
         ("menu", Open::Menu),
         ("rename", Open::Rename),

@@ -1317,6 +1317,10 @@ fn describe(request: &Request) -> String {
         Request::TestVoice => "voice test".into(),
         Request::Dictate => "dictation".into(),
         Request::StopDictation => "stop dictation".into(),
+        // Never the text read (issue #745).
+        Request::Speak { .. } => "read aloud".into(),
+        Request::StopSpeaking => "stop reading aloud".into(),
+        Request::SpeechStatus => "speech status".into(),
         Request::MapsStatus => "map data".into(),
         Request::ClearMapsCache => "clear map data".into(),
         // Ids only, never a title, the content or a path (issue #225).
