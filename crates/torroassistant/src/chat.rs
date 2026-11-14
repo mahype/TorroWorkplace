@@ -599,6 +599,11 @@ mod tests {
             ("tools.copy_file", "Copied file"),
             ("tools.move_file", "Moved file"),
             ("tools.trash_file", "Moved to trash"),
+            // Issue #705: the tool `file_contents`.
+            ("tools.read_file", "Read file"),
+            ("tools.search_in_files", "Searched in files"),
+            ("tools.write_file", "Wrote file"),
+            ("tools.edit_file", "Changed file"),
         ] {
             assert_eq!(tool_title(name), tr(title), "{name}");
         }

@@ -6444,6 +6444,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Copied file", "Datei kopiert"),
     ("Moved file", "Datei verschoben"),
     ("Moved to trash", "In den Papierkorb gelegt"),
+    // The tool file contents (#705): its tool lines in the chat
+    ("Read file", "Datei gelesen"),
+    ("Searched in files", "In Dateien gesucht"),
+    ("Wrote file", "Datei geschrieben"),
+    ("Changed file", "Datei geändert"),
     // The tool files (WD.4, #304): the allowed folders in the assistant's Tools settings
     ("Allowed folders", "Freigegebene Ordner"),
     ("Add folder…", "Ordner hinzufügen…"),
@@ -6529,6 +6534,47 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "The files changed after the approval was asked for; nothing was done.",
         "Die Dateien haben sich nach der Anfrage zur Freigabe geändert; es wurde nichts getan.",
     ),
+    // The tool file contents (#705): what it does, its errors, its approvals
+    (
+        "Reads, searches, writes and changes text files in the allowed folders; changing one waits for your yes.",
+        "Liest, durchsucht, schreibt und ändert Textdateien in den freigegebenen Ordnern; vor einer Änderung fragt es dich.",
+    ),
+    (
+        "Only text files can be read or changed: UTF-8, without binary data.",
+        "Nur Textdateien lassen sich lesen oder ändern: UTF-8, ohne Binärdaten.",
+    ),
+    (
+        "The file is too big to be read or changed here (more than 10 MiB).",
+        "Die Datei ist zu groß, um sie hier zu lesen oder zu ändern (mehr als 10 MiB).",
+    ),
+    (
+        "Only files can be read or changed, not folders or links.",
+        "Nur Dateien lassen sich lesen oder ändern, keine Ordner oder Links.",
+    ),
+    (
+        "Give a text of 1 to 200 characters to look for, in one line.",
+        "Gib einen Text mit 1 bis 200 Zeichen in einer Zeile an, nach dem gesucht wird.",
+    ),
+    ("The text is too long for one file (more than 1 MiB).", "Der Text ist zu lang für eine Datei (mehr als 1 MiB)."),
+    ("Give the text to replace; it cannot be empty.", "Gib den Text an, der ersetzt wird; er darf nicht leer sein."),
+    ("The text to replace is not in the file.", "Der Text, der ersetzt werden soll, steht nicht in der Datei."),
+    (
+        "The text to replace is in the file {n} times; give more of it, or replace every one.",
+        "Der Text, der ersetzt werden soll, steht {n}-mal in der Datei; gib mehr davon an oder ersetze alle.",
+    ),
+    (
+        "The file changed since it was read; read it again, nothing was changed.",
+        "Die Datei hat sich seit dem Lesen geändert; lies sie erneut, es wurde nichts geändert.",
+    ),
+    (
+        "The file changed after the approval was asked for; nothing was changed.",
+        "Die Datei hat sich nach der Anfrage zur Freigabe geändert; es wurde nichts geändert.",
+    ),
+    ("… {n} more lines", "… {n} weitere Zeilen"),
+    ("Create the file \"{new}\" in \"{folder}\"", "Datei „{new}“ in „{folder}“ anlegen"),
+    ("Create a file in an unknown place", "Datei an unbekannter Stelle anlegen"),
+    ("Change \"{name}\" in \"{folder}\"", "„{name}“ in „{folder}“ ändern"),
+    ("Change an unknown file", "Unbekannte Datei ändern"),
     // The rights editor › the selection of tools (WZ.7, #225)
     ("Off under MCP servers", "Unter MCP-Server ausgeschaltet"),
     // The file card in the chat (WZ.8, #225)

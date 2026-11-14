@@ -765,6 +765,9 @@ impl Demo {
                     ToolId::Web => tr("Searches the web and reads web pages for the assistant, with the providers \
                                        you switch on.")
                     .to_string(),
+                    ToolId::FileContents => tr("Reads, searches, writes and changes text files in the allowed \
+                                                folders; changing one waits for your yes.")
+                    .to_string(),
                 },
                 allowed: true,
             })

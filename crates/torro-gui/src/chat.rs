@@ -262,6 +262,11 @@ pub fn tool_title(name: &str) -> String {
         "tools.copy_file" => tr("Copied file"),
         "tools.move_file" => tr("Moved file"),
         "tools.trash_file" => tr("Moved to trash"),
+        // Issue #705: the tool `file_contents`, never the path or the text searched for.
+        "tools.read_file" => tr("Read file"),
+        "tools.search_in_files" => tr("Searched in files"),
+        "tools.write_file" => tr("Wrote file"),
+        "tools.edit_file" => tr("Changed file"),
         "find_tools" => tr("Looked for tools"),
         other => return other.to_owned(),
     };
