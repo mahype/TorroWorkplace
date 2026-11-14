@@ -17602,7 +17602,7 @@ mod tests {
                             let was_drawer = app.drawer;
                             // Settings deliberately force the rail, regardless of the stored wide choice.
                             let moved = !settings && size == WIDE && mode == SidebarMode::Expanded;
-                            let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), size, app.view());
+                            let (_one, mut ui) = crate::simulator(size, app.view());
                             // The icon's centring container exposes the button's bounds, no test-only ID.
                             let switch = ui
                                 .find(|candidate: Candidate<'_>| match candidate {
@@ -17662,7 +17662,7 @@ mod tests {
                     let content_x =
                         if mode == SidebarMode::Expanded { app.sidebar_room() } else { shell::rail() } + size::HAIRLINE;
                     let width = app.split.width(app.split_limits());
-                    let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), app.size, app.view());
+                    let (_one, mut ui) = crate::simulator(app.size, app.view());
                     let body = ui
                         .find(|candidate: Candidate<'_>| match candidate {
                             Candidate::Container { bounds, .. }
@@ -22192,11 +22192,8 @@ mod tests {
         for mode in [SidebarMode::Expanded, SidebarMode::Rail] {
             assert_eq!(bare.mail_sidebar_foot(mode, &Anchor::new()).len(), 1, "disabled compose, no account field");
             assert_eq!(app.mail_sidebar_foot(mode, &Anchor::new()).len(), 2, "compose, then accounts");
-            let mut ui = iced_test::Simulator::with_size(
-                iced::Settings::default(),
-                iced::Size::new(shell::rail(), size::control()),
-                bare.mail_sidebar_compose(mode),
-            );
+            let (_one, mut ui) =
+                crate::simulator(iced::Size::new(shell::rail(), size::control()), bare.mail_sidebar_compose(mode));
             ui.point_at(iced::Point::new(shell::rail() / 2.0, size::control() / 2.0));
             ui.simulate(iced_test::simulator::click());
             assert!(ui.into_messages().next().is_none(), "compose remains disabled without an account");
@@ -22333,11 +22330,7 @@ mod tests {
         app.folders.retain(|folder| folder.account == torro_inbox::demo::MAIL_ACCOUNTS[1]);
         let anchor = Anchor::new();
         let field = app.mail_sidebar_foot(SidebarMode::Expanded, &anchor).pop().expect("account field");
-        let mut ui = iced_test::Simulator::with_size(
-            iced::Settings::default(),
-            iced::Size::new(size::sidebar(), size::control_lg() * 2.0),
-            field,
-        );
+        let (_one, mut ui) = crate::simulator(iced::Size::new(size::sidebar(), size::control_lg() * 2.0), field);
         let title = ui.find(tr("All accounts")).expect("title").bounds();
         let detail = ui.find(app.account_field_text().1).expect("detail").bounds();
         let text_inset = style::ITEM_PADDING.left + torro_gui::icon::SIZE + space::s();
@@ -22356,7 +22349,7 @@ mod tests {
         for size in [WIDE, NARROW] {
             app.size = size;
             app.drawer = size == NARROW;
-            let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), size, app.view());
+            let (_one, mut ui) = crate::simulator(size, app.view());
             let navigation = ui.find(tr("All")).expect("navigation").bounds();
             let compose = ui.find(tr("New email")).expect("compose").bounds();
             let accounts = ui.find(tr("All accounts")).expect("accounts").bounds();
@@ -22374,7 +22367,7 @@ mod tests {
         let mut app = mail_window(Density::Compact, &[]);
         app.size = WIDE;
         app.drawer = false;
-        let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), WIDE, app.view());
+        let (_one, mut ui) = crate::simulator(WIDE, app.view());
         let all = ui.find(tr("All")).expect("navigation").bounds();
         let compose = ui.find(tr("New email")).expect("compose").bounds();
         assert!((all.x - compose.x).abs() < 0.5, "labels start on one axis: {} vs {}", all.x, compose.x);
@@ -26061,7 +26054,7 @@ mod tests {
         let item = MenuItem::plain(label.clone(), Message::InviteCalendar(calendar));
         let width = 280.0;
         let option = container(invitation_calendar_option(item, width, width - space::xxl())).width(width);
-        let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), Size::new(320.0, 800.0), option);
+        let (_one, mut ui) = crate::simulator(Size::new(320.0, 800.0), option);
         let position = Point::new(space::m(), space::m());
         ui.point_at(position);
         ui.simulate([iced::Event::Mouse(iced::mouse::Event::CursorMoved { position })]);
@@ -26072,11 +26065,9 @@ mod tests {
         // delayed hover appears, then inspect the same tooltip content's layout separately.
         std::thread::sleep(Duration::from_millis(510));
         assert!(!ui.snapshot(&Theme::Dark).expect("tooltip open").matches_hash(&before).expect("compare hash"));
-        let mut ui = iced_test::Simulator::with_size(
-            iced::Settings::default(),
-            Size::new(320.0, 800.0),
-            invitation_calendar_tip(label.clone(), width),
-        );
+        // One simulator at a time (`crate::simulator`): this one goes before the next is built.
+        drop((ui, _one));
+        let (_one, mut ui) = crate::simulator(Size::new(320.0, 800.0), invitation_calendar_tip(label.clone(), width));
         let bounds = ui
             .find(|candidate: Candidate<'_>| match candidate {
                 Candidate::Text { content, bounds, .. } if content == label => Some(bounds),
@@ -28040,7 +28031,7 @@ mod tests {
 
     /// Whether the wide window shows `text` somewhere.
     fn shows(app: &App<DemoSource>, text: &str) -> bool {
-        let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), WIDE, app.view());
+        let (_one, mut ui) = crate::simulator(WIDE, app.view());
         ui.find(text.to_owned()).is_ok()
     }
 
@@ -28148,7 +28139,7 @@ mod tests {
         let _ = shot.update(Message::Resized(WIDE));
         self::load(&mut shot);
         deliver_letter(&mut shot, "m:w14");
-        let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), WIDE, shot.view());
+        let (_one, mut ui) = crate::simulator(WIDE, shot.view());
         ui.click(tr("Show once").to_owned()).expect("Show once can be clicked");
         let messages: Vec<_> = ui.into_messages().collect();
         assert!(matches!(messages.as_slice(), [Message::ShowImagesOnce(id)] if id == "m:w14"), "{messages:?}");

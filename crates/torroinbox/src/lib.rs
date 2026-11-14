@@ -450,3 +450,19 @@ mod tests {
         }
     }
 }
+
+/// A test's `iced_test::Simulator` of `element` at `size`, with the lock that lets only one exist at a time
+/// (issue #697): each builds a wgpu instance, and the Vulkan loader crashes the test process (SIGSEGV in
+/// `vkEnumerateInstanceExtensionProperties`) when several threads do that at once, as torro-gui found before
+/// (`shell::tests::one_simulator`). Bind both, `let (_one, mut ui) = …`, so the lock is let go after the
+/// simulator; a test holds one simulator at a time.
+#[cfg(test)]
+pub(crate) fn simulator<'a, Message>(
+    size: impl Into<iced::Size>,
+    element: impl Into<Element<'a, Message>>,
+) -> (std::sync::MutexGuard<'static, ()>, iced_test::Simulator<'a, Message>) {
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // A test that failed while holding it leaves it poisoned; the next one may still run.
+    let one = ONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    (one, iced_test::Simulator::with_size(iced::Settings::default(), size, element))
+}
