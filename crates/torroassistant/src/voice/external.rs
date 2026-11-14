@@ -239,12 +239,15 @@ impl Drop for OpenWakeWord {
 
 /// The script Parakeet runs in: loads the model once, then reads sentences from its input, each
 /// as 4 bytes (the number of samples, unsigned little endian) and that many 16-bit samples, and
-/// writes each sentence's text as one line. The end of its input ends it.
+/// writes each sentence's text as one line in UTF-8, whatever the system's encoding. A sentence it
+/// cannot recognize is an empty line, so one bad sentence does not end the process (and with it the
+/// wake word). The end of its input ends it.
 const PARAKEET: &str = r#"
 import struct
 import sys
 import numpy as np
 import onnx_asr
+sys.stdout.reconfigure(encoding="utf-8")
 quantization = sys.argv[2] if len(sys.argv) > 2 else None
 model = onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v3", sys.argv[1], quantization=quantization)
 source = sys.stdin.buffer
@@ -257,7 +260,10 @@ while True:
     if len(data) < count * 2:
         break
     samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768
-    text = model.recognize(samples, sample_rate=16000)
+    try:
+        text = model.recognize(samples, sample_rate=16000)
+    except Exception:
+        text = ""
     print(" ".join(str(text).split()), flush=True)
 "#;
 
@@ -320,10 +326,12 @@ impl Transcriber for ParakeetPython {
         let mut bytes = Vec::with_capacity(4 + samples.len() * 2);
         bytes.extend(count.to_le_bytes());
         bytes.extend(samples.iter().flat_map(|sample| sample.to_le_bytes()));
-        let mut line = String::new();
-        let answered = input.write_all(&bytes).and_then(|()| input.flush()).and_then(|()| output.read_line(&mut line));
+        // Read as bytes: a line that is not UTF-8 after all loses a letter, not the process.
+        let mut line = Vec::new();
+        let answered =
+            input.write_all(&bytes).and_then(|()| input.flush()).and_then(|()| output.read_until(b'\n', &mut line));
         match answered {
-            Ok(read) if read > 0 => Ok(line.trim().to_string()),
+            Ok(read) if read > 0 => Ok(String::from_utf8_lossy(&line).trim().to_string()),
             _ => {
                 self.stop();
                 Err(VoiceError::program(PARAKEET_NAME, "stopped"))
@@ -353,7 +361,7 @@ impl Transcriber for SharedTranscriber {
     fn transcribe(&mut self, samples: &[i16]) -> Result<String, VoiceError> {
         // The listener runs one part at a time, so the transcriber is never in use twice.
         let mut transcriber =
-            self.0.try_borrow_mut().map_err(|_| VoiceError::program(PARAKEET_NAME, "already transcribing"))?;
+            self.0.try_borrow_mut().map_err(|_| VoiceError::program("speech to text", "already transcribing"))?;
         transcriber.transcribe(samples)
     }
 }

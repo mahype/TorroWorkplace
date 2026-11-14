@@ -349,8 +349,8 @@ fn parakeet_python(finder: &Finder) -> Option<PathBuf> {
 }
 
 /// The Python a Python program runs with, from its first lines: `#!/path/python`,
-/// `#!/usr/bin/env python3`, or the `/bin/sh` trampoline `pip` writes for long paths
-/// (`'''exec' '/path/python' "$0" "$@"`). `None` for anything else.
+/// `#!/usr/bin/env python3`, or the `/bin/sh` trampoline `pip` writes for long paths, with the path
+/// bare, in single or in double quotes (`'''exec' /path/python "$0" "$@"`). `None` for anything else.
 pub fn script_python(script: &Path, finder: &Finder) -> Option<PathBuf> {
     let mut head = Vec::new();
     std::fs::File::open(script).ok()?.take(1024).read_to_end(&mut head).ok()?;
@@ -363,15 +363,18 @@ pub fn script_python(script: &Path, finder: &Finder) -> Option<PathBuf> {
         return words.next().and_then(|name| finder.program(&[name]));
     }
     if stem == "sh" {
-        let exec = lines.find_map(|line| line.strip_prefix("'''exec' "))?;
-        let quoted = exec.trim_start().strip_prefix('\'')?;
-        return quoted.split('\'').next().map(PathBuf::from).filter(|path| path.is_file());
+        let exec = lines.find_map(|line| line.strip_prefix("'''exec' "))?.trim_start();
+        let path = match exec.chars().next()? {
+            quote @ ('\'' | '"') => exec[1..].split(quote).next()?,
+            _ => exec.split_whitespace().next()?,
+        };
+        return Some(PathBuf::from(path)).filter(|path| path.is_file());
     }
     Some(interpreter.to_path_buf()).filter(|path| path.is_file())
 }
 
 /// Whether `folder` holds a Parakeet model: its vocabulary and either the int8 files (`Some(true)`)
-/// or the full ones (`Some(false)`).
+/// or the full ones (`Some(false)`), whose encoder keeps its weights in `encoder-model.onnx.data`.
 fn parakeet_model(folder: &Path) -> Option<bool> {
     let has = |name: &str| folder.join(name).is_file();
     if !has("vocab.txt") {
@@ -379,7 +382,7 @@ fn parakeet_model(folder: &Path) -> Option<bool> {
     }
     if has("encoder-model.int8.onnx") && has("decoder_joint-model.int8.onnx") {
         Some(true)
-    } else if has("encoder-model.onnx") && has("decoder_joint-model.onnx") {
+    } else if has("encoder-model.onnx") && has("encoder-model.onnx.data") && has("decoder_joint-model.onnx") {
         Some(false)
     } else {
         None
@@ -573,6 +576,8 @@ pub mod tests {
         fs::remove_file(model.join("decoder_joint-model.int8.onnx")).expect("remove");
         assert_eq!(stt(&Found::detect(&finder, &Voice::default())).missing, Some(VoiceMissing::Model));
         fs::write(model.join("decoder_joint-model.onnx"), b"model").expect("full model");
+        assert_eq!(stt(&Found::detect(&finder, &Voice::default())).missing, Some(VoiceMissing::Model), "no .data");
+        fs::write(model.join("encoder-model.onnx.data"), b"weights").expect("weights");
         let found = Found::detect(&finder, &Voice::default());
         assert_eq!((found.parakeet_model.is_some(), found.parakeet_int8), (true, false), "the full files");
 
@@ -601,6 +606,10 @@ pub mod tests {
         let trampoline = format!("#!/bin/sh\n'''exec' '{}' \"$0\" \"$@\"\n' '''\nimport onnx_asr\n", python.display());
         fs::write(&script, trampoline).expect("script");
         assert_eq!(script_python(&script, &finder), Some(python.clone()));
+        for quoted in [python.display().to_string(), format!("\"{}\"", python.display())] {
+            fs::write(&script, format!("#!/bin/sh\n'''exec' {quoted} \"$0\" \"$@\"\n' '''\n")).expect("script");
+            assert_eq!(script_python(&script, &finder), Some(python.clone()), "{quoted}");
+        }
         fs::write(&script, "#!/usr/bin/env python3\n").expect("script");
         assert_eq!(script_python(&script, &finder), Some(path.path().join("python3")));
         fs::write(&script, "no shebang\n").expect("script");
