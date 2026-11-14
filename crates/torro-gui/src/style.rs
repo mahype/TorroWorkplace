@@ -216,6 +216,21 @@ pub mod button {
         }
     }
 
+    /// The round "Send" of the assistant's composer (issue #699): [`primary`] as a circle, the
+    /// arrow in `on_accent`. Still the one red button of
+    /// the window. Its disabled state is never drawn: an empty field shows [`round_quiet`] instead.
+    pub fn round_primary(theme: &Theme, status: Status) -> Style {
+        let style = primary(theme, status);
+        Style { border: style.border.rounded(super::ROUND as f32), ..style }
+    }
+
+    /// A round neutral button of the composer (issue #699): "Send" while the field is empty (then
+    /// disabled, grey), "Stop" and "Sending…" in the same form. [`secondary`] as a circle.
+    pub fn round_quiet(theme: &Theme, status: Status) -> Style {
+        let style = secondary(theme, status);
+        Style { border: style.border.rounded(super::ROUND as f32), ..style }
+    }
+
     /// An icon-only button (‹ › refresh …): a [`ghost`] button, 28 × 28
     /// ([`crate::theme::size::control_sm()`] square, no padding), icon 14–16 in the text colour.
     /// Always give it a tooltip.
@@ -594,6 +609,13 @@ pub mod container {
     pub fn chip(theme: &Theme) -> Style {
         let p = palette(theme);
         Style { text_color: Some(p.text), border: outline(p.line_strong, radius::xs()), ..surface(p.raised) }
+    }
+
+    /// The assistant's composer (issue #699): one frame around the text and the quiet row of its
+    /// options – `panel`, 1-px `line_strong` border, radius [`radius::lg()`] like a floating card.
+    pub fn composer(theme: &Theme) -> Style {
+        let p = palette(theme);
+        Style { text_color: Some(p.text), border: outline(p.line_strong, radius::lg()), ..surface(p.panel) }
     }
 
     /// A key hint ("⌘K", "N"): no surface, 1-px `line_strong` border, radius [`radius::xs()`], text
@@ -1043,6 +1065,26 @@ mod tests {
             }
             let r = radio(&theme, widget::radio::Status::Active { is_selected: true });
             assert!(!same(r.dot_color, p.accent) && !same(r.border_color, p.accent));
+        }
+    }
+
+    /// Issue #699: the round buttons of the composer are circles; red only for "Send" when ready,
+    /// with the arrow readable on it, the quiet one neutral with its icon readable.
+    #[test]
+    fn the_round_buttons_of_the_composer_are_readable() {
+        for (mode, theme, p) in modes() {
+            for status in [Status::Active, Status::Hovered, Status::Pressed] {
+                let send = button::round_primary(&theme, status);
+                assert!(same(bg(&button::round_primary(&theme, Status::Active)), p.accent), "{mode}");
+                assert!(send.text_color.relative_contrast(bg(&send)) >= 5.35, "{mode}: arrow on red {status:?}");
+                assert_eq!(send.border.radius, (ROUND as f32).into(), "{mode}: a circle");
+                let quiet = button::round_quiet(&theme, status);
+                assert!(!same(bg(&quiet), p.accent) && !same(quiet.text_color, p.accent), "{mode}: quiet is not red");
+                assert!(quiet.text_color.relative_contrast(over(bg(&quiet), p.panel)) >= 4.5, "{mode}: {status:?}");
+                assert_eq!(quiet.border.radius, (ROUND as f32).into(), "{mode}: a circle");
+            }
+            let frame = container::composer(&theme);
+            assert!(frame.border.color.relative_contrast(p.panel) > 1.0, "{mode}: the frame shows");
         }
     }
 
