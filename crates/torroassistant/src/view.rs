@@ -18,6 +18,8 @@
 //! The settings (task S.18) take header and content area from `torro_settings_ui::Host`
 //! ([`App::settings_frame`]) while they are open; the sidebar stays as it is.
 
+use std::collections::HashSet;
+
 use iced::widget::text::Wrapping;
 use iced::widget::{
     Space, button, column, container, mouse_area, responsive, row, scrollable, stack, text_editor, text_input,
@@ -32,13 +34,14 @@ use torro_gui::theme::{self, Palette, palette, size, space};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail};
 use torro_gui::{layout, markdown, style, typo};
 use torro_ipc::api::Area;
-use torro_ipc::assistant::{ConversationSummary, EngineKind, Entry, EntryContent};
+use torro_ipc::assistant::{ConversationHit, ConversationSummary, EngineKind, Entry, EntryContent};
 use torro_ipc::{ApprovalInfo, ApprovalState};
 use torro_settings_ui::Frame;
 use torro_settings_ui::assistant as settings;
 
 use crate::app::{
-    Access, App, Dialog, EDITOR, HISTORY, MINI_INPUT, Menu, MenuAt, Message, RENAME, SEARCH, composer_binding,
+    Access, App, Dialog, EDITOR, HISTORY, MINI_INPUT, Menu, MenuAt, Message, RENAME, SEARCH, SEARCH_FROM,
+    composer_binding,
 };
 use crate::bots;
 use crate::chat::{self, Choice};
@@ -334,6 +337,11 @@ impl App {
                 .style(style::text_input)
                 .on_input(Message::Search);
             items.push(search.into());
+            // A search through the history (issue #704): its hits take the place of the groups.
+            if let Some(found) = self.history_search() {
+                items.extend(self.hit_rows(mode, found));
+                return shell::sidebar(head, items, Vec::new());
+            }
             // The bots (task B.3) before the conversations: few, and each a way into its chat.
             if self.bots_loaded {
                 items.push(widgets::sidebar_group_in(mode, tr("Bots"), None));
@@ -365,6 +373,43 @@ impl App {
         }
         // "Settings" sits in the top row's right corner (issue #459).
         shell::sidebar(head, items, Vec::new())
+    }
+
+    /// The hits of the search through the history once the core answered for the words in the field
+    /// (issue #704); `None` below [`SEARCH_FROM`] characters and before the first answer.
+    fn history_search(&self) -> Option<&Result<Vec<ConversationHit>, crate::backend::Refusal>> {
+        (self.search.trim().chars().count() >= SEARCH_FROM).then_some(self.hits.as_ref()).flatten()
+    }
+
+    /// The rows of the search's hits: under "Results" one row per conversation with its title and the
+    /// snippet of its newest hit, the hit opened last chosen; a note when nothing matches or the core
+    /// cannot search.
+    fn hit_rows<'a>(
+        &'a self,
+        mode: SidebarMode,
+        found: &'a Result<Vec<ConversationHit>, crate::backend::Refusal>,
+    ) -> Vec<Element<'a, Message>> {
+        let hits = match found {
+            Ok(hits) if hits.is_empty() => return vec![sidebar_note(tr("No conversation matches"))],
+            Ok(hits) => hits,
+            Err(_) => return vec![sidebar_note(tr("Search is not available"))],
+        };
+        let mut rows = vec![widgets::sidebar_group_in(mode, tr("Results"), None)];
+        let mut seen = HashSet::new();
+        for hit in hits.iter().filter(|hit| seen.insert(hit.conversation.as_str())) {
+            let chosen = self.current.as_deref() == Some(hit.conversation.as_str())
+                && self.marked.as_ref().is_none_or(|(id, _)| *id == hit.conversation);
+            rows.push(widgets::sidebar_item_detail_in(
+                mode,
+                Icon::MessageCircle,
+                hit.title.as_str(),
+                hit.snippet.as_str(),
+                Trail::None,
+                chosen,
+                Message::OpenHit(hit.conversation.clone(), hit.seq),
+            ));
+        }
+        rows
     }
 
     /// How many conversations the search leaves.
@@ -662,7 +707,20 @@ impl App {
                 list = list.push(Space::new().height(gap));
             }
             previous_tool = Some(tool);
-            list = list.push(self.entry(entry, colours));
+            // The hit opened from the search (issue #704) shows on a neutral ground.
+            let hit =
+                self.marked.as_ref().is_some_and(|(id, seq)| *seq == entry.seq && self.current.as_ref() == Some(id));
+            if hit {
+                list = list.push(container(self.entry(entry, colours)).width(Fill).padding(space::s()).style(
+                    |t: &Theme| container::Style {
+                        background: Some(Background::Color(palette(t).selected)),
+                        border: iced::border::rounded(theme::radius::sm()),
+                        ..container::Style::default()
+                    },
+                ));
+            } else {
+                list = list.push(self.entry(entry, colours));
+            }
         }
         // The assistant proposed a bot and waits for the person's word (task B.2).
         if let Some(card) = self.proposal_card() {

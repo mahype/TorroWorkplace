@@ -36,6 +36,21 @@ use torro_ipc::bots::{Bot, Skill};
 use torro_ipc::{AccountInfo, ApprovalInfo, ApprovalState, ClientInfo, Request, Response};
 use torro_pim::{AccountState, Collection, CollectionKind};
 
+/// `text` from a little before `word`, white space folded, at most about `chars` characters ("…" where cut).
+fn snippet(text: &str, word: &str, chars: usize) -> String {
+    let folded: Vec<char> = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().collect();
+    let lowered: Vec<char> = folded.iter().map(|c| c.to_lowercase().next().unwrap_or(*c)).collect();
+    let word: Vec<char> = word.chars().collect();
+    let at = (0..lowered.len()).find(|at| lowered[*at..].starts_with(&word)).unwrap_or(0);
+    let start = at.saturating_sub(chars / 4);
+    let end = (start + chars).min(folded.len());
+    let middle: String = folded[start..end].iter().collect();
+    format!("{}{middle}{}", if start > 0 { "…" } else { "" }, if end < folded.len() { "…" } else { "" })
+}
+
+/// A word the demo's conversations hold in every language, for `--open search` (issue #704).
+pub const SEARCH_WORD: &str = "Anna";
+
 /// "Plan for tomorrow": messages, tool lines and an answer in Markdown. Pinned.
 pub const TOOLS: &str = "d000000000000001";
 /// "Block the afternoon": a tool waits for the person's approval.
@@ -168,6 +183,10 @@ impl Demo {
             Request::Accounts => Response::Accounts { accounts: accounts() },
             Request::ListConversations => Response::Conversations { conversations: state.summaries() },
             Request::GetConversation { id, after } => state.get(&id, after.unwrap_or(0)),
+            // Issue #704, in short: every word in a message or answer, the newest conversations first.
+            Request::SearchConversations { query, limit } => {
+                Response::ConversationHits { hits: state.search(&query, limit) }
+            }
             Request::SendMessage { conversation, engine, model, effort, text, without, mode, bot, about: _ } => {
                 state.send(conversation, (engine, model, effort), text, (without, mode), bot)
             }
@@ -276,6 +295,42 @@ impl State {
         let mut list: Vec<ConversationSummary> = self.conversations.iter().map(|c| self.head(&c.summary)).collect();
         list.sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.updated.cmp(&a.updated)));
         list
+    }
+
+    /// The hits of `query` (issue #704) as the core finds them, in short: a message or answer that holds
+    /// every word in any case, at most three per conversation (the newest), the most recent first; the
+    /// snippet the text's start.
+    fn search(&self, query: &str, limit: Option<u32>) -> Vec<torro_ipc::assistant::ConversationHit> {
+        use torro_ipc::assistant::{ConversationHit, HITS_PER_CONVERSATION, HitKind, MAX_HITS, SNIPPET_CHARS};
+        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        let mut conversations: Vec<&Conversation> = self.conversations.iter().collect();
+        conversations.sort_by_key(|c| std::cmp::Reverse(c.summary.updated));
+        let mut hits = Vec::new();
+        for conversation in conversations {
+            let found = conversation.entries.iter().rev().filter_map(|entry| {
+                let (kind, text) = match &entry.content {
+                    EntryContent::Message { text, .. } => (HitKind::Message, text),
+                    EntryContent::Answer { text, .. } => (HitKind::Answer, text),
+                    _ => return None,
+                };
+                let lowered = text.to_lowercase();
+                words.iter().all(|word| lowered.contains(word.as_str())).then_some((entry.seq, kind, text))
+            });
+            for (seq, kind, text) in found.take(HITS_PER_CONVERSATION) {
+                hits.push(ConversationHit {
+                    conversation: conversation.summary.id.clone(),
+                    title: conversation.summary.title.clone(),
+                    updated: conversation.summary.updated,
+                    bot: conversation.summary.bot.clone(),
+                    seq: Some(seq),
+                    kind,
+                    snippet: snippet(text, words.first().map_or("", String::as_str), SNIPPET_CHARS),
+                    untrusted: false,
+                });
+            }
+        }
+        hits.truncate(limit.unwrap_or(MAX_HITS).clamp(1, MAX_HITS) as usize);
+        hits
     }
 
     fn find(&mut self, id: &str) -> Option<&mut Conversation> {

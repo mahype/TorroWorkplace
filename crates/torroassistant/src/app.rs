@@ -3,7 +3,8 @@
 //!
 //! Two kinds of window from one program ([`Window`]): the main window (class `torro-assistant`)
 //! with the conversations in the sidebar – pinned on top, then the newest, with a search – and the
-//! chat beside them; and a single chat window (`--chat <id>|new`, class `torro-assistant-chat`,
+//! chat beside them; from [`SEARCH_FROM`] characters on the search looks through the whole history
+//! (`assistant.search_conversations`, issue #704), and a hit opens its conversation at the place; and a single chat window (`--chat <id>|new`, class `torro-assistant-chat`,
 //! [`CHAT`]) with the chat alone. "Open in new window" in a conversation's menu, or a double
 //! click on it in the sidebar, sends `assistant.open_window`; the core starts the chat window. A
 //! chat window whose conversation was deleted meanwhile becomes a new chat, as a workspace
@@ -107,7 +108,8 @@ use torro_gui::zoom::{self, Zoom};
 use torro_ipc::api::{Area, Rights};
 use torro_ipc::assistant::Mode as PermissionMode;
 use torro_ipc::assistant::{
-    Card, CardEntry, ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, Profile,
+    Card, CardEntry, ChatWindow, ConversationHit, ConversationSummary, Engine, EngineKind, Entry, EntryContent,
+    MAX_HITS, Profile,
 };
 use torro_ipc::bots::{Bot, BotSummary};
 use torro_ipc::{ApprovalInfo, Request, Response};
@@ -167,6 +169,10 @@ pub const EDITOR: &str = "assistant-composer";
 pub const MINI_INPUT: &str = "assistant-mini";
 /// The id of the sidebar's search field.
 pub const SEARCH: &str = "assistant-search";
+
+/// From this many characters on (trimmed) the sidebar's search looks through the history of every
+/// conversation (issue #704); below, it filters the titles only.
+pub const SEARCH_FROM: usize = 2;
 /// The id of the bot editor's name field: "Save" goes there while the name keeps it back.
 pub const BOT_NAME: &str = "assistant-bot-name";
 /// The id of the bot editor's scrolling form: a "Save" that finds a problem goes to its top.
@@ -425,6 +431,10 @@ pub enum Message {
     CloseDialog,
     /// What is typed into the sidebar's search.
     Search(String),
+    /// The core's hits for the search with these words (issue #704).
+    Hits(String, Result<Vec<ConversationHit>, Refusal>),
+    /// A hit of the search: open its conversation at the entry with this number (`None`: the title).
+    OpenHit(String, Option<u64>),
     /// The pointer is on the sidebar row of this conversation (`None`: on none).
     Hover(Option<String>),
     /// From the tools at the top of the sidebar: search and "New".
@@ -570,6 +580,14 @@ pub struct App {
     pub(crate) menu: Option<Menu>,
     pub(crate) dialog: Option<Dialog>,
     pub(crate) search: String,
+    /// The core's hits for [`App::search`] (issue #704): `None` while there is no search through the
+    /// history (fewer than [`SEARCH_FROM`] characters) or before its first answer.
+    pub(crate) hits: Option<Result<Vec<ConversationHit>, Refusal>>,
+    /// The hit opened last (conversation, entry): its entry shows marked until another conversation is
+    /// chosen or the search is cleared.
+    pub(crate) marked: Option<(String, u64)>,
+    /// The entry to scroll to once its conversation is opened.
+    pub(crate) snap: Option<(String, u64)>,
     /// The sidebar row under the pointer.
     pub(crate) hover: Option<String>,
     /// Whether the sidebar drawer is open (medium and narrow layouts).
@@ -671,6 +689,9 @@ impl App {
             },
             dialog: None,
             search: String::new(),
+            hits: None,
+            marked: None,
+            snap: None,
             hover: None,
             // Without a sidebar the bot's menu hangs in the drawer.
             drawer: matches!(open, Some(Open::Drawer | Open::BotMenu)),
@@ -1008,7 +1029,10 @@ impl App {
                 return self.fetch_cards();
             }
             Message::Decided(id, result) => return self.decided(id, result),
-            Message::Select(id) => return self.select(id),
+            Message::Select(id) => {
+                self.marked = None;
+                return self.select(id);
+            }
             Message::NewChat => return self.new_chat(),
             Message::Edit(action) => self.editor.perform(action),
             Message::MiniInput(text) => self.mini = text,
@@ -1104,7 +1128,26 @@ impl App {
             }
             Message::Deleted(id, result) => return self.deleted(id, result),
             Message::CloseDialog => self.dialog = None,
-            Message::Search(text) => self.search = text,
+            Message::Search(text) => return self.search_for(text),
+            Message::Hits(query, result) => {
+                // An answer for words no longer in the field is stale.
+                if query == self.search.trim() {
+                    // `--open search`: the first hit opened, so its marked entry shows.
+                    let first = match (&result, self.launch.open, &self.current) {
+                        // One whose answer runs would never settle for a picture.
+                        (Ok(hits), Some(Open::Search), None) => hits
+                            .iter()
+                            .find(|hit| self.conversations.iter().any(|c| c.id == hit.conversation && !c.running))
+                            .map(|hit| (hit.conversation.clone(), hit.seq)),
+                        _ => None,
+                    };
+                    self.hits = Some(result);
+                    if let Some((id, seq)) = first {
+                        return self.open_hit(id, seq);
+                    }
+                }
+            }
+            Message::OpenHit(id, seq) => return self.open_hit(id, seq),
             Message::Hover(id) => self.hover = id,
             Message::Switcher(Switcher::Search) => {
                 self.menu = None;
@@ -1360,7 +1403,12 @@ impl App {
                 self.list_error = None;
                 self.choose_default();
                 self.open_launched();
-                return self.resolve_bot_window();
+                // `--open search` (issue #704): a word of the demo in the field.
+                let search = match self.launch.open == Some(Open::Search) && self.search.is_empty() {
+                    true => self.search_for(demo::SEARCH_WORD.into()),
+                    false => Task::none(),
+                };
+                return Task::batch([self.resolve_bot_window(), search]);
             }
             Err(refusal) => self.list_error = Some(refusal.message),
         }
@@ -1494,7 +1542,8 @@ impl App {
                     self.expanded.extend(first.map(|entry| entry.seq));
                 }
                 self.choose_default();
-                Task::batch([self.fetch_approvals(), self.fetch_cards(), self.scroll_to_newest()])
+                let scroll = self.scroll_to_hit(&id).unwrap_or_else(|| self.scroll_to_newest());
+                Task::batch([self.fetch_approvals(), self.fetch_cards(), scroll])
             }
             Err(refusal) if refusal.code == "not-found" => self.gone(),
             Err(refusal) => {
@@ -1729,6 +1778,53 @@ impl App {
         }
         self.choose_default();
         self.open_current()
+    }
+
+    /// The sidebar's search with `text` (issue #704): from [`SEARCH_FROM`] characters on it asks the core
+    /// for hits in every conversation; below, the titles are filtered as before and the hits go.
+    fn search_for(&mut self, text: String) -> Task<Message> {
+        self.search = text;
+        let query = self.search.trim().to_owned();
+        if query.chars().count() < SEARCH_FROM {
+            self.hits = None;
+            if query.is_empty() {
+                self.marked = None;
+            }
+            return Task::none();
+        }
+        let request = Request::SearchConversations { query: query.clone(), limit: Some(MAX_HITS) };
+        self.ask(request, move |result| {
+            Message::Hits(
+                query.clone(),
+                result.and_then(|response| match response {
+                    Response::ConversationHits { hits } => Ok(hits),
+                    other => Err(Refusal::unexpected(&other)),
+                }),
+            )
+        })
+    }
+
+    /// Opens the hit at entry `seq` of the conversation `id` (issue #704): the entry marked and scrolled
+    /// to once it is there; a hit of the title opens the conversation as a click on it does.
+    fn open_hit(&mut self, id: String, seq: Option<u64>) -> Task<Message> {
+        self.marked = seq.map(|seq| (id.clone(), seq));
+        self.snap = self.marked.clone();
+        if self.current.as_ref() == Some(&id) && self.transcript.summary.is_some() {
+            self.close_menus();
+            return self.scroll_to_hit(&id).unwrap_or_else(Task::none);
+        }
+        self.select(id)
+    }
+
+    /// Scrolls the history of the open conversation `id` to the hit waiting for it ([`App::snap`]), by its
+    /// share of the entries; `None` when none waits. The history then stays there and does not follow.
+    fn scroll_to_hit(&mut self, id: &str) -> Option<Task<Message>> {
+        let (_, seq) = self.snap.take().filter(|(snap, _)| snap == id)?;
+        let entries = &self.transcript.entries;
+        let at = entries.iter().position(|entry| entry.seq == seq)?;
+        let share = if entries.len() <= 1 { 0.0 } else { at as f32 / (entries.len() - 1) as f32 };
+        self.follow_bottom = false;
+        Some(operation::snap_to(HISTORY, operation::RelativeOffset { x: None, y: Some(share) }))
     }
 
     /// A new chat: with the assistant in the main window, with its bot in a bot's chat window.

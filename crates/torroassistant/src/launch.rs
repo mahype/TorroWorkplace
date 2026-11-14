@@ -105,11 +105,14 @@ pub enum Open {
     AccessSelections,
     /// The settings at Access, its tab Bots (issue #547).
     AccessBots,
+    /// The sidebar's search through the history with a word of the demo, its first hit opened and marked
+    /// (issue #704).
+    Search,
 }
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 30] = [
+    pub const ALL: [(&'static str, Open); 31] = [
         ("new", Open::New),
         ("tools", Open::Tools),
         ("approval", Open::Approval),
@@ -140,6 +143,7 @@ impl Open {
         ("profile-changed", Open::ProfileChanged),
         ("access-selections", Open::AccessSelections),
         ("access-bots", Open::AccessBots),
+        ("search", Open::Search),
     ];
 }
 
