@@ -71,6 +71,14 @@ struct Anchors {
     archive: Anchor,
 }
 
+/// What the bar of a sidebar row ("…" and the bin, issue #697) takes of the title's room: its two icon
+/// buttons with their frame, and the gap [`widgets::row_actions`] leaves to the row's end.
+fn row_bar_room() -> f32 {
+    let bar: [RowAction<'_, ()>; 2] =
+        [RowAction::new(Icon::Ellipsis, "", "", ()), RowAction::new(Icon::Trash2, "", "", ())];
+    widgets::row_actions_width(&bar, false) + layout::row_padding().right - style::ITEM_PADDING.right
+}
+
 /// A dialog's card: `title`, `content`, then "Cancel" and `confirm` at the right.
 fn dialog_card<'a>(
     title: String,
@@ -86,7 +94,11 @@ fn dialog_card<'a>(
 /// A sidebar group's title with `more`, its "…", at the end (issue #697); the title alone without.
 fn group_with<'a>(group: Element<'a, Message>, more: Option<Element<'a, Message>>) -> Element<'a, Message> {
     match more {
-        Some(more) => row![container(group).width(Fill), more].align_y(Alignment::End).into(),
+        // The button centred on the title's line, which sits at the bottom of the group's head.
+        Some(more) => {
+            let more = container(more).height(size::row_sidebar()).center_y(size::row_sidebar());
+            row![container(group).width(Fill), more].align_y(Alignment::End).into()
+        }
         None => group,
     }
 }
@@ -406,8 +418,8 @@ impl App {
                 let open = self.archive_open || !self.search.trim().is_empty();
                 let label = trf("Archive ({n})", &[("n", &archived.len())]);
                 let group = widgets::sidebar_group_in(mode, label, Some((open, Message::ToggleArchive)));
-                let more = open.then(|| self.group_more(Menu::Archive, &anchors.archive));
-                items.push(group_with(group, more));
+                let more = self.group_more(Menu::Archive, &anchors.archive);
+                items.push(group_with(group, Some(more)));
                 if open {
                     items.extend(archived.into_iter().map(|c| self.conversation_row(c, anchors)));
                 }
@@ -483,7 +495,12 @@ impl App {
         // and after it take their room.
         let about = conversation.about.is_some();
         let marks = usize::from(conversation.running) + usize::from(about);
-        let room = row_title_room(self.sidebar_shown()) - marks as f32 * (icon::SIZE_SM + space::s());
+        let menu_here = matches!(&self.menu, Some(Menu::Conversation { id: open, at: MenuAt::Row }) if *open == id);
+        let mut room = row_title_room(self.sidebar_shown()) - marks as f32 * (icon::SIZE_SM + space::s());
+        // While "…" and the bin stand over the row's end (issue #697), the title ends in "…" before them.
+        if hovered || menu_here {
+            room -= row_bar_room();
+        }
         let shown = typo::ellipsize(&conversation.title, typo::body(), room);
         let cut = shown != conversation.title;
         let title = container(typo::text(typo::body(), shown).wrapping(Wrapping::None)).width(Fill).clip(true);
@@ -529,7 +546,6 @@ impl App {
             .interaction(iced::mouse::Interaction::Pointer);
         // "…" and the bin at the row's end while the pointer is on it (issue #697), and while its menu is
         // open, which hangs at the "…" – a right click opens the same menu there.
-        let menu_here = matches!(&self.menu, Some(Menu::Conversation { id: open, at: MenuAt::Row }) if *open == id);
         let mut more = RowAction::new(Icon::Ellipsis, tr("More"), "", Message::ToggleMenu(menu));
         if menu_here {
             more = more.at(&anchors.row);
@@ -1368,7 +1384,7 @@ impl App {
                     style::button::secondary,
                     Some(Message::ConfirmMany),
                 );
-                return self.many_dialog(title, words.into(), confirm);
+                return dialog_card(title, words.into(), confirm);
             }
             Dialog::DeleteMany { ids, archive } => {
                 let n = ids.len();
@@ -1384,31 +1400,20 @@ impl App {
                     ),
                     (false, true) => (
                         tr("Delete 1 conversation?").to_owned(),
-                        tr("It and everything in it will be deleted for good. Pinned conversations stay.").to_owned(),
+                        tr("Everything in it is deleted for good. Pinned conversations stay.").to_owned(),
                     ),
                     (false, false) => (
                         trf("Delete {n} conversations?", &[("n", &n)]),
-                        tr("They and everything in them will be deleted for good. Pinned conversations stay.")
-                            .to_owned(),
+                        tr("Everything in them is deleted for good. Pinned conversations stay.").to_owned(),
                     ),
                 };
                 let words = typo::text(typo::body(), text).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
                 let confirm =
                     widgets::text_button(Some(Icon::Trash2), label, style::button::danger, Some(Message::ConfirmMany));
-                return self.many_dialog(title, words.into(), confirm);
+                return dialog_card(title, words.into(), confirm);
             }
         };
         dialog_card(title.to_owned(), content, confirm)
-    }
-
-    /// [`App::dialog_view`] for a question whose title is made at run time (issue #697).
-    fn many_dialog<'a>(
-        &'a self,
-        title: String,
-        content: Element<'a, Message>,
-        confirm: Element<'a, Message>,
-    ) -> Element<'a, Message> {
-        dialog_card(title, content, confirm)
     }
 
     // -- Mini and strip -------------------------------------------------------------------------

@@ -426,6 +426,8 @@ impl State {
             (engine.clone(), model.clone(), effort);
         let message =
             conversation.push(now, EntryContent::Message { text, engine, model, effort, without, mode, from: None });
+        // As the core: a message brings an archived conversation back (issue #697).
+        conversation.summary.archived = false;
         conversation.summary.running = true;
         conversation.growing = Some(Growing { text: tr(reply).to_owned(), shown: 0, frozen: false });
         Response::Conversation { conversation: conversation.summary.clone(), entries: vec![message] }
