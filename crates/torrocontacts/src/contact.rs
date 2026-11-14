@@ -102,9 +102,9 @@ pub enum AddressMap {
     Shown(Handle),
     /// The place search found no place: "Address not found on the map".
     NotFound,
-    /// The lookup of contact addresses is off (maps are on): "Turn on address lookup to see a map".
+    /// The lookup of contact addresses is off (maps are on): "Address lookup is off", "Turn on ›".
     LookupOff,
-    /// Maps are off: "Turn on maps to see a map".
+    /// Maps are off: "Maps are off", "Turn on ›".
     MapsOff,
     /// The service is busy or cannot be reached: "The map is not available right now."
     Unavailable,
@@ -288,7 +288,7 @@ pub fn address_map(map: &AddressMap, index: usize, pin: iced::Color) -> Element<
     let (words, turn_on) = match map {
         AddressMap::Shown(picture) => {
             let credit = Message::OpenUri(torro_gui::map::OSM_COPYRIGHT.to_owned());
-            return torro_gui::map::map_view(picture, pin, open, credit);
+            return torro_gui::map::map_view(picture, pin, open.clone(), credit, Some(open));
         }
         AddressMap::Finding => return torro_gui::map::map_placeholder(tr("Finding address…"), open),
         AddressMap::NotFound => (tr("Address not found on the map"), false),

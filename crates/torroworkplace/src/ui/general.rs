@@ -46,9 +46,9 @@ pub struct State {
     pub suite: suite::State,
     /// The addresses of "Maps" as typed and not saved yet ([`maps`]).
     maps: MapsDraft,
-    /// "Clear" of "Stored map data" was pressed while the core said this (issue #355): the button
-    /// says "Clearing…" until the numbers change.
-    clearing: Option<torro_ipc::MapsStatus>,
+    /// "Clear" of "Stored map data" was pressed and the core has not answered yet (issue #355): the
+    /// button says "Clearing…".
+    clearing: bool,
 }
 
 /// One of the two addresses under "Maps": the place search service or the map tiles.
@@ -199,7 +199,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         }
         Message::ContactLookup(on) => return maps_change(state, maps, "contactLookup", serde_json::Value::Bool(on)),
         Message::ClearMaps => {
-            state.clearing = Some(data.maps_status.unwrap_or_default());
+            state.clearing = true;
             return Action::Send(Request::ClearMapsCache);
         }
         Message::AddressInput(which, text) => {
@@ -434,13 +434,16 @@ fn maps<'a>(state: &'a State, maps: &'a Maps, status: Option<torro_ipc::MapsStat
     block.push(row(links).spacing(space::xs()).wrap().vertical_spacing(space::xs())).into()
 }
 
-/// "Clear" of "Stored map data": "Clearing…" while the numbers are still those it was pressed at, off
-/// while nothing is stored or the numbers are not known.
-fn clear_button<'a>(
-    status: Option<torro_ipc::MapsStatus>,
-    clearing: Option<torro_ipc::MapsStatus>,
-) -> Element<'a, Message> {
-    if status.is_some() && status == clearing {
+/// The core answered a request of the page: "Clear" of the stored map data is over, done or refused
+/// (the shell shows a refusal). Whether it was pending, so the shell asks for the numbers again.
+pub fn answered(state: &mut State) -> bool {
+    std::mem::take(&mut state.clearing)
+}
+
+/// "Clear" of "Stored map data": "Clearing…" until the core answers, off while nothing is stored or the
+/// numbers are not known.
+fn clear_button<'a>(status: Option<torro_ipc::MapsStatus>, clearing: bool) -> Element<'a, Message> {
+    if clearing {
         return widgets::busy_button(tr("Clearing…"), style::button::secondary);
     }
     let empty = status.is_none_or(|status| status.tile_bytes == 0 && status.contact_places == 0);
@@ -712,9 +715,11 @@ mod tests {
         let mut state = State::default();
         let shown = Data { maps_status: Some(status), ..Data::default() };
         let _ = update(&mut state, Message::ClearMaps, &shown);
-        assert_eq!(state.clearing, Some(status));
+        assert!(state.clearing);
         drop(clear_button(Some(status), state.clearing));
-        drop(clear_button(Some(torro_ipc::MapsStatus::default()), None));
+        assert!(answered(&mut state) && !state.clearing, "the answer ends it, done or refused");
+        assert!(!answered(&mut state));
+        drop(clear_button(Some(torro_ipc::MapsStatus::default()), false));
     }
 
     /// Task TE.10: moving on to the other field or another control of the group saves the address

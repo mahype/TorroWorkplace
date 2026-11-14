@@ -32,15 +32,23 @@ pub fn pin_size() -> f32 {
 /// The map, [`size::map_preview()`] high: the picture with a pin in the middle in `pin`, ↗ "Open in
 /// Maps" (`open`) in the top right corner and "© OpenStreetMap" (`credit`, which opens
 /// [`OSM_COPYRIGHT`]; a button as high as ↗) in the bottom right one, in a frame with radius `md`.
-/// A click on the map itself opens it too; the frame turns `line_selected` under the pointer.
-pub fn map_view<'a, M: Clone + 'a>(picture: &'a image::Handle, pin: Color, open: M, credit: M) -> Element<'a, M> {
+/// With `on_map` a click on the map itself sends it too (the contacts app opens the maps app), and the
+/// frame turns `line_selected` under the pointer; without, only the buttons take clicks (the event
+/// editor).
+pub fn map_view<'a, M: Clone + 'a>(
+    picture: &'a image::Handle,
+    pin: Color,
+    open: M,
+    credit: M,
+    on_map: Option<M>,
+) -> Element<'a, M> {
     let height = size::map_preview();
     let picture =
         image(picture).width(Length::Fill).height(height).content_fit(ContentFit::Cover).border_radius(radius::md());
     let marker = icon(Icon::MapPin, pin_size()).style(move |_, _| svg::Style { color: Some(pin) });
     // The tip of the pin, not its middle, stands on the point.
     let marker = container(column![marker, Space::new().height(pin_size())]).center(Length::Fill);
-    let corner = widgets::boxed_button(Icon::ArrowUpRight, tr("Open in Maps"), Some(open.clone()));
+    let corner = widgets::boxed_button(Icon::ArrowUpRight, tr("Open in Maps"), Some(open));
     let credit = widgets::text_button(None, tr("© OpenStreetMap"), style::button::secondary, Some(credit));
     let over = column![
         row![Space::new().width(Length::Fill), corner],
@@ -49,7 +57,10 @@ pub fn map_view<'a, M: Clone + 'a>(picture: &'a image::Handle, pin: Color, open:
     ]
     .padding(space::s());
     let inside = container(stack![picture, marker, over].width(Length::Fill).height(height)).clip(true);
-    button(inside).padding(0).width(Length::Fill).style(frame_button).on_press(open).into()
+    match on_map {
+        Some(on_map) => button(inside).padding(0).width(Length::Fill).style(frame_button).on_press(on_map).into(),
+        None => inside.width(Length::Fill).style(frame).into(),
+    }
 }
 
 /// The place of the map while there is none yet (issue #355, "Finding address…"): the frame as high
@@ -124,7 +135,8 @@ mod tests {
         assert!(size::map_preview() >= 2.0 * size::control_sm() + 2.0 * space::s());
         assert!(pin_size() > icon::SIZE);
         let picture = image::Handle::from_rgba(1, 1, vec![0; 4]);
-        let _: Element<'_, u8> = map_view(&picture, Color::WHITE, 1, 2);
+        let _: Element<'_, u8> = map_view(&picture, Color::WHITE, 1, 2, Some(1));
+        let _: Element<'_, u8> = map_view(&picture, Color::WHITE, 1, 2, None);
         let _: Element<'_, u8> = map_placeholder("Finding", 1);
         let _ = demo_map(&Theme::Dark);
     }

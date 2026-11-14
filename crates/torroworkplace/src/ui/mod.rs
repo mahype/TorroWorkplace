@@ -686,7 +686,8 @@ impl Ui {
             general: general::State::default(),
             apps: apps::State::default(),
             catalog_at: None,
-            maps_due: std::cell::Cell::new(false),
+            // The first reload asks if the window opens on General (`ui --section general`).
+            maps_due: std::cell::Cell::new(true),
             setup: None,
             target: None,
         };
@@ -1553,6 +1554,11 @@ impl Ui {
                 let in_setup = self.setup.as_mut().is_some_and(|setup| setup::answered(setup, &result));
                 let in_dialog = in_setup || accounts::answered(&mut self.accounts, &result);
                 approvals::answered(&mut self.approvals);
+                // "Clear" of the stored map data answered, done or refused: the reload asks for the
+                // numbers as they are now (issue #355); a tick before the answer does not.
+                if general::answered(&mut self.general) {
+                    self.maps_due.set(true);
+                }
                 // "Create key", "Connect client" and the hook switch show their errors themselves,
                 // and may go on with a job. Each section takes only its own answers.
                 let next = [mcp::answered(&mut self.mcp, &result), api::answered(&mut self.api, &result)];
@@ -1798,12 +1804,7 @@ impl Ui {
             Message::Mcp(m) => mcp::update(&mut self.mcp, m, &self.data),
             Message::Connections(m) => connections::update(&mut self.connections, m, &self.data),
             Message::Approvals(m) => approvals::update(&mut self.approvals, m, &self.data),
-            Message::General(m) => {
-                if matches!(m, general::Message::ClearMaps) {
-                    self.maps_due.set(true);
-                }
-                general::update(&mut self.general, m, &self.data)
-            }
+            Message::General(m) => general::update(&mut self.general, m, &self.data),
             Message::Privacy(m) => Action::Send(torro_settings_ui::privacy::update(m)),
             Message::Apps(m) => apps::update(&mut self.apps, m, &self.data),
         };

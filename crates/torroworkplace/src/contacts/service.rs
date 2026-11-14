@@ -55,11 +55,12 @@ pub struct AddressSpot {
 }
 
 impl AddressSpot {
-    /// What an approval of `contacts.open_in_maps` is pinned to: a hash of the address's key and the
-    /// contact's `GEO` (first address only), so neither can change unseen; never the address itself.
-    pub fn pin(&self) -> String {
+    /// What an approval of `contacts.open_in_maps` is pinned to: a hash of the address's key, the
+    /// contact's `GEO` (first address only) and the maps `app` it goes to, so none can change unseen;
+    /// never the address itself.
+    pub fn pin(&self, app: torro_core::settings::MapsApp) -> String {
         let point = self.geo.map(|geo| format!("{},{}", geo.lat, geo.lon)).unwrap_or_default();
-        crate::audit::hashed(&format!("{}|{point}", self.line))
+        crate::audit::hashed(&format!("{}|{point}|{app:?}", self.line))
     }
 }
 

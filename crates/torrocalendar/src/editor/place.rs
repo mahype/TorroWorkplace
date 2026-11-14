@@ -155,7 +155,7 @@ fn source_line<'a>(words: String) -> Element<'a, Message> {
 /// The map under the location: the picture with a pin in the middle in `pin` (the calendar's
 /// colour), ↗ "Open in Maps" (`open`) and "© OpenStreetMap" ([`torro_gui::map::map_view`]).
 pub(super) fn map_view<'a>(picture: &'a image::Handle, pin: Color, open: Message) -> Element<'a, Message> {
-    torro_gui::map::map_view(picture, pin, open, Message::OpenLink(OSM_COPYRIGHT.to_string()))
+    torro_gui::map::map_view(picture, pin, open, Message::OpenLink(OSM_COPYRIGHT.to_string()), None)
 }
 
 /// The places `--demo` suggests for any search, without the network: two of the same street in

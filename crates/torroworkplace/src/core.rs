@@ -334,7 +334,10 @@ fn open_in_browser(url: &str) -> Result<(), String> {
 fn open_map_link(url: &str) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     if url.starts_with("geo:") {
-        return std::process::Command::new("xdg-open").arg(url).spawn().map(|_| ()).map_err(|err| err.to_string());
+        let mut child = std::process::Command::new("xdg-open").arg(url).spawn().map_err(|err| err.to_string())?;
+        // Reaped on a thread of its own, so the long-running core keeps no zombie.
+        std::thread::spawn(move || child.wait());
+        return Ok(());
     }
     webbrowser::open(url).map_err(|err| err.to_string())
 }
@@ -5552,7 +5555,7 @@ impl Core {
                     && let Ok(spot) = self.contacts.address_spot(id, *address)
                 {
                     let app = torro_core::maps::on_this_system(self.settings.current().maps.open_with);
-                    fingerprint = Some((spot.pin(), crate::approvals::maps_details(&spot.address, app)));
+                    fingerprint = Some((spot.pin(app), crate::approvals::maps_details(&spot.address, app)));
                 }
                 // What a target shows (task E8.7a): the subject or title the core holds, looked up
                 // as the client may see it – for a file of the tools (task WZ.8) the register's title.
@@ -13080,7 +13083,8 @@ impl Core {
             Ok(spot) => spot,
             Err(err) => return crate::contacts::service::error_response(&err),
         };
-        if approved.is_some_and(|pin| pin != spot.pin()) {
+        let app = torro_core::maps::on_this_system(self.settings.current().maps.open_with);
+        if approved.is_some_and(|pin| pin != spot.pin(app)) {
             let message = "the address changed after the approval was asked for; nothing was opened";
             return refusal("conflict", message.into());
         }
@@ -13088,7 +13092,7 @@ impl Core {
             Some(geo) => Some((geo.lat, geo.lon)),
             None => self.contacts.kept_place(&spot).ok().flatten().and_then(|kept| kept.point),
         };
-        let link = torro_core::maps::maps_link(self.settings.current().maps.open_with, &spot.address.one_line(), point);
+        let link = torro_core::maps::link_for(app, &spot.address.one_line(), point);
         match (self.open_map)(&link) {
             Ok(()) => Response::Ok,
             Err(_) => refusal("error", tr("The maps app could not be opened.").into()),

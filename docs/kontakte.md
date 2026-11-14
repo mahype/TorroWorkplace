@@ -375,9 +375,9 @@ bzw. „Maps are off“ (beide mit „Turn on ›“ zur Steuerzentrale › Gene
 Während der Suche steht der leere Rahmen der Karte mit „Finding address…“, damit darunter nichts springt.
 
 **Karte aller Kontakte (KO4), „Karte als Ansicht“** (Entscheidung 11, Entwurf `c-karte.html`):
-- **Nur mit Zustimmung.** Ist die Ortssuche (`maps.geocoding`) aus, gibt es die Karte nicht: kein Schalter,
+- **Nur mit Zustimmung.** Ist die Ortssuche (`contactLookup`) aus, gibt es die Karte nicht: kein Schalter,
   kein Eintrag, nur die Liste. Die Frage nach der Zustimmung steht in der Steuerzentrale (KO2.3) und
-  am Hinweis „Turn on address lookup to see a map“ im Kontakt, nicht auf einer leeren Karte.
+  am Hinweis „Address lookup is off“ mit „Turn on ›“ im Kontakt, nicht auf einer leeren Karte.
 - **Eine Darstellung derselben Auswahl:** In der Kopfleiste erscheint ein Schalter „List | Map“. Buch
   und Gruppe aus der Seitenleiste, Suche und Filter gelten für beide.
 - Verschiebbar und zoombar. Pins werden zu Haufen mit Zahl zusammengefasst, ein Haufen öffnet seine Liste,
