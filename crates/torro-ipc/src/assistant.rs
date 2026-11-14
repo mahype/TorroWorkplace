@@ -1,7 +1,7 @@
 //! The assistant on the wire (task C.1, `docs/assistent.md`): what the `assistant.*` requests and
 //! answers carry – engines ([`Engine`]), conversations ([`ConversationSummary`]) and their
 //! entries ([`Entry`]), the window to open ([`ChatWindow`]), its profile ([`Profile`]) and its
-//! memory ([`Note`], task C.10) – and the limits every `assistant.*` request keeps
+//! memory ([`Note`], task C.10), its skills ([`Skill`], issue #703) – and the limits every `assistant.*` request keeps
 //! ([`limit_refusal`]).
 //!
 //! The logic is the core's (`crates/torroworkplace/src/assistant`): it keeps the conversations in
@@ -56,6 +56,19 @@ pub const MAX_NOTE_CHARS: usize = 500;
 /// At most this many notes in the memory; `assistant.remember` beyond it is `error` until the
 /// person forgets some.
 pub const MAX_NOTES: usize = 200;
+
+/// At most this many characters in the text of one skill ([`Skill::text`]).
+pub const MAX_SKILL_CHARS: usize = 8_000;
+
+/// At most this many characters in the name of one skill ([`Skill::name`]): one line.
+pub const MAX_SKILL_NAME_CHARS: usize = 40;
+
+/// At most this many characters in the description of one skill ([`Skill::description`]): one line.
+pub const MAX_SKILL_DESCRIPTION_CHARS: usize = 200;
+
+/// At most this many skills for the assistant and for each bot (issue #703): only one line of each
+/// stands in a prompt, the text is fetched with `assistant.get_skill`.
+pub const MAX_SKILLS: usize = 30;
 
 /// The picture that shows the first letter of the assistant's name ([`Profile::avatar`]).
 pub const LETTER_AVATAR: &str = "letter";
@@ -412,6 +425,73 @@ pub struct Note {
     pub local_only: bool,
 }
 
+/// One skill (issue #703, "Skills" in `docs/assistent.md`): a guide for a recurring task ("How I write
+/// offers") written by the person, for the assistant (`assistant.save_skill`) or a bot (`bots.save_bot`).
+/// Its prompt names it with its description in one line; the text comes with `assistant.get_skill` when
+/// the task fits. All of it is the person's text: data, never instructions, and it never changes rights
+/// or rules.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Skill {
+    /// What the skill is called ("Offers"): one line, at most [`MAX_SKILL_NAME_CHARS`] characters,
+    /// unique without regard to case.
+    pub name: String,
+    /// When it fits ("How I write offers"), one line of at most [`MAX_SKILL_DESCRIPTION_CHARS`]
+    /// characters; may be empty (skills of bots from before issue #703).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// The skill itself (Markdown or plain text), at most [`MAX_SKILL_CHARS`] characters.
+    pub text: String,
+}
+
+impl Skill {
+    /// The skill as `assistant.list_skills` lists it.
+    pub fn summary(&self) -> SkillSummary {
+        SkillSummary { name: self.name.clone(), description: self.description.clone() }
+    }
+
+    /// Whether this skill is called `name`: trimmed, without regard to case.
+    pub fn is_named(&self, name: &str) -> bool {
+        same_skill_name(&self.name, name)
+    }
+}
+
+/// Whether two names of skills are the same: trimmed, without regard to case.
+pub fn same_skill_name(a: &str, b: &str) -> bool {
+    a.trim().to_lowercase() == b.trim().to_lowercase()
+}
+
+/// One skill without its text (`assistant.list_skills`): what a prompt shows of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SkillSummary {
+    /// As [`Skill::name`].
+    pub name: String,
+    /// As [`Skill::description`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
+/// Why a skill is refused, for people; `None` when it keeps every limit: a name of one line of 1 to
+/// [`MAX_SKILL_NAME_CHARS`] characters, a description of one line within
+/// [`MAX_SKILL_DESCRIPTION_CHARS`], a text of 1 to [`MAX_SKILL_CHARS`] characters (`text_required`;
+/// skills of bots may be empty, as before issue #703). Lengths count characters after trimming.
+pub fn skill_refusal(name: &str, description: &str, text: &str, text_required: bool) -> Option<String> {
+    let chars = |text: &str| text.trim().chars().count();
+    let one_line = |text: &str| text.trim().lines().count() <= 1;
+    if name.trim().is_empty() || !one_line(name) || chars(name) > MAX_SKILL_NAME_CHARS {
+        return Some(format!("a skill's name is one line of 1 to {MAX_SKILL_NAME_CHARS} characters"));
+    }
+    if !one_line(description) || chars(description) > MAX_SKILL_DESCRIPTION_CHARS {
+        return Some(format!("a skill's description is one line of at most {MAX_SKILL_DESCRIPTION_CHARS} characters"));
+    }
+    if text_required && text.trim().is_empty() {
+        return Some("the skill's text is empty".into());
+    }
+    if chars(text) > MAX_SKILL_CHARS {
+        return Some(format!("a skill may hold at most {MAX_SKILL_CHARS} characters"));
+    }
+    None
+}
+
 /// What a client may do now (`assistant.my_access`, issue #134): its rights as they apply to the
 /// request that asks, so the assistant, a bot or an agent can tell the person what it may do, and
 /// a test can compare it with what the person set (`clients.list_clients`).
@@ -525,7 +605,7 @@ pub enum ChatWindow {
 /// The `error` answer for an `assistant.*` request that breaks a limit, before anything is looked
 /// at: a message that is blank or over [`MAX_TEXT_CHARS`], a title that is blank, longer than
 /// [`MAX_TITLE_CHARS`] or more than one line, any id over [`MAX_ID_BYTES`], a note that is blank or
-/// over [`MAX_NOTE_CHARS`], and a change of the profile that changes nothing or breaks its limits
+/// over [`MAX_NOTE_CHARS`], a skill beyond its limits ([`skill_refusal`]), and a change of the profile that changes nothing or breaks its limits
 /// ([`profile_refusal`]). `None` for every request within them and for every other request. The
 /// core calls it before rights, approvals and handlers, so nobody is asked to approve what would be
 /// refused anyway.
@@ -548,6 +628,8 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
         Request::Remember { text, .. } if text.trim().chars().count() > MAX_NOTE_CHARS => {
             refuse(format!("a note may hold at most {MAX_NOTE_CHARS} characters"))
         }
+        Request::SaveSkill { name, description, text, .. } => skill_refusal(name, description, text, true)
+            .map(|message| Response::Error { code: "error".into(), message }),
         Request::UpdateProfile { name, description, avatar, personality } => {
             profile_refusal(name.as_deref(), description.as_deref(), avatar.as_deref(), personality.as_deref())
                 .map(|message| Response::Error { code: "error".into(), message })
@@ -633,6 +715,8 @@ fn assistant_ids(request: &Request) -> Vec<&str> {
         }
         Request::OpenChatWindow { window: ChatWindow::Bot(bot) } | Request::ConfirmBot { bot, .. } => ids.push(bot),
         Request::Forget { id } | Request::Remember { replaces: Some(id), .. } => ids.push(id),
+        Request::GetSkill { name } | Request::DeleteSkill { name } => ids.push(name),
+        Request::SaveSkill { replaces: Some(name), .. } => ids.push(name),
         _ => {}
     }
     ids
@@ -813,6 +897,29 @@ mod tests {
         assert_eq!(code(limit_refusal(&remember("Hi", Some(long.clone())))), Some("error".into()), "a long id");
         assert_eq!(code(limit_refusal(&Request::Forget { id: long })), Some("error".into()));
         assert_eq!(code(limit_refusal(&Request::Forget { id: "1a2b3c4d".into() })), None);
+        // Issue #703: a skill keeps the limits of `skill_refusal`, and its text may not be empty.
+        let skill = |name: &str, description: &str, text: &str| Request::SaveSkill {
+            name: name.into(),
+            description: description.into(),
+            text: text.into(),
+            replaces: None,
+        };
+        assert_eq!(code(limit_refusal(&skill("Offers", "How I write offers", "1. Greeting"))), None);
+        assert_eq!(code(limit_refusal(&skill(" ", "", "x"))), Some("error".into()), "a name");
+        assert_eq!(code(limit_refusal(&skill("a\nb", "", "x"))), Some("error".into()), "one line");
+        let name = "a".repeat(MAX_SKILL_NAME_CHARS + 1);
+        assert_eq!(code(limit_refusal(&skill(&name, "", "x"))), Some("error".into()));
+        let description = "a".repeat(MAX_SKILL_DESCRIPTION_CHARS + 1);
+        assert_eq!(code(limit_refusal(&skill("Offers", &description, "x"))), Some("error".into()));
+        assert_eq!(code(limit_refusal(&skill("Offers", "one\ntwo", "x"))), Some("error".into()));
+        assert_eq!(code(limit_refusal(&skill("Offers", "", " "))), Some("error".into()), "a text");
+        let text = "a".repeat(MAX_SKILL_CHARS);
+        assert_eq!(code(limit_refusal(&skill("Offers", "", &text))), None);
+        let text = "a".repeat(MAX_SKILL_CHARS + 1);
+        assert_eq!(code(limit_refusal(&skill("Offers", "", &text))), Some("error".into()));
+        let long = "a".repeat(MAX_ID_BYTES + 1);
+        assert_eq!(code(limit_refusal(&Request::GetSkill { name: long.clone() })), Some("error".into()));
+        assert_eq!(code(limit_refusal(&Request::DeleteSkill { name: long })), Some("error".into()));
     }
 
     #[test]
