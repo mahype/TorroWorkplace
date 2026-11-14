@@ -4145,7 +4145,7 @@ impl Core {
             // A bot that runs for the assistant (task B.2): the log names the bot and the assistant.
             scope = self.lent_scope(key);
             if let Some(LentFor::Delegated(delegation)) = &scope {
-                ids.extend(crate::audit::delegation_ids(&delegation.bot, &delegation.assistant));
+                ids.extend(crate::audit::delegation_ids(&delegation.bot, &delegation.caller));
             }
         }
         let read = match &admitted {
@@ -4343,10 +4343,11 @@ impl Core {
                 via.asking = Some(AskedFrom { conversation, without, mode });
             }
             Some(LentFor::Delegated(delegation)) => {
-                // The lease took its areas out of the bot's rights already; the assistant's, narrowed
-                // the same way, bound them as well. Its client removed meanwhile: nothing runs.
-                let theirs = self.assistant_client().filter(|info| info.id == delegation.assistant);
-                via.origin.behalf = Some(delegation.assistant);
+                // The lease took its areas out of the bot's rights already; the caller's (the assistant's
+                // or a client's from outside, issue #698), narrowed the same way, bound them as well. Its
+                // client removed meanwhile: nothing runs.
+                let theirs = self.caller_client(&delegation.caller);
+                via.origin.behalf = Some(delegation.caller);
                 match via.origin.effective(&rights, theirs.as_ref().map(|info| &info.rights)) {
                     Some(bound) => rights = bound,
                     None => return Err(Refused::Forbidden { command: request.operation().name() }),
@@ -4934,16 +4935,22 @@ impl Core {
         self.clients.list().into_iter().find(|info| info.id == client && info.kind == torro_ipc::api::BOT_CLIENT)
     }
 
-    /// The bot's client of `delegation` (task B.2) with the rights it runs with for the assistant:
-    /// what both the bot's and the assistant's client may now, without the areas of
-    /// [`crate::assistant::Delegation::without`]. `None` when either client is not there (also an
-    /// assistant client other than the one that asked).
+    /// The bot's client of `delegation` (task B.2) with the rights it runs with for its caller: what
+    /// both the bot's and the calling client (the assistant's, or since issue #698 a client from outside)
+    /// may now, without the areas of [`crate::assistant::Delegation::without`]. `None` when either client
+    /// is not there, and for a caller that is a bot's client (no chains).
     fn delegated_client(&self, delegation: &crate::assistant::Delegation) -> Option<torro_ipc::ClientInfo> {
         let mut bot = self.bot_client(&delegation.client)?;
-        let assistant = self.assistant_client().filter(|info| info.id == delegation.assistant)?;
+        let caller = self.caller_client(&delegation.caller)?;
         let origin = delegation_origin(None, delegation);
-        bot.rights = origin.effective(&bot.rights, Some(&assistant.rights))?;
+        bot.rights = origin.effective(&bot.rights, Some(&caller.rights))?;
         Some(bot)
+    }
+
+    /// The client a bot runs for (issue #698, [`crate::assistant::Delegation::caller`]) as stored now: any
+    /// client but a bot's. `None` when it is not there.
+    fn caller_client(&self, caller: &str) -> Option<torro_ipc::ClientInfo> {
+        self.clients.list().into_iter().find(|info| info.id == caller && info.kind != torro_ipc::api::BOT_CLIENT)
     }
 
     /// [`Core::handle_as_assistant`] for the client `client`: the assistant's own or a bot's (task
@@ -4987,7 +4994,7 @@ impl Core {
                 asking = Some(AskedFrom { conversation, without: without.to_vec(), mode });
             }
             Scope::Delegated(delegation) => {
-                ids.extend(crate::audit::delegation_ids(&delegation.bot, &delegation.assistant));
+                ids.extend(crate::audit::delegation_ids(&delegation.bot, &delegation.caller));
                 origin = delegation_origin(Some(engine), delegation);
             }
         }
@@ -13846,13 +13853,13 @@ fn key_hash(key: &Key) -> [u8; 32] {
     sha2::Sha256::digest(key.expose().as_bytes()).into()
 }
 
-/// The origin of a bot's request for the assistant (task B.2): the engine, the areas taken out and
-/// the assistant's client, so an approval never runs with more than both may.
+/// The origin of a bot's request for another client (task B.2, issue #698): the engine, the areas taken
+/// out and the calling client, so an approval never runs with more than both may.
 fn delegation_origin(engine: Option<&str>, delegation: &crate::assistant::Delegation) -> crate::approvals::Origin {
     crate::approvals::Origin {
         engine: engine.map(str::to_string),
         without: delegation.without.clone(),
-        behalf: Some(delegation.assistant.clone()),
+        behalf: Some(delegation.caller.clone()),
         mode: delegation.mode,
         consent: None,
     }
@@ -31911,10 +31918,10 @@ mod tests {
         let delegated = crate::assistant::Actor::Delegated(crate::assistant::Delegation {
             bot: bot.id.clone(),
             client: bot.client.clone(),
-            assistant: client.clone(),
+            caller: client.clone(),
             without: Vec::new(),
             mode: Mode::Default,
-            conversation: "main".into(),
+            conversation: Some("main".into()),
         });
         let web = crate::approvals::WebConsent { conversation: "main".into(), outside: false, by_person: false };
         let search = || Request::WebSearch { query: "Lisbon trams".into(), count: None, language: None };
@@ -32660,10 +32667,10 @@ mod tests {
             crate::assistant::Actor::Delegated(crate::assistant::Delegation {
                 bot: bot.id.clone(),
                 client: bot.client.clone(),
-                assistant: client.id.clone(),
+                caller: client.id.clone(),
                 without,
                 mode: torro_ipc::assistant::Mode::Default,
-                conversation: "main".into(),
+                conversation: Some("main".into()),
             })
         };
         let actor = delegation(Vec::new());
@@ -33211,10 +33218,10 @@ mod tests {
         let actor = crate::assistant::Actor::Delegated(crate::assistant::Delegation {
             bot: bot.id.clone(),
             client: bot.client.clone(),
-            assistant: client.id.clone(),
+            caller: client.id.clone(),
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
-            conversation: "main".into(),
+            conversation: Some("main".into()),
         });
         let delete = |id: &str| Request::DeleteTemplate { id: id.into() };
         let first = waits(Host::run_as(&core, &actor, delete("old"), "test", false).await);
@@ -33296,10 +33303,10 @@ mod tests {
         let actor = crate::assistant::Actor::Delegated(crate::assistant::Delegation {
             bot: bot.id.clone(),
             client: bot.client.clone(),
-            assistant: client.id.clone(),
+            caller: client.id.clone(),
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
-            conversation: "main".into(),
+            conversation: Some("main".into()),
         });
         assert!(Host::lend_as(&core, &actor, "claude-code", &[]).is_none(), "only with the narrowing remembered");
         // A bot's key the core lent without knowing its run does nothing; lent for the bot's own run
@@ -33355,10 +33362,10 @@ mod tests {
         let actor = crate::assistant::Actor::Delegated(crate::assistant::Delegation {
             bot: bot.id.clone(),
             client: bot.client.clone(),
-            assistant: client.id.clone(),
+            caller: client.id.clone(),
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
-            conversation: "main".into(),
+            conversation: Some("main".into()),
         });
         let lent = Host::lend_in(&core, &actor, &conversation.id, "claude-code", &[]).expect("lent");
 

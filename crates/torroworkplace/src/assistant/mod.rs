@@ -1390,8 +1390,8 @@ struct Message {
     mode: torro_ipc::assistant::Mode,
     /// The bot that answers, as stored now (task B.1); `None` for the assistant.
     bot: Option<Bot>,
-    /// The bot runs for the assistant (task B.2): as [`Actor::Delegated`], with what both clients
-    /// may. `None`: as its own client (or the assistant as its own).
+    /// The bot runs for another client (task B.2: the assistant; issue #698: a client from outside): as
+    /// [`Actor::Delegated`], with what both clients may. `None`: as its own client (or the assistant as its own).
     on_behalf: Option<Delegation>,
     /// The client that sent it ([`EntryContent::Message`]'s `from`, issue #305); `None`: the person
     /// wrote it (task B.2), sent with the app key. Only the person's message can name a bot for the
@@ -1453,7 +1453,8 @@ pub const TEST_CLIENT: &str = "7e57c11e";
 /// Answers an `assistant.*` request and `bots.ask_bot` (task B.1), for the app key and for a client
 /// the core admitted ([`crate::core::Core::handle_from`]). `from`: the client that sent it, `None`
 /// for the app key (task B.2): then a message is the person's own, and only such a message can name
-/// a bot for the assistant to ask; a client's message keeps its id (issue #305). What would be
+/// a bot for the assistant to ask; a client's message keeps its id (issue #305), and a bot it asks or writes
+/// to runs with what both may (issue #698, [`for_caller`]). What would be
 /// refused anyway comes first ([`Assistant::refusal`]); the handlers check again
 /// under their lock (a conversation may have been deleted or started answering meanwhile).
 pub async fn answer_from(
@@ -1482,12 +1483,14 @@ pub async fn answer_from(
             // Without a model, the bot's own when it answers with its own engine.
             let model =
                 model.or_else(|| bot.as_ref().filter(|bot| bot.engine == engine).and_then(|bot| bot.model.clone()));
-            let kind = match assistant.engine(ai, &engine, &Actor::of(bot.as_ref())).await {
+            // A client's chat with a bot (issue #698): the bot runs with what both may.
+            let on_behalf = bot.as_ref().and_then(|bot| for_caller(bot, from.as_deref(), &without, mode));
+            let actor = on_behalf.clone().map_or_else(|| Actor::of(bot.as_ref()), Actor::Delegated);
+            let kind = match assistant.engine(ai, &engine, &actor).await {
                 Ok(kind) => kind,
                 Err(refused) => return refused,
             };
-            let message =
-                Message { conversation, engine, model, effort, text, without, mode, bot, on_behalf: None, from };
+            let message = Message { conversation, engine, model, effort, text, without, mode, bot, on_behalf, from };
             // A chat about a mail (issue #605): refused before anything is stored.
             let about = match assistant.about_for(&message, about, kind).await {
                 Ok(about) => about,
@@ -1499,7 +1502,11 @@ pub async fn answer_from(
         Request::CheckAbout { .. } => Response::Ok,
         Request::AskBot { bot, text, conversation } => {
             let Some(bot) = assistant.bots.get(&bot).await else { return crate::bots::no_bot(&bot) };
-            let kind = match assistant.engine(ai, &bot.engine, &Actor::of(Some(&bot))).await {
+            let mode = torro_ipc::assistant::Mode::Default;
+            // A client asks the bot (issue #698): it runs with what both may, never with more than the caller.
+            let on_behalf = for_caller(&bot, from.as_deref(), &[], mode);
+            let actor = on_behalf.clone().map_or_else(|| Actor::of(Some(&bot)), Actor::Delegated);
+            let kind = match assistant.engine(ai, &bot.engine, &actor).await {
                 Ok(kind) => kind,
                 Err(refused) => return refused,
             };
@@ -1511,9 +1518,9 @@ pub async fn answer_from(
                 effort: None,
                 text,
                 without: Vec::new(),
-                mode: torro_ipc::assistant::Mode::Default,
+                mode,
                 bot: Some(bot),
-                on_behalf: None,
+                on_behalf,
                 from,
             };
             assistant.send(message, kind, Utc::now()).await
@@ -1526,6 +1533,21 @@ pub async fn answer_from(
         Request::ConfirmBot { conversation, bot } => assistant.confirm_bot(&conversation, &bot).await,
         other => failure(&format!("{} is no command of the assistant", other.operation().name())),
     }
+}
+
+/// The delegation of `bot`'s run for the client `from` (issue #698): a client from outside that asks the bot
+/// or writes to it reaches through it only what both clients may ([`Actor::Delegated`]), without `without`
+/// and in `mode`; the bot's own conversation counts for the web's yes. `None` for the app key (`from` is
+/// `None`): the person's own chat with the bot runs as the bot's client.
+fn for_caller(bot: &Bot, from: Option<&str>, without: &[Area], mode: torro_ipc::assistant::Mode) -> Option<Delegation> {
+    Some(Delegation {
+        bot: bot.id.clone(),
+        client: bot.client.clone(),
+        caller: from?.to_string(),
+        without: without.to_vec(),
+        mode,
+        conversation: None,
+    })
 }
 
 /// `torroassistant` with `arguments[1..]`, started as `apps.open_app` starts apps (issue #279,

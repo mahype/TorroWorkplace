@@ -393,21 +393,23 @@ pub enum Actor {
     /// The client of a bot (kind `torro_ipc::api::BOT_CLIENT`), by the client's id as the bot keeps
     /// it ([`torro_ipc::bots::Bot::client`]).
     Bot(String),
-    /// The client of a bot that runs for the assistant (task B.2): the bot's client with what both
-    /// it and the assistant's client may ([`Delegation`]).
+    /// The client of a bot that runs for another client (task B.2, issue #698): the bot's client with
+    /// what both it and the calling client may ([`Delegation`]).
     Delegated(Delegation),
 }
 
-/// A bot's run on behalf of the assistant (task B.2, [`super::Assistant::delegate`]): who runs, for
-/// whom, and what is switched off. Its rights are never more than both clients have now.
+/// A bot's run on behalf of another client (task B.2, [`super::Assistant::delegate`]; issue #698: also a
+/// client from outside through `bots.ask_bot` or `assistant.send_message` with a bot): who runs, for whom,
+/// and what is switched off. Its rights are never more than both clients have now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delegation {
     /// The bot's id ([`torro_ipc::bots::Bot::id`]), for the audit log.
     pub bot: String,
     /// The bot's client id ([`torro_ipc::bots::Bot::client`]): the run runs as this client.
     pub client: String,
-    /// The assistant's client id: its rights of now bound the run as well.
-    pub assistant: String,
+    /// The client the bot runs for: the assistant's own, or a client from outside that asked it or wrote to
+    /// it (issue #698). Its rights of now bound the run as well.
+    pub caller: String,
     /// Areas taken out of both: those switched off in the assistant's conversation, and for an
     /// agent driving the assistant those its key was lent without (always mail).
     pub without: Vec<Area>,
@@ -416,8 +418,10 @@ pub struct Delegation {
     pub mode: Mode,
     /// The assistant's conversation that asked (issue #305, task WEB.5): the bot's web commands go
     /// by the person's yes to the web there ([`Host::run_web`]), not by one of the bot's own
-    /// conversation, and what that conversation read from outside counts for them too.
-    pub conversation: String,
+    /// conversation, and what that conversation read from outside counts for them too. `None` for a run
+    /// a client from outside started (issue #698): then the bot's own conversation counts, and its yes
+    /// is the person's there.
+    pub conversation: Option<String>,
 }
 
 impl Actor {
@@ -693,7 +697,8 @@ pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: 
     // there (what the assistant's model read when it asked the bot).
     let mut outside = from_client || reads_outside(&job.history);
     if let Actor::Delegated(delegation) = &job.actor
-        && let Response::Conversation { entries, .. } = assistant.get(&delegation.conversation, None).await
+        && let Some(asked) = &delegation.conversation
+        && let Response::Conversation { entries, .. } = assistant.get(asked, None).await
     {
         outside |= reads_outside(&entries) || sent_by_a_client(&entries, &Actor::Assistant);
     }
@@ -1236,14 +1241,15 @@ impl Answering {
 
     /// What [`Host::run_web`] needs for `request` when it is a command of the tool `web` (issue #305,
     /// task WEB.5); `None` for every other request. The yes is the conversation's: this answer's, for
-    /// a bot that runs for the assistant the assistant's ([`Delegation::conversation`]). An address
+    /// a bot that runs for the assistant the assistant's ([`Delegation::conversation`]), for one a client from
+    /// outside started the bot's own (issue #698). An address
     /// counts as the person's only when one of their messages here holds it word for word
     /// ([`by_person`], [`Answering::said`]); the messages in a bot's conversation for the assistant are
     /// the assistant's model's, so there none does.
     fn web_consent(&self, request: &Request) -> Option<crate::approvals::WebConsent> {
         let conversation = match &self.job.actor {
-            Actor::Delegated(delegation) => delegation.conversation.clone(),
-            Actor::Assistant | Actor::Bot(_) => self.job.conversation.clone(),
+            Actor::Delegated(Delegation { conversation: Some(asked), .. }) => asked.clone(),
+            Actor::Delegated(_) | Actor::Assistant | Actor::Bot(_) => self.job.conversation.clone(),
         };
         let by_person = match request {
             Request::WebSearch { .. } => false,
@@ -1534,12 +1540,13 @@ fn reads_outside(entries: &[Entry]) -> bool {
 
 /// Whether `history` holds a message a client sent, not the person ([`EntryContent::Message`]'s
 /// `from`, issue #305): data from outside in every turn. For a bot's run for the assistant
-/// ([`Actor::Delegated`]) the assistant's own messages do not count: its model knew only what its
-/// conversation read, which counts there ([`Delegation::conversation`]).
+/// ([`Actor::Delegated`] with a [`Delegation::conversation`]) the assistant's own messages do not count: its
+/// model knew only what its conversation read, which counts there. A client from outside (issue #698, no
+/// conversation) wrote its message itself: it counts.
 fn sent_by_a_client(history: &[Entry], actor: &Actor) -> bool {
     let asking = match actor {
-        Actor::Delegated(delegation) => Some(delegation.assistant.as_str()),
-        Actor::Assistant | Actor::Bot(_) => None,
+        Actor::Delegated(Delegation { caller, conversation: Some(_), .. }) => Some(caller.as_str()),
+        Actor::Delegated(_) | Actor::Assistant | Actor::Bot(_) => None,
     };
     history.iter().any(|entry| match &entry.content {
         EntryContent::Message { from: Some(from), .. } => Some(from.as_str()) != asking,
@@ -3337,10 +3344,10 @@ pub(crate) mod tests {
         let delegation = Delegation {
             bot: bot.id.clone(),
             client: bot.client.clone(),
-            assistant: "a55e5517".into(),
+            caller: "a55e5517".into(),
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
-            conversation: main.clone(),
+            conversation: Some(main.clone()),
         };
         let message = Message {
             conversation: None,
@@ -3352,7 +3359,7 @@ pub(crate) mod tests {
             mode: torro_ipc::assistant::Mode::Default,
             bot: Some(bot),
             // As the assistant sends it (`Assistant::delegate`).
-            from: Some(delegation.assistant.clone()),
+            from: Some(delegation.caller.clone()),
             on_behalf: Some(delegation),
         };
         let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
@@ -3408,10 +3415,10 @@ pub(crate) mod tests {
         let delegation = Delegation {
             bot: bot.id.clone(),
             client: bot.client.clone(),
-            assistant: "a55e5517".into(),
+            caller: "a55e5517".into(),
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
-            conversation: main.clone(),
+            conversation: Some(main.clone()),
         };
         let message = Message {
             conversation: None,
@@ -3422,7 +3429,7 @@ pub(crate) mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: Some(bot),
-            from: Some(delegation.assistant.clone()),
+            from: Some(delegation.caller.clone()),
             on_behalf: Some(delegation),
         };
         let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
@@ -3539,17 +3546,20 @@ pub(crate) mod tests {
         let delegation = Delegation {
             bot: "1a2b3c4d".into(),
             client: "9f8e7d6c".into(),
-            assistant: "a55e5517".into(),
+            caller: "a55e5517".into(),
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
-            conversation: "main".into(),
+            conversation: Some("main".into()),
         };
         let assistants = [message(1, Some("a55e5517"))];
         assert!(!sent_by_a_client(&persons, &Actor::Assistant));
         assert!(sent_by_a_client(&clients, &Actor::Assistant));
         assert!(sent_by_a_client(&assistants, &Actor::Bot("9f8e7d6c".into())), "in the bot's own run");
         assert!(!sent_by_a_client(&assistants, &Actor::Delegated(delegation.clone())));
-        assert!(sent_by_a_client(&clients, &Actor::Delegated(delegation)), "another client's still counts");
+        assert!(sent_by_a_client(&clients, &Actor::Delegated(delegation.clone())), "another client's still counts");
+        // A client from outside that asked the bot (issue #698): its own message counts.
+        let outside = Delegation { conversation: None, ..delegation };
+        assert!(sent_by_a_client(&assistants, &Actor::Delegated(outside)), "the caller's own message counts");
     }
 
     // ----- Issue #605: a chat about a mail -----

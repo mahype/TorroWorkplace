@@ -729,11 +729,11 @@ pub fn engine_id(engine: &str) -> String {
     }
 }
 
-/// The ids that say a bot ran for the assistant (task B.2), next to the line of the bot's client:
-/// `bot:<the bot's id>` and `for:<the assistant's client id>`, so the log names both. Ids that do
-/// not have the form the core makes are hashed.
-pub fn delegation_ids(bot: &str, assistant: &str) -> Vec<String> {
-    vec![made_id("bot", bot), behalf_id(assistant)]
+/// The ids that say a bot ran for another client (task B.2: the assistant; issue #698: a client from
+/// outside), next to the line of the bot's client: `bot:<the bot's id>` and `for:<the caller's client id>`,
+/// so the log names both. Ids that do not have the form the core makes are hashed.
+pub fn delegation_ids(bot: &str, caller: &str) -> Vec<String> {
+    vec![made_id("bot", bot), behalf_id(caller)]
 }
 
 /// `account:<id>` for each mail account `contacts.suggest_recipients` read (issue #460), as
