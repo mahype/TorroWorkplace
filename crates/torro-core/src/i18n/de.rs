@@ -4003,6 +4003,13 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Chats with the assistant, which acts with its own rights",
         "Chats mit dem Assistenten, der mit eigenen Rechten handelt",
     ),
+    // Issue #697: approvals for several conversations at once.
+    ("Archive 1 assistant conversation", "1 Unterhaltung des Assistenten archivieren"),
+    ("Archive {n} assistant conversations", "{n} Unterhaltungen des Assistenten archivieren"),
+    ("Delete 1 assistant conversation for good", "1 Unterhaltung des Assistenten endgültig löschen"),
+    ("Delete {n} assistant conversations for good", "{n} Unterhaltungen des Assistenten endgültig löschen"),
+    ("Restore 1 assistant conversation", "1 Unterhaltung des Assistenten zurückholen"),
+    ("Restore {n} assistant conversations", "{n} Unterhaltungen des Assistenten zurückholen"),
     ("Delete an unknown assistant conversation", "Eine unbekannte Unterhaltung des Assistenten löschen"),
     ("Delete the assistant conversation \"{title}\"", "Die Unterhaltung „{title}“ des Assistenten löschen"),
     (
