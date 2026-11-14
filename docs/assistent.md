@@ -136,7 +136,12 @@ Agenten im Terminal.
   Karte „Allow“ ist ein Klick des Menschen, nie ein Werkzeug des Modells.
 - **Keine Schleife:** Der Client des Assistenten darf im Bereich `assistant` nur sein Gedächtnis
   (`list_memories`, `remember`, `forget`) und Karten zeigen (`show_items`, `get_cards`); Nachrichten schicken, Unterhaltungen und das eigene Profil
-  sind für ihn gesperrt, fest im Kern, nicht über Rechte.
+  sind für ihn gesperrt, fest im Kern, nicht über Rechte. Zweite Ausnahme, nur zum Lesen (#704): Er darf
+  seine Unterhaltungen durchsuchen (`search_conversations`), auch ohne den Bereich `assistant`. Der Kern
+  antwortet ihm enger als anderen Clients: nur seine eigenen Unterhaltungen (keine mit Bots), keine zu einer
+  Mail, die er nicht lesen darf, und keinen Treffer nach einem Befehl eines Bereichs, den er heute nicht
+  lesen darf. Nach einer Suche gilt die Unterhaltung als eine, die fremde Daten gelesen hat (eine neue Notiz
+  wartet auf die Person, vor dem Web fragt er noch einmal). Bots bekommen die Suche nicht.
 - **Sichtbar:** Kopf des Chats zeigt kurz, worauf der Assistent gerade Zugriff hat (kleine Symbole
   je Bereich), damit man nicht raten muss.
 
@@ -332,7 +337,11 @@ Agenten mit eigenem Profil, die auf ein Fachgebiet zugeschnitten sind, z. B. „
 ## Die App `torroassistant`
 
 - **Fenster:** Seitenleiste mit Unterhaltungen (neueste oben, Suche), rechts der Verlauf, unten das
-  Eingabefeld mit Antrieb-Auswahl. Mini-Größe: nur Eingabe und letzte Antwort (für eine Kachel).
+  Eingabefeld mit Antrieb-Auswahl. Die Suche filtert mit einem Zeichen die Titel; ab zwei Zeichen sucht sie
+  im Verlauf aller Unterhaltungen (#704) und zeigt unter „Results“ je Unterhaltung einen Ausschnitt. Ein
+  Treffer öffnet die Unterhaltung an der Fundstelle, die Nachricht neutral hinterlegt. Gesucht wird in
+  Titeln, Nachrichten und Antworten, nie in dem, was ein Werkzeug geantwortet hat; Protokoll und Log nennen
+  keine Suchwörter. Mini-Größe: nur Eingabe und letzte Antwort (für eine Kachel).
 - **Werkzeug-Aufrufe** erscheinen zusammengeklappt als eine Zeile („Searched mail · 12 results“,
   „Created event · Tue 14:00“), aufklappbar mit Eingabe und Ergebnis. Was geändert wurde, ist
   anklickbar und öffnet die passende App (Termin im Kalender, Eintrag in der Inbox).
@@ -818,6 +827,7 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 |---|---|---|---|
 | Antriebe auflisten (installiert, verbunden, Modell) | Auswahl im Eingabefeld | `assistant.list_engines` · Read | `assistant_list_engines` |
 | Unterhaltungen auflisten | Seitenleiste | `assistant.list_conversations` · Read | `assistant_list_conversations` |
+| Unterhaltungen durchsuchen (#704) | Suchfeld der Seitenleiste (ab zwei Zeichen) | `assistant.search_conversations` · Read (der Assistent durch seine Art, nur seine eigenen; Bots nie) | `assistant_search_conversations` |
 | Unterhaltung lesen (ab Stelle) | Verlauf | `assistant.get_conversation` · Read | `assistant_get_conversation` |
 | Nachricht schicken (neue oder bestehende Unterhaltung) | Eingabefeld | `assistant.send_message` · Write (startet einen Modelllauf) | `assistant_send_message` |
 | Fragen zu einer Mail | Mail › „Ask AI…“ (Paneel) | `assistant.send_message` mit `about` · Write | `assistant_send_message` mit `about` |
