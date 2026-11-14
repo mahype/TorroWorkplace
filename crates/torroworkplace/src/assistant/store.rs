@@ -31,7 +31,6 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use torro_core::ai::Effort;
-use torro_ipc::api::{Area, CATALOGUE};
 use torro_ipc::assistant::{ConversationSummary, Entry, EntryContent, HitKind, MailRef, SNIPPET_CHARS};
 
 /// The extension of a conversation's file.
@@ -245,9 +244,9 @@ pub struct Found {
     pub snippet: String,
     /// The text may come from outside the suite ([`torro_ipc::assistant::ConversationHit::untrusted`]).
     pub untrusted: bool,
-    /// The areas of the commands that ran before it in the conversation and did not fail: what its text
-    /// may tell of. A command the catalogue does not name (a server's tool) counts as `extensions`.
-    pub after: BTreeSet<Area>,
+    /// The commands that ran before it in the conversation and did not fail, by their names as the tool lines
+    /// keep them (a server's tool as `ext_…`): what its text may tell of.
+    pub after: BTreeSet<String>,
 }
 
 impl Conversation {
@@ -274,7 +273,7 @@ impl Conversation {
                 EntryContent::Answer { text, .. } => (HitKind::Answer, text, false),
                 EntryContent::Tool { name, error: None, .. } => {
                     outside |= super::tools::may_have_read_untrusted(name);
-                    after.insert(area_of(name));
+                    after.insert(name.clone());
                     continue;
                 }
                 _ => continue,
@@ -298,15 +297,10 @@ impl Conversation {
     }
 }
 
-/// The area of the command `name` as a tool line keeps it; `extensions` for a name the catalogue does not
-/// know (a server's tool, issue #302).
-fn area_of(name: &str) -> Area {
-    CATALOGUE.iter().find(|command| command.name == name).map_or(Area::Extensions, |command| command.area)
-}
-
-/// The words of a search (issue #704): `query` split at white space, in small letters.
+/// The words of a search (issue #704): `query` split at white space, in small letters letter by letter, as
+/// [`snippet`] lowers the text (`str::to_lowercase` would end a word in `ς` where the text has `σ`).
 pub fn words_of(query: &str) -> Vec<String> {
-    query.split_whitespace().map(str::to_lowercase).collect()
+    query.split_whitespace().map(|word| word.chars().flat_map(char::to_lowercase).collect()).collect()
 }
 
 /// When `text` holds every one of `words` (in small letters): the text around the first of them, white
@@ -542,6 +536,7 @@ mod tests {
         let grown = format!("{} İİİ flight", "y".repeat(200));
         assert!(snippet(&grown, &words).expect("found").contains("flight"), "a letter of two in small letters");
         assert_eq!(words_of("  Lisbon\tFLIGHT "), ["lisbon", "flight"]);
+        assert!(snippet("ΟΔΟΣ", &words_of("ΟΔΟΣ")).is_some(), "the same small letters for words and text");
     }
 
     fn answer(text: &str) -> EntryContent {

@@ -4017,8 +4017,9 @@ mod tests {
             .collect();
         assert_eq!(
             catalogue.len(),
-            21,
-            "nine of task C.1, five of C.10, one of issue #134, one of #225, one of #605, four of #703: {catalogue:?}"
+            22,
+            "nine of task C.1, five of C.10, one of issue #134, one of #225, one of #605, four of #703, one of #704: \
+             {catalogue:?}"
         );
         assert!(catalogue.iter().all(|name| name.starts_with("assistant_") && names.contains(name.as_str())));
         // But the person's yes to asking a bot (task B.2), which no agent may give.
@@ -4688,8 +4689,8 @@ mod tests {
         const CONVERSATION: &str = "0123456789abcdef";
 
         /// "Keine Schleife" (tasks C.1, C.10): the assistant's own client is refused every assistant
-        /// tool but its memory, which it reads, adds to and forgets from, whatever its rights in the
-        /// area say; forgetting waits for the person, as deleting does with its rights. It reads its
+        /// tool but its memory, which it reads, adds to and forgets from, and the search of its conversations
+        /// (issue #704), whatever its rights in the area say; forgetting waits for the person, as deleting does with its rights. It reads its
         /// own access (issue #134): the rights the person set, as `clients.list_clients` has them.
         #[tokio::test]
         async fn the_assistants_own_client_gets_its_memory_and_no_other_assistant_tool() {
@@ -4726,6 +4727,7 @@ mod tests {
                 "assistant_get_skill",
                 "assistant_save_skill",
                 "assistant_delete_skill",
+                "assistant_search_conversations",
             ];
             let tools: BTreeSet<&str> =
                 tools().iter().map(|tool| tool.name.as_ref()).filter(|name| name.starts_with("assistant_")).collect();
@@ -4755,6 +4757,10 @@ mod tests {
                 .expect("rights in the answer");
             assert_eq!(rights, Rights::assistant(), "what the person set: {access}");
             assert!(access["structuredContent"]["access"].get("withheld").is_none(), "its own key: {access}");
+            // Issue #704: it searches its own conversations, reading only.
+            let found = session.call("assistant_search_conversations", json!({"query": "flight"})).await;
+            assert_eq!(found["isError"], false, "{found}");
+            assert_eq!(found["structuredContent"]["hits"], json!([]), "{found}");
         }
 
         #[tokio::test]

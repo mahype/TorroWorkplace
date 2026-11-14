@@ -218,7 +218,8 @@ pub fn allowed(rights: Option<&Rights>, without: &[Area]) -> Vec<Arc<Tool>> {
 /// areas `without`, in catalogue order (see the module's documentation). `None` rights (no client
 /// yet): none. Contacts only with an address book in the rights. A command of one of the assistant's own tools only with the tool in
 /// [`Rights::tools`]. The assistant's own client ([`ASSISTANT_CLIENT`]) gets its memory and
-/// [`ASSISTANT_BOT_TOOLS`] (task B.2) and [`SEARCH`] (issue #704) besides its rights, a bot's ([`torro_ipc::api::BOT_CLIENT`],
+/// [`ASSISTANT_BOT_TOOLS`] (task B.2) and [`SEARCH`] (issue #704) besides its rights, a bot's
+/// ([`torro_ipc::api::BOT_CLIENT`],
 /// task B.1) its rights only and reading its skills ([`BOT_SKILL_TOOLS`], issue #703); both get
 /// [`MY_ACCESS`] (issue #134) and [`GET_HELP`] (issue #702). Neither is offered any other tool
 /// of `assistant` or `bots`, and a bot no tool of `bots` (no chains; the core refuses it them).

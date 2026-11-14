@@ -106,6 +106,7 @@ use torro_setups::launch::{Launcher, SystemLauncher};
 use crate::account::ai::AiAccounts;
 use crate::bots::Bots;
 pub use delegate::Asking;
+pub(crate) use model::readable;
 pub(crate) use model::workflow_choice;
 pub use model::{Actor, AskedIn, Delegation, Host, Limits, ModelAccess};
 use store::{Conversation, Line};
@@ -412,7 +413,7 @@ impl Assistant {
         for conversation in conversations {
             let found =
                 conversation.find(&words).into_iter().rev().filter(|found| {
-                    scope.readable.is_none_or(|readable| found.after.iter().all(|area| readable(*area)))
+                    scope.readable.is_none_or(|readable| found.after.iter().all(|name| readable(name)))
                 });
             for found in found.take(HITS_PER_CONVERSATION) {
                 if hits.len() >= limit {
@@ -1415,9 +1416,10 @@ fn with_bots(mut summary: ConversationSummary, bots: &[String]) -> ConversationS
 pub struct Scope<'a> {
     /// Only the assistant's own conversations, none with a bot: for the assistant's own client.
     pub own_only: bool,
-    /// Whether the caller may read an area now; a hit after a command of an area it may not is left out.
-    /// `None`: every hit, for callers that may read the whole conversation anyway.
-    pub readable: Option<&'a (dyn Fn(Area) -> bool + Sync)>,
+    /// Whether the caller may still read what a command (its catalogue name, as a tool line keeps it) returned
+    /// ([`readable`], issue #713); a hit after a command it may not is left out. `None`: every hit, for callers
+    /// that may read the whole conversation anyway.
+    pub readable: Option<&'a (dyn Fn(&str) -> bool + Sync)>,
     /// Whether the caller may read the mail a conversation is about (issue #605): one about another is not
     /// there for it.
     pub reads_about: &'a (dyn Fn(&MailRef) -> bool + Sync),
@@ -1995,7 +1997,7 @@ pub(crate) mod tests {
         assert_eq!(marked("0000000000000003"), [true], "a client's message");
         assert_eq!(marked("0000000000000004"), [true], "a bot's");
 
-        let no_mail = |area: Area| area != Area::Mail;
+        let no_mail = |name: &str| !name.starts_with("mail.");
         let narrow = Scope { own_only: true, readable: Some(&no_mail), reads_about: &|_| false };
         let seen: Vec<(String, Option<u64>)> = hits(assistant.search("invoice", None, &narrow).await)
             .into_iter()

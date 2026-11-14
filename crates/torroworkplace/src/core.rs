@@ -4514,6 +4514,18 @@ impl Core {
         if matches!(request, Request::MyAccess) {
             return Ok(my_access(&rights, &via.origin));
         }
+        // Searching the conversations (issue #704) with the rights narrowed by what the conversation switched
+        // off, as its access tells them: a hit after mail stays out of a chat without mail.
+        if let Request::SearchConversations { query, limit } = &request {
+            if let Some(refused) = torro_ipc::assistant::limit_refusal(&request) {
+                return Ok(refused);
+            }
+            let narrowed = match my_access(&rights, &via.origin) {
+                Response::MyAccess { access } => access.rights,
+                _ => rights.clone(),
+            };
+            return Ok(self.search_conversations(query, *limit, Reach::Client(&narrowed), Some(&id)).await);
+        }
         // A bot reads its own skills (issue #703), never the assistant's: looked up by its client.
         if matches!(request, Request::ListSkills | Request::GetSkill { .. })
             && self.client_kind(&id).as_deref() == Some(torro_ipc::api::BOT_CLIENT)
@@ -7125,7 +7137,9 @@ impl Core {
             // sending; the handler checks the mail itself.
             Request::Unsubscribe { account, id } => self.unsubscribe(&account, &id, reach, None).await,
             // Searching the conversations (issue #704): rights were checked in `handle_from`.
-            Request::SearchConversations { query, limit } => self.search_conversations(&query, limit, reach, caller).await,
+            Request::SearchConversations { query, limit } => {
+                self.search_conversations(&query, limit, reach, caller).await
+            }
             // The assistant (task C.1): rights were checked in `handle_from`; the assistant runs
             // with its own client, not with the caller's reach.
             request @ (Request::ListEngines
@@ -11521,14 +11535,15 @@ impl Core {
             .then(|| Response::Error { code: "not-found".into(), message: format!("no conversation {id:?}") })
     }
 
-    /// `answered`, an answer of the assistant, without the conversations about a mail (issue #605) of an account
-    /// `reach` may not read ([`Core::about_hidden`]): `assistant.list_conversations` leaves them out.
     /// `assistant.search_conversations` (issue #704) for `reach` and the client `caller`. A caller sees the
     /// conversations `assistant.list_conversations` lists it (one about a mail only while it may read that
     /// mail, issue #605) and every hit in them: it may read each of them whole anyway. The assistant's own
     /// client sees narrower (decision 2 of the plan): its own conversations only, none with a bot, and no
-    /// hit after a command of an area its rights of now do not let it read. What it uses by its kind
-    /// (`assistant`, `bots`, the help of `system`) never counts against it.
+    /// hit after a command whose answer its rights of now would not let it read again
+    /// ([`crate::assistant::readable`], the rule of issue #713: areas, switched-off commands, its tools, the
+    /// servers offered to it), and none after a search or a bot's answer, which may retell what any area said.
+    /// Its rights come narrowed by what its conversation switched off
+    /// ([`Core::handle_from`]).
     async fn search_conversations(
         &self,
         query: &str,
@@ -11540,21 +11555,23 @@ impl Core {
             self.clients.list().iter().any(|info| info.id == id && info.kind == torro_ipc::api::ASSISTANT_CLIENT)
         });
         let reads_about = |about: &torro_ipc::assistant::MailRef| reads_mail(reach, &about.account);
-        let readable = |area: Area| {
-            matches!(area, Area::Assistant | Area::Bots | Area::System)
-                || match reach {
-                    Reach::Suite => true,
-                    Reach::Client(rights) => rights.area(area).allows(Access::Read),
-                }
+        let servers = if assistant { self.extension_tools(reach) } else { Vec::new() };
+        // After a search or a bot's answer an answer may retell anything, of any area read then: never again.
+        let readable = |name: &str| match reach {
+            Reach::Suite => true,
+            Reach::Client(_) if matches!(name, "assistant.search_conversations" | "bots.ask_bot") => false,
+            Reach::Client(rights) => crate::assistant::readable(name, rights, &servers),
         };
         let scope = crate::assistant::Scope {
             own_only: assistant,
-            readable: assistant.then_some(&readable as &(dyn Fn(Area) -> bool + Sync)),
+            readable: assistant.then_some(&readable as &(dyn Fn(&str) -> bool + Sync)),
             reads_about: &reads_about,
         };
         self.assistant.search(query, limit, &scope).await
     }
 
+    /// `answered`, an answer of the assistant, without the conversations about a mail (issue #605) of an account
+    /// `reach` may not read ([`Core::about_hidden`]): `assistant.list_conversations` leaves them out.
     fn about_within(&self, answered: Response, reach: Reach<'_>) -> Response {
         match answered {
             Response::Conversations { mut conversations } => {
@@ -32036,7 +32053,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let folder = dir.path().join("assistant");
         let (own, bots) = ("0000000000000001", "0000000000000002");
-        let contents = vec![message("Our flight?"), tool("mail.get_message"), said("The flight from the mail")];
+        let contents = vec![
+            message("Our flight?"),
+            tool("mail.get_message"),
+            said("The flight from the mail"),
+            tool("assistant.search_conversations"),
+            said("As found: the flight again"),
+        ];
         written(&folder, own, "Trip", contents, &[], |_| {});
         written(&folder, bots, "Planner", vec![said("A bot's flight")], &[], |c| c.bot = Some("b1".into()));
         let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
@@ -32053,13 +32076,13 @@ mod tests {
         reading.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
         core.clients.update(&assistant.id, reading).await.expect("updated");
         let found = places(ask(&core, Some(&key), search()).await);
-        assert_eq!(found, [(own.to_string(), Some(3)), (own.to_string(), Some(1))], "with mail, newest first");
+        assert_eq!(found, [(own.to_string(), Some(3)), (own.to_string(), Some(1))], "with mail, never after a search");
 
         let mut agent = RightsTemplate::ReadAndWrite.rights();
         agent.areas.insert(Area::Assistant, AreaRights { level: Level::Read, admin: false });
         let (_, other) = client(&core, agent).await;
         let found = places(ask(&core, Some(&other), search()).await);
-        assert_eq!(found.len(), 3, "what it lists, the bot's too: {found:?}");
+        assert_eq!(found.len(), 4, "what it lists, the bot's too: {found:?}");
         let (_, without) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
         assert_eq!(code(&ask(&core, Some(&without), search()).await), "forbidden", "the area is off");
         let (_, bot) = core.clients.add("Planner", torro_ipc::api::BOT_CLIENT, Rights::none()).await.expect("bot");
