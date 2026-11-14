@@ -3981,8 +3981,8 @@ mod tests {
             .collect();
         assert_eq!(
             catalogue.len(),
-            17,
-            "nine of task C.1, five of C.10, one of issue #134, one of #225, one of #605: {catalogue:?}"
+            21,
+            "nine of task C.1, five of C.10, one of issue #134, one of #225, one of #605, four of #703: {catalogue:?}"
         );
         assert!(catalogue.iter().all(|name| name.starts_with("assistant_") && names.contains(name.as_str())));
         // But the person's yes to asking a bot (task B.2), which no agent may give.
@@ -4140,6 +4140,40 @@ mod tests {
             request_for("assistant_remember", args(json!({"note": "x"})), &Utc),
             Err(ToolError::Input(_))
         ));
+    }
+
+    /// Issue #703: the skill tools build their requests; `description` and `replaces` may be left out.
+    #[test]
+    fn the_skill_tools_build_their_requests() {
+        assert_eq!(request_for("assistant_list_skills", args(json!({})), &Utc), Ok(Request::ListSkills));
+        assert_eq!(
+            request_for("assistant_get_skill", args(json!({"name": "Offers"})), &Utc),
+            Ok(Request::GetSkill { name: "Offers".into() })
+        );
+        assert_eq!(
+            request_for("assistant_save_skill", args(json!({"name": "Offers", "text": "Be brief."})), &Utc),
+            Ok(Request::SaveSkill {
+                name: "Offers".into(),
+                description: String::new(),
+                text: "Be brief.".into(),
+                replaces: None
+            })
+        );
+        let change = json!({"name": "Offers", "description": "How I write offers", "text": "x", "replaces": "offers"});
+        assert_eq!(
+            request_for("assistant_save_skill", args(change), &Utc),
+            Ok(Request::SaveSkill {
+                name: "Offers".into(),
+                description: "How I write offers".into(),
+                text: "x".into(),
+                replaces: Some("offers".into())
+            })
+        );
+        assert_eq!(
+            request_for("assistant_delete_skill", args(json!({"name": "Offers"})), &Utc),
+            Ok(Request::DeleteSkill { name: "Offers".into() })
+        );
+        assert!(matches!(request_for("assistant_get_skill", args(json!({})), &Utc), Err(ToolError::Input(_))));
     }
 
     fn message(seq: u64, text: &str) -> Entry {
@@ -4631,7 +4665,16 @@ mod tests {
                 ("assistant_get_profile", json!({})),
                 ("assistant_update_profile", json!({"name": "Jarvis"})),
             ];
-            let own = ["assistant_list_memories", "assistant_remember", "assistant_forget", "assistant_my_access"];
+            let own = [
+                "assistant_list_memories",
+                "assistant_remember",
+                "assistant_forget",
+                "assistant_my_access",
+                "assistant_list_skills",
+                "assistant_get_skill",
+                "assistant_save_skill",
+                "assistant_delete_skill",
+            ];
             let tools: BTreeSet<&str> =
                 tools().iter().map(|tool| tool.name.as_ref()).filter(|name| name.starts_with("assistant_")).collect();
             let called: BTreeSet<&str> = forbidden.iter().map(|(name, _)| *name).chain(own).collect();

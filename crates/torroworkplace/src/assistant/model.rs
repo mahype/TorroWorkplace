@@ -657,6 +657,11 @@ pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: 
         Some(bot) => (bot.personality.clone(), Vec::new()),
         None => assistant.persona_and_notes().await,
     };
+    // A bot's prompt names its own skills (issue #703), the assistant's these.
+    let skills = match &job.bot {
+        Some(_) => Vec::new(),
+        None => assistant.skill_summaries().await,
+    };
     // A client's message (issue #305) is data from outside like a mail, in this turn and every later
     // one: it counts for the web's yes and for the memory (C.11) alike.
     let from_client = sent_by_a_client(&job.history, &job.actor);
@@ -702,6 +707,7 @@ pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: 
         loaded: BTreeSet::new(),
         persona,
         memory,
+        skills,
         untrusted,
         outside,
         said,
@@ -726,6 +732,8 @@ struct Answering {
     persona: String,
     /// The notes of the memory, read when the answer started.
     memory: Vec<Note>,
+    /// The assistant's skills by name, read when the answer started (issue #703); none for a bot.
+    skills: Vec<torro_ipc::assistant::SkillSummary>,
     /// The conversation read data from outside the suite: a tool of an earlier turn that may have
     /// ([`tools::may_have_read_untrusted`]; counted by its line when it might, also once its result was left out
     /// to save room, issue #701), an
@@ -862,6 +870,7 @@ impl Answering {
                 model: &model,
                 place: access.place,
                 memory: &self.memory,
+                skills: &self.skills,
                 servers: &servers,
             };
             let mut system = match &self.job.bot {
@@ -1180,6 +1189,12 @@ impl Answering {
     fn allowed(&self, rights: Option<&Rights>) -> Vec<Arc<tools::Tool>> {
         let servers = rights.map(|rights| self.host.extension_tools(rights)).unwrap_or_default();
         let allowed = tools::allowed_with(self.job.actor.kind(), rights, &self.job.without, self.job.mode, &servers);
+        // Issue #703: the tools of skills only with a skill to read, as the prompt names them.
+        let any_skill = match &self.job.bot {
+            Some(bot) => bot.skills.iter().any(|skill| !skill.text.trim().is_empty()),
+            None => !self.skills.is_empty(),
+        };
+        let allowed = tools::with_skills(allowed, any_skill);
         match &self.job.about {
             Some(about) => tools::about_mail(allowed, rights, &self.job.without, &about.account),
             None => allowed,
@@ -2425,7 +2440,11 @@ pub(crate) mod tests {
             model: None,
             personality: "Cheerful and quick.".into(),
             instructions: "Suggest trains before flights.".into(),
-            skills: vec![torro_ipc::bots::Skill { name: "Packing".into(), text: "Pack light.".into() }],
+            skills: vec![torro_ipc::bots::Skill {
+                name: "Packing".into(),
+                description: String::new(),
+                text: "Pack light.".into(),
+            }],
             client: "9f8e7d6c".into(),
         };
         let message = Message {
@@ -2453,13 +2472,15 @@ pub(crate) mod tests {
         assert!(system.starts_with(prompt::PERSONALITY_HEADING), "{system}");
         assert!(at("> Cheerful and quick.") < at(prompt::skill()), "its personality before the rules");
         assert!(at(prompt::skill()) < at(prompt::BOT_HEADING), "the rules before its instructions");
-        assert!(at("> Suggest trains before flights.") < at("> Pack light."), "the instructions, then the skills");
-        assert!(at("> Pack light.") < at("## This conversation"), "the conversation last");
+        // Issue #703: its skills one line each, their text only through the tool.
+        assert!(at("> Suggest trains before flights.") < at("> - \"Packing\""), "the instructions, then the skills");
+        assert!(at("> - \"Packing\"") < at("## This conversation"), "the conversation last");
+        assert!(!system.contains("Pack light."), "{system}");
         assert!(!system.contains("calm butler") && !system.contains("Anna"), "nothing of the assistant's: {system}");
         let offered: Vec<&str> = asked[0].tools.iter().map(|tool| tool.name.as_str()).collect();
         assert!(offered.contains(&"calendar_list_calendars"), "{offered:?}");
-        // Of `assistant` only its own access (issue #134).
-        let own = |tool: &&str| *tool == "assistant_my_access";
+        // Of `assistant` only its own access (issue #134) and reading its own skills (issue #703).
+        let own = |tool: &&str| ["assistant_my_access", "assistant_list_skills", "assistant_get_skill"].contains(tool);
         assert!(
             offered
                 .iter()
