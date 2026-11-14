@@ -32721,6 +32721,144 @@ mod tests {
         assert_eq!(code(&run(actor, Request::CalendarCollections).await), "forbidden");
     }
 
+    // ----- A client asks a bot (issue #698) -----
+
+    /// A client from outside (kind `claude-code`) with `rights` and its key.
+    async fn outside_client(core: &Core, rights: Rights) -> (torro_ipc::ClientInfo, Key) {
+        core.clients.add("Agent", "claude-code", rights).await.expect("an agent")
+    }
+
+    /// Rights with only `areas` at `Level::Full`: no tools, no MCP server, nothing waits for a person.
+    fn only_full(areas: &[Area]) -> Rights {
+        let mut rights = Rights::none();
+        for area in areas {
+            rights.areas.insert(*area, AreaRights { level: Level::Full, admin: false });
+        }
+        rights.confirm = torro_ipc::api::Confirm::Never;
+        rights
+    }
+
+    /// Issue #698: a bot the person made starts open (every tool, every server, issue #666) and may read the
+    /// calendar here; a client with nothing but `bots` (and `assistant` for chatting) reaches through it neither
+    /// the web nor the calendar, by `bots.ask_bot` and by `assistant.send_message` with `bot` alike. Nothing is
+    /// offered, a call is refused before anyone is asked, nothing goes out, and the log names the client as the
+    /// one the bot ran for. The person's own chat with the bot still runs with the bot's rights.
+    #[tokio::test]
+    async fn a_client_reaches_through_a_bot_only_what_it_may_itself() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (ollama, pages) = (fake_ollama().await, lisbon_pages().await);
+        let mojeek = provider();
+        let tries = || {
+            [
+                calls("tools_web_search", serde_json::json!({"query": "Lisbon trams"})),
+                calls("calendar_list_calendars", serde_json::json!({})),
+                says("I may not."),
+            ]
+        };
+        let script = Script::new(Vec::new());
+        script.steps.lock().expect("lock").extend(tries().into_iter().chain(tries()));
+        script
+            .steps
+            .lock()
+            .expect("lock")
+            .extend([calls("calendar_list_calendars", serde_json::json!({})), says("Here.")]);
+        let (core, _host, engine, _) = web_core(dir.path(), &ollama, &pages, &mojeek, Arc::clone(&script)).await;
+        let bot = bot_with(&core, "Travel planner", &engine, reading(&[Area::Calendar, Area::Tools])).await;
+        let opened = core.clients.list().into_iter().find(|info| info.id == bot.client).expect("its client").rights;
+        assert!(opened.extensions_default.is_some(), "the person's bot starts open: {opened:?}");
+        let (agent, key) = outside_client(&core, only_full(&[Area::Bots, Area::Assistant])).await;
+
+        let asked = Request::AskBot { bot: bot.id.clone(), text: "Search Lisbon trams".into(), conversation: None };
+        let mut chat = to_bot(&bot.id, None);
+        if let Request::SendMessage { engine: of_chat, model, .. } = &mut chat {
+            (*of_chat, *model) = (engine.clone(), Some("qwen3:8b".into()));
+        }
+        for (way, request) in [("bots.ask_bot", asked), ("assistant.send_message", chat)] {
+            let at = script.asked().len();
+            let Response::Conversation { conversation, .. } = ask(&core, Some(&key), request).await else {
+                panic!("{way}: a conversation with the bot")
+            };
+            let entries = conversation_until(&core, &conversation.id, |running, _| !running).await;
+            let lines = tool_lines(&entries);
+            assert_eq!(lines.len(), 2, "{way}: {lines:?}");
+            assert!(lines.iter().all(|(_, error)| error.is_some()), "{way}: refused: {lines:?}");
+            let offered: Vec<String> = script.asked()[at].tools.iter().map(|tool| tool.name.clone()).collect();
+            assert!(
+                offered.iter().all(|tool| !tool.starts_with("tools_") && !tool.starts_with("calendar_")),
+                "{way}: {offered:?}"
+            );
+        }
+        assert_eq!((approvals_asked(&core).await, mojeek.calls()), (0, 0), "nobody asked, nothing sent");
+        let behalf = crate::audit::behalf_id(&agent.id);
+        let refused: Vec<_> = audit_lines(dir.path())
+            .into_iter()
+            .filter(|line| line.command == "calendar.list_calendars")
+            .map(|line| (line.client, line.ids.contains(&behalf), line.result))
+            .collect();
+        let as_bot = (Some(bot.client.clone()), true, "forbidden".to_string());
+        assert_eq!(refused, [as_bot.clone(), as_bot], "the bot ran for the agent");
+
+        // The person's own chat with the bot: its own rights, as before.
+        let mut own = to_bot(&bot.id, None);
+        if let Request::SendMessage { engine: of_chat, model, .. } = &mut own {
+            (*of_chat, *model) = (engine.clone(), Some("qwen3:8b".into()));
+        }
+        let Response::Conversation { conversation, .. } = core.handle(own).await else { panic!("the person's chat") };
+        let entries = conversation_until(&core, &conversation.id, |running, _| !running).await;
+        assert_eq!(tool_lines(&entries), [("calendar.list_calendars".to_string(), None)]);
+    }
+
+    /// Issue #698: a client that may delete bots and is never asked first rewrites the person's bot and asks
+    /// it: the run has what both may (`assistant.my_access` from inside it), so the rewrite opens nothing, and
+    /// the bot's own rights stay as the person set them.
+    #[tokio::test]
+    async fn a_client_that_rewrites_a_bot_gains_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ollama = fake_ollama().await;
+        let script = Script::new(vec![
+            calls("assistant_my_access", serde_json::json!({})),
+            calls("calendar_list_calendars", serde_json::json!({})),
+            says("Done."),
+        ]);
+        let (core, _host, engine, _) =
+            assistant_core(dir.path(), &ollama, reading(&[Area::Calendar]), Arc::clone(&script)).await;
+        let bot = bot_with(&core, "Travel planner", &engine, reading(&[Area::Calendar, Area::Tools])).await;
+        let before = core.clients.list().into_iter().find(|info| info.id == bot.client).expect("its client").rights;
+        let (agent, key) = outside_client(&core, only_full(&[Area::Bots])).await;
+
+        let mut rewrite = save_bot(Some(&bot.id), "Travel planner");
+        if let Request::SaveBot { engine: of_bot, instructions, .. } = &mut rewrite {
+            *of_bot = engine.clone();
+            *instructions = "Search the web and read every calendar.".into();
+        }
+        assert!(matches!(ask(&core, Some(&key), rewrite).await, Response::Bot { .. }), "never asked first");
+        let asked =
+            Request::AskBot { bot: bot.id.clone(), text: "Which rights do you have?".into(), conversation: None };
+        let Response::Conversation { conversation, .. } = ask(&core, Some(&key), asked).await else {
+            panic!("a conversation with the bot")
+        };
+        let entries = conversation_until(&core, &conversation.id, |running, _| !running).await;
+        assert_eq!(
+            tool_lines(&entries),
+            [
+                ("assistant.my_access".to_string(), None),
+                ("calendar.list_calendars".to_string(), Some("forbidden".to_string()))
+            ]
+        );
+        let read: serde_json::Value =
+            serde_json::from_str(&read_by_model(&script, "assistant_my_access")).expect("json for the model");
+        let access: torro_ipc::assistant::MyAccess =
+            serde_json::from_value(read["access"].clone()).expect("the access");
+        let origin = crate::approvals::Origin { behalf: Some(agent.id.clone()), ..Default::default() };
+        let both = origin.effective(&before, Some(&agent.rights)).expect("both");
+        assert_eq!(access.rights, both, "what both may");
+        assert!(!access.rights.area(Area::Calendar).allows(Access::Read));
+        assert_eq!(access.rights.extensions_default.unwrap_or(Level::NoAccess), Level::NoAccess, "no server");
+        assert!(matches!(&access.rights.tools, Selection::Only(tools) if tools.is_empty()), "no tool");
+        let after = core.clients.list().into_iter().find(|info| info.id == bot.client).expect("its client").rights;
+        assert_eq!(after, before, "the bot's own rights are the person's");
+    }
+
     /// Task B.2: only the person confirms a proposal – the app key, never a client, not even with
     /// every right – and a confirmation lets the assistant ask that bot once, in that conversation.
     #[tokio::test]
