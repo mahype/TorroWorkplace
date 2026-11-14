@@ -6439,6 +6439,8 @@ impl Core {
         match request {
             Request::Ping => Response::Pong { version: version(), api: API_VERSION },
             Request::Status => self.status(reach).await,
+            // The built-in help (#702) holds nothing a client may not see: every reach reads it.
+            Request::GetHelp { topic } => crate::help::answer(topic.as_deref()),
             // The core ends only after the answer went out; the daemon takes care of that
             // (`daemon::end_after_answer`), so the core itself just acknowledges it.
             Request::Quit => Response::Ok,
@@ -14962,6 +14964,27 @@ mod tests {
             ("dense", "torro", MailFormat::Html, "torro"),
             "the run sets the design only: no font, mail view or colour scheme follows"
         );
+    }
+
+    /// Issue #702: the help lists its topics and answers one to every client, also one without any
+    /// area; an unknown topic is `not-found`.
+    #[tokio::test]
+    async fn every_client_reads_the_help() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let (_, nobody) = client(&core, Rights::none()).await;
+        for key in [Some(&app_key), Some(&nobody)] {
+            match ask(&core, key, Request::GetHelp { topic: None }).await {
+                Response::HelpTopics { topics } => assert!(topics.iter().any(|topic| topic.id == "accounts")),
+                other => panic!("the topics, got {other:?}"),
+            }
+            match ask(&core, key, Request::GetHelp { topic: Some("accounts".into()) }).await {
+                Response::HelpTopic { topic } => assert!(topic.text.contains("Add mail account")),
+                other => panic!("the topic, got {other:?}"),
+            }
+            assert_eq!(code(&ask(&core, key, Request::GetHelp { topic: Some("nothing".into()) }).await), "not-found");
+        }
     }
 
     #[tokio::test]

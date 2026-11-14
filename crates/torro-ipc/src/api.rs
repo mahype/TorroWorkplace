@@ -1788,6 +1788,7 @@ impl Request {
             Request::RevokeWorkflowAuthorization { .. } => &wf::REVOKE,
             Request::Ping => &PING,
             Request::Status => &STATUS,
+            Request::GetHelp { .. } => &GET_HELP,
             Request::Quit => &QUIT,
             Request::ListTemplates => &LIST_TEMPLATES,
             Request::SaveTemplate { .. } => &SAVE_TEMPLATE,
@@ -2136,6 +2137,7 @@ fn method_of(variant: &serde_json::Value) -> Option<&str> {
 pub static CATALOGUE: &[&Command] = &[
     &PING,
     &STATUS,
+    &GET_HELP,
     &QUIT,
     &LIST_TEMPLATES,
     &SAVE_TEMPLATE,
@@ -2501,6 +2503,16 @@ static STATUS: Command = Command {
 
 // Never an MCP tool: an agent must not switch off the service that checks and logs its requests
 // (`docs/api.md`, "Was nie nach außen geht", 4). Only the app key may send it.
+static GET_HELP: Command = Command {
+    name: "system.get_help",
+    area: Area::System,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Reads the built-in help of Torro Workplace. Without `topic` it lists the topics (id, title, \
+                  summary); with `topic` it returns that topic's text. Use it for questions on how the suite \
+                  works, how to set something up or whether it can do something. Changes nothing.",
+};
+
 static QUIT: Command = Command {
     name: "system.quit",
     area: Area::System,
@@ -6288,6 +6300,7 @@ mod tests {
         let mut samples = vec![
             Request::Ping,
             Request::Status,
+            Request::GetHelp { topic: Some("mail".into()) },
             Request::Quit,
             Request::ListTemplates,
             Request::SaveTemplate { name: None },

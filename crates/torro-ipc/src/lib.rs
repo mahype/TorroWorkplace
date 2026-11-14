@@ -29,6 +29,7 @@ pub mod chat;
 pub mod client;
 pub mod contacts;
 pub mod extensions;
+pub mod help;
 pub mod inbox;
 pub mod mail;
 pub mod pim;
@@ -69,6 +70,7 @@ use torro_setups::{Startup, TemplateSummary};
 use crate::api::{Area, Rights, RightsTemplate};
 use crate::assistant::{CardEntry, ChatWindow, ConversationSummary, Engine, Entry, MyAccess, Note, Profile};
 use crate::bots::{Bot, BotSummary, Skill};
+use crate::help::{HelpTopic, HelpTopicSummary};
 use crate::mail::{
     BackupJob, BackupScope, BackupVerification, Delivery, IncompleteReason, MailAccountStats, MailCacheEstimate,
     MailCacheJob, MailCachePolicy, MailHighlight, MailIndexProgress, MailSort, MailSource, MailSyncStatus, MoveTarget,
@@ -432,6 +434,14 @@ pub enum Request {
     /// Short status for bars and scripts.
     #[serde(rename = "system.status")]
     Status,
+    /// The suite's built-in help (#702): without `topic` the list of topics
+    /// ([`Response::HelpTopics`]), with `topic` its text ([`Response::HelpTopic`]). An unknown
+    /// topic gets `not-found`.
+    #[serde(rename = "system.get_help")]
+    GetHelp {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        topic: Option<String>,
+    },
     /// Stops the core cleanly, as the tray's Quit does. Answered with [`Response::Ok`] before the
     /// core ends. Only the app key may send it; a client key gets `forbidden`.
     #[serde(rename = "system.quit")]
@@ -5210,6 +5220,14 @@ pub enum Response {
         api: u32,
     },
     Status(Status),
+    /// The topics of the built-in help ([`Request::GetHelp`] without a topic).
+    HelpTopics {
+        topics: Vec<HelpTopicSummary>,
+    },
+    /// One topic of the built-in help with its text ([`Request::GetHelp`] with a topic).
+    HelpTopic {
+        topic: HelpTopic,
+    },
     Templates {
         templates: Vec<TemplateSummary>,
     },

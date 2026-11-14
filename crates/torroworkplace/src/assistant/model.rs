@@ -841,7 +841,8 @@ impl Answering {
                 .iter()
                 .filter(|tool| !tool.is_server())
                 .map(|tool| tool.command.area)
-                .filter(|area| !matches!(area, Area::Assistant | Area::Bots))
+                // The help (issue #702) is the one tool of `system`, no area the person granted.
+                .filter(|area| !matches!(area, Area::Assistant | Area::Bots | Area::System))
                 .collect();
             let areas: Vec<Area> = areas.into_iter().collect();
             let servers: BTreeSet<String> = allowed

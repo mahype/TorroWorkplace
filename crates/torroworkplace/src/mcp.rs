@@ -4142,6 +4142,16 @@ mod tests {
         ));
     }
 
+    /// Issue #702: the help tool reads the list without a topic and one topic with it.
+    #[test]
+    fn the_help_tool_builds_its_request() {
+        assert_eq!(request_for("system_get_help", args(json!({})), &Utc), Ok(Request::GetHelp { topic: None }));
+        assert_eq!(
+            request_for("system_get_help", args(json!({"topic": "mail"})), &Utc),
+            Ok(Request::GetHelp { topic: Some("mail".into()) })
+        );
+    }
+
     fn message(seq: u64, text: &str) -> Entry {
         let content = EntryContent::Answer { text: text.into(), engine: "test".into(), model: None };
         Entry { seq, time: Utc::now(), content }

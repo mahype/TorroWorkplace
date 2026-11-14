@@ -550,7 +550,8 @@ fn allowed_areas(kind: &str, rights: &torro_ipc::api::Rights, without: &[Area], 
     let mut areas: Vec<Area> = tools::allowed_in(kind, Some(rights), without, mode)
         .iter()
         .map(|tool| tool.command.area)
-        .filter(|area| !matches!(area, Area::Assistant | Area::Bots))
+        // The help (issue #702) is the one tool of `system`, no area the person granted.
+        .filter(|area| !matches!(area, Area::Assistant | Area::Bots | Area::System))
         .collect();
     areas.sort();
     areas.dedup();
