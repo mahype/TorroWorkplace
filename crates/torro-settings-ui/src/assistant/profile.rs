@@ -713,6 +713,40 @@ mod tests {
         data
     }
 
+    /// Issue #702: the person's name from "About you" goes out as `person_name`, a cleared one as
+    /// empty, and a name over its limit keeps "Save" back.
+    #[tokio::test]
+    async fn the_persons_name_is_sent_changed_or_cleared() {
+        let data = with_notes().await;
+        let mut state = State::default();
+        let _ = update(&mut state, Message::OpenProfile, &data);
+        let _ = update(&mut state, Message::PersonName(" Carla Rossi ".into()), &data);
+        let only_the_name = |person_name: &str| Request::UpdateProfile {
+            name: None,
+            description: None,
+            avatar: None,
+            personality: None,
+            person_name: Some(person_name.into()),
+        };
+        assert_eq!(sent(update(&mut state, Message::Save, &data)), only_the_name("Carla Rossi"));
+
+        let named =
+            Data { profile: Some(Profile { person_name: "Anna Berg".into(), ..profile_of(&data) }), ..data.clone() };
+        let mut state = State::default();
+        let _ = update(&mut state, Message::OpenProfile, &named);
+        assert!(matches!(update(&mut state, Message::Save, &named), Act::None), "nothing changed");
+        let _ = update(&mut state, Message::PersonName(String::new()), &named);
+        assert_eq!(sent(update(&mut state, Message::Save, &named)), only_the_name(""), "cleared");
+
+        let _ = update(&mut state, Message::PersonName("a".repeat(MAX_PERSON_NAME_CHARS + 1)), &named);
+        assert!(matches!(update(&mut state, Message::Save, &named), Act::None), "too long: kept back");
+        assert_eq!(
+            state.draft.as_ref().and_then(Draft::problem),
+            Some(trf("Your name may hold at most {max} characters.", &[("max", &MAX_PERSON_NAME_CHARS)]))
+        );
+        let _ = page(&state, &named, SizeClass::Wide);
+    }
+
     #[tokio::test]
     async fn saving_the_profile_sends_only_what_changed() {
         let data = with_notes().await;
