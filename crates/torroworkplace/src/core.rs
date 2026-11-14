@@ -7377,6 +7377,8 @@ impl Core {
             | Request::RenameConversation { .. }
             | Request::DeleteConversation { .. }
             | Request::PinConversation { .. }
+            | Request::ArchiveConversations { .. }
+            | Request::DeleteConversations { .. }
             | Request::OpenChatWindow { .. }
             | Request::ConfirmBot { .. }
             | Request::AskBot { .. }) => {
@@ -11749,9 +11751,15 @@ impl Core {
     /// `not-found` for a request of the assistant that names a conversation about a mail (issue #605) of an account
     /// `reach` may not read: for that caller the conversation is not there at all, since its entries (tool lines,
     /// cards, answers) tell what the mail says. As the assistant answers an unknown conversation. `None` for every
-    /// other request, the suite, and a conversation about no mail or a mail the caller reads.
+    /// other request, the suite, and a conversation about no mail or a mail the caller reads. A request that names
+    /// several (issue #697) is refused for the first hidden one, before anything changes.
     async fn about_hidden(&self, request: &Request, reach: Reach<'_>) -> Option<Response> {
-        self.hidden_conversation(request.conversation()?, reach).await
+        for id in request.conversation_ids() {
+            if let Some(hidden) = self.hidden_conversation(id, reach).await {
+                return Some(hidden);
+            }
+        }
+        None
     }
 
     /// [`Core::about_hidden`] for the conversation `id`.
@@ -34380,10 +34388,35 @@ done"#;
                 Request::PinConversation { id: named.clone(), pinned: true },
                 Request::CancelAnswer { conversation: named.clone() },
                 Request::DeleteConversation { id: named.clone() },
+                Request::ArchiveConversations { ids: vec![named.clone()], archived: true },
+                Request::DeleteConversations { ids: vec![named.clone()] },
             ] {
                 let name = request.operation().name();
                 assert_eq!(code(&ask(&core, Some(&stranger), request).await), "not-found", "{name}");
             }
+            // Issue #697: a request about several is refused for the hidden one before it changes any.
+            let Response::Conversation { conversation: own, .. } = ask(&core, Some(&stranger), send(None, None)).await
+            else {
+                panic!("the stranger chats of its own")
+            };
+            conversation_until(&core, &own.id, |running, _| !running).await;
+            let both = vec![own.id.clone(), named.clone()];
+            let archive = Request::ArchiveConversations { ids: both.clone(), archived: true };
+            assert_eq!(code(&ask(&core, Some(&stranger), archive).await), "not-found");
+            assert_eq!(
+                code(&ask(&core, Some(&stranger), Request::DeleteConversations { ids: both }).await),
+                "not-found"
+            );
+            let Response::Conversation { conversation: still, .. } =
+                ask(&core, Some(&stranger), Request::GetConversation { id: own.id.clone(), after: None }).await
+            else {
+                panic!("its own conversation is still there")
+            };
+            assert!(!still.archived, "and not archived");
+            assert_eq!(
+                ask(&core, Some(&app_key), Request::DeleteConversations { ids: vec![own.id.clone()] }).await,
+                Response::Ok
+            );
             assert_eq!(listed(ask(&core, Some(&app_key), Request::ListConversations).await), [Some(mail.clone())]);
             let get = Request::GetConversation { id: named.clone(), after: None };
             let Response::Conversation { conversation: kept, .. } = ask(&core, Some(&app_key), get).await else {

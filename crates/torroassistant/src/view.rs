@@ -26,12 +26,12 @@ use iced::widget::{
 };
 use iced::{Alignment, Background, Element, Fill, Padding, Theme};
 use torro_core::AppId;
-use torro_core::i18n::{tr, trf};
+use torro_core::i18n::{tr, trc, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::SizeClass;
 use torro_gui::shell::{self, Cover, SidebarMode, Surface, TitleButtons, TopRow};
 use torro_gui::theme::{self, Palette, palette, size, space};
-use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail};
+use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, RowAction, Trail};
 use torro_gui::{layout, markdown, style, typo};
 use torro_ipc::api::Area;
 use torro_ipc::assistant::{ConversationHit, ConversationSummary, EngineKind, Entry, EntryContent};
@@ -66,6 +66,42 @@ struct Anchors {
     bot_row: Anchor,
     /// The engine of the bot editor.
     bot_picker: Anchor,
+    /// The "…" of the sidebar's groups "Recent" and "Archive" (issue #697).
+    recent: Anchor,
+    archive: Anchor,
+}
+
+/// What the bar of a sidebar row ("…" and the bin, issue #697) takes of the title's room: its two icon
+/// buttons with their frame and a gap before them; the marks at the row's end it stands beside are
+/// counted apart.
+fn row_bar_room() -> f32 {
+    let bar: [RowAction<'_, ()>; 2] =
+        [RowAction::new(Icon::Ellipsis, "", "", ()), RowAction::new(Icon::Trash2, "", "", ())];
+    widgets::row_actions_width(&bar, false) + space::s()
+}
+
+/// A dialog's card: `title`, `content`, then "Cancel" and `confirm` at the right.
+fn dialog_card<'a>(
+    title: String,
+    content: Element<'a, Message>,
+    confirm: Element<'a, Message>,
+) -> Element<'a, Message> {
+    let cancel = widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CloseDialog));
+    let buttons = row![Space::new().width(Fill), cancel, confirm].spacing(space::s()).align_y(Alignment::Center);
+    let card = column![typo::text(typo::title(), title), content, buttons].spacing(space::l());
+    container(card).width(Fill).padding(layout::panel_padding()).style(style::container::popover).into()
+}
+
+/// A sidebar group's title with `more`, its "…", at the end (issue #697); the title alone without.
+fn group_with<'a>(group: Element<'a, Message>, more: Option<Element<'a, Message>>) -> Element<'a, Message> {
+    match more {
+        // The button centred on the title's line, which sits at the bottom of the group's head.
+        Some(more) => {
+            let more = container(more).height(size::row_sidebar()).center_y(size::row_sidebar());
+            row![container(group).width(Fill), more].align_y(Alignment::End).into()
+        }
+        None => group,
+    }
 }
 
 /// The composer's text area: two lines high at first, at most eight, then it scrolls.
@@ -297,12 +333,24 @@ impl App {
             Menu::Areas => {
                 widgets::floating(&anchors.areas, Placement::Below(Align::Start), self.areas_menu(), Message::CloseMenu)
             }
+            // At a row the menu hangs at its "…" (issue #697), which stays while the menu is open.
             Menu::Conversation { id, at } => {
                 let (anchor, align) = match at {
                     MenuAt::Header => (&anchors.header, Align::End),
-                    MenuAt::Row => (&anchors.row, Align::Start),
+                    MenuAt::Row => (&anchors.row, Align::End),
                 };
                 widgets::floating(anchor, Placement::Below(align), self.conversation_menu(id), Message::CloseMenu)
+            }
+            Menu::Recent => {
+                let items = vec![MenuItem::new(Icon::Archive, tr("Archive all…"), Message::AskArchiveAll)];
+                let delete = MenuItem::new(Icon::Trash2, tr("Delete all…"), Message::AskDeleteAll);
+                let menu = widgets::menu(vec![MenuSection::new(items), MenuSection::new(vec![delete])]);
+                widgets::floating(&anchors.recent, Placement::Below(Align::End), menu, Message::CloseMenu)
+            }
+            Menu::Archive => {
+                let empty = MenuItem::new(Icon::Trash2, tr("Empty archive…"), Message::AskEmptyArchive);
+                let menu = widgets::menu(vec![MenuSection::new(vec![empty])]);
+                widgets::floating(&anchors.archive, Placement::Below(Align::End), menu, Message::CloseMenu)
             }
         })
     }
@@ -360,8 +408,22 @@ impl App {
                 items.extend(pinned.into_iter().map(|c| self.conversation_row(c, anchors)));
             }
             if !recent.is_empty() {
-                items.push(widgets::sidebar_group_in(mode, tr("Recent"), None));
+                let more = self.group_more(Menu::Recent, &anchors.recent);
+                items.push(group_with(widgets::sidebar_group_in(mode, tr("Recent"), None), Some(more)));
                 items.extend(recent.into_iter().map(|c| self.conversation_row(c, anchors)));
+            }
+            // The archive at the bottom (issue #697): closed, with its number; open while searching, so
+            // what matches there shows too.
+            let archived = chat::archived_group(&self.conversations, &self.search);
+            if !archived.is_empty() {
+                let open = self.archive_open || !self.search.trim().is_empty();
+                let label = trf("Archive ({n})", &[("n", &archived.len())]);
+                let group = widgets::sidebar_group_in(mode, label, Some((open, Message::ToggleArchive)));
+                let more = self.group_more(Menu::Archive, &anchors.archive);
+                items.push(group_with(group, Some(more)));
+                if open {
+                    items.extend(archived.into_iter().map(|c| self.conversation_row(c, anchors)));
+                }
             }
             if self.listed && self.conversations.is_empty() {
                 items.push(sidebar_note(tr("No conversations yet")));
@@ -407,10 +469,16 @@ impl App {
         rows
     }
 
-    /// How many conversations the search leaves.
+    /// How many conversations the search leaves, the archived ones too.
     fn shown_count(&self) -> usize {
         let (pinned, recent) = chat::sidebar_groups(&self.conversations, &self.search);
-        pinned.len() + recent.len()
+        pinned.len() + recent.len() + chat::archived_group(&self.conversations, &self.search).len()
+    }
+
+    /// The "…" at the end of a sidebar group's title (issue #697) that opens `menu`, at `anchor`.
+    fn group_more<'a>(&self, menu: Menu, anchor: &Anchor) -> Element<'a, Message> {
+        let more = widgets::icon_button(Icon::Ellipsis, tr("More"), Some(Message::ToggleMenu(menu)));
+        widgets::anchored(anchor, more)
     }
 
     /// A conversation in the sidebar: its title on a row of the sidebar's height, the open one
@@ -428,7 +496,12 @@ impl App {
         // and after it take their room.
         let about = conversation.about.is_some();
         let marks = usize::from(conversation.running) + usize::from(about);
-        let room = row_title_room(self.sidebar_shown()) - marks as f32 * (icon::SIZE_SM + space::s());
+        let menu_here = matches!(&self.menu, Some(Menu::Conversation { id: open, at: MenuAt::Row }) if *open == id);
+        let mut room = row_title_room(self.sidebar_shown()) - marks as f32 * (icon::SIZE_SM + space::s());
+        // While "…" and the bin stand over the row's end (issue #697), the title ends in "…" before them.
+        if hovered || menu_here {
+            room -= row_bar_room();
+        }
         let shown = typo::ellipsize(&conversation.title, typo::body(), room);
         let cut = shown != conversation.title;
         let title = container(typo::text(typo::body(), shown).wrapping(Wrapping::None)).width(Fill).clip(true);
@@ -455,7 +528,8 @@ impl App {
             .padding(style::ITEM_PADDING)
             .center_y(size::row_sidebar())
             .style(move |t: &Theme| {
-                let status = if hovered { button::Status::Hovered } else { button::Status::Active };
+                // Its menu open (issue #697), the row stays marked as under the pointer.
+                let status = if hovered || menu_here { button::Status::Hovered } else { button::Status::Active };
                 let look = style::button::sidebar_item(active)(t, status);
                 container::Style {
                     background: look.background,
@@ -464,15 +538,27 @@ impl App {
                     ..container::Style::default()
                 }
             });
+        let menu = Menu::Conversation { id: id.clone(), at: MenuAt::Row };
         let row = mouse_area(surface)
             .on_press(Message::Select(id.clone()))
             .on_double_click(Message::OpenInWindow(id.clone()))
-            .on_right_press(Message::ToggleMenu(Menu::Conversation { id: id.clone(), at: MenuAt::Row }))
+            .on_right_press(Message::ToggleMenu(menu.clone()))
             .on_enter(Message::Hover(Some(id.clone())))
             .on_exit(Message::Hover(None))
             .interaction(iced::mouse::Interaction::Pointer);
-        let menu_here = matches!(&self.menu, Some(Menu::Conversation { id: open, at: MenuAt::Row }) if *open == id);
-        if menu_here { widgets::anchored(&anchors.row, row) } else { row.into() }
+        // "…" and the bin at the row's end while the pointer is on it (issue #697), and while its menu is
+        // open, which hangs at the "…" – a right click opens the same menu there.
+        let mut more = RowAction::new(Icon::Ellipsis, tr("More"), "", Message::ToggleMenu(menu));
+        if menu_here {
+            more = more.at(&anchors.row);
+        }
+        let delete = RowAction::new(Icon::Trash2, tr("Delete"), "", Message::AskDelete(id));
+        // The bar keeps the row's own inset and leaves the mark of an answer that runs free.
+        let mut right = style::ITEM_PADDING.right;
+        if conversation.running {
+            right += icon::SIZE_SM + space::s();
+        }
+        widgets::row_actions_inset(row, vec![more, delete], menu_here, false, right)
     }
 
     // -- Header ---------------------------------------------------------------------------------
@@ -1243,17 +1329,30 @@ impl App {
         widgets::menu(vec![MenuSection::titled(tr("The assistant may use"), items)])
     }
 
-    /// A conversation's menu: Rename, Pin or Unpin, Open in new window (main window), Delete.
+    /// A conversation's menu: Rename, Pin or Unpin, Archive, Open in new window (main window), Delete;
+    /// an archived one has Restore in place of Pin and Archive (issue #697).
     fn conversation_menu(&self, id: &str) -> Element<'_, Message> {
-        let pinned = self.conversations.iter().find(|c| c.id == id).is_some_and(|c| c.pinned);
-        let mut items = vec![
-            MenuItem::new(Icon::SquarePen, tr("Rename"), Message::AskRename(id.to_owned())),
-            if pinned {
+        let known = self.conversations.iter().find(|c| c.id == id);
+        let (pinned, archived) = known.map_or((false, false), |c| (c.pinned, c.archived));
+        let mut items = vec![MenuItem::new(Icon::SquarePen, tr("Rename"), Message::AskRename(id.to_owned()))];
+        if archived {
+            items.push(MenuItem::new(
+                Icon::Inbox,
+                trc("action", "Restore"),
+                Message::Archive(vec![id.to_owned()], false),
+            ));
+        } else {
+            items.push(if pinned {
                 MenuItem::new(Icon::PinOff, tr("Unpin"), Message::Pin(id.to_owned(), false))
             } else {
                 MenuItem::new(Icon::Flag, tr("Pin"), Message::Pin(id.to_owned(), true))
-            },
-        ];
+            });
+            items.push(MenuItem::new(
+                Icon::Archive,
+                trc("action", "Archive"),
+                Message::Archive(vec![id.to_owned()], true),
+            ));
+        }
         if !self.chat_only {
             items.push(MenuItem::new(Icon::AppWindow, tr("Open in new window"), Message::OpenInWindow(id.to_owned())));
         }
@@ -1311,11 +1410,54 @@ impl App {
                 );
                 (tr("Delete this bot?"), words.into(), confirm)
             }
+            // Issue #697: the question names how many, and so does its button.
+            Dialog::ArchiveMany { ids } => {
+                let n = ids.len();
+                let (title, label) = if n == 1 {
+                    (tr("Archive 1 conversation?").to_owned(), tr("Archive 1 conversation").to_owned())
+                } else {
+                    (trf("Archive {n} conversations?", &[("n", &n)]), trf("Archive {n} conversations", &[("n", &n)]))
+                };
+                let text = tr(
+                    "They move to the archive at the bottom of the sidebar, where you can restore them. Pinned conversations stay.",
+                );
+                let words = typo::text(typo::body(), text).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
+                let confirm = widgets::text_button(
+                    Some(Icon::Archive),
+                    label,
+                    style::button::secondary,
+                    Some(Message::ConfirmMany),
+                );
+                return dialog_card(title, words.into(), confirm);
+            }
+            Dialog::DeleteMany { ids, archive } => {
+                let n = ids.len();
+                let label = if n == 1 {
+                    tr("Delete 1 conversation").to_owned()
+                } else {
+                    trf("Delete {n} conversations", &[("n", &n)])
+                };
+                let (title, text) = match (archive, n == 1) {
+                    (true, _) => (
+                        tr("Empty the archive?").to_owned(),
+                        tr("Every archived conversation and everything in it will be deleted for good.").to_owned(),
+                    ),
+                    (false, true) => (
+                        tr("Delete 1 conversation?").to_owned(),
+                        tr("Everything in it is deleted for good. Pinned ones stay.").to_owned(),
+                    ),
+                    (false, false) => (
+                        trf("Delete {n} conversations?", &[("n", &n)]),
+                        tr("Everything in them is deleted for good. Pinned ones stay.").to_owned(),
+                    ),
+                };
+                let words = typo::text(typo::body(), text).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
+                let confirm =
+                    widgets::text_button(Some(Icon::Trash2), label, style::button::danger, Some(Message::ConfirmMany));
+                return dialog_card(title, words.into(), confirm);
+            }
         };
-        let cancel = widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CloseDialog));
-        let buttons = row![Space::new().width(Fill), cancel, confirm].spacing(space::s()).align_y(Alignment::Center);
-        let card = column![typo::text(typo::title(), title), content, buttons].spacing(space::l());
-        container(card).width(Fill).padding(layout::panel_padding()).style(style::container::popover).into()
+        dialog_card(title.to_owned(), content, confirm)
     }
 
     // -- Mini and strip -------------------------------------------------------------------------

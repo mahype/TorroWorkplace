@@ -100,6 +100,8 @@ fn answer_of(request: &Request, result: Result<Response, Refusal>) -> Message {
             Message::Changed(result.map(|_| ()), "failed")
         }
         Request::DeleteConversation { id } => Message::Deleted(id.clone(), result.map(|_| ())),
+        Request::ArchiveConversations { .. } => Message::Changed(result.map(|_| ()), "failed"),
+        Request::DeleteConversations { ids } => Message::DeletedMany(ids.clone(), result.map(|_| ())),
         Request::OpenChatWindow { .. } => Message::WindowOpened(result.map(|_| ())),
         Request::GetProfile => Message::Profile(result.and_then(|response| match response {
             Response::Profile { profile } => Ok(profile),
@@ -649,6 +651,76 @@ fn the_menu_renames_pins_opens_and_deletes() {
     let _ = app.update(answer_of(&requests[0], result));
     assert_eq!(app.current, None, "the open conversation went: a new chat");
     assert!(!app.conversations.iter().any(|c| c.id == TOOLS));
+}
+
+/// Issue #697: the bin at a row asks first and deletes that one conversation.
+#[test]
+fn the_bin_at_a_row_asks_and_deletes_its_conversation() {
+    let mut app = started(&[]);
+    sent(&mut app);
+    let row = app.conversations.iter().find(|c| !c.pinned && !c.archived).map(|c| c.id.clone()).expect("a recent one");
+    let _ = app.update(Message::AskDelete(row.clone()));
+    assert!(matches!(&app.dialog, Some(Dialog::Delete { id, .. }) if *id == row));
+    assert!(sent(&mut app).is_empty(), "deleting asks first");
+    let _ = app.update(Message::ConfirmDelete);
+    assert_eq!(sent(&mut app), [Request::DeleteConversation { id: row }]);
+}
+
+/// Issue #697: "Archive all…" and "Delete all…" take exactly what stands under "Recent", whatever the
+/// search shows – no pinned and no archived one –, ask with the number and go out as one request.
+#[test]
+fn archive_all_and_delete_all_take_the_recent_conversations() {
+    let mut app = started(&[]);
+    sent(&mut app);
+    let recent: Vec<String> =
+        app.conversations.iter().filter(|c| !c.pinned && !c.archived).map(|c| c.id.clone()).collect();
+    let ordered: Vec<String> = chat::sidebar_groups(&app.conversations, "").1.iter().map(|c| c.id.clone()).collect();
+    assert!(!recent.is_empty() && recent.len() < app.conversations.len());
+    let _ = app.update(Message::Search("Lisbon".into()));
+    sent(&mut app);
+
+    let _ = app.update(Message::AskArchiveAll);
+    assert_eq!(app.dialog, Some(Dialog::ArchiveMany { ids: ordered.clone() }), "the search narrows nothing");
+    assert!(sent(&mut app).is_empty(), "it asks first");
+    let _ = app.update(Message::ConfirmMany);
+    assert_eq!(sent(&mut app), [Request::ArchiveConversations { ids: ordered.clone(), archived: true }]);
+    assert!(app.conversations.iter().filter(|c| recent.contains(&c.id)).all(|c| c.archived));
+
+    let mut app = started(&[]);
+    sent(&mut app);
+    let _ = app.update(Message::AskDeleteAll);
+    assert_eq!(app.dialog, Some(Dialog::DeleteMany { ids: ordered.clone(), archive: false }));
+    // One gone meanwhile (another window): the rest still go, so the core does not refuse them all.
+    app.conversations.retain(|c| c.id != ordered[0]);
+    let _ = app.update(Message::ConfirmMany);
+    let requests = sent(&mut app);
+    assert_eq!(requests, [Request::DeleteConversations { ids: ordered[1..].to_vec() }]);
+    let result = block_on(app.backend.ask(requests[0].clone()));
+    let _ = app.update(answer_of(&requests[0], result));
+    assert!(app.conversations.iter().all(|c| !ordered.contains(&c.id)));
+    assert!(app.conversations.iter().any(|c| c.pinned) && app.conversations.iter().any(|c| c.archived), "these stay");
+}
+
+/// Issue #697: archived conversations stand closed in "Archive"; restoring one and emptying the archive
+/// go to the core.
+#[test]
+fn the_archive_restores_and_empties() {
+    let mut app = started(&[]);
+    sent(&mut app);
+    let archived: Vec<String> = chat::archived_group(&app.conversations, "").iter().map(|c| c.id.clone()).collect();
+    assert_eq!(archived.len(), 3, "the demo's archive");
+    assert!(!app.archive_open, "closed at the start");
+    let _ = app.update(Message::ToggleArchive);
+    assert!(app.archive_open);
+
+    let _ = app.update(Message::Archive(vec![archived[0].clone()], false));
+    assert_eq!(sent(&mut app), [Request::ArchiveConversations { ids: vec![archived[0].clone()], archived: false }]);
+    assert!(app.conversations.iter().any(|c| c.id == archived[0] && !c.archived), "shown at once");
+
+    let _ = app.update(Message::AskEmptyArchive);
+    assert_eq!(app.dialog, Some(Dialog::DeleteMany { ids: archived[1..].to_vec(), archive: true }));
+    let _ = app.update(Message::ConfirmMany);
+    assert_eq!(sent(&mut app), [Request::DeleteConversations { ids: archived[1..].to_vec() }]);
 }
 
 #[test]

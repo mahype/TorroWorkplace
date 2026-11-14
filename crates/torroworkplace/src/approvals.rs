@@ -2120,6 +2120,8 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         | Request::RenameConversation { .. }
         | Request::DeleteConversation { .. }
         | Request::PinConversation { .. }
+        | Request::ArchiveConversations { .. }
+        | Request::DeleteConversations { .. }
         | Request::OpenChatWindow { .. }) => assistant_summary(request, facts),
         request @ (Request::UpdateProfile { .. }
         | Request::Remember { .. }
@@ -3165,9 +3167,29 @@ fn assistant_summary(request: &Request, facts: &Facts) -> String {
         (Request::OpenChatWindow { window: ChatWindow::Conversation(_) }, None) => {
             tr("Open an unknown assistant conversation in a window").to_string()
         }
+        // Several at once (issue #697): how many, each counted once; unknown ones are refused before
+        // anyone is asked, so the number is what goes.
+        (Request::ArchiveConversations { ids, archived }, _) => {
+            let n = distinct(ids);
+            match (archived, n) {
+                (true, 1) => tr("Archive 1 assistant conversation").to_string(),
+                (true, _) => trf("Archive {n} assistant conversations", &[("n", &n)]),
+                (false, 1) => tr("Restore 1 assistant conversation").to_string(),
+                (false, _) => trf("Restore {n} assistant conversations", &[("n", &n)]),
+            }
+        }
+        (Request::DeleteConversations { ids }, _) => match distinct(ids) {
+            1 => tr("Delete 1 assistant conversation for good").to_string(),
+            n => trf("Delete {n} assistant conversations for good", &[("n", &n)]),
+        },
         // Bots do not exist yet and are refused before anyone is asked; say which command it is.
         (other, _) => trf("Run {command}", &[("command", &other.operation().name())]),
     }
+}
+
+/// How many different ids `ids` holds (issue #697): a double is one conversation.
+fn distinct(ids: &[String]) -> usize {
+    ids.iter().collect::<std::collections::BTreeSet<_>>().len()
 }
 
 /// What `accounts.set_ntfy_topic` would do, in words (task E5.12): the account by its label
@@ -6000,6 +6022,17 @@ pub(crate) mod tests {
             tr("Open an unknown assistant conversation in a window")
         );
         assert_eq!(summary(&open(ChatWindow::New), &held), tr("Open a new assistant conversation in a window"));
+
+        // Issue #697: several at once by their number, a double counted once.
+        let ids = |n: usize| (0..n).map(|i| format!("{i:016x}")).chain([format!("{:016x}", 0)]).collect::<Vec<_>>();
+        let delete = |n| Request::DeleteConversations { ids: ids(n) };
+        assert_eq!(summary(&delete(7), &unknown), trf("Delete {n} assistant conversations for good", &[("n", &7)]));
+        assert_eq!(summary(&delete(1), &unknown), tr("Delete 1 assistant conversation for good"));
+        let archive = |n, archived| Request::ArchiveConversations { ids: ids(n), archived };
+        assert_eq!(summary(&archive(3, true), &unknown), trf("Archive {n} assistant conversations", &[("n", &3)]));
+        assert_eq!(summary(&archive(1, true), &unknown), tr("Archive 1 assistant conversation"));
+        assert_eq!(summary(&archive(2, false), &unknown), trf("Restore {n} assistant conversations", &[("n", &2)]));
+        assert_eq!(summary(&archive(1, false), &unknown), tr("Restore 1 assistant conversation"));
 
         let send = |conversation: Option<String>| Request::SendMessage {
             conversation,

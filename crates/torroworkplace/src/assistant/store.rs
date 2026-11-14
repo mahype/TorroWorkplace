@@ -65,6 +65,8 @@ pub enum Line {
     Renamed { title: String },
     /// `assistant.pin_conversation`.
     Pinned { pinned: bool },
+    /// `assistant.archive_conversations` (issue #697), and a message sent in an archived one.
+    Archived { archived: bool },
     /// What the model read of the tool call whose line is the entry `seq` (issue #701): kept for later turns
     /// ([`Conversation::results`]), never shown to a client.
     Result { seq: u64, text: String },
@@ -81,6 +83,8 @@ pub struct Conversation {
     pub title: String,
     pub created: DateTime<Utc>,
     pub pinned: bool,
+    /// In the archive (issue #697, [`Line::Archived`]): kept beyond the retention time.
+    pub archived: bool,
     /// In order of their `seq`.
     pub entries: Vec<Entry>,
     /// The bot it is with (task B.1), fixed when it starts; `None` for the assistant.
@@ -102,6 +106,7 @@ impl Conversation {
             title: title_of(text),
             created: now,
             pinned: false,
+            archived: false,
             entries: Vec::new(),
             bot: None,
             about: None,
@@ -129,6 +134,7 @@ impl Conversation {
             title,
             created,
             pinned: false,
+            archived: false,
             entries: Vec::new(),
             bot,
             about,
@@ -150,6 +156,7 @@ impl Conversation {
             Line::Entry { .. } => {}
             Line::Renamed { title } => self.title = title,
             Line::Pinned { pinned } => self.pinned = pinned,
+            Line::Archived { archived } => self.archived = archived,
             // Only for a tool line it has, so a damaged file adds no result to an answer or a message.
             Line::Result { seq, text } if self.is_tool(seq) => {
                 self.results.insert(seq, text);
@@ -219,6 +226,7 @@ impl Conversation {
             created: self.created,
             updated: self.updated(),
             pinned: self.pinned,
+            archived: self.archived,
             running,
             last: self.last(),
             bot: self.bot.clone(),
@@ -567,10 +575,16 @@ mod tests {
         let first = conversation.next(answer("Hi"), at(1));
         conversation.apply(Line::Entry { entry: first.clone() });
         append(&folder, &conversation.id, &[conversation.started(), Line::Entry { entry: first }]).expect("written");
-        append(&folder, &conversation.id, &[Line::Renamed { title: "Greeting".into() }, Line::Pinned { pinned: true }])
-            .expect("written");
-        conversation.apply(Line::Renamed { title: "Greeting".into() });
-        conversation.apply(Line::Pinned { pinned: true });
+        let changes = [
+            Line::Renamed { title: "Greeting".into() },
+            Line::Pinned { pinned: true },
+            Line::Archived { archived: true },
+        ];
+        append(&folder, &conversation.id, &changes).expect("written");
+        for line in changes {
+            conversation.apply(line);
+        }
+        assert!(conversation.summary(false).archived);
 
         // A line cut off by a crash and files that are no conversation are left out.
         let path = file(&folder, &conversation.id);

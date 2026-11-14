@@ -941,6 +941,7 @@ mod tests {
             }
         }
 
+        let _one = crate::one_renderer();
         let mut renderer = iced_test::futures::futures::executor::block_on(iced::Renderer::new(
             torro_gui::typo::body().font,
             torro_gui::typo::body().size,

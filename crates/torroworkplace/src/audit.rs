@@ -578,6 +578,10 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::OpenChatWindow { window: ChatWindow::Conversation(conversation) } => {
             vec![random("conversation", conversation)]
         }
+        // Several conversations at once (issue #697): each by the id the core made.
+        Request::ArchiveConversations { ids, .. } | Request::DeleteConversations { ids } => {
+            ids.iter().map(|id| random("conversation", id)).collect()
+        }
         // The assistant's profile and memory (task C.10): a note by the id the core made, never
         // its text, a name or the personality.
         Request::GetProfile | Request::UpdateProfile { .. } | Request::ListMemories | Request::MyAccess => Vec::new(),

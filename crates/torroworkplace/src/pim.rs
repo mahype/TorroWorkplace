@@ -1430,6 +1430,8 @@ impl PimService {
             | Request::RenameConversation { .. }
             | Request::DeleteConversation { .. }
             | Request::PinConversation { .. }
+            | Request::ArchiveConversations { .. }
+            | Request::DeleteConversations { .. }
             | Request::OpenChatWindow { .. }
             | Request::VoiceStatus
             | Request::TestVoice

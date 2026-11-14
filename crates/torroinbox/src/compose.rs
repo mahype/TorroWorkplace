@@ -6728,6 +6728,7 @@ mod tests {
         use iced::futures::StreamExt as _;
         use iced_test::runtime::{Action, UserInterface, task, user_interface};
         let body = typo::body();
+        let _one = crate::one_renderer();
         let mut renderer = block_on(iced::Renderer::new(body.font, body.size, None)).expect("headless");
         let mut window = ready(&[]);
         window.body = Content::with_text("Before After").into();
@@ -6844,6 +6845,7 @@ mod tests {
         use iced::futures::StreamExt as _;
         use iced_test::runtime::{Action, UserInterface, task, user_interface};
         let body = typo::body();
+        let _one = crate::one_renderer();
         let mut renderer = block_on(iced::Renderer::new(body.font, body.size, None)).expect("headless renderer");
         let mut cache = user_interface::Cache::default();
         let mut window = ready(&[]);

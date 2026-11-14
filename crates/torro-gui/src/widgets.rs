@@ -2039,6 +2039,24 @@ pub fn row_actions<'a, M: Clone + 'a>(
     with_actions(row.into(), actions, shown, words, Place::Middle)
 }
 
+/// [`row_actions`] with the bar `right` in from the row's end instead of [`layout::row_padding`]
+/// (issue #697): for rows with an inset of their own, such as a sidebar row ([`style::ITEM_PADDING`]),
+/// whose marks at the end the bar must leave free in every spacing step.
+///
+/// ```ignore
+/// let right = style::ITEM_PADDING.right + if running { icon::SIZE_SM + space::s() } else { 0.0 };
+/// widgets::row_actions_inset(row, actions, menu_open, false, right)
+/// ```
+pub fn row_actions_inset<'a, M: Clone + 'a>(
+    row: impl Into<Element<'a, M>>,
+    actions: Vec<RowAction<'a, M>>,
+    shown: bool,
+    words: bool,
+    right: f32,
+) -> Element<'a, M> {
+    with_actions(row.into(), actions, shown, words, Place::Inset(right))
+}
+
 /// [`row_actions`] for a row of several lines (task E3.11: the inbox's mail and notice rows): the
 /// bar is centred on the line whose middle lies `line_middle` below the row's top – the first line,
 /// where the time stands –, so it covers neither the preview nor the account further down. Shown
@@ -2116,6 +2134,8 @@ enum Place {
     Line(f32),
     /// At the bottom, centred on a button row this far in from the edges ([`card_actions`]).
     Card(f32),
+    /// Centred in the height, this far in from the right end ([`row_actions_inset`]).
+    Inset(f32),
 }
 
 /// `base` with the bar of `actions` over it, at `place`.
@@ -2145,6 +2165,7 @@ fn with_actions<'a, M: Clone + 'a>(
     let right = layout::row_padding().right;
     let layer = match place {
         Place::Middle => layer.center_y(Fill).padding(Padding::new(0.0).right(right)),
+        Place::Inset(inset) => layer.center_y(Fill).padding(Padding::new(0.0).right(inset)),
         Place::Line(middle) => {
             let top = (middle - row_actions_height() / 2.0).max(0.0);
             layer.align_top(Fill).padding(Padding::new(0.0).right(right).top(top))
