@@ -1412,29 +1412,37 @@ pub enum ToolId {
     /// person allowed ([`Tools::folders`]) – lists a folder, finds files by name, makes a folder, copies,
     /// moves or renames and moves to the trash (`tools.list_folder`, `tools.find_files`,
     /// `tools.create_folder`, `tools.copy_file`, `tools.move_file`, `tools.trash_file`). Never reads or
-    /// changes what a file holds.
+    /// changes what a file holds; that is [`ToolId::FileContents`].
     Files,
+    /// `file_contents` (issue #705, "Werkzeug Dateiinhalte" in `docs/assistent.md`): reads text files
+    /// page by page, searches in what they hold, writes a new one and changes one by find and replace
+    /// (`tools.read_file`, `tools.search_in_files`, `tools.write_file`, `tools.edit_file`), in the same
+    /// folders and with the same locks as [`ToolId::Files`]. What it reads goes to the model's
+    /// provider, so a client reaches it only when a person ticked it ([`ToolId::needs_naming`]).
+    FileContents,
 }
 
 impl ToolId {
     /// Every tool, in the order the settings and the control centre show them.
-    pub const ALL: [ToolId; 3] = [ToolId::Pdf, ToolId::Web, ToolId::Files];
+    pub const ALL: [ToolId; 4] = [ToolId::Pdf, ToolId::Web, ToolId::Files, ToolId::FileContents];
 
-    /// The id on the wire and in a selection of the rights: `pdf`, `web`, `files`.
+    /// The id on the wire and in a selection of the rights: `pdf`, `web`, `files`, `file_contents`.
     pub fn name(self) -> &'static str {
         match self {
             ToolId::Pdf => "pdf",
             ToolId::Web => "web",
             ToolId::Files => "files",
+            ToolId::FileContents => "file_contents",
         }
     }
 
-    /// What people call it, the same in every language: `PDF`, `Web`, `Files`.
+    /// What people call it, the same in every language: `PDF`, `Web`, `Files`, `File contents`.
     pub fn title(self) -> &'static str {
         match self {
             ToolId::Pdf => "PDF",
             ToolId::Web => "Web",
             ToolId::Files => "Files",
+            ToolId::FileContents => "File contents",
         }
     }
 
@@ -1442,7 +1450,8 @@ impl ToolId {
     /// `tools.save_file_as` to [`ToolId::Pdf`] (every file a tool makes is a PDF for now),
     /// `tools.web_search` and `tools.fetch_page` to [`ToolId::Web`], `tools.list_folder`,
     /// `tools.find_files`, `tools.create_folder`, `tools.copy_file`, `tools.move_file` and
-    /// `tools.trash_file` to [`ToolId::Files`]. `None` for `tools.list_tools` and
+    /// `tools.trash_file` to [`ToolId::Files`], `tools.read_file`, `tools.search_in_files`,
+    /// `tools.write_file` and `tools.edit_file` to [`ToolId::FileContents`]. `None` for `tools.list_tools` and
     /// `tools.list_search_providers`, which belong to no tool, and for every other name. The core
     /// checks the switch and the selection of exactly this tool before such a command runs.
     pub fn of_command(name: &str) -> Option<ToolId> {
@@ -1455,16 +1464,20 @@ impl ToolId {
             | "tools.copy_file"
             | "tools.move_file"
             | "tools.trash_file" => Some(ToolId::Files),
+            "tools.read_file" | "tools.search_in_files" | "tools.write_file" | "tools.edit_file" => {
+                Some(ToolId::FileContents)
+            }
             _ => None,
         }
     }
 
     /// Whether a client reaches the tool only when its selection names it (decision 26 in
-    /// `docs/assistent.md`): `web`, which sends search words and addresses out of the computer. "All
-    /// tools" (`Selection::All`, every template of the rights) does not cover it, so no client that
-    /// held the templates' rights before gets it without a person ticking it. `pdf` is covered.
+    /// `docs/assistent.md`): `web`, which sends search words and addresses out of the computer, and
+    /// `file_contents` (issue #705), which hands what files hold to the model's provider. "All tools"
+    /// (`Selection::All`, every template of the rights) does not cover them, so no client that held the
+    /// templates' rights before gets them without a person ticking them. `pdf` and `files` are covered.
     pub fn needs_naming(self) -> bool {
-        matches!(self, ToolId::Web)
+        matches!(self, ToolId::Web | ToolId::FileContents)
     }
 }
 
@@ -3621,7 +3634,13 @@ mod tests {
         assert_eq!((ToolId::Web.name(), ToolId::Web.title()), ("web", "Web"));
         assert!(ToolId::Web.needs_naming() && !ToolId::Pdf.needs_naming(), "only web needs a person's tick");
         assert!(!ToolId::Files.needs_naming(), "files stays on the computer, \"all tools\" covers it");
-        assert_eq!(ToolId::ALL, [ToolId::Pdf, ToolId::Web, ToolId::Files], "files last");
+        for name in ["tools.read_file", "tools.search_in_files", "tools.write_file", "tools.edit_file"] {
+            assert_eq!(ToolId::of_command(name), Some(ToolId::FileContents), "{name}");
+        }
+        assert!(ToolId::FileContents.needs_naming(), "a file's text goes to the provider, a person ticks it");
+        assert_eq!((ToolId::FileContents.name(), ToolId::FileContents.title()), ("file_contents", "File contents"));
+        assert_eq!(serde_json::to_value(ToolId::FileContents).expect("json"), "file_contents");
+        assert_eq!(ToolId::ALL, [ToolId::Pdf, ToolId::Web, ToolId::Files, ToolId::FileContents], "file contents last");
         assert_eq!((ToolId::Files.name(), ToolId::Files.title()), ("files", "Files"));
         assert_eq!(serde_json::to_value(ToolId::Files).expect("json"), "files");
     }
