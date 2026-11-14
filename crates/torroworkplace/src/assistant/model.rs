@@ -450,8 +450,9 @@ pub struct ModelAccess {
     pub model: String,
     /// Where [`ModelAccess::model`] runs (task S.23).
     pub place: Place,
-    /// The context window of [`ModelAccess::model`] in tokens as the account lists it ([`AiModel::context`]);
-    /// `None` when the list does not say. The loop keeps the conversation within half of it (issue #701).
+    /// The context window of [`ModelAccess::model`] in tokens as the account lists it ([`AiModel::context`]),
+    /// else as [`torro_core::ai::assumed_context`] assumes for its provider (issue #716); `None` when
+    /// neither says. The loop keeps the conversation within half of it (issue #701).
     pub context: Option<u64>,
 }
 
@@ -780,8 +781,8 @@ struct Answering {
     repeated: BTreeMap<(String, String), usize>,
 }
 
-/// The window assumed when the account does not list the model's ([`ModelAccess::context`], issue #701): small
-/// enough for the default window of a local server.
+/// The last fallback, when neither the account nor the provider's table knows the window ([`ModelAccess::context`],
+/// issue #701): small enough for the default window of a local server.
 const CONTEXT: u64 = 32_000;
 
 /// The same call this many times in one answer ends it (issue #701): the model goes round in circles.

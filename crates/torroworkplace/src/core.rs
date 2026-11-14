@@ -13524,7 +13524,12 @@ impl crate::assistant::Host for Core {
                 .map(|models| models.iter().map(|listed| (listed.id.clone(), listed.context)).collect())
                 .unwrap_or_default();
             let (model, place) = crate::assistant::ModelAccess::choose_on(listed, model, asked_on, place, off)?;
-            let context = windows.into_iter().find(|(id, _)| *id == model).and_then(|(_, context)| context);
+            // The list wins; where it names none, the provider's usual window (issue #716).
+            let context = windows
+                .into_iter()
+                .find(|(id, _)| *id == model)
+                .and_then(|(_, context)| context)
+                .or_else(|| server.as_ref().and_then(|(kind, _)| torro_core::ai::assumed_context(*kind, &model)));
             Ok(crate::assistant::ModelAccess { provider, model, place, context })
         })
     }
@@ -33190,6 +33195,38 @@ mod tests {
         assert_eq!(core.handle(asked).await, Response::Error { code: "unsupported".into(), message: off.clone() });
         let delegated = Host::ask_bot(&*core, &main, ask_bot(&automatic.id), "test", false, &[]).await;
         assert_eq!(delegated, Response::Error { code: "unsupported".into(), message: off });
+    }
+
+    /// Issue #716: a model the list gives no context window gets the one of its provider, a window the
+    /// list names wins, and an own server keeps none (the assistant then falls back to its default).
+    #[tokio::test]
+    async fn a_model_without_a_listed_window_gets_the_one_of_its_provider() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let mistral = httpmock::MockServer::start_async().await;
+        mistral
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(200).json_body(serde_json::json!({"object": "list", "data": [
+                    {"id": "mistral-large-latest"},
+                    {"id": "mistral-small-latest", "context_length": 32768},
+                ]}));
+            })
+            .await;
+        let core = Arc::new(core_with_ai(dir.path(), &keys, Vec::new()));
+        let account = core
+            .ai
+            .connect(AiProvider::Mistral, Some(&mistral.url("/v1")), torro_core::account::Secret::new("k"))
+            .await;
+        let account = account.expect("mistral");
+        for model in ["mistral-large-latest", "mistral-small-latest"] {
+            assert_eq!(core.handle(switch(&account.id, model, true)).await, Response::Ok);
+        }
+
+        let access = Host::model(&*core, &account.id, Some("mistral-large-latest")).await.expect("a model");
+        assert_eq!(access.context, Some(128_000), "the provider's window");
+        let access = Host::model(&*core, &account.id, Some("mistral-small-latest")).await.expect("a model");
+        assert_eq!(access.context, Some(32_768), "the list wins");
     }
 
     /// Task B.2: an approval the bot asks for while it runs for the assistant keeps the narrowing:
