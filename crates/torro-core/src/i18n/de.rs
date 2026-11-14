@@ -4226,12 +4226,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Invoice for March", "Rechnung für März"),
     ("Is the invoice for March paid?", "Ist die Rechnung für März bezahlt?"),
     (
-        "Everything in it is deleted for good. Pinned conversations stay.",
-        "Alles darin wird endgültig gelöscht. Angeheftete Unterhaltungen bleiben.",
+        "Everything in it is deleted for good. Pinned ones stay.",
+        "Alles darin wird endgültig gelöscht. Angeheftete bleiben.",
     ),
     (
-        "Everything in them is deleted for good. Pinned conversations stay.",
-        "Alles darin wird endgültig gelöscht. Angeheftete Unterhaltungen bleiben.",
+        "Everything in them is deleted for good. Pinned ones stay.",
+        "Alles darin wird endgültig gelöscht. Angeheftete bleiben.",
     ),
     (
         "They move to the archive at the bottom of the sidebar, where you can restore them. Pinned conversations stay.",

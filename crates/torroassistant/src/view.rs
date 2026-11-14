@@ -1407,11 +1407,11 @@ impl App {
                     ),
                     (false, true) => (
                         tr("Delete 1 conversation?").to_owned(),
-                        tr("Everything in it is deleted for good. Pinned conversations stay.").to_owned(),
+                        tr("Everything in it is deleted for good. Pinned ones stay.").to_owned(),
                     ),
                     (false, false) => (
                         trf("Delete {n} conversations?", &[("n", &n)]),
-                        tr("Everything in them is deleted for good. Pinned conversations stay.").to_owned(),
+                        tr("Everything in them is deleted for good. Pinned ones stay.").to_owned(),
                     ),
                 };
                 let words = typo::text(typo::body(), text).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
