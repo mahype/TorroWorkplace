@@ -9202,7 +9202,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Write the skill first.", "Schreib zuerst die Fähigkeit."),
     ("an unknown skill", "eine unbekannte Fähigkeit"),
     // Reading answers aloud (issue #745).
-    ("After “Hey Torro”, with the voice chosen above", "Nach „Hey Torro“, mit der oben gewählten Stimme"),
+    ("After “Hey Torro”, with the voice under Read aloud", "Nach „Hey Torro“, mit der Stimme unter Vorlesen"),
     ("Calm man", "Mann, ruhig"),
     ("Checking this computer…", "Dieser Rechner wird geprüft …"),
     ("Connect an OpenAI account in Settings › AI.", "Verbinde ein OpenAI-Konto unter Einstellungen › KI."),
@@ -9242,8 +9242,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Piper is not installed.", "Piper ist nicht installiert."),
     ("Piper could not read the text.", "Piper konnte den Text nicht vorlesen."),
     (
-        "This computer could not be checked. Use Check again below.",
-        "Dieser Rechner ließ sich nicht prüfen. Nutze „Erneut prüfen“ unten.",
+        "This computer could not be checked. Use Check again under Programs.",
+        "Dieser Rechner ließ sich nicht prüfen. Nutze „Erneut prüfen“ unter Programme.",
     ),
     ("Piper is not installed or has no voice.", "Piper ist nicht installiert oder hat keine Stimme."),
     ("Qwen3-TTS could not read the text.", "Qwen3-TTS konnte den Text nicht vorlesen."),
@@ -9265,6 +9265,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Qwen3-TTS stopped. Try again.", "Qwen3-TTS wurde beendet. Versuch es noch einmal."),
     ("Read aloud", "Vorlesen"),
+    // Issue #763: the tabs of the assistant's settings.
+    ("Chats", "Chats"),
+    ("Programs", "Programme"),
     ("Read answers aloud", "Antworten im Chat vorlesen"),
     ("Stop reading answers aloud", "Antworten nicht mehr vorlesen"),
     ("Fast enough for local voices · {gpu}", "Schnell genug für lokale Stimmen · {gpu}"),
