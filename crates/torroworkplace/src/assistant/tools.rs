@@ -7,7 +7,8 @@
 //!   never `system`, `clients` or `approvals`, which have no level), not switched off in this
 //!   conversation (`without`), never the area `assistant` (no loop) but its memory
 //!   (`torro_ipc::api::own_memory`, task C.10: `assistant_remember` only when the person asks, as its
-//!   description says), its own access ([`MY_ACCESS`], issue #134, also for a bot), the suite's help
+//!   description says), its own access ([`MY_ACCESS`], issue #134, also for a bot), searching its
+//!   conversations ([`SEARCH`], issue #704, not for a bot), the suite's help
 //!   ([`GET_HELP`], issue #702, also for a bot; the one tool of `system`) and
 //!   [`ASSISTANT_BOT_TOOLS`] (task B.2: asking a bot only on the person's word, which the core
 //!   checks), and never a command kept from agents ([`Mcp::Never`]). A command of one of the
@@ -85,6 +86,10 @@ pub const ASSISTANT_BOT_TOOLS: &[&str] = &["bots.list_bots", "bots.ask_bot"];
 /// The command that tells the assistant or a bot its own rights (issue #134), offered to both.
 pub const MY_ACCESS: &str = "assistant.my_access";
 
+/// The command that searches the conversations (issue #704), offered to the assistant only, never to a
+/// bot: the core answers it the assistant's own conversations.
+pub const SEARCH: &str = "assistant.search_conversations";
+
 /// The commands of the area `assistant` a bot's model is offered besides [`MY_ACCESS`] (issue #703):
 /// reading its own skills, which the core looks up by the bot. The assistant's model gets them with
 /// its memory (`torro_ipc::api::own_memory`), with writing them as well.
@@ -137,6 +142,11 @@ impl Tool {
     /// The command is [`MY_ACCESS`] (issue #134).
     fn is_my_access(&self) -> bool {
         self.command.name == MY_ACCESS
+    }
+
+    /// The command is [`SEARCH`] (issue #704).
+    fn is_search(&self) -> bool {
+        self.command.name == SEARCH
     }
 
     /// The command is one of [`BOT_SKILL_TOOLS`] (issue #703).
@@ -208,7 +218,8 @@ pub fn allowed(rights: Option<&Rights>, without: &[Area]) -> Vec<Arc<Tool>> {
 /// areas `without`, in catalogue order (see the module's documentation). `None` rights (no client
 /// yet): none. Contacts only with an address book in the rights. A command of one of the assistant's own tools only with the tool in
 /// [`Rights::tools`]. The assistant's own client ([`ASSISTANT_CLIENT`]) gets its memory and
-/// [`ASSISTANT_BOT_TOOLS`] (task B.2) besides its rights, a bot's ([`torro_ipc::api::BOT_CLIENT`],
+/// [`ASSISTANT_BOT_TOOLS`] (task B.2) and [`SEARCH`] (issue #704) besides its rights, a bot's
+/// ([`torro_ipc::api::BOT_CLIENT`],
 /// task B.1) its rights only and reading its skills ([`BOT_SKILL_TOOLS`], issue #703); both get
 /// [`MY_ACCESS`] (issue #134) and [`GET_HELP`] (issue #702). Neither is offered any other tool
 /// of `assistant` or `bots`, and a bot no tool of `bots` (no chains; the core refuses it them).
@@ -229,7 +240,7 @@ pub fn allowed_for(kind: &str, rights: Option<&Rights>, without: &[Area], server
         let granted = !matches!(area, Area::Assistant | Area::Bots) && rights.allows(operation);
         let bot = kind == torro_ipc::api::BOT_CLIENT;
         let help = assistant_or_bot && tool.is_help();
-        let by_kind = (own && (tool.is_memory() || tool.is_bots()))
+        let by_kind = (own && (tool.is_memory() || tool.is_bots() || tool.is_search()))
             || (assistant_or_bot && tool.is_my_access())
             || (bot && tool.is_bot_skill())
             || help;
@@ -304,7 +315,7 @@ pub fn callable(name: &str) -> Option<Arc<Tool>> {
         .iter()
         .find(|tool| tool.spec.name == name)
         .filter(|tool| {
-            let own = tool.is_memory() || tool.is_my_access();
+            let own = tool.is_memory() || tool.is_my_access() || tool.is_search();
             (tool.command.area.grantable() && (tool.command.area != Area::Assistant || own)) || tool.is_help()
         })
         .cloned()
@@ -492,7 +503,8 @@ pub fn untrusted(area: Area, value: &Value) -> bool {
         // (decision 4 in `docs/kontakte.md`).
         Area::Contacts => true,
         Area::Extensions => !matches!(result, Some("error" | "ok" | "catalog")),
-        Area::Inbox | Area::Tools => value.to_string().contains("\"untrusted\":true"),
+        // Issue #704: hits of the search of the conversations that may come from outside.
+        Area::Inbox | Area::Tools | Area::Assistant => value.to_string().contains("\"untrusted\":true"),
         Area::Tasks => {
             let text = value.to_string();
             text.contains("\"collection\":\"github:") || text.contains("\"id\":\"github:")
@@ -538,8 +550,9 @@ pub fn may_have_read_outside(name: &str) -> bool {
     if matches!(name, "tools.read_file" | "tools.search_in_files") {
         return true;
     }
-    // A bot the assistant asked (task B.2) may have read any of it.
-    if matches!(name, "tasks.list_todos" | "tasks.add_link" | "bots.ask_bot") {
+    // A bot the assistant asked (task B.2) may have read any of it; so may an earlier conversation the
+    // search shows (issue #704), and its hits do not say what they came after.
+    if matches!(name, "tasks.list_todos" | "tasks.add_link" | "bots.ask_bot" | SEARCH) {
         return true;
     }
     if name.starts_with(TOOL_PREFIX)
@@ -1013,6 +1026,7 @@ mod tests {
         assert_eq!(
             own,
             [
+                "assistant_search_conversations",
                 "assistant_list_memories",
                 "assistant_my_access",
                 "assistant_remember",
@@ -1022,7 +1036,7 @@ mod tests {
                 "assistant_save_skill",
                 "assistant_delete_skill"
             ],
-            "task C.10, issue #134, issue #703"
+            "task C.10, issue #134, issue #703, issue #704"
         );
         assert!(allowed(Some(&rights), &[Area::Calendar]).iter().all(|tool| tool.command.area != Area::Calendar));
         assert!(allowed(Some(&rights), &[Area::Assistant]).iter().all(|tool| !tool.is_memory()), "switched off");
@@ -1037,7 +1051,8 @@ mod tests {
             assert_eq!(command.mcp, Mcp::Tool, "{}", command.name);
             assert!(!matches!(command.area, Area::Clients | Area::Approvals), "{}", command.name);
             assert!(command.area != Area::System || tool.is_help(), "only the help of system (#702): {}", command.name);
-            assert!(command.area != Area::Assistant || tool.is_memory() || tool.is_my_access(), "{}", command.name);
+            let own = tool.is_memory() || tool.is_my_access() || tool.is_search();
+            assert!(command.area != Area::Assistant || own, "{}", command.name);
             assert!(command.area != Area::Bots || tool.is_bots(), "{}", command.name);
         }
         assert!(named(&everything, "mail_send_draft").is_some());
@@ -1051,6 +1066,8 @@ mod tests {
             assert!(callable(never).is_none(), "{never}");
         }
         assert!(callable("assistant_send_message").is_none() && callable("accounts_connect_ai").is_none());
+        // Issue #704: the search is callable; the core answers a bot `forbidden` for it.
+        assert!(callable("assistant_search_conversations").is_some());
         assert!(callable("assistant_update_profile").is_none(), "never its own profile");
         assert!(callable("assistant_remember").is_some() && callable("assistant_forget").is_some());
         // A map is a picture: neither offered nor callable, whatever the rights.
@@ -1337,6 +1354,24 @@ mod tests {
         for name in ["calendar.list_events", "tools.list_search_providers", "tools.create_pdf"] {
             assert!(!may_have_read_outside(name) && !may_have_read_untrusted(name), "{name}");
         }
+        // Issue #704: an earlier conversation may hold any of it; hits marked so are untrusted.
+        assert!(may_have_read_outside(SEARCH) && may_have_read_untrusted(SEARCH));
+        assert!(!may_have_read_outside("assistant.list_memories"));
+        let hit = |untrusted: bool| torro_ipc::assistant::ConversationHit {
+            conversation: "0123456789abcdef".into(),
+            title: "Trip".into(),
+            updated: chrono::Utc::now(),
+            bot: None,
+            seq: Some(2),
+            kind: torro_ipc::assistant::HitKind::Answer,
+            snippet: "Book the flight".into(),
+            untrusted,
+        };
+        let marked =
+            serde_json::to_value(Response::ConversationHits { hits: vec![hit(false), hit(true)] }).expect("json");
+        assert!(untrusted(Area::Assistant, &marked) && for_model(Area::Assistant, marked).contains(UNTRUSTED_NOTE));
+        let own = serde_json::to_value(Response::ConversationHits { hits: vec![hit(false)] }).expect("json");
+        assert!(!untrusted(Area::Assistant, &own));
         let results = torro_ipc::web::SearchResults::new(Vec::new(), Vec::new());
         let found = serde_json::to_value(Response::SearchResults { results }).expect("json");
         assert!(untrusted(Area::Tools, &found));

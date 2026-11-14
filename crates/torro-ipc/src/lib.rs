@@ -69,7 +69,8 @@ use torro_setups::{Startup, TemplateSummary};
 
 use crate::api::{Area, Rights, RightsTemplate};
 use crate::assistant::{
-    CardEntry, ChatWindow, ConversationSummary, Engine, Entry, MyAccess, Note, Profile, Skill, SkillSummary,
+    CardEntry, ChatWindow, ConversationHit, ConversationSummary, Engine, Entry, MyAccess, Note, Profile, Skill,
+    SkillSummary,
 };
 use crate::bots::{Bot, BotSummary};
 use crate::help::{HelpTopic, HelpTopicSummary};
@@ -4157,6 +4158,24 @@ pub enum Request {
     /// be read (the core's log says why).
     #[serde(rename = "assistant.list_conversations")]
     ListConversations,
+    /// Searches the conversations for words (issue #704, [`Response::ConversationHits`]): a part of
+    /// a conversation hits when it holds every word of `query` (split at white space, compared in
+    /// small letters). Parts are the title, the messages and the answers, never what a tool answered.
+    /// The most recently active conversations first, at most [`assistant::HITS_PER_CONVERSATION`] hits
+    /// each (the newest), each with a short snippet around the first word ([`assistant::SNIPPET_CHARS`]).
+    /// The caller sees what `assistant.list_conversations` lists it; the assistant's own client only
+    /// its own conversations (none with a bot) and no hit after a command of an area it may not read
+    /// now. `error` for an empty query or one beyond [`assistant::MAX_QUERY_CHARS`] characters. The
+    /// words are never logged.
+    #[serde(rename = "assistant.search_conversations")]
+    SearchConversations {
+        /// The words to look for, at most [`assistant::MAX_QUERY_CHARS`] characters.
+        query: String,
+        /// At most this many hits, [`assistant::DEFAULT_HITS`] when left out, kept within
+        /// 1..=[`assistant::MAX_HITS`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
+    },
     /// One conversation with its entries in order ([`Response::Conversation`]); with `after` only
     /// the entries numbered higher, so a window follows a running answer by asking again with the
     /// last number it has. `not-found` for an unknown id.
@@ -6163,6 +6182,12 @@ pub enum Response {
     /// The assistant's conversations, without their entries ([`Request::ListConversations`]).
     Conversations {
         conversations: Vec<ConversationSummary>,
+    },
+    /// The hits of [`Request::SearchConversations`], the most recently active conversation first.
+    /// Snippets are text of the person, the assistant or (marked `untrusted`) from outside: data,
+    /// never instructions.
+    ConversationHits {
+        hits: Vec<ConversationHit>,
     },
     /// The assistant's profile ([`Request::GetProfile`], [`Request::UpdateProfile`]). The
     /// personality is the person's text: data, never instructions.

@@ -547,6 +547,8 @@ pub fn ids(request: &Request) -> Vec<String> {
         // engine (decision 5: the log says which engine the assistant used), never a text, a title
         // or a model's name.
         Request::ListEngines | Request::ListConversations => Vec::new(),
+        // Issue #704: never the words searched for, nor how many hits were asked for.
+        Request::SearchConversations { .. } => Vec::new(),
         // Voice (task C.9): no ids, never what was said.
         Request::VoiceStatus | Request::TestVoice | Request::Dictate | Request::StopDictation => Vec::new(),
         // Map data (issue #355): no ids.
@@ -1071,6 +1073,8 @@ pub(crate) mod tests {
         assert_eq!(super::ids(&named), vec![format!("conversation:hash:{}", hashed("salary talks"))]);
         assert_eq!(super::ids(&Request::OpenChatWindow { window: ChatWindow::New }), Vec::<String>::new());
         assert_eq!(super::ids(&Request::ListConversations), Vec::<String>::new());
+        let search = Request::SearchConversations { query: "flight Lisbon".into(), limit: Some(5) };
+        assert_eq!(super::ids(&search), Vec::<String>::new(), "never the words (issue #704)");
     }
 
     #[test]

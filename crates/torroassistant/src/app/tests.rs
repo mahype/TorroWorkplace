@@ -1606,6 +1606,57 @@ fn an_answer_waiting_for_approval_is_followed_slowly() {
     assert!(!started(&["--open", "streaming"]).waits_for_approval());
 }
 
+/// Issue #704: from two characters on the search asks the core; an answer for other words than those in
+/// the field is dropped, and fewer than two characters filter the titles only.
+#[test]
+fn the_search_asks_the_core_and_drops_stale_hits() {
+    let mut app = started(&[]);
+    sent(&mut app);
+    let _ = app.update(Message::Search("A".into()));
+    assert!(sent(&mut app).is_empty(), "one character filters the titles");
+    let _ = app.update(Message::Search(" An ".into()));
+    assert_eq!(sent(&mut app), [Request::SearchConversations { query: "An".into(), limit: Some(MAX_HITS) }]);
+    let _ = app.update(Message::Search("Ann".into()));
+    sent(&mut app);
+    let _ = app.update(Message::Hits("An".into(), Ok(Vec::new())));
+    assert!(app.hits.is_none(), "stale");
+    let _ = app.update(Message::Hits("Ann".into(), Ok(Vec::new())));
+    assert_eq!((app.hits.clone(), app.hits_for.as_str()), (Some(Ok(Vec::new())), "Ann"));
+    let _ = app.update(Message::Search("Anx".into()));
+    assert_eq!((app.hits_for.as_str(), app.asked.as_str()), ("Ann", "Anx"), "the last hits stay while asking");
+    let _ = app.update(Message::Hits("Anx".into(), Ok(Vec::new())));
+    assert_eq!(app.hits_for, "Anx");
+    let _ = app.update(Message::Search("A".into()));
+    assert!(app.hits.is_none(), "back to the titles");
+}
+
+/// Issue #704: a hit opens its conversation with the entry marked and the history not following the
+/// newest entry; choosing another conversation unmarks it.
+#[test]
+fn a_hit_opens_its_conversation_at_the_place() {
+    let mut app = started(&[]);
+    let _ = app.update(Message::Search(demo::SEARCH_WORD.into()));
+    settle(&mut app);
+    let hit = match &app.hits {
+        Some(Ok(hits)) => hits.first().cloned().expect("the demo holds the word"),
+        other => panic!("expected hits, got {other:?}"),
+    };
+    let seq = hit.seq.expect("an entry");
+    let _ = app.update(Message::OpenHit(hit.conversation.clone(), Some(seq)));
+    settle(&mut app);
+    assert_eq!(app.current.as_deref(), Some(hit.conversation.as_str()));
+    assert_eq!(app.marked, Some((hit.conversation.clone(), seq)));
+    assert!(app.transcript.entries.iter().any(|entry| entry.seq == seq), "the entry is there");
+    assert!(!app.follow_bottom && app.snap.is_none(), "scrolled to the hit, not to the newest");
+    let other = app.conversations.iter().find(|c| c.id != hit.conversation).map(|c| c.id.clone()).expect("another");
+    let _ = app.update(Message::Select(other));
+    assert_eq!(app.marked, None);
+    // A deleted conversation goes from the hits: listing again searches again.
+    sent(&mut app);
+    let _ = app.update(Message::Listed(Ok(app.conversations.clone())));
+    assert!(sent(&mut app).iter().any(|request| matches!(request, Request::SearchConversations { .. })));
+}
+
 /// Issue #699: the microphone dictates into the field and sends nothing; a second press stops the
 /// recording, the text then comes as it was heard.
 #[test]

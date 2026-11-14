@@ -1269,6 +1269,8 @@ fn describe(request: &Request) -> String {
         // Ids only, never a message or a title (task C.1).
         Request::ListEngines => "assistant engines".into(),
         Request::ListConversations => "assistant conversations".into(),
+        // Never the words (issue #704).
+        Request::SearchConversations { .. } => "search the assistant conversations".into(),
         Request::GetConversation { id, .. } => format!("conversation {id}"),
         // Never a file's title or path (issue #225).
         Request::GetCards { conversation } => format!("cards of conversation {conversation}"),

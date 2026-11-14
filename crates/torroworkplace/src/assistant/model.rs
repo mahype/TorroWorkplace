@@ -1392,7 +1392,7 @@ fn touched(command: &torro_ipc::api::Command) -> Vec<Area> {
 /// level of every area the command touches ([`touched`]), the command is not switched off for it, it still reaches
 /// the command's tool (web, files, PDF), and for a server's tool one of `servers` still offers it. Areas only, no
 /// single account or collection: the tool line does not keep which one the call read.
-fn readable(name: &str, rights: &Rights, servers: &[ExtensionTool]) -> bool {
+pub(crate) fn readable(name: &str, rights: &Rights, servers: &[ExtensionTool]) -> bool {
     let Some(command) = torro_ipc::api::CATALOGUE.iter().find(|command| command.name == name) else {
         return servers.iter().any(|server| server.tool_name.as_deref() == Some(name));
     };

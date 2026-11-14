@@ -1421,6 +1421,7 @@ impl PimService {
             // No collection: the assistant's conversations are its own (task C.1).
             Request::ListEngines
             | Request::ListConversations
+            | Request::SearchConversations { .. }
             | Request::GetConversation { .. }
             | Request::GetCards { .. }
             | Request::SendMessage { .. }
