@@ -3412,7 +3412,7 @@ Pins a conversation of the assistant (`pinned: true`) so it is kept beyond the r
 
 Zugriff `write` · MCP-Tool `assistant_archive_conversations`
 
-Archives conversations of the assistant (`archived: true`) or restores them, up to 1000 ids at once. Archived ones are kept beyond the retention time and listed with `archived: true`; sending a message in one restores it. An answer that runs finishes. Fails with `not-found`, changing nothing, when one id is unknown.
+Archives conversations of the assistant (`archived: true`) or restores them, up to 1000 ids at once. Archived ones are kept beyond the retention time and listed with `archived: true`; sending a message in one restores it. An answer that runs finishes. Fails with `not-found`, changing nothing, when one id is unknown; with `error` when one cannot be stored, the ones before it keeping their new state.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -3423,7 +3423,7 @@ Archives conversations of the assistant (`archived: true`) or restores them, up 
 
 Zugriff `delete` · MCP-Tool `assistant_delete_conversations`
 
-Deletes several conversations of the assistant and everything in them from this computer, up to 1000 ids at once, stopping answers that run. They cannot be restored. Fails with `not-found`, deleting nothing, when one id is unknown.
+Deletes several conversations of the assistant and everything in them from this computer, up to 1000 ids at once, stopping answers that run. They cannot be restored. Fails with `not-found`, deleting nothing, when one id is unknown; with `error` when a file cannot be removed, the others staying deleted.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
