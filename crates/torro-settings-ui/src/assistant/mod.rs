@@ -285,6 +285,11 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.voice.menus.close();
             Action::None
         }
+        // The status row leads to Access: the assistant's page, not a bot's left open (issue #763).
+        Message::General(general::Message::Access) => {
+            access::leave_bot(&mut state.access);
+            general::update(&mut state.general, general::Message::Access, data)
+        }
         Message::General(message) => general::update(&mut state.general, message, data),
         Message::Access(message) => access::update_assistant(&mut state.access, message, data),
         Message::BotAccess(message) => access::update(&mut state.access, message, data),
@@ -312,7 +317,8 @@ pub fn page<'a>(state: &'a State, data: &'a Data, section: &str, class: SizeClas
     match section {
         access::ID => wrap(access::page(&state.access, data, class), Message::Access),
         "skills" => skills_page(state, data, class),
-        bots::BOTS => match access::bot_page(&state.access, data) {
+        // While the assistant is off, Bots is its one sentence, a bot's page too.
+        bots::BOTS => match access::bot_page(&state.access, data).filter(|_| is_on(data)) {
             Some(page) => wrap(page, Message::BotAccess),
             None => {
                 let rights = |bot: &torro_ipc::bots::BotSummary| access::bot_rights(&state.access, data, bot);
@@ -398,12 +404,14 @@ pub fn save_now(state: &mut State) -> Action {
 }
 
 /// One of the host's own messages, as the app hands it on **before** the host takes it
-/// (`assistant::received(&mut sections, &message); host.update(message)`): a send that came back
-/// and a load. The host gives a section neither the answers of its requests nor the fresh data;
+/// (`assistant::received(&mut sections, &message); host.update(message)`): a send that came back,
+/// a load, and Access chosen in the list. The host gives a section neither the answers of its requests nor the fresh data;
 /// Access needs both to settle the editor's draft and to see its client appear ([`access::sent`],
 /// [`access::loaded`]). Every other message is left alone.
 pub fn received(state: &mut State, message: &crate::host::Message) {
     match message {
+        // Access chosen in the list shows the assistant's page (issue #763).
+        crate::host::Message::Select(access::ID) => access::leave_bot(&mut state.access),
         crate::host::Message::Sent { changed, result } => {
             access::sent(&mut state.access, *changed, result);
             if let Ok(data) = &**result {
@@ -792,6 +800,13 @@ mod tests {
         let _ = update(&mut state, Message::Access(access::Message::Rights(level(torro_ipc::api::Area::Mail))), &data);
         let Action::Send(then) = save_now(&mut state) else { panic!("the assistant's draft waits") };
         assert!(matches!(&then[..], [Request::UpdateClient { id, .. }] if *id == assistant), "{then:?}");
+        let _ = update(&mut state, Message::Bots(bots::Message::Access(bot.clone())), &data);
+        assert!(page(&state, &turned_off(&data), bots::BOTS, SizeClass::Wide).sub_page.is_none(), "off: no bot page");
+        received(&mut state, &host::Message::Select(access::ID));
+        assert!(access::open_bot(&state.access, &data).is_none(), "Access chosen in the list");
+        let _ = update(&mut state, Message::Bots(bots::Message::Access(bot.clone())), &data);
+        assert_eq!(update(&mut state, Message::General(general::Message::Access), &data), Action::Open(access::ID));
+        assert!(access::open_bot(&state.access, &data).is_none(), "Access from General's status row");
         let _ = update(&mut state, Message::Bots(bots::Message::Access(bot.clone())), &data);
         show_access(&mut state, None);
         assert!(access::open_bot(&state.access, &data).is_none());

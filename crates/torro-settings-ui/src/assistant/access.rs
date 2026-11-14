@@ -294,6 +294,15 @@ pub fn update_assistant(state: &mut State, message: Message, data: &Data) -> Act
     }
 }
 
+/// Shows the assistant's own page again when Access is reached another way than its own controls
+/// (the list, General's status row; issue #763): a bot's page left open below Bots closes, so Access
+/// opens at its first tab without the bot's open areas. A waiting draft still goes with the clock.
+pub fn leave_bot(state: &mut State) {
+    if state.bot.is_some() {
+        show(state, None);
+    }
+}
+
 /// The bot whose page is open: [`State`]'s bot, as long as the data lists it.
 pub fn open_bot<'a>(state: &State, data: &'a Data) -> Option<&'a BotSummary> {
     let id = state.bot.as_deref()?;
