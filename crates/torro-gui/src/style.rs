@@ -611,13 +611,6 @@ pub mod container {
         Style { text_color: Some(p.text), border: outline(p.line_strong, radius::xs()), ..surface(p.raised) }
     }
 
-    /// The assistant's composer (issue #699): one frame around the text and the quiet row of its
-    /// options – `panel`, 1-px `line_strong` border, radius [`radius::lg()`] like a floating card.
-    pub fn composer(theme: &Theme) -> Style {
-        let p = palette(theme);
-        Style { text_color: Some(p.text), border: outline(p.line_strong, radius::lg()), ..surface(p.panel) }
-    }
-
     /// A key hint ("⌘K", "N"): no surface, 1-px `line_strong` border, radius [`radius::xs()`], text
     /// `text_3` in `CAPTION`. Padding [`super::KBD_PADDING`].
     pub fn kbd(theme: &Theme) -> Style {
@@ -751,6 +744,20 @@ pub fn text_editor_document(theme: &Theme, status: widget::text_editor::Status) 
     widget::text_editor::Style {
         background: Background::Color(Color::TRANSPARENT),
         border: Border::default(),
+        ..framed
+    }
+}
+
+/// The assistant's composer (issue #699): the text editor is the one frame around the text and the
+/// quiet row of its options, which lies over its bottom – `panel`, 1-px `line_strong` border, radius
+/// [`radius::lg()`] like a floating card; focused the 2-px `focus_ring` like every input, so the
+/// field shows where one writes. No hover surface: the whole field would light up under the row.
+pub fn text_editor_composer(theme: &Theme, status: widget::text_editor::Status) -> widget::text_editor::Style {
+    let framed = text_editor(theme, status);
+    let p = palette(theme);
+    widget::text_editor::Style {
+        background: Background::Color(p.panel),
+        border: framed.border.rounded(radius::lg()),
         ..framed
     }
 }
@@ -1083,8 +1090,11 @@ mod tests {
                 assert!(quiet.text_color.relative_contrast(over(bg(&quiet), p.panel)) >= 4.5, "{mode}: {status:?}");
                 assert_eq!(quiet.border.radius, (ROUND as f32).into(), "{mode}: a circle");
             }
-            let frame = container::composer(&theme);
-            assert!(frame.border.color.relative_contrast(p.panel) > 1.0, "{mode}: the frame shows");
+            let rest = text_editor_composer(&theme, widget::text_editor::Status::Active);
+            assert!(rest.border.color.relative_contrast(p.panel) > 1.0, "{mode}: the frame shows");
+            let focused = text_editor_composer(&theme, widget::text_editor::Status::Focused { is_hovered: false });
+            assert!(same(focused.border.color, p.focus_ring), "{mode}: the focus shows on the frame");
+            assert!(focused.border.width > rest.border.width, "{mode}: as the ring of every input");
         }
     }
 

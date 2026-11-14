@@ -885,17 +885,20 @@ impl App {
             Dictation::Recording => tr("Listening…").to_owned(),
             _ => self.placeholder(),
         };
+        // The editor is the frame of the whole field (its focus ring shows on it); the row of
+        // options lies over its bottom, where the editor keeps room free for it.
+        let row_room = size::control_sm() + space::xs();
         let editor = text_editor(&self.editor)
             .id(EDITOR)
             .placeholder(placeholder)
             .size(body.size)
             .line_height(body.line_height)
             .font(body.font)
-            .padding(style::INPUT_PADDING)
+            .padding(Padding { bottom: style::INPUT_PADDING.bottom + row_room, ..style::INPUT_PADDING })
             .min_height(least)
             .max_height(most)
             .wrapping(Wrapping::WordOrGlyph)
-            .style(style::text_editor_document)
+            .style(style::text_editor_composer)
             .key_binding(composer_binding)
             .on_action(Message::Edit);
         let wide = class == SizeClass::Wide;
@@ -975,8 +978,8 @@ impl App {
         };
         let right = row![picker, self.mic_button(), send].spacing(space::xs()).align_y(Alignment::Center);
         let options = row![left, Space::new().width(Fill), right].spacing(space::s()).align_y(Alignment::Center);
-        let content = column![editor, container(options).padding(Padding::new(space::xs()).top(0.0))];
-        container(content).width(Fill).style(style::container::composer).into()
+        let options = container(options).padding(Padding::new(space::xs()).top(0.0)).height(Fill).align_bottom(Fill);
+        stack![editor, options].width(Fill).into()
     }
 
     /// The model of `choice` as the composer's quiet row names it (issue #699): the model's name,
