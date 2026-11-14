@@ -353,12 +353,14 @@ fn read_aloud_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message
     let current = current_provider(data);
     let label =
         marked(provider_name(current), data.speech.as_ref().is_some_and(|speech| speech.recommended == current));
-    let provider = setting_row(
-        None,
-        tr("Provider"),
-        Some(provider_detail(data.speech.as_ref(), current)),
-        state.menus.button(Choice::Provider, label, Message::Menus),
-    );
+    // The status came with the other voice data, or its check failed: then say so instead of
+    // "Checking …" for ever.
+    let detail = match (&data.speech, &data.voice) {
+        (None, Some(_)) => tr("This computer could not be checked. Use Check again below.").to_string(),
+        (speech, _) => provider_detail(speech.as_ref(), current),
+    };
+    let provider =
+        setting_row(None, tr("Provider"), Some(detail), state.menus.button(Choice::Provider, label, Message::Menus));
     let preview = match state.previewing {
         true => widgets::text_button(None, tr("Stop"), style::button::secondary, Some(Message::StopPreview)),
         false => widgets::text_button(None, tr("Preview"), style::button::secondary, Some(Message::Preview)),
@@ -368,7 +370,12 @@ fn read_aloud_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message
     let recommended = voices.iter().any(|(id, recommended)| *recommended && *id == chosen);
     let picker: Element<'a, Message> = match current {
         // Piper speaks with the voice file found; it is chosen in the voice folder.
-        SpeechProvider::Piper => typo::text(typo::body(), chosen).style(theme::text_2).into(),
+        // Kept short with "…", the whole name in the tooltip: Piper's file names run long.
+        SpeechProvider::Piper => widgets::with_tooltip(
+            typo::text(typo::body(), typo::ellipsize(&chosen, typo::body(), torro_gui::theme::size::sidebar()))
+                .style(theme::text_2),
+            chosen.clone(),
+        ),
         _ => state.menus.button(Choice::SpeechVoice, marked(&voice_name(&chosen), recommended), Message::Menus),
     };
     let control = iced::widget::row![picker, preview].spacing(layout::item_gap()).align_y(iced::Alignment::Center);
@@ -955,6 +962,11 @@ mod tests {
         let _ = update(&mut state, Message::Preview, &data);
         answered(&mut state, &Err("No program to play sound was found.".into()));
         assert_eq!(state.preview_failed.as_deref(), Some("No program to play sound was found."));
+
+        // A status that could not be checked says so, not "Checking …" for ever.
+        let failed = Data { speech: None, ..data.clone() };
+        let _ = view(&state, &failed);
+        assert!(failed.voice.is_some());
 
         let providers = speech_items(Choice::Provider, &data);
         assert_eq!(providers.len(), 3);
