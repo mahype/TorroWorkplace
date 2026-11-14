@@ -152,9 +152,7 @@ impl Conversation {
             .keys()
             .copied()
             .filter(|seq| {
-                self.entries
-                    .binary_search_by_key(seq, |entry| entry.seq)
-                    .is_ok_and(|at| self.entries[at].time < oldest)
+                self.entries.binary_search_by_key(seq, |entry| entry.seq).is_ok_and(|at| self.entries[at].time < oldest)
             })
             .collect()
     }
