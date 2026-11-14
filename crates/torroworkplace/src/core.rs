@@ -2805,6 +2805,8 @@ async fn read_with_openai(
                             return speech_failure(&err);
                         }
                     }
+                    // Stopped or overtaken meanwhile: the helper says `done`, and the answer is `Ok`.
+                    Err(_) if !job.current() => {}
                     Err(err) => {
                         // What plays stops; the answer is OpenAI's error once the helper is done.
                         failed = Some(ai_error(&err));
@@ -6974,6 +6976,7 @@ impl Core {
                 }
                 // A client keeps or removes the PDF paths but never sets one (point 9, issue #225),
                 // judged again under the settings lock.
+                let speech_before = speech_choice(&self.settings.current().voice);
                 let set = match client {
                     true => self.settings.set_by_client(key, &value),
                     false => self.settings.set(key, &value),
@@ -6981,8 +6984,8 @@ impl Core {
                 self.follow_components();
                 // Another provider or Piper voice (issue #745): the helper ends, Qwen's graphics memory
                 // is free, and the next answer starts it with the new settings. Another voice of Qwen
-                // or OpenAI goes with the next job and keeps the model loaded.
-                if set.is_ok() && matches!(key, SettingKey::SpeechProvider | SettingKey::Voice) {
+                // or OpenAI goes with the next job and keeps the model loaded; so does the same value.
+                if set.is_ok() && speech_choice(&self.settings.current().voice) != speech_before {
                     self.speech.end().await;
                 }
                 match set {
