@@ -1099,11 +1099,14 @@ impl App {
         if with_effort && self.effort_offered() {
             let levels = std::iter::once(None).chain(torro_core::ai::Effort::ALL.into_iter().map(Some));
             let active = levels.clone().position(|effort| effort == self.effort).unwrap_or_default();
+            // The whole row stands in the menu, in every language: the card grows for it.
+            let names: Vec<&str> = levels.clone().map(chat::effort_name).collect();
+            let width = widgets::menu_extra_width(widgets::segmented_width(&names));
             let row = widgets::segmented(
                 levels.map(|effort| (chat::effort_name(effort), Message::PickEffort(effort))),
                 active,
             );
-            return widgets::menu_with_between(sections, tr("How hard the model thinks"), row, after);
+            return widgets::menu_with_between(sections, tr("How hard the model thinks"), row, after, width);
         }
         sections.extend(after);
         widgets::menu(sections)

@@ -2734,17 +2734,19 @@ pub fn menu_with<'a, M: Clone + 'a>(
     title: impl IntoFragment<'a>,
     extra: impl Into<Element<'a, M>>,
 ) -> Element<'a, M> {
-    menu_with_between(sections, title, extra, Vec::new())
+    menu_with_between(sections, title, extra, Vec::new(), menu_width())
 }
 
 /// A [`menu_with`] whose `extra` stands between the sections `before` and `after` (issue #699: the
 /// effort as a row under the models of the assistant's picker, "Manage models…" below it). Without
-/// `before` the menu begins with `title`.
+/// `before` the menu begins with `title`. The card is `width` wide, never narrower than
+/// [`menu_width`]: room for an `extra` that would be cut (a [`segmented`] row, [`menu_extra_width`]).
 pub fn menu_with_between<'a, M: Clone + 'a>(
     before: Vec<MenuSection<'a, M>>,
     title: impl IntoFragment<'a>,
     extra: impl Into<Element<'a, M>>,
     after: Vec<MenuSection<'a, M>>,
+    width: f32,
 ) -> Element<'a, M> {
     let line = || container(rule::horizontal(LINE).style(style::rule)).padding([space::xs(), 0.0]).into();
     let mut rows = menu_rows(before);
@@ -2759,7 +2761,17 @@ pub fn menu_with_between<'a, M: Clone + 'a>(
         rows.push(line());
         rows.extend(after);
     }
-    container(column(rows)).width(menu_width()).padding(style::MENU_INSET).style(style::container::menu).into()
+    container(column(rows))
+        .width(width.max(menu_width()))
+        .padding(style::MENU_INSET)
+        .style(style::container::menu)
+        .into()
+}
+
+/// How wide a [`menu_with_between`] must be for an `extra` `width` wide: the extra with its sides
+/// and the card's inset.
+pub fn menu_extra_width(width: f32) -> f32 {
+    width + 2.0 * space::s() + 2.0 * style::MENU_INSET
 }
 
 fn menu_rows<'a, M: Clone + 'a>(sections: Vec<MenuSection<'a, M>>) -> Vec<Element<'a, M>> {
