@@ -685,7 +685,7 @@ impl App {
             choice: None,
             effort: None,
             chosen: Chosen::Default,
-            without: Vec::new(),
+            without: if open == Some(Open::AreasOff) { vec![Area::Mail, Area::Calendar] } else { Vec::new() },
             mode: PermissionMode::Default,
             take_without: true,
             sending: false,
