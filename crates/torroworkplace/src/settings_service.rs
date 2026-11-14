@@ -32,7 +32,7 @@ use torro_core::privacy::{ForeignContent, ProviderChange};
 use torro_core::settings::{
     self, AssistantDefault, AttachmentClick, ComponentSwitch, ComposePaper, FocusSlots, FolderChange, Language,
     ListOrderEntry, MailAppearance, MailAttachments, MailFormat, Maps, Night, PdfSettings, PdfTemplate, PdfTemplateId,
-    Reminders, Retention, SearchProviderSwitch, Settings, SetupState, Voice, WebSearch, WorkingHours, Zoom,
+    Recognizer, Reminders, Retention, SearchProviderSwitch, Settings, SetupState, Voice, WebSearch, WorkingHours, Zoom,
 };
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
@@ -567,6 +567,8 @@ enum Change {
     WakeWord(String),
     Microphone(Option<String>),
     SpeakAnswers(bool),
+    /// The program that turns speech into text (issue #749).
+    SpeechRecognizer(Recognizer),
     SttModel(Option<String>),
     Voice(Option<String>),
     /// What a new chat of the assistant starts with (issue #131): the slot Chat (issue #325), written
@@ -669,6 +671,9 @@ impl Change {
             SettingKey::WakeWord => Change::WakeWord(Voice::wake_word_from(value)?),
             SettingKey::Microphone => Change::Microphone(Voice::microphone_from(value)?),
             SettingKey::SpeakAnswers => Change::SpeakAnswers(serde_json::from_value(value.clone()).map_err(invalid)?),
+            SettingKey::SpeechRecognizer => {
+                Change::SpeechRecognizer(serde_json::from_value(value.clone()).map_err(invalid)?)
+            }
             SettingKey::SttModel => Change::SttModel(Voice::file_from(value, "bin")?),
             SettingKey::Voice => Change::Voice(Voice::file_from(value, "onnx")?),
             SettingKey::AssistantDefault => Change::AssistantDefault(AssistantDefault::from_value(value)?),
@@ -777,6 +782,7 @@ impl Change {
             Change::WakeWord(phrase) => settings.voice.wake_word = phrase,
             Change::Microphone(name) => settings.voice.microphone = name,
             Change::SpeakAnswers(speak) => settings.voice.speak_answers = speak,
+            Change::SpeechRecognizer(recognizer) => settings.voice.recognizer = recognizer,
             Change::SttModel(path) => settings.voice.stt_model = path,
             Change::Voice(path) => settings.voice.voice = path,
             Change::AssistantDefault(default) => settings.ai_slots.chat = default,
@@ -1950,6 +1956,22 @@ mod tests {
         assert_eq!(store.current().mail_attachments.click, AttachmentClick::Target("t1".into()));
         store.release_attachment_click("t1").expect("its target");
         assert_eq!(store.current().mail_attachments.click, AttachmentClick::Open);
+    }
+
+    /// Issue #749: the recognizer takes both names and refuses anything else, without a change.
+    #[test]
+    fn the_speech_recognizer_is_set_and_checked() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SettingsStore::at(dir.path().join("settings.json"));
+        assert_eq!(store.current().voice.recognizer, Recognizer::Parakeet);
+        store.set(SettingKey::SpeechRecognizer, &json!("whisper")).expect("whisper");
+        assert_eq!(store.current().voice.recognizer, Recognizer::Whisper);
+        for refused in [json!("Parakeet"), json!("vosk"), json!(true), json!(null)] {
+            assert!(store.set(SettingKey::SpeechRecognizer, &refused).is_err(), "{refused}");
+        }
+        assert_eq!(store.current().voice.recognizer, Recognizer::Whisper, "unchanged");
+        store.set(SettingKey::SpeechRecognizer, &json!("parakeet")).expect("parakeet");
+        assert_eq!(store.current().voice.recognizer, Recognizer::Parakeet);
     }
 
     /// Task C.9: the voice settings are set one by one and checked; a client's whole settings

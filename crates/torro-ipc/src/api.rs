@@ -4051,7 +4051,8 @@ static SET_SETTING: Command = Command {
                   unpinned conversations within the hour) or the assistant's voice: `voice_enabled` (only false: \
                   switching the microphone on is for a person, true is forbidden), `wake_word` (\"hey torro\" for \
                   now), `microphone` (a name from settings_voice_status, or \"\" for the default), \
-                  `speak_answers` (true, false), `stt_model` (absolute path of a whisper.cpp .bin model, or \"\" for \
+                  `speak_answers` (true, false), `speech_recognizer` (\"parakeet\", the default and \
+                  faster, or \"whisper\": the program that turns speech into text), `stt_model` (absolute path of a whisper.cpp .bin model, or \"\" for \
                   the first in the voice folder) or `voice` (absolute path of a Piper .onnx voice, or \"\") or \
                   `assistant_default` (what a new chat of the assistant starts with: {\"engine\": \"<id from \
                   assistant_list_engines>\", \"model\": \"<model id>\", \"effort\": \"low\"|\"medium\"|\"high\"}, \
@@ -8852,6 +8853,7 @@ mod tests {
                 "wake_word",
                 "microphone",
                 "speak_answers",
+                "speech_recognizer",
                 "stt_model",
                 "voice",
                 "assistant_default",

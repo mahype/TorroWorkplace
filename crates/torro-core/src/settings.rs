@@ -1313,6 +1313,11 @@ pub struct Voice {
     /// Speak the answers with Piper as well as showing them. On unless turned off.
     #[serde(default = "on")]
     pub speak_answers: bool,
+    /// The program that turns speech into text, for dictating, the wake word and the
+    /// conversation mode. Parakeet unless Whisper is chosen, also for files written before the
+    /// choice existed.
+    #[serde(default)]
+    pub recognizer: Recognizer,
     /// The whisper.cpp model file (`ggml-base.bin`), an absolute path; `None` for the first
     /// model found in the voice folder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1327,6 +1332,19 @@ fn wake_word() -> String {
     WAKE_WORD.to_string()
 }
 
+/// The program that turns speech into text (`settings.set_setting speech_recognizer`, #749).
+/// Parakeet is recommended: about three times as fast as Whisper on the processor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Recognizer {
+    /// `"parakeet"`: Nvidia Parakeet TDT 0.6B v3 through the Python package `onnx-asr`, the model
+    /// folder in the voice folder.
+    #[default]
+    Parakeet,
+    /// `"whisper"`: whisper.cpp (`whisper-cli`) with a ggml model.
+    Whisper,
+}
+
 impl Default for Voice {
     fn default() -> Voice {
         Voice {
@@ -1334,6 +1352,7 @@ impl Default for Voice {
             wake_word: wake_word(),
             microphone: None,
             speak_answers: on(),
+            recognizer: Recognizer::default(),
             stt_model: None,
             voice: None,
         }
@@ -2702,6 +2721,17 @@ mod tests {
         written.ai_assignments.insert(AiFunction::InboxCategorize, exception);
         fs::write(&path, serde_json::to_string(&written).expect("json")).expect("write");
         assert_eq!(load_from(&path), written, "a file of this version is not taken over again");
+    }
+
+    /// Issue #749: a file from before the choice recognizes with Parakeet, and both names read.
+    #[test]
+    fn the_recognizer_is_parakeet_unless_whisper_is_chosen() {
+        let old: Settings = serde_json::from_str(r#"{"voice": {"enabled": true, "sttModel": "/m/ggml-base.bin"}}"#)
+            .expect("a file from before the choice");
+        assert_eq!(old.voice.recognizer, Recognizer::Parakeet);
+        let chosen: Voice = serde_json::from_str(r#"{"recognizer": "whisper"}"#).expect("whisper reads");
+        assert_eq!(chosen.recognizer, Recognizer::Whisper);
+        assert_eq!(serde_json::to_value(Recognizer::Parakeet).expect("json"), serde_json::json!("parakeet"));
     }
 
     /// Task C.9: voice is off unless switched on, answers are spoken unless turned off, and the
