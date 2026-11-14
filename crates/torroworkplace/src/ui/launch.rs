@@ -1388,6 +1388,9 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
         // Voice (task C.9): every program found but Piper's voice, two microphones; the test hears
         // a sentence. Nothing records.
         Request::VoiceStatus => Some(Response::Voice { voice: demo_voice() }),
+        // Reading aloud (issue #745): the sample computer of the settings' demo; nothing sounds.
+        Request::SpeechStatus => Some(Response::Speech { speech: torro_settings_ui::demo::speech_status(None) }),
+        Request::Speak { .. } | Request::StopSpeaking => Some(Response::Ok),
         // Map data (issue #355): the demo keeps its numbers, clearing changes nothing.
         Request::MapsStatus => Some(Response::MapsStatus { status: data.maps_status.unwrap_or_default() }),
         Request::ClearMapsCache => Some(Response::Ok),

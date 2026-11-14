@@ -964,6 +964,23 @@ impl SpeechJob<'_> {
         self.helper.jobs.load(Ordering::SeqCst) == self.number
     }
 
+    /// Writes `line` to the helper while no stop or newer job came since this one began; `false`
+    /// when one did. Under the lock of the input, so a stop is either before (and counts here) or
+    /// after the line (and the helper gets it).
+    pub async fn send_if_current(&mut self, line: &str) -> Result<bool, SpeechError> {
+        let mut input = self.helper.input.lock().await;
+        if !self.current() {
+            return Ok(false);
+        }
+        let input = input.as_mut().ok_or_else(|| SpeechError::Failed("the speech helper ended".into()))?;
+        let written = async {
+            input.write_all(line.as_bytes()).await?;
+            input.write_all(b"\n").await?;
+            input.flush().await
+        };
+        written.await.map(|()| true).map_err(|err| SpeechError::Failed(format!("the speech helper ended: {err}")))
+    }
+
     /// Writes `line` to the helper.
     pub async fn send(&mut self, line: &str) -> Result<(), SpeechError> {
         let mut input = self.helper.input.lock().await;

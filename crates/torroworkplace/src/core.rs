@@ -2724,10 +2724,9 @@ fn speech_failure(err: &SpeechError) -> Response {
     }
     match err {
         SpeechError::Overtaken => Response::Ok,
-        SpeechError::Missing => Response::Error {
-            code: "unsupported".into(),
-            message: format!("{} is not installed", AppId::ASSISTANT.binary),
-        },
+        SpeechError::Missing => {
+            Response::Error { code: "unsupported".into(), message: tr("The assistant app is not installed.").into() }
+        }
         SpeechError::Failed(_) => {
             Response::Error { code: "error".into(), message: tr("Reading aloud failed. Try again.").into() }
         }
@@ -13507,10 +13506,10 @@ impl Core {
         use torro_core::settings::SpeechProvider;
         let refused = |code: &str, message: &str| Response::Error { code: code.into(), message: message.into() };
         if text.trim().is_empty() {
-            return refused("error", "there is nothing to read");
+            return refused("error", tr("There is nothing to read."));
         }
         if text.chars().count() > MAX_SPEAK_CHARS {
-            return refused("error", &format!("the text is longer than {MAX_SPEAK_CHARS} characters"));
+            return refused("error", tr("The text is too long to read aloud."));
         }
         let number = self.speech.claim().await;
         let voice = self.settings.current().voice;
@@ -13543,13 +13542,15 @@ impl Core {
             Ok(job) => job,
             Err(err) => return speech_failure(&err),
         };
-        // Stopped while the helper started: nothing was sent, nothing is read.
-        if !job.current() {
-            job.leave();
-            return Response::Ok;
-        }
-        if let Err(err) = job.send(&say.to_string()).await {
-            return speech_failure(&err);
+        // Stopped while the helper started: nothing is sent, nothing is read. Checked as the line
+        // goes out, so a stop is either before it (and counts) or after it (and the helper gets it).
+        match job.send_if_current(&say.to_string()).await {
+            Ok(true) => {}
+            Ok(false) => {
+                job.leave();
+                return Response::Ok;
+            }
+            Err(err) => return speech_failure(&err),
         }
         loop {
             match job.next().await {
@@ -13560,7 +13561,7 @@ impl Core {
                     Some(speaker) => {
                         return read_with_openai(job, speaker, voice.openai_voice_or_default(), pieces).await;
                     }
-                    None => return refused("error", "the speech helper asked for sound it cannot get"),
+                    None => return refused("error", tr("Reading aloud failed. Try again.")),
                 },
                 Err(err) => return speech_failure(&err),
             }
