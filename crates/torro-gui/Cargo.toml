@@ -15,7 +15,8 @@ torro-core.workspace = true
 torro-pim.workspace = true
 torro-ipc.workspace = true
 chrono.workspace = true
-iced = { workspace = true, features = ["advanced", "markdown"] }
+# `image-without-codecs`: the small map of a place (`map`, issue #355), drawn from pixels the core sends as PNG.
+iced = { workspace = true, features = ["advanced", "markdown", "image-without-codecs"] }
 # The version in a bundle's `Info.plist`, to start the newest copy of the service (issue #411).
 roxmltree.workspace = true
 # `--demo --shots <dir>` (#492, `shots`): the views rendered in memory to PNG, without a window.

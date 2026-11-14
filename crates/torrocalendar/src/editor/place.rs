@@ -9,27 +9,21 @@
 //! address as text. Apple Maps opens only on macOS and `geo:` only on Linux; elsewhere both fall back
 //! to openstreetmap.org, as the setting says.
 
-use iced::widget::{Space, button, column, container, image, row, rule, stack, svg};
-use iced::{Alignment, Background, Border, Color, ContentFit, Element, Length, Padding, Theme};
+use iced::widget::{button, column, container, image, row, rule, svg};
+use iced::{Alignment, Color, Element, Length, Padding};
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{GeocoderKind, MapsApp};
 use torro_gui::icon::{self, Icon, icon};
-use torro_gui::theme::{self, palette, radius, size, space};
+use torro_gui::theme::{self, palette, size, space};
 use torro_gui::{style, typo, widgets};
 use torro_ipc::{Place, PlaceKind};
 use torro_pim::model::Geo;
 
 use super::Message;
 
-/// The size of the picture `calendar.map_preview` is asked for, in logical pixels (layout A). It is
-/// only the request: the map is laid out as wide as the value column and [`size::map_preview()`]
-/// high, and the picture covers that ([`ContentFit::Cover`]), so a design pack's other row height
-/// changes the frame, not what is fetched.
-pub const MAP_WIDTH: u16 = 336;
-pub const MAP_HEIGHT: u16 = 104;
-
-/// Where the attribution of the map leads (ODbL).
-pub(super) const OSM_COPYRIGHT: &str = "https://www.openstreetmap.org/copyright";
+/// The size of the picture `calendar.map_preview` is asked for, and the map itself, shared with the
+/// contacts app (`torro_gui::map`, issue #355).
+pub use torro_gui::map::{MAP_HEIGHT, MAP_WIDTH, OSM_COPYRIGHT, demo_map};
 
 /// Why a place search shows no suggestions. The editor says it in a translated sentence
 /// ([`Failure::message`]), never in the core's English `message`.
@@ -74,54 +68,13 @@ impl Failure {
 /// name, on this system: Apple Maps only on macOS and `geo:` only on Linux, otherwise
 /// openstreetmap.org.
 pub fn maps_link(app: MapsApp, location: &str, geo: Option<Geo>) -> String {
-    link_for(on_this_system(app), location, geo)
-}
-
-/// `app`, or openstreetmap.org where this system cannot open it.
-fn on_this_system(app: MapsApp) -> MapsApp {
-    match app {
-        MapsApp::Apple if !cfg!(target_os = "macos") => MapsApp::Osm,
-        MapsApp::Geo if !cfg!(target_os = "linux") => MapsApp::Osm,
-        app => app,
-    }
+    torro_core::maps::maps_link(app, location, geo.map(|Geo { lat, lon }| (lat, lon)))
 }
 
 /// The link of `app` (whatever the system): with `geo` the point, else `location` as a search, every
 /// text percent-encoded. OpenStreetMap shows the point at zoom 17 as the concept says.
 pub(super) fn link_for(app: MapsApp, location: &str, geo: Option<Geo>) -> String {
-    let query = encode(location.trim());
-    match (app, geo) {
-        (MapsApp::Osm, Some(Geo { lat, lon })) => {
-            format!("https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=17/{lat}/{lon}")
-        }
-        (MapsApp::Osm, None) => format!("https://www.openstreetmap.org/search?query={query}"),
-        (MapsApp::Google, Some(Geo { lat, lon })) => {
-            format!("https://www.google.com/maps/search/?api=1&query={lat},{lon}")
-        }
-        (MapsApp::Google, None) => format!("https://www.google.com/maps/search/?api=1&query={query}"),
-        (MapsApp::Apple, Some(Geo { lat, lon })) if query.is_empty() => {
-            format!("https://maps.apple.com/?ll={lat},{lon}&q={lat},{lon}")
-        }
-        (MapsApp::Apple, Some(Geo { lat, lon })) => format!("https://maps.apple.com/?ll={lat},{lon}&q={query}"),
-        (MapsApp::Apple, None) => format!("https://maps.apple.com/?q={query}"),
-        (MapsApp::Geo, Some(Geo { lat, lon })) => format!("geo:{lat},{lon}"),
-        (MapsApp::Geo, None) => format!("geo:0,0?q={query}"),
-    }
-}
-
-/// `text` percent-encoded for a query or fragment: everything but the unreserved characters of RFC
-/// 3986 (letters, digits, `-._~`) as `%XX` of its UTF-8 bytes, so nothing typed can end the
-/// parameter or add one.
-fn encode(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for byte in text.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            out.push(char::from(byte));
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    out
+    torro_core::maps::link_for(app, location, geo.map(|Geo { lat, lon }| (lat, lon)))
 }
 
 /// Whether the app may hand `url` to the system: a web address `torro_gui::links` allows, or a
@@ -198,49 +151,10 @@ fn source_line<'a>(words: String) -> Element<'a, Message> {
         .into()
 }
 
-/// The edge of the pin on the map: an icon and a half, so it stands out of the streets.
-fn pin_size() -> f32 {
-    icon::SIZE + icon::SIZE / 2.0
-}
-
-/// The map under the location, [`size::map_preview()`] high: the picture with a pin in the middle
-/// in `pin` (the calendar's colour), ↗ "Open in Maps" (`open`) in the top right corner and
-/// "© OpenStreetMap" (a link to the copyright page, a button as high as ↗) in the bottom right one,
-/// in a frame with radius `md`.
+/// The map under the location: the picture with a pin in the middle in `pin` (the calendar's
+/// colour), ↗ "Open in Maps" (`open`) and "© OpenStreetMap" ([`torro_gui::map::map_view`]).
 pub(super) fn map_view<'a>(picture: &'a image::Handle, pin: Color, open: Message) -> Element<'a, Message> {
-    let height = size::map_preview();
-    let picture =
-        image(picture).width(Length::Fill).height(height).content_fit(ContentFit::Cover).border_radius(radius::md());
-    let marker = icon(Icon::MapPin, pin_size()).style(move |_, _| svg::Style { color: Some(pin) });
-    // The tip of the pin, not its middle, stands on the point.
-    let marker = container(column![marker, Space::new().height(pin_size())]).center(Length::Fill);
-    let open = widgets::boxed_button(Icon::ArrowUpRight, tr("Open in Maps"), Some(open));
-    let credit = widgets::text_button(
-        None,
-        tr("© OpenStreetMap"),
-        style::button::secondary,
-        Some(Message::OpenLink(OSM_COPYRIGHT.to_string())),
-    );
-    let over = column![
-        row![Space::new().width(Length::Fill), open],
-        Space::new().height(Length::Fill),
-        row![Space::new().width(Length::Fill), credit],
-    ]
-    .padding(space::xs());
-    container(stack![picture, marker, over].width(Length::Fill).height(height))
-        .width(Length::Fill)
-        .style(frame)
-        .clip(true)
-        .into()
-}
-
-/// The frame of the map: `line_strong`, radius `md`.
-fn frame(theme: &Theme) -> container::Style {
-    container::Style {
-        border: Border { color: palette(theme).line_strong, width: size::HAIRLINE, radius: radius::md().into() },
-        background: Some(Background::Color(palette(theme).raised)),
-        ..container::Style::default()
-    }
+    torro_gui::map::map_view(picture, pin, open, Message::OpenLink(OSM_COPYRIGHT.to_string()))
 }
 
 /// The places `--demo` suggests for any search, without the network: two of the same street in
@@ -257,31 +171,6 @@ pub fn demo_places() -> Vec<Place> {
         place("Hafenstraße 4", "20359 Hamburg, Germany", 53.5458, 9.9672, PlaceKind::Search),
         place("Hafenstraße 4", "21614 Buxtehude, Germany", 53.4769, 9.7011, PlaceKind::Search),
     ]
-}
-
-/// The map `--demo` shows instead of asking the tile service: a calm sketch of streets and water in
-/// the colours of `theme`, [`MAP_WIDTH`] × [`MAP_HEIGHT`] at twice the density, like the core's.
-pub fn demo_map(theme: &Theme) -> image::Handle {
-    let p = palette(theme);
-    let (width, height) = (u32::from(MAP_WIDTH) * 2, u32::from(MAP_HEIGHT) * 2);
-    let (land, road, water) = (p.hover.into_rgba8(), p.raised.into_rgba8(), p.bg.into_rgba8());
-    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
-    for y in 0..height {
-        for x in 0..width {
-            let street = (height * 2 / 5..height / 2).contains(&y)
-                || (width * 3 / 10..width * 3 / 10 + height / 16).contains(&x)
-                || (width * 7 / 10..width * 7 / 10 + height / 16).contains(&x);
-            let colour = if y > height * 4 / 5 {
-                water
-            } else if street {
-                road
-            } else {
-                land
-            };
-            pixels.extend_from_slice(&colour);
-        }
-    }
-    image::Handle::from_rgba(width, height, pixels)
 }
 
 #[cfg(test)]
@@ -344,7 +233,7 @@ mod tests {
     fn the_map_holds_two_buttons_of_full_height() {
         assert!(size::control_sm() >= 24.0, "a click target of at least 24");
         assert!(size::map_preview() >= 2.0 * size::control_sm() + 3.0 * space::xs());
-        assert!(pin_size() > icon::SIZE);
+        assert!(torro_gui::map::pin_size() > icon::SIZE);
         let picture = image::Handle::from_rgba(1, 1, vec![0; 4]);
         let _ = map_view(&picture, Color::WHITE, Message::OpenMaps);
     }
@@ -352,7 +241,7 @@ mod tests {
     #[test]
     fn the_demo_needs_no_service() {
         assert!(demo_places().iter().all(|place| place.geo.on_map()));
-        let _ = demo_map(&Theme::Dark);
+        let _ = demo_map(&iced::Theme::Dark);
         let _ = suggestions(&demo_places(), "Hafenstr 4", service_name(GeocoderKind::Photon));
         let _ = suggestions(&[], "Nowhere", service_name(GeocoderKind::Nominatim));
     }
