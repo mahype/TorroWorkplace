@@ -1703,6 +1703,40 @@ pub enum Request {
     /// read-only book).
     #[serde(rename = "contacts.resolve_conflict")]
     ResolveContactConflict { id: String, keep: torro_contacts::Keep, etag: String },
+    /// Where the address number `address` of a contact is on the map (issue #355,
+    /// [`Response::ContactLocation`], [`contacts::ContactLocation`]): the first address at the vCard's
+    /// `GEO` when it has one, else the point looked up earlier on this device. The contacts app makes
+    /// the core look an address up when the person opens the contact, and only while a person turned
+    /// on maps and the lookup of contact addresses (`maps` with `contactLookup`); the address then goes
+    /// to the place search service of the settings (at most [`contacts::MAX_LOOKUP_CHARS`] characters),
+    /// and the point is kept on this device. A client never makes the core look up: it gets
+    /// `not_looked_up` for an address nobody looked up yet. An address not found is not looked up
+    /// again for [`contacts::LOOKUP_RETRY_DAYS`] days, unless it changes. For the picture ask
+    /// `calendar.map_preview` with the point.
+    ///
+    /// Codes: `not-found` for a contact the client does not reach or an address it does not have;
+    /// `busy`, `offline` and `error` of the place search as for `calendar.search_places` (nothing is
+    /// kept then). The address and the point are never logged.
+    #[serde(rename = "contacts.locate_contact")]
+    LocateContact {
+        /// The contact's id.
+        id: String,
+        /// Which of its addresses, 0 for the first, as `contacts.get_contact` lists them.
+        address: usize,
+    },
+    /// Opens the address number `address` of a contact in the maps app the settings name (`maps`,
+    /// `openWith`; [`Response::Ok`]): at the point of `GEO` or the one kept on this device, else the
+    /// address as a search. That sends the address or the point to that app's service (Google, Apple
+    /// or OpenStreetMap), so for a client it always waits for a person's approval, whatever its rights
+    /// say. Works with maps off. Codes: `not-found` (contact or address), `conflict` when the address
+    /// changed after the approval was asked for (nothing opens), `error` when the system cannot open it.
+    #[serde(rename = "contacts.open_in_maps")]
+    OpenContactInMaps {
+        /// The contact's id.
+        id: String,
+        /// Which of its addresses, 0 for the first.
+        address: usize,
+    },
 
     // Chat (`docs/chat.md`, issue #643): conversations and messages of the person's chat accounts,
     // Nextcloud Talk first.
@@ -4855,6 +4889,26 @@ pub enum Request {
     /// it needs are missing, `error` when the recording fails.
     #[serde(rename = "settings.test_voice")]
     TestVoice,
+    /// How much map data this device keeps (issue #355, [`Response::MapsStatus`]): the bytes of map
+    /// tiles of the whole suite, and how many places of contact addresses were kept
+    /// (`contacts.locate_contact`); for a client only those of the address books it reaches.
+    #[serde(rename = "settings.maps_status")]
+    MapsStatus,
+    /// Removes the kept map data (issue #355, [`Response::Ok`]): every map tile, and the places of
+    /// contact addresses (for a client only those of the address books it reaches). Maps then load
+    /// the tiles again, and addresses are looked up again when a person opens the contact.
+    #[serde(rename = "settings.clear_maps_cache")]
+    ClearMapsCache,
+}
+
+/// How much map data this device keeps ([`Request::MapsStatus`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MapsStatus {
+    /// Bytes of map tiles on disk, of the whole suite.
+    pub tile_bytes: u64,
+    /// Kept places of contact addresses, found or not found; for a client only those of the address
+    /// books it reaches.
+    pub contact_places: u32,
 }
 
 /// Whether the voice listener (`torroassistant --listen`) runs and what it does (task C.9). The
@@ -6148,6 +6202,14 @@ pub enum Response {
     /// How talking by voice stands ([`Request::VoiceStatus`]).
     Voice {
         voice: VoiceStatus,
+    },
+    /// Where an address of a contact is on the map ([`Request::LocateContact`]).
+    ContactLocation {
+        location: contacts::ContactLocation,
+    },
+    /// How much map data this device keeps ([`Request::MapsStatus`]).
+    MapsStatus {
+        status: MapsStatus,
     },
     /// What was said, as text ([`Request::TestVoice`]); empty when nothing was understood.
     Transcript {

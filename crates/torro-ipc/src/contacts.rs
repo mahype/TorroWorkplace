@@ -5,12 +5,14 @@
 use std::path::PathBuf;
 
 use base64::Engine;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use torro_contacts::{
     AddressBook, Birthday, Contact, ContactFields, ContactPage, ContactQuery, ContactsError, ContactsSource, Group,
     Keep, Moved, PhotoSize,
 };
 
-use crate::{Request, Response};
+use crate::{Geo, Request, Response};
 
 /// The most bytes of a picture `contacts.set_photo` takes, before Base64: 700 KB. The core takes no
 /// request over 1 MB, and Base64 makes a third more of it; an app scales larger pictures down
@@ -22,6 +24,46 @@ pub const BIRTHDAY_DAYS: u32 = 14;
 
 /// The most days `contacts.upcoming_birthdays` looks ahead.
 pub const MAX_BIRTHDAY_DAYS: u32 = 366;
+
+/// The most characters of an address `contacts.locate_contact` sends to the place search service
+/// (issue #355): a longer one is cut there, an address needs no more.
+pub const MAX_LOOKUP_CHARS: usize = 200;
+
+/// How many days an address the place search service did not find is not looked up again
+/// (`contacts.locate_contact`), unless it changes.
+pub const LOOKUP_RETRY_DAYS: i64 = 30;
+
+/// Where an address of a contact is on the map (`contacts.locate_contact`, issue #355), written
+/// with `state`: `{"state": "found", "geo": {"lat": 53.5, "lon": 10.0}, "source": "vcard"}`.
+/// Clients must accept states they do not know.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ContactLocation {
+    /// At `geo`.
+    Found {
+        geo: Geo,
+        /// Where the point comes from.
+        source: LocationSource,
+    },
+    /// The place search service found no place for the address, or it is empty.
+    NotFound,
+    /// Nobody looked the address up yet; only the contacts app makes the core look up, when the
+    /// person opens the contact.
+    NotLookedUp,
+    /// Maps or the lookup of contact addresses are off: a person turns them on in the settings
+    /// (`maps` with `enabled` and `contactLookup`).
+    NoConsent,
+}
+
+/// Where the point of a [`ContactLocation::Found`] comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LocationSource {
+    /// The vCard's `GEO` (the first address only).
+    Vcard,
+    /// Looked up on the place search service and kept on this device.
+    Lookup,
+}
 
 /// Talks to the core at its socket: [`ContactsSource`] for the contacts app, one request per call.
 #[derive(Debug, Clone)]

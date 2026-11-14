@@ -1394,6 +1394,8 @@ impl Request {
             Request::SetSetting { key: crate::SettingKey::Maps, value } => match value.as_object() {
                 Some(fields) => {
                     fields.get("enabled").is_some_and(switches_on)
+                        // Looking up contact addresses sends addresses of other people (issue #355).
+                        || fields.get("contactLookup").is_some_and(switches_on)
                         || fields.contains_key("geocoder")
                         || fields.contains_key("tiles")
                 }
@@ -2026,6 +2028,8 @@ impl Request {
             Request::AskBot { .. } => &ASK_BOT,
             Request::VoiceStatus => &VOICE_STATUS,
             Request::TestVoice => &TEST_VOICE,
+            Request::MapsStatus => &MAPS_STATUS,
+            Request::ClearMapsCache => &CLEAR_MAPS_CACHE,
             Request::ListTools => &LIST_TOOLS,
             Request::CreatePdf { .. } => &CREATE_PDF,
             Request::OpenFile { .. } => &OPEN_FILE,
@@ -2074,6 +2078,8 @@ impl Request {
             Request::MoveContact { .. } => &MOVE_CONTACT,
             Request::DeleteContact { .. } => &DELETE_CONTACT,
             Request::ResolveContactConflict { .. } => &RESOLVE_CONFLICT,
+            Request::LocateContact { .. } => &LOCATE_CONTACT,
+            Request::OpenContactInMaps { .. } => &OPEN_IN_MAPS,
             Request::ChatListConversations { .. } => &CHAT_LIST_CONVERSATIONS,
             Request::ChatGetMessages { .. } => &CHAT_GET_MESSAGES,
             Request::ChatSendMessage { .. } => &CHAT_SEND_MESSAGE,
@@ -2221,6 +2227,8 @@ pub static CATALOGUE: &[&Command] = &[
     &MOVE_CONTACT,
     &DELETE_CONTACT,
     &RESOLVE_CONFLICT,
+    &LOCATE_CONTACT,
+    &OPEN_IN_MAPS,
     &CHAT_LIST_CONVERSATIONS,
     &CHAT_GET_MESSAGES,
     &CHAT_SEND_MESSAGE,
@@ -2284,6 +2292,8 @@ pub static CATALOGUE: &[&Command] = &[
     &LIST_COLOR_SCHEMES,
     &VOICE_STATUS,
     &TEST_VOICE,
+    &MAPS_STATUS,
+    &CLEAR_MAPS_CACHE,
     &UPDATE_SETTINGS,
     &LIST_APPS,
     &LIST_ANNOUNCEMENTS,
@@ -2743,7 +2753,7 @@ static MAP_PREVIEW: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Draws a small map around the point `geo`, at most 800 x 400, e.g. to show \
-                  where an event is. Sends the numbers of the tiles around the point (so where it is) to the tile \
+                  where an event is or where contacts_locate_contact found an address. Sends the numbers of the tiles around the point (so where it is) to the tile \
                   service set in the settings (OpenStreetMap unless changed). Fails with `unsupported` while maps \
                   are off in the settings; `busy` when all clients together asked for 10 maps within a minute, or \
                   for an hour after the service refused with 403 or 429; `offline` when it cannot be reached. The \
@@ -3227,6 +3237,36 @@ static RESOLVE_CONFLICT: Command = Command {
                   `mine` overwrites the server's version, `theirs` drops the changes made here (both need full \
                   access), `both` keeps the server's version and this one as a new contact. Needs the `etag` of \
                   get_contact.",
+};
+
+// Read: only what this device keeps comes back; looking an address up on the place search service
+// is the contacts app's, when the person opens the contact (issue #355, decision 3).
+static LOCATE_CONTACT: Command = Command {
+    name: "contacts.locate_contact",
+    area: Area::Contacts,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Says where an address of a contact is (`address`: 0 for the first, as get_contact lists them), \
+                  as `state`: `found` with `geo` and `source` (`vcard`: the contact's own coordinates, first \
+                  address only; `lookup`: looked up earlier on this device), `not_found`, `not_looked_up` (you \
+                  never make it look up: only the contacts app does, when the person opens the contact) or \
+                  `no_consent` (a person has to turn on maps and looking up contact addresses). For a picture \
+                  call calendar_map_preview with `geo`. Nothing leaves the device for you. The point is data of \
+                  other people.",
+};
+
+// Write and always with approval for clients (decision 5 of the plan of issue #355): it opens a
+// program on the person's screen and sends the address to the maps app's service.
+static OPEN_IN_MAPS: Command = Command {
+    name: "contacts.open_in_maps",
+    area: Area::Contacts,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Opens an address of a contact (`address`: 0 for the first) on the person's screen in the maps app \
+                  set in the settings (OpenStreetMap, Google or Apple Maps, or the `geo:` program): at its point \
+                  when known, else the address as a search, which sends it to that app's service. Always waits \
+                  for the person's approval, whatever your rights say; `conflict` when the address changed \
+                  meanwhile.",
 };
 
 // Chat and presence (`docs/chat.md`, issue #643). Every name and text of a conversation is text of
@@ -4111,6 +4151,26 @@ static TEST_VOICE: Command = Command {
     mcp: Mcp::Never,
     description: "Records one sentence from the microphone and returns it as text, for the microphone test in the \
                   assistant's settings. Only for the app key: it opens the microphone.",
+};
+
+static MAPS_STATUS: Command = Command {
+    name: "settings.maps_status",
+    area: Area::Settings,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Says how much map data this device keeps: `tile_bytes`, the bytes of map tiles of the whole suite, \
+                  and `contact_places`, how many looked-up places of contact addresses (only of the address books \
+                  you may see).",
+};
+
+static CLEAR_MAPS_CACHE: Command = Command {
+    name: "settings.clear_maps_cache",
+    area: Area::Settings,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Removes the kept map data: every map tile of the suite and the looked-up places of contact \
+                  addresses (only of the address books you may see). Maps load their tiles again afterwards, and \
+                  addresses are looked up again when the person opens a contact.",
 };
 
 static UPDATE_SETTINGS: Command = Command {
@@ -7030,6 +7090,8 @@ mod tests {
             Request::AskBot { bot: "1a2b3c4d".into(), text: "Plan Lisbon".into(), conversation: None },
             Request::VoiceStatus,
             Request::TestVoice,
+            Request::MapsStatus,
+            Request::ClearMapsCache,
             Request::ListTools,
             Request::CreatePdf { title: "Offer".into(), markdown: "# Offer\n\nDear Anna,".into(), template: None },
             Request::CreatePdf {
@@ -7137,6 +7199,8 @@ mod tests {
             },
             Request::GetContact { id: CONTACT.into() },
             Request::GetContactPhoto { id: CONTACT.into(), size: torro_contacts::PhotoSize::Small },
+            Request::LocateContact { id: CONTACT.into(), address: 0 },
+            Request::OpenContactInMaps { id: CONTACT.into(), address: 0 },
             Request::ListContactGroups { book: None },
             Request::SuggestRecipients { query: "jo".into(), limit: Some(8), contacts_only: false },
             Request::UpcomingBirthdays { days: Some(7) },
@@ -7875,8 +7939,12 @@ mod tests {
         let off = maps(serde_json::json!({"enabled": false}));
         let app = maps(serde_json::json!({"openWith": "google", "geocoderKind": "nominatim"}));
         assert!(!off.kept_for_people() && !app.kept_for_people());
+        // Looking up contact addresses (issue #355): off for anyone, on for people only.
+        assert!(!maps(serde_json::json!({"contactLookup": false})).kept_for_people());
         for on in [
             serde_json::json!({"enabled": true}),
+            serde_json::json!({"contactLookup": true}),
+            serde_json::json!({"enabled": false, "contactLookup": "yes"}),
             serde_json::json!({"enabled": "yes"}),
             serde_json::json!({"enabled": false, "geocoder": "https://photon.komoot.io"}),
             serde_json::json!({"tiles": "https://tile.openstreetmap.org/{z}/{x}/{y}.png"}),
