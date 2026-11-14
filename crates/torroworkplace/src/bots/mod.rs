@@ -129,10 +129,9 @@ impl Draft {
     }
 
     /// The bot it makes, cleaned as it is kept: names and the description on one line, the texts
-    /// without control characters, each within its limit, the skills by name as they read back
-    /// (issue #703); a blank model is none, a missing picture the letter. `id` and `client` as given.
+    /// without control characters, each within its limit, the skills in the order given; a blank model is none, a missing picture the letter. `id` and `client` as given.
     fn into_bot(self, id: String, client: String) -> Bot {
-        let mut bot = Bot {
+        Bot {
             id,
             name: clean_line(&self.name, MAX_NAME_CHARS),
             description: clean_line(&self.description, MAX_DESCRIPTION_CHARS),
@@ -151,9 +150,7 @@ impl Draft {
                 })
                 .collect(),
             client,
-        };
-        bot.skills.sort_by_key(|skill| skill.name.to_lowercase());
-        bot
+        }
     }
 }
 

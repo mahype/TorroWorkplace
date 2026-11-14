@@ -254,8 +254,9 @@ Skills im selben Format und mit denselben Befehlen (entschieden), je bis zu 30, 
   einen Bot `<config>/assistant/bots/<id>/skills/<8 hex>/` (Ordner 0700, Dateien 0600). Die Datei beginnt mit einem
   Kopf zwischen zwei Zeilen `---` (`name:`, `description:`), danach steht der Text. Der Ordner lässt Platz für
   Beidateien. Bots aus der Zeit davor (`bot.json` mit Namen, `skills/<n>.md`) lesen weiter, ohne Beschreibung;
-  beim nächsten Speichern schreibt der Kern das neue Format. Namen sind eindeutig ohne Groß/Klein; Skills stehen
-  nach Namen sortiert.
+  beim nächsten Speichern schreibt der Kern das neue Format. Namen sind eindeutig ohne Groß/Klein; zwei gleiche Namen eines alten Bots
+  liest der Kern als „Name 2“. Die Skills des Assistenten stehen nach Namen sortiert, die eines Bots in der
+  Reihenfolge aus dem Bot-Editor (`order:` im Kopf).
 - **Nachladen statt voller Text:** Im Prompt steht nach dem festen Skill „Torro Workplace“ ein Abschnitt
   „Skills“ mit einer zitierten Zeile je Skill (`> - "Name": Beschreibung`). Passt eine Aufgabe, liest das Modell
   den Text mit `assistant_get_skill`. Ohne Skills fehlen Abschnitt und Lesewerkzeuge, damit kleine Modelle keinen

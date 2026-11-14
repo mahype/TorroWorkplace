@@ -132,6 +132,7 @@ pub fn load(dir: &Path, id: &str) -> io::Result<Option<Bot>> {
     if skills.is_empty() {
         skills = skills::load_all(&folder.join(SKILLS_FOLDER))?.into_iter().map(|stored| stored.skill).collect();
     }
+    unique_names(&mut skills);
     Ok(Some(Bot {
         id: id.to_string(),
         name: file.name,
@@ -196,6 +197,31 @@ pub fn remove(dir: &Path, id: &str) -> io::Result<()> {
 /// `skills/<index + 1>.md`.
 fn old_skill_file(folder: &Path, index: usize) -> PathBuf {
     folder.join(SKILLS_FOLDER).join(format!("{}.md", index + 1))
+}
+
+/// Gives every skill a name of its own (review of #703): a bot from before issue #703 may hold two
+/// skills of the same name, which `assistant.get_skill` could not tell apart and `bots.save_bot`
+/// refuses. The later one becomes "<name> 2" (then 3 …), cut so it stays within
+/// [`torro_ipc::bots::MAX_SKILL_NAME_CHARS`]; the person sees it in the bot editor and can rename it.
+fn unique_names(skills: &mut [Skill]) {
+    for at in 1..skills.len() {
+        let (before, rest) = skills.split_at_mut(at);
+        let skill = &mut rest[0];
+        let taken = |name: &str| before.iter().any(|other| other.is_named(name));
+        if !taken(&skill.name) {
+            continue;
+        }
+        let base = skill.name.trim().to_string();
+        for n in 2.. {
+            let suffix = format!(" {n}");
+            let room = torro_ipc::bots::MAX_SKILL_NAME_CHARS.saturating_sub(suffix.chars().count());
+            let name = format!("{}{suffix}", base.chars().take(room).collect::<String>().trim_end());
+            if !taken(&name) {
+                skill.name = name;
+                break;
+            }
+        }
+    }
 }
 
 /// Whether `name` is that of a skill file before issue #703: `<n>.md` with `n` digits.
@@ -336,6 +362,32 @@ pub(crate) mod tests {
         let mut read = load(&bots, "1a2b3c4d").expect("read").expect("a bot");
         read.skills.sort_by(|a, b| a.name.cmp(&b.name));
         assert_eq!(read, old);
+    }
+
+    /// Review of #703: two skills of the same name in an old bot read with names of their own, so the
+    /// bot can be saved again; the first keeps its name.
+    #[test]
+    fn an_old_bot_with_two_skills_of_one_name_reads_them_apart() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let bots = dir.path().join("bots");
+        let folder = bots.join("1a2b3c4d");
+        fs::create_dir_all(folder.join("skills")).expect("folder");
+        fs::write(
+            folder.join("bot.json"),
+            r#"{"name": "Bot", "engine": "test", "client": "9f8e7d6c", "skills": ["Packing", "packing", "Packing 2"]}"#,
+        )
+        .expect("bot.json");
+        let read = load(&bots, "1a2b3c4d").expect("read").expect("a bot");
+        let names: Vec<&str> = read.skills.iter().map(|skill| skill.name.as_str()).collect();
+        assert_eq!(names, ["Packing", "packing 2", "Packing 2 2"]);
+        let long = "a".repeat(torro_ipc::bots::MAX_SKILL_NAME_CHARS);
+        let mut two = vec![
+            Skill { name: long.clone(), description: String::new(), text: String::new() },
+            Skill { name: long, description: String::new(), text: String::new() },
+        ];
+        unique_names(&mut two);
+        assert_eq!(two[1].name.chars().count(), torro_ipc::bots::MAX_SKILL_NAME_CHARS);
+        assert!(two[1].name.ends_with(" 2"));
     }
 
     /// Review of #703: a save of an old bot that broke off after part of the new form keeps reading the

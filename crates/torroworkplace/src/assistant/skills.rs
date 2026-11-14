@@ -43,10 +43,12 @@ pub fn folder(assistant_config: &Path) -> PathBuf {
     assistant_config.join("skills")
 }
 
-/// Every skill in `dir`, by name (ignoring case); none when `dir` is not there. A folder whose
+/// Every skill in `dir`: those with a place (`order:` in the head, a bot's, [`replace_all`]) in that
+/// order first, then the others by name (ignoring case); none when `dir` is not there. A folder whose
 /// `SKILL.md` is missing is left out, one whose head has no name is named on stderr and left out.
 pub fn load_all(dir: &Path) -> io::Result<Vec<Stored>> {
     let mut skills = Vec::new();
+    let mut places = std::collections::HashMap::new();
     for id in crate::bots::store::ids(dir)? {
         let path = dir.join(&id).join(SKILL_FILE);
         let bytes = match fs::read(&path) {
@@ -54,12 +56,22 @@ pub fn load_all(dir: &Path) -> io::Result<Vec<Stored>> {
             Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
             Err(err) => return Err(err),
         };
-        match parse(&String::from_utf8_lossy(&bytes)) {
-            Some(skill) => skills.push(Stored { id, skill }),
+        let contents = String::from_utf8_lossy(&bytes);
+        match parse(&contents) {
+            Some(skill) => {
+                places.insert(id.clone(), place(&contents).unwrap_or(usize::MAX));
+                skills.push(Stored { id, skill });
+            }
             None => eprintln!("torroworkplace: {} has no name in its head; left out", path.display()),
         }
     }
-    skills.sort_by(|a, b| a.skill.name.to_lowercase().cmp(&b.skill.name.to_lowercase()).then(a.id.cmp(&b.id)));
+    let place_of = |stored: &Stored| places.get(&stored.id).copied().unwrap_or(usize::MAX);
+    skills.sort_by(|a, b| {
+        place_of(a)
+            .cmp(&place_of(b))
+            .then_with(|| a.skill.name.to_lowercase().cmp(&b.skill.name.to_lowercase()))
+            .then(a.id.cmp(&b.id))
+    });
     Ok(skills)
 }
 
@@ -73,6 +85,18 @@ pub fn save(dir: &Path, stored: &Stored) -> io::Result<()> {
     crate::bots::store::write(&folder.join(SKILL_FILE), format(&stored.skill).as_bytes())
 }
 
+/// Like [`save`], with the skill's place among a bot's (`order:` in the head, issue #703 review): the
+/// order the person gave them in the bot editor.
+fn save_at(dir: &Path, stored: &Stored, at: usize) -> io::Result<()> {
+    if !crate::bots::store::is_id(&stored.id) {
+        return Err(io::Error::other(format!("{:?} is no skill id", stored.id)));
+    }
+    let folder = dir.join(&stored.id);
+    crate::clients::create_private_dir(&folder)?;
+    let contents = format(&stored.skill).replacen("\n", &format!("\norder: {at}\n"), 1);
+    crate::bots::store::write(&folder.join(SKILL_FILE), contents.as_bytes())
+}
+
 /// Removes the folder of skill `id` from `dir` with everything in it; one that is not there is fine.
 pub fn remove(dir: &Path, id: &str) -> io::Result<()> {
     if !crate::bots::store::is_id(id) {
@@ -84,14 +108,14 @@ pub fn remove(dir: &Path, id: &str) -> io::Result<()> {
     }
 }
 
-/// Writes `skills` as every skill in `dir` (a bot's, saved whole): a skill whose name is there keeps
-/// its folder, a new one gets one, and the folders of skills no longer among them go. Nothing else in
-/// `dir` is touched.
+/// Writes `skills` as every skill in `dir` (a bot's, saved whole), each with its place in `skills`: a
+/// skill whose name is there keeps its folder, a new one gets one, and the folders of skills no longer
+/// among them go. Nothing else in `dir` is touched.
 pub fn replace_all(dir: &Path, skills: &[Skill]) -> io::Result<()> {
     let before = load_all(dir)?;
     let mut taken: Vec<String> = crate::bots::store::ids(dir)?;
     let mut kept = Vec::new();
-    for skill in skills {
+    for (at, skill) in skills.iter().enumerate() {
         let id = match before.iter().find(|old| old.skill.is_named(&skill.name)) {
             Some(old) => old.id.clone(),
             None => {
@@ -100,7 +124,7 @@ pub fn replace_all(dir: &Path, skills: &[Skill]) -> io::Result<()> {
                 id
             }
         };
-        save(dir, &Stored { id: id.clone(), skill: skill.clone() })?;
+        save_at(dir, &Stored { id: id.clone(), skill: skill.clone() }, at)?;
         kept.push(id);
     }
     for old in before {
@@ -156,6 +180,20 @@ pub fn parse(contents: &str) -> Option<Skill> {
     let start = contents.split_inclusive('\n').next().map_or(0, str::len) + head;
     let text = contents.get(start..).unwrap_or_default().trim_end().to_string();
     Some(Skill { name, description, text })
+}
+
+/// The place `order:` in the head of a `SKILL.md` gives; `None` without one.
+fn place(contents: &str) -> Option<usize> {
+    let mut lines = contents.lines();
+    if lines.next()?.trim_end() != FENCE {
+        return None;
+    }
+    lines
+        .take_while(|line| line.trim_end() != FENCE)
+        .find_map(|line| {
+            line.split_once(':').filter(|(key, _)| *key == "order").map(|(_, value)| value.trim().parse().ok())
+        })
+        .flatten()
 }
 
 /// The contents of the `SKILL.md` of `skill`: the head, then the text with a line break at its end.
@@ -243,6 +281,10 @@ mod tests {
         assert_eq!(now.len(), 2);
         assert_eq!((now[0].id.as_str(), now[0].skill.text.as_str()), ("5e6f7a8b", "By year."));
         assert_eq!(now[1].skill.name, "Travel");
+        // A bot's order is kept, whatever the names (review of #703).
+        replace_all(&skills, &[skill("Zebra", "", "z"), skill("Apple", "", "a")]).expect("in order");
+        let names: Vec<String> = load_all(&skills).expect("read").into_iter().map(|kept| kept.skill.name).collect();
+        assert_eq!(names, ["Zebra", "Apple"]);
         replace_all(&skills, &[]).expect("none");
         assert_eq!(load_all(&skills).expect("read"), Vec::new());
         assert!(skills.join("0a0b0c0d").exists() && skills.join("notes").exists(), "nothing else goes");
