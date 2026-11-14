@@ -970,14 +970,18 @@ impl Answering {
     }
 
     /// Adds the tool line `line` of the call `call` with `result`, what the model reads of it (issue #701): kept
-    /// with the line for later turns, and its summary for what a left-out stretch names. `None` when the run was
-    /// stopped meanwhile, else `result`.
+    /// with the line for later turns unless it is the web's ([`tools::kept_for_later`], issue #714), and its summary
+    /// for what a left-out stretch names. `None` when the run was stopped meanwhile, else `result`.
     async fn add_tool(&mut self, call: &str, line: EntryContent, result: String) -> Option<String> {
-        if let EntryContent::Tool { summary, .. } = &line {
-            self.summaries.insert(call.to_string(), summary.clone());
-        }
+        let kept = match &line {
+            EntryContent::Tool { name, summary, .. } => {
+                self.summaries.insert(call.to_string(), summary.clone());
+                tools::kept_for_later(name).then(|| result.clone())
+            }
+            _ => Some(result.clone()),
+        };
         let (conversation, run) = (&self.job.conversation, self.job.run);
-        self.assistant.add_to_run(conversation, run, line, false, Some(result.clone())).await.then_some(result)
+        self.assistant.add_to_run(conversation, run, line, false, kept).await.then_some(result)
     }
 
     /// Runs the tool call `call` and answers what the model reads of it; `None` when the run was
@@ -3167,6 +3171,35 @@ pub(crate) mod tests {
         assert_eq!(webs(&host)[7], ("tools.web_search", other, false, false), "a new conversation starts afresh");
         assert_eq!(remembered(&host).len(), 1);
         assert_eq!(host.untrusted.lock().expect("lock").last(), Some(&true), "after a search a note waits");
+    }
+
+    /// Issue #714: the web's results are not kept for later turns (Brave's terms), another tool's result is.
+    #[tokio::test]
+    async fn web_results_are_not_kept() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = Script::new(vec![
+            calls_all(&[
+                ("tools_web_search", json!({"query": "Lisbon trams"})),
+                ("tools_fetch_page", json!({"url": "https://lisbon.example.org/"})),
+                ("inbox_list_items", json!({})),
+            ]),
+            says("Done."),
+        ]);
+        let (assistant, _host) = set_up(dir.path(), Some(reader()), Place::Local, Arc::clone(&script));
+        let id = ask(&assistant, None, "Search for trams.", Vec::new()).await;
+        finished(&assistant, &id).await;
+        let state = assistant.state().await;
+        let conversation = state.conversations.get(&id).expect("conversation");
+        let tool_of = |seq: &u64| {
+            conversation.entries.iter().find(|entry| entry.seq == *seq).and_then(|entry| match &entry.content {
+                EntryContent::Tool { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+        };
+        let kept: Vec<Option<String>> = conversation.results.keys().map(tool_of).collect();
+        assert_eq!(kept, [Some("inbox.list_items".to_string())], "{:?}", conversation.entries);
+        let tools = conversation.entries.iter().filter(|entry| matches!(entry.content, EntryContent::Tool { .. }));
+        assert_eq!(tools.count(), 3, "every tool line stays");
     }
 
     /// Issue #305, task WEB.5: a bot that runs for the assistant goes by the yes of the assistant's

@@ -6,15 +6,19 @@
 //! line of its own, and a new title or pin is a line too. Reading folds the lines in order
 //! ([`Conversation::fold`]), so nothing is ever rewritten in place and a crash loses at most the
 //! line being written. A line that does not read (cut off by a crash, from a newer core) is
-//! skipped; a file without its first line is no conversation.
+//! skipped; a file without its first line is no conversation. The one exception is dropping old
+//! results ([`drop_results`]): the file is written anew beside the old one and renamed over it, so
+//! a crash leaves either file whole.
 //!
 //! What a tool answered the model ([`Line::Result`], issue #701) is kept beside its tool line, so a later turn
 //! sends the model its calls with their results again. It never leaves the core: `assistant.get_conversation`
-//! shows the entries only, as a result can hold what another area's data said.
+//! shows the entries only, as a result can hold what another area's data said. It is kept for
+//! [`RESULT_HOURS`] after its call only (issue #714): a mail read then may be deleted since, and the
+//! conversation would otherwise keep a copy of it as long as the conversation lives.
 //!
 //! Errors carry the path only for the core's own log; what goes to a client says nothing of it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -26,6 +30,11 @@ use torro_ipc::assistant::{ConversationSummary, Entry, EntryContent, MailRef};
 
 /// The extension of a conversation's file.
 const EXTENSION: &str = "jsonl";
+
+/// How long a tool's result stays in a conversation's file after its call (issue #714), pinned
+/// conversations too; then [`drop_results`] removes it. Fixed, no setting: a day covers going on
+/// with a conversation the same day, and a mail deleted since does not linger for long.
+pub const RESULT_HOURS: i64 = 24;
 
 /// At most this many characters of the first message become the title.
 const TITLE_CHARS: usize = 60;
@@ -134,6 +143,18 @@ impl Conversation {
             }
             Line::Result { .. } => {}
         }
+    }
+
+    /// The numbers of the results whose tool line was added before `oldest` (issue #714): those
+    /// [`drop_results`] removes.
+    pub fn expired_results(&self, oldest: DateTime<Utc>) -> BTreeSet<u64> {
+        self.results
+            .keys()
+            .copied()
+            .filter(|seq| {
+                self.entries.binary_search_by_key(seq, |entry| entry.seq).is_ok_and(|at| self.entries[at].time < oldest)
+            })
+            .collect()
     }
 
     /// Whether the entry `seq` is a tool line.
@@ -286,12 +307,76 @@ pub fn append(dir: &Path, id: &str, lines: &[Line]) -> io::Result<()> {
     file.flush()
 }
 
-/// Removes the file of conversation `id` from `dir`; one that is not there is fine.
-pub fn remove(dir: &Path, id: &str) -> io::Result<()> {
-    match fs::remove_file(file(dir, id)) {
-        Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
-        _ => Ok(()),
+/// Removes the results numbered `seqs` from the file of conversation `id` in `dir` (issue #714):
+/// every other line stays as it was, also one that does not read. The file is written anew as
+/// `<id>.jsonl.tmp` (0600) and renamed over the old one, so a crash leaves either whole. Nothing to
+/// drop, or no file, writes nothing.
+pub fn drop_results(dir: &Path, id: &str, seqs: &BTreeSet<u64>) -> io::Result<()> {
+    if seqs.is_empty() {
+        return Ok(());
     }
+    let path = file(dir, id);
+    let old = match fs::read(&path) {
+        Ok(old) => old,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    let mut kept = Vec::with_capacity(old.len());
+    // By bytes and with their line ends, so a line that does not read (or is not text) stays word for word.
+    for line in old.split_inclusive(|byte| *byte == b'\n') {
+        let dropped = matches!(
+            serde_json::from_slice::<Line>(line.trim_ascii_end()),
+            Ok(Line::Result { seq, .. }) if seqs.contains(&seq)
+        );
+        if !dropped {
+            kept.extend_from_slice(line);
+        }
+    }
+    let temp = temp_file(dir, id);
+    let written = write_new(&temp, &kept).and_then(|()| fs::rename(&temp, &path));
+    if written.is_err() {
+        // What is left of it is of no use; the old file still holds everything.
+        let _ = fs::remove_file(&temp);
+        return written;
+    }
+    // The rename on the disk too; should that fail, a crash brings back the old file whole, and the next round
+    // drops its results again.
+    #[cfg(unix)]
+    if let Err(err) = fs::File::open(dir).and_then(|folder| folder.sync_all()) {
+        eprintln!("torroworkplace: cannot sync the folder of the conversation {id}: {err}");
+    }
+    Ok(())
+}
+
+/// Writes `bytes` to a new file `path` (0600), on the disk before it answers.
+fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut options = OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+/// Removes the file of conversation `id` from `dir`, and what a crash in [`drop_results`] left beside it (a copy
+/// of the conversation, review of #714); one that is not there is fine.
+pub fn remove(dir: &Path, id: &str) -> io::Result<()> {
+    for path in [file(dir, id), temp_file(dir, id)] {
+        match fs::remove_file(path) {
+            Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Where [`drop_results`] writes the file of conversation `id` anew before renaming it.
+fn temp_file(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.{EXTENSION}.tmp"))
 }
 
 #[cfg(test)]
@@ -358,7 +443,11 @@ mod tests {
             assert_eq!(mode(&path), 0o600);
         }
 
+        // A copy a crash left while writing the file anew goes with it (review of #714).
+        let temp = temp_file(&folder, &conversation.id);
+        fs::write(&temp, "{}").expect("a copy left behind");
         remove(&folder, &conversation.id).expect("removed");
+        assert!(!temp.exists(), "the copy goes too");
         remove(&folder, &conversation.id).expect("removing again is fine");
         assert_eq!(load_all(&folder).expect("read"), Vec::new());
         assert_eq!(load_all(&dir.path().join("missing")).expect("no folder"), Vec::new());
@@ -437,6 +526,60 @@ mod tests {
         append(dir.path(), &conversation.id, &lines).expect("written");
         let read = load_all(dir.path()).expect("read");
         assert_eq!(read, [conversation]);
+    }
+
+    /// Issue #714: an old result goes from the file, and only it; the entries, the newer result and a line that does
+    /// not read stay, the file stays private and nothing is left beside it.
+    #[test]
+    fn old_results_are_dropped_from_the_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let folder = dir.path().join("assistant");
+        let mut conversation = Conversation::new("0123456789abcdef".into(), "Hello", at(0));
+        let tool = |summary: &str| EntryContent::Tool {
+            name: "mail.get_message".into(),
+            input: serde_json::json!({}),
+            summary: summary.into(),
+            error: None,
+            lack: None,
+        };
+        let mut lines = vec![conversation.started()];
+        for (minute, text) in [(1, "the old mail"), (30, "the new mail")] {
+            let entry = conversation.next(tool("1 mail"), at(minute));
+            let result = Line::Result { seq: entry.seq, text: text.into() };
+            conversation.apply(Line::Entry { entry: entry.clone() });
+            conversation.apply(result.clone());
+            lines.extend([Line::Entry { entry }, result]);
+        }
+        append(&folder, &conversation.id, &lines[..3]).expect("written");
+        let path = file(&folder, &conversation.id);
+        let mut damaged = OpenOptions::new().append(true).open(&path).expect("open");
+        damaged.write_all(b"{\"line\":\"from a newer core\"}\n").expect("a line that does not read");
+        append(&folder, &conversation.id, &lines[3..]).expect("written");
+
+        let expired = conversation.expired_results(at(10));
+        assert_eq!(expired, BTreeSet::from([1]));
+        assert_eq!(conversation.expired_results(at(1)), BTreeSet::new(), "older than, not as old as");
+        drop_results(&folder, &conversation.id, &expired).expect("dropped");
+
+        let read = load_all(&folder).expect("read");
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].entries, conversation.entries, "every entry stays");
+        assert_eq!(read[0].results, BTreeMap::from([(2, "the new mail".to_string())]));
+        let text = fs::read_to_string(&path).expect("the file");
+        assert!(!text.contains("the old mail"), "{text}");
+        assert!(text.contains("{\"line\":\"from a newer core\"}\n"), "{text}");
+        assert!(!temp_file(&folder, &conversation.id).exists(), "nothing left beside it");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&path).expect("metadata").permissions().mode() & 0o777, 0o600);
+        }
+
+        // Nothing to drop, or no file, writes nothing.
+        drop_results(&folder, &conversation.id, &BTreeSet::new()).expect("nothing");
+        assert_eq!(fs::read_to_string(&path).expect("the file"), text);
+        drop_results(&folder, "fedcba9876543210", &expired).expect("no file");
+        assert!(!file(&folder, "fedcba9876543210").exists());
     }
 
     #[test]

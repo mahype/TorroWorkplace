@@ -444,6 +444,14 @@ pub fn untrusted(area: Area, value: &Value) -> bool {
     }
 }
 
+/// Whether what the command `name` (a catalogue name, as a tool line keeps it) answered the model is
+/// kept with its tool line for later turns (issue #701, `store::Line::Result`): every command but
+/// the web's search and page (issue #714). Brave's terms do not allow keeping its results, so no
+/// provider's are kept; the model searches anew when a later turn needs them.
+pub fn kept_for_later(name: &str) -> bool {
+    !REACHES_OUT.contains(&name)
+}
+
 /// Whether the command `name` (a catalogue name, as a conversation's tool line keeps it) may have
 /// answered with data from outside the suite ([`untrusted`]): every command of mail, GitHub and
 /// the inbox, and the task commands that read GitHub items (`tasks.list_todos` lists the issues of

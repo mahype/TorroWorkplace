@@ -72,7 +72,14 @@ Was offene Modelle brauchen, damit das gut geht:
   Modell 30 (`Limits` in `assistant/model.rs`, keine Einstellung). Was ein Werkzeug dem Modell
   geliefert hat, speichert der Dienst neben der Werkzeugzeile des Gesprächs; die nächste Nachricht
   schickt Aufrufe und Ergebnisse wieder mit. Clients sehen diese Ergebnisse über
-  `get_conversation` nie. Überschreitet der Verlauf die Hälfte des Kontextfensters des Modells
+  `get_conversation` nie. Ein Ergebnis bleibt **24 Stunden** nach seinem Aufruf (Issue #714,
+  `RESULT_HOURS` in `assistant/store.rs`, keine Einstellung), auch in angehefteten Unterhaltungen;
+  danach entfernt der Lauf beim Start und jede Stunde (`Assistant::clean_up`) es aus der Datei, also
+  spätestens eine Stunde nach Ablauf, solange der Dienst läuft und die Unterhaltung gerade nicht
+  antwortet (sonst in einer späteren Runde). Wer später
+  weiterredet, bekommt vom Modell keine Antwort mehr aus den alten Treffern, es sucht bei Bedarf
+  neu. Ergebnisse von Websuche und Seitenabruf werden nie gespeichert (die Bedingungen von Brave
+  erlauben es nicht, darum für keinen Anbieter). Überschreitet der Verlauf die Hälfte des Kontextfensters des Modells
   (laut Modell-Liste, sonst 32 000 Tokens), verdichtet der Dienst ihn selbst, ohne Modellaufruf
   (`assistant/compact.rs`): zuerst werden ältere Ergebnisse zu ihrer Kurzzeile („12 results“),
   dann fallen ganze Schritte zwischen erster und letzter Nachricht der Person und vor den letzten
@@ -701,7 +708,13 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 - **Speicher:** `<data>/assistant/<id>.jsonl` (0600), je Unterhaltung Nachrichten und
   Werkzeug-Aufrufe. Inhalte von Mails stehen damit auf der Platte wie im Mail-Cache; „Delete
   conversation“ löscht die Datei. Unterhaltungen werden nach **30 Tagen** gelöscht (entschieden,
-  einstellbar bis „forever“); angeheftete bleiben.
+  einstellbar bis „forever“); angeheftete bleiben. Was ein Werkzeug dem Modell geliefert hat
+  (etwa ein Mail-Text), bleibt kürzer: 24 Stunden nach dem Aufruf, auch in angehefteten
+  Unterhaltungen und bei „forever“ (Issue #714); danach schreibt der nächste Lauf (beim Start und
+  stündlich, eine antwortende Unterhaltung in einer späteren Runde) die Datei ohne diese Ergebnisse neu,
+  Nachrichten und Werkzeugzeilen bleiben. Ob die Quelle (etwa die Mail) noch
+  existiert, prüft der Dienst nicht; die kurze Frist deckt das ab. Ergebnisse von Websuche und
+  Seitenabruf werden nie gespeichert.
 - **Protokoll** (`audit.jsonl`) wie immer ohne Inhalte: Client `assistant`, Befehl, Kennungen.
 - **Laufende Antwort:** Die App fragt `assistant.get_conversation` mit `after` (letzte gesehene
   Stelle) ab, bis es Änderungsmeldungen (`subscribe`) gibt.
