@@ -332,13 +332,33 @@ pub mod tests {
     /// shell script with `body`, executable.
     pub fn fake_program(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
-        fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write the program");
+        // `--torro-probe` only answers that the program starts (see below), nothing else.
+        fs::write(&path, format!("#!/bin/sh\n[ \"$1\" = --torro-probe ] && exit 0\n{body}\n"))
+            .expect("write the program");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("make it executable");
+            ready_to_run(&path);
         }
         path
+    }
+
+    /// Waits until `path` can be started (issue #699). A test running beside this one may fork while
+    /// the program is written; its child holds the file open for writing until it starts its own
+    /// program, and until then starting this one fails with "Text file busy" (ETXTBSY). No new
+    /// writer can come once the file is closed, so a probe that starts is enough.
+    #[cfg(unix)]
+    fn ready_to_run(path: &Path) {
+        const TEXT_FILE_BUSY: i32 = 26;
+        for _ in 0..200 {
+            match std::process::Command::new(path).arg("--torro-probe").status() {
+                Err(err) if err.raw_os_error() == Some(TEXT_FILE_BUSY) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                _ => return,
+            }
+        }
     }
 
     fn missing(found: &Found) -> Vec<(VoicePart, Option<VoiceMissing>)> {
