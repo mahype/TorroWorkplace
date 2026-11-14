@@ -678,7 +678,7 @@ neben `files`, weil der Inhalt dabei an den Anbieter des Modells geht (Entscheid
 - **Lesen seitenweise:** ganze Zeilen bis 10.000 Zeichen ab `from_line`, gezählt wie im JSON (Zeilenumbruch und
   Anführungszeichen zählen doppelt), damit eine Seite in die 16.000 Zeichen einer
   Antwort an das Modell passt; eine Seite geht ganz an das Modell, nicht nur ihr Anfang wie andere lange Texte. Nur
-  eine einzelne längere Zeile wird geschnitten. Die Antwort nennt die Zeilenzahl, ob mehr folgt (`more`), ab welcher
+  eine einzelne längere Zeile wird geschnitten; das sagt `cut_line`, der Rest der Zeile lässt sich so nicht lesen. Die Antwort nennt die Zeilenzahl, ob mehr folgt (`more`), ab welcher
   Zeile es weitergeht (`next_line`) und die **Version**: den SHA-256 der Bytes.
 - **Suchen** nach einem Text (eine Zeile, 1 bis 200 Zeichen, ohne Groß- und Kleinschreibung) mit den Grenzen der
   Namenssuche (10 Ebenen, 200 Treffer, 50.000 angesehene Einträge) und höchstens 256 MiB gelesen; gesperrte, binäre

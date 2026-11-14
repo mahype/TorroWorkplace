@@ -4725,7 +4725,8 @@ pub enum Request {
     /// Reads one page of the text file `path` from line `from_line` on ([`Response::FileText`]): whole
     /// lines up to [`tools::MAX_PAGE_CHARS`] characters, `more` and `next_line` when the file goes on, and the file's
     /// `version` for `tools.edit_file`. A byte order mark is left out. Past the last line the text is
-    /// empty. A symbolic link is followed while it stays within the bounds. Codes: `not-found` as
+    /// empty. A single line longer than a page is cut, and `cut_line` says so: the rest of that line
+    /// cannot be read here. A symbolic link is followed while it stays within the bounds. Codes: `not-found` as
     /// above, `unsupported` for a folder, a binary or too big file, `forbidden` while the tool is
     /// outside the client's selection.
     #[serde(rename = "tools.read_file")]

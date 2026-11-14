@@ -142,6 +142,10 @@ pub struct FileText {
     /// The line to read on from when [`FileText::more`]; left out at the end of the file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_line: Option<u32>,
+    /// The page is a single line longer than a page, cut after [`MAX_PAGE_CHARS`] characters: the rest of that line
+    /// cannot be read with `tools.read_file` (a minified file, say). Left out when nothing was cut.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cut_line: bool,
     /// The file's version as the core read it (SHA-256 of its bytes, hex): what `tools.edit_file` takes, so
     /// a change lands only on the text that was read.
     pub version: String,
@@ -160,7 +164,8 @@ impl FileText {
         next_line: Option<u32>,
         version: String,
     ) -> FileText {
-        FileText { path, text, from_line, total_lines, more: next_line.is_some(), next_line, version, untrusted: true }
+        let more = next_line.is_some();
+        FileText { path, text, from_line, total_lines, more, next_line, cut_line: false, version, untrusted: true }
     }
 }
 
