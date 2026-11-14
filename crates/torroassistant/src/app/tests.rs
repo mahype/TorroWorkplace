@@ -1769,7 +1769,8 @@ fn a_new_answer_is_read_aloud_once_it_is_complete() {
         Ok((head(&app, 2, false), vec![answer_entry(2, "Let me look. Found it.")])),
     ));
     assert!(!sent(&mut app).iter().any(|request| matches!(request, Request::Speak { .. })), "read once");
-    let _ = app.update(Message::Read(2, Ok(())));
+    let conversation = app.current.clone();
+    let _ = app.update(Message::Read(conversation, 2, Ok(())));
     assert_eq!(app.reading, None);
 
     // Answer, tool, answer: nothing is read while the run goes on, then only the last answer.
@@ -1780,7 +1781,8 @@ fn a_new_answer_is_read_aloud_once_it_is_complete() {
     let _ = parts.update(Message::Followed(id_of(&parts), Ok((head(&parts, 3, true), entries.clone()))));
     assert!(!sent(&mut parts).iter().any(|request| matches!(request, Request::Speak { .. })), "the run goes on");
     let _ = parts.update(Message::Followed(id_of(&parts), Ok((head(&parts, 3, false), entries))));
-    let speak: Vec<_> = sent(&mut parts).into_iter().filter(|request| matches!(request, Request::Speak { .. })).collect();
+    let speak: Vec<_> =
+        sent(&mut parts).into_iter().filter(|request| matches!(request, Request::Speak { .. })).collect();
     assert_eq!(speak, [Request::Speak { text: "Three events.".into() }]);
 
     // A new chat stops what the old conversation reads, and [■] never stands at another's answer.
@@ -1859,7 +1861,7 @@ fn the_speaker_switches_reading_aloud_and_stops_it() {
 
     let message = "Connect an OpenAI account in Settings › AI to read aloud with OpenAI.";
     app.reading = Some(4);
-    let _ = app.update(Message::Read(4, Err(Refusal::new("unsupported", message))));
+    let _ = app.update(Message::Read(app.current.clone(), 4, Err(Refusal::new("unsupported", message))));
     assert_eq!(app.reading, None);
     assert_eq!(app.notice.as_ref().map(|notice| notice.text.as_str()), Some(message), "the core's words");
     for size in SIZES {

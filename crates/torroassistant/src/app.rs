@@ -431,8 +431,8 @@ pub enum Message {
     StopReading,
     /// The core took "stop reading"; [`Message::Read`] follows for the answer.
     ReadingStopped,
-    /// The answer `seq` was read to its end, stopped, or could not be read.
-    Read(u64, Result<(), Refusal>),
+    /// The answer `seq` of the conversation was read to its end, stopped, or could not be read.
+    Read(Option<String>, u64, Result<(), Refusal>),
     /// "Manage models…" at the end of the picker and under "No model is turned on" (task S.26): the
     /// section AI of the settings ([`AI_PAGE`]), where the models of each AI account are turned on and off.
     ManageModels,
@@ -1162,8 +1162,11 @@ impl App {
             Message::ReadAloudSet(_, Ok(())) => self.read_aloud_switching = false,
             Message::StopReading => return self.stop_reading(),
             Message::ReadingStopped => {}
-            Message::Read(seq, result) => {
-                if self.reading == Some(seq) {
+            // A reading stopped by a change of conversation answers late: only its own conversation's
+            // answer is meant, and its failure is no longer worth a notice.
+            Message::Read(conversation, _, _) if conversation != self.reading_in && self.reading.is_some() => {}
+            Message::Read(conversation, seq, result) => {
+                if self.reading == Some(seq) && self.reading_in == conversation {
                     self.reading = None;
                 }
                 if let Err(refusal) = result {
@@ -1917,11 +1920,13 @@ impl App {
         }
         self.bot = self.conversations.iter().find(|c| c.id == id).and_then(|c| c.bot.clone());
         self.reset_chat(Some(id));
+        // What the old conversation reads stops at once, not only once the new one loaded.
+        let stopped = self.leave_reading();
         if self.chosen != Chosen::Person {
             self.chosen = Chosen::Default;
         }
         self.choose_default();
-        self.open_current()
+        Task::batch([self.open_current(), stopped])
     }
 
     /// The sidebar's search with `text` (issue #704): from [`SEARCH_FROM`] characters on it asks the core
@@ -2183,7 +2188,8 @@ impl App {
         self.reading_in = self.current.clone();
         // At most what the core takes; it reads the first 3000 characters anyway.
         let text: String = text.chars().take(SPEAK_MOST).collect();
-        self.ask(Request::Speak { text }, move |result| Message::Read(seq, result.map(drop)))
+        let conversation = self.current.clone();
+        self.ask(Request::Speak { text }, move |result| Message::Read(conversation.clone(), seq, result.map(drop)))
     }
 
     /// What was dictated goes into the field where the caret stands, nothing is sent; a space in

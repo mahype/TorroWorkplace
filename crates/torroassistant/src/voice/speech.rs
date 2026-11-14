@@ -55,8 +55,9 @@ pub const IDLE: Duration = Duration::from_secs(10 * 60);
 /// How often a job looks whether its sound has ended.
 const POLL: Duration = Duration::from_millis(50);
 
-/// How long a stopped Qwen job may still send before its worker is ended: one that hangs (or still
-/// loads the model) must not hold back every later job, nor the graphics memory.
+/// How long a stopped Qwen job may still send before its worker is ended: one that hangs must not
+/// hold back every later job, nor the graphics memory. Counted only once the worker has sent sound:
+/// loading the model the first time may take minutes, and ending it then would only load it again.
 const DRAIN_MOST: Duration = Duration::from_secs(60);
 
 /// The voice templates of Qwen3-TTS (step 4 of the plan of issue #745): made once with
@@ -531,6 +532,8 @@ pub fn template(qwen: &Path, id: &str) -> Result<(PathBuf, &'static str), String
 struct Qwen {
     /// Its number ([`Event::Qwen`]).
     number: u64,
+    /// It has sent sound once: its model is loaded ([`DRAIN_MOST`]).
+    loaded: bool,
     model: String,
     child: Child,
     input: ChildStdin,
@@ -603,7 +606,7 @@ fn start_qwen(python: &Path, model: &str, number: u64, events: &Sender<Event>) -
             }
         }
     });
-    Ok(Qwen { number, model: model.to_string(), child, input })
+    Ok(Qwen { number, loaded: false, model: model.to_string(), child, input })
 }
 
 fn read_u32(reader: &mut impl Read) -> Option<u32> {
@@ -708,7 +711,8 @@ impl<W: FnMut(Output)> Helper<W> {
     /// A stopped Qwen job that has not ended after [`DRAIN_MOST`]: its worker goes (the graphics
     /// memory with it), and the job that waited starts a new one.
     fn give_up_draining(&mut self, sender: &Sender<Event>) {
-        if self.draining && self.draining_since.is_some_and(|since| since.elapsed() >= DRAIN_MOST) {
+        let loaded = self.qwen.as_ref().is_none_or(|qwen| qwen.loaded);
+        if self.draining && loaded && self.draining_since.is_some_and(|since| since.elapsed() >= DRAIN_MOST) {
             eprintln!("torroassistant: qwen did not stop in time, ended");
             self.qwen = None;
             self.drained(sender);
@@ -717,7 +721,12 @@ impl<W: FnMut(Output)> Helper<W> {
 
     fn handle(&mut self, event: Event, sender: &Sender<Event>) {
         let event = match event {
-            Event::Qwen(number, event) if self.qwen.as_ref().is_some_and(|qwen| qwen.number == number) => *event,
+            Event::Qwen(number, event) if self.qwen.as_ref().is_some_and(|qwen| qwen.number == number) => {
+                if let (Event::Rate(_), Some(qwen)) = (event.as_ref(), self.qwen.as_mut()) {
+                    qwen.loaded = true;
+                }
+                *event
+            }
             // A worker that was replaced or ended on purpose: what it still sends belongs to no job.
             Event::Qwen(..) => return,
             event => event,
