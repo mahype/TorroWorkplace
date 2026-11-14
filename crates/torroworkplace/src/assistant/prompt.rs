@@ -346,7 +346,8 @@ fn generated(context: &Context<'_>) -> String {
         lines.push(format!("- The person's name: {person}."));
     }
     lines.push(match context.areas {
-        [] => "- Areas you may use: none. You have no tools now; tell the person they can grant you access in Torro \
+        [] => "- Areas you may use: none. You have no tools for the person's data now, only the suite's help and your \
+               own access; tell the person they can grant you access in Torro \
                Workplace › Assistant."
             .to_string(),
         areas => format!("- Areas you may use: {}.", names(areas)),
@@ -876,7 +877,7 @@ mod tests {
         context.person = None;
         context.place = Place::Remote;
         let prompt = system(None, &context);
-        assert!(prompt.contains("- Areas you may use: none. You have no tools now"), "{prompt}");
+        assert!(prompt.contains("- Areas you may use: none. You have no tools for the person's data now"), "{prompt}");
         assert!(!prompt.contains("Switched off"), "{prompt}");
         assert!(!prompt.contains("The person's name"), "{prompt}");
         assert!(prompt.contains("(remote)") && !prompt.contains("data rule"), "{prompt}");

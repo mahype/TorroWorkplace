@@ -3381,7 +3381,7 @@ Keine Felder.
 
 Zugriff `admin` · MCP-Tool `assistant_update_profile`
 
-Changes the profile of the assistant of Torro Workplace: `name` (one line, at most 40 characters), `description` (one line, at most 200), `avatar` (letter, sparkles, sun, moon, cloud, radar or user) `personality` (at most 4,000 characters) and `person_name`, the name of the person the assistant works for (one line, at most 80; empty clears it); fields left out stay. The personality shapes the assistant's tone from its next answer on and never changes its rights or rules. Always waits for the person's approval.
+Changes the profile of the assistant of Torro Workplace: `name` (one line, at most 40 characters), `description` (one line, at most 200), `avatar` (letter, sparkles, sun, moon, cloud, radar or user), `personality` (at most 4,000 characters) and `person_name`, the name of the person the assistant works for (one line, at most 80; empty clears it); fields left out stay. The personality shapes the assistant's tone from its next answer on and never changes its rights or rules. Always waits for the person's approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
