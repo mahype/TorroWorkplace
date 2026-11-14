@@ -570,6 +570,7 @@ mod tests {
             created: at,
             updated: at,
             pinned: false,
+            archived: false,
             running: false,
             last: 1,
             bot: bot.map(str::to_owned),

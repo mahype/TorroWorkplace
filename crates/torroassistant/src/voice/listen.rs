@@ -496,6 +496,7 @@ mod tests {
             created: time,
             updated: time,
             pinned: false,
+            archived: false,
             running,
             last,
             bot: None,

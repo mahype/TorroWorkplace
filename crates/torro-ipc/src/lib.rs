@@ -4311,6 +4311,26 @@ pub enum Request {
         id: String,
         pinned: bool,
     },
+    /// Archives (`archived: true`) or restores the conversations `ids` (issue #697, [`Response::Ok`]).
+    /// An archived conversation leaves "Pinned" and "Recent" for the group "Archive", is kept beyond
+    /// the retention time and comes back by itself when a message is sent in it; an answer that runs
+    /// finishes. Ids already in that state and doubles are skipped. `not-found` when one id is unknown,
+    /// and then nothing changes; `error` without ids or with more than [`assistant::MAX_BULK_IDS`].
+    #[serde(rename = "assistant.archive_conversations")]
+    ArchiveConversations {
+        /// The conversations' ids.
+        ids: Vec<String>,
+        archived: bool,
+    },
+    /// Deletes the conversations `ids` and their files for good, stopping answers that run (issue
+    /// #697, [`Response::Ok`]); doubles are skipped. `not-found` when one id is unknown, and then
+    /// nothing is deleted; `error` without ids, with more than [`assistant::MAX_BULK_IDS`], or when a
+    /// file could not be removed (the others stay deleted; the message says how many are left).
+    #[serde(rename = "assistant.delete_conversations")]
+    DeleteConversations {
+        /// The conversations' ids.
+        ids: Vec<String>,
+    },
     /// Opens a chat window of the assistant app: `torroassistant --chat <id>` for a conversation,
     /// `--chat new` for a new one, `--bot <id>` for a bot ([`Response::Ok`]). Each call starts one
     /// window. `not-found` for an unknown conversation or bot, `error` when the app does not start

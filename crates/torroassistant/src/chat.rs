@@ -355,6 +355,7 @@ mod tests {
             created: at(0),
             updated: at(1),
             pinned: false,
+            archived: false,
             running,
             last,
             bot: None,
