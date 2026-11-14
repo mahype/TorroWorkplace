@@ -229,6 +229,12 @@ fn refuses_reasoning(error: &AiError) -> bool {
         && ["not support", "unsupported", "unknown parameter", "invalid"].iter().any(|word| message.contains(word))
 }
 
+/// OpenAI's model that reads aloud (issue #745).
+pub const SPEECH_MODEL: &str = "gpt-4o-mini-tts";
+
+/// The rate of OpenAI's raw sound (`response_format: pcm`): 24 kHz.
+pub const SPEECH_RATE: u32 = 24_000;
+
 /// An OpenAI-compatible account: Chat Completions for most providers, Responses for OpenAI.
 /// `Debug` never shows the key ([`Secret`]).
 #[derive(Debug, Clone)]
@@ -275,6 +281,15 @@ impl OpenAiCompatible {
             }
             _ => self.list().await.map(drop),
         }
+    }
+
+    /// `POST <base>/audio/speech` (issue #745): `input` read by `voice` with [`SPEECH_MODEL`], as raw
+    /// signed 16-bit mono at [`SPEECH_RATE`]. The text goes to the server; no error repeats it or
+    /// the key ([`Wire::send`]).
+    pub async fn speech(&self, voice: &str, input: &str) -> Result<Vec<u8>, AiError> {
+        let body = json!({"model": SPEECH_MODEL, "voice": voice, "input": input, "response_format": "pcm"});
+        let response = self.wire.send(self.wire.request(reqwest::Method::POST, "audio/speech").json(&body)).await?;
+        self.wire.body(response).await
     }
 
     /// `GET <base>/models`, without asking local Ollama about tools: what finding a server needs.
@@ -1854,6 +1869,15 @@ impl AiAccounts {
         }
     }
 
+    /// The first OpenAI account with a key on this device, to read aloud with (issue #745); `None`
+    /// when there is none. Reading aloud has no key of its own: the core holds this one already.
+    pub async fn speaker(&self) -> Option<OpenAiCompatible> {
+        let http = self.http().ok()?.clone();
+        let slots = self.slots.read().await;
+        let slot = slots.iter().find(|slot| slot.provider() == AiProvider::OpenAi && slot.key.is_some())?;
+        Some(OpenAiCompatible::new(http, AiProvider::OpenAi, &slot.account.server, slot.key.clone()))
+    }
+
     /// The HTTP client of the AI accounts, also for downloads of models ([`super::pull`]).
     pub(crate) fn http(&self) -> Result<&reqwest::Client, AiError> {
         self.http.as_ref().ok_or_else(|| AiError::Format(tr("No HTTP client to ask AI servers with.").into()))
@@ -2910,6 +2934,36 @@ pub(crate) mod tests {
         let reply = openai.chat_without_thinking(&ask_calendar()).await.expect("an answer through responses");
         assert_eq!(reply.tool_calls.len(), 1);
         assert_eq!(responses.calls_async().await, 1);
+    }
+
+    /// Issue #745: reading aloud asks OpenAI for raw sound with the voice; an error repeats neither
+    /// the key nor the text.
+    #[tokio::test]
+    async fn openai_reads_aloud_as_raw_sound() {
+        let server = MockServer::start_async().await;
+        let speech = server
+            .mock_async(|when, then| {
+                when.method("POST")
+                    .path("/v1/audio/speech")
+                    .header("authorization", format!("Bearer {KEY}"))
+                    .json_body(
+                        json!({"model": SPEECH_MODEL, "voice": "marin", "input": "Hello.", "response_format": "pcm"}),
+                    );
+                then.status(200).body([1u8, 2, 3, 4]);
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/audio/speech");
+                then.status(401).json_body(json!({"error": {"message": format!("Incorrect API key {KEY}")}}));
+            })
+            .await;
+        let openai = OpenAiCompatible::new(http(), AiProvider::OpenAi, &server.url("/v1"), Some(Secret::new(KEY)));
+        assert_eq!(openai.speech("marin", "Hello.").await.expect("sound"), [1, 2, 3, 4]);
+        assert_eq!(speech.calls_async().await, 1);
+        let refused = openai.speech("marin", "Secret plans.").await.expect_err("refused");
+        let message = refused.to_string();
+        assert!(!message.contains(KEY) && !message.contains("Secret plans"), "{message}");
     }
 
     #[tokio::test]

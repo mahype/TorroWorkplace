@@ -53,6 +53,9 @@ pub const SEARCH_WORD: &str = "Anna";
 
 /// "Plan for tomorrow": messages, tool lines and an answer in Markdown. Pinned.
 pub const TOOLS: &str = "d000000000000001";
+
+/// The answer of [`TOOLS`] that the state `reading` reads aloud (issue #745): its fourth entry.
+pub const READ_ANSWER: u64 = 4;
 /// "Block the afternoon": a tool waits for the person's approval.
 pub const APPROVAL: &str = "d000000000000002";
 /// "Draft a reply to Anna": an answer still being written.
@@ -251,6 +254,8 @@ impl Demo {
             Request::VoiceStatus => Response::Voice { voice: voice() },
             Request::Dictate => Response::Transcript { text: tr("Remind me to call Anna tomorrow.").to_owned() },
             Request::StopDictation => Response::Ok,
+            // Reading aloud (issue #745): nothing sounds in the demo.
+            Request::Speak { .. } | Request::StopSpeaking => Response::Ok,
             other => refused("unsupported", &format!("{} is not in the demo", other.operation().name())),
         }
     }

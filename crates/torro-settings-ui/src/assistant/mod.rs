@@ -140,6 +140,7 @@ pub fn wanted() -> Vec<Request> {
         Request::ListTools,
         Request::ListEngines,
         Request::VoiceStatus,
+        Request::SpeechStatus,
         Request::Accounts,
         Request::CalendarCollections,
         Request::TaskCollections,
@@ -548,7 +549,7 @@ mod tests {
     /// What one load asks for, and the second round for an AI account's models.
     #[tokio::test]
     async fn the_load_asks_for_what_the_sections_show() {
-        assert_eq!(wanted().len(), 15, "one request per thing the sections read");
+        assert_eq!(wanted().len(), 16, "one request per thing the sections read");
         for offered in [
             Request::CalendarCollections,
             Request::TaskCollections,

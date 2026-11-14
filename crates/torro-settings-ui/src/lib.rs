@@ -80,7 +80,7 @@ use torro_inbox::{Rule, SourceInfo};
 use torro_ipc::assistant::{Engine, Note, Profile};
 use torro_ipc::bots::BotSummary;
 use torro_ipc::tools::ToolInfo;
-use torro_ipc::{AccountInfo, ClientInfo, Request, Response, RuleHits, VoiceStatus};
+use torro_ipc::{AccountInfo, ClientInfo, Request, Response, RuleHits, SpeechStatus, VoiceStatus};
 use torro_pim::Collection;
 
 pub use host::{Form, Frame, Host, Outcome, Page, Section, account_sections, form, suite_sections};
@@ -157,6 +157,8 @@ pub struct Data {
     pub default_models: Vec<AiModel>,
     /// How talking by voice stands (`settings.voice_status`); `None` until an answer came.
     pub voice: Option<VoiceStatus>,
+    /// Who can read aloud here (`settings.speech_status`, issue #745); `None` until an answer came.
+    pub speech: Option<SpeechStatus>,
     /// Every account with its collections, hidden ones included (`accounts.list_accounts`): the
     /// calendar app's "Calendars" and the tasks app's "Lists" group by it (task S.19,
     /// [`collections`]). A sign-in that still runs has an empty id and no collections.
@@ -326,6 +328,7 @@ impl Data {
             }
             Response::SortRules { rules } => self.sort_rules = rules,
             Response::Voice { voice } => self.voice = Some(voice),
+            Response::Speech { speech } => self.speech = Some(speech),
             Response::Accounts { accounts } => self.accounts = accounts,
             Response::MailAccountStats { accounts } => self.mail_stats = accounts,
             Response::MailCachePolicy { policy } => {
@@ -564,6 +567,8 @@ pub enum Action<A> {
     Ask(Request),
     /// Open a web page in the browser (`torro_gui::links`).
     OpenUrl(String),
+    /// Put this text on the clipboard: a command to copy (issue #745, setting up Qwen3-TTS).
+    Copy(String),
     /// Show another section of these settings, by its [`Section::id`].
     Open(&'static str),
     /// Put the keyboard focus into the text field with this id: what a row that opens a field
@@ -599,6 +604,7 @@ impl<A> Action<A> {
             Action::Send(requests) => Action::Send(requests),
             Action::Ask(request) => Action::Ask(request),
             Action::OpenUrl(url) => Action::OpenUrl(url),
+            Action::Copy(text) => Action::Copy(text),
             Action::Open(section) => Action::Open(section),
             Action::Focus(field) => Action::Focus(field),
             Action::ControlCentre(section) => Action::ControlCentre(section),

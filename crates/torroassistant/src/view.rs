@@ -740,10 +740,18 @@ impl App {
                     .style(style::container::group);
                 container(bubble).width(Fill).align_right(Fill).into()
             }
-            EntryContent::Answer { text, .. } => match self.answers.get(&entry.seq) {
-                Some((_, items)) => markdown::view(items, colours).map(Message::OpenLink),
-                None => typo::text(typo::body(), text.as_str()).into(),
-            },
+            EntryContent::Answer { text, .. } => {
+                let answer: Element<'a, Message> = match self.answers.get(&entry.seq) {
+                    Some((_, items)) => markdown::view(items, colours).map(Message::OpenLink),
+                    None => typo::text(typo::body(), text.as_str()).into(),
+                };
+                // Numbers count per conversation: the open one must be the one that reads.
+                match self.reading == Some(entry.seq) && self.reading_in == self.current {
+                    // Its own line above the answer, so the answer keeps its width.
+                    true => column![self.stop_reading_button(), answer].spacing(space::xs()).into(),
+                    false => answer,
+                }
+            }
             EntryContent::Tool { name, input, summary, error, lack } => {
                 self.tool(entry.seq, name, input, summary, error.as_deref(), *lack)
             }
@@ -1035,7 +1043,9 @@ impl App {
         } else {
             widgets::round_button(Icon::ArrowUp, tr("Send"), style::button::round_quiet, None)
         };
-        let right = row![picker, self.mic_button(), send].spacing(space::xs()).align_y(Alignment::Center);
+        let right = row![picker, self.speaker_button(), self.mic_button(), send]
+            .spacing(space::xs())
+            .align_y(Alignment::Center);
         let options = row![left, Space::new().width(Fill), right].spacing(space::s()).align_y(Alignment::Center);
         let options = container(options).padding(Padding::new(space::xs()).top(0.0)).height(Fill).align_bottom(Fill);
         stack![editor, options].width(Fill).into()
@@ -1052,6 +1062,33 @@ impl App {
                 .find(|engine| engine.id == choice.engine)
                 .map_or_else(|| choice.engine.clone(), |engine| engine.name.clone()),
         }
+    }
+
+    /// The speaker of the composer (issue #745): reading answers aloud on or off, told apart by the
+    /// icon (a speaker with waves or with a cross), not by colour alone.
+    fn speaker_button(&self) -> Element<'_, Message> {
+        let (glyph, colour, tip): (Icon, fn(&Palette) -> iced::Color, &str) = match self.read_aloud {
+            true => (Icon::Volume2, |p| p.text_2, tr("Stop reading answers aloud")),
+            false => (Icon::VolumeX, |p| p.text_3, tr("Read answers aloud")),
+        };
+        let speaker = button(container(tinted(glyph, icon::SIZE, colour)).center(Fill))
+            .width(size::control_sm())
+            .height(size::control_sm())
+            .padding(0)
+            .style(style::button::icon)
+            .on_press(Message::ToggleReadAloud);
+        widgets::with_tooltip(speaker, tip)
+    }
+
+    /// "Stop reading aloud" above the answer being read (issue #745): says that it reads, with the
+    /// speaker, and stops it at once.
+    fn stop_reading_button(&self) -> Element<'_, Message> {
+        widgets::text_button(
+            Some(Icon::Volume2),
+            tr("Stop reading aloud"),
+            style::button::ghost,
+            Some(Message::StopReading),
+        )
     }
 
     /// The microphone of the composer (issue #699): pale while speech recognition is not set up (a

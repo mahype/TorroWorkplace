@@ -4017,9 +4017,9 @@ mod tests {
             .collect();
         assert_eq!(
             catalogue.len(),
-            22,
-            "nine of task C.1, five of C.10, one of issue #134, one of #225, one of #605, four of #703, one of #704: \
-             {catalogue:?}"
+            24,
+            "nine of task C.1, five of C.10, one of issue #134, one of #225, one of #605, four of #703, one of #704, \
+             two of #745: {catalogue:?}"
         );
         assert!(catalogue.iter().all(|name| name.starts_with("assistant_") && names.contains(name.as_str())));
         // But the person's yes to asking a bot (task B.2), which no agent may give, and dictating
@@ -4719,6 +4719,9 @@ mod tests {
                 ("assistant_open_window", json!({"window": "new"})),
                 ("assistant_get_profile", json!({})),
                 ("assistant_update_profile", json!({"name": "Jarvis"})),
+                // Reading aloud (issue #745) is a person's or another client's, not the assistant's own.
+                ("assistant_speak", json!({"text": "Hello."})),
+                ("assistant_stop_speaking", json!({})),
             ];
             let own = [
                 "assistant_list_memories",
