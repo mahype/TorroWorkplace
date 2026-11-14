@@ -9,9 +9,11 @@
 //! - **Storage** ([`store`]): `<data>/assistant/<id>.jsonl`, the folder 0700, every file 0600,
 //!   loaded on first use. Conversations whose last entry is older than the retention time
 //!   (`Settings::assistant_retention`, 30 days unless changed) are removed by
-//!   [`Assistant::clean_up`], pinned ones and those answering never. Files are read and written on
-//!   the blocking threads, under the conversations' lock, so their lines keep the order of their
-//!   numbers.
+//!   [`Assistant::clean_up`], pinned ones and those answering never. What a tool answered the model
+//!   (issue #701) stays [`store::RESULT_HOURS`] after its call, in every conversation not answering,
+//!   pinned ones and any retention too; then `clean_up` drops it from the file (issue #714). The web's
+//!   results are never kept ([`tools::kept_for_later`]). Files are read and written on the blocking
+//!   threads, under the conversations' lock, so their lines keep the order of their numbers.
 //! - **Engines** ([`Assistant::engines`]): every AI account (engine A, [`model`]), the coding
 //!   agents while they are offered (engine B, [`engines`] — never in the product since task C.18,
 //!   issue #219, so in practice no agent), and the test
@@ -111,7 +113,8 @@ pub const TEST_ENGINE_VAR: &str = "TORRO_TEST_ENGINE";
 /// later `--bot <id>`.
 pub const BINARY: &str = "torroassistant";
 
-/// How often the daemon removes conversations past the retention time ([`Assistant::clean_up`]).
+/// How often the daemon removes conversations past the retention time and results past
+/// [`store::RESULT_HOURS`] ([`Assistant::clean_up`]).
 pub const CLEAN_UP_EVERY: Duration = Duration::from_secs(60 * 60);
 
 /// How long the test engine takes for each of its two steps in a running core: long enough that
@@ -937,27 +940,51 @@ impl Assistant {
     /// Removes every conversation whose last entry is older than `retention` at `now`, except the
     /// pinned ones and those answering (decision 8). Answers how many went; one whose file cannot
     /// be removed stays and is named on stderr.
+    ///
+    /// Then drops the tool results older than [`store::RESULT_HOURS`] from every conversation not
+    /// answering (issue #714), pinned ones and [`Retention::Forever`] too; an answering one keeps
+    /// them until a later round, as its run has copied them already. The daemon calls this at its
+    /// start and every [`CLEAN_UP_EVERY`]. A file that cannot be written anew keeps its results
+    /// and is named on stderr; the next round tries again.
     pub async fn clean_up(&self, now: DateTime<Utc>, retention: Retention) -> usize {
-        let Some(days) = retention.days() else { return 0 };
-        if self.dir.is_none() {
-            return 0;
-        }
-        let oldest = now - chrono::Duration::days(i64::from(days));
+        let Some(dir) = self.dir.clone() else { return 0 };
         let mut state = self.state().await;
-        let expired: Vec<String> = state
+        let mut removed = 0;
+        if let Some(days) = retention.days() {
+            let oldest = now - chrono::Duration::days(i64::from(days));
+            let expired: Vec<String> = state
+                .conversations
+                .values()
+                .filter(|c| !c.pinned && c.updated() < oldest && !state.running.contains_key(&c.id))
+                .map(|c| c.id.clone())
+                .collect();
+            for id in expired {
+                match self.remove(&id).await {
+                    Ok(()) => {
+                        state.conversations.remove(&id);
+                        removed += 1;
+                    }
+                    Err(err) => eprintln!("torroworkplace: cannot remove the old conversation {id}: {err}"),
+                }
+            }
+        }
+        let oldest = now - chrono::Duration::hours(store::RESULT_HOURS);
+        let expired: Vec<(String, BTreeSet<u64>)> = state
             .conversations
             .values()
-            .filter(|c| !c.pinned && c.updated() < oldest && !state.running.contains_key(&c.id))
-            .map(|c| c.id.clone())
+            .filter(|c| !state.running.contains_key(&c.id))
+            .map(|c| (c.id.clone(), c.expired_results(oldest)))
+            .filter(|(_, seqs)| !seqs.is_empty())
             .collect();
-        let mut removed = 0;
-        for id in expired {
-            match self.remove(&id).await {
+        for (id, seqs) in expired {
+            let (dir, file, dropping) = (dir.clone(), id.clone(), seqs.clone());
+            match blocking(move || store::drop_results(&dir, &file, &dropping)).await {
                 Ok(()) => {
-                    state.conversations.remove(&id);
-                    removed += 1;
+                    if let Some(conversation) = state.conversations.get_mut(&id) {
+                        conversation.results.retain(|seq, _| !seqs.contains(seq));
+                    }
                 }
-                Err(err) => eprintln!("torroworkplace: cannot remove the old conversation {id}: {err}"),
+                Err(err) => eprintln!("torroworkplace: cannot drop the old results of the conversation {id}: {err}"),
             }
         }
         removed
@@ -1647,6 +1674,48 @@ pub(crate) mod tests {
             assert!(kept.contains(id), "pinned, answering and recent stay");
         }
         assert!(!dir.path().join("assistant").join(format!("{}.jsonl", ids[0])).exists(), "its file too");
+    }
+
+    /// Issue #714: a result older than a day goes from a pinned conversation too, also when conversations are kept
+    /// for good; the conversation and its newer result stay.
+    #[tokio::test]
+    async fn old_results_go_even_in_pinned_conversations() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let folder = dir.path().join("assistant");
+        let now = Utc::now();
+        let mut conversation = Conversation::new("0123456789abcdef".into(), "Read my mail", now);
+        conversation.pinned = true;
+        let mut lines = vec![conversation.started(), Line::Pinned { pinned: true }];
+        for (hours, text) in [(25, "the mail of yesterday"), (1, "the mail of this morning")] {
+            let tool = EntryContent::Tool {
+                name: "mail.get_message".into(),
+                input: serde_json::json!({}),
+                summary: "1 mail".into(),
+                error: None,
+                lack: None,
+            };
+            let entry = conversation.next(tool, now - chrono::Duration::hours(hours));
+            let result = Line::Result { seq: entry.seq, text: text.into() };
+            conversation.apply(Line::Entry { entry: entry.clone() });
+            conversation.apply(result.clone());
+            lines.extend([Line::Entry { entry }, result]);
+        }
+        store::append(&folder, &conversation.id, &lines).expect("written");
+
+        let assistant = assistant_in(dir.path(), Duration::ZERO);
+        assert_eq!(assistant.clean_up(now, Retention::Forever).await, 0, "the conversation stays");
+        assert_eq!(
+            assistant.state().await.conversations.get(&conversation.id).map(|c| c.results.len()),
+            Some(1),
+            "held without it"
+        );
+
+        let again = assistant_in(dir.path(), Duration::ZERO);
+        let state = again.state().await;
+        let read = state.conversations.get(&conversation.id).expect("still there");
+        assert!(read.pinned);
+        assert_eq!(read.entries, conversation.entries, "every entry stays");
+        assert_eq!(read.results, std::collections::BTreeMap::from([(2, "the mail of this morning".to_string())]));
     }
 
     #[tokio::test]
