@@ -18,6 +18,9 @@
 //! leaves a note without content in its place ([`Line::Untrusted`], issue #724): the conversation keeps counting as
 //! untrusted for the memory, and nothing of what was read stays on the disk.
 //!
+//! Searching (issue #704, [`Conversation::find`]) reads what the core holds in memory, without an index of
+//! its own: titles, messages and answers, never a result, a tool line, an approval, an error or a card.
+//!
 //! Errors carry the path only for the core's own log; what goes to a client says nothing of it.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,7 +31,8 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use torro_core::ai::Effort;
-use torro_ipc::assistant::{ConversationSummary, Entry, EntryContent, MailRef};
+use torro_ipc::api::{Area, CATALOGUE};
+use torro_ipc::assistant::{ConversationSummary, Entry, EntryContent, HitKind, MailRef, SNIPPET_CHARS};
 
 /// The extension of a conversation's file.
 const EXTENSION: &str = "jsonl";
@@ -231,6 +235,115 @@ impl Conversation {
     }
 }
 
+/// A part of a conversation that holds every word of a search ([`Conversation::find`], issue #704).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    /// The entry's number; `None` for the title.
+    pub seq: Option<u64>,
+    pub kind: HitKind,
+    /// The words with text around them ([`snippet`]).
+    pub snippet: String,
+    /// The text may come from outside the suite ([`torro_ipc::assistant::ConversationHit::untrusted`]).
+    pub untrusted: bool,
+    /// The areas of the commands that ran before it in the conversation and did not fail: what its text
+    /// may tell of. A command the catalogue does not name (a server's tool) counts as `extensions`.
+    pub after: BTreeSet<Area>,
+}
+
+impl Conversation {
+    /// The parts that hold every one of `words` (in small letters, none empty), in order: the messages
+    /// and answers, and the title only when none of them does (it is mostly the start of the first
+    /// message). Never a result, a tool line, an approval, an error or a card: what a tool answered can
+    /// tell of an area the searcher may not read, and the other entries hold the core's words.
+    ///
+    /// A part is untrusted when the conversation is about a mail or with a bot, when a client sent the
+    /// message, or after a command that may have read data from outside
+    /// ([`super::tools::may_have_read_untrusted`]); the title when the conversation is so or its first
+    /// message came from a client.
+    pub fn find(&self, words: &[String]) -> Vec<Found> {
+        if words.is_empty() {
+            return Vec::new();
+        }
+        let foreign = self.about.is_some() || self.bot.is_some();
+        let mut outside = false;
+        let mut after = BTreeSet::new();
+        let mut found = Vec::new();
+        for entry in &self.entries {
+            let (kind, text, sent) = match &entry.content {
+                EntryContent::Message { text, from, .. } => (HitKind::Message, text, from.is_some()),
+                EntryContent::Answer { text, .. } => (HitKind::Answer, text, false),
+                EntryContent::Tool { name, error: None, .. } => {
+                    outside |= super::tools::may_have_read_untrusted(name);
+                    after.insert(area_of(name));
+                    continue;
+                }
+                _ => continue,
+            };
+            if let Some(snippet) = snippet(text, words) {
+                let untrusted = foreign || sent || outside;
+                found.push(Found { seq: Some(entry.seq), kind, snippet, untrusted, after: after.clone() });
+            }
+        }
+        if found.is_empty()
+            && let Some(snippet) = snippet(&self.title, words)
+        {
+            let first_sent = self.entries.iter().find_map(|entry| match &entry.content {
+                EntryContent::Message { from, .. } => Some(from.is_some()),
+                _ => None,
+            });
+            let untrusted = foreign || first_sent.unwrap_or(false);
+            found.push(Found { seq: None, kind: HitKind::Title, snippet, untrusted, after: BTreeSet::new() });
+        }
+        found
+    }
+}
+
+/// The area of the command `name` as a tool line keeps it; `extensions` for a name the catalogue does not
+/// know (a server's tool, issue #302).
+fn area_of(name: &str) -> Area {
+    CATALOGUE.iter().find(|command| command.name == name).map_or(Area::Extensions, |command| command.area)
+}
+
+/// The words of a search (issue #704): `query` split at white space, in small letters.
+pub fn words_of(query: &str) -> Vec<String> {
+    query.split_whitespace().map(str::to_lowercase).collect()
+}
+
+/// When `text` holds every one of `words` (in small letters): the text around the first of them, white
+/// space folded to single spaces, at most [`SNIPPET_CHARS`] characters with "…" where it was cut, cut at
+/// characters only. `None` when a word is missing.
+pub fn snippet(text: &str, words: &[String]) -> Option<String> {
+    let chars: Vec<char> = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().collect();
+    // The text in small letters, and for each of its characters the character of `chars` it comes from:
+    // a letter may become several in small letters.
+    let mut lowered = String::new();
+    let mut origin = Vec::new();
+    for (at, char) in chars.iter().enumerate() {
+        for small in char.to_lowercase() {
+            origin.push((lowered.len(), at));
+            lowered.push(small);
+        }
+    }
+    if !words.iter().all(|word| lowered.contains(word.as_str())) {
+        return None;
+    }
+    let byte = words.first().and_then(|word| lowered.find(word.as_str())).unwrap_or(0);
+    let at = origin.iter().find(|(start, _)| *start >= byte).map_or(0, |(_, at)| *at);
+    if chars.len() <= SNIPPET_CHARS {
+        return Some(chars.into_iter().collect());
+    }
+    // A little before the word, so it reads in its sentence; the window kept within the text.
+    let mut start = at.saturating_sub(SNIPPET_CHARS / 4);
+    let end = (start + SNIPPET_CHARS).min(chars.len());
+    start = end.saturating_sub(SNIPPET_CHARS);
+    let (cut_start, cut_end) = (start > 0, end < chars.len());
+    let from = start + usize::from(cut_start);
+    let to = end - usize::from(cut_end);
+    let middle: String = chars[from..to].iter().collect();
+    let middle = middle.trim();
+    Some(format!("{}{middle}{}", if cut_start { "…" } else { "" }, if cut_end { "…" } else { "" }))
+}
+
 /// A title from the first message: its first line that is not blank, trimmed, cut after
 /// [`TITLE_CHARS`] characters with "…".
 pub fn title_of(text: &str) -> String {
@@ -409,6 +522,26 @@ mod tests {
 
     fn at(minute: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 13, 9, minute, 0).single().expect("valid time")
+    }
+
+    /// Issue #704: a snippet holds the first word with text around it, cut at characters with "…", within
+    /// [`SNIPPET_CHARS`]; small letters that grow (`İ`) shift nothing.
+    #[test]
+    fn a_snippet_shows_the_word_in_its_sentence() {
+        let words = words_of("Flight");
+        assert_eq!(snippet("no match here", &words), None);
+        assert_eq!(snippet("Our  flight\nleaves", &words).as_deref(), Some("Our flight leaves"));
+        let long = format!("{} the flight leaves at nine {}", "ä".repeat(200), "ö".repeat(200));
+        let cut = snippet(&long, &words).expect("found");
+        assert!(cut.starts_with('…') && cut.ends_with('…'), "{cut}");
+        assert!(cut.contains("the flight leaves at nine"), "{cut}");
+        assert!(cut.chars().count() <= SNIPPET_CHARS, "{}", cut.chars().count());
+        let start = format!("flight {}", "x".repeat(300));
+        let first = snippet(&start, &words).expect("found");
+        assert!(first.starts_with("flight") && first.ends_with('…'), "{first}");
+        let grown = format!("{} İİİ flight", "y".repeat(200));
+        assert!(snippet(&grown, &words).expect("found").contains("flight"), "a letter of two in small letters");
+        assert_eq!(words_of("  Lisbon\tFLIGHT "), ["lisbon", "flight"]);
     }
 
     fn answer(text: &str) -> EntryContent {

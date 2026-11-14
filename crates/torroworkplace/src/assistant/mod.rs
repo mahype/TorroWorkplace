@@ -94,8 +94,9 @@ use torro_core::paths::AppPaths;
 use torro_core::settings::Retention;
 use torro_ipc::api::{Access, Area};
 use torro_ipc::assistant::{
-    ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, MAX_NOTES, MAX_SKILL_CHARS,
-    MAX_SKILL_DESCRIPTION_CHARS, MAX_SKILL_NAME_CHARS, MAX_SKILLS, MailRef, Note, Profile, Skill, TEST_ENGINE,
+    ChatWindow, ConversationHit, ConversationSummary, DEFAULT_HITS, Engine, EngineKind, Entry, EntryContent,
+    HITS_PER_CONVERSATION, MAX_HITS, MAX_NOTES, MAX_SKILL_CHARS, MAX_SKILL_DESCRIPTION_CHARS, MAX_SKILL_NAME_CHARS,
+    MAX_SKILLS, MailRef, Note, Profile, Skill, TEST_ENGINE,
 };
 use torro_ipc::bots::Bot;
 use torro_ipc::{Request, Response};
@@ -389,6 +390,47 @@ impl Assistant {
             .collect();
         conversations.sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.updated.cmp(&a.updated)).then(a.id.cmp(&b.id)));
         Response::Conversations { conversations }
+    }
+
+    /// `assistant.search_conversations` (issue #704) within `scope`: the conversations whose title,
+    /// messages or answers hold every word of `query` ([`Conversation::find`]), the most recently active
+    /// first (then by id), each with at most [`HITS_PER_CONVERSATION`] hits, its newest, until `limit`
+    /// hits ([`DEFAULT_HITS`] without one, kept within 1..=[`MAX_HITS`]). No index: the conversations are
+    /// in memory already, and a deleted or removed one is gone from there with its file.
+    pub async fn search(&self, query: &str, limit: Option<u32>, scope: &Scope<'_>) -> Response {
+        let words = store::words_of(query);
+        let limit = limit.unwrap_or(DEFAULT_HITS).clamp(1, MAX_HITS) as usize;
+        let state = self.state().await;
+        let mut conversations: Vec<&Conversation> = state
+            .conversations
+            .values()
+            .filter(|conversation| !(scope.own_only && conversation.bot.is_some()))
+            .filter(|conversation| conversation.about.as_ref().is_none_or(|about| (scope.reads_about)(about)))
+            .collect();
+        conversations.sort_by(|a, b| b.updated().cmp(&a.updated()).then(a.id.cmp(&b.id)));
+        let mut hits = Vec::new();
+        for conversation in conversations {
+            let found =
+                conversation.find(&words).into_iter().rev().filter(|found| {
+                    scope.readable.is_none_or(|readable| found.after.iter().all(|area| readable(*area)))
+                });
+            for found in found.take(HITS_PER_CONVERSATION) {
+                if hits.len() >= limit {
+                    return Response::ConversationHits { hits };
+                }
+                hits.push(ConversationHit {
+                    conversation: conversation.id.clone(),
+                    title: conversation.title.clone(),
+                    updated: conversation.updated(),
+                    bot: conversation.bot.clone(),
+                    seq: found.seq,
+                    kind: found.kind,
+                    snippet: found.snippet,
+                    untrusted: found.untrusted,
+                });
+            }
+        }
+        Response::ConversationHits { hits }
     }
 
     /// `assistant.get_conversation`: the conversation and its entries after `after`, and while a
@@ -1368,6 +1410,26 @@ fn with_bots(mut summary: ConversationSummary, bots: &[String]) -> ConversationS
     summary
 }
 
+/// What a search of the conversations may answer (issue #704, [`Assistant::search`]), set by the core
+/// for the caller.
+pub struct Scope<'a> {
+    /// Only the assistant's own conversations, none with a bot: for the assistant's own client.
+    pub own_only: bool,
+    /// Whether the caller may read an area now; a hit after a command of an area it may not is left out.
+    /// `None`: every hit, for callers that may read the whole conversation anyway.
+    pub readable: Option<&'a (dyn Fn(Area) -> bool + Sync)>,
+    /// Whether the caller may read the mail a conversation is about (issue #605): one about another is not
+    /// there for it.
+    pub reads_about: &'a (dyn Fn(&MailRef) -> bool + Sync),
+}
+
+impl Scope<'static> {
+    /// Every conversation and hit, as for the app key.
+    pub fn all() -> Scope<'static> {
+        Scope { own_only: false, readable: None, reads_about: &|_| true }
+    }
+}
+
 /// [`answer_from`] as for a client, for tests: a message counts as no person's.
 #[cfg(test)]
 pub async fn answer(assistant: &Arc<Assistant>, ai: &AiAccounts, request: Request) -> Response {
@@ -1396,6 +1458,8 @@ pub async fn answer_from(
     match request {
         Request::ListEngines => Response::Engines { engines: assistant.engines(ai).await },
         Request::ListConversations => assistant.list().await,
+        // The core answers it with the caller's scope (issue #704); this is the app key's.
+        Request::SearchConversations { query, limit } => assistant.search(&query, limit, &Scope::all()).await,
         Request::GetConversation { id, after } => assistant.get(&id, after).await,
         Request::SendMessage { conversation, engine, model, effort, text, without, mode, bot, about } => {
             let bot = match bot {
@@ -1768,6 +1832,180 @@ pub(crate) mod tests {
         let list = listed(answer(&again, &ai, Request::ListConversations).await);
         assert_eq!(list.len(), 1);
         assert_eq!((list[0].title.as_str(), list[0].pinned), ("Trip to Lisbon", true), "kept on disk");
+    }
+
+    /// Writes a conversation `id` titled `title` with `contents`, its last entry a few minutes old, with what
+    /// tool lines answered (`results`, by the position in `contents`), changed by `setup` before.
+    pub(crate) fn written(
+        folder: &std::path::Path,
+        id: &str,
+        title: &str,
+        contents: Vec<EntryContent>,
+        results: &[(usize, &str)],
+        setup: impl FnOnce(&mut Conversation),
+    ) {
+        let now = Utc::now();
+        let mut conversation = Conversation::new(id.into(), title, now - chrono::Duration::hours(1));
+        setup(&mut conversation);
+        let mut lines = vec![conversation.started()];
+        for (at, content) in contents.into_iter().enumerate() {
+            let entry = conversation.next(content, now - chrono::Duration::minutes(50 - at as i64));
+            conversation.apply(Line::Entry { entry: entry.clone() });
+            lines.push(Line::Entry { entry: entry.clone() });
+            if let Some((_, text)) = results.iter().find(|(position, _)| *position == at) {
+                lines.push(Line::Result { seq: entry.seq, text: (*text).into() });
+            }
+        }
+        store::append(folder, id, &lines).expect("written");
+    }
+
+    pub(crate) fn message(text: &str) -> EntryContent {
+        EntryContent::Message {
+            text: text.into(),
+            engine: TEST_ENGINE.into(),
+            model: None,
+            effort: None,
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            from: None,
+        }
+    }
+
+    pub(crate) fn said(text: &str) -> EntryContent {
+        EntryContent::Answer { text: text.into(), engine: TEST_ENGINE.into(), model: None }
+    }
+
+    pub(crate) fn tool(name: &str) -> EntryContent {
+        EntryContent::Tool {
+            name: name.into(),
+            input: serde_json::json!({}),
+            summary: "1".into(),
+            error: None,
+            lack: None,
+        }
+    }
+
+    pub(crate) fn hits(response: Response) -> Vec<ConversationHit> {
+        match response {
+            Response::ConversationHits { hits } => hits,
+            other => panic!("expected hits, got {other:?}"),
+        }
+    }
+
+    fn search(query: &str) -> Request {
+        Request::SearchConversations { query: query.into(), limit: None }
+    }
+
+    /// Issue #704: the words are found in messages, answers and titles, in any case, never in what a tool
+    /// answered; a deleted conversation and one past its retention are found no more.
+    #[tokio::test]
+    async fn the_search_finds_messages_answers_and_titles() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let folder = dir.path().join("assistant");
+        let trip = "0000000000000001";
+        let invoices = "0000000000000002";
+        let old = "0000000000000003";
+        written(
+            &folder,
+            trip,
+            "Trip to Lisbon",
+            vec![
+                message("When do I fly?"),
+                tool("calendar.list_events"),
+                said("Book the   FLIGHT\non the 14th, the hotel is booked."),
+            ],
+            &[(1, "Flight secretword on the 14th")],
+            |_| {},
+        );
+        written(&folder, invoices, "Invoices October", vec![message("The flight was refunded")], &[], |c| {
+            c.title = "Invoices October".into();
+        });
+        written(&folder, old, "Old plans", vec![message("A flight long ago")], &[], |_| {});
+        let (assistant, ai) = (Arc::new(assistant_in(dir.path(), Duration::ZERO)), no_ai(dir.path()));
+
+        let found = hits(answer(&assistant, &ai, search("flight")).await);
+        assert_eq!(found.len(), 3, "{found:?}");
+        let trip_hit = found.iter().find(|hit| hit.conversation == trip).expect("the trip");
+        assert_eq!((trip_hit.seq, trip_hit.kind), (Some(3), torro_ipc::assistant::HitKind::Answer));
+        assert_eq!(trip_hit.snippet, "Book the FLIGHT on the 14th, the hotel is booked.", "white space folded");
+        assert_eq!(trip_hit.title, "Trip to Lisbon");
+        assert!(!trip_hit.untrusted, "the calendar is the suite's own");
+        let message_hit = found.iter().find(|hit| hit.conversation == invoices).expect("the invoices");
+        assert_eq!(message_hit.kind, torro_ipc::assistant::HitKind::Message);
+
+        let both = hits(answer(&assistant, &ai, search("Hotel flight")).await);
+        assert_eq!(both.iter().map(|hit| hit.conversation.as_str()).collect::<Vec<_>>(), [trip], "every word");
+        assert!(hits(answer(&assistant, &ai, search("secretword")).await).is_empty(), "never a tool's result");
+        let titled = hits(answer(&assistant, &ai, search("lisbon")).await);
+        assert_eq!((titled.len(), titled[0].seq, titled[0].kind), (1, None, torro_ipc::assistant::HitKind::Title));
+        let one = Request::SearchConversations { query: "flight".into(), limit: Some(1) };
+        assert_eq!(hits(answer(&assistant, &ai, one).await).len(), 1, "the limit holds");
+        let none = Request::SearchConversations { query: "flight".into(), limit: Some(0) };
+        assert_eq!(hits(answer(&assistant, &ai, none).await).len(), 1, "at least one");
+
+        assert_eq!(answer(&assistant, &ai, Request::DeleteConversation { id: invoices.into() }).await, Response::Ok);
+        {
+            let mut state = assistant.state().await;
+            let conversation = state.conversations.get_mut(old).expect("held");
+            for entry in &mut conversation.entries {
+                entry.time = Utc::now() - chrono::Duration::days(31);
+            }
+        }
+        assert_eq!(assistant.clean_up(Utc::now(), Retention::Days(30)).await, 1);
+        let left = hits(answer(&assistant, &ai, search("flight")).await);
+        assert_eq!(left.iter().map(|hit| hit.conversation.as_str()).collect::<Vec<_>>(), [trip], "deleted and expired");
+    }
+
+    /// Issue #704: what came from outside stays `untrusted` – a chat about a mail, an answer after reading mail,
+    /// a client's message – and a scope narrows: no bot's conversation for the assistant, no hit after an area it
+    /// may not read, none about a mail it may not read.
+    #[tokio::test]
+    async fn the_search_marks_outside_text_and_keeps_its_scope() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let folder = dir.path().join("assistant");
+        let mail = MailRef { account: "mail:anna@example.org".into(), id: "m:1".into() };
+        let about = mail.clone();
+        written(&folder, "0000000000000001", "About the mail", vec![said("The invoice is due")], &[], |c| {
+            c.about = Some(about);
+        });
+        written(
+            &folder,
+            "0000000000000002",
+            "Inbox",
+            vec![message("What is new?"), said("No invoice yet"), tool("mail.get_message"), said("The invoice came")],
+            &[],
+            |_| {},
+        );
+        let mut sent = message("Send me the invoice");
+        if let EntryContent::Message { from, .. } = &mut sent {
+            *from = Some("7e57c11e".into());
+        }
+        written(&folder, "0000000000000003", "Script", vec![sent], &[], |_| {});
+        written(&folder, "0000000000000004", "Bot", vec![said("The bot's invoice")], &[], |c| {
+            c.bot = Some("b1".into());
+        });
+        let assistant = assistant_in(dir.path(), Duration::ZERO);
+
+        let all = hits(assistant.search("invoice", None, &Scope::all()).await);
+        let marked = |id: &str| -> Vec<bool> {
+            all.iter().filter(|hit| hit.conversation == id).map(|hit| hit.untrusted).collect()
+        };
+        assert_eq!(marked("0000000000000001"), [true], "about a mail");
+        assert_eq!(marked("0000000000000002"), [true, false], "newest first; after reading mail");
+        assert_eq!(marked("0000000000000003"), [true], "a client's message");
+        assert_eq!(marked("0000000000000004"), [true], "a bot's");
+
+        let no_mail = |area: Area| area != Area::Mail;
+        let narrow = Scope { own_only: true, readable: Some(&no_mail), reads_about: &|_| false };
+        let seen: Vec<(String, Option<u64>)> = hits(assistant.search("invoice", None, &narrow).await)
+            .into_iter()
+            .map(|hit| (hit.conversation, hit.seq))
+            .collect();
+        assert_eq!(
+            seen,
+            [("0000000000000002".to_string(), Some(2)), ("0000000000000003".to_string(), Some(1))],
+            "no bot, no mail it may not read, nothing after reading mail"
+        );
     }
 
     #[tokio::test]
