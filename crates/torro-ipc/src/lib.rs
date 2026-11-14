@@ -51,6 +51,7 @@ pub use torro_core::account::{NtfyTopic, Secret};
 use torro_core::ai::{AiModel, AiProvider};
 use torro_core::paths::AppPaths;
 use torro_core::settings::Settings;
+pub use torro_core::settings::SpeechProvider;
 use torro_inbox::item::{MuteEffect, MuteOption, MuteScope, Muted};
 use torro_inbox::{AgentInfo, AgentKind, Item, Kind, Lane, Link, Rule, SourceInfo, SourceRef, StateFilter};
 /// Newest or oldest first for `mail.search_messages` and `inbox.list_items` (task E8.15).
@@ -4311,6 +4312,27 @@ pub enum Request {
         id: String,
         pinned: bool,
     },
+    /// Archives (`archived: true`) or restores the conversations `ids` (issue #697, [`Response::Ok`]).
+    /// An archived conversation leaves "Pinned" and "Recent" for the group "Archive", is kept beyond
+    /// the retention time and comes back by itself when a message is sent in it; an answer that runs
+    /// finishes. Ids already in that state and doubles are skipped. `not-found` when one id is unknown,
+    /// and then nothing changes; `error` without ids or with more than [`assistant::MAX_BULK_IDS`].
+    #[serde(rename = "assistant.archive_conversations")]
+    ArchiveConversations {
+        /// The conversations' ids.
+        ids: Vec<String>,
+        /// `true` archives, `false` restores.
+        archived: bool,
+    },
+    /// Deletes the conversations `ids` and their files for good, stopping answers that run (issue
+    /// #697, [`Response::Ok`]); doubles are skipped. `not-found` when one id is unknown, and then
+    /// nothing is deleted; `error` without ids, with more than [`assistant::MAX_BULK_IDS`], or when a
+    /// file could not be removed (the others stay deleted; the message says how many are left).
+    #[serde(rename = "assistant.delete_conversations")]
+    DeleteConversations {
+        /// The conversations' ids.
+        ids: Vec<String>,
+    },
     /// Opens a chat window of the assistant app: `torroassistant --chat <id>` for a conversation,
     /// `--chat new` for a new one, `--bot <id>` for a bot ([`Response::Ok`]). Each call starts one
     /// window. `not-found` for an unknown conversation or bot, `error` when the app does not start
@@ -4925,6 +4947,29 @@ pub enum Request {
     /// said so far is turned into text and answers the dictation. `Ok` also when none runs.
     #[serde(rename = "assistant.stop_dictation")]
     StopDictation,
+    /// Reads `text` aloud with the provider and voice of the settings (issue #745, [`Response::Ok`]):
+    /// Markdown is read without its marks, at most 3000 characters, ending at a sentence. Answers once
+    /// it was read to the end or stopped ([`Request::StopSpeaking`]); a new one stops the one that
+    /// reads. Waits as long as it reads; the first time Qwen3-TTS loads its model, which may take a
+    /// minute. With OpenAI the text goes to OpenAI. Codes: `error` for an empty text, one over 20000
+    /// characters, or when speaking fails; `unsupported` with a message for people when the provider
+    /// cannot speak here (no graphics card, program, player, voice or OpenAI account);
+    /// `not-connected` or `offline` when OpenAI refuses the key or cannot be reached.
+    #[serde(rename = "assistant.speak")]
+    Speak {
+        /// What to read, Markdown or plain text.
+        text: String,
+    },
+    /// Stops what [`Request::Speak`] reads, at once (issue #745, [`Response::Ok`]); `Ok` also when
+    /// nothing is read.
+    #[serde(rename = "assistant.stop_speaking")]
+    StopSpeaking,
+    /// Who can read aloud on this computer (issue #745, [`Response::Speech`]): the graphics card,
+    /// whether it is fast enough for local voices, the recommended and the current provider, and for
+    /// each provider what is missing, its voices and how to set it up. Runs local checks and may take a
+    /// few seconds.
+    #[serde(rename = "settings.speech_status")]
+    SpeechStatus,
     /// How much map data this device keeps (issue #355, [`Response::MapsStatus`]): the bytes of map
     /// tiles of the whole suite, and how many places of contact addresses were kept
     /// (`contacts.locate_contact`); for a client only those of the address books it reaches.
@@ -5061,6 +5106,85 @@ pub struct TodoRef {
     pub etag: String,
 }
 
+/// What keeps a [`SpeechProvider`] from reading aloud here (`settings.speech_status`, issue #745).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeechMissing {
+    /// Qwen3-TTS: no NVIDIA graphics card with at least 4 GB of memory.
+    Gpu,
+    /// The program is not installed: Qwen3-TTS (`faster-qwen3-tts` in Python) or Piper.
+    Program,
+    /// No program that plays sound (`paplay`, `pw-play`, `aplay`, `play`, `ffplay`, `afplay`, …).
+    Player,
+    /// Piper is there, its voice (`*.onnx`) is not.
+    Voice,
+    /// OpenAI: no OpenAI account with a key in Settings › AI.
+    Account,
+    /// The assistant app (`torroassistant`), which speaks, is not installed.
+    App,
+}
+
+/// One voice of a provider (`settings.speech_status`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SpeechVoice {
+    /// Its id for the settings `qwen_voice` and `openai_voice` (`warm_woman`, `marin`); for Piper the
+    /// file name of the voice.
+    pub id: String,
+    /// Marked "(recommended)" in the settings.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recommended: bool,
+}
+
+/// One provider as it stands here (`settings.speech_status`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SpeechOption {
+    pub provider: SpeechProvider,
+    /// What keeps it from speaking; `None` when it can.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing: Option<SpeechMissing>,
+    /// Its voices, in the order the settings offer them.
+    #[serde(default)]
+    pub voices: Vec<SpeechVoice>,
+    /// The model it speaks with (`Qwen/Qwen3-TTS-12Hz-1.7B-Base`); `None` where there is no choice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The command that sets it up, for people to copy (Qwen3-TTS); `None` when there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<String>,
+}
+
+impl SpeechOption {
+    /// Whether it can speak as found.
+    pub fn works(&self) -> bool {
+        self.missing.is_none()
+    }
+}
+
+/// Who can read aloud on this computer ([`Request::SpeechStatus`], issue #745).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SpeechStatus {
+    /// The graphics card as measured (`NVIDIA GeForce RTX 4090, 24 GB`); `None` when none is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<String>,
+    /// Whether this computer is fast enough for local voices (Qwen3-TTS): an NVIDIA card with at
+    /// least 4 GB.
+    pub fast_enough: bool,
+    /// The provider recommended for this computer: Qwen3-TTS when fast enough, else OpenAI.
+    pub recommended: SpeechProvider,
+    /// The provider that reads now: the chosen one, or the core's choice.
+    pub current: SpeechProvider,
+    /// Every provider, in the order of `torro_core::settings::SpeechProvider::ALL`.
+    #[serde(default)]
+    pub providers: Vec<SpeechOption>,
+}
+
+impl SpeechStatus {
+    /// The provider `provider`, if it was looked at.
+    pub fn option(&self, provider: SpeechProvider) -> Option<&SpeechOption> {
+        self.providers.iter().find(|option| option.provider == provider)
+    }
+}
+
 /// A setting [`Request::SetSetting`] can change, with the `value` it takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -5161,6 +5285,22 @@ pub enum SettingKey {
     /// The Piper voice, an absolute path to an `.onnx` file; `""` (or `null`) for the first one in the voice
     /// folder.
     Voice,
+    /// Read the assistant's answers aloud in its chat windows (issue #745): `true` or `false` (the
+    /// default). "Hey Torro" follows [`SettingKey::SpeakAnswers`] instead.
+    ReadAloud,
+    /// Who reads aloud (issue #745): `"qwen"` (Qwen3-TTS on this computer), `"openai"` (OpenAI, with the
+    /// OpenAI account of Settings › AI) or `"piper"`; `null` for the core's choice (Qwen where this
+    /// computer is fast enough and it is set up, else Piper). `"openai"` only with the app key: the text
+    /// of each answer then goes to OpenAI, and only a person chooses where data goes (point 6 of "Was nie
+    /// nach außen geht", `docs/api.md`); a client gets `forbidden`. The running speech helper ends.
+    SpeechProvider,
+    /// The voice of Qwen3-TTS (issue #745): `"warm_woman"` or `"calm_man"`, `null` for the recommended
+    /// one (`settings.speech_status`).
+    QwenVoice,
+    /// The voice of OpenAI (issue #745): one of the 13 voices `settings.speech_status` lists (`"marin"`,
+    /// `"cedar"`, …), `null` for the recommended one.
+    #[serde(rename = "openai_voice")]
+    OpenAiVoice,
     /// What a new chat of the assistant starts with (issue #131): `{"engine": "<id from
     /// assistant.list_engines>", "model": "<model id>", "effort": "low" | "medium" | "high"}`, model
     /// and effort optional; `null` for the engine and model used last (`torro_core::ai::SlotModel`).
@@ -6252,6 +6392,10 @@ pub enum Response {
     /// How talking by voice stands ([`Request::VoiceStatus`]).
     Voice {
         voice: VoiceStatus,
+    },
+    /// Who can read aloud on this computer ([`Request::SpeechStatus`], issue #745).
+    Speech {
+        speech: SpeechStatus,
     },
     /// Where an address of a contact is on the map ([`Request::LocateContact`]).
     ContactLocation {

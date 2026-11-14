@@ -7747,11 +7747,8 @@ mod tests {
             let date = torro_gui::datetime::format_moment(summary.date, reading.now);
             // (room, expected width of the category's box)
             for (room, expected) in [(900.0, pill), (190.0, field)] {
-                let mut ui = iced_test::Simulator::with_size(
-                    iced::Settings::default(),
-                    iced::Size::new(room, 400.0),
-                    sender_block(&reading, &summary, room),
-                );
+                let (_one, mut ui) =
+                    crate::simulator(iced::Size::new(room, 400.0), sender_block(&reading, &summary, room));
                 let date_box = ui
                     .find(|candidate: Candidate<'_>| match candidate {
                         Candidate::Text { content, bounds, .. } if content == date => Some(bounds),
@@ -8619,8 +8616,7 @@ mod tests {
         let side = InviteSide { calendars: Some(&calendars), calendar: calendars.first(), ..InviteSide::default() };
         for width in [280.0, 480.0, 800.0] {
             let card = invite_card(&invite, &summary, now(), false, side, palette(&Theme::Dark).attention);
-            let mut ui =
-                iced_test::Simulator::with_size(iced::Settings::default(), iced::Size::new(width, 1000.0), card);
+            let (_one, mut ui) = crate::simulator(iced::Size::new(width, 1000.0), card);
             let bounds = |ui: &mut iced_test::Simulator<'_, Message, Theme, iced::Renderer>, value: &str| {
                 ui.find(|candidate: Candidate<'_>| match candidate {
                     Candidate::Text { content, bounds, .. } if content == value => Some(bounds),
@@ -8655,8 +8651,7 @@ mod tests {
             item.reason = Some(torro_inbox::LaneReason::Automated);
             let why = detail::lane_text(&item);
             let width = 280.0;
-            let mut ui = iced_test::Simulator::with_size(
-                iced::Settings::default(),
+            let (_one, mut ui) = crate::simulator(
                 iced::Size::new(width, 1800.0),
                 head_in(&reading, Some(ReaderEntry { item: &item, hide: true }), width, widgets::floating_rail_room()),
             );
@@ -8701,7 +8696,7 @@ mod tests {
         };
         let width = 140.0;
         let card = invite_card_in(&invite, &summary, now(), false, InviteSide::default(), Color::BLACK, true);
-        let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), iced::Size::new(width, 1000.0), card);
+        let (_one, mut ui) = crate::simulator(iced::Size::new(width, 1000.0), card);
         let bounds = ui
             .find(|candidate: Candidate<'_>| match candidate {
                 Candidate::Text { content, bounds, .. } if content == title => Some(bounds),

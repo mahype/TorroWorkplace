@@ -53,6 +53,9 @@ pub const SEARCH_WORD: &str = "Anna";
 
 /// "Plan for tomorrow": messages, tool lines and an answer in Markdown. Pinned.
 pub const TOOLS: &str = "d000000000000001";
+
+/// The answer of [`TOOLS`] that the state `reading` reads aloud (issue #745): its fourth entry.
+pub const READ_ANSWER: u64 = 4;
 /// "Block the afternoon": a tool waits for the person's approval.
 pub const APPROVAL: &str = "d000000000000002";
 /// "Draft a reply to Anna": an answer still being written.
@@ -78,6 +81,8 @@ pub const GONE: &str = "d000000000000009";
 /// "Design review on Thursday": a chat about a mail (issue #605, "Ask AI…" in the mail window), with
 /// the mail's mark in the sidebar and the event it read out as a suggestion card.
 pub const MAIL_CHAT: &str = "d00000000000000b";
+/// "Invoice for March": the newest of three archived conversations (issue #697).
+pub const ARCHIVED: &str = "d00000000000000c";
 
 /// The bot "Travel planner".
 pub const TRAVEL: &str = "b0000001";
@@ -200,6 +205,23 @@ impl Demo {
                 state.conversations.retain(|c| c.summary.id != id);
                 if state.conversations.len() < before { Response::Ok } else { unknown(&id) }
             }
+            // Issue #697: as the core does, every id checked first.
+            Request::ArchiveConversations { ids, archived } => match state.unknown_of(&ids) {
+                Some(id) => unknown(&id),
+                None => {
+                    for conversation in state.conversations.iter_mut().filter(|c| ids.contains(&c.summary.id)) {
+                        conversation.summary.archived = archived;
+                    }
+                    Response::Ok
+                }
+            },
+            Request::DeleteConversations { ids } => match state.unknown_of(&ids) {
+                Some(id) => unknown(&id),
+                None => {
+                    state.conversations.retain(|c| !ids.contains(&c.summary.id));
+                    Response::Ok
+                }
+            },
             Request::OpenChatWindow { window } => open_window(&state, window),
             Request::ApprovalStatus { id } => match state.approvals.iter().find(|a| a.id == id) {
                 Some(approval) => Response::Approval { approval: approval.clone() },
@@ -251,6 +273,8 @@ impl Demo {
             Request::VoiceStatus => Response::Voice { voice: voice() },
             Request::Dictate => Response::Transcript { text: tr("Remind me to call Anna tomorrow.").to_owned() },
             Request::StopDictation => Response::Ok,
+            // Reading aloud (issue #745): nothing sounds in the demo.
+            Request::Speak { .. } | Request::StopSpeaking => Response::Ok,
             other => refused("unsupported", &format!("{} is not in the demo", other.operation().name())),
         }
     }
@@ -385,6 +409,7 @@ impl State {
                     created: now,
                     updated: now,
                     pinned: false,
+                    archived: false,
                     running: false,
                     last: 0,
                     bot: bot.clone(),
@@ -406,6 +431,8 @@ impl State {
             (engine.clone(), model.clone(), effort);
         let message =
             conversation.push(now, EntryContent::Message { text, engine, model, effort, without, mode, from: None });
+        // As the core: a message brings an archived conversation back (issue #697).
+        conversation.summary.archived = false;
         conversation.summary.running = true;
         conversation.growing = Some(Growing { text: tr(reply).to_owned(), shown: 0, frozen: false });
         Response::Conversation { conversation: conversation.summary.clone(), entries: vec![message] }
@@ -465,6 +492,11 @@ impl State {
         conversation.push(now, EntryContent::Stopped);
         conversation.summary.running = false;
         Response::Ok
+    }
+
+    /// The first of `ids` the demo does not have.
+    fn unknown_of(&self, ids: &[String]) -> Option<String> {
+        ids.iter().find(|id| !self.conversations.iter().any(|c| c.summary.id == **id)).cloned()
     }
 
     fn change(&mut self, id: &str, change: impl FnOnce(&mut Conversation)) -> Response {
@@ -589,6 +621,7 @@ fn sample(id: &str, title: &str, now: DateTime<Utc>, ago: Duration, entries: Vec
         created: updated - Duration::minutes(3),
         updated,
         pinned: false,
+        archived: false,
         running: false,
         last: entries.len() as u64,
         bot: None,
@@ -781,7 +814,31 @@ fn samples(now: DateTime<Utc>) -> Vec<Conversation> {
         ],
     );
     review.summary.about = Some(mail);
-    vec![plan, block, draft, forbidden, trip, release, lisbon, porto, gone, vienna, review]
+    // Issue #697: three conversations in the archive, closed at the bottom of the sidebar.
+    let archived = [
+        (ARCHIVED, tr("Invoice for March"), Duration::days(12), tr("Is the invoice for March paid?")),
+        (
+            "d00000000000000d",
+            tr("Flat viewing in Altona"),
+            Duration::days(20),
+            tr("When was the flat viewing in Altona?"),
+        ),
+        (
+            "d00000000000000e",
+            tr("Gift ideas for Tom"),
+            Duration::days(41),
+            tr("What could I give Tom for his birthday?"),
+        ),
+    ]
+    .map(|(id, title, ago, question)| {
+        let mut conversation =
+            sample(id, title, now, ago, vec![message(question), answer(tr("Here is what I found."))]);
+        conversation.summary.archived = true;
+        conversation
+    });
+    let mut all = vec![plan, block, draft, forbidden, trip, release, lisbon, porto, gone, vienna, review];
+    all.extend(archived);
+    all
 }
 
 /// The cards of `entries` as the core resolves them (task WZ.8): [`PDF`] as a file on the desktop,

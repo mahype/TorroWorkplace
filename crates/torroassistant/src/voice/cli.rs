@@ -13,6 +13,10 @@
 //! - `--dictate --voice <settings>`: records what is said until a pause of two seconds, the end of
 //!   standard input (the core closes it for `assistant.stop_dictation`) or a minute, and writes it as
 //!   text like `--voice-test`, for `assistant.dictate` (issue #699).
+//! - `--speak --voice <settings>`: the helper that reads aloud for `assistant.speak` (issue #745,
+//!   [`super::speech`]), as long as the core gives it work.
+//! - `--speech-status --voice <settings>`: what is found for reading aloud, as one line of JSON (a
+//!   [`Response::Speech`]), for `settings.speech_status`.
 
 use std::io::{Read, Write};
 use std::process::{Child, Command, ExitCode};
@@ -25,7 +29,7 @@ use torro_ipc::{Response, VoiceState, VoiceStatus};
 
 use super::audio::{Endpoint, FRAMES_PER_SECOND, Limits, NoiseFloor};
 use super::external::{CommandRecorder, Parts, transcriber_of};
-use super::listen::{CoreAssistant, Ended, Listener};
+use super::listen::{CoreAssistant, CoreSpeaker, Ended, Listener};
 use super::programs::{Finder, Found};
 use super::{Recorder, VoiceError};
 use crate::backend::Backend;
@@ -37,6 +41,8 @@ pub enum Mode {
     Status(Voice),
     Test(Voice),
     Dictate(Voice),
+    Speak(Voice),
+    SpeechStatus(Voice),
 }
 
 impl Mode {
@@ -49,13 +55,17 @@ impl Mode {
             let json = args.get(at + 1).ok_or("--voice needs the settings as JSON")?;
             serde_json::from_str(json).map_err(|err| format!("--voice: {err}"))
         };
-        match (has("--listen"), has("--voice-status"), has("--voice-test"), has("--dictate")) {
-            (false, false, false, false) => Ok(None),
-            (true, false, false, false) => Ok(Some(Mode::Listen)),
-            (false, true, false, false) => voice().map(|voice| Some(Mode::Status(voice))),
-            (false, false, true, false) => voice().map(|voice| Some(Mode::Test(voice))),
-            (false, false, false, true) => voice().map(|voice| Some(Mode::Dictate(voice))),
-            _ => Err("--listen, --voice-status, --voice-test and --dictate cannot be used together".into()),
+        let flags = ["--listen", "--voice-status", "--voice-test", "--dictate", "--speak", "--speech-status"];
+        let given: Vec<&str> = flags.into_iter().filter(|flag| has(flag)).collect();
+        match given.as_slice() {
+            [] => Ok(None),
+            ["--listen"] => Ok(Some(Mode::Listen)),
+            ["--voice-status"] => voice().map(|voice| Some(Mode::Status(voice))),
+            ["--voice-test"] => voice().map(|voice| Some(Mode::Test(voice))),
+            ["--dictate"] => voice().map(|voice| Some(Mode::Dictate(voice))),
+            ["--speak"] => voice().map(|voice| Some(Mode::Speak(voice))),
+            ["--speech-status"] => voice().map(|voice| Some(Mode::SpeechStatus(voice))),
+            _ => Err(format!("{} cannot be used together", flags.join(", "))),
         }
     }
 
@@ -66,6 +76,15 @@ impl Mode {
             Mode::Status(voice) => answer(&status(&voice)),
             Mode::Test(voice) => answer(&test(&voice, Limits::default(), &AtomicBool::new(false))),
             Mode::Dictate(voice) => answer(&test(&voice, dictation(), &stop_at_end_of_input())),
+            Mode::Speak(voice) => {
+                super::speech::serve(voice);
+                ExitCode::SUCCESS
+            }
+            Mode::SpeechStatus(voice) => {
+                let finder = Finder::system();
+                let found = Found::detect(&finder, &voice);
+                answer(&Response::Speech { speech: super::speech::status(&found, &finder) })
+            }
         }
     }
 }
@@ -196,7 +215,7 @@ fn listen() -> ExitCode {
             recorder: parts.recorder,
             wake: parts.wake,
             transcriber: parts.transcriber,
-            speaker: parts.speaker,
+            speaker: through_the_core(parts.speaker),
             assistant: &mut core,
             report: Box::new(report),
             limits: Limits::default(),
@@ -215,6 +234,21 @@ fn listen() -> ExitCode {
             }
         }
     }
+}
+
+/// Speaks the answers through the core (issue #745), with the provider and voice of the settings;
+/// `local` plays the tone of the wake word. On a connection of its own, so the speaker can live as
+/// long as the listener's parts; without a runtime `local` speaks as before.
+fn through_the_core(local: Box<dyn super::Speaker>) -> Box<dyn super::Speaker> {
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("torroassistant: answers are spoken with Piper: {err}");
+            return local;
+        }
+    };
+    let backend = Backend::core();
+    Box::new(CoreSpeaker::new(move |request| runtime.block_on(backend.ask(request)), local))
 }
 
 /// Reports "off" and ends with `code`.
@@ -286,6 +320,15 @@ mod tests {
         assert!(Mode::parse(&args(&["--dictate"])).is_err(), "the settings are needed");
         assert!(Mode::parse(&args(&["--dictate", "--voice-test", "--voice", "{}"])).is_err());
         assert!(Mode::parse(&args(&["--dictate", "--listen"])).is_err());
+    }
+
+    /// Issue #745: the helper that reads aloud and its status are modes with the settings.
+    #[test]
+    fn reading_aloud_comes_from_the_start_parameters() {
+        assert!(matches!(Mode::parse(&args(&["--speak", "--voice", "{}"])), Ok(Some(Mode::Speak(_)))));
+        assert!(matches!(Mode::parse(&args(&["--speech-status", "--voice", "{}"])), Ok(Some(Mode::SpeechStatus(_)))));
+        assert!(Mode::parse(&args(&["--speak"])).is_err(), "the settings are needed");
+        assert!(Mode::parse(&args(&["--speak", "--listen"])).is_err());
         let limits = dictation();
         assert_eq!(limits.pause, 2 * FRAMES_PER_SECOND);
         assert_eq!(limits.most, 60 * FRAMES_PER_SECOND);

@@ -34,6 +34,7 @@ pub mod cli;
 pub mod external;
 pub mod listen;
 pub mod programs;
+pub mod speech;
 pub mod wake;
 
 use std::fmt;

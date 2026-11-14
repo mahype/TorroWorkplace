@@ -1282,6 +1282,14 @@ fn describe(request: &Request) -> String {
         Request::PinConversation { id, pinned } => {
             format!("{} conversation {id}", if *pinned { "pin" } else { "unpin" })
         }
+        // How many, never a title (issue #697); a double counts once, as in the approval.
+        Request::ArchiveConversations { ids, archived } => {
+            let n = ids.iter().collect::<std::collections::BTreeSet<_>>().len();
+            format!("{} {n} conversations", if *archived { "archive" } else { "restore" })
+        }
+        Request::DeleteConversations { ids } => {
+            format!("delete {} conversations", ids.iter().collect::<std::collections::BTreeSet<_>>().len())
+        }
         Request::OpenChatWindow { .. } => "open an assistant window".into(),
         // Ids only, never a note or the personality (task C.10).
         Request::GetProfile => "assistant profile".into(),
@@ -1309,6 +1317,10 @@ fn describe(request: &Request) -> String {
         Request::TestVoice => "voice test".into(),
         Request::Dictate => "dictation".into(),
         Request::StopDictation => "stop dictation".into(),
+        // Never the text read (issue #745).
+        Request::Speak { .. } => "read aloud".into(),
+        Request::StopSpeaking => "stop reading aloud".into(),
+        Request::SpeechStatus => "speech status".into(),
         Request::MapsStatus => "map data".into(),
         Request::ClearMapsCache => "clear map data".into(),
         // Ids only, never a title, the content or a path (issue #225).

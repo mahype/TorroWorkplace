@@ -315,9 +315,9 @@ impl BotDraft {
 }
 
 /// The conversation a bot's chat opens (`--bot <id>`, a click on the bot in the sidebar): its
-/// newest; `None` starts a new one.
+/// newest that is not archived (issue #697); `None` starts a new one.
 pub fn newest_conversation<'a>(conversations: &'a [ConversationSummary], bot: &str) -> Option<&'a ConversationSummary> {
-    conversations.iter().filter(|c| c.bot.as_deref() == Some(bot)).max_by_key(|c| c.updated)
+    conversations.iter().filter(|c| c.bot.as_deref() == Some(bot) && !c.archived).max_by_key(|c| c.updated)
 }
 
 /// The bot `id` as listed.
@@ -570,6 +570,7 @@ mod tests {
             created: at,
             updated: at,
             pinned: false,
+            archived: false,
             running: false,
             last: 1,
             bot: bot.map(str::to_owned),
@@ -588,6 +589,10 @@ mod tests {
         ];
         assert_eq!(newest_conversation(&list, "b1").map(|c| c.id.as_str()), Some("b"));
         assert_eq!(newest_conversation(&list, "b3"), None, "none yet: a new one");
+        // Issue #697: an archived one is not opened again.
+        let archived =
+            [summary("a", Some("b1"), 1), ConversationSummary { archived: true, ..summary("b", Some("b1"), 5) }];
+        assert_eq!(newest_conversation(&archived, "b1").map(|c| c.id.as_str()), Some("a"));
     }
 
     fn tool(name: &str, input: serde_json::Value, error: Option<&str>) -> Entry {

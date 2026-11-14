@@ -64,6 +64,9 @@ pub enum Open {
     Mode,
     /// The composer while the microphone records (issue #699).
     Dictating,
+    /// "Plan for tomorrow" while its answer is read aloud (issue #745): the speaker on, [■] at the
+    /// answer.
+    Reading,
     /// The composer with two areas switched off: a chip for each, "2 areas off" when narrow
     /// (issue #699).
     AreasOff,
@@ -114,11 +117,19 @@ pub enum Open {
     /// The sidebar's search through the history with a word of the demo, its first hit opened and marked
     /// (issue #704).
     Search,
+    /// The sidebar's group "Archive" open, with its three conversations (issue #697).
+    Archive,
+    /// The "…" menu of a conversation's row in the sidebar: Rename, Pin, Archive, … (issue #697).
+    RowMenu,
+    /// The "…" menu of the sidebar's group "Recent": Archive all…, Delete all… (issue #697).
+    RecentMenu,
+    /// The question before deleting every conversation under "Recent" (issue #697).
+    DeleteAll,
 }
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 33] = [
+    pub const ALL: [(&'static str, Open); 38] = [
         ("new", Open::New),
         ("tools", Open::Tools),
         ("approval", Open::Approval),
@@ -128,6 +139,7 @@ impl Open {
         ("effort", Open::Effort),
         ("mode", Open::Mode),
         ("dictating", Open::Dictating),
+        ("reading", Open::Reading),
         ("areas-off", Open::AreasOff),
         ("menu", Open::Menu),
         ("rename", Open::Rename),
@@ -152,6 +164,10 @@ impl Open {
         ("access-selections", Open::AccessSelections),
         ("access-bots", Open::AccessBots),
         ("search", Open::Search),
+        ("archive", Open::Archive),
+        ("row-menu", Open::RowMenu),
+        ("recent-menu", Open::RecentMenu),
+        ("delete-all", Open::DeleteAll),
     ];
 }
 

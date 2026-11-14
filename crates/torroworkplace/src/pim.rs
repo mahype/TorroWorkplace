@@ -1430,11 +1430,16 @@ impl PimService {
             | Request::RenameConversation { .. }
             | Request::DeleteConversation { .. }
             | Request::PinConversation { .. }
+            | Request::ArchiveConversations { .. }
+            | Request::DeleteConversations { .. }
             | Request::OpenChatWindow { .. }
             | Request::VoiceStatus
             | Request::TestVoice
             | Request::Dictate
             | Request::StopDictation
+            | Request::Speak { .. }
+            | Request::StopSpeaking
+            | Request::SpeechStatus
             // Map data (issue #355): tiles are the suite's, places are checked by address book.
             | Request::MapsStatus
             | Request::ClearMapsCache => return None,

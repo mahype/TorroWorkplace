@@ -779,7 +779,7 @@ Open First gilt auch hier, und das Mikrofon verlässt den Rechner nie, solange n
 |---|---|---|
 | **Weckwort** | openWakeWord (offen, eigenes Wort trainierbar) | läuft dauerhaft, nur auf dem Rechner, kleiner Speicher (wenige Sekunden Ringpuffer, nie auf Platte) |
 | **Sprache → Text** | Parakeet über onnx-asr (empfohlen, etwa dreimal so schnell) oder whisper.cpp, wählbar in Einstellungen › Voice (#749) | optional über ein KI-Konto, wenn die Person es erlaubt |
-| **Text → Sprache** | Piper (offene Stimmen, auch Deutsch) | abschaltbar, dann nur Fenster |
+| **Text → Sprache** | Qwen3-TTS oder Piper, auf Wunsch OpenAI (siehe „Vorlesen“) | abschaltbar, dann nur Fenster |
 
 - **Standard aus.** Einschalten nur in den Einstellungen des Assistenten (Zahnrad › Voice), mit
   Wahl des Mikrofons und Test.
@@ -807,6 +807,45 @@ Open First gilt auch hier, und das Mikrofon verlässt den Rechner nie, solange n
 | Gesprochene Nachricht | Schnellfenster | `assistant.send_message` (gibt es dann) | ebenso |
 | Diktieren ins Eingabefeld | Mikrofon im Eingabefeld | `assistant.dictate`, `assistant.stop_dictation` · Admin | **Never** (Punkt 6: das Mikrofon schaltet nur ein Mensch ein) |
 
+### Vorlesen (Issue #745)
+
+Der Assistent liest seine Antworten auf Wunsch vor, im Chatfenster und nach „Hey Torro“, mit dem
+Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Read aloud“.
+
+| Anbieter | Läuft | Braucht | Stimmen |
+|---|---|---|---|
+| **Lokal: Qwen3-TTS** | auf dem Rechner, Ton stückweise schon während des Rechnens (erster Ton nach ca. 0,2 s) | NVIDIA-Grafikkarte ab 4 GB (ab 8 GB das Modell 1.7B, sonst 0.6B), Python-Paket `faster-qwen3-tts` 0.5.4 mit `transformers` 5.15.1 | „Warm woman“ (empfohlen), „Calm man“: Vorlagen, die mit dem Assistenten kommen und für jede Antwort geklont werden, damit jede Antwort gleich klingt |
+| **Online: OpenAI** | `gpt-4o-mini-tts` über `POST /v1/audio/speech` | das OpenAI-Konto aus Einstellungen › KI (kein eigener Schlüssel) | die 13 Stimmen der Schnittstelle, empfohlen Marin und Cedar |
+| **Lokal: Piper** | auf dem Rechner, auch ohne Grafikkarte und Netz | Piper und eine Stimme im Sprachordner | die gefundene Stimme |
+
+- **Wer liest:** Ohne eigene Wahl Qwen3-TTS, wenn der Rechner schnell genug und Qwen eingerichtet ist, sonst
+  Piper. OpenAI nur nach ausdrücklicher Wahl, weil der Text jeder Antwort dann an OpenAI geht; diese Wahl
+  trifft nur ein Mensch (`settings.set_setting speech_provider "openai"` bekommt von jedem Client
+  `forbidden`, [api.md](api.md), Punkt 6).
+- **Empfehlung:** Die Einstellungen sagen, ob der Rechner für lokale Stimmen schnell genug ist (Grafikkarte
+  aus der Messung des Rechners), und empfehlen danach Qwen3-TTS oder OpenAI.
+- **Einrichten von Qwen:** Die Person führt den Befehl aus, den die Einstellungen zeigen („Copy“): eine eigene
+  Python-Umgebung unter `<Sprachordner>/qwen/venv`. Torro findet sie danach von selbst; die Modelle lädt
+  das erste Vorlesen (einige GB, ca. 10 s Laden).
+- **Chatfenster:** Der Lautsprecher links vom Mikrofon schaltet `voice.read_aloud` (anfangs aus). Eine neue
+  Antwort wird vorgelesen, sobald sie fertig ist; [■] an ihr und der Lautsprecher aus beenden das Vorlesen
+  sofort. „Speak answers“ bleibt der eigene Schalter für „Hey Torro“: Der Hörer spricht die Antworten seiner
+  Unterhaltung „Voice“ selbst über `assistant.speak`, das Chatfenster liest diese Unterhaltung deshalb nicht noch
+  einmal vor. Wechselt das Fenster die Unterhaltung, endet das Vorlesen.
+- **Technisch:** Der Dienst hält den Helfer `torroassistant --speak` am Laufen (JSON-Zeilen, ein Auftrag
+  zugleich, nach zehn Minuten ohne Auftrag beendet er sich und gibt den Grafikspeicher frei; ein anderer Anbieter
+  beendet ihn sofort, eine andere Stimme nicht, sie geht mit dem nächsten Auftrag mit). Qwen rechnet
+  im Helfer in Python, der Ton geht roh an `paplay`, `pw-play`, `aplay`, `play` oder `ffplay`. Den Ton von
+  OpenAI holt der Dienst selbst, weil er den Schlüssel hält, in Stücken aus ganzen Sätzen (bis 500
+  Zeichen), das nächste, während das vorige spielt. Vorgelesen werden höchstens 3000 Zeichen, ohne
+  Markdown. Der Text kommt nicht ins Protokoll.
+
+| Funktion | Oberfläche | API · Zugriff | MCP |
+|---|---|---|---|
+| Text vorlesen, Vorlesen stoppen | Chatfenster (Lautsprecher, [■]), „Preview“ in Voice | `assistant.speak`, `assistant.stop_speaking` · Write | `assistant_speak`, `assistant_stop_speaking` |
+| Wer vorlesen kann | Voice › Read aloud | `settings.speech_status` · Read | `settings_speech_status` |
+| An/aus, Anbieter, Stimmen | Voice › Read aloud, Lautsprecher im Chatfenster | `settings.set_setting` `read_aloud`, `speech_provider`, `qwen_voice`, `openai_voice` · Admin | `settings_set_setting` (OpenAI als Anbieter nur Menschen) |
+
 ## Wo die Logik liegt
 
 Wie überall im Kern (CLAUDE.md): Die App schickt Requests, der Kern führt die Unterhaltung. Der Kern
@@ -816,7 +855,7 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 - **Speicher:** `<data>/assistant/<id>.jsonl` (0600), je Unterhaltung Nachrichten und
   Werkzeug-Aufrufe. Inhalte von Mails stehen damit auf der Platte wie im Mail-Cache; „Delete
   conversation“ löscht die Datei. Unterhaltungen werden nach **30 Tagen** gelöscht (entschieden,
-  einstellbar bis „forever“); angeheftete bleiben. Was ein Werkzeug dem Modell geliefert hat
+  einstellbar bis „forever“); angeheftete und archivierte bleiben (Issue #697). Was ein Werkzeug dem Modell geliefert hat
   (etwa ein Mail-Text), bleibt kürzer: 24 Stunden nach dem Aufruf, auch in angehefteten
   Unterhaltungen und bei „forever“ (Issue #714); danach schreibt der nächste Lauf (beim Start und
   stündlich, eine antwortende Unterhaltung in einer späteren Runde) die Datei ohne diese Ergebnisse neu,
@@ -844,7 +883,9 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | Unterhaltung umbenennen | Kontextmenü | `assistant.rename_conversation` · Write | `assistant_rename_conversation` |
 | Unterhaltung als eigenes Fenster öffnen | „Open in new window“, „Ask about this“ | `assistant.open_window { conversation \| new \| bot }` · Write (startet `torroassistant --chat …`) | `assistant_open_window` |
 | Unterhaltung anheften (bleibt über die Aufbewahrung hinaus) | Kontextmenü | `assistant.pin_conversation` · Write | `assistant_pin_conversation` |
-| Unterhaltung löschen | Kontextmenü | `assistant.delete_conversation` · Delete | `assistant_delete_conversation` |
+| Unterhaltung löschen | Mülltonne an der Zeile, „…“ bzw. Kontextmenü | `assistant.delete_conversation` · Delete | `assistant_delete_conversation` |
+| Unterhaltungen archivieren und zurückholen (Gruppe „Archive“ unten, bleibt über die Aufbewahrung hinaus, eine Nachricht holt zurück; Issue #697) | „…“ an der Zeile bzw. Kontextmenü, „Archive all…“ an „Recent“ | `assistant.archive_conversations` · Write | `assistant_archive_conversations` |
+| Viele Unterhaltungen löschen (Issue #697) | „Delete all…“ an „Recent“, „Empty archive…“ an „Archive“ | `assistant.delete_conversations` · Delete | `assistant_delete_conversations` |
 | Standard-Antrieb, Aufbewahrung | Assistent › Einstellungen › General bzw. History | `settings.set_setting` · Admin (gibt es) | `settings_set_setting` |
 | Rechte des Assistenten | Assistent › Einstellungen › Access (seit #231), erster Start („Turn on assistant“) | `clients.update_client` (gibt es) | **Never** (Punkt 2: kein Agent ändert Rechte) |
 | Bereiche je Unterhaltung abschalten | Eingabefeld | Feld `without` in `assistant.send_message` | ebenso |
@@ -905,7 +946,7 @@ Getroffen am 2026-10-13.
 5. **Ein Client „Assistant“** für alle Antriebe, der Antrieb steht im Protokoll.
 6. **Dateien und Shell** beim Agent-Antrieb immer aus.
 7. **Bereich `assistant` für andere Agenten** standardmäßig aus, auch in *Full access*.
-8. **Aufbewahrung** 30 Tage, einstellbar; angeheftete Unterhaltungen bleiben.
+8. **Aufbewahrung** 30 Tage, einstellbar; angeheftete und archivierte Unterhaltungen bleiben (Issue #697).
 9. **Fremde MCP-Server über den Abschnitt „MCP servers“, #302** (ersetzt „Fremde MCP-Server im Chat nicht in Stufe 1; Klärung
    in #79“): Die Werkzeuge erlaubter Server stehen dem Assistenten, seinen Bots und den MCP-Clients offen, je Server
    nur mit einer Stufe, je Werkzeug nur nach Zustimmung der Person (Steuerzentrale › MCP servers, Abschnitt „Your

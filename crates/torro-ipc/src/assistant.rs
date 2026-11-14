@@ -37,6 +37,10 @@ pub const MAX_TITLE_CHARS: usize = 200;
 /// model ids those of the server (`qwen/qwen3-14b`).
 pub const MAX_ID_BYTES: usize = 300;
 
+/// At most this many ids in one `assistant.archive_conversations` or `assistant.delete_conversations`
+/// (issue #697); the app sends more in pieces of this size.
+pub const MAX_BULK_IDS: usize = 1000;
+
 /// At most this many characters in the words of `assistant.search_conversations` (issue #704).
 pub const MAX_QUERY_CHARS: usize = 200;
 
@@ -229,6 +233,10 @@ pub struct ConversationSummary {
     pub updated: DateTime<Utc>,
     /// Kept beyond the retention time (`assistant.pin_conversation`).
     pub pinned: bool,
+    /// In the archive (`assistant.archive_conversations`, issue #697): shown in the group "Archive",
+    /// kept beyond the retention time. Left out when not archived.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub archived: bool,
     /// An answer is running: `assistant.cancel` stops it, `assistant.send_message` waits (`busy`).
     pub running: bool,
     /// The number of the newest stored entry ([`Entry::seq`]); 0 without entries. Pass it as
@@ -686,6 +694,14 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
         return refuse(format!("an id may hold at most {MAX_ID_BYTES} bytes"));
     }
     match request {
+        Request::ArchiveConversations { ids, .. } | Request::DeleteConversations { ids } if ids.is_empty() => {
+            refuse("no conversations given".into())
+        }
+        Request::ArchiveConversations { ids, .. } | Request::DeleteConversations { ids }
+            if ids.len() > MAX_BULK_IDS =>
+        {
+            refuse(format!("at most {MAX_BULK_IDS} conversations at once"))
+        }
         Request::SendMessage { text, .. } if text.trim().is_empty() => refuse("the message is empty".into()),
         Request::SendMessage { text, .. } if text.chars().count() > MAX_TEXT_CHARS => {
             refuse(format!("a message may hold at most {MAX_TEXT_CHARS} characters"))
@@ -783,9 +799,23 @@ impl Request {
     }
 }
 
+impl Request {
+    /// Every conversation a request names: [`Request::conversation`], or the `ids` of
+    /// `assistant.archive_conversations` and `assistant.delete_conversations` (issue #697). For the
+    /// core's checks, which must see each one before anything changes, and its audit log.
+    pub fn conversation_ids(&self) -> Vec<&str> {
+        match self {
+            Request::ArchiveConversations { ids, .. } | Request::DeleteConversations { ids } => {
+                ids.iter().map(String::as_str).collect()
+            }
+            _ => self.conversation().into_iter().collect(),
+        }
+    }
+}
+
 /// Every id an `assistant.*` request carries, for [`limit_refusal`].
 fn assistant_ids(request: &Request) -> Vec<&str> {
-    let mut ids: Vec<&str> = request.conversation().into_iter().collect();
+    let mut ids: Vec<&str> = request.conversation_ids();
     match request {
         Request::SendMessage { engine, model, bot, about, .. } => {
             ids.push(engine);
@@ -1093,6 +1123,50 @@ mod tests {
         assert_eq!(Request::OpenChatWindow { window: ChatWindow::New }.conversation(), None);
         assert_eq!(send("Hi").conversation(), None, "a new conversation has no id yet");
         assert_eq!(Request::Ping.conversation(), None);
+    }
+
+    #[test]
+    fn bulk_requests_name_every_conversation_and_keep_their_limits() {
+        let archive = |ids: Vec<String>| Request::ArchiveConversations { ids, archived: true };
+        let delete = |ids: Vec<String>| Request::DeleteConversations { ids };
+        assert_eq!(archive(vec!["a".into(), "b".into()]).conversation_ids(), ["a", "b"]);
+        assert_eq!(delete(vec!["a".into()]).conversation_ids(), ["a"]);
+        assert_eq!(Request::DeleteConversation { id: "c1".into() }.conversation_ids(), ["c1"]);
+        assert!(Request::Ping.conversation_ids().is_empty());
+
+        assert_eq!(code(limit_refusal(&archive(Vec::new()))), Some("error".into()), "no ids");
+        assert_eq!(code(limit_refusal(&delete(Vec::new()))), Some("error".into()), "no ids");
+        let many = |n: usize| (0..n).map(|i| format!("{i:016x}")).collect::<Vec<_>>();
+        assert_eq!(code(limit_refusal(&delete(many(MAX_BULK_IDS)))), None);
+        assert_eq!(code(limit_refusal(&delete(many(MAX_BULK_IDS + 1)))), Some("error".into()));
+        assert_eq!(code(limit_refusal(&archive(many(MAX_BULK_IDS + 1)))), Some("error".into()));
+        assert_eq!(code(limit_refusal(&delete(vec!["x".repeat(MAX_ID_BYTES + 1)]))), Some("error".into()), "long id");
+    }
+
+    #[test]
+    fn archived_is_left_out_unless_set() {
+        let summary = ConversationSummary {
+            id: "c1".into(),
+            title: "T".into(),
+            engine: "e".into(),
+            model: None,
+            effort: None,
+            created: Utc::now(),
+            updated: Utc::now(),
+            pinned: false,
+            archived: false,
+            running: false,
+            last: 0,
+            bot: None,
+            bot_deleted: false,
+            about: None,
+        };
+        let value = serde_json::to_value(&summary).expect("serializes");
+        assert!(value.get("archived").is_none());
+        let back: ConversationSummary = serde_json::from_value(value).expect("reads without the field");
+        assert!(!back.archived);
+        let archived = ConversationSummary { archived: true, ..summary };
+        assert_eq!(serde_json::to_value(&archived).expect("serializes")["archived"], true);
     }
 
     /// The wire format the apps and agents rely on: entries carry their `kind` next to `seq` and
