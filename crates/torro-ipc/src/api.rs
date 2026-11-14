@@ -7933,6 +7933,7 @@ mod tests {
                 assert!(!rights.allows_request(&on), "{level:?} admin {admin}");
                 assert!(!rights.allows_request(&Request::TestVoice), "{level:?} admin {admin}");
                 assert!(!rights.allows_request(&Request::Dictate), "{level:?} admin {admin}");
+                assert!(!rights.allows_request(&Request::StopDictation), "{level:?} admin {admin}");
                 assert_eq!(rights.allows_request(&off), admin, "{level:?} admin {admin}");
                 assert_eq!(rights.allows_request(&other), admin, "{level:?} admin {admin}");
             }

@@ -18802,6 +18802,8 @@ mod tests {
         assert!(!voice.installed && voice.programs.is_empty());
         assert_eq!(voice.listener, torro_ipc::VoiceState::Off);
         assert_eq!(code(&core.handle(Request::TestVoice).await), "unsupported");
+        assert_eq!(code(&core.handle(Request::Dictate).await), "unsupported", "issue #699: dictating too");
+        assert_eq!(core.handle(Request::StopDictation).await, Response::Ok, "nothing to stop is fine");
 
         let mut rights = RightsTemplate::ReadOnly.rights();
         rights.areas.insert(Area::Settings, AreaRights { level: Level::Read, admin: false });
@@ -18822,7 +18824,7 @@ mod tests {
         .expect("json");
         let heard = serde_json::to_string(&Response::Transcript { text: "What is on today?".into() }).expect("json");
         let body = format!(
-            "case \"$1\" in\n  --voice-status) echo '{status}' ;;\n  --voice-test) echo '{heard}' ;;\n  --listen) echo '\"listening\"'; sleep 30 ;;\nesac"
+            "case \"$1\" in\n  --voice-status) echo '{status}' ;;\n  --voice-test) echo '{heard}' ;;\n  --dictate) echo '{heard}' ;;\n  --listen) echo '\"listening\"'; sleep 30 ;;\nesac"
         );
         let program = crate::apps::tests::fake_program(dir.path(), &body);
         let core = core(dir.path()).with_listener(crate::apps::Listener::at(program));
@@ -18831,6 +18833,8 @@ mod tests {
         assert!(voice.installed);
         assert_eq!(voice.microphones, ["usb"]);
         assert_eq!(core.handle(Request::TestVoice).await, Response::Transcript { text: "What is on today?".into() });
+        // Issue #699: dictating answers with what was heard, through `--dictate`.
+        assert_eq!(core.handle(Request::Dictate).await, Response::Transcript { text: "What is on today?".into() });
 
         let mut changes = core.voice_changes();
         let set = |on: bool| Request::SetSetting { key: SettingKey::VoiceEnabled, value: serde_json::json!(on) };
