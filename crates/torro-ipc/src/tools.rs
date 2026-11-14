@@ -136,8 +136,11 @@ pub struct FileText {
     pub from_line: u32,
     /// How many lines the file has.
     pub total_lines: u32,
-    /// More of the file follows: read on with `from_line` set to the line after the last one here.
+    /// More of the file follows: read on with `from_line` set to [`FileText::next_line`].
     pub more: bool,
+    /// The line to read on from when [`FileText::more`]; left out at the end of the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_line: Option<u32>,
     /// The file's version as the core read it (SHA-256 of its bytes, hex): what `tools.edit_file` takes, so
     /// a change lands only on the text that was read.
     pub version: String,
@@ -146,10 +149,17 @@ pub struct FileText {
 }
 
 impl FileText {
-    /// The page `text` of the file `path` from `from_line` of `total_lines`, more following when `more`, at
-    /// `version`, marked as data that is not to be trusted.
-    pub fn new(path: String, text: String, from_line: u32, total_lines: u32, more: bool, version: String) -> FileText {
-        FileText { path, text, from_line, total_lines, more, version, untrusted: true }
+    /// The page `text` of the file `path` from `from_line` of `total_lines`, more following from `next_line` when
+    /// there is one, at `version`, marked as data that is not to be trusted.
+    pub fn new(
+        path: String,
+        text: String,
+        from_line: u32,
+        total_lines: u32,
+        next_line: Option<u32>,
+        version: String,
+    ) -> FileText {
+        FileText { path, text, from_line, total_lines, more: next_line.is_some(), next_line, version, untrusted: true }
     }
 }
 
@@ -306,7 +316,7 @@ mod tests {
         let json = serde_json::to_value(&file).expect("json");
         assert_eq!(json["template"], "report");
         assert_eq!(serde_json::from_value::<FileInfo>(json).expect("reads"), file);
-        let page = FileText::new("/a/b.md".into(), "x\n".into(), 1, 1, false, "ab".into());
+        let page = FileText::new("/a/b.md".into(), "x\n".into(), 1, 1, None, "ab".into());
         let json = serde_json::to_value(&page).expect("json");
         assert_eq!((json["untrusted"].clone(), json["from_line"].clone()), (true.into(), 1.into()));
         assert_eq!(serde_json::from_value::<FileText>(json).expect("reads"), page);
