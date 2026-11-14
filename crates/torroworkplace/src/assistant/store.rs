@@ -14,7 +14,9 @@
 //! sends the model its calls with their results again. It never leaves the core: `assistant.get_conversation`
 //! shows the entries only, as a result can hold what another area's data said. It is kept for
 //! [`RESULT_HOURS`] after its call only (issue #714): a mail read then may be deleted since, and the
-//! conversation would otherwise keep a copy of it as long as the conversation lives.
+//! conversation would otherwise keep a copy of it as long as the conversation lives. A result marked `untrusted`
+//! leaves a note without content in its place ([`Line::Untrusted`], issue #724): the conversation keeps counting as
+//! untrusted for the memory, and nothing of what was read stays on the disk.
 //!
 //! Errors carry the path only for the core's own log; what goes to a client says nothing of it.
 
@@ -63,6 +65,9 @@ pub enum Line {
     /// What the model read of the tool call whose line is the entry `seq` (issue #701): kept for later turns
     /// ([`Conversation::results`]), never shown to a client.
     Result { seq: u64, text: String },
+    /// The result of the tool call `seq` was marked `untrusted` and has been dropped (issue #724): only its number
+    /// stays, so the conversation still counts as untrusted ([`Conversation::untrusted`]).
+    Untrusted { seq: u64 },
 }
 
 /// One conversation as the core holds it in memory.
@@ -81,6 +86,9 @@ pub struct Conversation {
     pub about: Option<MailRef>,
     /// What the model read of each tool call, by the number of its tool line (issue #701, [`Line::Result`]).
     pub results: BTreeMap<u64, String>,
+    /// Whether a result marked `untrusted` was dropped from it (issue #724, [`Line::Untrusted`]): the conversation
+    /// has read what another's data said, though no result tells so any more.
+    pub untrusted: bool,
 }
 
 impl Conversation {
@@ -95,6 +103,7 @@ impl Conversation {
             bot: None,
             about: None,
             results: BTreeMap::new(),
+            untrusted: false,
         }
     }
 
@@ -121,6 +130,7 @@ impl Conversation {
             bot,
             about,
             results: BTreeMap::new(),
+            untrusted: false,
         };
         for line in lines {
             conversation.apply(line);
@@ -142,6 +152,8 @@ impl Conversation {
                 self.results.insert(seq, text);
             }
             Line::Result { .. } => {}
+            Line::Untrusted { seq } if self.is_tool(seq) => self.untrusted = true,
+            Line::Untrusted { .. } => {}
         }
     }
 
@@ -308,7 +320,8 @@ pub fn append(dir: &Path, id: &str, lines: &[Line]) -> io::Result<()> {
 }
 
 /// Removes the results numbered `seqs` from the file of conversation `id` in `dir` (issue #714):
-/// every other line stays as it was, also one that does not read. The file is written anew as
+/// every other line stays as it was, also one that does not read. A result marked `untrusted` ([`marked_untrusted`])
+/// is replaced by a [`Line::Untrusted`] with its number, so only the mark is kept (issue #724). The file is written anew as
 /// `<id>.jsonl.tmp` (0600) and renamed over the old one, so a crash leaves either whole. Nothing to
 /// drop, or no file, writes nothing.
 pub fn drop_results(dir: &Path, id: &str, seqs: &BTreeSet<u64>) -> io::Result<()> {
@@ -324,12 +337,15 @@ pub fn drop_results(dir: &Path, id: &str, seqs: &BTreeSet<u64>) -> io::Result<()
     let mut kept = Vec::with_capacity(old.len());
     // By bytes and with their line ends, so a line that does not read (or is not text) stays word for word.
     for line in old.split_inclusive(|byte| *byte == b'\n') {
-        let dropped = matches!(
-            serde_json::from_slice::<Line>(line.trim_ascii_end()),
-            Ok(Line::Result { seq, .. }) if seqs.contains(&seq)
-        );
-        if !dropped {
-            kept.extend_from_slice(line);
+        match serde_json::from_slice::<Line>(line.trim_ascii_end()) {
+            Ok(Line::Result { seq, text }) if seqs.contains(&seq) => {
+                if marked_untrusted(&text) {
+                    // A line of its own, so the next one does not stick to it.
+                    serde_json::to_writer(&mut kept, &Line::Untrusted { seq })?;
+                    kept.push(b'\n');
+                }
+            }
+            _ => kept.extend_from_slice(line),
         }
     }
     let temp = temp_file(dir, id);
@@ -346,6 +362,12 @@ pub fn drop_results(dir: &Path, id: &str, seqs: &BTreeSet<u64>) -> io::Result<()
         eprintln!("torroworkplace: cannot sync the folder of the conversation {id}: {err}");
     }
     Ok(())
+}
+
+/// Whether a result as the model read it is marked `untrusted` at its top (`tools::for_model`).
+pub fn marked_untrusted(result: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(result)
+        .is_ok_and(|value| value.get("untrusted").and_then(serde_json::Value::as_bool) == Some(true))
 }
 
 /// Writes `bytes` to a new file `path` (0600), on the disk before it answers.
@@ -580,6 +602,54 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).expect("the file"), text);
         drop_results(&folder, "fedcba9876543210", &expired).expect("no file");
         assert!(!file(&folder, "fedcba9876543210").exists());
+    }
+
+    /// Issue #724: an old result marked `untrusted` leaves a note without content, an unmarked one nothing; the
+    /// conversation counts as untrusted after reading, and a note for a line that is no tool line changes nothing.
+    #[test]
+    fn a_dropped_untrusted_result_leaves_only_its_mark() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let folder = dir.path().join("assistant");
+        let mut conversation = Conversation::new("0123456789abcdef".into(), "Hello", at(0));
+        let mut lines = vec![conversation.started()];
+        for (minute, text) in
+            [(1, "{\"untrusted\":true,\"data\":\"the marked text\"}"), (2, "{\"data\":\"the plain text\"}")]
+        {
+            let tool = EntryContent::Tool {
+                name: "tasks.get".into(),
+                input: serde_json::json!({}),
+                summary: "1 task".into(),
+                error: None,
+                lack: None,
+            };
+            let entry = conversation.next(tool, at(minute));
+            let result = Line::Result { seq: entry.seq, text: text.into() };
+            conversation.apply(Line::Entry { entry: entry.clone() });
+            conversation.apply(result.clone());
+            lines.extend([Line::Entry { entry }, result]);
+        }
+        assert!(!conversation.untrusted);
+        append(&folder, &conversation.id, &lines).expect("written");
+        drop_results(&folder, &conversation.id, &conversation.expired_results(at(10))).expect("dropped");
+
+        let text = fs::read_to_string(file(&folder, &conversation.id)).expect("the file");
+        assert!(!text.contains("the marked text") && !text.contains("the plain text"), "{text}");
+        let read = load_all(&folder).expect("read");
+        assert!(read[0].untrusted);
+        assert!(read[0].results.is_empty());
+
+        // A note for a message, not a tool line, is of no use.
+        let message = conversation.next(answer("Hi"), at(11));
+        let mut plain = Conversation::new("fedcba9876543210".into(), "Hello", at(0));
+        plain.apply(Line::Entry { entry: message.clone() });
+        plain.apply(Line::Untrusted { seq: message.seq });
+        assert!(!plain.untrusted);
+    }
+
+    #[test]
+    fn marked_results_are_told_by_their_top() {
+        assert!(marked_untrusted(&serde_json::json!({"untrusted": true, "data": {}}).to_string()));
+        assert!(!marked_untrusted("{\"result\":\"todo\"}") && !marked_untrusted("not json"));
     }
 
     #[test]

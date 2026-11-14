@@ -679,7 +679,8 @@ impl Assistant {
         if message.from.is_none() {
             state.said.insert(id.clone(), said);
         }
-        let (history, results) = (conversation.entries.clone(), conversation.results.clone());
+        let (history, results, untrusted) =
+            (conversation.entries.clone(), conversation.results.clone(), conversation.untrusted);
         state.conversations.insert(id.clone(), conversation);
         let (engine, model, effort, without, mode) =
             (message.engine, message.model, message.effort, message.without, message.mode);
@@ -697,6 +698,7 @@ impl Assistant {
             mode,
             history,
             results,
+            untrusted,
             partial: Arc::default(),
             actor,
             bot: message.bot,
@@ -985,6 +987,11 @@ impl Assistant {
             match blocking(move || store::drop_results(&dir, &file, &dropping)).await {
                 Ok(()) => {
                     if let Some(conversation) = state.conversations.get_mut(&id) {
+                        // The file keeps a note for each marked result it dropped (issue #724).
+                        conversation.untrusted |= conversation
+                            .results
+                            .iter()
+                            .any(|(seq, text)| seqs.contains(seq) && store::marked_untrusted(text));
                         conversation.results.retain(|seq, _| !seqs.contains(seq));
                     }
                 }
@@ -1847,6 +1854,41 @@ pub(crate) mod tests {
         assert!(read.pinned);
         assert_eq!(read.entries, conversation.entries, "every entry stays");
         assert_eq!(read.results, std::collections::BTreeMap::from([(2, "the mail of this morning".to_string())]));
+    }
+
+    /// Issue #724: a result marked `untrusted` leaves its mark when it goes after a day: in memory and, read anew,
+    /// from the file.
+    #[tokio::test]
+    async fn a_dropped_untrusted_result_leaves_its_mark() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let folder = dir.path().join("assistant");
+        let now = Utc::now();
+        let mut conversation = Conversation::new("0123456789abcdef".into(), "Look at the issue", now);
+        let tool = EntryContent::Tool {
+            name: "tasks.save_todo".into(),
+            input: serde_json::json!({}),
+            summary: "1 task".into(),
+            error: None,
+            lack: None,
+        };
+        let entry = conversation.next(tool, now - chrono::Duration::hours(25));
+        let result = Line::Result { seq: entry.seq, text: "{\"untrusted\":true,\"data\":\"an issue\"}".into() };
+        conversation.apply(Line::Entry { entry: entry.clone() });
+        conversation.apply(result.clone());
+        store::append(&folder, &conversation.id, &[conversation.started(), Line::Entry { entry }, result])
+            .expect("written");
+
+        let assistant = assistant_in(dir.path(), Duration::ZERO);
+        assistant.clean_up(now, Retention::Forever).await;
+        let state = assistant.state().await;
+        let held = state.conversations.get(&conversation.id).expect("there");
+        assert!(held.results.is_empty() && held.untrusted);
+        drop(state);
+
+        let again = assistant_in(dir.path(), Duration::ZERO);
+        let state = again.state().await;
+        let read = state.conversations.get(&conversation.id).expect("still there");
+        assert!(read.results.is_empty() && read.untrusted);
     }
 
     #[tokio::test]
