@@ -1772,6 +1772,23 @@ fn a_new_answer_is_read_aloud_once_it_is_complete() {
     let _ = app.update(Message::Read(2, Ok(())));
     assert_eq!(app.reading, None);
 
+    // Answer, tool, answer: nothing is read while the run goes on, then only the last answer.
+    let mut parts = answering();
+    parts.read_aloud = true;
+    sent(&mut parts);
+    let entries = vec![answer_entry(2, "I'll look at your calendar."), answer_entry(3, "Three events.")];
+    let _ = parts.update(Message::Followed(id_of(&parts), Ok((head(&parts, 3, true), entries.clone()))));
+    assert!(!sent(&mut parts).iter().any(|request| matches!(request, Request::Speak { .. })), "the run goes on");
+    let _ = parts.update(Message::Followed(id_of(&parts), Ok((head(&parts, 3, false), entries))));
+    let speak: Vec<_> = sent(&mut parts).into_iter().filter(|request| matches!(request, Request::Speak { .. })).collect();
+    assert_eq!(speak, [Request::Speak { text: "Three events.".into() }]);
+
+    // A new chat stops what the old conversation reads, and [■] never stands at another's answer.
+    assert_eq!(parts.reading, Some(3));
+    let _ = parts.update(Message::NewChat);
+    assert!(sent(&mut parts).contains(&Request::StopSpeaking));
+    assert_eq!(parts.reading, None);
+
     // The conversation of "Hey Torro": the listener speaks its answers, the window does not.
     let mut spoken = answering();
     spoken.read_aloud = true;
@@ -1808,6 +1825,11 @@ fn the_speaker_switches_reading_aloud_and_stops_it() {
     assert_eq!(sent(&mut app), [Request::StopSpeaking]);
     assert_eq!(app.reading, None);
 
+    // Off stops only what this window reads.
+    let _ = app.update(Message::ToggleReadAloud);
+    assert!(!sent(&mut app).contains(&Request::StopSpeaking), "nothing of this window reads");
+    let _ = app.update(Message::ToggleReadAloud);
+    sent(&mut app);
     app.reading = Some(demo::READ_ANSWER);
     let _ = app.update(Message::ToggleReadAloud);
     let requests = sent(&mut app);

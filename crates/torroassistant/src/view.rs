@@ -745,7 +745,8 @@ impl App {
                     Some((_, items)) => markdown::view(items, colours).map(Message::OpenLink),
                     None => typo::text(typo::body(), text.as_str()).into(),
                 };
-                match self.reading == Some(entry.seq) {
+                // Numbers count per conversation: the open one must be the one that reads.
+                match self.reading == Some(entry.seq) && self.reading_in == self.current {
                     // Its own line above the answer, so the answer keeps its width.
                     true => column![self.stop_reading_button(), answer].spacing(space::xs()).into(),
                     false => answer,

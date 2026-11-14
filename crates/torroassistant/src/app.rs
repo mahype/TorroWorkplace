@@ -623,7 +623,7 @@ pub struct App {
     /// The answer being read aloud now, by its number; [■] shows at it.
     pub(crate) reading: Option<u64>,
     /// The conversation of [`App::reading`]: numbers count per conversation.
-    reading_in: Option<String>,
+    pub(crate) reading_in: Option<String>,
     /// The speaker was switched and the core has not taken it yet: settings loaded meanwhile (every
     /// [`REFRESH`]) may still say the old value, and must not switch it back.
     read_aloud_switching: bool,
@@ -1746,17 +1746,20 @@ impl App {
         // The streaming answer is gone (stopped, or stored under another number): what it showed
         // goes on under the new number, nothing is written twice.
         let mut moved = self.stream.as_ref().is_some_and(|stream| !seen.contains(&stream.seq));
-        for (seq, text, complete) in &answers {
-            // A new answer that came while the window watches is read aloud once it is complete
-            // (issue #745); one that was there when the conversation opened is not.
+        // A new answer that came while the window watches is read aloud once the run ended, the last
+        // one only: a remark before a tool ("I'll look at your calendar") would be cut off by the
+        // answer after it (issue #745). One that was there when the conversation opened is not.
+        for (seq, _, _) in &answers {
             if animate && !self.answers.contains_key(seq) && self.stream.as_ref().is_none_or(|s| s.seq != *seq) {
                 self.to_read.insert(*seq);
             }
-            if *complete && self.to_read.remove(seq) {
-                self.ready_to_read = Some((*seq, text.clone()));
-            }
         }
         self.to_read.retain(|seq| seen.contains(seq));
+        if !running && !self.to_read.is_empty() {
+            let last = answers.iter().rev().find(|(seq, _, complete)| *complete && self.to_read.contains(seq));
+            self.ready_to_read = last.map(|(seq, text, _)| (*seq, text.clone()));
+            self.to_read.clear();
+        }
         for (seq, text, complete) in answers {
             if let Some(stream) = self.stream.as_mut().filter(|stream| stream.seq == seq) {
                 stream.smoother.set(&text, complete);
@@ -1988,12 +1991,16 @@ impl App {
         }
         self.reset_chat(None);
         self.choose_default();
-        operation::focus(EDITOR)
+        Task::batch([operation::focus(EDITOR), self.leave_reading()])
     }
 
     /// Leaves the open conversation for `current`: nothing of the old one stays.
     fn reset_chat(&mut self, current: Option<String>) {
         self.current = current;
+        // Answer numbers count per conversation (issue #745); what reads stops in the callers
+        // ([`App::leave_reading`]).
+        self.to_read.clear();
+        self.ready_to_read = None;
         self.transcript = Transcript::default();
         self.chat_error = None;
         self.following = false;
@@ -2048,9 +2055,11 @@ impl App {
             Ok((summary, entries)) => {
                 self.editor = Content::new();
                 self.mini.clear();
+                let mut stopped = Task::none();
                 if self.current.as_ref() != Some(&summary.id) {
                     let (without, mode) = (std::mem::take(&mut self.without), self.mode);
                     self.reset_chat(Some(summary.id.clone()));
+                    stopped = self.leave_reading();
                     (self.without, self.mode) = (without, mode);
                     self.take_without = false;
                     self.transcript = Transcript::new(summary, entries);
@@ -2060,7 +2069,7 @@ impl App {
                 self.after_change(true);
                 let read = self.read_ready();
                 // The person sent something: the history goes to it, wherever it was scrolled.
-                Task::batch([self.follow(), self.load_list(), self.scroll_to_newest(), read])
+                Task::batch([self.follow(), self.load_list(), self.scroll_to_newest(), read, stopped])
             }
             Err(refusal) => {
                 let what = match refusal.code.as_str() {
@@ -2135,9 +2144,18 @@ impl App {
         let on = self.read_aloud;
         let set = Request::SetSetting { key: torro_ipc::SettingKey::ReadAloud, value: serde_json::Value::Bool(on) };
         let task = self.ask(set, move |result| Message::ReadAloudSet(on, result.map(drop)));
-        match on {
+        // Off stops only what this window reads: not "Hey Torro" or another window's preview.
+        match on || self.reading.is_none() {
             true => task,
             false => Task::batch([task, self.stop_reading()]),
+        }
+    }
+
+    /// Stops reading when it belongs to another conversation than the open one (issue #745).
+    fn leave_reading(&mut self) -> Task<Message> {
+        match self.reading.is_some() && self.reading_in != self.current {
+            true => self.stop_reading(),
+            false => Task::none(),
         }
     }
 
