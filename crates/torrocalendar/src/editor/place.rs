@@ -73,6 +73,7 @@ pub fn maps_link(app: MapsApp, location: &str, geo: Option<Geo>) -> String {
 
 /// The link of `app` (whatever the system): with `geo` the point, else `location` as a search, every
 /// text percent-encoded. OpenStreetMap shows the point at zoom 17 as the concept says.
+#[cfg(test)]
 pub(super) fn link_for(app: MapsApp, location: &str, geo: Option<Geo>) -> String {
     torro_core::maps::link_for(app, location, geo.map(|Geo { lat, lon }| (lat, lon)))
 }
