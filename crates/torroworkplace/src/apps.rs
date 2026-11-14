@@ -907,12 +907,24 @@ impl SpeechHelper {
         running.take();
     }
 
-    /// Starts a job: stops the one that reads, waits for it to end, and starts the helper with `args`
-    /// unless it runs with them. [`SpeechError::Overtaken`] when another job or a stop came while it
-    /// waited.
-    pub async fn begin(&self, args: &[String]) -> Result<SpeechJob<'_>, SpeechError> {
+    /// Takes the next job's place: stops the one that reads. A stop or another job after this
+    /// overtakes it ([`SpeechHelper::begin_claimed`]).
+    pub async fn claim(&self) -> u64 {
         self.stop().await;
-        let number = self.jobs.fetch_add(1, Ordering::SeqCst) + 1;
+        self.jobs.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Starts a job: [`SpeechHelper::claim`], then [`SpeechHelper::begin_claimed`].
+    #[cfg(test)]
+    pub async fn begin(&self, args: &[String]) -> Result<SpeechJob<'_>, SpeechError> {
+        let number = self.claim().await;
+        self.begin_claimed(number, args).await
+    }
+
+    /// Starts the job `number` ([`SpeechHelper::claim`]): waits for the one that reads to end, and
+    /// starts the helper with `args` unless it runs with them. [`SpeechError::Overtaken`] when
+    /// another job or a stop came since the claim.
+    pub async fn begin_claimed(&self, number: u64, args: &[String]) -> Result<SpeechJob<'_>, SpeechError> {
         let mut running = self.running.lock().await;
         if self.jobs.load(Ordering::SeqCst) != number {
             return Err(SpeechError::Overtaken);
@@ -942,6 +954,11 @@ impl SpeechHelper {
 }
 
 impl SpeechJob<'_> {
+    /// Gives the helper back without a job sent: it is idle, and stays running for the next one.
+    pub fn leave(mut self) {
+        self.finished = true;
+    }
+
     /// Whether no newer job or stop came since this one began.
     pub fn current(&self) -> bool {
         self.helper.jobs.load(Ordering::SeqCst) == self.number
@@ -1360,6 +1377,11 @@ done"#;
         drop(first);
         assert_eq!(waiting.await.expect("joined"), Err(SpeechError::Overtaken));
         assert_eq!(SpeechHelper::none().begin(&args("one")).await.err(), Some(SpeechError::Missing));
+
+        // A stop while a job gets ready (after its claim) overtakes it.
+        let number = helper.claim().await;
+        helper.stop().await;
+        assert_eq!(helper.begin_claimed(number, &args("two")).await.err(), Some(SpeechError::Overtaken));
     }
 
     #[test]

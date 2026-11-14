@@ -2696,6 +2696,19 @@ fn speech_language() -> &'static str {
     }
 }
 
+/// The settings the speech helper is started with: only what reading aloud uses (provider, voices,
+/// Piper's voice file), so switching the listener or the chat's speaker does not start it anew and
+/// make Qwen load its model again.
+fn speech_settings(voice: &torro_core::settings::Voice) -> torro_core::settings::Voice {
+    torro_core::settings::Voice {
+        speech_provider: voice.speech_provider,
+        qwen_voice: voice.qwen_voice.clone(),
+        openai_voice: voice.openai_voice.clone(),
+        voice: voice.voice.clone(),
+        ..torro_core::settings::Voice::default()
+    }
+}
+
 /// What the speech helper is started with beyond the listener's settings: provider and voices.
 fn speech_choice(
     voice: &torro_core::settings::Voice,
@@ -13485,8 +13498,11 @@ impl Core {
     }
 
     /// `assistant.speak` (issue #745): reads `text` with the provider of the settings, or the core's
-    /// choice (Qwen where it works here, else Piper), through the helper. Answers once it was read or
-    /// stopped. OpenAI's sound is fetched here, where its key is, a piece ahead of what plays.
+    /// choice, through the helper; the helper makes that choice (Qwen where it is set up and the card
+    /// is fast enough, else Piper), so no answer waits for a check of the programs. Answers once it
+    /// was read or stopped. OpenAI's sound is fetched here, where its key is, a piece ahead of what
+    /// plays. Its place among the jobs is taken first, so a stop that comes while it gets ready
+    /// counts for it.
     async fn speak(&self, text: &str) -> Response {
         use torro_core::settings::SpeechProvider;
         let refused = |code: &str, message: &str| Response::Error { code: code.into(), message: message.into() };
@@ -13496,21 +13512,12 @@ impl Core {
         if text.chars().count() > MAX_SPEAK_CHARS {
             return refused("error", &format!("the text is longer than {MAX_SPEAK_CHARS} characters"));
         }
+        let number = self.speech.claim().await;
         let voice = self.settings.current().voice;
         let model = qwen_model(&self.measured_hardware().await);
-        let provider = match voice.speech_provider {
-            Some(provider) => provider,
-            None => {
-                let local = self.local_speech(&voice).await.ok();
-                let qwen = local.as_ref().and_then(|status| status.option(SpeechProvider::Qwen));
-                match model.is_some() && qwen.is_some_and(torro_ipc::SpeechOption::works) {
-                    true => SpeechProvider::Qwen,
-                    false => SpeechProvider::Piper,
-                }
-            }
-        };
+        let provider = voice.speech_provider;
         let speaker = match provider {
-            SpeechProvider::OpenAi => match self.ai.speaker().await {
+            Some(SpeechProvider::OpenAi) => match self.ai.speaker().await {
                 Some(speaker) => Some(speaker),
                 None => {
                     return refused(
@@ -13519,7 +13526,7 @@ impl Core {
                     );
                 }
             },
-            SpeechProvider::Qwen if model.is_none() => {
+            Some(SpeechProvider::Qwen) if model.is_none() => {
                 return refused("unsupported", tr("Local voices need an NVIDIA graphics card with at least 4 GB."));
             }
             _ => None,
@@ -13532,10 +13539,15 @@ impl Core {
             "model": model,
             "language": speech_language(),
         }});
-        let mut job = match self.speech.begin(&voice_args("--speak", &voice)).await {
+        let mut job = match self.speech.begin_claimed(number, &voice_args("--speak", &speech_settings(&voice))).await {
             Ok(job) => job,
             Err(err) => return speech_failure(&err),
         };
+        // Stopped while the helper started: nothing was sent, nothing is read.
+        if !job.current() {
+            job.leave();
+            return Response::Ok;
+        }
         if let Err(err) = job.send(&say.to_string()).await {
             return speech_failure(&err);
         }
