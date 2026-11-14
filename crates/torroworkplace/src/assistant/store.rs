@@ -337,8 +337,15 @@ pub fn drop_results(dir: &Path, id: &str, seqs: &BTreeSet<u64>) -> io::Result<()
     if written.is_err() {
         // What is left of it is of no use; the old file still holds everything.
         let _ = fs::remove_file(&temp);
+        return written;
     }
-    written
+    // The rename on the disk too; should that fail, a crash brings back the old file whole, and the next round
+    // drops its results again.
+    #[cfg(unix)]
+    if let Err(err) = fs::File::open(dir).and_then(|folder| folder.sync_all()) {
+        eprintln!("torroworkplace: cannot sync the folder of the conversation {id}: {err}");
+    }
+    Ok(())
 }
 
 /// Writes `bytes` to a new file `path` (0600), on the disk before it answers.
