@@ -13488,14 +13488,14 @@ impl crate::assistant::Host for Core {
     /// First the model, then where it runs (task S.23): the model asked or "Automatic" among the
     /// account's models as last listed ([`AiAccounts::known_models`], asked anew only for a model
     /// the list lacks), then [`torro_core::ai::place_of`] for that model. Only models turned on
-    /// count (task S.24, [`crate::assistant::ModelAccess::choose_on`]).
+    /// count (task S.24, [`crate::assistant::ModelAccess::choose_on`]). The provider is built after
+    /// the list, so it carries the models' output limits (issue #223).
     fn model<'a>(
         &'a self,
         engine: &'a str,
         model: Option<&'a str>,
     ) -> torro_core::ai::BoxFuture<'a, Result<crate::assistant::ModelAccess, torro_core::ai::AiError>> {
         Box::pin(async move {
-            let provider = self.ai.provider(engine).await?;
             let server = self.ai.server(engine).await;
             // An account removed meanwhile counts as elsewhere: nothing of mail goes to it.
             let place = |described: &torro_core::ai::AiModel| match &server {
@@ -13508,6 +13508,10 @@ impl crate::assistant::Host for Core {
                 Ok(models) => Ok(self.ai.mark_enabled(engine, models).await),
                 Err(err) => Err(err),
             };
+            // Built only now, once the account holds its list, so Anthropic caps each answer at the
+            // model's output limit (issue #223). The errors stay those of the first step:
+            // `known_models` fails through the same lookup.
+            let provider = self.ai.provider(engine).await?;
             let asked_on = match model {
                 Some(model) => self.ai.is_on(engine, model, listed.as_deref().ok()).await,
                 None => false,
