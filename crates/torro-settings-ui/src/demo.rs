@@ -1087,6 +1087,50 @@ impl Demo {
         }
     }
 
+    /// Who reads aloud on the sample computer (issue #745): a graphics card fast enough for Qwen3-TTS,
+    /// which is not set up yet, no OpenAI account, and Piper with its voice; the core's choice is Piper.
+    fn speech(&self) -> torro_ipc::SpeechStatus {
+        use torro_core::settings::{OPENAI_RECOMMENDED, OPENAI_VOICES, QWEN_RECOMMENDED, QWEN_VOICES, SpeechProvider};
+        use torro_ipc::{SpeechMissing, SpeechOption, SpeechStatus, SpeechVoice};
+        let voices = |ids: &[&str], recommended: &dyn Fn(&str) -> bool| {
+            ids.iter().map(|id| SpeechVoice { id: (*id).to_string(), recommended: recommended(id) }).collect()
+        };
+        SpeechStatus {
+            gpu: Some("NVIDIA GeForce RTX 4090, 24 GB".into()),
+            fast_enough: true,
+            recommended: SpeechProvider::Qwen,
+            current: self.settings.voice.speech_provider.unwrap_or(SpeechProvider::Piper),
+            providers: vec![
+                SpeechOption {
+                    provider: SpeechProvider::Qwen,
+                    missing: Some(SpeechMissing::Program),
+                    voices: voices(&QWEN_VOICES, &|id| id == QWEN_RECOMMENDED),
+                    model: Some("Qwen/Qwen3-TTS-12Hz-1.7B-Base".into()),
+                    setup: Some(
+                        "python3 -m venv \"/home/anna/.local/share/torroassistant/voice/qwen/venv\" && \
+                         \"/home/anna/.local/share/torroassistant/voice/qwen/venv/bin/pip\" install \
+                         faster-qwen3-tts==0.5.4 transformers==5.15.1"
+                            .into(),
+                    ),
+                },
+                SpeechOption {
+                    provider: SpeechProvider::OpenAi,
+                    missing: Some(SpeechMissing::Account),
+                    voices: voices(&OPENAI_VOICES, &|id| OPENAI_RECOMMENDED.contains(&id)),
+                    model: Some("gpt-4o-mini-tts".into()),
+                    setup: None,
+                },
+                SpeechOption {
+                    provider: SpeechProvider::Piper,
+                    missing: None,
+                    voices: vec![SpeechVoice { id: "de_DE-thorsten-medium".into(), recommended: true }],
+                    model: None,
+                    setup: None,
+                },
+            ],
+        }
+    }
+
     /// The save targets (`mail.list_save_targets`, task M12.7): "Invoices" by month and suggested for
     /// invoices and receipts that are PDFs, "Contracts" by sender and never suggested – the two of
     /// the design and of the mail window's demo. Paths only: the demo reads no folder.
@@ -1385,6 +1429,9 @@ impl Backend for Demo {
                 }
             }
             Request::VoiceStatus => Response::Voice { voice: self.voice() },
+            Request::SpeechStatus => Response::Speech { speech: self.speech() },
+            // "Preview" (issue #745): nothing sounds in the demo.
+            Request::Speak { .. } | Request::StopSpeaking => Response::Ok,
             Request::Accounts => Response::Accounts { accounts: self.accounts() },
             Request::MailAccountStats { .. } => Response::MailAccountStats { accounts: self.mail_stats() },
             // Always the same run: the demo never moves on, so it answers at once even with `after`

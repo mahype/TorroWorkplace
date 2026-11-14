@@ -140,6 +140,7 @@ pub fn wanted() -> Vec<Request> {
         Request::ListTools,
         Request::ListEngines,
         Request::VoiceStatus,
+        Request::SpeechStatus,
         Request::Accounts,
         Request::CalendarCollections,
         Request::TaskCollections,

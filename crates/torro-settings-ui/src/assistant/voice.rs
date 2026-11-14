@@ -7,6 +7,11 @@
 //! and below the four programs the listener needs with whether each was found
 //! (`settings.voice_status`).
 //!
+//! Above them "Read aloud" (issue #745, `settings.speech_status`): the switch of the chat windows,
+//! the provider and its voice from a dropdown each with the recommended one marked, whether this
+//! computer is fast enough for local voices, how to set up Qwen3-TTS (with "Copy"), and "Preview",
+//! which reads a sentence ([`Message::Preview`], an [`crate::Action::Ask`] of `assistant.speak`).
+//!
 //! Everything runs on this computer. Switching it on is a person's switch (point 6 of "Was nie nach
 //! außen geht" in `docs/api.md`): only here and in the tray, never through an agent.
 //!
@@ -31,11 +36,15 @@ use std::time::Duration;
 use iced::widget::{Space, column, toggler};
 use iced::{Element, Subscription};
 
-use torro_core::i18n::{tr, trf};
+use torro_core::i18n::{tr, trc, trf};
+use torro_core::settings::SpeechProvider;
 use torro_gui::theme;
 use torro_gui::widgets::{self, Align, DROPDOWN_SEARCH, Dropdown, DropdownEvent, MenuItem, MenuSection, Status};
 use torro_gui::{layout, style, typo};
-use torro_ipc::{Request, Response, SettingKey, VoiceMissing, VoicePart, VoiceProgram, VoiceState, VoiceStatus};
+use torro_ipc::{
+    Request, Response, SettingKey, SpeechMissing, SpeechStatus, VoiceMissing, VoicePart, VoiceProgram, VoiceState,
+    VoiceStatus,
+};
 
 use super::Action;
 use crate::Data;
@@ -54,6 +63,10 @@ const VOICE_POLLS: u8 = 5;
 pub enum Choice {
     /// "Microphone": the system's default or one the recording program lists.
     Microphone,
+    /// "Provider" of reading aloud (issue #745).
+    Provider,
+    /// "Voice" of the provider that reads (issue #745).
+    SpeechVoice,
 }
 
 /// Section state: what "Say something" is doing, what the listener is still expected to follow, and
@@ -72,6 +85,10 @@ pub struct State {
     expected: Option<bool>,
     /// How many more times the status is asked while the listener has not followed.
     polls: u8,
+    /// "Preview" reads its sentence (issue #745).
+    previewing: bool,
+    /// Why the last preview could not read, from the core.
+    preview_failed: Option<String>,
 }
 
 /// The outcome of "Say something".
@@ -102,6 +119,23 @@ pub enum Message {
     Poll,
     /// "Say something": record once and show what was understood.
     TestVoice,
+    /// "Read answers aloud" on or off (issue #745).
+    ReadAloud(bool),
+    /// An entry of the dropdown "Provider".
+    Provider(SpeechProvider),
+    /// An entry of the dropdown "Voice": the voice's id for the provider.
+    SpeechVoice(SpeechProvider, String),
+    /// "Preview": read a sentence with the provider and voice chosen.
+    Preview,
+    /// "Stop" while the preview reads.
+    StopPreview,
+    /// "Copy" beside the command that sets up Qwen3-TTS.
+    CopySetup(String),
+}
+
+/// The sentence "Preview" reads.
+pub fn preview_text() -> &'static str {
+    tr("Hello, I am your assistant. This is how I sound.")
 }
 
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
@@ -150,6 +184,32 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.polls -= 1;
             Action::Send(Vec::new())
         }
+        Message::ReadAloud(on) => set(SettingKey::ReadAloud, serde_json::Value::Bool(on)),
+        Message::Provider(provider) => {
+            state.menus.close();
+            set(SettingKey::SpeechProvider, serde_json::Value::String(provider.id().to_string()))
+        }
+        Message::SpeechVoice(provider, id) => {
+            state.menus.close();
+            let key = match provider {
+                SpeechProvider::Qwen => SettingKey::QwenVoice,
+                SpeechProvider::OpenAi => SettingKey::OpenAiVoice,
+                // Piper's voice is a file, chosen in the voice folder.
+                SpeechProvider::Piper => return Action::None,
+            };
+            set(key, serde_json::Value::String(id))
+        }
+        Message::Preview => {
+            if state.previewing {
+                return Action::None;
+            }
+            state.previewing = true;
+            state.preview_failed = None;
+            Action::Ask(Request::Speak { text: preview_text().to_string() })
+        }
+        // The preview's own answer comes once it stopped ([`answered`]).
+        Message::StopPreview => Action::send(Request::StopSpeaking),
+        Message::CopySetup(command) => Action::Copy(command),
         Message::TestVoice => {
             if state.testing {
                 return Action::None;
@@ -166,6 +226,12 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
 /// something" heard, or why it failed. Anything else is not this section's and changes nothing.
 pub fn answered(state: &mut State, result: &Result<Response, String>) {
     match result {
+        // The preview read to its end or was stopped (issue #745).
+        Ok(Response::Ok) if state.previewing => state.previewing = false,
+        Err(message) if state.previewing && !state.testing => {
+            state.previewing = false;
+            state.preview_failed = Some(message.clone());
+        }
         Ok(Response::Transcript { text }) => {
             state.testing = false;
             state.heard =
@@ -211,13 +277,19 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     if !super::is_on(data) {
         return super::off_group(tr("Voice"));
     }
-    column![voice_group(state, data), programs_group(data)].spacing(layout::section_gap()).into()
+    column![read_aloud_group(state, data), voice_group(state, data), programs_group(data)]
+        .spacing(layout::section_gap())
+        .into()
 }
 
 /// The open dropdown of the microphone, under its button: the system's default and every
 /// microphone the recording program lists, the chosen one marked.
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
     let key = state.menus.open().filter(|_| super::is_on(data))?;
+    if *key != Choice::Microphone {
+        let sections = vec![MenuSection::new(speech_items(*key, data))];
+        return Some(state.menus.view(key, sections, widgets::menu_width(), Align::End, Message::Menus));
+    }
     let microphones = data.voice.as_ref().map(|voice| &voice.microphones).filter(|list| !list.is_empty())?;
     let chosen = data.settings.voice.microphone.as_deref();
     let default = MenuItem::plain(tr("System default"), Message::Microphone(None)).current(chosen.is_none());
@@ -244,6 +316,78 @@ pub fn escape(state: &State) -> Option<Message> {
     state.menus.open().map(|_| Message::Menus(DropdownEvent::Close))
 }
 
+/// The entries of the dropdown `key` of reading aloud: the providers, or the voices of the one that
+/// reads, the recommended ones marked.
+fn speech_items(key: Choice, data: &Data) -> Vec<MenuItem<'_, Message>> {
+    let current = current_provider(data);
+    match key {
+        Choice::Provider => SpeechProvider::ALL
+            .iter()
+            .map(|&provider| {
+                let recommended = data.speech.as_ref().is_some_and(|speech| speech.recommended == provider);
+                MenuItem::plain(marked(provider_name(provider), recommended), Message::Provider(provider))
+                    .current(provider == current)
+            })
+            .collect(),
+        Choice::SpeechVoice => {
+            let chosen = chosen_voice(data, current);
+            voices_of(data, current)
+                .into_iter()
+                .map(|(id, recommended)| {
+                    MenuItem::plain(marked(&voice_name(&id), recommended), Message::SpeechVoice(current, id.clone()))
+                        .current(chosen == id)
+                })
+                .collect()
+        }
+        Choice::Microphone => Vec::new(),
+    }
+}
+
+/// "Read aloud" (issue #745): the switch of the chat windows, the provider with whether this computer
+/// is fast enough, the voice with "Preview", and how to set up Qwen3-TTS when it is missing.
+fn read_aloud_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let settings = &data.settings.voice;
+    let switch =
+        toggler(settings.read_aloud).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::ReadAloud);
+    let on = setting_row(None, tr("Read answers aloud"), Some(tr("In the chat windows").to_string()), switch);
+    let current = current_provider(data);
+    let label =
+        marked(provider_name(current), data.speech.as_ref().is_some_and(|speech| speech.recommended == current));
+    let provider = setting_row(
+        None,
+        tr("Provider"),
+        Some(provider_detail(data.speech.as_ref(), current)),
+        state.menus.button(Choice::Provider, label, Message::Menus),
+    );
+    let preview = match state.previewing {
+        true => widgets::text_button(None, tr("Stop"), style::button::secondary, Some(Message::StopPreview)),
+        false => widgets::text_button(None, tr("Preview"), style::button::secondary, Some(Message::Preview)),
+    };
+    let chosen = chosen_voice(data, current);
+    let voices = voices_of(data, current);
+    let recommended = voices.iter().any(|(id, recommended)| *recommended && *id == chosen);
+    let picker: Element<'a, Message> = match current {
+        // Piper speaks with the voice file found; it is chosen in the voice folder.
+        SpeechProvider::Piper => typo::text(typo::body(), chosen).style(theme::text_2).into(),
+        _ => state.menus.button(Choice::SpeechVoice, marked(&voice_name(&chosen), recommended), Message::Menus),
+    };
+    let control = iced::widget::row![picker, preview].spacing(layout::item_gap()).align_y(iced::Alignment::Center);
+    let detail = match &state.preview_failed {
+        Some(message) => Some(message.clone()),
+        None => voice_detail(data.speech.as_ref(), current),
+    };
+    // "Voice" as the sound of a speaker: in German the page itself is "Sprache".
+    let voice = setting_row(None, trc("speaker", "Voice"), detail, control);
+    let mut rows = vec![on, provider, voice];
+    if let Some(command) = setup_command(data.speech.as_ref(), current) {
+        let copy =
+            widgets::text_button(None, tr("Copy"), style::button::secondary, Some(Message::CopySetup(command.clone())));
+        rows.push(setting_row(None, tr("Set up Qwen3-TTS"), Some(command), copy));
+    }
+    let footer = tr("Local voices stay on this computer. With OpenAI the text of each answer goes to OpenAI.");
+    widgets::group(tr("Read aloud"), rows, Some(footer.to_string()))
+}
+
 /// "Voice": on or off with what the listener does, the wake word, "Speak answers", the microphone
 /// and the test.
 fn voice_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
@@ -261,8 +405,12 @@ fn voice_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let wake = setting_row(None, tr("Wake word"), Some(tr("Your own wake word comes later").to_string()), word);
     let speak =
         toggler(settings.speak_answers).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::SpeakAnswers);
-    let speak =
-        setting_row(None, tr("Speak answers"), Some(tr("Read aloud with Piper as well as shown").to_string()), speak);
+    let speak = setting_row(
+        None,
+        tr("Speak answers"),
+        Some(tr("After “Hey Torro”, with the voice chosen above").to_string()),
+        speak,
+    );
     let test_button = match state.testing {
         true => widgets::busy_button(tr("Listening…"), style::button::secondary),
         false => widgets::text_button(
@@ -341,6 +489,119 @@ pub fn heard_text(state: &State) -> String {
         Some(Heard::Nothing) => tr("Nothing understood. Speak a little louder or closer.").to_string(),
         Some(Heard::Failed(_)) => tr("The test failed. Check the programs below.").to_string(),
     }
+}
+
+/// The provider that reads now: the core's word (the chosen one, or its choice), else the chosen one,
+/// else Piper.
+pub fn current_provider(data: &Data) -> SpeechProvider {
+    data.speech
+        .as_ref()
+        .map(|speech| speech.current)
+        .or(data.settings.voice.speech_provider)
+        .unwrap_or(SpeechProvider::Piper)
+}
+
+/// The name of `provider` in the dropdown.
+pub fn provider_name(provider: SpeechProvider) -> &'static str {
+    match provider {
+        SpeechProvider::Qwen => tr("Local: Qwen3-TTS"),
+        SpeechProvider::OpenAi => tr("Online: OpenAI"),
+        SpeechProvider::Piper => tr("Local: Piper"),
+    }
+}
+
+/// `name` with "(recommended)" when it is.
+pub fn marked(name: &str, recommended: bool) -> String {
+    match recommended {
+        true => trf("{name} (recommended)", &[("name", &name)]),
+        false => name.to_string(),
+    }
+}
+
+/// The name of a voice: Qwen's templates in words, OpenAI's by their name, capitalised (Piper's
+/// file name is shown as it is).
+pub fn voice_name(id: &str) -> String {
+    match id {
+        "warm_woman" => tr("Warm woman").to_string(),
+        "calm_man" => tr("Calm man").to_string(),
+        _ => {
+            let mut chars = id.chars();
+            chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
+        }
+    }
+}
+
+/// The voices of `provider` with whether each is recommended; without a status Qwen's and OpenAI's
+/// from the settings' lists.
+fn voices_of(data: &Data, provider: SpeechProvider) -> Vec<(String, bool)> {
+    use torro_core::settings::{OPENAI_RECOMMENDED, OPENAI_VOICES, QWEN_RECOMMENDED, QWEN_VOICES};
+    if let Some(option) = data.speech.as_ref().and_then(|speech| speech.option(provider)) {
+        return option.voices.iter().map(|voice| (voice.id.clone(), voice.recommended)).collect();
+    }
+    match provider {
+        SpeechProvider::Qwen => QWEN_VOICES.iter().map(|id| (id.to_string(), *id == QWEN_RECOMMENDED)).collect(),
+        SpeechProvider::OpenAi => {
+            OPENAI_VOICES.iter().map(|id| (id.to_string(), OPENAI_RECOMMENDED.contains(id))).collect()
+        }
+        SpeechProvider::Piper => Vec::new(),
+    }
+}
+
+/// The voice `provider` reads with: the chosen one, else the recommended one; for Piper the voice
+/// found.
+fn chosen_voice(data: &Data, provider: SpeechProvider) -> String {
+    let voice = &data.settings.voice;
+    match provider {
+        SpeechProvider::Qwen => voice.qwen_voice_or_default().to_string(),
+        SpeechProvider::OpenAi => voice.openai_voice_or_default().to_string(),
+        SpeechProvider::Piper => {
+            voices_of(data, provider).into_iter().next().map(|(id, _)| id).unwrap_or_else(|| tr("None").to_string())
+        }
+    }
+}
+
+/// The line under "Provider": whether this computer is fast enough for local voices, and what keeps
+/// the provider chosen from reading.
+pub fn provider_detail(speech: Option<&SpeechStatus>, current: SpeechProvider) -> String {
+    let Some(speech) = speech else { return tr("Checking this computer…").to_string() };
+    let fast = match (&speech.gpu, speech.fast_enough) {
+        (Some(gpu), true) => trf("This computer is fast enough for local voices ({gpu}).", &[("gpu", gpu)]),
+        (Some(gpu), false) => trf(
+            "This computer is not fast enough for local voices ({gpu}); online voices are recommended.",
+            &[("gpu", gpu)],
+        ),
+        (None, _) => tr("Local voices need an NVIDIA graphics card with at least 4 GB; online voices are recommended.")
+            .to_string(),
+    };
+    match speech.option(current).and_then(|option| option.missing) {
+        Some(missing) => format!("{fast} {}", missing_text(current, missing)),
+        None => fast,
+    }
+}
+
+/// What keeps `provider` from reading, for people.
+pub fn missing_text(provider: SpeechProvider, missing: SpeechMissing) -> &'static str {
+    match (provider, missing) {
+        (_, SpeechMissing::Gpu) => tr("Qwen3-TTS needs an NVIDIA graphics card with at least 4 GB."),
+        (SpeechProvider::Qwen, SpeechMissing::Program) => tr("Qwen3-TTS is not set up yet: run the command below."),
+        (_, SpeechMissing::Program) => tr("Piper is not installed."),
+        (_, SpeechMissing::Voice) => tr("Piper has no voice yet: put one into the voice folder."),
+        (_, SpeechMissing::Player) => tr("No program to play sound was found."),
+        (_, SpeechMissing::Account) => tr("Connect an OpenAI account in Settings › AI."),
+        (_, SpeechMissing::App) => tr("The assistant app is not installed."),
+    }
+}
+
+/// The line under "Voice": the model Qwen reads with.
+fn voice_detail(speech: Option<&SpeechStatus>, current: SpeechProvider) -> Option<String> {
+    let model = speech?.option(current)?.model.as_deref()?;
+    Some(trf("Model: {model}", &[("model", &model)]))
+}
+
+/// The command that sets up Qwen3-TTS, while it reads and is not set up.
+fn setup_command(speech: Option<&SpeechStatus>, current: SpeechProvider) -> Option<String> {
+    let option = speech?.option(current).filter(|_| current == SpeechProvider::Qwen)?;
+    option.setup.clone().filter(|_| option.missing == Some(SpeechMissing::Program))
 }
 
 /// The dot and the line under "Talk to the assistant": off, or what the listener does.
@@ -653,5 +914,102 @@ mod tests {
             }
             let _ = view(&state, &turned_off(&data));
         }
+    }
+
+    /// Issue #745: the switch, provider and voice each send their setting; the recommended entry is
+    /// marked; Preview asks to read and Stop stops it; Qwen's setup is offered with Copy.
+    #[tokio::test]
+    async fn read_aloud_sends_its_settings_and_previews() {
+        let data = data().await;
+        let speech = data.speech.clone().expect("the demo answers the status");
+        let mut state = State::default();
+        assert_eq!(
+            sent(update(&mut state, Message::ReadAloud(true), &data)),
+            (SettingKey::ReadAloud, serde_json::json!(true))
+        );
+        assert_eq!(
+            sent(update(&mut state, Message::Provider(SpeechProvider::OpenAi), &data)),
+            (SettingKey::SpeechProvider, serde_json::json!("openai"))
+        );
+        assert_eq!(
+            sent(update(&mut state, Message::SpeechVoice(SpeechProvider::OpenAi, "cedar".into()), &data)),
+            (SettingKey::OpenAiVoice, serde_json::json!("cedar"))
+        );
+        assert_eq!(
+            sent(update(&mut state, Message::SpeechVoice(SpeechProvider::Qwen, "calm_man".into()), &data)),
+            (SettingKey::QwenVoice, serde_json::json!("calm_man"))
+        );
+        assert!(matches!(
+            update(&mut state, Message::SpeechVoice(SpeechProvider::Piper, "x".into()), &data),
+            Act::None
+        ));
+
+        assert_eq!(
+            update(&mut state, Message::Preview, &data),
+            Act::Ask(Request::Speak { text: preview_text().into() })
+        );
+        assert!(matches!(update(&mut state, Message::Preview, &data), Act::None), "one at a time");
+        assert_eq!(update(&mut state, Message::StopPreview, &data), Act::Send(vec![Request::StopSpeaking]));
+        answered(&mut state, &Ok(Response::Ok));
+        assert!(!state.previewing);
+        let _ = update(&mut state, Message::Preview, &data);
+        answered(&mut state, &Err("No program to play sound was found.".into()));
+        assert_eq!(state.preview_failed.as_deref(), Some("No program to play sound was found."));
+
+        let providers = speech_items(Choice::Provider, &data);
+        assert_eq!(providers.len(), 3);
+        assert_eq!(
+            marked(provider_name(SpeechProvider::Qwen), true),
+            trf("{name} (recommended)", &[("name", &provider_name(SpeechProvider::Qwen))])
+        );
+        let qwen =
+            Data { speech: Some(SpeechStatus { current: SpeechProvider::Qwen, ..speech.clone() }), ..data.clone() };
+        assert_eq!(speech_items(Choice::SpeechVoice, &qwen).len(), 2);
+        let openai =
+            Data { speech: Some(SpeechStatus { current: SpeechProvider::OpenAi, ..speech.clone() }), ..data.clone() };
+        assert_eq!(speech_items(Choice::SpeechVoice, &openai).len(), 13);
+        assert!(
+            setup_command(qwen.speech.as_ref(), SpeechProvider::Qwen)
+                .is_some_and(|command| command.contains("faster-qwen3-tts"))
+        );
+        assert_eq!(setup_command(openai.speech.as_ref(), SpeechProvider::OpenAi), None);
+        let Act::Copy(copied) = update(&mut state, Message::CopySetup("pip install x".into()), &data) else {
+            panic!("copied")
+        };
+        assert_eq!(copied, "pip install x");
+        assert_eq!(voice_name("warm_woman"), tr("Warm woman"));
+        assert_eq!(voice_name("marin"), "Marin");
+        for data in [&data, &qwen, &openai] {
+            let _ = view(&state, data);
+            for key in [Choice::Provider, Choice::SpeechVoice] {
+                state.menus = Dropdown::default();
+                let _ = update(&mut state, Message::Menus(DropdownEvent::Toggle(key)), data);
+                assert!(overlay(&state, data).is_some(), "{key:?}");
+            }
+        }
+    }
+
+    /// Issue #745: the line under "Provider" says whether this computer is fast enough, and what the
+    /// chosen provider lacks.
+    #[test]
+    fn the_provider_line_says_whether_local_voices_fit() {
+        let status = |gpu: Option<&str>, fast_enough| SpeechStatus {
+            gpu: gpu.map(str::to_string),
+            fast_enough,
+            recommended: SpeechProvider::Qwen,
+            current: SpeechProvider::Qwen,
+            providers: Vec::new(),
+        };
+        let fast = provider_detail(Some(&status(Some("RTX 4090, 24 GB"), true)), SpeechProvider::Qwen);
+        assert_eq!(fast, trf("This computer is fast enough for local voices ({gpu}).", &[("gpu", &"RTX 4090, 24 GB")]));
+        let slow = provider_detail(Some(&status(None, false)), SpeechProvider::Qwen);
+        assert!(slow.starts_with(tr(
+            "Local voices need an NVIDIA graphics card with at least 4 GB; online voices are recommended."
+        )));
+        assert_eq!(provider_detail(None, SpeechProvider::Piper), tr("Checking this computer…"));
+        assert_eq!(
+            missing_text(SpeechProvider::OpenAi, SpeechMissing::Account),
+            tr("Connect an OpenAI account in Settings › AI.")
+        );
     }
 }
