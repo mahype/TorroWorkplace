@@ -110,7 +110,7 @@ use torro_ipc::api::{Area, Rights};
 use torro_ipc::assistant::Mode as PermissionMode;
 use torro_ipc::assistant::{
     Card, CardEntry, ChatWindow, ConversationHit, ConversationSummary, Engine, EngineKind, Entry, EntryContent,
-    MAX_HITS, Profile,
+    MAX_BULK_IDS, MAX_HITS, Profile,
 };
 use torro_ipc::bots::{Bot, BotSummary};
 use torro_ipc::{ApprovalInfo, Request, Response, VoiceStatus};
@@ -213,6 +213,10 @@ pub enum Menu {
     /// The menu of a bot in the sidebar (right click): New chat, Edit, Access, Open in new window,
     /// Delete.
     Bot { id: String },
+    /// The "…" of the sidebar's group "Recent" (issue #697): Archive all…, Delete all….
+    Recent,
+    /// The "…" of the open group "Archive" (issue #697): Empty archive….
+    Archive,
     /// The engine and model picker of the bot editor.
     BotPicker,
 }
@@ -245,6 +249,11 @@ pub enum Dialog {
     Delete { id: String, title: String },
     /// Delete the bot `id` (named `name`) for good, after asking.
     DeleteBot { id: String, name: String },
+    /// Delete the conversations `ids` for good, after asking (issue #697): those under "Recent"
+    /// ("Delete all…") or, with `archive`, the whole archive ("Empty archive…").
+    DeleteMany { ids: Vec<String>, archive: bool },
+    /// Archive the conversations `ids` under "Recent", after asking ("Archive all…", issue #697).
+    ArchiveMany { ids: Vec<String> },
 }
 
 /// What the window knows of the assistant's own client (kind `assistant`).
@@ -446,6 +455,18 @@ pub enum Message {
     ConfirmDelete,
     /// "Pin" (`true`) or "Unpin".
     Pin(String, bool),
+    /// "Archive" (`true`) or "Restore" for these conversations (issue #697).
+    Archive(Vec<String>, bool),
+    /// Open or close the sidebar's group "Archive".
+    ToggleArchive,
+    /// "Archive all…", "Delete all…" at "Recent", "Empty archive…" at "Archive": asks first.
+    AskArchiveAll,
+    AskDeleteAll,
+    AskEmptyArchive,
+    /// The question's "Archive … conversations" or "Delete … conversations".
+    ConfirmMany,
+    /// These conversations were deleted (or not) at once.
+    DeletedMany(Vec<String>, Result<(), Refusal>),
     /// The core's answer to a rename or pin; the text says what failed.
     Changed(Result<(), Refusal>, &'static str),
     /// The conversation with this id was deleted (or not).
@@ -624,6 +645,8 @@ pub struct App {
     pub(crate) snap: Option<(String, u64)>,
     /// The sidebar row under the pointer.
     pub(crate) hover: Option<String>,
+    /// Whether the sidebar's group "Archive" is open (issue #697): closed at every start, not kept.
+    pub(crate) archive_open: bool,
     /// Whether the sidebar drawer is open (medium and narrow layouts).
     pub(crate) drawer: bool,
     /// The sidebar the user chose for the wide layout, kept in `ui.json`.
@@ -720,6 +743,9 @@ impl App {
                 Some(Open::Picker | Open::Effort) => Some(Menu::Picker),
                 Some(Open::Mode) => Some(Menu::Mode),
                 Some(Open::Menu) => Some(Menu::Conversation { id: demo::TOOLS.into(), at: MenuAt::Header }),
+                // A row under "Recent" (issue #697): the menu hangs at its "…", which stays shown.
+                Some(Open::RowMenu) => Some(Menu::Conversation { id: demo::STREAMING.into(), at: MenuAt::Row }),
+                Some(Open::RecentMenu) => Some(Menu::Recent),
                 Some(Open::BotMenu) => Some(Menu::Bot { id: demo::TRAVEL.into() }),
                 _ => None,
             },
@@ -731,6 +757,7 @@ impl App {
             marked: None,
             snap: None,
             hover: None,
+            archive_open: open == Some(Open::Archive),
             // Without a sidebar the bot's menu hangs in the drawer.
             drawer: matches!(open, Some(Open::Drawer | Open::BotMenu)),
             sidebar: SidebarMode::default(),
@@ -1175,6 +1202,32 @@ impl App {
                 let request = Request::PinConversation { id, pinned };
                 return self.ask(request, move |result| Message::Changed(result.map(|_| ()), failed));
             }
+            Message::Archive(ids, archived) => return self.archive(ids, archived),
+            Message::ToggleArchive => self.archive_open = !self.archive_open,
+            Message::AskArchiveAll => {
+                self.close_menus();
+                let ids = self.recent_ids();
+                if !ids.is_empty() {
+                    self.dialog = Some(Dialog::ArchiveMany { ids });
+                }
+            }
+            Message::AskDeleteAll => {
+                self.close_menus();
+                let ids = self.recent_ids();
+                if !ids.is_empty() {
+                    self.dialog = Some(Dialog::DeleteMany { ids, archive: false });
+                }
+            }
+            Message::AskEmptyArchive => {
+                self.close_menus();
+                let ids: Vec<String> =
+                    chat::archived_group(&self.conversations, "").iter().map(|c| c.id.clone()).collect();
+                if !ids.is_empty() {
+                    self.dialog = Some(Dialog::DeleteMany { ids, archive: true });
+                }
+            }
+            Message::ConfirmMany => return self.confirm_many(),
+            Message::DeletedMany(ids, result) => return self.deleted_many(ids, result),
             Message::Changed(Ok(()), _) => return self.load_list(),
             Message::Changed(Err(refusal), failed) => {
                 self.note_failure(failed, &refusal);
@@ -2146,6 +2199,71 @@ impl App {
         self.ask(request, move |result| Message::Deleted(id.clone(), result.map(|_| ())))
     }
 
+    /// The ids under "Recent", whatever the search shows (issue #697): what "Archive all…" and "Delete
+    /// all…" take – every conversation that is neither pinned nor archived, those with bots too.
+    fn recent_ids(&self) -> Vec<String> {
+        chat::sidebar_groups(&self.conversations, "").1.iter().map(|c| c.id.clone()).collect()
+    }
+
+    /// "Archive" or "Restore" (issue #697): shown at once, then asked of the core in pieces of
+    /// [`MAX_BULK_IDS`]; the list is read anew after each answer.
+    fn archive(&mut self, ids: Vec<String>, archived: bool) -> Task<Message> {
+        self.close_menus();
+        for conversation in self.conversations.iter_mut().filter(|c| ids.contains(&c.id)) {
+            conversation.archived = archived;
+        }
+        let failed =
+            if archived { tr("Couldn't archive the conversation.") } else { tr("Couldn't restore the conversation.") };
+        let tasks: Vec<Task<Message>> = ids
+            .chunks(MAX_BULK_IDS)
+            .map(|piece| {
+                let request = Request::ArchiveConversations { ids: piece.to_vec(), archived };
+                self.ask(request, move |result| Message::Changed(result.map(|_| ()), failed))
+            })
+            .collect();
+        Task::batch(tasks)
+    }
+
+    /// The question's yes to "Archive all…", "Delete all…" or "Empty archive…".
+    fn confirm_many(&mut self) -> Task<Message> {
+        match self.dialog.take() {
+            Some(Dialog::ArchiveMany { ids }) => self.archive(ids, true),
+            Some(Dialog::DeleteMany { ids, .. }) => {
+                let tasks: Vec<Task<Message>> = ids
+                    .chunks(MAX_BULK_IDS)
+                    .map(|piece| {
+                        let ids = piece.to_vec();
+                        let request = Request::DeleteConversations { ids: ids.clone() };
+                        self.ask(request, move |result| Message::DeletedMany(ids.clone(), result.map(|_| ())))
+                    })
+                    .collect();
+                Task::batch(tasks)
+            }
+            other => {
+                self.dialog = other;
+                Task::none()
+            }
+        }
+    }
+
+    /// The core's answer to deleting `ids` at once: as [`App::deleted`] for each, so the open one
+    /// makes room for a new chat; the list is read anew either way, as some may be gone.
+    fn deleted_many(&mut self, ids: Vec<String>, result: Result<(), Refusal>) -> Task<Message> {
+        match result {
+            Ok(()) => {
+                self.conversations.retain(|c| !ids.contains(&c.id));
+                self.note(tr("Conversations deleted").to_owned());
+                let open = self.current.as_ref().is_some_and(|id| ids.contains(id));
+                let task = if open { self.new_chat() } else { Task::none() };
+                Task::batch([task, self.load_list()])
+            }
+            Err(refusal) => {
+                self.note_failure(tr("Couldn't delete the conversations."), &refusal);
+                self.load_list()
+            }
+        }
+    }
+
     fn deleted(&mut self, id: String, result: Result<(), Refusal>) -> Task<Message> {
         match result {
             Ok(()) => {
@@ -2362,6 +2480,7 @@ impl App {
         match self.launch.open {
             Some(Open::Rename) => self.dialog = Some(Dialog::Rename { id, title }),
             Some(Open::Delete) => self.dialog = Some(Dialog::Delete { id, title }),
+            Some(Open::DeleteAll) => self.dialog = Some(Dialog::DeleteMany { ids: self.recent_ids(), archive: false }),
             _ => {}
         }
     }

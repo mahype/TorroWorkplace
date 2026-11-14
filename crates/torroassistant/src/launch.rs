@@ -114,11 +114,19 @@ pub enum Open {
     /// The sidebar's search through the history with a word of the demo, its first hit opened and marked
     /// (issue #704).
     Search,
+    /// The sidebar's group "Archive" open, with its three conversations (issue #697).
+    Archive,
+    /// The "…" menu of a conversation's row in the sidebar: Rename, Pin, Archive, … (issue #697).
+    RowMenu,
+    /// The "…" menu of the sidebar's group "Recent": Archive all…, Delete all… (issue #697).
+    RecentMenu,
+    /// The question before deleting every conversation under "Recent" (issue #697).
+    DeleteAll,
 }
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 33] = [
+    pub const ALL: [(&'static str, Open); 37] = [
         ("new", Open::New),
         ("tools", Open::Tools),
         ("approval", Open::Approval),
@@ -152,6 +160,10 @@ impl Open {
         ("access-selections", Open::AccessSelections),
         ("access-bots", Open::AccessBots),
         ("search", Open::Search),
+        ("archive", Open::Archive),
+        ("row-menu", Open::RowMenu),
+        ("recent-menu", Open::RecentMenu),
+        ("delete-all", Open::DeleteAll),
     ];
 }
 
