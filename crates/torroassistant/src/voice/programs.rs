@@ -4,19 +4,29 @@
 //!
 //! Programs are looked for on `PATH` ([`Finder`]); models and voices in the settings' paths or in
 //! the voice folder `<data>/torroassistant/voice/` ([`voice_folder`]): `ggml-*.bin` for
-//! whisper.cpp, `*.onnx` with its `*.onnx.json` for Piper, `hey_torro.onnx` (or `.tflite`) for
-//! openWakeWord.
+//! whisper.cpp, the folder [`PARAKEET_MODEL`] for Parakeet, `*.onnx` with its `*.onnx.json` for
+//! Piper, `hey_torro.onnx` (or `.tflite`) for openWakeWord. Only the speech to text the settings
+//! choose is looked for ([`Recognizer`]).
+//!
+//! Parakeet runs in a Python that imports `onnx-asr`. Systems with a protected Python (Arch,
+//! Debian) refuse a plain `pip install`, so the Python of a `pipx` or `uv tool` install is found
+//! too: it is named in the first line of their program `onnx-asr` ([`script_python`]).
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
-use torro_core::settings::Voice;
+use torro_core::settings::{Recognizer, Voice};
 use torro_ipc::{VoiceMissing, VoicePart, VoiceProgram};
 
 /// The openWakeWord model of the fixed wake word (decision 11), without its extension.
 pub const WAKE_MODEL: &str = "hey_torro";
+
+/// The folder of the Parakeet model in the voice folder (Hugging Face:
+/// `istupakov/parakeet-tdt-0.6b-v3-onnx`).
+pub const PARAKEET_MODEL: &str = "parakeet-tdt-0.6b-v3";
 
 /// The folder where models and voices are looked for when the settings name none; `None` without
 /// a home directory.
@@ -182,6 +192,14 @@ impl Player {
 pub struct Found {
     /// The recording program and its kind.
     pub recorder: Option<(RecorderKind, PathBuf)>,
+    /// The speech to text that was looked for: only its parts are filled in.
+    pub recognizer: Recognizer,
+    /// A Python with `onnx-asr` importable, for Parakeet.
+    pub parakeet: Option<PathBuf>,
+    /// The Parakeet model folder ([`PARAKEET_MODEL`]) with its vocabulary and model files.
+    pub parakeet_model: Option<PathBuf>,
+    /// The model folder holds the smaller int8 files, which are loaded instead of the full ones.
+    pub parakeet_int8: bool,
     /// `whisper-cli` (whisper.cpp).
     pub whisper: Option<PathBuf>,
     /// The whisper.cpp model.
@@ -201,8 +219,9 @@ pub struct Found {
 }
 
 impl Found {
-    /// Looks for every part with `finder`, as `voice` sets it. Starts Python once to see whether
-    /// openWakeWord is installed, nothing else.
+    /// Looks for every part with `finder`, as `voice` sets it; of speech to text only the chosen
+    /// one. Starts Python to see whether openWakeWord (and, for Parakeet, `onnx-asr`) is
+    /// installed, nothing else.
     pub fn detect(finder: &Finder, voice: &Voice) -> Found {
         let microphone = voice.microphone.as_deref();
         let recorder = RecorderKind::order().iter().find_map(|&kind| {
@@ -214,10 +233,22 @@ impl Found {
             path.file_stem().is_some_and(|stem| stem == WAKE_MODEL)
                 && path.extension().is_some_and(|ext| ext == "onnx" || ext == "tflite")
         });
-        let stt_model = finder.file(voice.stt_model.as_deref(), |path| {
-            let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-            name.starts_with("ggml-") && name.ends_with(".bin")
-        });
+        let whisper = voice.recognizer == Recognizer::Whisper;
+        let stt_model = finder
+            .file(voice.stt_model.as_deref(), |path| {
+                let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+                name.starts_with("ggml-") && name.ends_with(".bin")
+            })
+            .filter(|_| whisper);
+        let parakeet = if whisper { None } else { parakeet_python(finder) };
+        let model_folder = finder.folder.as_deref().filter(|_| !whisper).map(|folder| folder.join(PARAKEET_MODEL));
+        let (parakeet_model, parakeet_int8) = match model_folder {
+            Some(folder) => match parakeet_model(&folder) {
+                Some(int8) => (Some(folder), int8),
+                None => (None, false),
+            },
+            None => (None, false),
+        };
         let piper_voice = finder.file(voice.voice.as_deref(), |path| {
             path.extension().is_some_and(|ext| ext == "onnx")
                 && path.file_stem().is_none_or(|stem| stem != WAKE_MODEL)
@@ -225,7 +256,11 @@ impl Found {
         });
         Found {
             recorder,
-            whisper: finder.program(&["whisper-cli", "whisper-cpp"]),
+            recognizer: voice.recognizer,
+            parakeet,
+            parakeet_model,
+            parakeet_int8,
+            whisper: finder.program(&["whisper-cli", "whisper-cpp"]).filter(|_| whisper),
             stt_model,
             python,
             wake_model,
@@ -249,10 +284,17 @@ impl Found {
             Some((_, path)) => part(VoicePart::Recorder, name(path), None),
             None => part(VoicePart::Recorder, None, Some(VoiceMissing::Program)),
         };
-        let stt = match (&self.whisper, &self.stt_model) {
-            (Some(path), Some(_)) => part(VoicePart::SpeechToText, name(path), None),
-            (Some(path), None) => part(VoicePart::SpeechToText, name(path), Some(VoiceMissing::Model)),
-            (None, _) => part(VoicePart::SpeechToText, None, Some(VoiceMissing::Program)),
+        let stt = match self.recognizer {
+            Recognizer::Whisper => match (&self.whisper, &self.stt_model) {
+                (Some(path), Some(_)) => part(VoicePart::SpeechToText, name(path), None),
+                (Some(path), None) => part(VoicePart::SpeechToText, name(path), Some(VoiceMissing::Model)),
+                (None, _) => part(VoicePart::SpeechToText, None, Some(VoiceMissing::Program)),
+            },
+            Recognizer::Parakeet => match (&self.parakeet, &self.parakeet_model) {
+                (Some(_), Some(_)) => part(VoicePart::SpeechToText, Some(ONNX_ASR.into()), None),
+                (Some(_), None) => part(VoicePart::SpeechToText, Some(ONNX_ASR.into()), Some(VoiceMissing::Model)),
+                (None, _) => part(VoicePart::SpeechToText, None, Some(VoiceMissing::Program)),
+            },
         };
         let speech = match (&self.piper, &self.voice, &self.player) {
             (Some(path), Some(_), Some(_)) => part(VoicePart::Speech, name(path), None),
@@ -292,10 +334,67 @@ fn player(finder: &Finder) -> Option<Player> {
     })
 }
 
+/// The name Parakeet's program is shown with, and the program of a `pipx` or `uv tool` install.
+const ONNX_ASR: &str = "onnx-asr";
+
+/// The first Python that imports `onnx-asr`: the one of its program `onnx-asr` on `PATH` (a
+/// `pipx` or `uv tool` install), then `python3`, then `python`.
+fn parakeet_python(finder: &Finder) -> Option<PathBuf> {
+    let installed = finder.program(&[ONNX_ASR]).and_then(|script| script_python(&script, finder));
+    installed
+        .into_iter()
+        .chain(finder.program(&["python3"]))
+        .chain(finder.program(&["python"]))
+        .find(|python| imports(python, "onnx_asr"))
+}
+
+/// The Python a Python program runs with, from its first lines: `#!/path/python`,
+/// `#!/usr/bin/env python3`, or the `/bin/sh` trampoline `pip` writes for long paths
+/// (`'''exec' '/path/python' "$0" "$@"`). `None` for anything else.
+pub fn script_python(script: &Path, finder: &Finder) -> Option<PathBuf> {
+    let mut head = Vec::new();
+    std::fs::File::open(script).ok()?.take(1024).read_to_end(&mut head).ok()?;
+    let text = String::from_utf8_lossy(&head);
+    let mut lines = text.lines();
+    let mut words = lines.next()?.strip_prefix("#!")?.split_whitespace();
+    let interpreter = Path::new(words.next()?);
+    let stem = interpreter.file_stem()?.to_string_lossy();
+    if stem == "env" {
+        return words.next().and_then(|name| finder.program(&[name]));
+    }
+    if stem == "sh" {
+        let exec = lines.find_map(|line| line.strip_prefix("'''exec' "))?;
+        let quoted = exec.trim_start().strip_prefix('\'')?;
+        return quoted.split('\'').next().map(PathBuf::from).filter(|path| path.is_file());
+    }
+    Some(interpreter.to_path_buf()).filter(|path| path.is_file())
+}
+
+/// Whether `folder` holds a Parakeet model: its vocabulary and either the int8 files (`Some(true)`)
+/// or the full ones (`Some(false)`).
+fn parakeet_model(folder: &Path) -> Option<bool> {
+    let has = |name: &str| folder.join(name).is_file();
+    if !has("vocab.txt") {
+        return None;
+    }
+    if has("encoder-model.int8.onnx") && has("decoder_joint-model.int8.onnx") {
+        Some(true)
+    } else if has("encoder-model.onnx") && has("decoder_joint-model.onnx") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 /// Whether `python` can import openWakeWord: it is installed (`pip install openwakeword`).
 fn imports_openwakeword(python: &Path) -> bool {
+    imports(python, "openwakeword")
+}
+
+/// Whether `python` can import `module`.
+fn imports(python: &Path, module: &str) -> bool {
     Command::new(python)
-        .args(["-c", "import openwakeword"])
+        .args(["-c", &format!("import {module}")])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -392,7 +491,8 @@ pub mod tests {
             fake_program(path.path(), name, "exit 0");
         }
         let finder = Finder { dirs: vec![path.path().to_path_buf()], folder: Some(folder.path().to_path_buf()) };
-        let found = Found::detect(&finder, &Voice::default());
+        let whisper = Voice { recognizer: Recognizer::Whisper, ..Voice::default() };
+        let found = Found::detect(&finder, &whisper);
         assert_eq!(
             found.whisper.as_deref(),
             Some(path.path().join(format!("whisper-cli{}", std::env::consts::EXE_SUFFIX)).as_path())
@@ -409,7 +509,7 @@ pub mod tests {
         fs::write(folder.path().join("de_DE-thorsten-medium.onnx"), b"voice").expect("voice");
         fs::write(folder.path().join("de_DE-thorsten-medium.onnx.json"), b"{}").expect("config");
         fs::write(folder.path().join("hey_torro.onnx"), b"wake").expect("wake model");
-        let found = Found::detect(&finder, &Voice::default());
+        let found = Found::detect(&finder, &whisper);
         assert_eq!(found.stt_model, Some(folder.path().join("ggml-base.bin")), "the first by name");
         assert_eq!(found.voice, Some(folder.path().join("de_DE-thorsten-medium.onnx")));
         assert_eq!(found.wake_model, Some(folder.path().join("hey_torro.onnx")));
@@ -417,10 +517,9 @@ pub mod tests {
 
         // A model the settings name wins; one that is not there is missing.
         let named =
-            Voice { stt_model: Some(folder.path().join("ggml-tiny.bin").to_string_lossy().into()), ..Voice::default() };
+            Voice { stt_model: Some(folder.path().join("ggml-tiny.bin").to_string_lossy().into()), ..whisper.clone() };
         assert_eq!(Found::detect(&finder, &named).stt_model, Some(folder.path().join("ggml-tiny.bin")));
-        let gone =
-            Voice { stt_model: Some(folder.path().join("ggml-gone.bin").to_string_lossy().into()), ..Voice::default() };
+        let gone = Voice { stt_model: Some(folder.path().join("ggml-gone.bin").to_string_lossy().into()), ..whisper };
         assert_eq!(Found::detect(&finder, &gone).status()[2].missing, Some(VoiceMissing::Model));
     }
 
@@ -439,6 +538,74 @@ pub mod tests {
         fs::write(folder.path().join("hey_torro.tflite"), b"wake").expect("wake model");
         let wake = Found::detect(&finder, &Voice::default()).status()[0].clone();
         assert_eq!((wake.program.as_deref(), wake.missing), (Some("openWakeWord"), None));
+    }
+
+    /// Issue #749: Parakeet needs a Python that imports `onnx-asr` and the model folder with its
+    /// vocabulary; the int8 files are preferred. Whisper is not looked for meanwhile.
+    #[cfg(unix)]
+    #[test]
+    fn parakeet_needs_python_with_onnx_asr_and_the_model_folder() {
+        let path = tempfile::tempdir().expect("temp dir");
+        let folder = tempfile::tempdir().expect("voice folder");
+        let finder = Finder { dirs: vec![path.path().to_path_buf()], folder: Some(folder.path().to_path_buf()) };
+        fake_program(path.path(), "whisper-cli", "exit 0");
+        let stt = |found: &Found| found.status()[2].clone();
+        let found = Found::detect(&finder, &Voice::default());
+        assert_eq!(found.whisper, None, "only the chosen one is looked for");
+        assert_eq!((stt(&found).program, stt(&found).missing), (None, Some(VoiceMissing::Program)));
+
+        fake_program(path.path(), "python3", "[ \"$2\" = \"import onnx_asr\" ] && exit 0; exit 1");
+        let found = Found::detect(&finder, &Voice::default());
+        assert_eq!(stt(&found).program.as_deref(), Some("onnx-asr"));
+        assert_eq!(stt(&found).missing, Some(VoiceMissing::Model), "no model folder");
+
+        let model = folder.path().join(PARAKEET_MODEL);
+        fs::create_dir(&model).expect("model folder");
+        for file in ["encoder-model.int8.onnx", "decoder_joint-model.int8.onnx", "encoder-model.onnx"] {
+            fs::write(model.join(file), b"model").expect("model file");
+        }
+        assert_eq!(stt(&Found::detect(&finder, &Voice::default())).missing, Some(VoiceMissing::Model), "no vocab.txt");
+        fs::write(model.join("vocab.txt"), b"a 0").expect("vocabulary");
+        let found = Found::detect(&finder, &Voice::default());
+        assert_eq!((found.parakeet_model.as_deref(), found.parakeet_int8), (Some(model.as_path()), true));
+        assert_eq!(stt(&found).missing, None);
+
+        fs::remove_file(model.join("decoder_joint-model.int8.onnx")).expect("remove");
+        assert_eq!(stt(&Found::detect(&finder, &Voice::default())).missing, Some(VoiceMissing::Model));
+        fs::write(model.join("decoder_joint-model.onnx"), b"model").expect("full model");
+        let found = Found::detect(&finder, &Voice::default());
+        assert_eq!((found.parakeet_model.is_some(), found.parakeet_int8), (true, false), "the full files");
+
+        let whisper = Found::detect(&finder, &Voice { recognizer: Recognizer::Whisper, ..Voice::default() });
+        assert_eq!((&whisper.parakeet, &whisper.parakeet_model), (&None, &None));
+        assert_eq!(stt(&whisper).program.as_deref(), Some("whisper-cli"));
+    }
+
+    /// Issue #749: the Python of a `pipx` or `uv tool` install comes from the first lines of its
+    /// program `onnx-asr`, before `python3` on `PATH`.
+    #[cfg(unix)]
+    #[test]
+    fn the_python_of_an_onnx_asr_install_comes_first() {
+        let path = tempfile::tempdir().expect("temp dir");
+        let venv = tempfile::tempdir().expect("venv");
+        let finder = Finder { dirs: vec![path.path().to_path_buf()], folder: None };
+        // python3 on PATH has no onnx-asr; the one of the install has.
+        fake_program(path.path(), "python3", "exit 1");
+        let python = fake_program(venv.path(), "python", "[ \"$2\" = \"import onnx_asr\" ] && exit 0; exit 1");
+        let script = path.path().join("onnx-asr");
+        fs::write(&script, format!("#!{}\nimport onnx_asr\n", python.display())).expect("script");
+        assert_eq!(script_python(&script, &finder), Some(python.clone()));
+        assert_eq!(Found::detect(&finder, &Voice::default()).parakeet, Some(python.clone()));
+
+        // pip's trampoline for long paths, and `env`.
+        let trampoline = format!("#!/bin/sh\n'''exec' '{}' \"$0\" \"$@\"\n' '''\nimport onnx_asr\n", python.display());
+        fs::write(&script, trampoline).expect("script");
+        assert_eq!(script_python(&script, &finder), Some(python.clone()));
+        fs::write(&script, "#!/usr/bin/env python3\n").expect("script");
+        assert_eq!(script_python(&script, &finder), Some(path.path().join("python3")));
+        fs::write(&script, "no shebang\n").expect("script");
+        assert_eq!(script_python(&script, &finder), None);
+        assert_eq!(Found::detect(&finder, &Voice::default()).parakeet, None, "python3 lacks onnx-asr");
     }
 
     #[test]

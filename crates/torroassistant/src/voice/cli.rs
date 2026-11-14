@@ -24,10 +24,10 @@ use torro_core::settings::Voice;
 use torro_ipc::{Response, VoiceState, VoiceStatus};
 
 use super::audio::{Endpoint, FRAMES_PER_SECOND, Limits, NoiseFloor};
-use super::external::{CommandRecorder, Parts, WhisperCli};
+use super::external::{CommandRecorder, Parts, transcriber_of};
 use super::listen::{CoreAssistant, Ended, Listener};
 use super::programs::{Finder, Found};
-use super::{Recorder, Transcriber, VoiceError};
+use super::{Recorder, VoiceError};
 use crate::backend::Backend;
 
 /// A voice mode from the start parameters.
@@ -124,12 +124,14 @@ fn stop_at_end_of_input() -> Arc<AtomicBool> {
 fn test(voice: &Voice, limits: Limits, stop: &AtomicBool) -> Response {
     let found = Found::detect(&Finder::system(), voice);
     let refused = |code: &str, err: VoiceError| Response::Error { code: code.into(), message: err.to_string() };
-    let (mut recorder, mut whisper) =
-        match (CommandRecorder::of(&found, voice.microphone.as_deref()), WhisperCli::of(&found)) {
-            (Ok(recorder), Ok(whisper)) => (recorder, whisper),
-            (Err(err), _) | (_, Err(err)) => return refused("unsupported", err),
-        };
-    match record_sentence(&mut recorder, limits, stop).and_then(|sentence| whisper.transcribe(&sentence)) {
+    // The transcriber starts before the recording, so Parakeet loads its model while one speaks.
+    let parts = CommandRecorder::of(&found, voice.microphone.as_deref())
+        .and_then(|recorder| transcriber_of(&found).map(|transcriber| (recorder, transcriber)));
+    let (mut recorder, mut transcriber) = match parts {
+        Ok(parts) => parts,
+        Err(err) => return refused("unsupported", err),
+    };
+    match record_sentence(&mut recorder, limits, stop).and_then(|sentence| transcriber.transcribe(&sentence)) {
         Ok(text) => Response::Transcript { text },
         Err(err) => refused("error", err),
     }

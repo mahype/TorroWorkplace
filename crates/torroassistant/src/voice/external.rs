@@ -1,17 +1,20 @@
 //! The parts of the listener over the local programs [`super::programs`] found: recording with
 //! `parec`/`arecord`/SoX/`ffmpeg` ([`CommandRecorder`]), the wake word with openWakeWord
-//! ([`OpenWakeWord`]), speech to text with whisper.cpp ([`WhisperCli`]) and speech with Piper
+//! ([`OpenWakeWord`]), speech to text with Parakeet ([`ParakeetPython`]) or whisper.cpp
+//! ([`WhisperCli`]), as the settings choose ([`transcriber_of`]), and speech with Piper
 //! ([`Piper`]). [`Parts::build`] puts them together for the settings.
 //!
 //! Every program runs without a shell, its arguments one by one, so a microphone's or a file's
 //! name is never read as a command.
 
+use std::cell::RefCell;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
-use torro_core::settings::Voice;
+use torro_core::settings::{Recognizer, Voice};
 use torro_ipc::{VoiceMissing, VoicePart};
 
 use super::audio::{FRAME, TempWav, chime};
@@ -33,15 +36,15 @@ impl Parts {
     /// only shown.
     pub fn build(found: &Found, voice: &Voice) -> Result<Parts, VoiceError> {
         let recorder = CommandRecorder::of(found, voice.microphone.as_deref())?;
-        let whisper = WhisperCli::of(found)?;
+        let transcriber = SharedTranscriber::new(transcriber_of(found)?);
         let wake: Box<dyn WakeWord> = match (&found.python, &found.wake_model) {
             (Some(python), Some(model)) => Box::new(OpenWakeWord::new(python.clone(), model.clone())),
-            _ => Box::new(TranscriptWake::new(Box::new(whisper.clone()))),
+            _ => Box::new(TranscriptWake::new(Box::new(transcriber.clone()))),
         };
         Ok(Parts {
             recorder: Box::new(recorder),
             wake,
-            transcriber: Box::new(whisper),
+            transcriber: Box::new(transcriber),
             speaker: Box::new(Piper::of(found)),
         })
     }
@@ -234,6 +237,144 @@ impl Drop for OpenWakeWord {
     }
 }
 
+/// The script Parakeet runs in: loads the model once, then reads sentences from its input, each
+/// as 4 bytes (the number of samples, unsigned little endian) and that many 16-bit samples, and
+/// writes each sentence's text as one line. The end of its input ends it.
+const PARAKEET: &str = r#"
+import struct
+import sys
+import numpy as np
+import onnx_asr
+quantization = sys.argv[2] if len(sys.argv) > 2 else None
+model = onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v3", sys.argv[1], quantization=quantization)
+source = sys.stdin.buffer
+while True:
+    head = source.read(4)
+    if len(head) < 4:
+        break
+    (count,) = struct.unpack("<I", head)
+    data = source.read(count * 2)
+    if len(data) < count * 2:
+        break
+    samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768
+    text = model.recognize(samples, sample_rate=16000)
+    print(" ".join(str(text).split()), flush=True)
+"#;
+
+/// Parakeet in a Python process of its own that keeps the model loaded: loading takes seconds, a
+/// sentence about one. The process starts at once ([`ParakeetPython::start`]), so the model loads
+/// while the first sentence is recorded; one that stopped starts again with the next sentence.
+pub struct ParakeetPython {
+    command: Vec<String>,
+    running: Option<(Child, ChildStdin, BufReader<ChildStdout>)>,
+}
+
+impl ParakeetPython {
+    /// Starts `python` with the model folder `model`, its int8 files if `int8`.
+    pub fn start(python: &Path, model: &Path, int8: bool) -> Result<ParakeetPython, VoiceError> {
+        let mut command = vec![
+            python.to_string_lossy().into_owned(),
+            "-u".into(),
+            "-c".into(),
+            PARAKEET.into(),
+            model.to_string_lossy().into_owned(),
+        ];
+        if int8 {
+            command.push("int8".into());
+        }
+        let mut parakeet = ParakeetPython { command, running: None };
+        parakeet.run()?;
+        Ok(parakeet)
+    }
+
+    fn run(&mut self) -> Result<(), VoiceError> {
+        let mut child = spawn(&self.command, Stdio::piped(), Stdio::piped())?;
+        let input = child.stdin.take().ok_or_else(|| VoiceError::program(PARAKEET_NAME, "no input"))?;
+        let output = child.stdout.take().ok_or_else(|| VoiceError::program(PARAKEET_NAME, "no output"))?;
+        self.running = Some((child, input, BufReader::new(output)));
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        if let Some((mut child, input, _)) = self.running.take() {
+            drop(input);
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// The name Parakeet's process goes by in messages.
+const PARAKEET_NAME: &str = "onnx-asr";
+
+impl Transcriber for ParakeetPython {
+    fn transcribe(&mut self, samples: &[i16]) -> Result<String, VoiceError> {
+        if samples.is_empty() {
+            return Ok(String::new());
+        }
+        if self.running.is_none() {
+            self.run()?;
+        }
+        let Some((_, input, output)) = self.running.as_mut() else { return Ok(String::new()) };
+        let count = u32::try_from(samples.len()).map_err(|_| VoiceError::Sound("the sentence is too long".into()))?;
+        let mut bytes = Vec::with_capacity(4 + samples.len() * 2);
+        bytes.extend(count.to_le_bytes());
+        bytes.extend(samples.iter().flat_map(|sample| sample.to_le_bytes()));
+        let mut line = String::new();
+        let answered = input.write_all(&bytes).and_then(|()| input.flush()).and_then(|()| output.read_line(&mut line));
+        match answered {
+            Ok(read) if read > 0 => Ok(line.trim().to_string()),
+            _ => {
+                self.stop();
+                Err(VoiceError::program(PARAKEET_NAME, "stopped"))
+            }
+        }
+    }
+}
+
+impl Drop for ParakeetPython {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// One transcriber shared by the wake word ([`TranscriptWake`]) and the sentences, so Parakeet
+/// runs in one process with one model loaded.
+#[derive(Clone)]
+pub struct SharedTranscriber(Rc<RefCell<Box<dyn Transcriber>>>);
+
+impl SharedTranscriber {
+    pub fn new(transcriber: Box<dyn Transcriber>) -> SharedTranscriber {
+        SharedTranscriber(Rc::new(RefCell::new(transcriber)))
+    }
+}
+
+impl Transcriber for SharedTranscriber {
+    fn transcribe(&mut self, samples: &[i16]) -> Result<String, VoiceError> {
+        // The listener runs one part at a time, so the transcriber is never in use twice.
+        let mut transcriber =
+            self.0.try_borrow_mut().map_err(|_| VoiceError::program(PARAKEET_NAME, "already transcribing"))?;
+        transcriber.transcribe(samples)
+    }
+}
+
+/// The speech to text chosen in the settings, as `found`: whisper.cpp, or Parakeet started at once.
+/// What is missing is a [`VoiceError::Missing`] of [`VoicePart::SpeechToText`].
+pub fn transcriber_of(found: &Found) -> Result<Box<dyn Transcriber>, VoiceError> {
+    match found.recognizer {
+        Recognizer::Whisper => Ok(Box::new(WhisperCli::of(found)?)),
+        Recognizer::Parakeet => {
+            let python =
+                found.parakeet.as_deref().ok_or(VoiceError::Missing(VoicePart::SpeechToText, VoiceMissing::Program))?;
+            let model = found
+                .parakeet_model
+                .as_deref()
+                .ok_or(VoiceError::Missing(VoicePart::SpeechToText, VoiceMissing::Model))?;
+            Ok(Box::new(ParakeetPython::start(python, model, found.parakeet_int8)?))
+        }
+    }
+}
+
 /// whisper.cpp's `whisper-cli` with a model: the sentence goes to a private temporary file, the
 /// text comes from its output.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -357,6 +498,39 @@ mod tests {
         piper.chime();
     }
 
+    /// Issue #749: the chosen speech to text is built, and what it misses is named.
+    #[test]
+    fn the_chosen_transcriber_names_what_it_misses() {
+        let missing = |found: &Found| transcriber_of(found).err();
+        let parakeet = Found::default();
+        assert_eq!(missing(&parakeet), Some(VoiceError::Missing(VoicePart::SpeechToText, VoiceMissing::Program)));
+        let without_model = Found { parakeet: Some(PathBuf::from("/usr/bin/python3")), ..Found::default() };
+        assert_eq!(missing(&without_model), Some(VoiceError::Missing(VoicePart::SpeechToText, VoiceMissing::Model)));
+        let whisper =
+            Found { recognizer: Recognizer::Whisper, whisper: Some("/bin/whisper-cli".into()), ..Found::default() };
+        assert_eq!(missing(&whisper), Some(VoiceError::Missing(VoicePart::SpeechToText, VoiceMissing::Model)));
+    }
+
+    /// Counts the sentences it was given.
+    struct Counts(Rc<RefCell<usize>>);
+
+    impl Transcriber for Counts {
+        fn transcribe(&mut self, _: &[i16]) -> Result<String, VoiceError> {
+            *self.0.borrow_mut() += 1;
+            Ok("heard".into())
+        }
+    }
+
+    #[test]
+    fn a_shared_transcriber_is_one() {
+        let count = Rc::new(RefCell::new(0));
+        let mut sentences = SharedTranscriber::new(Box::new(Counts(Rc::clone(&count))));
+        let mut wake = sentences.clone();
+        assert_eq!(wake.transcribe(&[1]).expect("text"), "heard");
+        assert_eq!(sentences.transcribe(&[1]).expect("text"), "heard");
+        assert_eq!(*count.borrow(), 2, "both went to the same transcriber");
+    }
+
     /// The programs with fake ones in a temporary folder (shell scripts, so Unix only): the
     /// recorder's sound arrives in frames, whisper's text comes back, Piper writes and the player
     /// plays, openWakeWord answers `wake` or stays quiet.
@@ -423,6 +597,34 @@ mod tests {
             assert_eq!(fs::read_to_string(&played).expect("played"), "Two events today.\n");
             speaker.chime();
             assert_eq!(fs::read(&played).expect("the tone"), wav_bytes(&chime()));
+        }
+
+        /// Issue #749: Parakeet's process gets the model folder and each sentence with its length
+        /// in front, answers a line, and starts again after it stopped.
+        #[test]
+        fn parakeet_answers_a_line_per_sentence_and_starts_again() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (args, head, starts) = (dir.path().join("args"), dir.path().join("head"), dir.path().join("starts"));
+            // Answers one sentence, then ends: the next sentence finds it stopped.
+            let body = format!(
+                "echo \"$4 $5\" > '{}'; echo start >> '{}'; dd bs=4 count=1 of='{}' 2>/dev/null; echo ' Hallo Welt '",
+                args.display(),
+                starts.display(),
+                head.display()
+            );
+            let python = fake_program(dir.path(), "python3", &body);
+            let model = dir.path().join("parakeet-tdt-0.6b-v3");
+            let mut parakeet = ParakeetPython::start(&python, &model, true).expect("starts");
+            assert_eq!(parakeet.transcribe(&[]).expect("nothing said"), "");
+            let samples = fixture("utterance.wav");
+            assert_eq!(parakeet.transcribe(&samples).expect("text"), "Hallo Welt");
+            assert_eq!(fs::read_to_string(&args).expect("arguments").trim(), format!("{} int8", model.display()));
+            let count = u32::try_from(samples.len()).expect("fits");
+            assert_eq!(fs::read(&head).expect("the length"), count.to_le_bytes());
+
+            assert_eq!(parakeet.transcribe(&samples), Err(VoiceError::program("onnx-asr", "stopped")));
+            assert_eq!(parakeet.transcribe(&samples).expect("started again"), "Hallo Welt");
+            assert_eq!(fs::read_to_string(&starts).expect("starts").lines().count(), 2);
         }
 
         /// Feeds frames until `wake` arrives or a second is over.
