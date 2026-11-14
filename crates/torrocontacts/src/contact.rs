@@ -18,7 +18,7 @@ use std::process::Command;
 
 use iced::widget::image::Handle;
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, column, container, row, text_input};
+use iced::widget::{column, container, row, text_input};
 use iced::{Alignment, Background, Element, Fill, Theme, border};
 use torro_contacts::{AddressBook, Contact, ContactState, Labeled};
 use torro_core::i18n::{tr, trf};
@@ -306,7 +306,8 @@ pub fn address_map(map: &AddressMap, index: usize, pin: iced::Color) -> Element<
         ),
     };
     let open = widgets::text_button(Some(Icon::ArrowUpRight), tr("Open in Maps"), style::button::ghost, Some(open));
-    row![words, Space::new().width(Fill), open].spacing(space::s()).align_y(Alignment::Center).wrap().into()
+    // Side by side while both fit, "Open in Maps" under the line where they do not; never a gap between.
+    row![words, open].spacing(space::s()).align_y(Alignment::Center).wrap().into()
 }
 
 /// A quiet line under an address: `meta` in `text_3`, as high as a button so the states do not jump.
