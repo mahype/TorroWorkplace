@@ -22,7 +22,7 @@ use torro_ipc::Request;
 use torro_ipc::assistant::{ConversationSummary, Entry, EntryContent, LETTER_AVATAR};
 use torro_ipc::bots::{
     Bot, BotSummary, MAX_DESCRIPTION_CHARS, MAX_INSTRUCTIONS_CHARS, MAX_NAME_CHARS, MAX_PERSONALITY_CHARS,
-    MAX_SKILL_CHARS, MAX_SKILL_NAME_CHARS, MAX_SKILLS, Skill,
+    MAX_SKILL_CHARS, MAX_SKILL_DESCRIPTION_CHARS, MAX_SKILL_NAME_CHARS, MAX_SKILLS, Skill,
 };
 
 use crate::chat::Choice;
@@ -66,10 +66,11 @@ impl Template {
     }
 }
 
-/// One skill as it is typed: its name and its text.
+/// One skill as it is typed: its name, when it fits (issue #703) and its text.
 #[derive(Debug)]
 pub struct SkillDraft {
     pub name: String,
+    pub description: String,
     pub text: Content,
 }
 
@@ -112,6 +113,8 @@ pub enum DraftEdit {
     /// "Remove skill" at the skill with this place.
     RemoveSkill(usize),
     SkillName(usize, String),
+    /// When the skill at this place fits (issue #703).
+    SkillDescription(usize, String),
     SkillText(usize, Action),
     /// From the engine picker.
     Engine(Choice),
@@ -157,7 +160,11 @@ impl BotDraft {
             skills: bot
                 .skills
                 .iter()
-                .map(|skill| SkillDraft { name: skill.name.clone(), text: Content::with_text(&skill.text) })
+                .map(|skill| SkillDraft {
+                    name: skill.name.clone(),
+                    description: skill.description.clone(),
+                    text: Content::with_text(&skill.text),
+                })
                 .collect(),
             choice: Some(Choice { engine: bot.engine.clone(), model: bot.model.clone() }),
             tried: false,
@@ -176,7 +183,7 @@ impl BotDraft {
             DraftEdit::Template(template) => self.personality = Content::with_text(template.text()),
             DraftEdit::Instructions(action) => self.instructions.perform(action),
             DraftEdit::AddSkill if self.can_add_skill() => {
-                self.skills.push(SkillDraft { name: String::new(), text: Content::new() });
+                self.skills.push(SkillDraft { name: String::new(), description: String::new(), text: Content::new() });
             }
             DraftEdit::AddSkill => {}
             DraftEdit::RemoveSkill(at) if at < self.skills.len() => {
@@ -186,6 +193,11 @@ impl BotDraft {
             DraftEdit::SkillName(at, name) => {
                 if let Some(skill) = self.skills.get_mut(at) {
                     skill.name = name;
+                }
+            }
+            DraftEdit::SkillDescription(at, description) => {
+                if let Some(skill) = self.skills.get_mut(at) {
+                    skill.description = description;
                 }
             }
             DraftEdit::SkillText(at, action) => {
@@ -238,10 +250,20 @@ impl BotDraft {
                 MAX_INSTRUCTIONS_CHARS,
             ));
         }
-        for skill in &self.skills {
+        for (at, skill) in self.skills.iter().enumerate() {
             let name = skill.name.trim();
             if name.is_empty() {
                 return Some(tr("Give every skill a name.").to_owned());
+            }
+            // Issue #703: a skill is fetched by its name, so each is there once.
+            if self.skills[..at].iter().any(|other| other.name.trim().to_lowercase() == name.to_lowercase()) {
+                return Some(trf("Two skills are called “{name}”.", &[("name", &name)]));
+            }
+            if skill.description.trim().chars().count() > MAX_SKILL_DESCRIPTION_CHARS {
+                return Some(trf(
+                    "A skill's description is at most {max} characters: “{name}”.",
+                    &[("max", &MAX_SKILL_DESCRIPTION_CHARS), ("name", &name)],
+                ));
             }
             if name.chars().count() > MAX_SKILL_NAME_CHARS {
                 return Some(trf(
@@ -282,7 +304,11 @@ impl BotDraft {
             skills: self
                 .skills
                 .iter()
-                .map(|skill| Skill { name: skill.name.trim().to_owned(), text: editor_text(&skill.text) })
+                .map(|skill| Skill {
+                    name: skill.name.trim().to_owned(),
+                    description: skill.description.trim().to_owned(),
+                    text: editor_text(&skill.text),
+                })
                 .collect(),
         })
     }
@@ -395,7 +421,7 @@ mod tests {
             model: Some("qwen3:14b".into()),
             personality: "Calm.".into(),
             instructions: "Trains first.".into(),
-            skills: vec![Skill { name: "Packing".into(), text: "Pack light.".into() }],
+            skills: vec![Skill { name: "Packing".into(), description: String::new(), text: "Pack light.".into() }],
             client: "c0000001".into(),
         }
     }
@@ -420,7 +446,7 @@ mod tests {
                 model: Some("qwen3:14b".into()),
                 personality: "Calm.".into(),
                 instructions: "Trains first.".into(),
-                skills: vec![Skill { name: "Packing".into(), text: "Pack light.".into() }],
+                skills: vec![Skill { name: "Packing".into(), description: String::new(), text: "Pack light.".into() }],
             })
         );
     }
@@ -432,7 +458,11 @@ mod tests {
         assert_eq!(draft.avatar, LETTER_AVATAR);
         assert_eq!(tried(BotDraft::new(None)), Some(tr("Give the bot a name.").to_owned()));
         draft.name = "  Release helper ".into();
-        draft.skills.push(SkillDraft { name: " Steps ".into(), text: Content::with_text(" Tag, build. \n") });
+        draft.skills.push(SkillDraft {
+            name: " Steps ".into(),
+            description: " When we ship ".into(),
+            text: Content::with_text(" Tag, build. \n"),
+        });
         let Some(Request::SaveBot { id, name, skills, engine, avatar, .. }) = draft.request() else {
             panic!("a save");
         };
@@ -440,7 +470,10 @@ mod tests {
             (id, name.as_str(), engine.as_str(), avatar.as_deref()),
             (None, "Release helper", "test", Some("letter"))
         );
-        assert_eq!(skills, vec![Skill { name: "Steps".into(), text: "Tag, build.".into() }]);
+        assert_eq!(
+            skills,
+            vec![Skill { name: "Steps".into(), description: "When we ship".into(), text: "Tag, build.".into() }]
+        );
     }
 
     #[test]
@@ -460,6 +493,13 @@ mod tests {
         assert_eq!(with(&|d| d.personality = Content::with_text(&"a".repeat(MAX_PERSONALITY_CHARS))).0, None);
         assert!(refused(with(&|d| d.instructions = Content::with_text(&"a".repeat(MAX_INSTRUCTIONS_CHARS + 1)))));
         assert!(refused(with(&|d| d.skills[0].name = String::new())));
+        // Issue #703: a description of one line within its length, and every name once.
+        assert!(refused(with(&|d| d.skills[0].description = "a".repeat(MAX_SKILL_DESCRIPTION_CHARS + 1))));
+        assert!(refused(with(&|d| {
+            let copy =
+                SkillDraft { name: d.skills[0].name.to_uppercase(), description: String::new(), text: Content::new() };
+            d.skills.push(copy)
+        })));
         assert!(refused(with(&|d| d.skills[0].name = "a".repeat(MAX_SKILL_NAME_CHARS + 1))));
         assert!(refused(with(&|d| d.skills[0].text = Content::with_text(&"a".repeat(MAX_SKILL_CHARS + 1)))));
         assert!(refused(with(&|d| d.choice = None)), "no engine");
@@ -498,7 +538,11 @@ mod tests {
             skills: draft
                 .skills
                 .iter()
-                .map(|skill| SkillDraft { name: skill.name.clone(), text: Content::with_text(&skill.text.text()) })
+                .map(|skill| SkillDraft {
+                    name: skill.name.clone(),
+                    description: skill.description.clone(),
+                    text: Content::with_text(&skill.text.text()),
+                })
                 .collect(),
             choice: draft.choice.clone(),
             tried: draft.tried,

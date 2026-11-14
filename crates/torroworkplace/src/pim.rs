@@ -1438,7 +1438,11 @@ impl PimService {
             | Request::ListMemories
             | Request::MyAccess
             | Request::Remember { .. }
-            | Request::Forget { .. } => return None,
+            | Request::Forget { .. }
+            | Request::ListSkills
+            | Request::GetSkill { .. }
+            | Request::SaveSkill { .. }
+            | Request::DeleteSkill { .. } => return None,
             // No collection: bots are the assistant's (task B.1).
             Request::ListBots
             | Request::GetBot { .. }

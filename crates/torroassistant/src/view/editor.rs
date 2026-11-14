@@ -319,7 +319,7 @@ impl App {
             .push(section(
                 tr("Skills"),
                 skills(draft),
-                Some(tr("What the bot knows, as text it reads in every answer.")),
+                Some(tr("Guides for tasks that come again. The bot sees each name and description and reads the text when a task fits.")),
             ))
             .push(section(
                 tr("Engine"),
@@ -482,10 +482,14 @@ fn skills(draft: &BotDraft) -> Element<'_, Message> {
         let remove =
             widgets::icon_button(Icon::Trash2, tr("Remove skill"), Some(Message::Draft(DraftEdit::RemoveSkill(at))));
         let head = row![name, remove].spacing(space::s()).align_y(Alignment::Center);
+        // Issue #703: the bot's prompt names the skill with this line; the text it reads when it fits.
+        let description = field(tr("When it fits, such as How I pack for a trip"), &skill.description, move |text| {
+            Message::Draft(DraftEdit::SkillDescription(at, text))
+        });
         let text = area(&skill.text, tr("What the bot should know"), SKILL_LINES, move |action| {
             Message::Draft(DraftEdit::SkillText(at, action))
         });
-        list = list.push(column![head, text, counter(&skill.text, MAX_SKILL_CHARS)].spacing(space::xs()));
+        list = list.push(column![head, description, text, counter(&skill.text, MAX_SKILL_CHARS)].spacing(space::xs()));
     }
     let add = widgets::text_button(
         Some(Icon::Plus),

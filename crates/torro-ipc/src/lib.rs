@@ -68,8 +68,10 @@ use torro_setups::restore::RestoreReport;
 use torro_setups::{Startup, TemplateSummary};
 
 use crate::api::{Area, Rights, RightsTemplate};
-use crate::assistant::{CardEntry, ChatWindow, ConversationSummary, Engine, Entry, MyAccess, Note, Profile};
-use crate::bots::{Bot, BotSummary, Skill};
+use crate::assistant::{
+    CardEntry, ChatWindow, ConversationSummary, Engine, Entry, MyAccess, Note, Profile, Skill, SkillSummary,
+};
+use crate::bots::{Bot, BotSummary};
 use crate::help::{HelpTopic, HelpTopicSummary};
 use crate::mail::{
     BackupJob, BackupScope, BackupVerification, Delivery, IncompleteReason, MailAccountStats, MailCacheEstimate,
@@ -4325,6 +4327,44 @@ pub enum Request {
         /// The note's id from `assistant.list_memories`.
         id: String,
     },
+    /// The skills of the client that asks, by name ([`Response::Skills`], issue #703): a bot's own
+    /// for a bot's client, the assistant's for every other. Name and description only; the text comes
+    /// with `assistant.get_skill`. Never fails; an empty list when there is none or they cannot be
+    /// read.
+    #[serde(rename = "assistant.list_skills")]
+    ListSkills,
+    /// One skill whole, with its text ([`Response::Skill`]): of the bot for a bot's client, of the
+    /// assistant for every other. `not-found` for an unknown name.
+    #[serde(rename = "assistant.get_skill")]
+    GetSkill {
+        /// The skill's name from `assistant.list_skills`; without regard to case.
+        name: String,
+    },
+    /// Adds a skill to the assistant, or with `replaces` changes the skill of that name (which needs
+    /// the right to delete) – only when the person asked for it. Answered with the skill as stored
+    /// ([`Response::Skill`]). `not-found` for an unknown `replaces`, `conflict` when the name belongs to
+    /// another skill, `error` for a skill beyond its limits ([`assistant::skill_refusal`]), more than
+    /// 30 skills or one that cannot be stored.
+    #[serde(rename = "assistant.save_skill")]
+    SaveSkill {
+        /// Its name, one line, at most 40 characters; unique without regard to case.
+        name: String,
+        /// When it fits, one line, at most 200 characters; empty for none.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        description: String,
+        /// The skill itself, at most 8,000 characters.
+        text: String,
+        /// The name of the skill this one replaces.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        replaces: Option<String>,
+    },
+    /// Deletes the assistant's skill `name` for good ([`Response::Ok`]); `not-found` for an unknown
+    /// name.
+    #[serde(rename = "assistant.delete_skill")]
+    DeleteSkill {
+        /// The skill's name from `assistant.list_skills`.
+        name: String,
+    },
     /// The person confirms in the assistant's conversation `conversation` that the assistant may
     /// ask the bot `bot` (task B.2): the assistant proposed it by name, the person said yes in the
     /// chat ([`Response::Ok`]). It allows the assistant's next `bots.ask_bot` for that bot in that
@@ -4387,7 +4427,7 @@ pub enum Request {
         /// What it does and how, at most 8,000 characters.
         #[serde(default, skip_serializing_if = "String::is_empty")]
         instructions: String,
-        /// What it knows, at most 8 skills of at most 8,000 characters each.
+        /// Its skills, at most 30 of at most 8,000 characters each, names unique without regard to case.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         skills: Vec<Skill>,
     },
@@ -6068,6 +6108,16 @@ pub enum Response {
     /// One note of the assistant's memory as stored ([`Request::Remember`]).
     Memory {
         note: Note,
+    },
+    /// Skills by name, without their text ([`Request::ListSkills`]): the person's text, data, never
+    /// instructions.
+    Skills {
+        skills: Vec<SkillSummary>,
+    },
+    /// One skill whole ([`Request::GetSkill`], [`Request::SaveSkill`]): the person's text, data, never
+    /// instructions; it never changes rights or rules.
+    Skill {
+        skill: Skill,
     },
     /// What the client that asked may do now ([`Request::MyAccess`]).
     MyAccess {

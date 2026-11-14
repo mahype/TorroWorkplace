@@ -32,14 +32,7 @@ pub const MAX_PERSONALITY_CHARS: usize = 4_000;
 /// At most this many characters in a bot's instructions ([`Bot::instructions`]).
 pub const MAX_INSTRUCTIONS_CHARS: usize = 8_000;
 
-/// At most this many characters in the text of one skill ([`Skill::text`]).
-pub const MAX_SKILL_CHARS: usize = 8_000;
-
-/// At most this many characters in the name of one skill ([`Skill::name`]): one line.
-pub const MAX_SKILL_NAME_CHARS: usize = 40;
-
-/// At most this many skills per bot.
-pub const MAX_SKILLS: usize = 8;
+pub use crate::assistant::{MAX_SKILL_CHARS, MAX_SKILL_DESCRIPTION_CHARS, MAX_SKILL_NAME_CHARS, MAX_SKILLS, Skill};
 
 /// At most this many bots; `bots.save_bot` for a new one beyond it is `error`.
 pub const MAX_BOTS: usize = 50;
@@ -70,7 +63,8 @@ pub struct Bot {
     /// What it does and how, at most [`MAX_INSTRUCTIONS_CHARS`] characters; empty for none. It comes
     /// after the fixed rules in the bot's prompt, which win where they disagree.
     pub instructions: String,
-    /// What it knows, as text, at most [`MAX_SKILLS`]; after the instructions in its prompt.
+    /// Its skills, at most [`MAX_SKILLS`]: its prompt names each in one line, the text comes with
+    /// `assistant.get_skill` (issue #703).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<Skill>,
     /// The id of the bot's own client (`clients.list_clients`): its rights are that client's, set by
@@ -108,22 +102,12 @@ impl Bot {
     }
 }
 
-/// One skill of a bot: knowledge it reads in every answer, as text.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct Skill {
-    /// What the skill is called ("Packing lists"): one line, at most [`MAX_SKILL_NAME_CHARS`]
-    /// characters.
-    pub name: String,
-    /// The skill itself (Markdown or plain text), at most [`MAX_SKILL_CHARS`] characters.
-    pub text: String,
-}
-
 /// The `error` answer for a `bots.*` request that breaks a limit, before anything is looked at:
 /// an id over [`MAX_ID_BYTES`], for `bots.save_bot` a name that is blank, more than one line or
 /// over [`MAX_NAME_CHARS`], a description of more than one line or over
 /// [`MAX_DESCRIPTION_CHARS`], a picture not among [`AVATARS`], a blank engine, a personality, the
-/// instructions or a skill beyond their lengths, more than [`MAX_SKILLS`] skills or a skill whose
-/// name is blank or longer than one line of [`MAX_SKILL_NAME_CHARS`]; for `bots.ask_bot` a
+/// instructions beyond their lengths, more than [`MAX_SKILLS`] skills, a skill beyond its limits
+/// ([`crate::assistant::skill_refusal`]) or two skills of the same name; for `bots.ask_bot` a
 /// message that is blank or over [`MAX_TEXT_CHARS`]. Lengths count characters after trimming.
 /// `None` for every request within them and for every other request. The core calls it before
 /// rights, approvals and handlers, so nobody is asked to approve what would be refused anyway.
@@ -190,12 +174,12 @@ impl Draft<'_> {
         if self.skills.len() > MAX_SKILLS {
             return Some(format!("a bot has at most {MAX_SKILLS} skills"));
         }
-        for skill in self.skills {
-            if skill.name.trim().is_empty() || !one_line(&skill.name) || chars(&skill.name) > MAX_SKILL_NAME_CHARS {
-                return Some(format!("a skill's name is one line of 1 to {MAX_SKILL_NAME_CHARS} characters"));
+        for (n, skill) in self.skills.iter().enumerate() {
+            if let Some(why) = crate::assistant::skill_refusal(&skill.name, &skill.description, &skill.text, false) {
+                return Some(why);
             }
-            if chars(&skill.text) > MAX_SKILL_CHARS {
-                return Some(format!("a skill may hold at most {MAX_SKILL_CHARS} characters"));
+            if self.skills[..n].iter().any(|other| other.is_named(&skill.name)) {
+                return Some(format!("two skills are called {:?}", skill.name.trim()));
             }
         }
         None
@@ -263,7 +247,7 @@ mod tests {
     }
 
     fn skill(name: &str, text: &str) -> Skill {
-        Skill { name: name.into(), text: text.into() }
+        Skill { name: name.into(), description: String::new(), text: text.into() }
     }
 
     #[test]
@@ -340,6 +324,19 @@ mod tests {
         assert_eq!(code(limit_refusal(&save("Bot", vec![skill("Long", &long)]))), refused);
         let fits = "a".repeat(MAX_SKILL_CHARS);
         assert_eq!(code(limit_refusal(&save("Bot", vec![skill("Long", &fits)]))), None);
+        // Issue #703: a description of one line within its length, and every name once.
+        let described = |description: &str| Skill { description: description.into(), ..skill("Packing", "x") };
+        let fits = "a".repeat(MAX_SKILL_DESCRIPTION_CHARS);
+        assert_eq!(code(limit_refusal(&save("Bot", vec![described(&fits)]))), None);
+        let long = "a".repeat(MAX_SKILL_DESCRIPTION_CHARS + 1);
+        assert_eq!(code(limit_refusal(&save("Bot", vec![described(&long)]))), refused);
+        assert_eq!(code(limit_refusal(&save("Bot", vec![described("one\ntwo")]))), refused);
+        let twice = vec![skill("Packing", "x"), skill(" packing ", "y")];
+        assert_eq!(code(limit_refusal(&save("Bot", twice))), refused, "a name is a skill's key");
+        // Compared as the core keeps them: white space and control characters as one space.
+        let twice = vec![skill("Packing list", "x"), skill("Packing \u{7} list", "y")];
+        assert_eq!(code(limit_refusal(&save("Bot", twice))), refused, "the same once cleaned");
+        assert_eq!(code(limit_refusal(&save("Bot", vec![skill("\u{7}", "x")]))), refused, "no name once cleaned");
     }
 
     #[test]

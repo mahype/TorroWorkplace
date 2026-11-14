@@ -272,6 +272,9 @@ pub struct Facts {
     /// template or the account. `None` when the core does not know it: the summary then shows the
     /// id the command runs with, which then finds nothing either.
     pub name: Option<String>,
+    /// The skill of the assistant that `assistant.save_skill` with `replaces` or
+    /// `assistant.delete_skill` would change, as stored (issue #703); `None` when it is unknown.
+    pub skill: Option<torro_ipc::assistant::Skill>,
     /// For a save that moves an item to another collection: the display name of the collection
     /// that holds it now and loses it. `None` when nothing moves.
     pub moved_from: Option<String>,
@@ -2113,9 +2116,11 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         | Request::DeleteConversation { .. }
         | Request::PinConversation { .. }
         | Request::OpenChatWindow { .. }) => assistant_summary(request, facts),
-        request @ (Request::UpdateProfile { .. } | Request::Remember { .. } | Request::Forget { .. }) => {
-            profile_summary(request, facts)
-        }
+        request @ (Request::UpdateProfile { .. }
+        | Request::Remember { .. }
+        | Request::Forget { .. }
+        | Request::SaveSkill { .. }
+        | Request::DeleteSkill { .. }) => profile_summary(request, facts),
         request @ (Request::SaveBot { .. } | Request::DeleteBot { .. } | Request::AskBot { .. }) => {
             bot_summary(request, facts)
         }
@@ -3282,6 +3287,21 @@ fn profile_summary(request: &Request, facts: &Facts) -> String {
         }
         (Request::Forget { .. }, Some(note)) => trf("Forget the assistant's note \"{note}\"", &[("note", &note)]),
         (Request::Forget { .. }, None) => tr("Forget an unknown note of the assistant").to_string(),
+        // Skills (issue #703): a new one by the name it will have, a stored one by its name as kept.
+        (Request::SaveSkill { name, replaces: None, .. }, _) => {
+            trf("Save skill for the assistant: \"{name}\"", &[("name", &quote(name))])
+        }
+        (Request::SaveSkill { .. }, _) if facts.skill.is_none() => {
+            tr("Change an unknown skill of the assistant").to_string()
+        }
+        (Request::SaveSkill { .. }, _) => {
+            let old = facts.skill.as_ref().map(|skill| quote(&skill.name)).unwrap_or_default();
+            trf("Change skill of the assistant: \"{name}\"", &[("name", &old)])
+        }
+        (Request::DeleteSkill { .. }, _) => match &facts.skill {
+            Some(skill) => trf("Delete skill of the assistant: \"{name}\"", &[("name", &quote(&skill.name))]),
+            None => tr("Delete an unknown skill of the assistant").to_string(),
+        },
         (Request::UpdateProfile { name, description, avatar, personality, person_name }, current) => {
             let mut changes = Vec::new();
             if let Some(name) = name {
@@ -3377,9 +3397,46 @@ fn profile_details(request: &Request, facts: &Facts) -> Option<Vec<String>> {
                 None => vec![tr("an unknown note").to_string()],
             });
         }
+        // Skills (issue #703): the stored one whole before the new one, since the text is read into
+        // answers whenever its description fits.
+        Request::SaveSkill { name, description, text, replaces } => {
+            if replaces.is_some() {
+                lines.push(tr("Now:").to_string());
+                lines.extend(skill_lines(facts.skill.as_ref()));
+                lines.push(tr("New:").to_string());
+            }
+            lines.extend(skill_lines(Some(&torro_ipc::assistant::Skill {
+                name: name.clone(),
+                description: description.clone(),
+                text: text.clone(),
+            })));
+        }
+        Request::DeleteSkill { .. } => lines.extend(skill_lines(facts.skill.as_ref())),
         _ => return None,
     }
     Some(lines)
+}
+
+/// The lines of a skill in the details (issue #703): `Name: "<name>"`, `Description: "<text>"` or
+/// `Description: none`, `Text:` and the text whole ([`whole`]); "an unknown skill" for `None`.
+fn skill_lines(skill: Option<&torro_ipc::assistant::Skill>) -> Vec<String> {
+    let Some(skill) = skill else { return vec![tr("an unknown skill").to_string()] };
+    let quoted = |text: &str| format!("\"{}\"", quote_up_to(text, DETAIL_MAX));
+    let mut lines = vec![trf("Name: {text}", &[("text", &quoted(&skill.name))])];
+    lines.push(match skill.description.trim() {
+        "" => tr("Description: none").to_string(),
+        description => trf("Description: {text}", &[("text", &quoted(description))]),
+    });
+    lines.push(tr("Text:").to_string());
+    lines.extend(whole(&skill.text));
+    lines
+}
+
+/// The fingerprint of the stored skill an `assistant.delete_skill` or a `save_skill` with `replaces`
+/// was shown with (issue #703): the hash of it whole, so the approved command never changes a skill
+/// the person changed meanwhile. Empty when the skill is unknown.
+pub fn skill_fingerprint(facts: &Facts) -> String {
+    facts.skill.as_ref().map(|skill| crate::audit::hashed(&crate::assistant::skills::format(skill))).unwrap_or_default()
 }
 
 /// `text` whole, for the details: each of its lines made harmless ([`quote_up_to`], never cut) and
