@@ -18,7 +18,7 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
-use tao::dpi::{LogicalPosition, LogicalSize};
+use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::window::{Theme, WindowBuilder};
@@ -26,7 +26,7 @@ use torro_chat::{ChatError, Video};
 use torro_core::i18n::tr;
 use torro_gui::instance::Claim;
 use wry::http::{HeaderMap, HeaderValue, header::REFERER};
-use wry::{NewWindowResponse, Rect, WebView, WebViewBuilder};
+use wry::{NewWindowResponse, WebView, WebViewBuilder};
 
 use super::{
     MIN_SIZE, PlayerError, allowed_navigation, leads_to_youtube, note_page, playable, refusal, title, window_size,
@@ -105,16 +105,13 @@ pub fn run(message: String, demo: bool) -> ExitCode {
             None
         }
     };
+    // The web view fills the window and follows its size by itself (wry: the content view on macOS,
+    // the parent's subclass on Windows); it only has to live as long as the loop.
     event_loop.run(move |event, _, control_flow| {
+        let _ = &webview;
         *control_flow = ControlFlow::Wait;
         match event {
             Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => *control_flow = ControlFlow::Exit,
-            Event::WindowEvent { event: WindowEvent::Resized(size), .. } => {
-                let bounds = Rect { position: LogicalPosition::new(0.0, 0.0).into(), size: size.into() };
-                if webview.set_bounds(bounds).is_err() {
-                    eprintln!("{BINARY}: the player could not follow the window's size");
-                }
-            }
             Event::UserEvent(UserEvent::Show) => {
                 window.set_minimized(false);
                 window.set_focus();
