@@ -1819,6 +1819,22 @@ fn the_speaker_switches_reading_aloud_and_stops_it() {
     let _ = app.update(Message::ReadAloudSet(true, Err(Refusal::new("forbidden", "no"))));
     assert!(!app.read_aloud, "back as it was");
 
+    // Escape stops reading first; settings loaded while the switch is on its way do not turn it back.
+    app.reading = Some(4);
+    let _ = app.update(Message::Escape);
+    assert_eq!(app.reading, None);
+    assert!(sent(&mut app).contains(&Request::StopSpeaking));
+    let _ = app.update(Message::ToggleReadAloud);
+    assert!(app.read_aloud);
+    let mut stale = torro_core::settings::Settings::default();
+    stale.voice.read_aloud = false;
+    app.launch.open = None;
+    let _ = app.update(Message::Settings(Ok(Box::new(stale.clone()))));
+    assert!(app.read_aloud, "the old value of a load that overlapped the switch");
+    let _ = app.update(Message::ReadAloudSet(true, Ok(())));
+    let _ = app.update(Message::Settings(Ok(Box::new(stale))));
+    assert!(!app.read_aloud, "switched in another window afterwards");
+
     let message = "Connect an OpenAI account in Settings › AI to read aloud with OpenAI.";
     app.reading = Some(4);
     let _ = app.update(Message::Read(4, Err(Refusal::new("unsupported", message))));

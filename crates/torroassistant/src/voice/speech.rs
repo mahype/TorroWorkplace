@@ -139,6 +139,9 @@ while True:
     stopped.discard(ident)
 "#;
 
+/// How the lines of [`QWEN_SCRIPT`] on standard error begin: the only ones that reach the log.
+const OWN_LINES: [&str; 2] = ["generation failed: ", "warmup failed: "];
+
 /// A line from the core.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
@@ -552,10 +555,13 @@ fn start_qwen(python: &Path, model: &str, number: u64, events: &Sender<Event>) -
     };
     let said = Arc::new(Mutex::new(String::new()));
     let last = Arc::clone(&said);
+    // Only the script's own lines reach the log, which name the kind of an error and never the text
+    // read; what the libraries print (progress, warnings, a traceback that may quote the text) does
+    // not.
     std::thread::spawn(move || {
         for line in BufReader::new(errors).lines().map_while(Result::ok) {
-            eprintln!("torroassistant: qwen: {line}");
-            if !line.trim().is_empty() {
+            if OWN_LINES.iter().any(|start| line.starts_with(start)) {
+                eprintln!("torroassistant: qwen: {line}");
                 *last.lock().unwrap_or_else(PoisonError::into_inner) = line;
             }
         }
@@ -786,8 +792,8 @@ impl<W: FnMut(Output)> Helper<W> {
             Event::Gone(said) => {
                 self.qwen = None;
                 self.draining = false;
-                // What it last said stays in the log: a library's words may quote the text read.
-                eprintln!("torroassistant: qwen ended: {said}");
+                // The script's last line, if any: never a library's words, which may quote the text.
+                eprintln!("torroassistant: qwen ended {said}");
                 if matches!(self.job, Job::Qwen { .. }) {
                     self.fail(Output::failed("error", tr("Qwen3-TTS stopped. Try again.")));
                 }

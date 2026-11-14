@@ -624,6 +624,9 @@ pub struct App {
     pub(crate) reading: Option<u64>,
     /// The conversation of [`App::reading`]: numbers count per conversation.
     reading_in: Option<String>,
+    /// The speaker was switched and the core has not taken it yet: settings loaded meanwhile (every
+    /// [`REFRESH`]) may still say the old value, and must not switch it back.
+    read_aloud_switching: bool,
     /// New answers that came while the window watches and are not complete yet: each is read once
     /// it is.
     to_read: HashSet<u64>,
@@ -742,6 +745,7 @@ impl App {
             read_aloud: open == Some(Open::Reading),
             reading: (open == Some(Open::Reading)).then_some(demo::READ_ANSWER),
             reading_in: (open == Some(Open::Reading)).then(|| demo::TOOLS.to_string()),
+            read_aloud_switching: false,
             to_read: HashSet::new(),
             ready_to_read: None,
             dictation: if open == Some(Open::Dictating) { Dictation::Recording } else { Dictation::Idle },
@@ -1009,7 +1013,7 @@ impl App {
             }
             Message::Settings(Ok(settings)) => {
                 // The demo state `reading` shows the speaker on, whatever the demo's settings say.
-                if self.launch.open != Some(Open::Reading) {
+                if self.launch.open != Some(Open::Reading) && !self.read_aloud_switching {
                     self.read_aloud = settings.voice.read_aloud;
                 }
                 self.default = settings.ai_slots.chat;
@@ -1149,12 +1153,13 @@ impl App {
             Message::DictationStopped => {}
             Message::ToggleReadAloud => return self.toggle_read_aloud(),
             Message::ReadAloudSet(on, Err(refusal)) => {
+                self.read_aloud_switching = false;
                 if self.read_aloud == on {
                     self.read_aloud = !on;
                 }
                 self.note_failure(tr("Couldn't change reading aloud."), &refusal);
             }
-            Message::ReadAloudSet(_, Ok(())) => {}
+            Message::ReadAloudSet(_, Ok(())) => self.read_aloud_switching = false,
             Message::StopReading => return self.stop_reading(),
             Message::ReadingStopped => {}
             Message::Read(seq, result) => {
@@ -1343,6 +1348,9 @@ impl App {
                     // Through the host: its open section menu or a page's own menu closes first
                     // (review of #554), else the host answers `Outcome::Close`.
                     return self.update(Message::SettingsHost(torro_settings_ui::host::Message::Back));
+                } else if self.reading.is_some() {
+                    // Reading aloud stops first (issue #745), the notice goes with the next Escape.
+                    return self.stop_reading();
                 } else {
                     self.notice = None;
                 }
@@ -2123,6 +2131,7 @@ impl App {
     /// window; off also stops what is read now.
     fn toggle_read_aloud(&mut self) -> Task<Message> {
         self.read_aloud = !self.read_aloud;
+        self.read_aloud_switching = true;
         let on = self.read_aloud;
         let set = Request::SetSetting { key: torro_ipc::SettingKey::ReadAloud, value: serde_json::Value::Bool(on) };
         let task = self.ask(set, move |result| Message::ReadAloudSet(on, result.map(drop)));
