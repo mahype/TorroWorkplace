@@ -548,7 +548,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         // or a model's name.
         Request::ListEngines | Request::ListConversations => Vec::new(),
         // Voice (task C.9): no ids, never what was said.
-        Request::VoiceStatus | Request::TestVoice => Vec::new(),
+        Request::VoiceStatus | Request::TestVoice | Request::Dictate | Request::StopDictation => Vec::new(),
         // Map data (issue #355): no ids.
         Request::MapsStatus | Request::ClearMapsCache => Vec::new(),
         // A chat about a mail (issue #605): the account and the mail hashed as for its suggestions.

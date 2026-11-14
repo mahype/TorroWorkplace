@@ -4021,8 +4021,10 @@ mod tests {
             "nine of task C.1, five of C.10, one of issue #134, one of #225, one of #605, four of #703: {catalogue:?}"
         );
         assert!(catalogue.iter().all(|name| name.starts_with("assistant_") && names.contains(name.as_str())));
-        // But the person's yes to asking a bot (task B.2), which no agent may give.
-        let assistant = CATALOGUE.iter().filter(|c| c.area == Area::Assistant && c.name != "assistant.confirm_bot");
+        // But the person's yes to asking a bot (task B.2), which no agent may give, and dictating
+        // (issue #699): only a person switches the microphone on.
+        let people_only = ["assistant.confirm_bot", "assistant.dictate", "assistant.stop_dictation"];
+        let assistant = CATALOGUE.iter().filter(|c| c.area == Area::Assistant && !people_only.contains(&c.name));
         assert!(assistant.clone().all(|c| c.mcp == Mcp::Tool));
     }
 

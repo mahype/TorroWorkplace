@@ -4891,6 +4891,19 @@ pub enum Request {
     /// it needs are missing, `error` when the recording fails.
     #[serde(rename = "settings.test_voice")]
     TestVoice,
+    /// Records what the person says into the microphone and turns it into text, for the microphone
+    /// in the assistant's input field (issue #699, [`Response::Transcript`]). The recording ends at a
+    /// pause of two seconds, with [`Request::StopDictation`] or after a minute; the text goes into the
+    /// field and is not sent. Works whether "Hey Torro" is on or off. Only with the app key: it opens
+    /// the microphone (point 6 of "Was nie nach außen geht" in `docs/api.md`). `unsupported` when the
+    /// programs it needs are missing, `busy` while another dictation runs, `error` when the recording
+    /// fails. An empty text means nothing was understood.
+    #[serde(rename = "assistant.dictate")]
+    Dictate,
+    /// Ends a running dictation ([`Request::Dictate`]) now (issue #699, [`Response::Ok`]): what was
+    /// said so far is turned into text and answers the dictation. `Ok` also when none runs.
+    #[serde(rename = "assistant.stop_dictation")]
+    StopDictation,
     /// How much map data this device keeps (issue #355, [`Response::MapsStatus`]): the bytes of map
     /// tiles of the whole suite, and how many places of contact addresses were kept
     /// (`contacts.locate_contact`); for a client only those of the address books it reaches.

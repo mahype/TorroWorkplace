@@ -784,11 +784,19 @@ Open First gilt auch hier, und das Mikrofon verlässt den Rechner nie, solange n
   nicht erteilen, nur per Klick (sonst könnte ein Video im Hintergrund „Allow“ sagen).
 - **Technisch:** Das Lauschen läuft als eigener Prozess `torroassistant --listen` (Mikrofon und
   Modelle getrennt vom Dienst), erkannter Text geht als `assistant.send_message` an den Kern.
+- **Diktieren** (Issue #699): Das Mikrofon im Eingabefeld nimmt auf, bis man zwei Sekunden schweigt,
+  es noch einmal drückt oder eine Minute um ist, und schreibt den Text an die Schreibmarke, ohne zu
+  senden. Es braucht kein Weckwort und geht auch, wenn „Hey Torro“ aus ist. Aufgenommen wird über
+  den Dienst (`assistant.dictate`, der `torroassistant --dictate` startet; `assistant.stop_dictation`
+  schließt dessen Eingabe und beendet die Aufnahme), nie im Fenster selbst; der Text kommt nicht ins
+  Protokoll. Ohne eingerichtete Spracherkennung ist das Mikrofon blass und öffnet Einstellungen ›
+  Voice. Mini- und Leistenkachel haben kein Mikrofon.
 
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
 | Sprache an/aus, Weckwort, Mikrofon, Stimme | Assistent › Einstellungen › Voice, Tray | `settings.set_setting` · Admin | **Never** für das Einschalten des Mikrofons (Punkt 6); Stimme und Weckwort über `settings_set_setting` |
 | Gesprochene Nachricht | Schnellfenster | `assistant.send_message` (gibt es dann) | ebenso |
+| Diktieren ins Eingabefeld | Mikrofon im Eingabefeld | `assistant.dictate`, `assistant.stop_dictation` · Admin | **Never** (Punkt 6: das Mikrofon schaltet nur ein Mensch ein) |
 
 ## Wo die Logik liegt
 

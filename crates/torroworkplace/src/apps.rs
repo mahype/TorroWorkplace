@@ -34,7 +34,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::watch;
 use torro_core::AppId;
 use torro_ipc::{AppInfo, Response, VoiceState};
@@ -529,6 +529,33 @@ pub struct Listener {
     running: Arc<Mutex<Running>>,
     /// Told whenever the state changes; the daemon then rebuilds the tray menu.
     changes: watch::Sender<()>,
+    /// The running dictation (`--dictate`, issue #699); closing its standard input ends the
+    /// recording ([`Listener::stop_dictation`]).
+    dictation: Mutex<Dictation>,
+    /// When a stop came while no dictation ran yet: the window's stop can overtake its start (two
+    /// requests on two connections). A dictation that starts within [`STOP_AHEAD`] ends at once.
+    stop_ahead: Mutex<Option<std::time::Instant>>,
+}
+
+/// The one place for a dictation: free, or taken by one that runs with its standard input (`None`
+/// once it was closed – the program still turns what it heard into text).
+#[derive(Debug, Default)]
+enum Dictation {
+    #[default]
+    Free,
+    Running(Option<ChildStdin>),
+}
+
+/// How long a stop that came before its dictation counts ([`Listener::stop_dictation`]).
+const STOP_AHEAD: Duration = Duration::from_secs(2);
+
+/// Why [`Listener::dictate`] got no answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DictateError {
+    /// Another dictation runs.
+    Busy,
+    /// The program could not run or answered nothing usable, for people.
+    Failed(String),
 }
 
 impl Listener {
@@ -549,7 +576,13 @@ impl Listener {
     }
 
     fn with(program: Program) -> Listener {
-        Listener { program, running: Arc::default(), changes: watch::Sender::new(()) }
+        Listener {
+            program,
+            running: Arc::default(),
+            changes: watch::Sender::new(()),
+            dictation: Mutex::default(),
+            stop_ahead: Mutex::default(),
+        }
     }
 
     /// The program, when it is installed.
@@ -672,6 +705,58 @@ impl Listener {
         let text = String::from_utf8_lossy(&output.stdout);
         let line = text.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or_default();
         serde_json::from_str(line).map_err(|err| format!("{} answered no voice answer: {err}", AppId::ASSISTANT.binary))
+    }
+
+    /// Runs the program once with `args` like [`Listener::ask`], but keeps its standard input open
+    /// so [`Listener::stop_dictation`] can end the recording (issue #699, `--dictate`). One at a
+    /// time: [`DictateError::Busy`] while another runs.
+    pub async fn dictate(&self, args: &[String], wait: Duration) -> Result<Response, DictateError> {
+        let program = self
+            .program()
+            .ok_or_else(|| DictateError::Failed(format!("{} is not installed", AppId::ASSISTANT.binary)))?;
+        let child = {
+            let mut dictation = self.dictation.lock().unwrap_or_else(PoisonError::into_inner);
+            if matches!(*dictation, Dictation::Running(_)) {
+                return Err(DictateError::Busy);
+            }
+            let mut child = Command::new(&program)
+                .args(args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .kill_on_drop(true)
+                .spawn()
+                .map_err(|err| DictateError::Failed(format!("cannot start {}: {err}", program.display())))?;
+            let stopped = self.stop_ahead.lock().unwrap_or_else(PoisonError::into_inner).take();
+            // A stop that overtook this start ends the recording at once: its input closes (tokio
+            // closes what stays in the child before it waits). The place is taken either way.
+            let input = if stopped.is_some_and(|at| at.elapsed() < STOP_AHEAD) { None } else { child.stdin.take() };
+            *dictation = Dictation::Running(input);
+            child
+        };
+        let output = tokio::time::timeout(wait, child.wait_with_output()).await;
+        // Whatever happened, the next dictation may start.
+        *self.dictation.lock().unwrap_or_else(PoisonError::into_inner) = Dictation::Free;
+        let output = output
+            .map_err(|_| DictateError::Failed(format!("{} did not answer in time", AppId::ASSISTANT.binary)))?
+            .map_err(|err| DictateError::Failed(err.to_string()))?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let line = text.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or_default();
+        serde_json::from_str(line)
+            .map_err(|err| DictateError::Failed(format!("{} answered no voice answer: {err}", AppId::ASSISTANT.binary)))
+    }
+
+    /// Ends a running dictation: its standard input closes, it stops recording and answers with
+    /// what it heard. Nothing happens when none runs.
+    pub fn stop_dictation(&self) {
+        let mut dictation = self.dictation.lock().unwrap_or_else(PoisonError::into_inner);
+        match &mut *dictation {
+            Dictation::Running(input) => drop(input.take()),
+            // Kept under the same lock, so a start cannot slip in between and miss it.
+            Dictation::Free => {
+                *self.stop_ahead.lock().unwrap_or_else(PoisonError::into_inner) = Some(std::time::Instant::now());
+            }
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Running> {
@@ -988,6 +1073,38 @@ pub mod tests {
         assert_eq!(listener.ask(&[], Duration::from_secs(5)).await, Ok(Response::Transcript { text: "Hi".into() }));
         let slow = Listener::at(fake_program(dir.path(), "sleep 5"));
         assert!(slow.ask(&[], Duration::from_millis(200)).await.is_err(), "it does not wait for ever");
+    }
+
+    /// Issue #699: a dictation records until its standard input closes; a second one meanwhile is
+    /// busy, and once it answered the next may start.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_dictation_ends_when_it_is_stopped() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let answer = serde_json::to_string(&Response::Transcript { text: "Buy milk".into() }).expect("json");
+        // Like `--dictate`: waits for the end of its input (at most 20 s), then answers.
+        let listener =
+            Arc::new(Listener::at(fake_program(dir.path(), &format!("timeout 20 cat > /dev/null; echo '{answer}'"))));
+        let running = {
+            let listener = Arc::clone(&listener);
+            tokio::spawn(async move { listener.dictate(&[], Duration::from_secs(30)).await })
+        };
+        while matches!(*listener.dictation.lock().expect("lock"), Dictation::Free) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(listener.dictate(&[], Duration::from_secs(1)).await, Err(DictateError::Busy));
+        let started = std::time::Instant::now();
+        listener.stop_dictation();
+        let heard = running.await.expect("joined");
+        assert_eq!(heard, Ok(Response::Transcript { text: "Buy milk".into() }));
+        assert!(started.elapsed() < Duration::from_secs(10), "stopping ends it now");
+        assert!(matches!(*listener.dictation.lock().expect("lock"), Dictation::Free), "the next one may start");
+        // A stop that overtakes its dictation (two connections) still ends it at once.
+        listener.stop_dictation();
+        let started = std::time::Instant::now();
+        let heard = listener.dictate(&[], Duration::from_secs(30)).await;
+        assert_eq!(heard, Ok(Response::Transcript { text: "Buy milk".into() }));
+        assert!(started.elapsed() < Duration::from_secs(10), "the early stop counts");
     }
 
     #[test]

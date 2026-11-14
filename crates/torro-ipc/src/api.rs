@@ -2028,6 +2028,8 @@ impl Request {
             Request::AskBot { .. } => &ASK_BOT,
             Request::VoiceStatus => &VOICE_STATUS,
             Request::TestVoice => &TEST_VOICE,
+            Request::Dictate => &DICTATE,
+            Request::StopDictation => &STOP_DICTATION,
             Request::MapsStatus => &MAPS_STATUS,
             Request::ClearMapsCache => &CLEAR_MAPS_CACHE,
             Request::ListTools => &LIST_TOOLS,
@@ -2292,6 +2294,8 @@ pub static CATALOGUE: &[&Command] = &[
     &LIST_COLOR_SCHEMES,
     &VOICE_STATUS,
     &TEST_VOICE,
+    &DICTATE,
+    &STOP_DICTATION,
     &MAPS_STATUS,
     &CLEAR_MAPS_CACHE,
     &UPDATE_SETTINGS,
@@ -4152,6 +4156,28 @@ static TEST_VOICE: Command = Command {
     mcp: Mcp::Never,
     description: "Records one sentence from the microphone and returns it as text, for the microphone test in the \
                   assistant's settings. Only for the app key: it opens the microphone.",
+};
+
+// Kept from agents (point 6 of "Was nie nach außen geht", issue #699): dictating opens the
+// microphone, which only a person switches on.
+static DICTATE: Command = Command {
+    name: "assistant.dictate",
+    area: Area::Assistant,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Records what the person says into the microphone until a pause and returns it as text, for \
+                  dictating into the assistant's input field; nothing is sent. Only for the app key: it opens the \
+                  microphone.",
+};
+
+// Kept from agents with dictating itself (issue #699).
+static STOP_DICTATION: Command = Command {
+    name: "assistant.stop_dictation",
+    area: Area::Assistant,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Ends a running dictation now; the dictation answers with what was said so far. Only for the \
+                  app key.",
 };
 
 static MAPS_STATUS: Command = Command {
@@ -7091,6 +7117,8 @@ mod tests {
             Request::AskBot { bot: "1a2b3c4d".into(), text: "Plan Lisbon".into(), conversation: None },
             Request::VoiceStatus,
             Request::TestVoice,
+            Request::Dictate,
+            Request::StopDictation,
             Request::MapsStatus,
             Request::ClearMapsCache,
             Request::ListTools,
@@ -7703,6 +7731,8 @@ mod tests {
                         // Point 6: the microphone. Switching voice on through settings.set_setting
                         // is kept back by value (`the_microphone_is_switched_on_by_people_only`).
                         | "settings.test_voice"
+                        | "assistant.dictate"
+                        | "assistant.stop_dictation"
                         // Point 3: a person's yes, here to the assistant asking a bot (task B.2).
                         | "assistant.confirm_bot"
                         // Point 9: a place on the person's computer for a file (issue #225).
@@ -7902,6 +7932,8 @@ mod tests {
                 }
                 assert!(!rights.allows_request(&on), "{level:?} admin {admin}");
                 assert!(!rights.allows_request(&Request::TestVoice), "{level:?} admin {admin}");
+                assert!(!rights.allows_request(&Request::Dictate), "{level:?} admin {admin}");
+                assert!(!rights.allows_request(&Request::StopDictation), "{level:?} admin {admin}");
                 assert_eq!(rights.allows_request(&off), admin, "{level:?} admin {admin}");
                 assert_eq!(rights.allows_request(&other), admin, "{level:?} admin {admin}");
             }
@@ -7911,6 +7943,7 @@ mod tests {
                 .needs_approval_of(off.operation())
         );
         assert_eq!(Request::TestVoice.operation().command.mcp, Mcp::Never);
+        assert_eq!(Request::Dictate.operation().command.mcp, Mcp::Never);
         assert_eq!(Request::VoiceStatus.operation().access, Access::Read);
     }
 
