@@ -378,7 +378,8 @@ impl Running {
         let context = prompt::Context {
             now: Local::now(),
             lang: i18n::lang(),
-            person: None,
+            machine: &prompt::Machine::here(host.window_manager()),
+            person: Some(&person),
             areas: &areas,
             without: &self.job.without,
             rights: Some(&rights),

@@ -82,6 +82,13 @@ pub trait Host: Send + Sync {
     /// rights as stored now; `None` while a person has not set it up. Read anew on every call.
     fn client(&self) -> Option<ClientInfo>;
 
+    /// The name of the window manager backend the core works with (`hyprland`, `glazewm`,
+    /// `aerospace`, `unsupported`), for the line "This computer" of the prompt (issue #702,
+    /// [`prompt::Machine`]). Empty for a host without one.
+    fn window_manager(&self) -> &'static str {
+        ""
+    }
+
     /// The model `model` of the engine `engine` (an AI account id), or for `None` the one
     /// "Automatic" picks among its models ([`ModelAccess::automatic`]), and where that model runs
     /// ([`torro_core::ai::place_of`], task S.23: account **and** model; a model the account does not
@@ -704,6 +711,7 @@ pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: 
         loaded: BTreeSet::new(),
         persona,
         memory,
+        person,
         untrusted,
         outside,
         said,
@@ -728,6 +736,9 @@ struct Answering {
     persona: String,
     /// The notes of the memory, read when the answer started.
     memory: Vec<Note>,
+    /// The person's own name from the profile (issue #702), read when the answer started; empty
+    /// when the assistant should not know it.
+    person: String,
     /// The conversation read data from outside the suite: a tool of an earlier turn that may have
     /// ([`tools::may_have_read_untrusted`]; counted by its line when it might, also once its result was left out
     /// to save room, issue #701), an
@@ -832,6 +843,8 @@ impl Answering {
         // every thinking block to the system prompt it was written under (preserved thinking), and one rebuilt with
         // the next minute fails the step after a tool round with HTTP 400.
         let now = Local::now();
+        // This computer (issue #702), for the same reason once for the whole answer.
+        let machine = prompt::Machine::here(self.host.window_manager());
         // The system prompt and the tools of the step before, to see what changed since ([`without_thinking`]).
         let mut sent: Option<(String, Vec<torro_core::ai::ToolSpec>)> = None;
         for _ in 0..steps {
@@ -856,8 +869,8 @@ impl Answering {
             let context = prompt::Context {
                 now,
                 lang: i18n::lang(),
-                // The suite keeps no name of the person yet (no setting holds one).
-                person: None,
+                machine: &machine,
+                person: Some(&self.person),
                 areas: &areas,
                 without: &self.job.without,
                 rights: rights.as_ref(),
@@ -2851,6 +2864,11 @@ pub(crate) mod tests {
         let system = |step: usize| asked[step].messages[0].content.clone();
         assert!(!system(0).is_empty());
         assert_eq!((system(1), system(2)), (system(0), system(0)), "one system prompt per answer");
+        // Issue #702: this computer and the person's name, the same in every step.
+        for step in 0..3 {
+            assert!(system(step).contains("- This computer: "), "{}", system(step));
+            assert!(system(step).contains("- The person's name: Anna Berg."), "{}", system(step));
+        }
         assert_ne!(asked[1].tools, asked[0].tools, "find_tools loaded a tool");
         assert_eq!(asked[2].tools, asked[1].tools, "nothing loaded since");
         let thinking = |step: usize| -> Vec<Vec<Value>> {

@@ -13148,6 +13148,10 @@ impl crate::assistant::Host for Core {
         self.assistant_client()
     }
 
+    fn window_manager(&self) -> &'static str {
+        self.backend.name()
+    }
+
     /// First the model, then where it runs (task S.23): the model asked or "Automatic" among the
     /// account's models as last listed ([`AiAccounts::known_models`], asked anew only for a model
     /// the list lacks), then [`torro_core::ai::place_of`] for that model. Only models turned on
