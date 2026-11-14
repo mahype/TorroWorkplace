@@ -33214,7 +33214,10 @@ mod tests {
             })
             .await;
         let core = Arc::new(core_with_ai(dir.path(), &keys, Vec::new()));
-        let account = core.ai.connect(AiProvider::Mistral, Some(&mistral.url("/v1")), Secret::new("k")).await;
+        let account = core
+            .ai
+            .connect(AiProvider::Mistral, Some(&mistral.url("/v1")), torro_core::account::Secret::new("k"))
+            .await;
         let account = account.expect("mistral");
         for model in ["mistral-large-latest", "mistral-small-latest"] {
             assert_eq!(core.handle(switch(&account.id, model, true)).await, Response::Ok);
