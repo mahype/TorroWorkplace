@@ -607,7 +607,9 @@ ist kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   Jetzt-Linie enden an der Schrift, die Platte endet mit dem Text und vor dem nächsten Block (#543).
 - **Einstellungsseiten:** links im Inhalt ein **Untermenü** mit den Abschnitten der App (Host der Einstellungen,
   `docs/settings.md` „Wie es aussieht“), rechts die Seite. Jede Seite mit **mehr als drei Gruppen** bekommt Reiter
-  (`widgets::tabs`, unten), nicht nur Detailseiten; bis drei Gruppen stehen sie untereinander. Gruppen derselben Art
+  (`widgets::tabs`, unten), nicht nur Detailseiten, **ebenso eine Seite, die im normalen Fenster (1600×1000) deutlich
+  übersteht** (Assistent › Voice, #763); sonst stehen bis drei Gruppen untereinander. Eine Unterseite (ein Bot, das
+  Profil) zeigt die Reiter ihres Abschnitts nicht, der Pfad oben führt zurück (#763). Gruppen derselben Art
   je Konto (die Kalender bzw. Listen eines Kontos, #543) zählen dafür nicht: Sie sind eine Liste, die mit den Konten
   wächst, keine Teile der Seite. Abschnittsseiten aus
   `widgets::group` (Titel, Zeilen mindestens `size::header()` bzw. 12 höher mit
@@ -633,7 +635,8 @@ ist kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
     rechten Rand, der zeigt, dass mehr folgt; liegt der gewählte Reiter jenseits der Breite, steht die Reihe am
     rechten Ende. Nie eine Auswahlliste. Nie Rot, nie `segmented`
     (`segmented` wechselt die Ansicht derselben Daten, Reiter den Teil eines Objekts oder einer Seite). Erst ab mehr als
-    drei Gruppen, dann aber auf jeder Seite; Gruppen derselben Art je Konto zählen nicht (#543).
+    drei Gruppen oder einer Seite, die im normalen Fenster deutlich übersteht (#763), dann aber auf jeder Seite;
+    Gruppen derselben Art je Konto zählen nicht (#543).
   - `question_card(mark, title, detail, actions)`: was auf eine Entscheidung wartet, direkt unter den Reitern;
     `RAISED`, Rand `LINE_STRONG`, Radius `sm`, Icon in Attention, Knöpfe rechts oder darunter; mehrere mit
     `size::card_gap()`.
@@ -927,8 +930,8 @@ Ansicht und jede Seite der Einstellungen einzeln, mit `shots.sh` in allen sechs 
   unabhängige Blöcke stehen nebeneinander (`page_columns`); kein `max_width(size::content_max())` um eine ganze Seite.
 - [ ] **Auswahl** (Abschnitt 5): bis etwa 4 Optionen `segmented` oder Chips, mehr `select_button`, ab etwa 12
   `search_menu`; keine langen Zeilenlisten für eine Einzelauswahl.
-- [ ] **Reiter** (Abschnitt 5, Einstellungsseiten): Seiten mit mehr als drei Gruppen haben `tabs`; die Abschnitte
-  stehen links im Untermenü.
+- [ ] **Reiter** (Abschnitt 5, Einstellungsseiten): Seiten mit mehr als drei Gruppen oder die im normalen Fenster
+  deutlich überstehen haben `tabs`, Unterseiten keine; die Abschnitte stehen links im Untermenü.
 - [ ] **Obere Zeile** (Abschnitt 0): kein App-Umschalter; App-Titel nach der Ampel (macOS) bzw. nach dem App-Zeichen
   (Linux, Windows); `panel-left` ausgeklappt an der Kante der Seitenleiste, sonst vor dem Titel; `panel-right` vor den
   Einstellungen nur, wo es eine rechte Spalte gibt; der Einstellungs-Knopf mit
