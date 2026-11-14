@@ -528,7 +528,8 @@ impl App {
             .padding(style::ITEM_PADDING)
             .center_y(size::row_sidebar())
             .style(move |t: &Theme| {
-                let status = if hovered { button::Status::Hovered } else { button::Status::Active };
+                // Its menu open (issue #697), the row stays marked as under the pointer.
+                let status = if hovered || menu_here { button::Status::Hovered } else { button::Status::Active };
                 let look = style::button::sidebar_item(active)(t, status);
                 container::Style {
                     background: look.background,
