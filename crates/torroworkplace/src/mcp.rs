@@ -4143,6 +4143,11 @@ mod tests {
         );
         let read = request_for("assistant_get_conversation", args(json!({"id": "0123456789abcdef", "after": 4})), &Utc);
         assert_eq!(read, Ok(Request::GetConversation { id: "0123456789abcdef".into(), after: Some(4) }));
+        // Issue #704: searching the conversations, the limit optional.
+        let search = request_for("assistant_search_conversations", args(json!({"query": "flight", "limit": 5})), &Utc);
+        assert_eq!(search, Ok(Request::SearchConversations { query: "flight".into(), limit: Some(5) }));
+        let plain = request_for("assistant_search_conversations", args(json!({"query": "flight"})), &Utc);
+        assert_eq!(plain, Ok(Request::SearchConversations { query: "flight".into(), limit: None }));
     }
 
     /// Task C.10: the memory and profile tools build their requests; a note's optional fields stay
