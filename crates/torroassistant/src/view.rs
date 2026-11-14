@@ -381,10 +381,13 @@ impl App {
     }
 
     /// The hits of the search through the history once the core answered for the words in the field
-    /// (issue #704); `None` below [`SEARCH_FROM`] characters and before the first answer.
+    /// (issue #704), the last ones while the answer for new words is on its way; `None` below [`SEARCH_FROM`]
+    /// characters and before the first answer.
     fn history_search(&self) -> Option<&Result<Vec<ConversationHit>, crate::backend::Refusal>> {
         let query = self.search.trim();
-        (query.chars().count() >= SEARCH_FROM && self.hits_for == query).then_some(self.hits.as_ref()).flatten()
+        // The last hits stay while the answer for the words in the field is on its way (review of #741).
+        let current = self.hits_for == query || self.asked == query;
+        (query.chars().count() >= SEARCH_FROM && current).then_some(self.hits.as_ref()).flatten()
     }
 
     /// The rows of the search's hits: under "Results" one row per conversation with its title and the

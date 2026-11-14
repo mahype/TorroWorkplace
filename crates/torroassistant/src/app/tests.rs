@@ -1613,7 +1613,9 @@ fn the_search_asks_the_core_and_drops_stale_hits() {
     let _ = app.update(Message::Hits("Ann".into(), Ok(Vec::new())));
     assert_eq!((app.hits.clone(), app.hits_for.as_str()), (Some(Ok(Vec::new())), "Ann"));
     let _ = app.update(Message::Search("Anx".into()));
-    assert_ne!(app.hits_for, app.search.trim(), "the old hits are not shown for other words");
+    assert_eq!((app.hits_for.as_str(), app.asked.as_str()), ("Ann", "Anx"), "the last hits stay while asking");
+    let _ = app.update(Message::Hits("Anx".into(), Ok(Vec::new())));
+    assert_eq!(app.hits_for, "Anx");
     let _ = app.update(Message::Search("A".into()));
     assert!(app.hits.is_none(), "back to the titles");
 }

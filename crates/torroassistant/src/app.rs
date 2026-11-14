@@ -584,8 +584,11 @@ pub struct App {
     /// The core's hits for [`App::search`] (issue #704): `None` while there is no search through the
     /// history (fewer than [`SEARCH_FROM`] characters) or before its first answer.
     pub(crate) hits: Option<Result<Vec<ConversationHit>, Refusal>>,
-    /// The words [`App::hits`] answer: the sidebar shows them only while the field holds these words.
+    /// The words [`App::hits`] answer: the sidebar shows them while the field holds these words, or while the
+    /// answer for the words in the field is on its way ([`App::asked`]), so the list does not jump at each key.
     pub(crate) hits_for: String,
+    /// The words of the last search sent to the core.
+    pub(crate) asked: String,
     /// The hit opened last (conversation, entry): its entry shows marked until another conversation is
     /// chosen or the search is cleared.
     pub(crate) marked: Option<(String, u64)>,
@@ -694,6 +697,7 @@ impl App {
             search: String::new(),
             hits: None,
             hits_for: String::new(),
+            asked: String::new(),
             marked: None,
             snap: None,
             hover: None,
@@ -1800,6 +1804,7 @@ impl App {
             }
             return Task::none();
         }
+        self.asked = query.clone();
         let request = Request::SearchConversations { query: query.clone(), limit: Some(MAX_HITS) };
         self.ask(request, move |result| {
             Message::Hits(
