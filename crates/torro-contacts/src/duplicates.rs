@@ -8,7 +8,7 @@
 //! - **Shared** addresses and numbers do not count when more than [`SHARED_MAX`] contacts hold them:
 //!   a company's switchboard or `info@` is no sign that the people behind it are one.
 //! - **Groups** are the contacts tied by such pairs, directly or through others ([`find`]); pairs the
-//!   person said are different people ("Not duplicates") are left out.
+//!   person said are different people ("Mark as different") are left out.
 //! - **Merging** ([`merged`]) keeps the single fields of the contact chosen, fills its empty ones
 //!   from the others in their order, and joins the lists (mail addresses, numbers, addresses, links,
 //!   handles, groups) without making any value of the others the preferred one.
@@ -119,7 +119,7 @@ pub fn filled(contact: &Contact) -> usize {
         + contact.groups.len()
 }
 
-/// The pair of ids as "Not duplicates" keeps it: the smaller first.
+/// The pair of ids as "Mark as different" keeps it: the smaller first.
 pub fn pair(a: &str, b: &str) -> (String, String) {
     if a <= b { (a.to_string(), b.to_string()) } else { (b.to_string(), a.to_string()) }
 }

@@ -8997,6 +8997,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Marked as different people", "Als verschiedene Personen markiert"),
     ("Merge", "Zusammenführen"),
     ("Merge contacts?", "Kontakte zusammenführen?"),
+    ("Mark as different", "Als verschieden markieren"),
+    ("Marking…", "Wird markiert…"),
+    ("These are different people", "Das sind verschiedene Personen"),
+    ("Merge into the contact that stays", "In den Kontakt zusammenführen, der bleibt"),
     (
         "More than {n} contacts; export one address book or group at a time.",
         "Mehr als {n} Kontakte; exportiere jeweils ein Adressbuch oder eine Gruppe.",
@@ -9014,7 +9018,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Name at most {n} contacts.", "Nenne höchstens {n} Kontakte."),
     ("Name {min} to {max} different contacts.", "Nenne {min} bis {max} verschiedene Kontakte."),
     ("No duplicates found.", "Keine Dubletten gefunden."),
-    ("Not duplicates", "Keine Dubletten"),
     ("Nothing new to import into this address book.", "Nichts Neues für dieses Adressbuch."),
     ("Nothing was exported: {error}", "Nichts wurde exportiert: {error}"),
     (
