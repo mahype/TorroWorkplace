@@ -934,7 +934,7 @@ Finds contacts that look like one person: the same mail address, the same number
 
 Zugriff `delete` · MCP-Tool `contacts_merge_contacts`
 
-Merges 2 to 20 contacts (`ids`, with their `etags` from get_contact in the same order) into the one `keep`: it keeps its own fields, fills empty ones from the others and gets their mail addresses, numbers, addresses, links and groups; then the others are deleted for good, so it needs full access and usually a person's approval. `left` names contacts whose deletion failed.
+Merges 2 to 20 contacts (`ids`, with their `etags` from get_contact in the same order) into the one `keep`: it keeps its own fields, fills empty ones from the others and gets their mail addresses, numbers, addresses, links and groups; then the others are deleted for good, so it needs full access and usually a person's approval. `left` names contacts still there: their deletion failed, or the merged contact waits for the server (then they stay; do not delete them by hand).
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|

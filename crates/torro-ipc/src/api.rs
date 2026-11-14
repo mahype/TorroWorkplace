@@ -3285,7 +3285,8 @@ static MERGE_CONTACTS: Command = Command {
     description: "Merges 2 to 20 contacts (`ids`, with their `etags` from get_contact in the same order) into the one \
                   `keep`: it keeps its own fields, fills empty ones from the others and gets their mail addresses, \
                   numbers, addresses, links and groups; then the others are deleted for good, so it needs full \
-                  access and usually a person's approval. `left` names contacts whose deletion failed.",
+                  access and usually a person's approval. `left` names contacts still there: their deletion \
+                  failed, or the merged contact waits for the server (then they stay; do not delete them by hand).",
 };
 
 static DISMISS_DUPLICATES: Command = Command {

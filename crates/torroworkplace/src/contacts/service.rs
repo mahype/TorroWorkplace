@@ -1141,14 +1141,19 @@ impl ContactsService {
         };
         with(self.store()?, |s| {
             s.put_card(&card)?;
-            s.enqueue(&Queued {
+            let queued = s.enqueue(&Queued {
                 card: card.id.clone(),
                 book: book.id.clone(),
                 op: Op::Put,
                 uid: uid.to_string(),
                 href: None,
                 etag: None,
-            })
+            });
+            // A card that cannot be queued would never reach the server: it goes again.
+            if queued.is_err() {
+                let _ = s.remove_card(&card.id);
+            }
+            queued
         })?;
         Ok(card)
     }

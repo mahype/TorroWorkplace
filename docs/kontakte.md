@@ -251,7 +251,8 @@ Einstellung, nicht mit `forbidden`: Das hieße für Agenten „Rechte fehlen“.
   `0171 …` sind gleich, wenn die Suite deutsch spricht) oder gleicher Name mit gleicher Firma. Eine Adresse oder
   Nummer, die mehr als drei Kontakte teilen (Zentrale, `info@`), zählt nicht. Zusammenführen behält die Einzelfelder
   des gewählten Kontakts, füllt leere aus den anderen und vereinigt Listen, ohne einen Wert der anderen bevorzugt zu
-  machen; danach werden die anderen gelöscht. „Not duplicates“ merkt sich das Paar auf diesem Gerät (Tabelle
+  machen; danach werden die anderen gelöscht, aber erst, wenn der zusammengeführte Kontakt auf dem Server ist
+  (sonst bleiben sie und stehen in `left`). „Mark as different“ merkt sich das Paar auf diesem Gerät (Tabelle
   `not_duplicates`, Schema 2); es geht mit Kontakt, Buch und Konto.
 
 ## Befehle
@@ -359,7 +360,7 @@ Erläuterungen:
 - **Kontakte-App (KO3, Issues #725, #726):** im „…“ der Kopfleiste „Import vCard…“ (Dateiwahl, Buch, Probelauf,
   „Import {n}“) und „Export…“ (was die Ansicht zeigt), im „…“ eines Kontakts „Export vCard…“; Ansicht „Duplicates“ in
   der Seitenleiste mit Zahl, je Treffer die Kontakte nebeneinander (mittel und schmal untereinander) mit „Keep this
-  one“, „Not duplicates“ und „Merge…“ (der Dialog nennt, was bleibt und was endgültig gelöscht wird).
+  one“, „Mark as different“ und „Merge…“ (auch per Tastatur: ↑/↓, ←/→, Enter, `D`) (der Dialog nennt, was bleibt und was endgültig gelöscht wird).
 
 **Empfänger-Vorschläge (#460, vorgezogen aus KO3):** Ab dem ersten Buchstaben in An, Cc oder Bcc fragt das
 Schreibfenster 150 ms nach der letzten Taste `contacts.suggest_recipients`. Die Reihenfolge rechnet der Dienst

@@ -974,7 +974,9 @@ pub struct DuplicateGroup {
 pub struct Merged {
     /// The contact that stays, with what the others brought.
     pub contact: Contact,
-    /// The ids of the other contacts whose deletion failed: they are still there.
+    /// The ids of the other contacts that are still there: their deletion failed, or the merged
+    /// contact has not reached the server yet (offline) and they stay until it has. Do not delete
+    /// them by hand while the merged contact is `pending`: they hold what it brings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub left: Vec<String>,
 }

@@ -642,7 +642,8 @@ fn vcard_attachment(message: &torro_mail::Message) -> Option<&torro_mail::Attach
     let first = message.attachments.iter().find(|attachment| {
         let kind = attachment.content_type.to_ascii_lowercase();
         let kind = kind.split(';').next().unwrap_or_default().trim();
-        let named = attachment.filename.as_deref().is_some_and(|name| name.to_ascii_lowercase().ends_with(".vcf"));
+        let named =
+            attachment.filename.as_deref().is_some_and(|name| name.trim().to_ascii_lowercase().ends_with(".vcf"));
         matches!(kind, "text/vcard" | "text/x-vcard") || named
     })?;
     (first.size <= crate::contacts::service::MAX_ATTACHED_CARD_BYTES as u64).then_some(first)
