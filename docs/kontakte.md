@@ -138,6 +138,12 @@ von `walkers` (egui): Kachel-Mathematik, Laden mit Cache, Widget aus `canvas` un
    war. Neue Kontakte bekommen die vCard-Fassung, die im Buch überwiegt (sonst 3.0, die versteht
    jeder Server). Gruppen werden im Stil des Servers geschrieben: `CATEGORIES`, oder bei iCloud die
    Gruppen-vCard.
+   **Stand #355 (2026-11-14):** Die Karte baut auf der Karten-Technik des Kalenders auf (TE.5): derselbe Abschnitt
+   „Maps“ der Steuerzentrale, dieselben Dienste (ab Werk Kacheln von OpenStreetMap, Ortssuche von Photon), dieselbe
+   Kachelablage und das Kartenbild `calendar.map_preview`. Einen eigenen Bereich `maps` mit Kachelserver-Auswahl,
+   eigenem Cache und `maps.get_tile` gibt es nicht. Gesucht wird beim Öffnen eines Kontakts, der Lauf über alle
+   Adressen und das Karten-Widget aus Einzelkacheln kommen mit #357. Wo die Entscheidungen 7 und 8 davon abweichen,
+   gilt dieser Stand.
 7. **Karte stufenweise:**
    - **KO2:** „In Karten öffnen“ und eine kleine Karte im Kontakt.
    - **KO4:** eine Karte aller Kontakte, die Übersicht offline aus mitgelieferten PMTiles, die Details online.
@@ -146,8 +152,9 @@ von `walkers` (egui): Kachel-Mathematik, Laden mit Cache, Widget aus `canvas` un
      die Nennung. Der Kachelserver ist einstellbar: OpenStreetMap (Standard), OpenTopoMap,
      basemap.de oder eine eigene URL.
 8. **Ortssuche nur mit Zustimmung:**
-   - **Ab Werk aus.** Eine Einstellung „Look up addresses with OpenStreetMap (Nominatim)“ schaltet sie ein.
-     Ein Text erklärt, dass dabei Adressen an die OpenStreetMap Foundation gehen.
+   - **Ab Werk aus.** Die Einstellung „Look up contact addresses“ im Abschnitt „Maps“ (`maps` mit `contactLookup`,
+     #355) schaltet sie ein; sie wirkt nur, solange Karten an sind. Der Satz darunter nennt den eingestellten
+     Suchdienst (ab Werk `photon.komoot.io`), an den die Adressen gehen.
    - **Eingeschaltet:** Der Kern wandelt Adressen nacheinander um, höchstens eine pro Sekunde, nur
      aus Büchern, die in der App sichtbar sind. Das Systemadressbuch (alle Nutzer der Instanz) geht
      also nur an die OSMF, wenn der Mensch ausgeblendete Bücher einblendet. Er
@@ -156,10 +163,11 @@ von `walkers` (egui): Kachel-Mathematik, Laden mit Cache, Widget aus `canvas` un
    - **`GEO` aus der vCard wird gelesen und hat Vorrang.**
    - **Zurückgeschrieben wird `GEO` nie still.** Es landet nur auf dem Server, wenn der Mensch einen
      Pin von Hand setzt (KO4).
-   - **Einschalten darf nur ein Mensch.** `maps.geocoding` auf „an“ ist wie das Mikrofon für Menschen
+   - **Einschalten darf nur ein Mensch.** `contactLookup` auf „an“ ist wie das Mikrofon für Menschen
      vorbehalten (`Request::kept_for_people`); ausschalten darf jeder mit Admin-Recht.
-   - **Ins Netz gehen nur der Kern im Hintergrund und die Apps** (App-Schlüssel). Für Clients
-     antworten `contacts.locate_contact` und `maps.get_tile` nur aus `GEO` und Cache. Der Kern
+   - **Ins Netz gehen nur der Kern für die App** (App-Schlüssel), beim Öffnen eines Kontakts (#355). Für Clients
+     antwortet `contacts.locate_contact` nur aus `GEO` und den gemerkten Orten. Nicht Gefundenes fragt der Kern
+     30 Tage lang nicht wieder, außer die Adresse ändert sich. Der Kern
      nimmt keinen Freitext an, nur Adressfelder gespeicherter Kontakte.
    - **Restweg, ehrlich benannt:** Ein Agent mit Schreibrecht kann einen Kontakt mit erfundener
      „Adresse“ anlegen, die der Hintergrund dann sucht. Das ist ein langsamer Kanal (1/s, nur
@@ -267,8 +275,8 @@ Bereich `contacts`:
 | KO1 | `contacts.move_contact { id, etag, to_book }` | Write | `contacts_move_contact` |
 | KO1 | `contacts.delete_contact { id, etag }` | Delete | `contacts_delete_contact` |
 | KO1 | `contacts.resolve_conflict { id, keep: mine\|theirs\|both, etag }` | Write, mit `mine`/`theirs` **Delete** | `contacts_resolve_conflict` |
-| KO2 | `contacts.locate_contact { id, address: usize }` (Antwort `found \| not_found \| queued \| no_consent`; Netz nur für den App-Schlüssel) | Read | `contacts_locate_contact` |
-| KO2 | `contacts.open_in_maps { id, address: usize }` (öffnet die Karten-App oder den Browser) | Write | `contacts_open_in_maps` |
+| KO2, #355 | `contacts.locate_contact { id, address: usize }` (Antwort `found \| not_found \| not_looked_up \| no_consent`; Netz nur für den App-Schlüssel) | Read | `contacts_locate_contact` |
+| KO2, #355 | `contacts.open_in_maps { id, address: usize }` (öffnet die Karten-App oder den Browser; für Clients immer mit Freigabe) | Write | `contacts_open_in_maps` |
 | KO3, #460 | `contacts.suggest_recipients { query, limit? }` (Kontakte, Gruppen und Adressen aus Mails, siehe unten) | Read | `contacts_suggest_recipients` |
 | KO3 | `contacts.import_vcards { book, data, dry_run }` | Write | `contacts_import_vcards` |
 | KO3 | `contacts.export_vcards { book?, ids? }` | Read | `contacts_export_vcards` |
@@ -278,22 +286,21 @@ Bereich `contacts`:
 | KO4 | `contacts.list_locations { book?, group?, bbox? }` (Pins: Kennung, Name, Koordinaten) | Read | `contacts_list_locations` |
 | KO4 | `contacts.set_location { id, etag, address: usize, lat, lon, replace }` (Pin von Hand, schreibt `GEO`) | Write, mit `replace` **Delete** | `contacts_set_location` |
 
-Bereich `maps` (neu):
+Karten (seit #355 auf der Technik des Kalenders, ohne eigenen Bereich `maps`):
 
 | Stufe | Befehl | Zugriff | MCP |
 |---|---|---|---|
-| KO2 | `maps.get_tile { z, x, y }` (PNG aus dem Cache oder vom eingestellten Server; für Clients nur aus dem Cache) | Read | `maps_get_tile` |
-| KO2 | `maps.get_status` (Server, Nennung, Ortssuche an/aus mit Fortschritt, Größe des Caches) | Read | `maps_get_status` |
-| KO2 | `maps.clear_cache` | Write | `maps_clear_cache` |
+| TE.5 | `calendar.map_preview { geo, width, height, dark }` (das Kartenbild, auch für Kontakte) | Read | `calendar_map_preview` |
+| KO2, #355 | `settings.maps_status` (Bytes der Kacheln, Zahl der gemerkten Orte; für Clients nur ihrer Bücher) | Read | `settings_maps_status` |
+| KO2, #355 | `settings.clear_maps_cache` (Kacheln und Orte; für Clients nur Orte ihrer Bücher) | Admin | `settings_clear_maps_cache` |
 | KO4 | `maps.get_offline_tile { z, x, y }` (aus den mitgelieferten PMTiles) | Read | `maps_get_offline_tile` |
 
 Einstellungen über das vorhandene `settings.set_setting` (Admin, für Agenten also mit Freigabe):
-`maps.tile_server` (`osm`, `opentopomap`, `basemap-de`, `custom`), `maps.tile_url` (bei `custom`),
-`maps.geocoding` (aus/an; „an“ nur für Menschen), `contacts.show_hidden_books` (aus/an, nur die Anzeige
-in der App, die Rechte bleiben).
+`maps` mit `contactLookup` (aus/an; „an“ nur für Menschen) neben den Feldern des Kalenders,
+`contacts.show_hidden_books` (aus/an, nur die Anzeige in der App, die Rechte bleiben).
 
 Erläuterungen:
-- **Kein Befehl steht auf `Never`.** Einzig das Einschalten der Ortssuche (`maps.geocoding = true`)
+- **Kein Befehl steht auf `Never`.** Einzig das Einschalten der Ortssuche (`contactLookup: true`)
   ist nach seinem Wert Menschen vorbehalten, wie das Mikrofon. Das wird ein eigener Punkt in
   [„Was nie nach außen geht“](api.md#was-nie-nach-außen-geht) (KO2.1).
 - **`update_contact` ist `Delete`,** weil es Felder des Menschen überschreibt; `add_to_contact` nicht.
@@ -303,12 +310,10 @@ Erläuterungen:
   der Kern mit `conflict`.
 - **`locate_contact` ist `Read`:** Für Clients liest es nur `GEO` und den Cache. Nominatim fragt nur
   der Kern selbst, im Hintergrund oder für die App, und nur mit Zustimmung.
-- **Kein `locate_all`:** Mit Zustimmung sucht der Hintergrund alle Adressen von selbst. Ausschalten
-  hält ihn an, `maps.get_status` zeigt den Fortschritt.
-- **`open_in_maps` ist `Write`** wie `apps.open_app`: Es öffnet etwas auf dem Bildschirm des Menschen.
-- **`maps_get_tile` für Agenten:** Ein Agent kann mit einem Kachelbild wenig anfangen. Es gibt das
-  Tool trotzdem, weil die Regel „jede Funktion dreimal“ gilt. Es liest nur den Cache, damit ein
-  Agent über frei gewählte Kachelnummern nichts nach draußen trägt.
+- **Kein `locate_all`:** Mit Zustimmung sucht der Hintergrund alle Adressen von selbst (#357). Ausschalten
+  hält ihn an.
+- **`open_in_maps` ist `Write`** wie `apps.open_app`: Es öffnet etwas auf dem Bildschirm des Menschen und schickt
+  die Adresse an Google, Apple oder OpenStreetMap; für Clients wartet es darum immer auf eine Freigabe (#355).
 
 ## Oberfläche
 
@@ -362,10 +367,11 @@ Systemadressbuch nur, solange ausgeblendete Bücher gezeigt werden. Adressen aus
 Aufrufer lesen darf; die eigenen Adressen der Konten nie. „+ Contact“ legt mit Name und Adresse einen Kontakt im
 ersten beschreibbaren Buch an (`contacts.create_contact`); ohne beschreibbares Buch fehlt der Knopf.
 
-**Karte im Kontakt (KO2):** ein fester Ausschnitt (Zoom 15, 3×3 Kacheln) mit Pin, unten rechts
-„© OpenStreetMap contributors“. Ein Klick öffnet die Karten-App. Ohne Koordinaten und ohne
-Zustimmung zeigt die Stelle nur „Open in Maps“ und den Hinweis „Turn on address lookup to see a
-map“, mit Link zur Einstellung.
+**Karte im Kontakt (KO2, #355):** das Kartenbild des Kalenders (`calendar.map_preview`, Zoom 16) mit Pin, oben
+rechts ↗ „Open in Maps“, unten rechts „© OpenStreetMap“. Ein Klick öffnet die Karten-App. Ohne Karte steht an der
+Stelle eine Zeile mit „Open in Maps“ daneben: „Finding address…“, „Address not found on the map“, „Turn on address
+lookup to see a map“ bzw. „Turn on maps to see a map“ (beide mit Link zur Steuerzentrale › General) oder „The map is
+not available right now.“
 
 **Karte aller Kontakte (KO4), „Karte als Ansicht“** (Entscheidung 11, Entwurf `c-karte.html`):
 - **Nur mit Zustimmung.** Ist die Ortssuche (`maps.geocoding`) aus, gibt es die Karte nicht: kein Schalter,
