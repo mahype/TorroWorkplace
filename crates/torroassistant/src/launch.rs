@@ -57,10 +57,16 @@ pub enum Open {
     Forbidden,
     /// The model picker of the composer.
     Picker,
-    /// The effort menu of the composer (issue #131).
+    /// The effort of the composer (issue #131): since issue #699 a row in the model's menu, which
+    /// this state opens like `picker`.
     Effort,
     /// The permission mode menu under the composer (issue #132).
     Mode,
+    /// The composer while the microphone records (issue #699).
+    Dictating,
+    /// The composer with two areas switched off: a chip for each, "2 areas off" when narrow
+    /// (issue #699).
+    AreasOff,
     /// The "…" menu of the open conversation (Rename, Pin, Open in new window, Delete).
     Menu,
     /// The dialog that renames the open conversation.
@@ -109,7 +115,7 @@ pub enum Open {
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 30] = [
+    pub const ALL: [(&'static str, Open); 32] = [
         ("new", Open::New),
         ("tools", Open::Tools),
         ("approval", Open::Approval),
@@ -118,6 +124,8 @@ impl Open {
         ("picker", Open::Picker),
         ("effort", Open::Effort),
         ("mode", Open::Mode),
+        ("dictating", Open::Dictating),
+        ("areas-off", Open::AreasOff),
         ("menu", Open::Menu),
         ("rename", Open::Rename),
         ("delete", Open::Delete),

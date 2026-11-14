@@ -216,6 +216,21 @@ pub mod button {
         }
     }
 
+    /// The round "Send" of the assistant's composer (issue #699): [`primary`] as a circle, the
+    /// arrow in `on_accent`. Still the one red button of
+    /// the window. Its disabled state is never drawn: an empty field shows [`round_quiet`] instead.
+    pub fn round_primary(theme: &Theme, status: Status) -> Style {
+        let style = primary(theme, status);
+        Style { border: style.border.rounded(super::ROUND as f32), ..style }
+    }
+
+    /// A round neutral button of the composer (issue #699): "Send" while the field is empty (then
+    /// disabled, grey), "Stop" and "Sending…" in the same form. [`secondary`] as a circle.
+    pub fn round_quiet(theme: &Theme, status: Status) -> Style {
+        let style = secondary(theme, status);
+        Style { border: style.border.rounded(super::ROUND as f32), ..style }
+    }
+
     /// An icon-only button (‹ › refresh …): a [`ghost`] button, 28 × 28
     /// ([`crate::theme::size::control_sm()`] square, no padding), icon 14–16 in the text colour.
     /// Always give it a tooltip.
@@ -733,6 +748,20 @@ pub fn text_editor_document(theme: &Theme, status: widget::text_editor::Status) 
     }
 }
 
+/// The assistant's composer (issue #699): the text editor is the one frame around the text and the
+/// quiet row of its options, which lies over its bottom – `panel`, 1-px `line_strong` border, radius
+/// [`radius::lg()`] like a floating card; focused the 2-px `focus_ring` like every input, so the
+/// field shows where one writes. No hover surface: the whole field would light up under the row.
+pub fn text_editor_composer(theme: &Theme, status: widget::text_editor::Status) -> widget::text_editor::Style {
+    let framed = text_editor(theme, status);
+    let p = palette(theme);
+    widget::text_editor::Style {
+        background: Background::Color(p.panel),
+        border: framed.border.rounded(radius::lg()),
+        ..framed
+    }
+}
+
 /// The colour of the check mark on a filled check box or task circle: `panel` (white in light
 /// mode, near black in dark mode), ≥ 3:1 on every calendar colour of the mode.
 fn check_mark(p: &Palette) -> Color {
@@ -1043,6 +1072,29 @@ mod tests {
             }
             let r = radio(&theme, widget::radio::Status::Active { is_selected: true });
             assert!(!same(r.dot_color, p.accent) && !same(r.border_color, p.accent));
+        }
+    }
+
+    /// Issue #699: the round buttons of the composer are circles; red only for "Send" when ready,
+    /// with the arrow readable on it, the quiet one neutral with its icon readable.
+    #[test]
+    fn the_round_buttons_of_the_composer_are_readable() {
+        for (mode, theme, p) in modes() {
+            for status in [Status::Active, Status::Hovered, Status::Pressed] {
+                let send = button::round_primary(&theme, status);
+                assert!(same(bg(&button::round_primary(&theme, Status::Active)), p.accent), "{mode}");
+                assert!(send.text_color.relative_contrast(bg(&send)) >= 5.35, "{mode}: arrow on red {status:?}");
+                assert_eq!(send.border.radius, (ROUND as f32).into(), "{mode}: a circle");
+                let quiet = button::round_quiet(&theme, status);
+                assert!(!same(bg(&quiet), p.accent) && !same(quiet.text_color, p.accent), "{mode}: quiet is not red");
+                assert!(quiet.text_color.relative_contrast(over(bg(&quiet), p.panel)) >= 4.5, "{mode}: {status:?}");
+                assert_eq!(quiet.border.radius, (ROUND as f32).into(), "{mode}: a circle");
+            }
+            let rest = text_editor_composer(&theme, widget::text_editor::Status::Active);
+            assert!(rest.border.color.relative_contrast(p.panel) > 1.0, "{mode}: the frame shows");
+            let focused = text_editor_composer(&theme, widget::text_editor::Status::Focused { is_hovered: false });
+            assert!(same(focused.border.color, p.focus_ring), "{mode}: the focus shows on the frame");
+            assert!(focused.border.width > rest.border.width, "{mode}: as the ring of every input");
         }
     }
 

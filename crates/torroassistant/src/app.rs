@@ -110,7 +110,7 @@ use torro_ipc::assistant::{
     Card, CardEntry, ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, Profile,
 };
 use torro_ipc::bots::{Bot, BotSummary};
-use torro_ipc::{ApprovalInfo, Request, Response};
+use torro_ipc::{ApprovalInfo, Request, Response, VoiceStatus};
 use torro_settings_ui::assistant::{self as settings, AppAction};
 use torro_settings_ui::{Host, Outcome};
 
@@ -176,6 +176,8 @@ pub const RENAME: &str = "assistant-rename";
 /// The section AI of the window's own settings (issue #410), where accounts are added and their
 /// models turned on.
 pub const AI_PAGE: &str = settings::AI_SECTION;
+/// The section Voice of the window's settings, where speech recognition is set up (issue #699).
+pub const VOICE_PAGE: &str = "voice";
 
 /// The id of the scrolling entries of the open conversation.
 pub const HISTORY: &str = "assistant-history";
@@ -194,8 +196,6 @@ pub type Reply = Box<dyn Fn(Result<Response, Refusal>) -> Message + Send>;
 pub enum Menu {
     /// The engine and model picker of the composer.
     Picker,
-    /// The effort of the composer (issue #131).
-    Effort,
     /// The permission mode under the composer (issue #132).
     Mode,
     /// The areas of the composer ("Without Mail").
@@ -208,6 +208,18 @@ pub enum Menu {
     Bot { id: String },
     /// The engine and model picker of the bot editor.
     BotPicker,
+}
+
+/// The microphone of the composer (issue #699).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Dictation {
+    /// Nothing is recorded.
+    #[default]
+    Idle,
+    /// The core records (`assistant.dictate` is out); a press stops it.
+    Recording,
+    /// The recording was stopped and the speech turns into text.
+    Stopping,
 }
 
 /// Where a conversation's menu opens.
@@ -391,6 +403,16 @@ pub enum Message {
     PickEffort(Option<Effort>),
     /// From the permission mode's menu (issue #132).
     PickMode(PermissionMode),
+    /// How talking by voice stands (`settings.voice_status`, issue #699): whether the microphone
+    /// can dictate.
+    Voice(Result<VoiceStatus, Refusal>),
+    /// The microphone of the composer (issue #699): records, stops a recording, or – without speech
+    /// recognition – opens Settings › Voice.
+    Dictate,
+    /// What was dictated, as text; empty when nothing was understood.
+    Dictated(Result<String, Refusal>),
+    /// The core took "stop dictating"; the text comes with [`Message::Dictated`].
+    DictationStopped,
     /// "Manage models…" at the end of the picker and under "No model is turned on" (task S.26): the
     /// section AI of the settings ([`AI_PAGE`]), where the models of each AI account are turned on and off.
     ManageModels,
@@ -566,6 +588,12 @@ pub struct App {
     pub(crate) take_without: bool,
     /// The message is on its way.
     pub(crate) sending: bool,
+    /// How talking by voice stands, as last asked (issue #699); `None` until the core answered.
+    pub(crate) voice: Option<VoiceStatus>,
+    /// The microphone of the composer.
+    pub(crate) dictation: Dictation,
+    /// How voice stands was asked once outside mini and strip.
+    voice_asked: bool,
 
     pub(crate) menu: Option<Menu>,
     pub(crate) dialog: Option<Dialog>,
@@ -657,13 +685,15 @@ impl App {
             choice: None,
             effort: None,
             chosen: Chosen::Default,
-            without: Vec::new(),
+            without: if open == Some(Open::AreasOff) { vec![Area::Mail, Area::Calendar] } else { Vec::new() },
             mode: PermissionMode::Default,
             take_without: true,
             sending: false,
+            voice: None,
+            voice_asked: false,
+            dictation: if open == Some(Open::Dictating) { Dictation::Recording } else { Dictation::Idle },
             menu: match open {
-                Some(Open::Picker) => Some(Menu::Picker),
-                Some(Open::Effort) => Some(Menu::Effort),
+                Some(Open::Picker | Open::Effort) => Some(Menu::Picker),
                 Some(Open::Mode) => Some(Menu::Mode),
                 Some(Open::Menu) => Some(Menu::Conversation { id: demo::TOOLS.into(), at: MenuAt::Header }),
                 Some(Open::BotMenu) => Some(Menu::Bot { id: demo::TRAVEL.into() }),
@@ -886,11 +916,17 @@ impl App {
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
             Message::Raise => return torro_gui::instance::bring_to_front(),
-            Message::Resized(size) => self.size = size,
+            Message::Resized(size) => {
+                self.size = size;
+                // A window that grows out of mini or strip gets its microphone (issue #699).
+                if !self.waiting && self.voice.is_none() && !self.voice_asked && !self.is_glance() {
+                    return self.load_voice();
+                }
+            }
             Message::CoreReady => {
                 self.waiting = false;
                 // The chat window's conversation too: it waited with the rest (issue #206).
-                return Task::batch([self.load_all(), self.open_current()]);
+                return Task::batch([self.load_all(), self.open_current(), self.load_voice()]);
             }
             Message::Tick => {
                 let mut tasks = vec![self.load_all(), self.fetch_appearance(), self.zoom.fetch().map(Message::Zoom)];
@@ -1031,6 +1067,16 @@ impl App {
                 self.mode = mode;
                 self.menu = None;
             }
+            Message::Voice(Ok(voice)) => self.voice = Some(voice),
+            // An old core or none: the microphone stays as it was.
+            Message::Voice(Err(_)) => {}
+            Message::Dictate => return self.dictate(),
+            Message::Dictated(result) => return self.dictated(result),
+            // The demo records nothing: its `dictating` state has no dictation that could answer.
+            Message::DictationStopped if self.launch.demo && self.dictation == Dictation::Stopping => {
+                self.dictation = Dictation::Idle;
+            }
+            Message::DictationStopped => {}
             // The section AI of this window's own settings (issue #410), not the control centre.
             Message::ManageModels => {
                 self.close_menus();
@@ -1829,6 +1875,106 @@ impl App {
         }
     }
 
+    /// How talking by voice stands (issue #699), for the microphone of the composer: at the start
+    /// and after the settings; never in mini and strip, which have no microphone.
+    fn load_voice(&mut self) -> Task<Message> {
+        if self.is_glance() {
+            return Task::none();
+        }
+        self.voice_asked = true;
+        self.ask(Request::VoiceStatus, |result| {
+            Message::Voice(result.and_then(|response| match response {
+                Response::Voice { voice } => Ok(voice),
+                other => Err(Refusal::unexpected(&other)),
+            }))
+        })
+    }
+
+    /// Whether the composer offers the plus with the areas and the permission mode (issue #699): not
+    /// in a bot's chat, which answers with its own client's rights – nothing of the assistant's to
+    /// switch off.
+    pub(crate) fn offers_areas_and_mode(&self) -> bool {
+        self.chat_bot().is_none()
+    }
+
+    /// Whether the microphone can dictate (issue #699): the programs to record and to turn speech
+    /// into text are there. "Hey Torro" need not be on.
+    pub(crate) fn can_dictate(&self) -> bool {
+        self.voice.as_ref().is_some_and(|voice| voice.installed && voice.can_listen())
+    }
+
+    /// The microphone (issue #699): records until a pause, stops a recording, or – without speech
+    /// recognition – opens Settings › Voice, where it is set up.
+    fn dictate(&mut self) -> Task<Message> {
+        match self.dictation {
+            Dictation::Stopping => Task::none(),
+            Dictation::Recording => {
+                self.dictation = Dictation::Stopping;
+                self.ask(Request::StopDictation, |_| Message::DictationStopped)
+            }
+            Dictation::Idle if !self.can_dictate() => {
+                self.close_menus();
+                self.open_settings(Some(VOICE_PAGE))
+            }
+            Dictation::Idle => {
+                self.dictation = Dictation::Recording;
+                self.ask(Request::Dictate, |result| {
+                    Message::Dictated(result.and_then(|response| match response {
+                        Response::Transcript { text } => Ok(text),
+                        other => Err(Refusal::unexpected(&other)),
+                    }))
+                })
+            }
+        }
+    }
+
+    /// What was dictated goes into the field where the caret stands, nothing is sent; a space in
+    /// front where the text does not end in one.
+    fn dictated(&mut self, result: Result<String, Refusal>) -> Task<Message> {
+        self.dictation = Dictation::Idle;
+        match result {
+            Ok(text) if text.trim().is_empty() => {
+                self.note(tr("Nothing was understood.").to_owned());
+                Task::none()
+            }
+            Ok(text) => {
+                // What stands right before the caret decides the space, not the end of the field.
+                // The text around the caret – or around a selection, which the text replaces – decides
+                // the spaces: one in front after a word, one behind before a word.
+                let cursor = self.editor.cursor();
+                let (start, end) = match cursor.selection {
+                    Some(other) if (other.line, other.column) < (cursor.position.line, cursor.position.column) => {
+                        (other, cursor.position)
+                    }
+                    Some(other) => (cursor.position, other),
+                    None => (cursor.position, cursor.position),
+                };
+                let line = |at: usize| self.editor.line(at).map(|line| line.text.into_owned()).unwrap_or_default();
+                let (first, last) = (line(start.line), line(end.line));
+                let before = first.get(..start.column).and_then(|text| text.chars().last());
+                let after = last.get(end.column..).and_then(|text| text.chars().next());
+                let word = |c: Option<char>| c.is_some_and(|c| !c.is_whitespace());
+                let mut text = text.trim().to_owned();
+                if word(before) {
+                    text.insert(0, ' ');
+                }
+                if word(after) {
+                    text.push(' ');
+                }
+                self.editor.perform(text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new(text))));
+                operation::focus(EDITOR)
+            }
+            Err(refusal) if refusal.code == "unsupported" => {
+                self.note(tr("Speech recognition isn't set up.").to_owned());
+                self.load_voice()
+            }
+            Err(refusal) => {
+                self.note_failure(tr("Couldn't dictate."), &refusal);
+                Task::none()
+            }
+        }
+    }
+
     fn stop(&mut self) -> Task<Message> {
         let Some(id) = self.current.clone().filter(|_| self.transcript.running()) else { return Task::none() };
         self.ask(Request::CancelAnswer { conversation: id }, |result| Message::Stopped(result.map(|_| ())))
@@ -1910,7 +2056,8 @@ impl App {
         self.close_menus();
         if self.settings.is_some() {
             self.settings = None;
-            return Task::none();
+            // Speech recognition may have been set up meanwhile (issue #699).
+            return self.load_voice();
         }
         self.open_settings(None)
     }
@@ -2042,11 +2189,11 @@ impl App {
             // A section changed something: the window loads what it shows itself – the engines,
             // the profile, the client, the conversations – right now instead of on its next tick,
             // so a changed default or a new bot is in the chat at once.
-            Outcome::Changed => Task::batch([self.fetch_appearance(), self.load_all()]),
+            Outcome::Changed => Task::batch([self.fetch_appearance(), self.load_all(), self.load_voice()]),
             Outcome::Close => {
                 let save = self.save_settings().unwrap_or_else(Task::none);
                 self.settings = None;
-                save
+                Task::batch([save, self.load_voice()])
             }
             Outcome::OpenUrl(url) => open_link(url),
             Outcome::Answer(result) => {

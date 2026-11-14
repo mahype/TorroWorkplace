@@ -2624,6 +2624,10 @@ const VOICE_STATUS_WAIT: std::time::Duration = std::time::Duration::from_secs(15
 /// to text.
 const VOICE_TEST_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How long `torroassistant --dictate` may take (issue #699): a dictation is at most a minute, then
+/// speech to text.
+const DICTATE_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
+
 /// The arguments of a voice helper `mode` of the assistant app, with the voice settings.
 fn voice_args(mode: &str, voice: &torro_core::settings::Voice) -> Vec<String> {
     vec![mode.to_string(), "--voice".to_string(), serde_json::to_string(voice).unwrap_or_default()]
@@ -6768,6 +6772,11 @@ impl Core {
             }
             Request::VoiceStatus => self.voice_status().await,
             Request::TestVoice => self.test_voice().await,
+            Request::Dictate => self.dictate().await,
+            Request::StopDictation => {
+                self.voice.stop_dictation();
+                Response::Ok
+            }
             Request::MapsStatus => self.maps_status(reach),
             Request::ClearMapsCache => self.clear_maps_cache(reach),
             Request::SetCollectionShown { collection, shown } => self.set_collection_shown(&collection, shown).await,
@@ -13174,6 +13183,27 @@ impl Core {
         }
     }
 
+    /// `assistant.dictate` (issue #699, app key only): what the person says as text, recorded by
+    /// `torroassistant --dictate` until a pause or `assistant.stop_dictation`. Whether "Hey Torro" is
+    /// on does not matter. The text goes to the window only, never into the log.
+    async fn dictate(&self) -> Response {
+        if self.voice.program().is_none() {
+            return Response::Error {
+                code: "unsupported".into(),
+                message: format!("{} is not installed", AppId::ASSISTANT.binary),
+            };
+        }
+        let voice = self.settings.current().voice;
+        match self.voice.dictate(&voice_args("--dictate", &voice), DICTATE_WAIT).await {
+            Ok(answer @ (Response::Transcript { .. } | Response::Error { .. })) => answer,
+            Ok(other) => voice_failure(&unexpected_kind(&other)),
+            Err(crate::apps::DictateError::Busy) => {
+                Response::Error { code: "busy".into(), message: "a dictation is already running".into() }
+            }
+            Err(crate::apps::DictateError::Failed(message)) => voice_failure(&message),
+        }
+    }
+
     /// "Save workspace…" in the tray (task WS.7): `workspaces.save_template` without a name, through
     /// [`Core::handle`], so the windows are captured at the click, before any dialog is there to be
     /// captured with them; then, once it answered `Saved`, the dialog for the new template in its mode
@@ -18772,6 +18802,8 @@ mod tests {
         assert!(!voice.installed && voice.programs.is_empty());
         assert_eq!(voice.listener, torro_ipc::VoiceState::Off);
         assert_eq!(code(&core.handle(Request::TestVoice).await), "unsupported");
+        assert_eq!(code(&core.handle(Request::Dictate).await), "unsupported", "issue #699: dictating too");
+        assert_eq!(core.handle(Request::StopDictation).await, Response::Ok, "nothing to stop is fine");
 
         let mut rights = RightsTemplate::ReadOnly.rights();
         rights.areas.insert(Area::Settings, AreaRights { level: Level::Read, admin: false });
@@ -18792,7 +18824,7 @@ mod tests {
         .expect("json");
         let heard = serde_json::to_string(&Response::Transcript { text: "What is on today?".into() }).expect("json");
         let body = format!(
-            "case \"$1\" in\n  --voice-status) echo '{status}' ;;\n  --voice-test) echo '{heard}' ;;\n  --listen) echo '\"listening\"'; sleep 30 ;;\nesac"
+            "case \"$1\" in\n  --voice-status) echo '{status}' ;;\n  --voice-test) echo '{heard}' ;;\n  --dictate) echo '{heard}' ;;\n  --listen) echo '\"listening\"'; sleep 30 ;;\nesac"
         );
         let program = crate::apps::tests::fake_program(dir.path(), &body);
         let core = core(dir.path()).with_listener(crate::apps::Listener::at(program));
@@ -18801,6 +18833,8 @@ mod tests {
         assert!(voice.installed);
         assert_eq!(voice.microphones, ["usb"]);
         assert_eq!(core.handle(Request::TestVoice).await, Response::Transcript { text: "What is on today?".into() });
+        // Issue #699: dictating answers with what was heard, through `--dictate`.
+        assert_eq!(core.handle(Request::Dictate).await, Response::Transcript { text: "What is on today?".into() });
 
         let mut changes = core.voice_changes();
         let set = |on: bool| Request::SetSetting { key: SettingKey::VoiceEnabled, value: serde_json::json!(on) };

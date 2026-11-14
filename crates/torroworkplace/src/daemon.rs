@@ -1305,6 +1305,8 @@ fn describe(request: &Request) -> String {
         Request::ConfirmBot { bot, .. } => format!("confirm asking bot {bot}"),
         Request::VoiceStatus => "voice status".into(),
         Request::TestVoice => "voice test".into(),
+        Request::Dictate => "dictation".into(),
+        Request::StopDictation => "stop dictation".into(),
         Request::MapsStatus => "map data".into(),
         Request::ClearMapsCache => "clear map data".into(),
         // Ids only, never a title, the content or a path (issue #225).

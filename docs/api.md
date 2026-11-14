@@ -1246,7 +1246,8 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    `only_people_switch_the_microphone_on_and_agents_may_switch_it_off` im Kern). `voice_enabled:
    false` ist eine gewöhnliche Admin-Änderung mit Freigabe. Den Mikrofontest („Say something“ im
    Abschnitt Voice des Assistenten, `settings.test_voice`) gibt es nur mit dem App-Schlüssel
-   (`Mcp::Never`). Dass die Einstellung im App-Fenster statt in der Steuerzentrale steht, ändert
+   (`Mcp::Never`), ebenso das Diktieren ins Eingabefeld (`assistant.dictate`,
+   `assistant.stop_dictation`, Issue #699). Dass die Einstellung im App-Fenster statt in der Steuerzentrale steht, ändert
    die Zusage nicht: Jedes Fenster der Suite hält den App-Schlüssel, und ein Mensch drückt den
    Schalter.
 
