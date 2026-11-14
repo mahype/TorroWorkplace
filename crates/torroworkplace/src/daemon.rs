@@ -1330,6 +1330,11 @@ fn describe(request: &Request) -> String {
         Request::CopyFile { .. } => "copy a file".into(),
         Request::MoveFile { .. } => "move a file".into(),
         Request::TrashFile { .. } => "trash a file".into(),
+        // Never a path, a text searched for or what a file holds (issue #705).
+        Request::ReadFile { .. } => "read a file".into(),
+        Request::SearchInFiles { .. } => "search in files".into(),
+        Request::WriteFile { .. } => "write a file".into(),
+        Request::EditFile { .. } => "change a file".into(),
         // Never a name, a search, a group or a field: contacts are people (`docs/kontakte.md`).
         Request::ListAddressBooks { .. } => "list address books".into(),
         Request::ListContacts { .. } => "list contacts".into(),
@@ -1724,6 +1729,19 @@ mod tests {
             (Request::CopyFile { from: path(), to: path() }, "copy a file"),
             (Request::MoveFile { from: path(), to: path() }, "move a file"),
             (Request::TrashFile { path: path() }, "trash a file"),
+            (Request::ReadFile { path: path(), from_line: None }, "read a file"),
+            (Request::SearchInFiles { folder: path(), text: "secret".into() }, "search in files"),
+            (Request::WriteFile { path: path(), text: "secret".into() }, "write a file"),
+            (
+                Request::EditFile {
+                    path: path(),
+                    version: "v".into(),
+                    find: "secret".into(),
+                    replace: "x".into(),
+                    all: true,
+                },
+                "change a file",
+            ),
         ];
         for (request, words) in named {
             assert_eq!(describe(&request), words);

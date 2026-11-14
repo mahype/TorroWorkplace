@@ -339,6 +339,10 @@ pub struct Facts {
     /// folders (`crate::tools::organize::Plan`), never the client's text. `None` when the core could not resolve
     /// them: the summary then names an unknown file.
     pub paths: Option<PathFacts>,
+    /// For `tools.edit_file` (issue #705): the lines the change makes as the core worked them out from the file it
+    /// read (`crate::tools::contents::Plan::diff`), old ones with `- `, new ones with `+ `; never the client's text.
+    /// Empty for every other command.
+    pub diff: Vec<String>,
     /// For the `contacts.*` commands (issue #351): the contact and its book as the core's store holds
     /// them, looked up by the contact's id, never by the client's text. `None` for other commands.
     /// Boxed: a contact is large, and the facts travel through the core's futures.
@@ -2154,7 +2158,9 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         request @ (Request::CreateFolder { .. }
         | Request::CopyFile { .. }
         | Request::MoveFile { .. }
-        | Request::TrashFile { .. }) => files_summary(request, facts.paths.as_ref()),
+        | Request::TrashFile { .. }
+        | Request::WriteFile { .. }
+        | Request::EditFile { .. }) => files_summary(request, facts.paths.as_ref()),
         // A backup (#267): the account by the label the core keeps, the source and where the
         // archive goes. A file name is a plain name in the managed folder for a client: it is what
         // will be written.
@@ -2790,6 +2796,11 @@ fn files_summary(request: &Request, paths: Option<&PathFacts>) -> String {
         }
         (Request::TrashFile { .. }, Some(from), _) => words("Move \"{name}\" to the trash", from, from),
         (Request::TrashFile { .. }, None, _) => tr("Move an unknown file or folder to the trash").to_string(),
+        // The tool `file_contents` (issue #705): a new file where it goes, a change of the file the core read.
+        (Request::WriteFile { .. }, _, Some(to)) => words("Create the file \"{new}\" in \"{folder}\"", to, to),
+        (Request::WriteFile { .. }, _, None) => tr("Create a file in an unknown place").to_string(),
+        (Request::EditFile { .. }, Some(from), _) => words("Change \"{name}\" in \"{folder}\"", from, from),
+        (Request::EditFile { .. }, None, _) => tr("Change an unknown file").to_string(),
         _ => tr("Move an unknown file or folder").to_string(),
     }
 }
@@ -2797,11 +2808,17 @@ fn files_summary(request: &Request, paths: Option<&PathFacts>) -> String {
 /// The details of a command of the tool `files` (issue #304): `From: "<path>"` for a copy, a move and the trash, `To:
 /// "<path>"`, and that nothing there is replaced (not for the trash, which makes nothing). The paths whole as the core
 /// resolved them, made harmless as in the summary; one longer than [`DETAIL_MAX`] characters keeps its end, where the
-/// names are. `None` for every other command.
+/// names are. For `tools.edit_file` (issue #705) the path and the lines it changes ([`Facts::diff`], [`diff_line`]),
+/// for `tools.write_file` the path and that nothing is replaced. `None` for every other command.
 fn files_details(request: &Request, facts: &Facts) -> Option<Vec<String>> {
     if !matches!(
         request,
-        Request::CreateFolder { .. } | Request::CopyFile { .. } | Request::MoveFile { .. } | Request::TrashFile { .. }
+        Request::CreateFolder { .. }
+            | Request::CopyFile { .. }
+            | Request::MoveFile { .. }
+            | Request::TrashFile { .. }
+            | Request::WriteFile { .. }
+            | Request::EditFile { .. }
     ) {
         return None;
     }
@@ -2817,10 +2834,31 @@ fn files_details(request: &Request, facts: &Facts) -> Option<Vec<String>> {
     let mut lines = Vec::new();
     lines.extend(paths.from.as_deref().map(|from| trf("From: {path}", &[("path", &shown(from))])));
     lines.extend(paths.to.as_deref().map(|to| trf("To: {path}", &[("path", &shown(to))])));
-    if !matches!(request, Request::TrashFile { .. }) {
-        lines.push(tr("A file there is never replaced; a free name is chosen.").to_string());
+    match request {
+        Request::TrashFile { .. } => {}
+        Request::EditFile { .. } => lines.extend(facts.diff.iter().map(|line| diff_line(line))),
+        _ => lines.push(tr("A file there is never replaced; a free name is chosen.").to_string()),
     }
     Some(lines)
+}
+
+/// A line of the difference of `tools.edit_file` made harmless for the card (issue #705): invisible format characters
+/// (direction marks, zero-width characters) and control characters but a tab are shown by their code (`⟨U+202E⟩`)
+/// instead of being dropped, so a change made only of them still shows on the card; spaces and tabs stay, as they are
+/// part of the change. At most [`DETAIL_MAX`] characters with `…`.
+fn diff_line(line: &str) -> String {
+    let cleaned: String = line
+        .chars()
+        .map(|c| match c {
+            '\t' => c.to_string(),
+            c if is_format(c) || c.is_control() => format!("⟨U+{:04X}⟩", u32::from(c)),
+            c => c.to_string(),
+        })
+        .collect();
+    match cleaned.char_indices().nth(DETAIL_MAX) {
+        Some((cut, _)) => format!("{}…", &cleaned[..cut]),
+        None => cleaned,
+    }
 }
 
 /// Where a backup reads from, as people say it.
@@ -4843,6 +4881,18 @@ fn quote_up_to(text: &str, max: usize) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    /// Issue #705: a line of a change keeps its spaces and tabs and shows invisible characters by their code, so a
+    /// change made only of them still shows on the card.
+    #[test]
+    fn a_line_of_a_change_shows_what_is_invisible() {
+        assert_eq!(diff_line("+     indented\tcell"), "+     indented\tcell");
+        assert_eq!(diff_line("+ abc\u{202e}def\u{200b}"), "+ abc⟨U+202E⟩def⟨U+200B⟩");
+        assert_eq!(diff_line("- a\u{7}b"), "- a⟨U+0007⟩b");
+        assert_ne!(diff_line("- foo"), diff_line("+ foo\u{200d}").replacen('+', "-", 1));
+        let long = diff_line(&"x".repeat(DETAIL_MAX + 10));
+        assert_eq!(long.chars().count(), DETAIL_MAX + 1);
+    }
+
     use std::sync::Mutex;
 
     use chrono::TimeZone;
