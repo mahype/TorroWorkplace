@@ -3,7 +3,8 @@
 //! atomically (a temporary file renamed over it), so a crash never leaves half a file.
 //!
 //! - `profile.json`: name, description, picture and the person's own name ([`ProfileFile`]).
-//!   Missing fields take the defaults ([`DEFAULT_NAME`], the description the core passes in, [`LETTER_AVATAR`]).
+//!   Missing fields take the defaults ([`DEFAULT_NAME`], the description the core passes in,
+//!   [`LETTER_AVATAR`]).
 //! - `persona.md`: the personality as the person wrote it, so it can be read and edited like any
 //!   text file. Control characters other than line breaks and tabs are taken out
 //!   ([`clean_personality`]): the text goes into every prompt.
