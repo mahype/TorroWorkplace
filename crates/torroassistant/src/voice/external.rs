@@ -272,8 +272,20 @@ while True:
 /// while the first sentence is recorded; one that stopped starts again with the next sentence.
 pub struct ParakeetPython {
     command: Vec<String>,
-    running: Option<(Child, ChildStdin, BufReader<ChildStdout>)>,
+    running: Option<Running>,
 }
+
+/// A running Parakeet process: its pipes, and a thread that keeps the last line it wrote to its
+/// error output, so a model that does not load says why ([`ParakeetPython::stop`]).
+struct Running {
+    child: Child,
+    input: ChildStdin,
+    output: BufReader<ChildStdout>,
+    errors: std::thread::JoinHandle<String>,
+}
+
+/// The longest reason from Parakeet's error output a message carries, in characters.
+const MAX_REASON_CHARS: usize = 300;
 
 impl ParakeetPython {
     /// Starts `python` with the model folder `model`, its int8 files if `int8`.
@@ -294,19 +306,42 @@ impl ParakeetPython {
     }
 
     fn run(&mut self) -> Result<(), VoiceError> {
-        let mut child = spawn(&self.command, Stdio::piped(), Stdio::piped())?;
+        let (program, args) = self.command.split_first().ok_or_else(|| VoiceError::program("", "no program"))?;
+        let mut child = Command::new(program)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|err| VoiceError::program(PARAKEET_NAME, err))?;
         let input = child.stdin.take().ok_or_else(|| VoiceError::program(PARAKEET_NAME, "no input"))?;
         let output = child.stdout.take().ok_or_else(|| VoiceError::program(PARAKEET_NAME, "no output"))?;
-        self.running = Some((child, input, BufReader::new(output)));
+        let stderr = child.stderr.take().ok_or_else(|| VoiceError::program(PARAKEET_NAME, "no error output"))?;
+        // Read all the time, so a chatty library never fills the pipe and blocks the process.
+        let errors = std::thread::spawn(move || {
+            let mut last = String::new();
+            for line in BufReader::new(stderr).split(b'\n') {
+                let Ok(line) = line else { break };
+                let line = String::from_utf8_lossy(&line).trim().to_string();
+                if !line.is_empty() {
+                    last = line;
+                }
+            }
+            last
+        });
+        self.running = Some(Running { child, input, output: BufReader::new(output), errors });
         Ok(())
     }
 
-    fn stop(&mut self) {
-        if let Some((mut child, input, _)) = self.running.take() {
-            drop(input);
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+    /// Ends the process; the last line it wrote to its error output (a Python error names the
+    /// cause there, e.g. a model file that is missing), empty when there is none.
+    fn stop(&mut self) -> String {
+        let Some(Running { mut child, input, errors, .. }) = self.running.take() else { return String::new() };
+        drop(input);
+        let _ = child.kill();
+        let _ = child.wait();
+        // The process is gone, so its error output is closed and the thread ends.
+        errors.join().unwrap_or_default().chars().take(MAX_REASON_CHARS).collect()
     }
 }
 
@@ -321,7 +356,7 @@ impl Transcriber for ParakeetPython {
         if self.running.is_none() {
             self.run()?;
         }
-        let Some((_, input, output)) = self.running.as_mut() else { return Ok(String::new()) };
+        let Some(Running { input, output, .. }) = self.running.as_mut() else { return Ok(String::new()) };
         let count = u32::try_from(samples.len()).map_err(|_| VoiceError::Sound("the sentence is too long".into()))?;
         let mut bytes = Vec::with_capacity(4 + samples.len() * 2);
         bytes.extend(count.to_le_bytes());
@@ -333,8 +368,9 @@ impl Transcriber for ParakeetPython {
         match answered {
             Ok(read) if read > 0 => Ok(String::from_utf8_lossy(&line).trim().to_string()),
             _ => {
-                self.stop();
-                Err(VoiceError::program(PARAKEET_NAME, "stopped"))
+                let reason = self.stop();
+                let message = if reason.is_empty() { "stopped".to_string() } else { format!("stopped: {reason}") };
+                Err(VoiceError::program(PARAKEET_NAME, message))
             }
         }
     }
@@ -633,6 +669,21 @@ mod tests {
             assert_eq!(parakeet.transcribe(&samples), Err(VoiceError::program("onnx-asr", "stopped")));
             assert_eq!(parakeet.transcribe(&samples).expect("started again"), "Hallo Welt");
             assert_eq!(fs::read_to_string(&starts).expect("starts").lines().count(), 2);
+        }
+
+        /// Review of #756: a model that does not load says why – the last line of Python's error
+        /// output comes with the message.
+        #[test]
+        fn parakeet_names_why_it_stopped() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let body = "echo 'Traceback (most recent call last):' >&2; \
+                        echo 'FileNotFoundError: encoder-model.onnx.data' >&2; exit 1";
+            let python = fake_program(dir.path(), "python3", body);
+            let mut parakeet = ParakeetPython::start(&python, dir.path(), false).expect("starts");
+            assert_eq!(
+                parakeet.transcribe(&fixture("utterance.wav")),
+                Err(VoiceError::program("onnx-asr", "stopped: FileNotFoundError: encoder-model.onnx.data"))
+            );
         }
 
         /// Feeds frames until `wake` arrives or a second is over.
