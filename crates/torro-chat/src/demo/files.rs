@@ -1,7 +1,8 @@
 //! Files and media of the sample (stage 4): the shared files of "Design sync" ([`DESIGN`]) – two
 //! pictures, a video with a preview and one without, a PDF, a voice message, a file that may not be
-//! downloaded, an SVG without a preview, a link to the account's own server with its card and a
-//! foreign link whose card comes only with "Show once" (issue #672) – and what the demo does with files:
+//! downloaded, an SVG without a preview, a link to the account's own server with its card, a
+//! foreign link whose card comes only with "Show once" (issue #672) and a YouTube video with its video
+//! card (issue #673) – and what the demo does with files:
 //! prepared files and uploads in memory, sendings that advance a quarter with each look
 //! ([`Files::progress`]), pictures drawn on the spot ([`picture`]).
 //!
@@ -44,9 +45,10 @@ fn file(id: &str, name: &str, size: u64, content_type: &str, preview: bool, edge
     }
 }
 
-/// The messages 3 to 16 of [`DESIGN`], four hours to a little over three before `now`: older than
+/// The messages 3 to 17 of [`DESIGN`], four hours to a little over three before `now`: older than
 /// the sample's other recent messages, so the order of the conversations stays as it was. Gesa's
-/// last four are pictures sent at once (13 to 16), which the chat window shows as one grid.
+/// four pictures sent at once (13 to 16) the chat window shows as one grid; her last message is a
+/// YouTube video with its video card, as YouTube allowed in Settings › Privacy gives it (17).
 pub(super) fn design_media(now: DateTime<chrono::Utc>) -> Vec<Message> {
     let ago = |minutes: i64| now - Duration::minutes(minutes);
     let shared = |number: u64, user: &str, name: &str, minutes: i64, caption: &str, file: FileRef| {
@@ -82,11 +84,23 @@ pub(super) fn design_media(now: DateTime<chrono::Utc>) -> Vec<Message> {
         description: Some("Shared folder · 12 files".into()),
         domain: "cloud.example.org".into(),
         image: true,
+        video: None,
     }];
     let mut grids =
         text(DESIGN, 11, "gesa", gesa, ago(198), "A good read on icon grids: https://example.com/blog/icon-grids");
     // Settings › Privacy at "Ask" (issue #672): the window asks before the card of another server loads.
     grids.foreign = Some(ForeignProvider { key: "example.com".into(), name: "example.com".into() });
+    let intro_link = "https://youtu.be/M7lc1UVf-VE";
+    let mut intro = text(DESIGN, 17, "gesa", gesa, ago(190), &format!("Our intro: {intro_link}"));
+    // YouTube allowed (issue #673): the card carries the video, its picture as the one of message 10.
+    intro.cards = vec![LinkCard {
+        url: intro_link.into(),
+        title: "Torro Workplace in two minutes".into(),
+        description: None,
+        domain: "youtu.be".into(),
+        image: true,
+        video: crate::video::video_of(intro_link),
+    }];
     vec![
         shared(
             3,
@@ -165,6 +179,7 @@ pub(super) fn design_media(now: DateTime<chrono::Utc>) -> Vec<Message> {
             "Options for the new header",
             file("5116", "Header D.png", 1_102_448, "image/png", true, Some((1600, 1000))),
         ),
+        intro,
     ]
 }
 
@@ -176,6 +191,7 @@ pub(super) fn foreign_card(url: &str) -> Option<LinkCard> {
         description: Some("Why a 24-pixel grid with 2 pixels of padding works for line icons.".into()),
         domain: "example.com".into(),
         image: false,
+        video: None,
     })
 }
 
