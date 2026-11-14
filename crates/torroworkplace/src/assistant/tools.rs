@@ -450,8 +450,9 @@ pub fn untrusted(area: Area, value: &Value) -> bool {
 /// filter lists, `tasks.add_link` takes an issue's title), asking a bot (task B.2), and the web's
 /// search and page (issue #305). The service keeps a result beside its tool line (issue #701), but
 /// compaction may drop it to save room, so this still counts by the line and what might have been
-/// rather than by the result (task C.11); a result marked `untrusted` counts on its own. Of MCP servers (issue #302) every tool of one (`ext_…`, as the tool line keeps its
-/// name) and the commands that show a server's text ([`untrusted`]).
+/// rather than by the result (task C.11); a result marked `untrusted` counts on its own. Of MCP
+/// servers (issue #302) every tool of one (`ext_…`, as the tool line keeps its name) and the
+/// commands that show a server's text ([`untrusted`]).
 pub fn may_have_read_untrusted(name: &str) -> bool {
     // The web's results and pages (issue #305, task WEB.5) are text of anyone on the internet.
     matches!(name, "tools.web_search" | "tools.fetch_page") || may_have_read_outside(name)
