@@ -910,8 +910,14 @@ mod tests {
         let prompt = system(None, &context);
         let generated = prompt.split_once("## This conversation").map(|(_, rest)| rest).expect("its part");
         let lines: Vec<&str> = generated.lines().filter(|line| !line.is_empty()).collect();
-        let labels =
-            ["- Now:", "- The suite's language:", "- The person's name:", "- Areas you may use:", "- You answer"];
+        let labels = [
+            "- Now:",
+            "- The suite's language:",
+            "- This computer:",
+            "- The person's name:",
+            "- Areas you may use:",
+            "- You answer",
+        ];
         assert_eq!(lines.len(), labels.len(), "{generated}");
         for (line, label) in lines.iter().zip(labels) {
             assert!(line.starts_with(label), "{line:?} is not {label:?}");

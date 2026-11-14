@@ -288,7 +288,7 @@ pub fn callable(name: &str) -> Option<Arc<Tool>> {
 /// What the model is offered of `allowed` in one step: every tool when they are at most
 /// [`MAX_TOOLS`] and the model is not `small`; otherwise the reading ones, the memory and those
 /// `loaded` by [`FIND_TOOLS`] before, in catalogue order, as many as fit next to [`FIND_TOOLS`], which comes
-/// last whenever a tool is left out. Of the reading tools of MCP servers (issue #302) the first
+/// last whenever a tool is left out; [`GET_HELP`] after the reading ones (issue #702). Of the reading tools of MCP servers (issue #302) the first
 /// [`SERVER_TOOLS_FIRST`] come before the catalogue's, after the memory and the bots.
 pub fn offered(allowed: &[Arc<Tool>], small: bool, loaded: &BTreeSet<String>) -> Vec<ToolSpec> {
     if !small && allowed.len() <= MAX_TOOLS {
@@ -306,11 +306,15 @@ pub fn offered(allowed: &[Arc<Tool>], small: bool, loaded: &BTreeSet<String>) ->
         rest.into_iter().partition(|tool| tool.is_memory() || tool.is_bots());
     let (servers, reading): (Vec<&Tool>, Vec<&Tool>) = rest.into_iter().partition(|tool| tool.is_server());
     let servers = servers.into_iter().take(SERVER_TOOLS_FIRST);
+    // The help (issue #702) last: it takes no reading tool's place, and the model may call it by the
+    // name the skill gives even when it is left out ([`callable`]).
+    let (help, reading): (Vec<&Tool>, Vec<&Tool>) = reading.into_iter().partition(|tool| tool.is_help());
     let mut specs: Vec<ToolSpec> = wanted
         .into_iter()
         .chain(memory)
         .chain(servers)
         .chain(reading)
+        .chain(help)
         .take(MAX_TOOLS - 1)
         .map(|tool| tool.spec.clone())
         .collect();
