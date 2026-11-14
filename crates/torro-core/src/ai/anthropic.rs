@@ -66,9 +66,9 @@ pub fn answer_ceiling(asked: Option<u32>, limit: Option<u32>) -> u32 {
 const EMPTY: &str = "(empty)";
 
 /// The body of `POST <base>/messages` for `request`: the model, the ceiling for the answer
-/// ([`answer_ceiling`] of the number the request names and the model's own `limit`), `stream`, the conversation ([`messages_json`]), the
-/// instructions as `system` and the tools as `input_schema` tools. Both are left out when there
-/// are none.
+/// ([`answer_ceiling`] of the number the request names and the model's own `limit`), `stream`,
+/// the conversation ([`messages_json`]), the instructions as `system` and the tools as
+/// `input_schema` tools. Both are left out when there are none.
 ///
 /// With [`ChatRequest::effort`] the body also carries `output_config.effort` with the effort's
 /// [`super::Effort::id`] and `thinking: {"type": "adaptive"}`, so the effort takes hold on the
@@ -460,7 +460,12 @@ pub fn parse_models(body: &[u8]) -> Result<Vec<AiModel>, AiError> {
                 tools: Some(true),
                 open_weights: None,
                 context: model.get("max_input_tokens").and_then(Value::as_u64),
-                max_output: model.get("max_tokens").and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok()),
+                // A limit of 0 would make every request ask for nothing: no limit is better.
+                max_output: model
+                    .get("max_tokens")
+                    .and_then(Value::as_u64)
+                    .and_then(|n| u32::try_from(n).ok())
+                    .filter(|n| *n > 0),
                 parameters: None,
                 quantization: None,
                 size: None,
@@ -1064,7 +1069,7 @@ mod tests {
             {"type":"model","id":"claude-opus-4-5","display_name":"Claude Opus 4.5",
              "capabilities":{"effort":{"supported":true},
              "thinking":{"supported":true,"types":{"enabled":{"supported":true},"adaptive":{"supported":false}}}}},
-            {"type":"model","id":"claude-old"},
+            {"type":"model","id":"claude-old","max_tokens":0},
             {"type":"model","display_name":"No id"}],"has_more":false}"#;
         let models = parse_models(body).expect("models");
         assert_eq!(models.len(), 4, "the one without an id is dropped");
@@ -1074,7 +1079,7 @@ mod tests {
         assert_eq!(models[0].max_output, Some(128_000), "max_tokens is the model's output limit");
         assert_eq!(models[0].reasoning, Some(true));
         for model in &models[1..] {
-            assert_eq!(model.max_output, None, "{}: the answer names no limit", model.id);
+            assert_eq!(model.max_output, None, "{}: the answer names no usable limit", model.id);
         }
         assert_eq!(models[1].name, "claude-haiku-4-5", "no name given: the id");
         assert_eq!(models[1].reasoning, Some(false), "so apps offer no effort for it");
