@@ -6439,6 +6439,8 @@ impl Core {
         match request {
             Request::Ping => Response::Pong { version: version(), api: API_VERSION },
             Request::Status => self.status(reach).await,
+            // The built-in help (#702) holds nothing a client may not see: every reach reads it.
+            Request::GetHelp { topic } => crate::help::answer(topic.as_deref()),
             // The core ends only after the answer went out; the daemon takes care of that
             // (`daemon::end_after_answer`), so the core itself just acknowledges it.
             Request::Quit => Response::Ok,
@@ -13146,6 +13148,10 @@ impl crate::assistant::Host for Core {
         self.assistant_client()
     }
 
+    fn window_manager(&self) -> &'static str {
+        self.backend.name()
+    }
+
     /// First the model, then where it runs (task S.23): the model asked or "Automatic" among the
     /// account's models as last listed ([`AiAccounts::known_models`], asked anew only for a model
     /// the list lacks), then [`torro_core::ai::place_of`] for that model. Only models turned on
@@ -14962,6 +14968,27 @@ mod tests {
             ("dense", "torro", MailFormat::Html, "torro"),
             "the run sets the design only: no font, mail view or colour scheme follows"
         );
+    }
+
+    /// Issue #702: the help lists its topics and answers one to every client, also one without any
+    /// area; an unknown topic is `not-found`.
+    #[tokio::test]
+    async fn every_client_reads_the_help() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let (_, nobody) = client(&core, Rights::none()).await;
+        for key in [Some(&app_key), Some(&nobody)] {
+            match ask(&core, key, Request::GetHelp { topic: None }).await {
+                Response::HelpTopics { topics } => assert!(topics.iter().any(|topic| topic.id == "accounts")),
+                other => panic!("the topics, got {other:?}"),
+            }
+            match ask(&core, key, Request::GetHelp { topic: Some("accounts".into()) }).await {
+                Response::HelpTopic { topic } => assert!(topic.text.contains("Add mail account")),
+                other => panic!("the topic, got {other:?}"),
+            }
+            assert_eq!(code(&ask(&core, key, Request::GetHelp { topic: Some("nothing".into()) }).await), "not-found");
+        }
     }
 
     #[tokio::test]
@@ -27436,7 +27463,13 @@ mod tests {
             Request::PinConversation { id: id.into(), pinned: true },
             Request::OpenChatWindow { window: torro_ipc::assistant::ChatWindow::New },
             Request::GetProfile,
-            Request::UpdateProfile { name: Some("Jarvis".into()), description: None, avatar: None, personality: None },
+            Request::UpdateProfile {
+                name: Some("Jarvis".into()),
+                description: None,
+                avatar: None,
+                personality: None,
+                person_name: None,
+            },
         ]
     }
 
@@ -27551,6 +27584,7 @@ mod tests {
             description: None,
             avatar: Some("sun".into()),
             personality: Some("Formal and precise.".into()),
+            person_name: None,
         };
 
         let mut reading = RightsTemplate::ReadOnly.rights();
@@ -27576,8 +27610,13 @@ mod tests {
             matches!(unchanged, Response::Profile { ref profile } if profile.name == "Torro"),
             "nothing before the approval"
         );
-        let blank =
-            Request::UpdateProfile { name: Some(" ".into()), description: None, avatar: None, personality: None };
+        let blank = Request::UpdateProfile {
+            name: Some(" ".into()),
+            description: None,
+            avatar: None,
+            personality: None,
+            person_name: None,
+        };
         assert_eq!(code(&ask(&core, Some(&key), blank).await), "error", "refused before anyone is asked");
 
         let Response::Profile { profile } = ask(&core, Some(&app_key), update).await else {

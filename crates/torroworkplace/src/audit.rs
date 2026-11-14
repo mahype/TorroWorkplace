@@ -193,6 +193,7 @@ pub fn ids(request: &Request) -> Vec<String> {
     match request {
         Request::Ping
         | Request::Status
+        | Request::GetHelp { .. }
         | Request::Quit
         | Request::ListTemplates
         | Request::ListScreens

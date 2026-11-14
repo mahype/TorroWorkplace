@@ -53,6 +53,7 @@ mod core;
 mod daemon;
 mod designs;
 mod extensions;
+mod help;
 mod hook;
 mod inbox;
 mod inbox_notify;

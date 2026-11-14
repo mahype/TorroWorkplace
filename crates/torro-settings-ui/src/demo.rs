@@ -708,6 +708,7 @@ impl Demo {
             description: "Your assistant for this computer".into(),
             avatar: LETTER_AVATAR.into(),
             personality: "Be calm and brief.".into(),
+            person_name: "Anna Berg".into(),
         }
     }
 

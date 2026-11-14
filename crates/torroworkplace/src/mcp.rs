@@ -4133,13 +4133,24 @@ mod tests {
                 name: None,
                 description: None,
                 avatar: None,
-                personality: Some("Brief.".into())
+                personality: Some("Brief.".into()),
+                person_name: None,
             })
         );
         assert!(matches!(
             request_for("assistant_remember", args(json!({"note": "x"})), &Utc),
             Err(ToolError::Input(_))
         ));
+    }
+
+    /// Issue #702: the help tool reads the list without a topic and one topic with it.
+    #[test]
+    fn the_help_tool_builds_its_request() {
+        assert_eq!(request_for("system_get_help", args(json!({})), &Utc), Ok(Request::GetHelp { topic: None }));
+        assert_eq!(
+            request_for("system_get_help", args(json!({"topic": "mail"})), &Utc),
+            Ok(Request::GetHelp { topic: Some("mail".into()) })
+        );
     }
 
     fn message(seq: u64, text: &str) -> Entry {

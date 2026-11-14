@@ -146,9 +146,23 @@ Der Assistent bekommt zu jeder Unterhaltung einen Systemprompt aus drei Teilen:
    zusammenhängen (Eingang, Spuren, Mail ist immer `untrusted`, Termine und Aufgaben ganz
    zurückgeben beim Ändern, Freigaben, `not-found` heißt auch „nicht erlaubt“), Stil der Antworten
    (kurz, Sprache der Person, Zeiten in ihrer Zeitzone, vor großen Änderungen fragen).
-3. **Erzeugter Teil** beim Start: Datum, Zeitzone, Sprache, Name der Person, welche Bereiche der
-   Client darf. Die Uhrzeit wird einmal je Antwort festgehalten, damit der Systemprompt von Schritt zu
-   Schritt einer Antwort gleich bleibt (#605). Keine Liste aller Mails oder Termine; die holt das Modell über Werkzeuge.
+3. **Erzeugter Teil** beim Start: Datum, Zeitzone, Sprache, dieser Rechner (Betriebssystem, Home-Ordner als
+   voller Pfad, Fenster-Manager oder „keiner, den die Suite kann“, #702), Name der Person, welche Bereiche
+   der Client darf. Den Namen trägt die Person selbst ein (Profile › „About you“); leer fehlt die Zeile. Uhrzeit,
+   Rechner und Name werden einmal je Antwort festgehalten, damit der Systemprompt von Schritt zu Schritt einer
+   Antwort gleich bleibt (#605). Keine Liste aller Mails oder Termine; die holt das Modell über Werkzeuge.
+
+### Hilfe zur Suite
+
+Für Fragen, wie etwas in der Suite geht, gibt es eingebaute englische Hilfetexte für Nutzer (#702), je Thema
+einer (`overview`, `workspaces`, `accounts`, `mail`, `calendar-and-tasks`, `inbox`, `contacts`, `chat`,
+`assistant`, `agents-and-mcp`), höchstens 4000 Zeichen. Sie sind neu geschrieben, keine Übersetzung von `docs/`,
+und nennen die Wege in der Oberfläche mit deren englischen Beschriftungen. `system.get_help` liefert ohne Thema
+die Liste, mit Thema den Text; Bereich `system`, Lesen, daher darf jeder angemeldete Client sie lesen, der
+Assistent und Bots auch ohne Bereichsrechte. Der feste Teil sagt, dass der Assistent bei solchen Fragen erst
+nachschlägt und nie aus dem Gedächtnis „geht nicht“ antwortet. Die Texte enthalten keine Pfade und nichts aus
+„Was nie nach außen geht“ (`api.md`); ein Test prüft eine Verbotsliste. Eine eigene Hilfe-Seite in der
+Oberfläche gibt es nicht; Menschen fragen den Assistenten.
 
 Die Beschreibungen der Werkzeuge kommen wie immer aus dem Katalog (`api.rs`); der Skill
 wiederholt sie nicht. Derselbe Text steht auch als MCP-Prompt `torro_workplace` und als Skill-Datei

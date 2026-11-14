@@ -1016,6 +1016,7 @@ fn describe(request: &Request) -> String {
         | Request::RevokeWorkflowAuthorization { .. } => request.operation().name().into(),
         Request::Ping => "ping".into(),
         Request::Status => "status".into(),
+        Request::GetHelp { .. } => "help".into(),
         Request::Quit => "quit".into(),
         Request::ListTemplates => "list".into(),
         Request::SaveTemplate { .. } => "save".into(),

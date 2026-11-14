@@ -44,7 +44,7 @@
 //!
 //! Nothing here logs a subject, an address, a file name or a folder name.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -54,7 +54,7 @@ use torro_core::i18n::{tr, trf};
 use torro_ipc::Request;
 use torro_ipc::Response;
 use torro_ipc::mail::{Delivery, MAX_FILE_BYTES, MoveTarget};
-use torro_mail::{Draft, DraftAttachment, Flag, InvitationAnswer, MailAddress, Role, html};
+use torro_mail::{Draft, DraftAttachment, Flag, InvitationAnswer, MailAddress, MailCategory, Role, html};
 use torro_mail_imap::imap::{FetchedHeader, ImapError, Search, Session};
 use torro_mail_imap::mime::{self, CalendarPart, Outgoing, OutgoingAttachment, ReadMessage, Reply};
 
@@ -544,6 +544,20 @@ async fn move_into(
     if refs.is_empty() {
         return Ok(());
     }
+    // What only the store knows of each message, its category: the sync of the old folder may drop
+    // the rows while the move runs, and a message stored anew below gets it back (#702).
+    let ids: Vec<String> = refs.iter().map(|message| message.id.clone()).collect();
+    let categories: HashMap<String, MailCategory> = store
+        .run(move |store| {
+            let mut held = HashMap::new();
+            for id in ids {
+                if let Some(category) = store.summary(&id)?.and_then(|summary| summary.category) {
+                    held.insert(id, category);
+                }
+            }
+            Ok(held)
+        })
+        .await?;
     let mut command = mail.command(&target.account).await?;
     // The first UID the moved messages can get: the new ones from here on are theirs or new mail.
     let next = command.session().status(&target.path).await?.uid_next;
@@ -589,10 +603,13 @@ async fn move_into(
                     }
                     // The sync of the old folder saw the message go and dropped it before it was
                     // moved here: stored anew under its id from the headers just read (its text
-                    // comes back when someone opens it).
+                    // comes back when someone opens it), with the category it had before.
                     if let Ok(read) = mime::read(&header.header) {
                         let message = stored_message(&id, &target_id, uidvalidity, &header, &read);
                         put(store, &target_id, uidvalidity, &message)?;
+                        if let Some(category) = categories.get(&id) {
+                            store.set_category(&id, Some(*category))?;
+                        }
                         kept.push(id);
                     }
                 }

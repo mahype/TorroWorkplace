@@ -2,8 +2,9 @@
 //! three files in `<config>/assistant/`, the folder 0700 and every file 0600, each written whole and
 //! atomically (a temporary file renamed over it), so a crash never leaves half a file.
 //!
-//! - `profile.json`: name, description and picture ([`ProfileFile`]). Missing fields take the
-//!   defaults ([`DEFAULT_NAME`], the description the core passes in, [`LETTER_AVATAR`]).
+//! - `profile.json`: name, description, picture and the person's own name ([`ProfileFile`]).
+//!   Missing fields take the defaults ([`DEFAULT_NAME`], the description the core passes in,
+//!   [`LETTER_AVATAR`]).
 //! - `persona.md`: the personality as the person wrote it, so it can be read and edited like any
 //!   text file. Control characters other than line breaks and tabs are taken out
 //!   ([`clean_personality`]): the text goes into every prompt.
@@ -22,8 +23,8 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use torro_ipc::assistant::{
-    AVATARS, DEFAULT_NAME, LETTER_AVATAR, MAX_DESCRIPTION_CHARS, MAX_NAME_CHARS, MAX_NOTE_CHARS, MAX_PERSONALITY_CHARS,
-    Note, Profile,
+    AVATARS, DEFAULT_NAME, LETTER_AVATAR, MAX_DESCRIPTION_CHARS, MAX_NAME_CHARS, MAX_NOTE_CHARS, MAX_PERSON_NAME_CHARS,
+    MAX_PERSONALITY_CHARS, Note, Profile,
 };
 
 /// The file with name, description and picture.
@@ -53,6 +54,9 @@ struct ProfileFile {
     description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     avatar: Option<String>,
+    /// The person's own name (#702); left out while it is empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    person_name: Option<String>,
 }
 
 /// A change of the profile (`assistant.update_profile`): each field given replaces the stored one.
@@ -63,6 +67,7 @@ pub struct Change {
     pub description: Option<String>,
     pub avatar: Option<String>,
     pub personality: Option<String>,
+    pub person_name: Option<String>,
 }
 
 /// The profile with no files: the default name, `description`, the letter, no personality.
@@ -72,6 +77,7 @@ pub fn default_profile(description: &str) -> Profile {
         description: description.to_string(),
         avatar: LETTER_AVATAR.to_string(),
         personality: String::new(),
+        person_name: String::new(),
     }
 }
 
@@ -90,6 +96,9 @@ pub fn load_profile(dir: &Path, description: &str) -> io::Result<Profile> {
         }
         if let Some(avatar) = stored.avatar.filter(|avatar| AVATARS.contains(&avatar.as_str())) {
             profile.avatar = avatar;
+        }
+        if let Some(person_name) = stored.person_name {
+            profile.person_name = clean_line(&person_name, MAX_PERSON_NAME_CHARS);
         }
     }
     if let Some(bytes) = read_if_there(&dir.join(PERSONA_FILE))? {
@@ -113,6 +122,9 @@ pub fn apply(mut profile: Profile, change: Change) -> Profile {
     if let Some(personality) = change.personality {
         profile.personality = clean_personality(&personality);
     }
+    if let Some(person_name) = change.person_name {
+        profile.person_name = clean_line(&person_name, MAX_PERSON_NAME_CHARS);
+    }
     profile
 }
 
@@ -123,6 +135,7 @@ pub fn save_profile(dir: &Path, profile: &Profile) -> io::Result<()> {
         name: Some(profile.name.clone()),
         description: Some(profile.description.clone()),
         avatar: Some(profile.avatar.clone()),
+        person_name: Some(profile.person_name.clone()).filter(|name| !name.is_empty()),
     };
     let mut json = serde_json::to_vec_pretty(&file).map_err(io::Error::other)?;
     json.push(b'\n');
@@ -289,6 +302,7 @@ mod tests {
             description: Some("Your helper".into()),
             avatar: Some("sparkles".into()),
             personality: Some("Calm and brief.\r\nAsk before big changes.\u{1b}[31m\u{0}".into()),
+            person_name: None,
         };
         let profile = apply(load_profile(&folder, "Yours").expect("defaults"), change);
         assert_eq!(profile.name, "Jarvis");
@@ -309,6 +323,28 @@ mod tests {
         let unchanged =
             apply(profile.clone(), Change { name: Some(" ".into()), avatar: Some("bot".into()), ..Change::default() });
         assert_eq!(unchanged, profile);
+    }
+
+    /// Issue #702: the person's own name is stored, read back, cut to its length and cleared.
+    #[test]
+    fn the_persons_name_is_stored_cut_and_cleared() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let folder = folder(dir.path());
+        let named = |name: &str| Change { person_name: Some(name.into()), ..Change::default() };
+        let profile = apply(default_profile("Yours"), named("  Anna \n Berg "));
+        assert_eq!(profile.person_name, "Anna Berg", "one line, trimmed");
+        save_profile(&folder, &profile).expect("saved");
+        assert_eq!(load_profile(&folder, "Yours").expect("read").person_name, "Anna Berg");
+
+        let long = apply(profile.clone(), named(&"a".repeat(MAX_PERSON_NAME_CHARS + 10)));
+        assert_eq!(long.person_name.chars().count(), MAX_PERSON_NAME_CHARS);
+
+        let cleared = apply(profile, named(""));
+        assert_eq!(cleared.person_name, "");
+        save_profile(&folder, &cleared).expect("saved");
+        let stored = fs::read_to_string(folder.join(PROFILE_FILE)).expect("profile.json");
+        assert!(!stored.contains("person_name"), "left out while empty: {stored}");
+        assert_eq!(load_profile(&folder, "Yours").expect("read").person_name, "");
     }
 
     #[test]

@@ -4489,6 +4489,18 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("picture \"{name}\"", "Bild „{name}“"),
     ("{count} notes", "{count} Notizen"),
     ("{count} of {max} characters", "{count} von {max} Zeichen"),
+    // The person's own name in the profile (#702)
+    ("About you", "Über dich"),
+    ("Optional", "Optional"),
+    (
+        "The assistant calls you by this name. Leave it empty if it should not know it.",
+        "Der Assistent spricht dich mit diesem Namen an. Lass das Feld leer, wenn er ihn nicht kennen soll.",
+    ),
+    ("Your name may hold at most {max} characters.", "Dein Name hat höchstens {max} Zeichen."),
+    ("Your name: none", "Dein Name: keiner"),
+    ("Your name: {text}", "Dein Name: {text}"),
+    ("no name for you", "kein Name für dich"),
+    ("your name \"{name}\"", "dein Name „{name}“"),
     // Hardening (C.11)
     ("Not listening", "Hört nicht zu"),
     // Bots (B.1)

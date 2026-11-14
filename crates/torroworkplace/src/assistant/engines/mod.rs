@@ -365,6 +365,8 @@ impl Running {
             Some(bot) => (bot.personality.clone(), Vec::new()),
             None => self.assistant.persona_and_notes().await,
         };
+        // The person's name (issue #702), for the assistant and its bots alike.
+        let person = self.assistant.profile().await.person_name;
         // The servers whose tools it finds over Torro's MCP server with these rights (issue #302).
         let servers: std::collections::BTreeSet<String> = host
             .extension_tools(&rights)
@@ -376,7 +378,8 @@ impl Running {
         let context = prompt::Context {
             now: Local::now(),
             lang: i18n::lang(),
-            person: None,
+            machine: &prompt::Machine::here(host.window_manager()),
+            person: Some(&person),
             areas: &areas,
             without: &self.job.without,
             rights: Some(&rights),
@@ -550,7 +553,8 @@ fn allowed_areas(kind: &str, rights: &torro_ipc::api::Rights, without: &[Area], 
     let mut areas: Vec<Area> = tools::allowed_in(kind, Some(rights), without, mode)
         .iter()
         .map(|tool| tool.command.area)
-        .filter(|area| !matches!(area, Area::Assistant | Area::Bots))
+        // The help (issue #702) is the one tool of `system`, no area the person granted.
+        .filter(|area| !matches!(area, Area::Assistant | Area::Bots | Area::System))
         .collect();
     areas.sort();
     areas.dedup();

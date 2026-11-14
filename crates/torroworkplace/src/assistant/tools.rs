@@ -7,7 +7,8 @@
 //!   never `system`, `clients` or `approvals`, which have no level), not switched off in this
 //!   conversation (`without`), never the area `assistant` (no loop) but its memory
 //!   (`torro_ipc::api::own_memory`, task C.10: `assistant_remember` only when the person asks, as its
-//!   description says), its own access ([`MY_ACCESS`], issue #134, also for a bot) and
+//!   description says), its own access ([`MY_ACCESS`], issue #134, also for a bot), the suite's help
+//!   ([`GET_HELP`], issue #702, also for a bot; the one tool of `system`) and
 //!   [`ASSISTANT_BOT_TOOLS`] (task B.2: asking a bot only on the person's word, which the core
 //!   checks), and never a command kept from agents ([`Mcp::Never`]). A command of one of the
 //!   assistant's own tools (issue #225) only when the tool is in the rights' selection
@@ -84,6 +85,10 @@ pub const ASSISTANT_BOT_TOOLS: &[&str] = &["bots.list_bots", "bots.ask_bot"];
 /// The command that tells the assistant or a bot its own rights (issue #134), offered to both.
 pub const MY_ACCESS: &str = "assistant.my_access";
 
+/// The suite's built-in help (issue #702), offered to the assistant and a bot although `system` is no
+/// area a person grants: every client may read it, and it holds nothing a client may not see.
+pub const GET_HELP: &str = "system.get_help";
+
 /// The command a server tool's call becomes (issue #302).
 const CALL_TOOL: &str = "extensions.call_tool";
 
@@ -127,6 +132,11 @@ impl Tool {
     /// The command is [`MY_ACCESS`] (issue #134).
     fn is_my_access(&self) -> bool {
         self.command.name == MY_ACCESS
+    }
+
+    /// The command is [`GET_HELP`] (issue #702).
+    fn is_help(&self) -> bool {
+        self.command.name == GET_HELP
     }
 }
 
@@ -189,7 +199,7 @@ pub fn allowed(rights: Option<&Rights>, without: &[Area]) -> Vec<Arc<Tool>> {
 /// yet): none. Contacts only with an address book in the rights. A command of one of the assistant's own tools only with the tool in
 /// [`Rights::tools`]. The assistant's own client ([`ASSISTANT_CLIENT`]) gets its memory and
 /// [`ASSISTANT_BOT_TOOLS`] (task B.2) besides its rights, a bot's ([`torro_ipc::api::BOT_CLIENT`],
-/// task B.1) its rights only; both get [`MY_ACCESS`] (issue #134). Neither is offered any other tool
+/// task B.1) its rights only; both get [`MY_ACCESS`] (issue #134) and [`GET_HELP`] (issue #702). Neither is offered any other tool
 /// of `assistant` or `bots`, and a bot no tool of `bots` (no chains; the core refuses it them).
 ///
 /// After them the tools of `servers` (issue #302, what [`super::Host::extension_tools`] answers for
@@ -206,7 +216,9 @@ pub fn allowed_for(kind: &str, rights: Option<&Rights>, without: &[Area], server
         let area = tool.command.area;
         let operation = Operation { command: tool.command, access: tool.command.access };
         let granted = !matches!(area, Area::Assistant | Area::Bots) && rights.allows(operation);
-        let by_kind = (own && (tool.is_memory() || tool.is_bots())) || (assistant_or_bot && tool.is_my_access());
+        let help = assistant_or_bot && tool.is_help();
+        let by_kind =
+            (own && (tool.is_memory() || tool.is_bots())) || (assistant_or_bot && tool.is_my_access()) || help;
         let tool_reached = ToolId::of_command(tool.command.name).is_none_or(|own| rights.reaches_tool(own));
         // Contacts without a single address book ticked (how the assistant starts, decision 5 in
         // `docs/kontakte.md`) would only answer with nothing: their tools wait for a book.
@@ -215,7 +227,12 @@ pub fn allowed_for(kind: &str, rights: Option<&Rights>, without: &[Area], server
             || !rights.hidden_address_books.is_empty();
         let workflow_mail = !torro_ipc::workflows::reads_mail(tool.command.name)
             || (!without.contains(&Area::Mail) && rights.area(Area::Mail).allows(Access::Read));
-        area.grantable() && !without.contains(&area) && (granted || by_kind) && tool_reached && books && workflow_mail
+        (area.grantable() || help)
+            && !without.contains(&area)
+            && (granted || by_kind)
+            && tool_reached
+            && books
+            && workflow_mail
     });
     let served = servers.iter().filter(|tool| {
         let operation = call_command().map(|command| Operation { command, access: tool.access });
@@ -241,7 +258,7 @@ pub fn usable_tools(rights: &Rights, areas: &[Area]) -> Vec<ToolId> {
 }
 
 /// The tool named `name` if the model may call it at all: one of the catalogue in an area a person
-/// can grant (so never `system`, `clients` or `approvals`) other than `assistant`, and none of
+/// can grant (so never `system`, `clients` or `approvals`, but [`GET_HELP`]) other than `assistant`, and none of
 /// [`NOT_FOR_MODELS`] (`calendar_map_preview`: its picture does not fit a tool result). Whether its rights
 /// and the conversation allow it is checked after this: `without` by the loop, the rights by the
 /// core, which answers `forbidden`. `None` for every other name, also of a real command: the model
@@ -263,7 +280,7 @@ pub fn callable(name: &str) -> Option<Arc<Tool>> {
         .find(|tool| tool.spec.name == name)
         .filter(|tool| {
             let own = tool.is_memory() || tool.is_my_access();
-            tool.command.area.grantable() && (tool.command.area != Area::Assistant || own)
+            (tool.command.area.grantable() && (tool.command.area != Area::Assistant || own)) || tool.is_help()
         })
         .cloned()
 }
@@ -271,7 +288,7 @@ pub fn callable(name: &str) -> Option<Arc<Tool>> {
 /// What the model is offered of `allowed` in one step: every tool when they are at most
 /// [`MAX_TOOLS`] and the model is not `small`; otherwise the reading ones, the memory and those
 /// `loaded` by [`FIND_TOOLS`] before, in catalogue order, as many as fit next to [`FIND_TOOLS`], which comes
-/// last whenever a tool is left out. Of the reading tools of MCP servers (issue #302) the first
+/// last whenever a tool is left out; [`GET_HELP`] on top of them, before [`FIND_TOOLS`] (issue #702). Of the reading tools of MCP servers (issue #302) the first
 /// [`SERVER_TOOLS_FIRST`] come before the catalogue's, after the memory and the bots.
 pub fn offered(allowed: &[Arc<Tool>], small: bool, loaded: &BTreeSet<String>) -> Vec<ToolSpec> {
     if !small && allowed.len() <= MAX_TOOLS {
@@ -289,12 +306,16 @@ pub fn offered(allowed: &[Arc<Tool>], small: bool, loaded: &BTreeSet<String>) ->
         rest.into_iter().partition(|tool| tool.is_memory() || tool.is_bots());
     let (servers, reading): (Vec<&Tool>, Vec<&Tool>) = rest.into_iter().partition(|tool| tool.is_server());
     let servers = servers.into_iter().take(SERVER_TOOLS_FIRST);
+    // The help (issue #702) on top of the others: always there, as the skill sends the model to it,
+    // and without taking a reading tool's place.
+    let (help, reading): (Vec<&Tool>, Vec<&Tool>) = reading.into_iter().partition(|tool| tool.is_help());
     let mut specs: Vec<ToolSpec> = wanted
         .into_iter()
         .chain(memory)
         .chain(servers)
         .chain(reading)
         .take(MAX_TOOLS - 1)
+        .chain(help)
         .map(|tool| tool.spec.clone())
         .collect();
     if specs.len() < allowed.len() {
@@ -895,6 +916,26 @@ mod tests {
         assert!(contacts(&rights) > 10);
     }
 
+    /// Issue #702: the assistant and a bot get the suite's help without any right, and may call it;
+    /// no other command of `system` is offered or callable.
+    #[test]
+    fn the_assistant_and_a_bot_get_the_help_without_rights() {
+        let nothing = Rights::none();
+        for kind in [ASSISTANT_CLIENT, torro_ipc::api::BOT_CLIENT] {
+            let tools = allowed_for(kind, Some(&nothing), &[], &[]);
+            assert!(named(&tools, "system_get_help").is_some(), "{kind}");
+            let system: Vec<&str> = tools
+                .iter()
+                .filter(|tool| tool.command.area == Area::System)
+                .map(|tool| tool.spec.name.as_str())
+                .collect();
+            assert_eq!(system, ["system_get_help"], "{kind}");
+        }
+        assert!(allowed_for("agent", Some(&nothing), &[], &[]).is_empty(), "an agent reads it over MCP");
+        assert!(callable("system_get_help").is_some());
+        assert!(callable("system_status").is_none() && callable("system_quit").is_none());
+    }
+
     #[test]
     fn the_assistant_is_offered_only_what_its_rights_and_the_conversation_allow() {
         assert!(allowed(None, &[]).is_empty(), "no client, no tools");
@@ -902,7 +943,8 @@ mod tests {
         let tools = allowed(Some(&rights), &[]);
         let areas: BTreeSet<Area> = tools.iter().map(|tool| tool.command.area).collect();
         // Issue #666: the tools come opened.
-        let expected = [Area::Calendar, Area::Tasks, Area::Inbox, Area::Assistant, Area::Bots, Area::Tools];
+        let expected =
+            [Area::System, Area::Calendar, Area::Tasks, Area::Inbox, Area::Assistant, Area::Bots, Area::Tools];
         assert_eq!(areas, BTreeSet::from(expected));
         assert!(
             tools
@@ -943,7 +985,8 @@ mod tests {
         for tool in &everything {
             let command = tool.command;
             assert_eq!(command.mcp, Mcp::Tool, "{}", command.name);
-            assert!(!matches!(command.area, Area::System | Area::Clients | Area::Approvals), "{}", command.name);
+            assert!(!matches!(command.area, Area::Clients | Area::Approvals), "{}", command.name);
+            assert!(command.area != Area::System || tool.is_help(), "only the help of system (#702): {}", command.name);
             assert!(command.area != Area::Assistant || tool.is_memory() || tool.is_my_access(), "{}", command.name);
             assert!(command.area != Area::Bots || tool.is_bots(), "{}", command.name);
         }
@@ -972,7 +1015,9 @@ mod tests {
         assert!(tools.len() > MAX_TOOLS, "the catalogue outgrew the limit: {}", tools.len());
 
         let first = offered(&tools, false, &BTreeSet::new());
-        assert_eq!(first.len(), MAX_TOOLS);
+        // Issue #702: the help comes on top of the limit, right before find_tools.
+        assert_eq!(first.len(), MAX_TOOLS + 1);
+        assert_eq!(first[first.len() - 2].name, "system_get_help");
         assert_eq!(first.last().map(|spec| spec.name.as_str()), Some(FIND_TOOLS));
         for spec in &first[..first.len() - 1] {
             let tool = named(&tools, &spec.name);
@@ -986,7 +1031,7 @@ mod tests {
         let next = offered(&tools, false, &loaded);
         assert_eq!(next[0].name, "calendar_delete_event");
         assert_eq!(next[1].name, "assistant_list_memories", "then the memory");
-        assert_eq!(next.len(), MAX_TOOLS);
+        assert_eq!(next.len(), MAX_TOOLS + 1);
 
         // Few tools: all of them for a large model, the reading ones and find_tools for a small one.
         let calendar = allowed(Some(&rights), &[Area::Tasks, Area::Inbox, Area::Mail, Area::Github, Area::Accounts])

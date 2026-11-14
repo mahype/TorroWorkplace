@@ -9,7 +9,8 @@
 //!    how its parts fit together, the rules and the style of the answers. English, kept like code.
 //!    It comes *after* the personality, and the personality's header says the rules win, so a
 //!    personality can never talk the model out of them.
-//! 3. **This conversation** ([`Context`]): date, time zone, language, the person's name, the areas
+//! 3. **This conversation** ([`Context`]): date, time zone, language, this computer (system, home
+//!    folder, window manager; issue #702, [`Machine`]), the person's name, the areas
 //!    the assistant may use with what it may do in each (level, admin, how many collections, sending,
 //!    what waits for approval; issue #134, [`access`]) and those switched
 //!    off, the assistant's own tools it may use (issue #225, [`own_tools`]), the MCP servers it may use
@@ -85,6 +86,79 @@ pub(super) fn workflow_messages(candidates: &[String], instruction: &str) -> Vec
     ]
 }
 
+/// This computer as the prompt names it (issue #702): its system, the home folder and the window
+/// manager the core works with. Built once per answer ([`Machine::here`]), so the prompt stays the
+/// same from step to step (#605); [`Machine::of`] makes it from given values, for tests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Machine {
+    /// The system, e.g. `Linux (Arch Linux)`, `macOS`, `Windows`.
+    pub os: String,
+    /// The home folder as a full path; `None` when it is not known.
+    pub home: Option<String>,
+    /// The window manager by name (`Hyprland`), or that the suite supports none here.
+    pub window_manager: String,
+}
+
+/// What the prompt says when the core works with no window manager it supports.
+pub const NO_WINDOW_MANAGER: &str = "none the suite supports (workspace templates do not work here)";
+
+impl Machine {
+    /// This computer from given values: `os_family` as `std::env::consts::OS` gives it, the
+    /// `PRETTY_NAME` of `/etc/os-release` on Linux (`None` or blank leaves it out), the home folder
+    /// and the name of the window manager backend (`hyprland`, `glazewm`, `aerospace`; anything
+    /// else is none the suite supports). Every value is one line within the prompt's limit.
+    pub fn of(os_family: &str, os_release: Option<&str>, home: Option<std::path::PathBuf>, wm: &str) -> Machine {
+        let os = match os_family {
+            "linux" => match os_release.map(one_line).filter(|name| !name.is_empty()) {
+                Some(name) => format!("Linux ({name})"),
+                None => "Linux".to_string(),
+            },
+            "macos" => "macOS".to_string(),
+            "windows" => "Windows".to_string(),
+            other => one_line(other),
+        };
+        let home = home.map(|path| one_line(&path.to_string_lossy())).filter(|path| !path.is_empty());
+        let window_manager = match wm {
+            "hyprland" => "Hyprland",
+            "glazewm" => "GlazeWM",
+            "aerospace" => "AeroSpace",
+            _ => NO_WINDOW_MANAGER,
+        }
+        .to_string();
+        Machine { os, home, window_manager }
+    }
+
+    /// The computer the core runs on, with the window manager backend `wm`: the system from
+    /// `std::env::consts::OS` and, on Linux, `/etc/os-release`; the home folder from `HOME`
+    /// (`USERPROFILE` on Windows).
+    pub fn here(wm: &str) -> Machine {
+        let os_release = match std::env::consts::OS {
+            "linux" => std::fs::read_to_string("/etc/os-release").ok().and_then(|text| pretty_name(&text)),
+            _ => None,
+        };
+        let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        let home = std::env::var_os(home_var).filter(|home| !home.is_empty()).map(std::path::PathBuf::from);
+        Machine::of(std::env::consts::OS, os_release.as_deref(), home, wm)
+    }
+
+    /// The line of the generated part: `- This computer: …, home folder …, window manager ….`
+    fn line(&self) -> String {
+        let home = match &self.home {
+            Some(home) => format!(", home folder {home}"),
+            None => String::new(),
+        };
+        format!("- This computer: {}{home}, window manager {}.", self.os, self.window_manager)
+    }
+}
+
+/// `PRETTY_NAME` of an `os-release` file, without its quotes; `None` when it has none.
+fn pretty_name(os_release: &str) -> Option<String> {
+    os_release.lines().find_map(|line| {
+        let value = line.trim().strip_prefix("PRETTY_NAME=")?;
+        Some(value.trim().trim_matches(|c| c == '"' || c == '\'').to_string())
+    })
+}
+
 /// What the generated part of the prompt tells the model about this answer. The model loop builds
 /// it for every step from the core's state ([`super::model`]); nothing in it comes from the model,
 /// and it has no field for a secret or an item of a collection.
@@ -95,6 +169,8 @@ pub struct Context<'a> {
     /// The suite's language (`torro_core::i18n::lang`): what to answer in when the person's own
     /// message does not tell.
     pub lang: Lang,
+    /// This computer (issue #702), the same in every step of one answer.
+    pub machine: &'a Machine,
     /// The person's name when the suite knows it; `None` leaves the line out.
     pub person: Option<&'a str>,
     /// The areas the assistant has tools in now: its client's rights without the switched-off
@@ -264,15 +340,21 @@ fn generated(context: &Context<'_>) -> String {
              in this one.",
             language(context.lang)
         ),
+        context.machine.line(),
     ];
     if let Some(person) = context.person.map(one_line).filter(|person| !person.is_empty()) {
         lines.push(format!("- The person's name: {person}."));
     }
-    lines.push(match context.areas {
-        [] => "- Areas you may use: none. You have no tools now; tell the person they can grant you access in Torro \
-               Workplace › Assistant."
+    lines.push(match (context.areas, context.rights) {
+        // Not set up yet (no client): no tool at all, not even the help.
+        ([], None) => "- Areas you may use: none. You have no tools now; tell the person they can grant you access in \
+                       Torro Workplace › Assistant."
             .to_string(),
-        areas => format!("- Areas you may use: {}.", names(areas)),
+        ([], Some(_)) => "- Areas you may use: none. You have no tools for the person's data now, only the suite's \
+                          help and your own access; tell the person they can grant you access in Torro Workplace › \
+                          Assistant."
+            .to_string(),
+        (areas, _) => format!("- Areas you may use: {}.", names(areas)),
     });
     lines.extend(access(context));
     lines.extend(own_tools(context));
@@ -555,12 +637,20 @@ fn zone_of_localtime() -> Option<String> {
 mod tests {
     use chrono::TimeZone;
 
+    use std::path::PathBuf;
+    use std::sync::LazyLock;
+
     use super::*;
+
+    /// The computer of the tests: fixed, never the one the tests run on.
+    static MACHINE: LazyLock<Machine> =
+        LazyLock::new(|| Machine::of("linux", Some("Arch Linux"), Some(PathBuf::from("/home/anna")), "hyprland"));
 
     fn context<'a>(areas: &'a [Area], without: &'a [Area]) -> Context<'a> {
         Context {
             now: Local.with_ymd_and_hms(2026, 10, 13, 9, 30, 0).single().expect("a local time"),
             lang: Lang::De,
+            machine: &MACHINE,
             person: Some("Anna"),
             areas,
             without,
@@ -791,7 +881,14 @@ mod tests {
         context.person = None;
         context.place = Place::Remote;
         let prompt = system(None, &context);
-        assert!(prompt.contains("- Areas you may use: none. You have no tools now"), "{prompt}");
+        assert!(prompt.contains("- Areas you may use: none. You have no tools now;"), "no client: {prompt}");
+        // Issue #702: with a client the help and its own access are there even without an area.
+        let rights = Rights::none();
+        let with_client = system(None, &Context { rights: Some(&rights), ..context });
+        assert!(
+            with_client.contains("You have no tools for the person's data now, only the suite's help"),
+            "{with_client}"
+        );
         assert!(!prompt.contains("Switched off"), "{prompt}");
         assert!(!prompt.contains("The person's name"), "{prompt}");
         assert!(prompt.contains("(remote)") && !prompt.contains("data rule"), "{prompt}");
@@ -825,8 +922,14 @@ mod tests {
         let prompt = system(None, &context);
         let generated = prompt.split_once("## This conversation").map(|(_, rest)| rest).expect("its part");
         let lines: Vec<&str> = generated.lines().filter(|line| !line.is_empty()).collect();
-        let labels =
-            ["- Now:", "- The suite's language:", "- The person's name:", "- Areas you may use:", "- You answer"];
+        let labels = [
+            "- Now:",
+            "- The suite's language:",
+            "- This computer:",
+            "- The person's name:",
+            "- Areas you may use:",
+            "- You answer",
+        ];
         assert_eq!(lines.len(), labels.len(), "{generated}");
         for (line, label) in lines.iter().zip(labels) {
             assert!(line.starts_with(label), "{line:?} is not {label:?}");
@@ -964,6 +1067,42 @@ mod tests {
         assert!(shown.last().is_some_and(|line| line.starts_with("  - [00000027]")), "the newest last: {shown:?}");
         let left_out = notes.len() - shown.len();
         assert!(prompt.contains(&format!("- Older notes not shown here: {left_out}.")), "{prompt}");
+    }
+
+    #[test]
+    fn machine_names_system_home_and_window_manager() {
+        let home = || Some(PathBuf::from("/home/anna"));
+        assert_eq!(MACHINE.os, "Linux (Arch Linux)");
+        assert_eq!(
+            MACHINE.line(),
+            "- This computer: Linux (Arch Linux), home folder /home/anna, window manager Hyprland."
+        );
+        assert_eq!(Machine::of("linux", None, home(), "hyprland").os, "Linux");
+        assert_eq!(Machine::of("linux", Some("  "), home(), "hyprland").os, "Linux");
+        assert_eq!(Machine::of("linux", Some("Arch\nLinux"), home(), "hyprland").os, "Linux (Arch Linux)", "one line");
+        let mac = Machine::of("macos", None, Some(PathBuf::from("/Users/anna")), "aerospace");
+        assert_eq!((mac.os.as_str(), mac.window_manager.as_str()), ("macOS", "AeroSpace"));
+        let windows = Machine::of("windows", Some("ignored"), None, "glazewm");
+        assert_eq!((windows.os.as_str(), windows.window_manager.as_str()), ("Windows", "GlazeWM"));
+        assert_eq!(windows.line(), "- This computer: Windows, window manager GlazeWM.", "no home folder when unknown");
+        assert_eq!(Machine::of("linux", None, home(), "").window_manager, NO_WINDOW_MANAGER);
+        assert_eq!(Machine::of("linux", None, home(), "sway").window_manager, NO_WINDOW_MANAGER);
+        assert_eq!(pretty_name("NAME=Arch\nPRETTY_NAME=\"Arch Linux\"\nID=arch\n").as_deref(), Some("Arch Linux"));
+        assert_eq!(pretty_name("ID=arch\n"), None);
+    }
+
+    /// Issue #702: the generated part names this computer, and the person's name only when it is
+    /// known.
+    #[test]
+    fn the_prompt_names_this_computer_and_the_person() {
+        let prompt = system(None, &context(&[], &[]));
+        assert!(prompt.contains(&MACHINE.line()), "{prompt}");
+        assert!(prompt.contains("- The person's name: Anna."), "{prompt}");
+        for person in [None, Some(""), Some("  ")] {
+            let prompt = system(None, &Context { person, ..context(&[], &[]) });
+            assert!(!prompt.contains("The person's name"), "{person:?}: {prompt}");
+            assert!(prompt.contains("- This computer:"), "{prompt}");
+        }
     }
 
     #[test]
