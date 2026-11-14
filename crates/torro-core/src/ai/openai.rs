@@ -317,6 +317,9 @@ pub fn parse_models(body: &[u8]) -> Result<Vec<AiModel>, AiError> {
                 tools,
                 open_weights,
                 context: model.get("context_length").and_then(Value::as_u64),
+                // This way sends `max_tokens` only when the request names a number, which nothing
+                // does, so no limit of the model can refuse a request (issue #223).
+                max_output: None,
                 parameters: None,
                 quantization: None,
                 size: None,
@@ -841,6 +844,7 @@ mod tests {
         assert_eq!(models[0].name, "Qwen: Qwen3 14B");
         let reasoning: Vec<Option<bool>> = models.iter().map(|m| m.reasoning).collect();
         assert_eq!(reasoning, [Some(true), Some(false), Some(false)], "issue #131");
+        assert!(models.iter().all(|m| m.max_output.is_none()), "this way leaves the output limit open (issue #223)");
 
         let ollama = br#"{"object":"list","data":[{"id":"qwen3:8b","object":"model","owned_by":"library"},{"id":""}]}"#;
         let models = parse_models(ollama).expect("models");
@@ -852,6 +856,7 @@ mod tests {
                 tools: None,
                 open_weights: None,
                 context: None,
+                max_output: None,
                 parameters: None,
                 quantization: None,
                 size: None,

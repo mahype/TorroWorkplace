@@ -446,6 +446,7 @@ mod tests {
             tools: Some(true),
             open_weights: None,
             context: None,
+            max_output: None,
             parameters: None,
             quantization: None,
             size: None,

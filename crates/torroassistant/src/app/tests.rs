@@ -746,6 +746,7 @@ fn claude_code() -> Engine {
         tools: Some(true),
         open_weights: Some(false),
         context: None,
+        max_output: None,
         parameters: None,
         quantization: None,
         size: None,

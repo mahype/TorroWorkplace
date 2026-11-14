@@ -378,6 +378,7 @@ impl AiProvider {
                 tools: Some(false),
                 open_weights: Some(false),
                 context: None,
+                max_output: None,
                 parameters: None,
                 quantization: None,
                 size: None,
@@ -414,6 +415,11 @@ pub struct AiModel {
     /// How many tokens fit into one conversation, when the server tells.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<u64>,
+    /// The most tokens **one answer** may have, where the server tells (Anthropic's `max_tokens`,
+    /// issue #223); `None` where it is silent. Unlike [`AiModel::context`], which counts the whole
+    /// conversation, this bounds only what the model writes back, thinking included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output: Option<u32>,
     /// How many parameters the model has, as the server writes it (`8.2B`, issue #431): only
     /// Ollama tells (`details.parameter_size` in `/api/tags`), never estimated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -467,6 +473,7 @@ impl AiModel {
             tools: None,
             open_weights: None,
             context: None,
+            max_output: None,
             parameters: None,
             quantization: None,
             size: None,
@@ -1233,6 +1240,7 @@ mod tests {
             tools: None,
             open_weights,
             context: None,
+            max_output: None,
             parameters: None,
             quantization: None,
             size: None,
