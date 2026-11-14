@@ -13,8 +13,9 @@
 //! new form and removes the old files.
 //!
 //! The texts are files of their own so a person can read and edit them like any text. `bot.json` is
-//! written last: a bot whose save broke off reads with the texts written so far. A text file that
-//! is missing reads as empty; a folder without a readable `bot.json` is no bot and is left alone.
+//! written after them (only the skill files of the old form go after it): a bot whose save broke off
+//! reads with the texts written so far. A text file that is missing reads as empty; a folder without a
+//! readable `bot.json` is no bot and is left alone.
 //!
 //! Errors carry the path only for the core's own log; what goes to a client never names it.
 
@@ -122,14 +123,14 @@ pub fn load(dir: &Path, id: &str) -> io::Result<Option<Bot>> {
             .map(|bytes| String::from_utf8_lossy(&bytes).trim_end().to_string())
             .unwrap_or_default())
     };
-    // The new form wins once it is there: a save that broke off between writing it and `bot.json`
-    // reads with the texts it wrote, never with the old names and files already removed.
-    let mut skills: Vec<Skill> =
-        skills::load_all(&folder.join(SKILLS_FOLDER))?.into_iter().map(|stored| stored.skill).collect();
+    // The old form wins while `bot.json` names skills: [`save`] removes its files only after it wrote
+    // `bot.json` without them, so a save that broke off reads as before, never half of the new form.
+    let mut skills = Vec::new();
+    for (index, name) in file.skills.into_iter().enumerate() {
+        skills.push(Skill { name, description: String::new(), text: text(old_skill_file(&folder, index))? });
+    }
     if skills.is_empty() {
-        for (index, name) in file.skills.into_iter().enumerate() {
-            skills.push(Skill { name, description: String::new(), text: text(old_skill_file(&folder, index))? });
-        }
+        skills = skills::load_all(&folder.join(SKILLS_FOLDER))?.into_iter().map(|stored| stored.skill).collect();
     }
     Ok(Some(Bot {
         id: id.to_string(),
@@ -335,15 +336,28 @@ pub(crate) mod tests {
         let mut read = load(&bots, "1a2b3c4d").expect("read").expect("a bot");
         read.skills.sort_by(|a, b| a.name.cmp(&b.name));
         assert_eq!(read, old);
+    }
 
-        // A save that broke off before `bot.json`: the new skills read, not the old names without text.
+    /// Review of #703: a save of an old bot that broke off after part of the new form keeps reading the
+    /// old form whole, as its files go only after `bot.json`.
+    #[test]
+    fn a_broken_off_save_of_an_old_bot_reads_as_before() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let bots = dir.path().join("bots");
+        let folder = bots.join("1a2b3c4d");
+        fs::create_dir_all(folder.join("skills")).expect("folder");
         fs::write(
             folder.join("bot.json"),
             r#"{"name": "Travel planner", "engine": "test", "client": "9f8e7d6c", "skills": ["Packing", "Trains"]}"#,
         )
-        .expect("old bot.json");
-        let mut read = load(&bots, "1a2b3c4d").expect("read").expect("a bot");
-        read.skills.sort_by(|a, b| a.name.cmp(&b.name));
-        assert_eq!(read.skills, old.skills, "the texts written so far");
+        .expect("bot.json");
+        fs::write(folder.join("skills/1.md"), "Pack light.\n").expect("skill 1");
+        fs::write(folder.join("skills/2.md"), "Trains first.\n").expect("skill 2");
+        let written = Skill { name: "Packing".into(), description: String::new(), text: "Pack light.".into() };
+        skills::replace_all(&folder.join("skills"), std::slice::from_ref(&written)).expect("half of the new form");
+        let read = load(&bots, "1a2b3c4d").expect("read").expect("a bot");
+        let names: Vec<&str> = read.skills.iter().map(|skill| skill.name.as_str()).collect();
+        assert_eq!(names, ["Packing", "Trains"]);
+        assert_eq!(read.skills[1].text, "Trains first.");
     }
 }

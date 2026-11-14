@@ -482,7 +482,9 @@ pub struct SkillSummary {
 pub fn skill_refusal(name: &str, description: &str, text: &str, text_required: bool) -> Option<String> {
     let chars = |text: &str| text.trim().chars().count();
     let one_line = |text: &str| text.trim().lines().count() <= 1;
-    if name.trim().is_empty() || !one_line(name) || chars(name) > MAX_SKILL_NAME_CHARS {
+    // Blank once cleaned as the core keeps it (only control characters): no name either.
+    let blank = name.chars().all(|c| c.is_control() || c.is_whitespace());
+    if blank || !one_line(name) || chars(name) > MAX_SKILL_NAME_CHARS {
         return Some(format!("a skill's name is one line of 1 to {MAX_SKILL_NAME_CHARS} characters"));
     }
     if !one_line(description) || chars(description) > MAX_SKILL_DESCRIPTION_CHARS {
