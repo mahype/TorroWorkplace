@@ -74,7 +74,9 @@ Was offene Modelle brauchen, damit das gut geht:
   schickt Aufrufe und Ergebnisse wieder mit. Clients sehen diese Ergebnisse über
   `get_conversation` nie. Ein Ergebnis bleibt **24 Stunden** nach seinem Aufruf (Issue #714,
   `RESULT_HOURS` in `assistant/store.rs`, keine Einstellung), auch in angehefteten Unterhaltungen;
-  danach entfernt der stündliche Lauf (`Assistant::clean_up`) es aus der Datei. Wer später
+  danach entfernt der Lauf beim Start und jede Stunde (`Assistant::clean_up`) es aus der Datei, also
+  spätestens eine Stunde nach Ablauf, solange der Dienst läuft und die Unterhaltung gerade nicht
+  antwortet (sonst in der Runde danach). Wer später
   weiterredet, bekommt vom Modell keine Antwort mehr aus den alten Treffern, es sucht bei Bedarf
   neu. Ergebnisse von Websuche und Seitenabruf werden nie gespeichert (die Bedingungen von Brave
   erlauben es nicht, darum für keinen Anbieter). Überschreitet der Verlauf die Hälfte des Kontextfensters des Modells
@@ -708,8 +710,9 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
   conversation“ löscht die Datei. Unterhaltungen werden nach **30 Tagen** gelöscht (entschieden,
   einstellbar bis „forever“); angeheftete bleiben. Was ein Werkzeug dem Modell geliefert hat
   (etwa ein Mail-Text), bleibt kürzer: 24 Stunden nach dem Aufruf, auch in angehefteten
-  Unterhaltungen und bei „forever“ (Issue #714); dann schreibt der stündliche Lauf die Datei ohne
-  diese Ergebnisse neu, Nachrichten und Werkzeugzeilen bleiben. Ob die Quelle (etwa die Mail) noch
+  Unterhaltungen und bei „forever“ (Issue #714); danach schreibt der nächste Lauf (beim Start und
+  stündlich, eine antwortende Unterhaltung in der Runde danach) die Datei ohne diese Ergebnisse neu,
+  Nachrichten und Werkzeugzeilen bleiben. Ob die Quelle (etwa die Mail) noch
   existiert, prüft der Dienst nicht; die kurze Frist deckt das ab. Ergebnisse von Websuche und
   Seitenabruf werden nie gespeichert.
 - **Protokoll** (`audit.jsonl`) wie immer ohne Inhalte: Client `assistant`, Befehl, Kennungen.
