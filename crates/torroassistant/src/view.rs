@@ -38,7 +38,8 @@ use torro_settings_ui::Frame;
 use torro_settings_ui::assistant as settings;
 
 use crate::app::{
-    Access, App, Dialog, EDITOR, HISTORY, MINI_INPUT, Menu, MenuAt, Message, RENAME, SEARCH, composer_binding,
+    Access, App, Dialog, Dictation, EDITOR, HISTORY, MINI_INPUT, Menu, MenuAt, Message, RENAME, SEARCH,
+    composer_binding,
 };
 use crate::bots;
 use crate::chat::{self, Choice};
@@ -55,8 +56,6 @@ const GLANCE_LINES: f32 = 3.0;
 struct Anchors {
     header: Anchor,
     picker: Anchor,
-    /// The effort of the composer (issue #131).
-    effort: Anchor,
     /// The permission mode under the composer (issue #132).
     mode: Anchor,
     areas: Anchor,
@@ -74,8 +73,8 @@ fn editor_heights() -> (f32, f32) {
     (2.0 * line + frame, 8.0 * line + frame)
 }
 
-/// How wide the label of the picker and of the areas may get before it is cut: room for both
-/// beside "Send" in a narrow window.
+/// How wide the label of the picker may get before it is cut: room for it beside the plus, the
+/// mode's shield, the microphone and "Send" in a narrow window.
 fn label_room(class: SizeClass) -> f32 {
     match class {
         SizeClass::Wide | SizeClass::Medium => size::sidebar(),
@@ -272,15 +271,16 @@ impl App {
     fn layer(&self, anchors: &Anchors) -> Option<Element<'_, Message>> {
         let menu = self.menu.as_ref()?;
         Some(match menu {
+            // The picker stands at the right of the composer (issue #699): its menu ends there too.
             Menu::Picker => widgets::floating(
                 &anchors.picker,
-                Placement::Below(Align::Start),
-                self.picker_menu(self.choice.as_ref(), Message::Pick),
+                Placement::Below(Align::End),
+                self.picker_menu(self.choice.as_ref(), Message::Pick, true),
                 Message::CloseMenu,
             ),
             Menu::BotPicker => {
                 let chosen = self.bot_draft.as_ref().and_then(|draft| draft.choice.as_ref());
-                let menu = self.picker_menu(chosen, |choice| Message::Draft(bots::DraftEdit::Engine(choice)));
+                let menu = self.picker_menu(chosen, |choice| Message::Draft(bots::DraftEdit::Engine(choice)), false);
                 widgets::floating(&anchors.bot_picker, Placement::Below(Align::Start), menu, Message::CloseMenu)
             }
             Menu::Bot { id } => widgets::floating(
@@ -292,12 +292,6 @@ impl App {
             Menu::Mode => {
                 widgets::floating(&anchors.mode, Placement::Below(Align::Start), self.mode_menu(), Message::CloseMenu)
             }
-            Menu::Effort => widgets::floating(
-                &anchors.effort,
-                Placement::Below(Align::Start),
-                self.effort_menu(),
-                Message::CloseMenu,
-            ),
             Menu::Areas => {
                 widgets::floating(&anchors.areas, Placement::Below(Align::Start), self.areas_menu(), Message::CloseMenu)
             }
@@ -877,8 +871,12 @@ impl App {
 
     // -- Composer -------------------------------------------------------------------------------
 
-    /// The composer: the text (`Enter` sends, `Shift + Enter` a new line), below it the engine and
-    /// model, the areas, and "Send" – or "Stop" while an answer runs.
+    /// The composer (issue #699, "A" of the draft): one frame, the text on top (`Enter` sends,
+    /// `Shift + Enter` a new line), at its bottom a quiet row – left the plus with the areas, a chip
+    /// for each area switched off and the permission mode with its shield; right the model and its
+    /// effort in one menu, the microphone and the round "Send", "Stop" or "Sending…". Nothing stands
+    /// under the frame. Narrower, the row drops the effort first, then the mode's word (only its
+    /// shield stays); in a bot's chat plus and mode are not there.
     fn composer<'a>(&'a self, class: SizeClass, anchors: &Anchors) -> Element<'a, Message> {
         let body = typo::body();
         let (least, most) = editor_heights();
@@ -893,65 +891,122 @@ impl App {
             .min_height(least)
             .max_height(most)
             .wrapping(Wrapping::WordOrGlyph)
-            .style(style::text_editor)
+            .style(style::text_editor_document)
             .key_binding(composer_binding)
             .on_action(Message::Edit);
+        let wide = class == SizeClass::Wide;
+        let roomy = matches!(class, SizeClass::Wide | SizeClass::Medium);
+        let mut left = row![].spacing(space::xs()).align_y(Alignment::Center);
+        if self.offers_areas_and_mode() {
+            if !self.switchable().is_empty() {
+                let plus = widgets::icon_button(Icon::Plus, tr("Areas"), Some(Message::ToggleMenu(Menu::Areas)));
+                left = left.push(widgets::anchored(&anchors.areas, plus));
+                if roomy {
+                    for area in &self.without {
+                        let label = trf("Without {areas}", &[("areas", &chat::area_name(*area))]);
+                        left = left.push(widgets::dismiss_chip(label, Message::ToggleArea(*area)));
+                    }
+                } else if !self.without.is_empty() {
+                    let label = trf("{n} areas off", &[("n", &self.without.len())]);
+                    left = left.push(widgets::text_button(
+                        None,
+                        label,
+                        style::button::ghost,
+                        Some(Message::ToggleMenu(Menu::Areas)),
+                    ));
+                }
+            }
+            if let Access::Granted(_) = &self.access {
+                let shield = mode_shield(self.mode);
+                let name = chat::mode_name(self.mode);
+                let mode = if roomy {
+                    widgets::quiet_select_marked(
+                        &anchors.mode,
+                        Some(shield),
+                        Some(name),
+                        Message::ToggleMenu(Menu::Mode),
+                    )
+                } else {
+                    let only = widgets::quiet_select_marked(
+                        &anchors.mode,
+                        Some(shield),
+                        None::<&str>,
+                        Message::ToggleMenu(Menu::Mode),
+                    );
+                    widgets::with_tooltip(only, name)
+                };
+                left = left.push(mode);
+            }
+        }
         let room = label_room(class);
-        let mut controls = row![].spacing(space::s()).align_y(Alignment::Center);
-        controls = controls.push(match &self.choice {
+        let picker: Element<'a, Message> = match &self.choice {
             Some(choice) => {
-                let label = typo::ellipsize(&self.choice_label(choice), typo::caption(), room);
-                widgets::select_button(&anchors.picker, label, Message::ToggleMenu(Menu::Picker))
+                let mut label = self.composer_label(choice);
+                if wide && self.effort_offered() {
+                    label = format!("{label} {}", chat::effort_name(self.effort));
+                }
+                let label = typo::ellipsize(&label, typo::caption(), room);
+                widgets::with_tooltip(
+                    widgets::quiet_select(&anchors.picker, label, Message::ToggleMenu(Menu::Picker)),
+                    self.choice_label(choice),
+                )
             }
             None if self.no_model_on() => {
                 typo::text(typo::meta(), tr("No model is turned on")).style(theme::text_3).into()
             }
             None if self.engines_loaded => typo::text(typo::meta(), tr("No AI account")).style(theme::text_3).into(),
             None => typo::text(typo::meta(), tr("Loading …")).style(theme::text_3).into(),
-        });
-        // The effort, only for a model that thinks (issue #131); the word alone where room is short.
-        if self.effort_offered() {
-            let level = chat::effort_name(self.effort);
-            let label = match class {
-                SizeClass::Wide | SizeClass::Medium => trf("Effort: {level}", &[("level", &level)]),
-                SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => level.to_owned(),
-            };
-            controls = controls.push(widgets::select_button(&anchors.effort, label, Message::ToggleMenu(Menu::Effort)));
-        }
-        // A bot answers with its own client's rights: nothing of the assistant's to switch off.
-        let areas = if self.chat_bot().is_some() { Vec::new() } else { self.switchable() };
-        if !areas.is_empty() {
-            let label = if self.without.is_empty() {
-                tr("All areas").to_owned()
-            } else {
-                let names: Vec<&str> = self.without.iter().map(|area| chat::area_name(*area)).collect();
-                trf("Without {areas}", &[("areas", &names.join(", "))])
-            };
-            let label = typo::ellipsize(&label, typo::caption(), room);
-            controls = controls.push(widgets::select_button(&anchors.areas, label, Message::ToggleMenu(Menu::Areas)));
-        }
-        controls = controls.push(Space::new().width(Fill));
-        controls = controls.push(if self.transcript.running() {
-            stop_button(class)
+        };
+        let send = if self.transcript.running() {
+            widgets::round_button(Icon::Square, tr("Stop"), style::button::round_quiet, Some(Message::Stop))
         } else if self.sending {
-            widgets::busy_button(tr("Sending…"), style::button::primary)
+            widgets::round_busy(tr("Sending…"))
+        } else if self.choice.is_some() && !self.editor.text().trim().is_empty() {
+            widgets::round_button(Icon::ArrowUp, tr("Send"), style::button::round_primary, Some(Message::Send))
         } else {
-            send_button(class, self.choice.is_some() && !self.editor.text().trim().is_empty())
-        });
-        let mut composer = column![editor, controls].spacing(space::s());
-        // What the next message may do (issue #132): the mode, and the access it leaves in words.
-        if let (Access::Granted(rights), None) = (&self.access, self.chat_bot()) {
-            let mode =
-                widgets::select_button(&anchors.mode, chat::mode_name(self.mode), Message::ToggleMenu(Menu::Mode));
-            let line = chat::access_line(rights, &self.without, self.mode);
-            let line = widgets::ellipsized(typo::meta(), line, theme::text_3);
-            let row = row![mode, container(line).width(Fill)].spacing(space::s()).align_y(Alignment::Center);
-            composer = composer.push(row);
-        }
-        composer.into()
+            widgets::round_button(Icon::ArrowUp, tr("Send"), style::button::round_quiet, None)
+        };
+        let right = row![picker, self.mic_button(), send].spacing(space::xs()).align_y(Alignment::Center);
+        let options = row![left, Space::new().width(Fill), right].spacing(space::s()).align_y(Alignment::Center);
+        let content = column![editor, container(options).padding(Padding::new(space::xs()).top(0.0))];
+        container(content).width(Fill).style(style::container::composer).into()
     }
 
-    /// The permission mode's menu (issue #132): each mode, the narrowest first, a check at the chosen.
+    /// The model of `choice` as the composer's quiet row names it (issue #699): the model's name,
+    /// the engine's where the engine picks it.
+    fn composer_label(&self, choice: &Choice) -> String {
+        match &choice.model {
+            Some(id) => self.model_name(&choice.engine, id),
+            None => self
+                .engines
+                .iter()
+                .find(|engine| engine.id == choice.engine)
+                .map_or_else(|| choice.engine.clone(), |engine| engine.name.clone()),
+        }
+    }
+
+    /// The microphone of the composer (issue #699): pale while speech recognition is not set up (a
+    /// click opens Settings › Voice), in the attention colour while it records (red stays for
+    /// "Send"), turning arrows while the speech becomes text.
+    fn mic_button(&self) -> Element<'_, Message> {
+        let (colour, tip): (fn(&Palette) -> iced::Color, &str) = match self.dictation {
+            Dictation::Stopping => return widgets::round_busy(tr("Transcribing…")),
+            Dictation::Recording => (|p| p.attention, tr("Stop dictating")),
+            Dictation::Idle if self.can_dictate() => (|p| p.text_2, tr("Dictate")),
+            Dictation::Idle => (|p| p.text_3, tr("Set up speech recognition in Settings › Voice")),
+        };
+        let mic = button(container(tinted(Icon::Mic, icon::SIZE, colour)).center(Fill))
+            .width(size::control_sm())
+            .height(size::control_sm())
+            .padding(0)
+            .style(style::button::icon)
+            .on_press(Message::Dictate);
+        widgets::with_tooltip(mic, tip)
+    }
+
+    /// The permission mode's menu (issue #132): each mode, the narrowest first, a check at the
+    /// chosen; under them what the next message may do in words (issue #699: the line that stood
+    /// under the composer).
     fn mode_menu(&self) -> Element<'_, Message> {
         let check = palette(&self.theme()).text_2;
         let items = torro_ipc::assistant::Mode::ALL
@@ -960,7 +1015,11 @@ impl App {
                 MenuItem::new(Mark::Check(check, self.mode == mode), chat::mode_name(mode), Message::PickMode(mode))
             })
             .collect();
-        widgets::menu(vec![MenuSection::titled(tr("What the assistant may do here"), items)])
+        let sections = vec![MenuSection::titled(tr("What the assistant may do here"), items)];
+        let Access::Granted(rights) = &self.access else { return widgets::menu(sections) };
+        let line = chat::access_line(rights, &self.without, self.mode);
+        let line = typo::text(typo::meta(), line).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
+        widgets::menu_with(sections, tr("Access"), line)
     }
 
     /// The picker: each engine with the models that can call tools and are turned on (task S.26);
@@ -968,7 +1027,12 @@ impl App {
     /// `chosen` has the check, a pick sends `pick` (the composer's choice, or the bot editor's
     /// engine). A chosen model that is turned off stands on top of its engine with why "Automatic"
     /// answers; "Manage models…" at the end opens the control centre's AI section.
-    fn picker_menu(&self, chosen: Option<&Choice>, pick_message: fn(Choice) -> Message) -> Element<'_, Message> {
+    fn picker_menu(
+        &self,
+        chosen: Option<&Choice>,
+        pick_message: fn(Choice) -> Message,
+        with_effort: bool,
+    ) -> Element<'_, Message> {
         let check = palette(&self.theme()).text_2;
         let mut sections: Vec<MenuSection<Message>> = self
             .engines
@@ -1025,10 +1089,23 @@ impl App {
             })
             .collect();
         // Which models are offered is set under Settings › AI (task S.26, issue #410), not here.
+        let mut after = Vec::new();
         if self.engines.iter().any(|engine| engine.kind == EngineKind::Ai) {
             let manage = MenuItem::new(Icon::Layers, tr("Manage models…"), Message::ManageModels);
-            sections.push(MenuSection::new(vec![manage]));
+            after.push(MenuSection::new(vec![manage]));
         }
+        // The effort of the composer's model as a row under the models (issues #131, #699), only
+        // for a model that thinks; the bot editor has none.
+        if with_effort && self.effort_offered() {
+            let levels = std::iter::once(None).chain(torro_core::ai::Effort::ALL.into_iter().map(Some));
+            let active = levels.clone().position(|effort| effort == self.effort).unwrap_or_default();
+            let row = widgets::segmented(
+                levels.map(|effort| (chat::effort_name(effort), Message::PickEffort(effort))),
+                active,
+            );
+            return widgets::menu_with_between(sections, tr("How hard the model thinks"), row, after);
+        }
+        sections.extend(after);
         widgets::menu(sections)
     }
 
@@ -1040,19 +1117,6 @@ impl App {
             true => tr("No model here can use tools"),
             false => tr("No model is turned on"),
         }
-    }
-
-    /// The effort's menu (issue #131): "Automatic" and each level, with a check at the chosen one.
-    fn effort_menu(&self) -> Element<'_, Message> {
-        let check = palette(&self.theme()).text_2;
-        let items = std::iter::once(None)
-            .chain(torro_core::ai::Effort::ALL.into_iter().map(Some))
-            .map(|effort| {
-                let on = self.effort == effort;
-                MenuItem::new(Mark::Check(check, on), chat::effort_name(effort), Message::PickEffort(effort))
-            })
-            .collect();
-        widgets::menu(vec![MenuSection::titled(tr("How hard the model thinks"), items)])
     }
 
     /// The areas of the composer: each with a check while the assistant may use it here.
@@ -1423,24 +1487,17 @@ fn stop_button<'a>(class: SizeClass) -> Element<'a, Message> {
     }
 }
 
-/// "Send" of the composer (issue #547): primary while a message can go, else framed (`boxed`) and off,
-/// so it never reads as a dark red block. In narrow windows only its icon, as the mail button does.
-fn send_button<'a>(class: SizeClass, ready: bool) -> Element<'a, Message> {
-    let on_press = ready.then_some(Message::Send);
-    match (class, ready) {
-        (SizeClass::Wide | SizeClass::Medium, true) => {
-            widgets::text_button(Some(Icon::Send), tr("Send"), style::button::primary, on_press)
-        }
-        (SizeClass::Wide | SizeClass::Medium, false) => {
-            widgets::text_button(Some(Icon::Send), tr("Send"), style::button::boxed, on_press)
-        }
-        (SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip, true) => {
-            widgets::compact_button(Icon::Send, tr("Send"), style::button::primary, on_press)
-        }
-        (SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip, false) => {
-            widgets::boxed_button(Icon::Send, tr("Send"), on_press)
-        }
-    }
+/// The shield of a permission mode in the composer (issue #699), in its colour: "Default access" in
+/// attention orange, "Ask before changes" light (`text_2`), "Read only" grey (`text_3`). The word or
+/// its tooltip says the mode; the colour alone carries nothing.
+fn mode_shield<'a>(mode: torro_ipc::assistant::Mode) -> Element<'a, Message> {
+    use torro_ipc::assistant::Mode;
+    let colour: fn(&Palette) -> iced::Color = match mode {
+        Mode::Default => |p| p.attention,
+        Mode::Ask => |p| p.text_2,
+        Mode::ReadOnly => |p| p.text_3,
+    };
+    tinted(Icon::Shield, icon::SIZE_SM, colour)
 }
 
 /// How far the answer of the strip stands above its bottom (issue #547): the middle of its last line,
@@ -1495,14 +1552,11 @@ mod tests {
         assert_eq!(app.sidebar_room(), size::sidebar());
     }
 
-    /// Issue #547: "Send" builds in every class, ready or not, and the strip lifts the answer's last
+    /// Issue #547: "Stop" builds in every class, and the strip lifts the answer's last
     /// line onto the middle line of its field – a line of meta text a little more than one of body.
     #[test]
     fn send_and_the_strip_line_up() {
         for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow, SizeClass::Mini, SizeClass::Strip] {
-            for ready in [true, false] {
-                drop(send_button(class, ready));
-            }
             drop(stop_button(class));
         }
         assert_eq!(glance_lift(typo::body()), style::INPUT_PADDING.top);

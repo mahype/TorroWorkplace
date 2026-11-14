@@ -227,6 +227,11 @@ impl Demo {
                 state.clients.retain(|known| Some(&known.id) != client.as_ref());
                 if state.bots.len() < before { Response::Ok } else { no_bot(&id) }
             }
+            // Speech recognition is set up in the demo (issue #699): the microphone dictates a fixed
+            // sentence and records nothing.
+            Request::VoiceStatus => Response::Voice { voice: voice() },
+            Request::Dictate => Response::Transcript { text: tr("Remind me to call Anna tomorrow.").to_owned() },
+            Request::StopDictation => Response::Ok,
             other => refused("unsupported", &format!("{} is not in the demo", other.operation().name())),
         }
     }
@@ -745,6 +750,18 @@ fn cards(entries: &[Entry], now: DateTime<Utc>) -> Vec<CardEntry> {
             _ => None,
         })
         .collect()
+}
+
+/// How talking by voice stands in the demo (issue #699): recording and speech to text are there,
+/// the listener is off – the microphone of the composer can dictate.
+fn voice() -> torro_ipc::VoiceStatus {
+    use torro_ipc::{VoicePart, VoiceProgram, VoiceStatus};
+    let found = |part, program: &str| VoiceProgram { part, program: Some(program.into()), missing: None };
+    VoiceStatus {
+        installed: true,
+        programs: vec![found(VoicePart::Recorder, "parec"), found(VoicePart::SpeechToText, "whisper-cli")],
+        ..VoiceStatus::default()
+    }
 }
 
 /// The event "Design review" read out of the mail of [`MAIL_CHAT`]: two days on at 14:00 for an hour.

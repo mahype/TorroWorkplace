@@ -126,6 +126,15 @@ fn answer_of(request: &Request, result: Result<Response, Refusal>) -> Message {
         Request::OpenFile { .. } | Request::SaveFileAs { .. } | Request::OpenApp { .. } => {
             Message::FileDone(result.map(|_| None), "failed")
         }
+        Request::VoiceStatus => Message::Voice(result.and_then(|response| match response {
+            Response::Voice { voice } => Ok(voice),
+            other => Err(Refusal::unexpected(&other)),
+        })),
+        Request::Dictate => Message::Dictated(result.and_then(|response| match response {
+            Response::Transcript { text } => Ok(text),
+            other => Err(Refusal::unexpected(&other)),
+        })),
+        Request::StopDictation => Message::DictationStopped,
         Request::ConfirmBot { conversation, bot } => Message::BotConfirmed(
             crate::bots::Proposal { conversation: conversation.clone(), bot: bot.clone() },
             result.map(|_| ()),
@@ -340,9 +349,10 @@ fn the_picker_offers_only_models_that_can_call_tools() {
 /// account again for its models, closed ones too.
 #[test]
 fn the_effort_goes_with_the_message_where_the_model_thinks() {
+    // Issue #699: the effort is a row in the model's menu; `--open effort` opens that menu.
     let mut app = started(&["--open", "effort"]);
     also_offered(&mut app, claude_code());
-    assert_eq!(app.menu, Some(Menu::Effort));
+    assert_eq!(app.menu, Some(Menu::Picker));
     assert!(app.effort_offered(), "qwen3:14b thinks");
     let _ = app.update(Message::PickEffort(Some(torro_core::ai::Effort::High)));
     assert_eq!((app.effort, app.menu.as_ref()), (Some(torro_core::ai::Effort::High), None));
@@ -1594,4 +1604,81 @@ fn an_answer_stored_under_another_number_goes_on_where_it_was() {
 fn an_answer_waiting_for_approval_is_followed_slowly() {
     assert!(started(&["--open", "approval"]).waits_for_approval());
     assert!(!started(&["--open", "streaming"]).waits_for_approval());
+}
+
+/// Issue #699: the microphone dictates into the field and sends nothing; a second press stops the
+/// recording, the text then comes as it was heard.
+#[test]
+fn the_microphone_writes_into_the_field_without_sending() {
+    let mut app = started(&[]);
+    assert!(app.can_dictate(), "the demo has speech recognition");
+    sent(&mut app);
+    let _ = app.update(Message::Edit(text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new("Note:".into())))));
+    let _ = app.update(Message::Dictate);
+    assert_eq!(app.dictation, Dictation::Recording);
+    let requests = sent(&mut app);
+    assert!(matches!(requests.as_slice(), [Request::Dictate]), "{requests:?}");
+    let _ = app.update(Message::Dictate);
+    assert_eq!(app.dictation, Dictation::Stopping);
+    assert!(matches!(sent(&mut app).as_slice(), [Request::StopDictation]));
+    let _ = app.update(Message::Dictate);
+    assert!(sent(&mut app).is_empty(), "nothing more while the speech turns into text");
+    let _ = app.update(Message::Dictated(Ok("call Anna".into())));
+    assert_eq!(app.dictation, Dictation::Idle);
+    assert_eq!(app.editor.text().trim_end(), "Note: call Anna", "a space in front, at the caret");
+    assert!(!sent(&mut app).iter().any(|request| matches!(request, Request::SendMessage { .. })), "nothing is sent");
+}
+
+/// Issue #699: nothing understood, speech recognition gone and other failures each say so; the
+/// field stays as it was.
+#[test]
+fn a_dictation_that_brings_nothing_says_why() {
+    let mut app = started(&[]);
+    let _ = app.update(Message::Dictate);
+    let _ = app.update(Message::Dictated(Ok("  ".into())));
+    assert_eq!(app.notice.as_ref().map(|notice| notice.text.as_str()), Some(tr("Nothing was understood.")));
+    assert!(app.editor.text().trim().is_empty());
+    sent(&mut app);
+    let _ = app.update(Message::Dictate);
+    let _ = app.update(Message::Dictated(Err(Refusal::new("unsupported", "whisper-cli is missing"))));
+    assert_eq!(app.notice.as_ref().map(|notice| notice.text.as_str()), Some(tr("Speech recognition isn't set up.")));
+    assert!(
+        sent(&mut app).iter().any(|request| matches!(request, Request::VoiceStatus)),
+        "asks again how voice stands"
+    );
+    let _ = app.update(Message::Dictate);
+    let _ = app.update(Message::Dictated(Err(Refusal::new("error", "the recording failed"))));
+    assert_eq!(app.notice.as_ref().map(|notice| notice.text.as_str()), Some(tr("Couldn't dictate.")));
+    assert_eq!(app.dictation, Dictation::Idle);
+}
+
+/// Issue #699: without speech recognition the microphone opens Settings › Voice and records nothing.
+#[test]
+fn without_speech_recognition_the_microphone_opens_the_settings() {
+    let mut app = started(&[]);
+    app.voice = Some(torro_ipc::VoiceStatus { installed: true, ..torro_ipc::VoiceStatus::default() });
+    assert!(!app.can_dictate());
+    sent(&mut app);
+    let _ = app.update(Message::Dictate);
+    assert_eq!(app.dictation, Dictation::Idle);
+    assert_eq!(pane(&app).host.current().id, VOICE_PAGE);
+    assert!(!sent(&mut app).iter().any(|request| matches!(request, Request::Dictate)));
+    for size in SIZES {
+        let _ = app.update(Message::Resized(size));
+        let _ = app.view();
+    }
+}
+
+/// Issue #699: a bot's chat has neither the plus with the areas nor the mode; the assistant's has
+/// both, and the composer builds in every size while it records.
+#[test]
+fn a_bots_chat_has_no_areas_and_no_mode() {
+    assert!(started(&[]).offers_areas_and_mode());
+    assert!(!started(&["--bot", TRAVEL]).offers_areas_and_mode());
+    let mut app = started(&["--open", "dictating"]);
+    assert_eq!(app.dictation, Dictation::Recording);
+    for size in SIZES {
+        let _ = app.update(Message::Resized(size));
+        let _ = app.view();
+    }
 }
