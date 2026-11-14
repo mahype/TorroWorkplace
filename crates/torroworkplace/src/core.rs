@@ -4352,7 +4352,9 @@ impl Core {
     /// `assistant.list_skills` or `assistant.get_skill` from the bot whose client is `client` (issue
     /// #703): that bot's own skills, `not-found` for a skill of no bot.
     async fn bot_skills(&self, client: &str, request: &Request) -> Response {
-        let skills = self.assistant.bots().by_client(client).await.map(|bot| bot.skills).unwrap_or_default();
+        // Without text a skill is no skill: the bot's prompt leaves it out too.
+        let mut skills = self.assistant.bots().by_client(client).await.map(|bot| bot.skills).unwrap_or_default();
+        skills.retain(|skill| !skill.text.trim().is_empty());
         match crate::assistant::skills::read_answer(&skills, request) {
             Some(answer) => answer,
             None => Response::Error { code: "error".into(), message: "no skill to read".into() },
