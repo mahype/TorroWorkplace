@@ -2,10 +2,15 @@
 //! `docs/tasks/assistent.md`): one folder per bot, `<config>/assistant/bots/<id>/`, the folders 0700
 //! and every file 0600, each file written whole and atomically:
 //!
-//! - `bot.json`: name, description, picture, engine, model, the id of the bot's client and the
-//!   names of its skills in order ([`BotFile`]),
+//! - `bot.json`: name, description, picture, engine, model and the id of the bot's client
+//!   ([`BotFile`]),
 //! - `persona.md`: the personality, `instructions.md`: the instructions, as the person wrote them,
-//! - `skills/<n>.md`: the text of the n-th skill (from 1), plain text.
+//! - `skills/<8 hex>/SKILL.md`: one skill each, as the assistant keeps its own (issue #703,
+//!   [`crate::assistant::skills`]).
+//!
+//! Before issue #703 `bot.json` named the skills in order and `skills/<n>.md` held the text of the
+//! n-th (from 1). Such a bot still reads, its skills without a description; its next save writes the
+//! new form and removes the old files.
 //!
 //! The texts are files of their own so a person can read and edit them like any text. `bot.json` is
 //! written last: a bot whose save broke off reads with the texts written so far. A text file that
@@ -19,6 +24,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use torro_ipc::bots::{Bot, Skill};
+
+use crate::assistant::skills;
 
 /// The file with everything but the texts.
 const BOT_FILE: &str = "bot.json";
@@ -41,8 +48,9 @@ struct BotFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     model: Option<String>,
     client: String,
-    /// The skills' names in order; the n-th text is `skills/<n>.md`.
-    #[serde(default)]
+    /// Before issue #703: the skills' names in order, the n-th text in `skills/<n>.md`. Written
+    /// empty (and so left out) since.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     skills: Vec<String>,
 }
 
@@ -116,7 +124,10 @@ pub fn load(dir: &Path, id: &str) -> io::Result<Option<Bot>> {
     };
     let mut skills = Vec::new();
     for (index, name) in file.skills.into_iter().enumerate() {
-        skills.push(Skill { name, text: text(skill_file(&folder, index))? });
+        skills.push(Skill { name, description: String::new(), text: text(old_skill_file(&folder, index))? });
+    }
+    if skills.is_empty() {
+        skills = skills::load_all(&folder.join(SKILLS_FOLDER))?.into_iter().map(|stored| stored.skill).collect();
     }
     Ok(Some(Bot {
         id: id.to_string(),
@@ -132,8 +143,9 @@ pub fn load(dir: &Path, id: &str) -> io::Result<Option<Bot>> {
     }))
 }
 
-/// Writes `bot` to its folder in `dir` (0700, its files 0600): the texts first, `bot.json` last,
-/// and the files of skills it no longer has removed.
+/// Writes `bot` to its folder in `dir` (0700, its files 0600): the texts first, `bot.json` last.
+/// The folders of skills it no longer has go, and so do the skill files of the form before issue
+/// #703 (`skills/<n>.md`); nothing else in `skills/` is touched.
 pub fn save(dir: &Path, bot: &Bot) -> io::Result<()> {
     if !is_id(&bot.id) {
         return Err(io::Error::other(format!("{:?} is no bot id", bot.id)));
@@ -143,14 +155,11 @@ pub fn save(dir: &Path, bot: &Bot) -> io::Result<()> {
     crate::clients::create_private_dir(&skills)?;
     write(&folder.join(PERSONA_FILE), &with_end(&bot.personality))?;
     write(&folder.join(INSTRUCTIONS_FILE), &with_end(&bot.instructions))?;
-    for (index, skill) in bot.skills.iter().enumerate() {
-        write(&skill_file(&folder, index), &with_end(&skill.text))?;
-    }
+    skills::replace_all(&skills, &bot.skills)?;
     for item in fs::read_dir(&skills)? {
-        let path = item?.path();
-        let kept = (0..bot.skills.len()).any(|index| skill_file(&folder, index) == path);
-        if !kept {
-            fs::remove_file(&path)?;
+        let item = item?;
+        if is_old_skill_file(&item.file_name().to_string_lossy()) && item.file_type()?.is_file() {
+            fs::remove_file(item.path())?;
         }
     }
     let file = BotFile {
@@ -160,7 +169,7 @@ pub fn save(dir: &Path, bot: &Bot) -> io::Result<()> {
         engine: bot.engine.clone(),
         model: bot.model.clone(),
         client: bot.client.clone(),
-        skills: bot.skills.iter().map(|skill| skill.name.clone()).collect(),
+        skills: Vec::new(),
     };
     let mut json = serde_json::to_vec_pretty(&file).map_err(io::Error::other)?;
     json.push(b'\n');
@@ -178,9 +187,15 @@ pub fn remove(dir: &Path, id: &str) -> io::Result<()> {
     }
 }
 
-/// The file of the skill at `index` (from 0) in a bot's `folder`: `skills/<index + 1>.md`.
-fn skill_file(folder: &Path, index: usize) -> PathBuf {
+/// The file of the skill at `index` (from 0) in a bot's `folder` before issue #703:
+/// `skills/<index + 1>.md`.
+fn old_skill_file(folder: &Path, index: usize) -> PathBuf {
     folder.join(SKILLS_FOLDER).join(format!("{}.md", index + 1))
+}
+
+/// Whether `name` is that of a skill file before issue #703: `<n>.md` with `n` digits.
+fn is_old_skill_file(name: &str) -> bool {
+    name.strip_suffix(".md").is_some_and(|n| !n.is_empty() && n.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 /// `text` as a file holds it: with a line break at the end unless it is empty.
@@ -201,7 +216,7 @@ fn read_if_there(path: &Path) -> io::Result<Option<Vec<u8>>> {
 }
 
 /// Writes `bytes` to `path` atomically, 0600 on Unix.
-fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     crate::clients::write_private(path, bytes).map_err(|err| io::Error::other(err.to_string()))
 }
 
@@ -219,7 +234,13 @@ pub(crate) mod tests {
             model: Some("qwen3:8b".into()),
             personality: "Calm and brief.\nNever in a hurry.".into(),
             instructions: "Suggest trains before flights.".into(),
-            skills: (1..=skills).map(|n| Skill { name: format!("Skill {n}"), text: format!("Text {n}") }).collect(),
+            skills: (1..=skills)
+                .map(|n| Skill {
+                    name: format!("Skill {n}"),
+                    description: format!("When {n}"),
+                    text: format!("Text {n}"),
+                })
+                .collect(),
             client: "9f8e7d6c".into(),
         }
     }
@@ -245,13 +266,15 @@ pub(crate) mod tests {
             fs::read_to_string(folder.join("instructions.md")).expect("text"),
             "Suggest trains before flights.\n"
         );
-        assert_eq!(fs::read_to_string(folder.join("skills/2.md")).expect("text"), "Text 2\n");
+        let on_disk = skills::load_all(&folder.join("skills")).expect("skills");
+        assert_eq!(on_disk.iter().map(|kept| kept.skill.clone()).collect::<Vec<_>>(), stored.skills);
+        assert!(!fs::read_to_string(folder.join("bot.json")).expect("json").contains("skills"));
 
-        // Fewer skills: the files of the others go.
+        // Fewer skills: the folders of the others go.
         stored.skills.truncate(1);
         stored.personality.clear();
         save(&bots, &stored).expect("saved again");
-        assert!(!folder.join("skills/2.md").exists() && !folder.join("skills/3.md").exists());
+        assert_eq!(skills::load_all(&folder.join("skills")).expect("skills").len(), 1);
         assert_eq!(load(&bots, "1a2b3c4d").expect("read"), Some(stored.clone()));
 
         #[cfg(unix)]
@@ -261,7 +284,8 @@ pub(crate) mod tests {
             assert_eq!(mode(&bots), 0o700);
             assert_eq!(mode(&folder), 0o700);
             assert_eq!(mode(&folder.join("skills")), 0o700);
-            for file in ["bot.json", "persona.md", "instructions.md", "skills/1.md"] {
+            let skill = &skills::load_all(&folder.join("skills")).expect("skills")[0].id;
+            for file in ["bot.json", "persona.md", "instructions.md", &format!("skills/{skill}/SKILL.md")] {
                 assert_eq!(mode(&folder.join(file)), 0o600, "{file}");
             }
         }
@@ -278,5 +302,34 @@ pub(crate) mod tests {
         remove(&bots, "1a2b3c4d").expect("removing again is fine");
         assert_eq!(load(&bots, "1a2b3c4d").expect("read"), None);
         assert_eq!(load_all(&dir.path().join("missing")).expect("no folder"), Vec::new());
+    }
+
+    /// Issue #703: a bot of the form before reads with its skills in order and no description; its
+    /// next save writes the new form, removes the old files and nothing else.
+    #[test]
+    fn a_bot_of_the_old_form_keeps_its_skills() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let bots = dir.path().join("bots");
+        let folder = bots.join("1a2b3c4d");
+        fs::create_dir_all(folder.join("skills")).expect("folder");
+        fs::write(
+            folder.join("bot.json"),
+            r#"{"name": "Travel planner", "engine": "test", "client": "9f8e7d6c", "skills": ["Packing", "Trains"]}"#,
+        )
+        .expect("bot.json");
+        fs::write(folder.join("skills/1.md"), "Pack light.\n").expect("skill 1");
+        fs::write(folder.join("skills/2.md"), "Trains first.\n").expect("skill 2");
+        fs::write(folder.join("skills/notes.txt"), "mine").expect("another file");
+        let old = load(&bots, "1a2b3c4d").expect("read").expect("a bot");
+        let named = |name: &str, text: &str| Skill { name: name.into(), description: String::new(), text: text.into() };
+        assert_eq!(old.skills, vec![named("Packing", "Pack light."), named("Trains", "Trains first.")]);
+
+        save(&bots, &old).expect("saved");
+        assert!(!folder.join("skills/1.md").exists() && !folder.join("skills/2.md").exists());
+        assert!(folder.join("skills/notes.txt").exists(), "nothing else goes");
+        assert!(!fs::read_to_string(folder.join("bot.json")).expect("json").contains("skills"));
+        let mut read = load(&bots, "1a2b3c4d").expect("read").expect("a bot");
+        read.skills.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(read, old);
     }
 }

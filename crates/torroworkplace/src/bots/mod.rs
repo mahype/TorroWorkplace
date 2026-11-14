@@ -23,7 +23,7 @@
 //!
 //! What goes to a client never names a path; the core's log does.
 
-mod store;
+pub(crate) mod store;
 
 use std::io;
 use std::path::PathBuf;
@@ -33,7 +33,7 @@ use torro_ipc::api::{BOT_CLIENT, Rights};
 use torro_ipc::assistant::LETTER_AVATAR;
 use torro_ipc::bots::{
     Bot, MAX_BOTS, MAX_DESCRIPTION_CHARS, MAX_INSTRUCTIONS_CHARS, MAX_NAME_CHARS, MAX_PERSONALITY_CHARS,
-    MAX_SKILL_CHARS, MAX_SKILL_NAME_CHARS, Skill,
+    MAX_SKILL_CHARS, MAX_SKILL_DESCRIPTION_CHARS, MAX_SKILL_NAME_CHARS, Skill,
 };
 use torro_ipc::{Request, Response};
 
@@ -129,10 +129,10 @@ impl Draft {
     }
 
     /// The bot it makes, cleaned as it is kept: names and the description on one line, the texts
-    /// without control characters, each within its limit; a blank model is none, a missing picture
-    /// the letter. `id` and `client` as given.
+    /// without control characters, each within its limit, the skills by name as they read back
+    /// (issue #703); a blank model is none, a missing picture the letter. `id` and `client` as given.
     fn into_bot(self, id: String, client: String) -> Bot {
-        Bot {
+        let mut bot = Bot {
             id,
             name: clean_line(&self.name, MAX_NAME_CHARS),
             description: clean_line(&self.description, MAX_DESCRIPTION_CHARS),
@@ -146,11 +146,14 @@ impl Draft {
                 .into_iter()
                 .map(|skill| Skill {
                     name: clean_line(&skill.name, MAX_SKILL_NAME_CHARS),
+                    description: clean_line(&skill.description, MAX_SKILL_DESCRIPTION_CHARS),
                     text: clean_text(&skill.text, MAX_SKILL_CHARS),
                 })
                 .collect(),
             client,
-        }
+        };
+        bot.skills.sort_by_key(|skill| skill.name.to_lowercase());
+        bot
     }
 }
 
@@ -180,6 +183,12 @@ impl Bots {
             eprintln!("torroworkplace: cannot read the bot {id}: {err}");
             None
         })
+    }
+
+    /// The bot whose own client is `client` (issue #703: a bot's client reads its skills); `None` for
+    /// none.
+    pub async fn by_client(&self, client: &str) -> Option<Bot> {
+        self.list().await.into_iter().find(|bot| bot.client == client)
     }
 
     /// The ids of every bot; none when they cannot be read.
