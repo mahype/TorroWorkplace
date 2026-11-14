@@ -4017,8 +4017,9 @@ mod tests {
             .collect();
         assert_eq!(
             catalogue.len(),
-            22,
-            "nine of task C.1, five of C.10, one of issue #134, one of #225, one of #605, four of #703, one of #704: \
+            24,
+            "nine of task C.1, five of C.10, one of issue #134, one of #225, one of #605, four of #703, one of #704, \
+             two of #697: \
              {catalogue:?}"
         );
         assert!(catalogue.iter().all(|name| name.starts_with("assistant_") && names.contains(name.as_str())));

@@ -486,6 +486,13 @@ impl Assistant {
             },
             None => None,
         };
+        // Several at once (issue #697): an unknown one is refused before anyone is asked, as a single one is.
+        if matches!(request, Request::ArchiveConversations { .. } | Request::DeleteConversations { .. }) {
+            let state = self.state().await;
+            if let Some(id) = request.conversation_ids().into_iter().find(|id| !state.conversations.contains_key(*id)) {
+                return Some(unknown(id));
+            }
+        }
         if let Some(id) = request.conversation() {
             let state = self.state().await;
             let Some(conversation) = state.conversations.get(id) else { return Some(unknown(id)) };
@@ -1991,6 +1998,10 @@ pub(crate) mod tests {
         let file = |id: &str| dir.path().join("assistant").join(format!("{id}.jsonl"));
 
         let unknown = Request::DeleteConversations { ids: vec![ids[0].clone(), "ffffffffffffffff".into()] };
+        // Refused before anyone would be asked to approve it.
+        assert_eq!(assistant.refusal(&ai, &unknown).await.as_ref().map(code), Some("not-found"));
+        let known = Request::DeleteConversations { ids: vec![ids[0].clone()] };
+        assert_eq!(assistant.refusal(&ai, &known).await, None);
         assert_eq!(code(&answer(&assistant, &ai, unknown).await), "not-found");
         assert!(file(&ids[0]).exists(), "nothing deleted");
 
