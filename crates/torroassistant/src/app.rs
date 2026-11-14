@@ -2215,8 +2215,12 @@ impl App {
         for conversation in self.conversations.iter_mut().filter(|c| ids.contains(&c.id)) {
             conversation.archived = archived;
         }
-        let failed =
-            if archived { tr("Couldn't archive the conversation.") } else { tr("Couldn't restore the conversation.") };
+        let failed = match (archived, ids.len() > 1) {
+            (true, false) => tr("Couldn't archive the conversation."),
+            (true, true) => tr("Couldn't archive the conversations."),
+            (false, false) => tr("Couldn't restore the conversation."),
+            (false, true) => tr("Couldn't restore the conversations."),
+        };
         let tasks: Vec<Task<Message>> = ids
             .chunks(MAX_BULK_IDS)
             .map(|piece| {

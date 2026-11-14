@@ -4205,6 +4205,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Archive {n} conversations?", "{n} Unterhaltungen archivieren?"),
     ("Conversations deleted", "Unterhaltungen gelöscht"),
     ("Couldn't archive the conversation.", "Die Unterhaltung konnte nicht archiviert werden."),
+    ("Couldn't archive the conversations.", "Die Unterhaltungen konnten nicht archiviert werden."),
+    ("Couldn't restore the conversations.", "Die Unterhaltungen konnten nicht zurückgeholt werden."),
     ("Couldn't delete the conversations.", "Die Unterhaltungen konnten nicht gelöscht werden."),
     ("Couldn't restore the conversation.", "Die Unterhaltung konnte nicht zurückgeholt werden."),
     ("Delete 1 conversation", "1 Unterhaltung löschen"),
