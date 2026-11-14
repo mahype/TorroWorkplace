@@ -609,7 +609,7 @@ fn remove_source(from: &Path, made: PathBuf) -> Result<PathBuf, FolderError> {
 
 /// `target`, then the same with `-2`, `-3` … up to [`MAX_NUMBER`] before its extension (`Report-2.pdf`), or after
 /// the whole name for a folder (`whole`, `Invoices.2026-2`) and a name without extension.
-fn free_names(target: &Path, whole: bool) -> impl Iterator<Item = PathBuf> + '_ {
+pub(super) fn free_names(target: &Path, whole: bool) -> impl Iterator<Item = PathBuf> + '_ {
     (1..=MAX_NUMBER).map(move |number| match (number, target.file_name()) {
         (1, _) | (_, None) => target.to_path_buf(),
         (number, Some(name)) => target.with_file_name(numbered(name, number, whole)),

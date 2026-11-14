@@ -11,12 +11,15 @@
 //! - `folders`: the bounds of the tool `files` – allowed folders, their access, what stays locked (task WD.2).
 //! - `organize`: the commands of the tool `files` – list, find, make a folder, copy, move (task WD.2), move to the
 //!   trash (task WD.3).
+//! - `contents`: the commands of the tool `file_contents` (issue #705) – read a text file, search in text files, write
+//!   a new one, change one by find and replace, in the bounds of `folders`.
 //!
 //! [`Tools`] answers the `tools.*` requests (task WZ.4). The core checks before: for a client its rights and
 //! selection (`Lack::Tool`) and that a file is its own; the tools are always there (issue #666). The handlers
 //! here take the maker of a file ([`Maker`]) and never reach another client's files. Nothing here logs a title, a
 //! path or content: only the kind of an error.
 
+pub mod contents;
 pub mod files;
 pub mod folders;
 pub mod organize;
@@ -351,6 +354,9 @@ fn description(id: ToolId) -> &'static str {
         ToolId::Files => {
             tr("Lists, finds, copies and moves files in the allowed folders, without reading what they hold.")
         }
+        ToolId::FileContents => tr(
+            "Reads, searches, writes and changes text files in the allowed folders; changing one waits for your yes.",
+        ),
     }
 }
 
@@ -754,22 +760,29 @@ pub(crate) mod tests {
         let mut rights = RightsTemplate::ReadOnly.rights();
         assert_eq!(
             allowed(&rights),
-            [(ToolId::Pdf, false), (ToolId::Web, false), (ToolId::Files, true)],
+            [(ToolId::Pdf, false), (ToolId::Web, false), (ToolId::Files, true), (ToolId::FileContents, false)],
             "All, reading only"
         );
         rights.tools = Selection::Only(vec!["web".into()]);
         assert_eq!(
             allowed(&rights),
-            [(ToolId::Pdf, false), (ToolId::Web, true), (ToolId::Files, false)],
+            [(ToolId::Pdf, false), (ToolId::Web, true), (ToolId::Files, false), (ToolId::FileContents, false)],
             "named, reading is enough"
         );
         rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
         rights.tools = Selection::All;
         assert_eq!(
             allowed(&rights),
-            [(ToolId::Pdf, true), (ToolId::Web, false), (ToolId::Files, true)],
-            "All is pdf and files, never web"
+            [(ToolId::Pdf, true), (ToolId::Web, false), (ToolId::Files, true), (ToolId::FileContents, false)],
+            "All is pdf and files, never web or file contents"
         );
+        // Issue #705: what files hold goes to the model's provider, so a client gets it only when a person ticks
+        // it; rights opened like the assistant's reach it with "all".
+        rights.tools = Selection::Only(vec!["file_contents".into()]);
+        assert_eq!(allowed(&rights)[3], (ToolId::FileContents, true), "named, reading is enough");
+        rights.tools = Selection::All;
+        let opened = rights.clone().opened();
+        assert_eq!(allowed(&opened)[3], (ToolId::FileContents, true), "the assistant's All does");
     }
 
     #[test]
