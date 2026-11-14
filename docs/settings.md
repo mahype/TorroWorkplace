@@ -1018,6 +1018,7 @@ Approval, bis zu fünf Auswahlgruppen, Voice, Microphone, Programs on this compu
 | Talk to the assistant | Sprache an/aus | Assistant › Voice; Tray „Mute microphone“ (nur aus) | `voice.enabled` | `set_setting voice_enabled` (an nur Menschen) | Assistent | bleibt, Assistent |
 | Wake word | nur Anzeige („Hey Torro“) | Assistant › Voice | `voice.wakeWord` | `set_setting wake_word` | – | bleibt als Anzeige |
 | Speak answers | Antworten nach „Hey Torro“ sprechen, mit Anbieter und Stimme von „Read aloud“ (#745) | Assistant › Voice | `voice.speakAnswers` | `set_setting speak_answers` | Assistent | bleibt, Assistent |
+| Speech recognition (Parakeet, Whisper) | welches Programm Sprache in Text wandelt (#749) | Assistant › Voice | `voice.recognizer` | `set_setting speech_recognizer` | Assistent | bleibt, Assistent |
 | Read answers aloud | Antworten im Chatfenster vorlesen (#745, anfangs aus) | Assistant › Voice › Read aloud; Lautsprecher im Eingabefeld | `voice.readAloud` | `set_setting read_aloud` | Assistent | bleibt, Assistent |
 | Provider (Qwen3-TTS, OpenAI, Piper) | wer vorliest; ohne Wahl Qwen, wo es geht, sonst Piper | Assistant › Voice › Read aloud | `voice.speechProvider` | `set_setting speech_provider` (OpenAI nur Menschen) | Assistent | bleibt, Assistent |
 | Voice (je Anbieter) | Stimme von Qwen bzw. OpenAI, mit „Preview“ | Assistant › Voice › Read aloud | `voice.qwenVoice`, `voice.openaiVoice` | `set_setting qwen_voice`, `set_setting openai_voice`; Preview `assistant.speak` | Assistent | bleibt, Assistent |

@@ -15,7 +15,9 @@
 //! - wake word: openWakeWord (Python) with the model `hey_torro.onnx`; without it the wake word is
 //!   found with speech to text on short windows ([`wake::TranscriptWake`]),
 //! - recording: `parec`, `arecord`, SoX or `ffmpeg`, as raw 16 kHz mono sound on their output,
-//! - speech to text: whisper.cpp (`whisper-cli`) with a `ggml-*.bin` model,
+//! - speech to text, as the setting `voice.recognizer` chooses: Parakeet (Python with `onnx-asr`,
+//!   the model folder `parakeet-tdt-0.6b-v3`), kept loaded in a process of its own
+//!   ([`external::ParakeetPython`]), or whisper.cpp (`whisper-cli`) with a `ggml-*.bin` model,
 //! - speech: Piper with a voice, played with `paplay`, `afplay` or the like.
 //!
 //! The parts are small traits ([`Recorder`], [`WakeWord`], [`Transcriber`], [`Speaker`]), so the
@@ -23,8 +25,9 @@
 //! ([`listen`]).
 //!
 //! While it waits for the wake word, the listener keeps a few seconds in memory and nothing on
-//! disk. Only for whisper.cpp, which reads files, a sentence (or, without openWakeWord, a window
-//! of two seconds) goes to a private temporary file that is removed at once ([`audio::TempWav`]).
+//! disk. Parakeet gets the sound through a pipe. Only for whisper.cpp, which reads files, a sentence
+//! (or, without openWakeWord, a window of two seconds) goes to a private temporary file that is
+//! removed at once ([`audio::TempWav`]).
 
 pub mod audio;
 pub mod cli;

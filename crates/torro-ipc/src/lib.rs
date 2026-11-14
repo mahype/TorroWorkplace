@@ -5017,7 +5017,9 @@ pub enum VoicePart {
     WakeWord,
     /// Takes the sound from the microphone: `parec`, `arecord`, `rec` (SoX) or `ffmpeg`.
     Recorder,
-    /// Turns speech into text: whisper.cpp (`whisper-cli`) with a model (`ggml-base.bin`).
+    /// Turns speech into text, the program chosen in the setting `speech_recognizer`: Parakeet
+    /// (Python with the package `onnx-asr`) with the model folder `parakeet-tdt-0.6b-v3`, or
+    /// whisper.cpp (`whisper-cli`) with a model (`ggml-base.bin`).
     SpeechToText,
     /// Speaks answers: Piper with a voice (`*.onnx`) and a program that plays sound.
     Speech,
@@ -5039,8 +5041,8 @@ pub enum VoiceMissing {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct VoiceProgram {
     pub part: VoicePart,
-    /// The program found (`whisper-cli`, `piper`, `openWakeWord`), as its file name; `None` when
-    /// none is.
+    /// The program found (`whisper-cli`, `onnx-asr`, `piper`, `openWakeWord`), as its file name;
+    /// `None` when none is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program: Option<String>,
     /// What keeps the part from working; `None` when it works.
@@ -5271,6 +5273,12 @@ pub enum SettingKey {
     Microphone,
     /// Speak the answers as well as showing them: `true` (the default) or `false`.
     SpeakAnswers,
+    /// The program that turns speech into text, for dictating, the wake word and the
+    /// conversation mode (issue #749): `"parakeet"` (the default and recommended: Parakeet through
+    /// the Python package `onnx-asr`) or `"whisper"` (whisper.cpp). Anything else is refused with
+    /// `error` (`torro_core::settings::Recognizer`). `settings.voice_status` then looks for the
+    /// chosen one.
+    SpeechRecognizer,
     /// The whisper.cpp model, an absolute path to a `.bin` file; `""` (or `null`) for the first one in the
     /// voice folder (`settings.voice_status`).
     SttModel,

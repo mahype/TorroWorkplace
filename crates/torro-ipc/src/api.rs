@@ -4066,8 +4066,10 @@ static SET_SETTING: Command = Command {
                   unpinned conversations within the hour) or the assistant's voice: `voice_enabled` (only false: \
                   switching the microphone on is for a person, true is forbidden), `wake_word` (\"hey torro\" for \
                   now), `microphone` (a name from settings_voice_status, or \"\" for the default), \
-                  `speak_answers` (true, false), `stt_model` (absolute path of a whisper.cpp .bin model, or \"\" for \
-                  the first in the voice folder) or `voice` (absolute path of a Piper .onnx voice, or \"\") or \
+                  `speak_answers` (true, false), `speech_recognizer` (\"parakeet\", the default and \
+                  faster, or \"whisper\": the program that turns speech into text), `stt_model` (absolute path \
+                  of a whisper.cpp .bin model, or \"\" for the first in the voice folder) or `voice` (absolute \
+                  path of a Piper .onnx voice, or \"\") or \
                   reading answers aloud (settings_speech_status lists providers and voices): `read_aloud` (true, \
                   false; the chat windows read answers aloud), `speech_provider` (\"qwen\", \"piper\" or null for \
                   the core's choice; \"openai\" is forbidden: only a person sends answers to OpenAI), \
@@ -8958,6 +8960,7 @@ mod tests {
                 "wake_word",
                 "microphone",
                 "speak_answers",
+                "speech_recognizer",
                 "stt_model",
                 "voice",
                 "read_aloud",
