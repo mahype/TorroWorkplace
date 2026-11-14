@@ -2,7 +2,8 @@
 //! settings groups, each with a footer sentence that explains the consequence.
 //!
 //! - **General** ([`view`]): "Language" ([`suite::language`]); "Maps" ([`maps`], task TE.10) switches
-//!   the calendar's place search and small map on and sets their services; "Startup" ([`startup`])
+//!   the place search and small maps of the calendar and contacts on, sets their services, switches
+//!   the lookup of contact addresses and clears the stored map data (issue #355); "Startup" ([`startup`])
 //!   has the "Start at login" switch, the one of Workspaces and "Run setup again" for the first-run
 //!   setup (issue #548: one group less instead of tabs, so the page stays at a glance). The group
 //!   "Apps" of task S.21 is the section Apps since issue #411: each app's card switches it, opens it
@@ -23,12 +24,13 @@
 //! draws this window with it at once (`Action::Choose`). The page shows `data.settings`, so it
 //! follows the daemon.
 
-use iced::widget::{column, container, row};
+use iced::widget::{column, container, row, toggler};
 use iced::{Alignment, Element, Length, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Component, ComponentSwitch, GeocoderKind, Maps, MapsApp, Settings, address_problem};
 use torro_gui::icon::Icon;
 use torro_gui::theme::{size, space};
+use torro_gui::units::{format_bytes, format_count};
 use torro_gui::{layout, style, widgets};
 use torro_ipc::{Request, SettingKey};
 use torro_settings_ui::parts::{field, notice, switch};
@@ -44,6 +46,9 @@ pub struct State {
     pub suite: suite::State,
     /// The addresses of "Maps" as typed and not saved yet ([`maps`]).
     maps: MapsDraft,
+    /// "Clear" of "Stored map data" was pressed and the core has not answered yet (issue #355): the
+    /// button says "Clearing…".
+    clearing: bool,
 }
 
 /// One of the two addresses under "Maps": the place search service or the map tiles.
@@ -150,6 +155,10 @@ pub enum Message {
     GeocoderKind(GeocoderKind),
     /// "Open in Maps with".
     OpenWith(MapsApp),
+    /// The switch "Look up contact addresses" (issue #355).
+    ContactLookup(bool),
+    /// "Clear" beside "Stored map data" (issue #355): every map tile and the places of contacts.
+    ClearMaps,
     /// A key in one of the two address fields: kept as typed, not sent. Saves the other field's
     /// address if it was changed, since the person has left it.
     AddressInput(Address, String),
@@ -187,6 +196,11 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         }
         Message::OpenWith(app) => {
             return maps_change(state, maps, "openWith", serde_json::to_value(app).unwrap_or_default());
+        }
+        Message::ContactLookup(on) => return maps_change(state, maps, "contactLookup", serde_json::Value::Bool(on)),
+        Message::ClearMaps => {
+            state.clearing = true;
+            return Action::Send(Request::ClearMapsCache);
         }
         Message::AddressInput(which, text) => {
             let left = leave_address(state, maps, which.other());
@@ -262,7 +276,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         let settings = &data.settings;
         let language = suite::language(settings, Place::ControlCentre).map(Message::Suite);
         let chat = suite::chat(settings).map(Message::Suite);
-        vec![language, maps(state, &settings.maps), startup(settings), chat]
+        vec![language, maps(state, &settings.maps, data.maps_status), startup(settings), chat]
     })
 }
 
@@ -304,9 +318,11 @@ const MAP_LINKS: [(&str, &str); 2] = [
     ("© OpenStreetMap contributors", "https://www.openstreetmap.org/copyright"),
 ];
 
-/// The group "Maps" (task TE.10, concept `docs/termin-editor.md` "Ort und Karte"), part of the
-/// calendar: the switch "Maps and place search", the place search service's address with its
-/// protocol, the map tiles' address, and "Open in Maps with". Each address row says under its name
+/// The group "Maps" (task TE.10, concept `docs/termin-editor.md` "Ort und Karte"), for the calendar
+/// and the contacts: the switch "Maps and place search", the switch "Look up contact addresses"
+/// (issue #355, at 40 % and without a click while maps are off), the place search service's address
+/// with its protocol, the map tiles' address, "Open in Maps with", and "Stored map data" with how much
+/// is kept (`settings.maps_status`, asked when the page opens and after "Clear") and "Clear". Each address row says under its name
 /// what that service gets, and "Press Enter to save" in the same line while its address is typed
 /// and not saved, so the row never changes its height. The group's footer says that it is off until
 /// a person turns it on and that the services are others'; under it two quiet links, the usage
@@ -317,7 +333,7 @@ const MAP_LINKS: [(&str, &str); 2] = [
 /// address is a person's alone; the control centre is that person (app key), so it may. The
 /// address fields save on Enter or when the person moves on ([`MapsDraft`]); a refused address
 /// says why in a quiet line under the group.
-fn maps<'a>(state: &'a State, maps: &'a Maps) -> Element<'a, Message> {
+fn maps<'a>(state: &'a State, maps: &'a Maps, status: Option<torro_ipc::MapsStatus>) -> Element<'a, Message> {
     let draft = &state.maps;
     let off = !maps.enabled;
     let address = move |which: Address, placeholder: &'static str| {
@@ -376,16 +392,36 @@ fn maps<'a>(state: &'a State, maps: &'a Maps) -> Element<'a, Message> {
         move || setting_row(None, tr("Open in Maps with"), None, open_with()),
         open_with,
     );
+    let mut lookup = toggler(maps.contact_lookup).size(style::CHECK_SIZE).style(style::toggler);
+    if maps.enabled {
+        lookup = lookup.on_toggle(Message::ContactLookup);
+    }
+    let mut lookup_line = trf(
+        "Sends the address of a contact you open to {service} to place it on the map. Results stay on this device.",
+        &[("service", &service_host(&maps.geocoder))],
+    );
+    if !maps.enabled {
+        // Why the switch does not move: it counts only while maps are on.
+        lookup_line = format!("{lookup_line} {}", tr("Needs maps and place search."));
+    }
+    let stored = status.map(|status| {
+        trf(
+            "{size} of map tiles · {places} contact places",
+            &[("size", &format_bytes(status.tile_bytes)), ("places", &format_count(u64::from(status.contact_places)))],
+        )
+    });
     let rows = vec![
         setting_row(
             None,
             tr("Maps and place search"),
-            Some(tr("Find places and see a small map in the calendar's event editor").to_string()),
+            Some(tr("Find places and see small maps in the calendar and contacts").to_string()),
             switch(maps.enabled, Message::MapsOn),
         ),
+        setting_row(None, tr("Look up contact addresses"), Some(lookup_line), lookup),
         search,
         tiles,
         open_with,
+        setting_row(None, tr("Stored map data"), stored, clear_button(status, state.clearing)),
     ];
     let footer = tr("Off until you turn it on. Both services are run by others, under their own rules.");
     let links = MAP_LINKS.map(|(label, url)| {
@@ -396,6 +432,29 @@ fn maps<'a>(state: &'a State, maps: &'a Maps) -> Element<'a, Message> {
         block = block.push(notice(trf("Not saved: {reason}", &[("reason", &tr(why))])));
     }
     block.push(row(links).spacing(space::xs()).wrap().vertical_spacing(space::xs())).into()
+}
+
+/// The core answered a request of the page: "Clear" of the stored map data is over, done or refused
+/// (the shell shows a refusal). Whether it was pending, so the shell asks for the numbers again.
+pub fn answered(state: &mut State) -> bool {
+    std::mem::take(&mut state.clearing)
+}
+
+/// "Clear" of "Stored map data": "Clearing…" until the core answers, off while nothing is stored or the
+/// numbers are not known.
+fn clear_button<'a>(status: Option<torro_ipc::MapsStatus>, clearing: bool) -> Element<'a, Message> {
+    if clearing {
+        return widgets::busy_button(tr("Clearing…"), style::button::secondary);
+    }
+    let empty = status.is_none_or(|status| status.tile_bytes == 0 && status.contact_places == 0);
+    widgets::text_button(None, tr("Clear"), style::button::secondary, (!empty).then_some(Message::ClearMaps))
+}
+
+/// The host of the place search service's address for the line under "Look up contact addresses"
+/// (`photon.komoot.io`): where the addresses go, as the person set it.
+fn service_host(address: &str) -> &str {
+    let rest = address.trim().split_once("://").map_or(address.trim(), |(_, rest)| rest);
+    rest.split(['/', '?', '#']).next().filter(|host| !host.is_empty()).unwrap_or(rest)
 }
 
 /// An address row of "Maps": `beside` – the whole row with its field – while every name and line of
@@ -634,6 +693,33 @@ mod tests {
         let enter = update(&mut same, Message::SaveAddress(Address::Tiles), &data);
         assert!(matches!(enter, Action::None), "unchanged: {enter:?}");
         assert!(matches!(update(&mut State::default(), Message::SaveAddress(Address::Tiles), &data), Action::None));
+    }
+
+    /// Issue #355: the switch "Look up contact addresses" sets only `contactLookup`, "Clear" clears the
+    /// stored map data, and the line under the switch names the service the addresses go to.
+    #[test]
+    fn looking_up_contact_addresses_and_clearing_map_data() {
+        let data = Data::default();
+        let set = |message| sent(update(&mut State::default(), message, &data));
+        assert_eq!(set(Message::ContactLookup(true)), (SettingKey::Maps, serde_json::json!({"contactLookup": true})));
+        assert_eq!(set(Message::ContactLookup(false)), (SettingKey::Maps, serde_json::json!({"contactLookup": false})));
+        let clear = update(&mut State::default(), Message::ClearMaps, &data);
+        assert!(matches!(clear, Action::Send(Request::ClearMapsCache)), "{clear:?}");
+        assert_eq!(service_host(Maps::PHOTON), "photon.komoot.io");
+        assert_eq!(service_host("http://photon.local:2322/api"), "photon.local:2322");
+        let on = Maps { enabled: true, contact_lookup: true, ..Maps::default() };
+        let status = torro_ipc::MapsStatus { tile_bytes: 13_002_342, contact_places: 38 };
+        drop(maps(&State::default(), &on, Some(status)));
+        drop(maps(&State::default(), &Maps::default(), None));
+        // "Clearing…" until the numbers change; nothing to clear, nothing to press.
+        let mut state = State::default();
+        let shown = Data { maps_status: Some(status), ..Data::default() };
+        let _ = update(&mut state, Message::ClearMaps, &shown);
+        assert!(state.clearing);
+        drop(clear_button(Some(status), state.clearing));
+        assert!(answered(&mut state) && !state.clearing, "the answer ends it, done or refused");
+        assert!(!answered(&mut state));
+        drop(clear_button(Some(torro_ipc::MapsStatus::default()), false));
     }
 
     /// Task TE.10: moving on to the other field or another control of the group saves the address

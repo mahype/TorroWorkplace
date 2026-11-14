@@ -735,6 +735,10 @@ const STAYS_HERE: &[&str] = &[
     "contacts.mark_used",
     // Suggestions read only the address books and the mail kept on this device (issue #460).
     "contacts.suggest_recipients",
+    // A client only reads the places kept on this device; only the contacts app makes the core look up
+    // (issue #355), and the map data is counted here.
+    "contacts.locate_contact",
+    "settings.maps_status",
     "calendar.list_reminders",
     "calendar.snooze_reminder",
     "calendar.dismiss_reminder",

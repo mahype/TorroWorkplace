@@ -308,7 +308,10 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::MarkContactUsed { id: contact }
         | Request::SetContactPhoto { id: contact, .. }
         | Request::DeleteContact { id: contact, .. }
-        | Request::ResolveContactConflict { id: contact, .. } => vec![format!("item:{}", hashed(contact))],
+        | Request::ResolveContactConflict { id: contact, .. }
+        // Where an address is (issue #355): the contact hashed, never the address or the point.
+        | Request::LocateContact { id: contact, .. }
+        | Request::OpenContactInMaps { id: contact, .. } => vec![format!("item:{}", hashed(contact))],
         Request::MoveContact { id: contact, to_book, .. } => {
             vec![format!("item:{}", hashed(contact)), collection(to_book)]
         }
@@ -546,6 +549,8 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::ListEngines | Request::ListConversations => Vec::new(),
         // Voice (task C.9): no ids, never what was said.
         Request::VoiceStatus | Request::TestVoice => Vec::new(),
+        // Map data (issue #355): no ids.
+        Request::MapsStatus | Request::ClearMapsCache => Vec::new(),
         // A chat about a mail (issue #605): the account and the mail hashed as for its suggestions.
         Request::SendMessage { conversation, engine, bot, about, .. } => conversation
             .iter()

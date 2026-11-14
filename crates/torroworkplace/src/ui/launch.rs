@@ -780,6 +780,8 @@ pub fn demo_data() -> Data {
         extensions: super::connections::Listing::Entries(demo_extensions()),
         catalog: super::connections::Listing::Entries(demo_catalog()),
         search_providers: demo_search_providers(),
+        // Issue #355: fixed numbers, as the plan's picture shows them.
+        maps_status: Some(torro_ipc::MapsStatus { tile_bytes: 13_002_342, contact_places: 38 }),
         app_catalog: super::apps::Loaded {
             catalog: super::apps::Catalog::Listed(Box::new(super::apps::demo_catalog(now))),
             job: None,
@@ -1386,6 +1388,9 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
         // Voice (task C.9): every program found but Piper's voice, two microphones; the test hears
         // a sentence. Nothing records.
         Request::VoiceStatus => Some(Response::Voice { voice: demo_voice() }),
+        // Map data (issue #355): the demo keeps its numbers, clearing changes nothing.
+        Request::MapsStatus => Some(Response::MapsStatus { status: data.maps_status.unwrap_or_default() }),
+        Request::ClearMapsCache => Some(Response::Ok),
         Request::TestVoice => Some(Response::Transcript { text: "What is on my calendar today?".into() }),
         // MCP servers (task MA.8): installing, allowing, switching and updating answer with the
         // server as the demo has it (or the catalog entry as just installed); nothing changes.

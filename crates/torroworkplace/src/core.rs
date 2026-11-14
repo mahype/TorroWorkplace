@@ -327,6 +327,21 @@ fn open_in_browser(url: &str) -> Result<(), String> {
     webbrowser::open(url).map_err(|err| err.to_string())
 }
 
+/// Opens a link of "Open in Maps" for `contacts.open_in_maps` (issue #355), as the calendar does
+/// ([`torro_core::maps::maps_link`] builds it): a `geo:` link with the program Linux has for it
+/// (`xdg-open`, started and not waited for: it may run the maps app in the foreground, and the core
+/// must not hold a worker until it closes), anything else in the browser.
+fn open_map_link(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if url.starts_with("geo:") {
+        let mut child = std::process::Command::new("xdg-open").arg(url).spawn().map_err(|err| err.to_string())?;
+        // Reaped on a thread of its own, so the long-running core keeps no zombie.
+        std::thread::spawn(move || child.wait());
+        return Ok(());
+    }
+    webbrowser::open(url).map_err(|err| err.to_string())
+}
+
 /// What tests open instead of a browser: nothing, so no test starts one by accident.
 fn no_browser(_url: &str) -> Result<(), String> {
     Err("no browser in tests".into())
@@ -2817,6 +2832,9 @@ pub struct Core {
     open_app_accounts: fn(AppId) -> AppOpening,
     /// Opens a web page for `inbox.open_item` ([`open_in_browser`]); tests record it instead.
     open_url: fn(&str) -> Result<(), String>,
+    /// Opens an address in the maps app for `contacts.open_in_maps` ([`open_map_link`], issue #355);
+    /// tests record it instead.
+    open_map: fn(&str) -> Result<(), String>,
     /// Tells a remote source that one of its entries is done (task E5.2,
     /// [`crate::sources::settle_done`]); tests record it instead.
     settle_done: fn(&Sources, &torro_inbox::Item),
@@ -2992,6 +3010,7 @@ impl Core {
             installed: if cfg!(test) { main_app_only } else { installed_now },
             open_app_accounts,
             open_url: if cfg!(test) { no_browser } else { open_in_browser },
+            open_map: if cfg!(test) { no_browser } else { open_map_link },
             settle_done: crate::sources::settle_done,
             mail_discovery: OnceLock::new(),
             make_mail_discoverer: if cfg!(test) { offline_mail_discoverer } else { system_mail_discoverer },
@@ -4718,6 +4737,12 @@ impl Core {
         {
             return Ok(refused);
         }
+        // Nor opening an address the contact does not have (issue #355).
+        if let Request::OpenContactInMaps { id, address } = &request
+            && let Err(err) = self.contacts.address_spot(id, *address)
+        {
+            return Ok(crate::contacts::service::error_response(&err));
+        }
         // Nor a move of a category or into a group that is not there (issue #481).
         if let Request::MoveCategory { category, group, position } = &request
             && let Err(refused) = self.inbox.plan_category_move(*category, *group, *position)
@@ -4731,6 +4756,9 @@ impl Core {
         // A change of a file that exists too (issue #705): its old text is gone after it, so the person sees the
         // change as the core worked it out, whatever the client's rights say.
         let trashes = matches!(request, Request::TrashFile { .. } | Request::EditFile { .. });
+        // Opening an address in a maps app always asks too (issue #355, decision 5): it starts a program
+        // on the person's screen and sends the address to Google, Apple or OpenStreetMap.
+        let opens_maps = matches!(request, Request::OpenContactInMaps { .. });
         // A note kept on this computer was written after the assistant read mail (task C.10), and
         // any note after the conversation read data from outside the suite (task C.11): what a
         // mail, an agent's entry or an issue says must never become a lasting part of the
@@ -4741,6 +4769,7 @@ impl Core {
         // `needs_approval_of`: sending mail also waits as `Rights::outbound` says (task M2.1).
         if question
             || trashes
+            || opens_maps
             || from_mail
             || matches!(request, Request::RunWorkflow { .. })
             || rights.needs_approval_of(operation)
@@ -5520,6 +5549,14 @@ impl Core {
                     facts.tasks = titles;
                     fingerprint = Some((pinned, crate::approvals::details(&request, &facts)));
                 }
+                // An address opens in maps only as it was when the person allowed it (issue #355): pinned
+                // to a hash of its line and point. The details say which address goes to which app.
+                if let Request::OpenContactInMaps { id, address } = &request
+                    && let Ok(spot) = self.contacts.address_spot(id, *address)
+                {
+                    let app = torro_core::maps::on_this_system(self.settings.current().maps.open_with);
+                    fingerprint = Some((spot.pin(app), crate::approvals::maps_details(&spot.address, app)));
+                }
                 // What a target shows (task E8.7a): the subject or title the core holds, looked up
                 // as the client may see it – for a file of the tools (task WZ.8) the register's title.
                 if let Request::OpenApp { app, target: Some(target) } = &request {
@@ -5768,7 +5805,8 @@ impl Core {
             | Request::SetContactPhoto { .. }
             | Request::MoveContact { .. }
             | Request::DeleteContact { .. }
-            | Request::ResolveContactConflict { .. }) => {
+            | Request::ResolveContactConflict { .. }
+            | Request::OpenContactInMaps { .. }) => {
                 Facts { contact: self.contacts.facts(request).map(Box::new), ..Facts::default() }
             }
             // A conversation's name and kind and the message a command is about, from the chat
@@ -5970,6 +6008,11 @@ impl Core {
         let reach = Reach::Client(rights);
         if let Some(outside) = self.out_of_reach(reach, &request).await {
             return not_reached(&request, &outside);
+        }
+        // The address the person allowed, else `conflict` (issue #355); an approval without a
+        // fingerprint matches none.
+        if let Request::OpenContactInMaps { id, address } = &request {
+            return self.open_contact_in_maps(id, *address, Some(fingerprint.unwrap_or_default()));
         }
         // Today's focus plan runs only as the person was shown it (issue #596).
         if let Request::PostponeFocusPlan = request
@@ -6725,6 +6768,8 @@ impl Core {
             }
             Request::VoiceStatus => self.voice_status().await,
             Request::TestVoice => self.test_voice().await,
+            Request::MapsStatus => self.maps_status(reach),
+            Request::ClearMapsCache => self.clear_maps_cache(reach),
             Request::SetCollectionShown { collection, shown } => self.set_collection_shown(&collection, shown).await,
             Request::ListDesigns => Response::Designs { designs: self.list_designs() },
             Request::ListFonts => Response::Fonts { fonts: self.list_fonts().await },
@@ -7204,6 +7249,9 @@ impl Core {
             | Request::MoveContact { .. }
             | Request::DeleteContact { .. }
             | Request::ResolveContactConflict { .. }
+            // The place of an address (issue #355): with the settings and the place search of the core.
+            | Request::LocateContact { .. }
+            | Request::OpenContactInMaps { .. }
             // Recipient suggestions (issue #460): contacts and the mail of the accounts `reach` may read.
             | Request::SuggestRecipients { .. }) => self.contacts_request(request, reach).await,
             // Chat and presence (`docs/chat.md`, issue #643); a client's reach was checked before
@@ -10108,6 +10156,12 @@ impl Core {
                 Request::SuggestRecipients { query, limit, contacts_only } => {
                     self.suggest_ranked(&query, limit, contacts_only, reach).await
                 }
+                Request::LocateContact { id, address } => self.locate_contact(&id, address, reach).await,
+                // A client's approval came with its fingerprint (`Core::run_approved`); here only the app.
+                Request::OpenContactInMaps { id, address } => match reach {
+                    Reach::Suite => self.open_contact_in_maps(&id, address, None),
+                    Reach::Client(_) => Refused::NeedsApproval { command: "contacts.open_in_maps" }.response(),
+                },
                 other => self.contacts.handle(other, reach).await,
             }
         })
@@ -12959,6 +13013,115 @@ impl Core {
             }
             _ => Response::Error { code: "error".into(), message: "not a place request".into() },
         }
+    }
+
+    /// `contacts.locate_contact` (issue #355), in this order: an address the contact does not have is
+    /// `not-found`; the first address with the vCard's `GEO` is there; a place kept on this device is
+    /// there; an address kept as not found less than [`torro_ipc::contacts::LOOKUP_RETRY_DAYS`] days
+    /// ago is `not_found`; with maps or the lookup of contact addresses off `no_consent`; a client
+    /// gets `not_looked_up` (it never makes the core look up, decision 3); an empty address is
+    /// `not_found` without asking; else the person's lookup asks the place search
+    /// ([`crate::places::Places::lookup`], at most [`torro_ipc::contacts::MAX_LOOKUP_CHARS`]
+    /// characters) and keeps what it says. `busy`, `offline` and `error` come back as they are,
+    /// with nothing kept. No answer and no message repeats the address or the point.
+    async fn locate_contact(&self, id: &str, index: usize, reach: Reach<'_>) -> Response {
+        use torro_ipc::contacts::{ContactLocation, LOOKUP_RETRY_DAYS, LocationSource, MAX_LOOKUP_CHARS};
+        let located = |location| Response::ContactLocation { location };
+        let found =
+            |lat, lon, source| located(ContactLocation::Found { geo: torro_pim::model::Geo { lat, lon }, source });
+        let spot = match self.contacts.address_spot(id, index) {
+            Ok(spot) => spot,
+            Err(err) => return crate::contacts::service::error_response(&err),
+        };
+        if let Some(geo) = spot.geo {
+            return found(geo.lat, geo.lon, LocationSource::Vcard);
+        }
+        let now = Utc::now().timestamp();
+        match self.contacts.kept_place(&spot) {
+            Ok(Some(kept)) => match kept.point {
+                Some((lat, lon)) => return found(lat, lon, LocationSource::Lookup),
+                None if now - kept.at < LOOKUP_RETRY_DAYS * 24 * 60 * 60 => return located(ContactLocation::NotFound),
+                None => {}
+            },
+            Ok(None) => {}
+            Err(err) => return crate::contacts::service::error_response(&err),
+        }
+        let maps = self.settings.current().maps;
+        if !(maps.enabled && maps.contact_lookup) {
+            return located(ContactLocation::NoConsent);
+        }
+        if let Reach::Client(_) = reach {
+            return located(ContactLocation::NotLookedUp);
+        }
+        let line = spot.address.one_line().split_whitespace().collect::<Vec<_>>().join(" ");
+        if line.is_empty() {
+            return located(ContactLocation::NotFound);
+        }
+        let line: String = line.chars().take(MAX_LOOKUP_CHARS).collect();
+        match self.places.lookup(&maps, &line).await {
+            Ok(point) => {
+                let point = point.map(|geo| (geo.lat, geo.lon));
+                // Not kept (the store says why on stderr): the answer is still right, the next opening
+                // asks again.
+                let _ = self.contacts.keep_place(&spot, point, now);
+                match point {
+                    Some((lat, lon)) => found(lat, lon, LocationSource::Lookup),
+                    None => located(ContactLocation::NotFound),
+                }
+            }
+            Err(failure) => failure,
+        }
+    }
+
+    /// `contacts.open_in_maps` (issue #355): the address number `index` of the contact `id` in the
+    /// maps app of the settings, at the point of `GEO` or the one kept, else as a search
+    /// ([`torro_core::maps::maps_link`]). With `approved` (a client's approval, `Core::run_approved`)
+    /// only when the address is still the one the person allowed ([`crate::contacts::store::line_key`]),
+    /// else `conflict` and nothing opens. No message repeats the address.
+    fn open_contact_in_maps(&self, id: &str, index: usize, approved: Option<&str>) -> Response {
+        let spot = match self.contacts.address_spot(id, index) {
+            Ok(spot) => spot,
+            Err(err) => return crate::contacts::service::error_response(&err),
+        };
+        let app = torro_core::maps::on_this_system(self.settings.current().maps.open_with);
+        if approved.is_some_and(|pin| pin != spot.pin(app)) {
+            let message = "the address changed after the approval was asked for; nothing was opened";
+            return refusal("conflict", message.into());
+        }
+        let point = match spot.geo {
+            Some(geo) => Some((geo.lat, geo.lon)),
+            None => self.contacts.kept_place(&spot).ok().flatten().and_then(|kept| kept.point),
+        };
+        let link = torro_core::maps::link_for(app, &spot.address.one_line(), point);
+        match (self.open_map)(&link) {
+            Ok(()) => Response::Ok,
+            Err(_) => refusal("error", tr("The maps app could not be opened.").into()),
+        }
+    }
+
+    /// `settings.maps_status` (issue #355): the bytes of the map tiles and the places kept of
+    /// addresses `reach` sees. Without contacts on this device none are kept.
+    fn maps_status(&self, reach: Reach<'_>) -> Response {
+        let contact_places = match self.contacts.store() {
+            Ok(_) => match self.contacts.place_count(reach) {
+                Ok(count) => count,
+                Err(err) => return crate::contacts::service::error_response(&err),
+            },
+            Err(_) => 0,
+        };
+        Response::MapsStatus { status: torro_ipc::MapsStatus { tile_bytes: self.places.tile_bytes(), contact_places } }
+    }
+
+    /// `settings.clear_maps_cache` (issue #355): every map tile, and the places kept of addresses
+    /// `reach` sees.
+    fn clear_maps_cache(&self, reach: Reach<'_>) -> Response {
+        self.places.clear_tiles();
+        if self.contacts.store().is_ok()
+            && let Err(err) = self.contacts.clear_places(reach)
+        {
+            return crate::contacts::service::error_response(&err);
+        }
+        Response::Ok
     }
 
     /// The earlier places for `query` ([`crate::places::recent_places`]) among the events of the
@@ -34494,6 +34657,222 @@ mod tests {
         assert_eq!(line.ids, [format!("account:{}", anna.id)]);
         let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("the log");
         assert!(!log.contains("\"jo\"") && !log.contains("bob\"") && !log.contains("posteo"), "no search, no person");
+    }
+
+    /// The links a test core opened instead of a maps app (issue #355).
+    static OPENED_MAPS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    fn record_map(url: &str) -> Result<(), String> {
+        OPENED_MAPS.lock().expect("lock").push(url.to_string());
+        Ok(())
+    }
+
+    /// Issue #355: where the address of a contact is. The vCard's `GEO` and kept places need no
+    /// service; only the person with both switches on makes the core look up, once per address
+    /// (and an address not found stays quiet for 30 days); a client reads what is kept, never more,
+    /// and never of a book outside its rights; opening in maps always waits for the person and only
+    /// for the address they saw; clearing as a client leaves other books' places.
+    #[test]
+    fn contact_addresses_are_located_only_for_the_person_and_kept() {
+        let worker = std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+            runtime.block_on(contact_addresses_are_located());
+        });
+        worker.expect("thread").join().expect("the test ran through");
+    }
+
+    async fn contact_addresses_are_located() {
+        use torro_ipc::contacts::{ContactLocation, LocationSource};
+        let service = httpmock::MockServer::start_async().await;
+        let hafen = service
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/api").query_param_includes("q", "Hafenstr");
+                then.status(200).body(
+                    r#"{"features":[{"geometry":{"coordinates":[9.9672,53.5458]},"properties":{"name":"Hafenstraße 4"}}]}"#,
+                );
+            })
+            .await;
+        let nowhere = service
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/api").query_param_includes("q", "Nowhere");
+                then.status(200).body(r#"{"features":[]}"#);
+            })
+            .await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let books = Arc::new(crate::contacts::sync::fake::Server::default());
+        let work = books.add_book("contacts", true, false);
+        let private = books.add_book("privat", true, false);
+        books.put_card(
+            &work,
+            "anna",
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:anna\r\nFN:Anna Berg\r\nGEO:geo:52.52,13.40\r\n\
+             ADR;TYPE=HOME:;;Example Street 1;Berlin;;10115;\r\n\
+             ADR;TYPE=WORK:;;Hafenstraße 4;Hamburg;;20359;\r\nEND:VCARD\r\n",
+        );
+        books.put_card(
+            &work,
+            "ben",
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:ben\r\nFN:Ben Koch\r\nADR;TYPE=HOME:;;Nowhere 1;Atlantis;;;\r\nEND:VCARD\r\n",
+        );
+        books.put_card(
+            &work,
+            "carl",
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:carl\r\nFN:Carl\r\nADR;TYPE=HOME:;;Lindenweg 3;Bonn;;;\r\nEND:VCARD\r\n",
+        );
+        books.put_card(
+            &private,
+            "secret",
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:secret\r\nFN:Secret\r\nADR;TYPE=HOME:;;Hafenstraße 4;Hamburg;;;\r\nEND:VCARD\r\n",
+        );
+        let account = "nextcloud:anna@cloud.example.org";
+        let contacts =
+            crate::contacts::ContactsService::in_dir(&dir.path().join("contacts"), vec![(account.into(), books)]);
+        contacts.sync_all().await;
+        let core = Core { open_map: record_map, ..core(dir.path()) }.with_contacts(contacts);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.address_books = Selection::Only(vec![format!("{account}/contacts")]);
+        let (_, key) = client(&core, rights.clone()).await;
+        let id = |uid: &str| format!("{account}/contacts/{uid}");
+        let secret = format!("{account}/privat/secret");
+        let locate = |id: &str, address: usize| Request::LocateContact { id: id.into(), address };
+        let location = |response: Response| match response {
+            Response::ContactLocation { location } => location,
+            other => panic!("a location, got {other:?}"),
+        };
+        let at = |lat, lon, source| ContactLocation::Found { geo: torro_pim::model::Geo { lat, lon }, source };
+        let calls = || async { hafen.calls_async().await + nowhere.calls_async().await };
+
+        // The contact's own coordinates, for its first address only, also with maps off.
+        let vcard = at(52.52, 13.40, LocationSource::Vcard);
+        assert_eq!(location(core.handle(locate(&id("anna"), 0)).await), vcard);
+        assert_eq!(location(ask(&core, Some(&key), locate(&id("anna"), 0)).await), vcard);
+        assert_eq!(location(core.handle(locate(&id("anna"), 1)).await), ContactLocation::NoConsent);
+        let maps_only = serde_json::json!({"enabled": true, "geocoder": service.base_url()});
+        assert_eq!(core.handle(Request::SetSetting { key: SettingKey::Maps, value: maps_only }).await, Response::Ok);
+        assert_eq!(location(core.handle(locate(&id("anna"), 1)).await), ContactLocation::NoConsent, "maps alone");
+        assert_eq!(calls().await, 0, "nothing asked without consent");
+        let lookup = serde_json::json!({"contactLookup": true});
+        assert_eq!(core.handle(Request::SetSetting { key: SettingKey::Maps, value: lookup }).await, Response::Ok);
+
+        // A client never makes the core look up; the person does, once.
+        assert_eq!(location(ask(&core, Some(&key), locate(&id("anna"), 1)).await), ContactLocation::NotLookedUp);
+        assert_eq!(calls().await, 0, "a client asks nothing");
+        let hamburg = at(53.5458, 9.9672, LocationSource::Lookup);
+        assert_eq!(location(core.handle(locate(&id("anna"), 1)).await), hamburg);
+        assert_eq!(location(core.handle(locate(&id("anna"), 1)).await), hamburg, "kept");
+        assert_eq!(location(ask(&core, Some(&key), locate(&id("anna"), 1)).await), hamburg, "and read by the client");
+        assert_eq!(hafen.calls_async().await, 1);
+
+        // Not found: quiet for 30 days.
+        assert_eq!(location(core.handle(locate(&id("ben"), 0)).await), ContactLocation::NotFound);
+        assert_eq!(location(core.handle(locate(&id("ben"), 0)).await), ContactLocation::NotFound);
+        assert_eq!(nowhere.calls_async().await, 1, "not asked again");
+
+        // Outside the client's books, or an address the contact does not have: `not-found`.
+        assert_eq!(code(&ask(&core, Some(&key), locate(&secret, 0)).await), "not-found");
+        assert_eq!(code(&ask(&core, Some(&key), locate(&id("anna"), 5)).await), "not-found");
+        assert_eq!(location(core.handle(locate(&secret, 0)).await), at(53.5458, 9.9672, LocationSource::Lookup));
+
+        // Counted per book; a client clears only the places of its books, and every tile.
+        let status = |response: Response| match response {
+            Response::MapsStatus { status } => status.contact_places,
+            other => panic!("a status, got {other:?}"),
+        };
+        assert_eq!(status(core.handle(Request::MapsStatus).await), 3);
+        assert_eq!(status(ask(&core, Some(&key), Request::MapsStatus).await), 2);
+        assert_eq!(core.clear_maps_cache(Reach::Client(&rights)), Response::Ok);
+        assert_eq!(status(core.handle(Request::MapsStatus).await), 1, "the private book's place stays");
+
+        // A new address is looked up anew, also within 30 days.
+        let Response::Contact { contact: ben } = core.handle(Request::GetContact { id: id("ben") }).await else {
+            panic!("ben")
+        };
+        let moved = torro_contacts::ContactFields {
+            addresses: Some(vec![torro_contacts::Labeled::new(
+                torro_contacts::PostalAddress {
+                    street: "Hafenstraße 4".into(),
+                    locality: "Hamburg".into(),
+                    ..torro_contacts::PostalAddress::default()
+                },
+                torro_contacts::FieldKind::Home,
+            )]),
+            ..torro_contacts::ContactFields::default()
+        };
+        let update =
+            Request::UpdateContact { id: id("ben"), etag: ben.etag.clone().unwrap_or_default(), fields: moved };
+        assert!(matches!(core.handle(update).await, Response::Contact { .. }));
+        assert_eq!(location(core.handle(locate(&id("ben"), 0)).await), hamburg);
+
+        // Opening in maps: the app at once, a client only after the person allowed that address.
+        OPENED_MAPS.lock().expect("lock").clear();
+        assert_eq!(core.handle(Request::OpenContactInMaps { id: id("ben"), address: 0 }).await, Response::Ok);
+        let opened = OPENED_MAPS.lock().expect("lock").clone();
+        assert_eq!(opened, ["https://www.openstreetmap.org/?mlat=53.5458&mlon=9.9672#map=17/53.5458/9.9672"]);
+        let nowhere = Request::OpenContactInMaps { id: id("carl"), address: 9 };
+        assert_eq!(code(&ask(&core, Some(&key), nowhere).await), "not-found", "nobody asked about no address");
+        let open = || Request::OpenContactInMaps { id: id("carl"), address: 0 };
+        let pending = waits(ask(&core, Some(&key), open()).await);
+        assert!(pending.summary.contains("Carl"), "{}", pending.summary);
+        let details = pending.details.join("\n");
+        assert!(details.contains("Lindenweg 3") && details.contains("OpenStreetMap"), "{details}");
+        assert_eq!(OPENED_MAPS.lock().expect("lock").len(), 1, "nothing opens before the person allows it");
+        let done = approval(ask(&core, Some(&app_key), decide(&pending.id, true)).await);
+        assert!(
+            matches!(&done.state, torro_ipc::ApprovalState::Done { response } if **response == Response::Ok),
+            "{:?}",
+            done.state
+        );
+        let searched = OPENED_MAPS.lock().expect("lock").last().cloned().unwrap_or_default();
+        assert!(searched.starts_with("https://www.openstreetmap.org/search?query=Lindenweg"), "{searched}");
+        let pending = waits(ask(&core, Some(&key), open()).await);
+        let Response::Contact { contact: carl } = core.handle(Request::GetContact { id: id("carl") }).await else {
+            panic!("carl")
+        };
+        let elsewhere = torro_contacts::ContactFields {
+            addresses: Some(vec![torro_contacts::Labeled::new(
+                torro_contacts::PostalAddress { street: "Neuweg 1".into(), ..torro_contacts::PostalAddress::default() },
+                torro_contacts::FieldKind::Home,
+            )]),
+            ..torro_contacts::ContactFields::default()
+        };
+        let update =
+            Request::UpdateContact { id: id("carl"), etag: carl.etag.clone().unwrap_or_default(), fields: elsewhere };
+        assert!(matches!(core.handle(update).await, Response::Contact { .. }));
+        let done = approval(ask(&core, Some(&app_key), decide(&pending.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = &done.state else { panic!("done: {:?}", done.state) };
+        assert_eq!(code(response), "conflict", "the address changed after the person allowed it");
+        assert_eq!(OPENED_MAPS.lock().expect("lock").len(), 2, "nothing more opened");
+
+        // A service that cannot be reached: `offline`, nothing kept, and no message names the address.
+        let unreachable = serde_json::json!({"geocoder": "http://127.0.0.1:9"});
+        assert_eq!(core.handle(Request::SetSetting { key: SettingKey::Maps, value: unreachable }).await, Response::Ok);
+        let answer = core.handle(locate(&id("carl"), 0)).await;
+        assert_eq!(code(&answer), "offline");
+        let Response::Error { message, .. } = answer else { panic!("an error") };
+        assert!(!message.contains("Neuweg"), "{message}");
+        assert_eq!(status(core.handle(Request::MapsStatus).await), 2, "secret and ben; carl not kept");
+
+        // A lookup that ends after the address changed keeps nothing (the change removed its places).
+        let spot = core.contacts.address_spot(&id("ben"), 0).expect("ben's address");
+        let Response::Contact { contact: ben } = core.handle(Request::GetContact { id: id("ben") }).await else {
+            panic!("ben")
+        };
+        let gone =
+            torro_contacts::ContactFields { addresses: Some(Vec::new()), ..torro_contacts::ContactFields::default() };
+        let update = Request::UpdateContact { id: id("ben"), etag: ben.etag.clone().unwrap_or_default(), fields: gone };
+        assert!(matches!(core.handle(update).await, Response::Contact { .. }));
+        core.contacts.keep_place(&spot, Some((1.0, 2.0)), 0).expect("kept or not");
+        assert_eq!(status(core.handle(Request::MapsStatus).await), 1, "only secret's place");
+
+        // Without read access to contacts a client counts and clears no place.
+        let mut blind = rights.clone();
+        blind.address_books = Selection::All;
+        blind.areas.remove(&Area::Contacts);
+        assert_eq!(core.clear_maps_cache(Reach::Client(&blind)), Response::Ok);
+        let Response::MapsStatus { status: seen } = core.maps_status(Reach::Client(&blind)) else { panic!("status") };
+        assert_eq!(seen.contact_places, 0);
+        assert_eq!(status(core.handle(Request::MapsStatus).await), 1, "nothing cleared");
     }
 
     /// Issue #351: a client sees contacts only in the address books of its rights – by list, search

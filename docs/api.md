@@ -1079,6 +1079,14 @@ Die eigenen Adressen der Konten kommen nie vor. Ins Protokoll kommt je gelesenem
 Suchtext. Alle Felder sind `untrusted`. Mit `contacts_only` kommt nichts aus Mails; der Assistent setzt es, wenn Mail im
 Gespräch ausgeschaltet ist (bis #664 auch für ein Modell anderswo ohne `mail_to_cloud`), damit auch die Auswahl der
 Kontakte nicht verrät, wem der Mensch oft schreibt.
+**Orte von Adressen** (Issue #355): `contacts.locate_contact` ist `Read` und liest für Clients nur `GEO` und die auf
+dem Rechner gemerkten Orte (sonst `not_looked_up`); im Netz sucht der Kern nur für die App, wenn der Mensch den Kontakt
+öffnet, und nur mit Karten und „Look up contact addresses“ an. Gemerkte Orte bleiben nach dem Ausschalten lesbar
+(es geht dabei nichts hinaus), bis „Clear“ sie löscht. `contacts.open_in_maps` ist `Write` und wartet für Clients
+immer auf eine Freigabe, die Adresse und Karten-App zeigt und an Adresse und `GEO` gebunden ist (geändert:
+`conflict`; eine Adresse, die es nicht gibt, ist `not-found` ohne Freigabe). `settings.maps_status` (`Read`) und
+`settings.clear_maps_cache` (`Admin`) zählen bzw. löschen Kacheln und Orte, für Clients nur Orte ihrer Bücher. Das Bild
+kommt wie im Kalender von `calendar.map_preview`.
 
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
 keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als
@@ -1267,6 +1275,13 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    Schlüssel im Schlüsselbund. Solange Karten aus sind, antworten `calendar.search_places` und `calendar.map_preview`
    `unsupported`, ohne einen Dienst zu fragen (Tests `only_people_turn_maps_on_or_name_their_services` in `torro-ipc`
    und `only_people_turn_maps_on_and_agents_may_turn_them_off` im Kern).
+
+   Ebenso **Ortssuche für Kontakte einschalten** (Issue #355): Dabei gehen Adressen anderer Menschen an den
+   Suchdienst. `maps` mit `contactLookup` ungleich `false` bekommt von jedem Client `forbidden`, ein
+   `update_settings` schaltet sie für Clients nie ein. Ausschalten (`{"contactLookup": false}`, Freigabe „Turn off
+   address lookup for contacts“) ist eine gewöhnliche Admin-Änderung (Tests
+   `only_people_turn_maps_on_or_name_their_services` in `torro-ipc` und
+   `looking_up_contact_addresses_is_off_and_only_a_person_turns_it_on` in `torro-core`).
 
    Ebenso **ein Modell anschalten, das anderswo rechnet** (#231, Aufgabe S.24, `ai.set_model_enabled` mit
    `enabled: true`): Ollamas Cloud-Modelle, OpenRouter, Anthropic und Server im Netz. Jeder Client bekommt

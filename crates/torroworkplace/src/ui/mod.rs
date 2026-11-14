@@ -296,6 +296,9 @@ pub struct Data {
     /// The app catalog (`apps.list_catalog`, issue #411) and the job that runs, loaded apart from
     /// the rest ([`load_app_catalog`]): the core reads what is installed for it each time.
     pub app_catalog: apps::Loaded,
+    /// How much map data this device keeps (`settings.maps_status`, issue #355); asked only while
+    /// General is open, since it counts the tiles on disk.
+    pub maps_status: Option<torro_ipc::MapsStatus>,
     /// Why the last load failed (daemon not running, …).
     pub error: Option<String>,
 }
@@ -480,6 +483,9 @@ pub struct Ui {
     /// When the app catalog last came ([`Message::AppCatalog`]): outside its section it is asked for
     /// once a minute, for the sidebar's count of updates.
     catalog_at: Option<Instant>,
+    /// The stored map data is to be asked for with the next reload (issue #355): when General opens and
+    /// after "Clear", not with every tick, since the core counts the tiles on disk for it.
+    maps_due: std::cell::Cell<bool>,
     /// The first-run setup while it is open (task W.4): it takes the window instead of the
     /// sections.
     setup: Option<setup::State>,
@@ -680,6 +686,8 @@ impl Ui {
             general: general::State::default(),
             apps: apps::State::default(),
             catalog_at: None,
+            // The first reload asks if the window opens on General (`ui --section general`).
+            maps_due: std::cell::Cell::new(true),
             setup: None,
             target: None,
         };
@@ -1262,12 +1270,13 @@ impl Ui {
             .as_ref()
             .filter(|setup| setup.step() == setup::Step::Ai)
             .map(|_| (self.data.ai_models_from.clone(), self.data.ai_models.clone()));
+        let maps = self.section == Section::General && self.maps_due.replace(false);
         let rest = match (self.launch.demo, self.section) {
             (true, _) => Task::none(),
-            (false, _) if self.on_documents() => Task::batch([load(true, None), load_catalog()]),
+            (false, _) if self.on_documents() => Task::batch([load(true, maps, None), load_catalog()]),
             // MCP servers shows the web search providers among the built-in tools (task MA.7 with WEB.6).
-            (false, Section::Connections) => Task::batch([load(true, ai_cache), load_catalog()]),
-            (false, _) => load(false, ai_cache),
+            (false, Section::Connections) => Task::batch([load(true, maps, ai_cache), load_catalog()]),
+            (false, _) => load(false, maps, ai_cache),
         };
         Task::batch([rest, self.reload_app_catalog()])
     }
@@ -1382,8 +1391,13 @@ impl Ui {
                     Section::Ai => accounts::act(accounts::ai_shown(&mut self.accounts, &self.data)),
                     // Which agent each hook client reports for (task S.35).
                     Section::Mcp => mcp::opened(),
-                    // The catalog is asked for only while the section is open (task MA.8).
+                    // The catalog is asked for only while the section is open (task MA.8), the stored map
+                    // data likewise (issue #355).
                     Section::Connections => Action::Reload,
+                    Section::General => {
+                        self.maps_due.set(true);
+                        Action::Reload
+                    }
                     // What is new on GitHub (issue #411, decision 2).
                     Section::Apps => apps::opened(&mut self.apps),
                     _ => Action::None,
@@ -1449,7 +1463,10 @@ impl Ui {
                 // The catalog comes apart from the rest ([`Message::Catalog`]): a reload keeps it.
                 let catalog = std::mem::take(&mut self.data.catalog);
                 let app_catalog = std::mem::take(&mut self.data.app_catalog);
+                // The stored map data is asked for only now and then ([`Ui::maps_due`]): a reload keeps it.
+                let maps_status = self.data.maps_status;
                 self.data = *data;
+                self.data.maps_status = self.data.maps_status.or(maps_status);
                 self.data.catalog = catalog;
                 self.data.app_catalog = app_catalog;
                 let mut providers = Task::none();
@@ -1537,6 +1554,11 @@ impl Ui {
                 let in_setup = self.setup.as_mut().is_some_and(|setup| setup::answered(setup, &result));
                 let in_dialog = in_setup || accounts::answered(&mut self.accounts, &result);
                 approvals::answered(&mut self.approvals);
+                // "Clear" of the stored map data answered, done or refused: the reload asks for the
+                // numbers as they are now (issue #355); a tick before the answer does not.
+                if general::answered(&mut self.general) {
+                    self.maps_due.set(true);
+                }
                 // "Create key", "Connect client" and the hook switch show their errors themselves,
                 // and may go on with a job. Each section takes only its own answers.
                 let next = [mcp::answered(&mut self.mcp, &result), api::answered(&mut self.api, &result)];
@@ -2592,8 +2614,9 @@ fn keys(event: iced::Event, status: iced::event::Status, _window: iced::window::
 /// The account ids behind a cached list of models suitable for mail categorization.
 type MailDeciderCache = (Vec<String>, Vec<(String, torro_core::ai::AiModel)>);
 
-/// Loads everything the pages show; the search providers only `with_providers` (MCP servers is open).
-fn load(with_providers: bool, ai_cache: Option<MailDeciderCache>) -> Task<Message> {
+/// Loads everything the pages show; the search providers only `with_providers` (MCP servers is open),
+/// the stored map data only `with_maps` (General is open).
+fn load(with_providers: bool, with_maps: bool, ai_cache: Option<MailDeciderCache>) -> Task<Message> {
     // How long the core took to answer, with `TORRO_TIMING` (issue #206).
     let started = Instant::now();
     Task::perform(
@@ -2695,6 +2718,10 @@ fn load(with_providers: bool, ai_cache: Option<MailDeciderCache>) -> Task<Messag
                     client::call(&socket, &Request::ListSearchProviders).await
             {
                 data.search_providers = providers;
+            }
+            if with_maps && let Ok(Response::MapsStatus { status }) = client::call(&socket, &Request::MapsStatus).await
+            {
+                data.maps_status = Some(status);
             }
             data
         },
@@ -3243,7 +3270,8 @@ mod tests {
         let mut real = ui(Section::Overview);
         assert!(suite::unlisted(&real.general.suite));
         assert!(real.update(Message::Select(Section::Appearance)).units() > 0, "opening the page asks the core");
-        assert!(real.update(Message::Select(Section::General)).units() == 0, "General no longer shows them");
+        // General no longer shows the looks, but asks for the stored map data (issue #355).
+        assert!(real.update(Message::Select(Section::General)).units() > 0, "General asks for the map data");
         assert!(real.update(Message::Select(Section::Workspaces)).units() == 0, "other pages do not");
         assert!(real.update(Message::Select(Section::Accounts)).units() > 0, "Accounts asks for TorroMail's accounts");
     }

@@ -6,6 +6,10 @@
 //! Links open only with the schemes [`SAFE_SCHEMES`] (`docs/kontakte.md`, "Sicherheit"): everything in
 //! a contact is text of other people, so any other link stays plain text.
 //!
+//! Under each address stands a small map ([`AddressMap`], issue #355): the picture with its pin, a
+//! click on it or ↗ opens the maps app; or, where there is no map, one quiet line saying why with
+//! "Open in Maps" beside it. The core looks the address up; the window only asks.
+//!
 //! The marks of the contact stand above its fields: "Read-only address book" (and no "Edit"), "Saved on
 //! this device, not yet on the server", and for a conflict "Changed elsewhere" with both versions
 //! ([`crate::edit::conflict`]).
@@ -88,6 +92,24 @@ pub fn open_uri(uri: &str) -> Result<(), String> {
     Command::new(program).arg(uri).spawn().map(|_| ()).map_err(|_| tr("The link could not be opened.").to_owned())
 }
 
+/// The map under one address of the open contact (issue #355), in the order the plan's picture
+/// names them.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AddressMap {
+    /// Asking the core, or the picture of a place found is on its way: "Finding address…".
+    Finding,
+    /// Found: the picture.
+    Shown(Handle),
+    /// The place search found no place: "Address not found on the map".
+    NotFound,
+    /// The lookup of contact addresses is off (maps are on): "Address lookup is off", "Turn on ›".
+    LookupOff,
+    /// Maps are off: "Maps are off", "Turn on ›".
+    MapsOff,
+    /// The service is busy or cannot be reached: "The map is not available right now."
+    Unavailable,
+}
+
 /// What the panel shows besides the contact.
 pub struct Look<'a> {
     pub picture: Option<&'a Handle>,
@@ -100,6 +122,8 @@ pub struct Look<'a> {
     pub busy: bool,
     /// Why the last change failed, as one line.
     pub error: Option<&'a str>,
+    /// The map under each address, by its place in `addresses`; an address without one shows none.
+    pub maps: &'a [AddressMap],
 }
 
 /// The panel's title: the picture, the name and under it position · company.
@@ -218,11 +242,13 @@ pub fn body<'a>(contact: &'a Contact, look: Look<'a>) -> Element<'a, Message> {
     let values = |values: &'a [Labeled<String>], link: fn(&str) -> Option<String>| -> Vec<Element<'a, Message>> {
         values.iter().map(|value| field_line(kind_word(&value.kind), &value.value, link(&value.value))).collect()
     };
-    let addresses: Vec<Element<'a, Message>> = contact
-        .addresses
-        .iter()
-        .map(|address| field_line(kind_word(&address.kind), &address.value.one_line(), None))
-        .collect();
+    let mut addresses: Vec<Element<'a, Message>> = Vec::new();
+    for (index, address) in contact.addresses.iter().enumerate() {
+        addresses.push(field_line(kind_word(&address.kind), &address.value.one_line(), None));
+        if let Some(map) = look.maps.get(index) {
+            addresses.push(torro_gui::panel::inset(address_map(map, index, look.colours.text)));
+        }
+    }
     let mut dates = Vec::new();
     if let Some(birthday) = contact.birthday {
         dates.push(field_line(tr("Birthday").to_owned(), &date_words(birthday, look.today), None));
@@ -249,6 +275,41 @@ pub fn body<'a>(contact: &'a Contact, look: Look<'a>) -> Element<'a, Message> {
     }
     parts = parts.push(widgets::prop_section(tr("Groups"), vec![groups(contact, &look)]));
     parts.into()
+}
+
+/// The map under the address number `index` ([`AddressMap`]): the picture with its pin in `pin`, a
+/// click on it or ↗ opens the maps app; while it is being found, its empty frame with "Finding
+/// address…". Else one line built the same in every state: why there is no map in `meta`/`text_3` on
+/// the axis of the labels (wrapping), and at the right edge the actions – "Turn on ›" for a switch
+/// that is off (Settings › General of the control centre) and ↗ "Open in Maps" (the maps app finds
+/// the address as text).
+pub fn address_map(map: &AddressMap, index: usize, pin: iced::Color) -> Element<'_, Message> {
+    let open = Message::OpenInMaps(index);
+    let (words, turn_on) = match map {
+        AddressMap::Shown(picture) => {
+            let credit = Message::OpenUri(torro_gui::map::OSM_COPYRIGHT.to_owned());
+            return torro_gui::map::map_view(picture, pin, open.clone(), credit, Some(open));
+        }
+        AddressMap::Finding => return torro_gui::map::map_placeholder(tr("Finding address…"), open),
+        AddressMap::NotFound => (tr("Address not found on the map"), false),
+        AddressMap::Unavailable => (tr("The map is not available right now."), false),
+        AddressMap::LookupOff => (tr("Address lookup is off"), true),
+        AddressMap::MapsOff => (tr("Maps are off"), true),
+    };
+    let words = container(typo::text(typo::meta(), words).style(theme::text_3).wrapping(Wrapping::WordOrGlyph))
+        .width(Fill)
+        .align_y(Alignment::Center);
+    let mut line = row![words].spacing(space::s()).align_y(Alignment::Center);
+    if turn_on {
+        line = line.push(widgets::text_button_trailing(
+            tr("Turn on"),
+            Icon::ChevronRight,
+            style::button::ghost,
+            Some(Message::OpenMapSettings),
+        ));
+    }
+    let open = widgets::text_button(Some(Icon::ArrowUpRight), tr("Open in Maps"), style::button::ghost, Some(open));
+    line.push(open).into()
 }
 
 /// A value of a field: its kind as the label, the value – wrapping, so a long address or date reads

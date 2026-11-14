@@ -1431,7 +1431,10 @@ impl PimService {
             | Request::PinConversation { .. }
             | Request::OpenChatWindow { .. }
             | Request::VoiceStatus
-            | Request::TestVoice => return None,
+            | Request::TestVoice
+            // Map data (issue #355): tiles are the suite's, places are checked by address book.
+            | Request::MapsStatus
+            | Request::ClearMapsCache => return None,
             // No collection: the assistant's profile and memory are its own (task C.10).
             Request::GetProfile
             | Request::UpdateProfile { .. }
@@ -1487,7 +1490,9 @@ impl PimService {
             | Request::SetContactPhoto { .. }
             | Request::MoveContact { .. }
             | Request::DeleteContact { .. }
-            | Request::ResolveContactConflict { .. } => return None,
+            | Request::ResolveContactConflict { .. }
+            | Request::LocateContact { .. }
+            | Request::OpenContactInMaps { .. } => return None,
             // No collection: the chat and presence services check their accounts themselves
             // (`docs/chat.md`, issue #643).
             Request::ChatListConversations { .. }

@@ -1957,6 +1957,11 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         {
             tr("Turn off maps and place search").to_string()
         }
+        Request::SetSetting { key: torro_ipc::SettingKey::Maps, value }
+            if *value == serde_json::json!({"contactLookup": false}) =>
+        {
+            tr("Turn off address lookup for contacts").to_string()
+        }
         // Issue #484: a design as the level the core really stores – `compact` and `console` are
         // `dense` – so the person sees what will be set; an id that is no level stays as sent (the core
         // refuses it).
@@ -2234,7 +2239,10 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         | Request::SetContactPhoto { .. }
         | Request::MoveContact { .. }
         | Request::DeleteContact { .. }
-        | Request::ResolveContactConflict { .. }) => contact_summary(request, facts.contact.as_deref()),
+        | Request::ResolveContactConflict { .. }
+        | Request::OpenContactInMaps { .. }) => contact_summary(request, facts.contact.as_deref()),
+        // Issue #355: every map tile, and the kept places of the address books the client sees.
+        Request::ClearMapsCache => tr("Clear stored map tiles and contact places").to_string(),
         request if matches!(request.operation().area(), Area::Chat | Area::Presence) => {
             chat_summary(request, facts.chat.as_deref())
         }
@@ -2632,6 +2640,7 @@ fn contact_summary(request: &Request, facts: Option<&ContactFacts>) -> String {
             trf("Take {name} out of the group \"{group}\"", &[("name", &name), ("group", &quote(group))])
         }
         Request::MarkContactUsed { .. } => trf("Note {name} as used", &[("name", &name)]),
+        Request::OpenContactInMaps { .. } => trf("Open the address of {name} in Maps", &[("name", &name)]),
         Request::SetContactPhoto { data: Some(_), .. } => trf("{name}: photo replaced", &[("name", &name)]),
         Request::SetContactPhoto { data: None, .. } => trf("{name}: photo removed", &[("name", &name)]),
         Request::MoveContact { .. } => trf(
@@ -3451,6 +3460,22 @@ fn whole(text: &str) -> Vec<String> {
         }
     }
     pieces
+}
+
+/// The lines under the approval of `contacts.open_in_maps` (issue #355): the address as the store
+/// holds it and the app it goes to, so the person sees what leaves the computer.
+pub fn maps_details(address: &torro_contacts::PostalAddress, app: torro_core::settings::MapsApp) -> Vec<String> {
+    use torro_core::settings::MapsApp;
+    let app = match app {
+        MapsApp::Osm => "OpenStreetMap",
+        MapsApp::Google => "Google Maps",
+        MapsApp::Apple => "Apple Maps",
+        MapsApp::Geo => tr("the program for geo: links"),
+    };
+    vec![
+        trf("Address: \"{address}\"", &[("address", &quote(&address.one_line()))]),
+        trf("Opens with {app}", &[("app", &app)]),
+    ]
 }
 
 /// The fingerprint of the stored note a `assistant.forget` or a `remember` with `replaces` was
@@ -6377,6 +6402,29 @@ pub(crate) mod tests {
         let text = "Unsubscribe {account} from {sender}: nothing is sent, only the address {target} is given";
         assert_eq!(web, filled(text, "https://shop.example/u", None));
         assert_eq!(summary(&request, &Facts::default()), tr("Unsubscribe from an unknown mailing list"));
+    }
+
+    /// Issue #355: opening an address names the contact from the store, clearing map data says what goes,
+    /// and turning the lookup of contact addresses off is said plainly.
+    #[test]
+    fn maps_of_contacts_are_said_plainly() {
+        let open = Request::OpenContactInMaps { id: "a/b/c".into(), address: 0 };
+        let contact =
+            torro_contacts::Contact { display_name: "Anna Berg".into(), ..torro_contacts::Contact::default() };
+        let facts = Facts {
+            contact: Some(Box::new(ContactFacts { contact: Some(contact), ..ContactFacts::default() })),
+            ..Facts::default()
+        };
+        assert_eq!(summary(&open, &facts), trf("Open the address of {name} in Maps", &[("name", &"\"Anna Berg\"")]));
+        assert_eq!(
+            summary(&Request::ClearMapsCache, &Facts::default()),
+            tr("Clear stored map tiles and contact places")
+        );
+        let off = Request::SetSetting {
+            key: torro_ipc::SettingKey::Maps,
+            value: serde_json::json!({"contactLookup": false}),
+        };
+        assert_eq!(summary(&off, &Facts::default()), tr("Turn off address lookup for contacts"));
     }
 
     /// Issue #411: uninstalling names the app as the suite does, never the client's text.

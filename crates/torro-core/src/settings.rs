@@ -497,11 +497,12 @@ fn lenient_reminders<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Remin
 /// The map and the place search of the event editor (task TE.1, `docs/termin-editor.md` "Ort und
 /// Karte", `settings.set_setting maps`), as one object: `{"enabled": false, "geocoder":
 /// "https://photon.komoot.io", "geocoderKind": "photon", "tiles":
-/// "https://tile.openstreetmap.org/{z}/{x}/{y}.png", "openWith": "osm"}`.
+/// "https://tile.openstreetmap.org/{z}/{x}/{y}.png", "openWith": "osm", "contactLookup": false}`.
 ///
 /// Off until a person turns it on: the search sends what was typed, and the map the coordinates,
-/// with the computer's IP address to services of others. Turning it on and changing either address
-/// is the person's alone (point 6 of "Was nie nach außen geht", `docs/api.md`). Addresses with a
+/// with the computer's IP address to services of others. Turning it on, turning on the lookup of
+/// contact addresses (issue #355) and changing either address is the person's alone (point 6 of
+/// "Was nie nach außen geht", `docs/api.md`). Addresses with a
 /// query (`?key=…`) or a sign-in (`user:pass@`) are refused ([`Maps::check_changes`]): services
 /// that need a key of their own come later, with the key in the keyring, never in the settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -521,6 +522,10 @@ pub struct Maps {
     /// What "Open in Maps" opens: `osm` (openstreetmap.org, the default), `google`, `apple` (macOS
     /// only) or `geo` (the `geo:` link, for the program the system has for it).
     pub open_with: MapsApp,
+    /// The addresses of contacts are looked up on the place search service to show them on a map
+    /// (issue #355, `contacts.locate_contact`): the address of a contact the person opens goes to
+    /// that service. Off unless a person turned it on; it counts only while maps are on.
+    pub contact_lookup: bool,
 }
 
 /// The protocol of a place search service ([`Maps::geocoder_kind`]).
@@ -558,6 +563,7 @@ impl Default for Maps {
             geocoder_kind: GeocoderKind::Photon,
             tiles: Maps::OSM_TILES.into(),
             open_with: MapsApp::Osm,
+            contact_lookup: false,
         }
     }
 }
@@ -625,8 +631,9 @@ impl Maps {
     }
 
     /// The settings a client may write when it sends `sent` whole (`settings.update_settings`), these
-    /// being the stored ones: on only when on now and in `sent`, both addresses as stored, the rest
-    /// as sent. Left out (`sent` unnamed), everything stays as stored.
+    /// being the stored ones: on only when on now and in `sent` (maps and the lookup of contact
+    /// addresses alike), both addresses as stored, the rest as sent. Left out (`sent` unnamed),
+    /// everything stays as stored.
     pub fn from_client(&self, sent: &Maps) -> Maps {
         if sent.is_unnamed() {
             return self.clone();
@@ -637,14 +644,19 @@ impl Maps {
             tiles: self.tiles.clone(),
             geocoder_kind: sent.geocoder_kind,
             open_with: sent.open_with,
+            contact_lookup: self.contact_lookup && sent.contact_lookup,
         }
     }
 
     /// Whether writing `sent` whole over these stored settings is a person's alone: it turns maps
-    /// on, or changes an address. Left out (`sent` unnamed), it changes nothing.
+    /// or the lookup of contact addresses on, or changes an address. Left out (`sent` unnamed), it
+    /// changes nothing.
     pub fn needs_a_person(&self, sent: &Maps) -> bool {
         !sent.is_unnamed()
-            && ((sent.enabled && !self.enabled) || sent.geocoder != self.geocoder || sent.tiles != self.tiles)
+            && ((sent.enabled && !self.enabled)
+                || (sent.contact_lookup && !self.contact_lookup)
+                || sent.geocoder != self.geocoder
+                || sent.tiles != self.tiles)
     }
 }
 
@@ -3571,6 +3583,21 @@ mod tests {
         let was_off = Maps { enabled: false, ..stored.clone() };
         assert!(was_off.needs_a_person(&stored), "turning on");
         assert!(!was_off.from_client(&stored).enabled, "a client turns nothing on");
+    }
+
+    #[test]
+    fn looking_up_contact_addresses_is_off_and_only_a_person_turns_it_on() {
+        assert!(!Maps::default().contact_lookup);
+        assert_eq!(Maps::default().to_value()["contactLookup"], false);
+        let stored = Maps { enabled: true, ..Maps::default() };
+        let on = stored.merged(&serde_json::json!({"contactLookup": true})).expect("valid");
+        assert!(on.contact_lookup && on.enabled);
+        assert!(stored.merged(&serde_json::json!({"contactLookup": "yes"})).is_err());
+        assert!(stored.needs_a_person(&on), "turning the lookup on");
+        assert!(!stored.from_client(&on).contact_lookup, "a client turns nothing on");
+        assert!(!on.needs_a_person(&stored), "turning it off is anyone's");
+        assert!(!on.from_client(&stored).contact_lookup);
+        assert!(on.from_client(&on).contact_lookup, "kept when on and sent on");
     }
 
     /// An absolute path on this system, for the tests of folders and logos.
