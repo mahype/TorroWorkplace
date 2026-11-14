@@ -396,3 +396,58 @@ async fn a_picture_chosen_for_another_contact_is_not_set() {
     assert!(app.detail.as_ref().is_some_and(|d| !d.busy), "nothing sent");
     assert!(app.notice.is_some());
 }
+
+/// Issue #355: opening a contact starts its maps once per version: maps off says so for every
+/// address, a place found asks for its picture, an older answer is dropped, errors say "not
+/// available", and the `--open map-…` states set the map without asking.
+#[tokio::test]
+async fn the_maps_of_an_open_contact_follow_its_version() {
+    use torro_ipc::contacts::{ContactLocation, Geo, LocationSource};
+    let mut app = loaded(&["--demo"]).await;
+    let _ = opened(&mut app, "demo-01").await;
+    let detail = app.detail.as_ref().expect("open");
+    assert_eq!(detail.maps, [AddressMap::Finding], "one address, asked");
+    let key = detail.maps_of.clone().expect("for this version");
+    assert!(key.ends_with("|\"demo-0\""), "{key}");
+
+    let _ = app.update(Message::MapSettings(key.clone(), backend::Shown::default()));
+    assert_eq!(app.detail.as_ref().expect("open").maps, [AddressMap::MapsOff]);
+
+    let found = ContactLocation::Found { geo: Geo { lat: 52.5, lon: 13.4 }, source: LocationSource::Lookup };
+    let _ = app.update(Message::Located(key.clone(), 0, Ok(found)));
+    assert_eq!(app.detail.as_ref().expect("open").maps, [AddressMap::Finding], "its picture is asked for");
+    let picture = torro_gui::map::demo_map(&Theme::Light);
+    let _ = app.update(Message::MapPicture(key.clone(), 0, Some(picture.clone())));
+    assert_eq!(app.detail.as_ref().expect("open").maps, [AddressMap::Shown(picture)]);
+    let _ = app.update(Message::MapPicture("other|\"1\"".into(), 0, None));
+    assert!(matches!(app.detail.as_ref().expect("open").maps[0], AddressMap::Shown(_)), "another version's answer");
+    let _ = app.update(Message::MapPicture(key.clone(), 0, None));
+    assert_eq!(app.detail.as_ref().expect("open").maps, [AddressMap::Unavailable]);
+    for (answer, map) in [
+        (Ok(ContactLocation::NoConsent), AddressMap::LookupOff),
+        (Ok(ContactLocation::NotFound), AddressMap::NotFound),
+        (Err("busy".to_string()), AddressMap::Unavailable),
+    ] {
+        let _ = app.update(Message::Located(key.clone(), 0, answer));
+        assert_eq!(app.detail.as_ref().expect("open").maps, [map]);
+    }
+    let _ = app.update(Message::Located(key.clone(), 7, Ok(ContactLocation::NotFound)));
+
+    // The same version asks nothing again; another contact starts afresh.
+    let _ = app.update(Message::Refetch);
+    assert_eq!(app.detail.as_ref().expect("open").maps_of.as_deref(), Some(key.as_str()));
+    let _ = opened(&mut app, "demo-02").await;
+    assert_eq!(app.detail.as_ref().expect("open").maps, [AddressMap::Finding]);
+
+    for (state, map) in [
+        ("map-off", AddressMap::MapsOff),
+        ("map-lookup-off", AddressMap::LookupOff),
+        ("map-finding", AddressMap::Finding),
+        ("map-not-found", AddressMap::NotFound),
+    ] {
+        let mut app = loaded(&["--demo", "--open", state]).await;
+        let _ = opened(&mut app, "demo-01").await;
+        assert_eq!(app.detail.as_ref().expect("open").maps, [map], "{state}");
+    }
+    let _ = contact::address_map(&AddressMap::LookupOff, 0, iced::Color::BLACK);
+}

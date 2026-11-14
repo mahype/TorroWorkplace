@@ -3,8 +3,10 @@
 //!
 //! The window reads and changes nothing itself (`CLAUDE.md`, "Jede Funktion dreimal"): every action is
 //! a command of the API area `contacts` through [`ContactsSource`], which both sides speak. Besides
-//! them the window asks the core one thing, whether the hidden address books are to be shown
-//! ([`Backend::show_hidden`], `settings.get_settings`).
+//! them the window asks the core what it reads of the settings ([`Backend::settings`],
+//! `settings.get_settings`: the hidden address books, maps and the lookup of contact addresses) and,
+//! for the map under an address (issue #355), `contacts.locate_contact`, `calendar.map_preview` and
+//! `contacts.open_in_maps` ([`Backend::locate`], [`Backend::map`], [`Backend::open_in_maps`]).
 //!
 //! [`load`] is what the window shows: the books, every contact of them (all pages), the birthdays of
 //! the coming year and the contacts used last.
@@ -16,8 +18,9 @@ use torro_contacts::{
     AddressBook, Birthday, Contact, ContactFields, ContactPage, ContactQuery, ContactSummary, ContactsError,
     ContactsSource, Group, Keep, Moved, PhotoSize,
 };
-use torro_ipc::contacts::{ContactsClient, MAX_BIRTHDAY_DAYS};
-use torro_ipc::{Request, Response};
+use torro_ipc::Request;
+use torro_ipc::Response;
+use torro_ipc::contacts::{ContactLocation, ContactsClient, Geo, LocationSource, MAX_BIRTHDAY_DAYS};
 
 /// How many contacts one page of `contacts.list_contacts` asks for: the most the core gives.
 pub const PAGE: u32 = 500;
@@ -44,16 +47,67 @@ impl Backend {
         matches!(self, Backend::Demo(_))
     }
 
-    /// Whether the person wants the hidden address books (Nextcloud's system address book, "Recently
-    /// contacted") in the app: `contacts_show_hidden_books` of the settings. The demo, and a core that
-    /// does not answer, say no.
-    pub async fn show_hidden(&self) -> bool {
-        let Backend::Core(client) = self else { return false };
+    /// What the window reads of the settings ([`Shown`]). A core that does not answer says no to
+    /// everything; the demo shows no hidden books and has maps and the lookup on.
+    pub async fn settings(&self) -> Shown {
+        let Backend::Core(client) = self else { return Shown { hidden_books: false, maps: true, lookup: true } };
         match torro_ipc::client::call(&client.socket, &Request::Settings).await {
-            Ok(Response::Settings { settings }) => settings.contacts_show_hidden_books,
-            _ => false,
+            Ok(Response::Settings { settings }) => Shown {
+                hidden_books: settings.contacts_show_hidden_books,
+                maps: settings.maps.enabled,
+                lookup: settings.maps.contact_lookup,
+            },
+            _ => Shown::default(),
         }
     }
+
+    /// Where the address number `address` of the contact `id` is (`contacts.locate_contact`, issue
+    /// #355); the error is the core's code (`busy`, `offline`, `not-found` …). The demo looks nothing
+    /// up: the first address is at the contact's `GEO`, the others are not found.
+    pub async fn locate(&self, id: String, address: usize) -> Result<ContactLocation, String> {
+        match self {
+            Backend::Core(client) => client.locate(id, address).await,
+            Backend::Demo(demo) => {
+                let contact = demo.get_contact(id).await.map_err(|_| "not-found".to_string())?;
+                Ok(match contact.geo.filter(|_| address == 0) {
+                    Some(geo) => ContactLocation::Found {
+                        geo: Geo { lat: geo.lat, lon: geo.lon },
+                        source: LocationSource::Vcard,
+                    },
+                    None => ContactLocation::NotFound,
+                })
+            }
+        }
+    }
+
+    /// The map around `geo` as PNG (`calendar.map_preview`, [`torro_gui::map::MAP_WIDTH`] ×
+    /// [`torro_gui::map::MAP_HEIGHT`], `dark` as the window is drawn); `None` when it cannot be had,
+    /// and always in the demo, which draws its sketch instead.
+    pub async fn map(&self, geo: Geo, dark: bool) -> Option<Vec<u8>> {
+        let Backend::Core(client) = self else { return None };
+        client.map(geo, torro_gui::map::MAP_WIDTH, torro_gui::map::MAP_HEIGHT, dark).await
+    }
+
+    /// Opens the address number `address` of the contact `id` in the maps app of the settings
+    /// (`contacts.open_in_maps`); the error is the core's message. The demo opens nothing.
+    pub async fn open_in_maps(&self, id: String, address: usize) -> Result<(), String> {
+        match self {
+            Backend::Core(client) => client.open_in_maps(id, address).await,
+            Backend::Demo(_) => Ok(()),
+        }
+    }
+}
+
+/// What the window reads of the settings (`settings.get_settings`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Shown {
+    /// The person wants the hidden address books (Nextcloud's system address book, "Recently
+    /// contacted") in the app: `contacts_show_hidden_books`.
+    pub hidden_books: bool,
+    /// Maps and place search are on (`maps.enabled`).
+    pub maps: bool,
+    /// The lookup of contact addresses is on (`maps.contactLookup`, issue #355).
+    pub lookup: bool,
 }
 
 /// Every call goes to the side the backend stands for.
@@ -210,7 +264,7 @@ pub async fn all_pages(backend: &Backend, mut query: ContactQuery) -> Result<Vec
 /// ([`AddressBook::hidden_by_default`]) come along, with their contacts, only when the settings say so.
 /// Birthdays and the recent list are extras: when they fail, the list still shows.
 pub async fn load(backend: Backend) -> Result<Loaded, ContactsError> {
-    let show_hidden = backend.show_hidden().await;
+    let show_hidden = backend.settings().await.hidden_books;
     let mut books = backend.address_books(None).await?;
     books.retain(|book| show_hidden || !book.hidden_by_default);
     let shown = |book: &str| books.iter().any(|known| known.id == book);
@@ -266,7 +320,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_demo_shows_no_hidden_books() {
-        assert!(!demo_backend().show_hidden().await);
+    async fn the_demo_shows_no_hidden_books_and_has_maps() {
+        assert_eq!(demo_backend().settings().await, Shown { hidden_books: false, maps: true, lookup: true });
+    }
+
+    /// Issue #355: the demo places the first address at the contact's `GEO`, opens nothing and has no
+    /// picture of its own (the window draws its sketch).
+    #[tokio::test]
+    async fn the_demo_locates_the_first_address_by_its_geo() {
+        let backend = demo_backend();
+        let first = all_pages(&backend, ContactQuery::default()).await.expect("all")[0].id.clone();
+        let located = backend.locate(first.clone(), 0).await.expect("located");
+        assert!(matches!(located, ContactLocation::Found { source: LocationSource::Vcard, .. }), "{located:?}");
+        assert_eq!(backend.locate(first.clone(), 1).await, Ok(ContactLocation::NotFound));
+        assert_eq!(backend.locate("nowhere".into(), 0).await, Err("not-found".to_string()));
+        assert_eq!(backend.map(Geo { lat: 1.0, lon: 2.0 }, false).await, None);
+        assert_eq!(backend.open_in_maps(first, 0).await, Ok(()));
     }
 }

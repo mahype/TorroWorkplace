@@ -12,7 +12,10 @@ use torro_contacts::{
     Keep, Moved, PhotoSize,
 };
 
-use crate::{Geo, Request, Response};
+use crate::{Request, Response};
+
+/// The point of a [`ContactLocation`], the same as the calendar's (`calendar.map_preview` takes it).
+pub use torro_pim::model::Geo;
 
 /// The most bytes of a picture `contacts.set_photo` takes, before Base64: 700 KB. The core takes no
 /// request over 1 MB, and Base64 makes a third more of it; an app scales larger pictures down
@@ -116,6 +119,36 @@ impl ContactsClient {
         match self.ask(request).await? {
             Response::Ok => Ok(()),
             other => Err(unexpected(other)),
+        }
+    }
+}
+
+/// The map of a contact's address (issue #355): besides [`ContactsSource`], which knows no maps.
+impl ContactsClient {
+    /// `contacts.locate_contact`; the error is the core's code (`busy`, `offline`, `not-found` …).
+    pub async fn locate(&self, id: String, address: usize) -> Result<ContactLocation, String> {
+        match crate::client::call(&self.socket, &Request::LocateContact { id, address }).await {
+            Ok(Response::ContactLocation { location }) => Ok(location),
+            Ok(Response::Error { code, .. }) => Err(code),
+            Ok(_) | Err(_) => Err("error".into()),
+        }
+    }
+
+    /// `calendar.map_preview` around `geo`, as the PNG's bytes; `None` when it cannot be had.
+    pub async fn map(&self, geo: Geo, width: u16, height: u16, dark: bool) -> Option<Vec<u8>> {
+        match crate::client::call(&self.socket, &Request::MapPreview { geo, width, height, dark }).await {
+            Ok(Response::Image { png }) => base64::engine::general_purpose::STANDARD.decode(png).ok(),
+            _ => None,
+        }
+    }
+
+    /// `contacts.open_in_maps`; the error is the core's message, or the failed call's.
+    pub async fn open_in_maps(&self, id: String, address: usize) -> Result<(), String> {
+        match crate::client::call(&self.socket, &Request::OpenContactInMaps { id, address }).await {
+            Ok(Response::Ok) => Ok(()),
+            Ok(Response::Error { message, .. }) => Err(message),
+            Ok(_) => Err("unexpected answer".into()),
+            Err(err) => Err(err.to_string()),
         }
     }
 }

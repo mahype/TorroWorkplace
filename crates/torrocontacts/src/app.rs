@@ -33,10 +33,10 @@ use torro_gui::theme::{self, Appearance};
 use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets;
 use torro_gui::zoom::{self, Zoom};
-use torro_ipc::contacts::MAX_PHOTO_BYTES;
+use torro_ipc::contacts::{ContactLocation, Geo, MAX_PHOTO_BYTES};
 
 use crate::backend::{self, Backend, Loaded};
-use crate::contact;
+use crate::contact::{self, AddressMap};
 use crate::edit::{self, Draft, List};
 use crate::launch::{Launch, Open};
 use crate::list::{GroupBy, Key};
@@ -130,6 +130,10 @@ pub struct Detail {
     pub busy: bool,
     /// Why the last change failed.
     pub error: Option<String>,
+    /// The map under each address of the contact (issue #355), by its place in `addresses`.
+    pub maps: Vec<AddressMap>,
+    /// The contact and version (`id|etag`) `maps` belong to: a new version asks again.
+    pub maps_of: Option<String>,
 }
 
 impl Detail {
@@ -143,6 +147,8 @@ impl Detail {
             known: None,
             busy: false,
             error: None,
+            maps: Vec::new(),
+            maps_of: None,
         }
     }
 }
@@ -247,6 +253,18 @@ pub enum Message {
     Resolved(String, Result<Vec<Contact>, ContactsError>),
     /// `contacts.mark_used` answered; nothing to show either way.
     Used,
+    /// The maps of the version `id|etag` of the open contact (issue #355): what the settings say.
+    MapSettings(String, backend::Shown),
+    /// Where its address number `usize` is (`contacts.locate_contact`), or the core's error code.
+    Located(String, usize, Result<ContactLocation, String>),
+    /// The picture of the map of its address number `usize`, `None` when it cannot be had.
+    MapPicture(String, usize, Option<Handle>),
+    /// "Open in Maps" of the address number `usize` of the open contact.
+    OpenInMaps(usize),
+    /// `contacts.open_in_maps` answered.
+    OpenedInMaps(Result<(), String>),
+    /// A line of a switch under an address: Settings › General of the control centre.
+    OpenMapSettings,
 
     // -- Editing
     Edit,
@@ -637,7 +655,14 @@ impl App {
         self.collapsed.get(&self.group_by).is_some_and(|words| words.contains(&key.word()))
     }
 
+    /// Handles `message`; then the maps of the open contact follow it ([`App::start_maps`]): a contact
+    /// opened, fetched or changed asks for them, whichever message brought it.
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.handle(message);
+        Task::batch([task, self.start_maps()])
+    }
+
+    fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::CoreReady => return self.load(),
             Message::Resized(size) => self.size = size,
@@ -878,6 +903,23 @@ impl App {
                 self.menu = None;
                 self.large = None;
             }
+            Message::MapSettings(key, shown) => return self.map_settings(&key, shown),
+            Message::Located(key, index, result) => return self.located(&key, index, result),
+            Message::MapPicture(key, index, picture) => {
+                let map = picture.map_or(AddressMap::Unavailable, AddressMap::Shown);
+                self.set_map(&key, index, map);
+            }
+            Message::OpenInMaps(index) => {
+                let Some(id) = self.detail.as_ref().and_then(|d| d.id.clone()) else { return Task::none() };
+                let backend = self.backend.clone();
+                return Task::batch([
+                    Task::perform(async move { backend.open_in_maps(id, index).await }, Message::OpenedInMaps),
+                    self.cursor.clone().map(|id| self.mark_used(id)).unwrap_or_else(Task::none),
+                ]);
+            }
+            Message::OpenedInMaps(Ok(())) => {}
+            Message::OpenedInMaps(Err(_)) => self.notify(tr("The maps app could not be opened.")),
+            Message::OpenMapSettings => torro_gui::connect::open_section("general"),
             Message::OpenUri(uri) => {
                 if let Err(err) = contact::open_uri(&uri) {
                     self.notify(err);
@@ -1116,6 +1158,8 @@ impl App {
                     known: None,
                     busy: false,
                     error: None,
+                    maps: Vec::new(),
+                    maps_of: None,
                 });
             }
             Message::NoteEdit(action) => {
@@ -1397,6 +1441,99 @@ impl App {
         }
     }
 
+    /// The maps of the open contact (issue #355, decision 3 of its plan): once per version (`id|etag`),
+    /// when it is open and has addresses. First what the settings say ([`Message::MapSettings`]),
+    /// then each address after the other ([`App::located`]), since the core looks up one at a time
+    /// (a second lookup within its second would be `busy`). `--open map-…` sets the state at once.
+    fn start_maps(&mut self) -> Task<Message> {
+        let forced = self.launch.open.and_then(Open::map_state);
+        let Some(detail) = &mut self.detail else { return Task::none() };
+        let Some(contact) = &detail.contact else { return Task::none() };
+        let key = format!("{}|{}", contact.id, contact.etag.as_deref().unwrap_or_default());
+        if detail.maps_of.as_deref() == Some(key.as_str()) {
+            return Task::none();
+        }
+        let count = contact.addresses.len();
+        detail.maps_of = Some(key.clone());
+        detail.maps = vec![forced.clone().unwrap_or(AddressMap::Finding); count];
+        if count == 0 || forced.is_some() {
+            return Task::none();
+        }
+        let backend = self.backend.clone();
+        Task::perform(async move { backend.settings().await }, move |shown| Message::MapSettings(key.clone(), shown))
+    }
+
+    /// The id of the open contact when `key` is still the version its maps are for.
+    fn maps_for(&self, key: &str) -> Option<String> {
+        let detail = self.detail.as_ref().filter(|d| d.maps_of.as_deref() == Some(key))?;
+        detail.contact.as_ref().map(|contact| contact.id.clone())
+    }
+
+    fn set_map(&mut self, key: &str, index: usize, map: AddressMap) {
+        if self.maps_for(key).is_none() {
+            return;
+        }
+        if let Some(slot) = self.detail.as_mut().and_then(|detail| detail.maps.get_mut(index)) {
+            *slot = map;
+        }
+    }
+
+    /// With maps off every address says so and nothing is asked; else the first address is located.
+    fn map_settings(&mut self, key: &str, shown: backend::Shown) -> Task<Message> {
+        if self.maps_for(key).is_none() {
+            return Task::none();
+        }
+        if !shown.maps {
+            if let Some(detail) = &mut self.detail {
+                detail.maps.iter_mut().for_each(|map| *map = AddressMap::MapsOff);
+            }
+            return Task::none();
+        }
+        self.locate(key, 0)
+    }
+
+    /// Asks where the address number `index` of the open contact is.
+    fn locate(&self, key: &str, index: usize) -> Task<Message> {
+        let Some(id) = self.maps_for(key) else { return Task::none() };
+        let backend = self.backend.clone();
+        let key = key.to_owned();
+        Task::perform(async move { backend.locate(id, index).await }, move |result| {
+            Message::Located(key.clone(), index, result)
+        })
+    }
+
+    /// The state of the address number `index`, the picture for a place found, and the next address.
+    fn located(&mut self, key: &str, index: usize, result: Result<ContactLocation, String>) -> Task<Message> {
+        if self.maps_for(key).is_none() {
+            return Task::none();
+        }
+        let (map, picture) = match result {
+            Ok(ContactLocation::Found { geo, .. }) => (AddressMap::Finding, self.map_picture(key, index, geo)),
+            Ok(ContactLocation::NoConsent) => (AddressMap::LookupOff, Task::none()),
+            // Only a client gets it; the app is the person.
+            Ok(ContactLocation::NotFound | ContactLocation::NotLookedUp) => (AddressMap::NotFound, Task::none()),
+            Err(_) => (AddressMap::Unavailable, Task::none()),
+        };
+        self.set_map(key, index, map);
+        let more = self.detail.as_ref().is_some_and(|detail| index + 1 < detail.maps.len());
+        let next = if more { self.locate(key, index + 1) } else { Task::none() };
+        Task::batch([picture, next])
+    }
+
+    /// The picture of the map at `geo` in the darkness the window is drawn in; the demo draws its sketch.
+    fn map_picture(&self, key: &str, index: usize, geo: Geo) -> Task<Message> {
+        let theme = self.theme();
+        let key = key.to_owned();
+        if self.backend.is_demo() {
+            return Task::done(Message::MapPicture(key, index, Some(torro_gui::map::demo_map(&theme))));
+        }
+        let dark = theme.extended_palette().is_dark;
+        let backend = self.backend.clone();
+        Task::perform(async move { backend.map(geo, dark).await }, move |bytes| {
+            Message::MapPicture(key.clone(), index, bytes.as_deref().and_then(picture))
+        })
+    }
+
     /// Asks for the groups of `book` (`contacts.list_groups`), the suggestions of the group input; a
     /// failure leaves the suggestions to the groups of the loaded contacts.
     fn list_groups(&self, book: String) -> Task<Message> {
@@ -1602,7 +1739,11 @@ impl App {
             | Open::Readonly
             | Open::Pending
             | Open::Delete
-            | Open::Move => {}
+            | Open::Move
+            | Open::MapOff
+            | Open::MapLookupOff
+            | Open::MapFinding
+            | Open::MapNotFound => {}
         }
         if let Some(uid) = open.contact() {
             let suffix = format!("/{uid}");
