@@ -332,7 +332,7 @@ pub fn drop_results(dir: &Path, id: &str, seqs: &BTreeSet<u64>) -> io::Result<()
             kept.extend_from_slice(line);
         }
     }
-    let temp = dir.join(format!("{id}.{EXTENSION}.tmp"));
+    let temp = temp_file(dir, id);
     let written = write_new(&temp, &kept).and_then(|()| fs::rename(&temp, &path));
     if written.is_err() {
         // What is left of it is of no use; the old file still holds everything.
@@ -362,12 +362,21 @@ fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
     file.sync_all()
 }
 
-/// Removes the file of conversation `id` from `dir`; one that is not there is fine.
+/// Removes the file of conversation `id` from `dir`, and what a crash in [`drop_results`] left beside it (a copy
+/// of the conversation, review of #714); one that is not there is fine.
 pub fn remove(dir: &Path, id: &str) -> io::Result<()> {
-    match fs::remove_file(file(dir, id)) {
-        Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
-        _ => Ok(()),
+    for path in [file(dir, id), temp_file(dir, id)] {
+        match fs::remove_file(path) {
+            Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err),
+            _ => {}
+        }
     }
+    Ok(())
+}
+
+/// Where [`drop_results`] writes the file of conversation `id` anew before renaming it.
+fn temp_file(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.{EXTENSION}.tmp"))
 }
 
 #[cfg(test)]
@@ -434,7 +443,11 @@ mod tests {
             assert_eq!(mode(&path), 0o600);
         }
 
+        // A copy a crash left while writing the file anew goes with it (review of #714).
+        let temp = temp_file(&folder, &conversation.id);
+        fs::write(&temp, "{}").expect("a copy left behind");
         remove(&folder, &conversation.id).expect("removed");
+        assert!(!temp.exists(), "the copy goes too");
         remove(&folder, &conversation.id).expect("removing again is fine");
         assert_eq!(load_all(&folder).expect("read"), Vec::new());
         assert_eq!(load_all(&dir.path().join("missing")).expect("no folder"), Vec::new());
@@ -555,7 +568,7 @@ mod tests {
         let text = fs::read_to_string(&path).expect("the file");
         assert!(!text.contains("the old mail"), "{text}");
         assert!(text.contains("{\"line\":\"from a newer core\"}\n"), "{text}");
-        assert!(!folder.join("0123456789abcdef.jsonl.tmp").exists(), "nothing left beside it");
+        assert!(!temp_file(&folder, &conversation.id).exists(), "nothing left beside it");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
