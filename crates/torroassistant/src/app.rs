@@ -592,6 +592,8 @@ pub struct App {
     pub(crate) voice: Option<VoiceStatus>,
     /// The microphone of the composer.
     pub(crate) dictation: Dictation,
+    /// How voice stands was asked once outside mini and strip.
+    voice_asked: bool,
 
     pub(crate) menu: Option<Menu>,
     pub(crate) dialog: Option<Dialog>,
@@ -688,6 +690,7 @@ impl App {
             take_without: true,
             sending: false,
             voice: None,
+            voice_asked: false,
             dictation: if open == Some(Open::Dictating) { Dictation::Recording } else { Dictation::Idle },
             menu: match open {
                 Some(Open::Picker | Open::Effort) => Some(Menu::Picker),
@@ -913,7 +916,13 @@ impl App {
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
             Message::Raise => return torro_gui::instance::bring_to_front(),
-            Message::Resized(size) => self.size = size,
+            Message::Resized(size) => {
+                self.size = size;
+                // A window that grows out of mini or strip gets its microphone (issue #699).
+                if !self.waiting && self.voice.is_none() && !self.voice_asked && !self.is_glance() {
+                    return self.load_voice();
+                }
+            }
             Message::CoreReady => {
                 self.waiting = false;
                 // The chat window's conversation too: it waited with the rest (issue #206).
@@ -1872,6 +1881,7 @@ impl App {
         if self.is_glance() {
             return Task::none();
         }
+        self.voice_asked = true;
         self.ask(Request::VoiceStatus, |result| {
             Message::Voice(result.and_then(|response| match response {
                 Response::Voice { voice } => Ok(voice),
@@ -1929,12 +1939,28 @@ impl App {
             }
             Ok(text) => {
                 // What stands right before the caret decides the space, not the end of the field.
-                let at = self.editor.cursor().position;
-                let before = self.editor.line(at.line).map(|line| line.text.into_owned()).unwrap_or_default();
-                let before =
-                    before.get(..at.column).map_or_else(|| before.chars().take(at.column).collect(), str::to_owned);
-                let spaced = before.chars().last().is_some_and(|c| !c.is_whitespace());
-                let text = if spaced { format!(" {}", text.trim()) } else { text.trim().to_owned() };
+                // The text around the caret – or around a selection, which the text replaces – decides
+                // the spaces: one in front after a word, one behind before a word.
+                let cursor = self.editor.cursor();
+                let (start, end) = match cursor.selection {
+                    Some(other) if (other.line, other.column) < (cursor.position.line, cursor.position.column) => {
+                        (other, cursor.position)
+                    }
+                    Some(other) => (cursor.position, other),
+                    None => (cursor.position, cursor.position),
+                };
+                let line = |at: usize| self.editor.line(at).map(|line| line.text.into_owned()).unwrap_or_default();
+                let (first, last) = (line(start.line), line(end.line));
+                let before = first.get(..start.column).and_then(|text| text.chars().last());
+                let after = last.get(end.column..).and_then(|text| text.chars().next());
+                let word = |c: Option<char>| c.is_some_and(|c| !c.is_whitespace());
+                let mut text = text.trim().to_owned();
+                if word(before) {
+                    text.insert(0, ' ');
+                }
+                if word(after) {
+                    text.push(' ');
+                }
                 self.editor.perform(text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new(text))));
                 operation::focus(EDITOR)
             }

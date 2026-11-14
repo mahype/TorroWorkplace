@@ -1631,7 +1631,11 @@ fn the_microphone_writes_into_the_field_without_sending() {
     let _ = app.update(Message::Edit(text_editor::Action::Move(text_editor::Motion::DocumentStart)));
     let _ = app.update(Message::Dictate);
     let _ = app.update(Message::Dictated(Ok("Please".into())));
-    assert!(app.editor.text().starts_with("PleaseNote:"), "{:?}", app.editor.text());
+    assert!(
+        app.editor.text().starts_with("Please Note: call Anna"),
+        "a space behind, before the word: {:?}",
+        app.editor.text()
+    );
 }
 
 /// Issue #699: nothing understood, speech recognition gone and other failures each say so; the
