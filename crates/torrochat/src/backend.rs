@@ -433,6 +433,23 @@ impl Backend {
         command.spawn().map(|_| ()).map_err(|err| err.to_string())
     }
 
+    /// Opens the player window of the video on the card of the message `message` (issue #673,
+    /// decision 25): this program once more with `--player=<message>`, with the demo and `appearance`
+    /// when this one runs on them. As with "Picture large" the core has no target for it; a second
+    /// start on the same video brings its window to the front.
+    pub fn open_player(&self, message: &str, appearance: Option<&'static str>) -> Result<(), String> {
+        let program = std::env::current_exe().map_err(|err| err.to_string())?;
+        let mut command = std::process::Command::new(program);
+        command.arg(format!("--player={message}"));
+        if self.is_demo() {
+            command.arg("--demo");
+            if let Some(appearance) = appearance {
+                command.arg("--appearance").arg(appearance);
+            }
+        }
+        command.spawn().map(|_| ()).map_err(|err| err.to_string())
+    }
+
     /// `apps.open_app` with the target `chat:<conversation>`: the core opens the conversation's chat
     /// window, or brings it to the front. The demo has no core: it starts this program once more on
     /// the conversation, with the demo, so the window can be tried.

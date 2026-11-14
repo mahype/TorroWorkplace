@@ -2,7 +2,7 @@
 //! `docs/prototypes/chat/`): a picture as its preview, a video as its preview with a play mark, a
 //! voice message with its play button, every other file – and every fallback without a preview –
 //! as a line with its kind, name, size and the buttons "Open", "Download" and "Open in Nextcloud";
-//! link cards under a message; the files chosen for sending and the progress above the composer;
+//! link cards under a message, a YouTube video as its video card (issue #673); the files chosen for sending and the progress above the composer;
 //! the drop zone over the window.
 //!
 //! A preview stands in the size of the picture from the first frame on (a calm placeholder until it
@@ -458,6 +458,9 @@ impl App {
         card: &'a LinkCard,
         room: f32,
     ) -> Element<'a, Message> {
+        if card.video.is_some() {
+            return self.video_card(chat, message, card, room);
+        }
         let width = room.min(size::props());
         let mut parts: Vec<Element<'a, Message>> = Vec::new();
         if card.image {
@@ -486,6 +489,55 @@ impl App {
             }
         });
         clickable(content.into(), wrap(FilesMsg::OpenLink(card.url.clone())), card.url.clone())
+    }
+
+    /// The card of a YouTube video (issue #673, decision 25): its picture in 16:9 with the play mark
+    /// (a calm placeholder without one), the title or "YouTube video" and the domain; a click plays it
+    /// in the player window (macOS, Windows) or opens it at YouTube (Linux). "Open on YouTube" under it
+    /// always opens the link in the browser.
+    fn video_card<'a>(
+        &'a self,
+        chat: &'a ChatState,
+        message: &'a ChatMessage,
+        card: &'a LinkCard,
+        room: f32,
+    ) -> Element<'a, Message> {
+        let width = room.min(size::props());
+        let height = width * 9.0 / 16.0;
+        let key: PictureKey = (message.id.clone(), None);
+        let shown = if card.image { chat.files.picture(&key) } else { None };
+        let corners = border::Radius { bottom_left: 0.0, bottom_right: 0.0, ..radius::sm().into() };
+        let frame = stack![picture(shown, Icon::Video, width, height, corners), container(play_mark()).center(Fill)]
+            .width(width)
+            .height(height);
+        let title = if card.title.trim().is_empty() { tr("YouTube video") } else { card.title.as_str() };
+        let words = column![
+            widgets::ellipsized(typo::body_strong(), title, theme::text),
+            row![
+                tinted(Icon::Link, icon::SIZE_SM, |p| p.text_3),
+                widgets::ellipsized(typo::meta(), card.domain.as_str(), theme::text_3)
+            ]
+            .spacing(space::xs())
+            .align_y(Alignment::Center),
+        ];
+        let content = column![frame, container(words).padding([space::s(), space::m()]).width(Fill)];
+        let content = container(content).width(width).clip(true).style(|t: &Theme| {
+            let p = palette(t);
+            container::Style {
+                background: Some(Background::Color(p.panel)),
+                border: border::rounded(radius::sm()).color(p.line_strong).width(HAIRLINE),
+                ..container::Style::default()
+            }
+        });
+        let tip = if system::plays_videos() { tr("Play video") } else { tr("Open on YouTube") };
+        let play = clickable(content.into(), wrap(FilesMsg::PlayVideo(message.id.clone())), tip.to_owned());
+        let open = widgets::text_button(
+            Some(Icon::ExternalLink),
+            tr("Open on YouTube"),
+            style::button::ghost,
+            Some(wrap(FilesMsg::OpenLink(card.url.clone()))),
+        );
+        column![play, open].spacing(space::xs()).into()
     }
 
     /// Above the composer: the files chosen for sending, or the sending under way. `None` when there
