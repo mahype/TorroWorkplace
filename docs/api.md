@@ -1264,6 +1264,14 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    `only_people_switch_a_search_provider_on` und `web_is_reached_only_when_named` in `torro-ipc`,
    `only_people_switch_search_providers_on_and_set_the_searxng_address` im Kern).
 
+   Ebenso **OpenAI als Vorleser wählen** (Issue #745, [assistent.md](assistent.md) „Vorlesen“): Dann geht der
+   Text jeder Antwort an OpenAI. `settings.set_setting` mit `speech_provider` `"openai"` bekommt von jedem Client
+   `forbidden`, auch mit Admin-Rechten; ein `settings.update_settings` eines Clients behält den gespeicherten Anbieter,
+   statt OpenAI zu wählen. Qwen3-TTS, Piper und `null` (die Wahl des Dienstes) sind gewöhnliche Admin-Änderungen.
+   `assistant.speak` selbst steht Clients mit den Rechten offen; es liest mit dem Anbieter, den ein Mensch gewählt hat
+   (Tests `only_people_send_what_is_read_aloud_to_openai` in `torro-ipc` und
+   `reading_aloud_is_set_and_a_client_never_chooses_openai` im Kern).
+
    Ebenso **Karten und Ortssuche einschalten** (Termin-Editor, Aufgabe TE.1, [termin-editor.md](termin-editor.md)):
    Die Suche schickt den getippten Ort mit der Sprache der Suite (bei Photon auch `near`), die Karte die Koordinaten,
    beide mit der IP-Adresse an fremde Dienste.
