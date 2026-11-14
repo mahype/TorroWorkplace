@@ -584,6 +584,8 @@ pub struct App {
     /// The core's hits for [`App::search`] (issue #704): `None` while there is no search through the
     /// history (fewer than [`SEARCH_FROM`] characters) or before its first answer.
     pub(crate) hits: Option<Result<Vec<ConversationHit>, Refusal>>,
+    /// The words [`App::hits`] answer: the sidebar shows them only while the field holds these words.
+    pub(crate) hits_for: String,
     /// The hit opened last (conversation, entry): its entry shows marked until another conversation is
     /// chosen or the search is cleared.
     pub(crate) marked: Option<(String, u64)>,
@@ -691,6 +693,7 @@ impl App {
             dialog: None,
             search: String::new(),
             hits: None,
+            hits_for: String::new(),
             marked: None,
             snap: None,
             hover: None,
@@ -1143,6 +1146,7 @@ impl App {
                         _ => None,
                     };
                     self.hits = Some(result);
+                    self.hits_for = query;
                     if let Some((id, seq)) = first {
                         return self.open_hit(id, seq);
                     }
@@ -1407,7 +1411,8 @@ impl App {
                 // `--open search` (issue #704): a word of the demo in the field.
                 let search = match self.launch.open == Some(Open::Search) && self.search.is_empty() {
                     true => self.search_for(demo::SEARCH_WORD.into()),
-                    false => Task::none(),
+                    // A search in the field asks again, so a deleted conversation leaves its hits.
+                    false => self.search_for(self.search.clone()),
                 };
                 return Task::batch([self.resolve_bot_window(), search]);
             }
@@ -1813,7 +1818,10 @@ impl App {
         self.marked = seq.map(|seq| (id.clone(), seq));
         self.snap = self.marked.clone();
         if self.current.as_ref() == Some(&id) && self.transcript.summary.is_some() {
+            // As a click on the conversation: the chat comes back in place of the settings or an editor.
             self.close_menus();
+            self.leave_settings();
+            self.bot_draft = None;
             // A newer entry than the window has comes with the next look; the scroll waits for it.
             return self.scroll_to_hit(&id).unwrap_or_else(|| self.follow());
         }

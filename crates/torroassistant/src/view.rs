@@ -383,7 +383,8 @@ impl App {
     /// The hits of the search through the history once the core answered for the words in the field
     /// (issue #704); `None` below [`SEARCH_FROM`] characters and before the first answer.
     fn history_search(&self) -> Option<&Result<Vec<ConversationHit>, crate::backend::Refusal>> {
-        (self.search.trim().chars().count() >= SEARCH_FROM).then_some(self.hits.as_ref()).flatten()
+        let query = self.search.trim();
+        (query.chars().count() >= SEARCH_FROM && self.hits_for == query).then_some(self.hits.as_ref()).flatten()
     }
 
     /// The rows of the search's hits: under "Results" one row per conversation with its title and the

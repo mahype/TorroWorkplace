@@ -1611,7 +1611,9 @@ fn the_search_asks_the_core_and_drops_stale_hits() {
     let _ = app.update(Message::Hits("An".into(), Ok(Vec::new())));
     assert!(app.hits.is_none(), "stale");
     let _ = app.update(Message::Hits("Ann".into(), Ok(Vec::new())));
-    assert_eq!(app.hits, Some(Ok(Vec::new())));
+    assert_eq!((app.hits.clone(), app.hits_for.as_str()), (Some(Ok(Vec::new())), "Ann"));
+    let _ = app.update(Message::Search("Anx".into()));
+    assert_ne!(app.hits_for, app.search.trim(), "the old hits are not shown for other words");
     let _ = app.update(Message::Search("A".into()));
     assert!(app.hits.is_none(), "back to the titles");
 }
@@ -1637,4 +1639,8 @@ fn a_hit_opens_its_conversation_at_the_place() {
     let other = app.conversations.iter().find(|c| c.id != hit.conversation).map(|c| c.id.clone()).expect("another");
     let _ = app.update(Message::Select(other));
     assert_eq!(app.marked, None);
+    // A deleted conversation goes from the hits: listing again searches again.
+    sent(&mut app);
+    let _ = app.update(Message::Listed(Ok(app.conversations.clone())));
+    assert!(sent(&mut app).iter().any(|request| matches!(request, Request::SearchConversations { .. })));
 }
