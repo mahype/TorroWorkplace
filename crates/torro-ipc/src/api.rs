@@ -5783,7 +5783,8 @@ static GET_CARDS: Command = Command {
 };
 
 // Write: it starts a run of the assistant, which then works with the assistant's own rights (they
-// may be wider than the caller's in other areas; that is why the area is off by default).
+// may be wider than the caller's in other areas; that is why the area is off by default). A chat with a
+// bot (`bot`, issue #698) works with what both the bot and the caller may, as bots.ask_bot.
 static SEND_MESSAGE: Command = Command {
     name: "assistant.send_message",
     area: Area::Assistant,
@@ -5806,7 +5807,9 @@ static SEND_MESSAGE: Command = Command {
                   dismissed. It needs the assistant's read access to that mail account (`forbidden` otherwise); \
                   `not-found` for a mail or account the \
                   caller may not see (a chat about it is not there for that caller at all), `error` for another \
-                  `about` than the conversation's or a chat about a mail with mail switched off in `without`.",
+                  `about` than the conversation's or a chat about a mail with mail switched off in `without`. \
+                  With `bot` the message goes to that bot, which acts only with what both it and the caller may, \
+                  as in bots_ask_bot.",
 };
 
 static CHECK_ABOUT: Command = Command {
@@ -6049,18 +6052,20 @@ static DELETE_BOT: Command = Command {
                   of a deleted bot. It cannot be restored.",
 };
 
-// Write: it starts a run of the bot, which then works with the bot's own rights (that is why the
-// area is off by default). The assistant's own ask (task B.2) is the core's: only when the person
-// named the bot or confirmed it, with what both clients may; its model hears that in the answer.
-// The description stays about the API, for every agent.
+// Write: it starts a run of the bot. A client's run (issue #698) works with what both the bot and the
+// caller may now, so a bot never opens more than the caller has; the area is still off by default. The
+// assistant's own ask (task B.2) is the core's: only when the person named the bot or confirmed it, with
+// what both clients may; its model hears that in the answer. The description stays about the API, for
+// every agent.
 static ASK_BOT: Command = Command {
     name: "bots.ask_bot",
     area: Area::Bots,
     access: Access::Write,
     mcp: Mcp::Tool,
     description: "Sends a message to a bot and starts its answer with the bot's engine and model, in `conversation` \
-                  (one of this bot) or in a new one. The bot acts with its own rights, not the caller's. The MCP \
-                  tool waits up to a minute for the answer, like assistant_send_message, and returns it with the \
+                  (one of this bot) or in a new one. The bot acts only with what both it and the caller may: a \
+                  server, tool or area the caller may not use stays closed to the bot as well, and its web search \
+                  needs the person's yes in the bot's conversation. The MCP tool waits up to a minute for the answer, like assistant_send_message, and returns it with the \
                   cursor `after`; the API answers at once, so follow the answer with assistant.get_conversation \
                   (needs read access to the assistant) and `after` while `running` is true. `busy` while the \
                   conversation still answers.",
