@@ -675,9 +675,10 @@ neben `files`, weil der Inhalt dabei an den Anbieter des Modells geht (Entscheid
 - **Nur Text** (Entscheidung 33): reguläre Dateien in UTF-8 ohne NUL-Byte, höchstens 10 MiB. Ordner, Binärdateien und
   zu große Dateien sind `unsupported`; PDF und Office-Dateien bleiben bei den ArtCraft-Werkzeugen (#303). Eine
   Byte-Order-Mark lässt das Lesen weg, eine Änderung behält sie.
-- **Lesen seitenweise:** ganze Zeilen bis 10.000 Zeichen ab `from_line` (Antworten an das Modell werden bei 16.000
-  Zeichen abgeschnitten); nur eine einzelne längere Zeile wird geschnitten. Die Antwort nennt die Zeilenzahl, ob mehr
-  folgt (`more`) und die **Version**: den SHA-256 der Bytes.
+- **Lesen seitenweise:** ganze Zeilen bis 10.000 Zeichen ab `from_line`, damit eine Seite in die 16.000 Zeichen einer
+  Antwort an das Modell passt; eine Seite geht ganz an das Modell, nicht nur ihr Anfang wie andere lange Texte. Nur
+  eine einzelne längere Zeile wird geschnitten. Die Antwort nennt die Zeilenzahl, ob mehr folgt (`more`), ab welcher
+  Zeile es weitergeht (`next_line`) und die **Version**: den SHA-256 der Bytes.
 - **Suchen** nach einem Text (eine Zeile, 1 bis 200 Zeichen, ohne Groß- und Kleinschreibung) mit den Grenzen der
   Namenssuche (10 Ebenen, 200 Treffer, 50.000 angesehene Einträge) und höchstens 256 MiB gelesen; gesperrte, binäre
   und zu große Dateien überspringt es still. Treffer: Pfad, Zeilennummer und die Zeile, höchstens 200 Zeichen.
@@ -689,8 +690,10 @@ neben `files`, weil der Inhalt dabei an den Anbieter des Modells geht (Entscheid
   Never“, weil der alte Inhalt danach weg ist (Zugriff `Delete`). Die Karte zeigt den Unterschied, so wie der Kern
   ihn aus der gelesenen Datei berechnet hat: alte Zeilen mit `-`, neue mit `+`, je eine Zeile Umfeld, höchstens 60
   Zeilen. Die Freigabe hängt an Pfad, Eintrag, Version und Ersetzung; ändert sich die Datei, während die Person
-  entscheidet, heißt die Antwort `conflict`. Geschrieben wird in eine temporäre Datei im selben Ordner, die dann die
-  alte ersetzt; ein harter Link auf die alte Datei behält deshalb den alten Inhalt.
+  entscheidet, heißt die Antwort `conflict`. Geschrieben wird in eine temporäre Datei im selben Ordner (nur für
+  den Eigentümer lesbar, bis sie die Rechte der alten bekommt), die dann die alte ersetzt; unmittelbar davor liest der
+  Kern die Datei noch einmal und antwortet `conflict`, wenn ein Editor sie inzwischen gespeichert hat. Ein harter Link
+  auf die alte Datei behält den alten Inhalt. Lange Zeilen zeigt die Karte um die Stelle der Änderung herum.
 - **Nicht vertrauenswürdig:** Gelesener Inhalt und Treffer sind `untrusted`, Daten und nie Anweisungen. Wer in einer
   Unterhaltung Dateien gelesen oder durchsucht hat, wird vor der nächsten Websuche erneut gefragt, wie nach dem
   Lesen von Mail (Entscheidung 36): Sonst könnte eine präparierte Datei den Inhalt anderer Dateien in Suchwörtern
