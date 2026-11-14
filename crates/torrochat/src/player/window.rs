@@ -168,9 +168,9 @@ fn error_code(err: &ChatError) -> &'static str {
 
 /// The web view of `shown` with every rule of the window: autoplay, no developer tools, no swiping
 /// back, nothing kept between starts (incognito: what YouTube stores goes with the window), only the
-/// embed of the video, no downloads. An address of YouTube itself the player leads to (its logo, a
-/// suggested video) goes to the browser; any other is only refused, so a frame of the page that loads
-/// elsewhere never opens a browser tab by itself.
+/// embed of the video, no downloads. A new window the player asks for to YouTube itself (its logo, a
+/// suggested video) opens in the browser; every other navigation, also of a frame of the page, is only
+/// refused, so the player never opens a browser tab by itself.
 fn webview_builder<'a>(shown: &Shown) -> WebViewBuilder<'a> {
     let builder = WebViewBuilder::new()
         .with_incognito(true)
@@ -187,23 +187,20 @@ fn webview_builder<'a>(shown: &Shown) -> WebViewBuilder<'a> {
                 headers.insert(REFERER, value);
             }
             builder
-                .with_navigation_handler(move |url| {
-                    if allowed_navigation(&url, &allowed) {
-                        return true;
-                    }
-                    to_browser(&url);
-                    false
-                })
+                // Also called for the page's frames (WKWebView): refused without a word. Links the
+                // player opens itself (its logo, a suggested video) come as new windows.
+                .with_navigation_handler(move |url| allowed_navigation(&url, &allowed))
                 .with_new_window_req_handler(|url, _| {
                     to_browser(&url);
                     NewWindowResponse::Deny
                 })
                 .with_url_and_headers(torro_chat::embed_url(video), headers)
         }
-        Shown::Note(text) => builder
-            .with_navigation_handler(|url| url == "about:blank")
-            .with_new_window_req_handler(|_, _| NewWindowResponse::Deny)
-            .with_html(note_page(text)),
+        // Our own page without links or script: no navigation rule, whatever address the system's web
+        // view gives a page loaded from a string (WebView2 may name it otherwise than `about:blank`).
+        Shown::Note(text) => {
+            builder.with_new_window_req_handler(|_, _| NewWindowResponse::Deny).with_html(note_page(text))
+        }
     }
 }
 

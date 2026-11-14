@@ -350,8 +350,9 @@ dahinter rückten um eins.
       und Bild („YouTube video“). Bei „Never show“ und für ein gesperrtes YouTube bleibt nur der Link im Text.
     - **Datenschutzfreundlicher Modus:** Der Player lädt nur die Einbettung dieses einen Videos von
       `www.youtube-nocookie.com` (keine Cookies, bevor jemand abspielt) und behält nichts zwischen zwei Starts
-      (Inkognito). Ein Link zu YouTube selbst (YouTube-Logo, Vorschläge) geht in den Browser; jede andere Adresse wird
-      nur abgelehnt, damit ein Rahmen der Seite nie von selbst einen Browser-Tab zu Dritten öffnet. YouTube spielt eingebettete Videos nur, wenn sich das Programm
+      (Inkognito). Ein Link des Players zu YouTube selbst, der ein neues Fenster öffnet (YouTube-Logo, Vorschläge), geht in
+      den Browser; jede andere Navigation, auch eines Rahmens der Seite, wird nur abgelehnt, damit der Player nie von
+      selbst einen Browser-Tab öffnet. YouTube spielt eingebettete Videos nur, wenn sich das Programm
       ausweist (sonst „Error 153“): Der Player schickt die Adresse der Suite (`https://io.github.mahype.torro-workplace/`)
       als `Referer`. Beim Abspielen lädt der Player auch von YouTubes Hilfs-Hosts (`ytimg.com`, `googlevideo.com`,
       `google.com`); die Freigabe von YouTube umfasst sie, sie stehen nicht einzeln in der Anbieterliste.
