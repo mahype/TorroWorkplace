@@ -97,7 +97,7 @@ pub fn list() -> Vec<HelpTopicSummary> {
 
 /// The topic `id` with its text; `None` for an id no topic has.
 pub fn get(id: &str) -> Option<HelpTopic> {
-    TOPICS.iter().find(|topic| topic.id == id.trim()).map(|topic| HelpTopic {
+    TOPICS.iter().find(|topic| topic.id.eq_ignore_ascii_case(id.trim())).map(|topic| HelpTopic {
         id: topic.id.into(),
         title: topic.title.into(),
         text: topic.text.trim().into(),
@@ -192,6 +192,7 @@ mod tests {
             }
             other => panic!("the topic, got {other:?}"),
         }
+        assert!(matches!(answer(Some(" Mail ")), Response::HelpTopic { .. }), "case and spaces do not matter");
         match answer(Some("passwords-and-keys")) {
             Response::Error { code, message } => {
                 assert_eq!(code, "not-found");

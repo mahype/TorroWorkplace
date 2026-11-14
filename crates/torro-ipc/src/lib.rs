@@ -439,6 +439,8 @@ pub enum Request {
     /// topic gets `not-found`.
     #[serde(rename = "system.get_help")]
     GetHelp {
+        /// The id of a topic as the list without a topic gives it (`mail`, `accounts` …); left out
+        /// for the list.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         topic: Option<String>,
     },

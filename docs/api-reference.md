@@ -100,7 +100,7 @@ Reads the built-in help of Torro Workplace. Without `topic` it lists the topics 
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
-| `topic` | string | nein |  |
+| `topic` | string | nein | The id of a topic as the list without a topic gives it (`mail`, `accounts` …); left out for the list. |
 
 ### `system.quit`
 

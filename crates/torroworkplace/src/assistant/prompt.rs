@@ -345,12 +345,16 @@ fn generated(context: &Context<'_>) -> String {
     if let Some(person) = context.person.map(one_line).filter(|person| !person.is_empty()) {
         lines.push(format!("- The person's name: {person}."));
     }
-    lines.push(match context.areas {
-        [] => "- Areas you may use: none. You have no tools for the person's data now, only the suite's help and your \
-               own access; tell the person they can grant you access in Torro \
-               Workplace › Assistant."
+    lines.push(match (context.areas, context.rights) {
+        // Not set up yet (no client): no tool at all, not even the help.
+        ([], None) => "- Areas you may use: none. You have no tools now; tell the person they can grant you access in \
+                       Torro Workplace › Assistant."
             .to_string(),
-        areas => format!("- Areas you may use: {}.", names(areas)),
+        ([], Some(_)) => "- Areas you may use: none. You have no tools for the person's data now, only the suite's \
+                          help and your own access; tell the person they can grant you access in Torro Workplace › \
+                          Assistant."
+            .to_string(),
+        (areas, _) => format!("- Areas you may use: {}.", names(areas)),
     });
     lines.extend(access(context));
     lines.extend(own_tools(context));
@@ -877,7 +881,14 @@ mod tests {
         context.person = None;
         context.place = Place::Remote;
         let prompt = system(None, &context);
-        assert!(prompt.contains("- Areas you may use: none. You have no tools for the person's data now"), "{prompt}");
+        assert!(prompt.contains("- Areas you may use: none. You have no tools now;"), "no client: {prompt}");
+        // Issue #702: with a client the help and its own access are there even without an area.
+        let rights = Rights::none();
+        let with_client = system(None, &Context { rights: Some(&rights), ..context });
+        assert!(
+            with_client.contains("You have no tools for the person's data now, only the suite's help"),
+            "{with_client}"
+        );
         assert!(!prompt.contains("Switched off"), "{prompt}");
         assert!(!prompt.contains("The person's name"), "{prompt}");
         assert!(prompt.contains("(remote)") && !prompt.contains("data rule"), "{prompt}");
