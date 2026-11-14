@@ -4,7 +4,7 @@
 
 ## Calendar
 
-The Calendar settings have "Calendars", "Reminders", "Night" and "Working hours". Reminders are a quiet notification or full screen. They are stored with the event, so they also reach your phone, and each one is an entry in the Notification Hub too. Tray menu › "Pause reminders" holds them back for an hour or until tomorrow.
+The Calendar settings have "Calendars", "Reminders", "Night" and "Working hours". Reminders are a quiet notification or full screen. They are stored with the event, so they also reach your phone, and each one is an entry in the Notification Hub too. While a reminder is coming up, tray menu › "Pause reminders" holds them back for an hour or until tomorrow.
 
 The calendar does not show tasks yet.
 

@@ -19,9 +19,9 @@ A click on the tray icon opens its menu, from top to bottom:
 
 - while voice is on: what the microphone does, and "Mute microphone";
 - the apps: "Notification Hub" (with the number of waiting items), "Mail", "App Feed", "Calendar", "Tasks", "Assistant", "Chat";
-- "Pause reminders" with "For 1 hour" or "Until tomorrow" (then "Resume reminders");
+- while a reminder is coming up: "Pause reminders" with "For 1 hour" or "Until tomorrow" (then "Resume reminders");
 - your workspace templates, "Save workspace…" and "Manage workspaces…";
-- with a chat account: your own status ("Online", "Away", "Busy", "Do not disturb", "Invisible");
+- with a chat account: "Status: …", a submenu with your own status ("Online", "Away", "Busy", "Do not disturb", "Invisible");
 - "Settings…" and "Quit".
 
 ## Settings
