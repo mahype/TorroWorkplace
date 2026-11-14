@@ -722,8 +722,14 @@ impl<W: FnMut(Output)> Helper<W> {
     fn handle(&mut self, event: Event, sender: &Sender<Event>) {
         let event = match event {
             Event::Qwen(number, event) if self.qwen.as_ref().is_some_and(|qwen| qwen.number == number) => {
-                if let (Event::Rate(_), Some(qwen)) = (event.as_ref(), self.qwen.as_mut()) {
+                if let (Event::Rate(_), Some(qwen)) = (event.as_ref(), self.qwen.as_mut())
+                    && !qwen.loaded
+                {
                     qwen.loaded = true;
+                    // A job stopped while the model loaded: its time starts now ([`DRAIN_MOST`]).
+                    if self.draining {
+                        self.draining_since = Some(std::time::Instant::now());
+                    }
                 }
                 *event
             }
@@ -1262,6 +1268,28 @@ mod tests {
         helper.give_up_draining(&sender);
         assert!(!helper.draining && helper.pending.is_none());
         assert!(matches!(said.borrow().last(), Some(Output::Failed { .. })), "the waiting job went on");
+    }
+
+    /// A job stopped while the model loaded: its time to end counts from the first sound, so the
+    /// worker that just loaded is not ended before its end comes.
+    #[test]
+    fn the_time_of_a_stop_counts_from_the_loaded_model() {
+        let (sender, _events) = mpsc::channel();
+        let (mut helper, _) = helper(Found::default());
+        let mut child = Command::new(if cfg!(windows) { "cmd" } else { "cat" })
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("a stand-in worker");
+        let Some(input) = child.stdin.take() else { panic!("its input") };
+        helper.qwen = Some(Qwen { number: 1, loaded: false, model: "m".into(), child, input });
+        helper.draining = true;
+        helper.draining_since = std::time::Instant::now().checked_sub(DRAIN_MOST * 2);
+        helper.give_up_draining(&sender);
+        assert!(helper.qwen.is_some(), "still loading: not given up");
+        helper.handle(Event::Qwen(1, Box::new(Event::Rate(24_000))), &sender);
+        helper.give_up_draining(&sender);
+        assert!(helper.qwen.is_some() && helper.draining, "loaded just now: its time starts");
     }
 
     /// What a replaced or ended Qwen worker still sends belongs to no job: its end does not fail the
