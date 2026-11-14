@@ -21,6 +21,9 @@
 //!   allowed or at "Always show"; for one not asked yet the message names it (`foreign`) and the card
 //!   comes with `chat.show_card`, a person's click ("Show once"); never for one blocked or at "Never
 //!   show", where a card held from before is left out too. A client's read resolves nothing.
+//! - **YouTube videos** (issue #673): the card of a link to a video carries its id (`video`), also
+//!   when the server knows no card for it; so the chat window can play exactly what Settings ›
+//!   Privacy let load, and a person's "Show once" counts for playing that video too.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::Write;
@@ -198,19 +201,38 @@ fn host_of(link: &str) -> String {
     torro_core::privacy::normalize_host(&host)
 }
 
-/// The card of `link` from what the server resolved.
+/// The card of `link` from what the server resolved; a YouTube video carries its id (issue #673).
 fn card_of(link: &str, reference: torro_nextcloud::Reference) -> Card {
-    let domain = url::Url::parse(link).ok().and_then(|url| url.host_str().map(str::to_string)).unwrap_or_default();
     Card {
         card: Some(LinkCard {
             url: link.to_string(),
             title: reference.title,
             description: reference.description,
-            domain,
+            domain: domain_of(link),
             image: reference.image.is_some(),
+            video: torro_chat::video_of(link),
         }),
         image: reference.image,
     }
+}
+
+/// The card of `link` when the server knows none: a video card without title or picture for a
+/// YouTube video (issue #673), so the video still plays; nothing for any other link.
+fn unresolved(link: &str) -> Card {
+    let card = torro_chat::video_of(link).map(|video| LinkCard {
+        url: link.to_string(),
+        title: String::new(),
+        description: None,
+        domain: domain_of(link),
+        image: false,
+        video: Some(video),
+    });
+    Card { card, image: None }
+}
+
+/// The host of `link` as it stands there (`youtu.be`); empty when it has none.
+fn domain_of(link: &str) -> String {
+    url::Url::parse(link).ok().and_then(|url| url.host_str().map(str::to_string)).unwrap_or_default()
 }
 
 /// `bytes` as a picture answer with its size, when they are a PNG, JPEG, GIF or WebP.
@@ -591,7 +613,7 @@ impl ChatService {
             for (id, link) in open {
                 match remote.resolve(&link).await {
                     Ok(Some(reference)) => self.held().keep_card(&id, card_of(&link, reference)),
-                    Ok(None) => self.held().keep_card(&id, Card { card: None, image: None }),
+                    Ok(None) => self.held().keep_card(&id, unresolved(&link)),
                     // Not reachable now: asked again with the next read.
                     Err(_) => {}
                 }
@@ -652,7 +674,7 @@ impl ChatService {
         }
         let card = match remote.resolve(&link).await {
             Ok(Some(reference)) => card_of(&link, reference),
-            Ok(None) => Card { card: None, image: None },
+            Ok(None) => unresolved(&link),
             Err(err) => return file_refusal(&err),
         };
         let shown = card.card.clone();

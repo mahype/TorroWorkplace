@@ -313,7 +313,7 @@ dahinter rückten um eins.
     Datei über den Kern (`chat.get_attachment`, für den App-Schlüssel bis 512 MiB) und öffnet sie dort; „Open in
     Nextcloud“ bleibt im Menü und ist der Weg für noch größere Videos. Kein
     GStreamer und kein FFmpeg in den Paketen; ein Player im Fenster wird ein eigenes Issue, wenn Videos im Alltag
-    häufig sind.
+    häufig sind. Für Videos auf YouTube gilt Entscheidung 25.
 23. **Link-Karten fremder Seiten nach Settings › Privacy** (entschieden vom Menschen am 2026-11-11, im Review von #636;
     seit #672 Teil der zentralen Freigabe fremder Inhalte, `docs/settings.md`, Abschnitt „Privacy“). Talk-Web löst den
     ersten Link beim Anzeigen auf; dabei ruft der eigene Server die fremde URL ab, und wer eine eindeutige URL schickt,
@@ -333,6 +333,32 @@ dahinter rückten um eins.
     - **Medien-Übersicht:** Seitenleiste im Chatfenster.
 
     Die verworfenen Fassungen bleiben in den Entwürfen zum Vergleich stehen.
+25. **YouTube-Videos spielen in einem eigenen Player-Fenster** (#673, mit der Annahme des Plans am 2026-11-14
+    bestätigt). Ein Link auf ein YouTube-Video (`youtube.com/watch?v=…`, `youtu.be/…`, Shorts) gibt seiner Link-Karte
+    die Kennung des Videos (`video`: `id`, `start`, `short`); das Chatfenster zeigt sie als Videokarte mit Abspielzeichen
+    und „Open on YouTube“.
+    - **Wo es spielt:** Ein Klick auf die Videokarte öffnet auf macOS und Windows ein eigenes, schwebendes Fenster
+      (`torrochat --player=<Nachricht>`, Klasse `torro-chat-player`) mit dem Titel des Videos, 640 × 360 (Shorts
+      360 × 640), nur dem Player von YouTube, der sofort abspielt. Unter Linux öffnet der Klick das Video bei YouTube
+      im Browser. Verworfen: ein Player im Verlauf (er verdeckt Menüs und geht unter Linux nicht, weil Iced unter
+      Wayland keine Web-Ansicht in sein Fenster setzen kann) und WebKitGTK für Linux, das die Suite bewusst entfernt
+      hat.
+    - **Freigabe:** Videokarte und Abspielen gibt es nur, wo Settings › Privacy YouTube erlaubt (oder „Always show“)
+      oder jemand „Show once“ geklickt hat; das Player-Fenster spielt nur ein Video, das auf einer Karte des Kerns steht.
+      „Show once“ gilt damit auch für das Abspielen dieses Videos, bis der Dienst neu startet, statt vor dem Abspielen
+      ein zweites Mal zu fragen. Kennt der Server keine Karte für das Video, gibt der Kern eine Videokarte ohne Titel
+      und Bild („YouTube video“). Bei „Never show“ und für ein gesperrtes YouTube bleibt nur der Link im Text.
+    - **Datenschutzfreundlicher Modus:** Der Player lädt nur die Einbettung dieses einen Videos von
+      `www.youtube-nocookie.com` (keine Cookies, bevor jemand abspielt) und behält nichts zwischen zwei Starts
+      (Inkognito). Ein Link des Players zu YouTube selbst (`youtube.com`, `youtu.be`: YouTube-Logo, Vorschläge) geht
+      in den Browser; jede andere Adresse, auch eines Rahmens der Seite, wird nur abgelehnt, damit der Player nie von
+      selbst einen Browser-Tab zu Dritten öffnet. (WKWebView fragt dieselbe Regel für Links und Rahmen; lüde die
+      Einbettung einen Rahmen von `youtube.com`, ginge dafür ein Tab auf. In der Probe auf macOS lud sie keinen.) YouTube spielt eingebettete Videos nur, wenn sich das Programm
+      ausweist (sonst „Error 153“): Der Player schickt die Adresse der Suite (`https://io.github.mahype.torro-workplace/`)
+      als `Referer`. Beim Abspielen lädt der Player auch von YouTubes Hilfs-Hosts (`ytimg.com`, `googlevideo.com`,
+      `google.com`); die Freigabe von YouTube umfasst sie, sie stehen nicht einzeln in der Anbieterliste.
+    - **API und MCP:** kein neuer Befehl; `chat.get_messages` und `chat_get_messages` zeigen das Feld `video`.
+      Agenten spielen keine Videos ab; das Abspielen ist Sache des Fensters wie „Bild groß“.
 
 ## Aufbau
 
@@ -551,6 +577,11 @@ Unterhaltung gemerkt werden können, siehe „Schweben“):
     Privacy (Entscheidung 23, #672). Bei „Ask“ steht statt der Karte ein ruhiger Satz „This message shows content from
     <Anbieter>.“ mit den Knöpfen „Show once“, „Always allow <Anbieter>“ und „Never for <Anbieter>“; die Antwort gilt
     für alle Nachrichten des Anbieters im Fenster. Ohne Karte bleibt der Link im Text.
+  - **Videokarte** eines YouTube-Links (Entscheidung 25, #673): Bild in 16:9 mit Abspielzeichen, Titel (ohne Titel
+    „YouTube video“) und Domain, so breit wie ein Bild im Verlauf; die ganze Karte ist ein Knopf (Kante beim Überfahren
+    in `LINE_SELECTED`): ein Klick spielt das Video im Player-Fenster (Tooltip „Play video“), unter Linux öffnet er es
+    bei YouTube (Tooltip „Open on YouTube“). Rechts in der Zeile der Domain der Knopf „Open on YouTube“ (ghost), der
+    den Link immer im Browser öffnet.
 - **Eingabe:** mehrzeilig, Enter sendet, Shift+Enter bricht um. `@` öffnet Vorschläge. Ein Zähler erscheint ab
   90 % der Höchstlänge. Im Menü „Send without notification“. Ab Stufe 4 links die Büroklammer („Attach file“, Dialog
   des Systems), Ziehen einer Datei auf das Fenster (die ganze Fläche wird zur Ablage, „Drop to send to Anna Berg“)
@@ -560,6 +591,13 @@ Unterhaltung gemerkt werden können, siehe „Schweben“):
 - **Bild groß** (Stufe 4): ein eigenes, schwebendes Fenster (Klasse `torro-chat-viewer`, Entscheidung 24). Bild eingepasst, oben Name, „Download“, „Open in Nextcloud“ und
   Schließen (`Esc`), `←`/`→` blättern durch die Bilder der Unterhaltung, unten „2 / 5 · Anna Berg · 10:02“. Das große
   Bild ist eine Vorschau in Fenstergröße, nicht das Original.
+- **Player** (#673, macOS und Windows): ein eigenes, schwebendes Fenster (Klasse `torro-chat-player`,
+  `torrochat --player=<Nachricht>`, Entscheidung 25), schwarz, mindestens 320 × 180, nur der Player von YouTube; ein
+  zweiter Start auf dasselbe Video holt das Fenster nach vorn. Kein Iced-Fenster, sondern tao mit der Web-Ansicht des
+  Systems (wry: WKWebView, WebView2). Statt des Videos steht ein Satz, wenn es nicht darf („This video may not load.
+  Allow YouTube in Settings › Privacy, or use Show once in the chat.“), nicht mehr da ist („This video is no longer in
+  the chat.“) oder der Kern nicht antwortet („This video cannot be shown right now.“); die Demo spielt nichts („The
+  demo plays no videos.“). Ohne Web-Ansicht öffnet das Video im Browser. Auf macOS schließt ⌘W über die Menüleiste.
 - **Medien-Übersicht** (Stufe 4, Knopf „Shared media“ im Kopf): Reiter „Media“ (Raster der Bilder und Videos nach
   Monat, neueste oben), „Files“, „Voice“ und „Links“ (die Link-Karten aus dem Cache); jede Zeile mit „Show in chat“.
   Seitenleiste im Chatfenster (Entscheidung 24). Ohne
@@ -589,8 +627,8 @@ sofort in der Liste, gewechselt wird nur hier.
 
 **Schweben je Fenster-Manager** (Entscheidung 16, #667): Welche Fenster der Suite schweben, steht an einer Stelle,
 der Liste `FLOATING_WINDOWS` in `torro-core` (`app.rs`): je Fenster das Programm, der Schalter, mit dem es startet,
-und seine Klasse. Heute sind das Chat-, Klingel- und Bildfenster des Chats (`torrochat --conversation`, `--ring`,
-`--viewer`) und der Dialog nach „Workspace speichern…“ (`torroworkplace ui --template`). Ein späteres Anruf- oder
+und seine Klasse. Heute sind das Chat-, Klingel-, Bild- und Player-Fenster des Chats (`torrochat --conversation`,
+`--ring`, `--viewer`, `--player`) und der Dialog nach „Workspace speichern…“ (`torroworkplace ui --template`). Ein späteres Anruf- oder
 Gerätefenster bekommt dort einen Eintrag und schwebt dann unter jedem Fenster-Manager; ein Test in
 `torrochat/src/launch.rs` nennt jede Fensterart des Chats und verlangt für jede außer der Kontaktliste den Eintrag. Einen Request dafür gibt es nicht.
 - **Hyprland:** `float_dialogs` setzt je Klasse eine Regel `float = true, center = true`, bevor das Fenster öffnet:
@@ -637,7 +675,7 @@ status bei den Diensten. Unter General die Schalter „Show others when I am onl
 
 **Demo:** `torrochat --demo` mit sechs Menschen in allen Status, zwei Gruppen, drei Unterhaltungen mit Erwähnung,
 Datei, Systemnachricht und verpasstem Anruf; ab Stufe 4 dazu Bild, Video mit und ohne Vorschau, Sprachnachricht und
-Link-Karte. `--open contacts | chat | ring | call | devices | media | viewer | upload` öffnet ein Fenster bzw. einen
+Link-Karte, in „Design sync“ ein YouTube-Video mit Videokarte (#673). `--open contacts | chat | ring | call | devices | media | viewer | upload` öffnet ein Fenster bzw. einen
 Zustand direkt (für die Sichtprüfung).
 
 ## Befehle
@@ -982,8 +1020,8 @@ Nach der Entscheidung leert der Kern Dateinamen und Bytes wie den Text (Datensch
 - `chat.list_shared` liest `…/share` bzw. `…/share/overview` (Capability `rich-object-list-media`, sonst
   `unsupported`), `kind: link` aus den Karten im Cache, weil Talk Links nicht als Art führt. Einträge tragen Kennung
   der Nachricht und der Datei, Name, Größe, Art, Autor und Zeit, alles `untrusted`.
-- **Link-Karten** stehen als Feld `cards` in `chat.get_messages` (Titel, Beschreibung, Domain, ob ein Bild da ist),
-  `untrusted`. Von selbst löst der Kern nur Links auf den Ursprung des eigenen Kontos über `references/resolve` auf
+- **Link-Karten** stehen als Feld `cards` in `chat.get_messages` (Titel, Beschreibung, Domain, ob ein Bild da ist,
+  bei einem YouTube-Video seine Kennung `video`, Entscheidung 25), `untrusted`. Von selbst löst der Kern nur Links auf den Ursprung des eigenen Kontos über `references/resolve` auf
   (Dateien, Deck, Talk), wenn er Nachrichten für ein offenes Chatfenster lädt (App-Schlüssel). Jeden anderen Link nach
   Settings › Privacy (#672, `torro_core::privacy`): von selbst bei „Always show“ und für einen erlaubten Anbieter
   (zusammen mit den eigenen höchstens fünf je Lesen), nie bei „Never show“ und für einen gesperrten – dann lässt der

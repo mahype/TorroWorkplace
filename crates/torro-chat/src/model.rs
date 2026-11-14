@@ -243,6 +243,11 @@ pub struct LinkCard {
     /// The card has a picture.
     #[serde(default, skip_serializing_if = "is_false")]
     pub image: bool,
+    /// The link is a YouTube video (issue #673, [`crate::video::video_of`]): the window shows a video
+    /// card and plays it. Only on a card the core holds, so only where Settings › Privacy lets
+    /// YouTube's content load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video: Option<crate::video::Video>,
 }
 
 /// The message another one answers.

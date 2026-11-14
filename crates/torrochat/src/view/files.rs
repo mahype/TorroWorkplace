@@ -2,7 +2,7 @@
 //! `docs/prototypes/chat/`): a picture as its preview, a video as its preview with a play mark, a
 //! voice message with its play button, every other file – and every fallback without a preview –
 //! as a line with its kind, name, size and the buttons "Open", "Download" and "Open in Nextcloud";
-//! link cards under a message; the files chosen for sending and the progress above the composer;
+//! link cards under a message, a YouTube video as its video card (issue #673); the files chosen for sending and the progress above the composer;
 //! the drop zone over the window.
 //!
 //! A preview stands in the size of the picture from the first frame on (a calm placeholder until it
@@ -11,8 +11,8 @@
 //! grid ([`album_tiles`]), each tile filled with its picture.
 
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, column, container, image, mouse_area, row, stack};
-use iced::{Alignment, Background, Color, ContentFit, Element, Fill, Rectangle, Theme, border, mouse};
+use iced::widget::{Space, button, column, container, image, mouse_area, row, stack};
+use iced::{Alignment, Background, Color, ContentFit, Element, Fill, Padding, Rectangle, Theme, border, mouse};
 use torro_chat::{FileRef, ForeignProvider, LinkCard, Message as ChatMessage, MessageKind};
 use torro_core::i18n::{tr, trf};
 use torro_core::privacy::ProviderChoice;
@@ -246,6 +246,22 @@ pub(super) fn clickable<'a>(content: Element<'a, Message>, on_press: Message, ti
     widgets::with_tooltip(mouse_area(content).on_press(on_press).interaction(mouse::Interaction::Pointer), tip)
 }
 
+/// A card that is one button (the video card): `panel` with a hairline in `line_strong`, its edge in
+/// `line_selected` while hovered or pressed.
+fn card_button(t: &Theme, status: button::Status) -> button::Style {
+    let p = palette(t);
+    let edge = match status {
+        button::Status::Hovered | button::Status::Pressed => p.line_selected,
+        button::Status::Active | button::Status::Disabled => p.line_strong,
+    };
+    button::Style {
+        background: Some(Background::Color(p.panel)),
+        text_color: p.text,
+        border: border::rounded(radius::sm()).color(edge).width(HAIRLINE),
+        ..button::Style::default()
+    }
+}
+
 /// "1.2 MB · PDF", with "no preview" and "view only" where they hold.
 fn file_meta(file: &FileRef, no_preview: bool) -> String {
     let mut parts = vec![units::format_bytes(file.size), kind_word(&file.content_type).to_owned()];
@@ -458,6 +474,9 @@ impl App {
         card: &'a LinkCard,
         room: f32,
     ) -> Element<'a, Message> {
+        if card.video.is_some() {
+            return self.video_card(chat, message, card, room);
+        }
         let width = room.min(size::props());
         let mut parts: Vec<Element<'a, Message>> = Vec::new();
         if card.image {
@@ -486,6 +505,51 @@ impl App {
             }
         });
         clickable(content.into(), wrap(FilesMsg::OpenLink(card.url.clone())), card.url.clone())
+    }
+
+    /// The card of a YouTube video (issue #673, decision 25): its picture in 16:9 with the play mark
+    /// (a calm placeholder without one), the title or "YouTube video", the domain and "Open on YouTube"
+    /// (always the browser), as wide as a picture of the history. A click on the card plays the video in
+    /// the player window (macOS, Windows) or opens it at YouTube (Linux); hovering it marks its edge.
+    fn video_card<'a>(
+        &'a self,
+        chat: &'a ChatState,
+        message: &'a ChatMessage,
+        card: &'a LinkCard,
+        room: f32,
+    ) -> Element<'a, Message> {
+        let width = room.min(size::list());
+        let height = width * 9.0 / 16.0;
+        let key: PictureKey = (message.id.clone(), None);
+        let shown = if card.image { chat.files.picture(&key) } else { None };
+        let corners = border::Radius { bottom_left: 0.0, bottom_right: 0.0, ..radius::sm().into() };
+        let frame = stack![picture(shown, Icon::Video, width, height, corners), container(play_mark()).center(Fill)]
+            .width(width)
+            .height(height);
+        let title = if card.title.trim().is_empty() { tr("YouTube video") } else { card.title.as_str() };
+        let open = widgets::text_button(
+            Some(Icon::ExternalLink),
+            tr("Open on YouTube"),
+            style::button::ghost,
+            Some(wrap(FilesMsg::OpenLink(card.url.clone()))),
+        );
+        let domain = row![
+            tinted(Icon::Link, icon::SIZE_SM, |p| p.text_3),
+            container(widgets::ellipsized(typo::meta(), card.domain.as_str(), theme::text_3)).width(Fill).clip(true),
+            open,
+        ]
+        .spacing(space::xs())
+        .align_y(Alignment::Center);
+        let words = column![widgets::ellipsized(typo::body_strong(), title, theme::text), domain];
+        let content = column![frame, container(words).padding([space::s(), space::m()]).width(Fill)];
+        let play = button(content)
+            .width(width)
+            .padding(Padding::ZERO)
+            .clip(true)
+            .style(card_button)
+            .on_press(wrap(FilesMsg::PlayVideo(message.id.clone())));
+        let tip = if system::plays_videos() { tr("Play video") } else { tr("Open on YouTube") };
+        widgets::with_tooltip(play, tip)
     }
 
     /// Above the composer: the files chosen for sending, or the sending under way. `None` when there

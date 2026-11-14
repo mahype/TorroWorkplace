@@ -67,6 +67,12 @@ pub fn open_file(path: &str) -> Result<(), String> {
     opener(&target.to_string_lossy()).spawn().map(|_| ()).map_err(|_| tr("The file could not be opened.").to_owned())
 }
 
+/// Whether this system plays a video of the chat in the player window (issue #673, decision 25):
+/// macOS and Windows; under Linux a video opens at YouTube in the browser.
+pub fn plays_videos() -> bool {
+    cfg!(any(target_os = "macos", target_os = "windows"))
+}
+
 /// Opens `link` in the browser – only `https` and `http`, so a text cannot start a program.
 pub fn open_link(link: &str) -> Result<(), String> {
     if !(link.starts_with("https://") || link.starts_with("http://")) {

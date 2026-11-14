@@ -9042,6 +9042,20 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{names}. Loading them tells the image servers when you read this.",
         "{names}. Lädst du sie, erfahren die Bildserver, wann du das liest.",
     ),
+    // YouTube videos in the chat (issue #673)
+    ("Close window", "Fenster schließen"),
+    ("Open on YouTube", "Auf YouTube öffnen"),
+    ("Play video", "Video abspielen"),
+    ("The demo plays no videos.", "Die Demo spielt keine Videos ab."),
+    ("The video could not be opened.", "Das Video konnte nicht geöffnet werden."),
+    ("This video cannot be shown right now.", "Dieses Video kann gerade nicht gezeigt werden."),
+    ("This video is no longer in the chat.", "Dieses Video ist nicht mehr im Chat."),
+    (
+        "This video may not load. Allow YouTube in Settings › Privacy, or use Show once in the chat.",
+        "Dieses Video darf nicht laden. Erlaube YouTube in Einstellungen › Privatsphäre oder nutze „Einmal zeigen“ im Chat.",
+    ),
+    ("Window", "Fenster"),
+    ("YouTube video", "YouTube-Video"),
     // Skills of the assistant and the bots (issue #703).
     (
         "1. Greet the customer by name.\n2. Name the price and what it includes.\n3. Close with when the offer holds.",

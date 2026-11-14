@@ -6,7 +6,8 @@
 //! reactions (one of them the person's own), an edited message, two favourites ("Team Alpha" and
 //! the chat with Gesa) and a message of the person's that is too old to change. For stage 4: the
 //! group "Design sync" ([`DESIGN`]) shares pictures, videos with and without a preview, a PDF, a
-//! voice message, a file that may not be downloaded and two links, one with its card ([`files`]).
+//! voice message, a file that may not be downloaded, two links, one with its card, and a YouTube video
+//! with its video card ([`files`]).
 //! For stage 6b: Ben calls, and it rings ([`ChatSource::call`]).
 //!
 //! Editing and deleting follow Talk's limits ([`EDIT_FOR`], [`DELETE_FOR`]), measured from the
@@ -1389,6 +1390,8 @@ mod tests {
         assert!(files.iter().any(|f| f.hide_download), "a file that may not be downloaded");
         assert!(page.messages.iter().any(|m| m.kind == MessageKind::Voice), "a voice message");
         assert!(page.messages.iter().any(|m| !m.cards.is_empty()), "a link card");
+        let video = page.messages.iter().find_map(|m| m.cards.first().and_then(|card| card.video.clone()));
+        assert_eq!(video.map(|video| video.id).as_deref(), Some("M7lc1UVf-VE"), "a YouTube video");
         let list = run(demo.conversations(None)).expect("list");
         let order: Vec<&str> = list.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(order[..4], ["Ben Koch", "Gesa Lange", "Team Alpha", "Design sync"], "the order stays");
@@ -1510,7 +1513,7 @@ mod tests {
         assert_eq!(media.items.len(), 9, "six pictures, two videos and the SVG");
         assert!(media.items.windows(2).all(|pair| pair[0].at >= pair[1].at), "the newest first");
         let links = run(demo.shared(DESIGN.into(), Some(SharedKind::Link), None, None)).expect("links");
-        assert_eq!(links.items.len(), 1, "only the link with a card");
+        assert_eq!(links.items.len(), 2, "only the links with a card: the own server's and the video");
         let foreign = message_id(DESIGN, 11);
         assert_eq!(message(&demo, DESIGN, 11).foreign.map(|provider| provider.key).as_deref(), Some("example.com"));
         let card = run(demo.show_card(foreign.clone())).expect("a card").expect("example.com has one");

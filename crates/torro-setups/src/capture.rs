@@ -459,7 +459,7 @@ mod tests {
     /// under every name AeroSpace and GlazeWM give them; the contact list and the control centre are not.
     #[test]
     fn a_floating_window_is_known_by_its_flag() {
-        use torro_core::app::{CHAT_CONVERSATION_CLASS, CHAT_RING_CLASS, CHAT_VIEWER_CLASS};
+        use torro_core::app::{CHAT_CONVERSATION_CLASS, CHAT_PLAYER_CLASS, CHAT_RING_CLASS, CHAT_VIEWER_CLASS};
 
         let chat_bundle = "io.github.mahype.torro-chat";
         let chat_app = "/Applications/Torro Chat.app";
@@ -471,6 +471,11 @@ mod tests {
             ),
             ("torrochat.exe", words(&["C:\\Torro\\torrochat.exe", "--ring=call-7"]), CHAT_RING_CLASS),
             ("torrochat", words(&["/usr/bin/torrochat", "--viewer", "ben/photo.jpg"]), CHAT_VIEWER_CLASS),
+            (
+                chat_bundle,
+                words(&["open", "-n", "-a", chat_app, "--args", "--player=nextcloud:a@b/ben/17"]),
+                CHAT_PLAYER_CLASS,
+            ),
             (
                 WORKPLACE_BUNDLE_ID,
                 words(&[

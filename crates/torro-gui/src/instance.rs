@@ -95,6 +95,17 @@ pub fn claim_named(app: AppId, name: &str) -> Claim {
     }
 }
 
+/// [`claim_named`] for a window that is no Iced window (issue #673: the player of a chat video, a tao
+/// window): each later `show` on the name calls `on_show` on the channel's thread instead of reaching
+/// [`subscription`], so the window brings itself to the front (e.g. through its event loop's proxy).
+/// Answers and is called as [`claim_named`].
+pub fn claim_named_with(app: AppId, name: &str, on_show: impl Fn() + Send + 'static) -> Claim {
+    match named_channel_path(app, name) {
+        Some(path) => claim_at(&path, on_show),
+        None => Claim::Without,
+    }
+}
+
 /// The channel of `app`'s kind of window: on Unix `<window class>.instance` in the state directory
 /// of `app` ([`torro_core::paths::AppPaths::for_app`]), on Windows the named pipe
 /// `\\.\pipe\torro-<window class>-<user SID>`. `None` without a home directory or a SID.
