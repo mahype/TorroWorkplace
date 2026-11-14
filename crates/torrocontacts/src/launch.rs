@@ -62,11 +62,13 @@ pub enum Open {
     MapFinding,
     /// Anna Berg open, her address not found on the map.
     MapNotFound,
+    /// Anna Berg open, the map service not reachable.
+    MapUnavailable,
 }
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 22] = [
+    pub const ALL: [(&'static str, Open); 23] = [
         ("list", Open::List),
         ("by-city", Open::ByCity),
         ("by-book", Open::ByBook),
@@ -89,6 +91,7 @@ impl Open {
         ("map-lookup-off", Open::MapLookupOff),
         ("map-finding", Open::MapFinding),
         ("map-not-found", Open::MapNotFound),
+        ("map-unavailable", Open::MapUnavailable),
     ];
 
     /// The uid of the demo contact this state opens in the side panel, if it opens one.
@@ -101,7 +104,8 @@ impl Open {
             | Open::MapOff
             | Open::MapLookupOff
             | Open::MapFinding
-            | Open::MapNotFound => Some("demo-01"),
+            | Open::MapNotFound
+            | Open::MapUnavailable => Some("demo-01"),
             Open::Conflict => Some("demo-04"),
             Open::Readonly => Some("demo-05"),
             Open::Pending => Some("demo-08"),
@@ -120,6 +124,7 @@ impl Open {
             Open::MapLookupOff => Some(AddressMap::LookupOff),
             Open::MapFinding => Some(AddressMap::Finding),
             Open::MapNotFound => Some(AddressMap::NotFound),
+            Open::MapUnavailable => Some(AddressMap::Unavailable),
             _ => None,
         }
     }

@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn the_map_holds_two_buttons_of_full_height() {
         assert!(size::control_sm() >= 24.0, "a click target of at least 24");
-        assert!(size::map_preview() >= 2.0 * size::control_sm() + 3.0 * space::xs());
+        assert!(size::map_preview() >= 2.0 * size::control_sm() + 2.0 * space::s());
         assert!(torro_gui::map::pin_size() > icon::SIZE);
         let picture = image::Handle::from_rgba(1, 1, vec![0; 4]);
         let _ = map_view(&picture, Color::WHITE, Message::OpenMaps);

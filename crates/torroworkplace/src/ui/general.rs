@@ -46,6 +46,9 @@ pub struct State {
     pub suite: suite::State,
     /// The addresses of "Maps" as typed and not saved yet ([`maps`]).
     maps: MapsDraft,
+    /// "Clear" of "Stored map data" was pressed while the core said this (issue #355): the button
+    /// says "Clearing…" until the numbers change.
+    clearing: Option<torro_ipc::MapsStatus>,
 }
 
 /// One of the two addresses under "Maps": the place search service or the map tiles.
@@ -195,7 +198,10 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             return maps_change(state, maps, "openWith", serde_json::to_value(app).unwrap_or_default());
         }
         Message::ContactLookup(on) => return maps_change(state, maps, "contactLookup", serde_json::Value::Bool(on)),
-        Message::ClearMaps => return Action::Send(Request::ClearMapsCache),
+        Message::ClearMaps => {
+            state.clearing = Some(data.maps_status.unwrap_or_default());
+            return Action::Send(Request::ClearMapsCache);
+        }
         Message::AddressInput(which, text) => {
             let left = leave_address(state, maps, which.other());
             *state.maps.draft_mut(which) = Some(Draft { text, handed_in: false });
@@ -390,10 +396,14 @@ fn maps<'a>(state: &'a State, maps: &'a Maps, status: Option<torro_ipc::MapsStat
     if maps.enabled {
         lookup = lookup.on_toggle(Message::ContactLookup);
     }
-    let lookup_line = trf(
+    let mut lookup_line = trf(
         "Sends the address of a contact you open to {service} to place it on the map. Results stay on this device.",
         &[("service", &service_host(&maps.geocoder))],
     );
+    if !maps.enabled {
+        // Why the switch does not move: it counts only while maps are on.
+        lookup_line = format!("{lookup_line} {}", tr("Needs maps and place search."));
+    }
     let stored = status.map(|status| {
         trf(
             "{size} of map tiles · {places} contact places",
@@ -411,12 +421,7 @@ fn maps<'a>(state: &'a State, maps: &'a Maps, status: Option<torro_ipc::MapsStat
         search,
         tiles,
         open_with,
-        setting_row(
-            None,
-            tr("Stored map data"),
-            stored,
-            widgets::text_button(None, tr("Clear"), style::button::secondary, Some(Message::ClearMaps)),
-        ),
+        setting_row(None, tr("Stored map data"), stored, clear_button(status, state.clearing)),
     ];
     let footer = tr("Off until you turn it on. Both services are run by others, under their own rules.");
     let links = MAP_LINKS.map(|(label, url)| {
@@ -427,6 +432,19 @@ fn maps<'a>(state: &'a State, maps: &'a Maps, status: Option<torro_ipc::MapsStat
         block = block.push(notice(trf("Not saved: {reason}", &[("reason", &tr(why))])));
     }
     block.push(row(links).spacing(space::xs()).wrap().vertical_spacing(space::xs())).into()
+}
+
+/// "Clear" of "Stored map data": "Clearing…" while the numbers are still those it was pressed at, off
+/// while nothing is stored or the numbers are not known.
+fn clear_button<'a>(
+    status: Option<torro_ipc::MapsStatus>,
+    clearing: Option<torro_ipc::MapsStatus>,
+) -> Element<'a, Message> {
+    if status.is_some() && status == clearing {
+        return widgets::busy_button(tr("Clearing…"), style::button::secondary);
+    }
+    let empty = status.is_none_or(|status| status.tile_bytes == 0 && status.contact_places == 0);
+    widgets::text_button(None, tr("Clear"), style::button::secondary, (!empty).then_some(Message::ClearMaps))
 }
 
 /// The host of the place search service's address for the line under "Look up contact addresses"
@@ -690,6 +708,13 @@ mod tests {
         let status = torro_ipc::MapsStatus { tile_bytes: 13_002_342, contact_places: 38 };
         drop(maps(&State::default(), &on, Some(status)));
         drop(maps(&State::default(), &Maps::default(), None));
+        // "Clearing…" until the numbers change; nothing to clear, nothing to press.
+        let mut state = State::default();
+        let shown = Data { maps_status: Some(status), ..Data::default() };
+        let _ = update(&mut state, Message::ClearMaps, &shown);
+        assert_eq!(state.clearing, Some(status));
+        drop(clear_button(Some(status), state.clearing));
+        drop(clear_button(Some(torro_ipc::MapsStatus::default()), None));
     }
 
     /// Task TE.10: moving on to the other field or another control of the group saves the address

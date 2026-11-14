@@ -277,45 +277,39 @@ pub fn body<'a>(contact: &'a Contact, look: Look<'a>) -> Element<'a, Message> {
     parts.into()
 }
 
-/// The map under the address number `index` ([`AddressMap`]): the picture with its pin in `pin` and
-/// ↗ "Open in Maps" over it, a click on it opens the maps app too; else a quiet line why there is
-/// none, with "Open in Maps" beside it (the maps app finds the address as text). The lines of the
-/// switches lead to Settings › General of the control centre.
+/// The map under the address number `index` ([`AddressMap`]): the picture with its pin in `pin`, a
+/// click on it or ↗ opens the maps app; while it is being found, its empty frame with "Finding
+/// address…". Else one line built the same in every state: why there is no map in `meta`/`text_3` on
+/// the axis of the labels (wrapping), and at the right edge the actions – "Turn on ›" for a switch
+/// that is off (Settings › General of the control centre) and ↗ "Open in Maps" (the maps app finds
+/// the address as text).
 pub fn address_map(map: &AddressMap, index: usize, pin: iced::Color) -> Element<'_, Message> {
     let open = Message::OpenInMaps(index);
-    let words = match map {
+    let (words, turn_on) = match map {
         AddressMap::Shown(picture) => {
             let credit = Message::OpenUri(torro_gui::map::OSM_COPYRIGHT.to_owned());
-            let map = torro_gui::map::map_view(picture, pin, open.clone(), credit);
-            return iced::widget::mouse_area(map).on_press(open).interaction(iced::mouse::Interaction::Pointer).into();
+            return torro_gui::map::map_view(picture, pin, open, credit);
         }
-        AddressMap::Finding => return quiet(tr("Finding address…")),
-        AddressMap::NotFound => quiet(tr("Address not found on the map")),
-        AddressMap::Unavailable => quiet(tr("The map is not available right now.")),
-        AddressMap::LookupOff => widgets::text_button_trailing(
-            tr("Turn on address lookup to see a map"),
-            Icon::ChevronRight,
-            style::button::ghost,
-            Some(Message::OpenMapSettings),
-        ),
-        AddressMap::MapsOff => widgets::text_button_trailing(
-            tr("Turn on maps to see a map"),
-            Icon::ChevronRight,
-            style::button::ghost,
-            Some(Message::OpenMapSettings),
-        ),
+        AddressMap::Finding => return torro_gui::map::map_placeholder(tr("Finding address…"), open),
+        AddressMap::NotFound => (tr("Address not found on the map"), false),
+        AddressMap::Unavailable => (tr("The map is not available right now."), false),
+        AddressMap::LookupOff => (tr("Address lookup is off"), true),
+        AddressMap::MapsOff => (tr("Maps are off"), true),
     };
+    let words = container(typo::text(typo::meta(), words).style(theme::text_3).wrapping(Wrapping::WordOrGlyph))
+        .width(Fill)
+        .align_y(Alignment::Center);
+    let mut line = row![words].spacing(space::s()).align_y(Alignment::Center);
+    if turn_on {
+        line = line.push(widgets::text_button_trailing(
+            tr("Turn on"),
+            Icon::ChevronRight,
+            style::button::ghost,
+            Some(Message::OpenMapSettings),
+        ));
+    }
     let open = widgets::text_button(Some(Icon::ArrowUpRight), tr("Open in Maps"), style::button::ghost, Some(open));
-    // Side by side while both fit, "Open in Maps" under the line where they do not; never a gap between.
-    row![words, open].spacing(space::s()).align_y(Alignment::Center).wrap().into()
-}
-
-/// A quiet line under an address: `meta` in `text_3`, as high as a button so the states do not jump.
-fn quiet<'a>(words: &'static str) -> Element<'a, Message> {
-    container(typo::text(typo::meta(), words).style(theme::text_3).wrapping(Wrapping::WordOrGlyph))
-        .height(size::control_sm())
-        .align_y(Alignment::Center)
-        .into()
+    line.push(open).into()
 }
 
 /// A value of a field: its kind as the label, the value – wrapping, so a long address or date reads

@@ -370,9 +370,9 @@ ersten beschreibbaren Buch an (`contacts.create_contact`); ohne beschreibbares B
 
 **Karte im Kontakt (KO2, #355):** das Kartenbild des Kalenders (`calendar.map_preview`, Zoom 16) mit Pin, oben
 rechts ↗ „Open in Maps“, unten rechts „© OpenStreetMap“. Ein Klick öffnet die Karten-App. Ohne Karte steht an der
-Stelle eine Zeile mit „Open in Maps“ daneben: „Finding address…“, „Address not found on the map“, „Turn on address
-lookup to see a map“ bzw. „Turn on maps to see a map“ (beide mit Link zur Steuerzentrale › General) oder „The map is
-not available right now.“
+Stelle eine Zeile, links der Grund, rechts „Open in Maps“: „Address not found on the map“, „Address lookup is off“
+bzw. „Maps are off“ (beide mit „Turn on ›“ zur Steuerzentrale › General) oder „The map is not available right now.“
+Während der Suche steht der leere Rahmen der Karte mit „Finding address…“, damit darunter nichts springt.
 
 **Karte aller Kontakte (KO4), „Karte als Ansicht“** (Entscheidung 11, Entwurf `c-karte.html`):
 - **Nur mit Zustimmung.** Ist die Ortssuche (`maps.geocoding`) aus, gibt es die Karte nicht: kein Schalter,

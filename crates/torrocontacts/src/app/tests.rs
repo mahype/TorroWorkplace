@@ -446,6 +446,7 @@ async fn the_maps_of_an_open_contact_follow_its_version() {
         ("map-lookup-off", AddressMap::LookupOff),
         ("map-finding", AddressMap::Finding),
         ("map-not-found", AddressMap::NotFound),
+        ("map-unavailable", AddressMap::Unavailable),
     ] {
         let mut app = loaded(&["--demo", "--open", state]).await;
         let _ = opened(&mut app, "demo-01").await;

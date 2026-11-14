@@ -1746,7 +1746,8 @@ impl App {
             | Open::MapOff
             | Open::MapLookupOff
             | Open::MapFinding
-            | Open::MapNotFound => {}
+            | Open::MapNotFound
+            | Open::MapUnavailable => {}
         }
         if let Some(uid) = open.contact() {
             let suffix = format!("/{uid}");

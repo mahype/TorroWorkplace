@@ -6,13 +6,13 @@
 //!
 //! Nothing here talks to a map service: the apps ask the core for the picture and hand it in.
 
-use iced::widget::{Space, column, container, image, row, stack, svg};
+use iced::widget::{Space, button, column, container, image, row, stack, svg};
 use iced::{Background, Border, Color, ContentFit, Element, Length, Theme};
 use torro_core::i18n::tr;
 
 use crate::icon::{self, Icon, icon};
 use crate::theme::{palette, radius, size, space};
-use crate::{style, widgets};
+use crate::{style, typo, widgets};
 
 /// The size of the picture `calendar.map_preview` is asked for, in logical pixels (layout A of the
 /// event editor). It is only the request: the map is laid out as wide as its column and
@@ -32,6 +32,7 @@ pub fn pin_size() -> f32 {
 /// The map, [`size::map_preview()`] high: the picture with a pin in the middle in `pin`, ↗ "Open in
 /// Maps" (`open`) in the top right corner and "© OpenStreetMap" (`credit`, which opens
 /// [`OSM_COPYRIGHT`]; a button as high as ↗) in the bottom right one, in a frame with radius `md`.
+/// A click on the map itself opens it too; the frame turns `line_selected` under the pointer.
 pub fn map_view<'a, M: Clone + 'a>(picture: &'a image::Handle, pin: Color, open: M, credit: M) -> Element<'a, M> {
     let height = size::map_preview();
     let picture =
@@ -39,19 +40,42 @@ pub fn map_view<'a, M: Clone + 'a>(picture: &'a image::Handle, pin: Color, open:
     let marker = icon(Icon::MapPin, pin_size()).style(move |_, _| svg::Style { color: Some(pin) });
     // The tip of the pin, not its middle, stands on the point.
     let marker = container(column![marker, Space::new().height(pin_size())]).center(Length::Fill);
-    let open = widgets::boxed_button(Icon::ArrowUpRight, tr("Open in Maps"), Some(open));
+    let corner = widgets::boxed_button(Icon::ArrowUpRight, tr("Open in Maps"), Some(open.clone()));
     let credit = widgets::text_button(None, tr("© OpenStreetMap"), style::button::secondary, Some(credit));
     let over = column![
-        row![Space::new().width(Length::Fill), open],
+        row![Space::new().width(Length::Fill), corner],
         Space::new().height(Length::Fill),
         row![Space::new().width(Length::Fill), credit],
     ]
-    .padding(space::xs());
-    container(stack![picture, marker, over].width(Length::Fill).height(height))
-        .width(Length::Fill)
-        .style(frame)
-        .clip(true)
-        .into()
+    .padding(space::s());
+    let inside = container(stack![picture, marker, over].width(Length::Fill).height(height)).clip(true);
+    button(inside).padding(0).width(Length::Fill).style(frame_button).on_press(open).into()
+}
+
+/// The place of the map while there is none yet (issue #355, "Finding address…"): the frame as high
+/// as the map with `words` in the middle in `meta`/`text_3` and ↗ "Open in Maps" (`open`) in its
+/// corner, so nothing below moves when the map comes.
+pub fn map_placeholder<'a, M: Clone + 'a>(words: &'a str, open: M) -> Element<'a, M> {
+    let height = size::map_preview();
+    let words = container(typo::text(typo::meta(), words).style(crate::theme::text_3)).center(Length::Fill);
+    let corner = widgets::boxed_button(Icon::ArrowUpRight, tr("Open in Maps"), Some(open));
+    let over = column![row![Space::new().width(Length::Fill), corner]].padding(space::s());
+    container(stack![words, over].width(Length::Fill).height(height)).width(Length::Fill).style(frame).into()
+}
+
+/// The frame of the map as a button: [`frame`], its edge `line_selected` under the pointer, like a
+/// card that opens.
+fn frame_button(theme: &Theme, status: button::Status) -> button::Style {
+    let mut border = frame(theme).border;
+    if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+        border.color = palette(theme).line_selected;
+    }
+    button::Style {
+        background: Some(Background::Color(palette(theme).raised)),
+        border,
+        text_color: palette(theme).text,
+        ..button::Style::default()
+    }
 }
 
 /// The frame of the map: `line_strong`, radius `md`.
@@ -97,10 +121,11 @@ mod tests {
     #[test]
     fn the_map_holds_two_buttons_of_full_height() {
         assert!(size::control_sm() >= 24.0, "a click target of at least 24");
-        assert!(size::map_preview() >= 2.0 * size::control_sm() + 3.0 * space::xs());
+        assert!(size::map_preview() >= 2.0 * size::control_sm() + 2.0 * space::s());
         assert!(pin_size() > icon::SIZE);
         let picture = image::Handle::from_rgba(1, 1, vec![0; 4]);
         let _: Element<'_, u8> = map_view(&picture, Color::WHITE, 1, 2);
+        let _: Element<'_, u8> = map_placeholder("Finding", 1);
         let _ = demo_map(&Theme::Dark);
     }
 }
