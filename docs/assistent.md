@@ -76,7 +76,7 @@ Was offene Modelle brauchen, damit das gut geht:
   `RESULT_HOURS` in `assistant/store.rs`, keine Einstellung), auch in angehefteten Unterhaltungen;
   danach entfernt der Lauf beim Start und jede Stunde (`Assistant::clean_up`) es aus der Datei, also
   spätestens eine Stunde nach Ablauf, solange der Dienst läuft und die Unterhaltung gerade nicht
-  antwortet (sonst in der Runde danach). Wer später
+  antwortet (sonst in einer späteren Runde). Wer später
   weiterredet, bekommt vom Modell keine Antwort mehr aus den alten Treffern, es sucht bei Bedarf
   neu. Ergebnisse von Websuche und Seitenabruf werden nie gespeichert (die Bedingungen von Brave
   erlauben es nicht, darum für keinen Anbieter). Überschreitet der Verlauf die Hälfte des Kontextfensters des Modells
@@ -711,7 +711,7 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
   einstellbar bis „forever“); angeheftete bleiben. Was ein Werkzeug dem Modell geliefert hat
   (etwa ein Mail-Text), bleibt kürzer: 24 Stunden nach dem Aufruf, auch in angehefteten
   Unterhaltungen und bei „forever“ (Issue #714); danach schreibt der nächste Lauf (beim Start und
-  stündlich, eine antwortende Unterhaltung in der Runde danach) die Datei ohne diese Ergebnisse neu,
+  stündlich, eine antwortende Unterhaltung in einer späteren Runde) die Datei ohne diese Ergebnisse neu,
   Nachrichten und Werkzeugzeilen bleiben. Ob die Quelle (etwa die Mail) noch
   existiert, prüft der Dienst nicht; die kurze Frist deckt das ab. Ergebnisse von Websuche und
   Seitenabruf werden nie gespeichert.
