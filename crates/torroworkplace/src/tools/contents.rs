@@ -334,7 +334,7 @@ fn read(file: &Path, from_line: u32) -> Result<FileText, FolderError> {
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let total = u32::try_from(lines.len()).unwrap_or(u32::MAX);
     let start = usize::try_from(from_line.saturating_sub(1)).unwrap_or(usize::MAX);
-    let (mut page, mut chars, mut end) = (String::new(), 0usize, start);
+    let (mut page, mut chars, mut end, mut cut) = (String::new(), 0usize, start, false);
     for line in lines.iter().skip(start) {
         let count: usize = line.chars().map(escaped).sum();
         if chars + count > MAX_PAGE_CHARS {
@@ -345,6 +345,7 @@ fn read(file: &Path, from_line: u32) -> Result<FileText, FolderError> {
                     line.chars().take_while(|c| room.checked_sub(escaped(*c)).map(|left| room = left).is_some()),
                 );
                 end += 1;
+                cut = true;
             }
             break;
         }
@@ -353,7 +354,9 @@ fn read(file: &Path, from_line: u32) -> Result<FileText, FolderError> {
         end += 1;
     }
     let next_line = (end < lines.len()).then(|| u32::try_from(end + 1).unwrap_or(u32::MAX));
-    Ok(FileText::new(file.to_string_lossy().into_owned(), page, from_line, total, next_line, version))
+    let mut page = FileText::new(file.to_string_lossy().into_owned(), page, from_line, total, next_line, version);
+    page.cut_line = cut;
+    Ok(page)
 }
 
 /// How many characters `c` takes in JSON: two for a quote, a backslash and the usual control characters (`\n`), six
@@ -527,6 +530,10 @@ fn replace_file(allowed: &Allowed, file: &Path, read: &str, text: &str, bom: boo
             let _ = fs::remove_file(&temporary);
             Err(err)
         };
+        // The rights of the old file before the rename on Unix, where a rename replaces a file whatever its rights,
+        // so the changed file never stays private by mistake.
+        #[cfg(unix)]
+        let written = written.and_then(|()| fs::set_permissions(&temporary, permissions.clone()));
         if let Err(err) = written {
             return gone(failed(err));
         }
@@ -540,9 +547,10 @@ fn replace_file(allowed: &Allowed, file: &Path, read: &str, text: &str, bom: boo
         if let Err(err) = fs::rename(&temporary, file) {
             return gone(failed(err));
         }
-        // The rights of the old file only now: on Windows a read-only temporary file could neither replace the old
-        // one nor be removed again.
-        fs::set_permissions(file, permissions).map_err(failed)?;
+        // Elsewhere only now: on Windows a read-only temporary file could neither replace the old one nor be removed
+        // again. The file is changed by then, so a failure here does not turn the change into an error.
+        #[cfg(not(unix))]
+        let _ = fs::set_permissions(file, permissions);
         return Ok(version_of(&bytes));
     }
     Err(FolderError::Invalid(ALL_TAKEN).into())
@@ -800,7 +808,12 @@ mod tests {
         let single = format!("{}\nend\n", "b".repeat(MAX_PAGE_CHARS + 5));
         write_raw(&place, "home/Documents/one.txt", single.as_bytes());
         let cut = read_page(&place, "home/Documents/one.txt", None).expect("read");
-        assert_eq!((cut.text.chars().count(), cut.next_line), (MAX_PAGE_CHARS, Some(2)));
+        assert_eq!((cut.text.chars().count(), cut.next_line, cut.cut_line), (MAX_PAGE_CHARS, Some(2), true));
+        assert!(!read_page(&place, "home/Documents/one.txt", Some(2)).expect("read").cut_line);
+        // One line only (minified JSON): `more` is false, but the cut is said.
+        write_raw(&place, "home/Documents/min.json", "x".repeat(MAX_PAGE_CHARS * 2).as_bytes());
+        let min = read_page(&place, "home/Documents/min.json", None).expect("read");
+        assert!(!min.more && min.cut_line);
         assert_eq!(read_page(&place, "home/Documents/one.txt", Some(2)).expect("read").text, "end\n");
 
         // Measured as JSON writes it: a page of quotes and line breaks reaches the model whole (review of #705).
