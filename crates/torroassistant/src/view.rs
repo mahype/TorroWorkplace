@@ -338,9 +338,14 @@ impl App {
                 .on_input(Message::Search);
             items.push(search.into());
             // A search through the history (issue #704): its hits take the place of the groups.
-            if let Some(found) = self.history_search() {
-                items.extend(self.hit_rows(mode, found));
-                return shell::sidebar(head, items, Vec::new());
+            match self.history_search() {
+                Some(Ok(hits)) => {
+                    items.extend(self.hit_rows(mode, hits));
+                    return shell::sidebar(head, items, Vec::new());
+                }
+                // Without the core's search the titles are still filtered, below the note.
+                Some(Err(_)) => items.push(sidebar_note(tr("Search is not available"))),
+                None => {}
             }
             // The bots (task B.3) before the conversations: few, and each a way into its chat.
             if self.bots_loaded {
@@ -382,18 +387,11 @@ impl App {
     }
 
     /// The rows of the search's hits: under "Results" one row per conversation with its title and the
-    /// snippet of its newest hit, the hit opened last chosen; a note when nothing matches or the core
-    /// cannot search.
-    fn hit_rows<'a>(
-        &'a self,
-        mode: SidebarMode,
-        found: &'a Result<Vec<ConversationHit>, crate::backend::Refusal>,
-    ) -> Vec<Element<'a, Message>> {
-        let hits = match found {
-            Ok(hits) if hits.is_empty() => return vec![sidebar_note(tr("No conversation matches"))],
-            Ok(hits) => hits,
-            Err(_) => return vec![sidebar_note(tr("Search is not available"))],
-        };
+    /// snippet of its newest hit, the hit opened last chosen; a note when nothing matches.
+    fn hit_rows<'a>(&'a self, mode: SidebarMode, hits: &'a [ConversationHit]) -> Vec<Element<'a, Message>> {
+        if hits.is_empty() {
+            return vec![sidebar_note(tr("No conversation matches"))];
+        }
         let mut rows = vec![widgets::sidebar_group_in(mode, tr("Results"), None)];
         let mut seen = HashSet::new();
         for hit in hits.iter().filter(|hit| seen.insert(hit.conversation.as_str())) {

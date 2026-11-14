@@ -4,7 +4,8 @@
 //! Two kinds of window from one program ([`Window`]): the main window (class `torro-assistant`)
 //! with the conversations in the sidebar – pinned on top, then the newest, with a search – and the
 //! chat beside them; from [`SEARCH_FROM`] characters on the search looks through the whole history
-//! (`assistant.search_conversations`, issue #704), and a hit opens its conversation at the place; and a single chat window (`--chat <id>|new`, class `torro-assistant-chat`,
+//! (`assistant.search_conversations`, issue #704), and a hit opens its conversation at the place; and a
+//! single chat window (`--chat <id>|new`, class `torro-assistant-chat`,
 //! [`CHAT`]) with the chat alone. "Open in new window" in a conversation's menu, or a double
 //! click on it in the sidebar, sends `assistant.open_window`; the core starts the chat window. A
 //! chat window whose conversation was deleted meanwhile becomes a new chat, as a workspace
@@ -1565,6 +1566,8 @@ impl App {
                 if self.transcript.merge(summary, entries) {
                     self.after_change(true);
                 }
+                // A hit that waited for its entry (issue #704).
+                let hit = self.scroll_to_hit(&id).unwrap_or_else(Task::none);
                 // A new card (after `tools.create_pdf`) is resolved at once, not on the next tick.
                 let cards = if self.transcript.cards() == cards { Task::none() } else { self.fetch_cards() };
                 let new: Vec<String> = self
@@ -1575,7 +1578,7 @@ impl App {
                     .map(str::to_owned)
                     .collect();
                 let tasks: Vec<Task<Message>> = new.into_iter().map(|id| self.fetch_approval(id)).collect();
-                Task::batch(tasks.into_iter().chain([cards]))
+                Task::batch(tasks.into_iter().chain([cards, hit]))
             }
             Err(refusal) if refusal.code == "not-found" => self.gone(),
             // The next tick asks again.
@@ -1811,17 +1814,20 @@ impl App {
         self.snap = self.marked.clone();
         if self.current.as_ref() == Some(&id) && self.transcript.summary.is_some() {
             self.close_menus();
-            return self.scroll_to_hit(&id).unwrap_or_else(Task::none);
+            // A newer entry than the window has comes with the next look; the scroll waits for it.
+            return self.scroll_to_hit(&id).unwrap_or_else(|| self.follow());
         }
         self.select(id)
     }
 
     /// Scrolls the history of the open conversation `id` to the hit waiting for it ([`App::snap`]), by its
-    /// share of the entries; `None` when none waits. The history then stays there and does not follow.
+    /// share of the entries; `None` when none waits or its entry is not there yet (it keeps waiting). The
+    /// history then stays there and does not follow.
     fn scroll_to_hit(&mut self, id: &str) -> Option<Task<Message>> {
-        let (_, seq) = self.snap.take().filter(|(snap, _)| snap == id)?;
+        let (_, seq) = self.snap.clone().filter(|(snap, _)| snap == id)?;
         let entries = &self.transcript.entries;
         let at = entries.iter().position(|entry| entry.seq == seq)?;
+        self.snap = None;
         let share = if entries.len() <= 1 { 0.0 } else { at as f32 / (entries.len() - 1) as f32 };
         self.follow_bottom = false;
         Some(operation::snap_to(HISTORY, operation::RelativeOffset { x: None, y: Some(share) }))
