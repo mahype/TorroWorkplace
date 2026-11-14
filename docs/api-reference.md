@@ -3288,7 +3288,7 @@ Keine Felder.
 
 Zugriff `write` · MCP-Tool `assistant_speak`
 
-Reads a text aloud on this computer with the provider and voice of the assistant's settings, Markdown without its marks, at most 3000 characters. Returns once it was read or stopped; a new call stops the one that reads. With the provider OpenAI the text goes to OpenAI. `unsupported` says what is missing (graphics card, program, voice, OpenAI account).
+Reads a text aloud on this computer with the provider and voice of the assistant's settings, Markdown without its marks, at most 3000 characters read (longer than 20000 is an error). Blocks until it was read or stopped, minutes for a long text; the first call with Qwen3-TTS loads its model for about a minute. A new call stops the one that reads. With the provider OpenAI the text goes to OpenAI. `unsupported` says what is missing (graphics card, program, voice, OpenAI account).
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -4102,7 +4102,7 @@ Replaces all suite-wide settings at once. Prefer set_setting and set_collection_
 | `settings.voice.openaiVoice` | string | nein | The voice of OpenAI, one of [`OPENAI_VOICES`]; `None` for the first of [`OPENAI_RECOMMENDED`]. |
 | `settings.voice.qwenVoice` | string | nein | The voice of Qwen3-TTS, one of [`QWEN_VOICES`]; `None` for [`QWEN_RECOMMENDED`]. |
 | `settings.voice.readAloud` | boolean | nein, Standard `false` | Read the assistant's answers aloud in its chat windows (issue #745, the speaker in the input field). Off unless switched on: "Speak answers" above was on before, and the chat should not start talking after an update. "Hey Torro" follows [`Voice::speak_answers`] instead. |
-| `settings.voice.speakAnswers` | boolean | nein, Standard `true` | Speak the answers with Piper as well as showing them. On unless turned off. |
+| `settings.voice.speakAnswers` | boolean | nein, Standard `true` | Speak the answers after "Hey Torro" as well as showing them, with the provider and voice of reading aloud (issue #745). On unless turned off. |
 | `settings.voice.speechProvider` | `"qwen"` \| `"openai"` \| `"piper"` | nein | Who reads aloud (issue #745); `None` until a person chooses: then Qwen3-TTS where this computer is fast enough and it is set up, else Piper ([`SpeechProvider`]). OpenAI only when chosen, since the text leaves the computer. |
 | `settings.voice.sttModel` | string | nein | The whisper.cpp model file (`ggml-base.bin`), an absolute path; `None` for the first model found in the voice folder. |
 | `settings.voice.voice` | string | nein | The Piper voice (`de_DE-thorsten-medium.onnx`, its `.onnx.json` next to it), an absolute path; `None` for the first voice found in the voice folder. |

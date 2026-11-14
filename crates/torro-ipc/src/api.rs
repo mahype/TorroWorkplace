@@ -4218,8 +4218,9 @@ static SPEAK: Command = Command {
     access: Access::Write,
     mcp: Mcp::Tool,
     description: "Reads a text aloud on this computer with the provider and voice of the assistant's settings, \
-                  Markdown without its marks, at most 3000 characters. Returns once it was read or stopped; a new \
-                  call stops the one that reads. With the provider OpenAI the text goes to OpenAI. `unsupported` \
+                  Markdown without its marks, at most 3000 characters read (longer than 20000 is an error). \
+                  Blocks until it was read or stopped, minutes for a long text; the first call with Qwen3-TTS \
+                  loads its model for about a minute. A new call stops the one that reads. With the provider OpenAI the text goes to OpenAI. `unsupported` \
                   says what is missing (graphics card, program, voice, OpenAI account).",
 };
 

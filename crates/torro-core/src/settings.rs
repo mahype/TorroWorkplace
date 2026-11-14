@@ -1310,7 +1310,8 @@ pub struct Voice {
     /// for the system's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub microphone: Option<String>,
-    /// Speak the answers with Piper as well as showing them. On unless turned off.
+    /// Speak the answers after "Hey Torro" as well as showing them, with the provider and voice of
+    /// reading aloud (issue #745). On unless turned off.
     #[serde(default = "on")]
     pub speak_answers: bool,
     /// The whisper.cpp model file (`ggml-base.bin`), an absolute path; `None` for the first

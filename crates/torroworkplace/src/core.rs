@@ -2696,15 +2696,28 @@ fn speech_language() -> &'static str {
     }
 }
 
-/// The answer of `assistant.speak` when the helper failed.
+/// What the speech helper is started with beyond the listener's settings: provider and voices.
+fn speech_choice(
+    voice: &torro_core::settings::Voice,
+) -> (Option<torro_core::settings::SpeechProvider>, Option<String>, Option<String>, Option<String>) {
+    (voice.speech_provider, voice.qwen_voice.clone(), voice.openai_voice.clone(), voice.voice.clone())
+}
+
+/// The answer of `assistant.speak` when the helper failed: a sentence for people; what went wrong
+/// (a path, the program's words) only into the log.
 fn speech_failure(err: &SpeechError) -> Response {
+    if let SpeechError::Failed(detail) = err {
+        eprintln!("torroworkplace: reading aloud failed: {detail}");
+    }
     match err {
         SpeechError::Overtaken => Response::Ok,
         SpeechError::Missing => Response::Error {
             code: "unsupported".into(),
             message: format!("{} is not installed", AppId::ASSISTANT.binary),
         },
-        SpeechError::Failed(message) => Response::Error { code: "error".into(), message: message.clone() },
+        SpeechError::Failed(_) => {
+            Response::Error { code: "error".into(), message: tr("Reading aloud failed. Try again.").into() }
+        }
     }
 }
 
@@ -6923,6 +6936,7 @@ impl Core {
             Request::SetSetting { key: SettingKey::ListOrder, value } => self.set_list_order(&value).await,
             Request::SetSetting { key: SettingKey::Reminders, value } => Box::pin(self.set_reminders(&value)).await,
             Request::UpdateSettings { settings } => {
+                let speech_before = speech_choice(&self.settings.current().voice);
                 // A client never sees the hidden collections, so what it sends back says nothing
                 // about them; they change only through `set_collection_shown`. Kept under the
                 // settings lock, so a collection hidden meanwhile stays hidden.
@@ -6931,6 +6945,10 @@ impl Core {
                     false => self.settings.update(settings),
                 };
                 self.follow_components();
+                // Another provider or voice ends the helper, as `set_setting` does (issue #745).
+                if speech_choice(&self.settings.current().voice) != speech_before {
+                    self.speech.end().await;
+                }
                 match updated {
                     Ok(()) => Response::Ok,
                     Err(message) => Response::Error { code: "error".into(), message },

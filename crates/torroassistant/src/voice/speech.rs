@@ -130,7 +130,8 @@ while True:
             put(struct.pack("<I", 24000))
         put(struct.pack("<I", 0))
     except Exception as err:
-        print("%s" % err, file=sys.stderr, flush=True)
+        # Only the kind of error: its words may quote the text being read.
+        print("generation failed: %s" % type(err).__name__, file=sys.stderr, flush=True)
         put(struct.pack("<I", 0))
     stopped.discard(ident)
 "#;
@@ -731,12 +732,10 @@ impl<W: FnMut(Output)> Helper<W> {
             Event::Gone(said) => {
                 self.qwen = None;
                 self.draining = false;
+                // What it last said stays in the log: a library's words may quote the text read.
+                eprintln!("torroassistant: qwen ended: {said}");
                 if matches!(self.job, Job::Qwen { .. }) {
-                    let reason = if said.is_empty() { tr("it stopped").to_string() } else { said };
-                    self.fail(Output::failed(
-                        "error",
-                        trf("Qwen3-TTS could not read the text: {reason}", &[("reason", &reason)]),
-                    ));
+                    self.fail(Output::failed("error", tr("Qwen3-TTS stopped. Try again.")));
                 }
                 if let Some(say) = self.pending.take() {
                     self.say(say, sender);

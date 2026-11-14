@@ -1268,7 +1268,8 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    Text jeder Antwort an OpenAI. `settings.set_setting` mit `speech_provider` `"openai"` bekommt von jedem Client
    `forbidden`, auch mit Admin-Rechten; ein `settings.update_settings` eines Clients behält den gespeicherten Anbieter,
    statt OpenAI zu wählen. Qwen3-TTS, Piper und `null` (die Wahl des Dienstes) sind gewöhnliche Admin-Änderungen.
-   `assistant.speak` selbst steht Clients mit den Rechten offen; es liest mit dem Anbieter, den ein Mensch gewählt hat
+   `assistant.speak` und `read_aloud` stehen Clients mit den Rechten offen: Die Zustimmung, dass Text an OpenAI geht,
+   liegt in der Wahl des Anbieters, nicht im Schalter; gelesen wird mit dem Anbieter, den ein Mensch gewählt hat
    (Tests `only_people_send_what_is_read_aloud_to_openai` in `torro-ipc` und
    `reading_aloud_is_set_and_a_client_never_chooses_openai` im Kern).
 
