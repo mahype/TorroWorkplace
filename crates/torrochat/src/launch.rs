@@ -9,6 +9,9 @@
 //! - `--viewer=<message>/<file>`: the window "Picture large" (stage 4) of the file `<file>` of the
 //!   message `<conversation>/<number>`, class `torro-chat-viewer`
 //!   ([`torro_core::app::CHAT_VIEWER_CLASS`]).
+//! - `--player=<message>`: the player window of the YouTube video on the card of the message
+//!   `<conversation>/<number>` (issue #673), class `torro-chat-player`
+//!   ([`torro_core::app::CHAT_PLAYER_CLASS`]); macOS and Windows only.
 //! - `--ring=<id>`: the small window of a call ringing in the conversation `<account>/<token>`
 //!   (stage 6b), class `torro-chat-ring` ([`torro_core::app::CHAT_RING_CLASS`]); the core starts it
 //!   once per call.
@@ -40,6 +43,8 @@ pub enum Window {
     Viewer { message: String, file: String },
     /// The ringing window of a call in the conversation (`<account>/<token>`).
     Ring(String),
+    /// The player window of the video on the card of the message (`<conversation>/<number>`).
+    Player(String),
 }
 
 /// A state the window can start in (`--demo --open <state>`), so every state can be photographed
@@ -258,7 +263,12 @@ impl Launch {
             None if open == Some(Open::Ring) => Some(Window::Ring(torro_chat::demo::BEN.to_owned())),
             None => None,
         };
-        let window = match (viewer.or(ring), flag_value(args, "--conversation")?) {
+        let player = match flag_value(args, "--player")? {
+            Some(id) if is_message(id) => Some(Window::Player(id.to_owned())),
+            Some(id) => return Err(unknown("--player", id, vec!["<account>/<token>/<number>"])),
+            None => None,
+        };
+        let window = match (viewer.or(ring).or(player), flag_value(args, "--conversation")?) {
             (Some(viewer), _) => viewer,
             (None, Some(id)) if is_conversation(id) => Window::Conversation(id.to_owned()),
             (None, Some(id)) => return Err(unknown("--conversation", id, vec!["<account>/<token>"])),
@@ -300,6 +310,15 @@ fn is_conversation(word: &str) -> bool {
         && word.len() <= ID_MAX
         && !word.chars().any(|c| c.is_whitespace() || c.is_control())
         && torro_chat::split_conversation(word).is_some()
+}
+
+/// A word that can be a message's id (`torro_chat::split_message`), not a flag, within [`ID_MAX`]
+/// bytes, without spaces or control characters.
+fn is_message(word: &str) -> bool {
+    !word.starts_with('-')
+        && word.len() <= ID_MAX
+        && !word.chars().any(|c| c.is_whitespace() || c.is_control())
+        && torro_chat::split_message(word).is_some()
 }
 
 /// The window "Picture large" of `<conversation>/<number>/<file>`: a message id
@@ -371,7 +390,9 @@ mod tests {
     /// `FLOATING_WINDOWS` and `starts` differ.
     #[test]
     fn every_side_window_is_a_floating_window() {
-        use torro_core::app::{CHAT_CONVERSATION_CLASS, CHAT_RING_CLASS, CHAT_VIEWER_CLASS, FLOATING_WINDOWS};
+        use torro_core::app::{
+            CHAT_CONVERSATION_CLASS, CHAT_PLAYER_CLASS, CHAT_RING_CLASS, CHAT_VIEWER_CLASS, FLOATING_WINDOWS,
+        };
 
         fn flag_of(window: &Window) -> Option<(&'static str, &'static str)> {
             match window {
@@ -379,13 +400,18 @@ mod tests {
                 Window::Conversation(_) => Some(("--conversation", CHAT_CONVERSATION_CLASS)),
                 Window::Viewer { .. } => Some(("--viewer", CHAT_VIEWER_CLASS)),
                 Window::Ring(_) => Some(("--ring", CHAT_RING_CLASS)),
+                Window::Player(_) => Some(("--player", CHAT_PLAYER_CLASS)),
             }
         }
 
         let conversation = "nextcloud:anna@cloud.example.org/ben4chat";
         let message = "nextcloud:anna@cloud.example.org/design4sync/3/5103";
-        let starts =
-            [format!("--conversation={conversation}"), format!("--ring={conversation}"), format!("--viewer={message}")];
+        let starts = [
+            format!("--conversation={conversation}"),
+            format!("--ring={conversation}"),
+            format!("--viewer={message}"),
+            format!("--player={conversation}/17"),
+        ];
         let mut flags = Vec::new();
         for start in &starts {
             let window = window_of(&[start]).expect("a window flag");
@@ -398,6 +424,15 @@ mod tests {
         assert_eq!(flag_of(&Window::Contacts), None, "the contact list stays a tile");
         let chat = FLOATING_WINDOWS.iter().filter(|entry| entry.binary == torro_core::AppId::CHAT.binary);
         assert_eq!(chat.count(), flags.len(), "no floating window of the chat that is not started here");
+    }
+
+    #[test]
+    fn player_takes_a_message() {
+        let id = "nextcloud:anna@cloud.example.org/design4sync/17";
+        assert_eq!(window_of(&[&format!("--player={id}")]), Ok(Window::Player(id.into())));
+        for bad in ["nextcloud:a@b/tok", "nextcloud:a@b/tok/x", "--demo", "a/b/1 2", "x"] {
+            assert!(matches!(window_of(&["--player", bad]), Err(LaunchError::UnknownValue { .. })), "{bad:?}");
+        }
     }
 
     #[test]
