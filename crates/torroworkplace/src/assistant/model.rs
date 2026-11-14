@@ -1365,6 +1365,9 @@ fn readable(name: &str, rights: &Rights, servers: &[ExtensionTool]) -> bool {
     }
     let areas_readable = touched(command).into_iter().all(|area| match area {
         Area::System | Area::Approvals => true,
+        // The assistant's memory, its bots and `my_access` are offered by the kind of client, not by an area's
+        // rights ([`tools::allowed_for`]); its own rights never hold these areas.
+        Area::Assistant | Area::Bots => true,
         Area::Clients => false,
         area => rights.area(area).allows(torro_ipc::api::Access::Read),
     });
@@ -4144,6 +4147,7 @@ pub(crate) mod tests {
         denied.denied.insert("mail.get_message".into());
         assert!(!readable("mail.get_message", &denied, &[]));
         assert!(!readable("tools.web_search", &reader(), &[]), "the tool web is not reached");
+        assert!(readable("bots.list_bots", &reader(), &[]), "offered by kind, not by an area");
 
         let server = |name: &str| ExtensionTool {
             extension: "time".into(),
