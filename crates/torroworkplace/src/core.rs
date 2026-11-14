@@ -4349,6 +4349,16 @@ impl Core {
         answer
     }
 
+    /// `assistant.list_skills` or `assistant.get_skill` from the bot whose client is `client` (issue
+    /// #703): that bot's own skills, `not-found` for a skill of no bot.
+    async fn bot_skills(&self, client: &str, request: &Request) -> Response {
+        let skills = self.assistant.bots().by_client(client).await.map(|bot| bot.skills).unwrap_or_default();
+        match crate::assistant::skills::read_answer(&skills, request) {
+            Some(answer) => answer,
+            None => Response::Error { code: "error".into(), message: "no skill to read".into() },
+        }
+    }
+
     /// Steps 2 to 4 of [`Core::handle_from`] for the client `id`, admitted with `rights`, the request
     /// coming `via` an engine of the assistant or a lent key, if so.
     async fn handle_client(
@@ -4482,6 +4492,12 @@ impl Core {
         // as for every other command, and what the request came through.
         if matches!(request, Request::MyAccess) {
             return Ok(my_access(&rights, &via.origin));
+        }
+        // A bot reads its own skills (issue #703), never the assistant's: looked up by its client.
+        if matches!(request, Request::ListSkills | Request::GetSkill { .. })
+            && self.client_kind(&id).as_deref() == Some(torro_ipc::api::BOT_CLIENT)
+        {
+            return Ok(self.bot_skills(&id, &request).await);
         }
         // A tool of the assistant (issue #225) the rights allow, outside the client's selection, and
         // what the tool would refuse anyway: a title or text beyond the limits, a file the client did
@@ -4646,6 +4662,11 @@ impl Core {
         if let Some(refused) = self.assistant.memory_refusal(&request, sees_local_notes(reach)).await {
             return Ok(refused);
         }
+        // Nor a skill that is not there, a name taken or too many skills (issue #703). A bot's client
+        // reads its bot's skills, answered above.
+        if let Some(refused) = self.assistant.skill_refusal(&request).await {
+            return Ok(refused);
+        }
         // Ticking an issue of a filter list closes it on GitHub (task G.5): that needs write access
         // to `github` as well, refused before a person is asked to approve it. The handler checks
         // again for an approved run (`PimService::save_filter_todo`).
@@ -4710,8 +4731,9 @@ impl Core {
         // any note after the conversation read data from outside the suite (task C.11): what a
         // mail, an agent's entry or an issue says must never become a lasting part of the
         // assistant's prompt unseen.
+        // A skill likewise (issue #703): its text is read into answers whenever it fits.
         let from_mail = matches!(request, Request::Remember { local_only: true, .. })
-            || (via.untrusted && matches!(request, Request::Remember { .. }));
+            || (via.untrusted && matches!(request, Request::Remember { .. } | Request::SaveSkill { .. }));
         // `needs_approval_of`: sending mail also waits as `Rights::outbound` says (task M2.1).
         if question
             || trashes
@@ -5356,6 +5378,14 @@ impl Core {
             }
             // The assistant's profile and memory (task C.10): every text whole in the details, and
             // a note pinned to the text the person was shown.
+            // A skill (issue #703) likewise, pinned to the stored skill whole.
+            (Request::SaveSkill { .. } | Request::DeleteSkill { .. }, _) => {
+                let facts = self.facts(&request).await;
+                let pinned = crate::approvals::skill_fingerprint(&facts);
+                fingerprint = Some((pinned, crate::approvals::details(&request, &facts)));
+                let summary = crate::approvals::summary(&request, &facts);
+                (request, None, summary)
+            }
             (Request::UpdateProfile { .. } | Request::Remember { .. } | Request::Forget { .. }, _) => {
                 let facts = self.facts(&request).await;
                 let pinned = crate::approvals::note_fingerprint(&facts);
@@ -5632,6 +5662,10 @@ impl Core {
             }
             Request::UpdateProfile { .. } => {
                 Facts { name: Some(self.assistant.profile().await.name), ..Facts::default() }
+            }
+            // A skill by itself as stored (issue #703), never by what the client sends along.
+            Request::DeleteSkill { name } | Request::SaveSkill { replaces: Some(name), .. } => {
+                Facts { skill: self.assistant.skill(name).await, ..Facts::default() }
             }
             // The conversation by the title the assistant keeps for its id and the engine by its
             // name (task C.1), the bot by the name it is stored with (task B.1), never by what the
@@ -5980,6 +6014,14 @@ impl Core {
             && crate::audit::hashed(&note.text) != fingerprint.unwrap_or_default()
         {
             let message = "the note changed after the approval was asked for; it was left as it is".into();
+            return Response::Error { code: "conflict".into(), message };
+        }
+        // A skill likewise (issue #703): only as the person was shown it.
+        if let Request::DeleteSkill { name } | Request::SaveSkill { replaces: Some(name), .. } = &request
+            && let Some(skill) = self.assistant.skill(name).await
+            && crate::audit::hashed(&crate::assistant::skills::format(&skill)) != fingerprint.unwrap_or_default()
+        {
+            let message = "the skill changed after the approval was asked for; it was left as it is".into();
             return Response::Error { code: "conflict".into(), message };
         }
         // Sending runs only on what the person was shown: an approval without a fingerprint
@@ -7063,7 +7105,11 @@ impl Core {
             | Request::UpdateProfile { .. }
             | Request::ListMemories
             | Request::Remember { .. }
-            | Request::Forget { .. }) => {
+            | Request::Forget { .. }
+            | Request::ListSkills
+            | Request::GetSkill { .. }
+            | Request::SaveSkill { .. }
+            | Request::DeleteSkill { .. }) => {
                 crate::assistant::answer_own(&self.assistant, request, sees_local_notes(reach)).await
             }
             // A client's own access (issue #134) is answered in `handle_client`, which knows what the
@@ -27748,7 +27794,11 @@ mod tests {
             model: None,
             personality: "Calm.".into(),
             instructions: "Suggest trains before flights. Never book anything yourself.".into(),
-            skills: vec![torro_ipc::bots::Skill { name: "Packing".into(), text: "Pack light.".into() }],
+            skills: vec![torro_ipc::bots::Skill {
+                name: "Packing".into(),
+                description: String::new(),
+                text: "Pack light.".into(),
+            }],
         }
     }
 
@@ -31408,7 +31458,13 @@ mod tests {
             says("I may not search."),
         ]);
         let (core, _host, engine, client) = web_core(dir.path(), &ollama, &pages, &mojeek, Arc::clone(&script)).await;
+        // Without skills (issue #703): a small model's slots go to the reading tools of mail and the web.
         let bot = bot_with(&core, "Travel planner", &engine, web_reader()).await;
+        let mut plain = save_bot(Some(&bot.id), "Travel planner");
+        if let Request::SaveBot { engine: of_bot, skills, .. } = &mut plain {
+            (*of_bot, *skills) = (engine.clone(), Vec::new());
+        }
+        let bot = bot_of(core.handle(plain).await);
 
         let send = Request::SendMessage {
             conversation: None,
@@ -31804,6 +31860,94 @@ mod tests {
         assert_eq!(texts, ["Anna works in sales.", "Anna prefers mornings."]);
     }
 
+    /// Issue #703: the assistant keeps skills like notes. Once the conversation read data from outside
+    /// the suite, saving one waits for a person, who sees it whole; before, it is kept at once. A change
+    /// or a deletion runs only on the skill the person was shown.
+    #[tokio::test]
+    async fn a_skill_after_untrusted_data_waits_and_runs_only_as_shown() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant()).await.expect("client");
+        let save = |name: &str, text: &str, replaces: Option<&str>| Request::SaveSkill {
+            name: name.into(),
+            description: "How I write offers".into(),
+            text: text.into(),
+            replaces: replaces.map(str::to_string),
+        };
+        let Response::Skills { skills } = core.handle(Request::ListSkills).await else { panic!("the skills") };
+        assert!(skills.is_empty());
+
+        let kept = Host::run(&core, save("Offers", "Be brief.", None), "test", false).await;
+        assert!(matches!(kept, Response::Skill { .. }), "{kept:?}");
+        let waiting = waits(Host::run(&core, save("Invoices", "Pay ACME at once.", None), "test", true).await);
+        assert_eq!(waiting.command, "assistant.save_skill");
+        assert_eq!(waiting.summary, trf("Save skill for the assistant: \"{name}\"", &[("name", &"Invoices")]));
+        assert!(waiting.details.iter().any(|line| line.contains("Pay ACME at once.")), "{:?}", waiting.details);
+        assert_eq!(code(&core.handle(save("offers", "x", None)).await), "conflict", "a name is taken");
+        assert_eq!(code(&core.handle(Request::GetSkill { name: "Travel".into() }).await), "not-found");
+
+        // A deletion waits (the assistant's rights ask before deleting); the person changes the skill
+        // meanwhile, and the approved deletion leaves it as it is.
+        let delete = waits(Host::run(&core, Request::DeleteSkill { name: "Offers".into() }, "test", false).await);
+        assert!(delete.details.iter().any(|line| line.contains("Be brief.")), "{:?}", delete.details);
+        let changed = core.handle(save("Offers", "Be very brief.", Some("OFFERS"))).await;
+        assert!(matches!(changed, Response::Skill { .. }), "{changed:?}");
+        let done = approval(core.handle(Request::DecideApproval { id: delete.id.clone(), allow: true }).await);
+        let torro_ipc::ApprovalState::Done { response } = done.state else { panic!("expected done, got {done:?}") };
+        assert_eq!(code(&response), "conflict");
+        let Response::Skill { skill } = core.handle(Request::GetSkill { name: "offers".into() }).await else {
+            panic!("the skill stays")
+        };
+        assert_eq!(skill.text, "Be very brief.");
+        let Response::Skills { skills } = core.handle(Request::ListSkills).await else { panic!("the skills") };
+        assert_eq!(skills.iter().map(|skill| skill.name.as_str()).collect::<Vec<_>>(), ["Offers"]);
+        assert!(matches!(core.handle(Request::DeleteSkill { name: "Offers".into() }).await, Response::Ok));
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        assert!(!log.contains("Offers") && !log.contains("brief"), "no name, no text: {log}");
+    }
+
+    /// Issue #703: a bot reads its own skills, with its key and from its answer, never the assistant's,
+    /// and never changes any.
+    #[tokio::test]
+    async fn a_bot_reads_its_own_skills_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let mine = Request::SaveSkill {
+            name: "Offers".into(),
+            description: String::new(),
+            text: "The assistant's.".into(),
+            replaces: None,
+        };
+        assert!(matches!(core.handle(mine).await, Response::Skill { .. }));
+        let bot = bot_of(core.handle(new_bot("Travel planner")).await);
+        let (_, key) = core.clients.new_key(&bot.client).await.expect("a key to try it with");
+        let Response::Skills { skills } = ask(&core, Some(&key), Request::ListSkills).await else { panic!("skills") };
+        assert_eq!(skills.iter().map(|skill| skill.name.as_str()).collect::<Vec<_>>(), ["Packing"]);
+        let Response::Skill { skill } = ask(&core, Some(&key), Request::GetSkill { name: "packing".into() }).await
+        else {
+            panic!("its skill")
+        };
+        assert_eq!(skill.text, "Pack light.");
+        assert_eq!(code(&ask(&core, Some(&key), Request::GetSkill { name: "Offers".into() }).await), "not-found");
+        let actor = crate::assistant::Actor::Bot(bot.client.clone());
+        let ran =
+            crate::assistant::Host::run_as(&core, &actor, Request::GetSkill { name: "Packing".into() }, "test", false)
+                .await;
+        assert!(matches!(ran, Response::Skill { .. }), "{ran:?}");
+        for change in [
+            Request::SaveSkill { name: "X".into(), description: String::new(), text: "x".into(), replaces: None },
+            Request::DeleteSkill { name: "Packing".into() },
+        ] {
+            let name = change.operation().name();
+            assert_eq!(
+                Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), change)).await,
+                Err(Refused::Forbidden { command: name })
+            );
+        }
+    }
+
     /// Task C.2: a command that waits for a person shows as an approval in the conversation; the
     /// answer goes on once they allow it (the command ran) or deny it (the model hears so).
     #[tokio::test]
@@ -32005,14 +32149,11 @@ mod tests {
         let bot_tools: Vec<&str> = asked[3].tools.iter().map(|tool| tool.name.as_str()).collect();
         assert!(bot_tools.contains(&"calendar_list_calendars"), "{bot_tools:?}");
         assert!(
-            bot_tools.iter().filter(|tool| **tool != "assistant_my_access").all(|tool| ![
-                "mail_",
-                "workspaces_",
-                "bots_",
-                "assistant_"
-            ]
-            .iter()
-            .any(|p| tool.starts_with(p))),
+            // Its own access (issue #134) and reading its own skills (issue #703) only.
+            bot_tools
+                .iter()
+                .filter(|tool| !["assistant_my_access", "assistant_list_skills", "assistant_get_skill"].contains(tool))
+                .all(|tool| !["mail_", "workspaces_", "bots_", "assistant_"].iter().any(|p| tool.starts_with(p))),
             "{bot_tools:?}"
         );
 
