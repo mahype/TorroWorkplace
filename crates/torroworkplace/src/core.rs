@@ -2624,6 +2624,10 @@ const VOICE_STATUS_WAIT: std::time::Duration = std::time::Duration::from_secs(15
 /// to text.
 const VOICE_TEST_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How long `torroassistant --dictate` may take (issue #699): a dictation is at most a minute, then
+/// speech to text.
+const DICTATE_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
+
 /// The arguments of a voice helper `mode` of the assistant app, with the voice settings.
 fn voice_args(mode: &str, voice: &torro_core::settings::Voice) -> Vec<String> {
     vec![mode.to_string(), "--voice".to_string(), serde_json::to_string(voice).unwrap_or_default()]
@@ -6768,6 +6772,11 @@ impl Core {
             }
             Request::VoiceStatus => self.voice_status().await,
             Request::TestVoice => self.test_voice().await,
+            Request::Dictate => self.dictate().await,
+            Request::StopDictation => {
+                self.voice.stop_dictation();
+                Response::Ok
+            }
             Request::MapsStatus => self.maps_status(reach),
             Request::ClearMapsCache => self.clear_maps_cache(reach),
             Request::SetCollectionShown { collection, shown } => self.set_collection_shown(&collection, shown).await,
@@ -13171,6 +13180,27 @@ impl Core {
             Ok(answer @ (Response::Transcript { .. } | Response::Error { .. })) => answer,
             Ok(other) => voice_failure(&unexpected_kind(&other)),
             Err(message) => voice_failure(&message),
+        }
+    }
+
+    /// `assistant.dictate` (issue #699, app key only): what the person says as text, recorded by
+    /// `torroassistant --dictate` until a pause or `assistant.stop_dictation`. Whether "Hey Torro" is
+    /// on does not matter. The text goes to the window only, never into the log.
+    async fn dictate(&self) -> Response {
+        if self.voice.program().is_none() {
+            return Response::Error {
+                code: "unsupported".into(),
+                message: format!("{} is not installed", AppId::ASSISTANT.binary),
+            };
+        }
+        let voice = self.settings.current().voice;
+        match self.voice.dictate(&voice_args("--dictate", &voice), DICTATE_WAIT).await {
+            Ok(answer @ (Response::Transcript { .. } | Response::Error { .. })) => answer,
+            Ok(other) => voice_failure(&unexpected_kind(&other)),
+            Err(crate::apps::DictateError::Busy) => {
+                Response::Error { code: "busy".into(), message: "a dictation is already running".into() }
+            }
+            Err(crate::apps::DictateError::Failed(message)) => voice_failure(&message),
         }
     }
 
