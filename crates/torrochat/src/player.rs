@@ -9,8 +9,8 @@
 //! What may play is what the core says ([`playable`]): the window reads the message with
 //! `chat.get_messages` `around` it, and plays only a video on a card the core gave, which it does only
 //! where Settings › Privacy lets YouTube's content load (or after "Show once"). The player loads only
-//! YouTube's privacy-enhanced embed of that one video ([`allowed_navigation`]); every other address
-//! goes to the browser.
+//! YouTube's privacy-enhanced embed of that one video ([`allowed_navigation`]); a link to YouTube itself
+//! goes to the browser ([`leads_to_youtube`]), every other address is refused.
 //!
 //! This file holds what the window decides, on every system, so it is tested everywhere; the window
 //! itself is [`window`].
@@ -62,6 +62,16 @@ pub fn allowed_navigation(url: &str, video: &Video) -> bool {
         Some(rest) => rest.is_empty() || rest.starts_with('?') || rest.starts_with('#'),
         None => false,
     }
+}
+
+/// Whether `url` is an address at YouTube itself (`https` to `youtube.com`, `www.`, `m.` or `youtu.be`):
+/// where the player's own links lead (its logo, a suggested video). Only those go to the browser; any
+/// other address a frame of the page asks for is refused without a word, so the player never opens a
+/// browser tab to a third party by itself.
+pub fn leads_to_youtube(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else { return false };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default().to_ascii_lowercase();
+    matches!(host.as_str(), "youtube.com" | "www.youtube.com" | "m.youtube.com" | "youtu.be")
 }
 
 /// The size the window opens at, logical: 640 × 360, a Short upright 360 × 640.
@@ -143,6 +153,25 @@ mod tests {
             "",
         ] {
             assert!(!allowed_navigation(url, &intro), "{url}");
+        }
+    }
+
+    #[test]
+    fn only_youtubes_own_addresses_go_to_the_browser() {
+        for url in
+            ["https://www.youtube.com/watch?v=M7lc1UVf-VE", "https://youtu.be/M7lc1UVf-VE", "https://YouTube.com/"]
+        {
+            assert!(leads_to_youtube(url), "{url}");
+        }
+        for url in [
+            "https://www.google.com/recaptcha/api2/anchor",
+            "https://googleads.g.doubleclick.net/pagead/id",
+            "https://www.youtube.com.example.org/watch",
+            "https://www.youtube.com@example.org/",
+            "http://www.youtube.com/watch?v=M7lc1UVf-VE",
+            "about:blank",
+        ] {
+            assert!(!leads_to_youtube(url), "{url}");
         }
     }
 

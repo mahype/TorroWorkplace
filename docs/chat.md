@@ -349,8 +349,9 @@ dahinter rückten um eins.
       ein zweites Mal zu fragen. Kennt der Server keine Karte für das Video, gibt der Kern eine Videokarte ohne Titel
       und Bild („YouTube video“). Bei „Never show“ und für ein gesperrtes YouTube bleibt nur der Link im Text.
     - **Datenschutzfreundlicher Modus:** Der Player lädt nur die Einbettung dieses einen Videos von
-      `www.youtube-nocookie.com` (keine Cookies, bevor jemand abspielt); jede andere Adresse (YouTube-Logo, Vorschläge)
-      und jedes neue Fenster gehen in den Browser. YouTube spielt eingebettete Videos nur, wenn sich das Programm
+      `www.youtube-nocookie.com` (keine Cookies, bevor jemand abspielt) und behält nichts zwischen zwei Starts
+      (Inkognito). Ein Link zu YouTube selbst (YouTube-Logo, Vorschläge) geht in den Browser; jede andere Adresse wird
+      nur abgelehnt, damit ein Rahmen der Seite nie von selbst einen Browser-Tab zu Dritten öffnet. YouTube spielt eingebettete Videos nur, wenn sich das Programm
       ausweist (sonst „Error 153“): Der Player schickt die Adresse der Suite (`https://io.github.mahype.torro-workplace/`)
       als `Referer`. Beim Abspielen lädt der Player auch von YouTubes Hilfs-Hosts (`ytimg.com`, `googlevideo.com`,
       `google.com`); die Freigabe von YouTube umfasst sie, sie stehen nicht einzeln in der Anbieterliste.

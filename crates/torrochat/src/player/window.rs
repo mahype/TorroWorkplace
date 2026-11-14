@@ -5,7 +5,8 @@
 //!   and ends ([`torro_gui::instance::claim_named_with`], `player:<message>`).
 //! - **What plays** comes from the core ([`super::playable`]); the demo plays nothing and says so.
 //! - **Only the embed of this video loads** ([`super::allowed_navigation`]); a link out of the player
-//!   (the YouTube logo, a suggested video) and every new window go to the browser.
+//!   to YouTube itself (the YouTube logo, a suggested video) goes to the browser, every other address
+//!   is refused. Nothing stays between starts (incognito).
 //! - **YouTube wants to know who embeds its player** (else "Error 153"): the page is asked for with the
 //!   suite's address as `Referer` ([`referer`]).
 //! - Without a web view (WebView2 missing) the video opens at YouTube in the browser, exit code 1.
@@ -26,7 +27,9 @@ use torro_gui::instance::Claim;
 use wry::http::{HeaderMap, HeaderValue, header::REFERER};
 use wry::{NewWindowResponse, Rect, WebView, WebViewBuilder};
 
-use super::{MIN_SIZE, PlayerError, allowed_navigation, note_page, playable, refusal, title, window_size};
+use super::{
+    MIN_SIZE, PlayerError, allowed_navigation, leads_to_youtube, note_page, playable, refusal, title, window_size,
+};
 use crate::app::CONTACTS;
 use crate::backend::Backend;
 use crate::system;
@@ -164,9 +167,13 @@ fn error_code(err: &ChatError) -> &'static str {
 }
 
 /// The web view of `shown` with every rule of the window: autoplay, no developer tools, no swiping
-/// back, only the embed of the video, links and new windows to the browser, no downloads.
+/// back, nothing kept between starts (incognito: what YouTube stores goes with the window), only the
+/// embed of the video, no downloads. An address of YouTube itself the player leads to (its logo, a
+/// suggested video) goes to the browser; any other is only refused, so a frame of the page that loads
+/// elsewhere never opens a browser tab by itself.
 fn webview_builder<'a>(shown: &Shown) -> WebViewBuilder<'a> {
     let builder = WebViewBuilder::new()
+        .with_incognito(true)
         .with_autoplay(true)
         .with_devtools(false)
         .with_back_forward_navigation_gestures(false)
@@ -174,7 +181,7 @@ fn webview_builder<'a>(shown: &Shown) -> WebViewBuilder<'a> {
         .with_download_started_handler(|_, _| false);
     match shown {
         Shown::Video { video, .. } => {
-            let (allowed, outside) = (video.clone(), video.clone());
+            let allowed = video.clone();
             let mut headers = HeaderMap::new();
             if let Ok(value) = HeaderValue::from_str(&referer()) {
                 headers.insert(REFERER, value);
@@ -187,10 +194,8 @@ fn webview_builder<'a>(shown: &Shown) -> WebViewBuilder<'a> {
                     to_browser(&url);
                     false
                 })
-                .with_new_window_req_handler(move |url, _| {
-                    if !allowed_navigation(&url, &outside) {
-                        to_browser(&url);
-                    }
+                .with_new_window_req_handler(|url, _| {
+                    to_browser(&url);
                     NewWindowResponse::Deny
                 })
                 .with_url_and_headers(torro_chat::embed_url(video), headers)
@@ -202,9 +207,10 @@ fn webview_builder<'a>(shown: &Shown) -> WebViewBuilder<'a> {
     }
 }
 
-/// Hands `url` to the browser when it is a web address; never logs it.
+/// Hands `url` to the browser when it is an address of YouTube itself ([`super::leads_to_youtube`]);
+/// never logs it.
 fn to_browser(url: &str) {
-    if (url.starts_with("https://") || url.starts_with("http://")) && system::open_link(url).is_err() {
+    if leads_to_youtube(url) && system::open_link(url).is_err() {
         eprintln!("{BINARY}: a link of the player could not be opened");
     }
 }
