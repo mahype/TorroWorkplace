@@ -2728,11 +2728,6 @@ fn account_name(account: &str) -> String {
     torro_inbox::rules::domain_of(address).unwrap_or_else(|| list::one_line(address))
 }
 
-/// The demo's invitations (task E8.3b): Maria's "Lunch next week?" (`m:w4`) invites to lunch on the
-/// Tuesday of next week at 12:00 for an hour, Paul's "Weekend plans" (`m:p1`) to a hike all
-/// Saturday. Counted from the demo's "now" (the mail's `date` plus how long before "now" the demo
-/// dated it), so `--now` gives the same pictures. `None` for every other message `id`. The entries
-/// of these mails carry them too (task E8.3c, [`demo_entry_invite`]).
 /// The demo's mail with a vCard attached (issue #727): its rail and footer offer "Add contact" in
 /// place of "Save as contact".
 pub const DEMO_VCARD_MAIL: &str = "m:w2";
@@ -2756,6 +2751,11 @@ fn demo_vcard(mail: &mut Mail) {
     mail.summary.has_attachments = true;
 }
 
+/// The demo's invitations (task E8.3b): Maria's "Lunch next week?" (`m:w4`) invites to lunch on the
+/// Tuesday of next week at 12:00 for an hour, Paul's "Weekend plans" (`m:p1`) to a hike all
+/// Saturday. Counted from the demo's "now" (the mail's `date` plus how long before "now" the demo
+/// dated it), so `--now` gives the same pictures. `None` for every other message `id`. The entries
+/// of these mails carry them too (task E8.3c, [`demo_entry_invite`]).
 fn demo_invite(id: &str, date: DateTime<Utc>) -> Option<Invite> {
     let (title, before, all_day) = match id {
         "m:w4" => (tr("Lunch with Maria"), chrono::TimeDelta::hours(26), false),

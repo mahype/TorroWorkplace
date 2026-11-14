@@ -11800,6 +11800,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
         match result {
             Ok(from) => {
+                // A toast that offers "Undo" (a mail archived or moved meanwhile) stays: losing its way
+                // back costs more than missing "Open contact" (review of #356).
+                if self.hint.as_ref().is_some_and(|hint| hint.undo.is_some()) {
+                    return;
+                }
                 let text = crate::contact::saved_text(from.created).to_owned();
                 let contact = Some(from.contact.id);
                 self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None, contact });
@@ -27680,6 +27685,20 @@ mod tests {
         assert!(app.hint.is_none(), "the running toast goes");
         assert!(app.error.is_some(), "the error is said");
         assert!(app.contact_saving.is_none());
+        // Review of #356: a toast with "Undo" shown meanwhile keeps its way back.
+        let _ = app.update(Message::SaveContact("m:w1".into()));
+        let undo = Undo::Mute(torro_inbox::SourceRef { kind: torro_inbox::SourceKind::Mail, name: "x".into() }, false);
+        app.hint = Some(Hint {
+            text: "Archived".into(),
+            undo: Some(undo),
+            shown: Instant::now(),
+            folder: None,
+            contact: None,
+        });
+        let contact = torro_contacts::Contact { id: "book/uid".into(), ..Default::default() };
+        let _ =
+            app.update(Message::ContactSaved("m:w1".into(), Ok(torro_contacts::FromItem { contact, created: true })));
+        assert!(app.hint.as_ref().is_some_and(|hint| hint.undo.is_some()), "the Undo stays");
     }
 
     /// Issue #727: the demo's states of the action draw in every size – the group "Torro" open on a
