@@ -244,14 +244,40 @@ mittel und schmal deckt es die Mail ab („‹ Mail“ führt zurück). Entwurf:
   Client, der das Konto selbst nicht sieht, gibt es die Unterhaltung nicht: Sie fehlt in der Liste, und
   jeder Befehl, der sie nennt, antwortet `not-found`, denn ihre Einträge erzählen, was in der Mail steht.
 
+## Skills (#703)
+
+Notizen sind kurz. Für Aufgaben, die wiederkommen („so schreibe ich Angebote“, „so sortiere ich Rechnungen“),
+schreibt die Person **Skills**: Anleitungen mit Name, Beschreibung und Text. Assistent und jeder Bot haben eigene
+Skills im selben Format und mit denselben Befehlen (entschieden), je bis zu 30, ein Text höchstens 8.000 Zeichen.
+
+- **Ablage:** je Skill ein Ordner mit `SKILL.md`, für den Assistenten `<config>/assistant/skills/<8 hex>/`, für
+  einen Bot `<config>/assistant/bots/<id>/skills/<8 hex>/` (Ordner 0700, Dateien 0600). Die Datei beginnt mit einem
+  Kopf zwischen zwei Zeilen `---` (`name:`, `description:`), danach steht der Text. Der Ordner lässt Platz für
+  Beidateien. Bots aus der Zeit davor (`bot.json` mit Namen, `skills/<n>.md`) lesen weiter, ohne Beschreibung;
+  beim nächsten Speichern schreibt der Kern das neue Format. Namen sind eindeutig ohne Groß/Klein; Skills stehen
+  nach Namen sortiert.
+- **Nachladen statt voller Text:** Im Prompt steht nach dem festen Skill „Torro Workplace“ ein Abschnitt
+  „Skills“ mit einer zitierten Zeile je Skill (`> - "Name": Beschreibung`). Passt eine Aufgabe, liest das Modell
+  den Text mit `assistant_get_skill`. Ohne Skills fehlen Abschnitt und Lesewerkzeuge, damit kleine Modelle keinen
+  Platz verlieren.
+- **Text der Person:** Skills sind zitiert wie die Persönlichkeit. Sie gelten nur innerhalb der Regeln, ändern nie
+  Rechte oder Regeln und geben keine Freigabe.
+- **Anlegen und Ändern:** in Assistent › Einstellungen › Skills (die Skills eines Bots im Bot-Editor). Der Assistent
+  legt einen Skill nur an, wenn die Person darum bittet (`assistant.save_skill`). Hat die Unterhaltung fremde Daten
+  gelesen, wartet das immer auf eine Freigabe mit dem ganzen Text, wie bei Notizen. Ändern und Löschen laufen nur auf
+  dem Skill, den die Person in der Freigabe sah.
+- **Bots** lesen nur ihre eigenen Skills (`assistant.list_skills`, `assistant.get_skill`, durch ihre Art erlaubt);
+  ändern kann sie nur die Person über `bots.save_bot`.
+- **Später:** Skills aus erledigten Aufgaben vorschlagen (eigenes Issue). Kein Laden aus dem Netz, kein Katalog.
+
 ## Bots (Stufe 2)
 
 Nach dem Vorbild der Bots bei Grok und der GPTs bei OpenAI, bei uns einfach **Bots**: weitere
 Agenten mit eigenem Profil, die auf ein Fachgebiet zugeschnitten sind, z. B. „Mail-Sortierer“,
 „Reiseplaner“, „Release-Helfer“ oder „Wochenrückblick“.
 
-- **Ein Bot hat:** Name, Bild, Beschreibung, Persönlichkeit, Anweisungen, eigenes Wissen (Skills,
-  später Dateien), Antrieb und Modell (Open First wie oben) und **eigene Rechte** (eigener Client
+- **Ein Bot hat:** Name, Bild, Beschreibung, Persönlichkeit, Anweisungen, eigenes Wissen (Skills wie der
+  Assistent, Abschnitt „Skills“; später Dateien), Antrieb und Modell (Open First wie oben) und **eigene Rechte** (eigener Client
   der Art `bot`).
 - **Zwei Wege zu jedem Bot:**
   1. **Direkt:** Man wählt ihn in der App (Seitenleiste „Bots“) oder per Weckwort/Namen („Hey
@@ -727,6 +753,8 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | Profil und Persönlichkeit lesen | Assistent › Einstellungen › Profile | `assistant.get_profile` · Read | `assistant_get_profile` |
 | Profil und Persönlichkeit ändern | ebenda | `assistant.update_profile` · Admin (mit Freigabe) | `assistant_update_profile` |
 | Gedächtnis lesen / ergänzen / löschen | ebenda › Memory; im Chat „Remember …“ | `assistant.list_memories` · Read, `assistant.remember` · Write, `assistant.forget` · Delete | `assistant_list_memories`, `assistant_remember`, `assistant_forget` |
+| Skills auflisten / lesen (#703) | Assistent › Einstellungen › Skills; im Prompt eine Zeile je Skill | `assistant.list_skills` · Read, `assistant.get_skill` · Read (ein Bot seine eigenen) | `assistant_list_skills`, `assistant_get_skill` |
+| Skill anlegen / ändern / löschen (#703) | ebenda; im Chat „Merk dir das als Skill“ | `assistant.save_skill` · Write (mit `replaces` Delete), `assistant.delete_skill` · Delete | `assistant_save_skill`, `assistant_delete_skill` |
 | Eigene Rechte kennen (Issue #134) | im Chat „Welche Rechte hast du?“ (Prompt-Zusammenfassung); die Person sieht sie in Assistent › Einstellungen › Access | `assistant.my_access` · Read (Assistent und Bots durch ihre Art, andere Clients mit `assistant`) | `assistant_my_access` |
 | **Stufe 2:** Bots auflisten | Seitenleiste „Bots“ | `bots.list_bots` · Read | `bots_list_bots` |
 | **Stufe 2:** Bot anlegen/ändern (ohne Rechte an Daten; von einem Client angelegt auch ohne Werkzeuge und Server) | Bot-Editor | `bots.save_bot` · Write | `bots_save_bot` |
