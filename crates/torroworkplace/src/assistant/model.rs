@@ -25,7 +25,8 @@
 //! What the model read of a call is kept with its tool line (issue #701), so a later message sends the calls of
 //! earlier turns with their results again ([`history_with_results`]). Before every step the messages are kept
 //! within half of the model's context window ([`super::compact`]): older results shrink to their summary, then
-//! older steps give way to a note. The same call a third time in one answer ends it ([`REPEATS`]), so a model that
+//! older steps give way to a note; results the client may no longer read by its rights of now stay out
+//! ([`readable_results`], issue #713). The same call a third time in one answer ends it ([`REPEATS`]), so a model that
 //! goes round in circles stops.
 //!
 //! The prompt ([`prompt::system`]) carries the person's personality and the notes of the memory,
@@ -809,8 +810,12 @@ impl Answering {
         let budget = access.context.unwrap_or(CONTEXT) / 2;
         lock(&self.job.partial).model = Some(model.clone());
         let mut messages = vec![ChatMessage::system(String::new())];
-        messages.extend(history_with_results(&self.job.history, &self.job.results, &self.job.without));
-        self.summaries.extend(summaries_of(&self.job.history, &self.job.results));
+        // Only what the client may still read goes back to the model (issue #713).
+        let rights = self.rights();
+        let servers = rights.as_ref().map(|rights| self.host.extension_tools(rights)).unwrap_or_default();
+        let kept = readable_results(&self.job.history, &self.job.results, rights.as_ref(), &servers);
+        messages.extend(history_with_results(&self.job.history, &kept, &self.job.without));
+        self.summaries.extend(summaries_of(&self.job.history, &kept));
         // A chat about a mail reads it first (issue #605), as a call of the model would, so the model answers the
         // person's first question with the mail before it.
         if let Some(about) = self.job.about.clone()
@@ -1283,7 +1288,8 @@ pub(super) fn history(entries: &[Entry]) -> Vec<ChatMessage> {
 /// tool message per call with its result. The tool is the catalogue's name for the model, or the name the line
 /// keeps (a server's tool). Lines without a kept result (conversations from before, `find_tools`, which has no
 /// line) are left out as before, and so are the lines of areas switched off in this conversation now (`without`,
-/// [`switched_off`]): what mail read stays with the mail. A turn that ends without text gets the note of
+/// [`switched_off`]): what mail read stays with the mail. Callers pass only what the client may still read
+/// ([`readable_results`], issue #713). A turn that ends without text gets the note of
 /// [`answer_of`], so the person and the assistant still take turns.
 pub(super) fn history_with_results(
     entries: &[Entry],
@@ -1344,6 +1350,46 @@ fn touched(command: &torro_ipc::api::Command) -> Vec<Area> {
         "accounts.set_ntfy_topic" => vec![Area::Accounts, Area::Inbox],
         _ => vec![command.area],
     }
+}
+
+/// Whether the client with `rights` may still read what the call `name` returned (issue #713): it holds the read
+/// level of every area the command touches ([`touched`]), the command is not switched off for it, it still reaches
+/// the command's tool (web, files, PDF), and for a server's tool one of `servers` still offers it. Areas only, no
+/// single account or collection: the tool line does not keep which one the call read.
+fn readable(name: &str, rights: &Rights, servers: &[ExtensionTool]) -> bool {
+    let Some(command) = torro_ipc::api::CATALOGUE.iter().find(|command| command.name == name) else {
+        return servers.iter().any(|server| server.tool_name.as_deref() == Some(name));
+    };
+    if rights.denies(Operation { command, access: command.access }) {
+        return false;
+    }
+    let areas_readable = touched(command).into_iter().all(|area| match area {
+        Area::System | Area::Approvals => true,
+        Area::Clients => false,
+        area => rights.area(area).allows(torro_ipc::api::Access::Read),
+    });
+    let tool_reached = torro_core::settings::ToolId::of_command(name).is_none_or(|tool| rights.reaches_tool(tool));
+    areas_readable && tool_reached
+}
+
+/// The results of `results` the client with `rights` may still read ([`readable`]); none without rights. What is
+/// left out takes its call with it ([`history_with_results`]), so nothing of it reaches the model again.
+fn readable_results(
+    entries: &[Entry],
+    results: &BTreeMap<u64, String>,
+    rights: Option<&Rights>,
+    servers: &[ExtensionTool],
+) -> BTreeMap<u64, String> {
+    let Some(rights) = rights else { return BTreeMap::new() };
+    entries
+        .iter()
+        .filter_map(|entry| match &entry.content {
+            EntryContent::Tool { name, .. } if readable(name, rights, servers) => {
+                results.get(&entry.seq).map(|result| (entry.seq, result.clone()))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Whether the tool line of the command `name` touches an area of `without` ([`touched`]); a name the catalogue
@@ -1715,7 +1761,7 @@ pub(crate) mod tests {
 
     /// The core as the loop sees it: the assistant's rights, a model, and fixed answers.
     struct FakeHost {
-        rights: Option<Rights>,
+        rights: Mutex<Option<Rights>>,
         place: Place,
         script: Arc<Script>,
         answer: fn(&Request) -> Response,
@@ -1735,7 +1781,7 @@ pub(crate) mod tests {
 
     impl Host for FakeHost {
         fn client(&self) -> Option<ClientInfo> {
-            self.rights.clone().map(|rights| ClientInfo {
+            self.rights.lock().expect("lock").clone().map(|rights| ClientInfo {
                 id: "a55e5517".into(),
                 name: "Assistant".into(),
                 kind: torro_ipc::api::ASSISTANT_CLIENT.into(),
@@ -1952,7 +1998,7 @@ pub(crate) mod tests {
     ) -> (Arc<Assistant>, Arc<FakeHost>) {
         let assistant = Arc::new(assistant_in(dir, Duration::ZERO).with_limits(limits));
         let host = Arc::new(FakeHost {
-            rights,
+            rights: Mutex::new(rights),
             place,
             script,
             answer,
@@ -4032,6 +4078,85 @@ pub(crate) mod tests {
             switched_off("tasks.create_todo_from_mail", &[Area::Mail])
                 && !switched_off("tasks.list_todos", &[Area::Mail])
         );
+    }
+
+    /// The core's answers for issue #713: a mail with a text only that mail has, the rest as [`answers`].
+    fn mail_answers(request: &Request) -> Response {
+        match request {
+            Request::GetMail { .. } => Response::MailMessage {
+                message: serde_json::from_value(json!({
+                    "id": "m:1", "account": "a", "folder": "INBOX", "thread_id": "t",
+                    "date": "2026-11-14T08:00:00Z", "subject": "Salary review 2026", "text": "Your raise is 7%."
+                }))
+                .expect("a message"),
+            },
+            other => answers(other),
+        }
+    }
+
+    /// Issue #713, Erledigt 2: once the client may no longer read mail, the next message leaves the earlier mail
+    /// result out, call and all; while it may, the result goes along.
+    #[tokio::test]
+    async fn results_no_longer_readable_stay_out() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = Script::new(vec![
+            calls("mail_get_message", json!({"id": "m:1", "include_body": true})),
+            says("A raise."),
+            says("Still there."),
+            says("Gone."),
+        ]);
+        let mut rights = reading_mail();
+        rights.mail_accounts = torro_ipc::api::Selection::All;
+        let (assistant, host) = set_up_limited(
+            dir.path(),
+            Some(rights),
+            Place::Local,
+            Arc::clone(&script),
+            mail_answers,
+            Limits::default(),
+        );
+        let id = ask(&assistant, None, "Read the mail.", Vec::new()).await;
+        finished(&assistant, &id).await;
+        ask(&assistant, Some(&id), "And again?", Vec::new()).await;
+        finished(&assistant, &id).await;
+        let with = &script.asked()[2].messages;
+        assert!(with.iter().any(|message| message.content.contains("Salary review 2026")), "{with:#?}");
+
+        host.rights.lock().expect("lock").as_mut().expect("rights").areas.remove(&Area::Mail);
+        ask(&assistant, Some(&id), "What was in the mail?", Vec::new()).await;
+        finished(&assistant, &id).await;
+        let last = &script.asked()[3].messages;
+        assert!(last.iter().all(|message| !message.content.contains("Salary review 2026")), "{last:#?}");
+        assert!(
+            last.iter().all(|message| message.tool_calls.is_empty() && message.tool_call_id.is_none()),
+            "{last:#?}"
+        );
+    }
+
+    /// Issue #713: what [`readable`] lets through by the rights of now.
+    #[test]
+    fn readable_goes_by_the_rights_of_now() {
+        let mail = reading_mail();
+        assert!(readable("mail.get_message", &mail, &[]));
+        assert!(!readable("mail.get_message", &reader(), &[]));
+        assert!(!readable("tasks.create_todo_from_mail", &reader(), &[]), "touches mail too");
+        let mut denied = reading_mail();
+        denied.denied.insert("mail.get_message".into());
+        assert!(!readable("mail.get_message", &denied, &[]));
+        assert!(!readable("tools.web_search", &reader(), &[]), "the tool web is not reached");
+
+        let server = |name: &str| ExtensionTool {
+            extension: "time".into(),
+            extension_name: "Time".into(),
+            name: "get_current_time".into(),
+            tool_name: Some(name.into()),
+            description: String::new(),
+            input_schema: json!({}),
+            access: torro_ipc::api::Access::Read,
+            state: torro_ipc::extensions::ToolState::Allowed,
+        };
+        assert!(readable("ext_time_get_current_time", &mail, &[server("ext_time_get_current_time")]));
+        assert!(!readable("ext_time_get_current_time", &mail, &[]));
     }
 
     /// Erledigt 6: "Stop" ends a long answer at once: no step after it.

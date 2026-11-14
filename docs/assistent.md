@@ -80,7 +80,9 @@ Was offene Modelle brauchen, damit das gut geht:
   Kurzzeile, nie mit Inhalten. Systemprompt, erste und letzte Nachricht der Person und die letzten
   vier Schritte bleiben dabei wörtlich; reicht das nicht, werden zuletzt auch deren Ergebnisse bis
   auf das des letzten Schritts zur Kurzzeile. Ergebnisse von Bereichen, die in der Unterhaltung
-  inzwischen abgeschaltet sind, gehen nicht mehr mit. Ein als `untrusted` markiertes Ergebnis bleibt auch verdichtet so
+  inzwischen abgeschaltet sind, gehen nicht mehr mit; ebenso Ergebnisse, die der Client nach seinen
+  heutigen Rechten nicht mehr lesen darf (Bereich, Befehl, Werkzeug oder MCP-Werkzeug entzogen,
+  Issue #713). Geprüft werden nur Bereiche, nicht einzelne Konten oder Sammlungen. Ein als `untrusted` markiertes Ergebnis bleibt auch verdichtet so
   markiert; die Regeln dazu gelten weiter: Notizen warten auf eine Person, sobald eine
   Werkzeugzeile fremde Daten gelesen haben kann oder ein mitgeschicktes Ergebnis als `untrusted`
   markiert ist; das Web fragt erneut nach den Werkzeugzeilen. Ruft das Modell dasselbe Werkzeug in einer Antwort zum dritten
