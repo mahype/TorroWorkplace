@@ -88,7 +88,8 @@ pub enum Area {
     Assistant,
     /// Bots (task B.1, `docs/assistent.md` "Bots"): listing, reading, making, deleting and asking
     /// them. Off for every client unless a person switches it on, also in *Full access*
-    /// ([`Area::in_templates`]): asking a bot lets it work with its own rights. A bot's client never
+    /// ([`Area::in_templates`]): asking a bot starts a model's run, with what both the bot and the
+    /// caller may (issue #698). A bot's client never
     /// uses it ([`loops_back`]); the assistant's own client uses what [`allowed_by_kind`] says.
     Bots,
     /// The assistant's own tools (issue #225, `docs/assistent.md` "Eigene Werkzeuge"): listing them

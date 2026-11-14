@@ -4243,7 +4243,8 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "assistant::Mode::is_default")]
         mode: assistant::Mode,
         /// Chat with this bot instead of the assistant (task B.1): its id from `bots.list_bots`. The
-        /// bot answers with its own client's rights and its own prompt, with `engine` and `model`
+        /// bot answers with its own prompt, for a client (issue #698) with what both the bot and the
+        /// caller may, for the person with its own client's rights, with `engine` and `model`
         /// as given (left without `model`, the bot's own when `engine` is the bot's). A new
         /// conversation belongs to the bot for good; continuing one needs the same `bot` it was
         /// started with (`error` otherwise), and one of a deleted bot is `not-found`. A client also
@@ -4497,7 +4498,8 @@ pub enum Request {
     },
     /// Sends `text` to the bot `bot`, in its conversation `conversation` or a new one, and starts
     /// its answer in the background with the bot's engine and model, like `assistant.send_message`
-    /// ([`Response::Conversation`], at once). The bot works with its own client's rights.
+    /// ([`Response::Conversation`], at once). The bot works with what both it and the caller may
+    /// (issue #698); for the app key with its own client's rights.
     /// `not-found` for an unknown bot or conversation (also one of another bot), `busy` while the
     /// conversation still answers, `unsupported` when the bot's AI account has no model turned on
     /// (task S.24), `error` for a limit.
