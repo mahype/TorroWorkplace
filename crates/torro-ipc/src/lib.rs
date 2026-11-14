@@ -4320,6 +4320,7 @@ pub enum Request {
     ArchiveConversations {
         /// The conversations' ids.
         ids: Vec<String>,
+        /// `true` archives, `false` restores.
         archived: bool,
     },
     /// Deletes the conversations `ids` and their files for good, stopping answers that run (issue

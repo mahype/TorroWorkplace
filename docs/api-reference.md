@@ -3416,7 +3416,7 @@ Archives conversations of the assistant (`archived: true`) or restores them, up 
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
-| `archived` | boolean | ja |  |
+| `archived` | boolean | ja | `true` archives, `false` restores. |
 | `ids` | array<string> | ja | The conversations' ids. |
 
 ### `assistant.delete_conversations`
