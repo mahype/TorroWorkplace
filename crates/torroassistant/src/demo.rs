@@ -1026,6 +1026,7 @@ pub fn profile() -> Profile {
         description: tr("Your assistant for this computer").into(),
         avatar: "sparkles".into(),
         personality: String::new(),
+        person_name: String::new(),
     }
 }
 

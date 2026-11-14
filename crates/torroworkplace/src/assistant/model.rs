@@ -657,6 +657,8 @@ pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: 
         Some(bot) => (bot.personality.clone(), Vec::new()),
         None => assistant.persona_and_notes().await,
     };
+    // The person's name (issue #702) for the assistant and its bots alike: it is the same person.
+    let person = assistant.profile().await.person_name;
     // A client's message (issue #305) is data from outside like a mail, in this turn and every later
     // one: it counts for the web's yes and for the memory (C.11) alike.
     let from_client = sent_by_a_client(&job.history, &job.actor);
@@ -2835,6 +2837,12 @@ pub(crate) mod tests {
         listed.context = Some(200_000);
         let script = script.listing(vec![listed]);
         let (assistant, _kept) = set_up(dir.path(), Some(rights), Place::Local, Arc::clone(&script));
+        // Issue #702: the person's name from the profile.
+        let named = super::super::profile::Change {
+            person_name: Some("Anna Berg".into()),
+            ..super::super::profile::Change::default()
+        };
+        assert!(matches!(assistant.update_profile(named).await, Response::Profile { .. }));
         let id = ask(&assistant, None, "Delete my dentist appointment", Vec::new()).await;
         finished(&assistant, &id).await;
 

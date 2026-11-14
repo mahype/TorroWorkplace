@@ -27459,7 +27459,13 @@ mod tests {
             Request::PinConversation { id: id.into(), pinned: true },
             Request::OpenChatWindow { window: torro_ipc::assistant::ChatWindow::New },
             Request::GetProfile,
-            Request::UpdateProfile { name: Some("Jarvis".into()), description: None, avatar: None, personality: None },
+            Request::UpdateProfile {
+                name: Some("Jarvis".into()),
+                description: None,
+                avatar: None,
+                personality: None,
+                person_name: None,
+            },
         ]
     }
 
@@ -27574,6 +27580,7 @@ mod tests {
             description: None,
             avatar: Some("sun".into()),
             personality: Some("Formal and precise.".into()),
+            person_name: None,
         };
 
         let mut reading = RightsTemplate::ReadOnly.rights();
@@ -27599,8 +27606,13 @@ mod tests {
             matches!(unchanged, Response::Profile { ref profile } if profile.name == "Torro"),
             "nothing before the approval"
         );
-        let blank =
-            Request::UpdateProfile { name: Some(" ".into()), description: None, avatar: None, personality: None };
+        let blank = Request::UpdateProfile {
+            name: Some(" ".into()),
+            description: None,
+            avatar: None,
+            personality: None,
+            person_name: None,
+        };
         assert_eq!(code(&ask(&core, Some(&key), blank).await), "error", "refused before anyone is asked");
 
         let Response::Profile { profile } = ask(&core, Some(&app_key), update).await else {

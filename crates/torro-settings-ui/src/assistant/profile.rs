@@ -8,7 +8,8 @@
 //!   suite's symbols, [`torro_ipc::assistant::AVATARS`]) and the personality, typed into a draft
 //!   and saved with "Save" (`assistant.update_profile`, only the fields that changed). Three
 //!   templates ("Calm and brief", "Friendly", "Formal") fill the personality as a starting point.
-//!   Two groups, "Name and picture" and "Personality" (issue #547); "Save" and "Discard" stand in
+//!   Three groups, "Name and picture", "About you" (the person's own name, issue #702) and
+//!   "Personality" (issue #547); "Save" and "Discard" stand in
 //!   the suite's save bar ([`crate::Page::save_bar`]), only while something is changed, with what
 //!   keeps "Save" back in place of "Profile changed" after the first try – a blank name, a
 //!   personality over 4,000 characters. Enter in a field saves as before.
@@ -41,7 +42,7 @@ use torro_gui::widgets::{self, Mark};
 use torro_gui::{style, typo};
 use torro_ipc::Request;
 use torro_ipc::assistant::{
-    AVATARS, DEFAULT_NAME, LETTER_AVATAR, MAX_NOTE_CHARS, MAX_PERSONALITY_CHARS, Note, Profile,
+    AVATARS, DEFAULT_NAME, LETTER_AVATAR, MAX_NOTE_CHARS, MAX_PERSON_NAME_CHARS, MAX_PERSONALITY_CHARS, Note, Profile,
 };
 
 use super::{Action, avatar};
@@ -127,6 +128,8 @@ struct Draft {
     description: String,
     avatar: String,
     personality: text_editor::Content,
+    /// The person's own name; empty when the assistant should not know it.
+    person_name: String,
     /// "Save" was pressed once: problems show from now on.
     tried: bool,
 }
@@ -138,6 +141,7 @@ impl Draft {
             description: profile.description.clone(),
             avatar: profile.avatar.clone(),
             personality: text_editor::Content::with_text(&profile.personality),
+            person_name: profile.person_name.clone(),
             tried: false,
         }
     }
@@ -155,9 +159,16 @@ impl Draft {
             description: changed(&self.description, &stored.description),
             avatar: (self.avatar != stored.avatar).then(|| self.avatar.clone()),
             personality: changed(&self.personality_text(), &stored.personality),
+            person_name: changed(&self.person_name, &stored.person_name),
         };
         match &request {
-            Request::UpdateProfile { name: None, description: None, avatar: None, personality: None } => None,
+            Request::UpdateProfile {
+                name: None,
+                description: None,
+                avatar: None,
+                personality: None,
+                person_name: None,
+            } => None,
             _ => Some(request),
         }
     }
@@ -167,6 +178,8 @@ impl Draft {
         let count = self.personality_text().chars().count();
         if self.name.trim().is_empty() {
             Some(tr("Give the assistant a name.").to_string())
+        } else if self.person_name.trim().chars().count() > MAX_PERSON_NAME_CHARS {
+            Some(trf("Your name may hold at most {max} characters.", &[("max", &MAX_PERSON_NAME_CHARS)]))
         } else if count > MAX_PERSONALITY_CHARS {
             Some(trf(
                 "The personality is too long: {count} of {max} characters.",
@@ -217,6 +230,8 @@ pub enum Message {
     Name(String),
     Description(String),
     Avatar(String),
+    /// The person's own name in "About you".
+    PersonName(String),
     Personality(text_editor::Action),
     Template(Template),
     /// "Save" in the save bar, Enter in a field.
@@ -245,6 +260,7 @@ fn profile_of(data: &Data) -> Profile {
         description: tr("Your assistant for this computer").to_string(),
         avatar: LETTER_AVATAR.to_string(),
         personality: String::new(),
+        person_name: String::new(),
     })
 }
 
@@ -285,6 +301,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         Message::Name(name) => edit_draft(state, |draft| draft.name = name),
         Message::Description(description) => edit_draft(state, |draft| draft.description = description),
         Message::Avatar(avatar) => edit_draft(state, |draft| draft.avatar = avatar),
+        Message::PersonName(name) => edit_draft(state, |draft| draft.person_name = name),
         Message::Personality(action) => edit_draft(state, |draft| draft.personality.perform(action)),
         Message::Template(template) => {
             edit_draft(state, |draft| draft.personality = text_editor::Content::with_text(template.text()))
@@ -498,7 +515,8 @@ fn save_summary(draft: &Draft, stored: &Profile) -> Option<String> {
     Some(draft.problem().filter(|_| draft.tried).unwrap_or_else(|| tr("Profile changed").to_string()))
 }
 
-/// "Name and picture" (name, description, picture) and "Personality"; "Save" is the page's save bar.
+/// "Name and picture" (name, description, picture), "About you" (the person's own name, #702) and
+/// "Personality"; "Save" is the page's save bar.
 fn profile_page(draft: &Draft) -> Element<'_, Message> {
     let name = field(DEFAULT_NAME, &draft.name).on_input(Message::Name).on_submit(Message::Save);
     let description = field(tr("Your assistant for this computer"), &draft.description)
@@ -544,6 +562,7 @@ fn profile_page(draft: &Draft) -> Element<'_, Message> {
         row![blank::horizontal(), counter],
     ]
     .spacing(space::s());
+    let person_name = field(tr("Optional"), &draft.person_name).on_input(Message::PersonName).on_submit(Message::Save);
     let about = tr("Shown under the name in the chat.").to_string();
     let identity = vec![
         widgets::segment_row(tr("Name"), None, name, None),
@@ -552,6 +571,11 @@ fn profile_page(draft: &Draft) -> Element<'_, Message> {
     ];
     column![
         widgets::group(tr("Name and picture"), identity, None),
+        widgets::group(
+            tr("About you"),
+            vec![widgets::segment_row(tr("Your name"), None, person_name, None)],
+            Some(tr("The assistant calls you by this name. Leave it empty if it should not know it.").to_string()),
+        ),
         widgets::group(
             tr("Personality"),
             vec![inset(personality)],
@@ -708,6 +732,7 @@ mod tests {
                 description: None,
                 avatar: Some("sun".into()),
                 personality: Some(Template::Formal.text().into()),
+                person_name: None,
             }
         );
         // The host loads again; against the stored profile nothing is left to save.

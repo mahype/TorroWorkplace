@@ -4283,6 +4283,10 @@ pub enum Request {
         /// The new personality, at most 4,000 characters; empty for none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         personality: Option<String>,
+        /// The name of the person the assistant works for, one line, at most 80 characters; empty
+        /// so the assistant no longer knows it (#702).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        person_name: Option<String>,
     },
     /// The notes of the assistant's memory, oldest first ([`Response::Memories`]). A note from mail
     /// ([`Note::local_only`]) is listed only for the app key and clients with read access to mail. Never fails; an empty list when the memory cannot be read.

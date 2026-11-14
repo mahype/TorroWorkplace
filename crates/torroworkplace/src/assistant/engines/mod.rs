@@ -365,6 +365,8 @@ impl Running {
             Some(bot) => (bot.personality.clone(), Vec::new()),
             None => self.assistant.persona_and_notes().await,
         };
+        // The person's name (issue #702), for the assistant and its bots alike.
+        let person = self.assistant.profile().await.person_name;
         // The servers whose tools it finds over Torro's MCP server with these rights (issue #302).
         let servers: std::collections::BTreeSet<String> = host
             .extension_tools(&rights)

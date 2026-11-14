@@ -4133,7 +4133,8 @@ mod tests {
                 name: None,
                 description: None,
                 avatar: None,
-                personality: Some("Brief.".into())
+                personality: Some("Brief.".into()),
+                person_name: None,
             })
         );
         assert!(matches!(

@@ -1130,8 +1130,8 @@ pub async fn answer_own(assistant: &Assistant, request: Request, sees_local: boo
     }
     match request {
         Request::GetProfile => Response::Profile { profile: assistant.profile().await },
-        Request::UpdateProfile { name, description, avatar, personality } => {
-            assistant.update_profile(profile::Change { name, description, avatar, personality }).await
+        Request::UpdateProfile { name, description, avatar, personality, person_name } => {
+            assistant.update_profile(profile::Change { name, description, avatar, personality, person_name }).await
         }
         Request::ListMemories => assistant.list_memories(sees_local).await,
         Request::Remember { text, replaces, local_only } => {
