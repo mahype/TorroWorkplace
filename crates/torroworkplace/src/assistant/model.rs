@@ -451,7 +451,8 @@ pub struct ModelAccess {
     /// Where [`ModelAccess::model`] runs (task S.23).
     pub place: Place,
     /// The context window of [`ModelAccess::model`] in tokens as the account lists it ([`AiModel::context`]),
-    /// else as [`torro_core::ai::assumed_context`] assumes for its provider (issue #716); `None` when neither says. The loop keeps the conversation within half of it (issue #701).
+    /// else as [`torro_core::ai::assumed_context`] assumes for its provider (issue #716); `None` when
+    /// neither says. The loop keeps the conversation within half of it (issue #701).
     pub context: Option<u64>,
 }
 
