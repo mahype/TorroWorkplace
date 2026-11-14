@@ -1409,6 +1409,10 @@ impl App {
                 return self.load();
             }
             Message::AskMerge(group) => {
+                // A merge that runs is not asked about again: its dialog stays as it is.
+                if self.merge.as_ref().is_some_and(|merge| merge.busy) {
+                    return Task::none();
+                }
                 self.group_cursor = Some(group.clone());
                 if self.dismissing.as_deref() != Some(group.as_str())
                     && let Some(found) = self.duplicate_group(&group)
@@ -1513,6 +1517,15 @@ impl App {
 
     fn key(&mut self, press: Press) -> Task<Message> {
         if self.view == View::Duplicates {
+            // A dialog, a menu or a contact being edited keeps the keys of the cards: they would merge,
+            // mark or choose under it (review of #356).
+            if self.dialog.is_some() || self.menu.is_some() || self.editing() {
+                return match press {
+                    Press::Search => operation::focus(SEARCH),
+                    Press::Sidebar => self.update(Message::ToggleSidebar),
+                    _ => Task::none(),
+                };
+            }
             return self.duplicates_key(press);
         }
         match press {
@@ -1563,6 +1576,8 @@ impl App {
                 return match press {
                     Press::Search => operation::focus(SEARCH),
                     Press::Sidebar => self.update(Message::ToggleSidebar),
+                    // The contact open in the panel is edited as in every other view.
+                    Press::Edit => self.edit(),
                     _ => Task::none(),
                 };
             }
@@ -2150,7 +2165,7 @@ fn key_press(event: iced::Event, status: iced::event::Status, _window: iced::win
         keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => Some(Message::Key(Press::Left)),
         keyboard::Key::Named(keyboard::key::Named::ArrowRight) => Some(Message::Key(Press::Right)),
         keyboard::Key::Named(keyboard::key::Named::Space) => Some(Message::Key(Press::Space)),
-        keyboard::Key::Character("d") => Some(Message::Key(Press::Different)),
+        keyboard::Key::Character("d" | "D") => Some(Message::Key(Press::Different)),
         _ => None,
     }
 }

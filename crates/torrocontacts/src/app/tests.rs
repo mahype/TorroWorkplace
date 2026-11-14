@@ -638,6 +638,27 @@ async fn the_keys_of_duplicates() {
     assert!(list.dismissing.is_none() && list.group_cursor.is_none());
 }
 
+/// Second review of #356: under an open dialog the keys of the cards do nothing, and a merge that runs
+/// is not asked about again.
+#[tokio::test]
+async fn the_keys_of_duplicates_wait_under_a_dialog() {
+    let mut app = two_groups().await;
+    let _ = app.update(Message::Show(View::Duplicates));
+    let _ = app.update(Message::Key(Press::Enter));
+    assert_eq!(app.dialog, Some(Dialog::Merge));
+    let kept = app.kept_of(&app.duplicates[0].clone()).map(|c| c.id.clone());
+    let _ = app.update(Message::Key(Press::Right));
+    let _ = app.update(Message::Key(Press::Different));
+    assert_eq!(app.kept_of(&app.duplicates[0].clone()).map(|c| c.id.clone()), kept, "the card stays");
+    assert!(app.dismissing.is_none(), "nothing marked under the dialog");
+    if let Some(merge) = app.merge.as_mut() {
+        merge.busy = true;
+    }
+    let group = app.merge.as_ref().map(|m| m.group.clone()).expect("merge");
+    let _ = app.update(Message::AskMerge(group));
+    assert!(app.merge.as_ref().is_some_and(|m| m.busy), "a running merge is not asked about again");
+}
+
 /// Review of #726: while "Mark as different" runs, no second request goes out and its "Merge…" waits.
 #[tokio::test]
 async fn marking_as_different_waits_for_its_answer() {
