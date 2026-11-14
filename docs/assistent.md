@@ -833,7 +833,8 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
   Unterhaltung „Voice“ selbst über `assistant.speak`, das Chatfenster liest diese Unterhaltung deshalb nicht noch
   einmal vor. Wechselt das Fenster die Unterhaltung, endet das Vorlesen.
 - **Technisch:** Der Dienst hält den Helfer `torroassistant --speak` am Laufen (JSON-Zeilen, ein Auftrag
-  zugleich, nach zehn Minuten ohne Auftrag beendet er sich und gibt den Grafikspeicher frei). Qwen rechnet
+  zugleich, nach zehn Minuten ohne Auftrag beendet er sich und gibt den Grafikspeicher frei; ein anderer Anbieter
+  beendet ihn sofort, eine andere Stimme nicht, sie geht mit dem nächsten Auftrag mit). Qwen rechnet
   im Helfer in Python, der Ton geht roh an `paplay`, `pw-play`, `aplay`, `play` oder `ffplay`. Den Ton von
   OpenAI holt der Dienst selbst, weil er den Schlüssel hält, in Stücken aus ganzen Sätzen (bis 500
   Zeichen), das nächste, während das vorige spielt. Vorgelesen werden höchstens 3000 Zeichen, ohne

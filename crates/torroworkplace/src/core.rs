@@ -2696,24 +2696,23 @@ fn speech_language() -> &'static str {
     }
 }
 
-/// The settings the speech helper is started with: only what reading aloud uses (provider, voices,
-/// Piper's voice file), so switching the listener or the chat's speaker does not start it anew and
-/// make Qwen load its model again.
+/// The settings the speech helper is started with: only the provider and Piper's voice file. The
+/// voices of Qwen and OpenAI go with each job, so choosing another voice does not start the helper
+/// anew and make Qwen load its model again; neither does switching the listener or the speaker.
 fn speech_settings(voice: &torro_core::settings::Voice) -> torro_core::settings::Voice {
     torro_core::settings::Voice {
         speech_provider: voice.speech_provider,
-        qwen_voice: voice.qwen_voice.clone(),
-        openai_voice: voice.openai_voice.clone(),
         voice: voice.voice.clone(),
         ..torro_core::settings::Voice::default()
     }
 }
 
-/// What the speech helper is started with beyond the listener's settings: provider and voices.
+/// What the speech helper is started with ([`speech_settings`]): another provider or Piper voice
+/// ends it.
 fn speech_choice(
     voice: &torro_core::settings::Voice,
-) -> (Option<torro_core::settings::SpeechProvider>, Option<String>, Option<String>, Option<String>) {
-    (voice.speech_provider, voice.qwen_voice.clone(), voice.openai_voice.clone(), voice.voice.clone())
+) -> (Option<torro_core::settings::SpeechProvider>, Option<String>) {
+    (voice.speech_provider, voice.voice.clone())
 }
 
 /// The answer of `assistant.speak` when the helper failed: a sentence for people; what went wrong
@@ -6957,7 +6956,7 @@ impl Core {
                     false => self.settings.update(settings),
                 };
                 self.follow_components();
-                // Another provider or voice ends the helper, as `set_setting` does (issue #745).
+                // Another provider or Piper voice ends the helper, as `set_setting` does (issue #745).
                 if speech_choice(&self.settings.current().voice) != speech_before {
                     self.speech.end().await;
                 }
@@ -6980,14 +6979,10 @@ impl Core {
                     false => self.settings.set(key, &value),
                 };
                 self.follow_components();
-                // Another provider or voice (issue #745): the helper ends, Qwen's graphics memory is
-                // free, and the next answer starts it with the new settings.
-                if set.is_ok()
-                    && matches!(
-                        key,
-                        SettingKey::SpeechProvider | SettingKey::QwenVoice | SettingKey::OpenAiVoice | SettingKey::Voice
-                    )
-                {
+                // Another provider or Piper voice (issue #745): the helper ends, Qwen's graphics memory
+                // is free, and the next answer starts it with the new settings. Another voice of Qwen
+                // or OpenAI goes with the next job and keeps the model loaded.
+                if set.is_ok() && matches!(key, SettingKey::SpeechProvider | SettingKey::Voice) {
                     self.speech.end().await;
                 }
                 match set {
@@ -19254,6 +19249,25 @@ mod tests {
         assert_eq!(core.snapshot().await.voice, VoiceState::Listening, "the tray shows it");
         assert_eq!(core.handle(set(false)).await, Response::Ok);
         assert_eq!(core.voice.state(), VoiceState::Off, "stopped at once");
+    }
+
+    /// Issue #745: the helper starts only with the provider and Piper's voice: another voice of Qwen
+    /// or OpenAI, the speaker or the listener keep it running with its model loaded.
+    #[test]
+    fn the_speech_helper_keeps_running_for_another_voice() {
+        use torro_core::settings::{SpeechProvider, Voice};
+        let chosen = Voice { speech_provider: Some(SpeechProvider::Qwen), ..Voice::default() };
+        let other = Voice {
+            qwen_voice: Some("calm_man".into()),
+            openai_voice: Some("cedar".into()),
+            read_aloud: true,
+            enabled: true,
+            ..chosen.clone()
+        };
+        assert_eq!(voice_args("--speak", &speech_settings(&chosen)), voice_args("--speak", &speech_settings(&other)));
+        assert_eq!(speech_choice(&chosen), speech_choice(&other));
+        let piper = Voice { speech_provider: Some(SpeechProvider::Piper), ..chosen.clone() };
+        assert_ne!(speech_choice(&chosen), speech_choice(&piper), "another provider ends it");
     }
 
     /// Issue #745: Qwen's model follows the graphics card; only an NVIDIA card with 4 GB is fast
