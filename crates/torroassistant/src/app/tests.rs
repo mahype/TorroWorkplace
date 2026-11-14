@@ -135,6 +135,11 @@ fn answer_of(request: &Request, result: Result<Response, Refusal>) -> Message {
             other => Err(Refusal::unexpected(&other)),
         })),
         Request::StopDictation => Message::DictationStopped,
+        // Issue #745: the answer a reading belongs to is the test's to hand in (`Message::Read`).
+        Request::SetSetting { key: torro_ipc::SettingKey::ReadAloud, value } => {
+            Message::ReadAloudSet(value.as_bool().unwrap_or_default(), result.map(|_| ()))
+        }
+        Request::Speak { .. } | Request::StopSpeaking => Message::ReadingStopped,
         Request::ConfirmBot { conversation, bot } => Message::BotConfirmed(
             crate::bots::Proposal { conversation: conversation.clone(), bot: bot.clone() },
             result.map(|_| ()),
@@ -1738,6 +1743,75 @@ fn a_bots_chat_has_no_areas_and_no_mode() {
     assert!(!started(&["--bot", TRAVEL]).offers_areas_and_mode());
     let mut app = started(&["--open", "dictating"]);
     assert_eq!(app.dictation, Dictation::Recording);
+    for size in SIZES {
+        let _ = app.update(Message::Resized(size));
+        let _ = app.view();
+    }
+}
+
+/// Issue #745: with the speaker on, a new answer is read aloud once it is complete, once; an answer
+/// that was there on opening is not, and off reads nothing.
+#[test]
+fn a_new_answer_is_read_aloud_once_it_is_complete() {
+    let mut app = answering();
+    app.read_aloud = true;
+    sent(&mut app);
+    let entries = vec![answer_entry(2, "Let me look.")];
+    let _ = app.update(Message::Followed(id_of(&app), Ok((head(&app, 1, true), entries))));
+    assert!(!sent(&mut app).iter().any(|request| matches!(request, Request::Speak { .. })), "not complete yet");
+    let entries = vec![answer_entry(2, "Let me look. Found it.")];
+    let _ = app.update(Message::Followed(id_of(&app), Ok((head(&app, 2, false), entries))));
+    let speak: Vec<_> = sent(&mut app).into_iter().filter(|request| matches!(request, Request::Speak { .. })).collect();
+    assert_eq!(speak, [Request::Speak { text: "Let me look. Found it.".into() }]);
+    assert_eq!(app.reading, Some(2), "[■] shows at it");
+    let _ = app.update(Message::Followed(
+        id_of(&app),
+        Ok((head(&app, 2, false), vec![answer_entry(2, "Let me look. Found it.")])),
+    ));
+    assert!(!sent(&mut app).iter().any(|request| matches!(request, Request::Speak { .. })), "read once");
+    let _ = app.update(Message::Read(2, Ok(())));
+    assert_eq!(app.reading, None);
+
+    // Off: a new answer is only shown.
+    let mut quiet = answering();
+    sent(&mut quiet);
+    let _ = quiet.update(Message::Followed(id_of(&quiet), Ok((head(&quiet, 2, false), vec![answer_entry(2, "Hi.")]))));
+    assert!(!sent(&mut quiet).iter().any(|request| matches!(request, Request::Speak { .. })));
+    // Opening a conversation reads nothing of what is there.
+    let mut opened = started(&["--chat", TOOLS]);
+    opened.read_aloud = true;
+    let _ = opened.update(Message::Select(TOOLS.into()));
+    settle(&mut opened);
+    assert_eq!(opened.reading, None);
+}
+
+/// Issue #745: the speaker switches the setting and back when the core refuses; switching it off
+/// and [■] stop what is read at once; a failure says why.
+#[test]
+fn the_speaker_switches_reading_aloud_and_stops_it() {
+    let mut app = started(&["--open", "reading"]);
+    assert!(app.read_aloud && app.reading == Some(demo::READ_ANSWER));
+    sent(&mut app);
+    let _ = app.update(Message::StopReading);
+    assert_eq!(sent(&mut app), [Request::StopSpeaking]);
+    assert_eq!(app.reading, None);
+
+    app.reading = Some(demo::READ_ANSWER);
+    let _ = app.update(Message::ToggleReadAloud);
+    let requests = sent(&mut app);
+    let off = Request::SetSetting { key: torro_ipc::SettingKey::ReadAloud, value: serde_json::json!(false) };
+    assert!(requests.contains(&off) && requests.contains(&Request::StopSpeaking), "{requests:?}");
+    assert!(!app.read_aloud && app.reading.is_none());
+    let _ = app.update(Message::ToggleReadAloud);
+    assert!(app.read_aloud);
+    let _ = app.update(Message::ReadAloudSet(true, Err(Refusal::new("forbidden", "no"))));
+    assert!(!app.read_aloud, "back as it was");
+
+    let message = "Connect an OpenAI account in Settings › AI to read aloud with OpenAI.";
+    app.reading = Some(4);
+    let _ = app.update(Message::Read(4, Err(Refusal::new("unsupported", message))));
+    assert_eq!(app.reading, None);
+    assert_eq!(app.notice.as_ref().map(|notice| notice.text.as_str()), Some(message), "the core's words");
     for size in SIZES {
         let _ = app.update(Message::Resized(size));
         let _ = app.view();
