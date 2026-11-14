@@ -397,6 +397,12 @@ pub struct ContactFacts {
     pub book: Option<String>,
     /// For a move: the name of the book it goes to.
     pub to_book: Option<String>,
+    /// For `contacts.import_vcards` (issue #725): what a trial run with the client's reach counts.
+    pub imported: Option<torro_contacts::Imported>,
+    /// For `contacts.merge_contacts` and `contacts.dismiss_duplicates` (issue #726): the other
+    /// contacts named, each as its name and its book's name, from the store; for a merge every one
+    /// but `keep`, which is [`ContactFacts::contact`]. A contact the store does not hold is left out.
+    pub others: Vec<(String, String)>,
 }
 
 /// A mail filter as the core stores it, for the summaries of the filter commands ([`Facts::filter`],
@@ -2234,7 +2240,10 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         | Request::SetContactPhoto { .. }
         | Request::MoveContact { .. }
         | Request::DeleteContact { .. }
-        | Request::ResolveContactConflict { .. }) => contact_summary(request, facts.contact.as_deref()),
+        | Request::ResolveContactConflict { .. }
+        | Request::ImportVCards { .. }
+        | Request::MergeContacts { .. }
+        | Request::DismissDuplicates { .. }) => contact_summary(request, facts.contact.as_deref()),
         request if matches!(request.operation().area(), Area::Chat | Area::Presence) => {
             chat_summary(request, facts.chat.as_deref())
         }
@@ -2650,8 +2659,35 @@ fn contact_summary(request: &Request, facts: Option<&ContactFacts>) -> String {
         Request::ResolveContactConflict { keep: torro_contacts::Keep::Both, .. } => {
             trf("Keep both versions of {name}", &[("name", &name)])
         }
+        // What a trial run counts with the client's reach (issue #725), never the client's words.
+        Request::ImportVCards { .. } => match facts.imported {
+            Some(imported) => trf(
+                "Import {n} contacts into {book}; {d} already there are skipped",
+                &[("n", &imported.created), ("book", &book), ("d", &imported.duplicates)],
+            ),
+            None => trf("Import contacts from a vCard file into {book}", &[("book", &book)]),
+        },
+        // Every contact that goes, with its book (issue #726).
+        Request::MergeContacts { .. } => {
+            let gone = others(&facts.others);
+            trf(
+                "Merge into {name} in {book}; deleted for good: {gone}",
+                &[("name", &name), ("book", &book), ("gone", &gone)],
+            )
+        }
+        Request::DismissDuplicates { .. } => {
+            trf("Keep {names} apart as different people", &[("names", &others(&facts.others))])
+        }
         other => trf("Run {command}", &[("command", &other.operation().name())]),
     }
+}
+
+/// Contacts as "Name" (Book), one after the other (issue #726); "an unknown contact" for none.
+fn others(contacts: &[(String, String)]) -> String {
+    if contacts.is_empty() {
+        return tr("an unknown contact").to_string();
+    }
+    contacts.iter().map(|(name, book)| format!("\"{}\" ({})", quote(name), quote(book))).collect::<Vec<_>>().join(", ")
 }
 
 /// The text of the field `field` (a name of [`torro_contacts::ContactFields::names`]) of `contact`.
@@ -3477,6 +3513,11 @@ pub struct InboxFacts {
     /// of the calendar of `inbox.create_event_from_item` (task E8.5b), as the core caches it;
     /// `None` when unknown: the summary then shows the id.
     pub list: Option<String>,
+    /// For `inbox.create_contact_from_item` (issue #727): the sender of the mail as the mail store
+    /// holds it, and the file name of the vCard attached that the contact would be made of; `None`
+    /// when unknown or none is attached.
+    pub sender: Option<torro_mail::MailAddress>,
+    pub card: Option<String>,
     /// The catalogue of mail categories as the inbox keeps it (task E15.1): the names a summary
     /// uses for a category already there. Empty for requests that name none; a category not in
     /// it is named by the suite's word ([`category_name`]).
@@ -3695,6 +3736,31 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                 &[("title", &title), ("when", &when(start, today)), ("calendar", &calendar), ("entry", &entry())],
             );
             with_settling(with_extras(made, location.as_deref(), notes.as_deref()), facts.item.as_ref())
+        }
+        // The sender or the attached vCard as the mail store holds them, the book by its name (issue
+        // #727).
+        Request::CreateContactFromItem { book, .. } => {
+            let book = quote(facts.list.as_deref().unwrap_or(book));
+            match (&facts.card, &facts.sender) {
+                (Some(card), _) => trf(
+                    "Add the contact of the attached vCard \"{file}\" of {entry} to \"{book}\"",
+                    &[("file", &quote(card)), ("entry", &entry()), ("book", &book)],
+                ),
+                (None, Some(sender)) => {
+                    let who = match sender.name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
+                        Some(name) => format!("{name} <{}>", sender.address),
+                        None => sender.address.clone(),
+                    };
+                    trf(
+                        "Save \"{sender}\" of {entry} as a contact in \"{book}\"",
+                        &[("sender", &quote(&who)), ("entry", &entry()), ("book", &book)],
+                    )
+                }
+                (None, None) => trf(
+                    "Save the sender of {entry} as a contact in \"{book}\"",
+                    &[("entry", &entry()), ("book", &book)],
+                ),
+            }
         }
         // Asking the person's AI (issue #120): it reads the entry, nothing is saved.
         Request::SuggestTaskFromItem { .. } => {
@@ -8198,5 +8264,47 @@ pub(crate) mod tests {
             Approvals::new(None, Notifier::asking(|_: &ApprovalInfo| {})).withdraw(at(2), names).await.ok(),
             Some(0)
         );
+    }
+
+    /// Issues #725–#727: an import names the counts of its trial run, a merge every contact that
+    /// goes, keeping apart the names, and a contact of a mail the sender or the card and the book –
+    /// all from the core's stores, never the client's words.
+    #[test]
+    fn imports_merges_and_contacts_of_mail_say_what_happens() {
+        let book = |name: &str| Some(name.to_string());
+        let anna = torro_contacts::Contact { display_name: "Anna Berg".into(), ..Default::default() };
+        let facts = |contact: ContactFacts| Facts { contact: Some(Box::new(contact)), ..Facts::default() };
+        let import = Request::ImportVCards { book: "b".into(), data: Some(String::new()), path: None, dry_run: false };
+        let counted = ContactFacts {
+            book: book("Work"),
+            imported: Some(torro_contacts::Imported { created: 12, duplicates: 3, skipped: 1 }),
+            ..ContactFacts::default()
+        };
+        assert_eq!(
+            summary(&import, &facts(counted)),
+            trf(
+                "Import {n} contacts into {book}; {d} already there are skipped",
+                &[("n", &12), ("book", &"\"Work\""), ("d", &3)]
+            )
+        );
+        let merge = Request::MergeContacts { ids: vec!["a".into(), "b".into()], etags: vec![], keep: "a".into() };
+        let merged = ContactFacts {
+            contact: Some(anna.clone()),
+            book: book("Work"),
+            others: vec![("Anna B.".into(), "Private".into())],
+            ..ContactFacts::default()
+        };
+        let said = summary(&merge, &facts(merged));
+        assert!(said.contains("\"Anna Berg\"") && said.contains("\"Anna B.\" (Private)"), "{said}");
+        let apart = ContactFacts { others: vec![("Anna B.".into(), "Private".into())], ..ContactFacts::default() };
+        assert!(summary(&Request::DismissDuplicates { ids: vec![] }, &facts(apart)).contains("Anna B."));
+
+        let save = Request::CreateContactFromItem { id: "i1".into(), book: "b".into() };
+        let sender = torro_mail::MailAddress { name: Some("Kim Neu".into()), address: "kim@example.org".into() };
+        let mail = InboxFacts { list: book("Work"), sender: Some(sender), ..InboxFacts::default() };
+        let said = inbox_summary(&save, &mail);
+        assert!(said.contains("Kim Neu <kim@example.org>") && said.contains("\"Work\""), "{said}");
+        let card = InboxFacts { list: book("Work"), card: Some("lars.vcf".into()), ..InboxFacts::default() };
+        assert!(inbox_summary(&save, &card).contains("lars.vcf"));
     }
 }

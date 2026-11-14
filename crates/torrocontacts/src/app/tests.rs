@@ -38,8 +38,8 @@ async fn opened(app: &mut App, uid: &str) -> String {
 async fn the_views_filter_the_list() {
     let mut app = loaded(&["--demo"]).await;
     assert!(app.loaded && app.error.is_none());
-    assert_eq!(app.shown().len(), 40);
-    assert_eq!(app.rows().len(), 40, "one group each in the demo");
+    assert_eq!(app.shown().len(), 41);
+    assert_eq!(app.rows().len(), 41, "one group each in the demo");
     let _ = app.update(Message::Show(View::Favorites));
     assert_eq!(app.shown().len(), 5);
     let _ = app.update(Message::Show(View::Book(torro_contacts::demo::TEAM.into())));
@@ -69,7 +69,7 @@ async fn the_states_after_loading() {
 async fn a_later_failure_keeps_the_list() {
     let mut app = loaded(&["--demo"]).await;
     let _ = app.update(Message::Loaded(app.load_asked, Err(torro_contacts::ContactsError::Offline)));
-    assert_eq!(app.contacts.len(), 40);
+    assert_eq!(app.contacts.len(), 41);
     assert!(app.error.is_none());
     assert!(app.notice.is_some());
 }
@@ -87,7 +87,7 @@ async fn the_search_takes_the_answer_to_what_is_typed() {
     assert!(shown.contains(&"Anna Berg".to_owned()), "{shown:?}");
     assert_eq!(app.cursor.as_deref(), app.rows().first().map(String::as_str));
     let _ = app.update(Message::Search(String::new()));
-    assert_eq!(app.shown().len(), 40);
+    assert_eq!(app.shown().len(), 41);
     // A pause that ended after another key asks nothing.
     let stale = app.search_asked;
     let _ = app.update(Message::Search("x".into()));
@@ -100,9 +100,9 @@ async fn heads_fold_and_the_grouping_changes() {
     let mut app = loaded(&["--demo"]).await;
     let _ = app.update(Message::Fold(Key::Group("Work".into())));
     assert!(app.folded(&Key::Group("Work".into())));
-    assert!(app.rows().len() < 40);
+    assert!(app.rows().len() < 41);
     let _ = app.update(Message::Fold(Key::Group("Work".into())));
-    assert_eq!(app.rows().len(), 40);
+    assert_eq!(app.rows().len(), 41);
     let _ = app.update(Message::GroupBy(GroupBy::City));
     assert_eq!(app.group_by, GroupBy::City);
     assert!(!app.folded(&Key::Group("Work".into())), "folds belong to their grouping");
@@ -240,7 +240,7 @@ async fn the_cursor_reaches_every_contact_when_one_stands_under_two_groups() {
     let rows = app.rows();
     let unique: HashSet<&String> = rows.iter().collect();
     assert_eq!(rows.len(), unique.len(), "each contact once");
-    assert_eq!(rows.len(), 40);
+    assert_eq!(rows.len(), 41);
     for _ in 0..rows.len() {
         let _ = app.update(Message::Key(Press::Down));
     }
@@ -374,7 +374,7 @@ async fn an_older_load_never_overwrites_a_newer() {
     let old = app.load_asked;
     let _ = app.load();
     let _ = app.update(Message::Loaded(old, Ok(backend::Loaded::default())));
-    assert_eq!(app.contacts.len(), 40, "the older answer is dropped");
+    assert_eq!(app.contacts.len(), 41, "the older answer is dropped");
 }
 
 #[tokio::test]
@@ -395,4 +395,341 @@ async fn a_picture_chosen_for_another_contact_is_not_set() {
     let _ = app.update(Message::PhotoChosen(anna, Some(Ok(vec![1, 2, 3]))));
     assert!(app.detail.as_ref().is_some_and(|d| !d.busy), "nothing sent");
     assert!(app.notice.is_some());
+}
+
+/// The id of the demo contact `uid`.
+fn id_of(app: &App, uid: &str) -> String {
+    app.contacts.iter().find(|c| c.id.ends_with(&format!("/{uid}"))).expect("in the demo").id.clone()
+}
+
+/// Issue #726: the demo's Anna Berg twice is one group; the view lists its contacts and walks no rows.
+#[tokio::test]
+async fn the_duplicates_come_with_the_load() {
+    let mut app = loaded(&["--demo"]).await;
+    assert_eq!(app.duplicates.len(), 1);
+    let _ = app.update(Message::Show(View::Duplicates));
+    assert_eq!(app.shown().len(), 2);
+    assert!(app.rows().is_empty(), "cards, no rows");
+    assert_eq!(app.view_name(&View::Duplicates), tr("Duplicates"));
+}
+
+/// Issue #726: the first card is kept until another is chosen, and the choice outlasts a load.
+#[tokio::test]
+async fn keep_follows_the_choice() {
+    let mut app = loaded(&["--demo"]).await;
+    let group = app.duplicates[0].clone();
+    let name = duplicates::key(&group);
+    assert_eq!(app.kept_of(&group).map(|c| c.id.clone()), Some(group.contacts[0].id.clone()), "the fullest");
+    let other = group.contacts[1].id.clone();
+    let _ = app.update(Message::Keep(name.clone(), other.clone()));
+    let again = backend::load(app.backend.clone()).await;
+    let asked = app.load_asked + 1;
+    app.load_asked = asked;
+    let _ = app.update(Message::Loaded(asked, again));
+    assert_eq!(app.keep.get(&name), Some(&other));
+    assert_eq!(app.kept_of(&app.duplicates[0].clone()).map(|c| c.id.clone()), Some(other));
+}
+
+/// Issue #726: a contact of a read-only book blocks "Merge…", so its dialog never opens.
+#[tokio::test]
+async fn merge_is_off_for_a_read_only_contact() {
+    let mut app = loaded(&["--demo"]).await;
+    app.duplicates[0].contacts[1].readonly = true;
+    let name = duplicates::key(&app.duplicates[0]);
+    let _ = app.update(Message::AskMerge(name));
+    assert_eq!(app.dialog, None);
+    assert!(app.merge.is_none());
+}
+
+/// Issue #726: "Merge" asks the core with every id and version, closes the dialog and says when some
+/// contacts stayed.
+#[tokio::test]
+async fn merging_closes_the_dialog() {
+    let mut app = loaded(&["--demo"]).await;
+    let group = app.duplicates[0].clone();
+    let _ = app.update(Message::AskMerge(duplicates::key(&group)));
+    assert_eq!(app.dialog, Some(Dialog::Merge));
+    let _ = app.update(Message::Merge);
+    assert!(app.merge.as_ref().is_some_and(|m| m.busy));
+    let _ = app.update(Message::CloseDialog);
+    assert_eq!(app.dialog, Some(Dialog::Merge), "the dialog waits for its answer");
+    let (ids, etags) = duplicates::ids_and_etags(&group);
+    let keep = group.contacts[0].id.clone();
+    let mut merged = app.backend.merge_contacts(ids, etags, keep).await.expect("merged");
+    merged.left = vec![group.contacts[1].id.clone()];
+    let _ = app.update(Message::MergedContacts(Ok(merged)));
+    assert_eq!(app.dialog, None);
+    assert!(app.merge.is_none());
+    let notice = app.notice.as_ref().map(|n| n.text.clone()).unwrap_or_default();
+    assert_eq!(notice, tr("Merged, but some contacts could not be deleted. They are still there."));
+}
+
+/// Issue #726: a failed merge keeps the dialog open with the reason.
+#[tokio::test]
+async fn a_failed_merge_says_why() {
+    let mut app = loaded(&["--demo"]).await;
+    let _ = app.update(Message::AskMerge(duplicates::key(&app.duplicates[0])));
+    let _ = app.update(Message::Merge);
+    let _ = app.update(Message::MergedContacts(Err(ContactsError::Offline)));
+    assert_eq!(app.dialog, Some(Dialog::Merge));
+    assert!(app.merge.as_ref().is_some_and(|m| !m.busy && m.error.is_some()));
+}
+
+/// Issue #725: "Export…" takes what the view shows.
+#[tokio::test]
+async fn export_takes_what_the_view_shows() {
+    let mut app = loaded(&["--demo"]).await;
+    assert_eq!(app.export_scope(), Scope::default(), "all contacts: every book not hidden");
+    let book = torro_contacts::demo::TEAM.to_owned();
+    let _ = app.update(Message::Show(View::Book(book.clone())));
+    assert_eq!(app.export_scope(), Scope { book: Some(book), ..Scope::default() });
+    let contacts = torro_contacts::demo::CONTACTS.to_owned();
+    let _ = app.update(Message::Show(View::Group(contacts.clone(), "Work".into())));
+    assert_eq!(app.export_scope(), Scope { book: Some(contacts), group: Some("Work".into()), ..Scope::default() });
+    let _ = app.update(Message::Show(View::Favorites));
+    let favorites = app.export_scope();
+    assert_eq!(favorites.ids.len(), 5);
+    assert!(favorites.book.is_none() && favorites.group.is_none());
+    let _ = app.update(Message::Show(View::Duplicates));
+    assert_eq!(app.export_scope().ids.len(), 2);
+    // A search narrows any view to the contacts it lists.
+    let _ = app.update(Message::Show(View::All));
+    let _ = app.update(Message::Search("Berg".into()));
+    let found = backend::search(app.backend.clone(), "Berg".into()).await;
+    let _ = app.update(Message::Found("Berg".into(), found));
+    let scope = app.export_scope();
+    assert!(!scope.ids.is_empty() && scope.ids.len() < app.contacts.len(), "{scope:?}");
+    assert!(app.can_export());
+}
+
+/// Issue #725: the window writes the cards to the file chosen, and nothing else.
+#[tokio::test]
+async fn an_export_writes_the_chosen_file() {
+    let app = loaded(&["--demo"]).await;
+    let dir = tempfile::tempdir().expect("dir");
+    let path = dir.path().join("Anna Berg.vcf");
+    let scope = Scope { ids: vec![id_of(&app, "demo-01")], ..Scope::default() };
+    let count = transfer::write_cards(&app.backend, scope, &path).await.expect("written");
+    assert_eq!(count, 1);
+    let text = std::fs::read_to_string(&path).expect("file");
+    assert!(text.contains("BEGIN:VCARD") && text.contains("Anna"), "{text}");
+    assert_eq!(std::fs::read_dir(dir.path()).expect("dir").count(), 1, "only the chosen file");
+}
+
+/// Issue #725: the trial run counts for the book shown; an answer for the book before is dropped, and
+/// "Import" imports for real.
+#[tokio::test]
+async fn a_trial_run_for_another_book_is_dropped() {
+    let mut app = loaded(&["--demo"]).await;
+    // Two writable books, so there is something to switch to.
+    for book in &mut app.books {
+        book.writable = true;
+    }
+    let dir = tempfile::tempdir().expect("dir");
+    let path = dir.path().join("kontakte.vcf");
+    std::fs::write(&path, "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Kim Neu\r\nEND:VCARD\r\n").expect("file");
+    let _ = app.update(Message::ImportChosen(Some(path.clone())));
+    assert_eq!(app.dialog, Some(Dialog::Import));
+    let first = app.import.as_ref().map(|i| (i.asked, i.book.clone())).expect("dialog");
+    let other = app.books.iter().find(|b| b.id != first.1).map(|b| b.id.clone()).expect("a second book");
+    let _ = app.update(Message::ImportBook(other.clone()));
+    let stale = Imported { created: 7, duplicates: 0, skipped: 0 };
+    let _ = app.update(Message::ImportCounted(first.0, Ok(stale)));
+    assert_eq!(app.import.as_ref().and_then(|i| i.counts), None, "the answer for the book before");
+    let asked = app.import.as_ref().map(|i| i.asked).expect("dialog");
+    let counted = transfer::import(app.backend.clone(), first.1.clone(), path.clone(), true).await;
+    let _ = app.update(Message::ImportCounted(asked, counted));
+    assert_eq!(app.import.as_ref().map(|i| i.new_count()), Some(1));
+    let _ = app.update(Message::ImportConfirm);
+    assert!(app.import.as_ref().is_some_and(|i| i.busy));
+    let done = transfer::import(app.backend.clone(), first.1, path, false).await;
+    let _ = app.update(Message::Imported(done));
+    assert_eq!(app.dialog, None);
+    let notice = app.notice.as_ref().map(|n| n.text.clone()).unwrap_or_default();
+    assert_eq!(notice, trf("{n} contacts imported", &[("n", &1)]));
+}
+
+/// Issue #725: a file the core cannot take keeps the dialog with the reason, and "Import" off.
+#[tokio::test]
+async fn a_failed_trial_run_says_why() {
+    let mut app = loaded(&["--demo"]).await;
+    let _ = app.update(Message::ImportChosen(Some(PathBuf::from("/nowhere/kontakte.vcf"))));
+    let asked = app.import.as_ref().map(|i| i.asked).expect("dialog");
+    let _ = app.update(Message::ImportCounted(asked, Err(ContactsError::TooLarge)));
+    let import = app.import.as_ref().expect("dialog");
+    assert!(import.error.is_some());
+    assert_eq!(import.new_count(), 0);
+    let _ = app.update(Message::ImportConfirm);
+    assert!(!app.import.as_ref().is_some_and(|i| i.busy), "nothing to import");
+}
+
+/// Issue #356: `--contact` opens the contact after the first load; an unknown one only the list.
+#[tokio::test]
+async fn a_contact_named_at_the_start_opens() {
+    let plain = loaded(&["--demo"]).await;
+    let anna = id_of(&plain, "demo-01");
+    let app = loaded(&["--demo", &format!("--contact={anna}")]).await;
+    assert!(app.is_open(&anna));
+    let unknown = loaded(&["--demo", "--contact=nobody"]).await;
+    assert!(unknown.detail.is_none());
+}
+
+/// The states `--open duplicates`, `import` and `merge` of the pictures.
+#[tokio::test]
+async fn the_states_of_import_and_duplicates() {
+    let dups = loaded(&["--demo", "--open", "duplicates"]).await;
+    assert_eq!(dups.view, View::Duplicates);
+    let import = loaded(&["--demo", "--open", "import"]).await;
+    assert_eq!(import.dialog, Some(Dialog::Import));
+    assert_eq!(import.import.as_ref().map(|i| i.new_count()), Some(12));
+    let merge = loaded(&["--demo", "--open", "merge"]).await;
+    assert_eq!((merge.view.clone(), merge.dialog), (View::Duplicates, Some(Dialog::Merge)));
+}
+
+/// Two groups of duplicates: the demo's Anna Berg and a second pair made here.
+async fn two_groups() -> App {
+    let mut app = loaded(&["--demo"]).await;
+    let mut second = app.duplicates[0].clone();
+    for (n, contact) in second.contacts.iter_mut().enumerate() {
+        contact.id = format!("other-{n}");
+    }
+    app.duplicates.push(second);
+    app
+}
+
+/// Review of #726: the keys of "Duplicates" walk the groups, choose the card that stays, merge and mark.
+#[tokio::test]
+async fn the_keys_of_duplicates() {
+    let mut app = two_groups().await;
+    let _ = app.update(Message::Show(View::Duplicates));
+    let keys: Vec<String> = app.duplicates.iter().map(duplicates::key).collect();
+    let _ = app.update(Message::Key(Press::Down));
+    assert_eq!(app.group_cursor.as_ref(), Some(&keys[0]));
+    let _ = app.update(Message::Key(Press::Down));
+    assert_eq!(app.group_cursor.as_ref(), Some(&keys[1]));
+    let _ = app.update(Message::Key(Press::Down));
+    assert_eq!(app.group_cursor.as_ref(), Some(&keys[1]), "stays at the last");
+    let _ = app.update(Message::Key(Press::Up));
+    assert_eq!(app.group_cursor.as_ref(), Some(&keys[0]));
+    // → and ← choose the card; Space goes round.
+    let group = app.duplicates[0].clone();
+    let kept = |app: &App| app.kept_of(&app.duplicates[0].clone()).map(|c| c.id.clone());
+    let _ = app.update(Message::Key(Press::Right));
+    assert_eq!(kept(&app), Some(group.contacts[1].id.clone()));
+    let _ = app.update(Message::Key(Press::Right));
+    assert_eq!(kept(&app), Some(group.contacts[1].id.clone()), "stays at the last card");
+    let _ = app.update(Message::Key(Press::Left));
+    assert_eq!(kept(&app), Some(group.contacts[0].id.clone()));
+    let _ = app.update(Message::Key(Press::Space));
+    let _ = app.update(Message::Key(Press::Space));
+    assert_eq!(kept(&app), Some(group.contacts[0].id.clone()), "after the last the first again");
+    // Enter is "Merge…" of the group under the cursor.
+    let _ = app.update(Message::Key(Press::Enter));
+    assert_eq!(app.dialog, Some(Dialog::Merge));
+    assert_eq!(app.merge.as_ref().map(|m| m.group.clone()), Some(keys[0].clone()));
+    let _ = app.update(Message::CloseDialog);
+    // D marks the group as different people.
+    let _ = app.update(Message::Key(Press::Down));
+    let _ = app.update(Message::Key(Press::Different));
+    assert_eq!(app.dismissing.as_ref(), Some(&keys[1]));
+    // Elsewhere the new keys do nothing.
+    let mut list = loaded(&["--demo"]).await;
+    let _ = list.update(Message::Key(Press::Different));
+    assert!(list.dismissing.is_none() && list.group_cursor.is_none());
+}
+
+/// Second review of #356: under an open dialog the keys of the cards do nothing, and a merge that runs
+/// is not asked about again.
+#[tokio::test]
+async fn the_keys_of_duplicates_wait_under_a_dialog() {
+    let mut app = two_groups().await;
+    let _ = app.update(Message::Show(View::Duplicates));
+    let _ = app.update(Message::Key(Press::Enter));
+    assert_eq!(app.dialog, Some(Dialog::Merge));
+    let kept = app.kept_of(&app.duplicates[0].clone()).map(|c| c.id.clone());
+    let _ = app.update(Message::Key(Press::Right));
+    let _ = app.update(Message::Key(Press::Different));
+    assert_eq!(app.kept_of(&app.duplicates[0].clone()).map(|c| c.id.clone()), kept, "the card stays");
+    assert!(app.dismissing.is_none(), "nothing marked under the dialog");
+    if let Some(merge) = app.merge.as_mut() {
+        merge.busy = true;
+    }
+    let group = app.merge.as_ref().map(|m| m.group.clone()).expect("merge");
+    let _ = app.update(Message::AskMerge(group));
+    assert!(app.merge.as_ref().is_some_and(|m| m.busy), "a running merge is not asked about again");
+}
+
+/// Review of PR #733: the narrow navigation keeps the keys of the cards; "Export…" in "Duplicates" takes
+/// the cards whatever the search of another view held.
+#[tokio::test]
+async fn duplicates_keys_wait_under_the_navigation_and_ignore_the_search() {
+    let mut app = two_groups().await;
+    let _ = app.update(Message::Show(View::Duplicates));
+    app.drawer = true;
+    let _ = app.update(Message::Key(Press::Different));
+    assert!(app.dismissing.is_none(), "nothing marked under the navigation");
+    app.drawer = false;
+    let all = app.export_scope().ids;
+    assert!(!all.is_empty());
+    app.search = "zzz nobody".into();
+    assert!(app.can_export());
+    assert_eq!(app.export_scope().ids, all, "the search of another view takes nothing away");
+}
+
+/// Review of #726: while "Mark as different" runs, no second request goes out and its "Merge…" waits.
+#[tokio::test]
+async fn marking_as_different_waits_for_its_answer() {
+    let mut app = two_groups().await;
+    let keys: Vec<String> = app.duplicates.iter().map(duplicates::key).collect();
+    let _ = app.update(Message::NotDuplicates(keys[0].clone()));
+    assert_eq!(app.dismissing.as_ref(), Some(&keys[0]));
+    let _ = app.update(Message::NotDuplicates(keys[1].clone()));
+    assert_eq!(app.dismissing.as_ref(), Some(&keys[0]), "no second request");
+    let _ = app.update(Message::AskMerge(keys[0].clone()));
+    assert_eq!(app.dialog, None, "its merge waits");
+    let _ = app.update(Message::Dismissed(Ok(())));
+    assert!(app.dismissing.is_none());
+    assert_eq!(app.notice.as_ref().map(|n| n.text.clone()), Some(tr("Marked as different people").to_owned()));
+    let _ = app.update(Message::NotDuplicates(keys[1].clone()));
+    assert_eq!(app.dismissing.as_ref(), Some(&keys[1]));
+    let _ = app.update(Message::Dismissed(Err(ContactsError::Offline)));
+    assert!(app.dismissing.is_none(), "a failure frees the buttons too");
+}
+
+/// Review of #725: with hidden books shown, "All contacts" exports the contacts shown by id, since the
+/// core leaves hidden books out without a scope.
+#[tokio::test]
+async fn all_contacts_with_hidden_books_go_by_id() {
+    let mut app = loaded(&["--demo"]).await;
+    assert_eq!(app.export_scope(), Scope::default());
+    app.books[1].hidden_by_default = true;
+    let scope = app.export_scope();
+    assert!(scope.book.is_none() && scope.group.is_none());
+    assert_eq!(scope.ids.len(), app.contacts.len());
+}
+
+/// Review of #356: `--contact` waits for a load that came through; a failed first one does not use it up.
+#[tokio::test]
+async fn a_contact_named_at_the_start_outlasts_a_failed_load() {
+    let plain = loaded(&["--demo"]).await;
+    let anna = id_of(&plain, "demo-01");
+    let mut app = started(&["--demo", &format!("--contact={anna}")]);
+    app.load_asked += 1;
+    let _ = app.update(Message::Loaded(app.load_asked, Err(ContactsError::Offline)));
+    assert!(app.error.is_some() && app.detail.is_none());
+    let result = backend::load(app.backend.clone()).await;
+    app.load_asked += 1;
+    let _ = app.update(Message::Loaded(app.load_asked, result));
+    assert!(app.error.is_none());
+    assert!(app.is_open(&anna));
+}
+
+/// The states of the two "…" menus for the pictures.
+#[tokio::test]
+async fn the_states_of_the_menus() {
+    let header = loaded(&["--demo", "--open", "header-menu"]).await;
+    assert_eq!(header.menu, Some(Menu::Header));
+    let contact = loaded(&["--demo", "--open", "contact-menu"]).await;
+    assert_eq!(contact.menu, Some(Menu::More));
+    assert!(contact.detail.is_some());
 }

@@ -455,6 +455,24 @@ pub trait MailSource: Send + Sync {
     /// `mail.list_action_kinds` (issue #603): every kind of action, also those switched off – the
     /// rail offers each by hand.
     fn list_action_kinds(&self) -> impl Future<Output = Result<Vec<ActionKind>, InboxError>> + Send;
+
+    /// The address book "Save as contact" writes to (issue #727, `contacts.list_address_books`): the
+    /// first one that may be written and is not hidden ([`crate::contact::writable_book`]); `None`
+    /// without one, and then the action is missing.
+    fn writable_book(&self) -> impl Future<Output = Result<Option<String>, InboxError>> + Send {
+        async { Ok(None) }
+    }
+
+    /// `inbox.create_contact_from_item` (issue #727): the sender of the entry or mail `id` – or the
+    /// vCard attached to it – as a contact in `book`, or the contact that holds it already.
+    fn create_contact_from_item(
+        &self,
+        id: String,
+        book: String,
+    ) -> impl Future<Output = Result<torro_contacts::FromItem, InboxError>> + Send {
+        let _ = (id, book);
+        async { Err(InboxError::NotFound) }
+    }
 }
 
 /// What "Focus & reply" sends for the message `id` (task E19.3, [`MailSource::send_reply`]): the
@@ -780,6 +798,14 @@ impl MailSource for InboxClient {
     async fn list_action_kinds(&self) -> Result<Vec<ActionKind>, InboxError> {
         InboxClient::list_action_kinds(self).await
     }
+
+    async fn writable_book(&self) -> Result<Option<String>, InboxError> {
+        crate::contact::core_writable_book(self).await
+    }
+
+    async fn create_contact_from_item(&self, id: String, book: String) -> Result<torro_contacts::FromItem, InboxError> {
+        crate::contact::core_from_item(self, id, book).await
+    }
 }
 
 impl MailSource for DemoSource {
@@ -937,6 +963,7 @@ impl MailSource for DemoSource {
         let mut mail = DemoSource::get_mail(self, &id)?;
         mail.summary.invite = demo_invite(&mail.summary.id, mail.summary.date);
         mail.invitation = mail.summary.invite.is_some();
+        demo_vcard(&mut mail);
         Ok(mail)
     }
 
@@ -1143,6 +1170,15 @@ impl MailSource for DemoSource {
 
     async fn list_action_kinds(&self) -> Result<Vec<ActionKind>, InboxError> {
         Ok(fallback_kinds())
+    }
+
+    /// The demo's own book of `torro_contacts::demo`, as the compose window's demo writes to.
+    async fn writable_book(&self) -> Result<Option<String>, InboxError> {
+        Ok(Some(torro_contacts::demo::CONTACTS.to_owned()))
+    }
+
+    async fn create_contact_from_item(&self, id: String, book: String) -> Result<torro_contacts::FromItem, InboxError> {
+        crate::contact::demo_from_item(self, id, book).await
     }
 }
 
@@ -2692,6 +2728,29 @@ fn account_name(account: &str) -> String {
     torro_inbox::rules::domain_of(address).unwrap_or_else(|| list::one_line(address))
 }
 
+/// The demo's mail with a vCard attached (issue #727): its rail and footer offer "Add contact" in
+/// place of "Save as contact".
+pub const DEMO_VCARD_MAIL: &str = "m:w2";
+
+/// Lena's card on [`DEMO_VCARD_MAIL`], laid over the demo's data as [`demo_invite`] lays an
+/// invitation: the shared demo of `torro_inbox` has no mail with a vCard. Only the whole mail carries
+/// it, the list's row keeps no paperclip.
+fn demo_vcard(mail: &mut Mail) {
+    if mail.summary.id != DEMO_VCARD_MAIL || mail.attachments.iter().any(crate::contact::is_vcard) {
+        return;
+    }
+    let part = (mail.attachments.len() + 2).to_string();
+    mail.attachments.push(AttachmentInfo {
+        part,
+        filename: Some("lena-hoffmann.vcf".into()),
+        content_type: "text/vcard".into(),
+        size: 412,
+        inline: false,
+        content_id: None,
+    });
+    mail.summary.has_attachments = true;
+}
+
 /// The demo's invitations (task E8.3b): Maria's "Lunch next week?" (`m:w4`) invites to lunch on the
 /// Tuesday of next week at 12:00 for an hour, Paul's "Weekend plans" (`m:p1`) to a hike all
 /// Saturday. Counted from the demo's "now" (the mail's `date` plus how long before "now" the demo
@@ -3249,6 +3308,11 @@ pub struct Reading<'a> {
     /// The kinds of action the rail's group "Torro" offers (`mail.list_action_kinds`); `None` while
     /// they are not in – Task and Event then ([`fallback_kinds`]).
     pub kinds: Option<&'a [ActionKind]>,
+    /// There is an address book to write to (issue #727, `MailSource::writable_book`): only then does
+    /// the rail's group "Torro" offer "Save as contact" ([`contact_item`]).
+    pub contact_book: bool,
+    /// A "Save as contact" is on its way: the item takes no click until the core answered.
+    pub contact_busy: bool,
 }
 
 /// How the mail's HTML shows in the panel or the reader (task M9.7): as HTML or its text, in light
@@ -4353,6 +4417,7 @@ fn torro_items<'a>(
     anchors: &detail::Anchors,
 ) -> Vec<RailItem<'a, Message>> {
     let mut items = action_items(reading, entry.map(|entry| entry.item.id.as_str()), anchors);
+    items.extend(contact_item(reading, entry.map(|entry| entry.item.id.as_str())));
     // Always there: without an AI or the right to read the mail, the chat says so itself.
     let ask = Some(Message::AskAi(reading.id.to_owned()));
     items.push(RailItem::new(Icon::Sparkles, tr("Ask AI…"), "I", ask).accent());
@@ -4377,6 +4442,20 @@ fn torro_items<'a>(
     }
     items.extend(workflow_items(reading));
     items
+}
+
+/// "Save as contact" – "Add contact" for a mail with a vCard ([`crate::contact::label`]) – after the
+/// kinds of action (issue #727): for the mail's entry `entry` when it has one, else for the mail
+/// itself (its `m:…` id). Only with a book to write to ([`Reading::contact_book`]); not for one's own
+/// draft or a mail read in "Sent", whose sender is oneself. Off while a save is on its way.
+fn contact_item<'a>(reading: &Reading<'_>, entry: Option<&str>) -> Option<RailItem<'a, Message>> {
+    if !reading.contact_book || reading.in_drafts || reading.sent {
+        return None;
+    }
+    let vcard = matches!(reading.loaded, Some(Ok(mail)) if crate::contact::has_vcard(mail));
+    let id = entry.map_or_else(|| reading.id.to_owned(), str::to_owned);
+    let save = (!reading.contact_busy).then_some(Message::SaveContact(id));
+    Some(RailItem::new(Icon::UserPlus, crate::contact::label(vcard), "", save))
 }
 
 /// Shared by the Torro rail and its context menu; the established Task action stays first.
@@ -6730,6 +6809,8 @@ mod tests {
             unsubscribed: &unsubscribed,
             suggestions: &[],
             kinds: None,
+            contact_book: false,
+            contact_busy: false,
         };
         check(&reading)
     }
@@ -8126,6 +8207,8 @@ mod tests {
                         unsubscribed: &none_left,
                         suggestions: &[],
                         kinds: None,
+                        contact_book: false,
+                        contact_busy: false,
                     };
                     let anchors = detail::Anchors::default();
                     let _ = panel(&reading, Some(&folder), &anchors, Bars::Split, None);
@@ -8879,6 +8962,65 @@ mod tests {
         assert_eq!(kind_icon("calendar-plus"), Icon::CalendarPlus);
         assert_eq!(kind_icon("rocket"), Icon::Sparkles);
         assert_eq!(kind_label(&kinds[0]), tr("Event"));
+    }
+
+    /// The item "Save as contact" of the group "Torro" (issue #727) in `groups`, if there is one –
+    /// under either of its names.
+    fn contact_of<'g, 'a>(groups: &'g [RailGroup<'a, Message>]) -> Option<&'g RailItem<'a, Message>> {
+        let torro = &group(groups, tr("Torro")).items;
+        torro.iter().find(|item| item.icon == Icon::UserPlus)
+    }
+
+    /// Issue #727: with a book to write to, "Save as contact" follows the kinds of action, before "Ask
+    /// AI…"; a mail without an entry sends its own id, an entry's mail the entry's. Without a book,
+    /// in a draft and in "Sent" it is missing; while a save runs it takes no click.
+    #[test]
+    fn save_as_contact_stands_in_the_rail_with_a_book() {
+        let folders = folders();
+        let anchors = detail::Anchors::default();
+        reading_of("m:w1", MailFormat::Text, true, |reading| {
+            assert!(contact_of(&action_groups(reading, None, &folders, true, &anchors)).is_none(), "no book");
+            let with = Reading { contact_book: true, ..*reading };
+            let groups = action_groups(&with, None, &folders, true, &anchors);
+            let words = &rail_words(&groups);
+            let torro = &words.iter().find(|(label, _)| label == tr("Torro")).expect("Torro").1;
+            let at = torro.iter().position(|word| word == tr("Save as contact")).expect("the action");
+            assert_eq!(torro.get(at + 1).map(String::as_str), Some(tr("Ask AI…")), "{torro:?}");
+            let item = contact_of(&groups).expect("the action");
+            assert!(matches!(item.press(), Some(Message::SaveContact(id)) if id == "m:w1"), "the mail's own id");
+
+            let entry = mail_entry();
+            let held = Some(ReaderEntry { item: &entry, hide: true });
+            let groups = action_groups(&with, held, &folders, true, &anchors);
+            let item = contact_of(&groups).expect("the action for an entry");
+            assert!(matches!(item.press(), Some(Message::SaveContact(id)) if *id == entry.id), "the entry's id");
+
+            let busy = Reading { contact_busy: true, ..with };
+            let groups = action_groups(&busy, None, &folders, true, &anchors);
+            assert!(contact_of(&groups).expect("still there").press().is_none(), "off while a save runs");
+            for own in [Reading { in_drafts: true, ..with }, Reading { sent: true, ..with }] {
+                assert!(contact_of(&action_groups(&own, None, &folders, true, &anchors)).is_none(), "one's own mail");
+            }
+        });
+    }
+
+    /// Issue #727: a mail with a vCard names the action "Add contact" (the demo's card on
+    /// [`DEMO_VCARD_MAIL`], as `MailSource::get_mail` of the demo lays it over the mail).
+    #[test]
+    fn a_mail_with_a_vcard_offers_add_contact() {
+        let folders = folders();
+        let demo = DemoSource::new(now());
+        let carded = iced::futures::executor::block_on(MailSource::get_mail(&demo, DEMO_VCARD_MAIL.to_owned()));
+        assert!(carded.as_ref().is_ok_and(crate::contact::has_vcard), "the demo's mail carries a card");
+        let carded = carded.map_err(|err| err.to_string());
+        reading_of(DEMO_VCARD_MAIL, MailFormat::Text, true, |reading| {
+            let plain = Reading { contact_book: true, ..*reading };
+            let groups = action_groups(&plain, None, &folders, true, &detail::Anchors::default());
+            assert_eq!(contact_of(&groups).map(|item| item.label.to_string()), Some(tr("Save as contact").to_owned()));
+            let with = Reading { loaded: Some(&carded), ..plain };
+            let groups = action_groups(&with, None, &folders, true, &detail::Anchors::default());
+            assert_eq!(contact_of(&groups).map(|item| item.label.to_string()), Some(tr("Add contact").to_owned()));
+        });
     }
 
     /// A mail with open suggestions carries the light bulb in its row, which kinds as its tooltip;

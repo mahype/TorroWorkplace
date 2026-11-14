@@ -14,17 +14,27 @@
 //!   this device.
 //! - **Groups** are `CATEGORIES`; a book that keeps groups as cards of their own (iCloud) refuses
 //!   changes of groups for now.
+//! - **Import and export** (issue #725) keep every card as written: an import stores the file's
+//!   card (a `UID` added where it has none) and leaves out people already there
+//!   ([`torro_contacts::duplicates`]); an export gives the cards as stored.
+//! - **Duplicates** (issue #726) are found in the books in reach that are not hidden; merging keeps
+//!   the chosen contact's fields, takes the others' lists and deletes them; pairs said to be
+//!   different people stay apart ([`Store::not_duplicates`]).
 
 use base64::Engine;
 use chrono::{Local, Utc};
+use std::collections::HashSet;
 use torro_contacts::suggest::GroupCandidate;
+
+use torro_contacts::duplicates;
 use torro_contacts::{
     AddressBook, Birthday, Contact, ContactFields, ContactPage, ContactState, ContactSummary, ContactsError,
-    ContactsProvider, FieldsError, Group, Keep, Moved, PhotoSize, Stored, contact_id, vcard,
+    ContactsProvider, DuplicateReason, FieldKind, FieldsError, FromItem, Group, Imported, Keep, Labeled, Merged, Moved,
+    PhotoSize, Stored, contact_id, vcard,
 };
-use torro_core::i18n::{tr, trf};
+use torro_core::i18n::{Lang, lang, tr, trf};
 use torro_ipc::api::Rights;
-use torro_ipc::contacts::{BIRTHDAY_DAYS, MAX_BIRTHDAY_DAYS};
+use torro_ipc::contacts::{BIRTHDAY_DAYS, MAX_BIRTHDAY_DAYS, MAX_IMPORT_BYTES, MAX_IMPORT_CARDS, MERGE_MAX, MERGE_MIN};
 use torro_ipc::{Request, Response};
 
 use super::store::{BookRow, CardRow, Op, Query, Queued, Store};
@@ -38,6 +48,71 @@ pub const SUGGEST_CANDIDATES: usize = 200;
 
 /// The name of Nextcloud's system address book (every user of the instance), hidden by default.
 const SYSTEM_BOOK: &str = "z-server-generated--system";
+
+/// The largest vCard attached to a mail that `inbox.create_contact_from_item` takes (issue #727).
+pub const MAX_ATTACHED_CARD_BYTES: usize = 1024 * 1024;
+
+/// The calling code numbers with the trunk prefix 0 belong to, by the suite's language
+/// ([`duplicates::country_code`]): the suite speaks German to people in Germany, Austria and
+/// Switzerland, whose numbers are nearly all written with `+` when they cross a border.
+fn country() -> Option<&'static str> {
+    match lang() {
+        Lang::De => duplicates::country_code("de"),
+        Lang::En => None,
+    }
+}
+
+/// A card an import or a mail brings: what it is to the address books.
+enum Card {
+    /// Does not read, names nobody, or is a group card.
+    Skipped,
+    /// The person is there already: the contact, when one of the books holds it (an earlier card of
+    /// the same file has none).
+    Known(Option<String>),
+    /// New: the card as it will be stored, with its `UID`.
+    New { uid: String, raw: String },
+}
+
+/// What a card is compared with: the `UID`s of the target book, and the mail addresses, numbers and
+/// names with company of the books in reach that are not hidden, of the target book and of the
+/// cards taken before ([`duplicates::keys`]), each with the contact that holds it.
+#[derive(Default)]
+struct Known {
+    uids: HashSet<String>,
+    keys: std::collections::HashMap<(DuplicateReason, String), Option<String>>,
+}
+
+impl Known {
+    fn add(&mut self, contact: &Contact, id: Option<&str>) {
+        for key in duplicates::keys(contact, country()) {
+            self.keys.entry(key).or_insert_with(|| id.map(str::to_string));
+        }
+    }
+
+    /// What `raw` is ([`Card`]); a new card is added, so the next one with the same person is known.
+    fn sort(&mut self, raw: &str) -> Result<Card, ContactsError> {
+        let contact = match vcard::read(raw) {
+            Ok(contact) if vcard::group_card(raw).is_none() && !contact.shown_name().trim().is_empty() => contact,
+            _ => return Ok(Card::Skipped),
+        };
+        if !contact.uid.is_empty() && self.uids.contains(&contact.uid) {
+            return Ok(Card::Known(None));
+        }
+        if let Some(held) = duplicates::keys(&contact, country()).iter().find_map(|key| self.keys.get(key)) {
+            return Ok(Card::Known(held.clone()));
+        }
+        // A card without a UID gets a fresh one; every other line stays as the file wrote it.
+        let (uid, raw) = if contact.uid.trim().is_empty() {
+            let uid = vcard::new_uid().map_err(ContactsError::Other)?;
+            (uid.clone(), vcard::set_uid(raw, &uid))
+        } else {
+            (contact.uid.clone(), raw.to_string())
+        };
+        self.uids.insert(uid.clone());
+        self.add(&contact, None);
+        Ok(Card::New { uid, raw })
+    }
+}
 
 /// What a command needs of the store before it runs: its contact and the contact's book.
 struct Found {
@@ -73,6 +148,43 @@ fn fields_error(err: FieldsError) -> ContactsError {
         )),
         FieldsError::Empty => ContactsError::Other(tr("Nothing to change was sent.").to_string()),
     }
+}
+
+/// The contact of a [`Response::Contact`].
+fn contact_in(response: Response) -> Result<Contact, ContactsError> {
+    match response {
+        Response::Contact { contact } => Ok(*contact),
+        _ => Err(ContactsError::NotFound),
+    }
+}
+
+/// The text of the `.vcf` file at `path` for `contacts.import_vcards` (issue #725): an absolute path
+/// to a regular file reached without a symbolic link at its end, at most [`MAX_IMPORT_BYTES`];
+/// bytes that are no UTF-8 become replacement characters. Blocks: call it on a blocking thread.
+fn read_vcf(path: &str) -> Result<String, ContactsError> {
+    let path = std::path::Path::new(path);
+    let unreadable = || ContactsError::Other(tr("The file cannot be read.").to_string());
+    if !path.is_absolute() {
+        return Err(ContactsError::Other(tr("The path must be absolute.").to_string()));
+    }
+    let meta = std::fs::symlink_metadata(path).map_err(|_| unreadable())?;
+    if !meta.is_file() {
+        return Err(unreadable());
+    }
+    if meta.len() > MAX_IMPORT_BYTES {
+        return Err(ContactsError::Other(trf(
+            "The file is larger than {mb} MB.",
+            &[("mb", &(MAX_IMPORT_BYTES / 1024 / 1024))],
+        )));
+    }
+    let bytes = std::fs::read(path).map_err(|_| unreadable())?;
+    if bytes.len() as u64 > MAX_IMPORT_BYTES {
+        return Err(ContactsError::Other(trf(
+            "The file is larger than {mb} MB.",
+            &[("mb", &(MAX_IMPORT_BYTES / 1024 / 1024))],
+        )));
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Whether `reach` sees `book`.
@@ -207,6 +319,85 @@ impl ContactsService {
             | Request::DeleteContact { id, .. }
             | Request::ResolveContactConflict { id, .. } => contact_outside(id),
             Request::MoveContact { id, to_book, .. } => contact_outside(id).or_else(|| book_outside(to_book)),
+            // Issues #725 and #726: the book named and every contact named.
+            Request::ImportVCards { book, .. } | Request::FindDuplicates { book: Some(book) } => book_outside(book),
+            Request::ExportVCards { book, ids, .. } => {
+                book.as_deref().and_then(book_outside).or_else(|| ids.iter().find_map(|id| contact_outside(id)))
+            }
+            Request::MergeContacts { ids, .. } | Request::DismissDuplicates { ids } => {
+                ids.iter().find_map(|id| contact_outside(id))
+            }
+            _ => None,
+        }
+    }
+
+    /// The contact `id` with the name it shows, when `reach` sees its book (`apps.open_app` with
+    /// `contact:<id>`, issue #727); the id as the store holds it.
+    pub fn named(&self, reach: Reach<'_>, id: &str) -> Option<(String, String)> {
+        let found = self.find(id).ok().filter(|found| reaches(reach, &found.book))?;
+        let name = vcard::read(&found.card.vcard).map(|contact| contact.shown_name()).unwrap_or_default();
+        Some((found.card.id, name))
+    }
+
+    /// For `reach`: whether it sees the book `id` (`inbox.create_contact_from_item`, issue #727).
+    pub fn sees_book(&self, reach: Reach<'_>, id: &str) -> bool {
+        self.book(id).is_ok_and(|book| reaches(reach, &book))
+    }
+
+    /// The answer for a request of the area that cannot run whatever the store holds (issues #725,
+    /// #726): `forbidden` for a file to import from a client (only the suite's apps name files),
+    /// `error` for a request outside the limits. Checked before an approval is asked for, and again
+    /// when the command runs. `None` for everything else.
+    pub fn refusal(&self, reach: Reach<'_>, request: &Request) -> Option<Response> {
+        let error = |message: String| Some(Response::Error { code: "error".into(), message });
+        let named = |ids: &[String]| {
+            let distinct: HashSet<&String> = ids.iter().collect();
+            if !(MERGE_MIN..=MERGE_MAX).contains(&ids.len()) || distinct.len() != ids.len() {
+                return error(trf(
+                    "Name {min} to {max} different contacts.",
+                    &[("min", &MERGE_MIN), ("max", &MERGE_MAX)],
+                ));
+            }
+            None
+        };
+        let read_only = |book: &BookRow| {
+            Some(error_response(&ContactsError::Unsupported(trf(
+                "The address book “{book}” is read-only.",
+                &[("book", &book.display_name)],
+            ))))
+        };
+        match request {
+            // A read-only book is nothing to approve (it is checked again when the command runs).
+            Request::ImportVCards { book, .. } if self.book(book).is_ok_and(|book| !book.writable) => {
+                self.book(book).ok().and_then(|book| read_only(&book))
+            }
+            Request::MergeContacts { ids, .. }
+                if let Some(book) = ids.iter().filter_map(|id| self.find(id).ok()).find(|f| !f.book.writable) =>
+            {
+                read_only(&book.book)
+            }
+            Request::ImportVCards { path: Some(_), .. } if !matches!(reach, Reach::Suite) => Some(Response::Error {
+                code: "forbidden".into(),
+                message: tr("Only the suite's apps import from a file; send the cards as `data`.").to_string(),
+            }),
+            Request::ImportVCards { data, path, .. } if data.is_some() == path.is_some() => {
+                error(tr("Send the cards either as `data` or as `path`.").to_string())
+            }
+            Request::ExportVCards { group: Some(_), book: None, .. } => {
+                error(tr("A group needs its address book (`book`).").to_string())
+            }
+            Request::ExportVCards { ids, .. } if ids.len() > MAX_IMPORT_CARDS => {
+                error(trf("Name at most {n} contacts.", &[("n", &MAX_IMPORT_CARDS)]))
+            }
+            Request::DismissDuplicates { ids } => named(ids),
+            Request::MergeContacts { ids, etags, keep } => named(ids).or_else(|| {
+                if etags.len() != ids.len() || !ids.contains(keep) {
+                    return error(
+                        tr("Send an `etag` for each contact, in the same order, and `keep` among them.").to_string(),
+                    );
+                }
+                None
+            }),
             _ => None,
         }
     }
@@ -215,6 +406,9 @@ impl ContactsService {
     /// that writes runs whole under the lock of the rounds, from its checks to the answer, so no
     /// round sends or merges the same contact in between.
     pub async fn handle(&self, request: Request, reach: Reach<'_>) -> Response {
+        if let Some(refused) = self.refusal(reach, &request) {
+            return refused;
+        }
         let _round = match request.operation().access {
             torro_ipc::api::Access::Read => None,
             _ => Some(self.rounds.lock().await),
@@ -255,6 +449,13 @@ impl ContactsService {
             Request::MoveContact { id, etag, to_book } => Box::pin(self.move_contact(&id, &etag, &to_book)).await,
             Request::DeleteContact { id, etag } => Box::pin(self.delete(&id, &etag)).await,
             Request::ResolveContactConflict { id, keep, etag } => Box::pin(self.resolve(&id, keep, &etag)).await,
+            Request::ImportVCards { book, data, path, dry_run } => {
+                Box::pin(self.import(reach, &book, data, path, dry_run)).await
+            }
+            Request::ExportVCards { book, group, ids } => self.export(reach, book.as_deref(), group.as_deref(), &ids),
+            Request::FindDuplicates { book } => self.find_duplicates(reach, book.as_deref()),
+            Request::MergeContacts { ids, etags, keep } => Box::pin(self.merge(&ids, &etags, &keep)).await,
+            Request::DismissDuplicates { ids } => self.dismiss(&ids),
             other => Err(ContactsError::Other(format!("{} is no contacts command", other.operation().name()))),
         };
         answer.unwrap_or_else(|err| error_response(&err))
@@ -893,6 +1094,362 @@ impl ContactsService {
         Ok(Response::ContactsResolved { contacts })
     }
 
+    /// The books in reach that are not hidden: where people "already in the address books" are
+    /// looked for, and what an export without a book and a search for duplicates read.
+    fn shown_books(&self, reach: Reach<'_>) -> Result<Vec<BookRow>, ContactsError> {
+        Ok(self.books_within(reach, None)?.into_iter().filter(|book| !book.hidden).collect())
+    }
+
+    /// The `UID`s of `target` and the people of the books in reach that are not hidden and of
+    /// `target` ([`Known`]).
+    fn known(&self, reach: Reach<'_>, target: &BookRow) -> Result<Known, ContactsError> {
+        let mut books = self.shown_books(reach)?;
+        if !books.iter().any(|book| book.id == target.id) {
+            books.push(target.clone());
+        }
+        with(self.store()?, |s| {
+            let mut known = Known::default();
+            for book in &books {
+                for card in s.cards(&book.id)? {
+                    if book.id == target.id {
+                        known.uids.insert(card.uid.clone());
+                    }
+                    if vcard::group_card(&card.vcard).is_none()
+                        && let Ok(contact) = vcard::read(&card.vcard)
+                    {
+                        known.add(&contact, Some(&card.id));
+                    }
+                }
+            }
+            Ok(known)
+        })
+    }
+
+    /// Stores `raw` as the new contact `uid` of `book` and queues it, without sending yet.
+    fn store_new(&self, book: &BookRow, uid: &str, raw: &str) -> Result<CardRow, ContactsError> {
+        let card = CardRow {
+            id: contact_id(&book.id, uid),
+            book: book.id.clone(),
+            uid: uid.to_string(),
+            href: None,
+            etag: None,
+            vcard: raw.to_string(),
+            base: None,
+            state: ContactState::Pending,
+            server: None,
+            server_etag: None,
+        };
+        with(self.store()?, |s| {
+            s.put_card(&card)?;
+            let queued = s.enqueue(&Queued {
+                card: card.id.clone(),
+                book: book.id.clone(),
+                op: Op::Put,
+                uid: uid.to_string(),
+                href: None,
+                etag: None,
+            });
+            // A card that cannot be queued would never reach the server: it goes again.
+            if queued.is_err() {
+                let _ = s.remove_card(&card.id);
+            }
+            queued
+        })?;
+        Ok(card)
+    }
+
+    /// `contacts.import_vcards` (issue #725): the cards of `data` or of the file at `path` into
+    /// `book_id`; with `dry_run` only counted. More than [`MAX_IMPORT_CARDS`] cards write nothing.
+    async fn import(
+        &self,
+        reach: Reach<'_>,
+        book_id: &str,
+        data: Option<String>,
+        path: Option<String>,
+        dry_run: bool,
+    ) -> Result<Response, ContactsError> {
+        let book = self.book(book_id)?;
+        Self::writable(&book)?;
+        let text = match (data, path) {
+            (Some(data), None) => data,
+            (None, Some(path)) => tokio::task::spawn_blocking(move || read_vcf(&path))
+                .await
+                .map_err(|err| ContactsError::Other(err.to_string()))??,
+            _ => return Err(ContactsError::Other(tr("Send the cards either as `data` or as `path`.").to_string())),
+        };
+        let cards = vcard::split(&text);
+        if cards.len() > MAX_IMPORT_CARDS {
+            return Err(ContactsError::Other(trf(
+                "The file holds more than {n} contacts; split it and import the parts.",
+                &[("n", &MAX_IMPORT_CARDS)],
+            )));
+        }
+        let mut known = self.known(reach, &book)?;
+        let mut imported = Imported::default();
+        let mut new = Vec::new();
+        for raw in &cards {
+            match known.sort(raw)? {
+                Card::Skipped => imported.skipped += 1,
+                Card::Known(_) => imported.duplicates += 1,
+                Card::New { uid, raw } => {
+                    imported.created += 1;
+                    new.push((uid, raw));
+                }
+            }
+        }
+        if dry_run || new.is_empty() {
+            return Ok(Response::ContactsImported(imported));
+        }
+        // All or nothing: a store failing halfway takes back what it wrote, so no answer "error" leaves
+        // contacts behind that go to the server with the next round.
+        let mut stored: Vec<String> = Vec::new();
+        for (uid, raw) in &new {
+            match self.store_new(&book, uid, raw) {
+                Ok(card) => stored.push(card.id),
+                Err(err) => {
+                    let _ = with(self.store()?, |s| {
+                        for id in &stored {
+                            s.remove_card(id)?;
+                        }
+                        Ok(())
+                    });
+                    return Err(err);
+                }
+            }
+        }
+        // One round sends them all; offline they wait (`state: pending`).
+        self.push(&book).await;
+        Ok(Response::ContactsImported(imported))
+    }
+
+    /// `contacts.export_vcards` (issue #725): the cards as stored, each ending its last line; at most
+    /// [`MAX_IMPORT_CARDS`], else `error`.
+    fn export(
+        &self,
+        reach: Reach<'_>,
+        book: Option<&str>,
+        group: Option<&str>,
+        ids: &[String],
+    ) -> Result<Response, ContactsError> {
+        let cards: Vec<CardRow> = if !ids.is_empty() {
+            ids.iter().map(|id| self.find(id).map(|found| found.card)).collect::<Result<_, _>>()?
+        } else {
+            let books: Vec<String> = match book {
+                Some(book) => vec![self.book(book)?.id],
+                None => self.shown_books(reach)?.into_iter().map(|b| b.id).collect(),
+            };
+            with(self.store()?, |s| {
+                let mut cards = Vec::new();
+                for book in &books {
+                    cards.extend(s.cards(book)?);
+                }
+                Ok(cards)
+            })?
+            .into_iter()
+            .filter(|card| {
+                group.is_none_or(|group| {
+                    // Without case, as the contacts app puts groups together.
+                    vcard::read(&card.vcard).is_ok_and(|contact| {
+                        contact.groups.iter().any(|g| g.trim().to_lowercase() == group.trim().to_lowercase())
+                    })
+                })
+            })
+            .collect()
+        };
+        // As for an import: more would fill an agent's answer or a window's memory at once.
+        if cards.len() > MAX_IMPORT_CARDS {
+            return Err(ContactsError::Other(trf(
+                "More than {n} contacts; export one address book or group at a time.",
+                &[("n", &MAX_IMPORT_CARDS)],
+            )));
+        }
+        let mut data = String::new();
+        for card in &cards {
+            data.push_str(&card.vcard);
+            if !card.vcard.ends_with('\n') {
+                data.push_str("\r\n");
+            }
+        }
+        Ok(Response::VCards { data, count: u32::try_from(cards.len()).unwrap_or(u32::MAX), untrusted: true })
+    }
+
+    /// The contacts of `books` as the API answers them, without group cards.
+    fn contacts_in(&self, books: &[BookRow]) -> Result<Vec<Contact>, ContactsError> {
+        with(self.store()?, |s| {
+            let mut contacts = Vec::new();
+            for book in books {
+                for card in s.cards(&book.id)? {
+                    if vcard::group_card(&card.vcard).is_none() {
+                        contacts.push(contact_of(s, &card, book));
+                    }
+                }
+            }
+            Ok(contacts)
+        })
+    }
+
+    /// `contacts.find_duplicates` (issue #726): in `book` (also a hidden one), else in the books in
+    /// reach that are not hidden.
+    fn find_duplicates(&self, reach: Reach<'_>, book: Option<&str>) -> Result<Response, ContactsError> {
+        let books = match book {
+            Some(book) => vec![self.book(book)?],
+            None => self.shown_books(reach)?,
+        };
+        let contacts = self.contacts_in(&books)?;
+        let dismissed = with(self.store()?, |s| s.not_duplicates())?;
+        Ok(Response::ContactDuplicates { groups: duplicates::find(&contacts, country(), &dismissed) })
+    }
+
+    /// `contacts.dismiss_duplicates` (issue #726).
+    fn dismiss(&self, ids: &[String]) -> Result<Response, ContactsError> {
+        for id in ids {
+            self.find(id)?;
+        }
+        with(self.store()?, |s| s.dismiss_duplicates(ids))?;
+        Ok(Response::Ok)
+    }
+
+    /// `contacts.merge_contacts` (issue #726): every contact checked first (its version, a writable
+    /// book, no conflict), then `keep` written with what the others bring, then the others deleted
+    /// as `contacts.delete_contact` deletes; one whose deletion fails, and all of them while the
+    /// merged contact did not reach the server yet, are named in `left`. A favourite stays one, a
+    /// picture comes from the first other when `keep` has none.
+    async fn merge(&self, ids: &[String], etags: &[String], keep: &str) -> Result<Response, ContactsError> {
+        let mut found = Vec::new();
+        for (id, etag) in ids.iter().zip(etags) {
+            let one = self.find(id)?;
+            if !one.book.writable {
+                return Err(ContactsError::Unsupported(trf(
+                    "The address book “{book}” is read-only.",
+                    &[("book", &one.book.display_name)],
+                )));
+            }
+            found.push((self.changeable(id, Some(etag))?, etag.clone()));
+        }
+        let at = found.iter().position(|(one, _)| one.card.id == keep).ok_or(ContactsError::NotFound)?;
+        let (kept, _) = found.remove(at);
+        let before = vcard::read(&kept.card.vcard).map_err(|_| ContactsError::NotFound)?;
+        let others: Vec<Contact> = found
+            .iter()
+            .map(|(one, _)| vcard::read(&one.card.vcard).map_err(|_| ContactsError::NotFound))
+            .collect::<Result<_, _>>()?;
+        let after = duplicates::merged(&before, &others, country());
+        if after.groups != before.groups {
+            Self::no_group_cards(&kept.book, None)?;
+        }
+        let mut raw = vcard::patch(&kept.card.vcard, &before, &after);
+        if vcard::photo(&kept.card.vcard).is_none()
+            && let Some(photo) = found.iter().find_map(|(one, _)| vcard::photo(&one.card.vcard))
+        {
+            raw = vcard::set_photo(&raw, Some(&photo));
+        }
+        let favorite = with(self.store()?, |s| {
+            let mut any = false;
+            for (one, _) in &found {
+                any |= s.is_favorite(&one.card.id)?;
+            }
+            Ok(any)
+        })?;
+        let (keep_id, keep_book) = (kept.card.id.clone(), kept.book.clone());
+        self.write(kept.card, &keep_book, raw).await?;
+        if favorite {
+            with(self.store()?, |s| s.set_favorite(&keep_id, &keep_book.account, true))?;
+        }
+        // The others go only once the merged contact is on the server: while it waits (offline, a
+        // passing failure) or the server may still refuse it, they are all that is there of what
+        // they bring.
+        let written = with(self.store()?, |s| s.card(&keep_id))?.is_some_and(|card| card.state == ContactState::Synced);
+        let mut left = Vec::new();
+        for (one, etag) in found {
+            if !written || Box::pin(self.delete(&one.card.id, &etag)).await.is_err() {
+                left.push(one.card.id);
+            }
+        }
+        let contact = with(self.store()?, |s| Ok(s.card(&keep_id)?.map(|card| contact_of(s, &card, &keep_book))))?
+            .ok_or(ContactsError::NotFound)?;
+        Ok(Response::ContactsMerged(Box::new(Merged { contact, left })))
+    }
+
+    /// `inbox.create_contact_from_item` with a vCard attached (issue #727): the first card of `text`
+    /// into `book_id` as `contacts.import_vcards` would take it; a person there already is answered
+    /// with `created: false` and the contact that holds it. The caller holds no lock; this takes the
+    /// lock of the rounds.
+    pub async fn contact_from_card(
+        &self,
+        reach: Reach<'_>,
+        book_id: &str,
+        text: &str,
+    ) -> Result<FromItem, ContactsError> {
+        let _round = self.rounds.lock().await;
+        let book = self.book(book_id)?;
+        Self::writable(&book)?;
+        let raw = vcard::split(text).into_iter().next().unwrap_or_default();
+        let mut known = self.known(reach, &book)?;
+        match known.sort(&raw)? {
+            Card::Skipped => Err(ContactsError::Other(tr("The attached vCard holds no contact.").to_string())),
+            // Known by its UID in `book`, or by a contact of the books holding the person.
+            Card::Known(held) => self.held(held.or_else(|| {
+                vcard::read(&raw).ok().filter(|card| !card.uid.is_empty()).map(|card| contact_id(&book.id, &card.uid))
+            })),
+            // Kept as the mail brought it, as an import keeps a file's card.
+            Card::New { uid, raw } => {
+                let card = self.store_new(&book, &uid, &raw)?;
+                let contact = match self.send_now(&book, &card.id).await? {
+                    Some(Sent::Refused(err)) => return Err(err),
+                    _ => self.answer(&card.id, &book)?,
+                };
+                Ok(FromItem { contact: contact_in(contact)?, created: true })
+            }
+        }
+    }
+
+    /// The contact `held` a card or a sender matched, as [`FromItem`] with `created: false`.
+    fn held(&self, held: Option<String>) -> Result<FromItem, ContactsError> {
+        let found = self.find(&held.ok_or(ContactsError::NotFound)?)?;
+        let contact = with(self.store()?, |s| Ok(contact_of(s, &found.card, &found.book)))?;
+        Ok(FromItem { contact, created: false })
+    }
+
+    /// `inbox.create_contact_from_item` without a vCard (issue #727): `name` and `address` of a
+    /// mail's sender into `book_id`, as "+ Contact" of the compose window makes one; a contact of a
+    /// book in reach that is not hidden holding the address already is answered with
+    /// `created: false`. Takes the lock of the rounds.
+    pub async fn contact_from_sender(
+        &self,
+        reach: Reach<'_>,
+        book_id: &str,
+        name: &str,
+        address: &str,
+    ) -> Result<FromItem, ContactsError> {
+        let _round = self.rounds.lock().await;
+        let book = self.book(book_id)?;
+        Self::writable(&book)?;
+        let wanted = address.trim().to_lowercase();
+        if wanted.is_empty() {
+            return Err(ContactsError::Other(tr("The mail names no sender.").to_string()));
+        }
+        let books = self.shown_books(reach)?;
+        let ids: Vec<String> = books.iter().map(|b| b.id.clone()).collect();
+        let held = with(self.store()?, |s| {
+            let query = Query { books: ids.clone(), text: Some(wanted.clone()), limit: 50, ..Query::default() };
+            Ok(s.query(&query)?.0.into_iter().find(|row| {
+                vcard::read(&row.vcard)
+                    .is_ok_and(|contact| contact.emails.iter().any(|email| email.value.trim().to_lowercase() == wanted))
+            }))
+        })?;
+        if let Some(row) = held {
+            return self.held(Some(row.id));
+        }
+        let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+        let fields = ContactFields {
+            display_name: (!name.is_empty()).then_some(name),
+            emails: Some(vec![Labeled::new(address.trim().to_string(), FieldKind::Other)]),
+            ..ContactFields::default()
+        };
+        let contact = contact_in(Box::pin(self.create(&book.id, &fields)).await?)?;
+        Ok(FromItem { contact, created: true })
+    }
+
     /// The facts of a contacts request for its approval: the contact's name and book from the
     /// store, the target book, and what a change replaces. `None` for other requests.
     pub fn facts(&self, request: &Request) -> Option<crate::approvals::ContactFacts> {
@@ -907,8 +1464,31 @@ impl ContactsService {
             }
         };
         let book_name = |id: &str| self.book(id).ok().map(|b| b.display_name);
+        // Name and book of each contact named but `keep` (issue #726).
+        let others = |ids: &[String], keep: Option<&str>| -> Vec<(String, String)> {
+            ids.iter()
+                .filter(|id| Some(id.as_str()) != keep)
+                .filter_map(|id| match named(id) {
+                    (Some(contact), Some(book)) => Some((contact.shown_name(), book.display_name)),
+                    _ => None,
+                })
+                .collect()
+        };
         let (contact, book, to_book) = match request {
-            Request::CreateContact { book, .. } => (None, book_name(book), None),
+            Request::CreateContact { book, .. } | Request::ImportVCards { book, .. } => (None, book_name(book), None),
+            Request::MergeContacts { ids, keep, .. } => {
+                let (contact, book) = named(keep);
+                let others = others(ids, Some(keep));
+                return Some(crate::approvals::ContactFacts {
+                    contact,
+                    book: book.map(|b| b.display_name),
+                    others,
+                    ..Default::default()
+                });
+            }
+            Request::DismissDuplicates { ids } => {
+                return Some(crate::approvals::ContactFacts { others: others(ids, None), ..Default::default() });
+            }
             Request::MoveContact { id, to_book, .. } => {
                 let (contact, book) = named(id);
                 (contact, book.map(|b| b.display_name), book_name(to_book))
@@ -927,7 +1507,25 @@ impl ContactsService {
             }
             _ => return None,
         };
-        Some(crate::approvals::ContactFacts { contact, book, to_book })
+        Some(crate::approvals::ContactFacts { contact, book, to_book, ..Default::default() })
+    }
+
+    /// What `contacts.import_vcards` with the cards of `data` into `book` would do for `reach` (issue
+    /// #725): the trial run an approval shows. `None` for a file, which only the suite's apps name,
+    /// and when it cannot be counted.
+    pub fn import_facts(&self, reach: Reach<'_>, request: &Request) -> Option<Imported> {
+        let Request::ImportVCards { book, data: Some(data), path: None, .. } = request else { return None };
+        let book = self.book(book).ok()?;
+        let mut known = self.known(reach, &book).ok()?;
+        let mut imported = Imported::default();
+        for raw in vcard::split(data) {
+            match known.sort(&raw).ok()? {
+                Card::Skipped => imported.skipped += 1,
+                Card::Known(_) => imported.duplicates += 1,
+                Card::New { .. } => imported.created += 1,
+            }
+        }
+        Some(imported)
     }
 }
 
@@ -1261,5 +1859,326 @@ mod tests {
             Request::DeleteContact { id: moved.contact.id.clone(), etag: moved.contact.etag.clone().expect("etag") };
         assert_eq!(setup.service.handle(gone, Reach::Suite).await, Response::Ok);
         assert!(setup.server.lock().books[&setup.private].3.keys().all(|href| !href.contains(&moved.contact.uid)));
+    }
+
+    fn imported(response: Response) -> Imported {
+        match response {
+            Response::ContactsImported(imported) => imported,
+            other => panic!("not an import: {other:?}"),
+        }
+    }
+
+    fn work_cards(setup: &Setup) -> Vec<String> {
+        setup.server.lock().books[&setup.work].3.values().map(|(_, vcard)| vcard.clone()).collect()
+    }
+
+    /// Issue #725: an import counts new, known and unreadable cards alike in a trial run and for
+    /// real, keeps each new card as written, never takes a person twice, and keeps to its limits.
+    #[tokio::test]
+    async fn an_import_leaves_out_people_there_and_keeps_cards_as_written() {
+        let setup = setup().await;
+        let book = format!("{ACCOUNT}/contacts");
+        let file = [
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:kim1\r\nFN:Kim Neu\r\nEMAIL:kim@example.org\r\nX-OWN:kept\r\nEND:VCARD\r\n",
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:a2\r\nFN:Anna\r\nEMAIL:ANNA@example.org\r\nEND:VCARD\r\n",
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nNOTE:nobody\r\nEND:VCARD\r\n",
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:kim2\r\nFN:K. Neu\r\nEMAIL:Kim@Example.org\r\nEND:VCARD\r\n",
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:g\r\nFN:Friends\r\nX-ADDRESSBOOKSERVER-KIND:group\r\nEND:VCARD\r\n",
+            "BEGIN:VCARD\nVERSION:2.1\nFN:Lars Ohne\nTEL;CELL:+49 170 1112223\nEND:VCARD\n",
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:anna\r\nFN:Someone Else\r\nEND:VCARD\r\n",
+        ]
+        .concat();
+        let import =
+            |dry_run: bool| Request::ImportVCards { book: book.clone(), data: Some(file.clone()), path: None, dry_run };
+        let expected = Imported { created: 2, duplicates: 3, skipped: 2 };
+        assert_eq!(imported(setup.service.handle(import(true), Reach::Suite).await), expected);
+        assert_eq!(work_cards(&setup).len(), 1, "a trial run writes nothing");
+        assert_eq!(imported(setup.service.handle(import(false), Reach::Suite).await), expected);
+        let written = work_cards(&setup);
+        assert_eq!(written.len(), 3);
+        assert!(
+            written.contains(&file.split_inclusive("END:VCARD\r\n").next().expect("first").to_string()),
+            "byte for byte"
+        );
+        let lars = written.iter().find(|card| card.contains("Lars Ohne")).expect("lars");
+        assert!(lars.contains("UID:") && lars.contains("TEL;CELL:+49 170 1112223"), "{lars}");
+        let again = imported(setup.service.handle(import(false), Reach::Suite).await);
+        assert_eq!(again, Imported { created: 0, duplicates: 5, skipped: 2 }, "nobody twice");
+
+        let team = Request::ImportVCards {
+            book: format!("{ACCOUNT}/team"),
+            data: Some(file.clone()),
+            path: None,
+            dry_run: true,
+        };
+        assert_eq!(code(&setup.service.handle(team, Reach::Suite).await), "unsupported");
+        let both = Request::ImportVCards {
+            book: book.clone(),
+            data: Some(file.clone()),
+            path: Some("/x.vcf".into()),
+            dry_run: true,
+        };
+        assert_eq!(code(&setup.service.handle(both, Reach::Suite).await), "error");
+        let rights = only_work();
+        let file_of_client =
+            Request::ImportVCards { book: book.clone(), data: None, path: Some("/x.vcf".into()), dry_run: true };
+        assert_eq!(code(&setup.service.handle(file_of_client, Reach::Client(&rights)).await), "forbidden");
+        let many = "BEGIN:VCARD\r\nFN:x\r\nEND:VCARD\r\n".repeat(MAX_IMPORT_CARDS + 1);
+        let many = Request::ImportVCards { book: book.clone(), data: Some(many), path: None, dry_run: false };
+        assert_eq!(code(&setup.service.handle(many, Reach::Suite).await), "error");
+        assert_eq!(work_cards(&setup).len(), 3, "too many cards write nothing");
+
+        // A person in a book the client does not reach is new to it.
+        let secret = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Secret\r\nEMAIL:secret@example.org\r\nEND:VCARD\r\n";
+        let probe = |reach| {
+            let request =
+                Request::ImportVCards { book: book.clone(), data: Some(secret.into()), path: None, dry_run: true };
+            setup.service.import_facts(reach, &request).expect("counted")
+        };
+        assert_eq!(probe(Reach::Client(&rights)).created, 1);
+        assert_eq!(probe(Reach::Suite).duplicates, 1);
+    }
+
+    /// Issue #725: a file is read only as an absolute path to a file, no link.
+    #[tokio::test]
+    async fn an_import_reads_a_file_only_by_an_absolute_path() {
+        let setup = setup().await;
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("kontakte.vcf");
+        std::fs::write(&path, "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Kim Neu\r\nEND:VCARD\r\n").expect("file");
+        let import = |path: String| Request::ImportVCards {
+            book: format!("{ACCOUNT}/contacts"),
+            data: None,
+            path: Some(path),
+            dry_run: true,
+        };
+        let read = setup.service.handle(import(path.to_string_lossy().into_owned()), Reach::Suite).await;
+        assert_eq!(imported(read).created, 1);
+        assert_eq!(code(&setup.service.handle(import("kontakte.vcf".into()), Reach::Suite).await), "error");
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link.vcf");
+            std::os::unix::fs::symlink(&path, &link).expect("link");
+            assert_eq!(
+                code(&setup.service.handle(import(link.to_string_lossy().into_owned()), Reach::Suite).await),
+                "error"
+            );
+        }
+    }
+
+    /// Issue #725: an export gives the cards as stored, of the contacts, the group or the books in
+    /// reach.
+    #[tokio::test]
+    async fn an_export_gives_the_cards_as_stored() {
+        let setup = setup().await;
+        let export = |book: Option<String>, group: Option<&str>, ids: Vec<String>| Request::ExportVCards {
+            book,
+            group: group.map(str::to_string),
+            ids,
+        };
+        let vcards = |response: Response| match response {
+            Response::VCards { data, count, .. } => (data, count),
+            other => panic!("not cards: {other:?}"),
+        };
+        let (data, count) =
+            vcards(setup.service.handle(export(None, None, vec![id("contacts", "anna")]), Reach::Suite).await);
+        let (_, stored) = setup.server.card(&setup.work, &format!("{}anna.vcf", setup.work)).expect("card");
+        assert_eq!((data, count), (stored, 1), "byte for byte");
+        let rights = only_work();
+        let (data, count) = vcards(setup.service.handle(export(None, None, Vec::new()), Reach::Client(&rights)).await);
+        assert_eq!(count, 2, "the books in reach: anna and bob");
+        assert!(!data.contains("Secret Person"));
+        let grouped = export(Some(format!("{ACCOUNT}/contacts")), Some("Friends"), Vec::new());
+        assert_eq!(vcards(setup.service.handle(grouped, Reach::Suite).await).1, 0);
+        let lost = export(None, Some("Friends"), Vec::new());
+        assert_eq!(code(&setup.service.handle(lost, Reach::Suite).await), "error");
+    }
+
+    /// Issue #726: Anna kept twice is found, can be kept apart, or merged: the mail addresses and
+    /// numbers join, the other is deleted, and a deletion refused leaves it in `left`.
+    #[tokio::test]
+    async fn duplicates_are_found_kept_apart_and_merged() {
+        let setup = setup().await;
+        let twin = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:anna2\r\nFN:Anna B.\r\nEMAIL:Anna@Example.org\r\n\
+                    TEL;TYPE=CELL:+49 171 2345678\r\nCATEGORIES:Friends\r\nEND:VCARD\r\n";
+        setup.server.put_card(&setup.work, "anna2", twin);
+        setup.service.sync_all().await;
+        let groups = |response: Response| match response {
+            Response::ContactDuplicates { groups } => groups,
+            other => panic!("not duplicates: {other:?}"),
+        };
+        let found = groups(setup.service.handle(Request::FindDuplicates { book: None }, Reach::Suite).await);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].reasons, [DuplicateReason::Mail]);
+        let ids: Vec<String> = found[0].contacts.iter().map(|c| c.id.clone()).collect();
+        assert_eq!(ids.len(), 2);
+
+        let dismiss = Request::DismissDuplicates { ids: ids.clone() };
+        assert_eq!(setup.service.handle(dismiss, Reach::Suite).await, Response::Ok);
+        assert!(groups(setup.service.handle(Request::FindDuplicates { book: None }, Reach::Suite).await).is_empty());
+        let one = Request::DismissDuplicates { ids: vec![ids[0].clone()] };
+        assert_eq!(code(&setup.service.handle(one, Reach::Suite).await), "error", "two or more");
+
+        let anna = id("contacts", "anna");
+        let twin_id = id("contacts", "anna2");
+        let etag = |id: String| async {
+            contact(setup.service.handle(Request::GetContact { id }, Reach::Suite).await).etag.expect("etag")
+        };
+        let favorite = Request::SetContactFavorite { id: twin_id.clone(), favorite: true };
+        setup.service.handle(favorite, Reach::Suite).await;
+        let stale = Request::MergeContacts {
+            ids: vec![anna.clone(), twin_id.clone()],
+            etags: vec![etag(anna.clone()).await, "\"old\"".into()],
+            keep: anna.clone(),
+        };
+        assert_eq!(code(&setup.service.handle(stale, Reach::Suite).await), "conflict");
+        let merge = Request::MergeContacts {
+            ids: vec![anna.clone(), twin_id.clone()],
+            etags: vec![etag(anna.clone()).await, etag(twin_id.clone()).await],
+            keep: anna.clone(),
+        };
+        let Response::ContactsMerged(merged) = setup.service.handle(merge, Reach::Suite).await else {
+            panic!("merged")
+        };
+        assert!(merged.left.is_empty());
+        assert_eq!(merged.contact.display_name, "Anna Berg");
+        assert_eq!(merged.contact.emails.len(), 1, "one address whatever its case");
+        assert_eq!(merged.contact.phones[0].value, "+49 171 2345678");
+        assert_eq!(merged.contact.groups, ["Friends"]);
+        assert!(merged.contact.favorite, "a favourite stays one");
+        assert_eq!(code(&setup.service.handle(Request::GetContact { id: twin_id }, Reach::Suite).await), "not-found");
+        let (_, written) = setup.server.card(&setup.work, &format!("{}anna.vcf", setup.work)).expect("card");
+        assert!(written.contains("X-KEEP:me") && written.contains("+49 171 2345678"), "{written}");
+        assert_eq!(work_cards(&setup).len(), 1, "the other is gone on the server");
+    }
+
+    /// Issue #726: a merge never deletes in a read-only book; a deletion the server refuses leaves
+    /// the contact in `left`.
+    #[tokio::test]
+    async fn a_merge_names_what_it_could_not_delete() {
+        let setup = setup().await;
+        let anna = id("contacts", "anna");
+        let bob = id("team", "bob");
+        let etag = |id: String| async {
+            contact(setup.service.handle(Request::GetContact { id }, Reach::Suite).await).etag.expect("etag")
+        };
+        let read_only = Request::MergeContacts {
+            ids: vec![anna.clone(), bob.clone()],
+            etags: vec![etag(anna.clone()).await, etag(bob).await],
+            keep: anna.clone(),
+        };
+        assert_eq!(code(&setup.service.handle(read_only, Reach::Suite).await), "unsupported");
+        setup.server.put_card(&setup.work, "anna3", &card("anna3", "Anna Drei", "anna@example.org"));
+        setup.service.sync_all().await;
+        let third = id("contacts", "anna3");
+        let merge = Request::MergeContacts {
+            ids: vec![anna.clone(), third.clone()],
+            etags: vec![etag(anna.clone()).await, etag(third.clone()).await],
+            keep: anna.clone(),
+        };
+        // Changed on the server meanwhile, unseen here: the server refuses the deletion.
+        setup.server.put_card(&setup.work, "anna3", &card("anna3", "Anna Drei", "anna3@example.org"));
+        let Response::ContactsMerged(merged) = setup.service.handle(merge, Reach::Suite).await else {
+            panic!("merged")
+        };
+        assert_eq!(merged.left, [third]);
+    }
+
+    /// Review of #356: offline the merged contact only waits, so the others stay (`left`), and a merge
+    /// with a read-only book is refused before an approval is asked for.
+    #[tokio::test]
+    async fn an_offline_merge_deletes_nothing() {
+        let setup = setup().await;
+        setup.server.put_card(&setup.work, "anna2", &card("anna2", "Anna B.", "anna@example.org"));
+        setup.service.sync_all().await;
+        let (anna, twin) = (id("contacts", "anna"), id("contacts", "anna2"));
+        let etag = |id: String| async {
+            contact(setup.service.handle(Request::GetContact { id }, Reach::Suite).await).etag.expect("etag")
+        };
+        let merge = Request::MergeContacts {
+            ids: vec![anna.clone(), twin.clone()],
+            etags: vec![etag(anna.clone()).await, etag(twin.clone()).await],
+            keep: anna.clone(),
+        };
+        setup.server.lock().offline = true;
+        let Response::ContactsMerged(merged) = setup.service.handle(merge, Reach::Suite).await else {
+            panic!("merged")
+        };
+        assert_eq!(merged.left, std::slice::from_ref(&twin), "nothing goes while the merge waits");
+        assert_eq!(merged.contact.state, ContactState::Pending);
+        assert_eq!(code(&setup.service.handle(Request::GetContact { id: twin }, Reach::Suite).await), "ok");
+        let bob = id("team", "bob");
+        let read_only =
+            Request::MergeContacts { ids: vec![anna.clone(), bob], etags: vec!["a".into(), "b".into()], keep: anna };
+        assert!(
+            matches!(setup.service.refusal(Reach::Suite, &read_only), Some(Response::Error { code, .. }) if code == "unsupported")
+        );
+        let import = Request::ImportVCards {
+            book: format!("{ACCOUNT}/team"),
+            data: Some(String::new()),
+            path: None,
+            dry_run: false,
+        };
+        assert!(setup.service.refusal(Reach::Suite, &import).is_some());
+    }
+
+    /// Issues #725, #726: every book and contact the new commands name must be in reach.
+    #[tokio::test]
+    async fn import_export_and_duplicates_keep_to_the_reach() {
+        let setup = setup().await;
+        let rights = only_work();
+        let reach = Reach::Client(&rights);
+        let secret = id("privat", "secret");
+        let anna = id("contacts", "anna");
+        for request in [
+            Request::ImportVCards {
+                book: format!("{ACCOUNT}/privat"),
+                data: Some(String::new()),
+                path: None,
+                dry_run: true,
+            },
+            Request::ExportVCards { book: Some(format!("{ACCOUNT}/privat")), group: None, ids: Vec::new() },
+            Request::ExportVCards { book: None, group: None, ids: vec![anna.clone(), secret.clone()] },
+            Request::FindDuplicates { book: Some(format!("{ACCOUNT}/privat")) },
+            Request::MergeContacts {
+                ids: vec![anna.clone(), secret.clone()],
+                etags: vec!["a".into(), "b".into()],
+                keep: anna.clone(),
+            },
+            Request::DismissDuplicates { ids: vec![secret.clone(), anna.clone()] },
+        ] {
+            assert!(setup.service.out_of_reach(reach, &request).is_some(), "{request:?}");
+        }
+        let found = Request::FindDuplicates { book: None };
+        assert_eq!(setup.service.out_of_reach(reach, &found), None);
+    }
+
+    /// Issue #727: a sender or a card of a person there already makes nothing; a new one makes a
+    /// contact, the card as the mail brought it.
+    #[tokio::test]
+    async fn a_mail_brings_a_contact_only_once() {
+        let setup = setup().await;
+        let book = format!("{ACCOUNT}/contacts");
+        let known =
+            setup.service.contact_from_sender(Reach::Suite, &book, "Anna", "ANNA@example.org").await.expect("known");
+        assert_eq!((known.created, known.contact.id.as_str()), (false, id("contacts", "anna").as_str()));
+        let new =
+            setup.service.contact_from_sender(Reach::Suite, &book, "Kim  Neu", "kim@example.org").await.expect("new");
+        assert!(new.created);
+        assert_eq!(
+            (new.contact.display_name.as_str(), new.contact.emails[0].value.as_str()),
+            ("Kim Neu", "kim@example.org")
+        );
+        let card = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:lars\r\nFN:Lars Karte\r\nX-FROM:mail\r\nEND:VCARD\r\n";
+        let made = setup.service.contact_from_card(Reach::Suite, &book, card).await.expect("card");
+        assert!(made.created);
+        assert!(work_cards(&setup).iter().any(|stored| stored == card), "as the mail brought it");
+        let again = setup.service.contact_from_card(Reach::Suite, &book, card).await.expect("again");
+        assert_eq!((again.created, again.contact.id), (false, made.contact.id));
+        let empty = setup.service.contact_from_card(Reach::Suite, &book, "no card").await;
+        assert!(matches!(empty, Err(ContactsError::Other(_))));
+        let team =
+            setup.service.contact_from_sender(Reach::Suite, &format!("{ACCOUNT}/team"), "", "x@example.org").await;
+        assert_eq!(team.err(), Some(ContactsError::ReadOnly));
     }
 }

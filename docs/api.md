@@ -152,8 +152,8 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `workspaces` | `list_templates`, `list_screens` ²³ | `save_template`, `rename_template`, `load_template` ¹, `set_template_shortcut` ²³ | `update_template`, `delete_template` | `set_template_startup` ²³ |
 | `calendar` | `list_calendars`, `list_events` ¹⁹, `list_reminders` ²⁰, `search_places`, `map_preview` (Termin-Editor, TE.1) | `save_event` ¹⁹ ²⁴, `snooze_reminder`, `dismiss_reminder`, `pause_reminders`, `preview_reminder` ²⁰ | `delete_event` ²⁴ | |
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
-| `contacts` ²⁸ | `list_address_books`, `list_contacts`, `get_contact`, `get_photo`, `list_groups`, `upcoming_birthdays` | `create_contact`, `add_to_contact`, `set_favorite`, `add_to_group`, `mark_used`, `move_contact`, `resolve_conflict` mit `both` | `update_contact`, `remove_from_group`, `set_photo`, `delete_contact`, `resolve_conflict` mit `mine`/`theirs` | |
-| `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_pile` ²⁶, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `mute_item` mit `conversation`, `hide` (nicht für Mail ¹⁰)/`info`, ohne `until` ¹¹ | | `mute_source`, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ², `move_category` ²⁹ |
+| `contacts` ²⁸ | `list_address_books`, `list_contacts`, `get_contact`, `get_photo`, `list_groups`, `upcoming_birthdays`, `export_vcards`, `find_duplicates`, `import_vcards` mit `dry_run` | `create_contact`, `add_to_contact`, `set_favorite`, `add_to_group`, `mark_used`, `move_contact`, `resolve_conflict` mit `both`, `import_vcards`, `dismiss_duplicates` | `update_contact`, `remove_from_group`, `set_photo`, `delete_contact`, `resolve_conflict` mit `mine`/`theirs`, `merge_contacts` | |
+| `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_pile` ²⁶, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `create_contact_from_item` ²⁸, `mute_item` mit `conversation`, `hide` (nicht für Mail ¹⁰)/`info`, ohne `until` ¹¹ | | `mute_source`, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ², `move_category` ²⁹ |
 | `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `overview` ⁷, `sync_status`, `get_message`, `get_thread`, `get_attachment`, `get_draft`, `prepare_paste`, `list_filters` ²⁷, `preview_filter` ²⁷ | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `prepare_image`, `upload_image`, `respond_to_invitation` ⁷ ¹⁶, `unsubscribe` ⁷ | `delete_messages`, `release_images` | `create_filter`, `update_filter`, `remove_filter`, `apply_filter` ²⁷ |
 | `chat` ³⁰ | `list_conversations`, `get_messages`, `suggest_mentions`, `find_people`, `search_messages`, `get_upload`, `get_preview`, `get_attachment`, `list_shared`, `get_call` | `send_message` (nach außen, auch mit `files` und `items`), `mark_read`, `mark_unread`, `create_conversation` (nach außen), `react` (nach außen), `set_favorite`, `set_notification_level`, `prepare_file` (`source: path` **nur App-Schlüssel**, Punkt 10 unten), `upload_file`, `cancel_upload`, `save_attachment` (`to: file`/`folder` **nur App-Schlüssel**), `show_card` (**nur App-Schlüssel**, Punkt 10), `decline_call`, `leave_call` | `edit_message`, `delete_message` (beide nach außen), `release_files` | |
 | `presence` ³⁰ | `list_people`, `find_people`, `get_own_status` | `add_person`, `remove_person`, `set_own_status` (nach außen) | | |
@@ -670,7 +670,8 @@ kein Ziel von außen auslösen. Ein Client braucht Leserecht in `workspaces` (so
 Namen der Vorlage aus dem Speicher. `chat:<unterhaltung>` (Issue #643, [chat.md](chat.md)) öffnet ein Chatfenster mit
 der Unterhaltung (`torrochat --conversation=<id>`), `chat:contacts` die Kontaktliste; ein Client braucht Leserecht
 in `chat` mit dem Konto (sonst `not-found`). Auf die Befehlszeile kommen nur das Konto, wie der Kern es kennt, und ein
-geprüftes Token; die Freigabe nennt den Namen der Unterhaltung vom Server.
+geprüftes Token; die Freigabe nennt den Namen der Unterhaltung vom Server. `contact:<id>` (Issue #727) öffnet einen
+Kontakt in einem eigenen Fenster der Kontakte-App (`torrocontacts --contact=<id>`, siehe Fußnote ²⁸).
 
 ¹⁴ Statistik des Eingangs (E8.8a, Konzept [eingang.md](eingang.md#insights)). `get_stats { range: week
 | month | quarter, until? }` (`Read`) zählt über die letzten 7, 30 bzw. 90 Tage bis `until` (ein lokaler
@@ -1079,6 +1080,23 @@ Die eigenen Adressen der Konten kommen nie vor. Ins Protokoll kommt je gelesenem
 Suchtext. Alle Felder sind `untrusted`. Mit `contacts_only` kommt nichts aus Mails; der Assistent setzt es, wenn Mail im
 Gespräch ausgeschaltet ist (bis #664 auch für ein Modell anderswo ohne `mail_to_cloud`), damit auch die Auswahl der
 Kontakte nicht verrät, wem der Mensch oft schreibt.
+**Import und Export** (Issue #725): `import_vcards { book, data?, path?, dry_run }` übernimmt die Karten einer
+`.vcf`-Datei Byte für Byte (fehlt die `UID`, setzt der Dienst eine) und lässt Personen weg, die schon in einem Buch der
+Auswahl stehen (gleiche `UID` im Zielbuch, gleiche Mailadresse, Nummer oder Name mit Firma); nie wird still
+zusammengeführt. Höchstens 20 MB und 10.000 Karten, sonst `error` und nichts geschrieben. `path` nimmt nur der
+App-Schlüssel (für Dateien über 1 MB, absolut, kein Link), ein Client schickt `data` (sonst `forbidden`). Mit `dry_run`
+ist der Befehl `Read` und zählt nur; die Freigabe nennt Zahl und Buch aus einem Probelauf mit den Rechten des Clients.
+`export_vcards { book?, group?, ids? }` gibt die Karten, wie sie gespeichert sind.
+**Dubletten** (Issue #726): `find_duplicates { book? }` sucht in den Büchern der Auswahl, die nicht ausgeblendet sind
+(oder in `book`); eine Adresse oder Nummer, die mehr als drei Kontakte teilen, zählt nicht. `merge_contacts { ids,
+etags, keep }` (2 bis 20) ist `Delete`: die übrigen Kontakte werden gelöscht, die Freigabe nennt jeden mit Buch.
+`dismiss_duplicates { ids }` merkt sich auf diesem Gerät, dass es verschiedene Menschen sind.
+**Kontakt aus einer Mail** (Issue #727): `inbox.create_contact_from_item { id, book }` ist `Write` in `inbox`, schreibt
+aber einen Kontakt: Der Kern prüft vor dem Eintrag und vor einer Freigabe Schreibrecht in `contacts` (`forbidden`) und
+das Buch (`not-found`). Mit vCard-Anhang (bis 1 MB) entsteht der Kontakt aus der Karte, sonst aus dem Absender; wer
+schon da ist, wird nicht doppelt angelegt (`created: false`). Die Mail liest der Kern mit den Rechten des Clients.
+`apps.open_app` mit `contact:<id>` öffnet den Kontakt in der Kontakte-App (`torrocontacts --contact=<id>`); ein Client
+braucht Leserecht in `contacts` und das Buch, sonst `not-found`.
 
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
 keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als

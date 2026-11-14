@@ -1336,6 +1336,8 @@ impl PimService {
             Request::CreateTaskFromItem { .. }
             | Request::CreateEventFromItem { .. }
             | Request::RespondToInvitation { .. } => return None,
+            // A contact of an entry: the core checks the address book itself (issue #727).
+            Request::CreateContactFromItem { .. } => return None,
             // No collection: the inbox filters by the client's sources itself (task E1.2).
             Request::ListItems { .. }
             | Request::GetItem { .. }
@@ -1487,7 +1489,12 @@ impl PimService {
             | Request::SetContactPhoto { .. }
             | Request::MoveContact { .. }
             | Request::DeleteContact { .. }
-            | Request::ResolveContactConflict { .. } => return None,
+            | Request::ResolveContactConflict { .. }
+            | Request::ImportVCards { .. }
+            | Request::ExportVCards { .. }
+            | Request::FindDuplicates { .. }
+            | Request::MergeContacts { .. }
+            | Request::DismissDuplicates { .. } => return None,
             // No collection: the chat and presence services check their accounts themselves
             // (`docs/chat.md`, issue #643).
             Request::ChatListConversations { .. }

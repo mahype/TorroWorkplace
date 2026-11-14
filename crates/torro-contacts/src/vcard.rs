@@ -498,6 +498,31 @@ pub fn read(raw: &str) -> Result<Contact, VCardError> {
     Ok(read_doc(&Doc::parse(raw)?).0)
 }
 
+/// The cards of a `.vcf` file, each from its `BEGIN:VCARD` to its `END:VCARD` as the file writes it,
+/// line endings and folding included (issue #725: an import keeps every card byte for byte). Text
+/// between cards is left out; a card the file does not end is kept as it is, so the import counts it
+/// as one that does not read.
+pub fn split(text: &str) -> Vec<String> {
+    let mut cards = Vec::new();
+    let mut card: Option<String> = None;
+    for line in text.split_inclusive('\n') {
+        let bare = without_eol(line).trim();
+        if bare.eq_ignore_ascii_case("BEGIN:VCARD") {
+            // A card begun before and never ended stays a card of its own.
+            cards.extend(card.take());
+            card = Some(String::new());
+        }
+        if let Some(current) = card.as_mut() {
+            current.push_str(line);
+            if bare.eq_ignore_ascii_case("END:VCARD") {
+                cards.extend(card.take());
+            }
+        }
+    }
+    cards.extend(card);
+    cards
+}
+
 /// The version `raw` is written in; 3.0 when it is no card.
 pub fn version(raw: &str) -> Version {
     Doc::parse(raw).map(|d| d.version).unwrap_or(Version::V3)
@@ -1070,6 +1095,21 @@ mod tests {
     fn fixture(name: &str) -> String {
         let path = format!("{}/tests/fixtures/vcard/{name}", env!("CARGO_MANIFEST_DIR"));
         std::fs::read_to_string(&path).expect("fixture")
+    }
+
+    /// Issue #725: a file splits into its cards byte for byte, whatever the line endings and the case
+    /// of `BEGIN`; text between cards goes, a card the file does not end stays one.
+    #[test]
+    fn a_file_splits_into_its_cards_as_written() {
+        let one = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Anna\r\n  Berg\r\nEND:VCARD\r\n";
+        let two = "begin:vcard\nVERSION:2.1\nFN:Ben\nend:vcard\n";
+        let open = "BEGIN:VCARD\nFN:Cut";
+        let text = format!("junk\r\n{one}\r\n{two}{open}");
+        assert_eq!(split(&text), [one, two, open]);
+        let again = "BEGIN:VCARD\nFN:A\nBEGIN:VCARD\nFN:B\nEND:VCARD\n";
+        assert_eq!(split(again), ["BEGIN:VCARD\nFN:A\n", "BEGIN:VCARD\nFN:B\nEND:VCARD\n"]);
+        assert!(split("no cards here").is_empty());
+        assert_eq!(read(&split(&text)[0]).expect("card").display_name, "Anna Berg");
     }
 
     /// The logical lines of `a` that are not in `b`, by exact text.

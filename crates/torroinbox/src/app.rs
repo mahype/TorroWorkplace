@@ -884,6 +884,9 @@ pub struct Hint {
     /// opened in the file manager as `mail::open_attachment` opens the folder of a program. A hint
     /// has it or "Undo", never both – saving is not undone.
     pub folder: Option<std::path::PathBuf>,
+    /// "Open contact" after "Save as contact" (issue #727): the id of the contact made or found,
+    /// opened in the contacts app. A hint has it, "Undo" or "Show in folder", never two of them.
+    pub contact: Option<String>,
 }
 
 /// How the list held was asked for ([`App::held`], issue #612): a load keeps the mail scrolled to
@@ -1188,6 +1191,8 @@ pub enum Sent {
     Decide(String, bool),
     /// The task lists were asked for (the dialog of "Make task" opened).
     Lists,
+    /// `inbox.create_contact_from_item` (issue #727): the entry or mail id and the book.
+    Contact(String, String),
     /// `inbox.create_task_from_item`: entry, list, title (`None`: the entry's), due day and the note
     /// (issue #120; `None` for none).
     Task {
@@ -1668,6 +1673,14 @@ pub enum Open {
     /// "For me" with its first mail entry in the reader (or the panel), the rail collapsed and its
     /// group "File" open beside its icon (task E14.3).
     MailGroup,
+    /// The same with the rail's group "Torro" open (issue #727): "Save as contact" after the kinds of
+    /// action.
+    TorroGroup,
+    /// The same for the demo's mail with a vCard (`mail::DEMO_VCARD_MAIL`): "Add contact".
+    TorroGroupVcard,
+    /// The first mail of `mail-entry` after "Save as contact" (issue #727): the toast "Saved to
+    /// contacts" with "Open contact", kept for good.
+    ContactSaved,
     /// The menu of `m` of the first mail entry of "For me", at its row (task E3.10): the bell's menu
     /// since issue #123.
     Hide,
@@ -1925,7 +1938,7 @@ impl Open {
                 | Self::SaveShortened
         )
     }
-    const ALL: [(&'static str, Open); 136] = [
+    const ALL: [(&'static str, Open); 139] = [
         ("workflow-setup", Open::WorkflowSetup),
         ("workflow-template", Open::WorkflowTemplate),
         ("workflow-test", Open::WorkflowTest),
@@ -1962,6 +1975,9 @@ impl Open {
         ("mail-entry", Open::MailEntry),
         ("mail-actions", Open::MailActions),
         ("mail-group", Open::MailGroup),
+        ("torro-group", Open::TorroGroup),
+        ("torro-group-vcard", Open::TorroGroupVcard),
+        ("contact-saved", Open::ContactSaved),
         ("search", Open::Search),
         ("hide", Open::Hide),
         ("hide-panel", Open::HidePanel),
@@ -3346,6 +3362,12 @@ pub struct App<S> {
     /// The kinds of action (issue #603, `mail.list_action_kinds`): `None` until the core answered
     /// (or when it could not), the rail then offers Task and Event.
     action_kinds: Option<Vec<ActionKind>>,
+    /// The address book "Save as contact" writes to (issue #727, `crate::contact::writable_book`):
+    /// `None` while it is not known or there is none – the action is missing then.
+    contact_book: Option<String>,
+    /// The entry or mail whose "Save as contact" is on its way: the action takes no click until the
+    /// core answered.
+    contact_saving: Option<String>,
     /// The open suggestions of the mail held ([`App::letter`]), by its id (issue #603).
     suggestions: Option<(String, Vec<MailSuggestion>)>,
     /// The `mail.extract_action` on their way, by message and kind: each is asked once at a time.
@@ -3459,6 +3481,13 @@ pub struct App<S> {
     rail_pending: Option<(usize, Instant)>,
     /// When the pointer last left an open group: the next one opens at once within [`RAIL_DELAY`].
     rail_left: Option<Instant>,
+    /// The group of the rail a demo state of "Save as contact" opens (`--open torro-group`, issue
+    /// #727), held until the window knows its size and the mail is in: opened before, a resize to
+    /// another size class – the window's first size comes late – would close it again
+    /// ([`RailShape::moved`]).
+    staged_rail: Option<usize>,
+    /// The window got its size once ([`Message::Resized`]); until then it draws at its default size.
+    sized: bool,
     /// The suite-wide zoom (Ctrl + Plus / Minus / 0), the factor of the whole window.
     zoom: Zoom,
     /// Follows the design pack the suite settings name (task L.3).
@@ -4059,6 +4088,18 @@ pub enum Message {
     /// "Open task" (the card of a mail, "Handed off", task E8.7b): the task with this uid in the
     /// tasks app, through the core (`apps.open_app` with `task:<uid>`).
     OpenTask(String),
+    /// "Save as contact" or "Add contact" (issue #727, `crate::contact`): the sender of the entry or
+    /// mail with this id – an entry's id, or the `m:…` id of a mail without one – or its vCard into
+    /// the writable book ([`App::contact_book`], `inbox.create_contact_from_item`).
+    SaveContact(String),
+    /// The core's answer to [`Message::SaveContact`] for this id: the contact made or found.
+    ContactSaved(String, Result<torro_contacts::FromItem, String>),
+    /// The book "Save as contact" writes to (`contacts.list_address_books`), asked at start and on
+    /// the tick until there is one; `None` without a writable book.
+    ContactBook(Result<Option<String>, String>),
+    /// "Open contact" on the toast after a save: the contacts app on the contact with this id
+    /// (`apps.open_app` with `contact:<id>`).
+    OpenContact(String),
     /// "Archive mail" on the suite's "You finished a task from a mail" with this id (task E18.5,
     /// [`App::archive_task_mail`]): its mail archived, then its mail entry and the question closed.
     ArchiveMail(String),
@@ -4765,8 +4806,22 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     | Open::DeleteMail,
                 ) => View::Mail,
                 // The first mail of "All" in the mail window (task E18.4).
-                Some(Open::MailEntry | Open::MailActions | Open::MailGroup) if mail_window => View::All,
-                Some(Open::MailEntry | Open::MailActions | Open::MailGroup) => View::ForMe,
+                Some(
+                    Open::MailEntry
+                    | Open::MailActions
+                    | Open::MailGroup
+                    | Open::TorroGroup
+                    | Open::TorroGroupVcard
+                    | Open::ContactSaved,
+                ) if mail_window => View::All,
+                Some(
+                    Open::MailEntry
+                    | Open::MailActions
+                    | Open::MailGroup
+                    | Open::TorroGroup
+                    | Open::TorroGroupVcard
+                    | Open::ContactSaved,
+                ) => View::ForMe,
                 // "All" holds the demo's invoice and invitations (issue #337).
                 Some(
                     Open::AttachmentMenu
@@ -4915,6 +4970,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             made: Vec::new(),
             event_mail: None,
             action_kinds: None,
+            contact_book: None,
+            contact_saving: None,
             suggestions: None,
             extracting: HashSet::new(),
             dialog_mail: None,
@@ -4973,6 +5030,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             rail_open: None,
             rail_pending: None,
             rail_left: None,
+            staged_rail: None,
+            sized: false,
             launch,
         };
         // The size, and the traffic lights onto the title band's line (U.11).
@@ -5014,6 +5073,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             iced::window::latest().and_then(iced::window::scale_factor).map(Message::WindowScale),
             app.fetch_ai_ready(),
             app.fetch_action_kinds(),
+            app.fetch_contact_book(),
             app.zoom.fetch().map(Message::Zoom),
             app.design.fetch().map(Message::Design),
             iced::system::theme().map(Message::SystemMode),
@@ -5224,6 +5284,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if self.menu.is_some() || (shown.is_some() && self.wanted_letter() != shown) || reshaped {
             self.rail_open = None;
             self.rail_pending = None;
+        }
+        // A demo state's group opens once the rail stands where it will be drawn (issue #727).
+        if self.sized
+            && self.letter.as_ref().is_some_and(|letter| letter.loaded.is_some())
+            && let Some(at) = self.staged_rail.take()
+        {
+            self.rail_open = Some(at);
         }
         // A round of "Focus & reply" at the end of what is loaded loads the pile's next page (decision of
         // #315) – before the letter follows, so the next mail is read once it is in.
@@ -5555,7 +5622,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
             Message::Raise => return torro_gui::instance::bring_to_front(),
-            Message::Resized(size) => self.size = size,
+            Message::Resized(size) => {
+                self.size = size;
+                self.sized = true;
+            }
             Message::Loaded(view, result) => {
                 // An answer for a view the user has left since would show the wrong entries; one in
                 // the order before the last turn (task E8.15) the wrong way round.
@@ -5611,9 +5681,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::Undo => return self.undo(),
             Message::SendTick(now) => return self.send_tick(now),
             Message::HintTick(now) => {
-                // The forced hints of `--open undo`, `mute` and `attachment-saved` stay, so they can be
-                // photographed.
-                let forced = matches!(self.launch.open, Some(Open::Undo | Open::Mute | Open::AttachmentSaved));
+                // The forced hints of `--open undo`, `mute`, `attachment-saved` and `contact-saved` stay,
+                // so they can be photographed.
+                let forced = matches!(
+                    self.launch.open,
+                    Some(Open::Undo | Open::Mute | Open::AttachmentSaved | Open::ContactSaved)
+                );
                 // While a reply is on its way the hint waits with its undo (fifth review of #315).
                 if !forced
                     && !self.holds_round()
@@ -5717,7 +5790,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::MuteSuggested(id, scope, effect) => return self.mute_by(id, scope, effect),
             Message::MutedBy(Ok(muted), effect) => {
                 let text = muted_note(&muted, effect, self.now);
-                self.hint = Some(Hint { text, undo: Undo::of_muted(&muted), shown: Instant::now(), folder: None });
+                self.hint = Some(Hint {
+                    text,
+                    undo: Undo::of_muted(&muted),
+                    shown: Instant::now(),
+                    folder: None,
+                    contact: None,
+                });
                 return self.load();
             }
             Message::MutedBy(Err(err), _) => {
@@ -5941,6 +6020,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     self.fetch_look(),
                     self.fetch_ai_ready(),
                     self.fetch_action_kinds(),
+                    // Once known the book stays: asked again only until there is one.
+                    if self.contact_book.is_none() { self.fetch_contact_book() } else { Task::none() },
                     suggestions,
                     self.zoom.fetch().map(Message::Zoom),
                     self.load(),
@@ -6462,7 +6543,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 }
                 let text =
                     tr("Not fraud: it is in your inbox, and mail from this sender comes in from now on.").to_owned();
-                self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None });
+                self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None, contact: None });
                 return self.load();
             }
             Message::Released(_, Err(err)) => {
@@ -6934,6 +7015,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             Message::FillFromMail => return self.fill_from_mail(),
             Message::OpenTask(uid) => return self.open_task(&uid),
+            Message::SaveContact(id) => return self.save_contact(id),
+            Message::ContactSaved(id, result) => self.contact_saved(&id, result),
+            Message::ContactBook(result) => {
+                // A core that could not answer keeps the book known; without one the action is missing.
+                if let Ok(book) = result {
+                    self.contact_book = book;
+                }
+            }
+            Message::OpenContact(contact) => return self.open_contact(&contact),
             Message::ArchiveMail(id) => return self.archive_task_mail(&id),
             // The move answers as every move does; an entry left open says so on top.
             Message::MailDone(result, ids, hint) => {
@@ -7232,7 +7322,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
         if !done.is_empty() {
             let text = trf("{n} dismissed", &[("n", &done.len())]);
-            self.hint = Some(Hint { text, undo: Some(Undo::Dismissed(done)), shown: Instant::now(), folder: None });
+            self.hint = Some(Hint {
+                text,
+                undo: Some(Undo::Dismissed(done)),
+                shown: Instant::now(),
+                folder: None,
+                contact: None,
+            });
         }
         self.load()
     }
@@ -7708,7 +7804,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 trf("{mail}: {result}", &[("mail", &job.subject), ("result", &text)])
             };
             // A status stays at its own menu entry; a late result names the originating mail.
-            self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder });
+            self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder, contact: None });
         }
         self.saves.retain(|job| job.state.active() || job.visible);
     }
@@ -8189,6 +8285,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             undo: Some(Undo::Mail { edit: back, reopen, follow }),
             shown: Instant::now(),
             folder: None,
+            contact: None,
         };
         self.leaving.push(Leaving { id: id.clone(), from: self.folder_of(&id), answered: None });
         self.take_out(&id);
@@ -8292,6 +8389,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             undo: Some(Undo::Filed { back, reopen, follow, piled: piled.clone() }),
             shown: Instant::now(),
             folder: None,
+            contact: None,
         };
         for id in &ids {
             // Taken off its pile it is kept out wherever it loads: a load between the move and taking it
@@ -8492,6 +8590,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             undo: Some(undo.unwrap_or_else(|| Undo::Pile(ids.clone(), before, since))),
             shown: Instant::now(),
             folder: None,
+            contact: None,
         };
         self.count_pile(before, false);
         self.count_pile(pile, true);
@@ -8680,8 +8779,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let Some(focus) = self.focus_reply.take() else { return };
         if focus.has_text() {
             let undo = Some(Undo::Focus(focus.keep()));
-            self.hint =
-                Some(Hint { text: tr("Reply discarded.").to_owned(), undo, shown: Instant::now(), folder: None });
+            self.hint = Some(Hint {
+                text: tr("Reply discarded.").to_owned(),
+                undo,
+                shown: Instant::now(),
+                folder: None,
+                contact: None,
+            });
         }
     }
 
@@ -8734,7 +8838,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             Ok(_) => {
                 let text = tr("No longer on Reply later.").to_owned();
-                self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None });
+                self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None, contact: None });
                 focus_top()
             }
             Err(why) => {
@@ -8825,7 +8929,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             hint.shown = Instant::now();
             return;
         }
-        self.hint = Some(Hint { text: text.to_owned(), undo: None, shown: Instant::now(), folder: None });
+        self.hint =
+            Some(Hint { text: text.to_owned(), undo: None, shown: Instant::now(), folder: None, contact: None });
     }
 
     /// The timer of a reply on its way (fifth review of #315): once [`SEND_TIMEOUT`] passed since it
@@ -9248,7 +9353,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 follow,
             }
         });
-        let hint = Some(Hint { text: tr("Moved to Trash").to_owned(), undo, shown: Instant::now(), folder: None });
+        let hint = Some(Hint {
+            text: tr("Moved to Trash").to_owned(),
+            undo,
+            shown: Instant::now(),
+            folder: None,
+            contact: None,
+        });
         for id in &ids {
             self.leaving.push(Leaving { id: id.clone(), from: self.folder_of(id), answered: None });
             self.take_out(id);
@@ -9407,6 +9518,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }),
             shown: Instant::now(),
             folder: None,
+            contact: None,
         };
         self.leaving.push(Leaving { id: id.clone(), from: self.folder_of(&id), answered: None });
         self.take_out(&id);
@@ -9429,7 +9541,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     fn delete_for_good(&mut self) -> Task<Message> {
         let Some(id) = self.mail_subject.clone() else { return Task::none() };
         self.close_menus();
-        let hint = Hint { text: tr("Deleted permanently").to_owned(), undo: None, shown: Instant::now(), folder: None };
+        let hint = Hint {
+            text: tr("Deleted permanently").to_owned(),
+            undo: None,
+            shown: Instant::now(),
+            folder: None,
+            contact: None,
+        };
         self.take_out(&id);
         self.mail_edit(Some(MailEdit::DeleteForGood { ids: vec![id] }), Some(hint))
     }
@@ -9471,7 +9589,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Err(err) => {
                 self.offer_again(&ask);
                 let text = trf("Couldn't unsubscribe: {reason}", &[("reason", &err)]);
-                self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None });
+                self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None, contact: None });
                 return Task::none();
             }
             Ok(UnsubscribeVia::OneClick { .. }) => (trf("Unsubscribed from {sender}", &[("sender", &sender)]), None),
@@ -9492,7 +9610,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.forget_unsubscribed();
             }
         }
-        self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None });
+        self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None, contact: None });
         match open {
             Some(url) => self.open_url(url),
             None => Task::none(),
@@ -11274,6 +11392,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             undo: Some(Undo::Mail { edit: back, reopen, follow }),
             shown: Instant::now(),
             folder: None,
+            contact: None,
         };
         self.mail_edit(Some(edit), Some(hint))
     }
@@ -11643,6 +11762,81 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
 
     // ----- Suggestions and actions of mail (issue #603) ----------------------------------------
 
+    /// Asks for the book "Save as contact" writes to (issue #727, [`MailSource::writable_book`]).
+    fn fetch_contact_book(&self) -> Task<Message> {
+        let inbox = self.inbox.clone();
+        Task::perform(async move { inbox.writable_book().await.map_err(|err| err.to_string()) }, Message::ContactBook)
+    }
+
+    /// "Save as contact" / "Add contact" for the entry or mail `id` (issue #727): sends
+    /// `inbox.create_contact_from_item` into [`App::contact_book`] and says so at once; the core
+    /// finds the mail's vCard itself and makes no second contact. Nothing without a book, and nothing
+    /// while a save is on its way.
+    fn save_contact(&mut self, id: String) -> Task<Message> {
+        self.close_menus();
+        let Some(book) = self.contact_book.clone() else { return Task::none() };
+        if self.contact_saving.is_some() {
+            return Task::none();
+        }
+        self.contact_saving = Some(id.clone());
+        // Immediate feedback (#560): the toast says the save runs; the answer takes its place.
+        let text = tr("Saving to contacts…").to_owned();
+        self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None, contact: None });
+        #[cfg(test)]
+        self.sent.push(Sent::Contact(id.clone(), book.clone()));
+        let inbox = self.inbox.clone();
+        let asked = id.clone();
+        Task::perform(
+            async move { inbox.create_contact_from_item(asked, book).await.map_err(|err| err.to_string()) },
+            move |result| Message::ContactSaved(id.clone(), result),
+        )
+    }
+
+    /// The answer to "Save as contact" for `id`: "Saved to contacts" or "Already in your contacts"
+    /// with "Open contact", or the error.
+    fn contact_saved(&mut self, id: &str, result: Result<torro_contacts::FromItem, String>) {
+        if self.contact_saving.as_deref() == Some(id) {
+            self.contact_saving = None;
+        }
+        match result {
+            Ok(from) => {
+                // A toast that offers "Undo" (a mail archived or moved meanwhile) stays: losing its way
+                // back costs more than missing "Open contact" (review of #356).
+                if self.hint.as_ref().is_some_and(|hint| hint.undo.is_some()) {
+                    return;
+                }
+                let text = crate::contact::saved_text(from.created).to_owned();
+                let contact = Some(from.contact.id);
+                self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None, contact });
+            }
+            Err(err) => {
+                // The toast of the running save must not stay as if it had worked; another hint shown
+                // meanwhile stays.
+                if self.hint.as_ref().is_some_and(|hint| hint.text == tr("Saving to contacts…")) {
+                    self.hint = None;
+                }
+                self.error = Some(Failure::new(tr("Couldn't save the contact."), err));
+            }
+        }
+    }
+
+    /// Opens the contact `contact` in the contacts app ("Open contact", issue #727): through the core
+    /// (`apps.open_app` with `contact:<id>`), which checks it. The demo has no core: it starts the
+    /// contacts app's demo on its contact.
+    fn open_contact(&mut self, contact: &str) -> Task<Message> {
+        self.close_menus();
+        let target = crate::contact::target(contact);
+        #[cfg(test)]
+        self.sent.push(Sent::Target(AppId::CONTACTS.binary.to_owned(), target.clone()));
+        if self.launch.demo {
+            let mut command = std::process::Command::new(torro_gui::source::sibling(AppId::CONTACTS.binary));
+            command.arg("--demo").arg("--open").arg("contact");
+            return Task::perform(async move { mail::start(command) }, Message::AppOpened);
+        }
+        let suite = self.suite.clone();
+        Task::perform(open_target(suite, AppId::CONTACTS.binary, target), Message::AppOpened)
+    }
+
     /// Asks for the kinds of action (`mail.list_action_kinds`), at start and on every tick: the rail's
     /// group "Torro" offers each.
     fn fetch_action_kinds(&self) -> Task<Message> {
@@ -11914,6 +12108,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             undo: Some(Undo::Suggestion { id, kind }),
             shown: Instant::now(),
             folder: None,
+            contact: None,
         });
         Task::none()
     }
@@ -12396,6 +12591,20 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             .or_else(|| self.made.iter().find(|(message, _)| message == id).map(|(_, task)| task))
     }
 
+    /// "Save as contact" in the footer of the panel of `item` (issue #727): for a mail entry while there
+    /// is a book to write to, named after the vCard of its mail once that is in.
+    fn contact_offer(&self, item: &Item) -> Option<crate::contact::ContactOffer> {
+        if self.contact_book.is_none() || item.source.kind != SourceKind::Mail {
+            return None;
+        }
+        let mail = match (&item.link, &self.letter) {
+            (Some(Link::Mail { message }), Some(letter)) if letter.id == *message => letter.loaded.as_ref(),
+            _ => None,
+        };
+        let vcard = matches!(mail, Some(Ok(mail)) if crate::contact::has_vcard(mail));
+        Some(crate::contact::ContactOffer { vcard, busy: self.contact_saving.is_some() })
+    }
+
     /// Opens the task `uid` in the tasks app (task E8.7b, "Open task"): through the core
     /// (`apps.open_app` with `task:<uid>`), which checks it and starts the app with it. The demo has
     /// no core: it starts the tasks app's demo on the task itself.
@@ -12733,7 +12942,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if let Ok(item) = &result {
             match after {
                 Some(After { text, undo }) => {
-                    self.hint = Some(Hint { text, undo: undo.map(Undo::Edit), shown: Instant::now(), folder: None });
+                    self.hint = Some(Hint {
+                        text,
+                        undo: undo.map(Undo::Edit),
+                        shown: Instant::now(),
+                        folder: None,
+                        contact: None,
+                    });
                 }
                 None => {
                     // Undone: the entry is back in its place, and the cursor (and panel) with it.
@@ -12749,7 +12964,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
 
     /// A hint without undo: what happened, or why nothing did.
     fn note(&mut self, text: String) {
-        self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None });
+        self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None, contact: None });
     }
 
     /// The entries of the open menu of choices, in order; their digits are their place from 1.
@@ -13387,11 +13602,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// badge; empty without a hint.
     fn hint_layer(&self) -> Element<'_, Message> {
         let Some(hint) = &self.hint else { return Space::new().into() };
-        // "Undo" after a change, "Show in folder" after saving attachments (task M12.6).
-        let action = match (&hint.undo, &hint.folder) {
-            (Some(_), _) => Some(ToastAction::undo(Message::Undo)),
-            (None, Some(_)) => Some(ToastAction::new(tr("Show in folder"), None, Message::ShowInFolder)),
-            (None, None) => None,
+        // "Undo" after a change, "Show in folder" after saving attachments (task M12.6), "Open contact"
+        // after saving a contact (issue #727).
+        let action = match (&hint.undo, &hint.folder, &hint.contact) {
+            (Some(_), _, _) => Some(ToastAction::undo(Message::Undo)),
+            (None, Some(_), _) => Some(ToastAction::new(tr("Show in folder"), None, Message::ShowInFolder)),
+            (None, None, Some(contact)) => {
+                Some(ToastAction::new(tr("Open contact"), None, Message::OpenContact(contact.clone())))
+            }
+            (None, None, None) => None,
         };
         widgets::toast(hint.text.as_str(), action)
     }
@@ -13742,6 +13961,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     compact: !matches!(class, SizeClass::Wide | SizeClass::Medium),
                     // A mail's switches and "Copy text" in the footer (task E9.4).
                     view: self.reading().map(|reading| reading.view_tools()),
+                    contact: self.contact_offer(item),
                 };
                 // A Talk entry shows its conversation and the reply field (issue #643), or – without the
                 // right to chat – its last line.
@@ -14271,6 +14491,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 _ => &[],
             },
             kinds: self.action_kinds.as_deref(),
+            contact_book: self.contact_book.is_some(),
+            contact_busy: self.contact_saving.is_some(),
         })
     }
 
@@ -15898,6 +16120,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                         undo: Some(Undo::Edit(Edit::Done { id: item.id.clone(), done: false })),
                         shown: Instant::now(),
                         folder: None,
+                        contact: None,
                     });
                 }
             }
@@ -16019,21 +16242,57 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     return self.ask_mute_message(&id);
                 }
             }
-            Some(open @ (Open::MailEntry | Open::MailActions | Open::MailGroup)) => {
+            Some(
+                open @ (Open::MailEntry
+                | Open::MailActions
+                | Open::MailGroup
+                | Open::TorroGroup
+                | Open::TorroGroupVcard
+                | Open::ContactSaved),
+            ) => {
+                // The vCard's mail for its state (issue #727), else the first.
+                let vcard = |id: &str| open == Open::TorroGroupVcard && id == mail::DEMO_VCARD_MAIL;
                 if self.launch.kind == Kind::Mail {
                     // The first mail of "All" in the reader or the panel (task E18.4).
-                    self.cursor = self.messages.first().map(|message| message.id.clone());
+                    let message = self.messages.iter().find(|message| vcard(&message.id)).or(self.messages.first());
+                    self.cursor = message.map(|message| message.id.clone());
                     self.reading = self.cursor.is_some();
                 } else {
-                    self.detail = self.items.iter().find(|item| matches!(item.link, Some(Link::Mail { .. }))).cloned();
+                    let of = |item: &&Item, card: bool| match &item.link {
+                        Some(Link::Mail { message }) => !card || vcard(message),
+                        _ => false,
+                    };
+                    let found = self
+                        .items
+                        .iter()
+                        .find(|item| of(item, true))
+                        .or_else(|| self.items.iter().find(|item| of(item, false)));
+                    self.detail = found.cloned();
                     // Its row is the cursor's, as after a click on it: the pictures show the selection.
                     self.cursor = self.detail.as_ref().map(|item| item.id.clone());
+                    // The states of "Save as contact" (issue #727) show the entry's footer: its mail
+                    // counts as read here already, so opening it does not close the entry and the
+                    // panel keeps it.
+                    if matches!(open, Open::TorroGroup | Open::TorroGroupVcard | Open::ContactSaved)
+                        && let Some(Link::Mail { message }) = self.detail.as_ref().and_then(|item| item.link.clone())
+                    {
+                        self.seen_mail.insert(message);
+                    }
                 }
                 // The rail as the picture needs it (task E14.3): "File" open – the second group, after
                 // Reply, for every entry –, or the card "Display" (issue #456).
                 match open {
                     Open::MailActions => self.menu = Some(Menu::MailDisplay),
                     Open::MailGroup => self.rail_open = Some(1),
+                    // Reply, File, Torro: the third group.
+                    Open::TorroGroup | Open::TorroGroupVcard => self.staged_rail = Some(2),
+                    // The answer the demo gives a first save, without asking it: the picture needs
+                    // only the toast.
+                    Open::ContactSaved => {
+                        let contact = Some(format!("{}/demo-mail", torro_contacts::demo::CONTACTS));
+                        let text = crate::contact::saved_text(true).to_owned();
+                        self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None, contact });
+                    }
                     _ => {}
                 }
             }
@@ -16301,7 +16560,7 @@ fn mute_hint(source: &SourceRef, muted: bool) -> Hint {
     } else {
         trf("Unmuted {source}", &[("source", &label)])
     };
-    Hint { text, undo: Some(Undo::Mute(source.clone(), !muted)), shown: Instant::now(), folder: None }
+    Hint { text, undo: Some(Undo::Mute(source.clone(), !muted)), shown: Instant::now(), folder: None, contact: None }
 }
 
 /// Scrolls the mail of "Focus & reply" back to its top (task E19.5), for the next mail of the round.
@@ -16326,6 +16585,7 @@ fn closes_rail(message: &Message) -> bool {
             | Message::AskTask(_)
             | Message::AskMailTask(_)
             | Message::AskAction(..)
+            | Message::SaveContact(_)
             | Message::AskAi(_)
             | Message::AskEvent(_)
             | Message::AskCategory(_)
@@ -23000,7 +23260,7 @@ mod tests {
     fn hint_of(app: &App<DemoSource>) -> Hint {
         match last_pile(app) {
             Some(Sent::Pile(_, _, _, Some(hint))) => hint.clone(),
-            _ => Hint { text: String::new(), undo: None, shown: Instant::now(), folder: None },
+            _ => Hint { text: String::new(), undo: None, shown: Instant::now(), folder: None, contact: None },
         }
     }
 
@@ -27370,6 +27630,106 @@ mod tests {
         assert_eq!(task.due, Some(torro_inbox::item::TaskDue::Date(tomorrow)));
         let _ = app.update(Message::Mail(MailAction::Read(true), id));
         draw_everywhere(&mut app);
+    }
+
+    /// Issue #727: "Save as contact" sends `inbox.create_contact_from_item` with the entry's id – or the
+    /// `m:…` id of a mail – into the book the window asked for, once until the core answered; the answer
+    /// is the toast with "Open contact", which opens the contacts app on the contact. Without a book
+    /// nothing is sent.
+    #[test]
+    fn save_as_contact_sends_the_request_and_offers_the_contact() {
+        let mut app = loaded(&[]);
+        let saves = |app: &App<DemoSource>| app.sent.iter().filter(|sent| matches!(sent, Sent::Contact(..))).count();
+        app.contact_book = None;
+        let _ = app.update(Message::SaveContact("demo-mail-1".into()));
+        assert_eq!(saves(&app), 0, "no book, nothing sent");
+        let book = block_on(MailSource::writable_book(app.inbox.as_ref())).map_err(|err| err.to_string());
+        let _ = app.update(Message::ContactBook(book));
+        let book = torro_contacts::demo::CONTACTS.to_owned();
+        assert_eq!(app.contact_book.as_deref(), Some(book.as_str()));
+        for id in ["demo-mail-1", mail::DEMO_VCARD_MAIL] {
+            let before = saves(&app);
+            let _ = app.update(Message::SaveContact(id.into()));
+            assert_eq!(app.sent.last(), Some(&Sent::Contact(id.into(), book.clone())), "{id}");
+            assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Saving to contacts…")));
+            let _ = app.update(Message::SaveContact(id.into()));
+            assert_eq!(saves(&app), before + 1, "{id}: one save at a time");
+            let answer = block_on(MailSource::create_contact_from_item(app.inbox.as_ref(), id.into(), book.clone()))
+                .map_err(|err| err.to_string());
+            let (contact, created) = answer.as_ref().map(|from| (from.contact.id.clone(), from.created)).expect("{id}");
+            let _ = app.update(Message::ContactSaved(id.into(), answer));
+            assert!(app.contact_saving.is_none(), "{id}: free again");
+            let hint = app.hint.clone().expect("the toast");
+            assert_eq!(hint.text, crate::contact::saved_text(created));
+            assert_eq!(hint.contact.as_deref(), Some(contact.as_str()));
+            let _ = app.view();
+            let _ = app.update(Message::OpenContact(contact.clone()));
+            let target = Sent::Target(AppId::CONTACTS.binary.to_owned(), format!("contact:{contact}"));
+            assert_eq!(app.sent.last(), Some(&target), "{id}");
+        }
+    }
+
+    /// Issue #727: a person found in the books says so, an error is no toast of success.
+    #[test]
+    fn save_as_contact_says_what_the_core_answered() {
+        let mut app = loaded(&[]);
+        app.contact_book = Some(torro_contacts::demo::CONTACTS.to_owned());
+        let _ = app.update(Message::SaveContact("m:w1".into()));
+        let contact = torro_contacts::Contact { id: "book/uid".into(), ..Default::default() };
+        let found = torro_contacts::FromItem { contact, created: false };
+        let _ = app.update(Message::ContactSaved("m:w1".into(), Ok(found)));
+        let hint = app.hint.clone().expect("the toast");
+        assert_eq!((hint.text.as_str(), hint.contact.as_deref()), (tr("Already in your contacts"), Some("book/uid")));
+        let _ = app.update(Message::SaveContact("m:w1".into()));
+        let _ = app.update(Message::ContactSaved("m:w1".into(), Err("forbidden".into())));
+        assert!(app.hint.is_none(), "the running toast goes");
+        assert!(app.error.is_some(), "the error is said");
+        assert!(app.contact_saving.is_none());
+        // Review of #356: a toast with "Undo" shown meanwhile keeps its way back.
+        let _ = app.update(Message::SaveContact("m:w1".into()));
+        let undo = Undo::Mute(torro_inbox::SourceRef { kind: torro_inbox::SourceKind::Mail, name: "x".into() }, false);
+        app.hint = Some(Hint {
+            text: "Archived".into(),
+            undo: Some(undo),
+            shown: Instant::now(),
+            folder: None,
+            contact: None,
+        });
+        let contact = torro_contacts::Contact { id: "book/uid".into(), ..Default::default() };
+        let _ =
+            app.update(Message::ContactSaved("m:w1".into(), Ok(torro_contacts::FromItem { contact, created: true })));
+        assert!(app.hint.as_ref().is_some_and(|hint| hint.undo.is_some()), "the Undo stays");
+    }
+
+    /// Issue #727: the demo's states of the action draw in every size – the group "Torro" open on a
+    /// mail and on the one with a vCard, and the toast after a save – in the mail window and the hub.
+    #[test]
+    fn the_contact_states_draw_everywhere() {
+        for view in ["mail", "hub"] {
+            for open in ["torro-group", "torro-group-vcard", "contact-saved"] {
+                let mut app = demo(&["--demo", "--now", "2026-10-13T10:30", "--view", view, "--open", open]);
+                load(&mut app);
+                let book = block_on(MailSource::writable_book(app.inbox.as_ref())).map_err(|err| err.to_string());
+                let _ = app.update(Message::ContactBook(book));
+                if let Some(id) = app.wanted_letter() {
+                    deliver_letter(&mut app, &id);
+                }
+                if open == "contact-saved" {
+                    assert!(app.hint.as_ref().is_some_and(|hint| hint.contact.is_some()), "{view} {open}");
+                }
+                draw_everywhere(&mut app);
+            }
+        }
+        let mut app = mail_window(Density::Compact, &["--open", "torro-group-vcard"]);
+        assert_eq!(app.cursor.as_deref(), Some(mail::DEMO_VCARD_MAIL), "the mail with the card");
+        // Held until the window has its size and the mail is in (design review of #727): a first size
+        // of another class would close a group opened before.
+        assert_eq!(app.rail_open, None, "not before the size and the mail");
+        let _ = app.update(Message::Resized(Size::new(800.0, 600.0)));
+        deliver_letter(&mut app, mail::DEMO_VCARD_MAIL);
+        assert_eq!(app.rail_open, Some(2), "the group Torro");
+        let _ = app.update(Message::Resized(Size::new(1600.0, 1000.0)));
+        assert_eq!(app.rail_open, None, "a later resize closes it as before");
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! How the contacts window looks (design skill `torro-design`, draft D2 in `docs/prototypes/kontakte/`):
-//! the sidebar, the header with "Group by" and "New contact", the search over the grouped list, the
-//! contact in its panel, the menus and the dialog "Delete contact?".
+//! the sidebar, the header with "Group by", "…" (import, export) and "New contact", the search over the
+//! grouped list, the contact in its panel, the menus and the dialog "Delete contact?". The view
+//! "Duplicates" and its dialog are [`crate::duplicates`], the dialog "Import vCard" [`crate::transfer`].
 //!
 //! Nothing here changes state: every control sends a [`Message`] that [`App::update`] handles.
 //!
@@ -35,6 +36,8 @@ use crate::list::{self, Columns, GroupBy, Key, RowLook, tinted};
 #[derive(Default)]
 pub struct Anchors {
     pub group_by: Anchor,
+    pub header: Anchor,
+    pub import_book: Anchor,
     pub nav: Anchor,
     pub more: Anchor,
     pub row: Anchor,
@@ -71,11 +74,27 @@ impl App {
         }
         let anchors = Anchors::default();
         let window = self.window(class, &anchors);
-        let window = match self.dialog {
-            Some(Dialog::Delete) => {
+        let window = match (self.dialog, &self.import) {
+            (Some(Dialog::Delete), _) => {
                 widgets::modal(window, self.delete_dialog(), size::form_max(), Message::CloseDialog)
             }
-            None => window,
+            (Some(Dialog::Import), Some(import)) => {
+                let books = self.writable_books();
+                let dialog = crate::transfer::dialog(import, &books, &anchors.import_book);
+                widgets::modal(window, dialog, size::form_max(), Message::CloseDialog)
+            }
+            (Some(Dialog::Merge), _) => {
+                widgets::modal(window, self.merge_dialog(), size::form_max(), Message::CloseDialog)
+            }
+            (Some(Dialog::Import), None) | (None, _) => window,
+        };
+        // The books of the import open over its dialog, not under it.
+        let window = match (&self.menu, self.dialog) {
+            (Some(Menu::ImportBook), Some(Dialog::Import)) => match self.import_book_menu(&anchors) {
+                Some(menu) => stack![window, menu].width(Fill).height(Fill).into(),
+                None => window,
+            },
+            _ => window,
         };
         widgets::ctrl_guard(self.zoom.view(self.with_notice(window)))
     }
@@ -142,6 +161,7 @@ impl App {
             View::Favorites => tr("Favorites").to_owned(),
             View::Recent => tr("Recent").to_owned(),
             View::Birthdays => tr("Birthdays").to_owned(),
+            View::Duplicates => tr("Duplicates").to_owned(),
             View::Book(id) => self.book(id).map(|b| b.display_name.clone()).unwrap_or_default(),
             View::Group(_, name) => name.clone(),
         }
@@ -153,6 +173,7 @@ impl App {
             View::Favorites => Icon::Star,
             View::Recent => Icon::History,
             View::Birthdays => Icon::Cake,
+            View::Duplicates => Icon::Copy,
             View::Book(id) => match self.book(id) {
                 Some(book) if !book.writable => Icon::Lock,
                 _ => Icon::BookUser,
@@ -182,6 +203,10 @@ impl App {
             item(View::Favorites, if favorites > 0 { Trail::Count(favorites) } else { Trail::None }),
             item(View::Recent, Trail::None),
             item(View::Birthdays, if soon > 0 { Trail::Count(soon) } else { Trail::None }),
+            item(
+                View::Duplicates,
+                if self.duplicates.is_empty() { Trail::None } else { Trail::Count(self.duplicates.len()) },
+            ),
         ];
         let mut accounts: Vec<&str> = Vec::new();
         for book in &self.books {
@@ -226,6 +251,7 @@ impl App {
         let narrow = !matches!(class, SizeClass::Wide | SizeClass::Medium);
         let count = match &self.view {
             View::Birthdays => self.shown_birthdays().len(),
+            View::Duplicates => self.duplicates.len(),
             _ => self.shown().len(),
         };
         let lead: Element<'a, Message> = if narrow {
@@ -242,13 +268,20 @@ impl App {
             shell::header_title(Some(self.view_icon(&self.view)), self.view_name(&self.view), Some(count.to_string()))
         };
         let mut trailing: Vec<Element<'a, Message>> = Vec::new();
-        if !matches!(self.view, View::Recent | View::Birthdays) && !self.contacts.is_empty() {
+        if !matches!(self.view, View::Recent | View::Birthdays | View::Duplicates) && !self.contacts.is_empty() {
             let toggle = Message::ToggleMenu(Menu::GroupBy);
             // Narrow, the grouping moves into the navigation menu, so the navigation and "+" keep their room.
             if !narrow {
                 let button = widgets::select_button(&anchors.group_by, self.group_by.by_label(), toggle);
                 trailing.push(widgets::anchored(&anchors.group_by, button));
             }
+        }
+        // Import and export (issue #725); narrow, they move into the navigation menu like "Group by".
+        if !narrow {
+            trailing.push(widgets::anchored(
+                &anchors.header,
+                widgets::icon_button(Icon::Ellipsis, tr("More"), Some(Message::ToggleMenu(Menu::Header))),
+            ));
         }
         // Off while a contact is edited: its input is never dropped for a new one.
         let new = self.new_book().filter(|_| !self.editing()).map(|_| Message::NewContact(None, None));
@@ -301,6 +334,10 @@ impl App {
     }
 
     fn list_view<'a>(&'a self, anchors: &Anchors) -> Element<'a, Message> {
+        // The duplicates are cards to decide on, not a list to search.
+        if self.view == View::Duplicates {
+            return self.duplicates_view();
+        }
         let body: Element<'a, Message> = if self.contacts.is_empty() {
             let new = self.new_book().map(|_| {
                 widgets::text_button(
@@ -561,7 +598,7 @@ impl App {
                 )
             }
             Menu::Nav => {
-                let mut views = vec![View::All, View::Favorites, View::Recent, View::Birthdays];
+                let mut views = vec![View::All, View::Favorites, View::Recent, View::Birthdays, View::Duplicates];
                 // The books with their groups, as the sidebar has them.
                 let mut nested = vec![false; views.len()];
                 for book in &self.books {
@@ -587,7 +624,8 @@ impl App {
                     })
                     .collect();
                 let mut sections = vec![MenuSection::new(items)];
-                if !matches!(self.view, View::Recent | View::Birthdays) && !self.contacts.is_empty() {
+                if !matches!(self.view, View::Recent | View::Birthdays | View::Duplicates) && !self.contacts.is_empty()
+                {
                     let by = GroupBy::ALL
                         .into_iter()
                         .map(|by| {
@@ -597,9 +635,19 @@ impl App {
                         .collect();
                     sections.push(MenuSection::titled(tr("Group by"), by));
                 }
+                sections.push(MenuSection::new(self.transfer_items()));
                 (anchors.nav.clone(), Placement::Below(Align::Start), sections)
             }
             Menu::More => (anchors.more.clone(), Placement::Below(Align::End), self.more_menu()),
+            // Narrow, import and export live in the navigation menu.
+            Menu::Header if !matches!(self.class(), SizeClass::Wide | SizeClass::Medium) => {
+                return self.menu_layer_of(&Menu::Nav, anchors);
+            }
+            Menu::Header => {
+                (anchors.header.clone(), Placement::Below(Align::End), vec![MenuSection::new(self.transfer_items())])
+            }
+            // Drawn over the dialog ([`App::import_book_menu`]).
+            Menu::ImportBook => return None,
             Menu::Move => {
                 let here = self.open_contact().map(|c| c.book.clone()).unwrap_or_default();
                 let items = self
@@ -680,7 +728,8 @@ impl App {
         if !contact.readonly && elsewhere {
             change.push(MenuItem::new(Mark::Icon(Icon::BookUser), tr("Move to…"), Message::ToggleMenu(Menu::Move)));
         }
-        let mut sections = vec![MenuSection::new(copy), MenuSection::new(change)];
+        let export = vec![MenuItem::new(Mark::Icon(Icon::Upload), tr("Export vCard…"), Message::ExportContact)];
+        let mut sections = vec![MenuSection::new(copy), MenuSection::new(export), MenuSection::new(change)];
         if !contact.readonly {
             sections.push(MenuSection::new(vec![MenuItem::new(
                 Mark::Icon(Icon::Trash2),
@@ -689,6 +738,27 @@ impl App {
             )]));
         }
         sections
+    }
+
+    /// "Import vCard…" and, when the view shows someone, "Export…" (issue #725).
+    fn transfer_items<'a>(&self) -> Vec<MenuItem<'a, Message>> {
+        let mut items = vec![MenuItem::new(Mark::Icon(Icon::Download), tr("Import vCard…"), Message::ImportVcard)];
+        if self.can_export() {
+            items.push(MenuItem::new(Mark::Icon(Icon::Upload), tr("Export…"), Message::Export));
+        }
+        items
+    }
+
+    /// The writable books for the dialog "Import vCard", the chosen one marked.
+    fn import_book_menu<'a>(&'a self, anchors: &Anchors) -> Option<Element<'a, Message>> {
+        let chosen = self.import.as_ref()?.book.as_str();
+        let items = self
+            .writable_books()
+            .into_iter()
+            .map(|b| MenuItem::plain(b.display_name.clone(), Message::ImportBook(b.id.clone())).current(b.id == chosen))
+            .collect();
+        let menu = widgets::menu(vec![MenuSection::new(items)]);
+        Some(widgets::floating(&anchors.import_book, Placement::Below(Align::Start), menu, Message::CloseMenu))
     }
 
     fn delete_dialog(&self) -> Element<'_, Message> {
@@ -742,7 +812,7 @@ fn no_account<'a>() -> Element<'a, Message> {
 
 /// A calm state in the middle of its room: an icon, what is (or is not) here, what to do, and a button
 /// for it – as `widgets::empty_state`, with the button right under the words.
-fn calm<'a>(
+pub(crate) fn calm<'a>(
     mark: Option<Icon>,
     title: &'a str,
     hint: &'a str,

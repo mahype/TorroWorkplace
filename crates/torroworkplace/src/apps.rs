@@ -707,7 +707,13 @@ pub enum Target<'a> {
     /// `chat:<conversation>`: a chat conversation (`<account>/<token>`, `docs/chat.md`) in a window
     /// of its own; `chat:contacts` the contact list.
     Chat { conversation: &'a str },
+    /// `contact:<id>`: a contact by its id (`<book>/<uid>`) in the contacts app (issue #727, "Open
+    /// contact" after saving a mail's sender).
+    Contact { id: &'a str },
 }
+
+/// The start of a contact target (issue #727).
+const CONTACT_TARGET: &str = "contact:";
 
 /// The start of a chat target; `chat:contacts` is the contact list.
 const CHAT_TARGET: &str = "chat:";
@@ -736,7 +742,13 @@ impl<'a> Target<'a> {
     /// template id with other characters than `a`–`z`, `0`–`9` and `-` (the form of a template's id).
     pub fn parse(text: &'a str) -> Result<Target<'a>, &'static str> {
         const FORMS: &str = "a target is mail:<address>:<Message-ID>, message:mail:<address>:m:<id>, task:<uid>, file:<id>, \
-             template:<id> or chat:<conversation>";
+             template:<id>, chat:<conversation> or contact:<id>";
+        if let Some(id) = text.strip_prefix(CONTACT_TARGET) {
+            return match id.is_empty() || id.chars().any(char::is_control) {
+                true => Err(FORMS),
+                false => Ok(Target::Contact { id }),
+            };
+        }
         if let Some(conversation) = text.strip_prefix(CHAT_TARGET) {
             let named = conversation == "contacts" || torro_chat::split_conversation(conversation).is_some();
             return if named { Ok(Target::Chat { conversation }) } else { Err(FORMS) };
@@ -783,6 +795,7 @@ impl<'a> Target<'a> {
             Target::Task { .. } => AppId::TASKS,
             Target::Template { .. } => AppId::WORKPLACE,
             Target::Chat { .. } => AppId::CHAT,
+            Target::Contact { .. } => AppId::CONTACTS,
         }
     }
 
@@ -822,6 +835,10 @@ pub enum Opened {
     Ring {
         conversation: String,
     },
+    /// A contact by the id the core's store holds (issue #727).
+    Contact {
+        id: String,
+    },
 }
 
 impl Opened {
@@ -832,6 +849,7 @@ impl Opened {
             Opened::Task { .. } => AppId::TASKS,
             Opened::Template { .. } => AppId::WORKPLACE,
             Opened::Chat { .. } | Opened::Ring { .. } => AppId::CHAT,
+            Opened::Contact { .. } => AppId::CONTACTS,
         }
     }
 }
@@ -839,7 +857,8 @@ impl Opened {
 /// The command line that starts a window of `program` (the path [`target_program`] found: for a mail
 /// `torro-inbox-mail` or `torroinbox`, else [`Opened::app`]'s binary) showing `opened`:
 /// `torroinbox --view mail --message=m:…` (or `torro-inbox-mail --view mail --message=m:…`),
-/// `torrotasks --task=<uid>`, `torroinbox --compose --attach=<path>` or `torroworkplace ui --template=<id>`
+/// `torrotasks --task=<uid>`, `torrocontacts --contact=<id>`, `torroinbox --compose --attach=<path>` or
+/// `torroworkplace ui --template=<id>`
 /// (the dialog in its mode "Edit"; the mode "Save", `--saved`, is never built here). One argument each,
 /// with `=`, so a value that starts with `-` stays a value; started without a shell.
 pub fn target_command(program: String, opened: &Opened) -> Vec<String> {
@@ -853,6 +872,7 @@ pub fn target_command(program: String, opened: &Opened) -> Vec<String> {
             (opened.app().command(program), format!("--conversation={conversation}"))
         }
         Opened::Ring { conversation } => (opened.app().command(program), format!("--ring={conversation}")),
+        Opened::Contact { id } => (opened.app().command(program), format!("--contact={id}")),
         // A file opens the compose window, not the mail window the inbox's mail entry names.
         Opened::File { path } => (vec![program, "--compose".to_string()], format!("--attach={path}")),
     };

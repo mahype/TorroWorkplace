@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 use base64::Engine;
 use torro_contacts::{
-    AddressBook, Birthday, Contact, ContactFields, ContactPage, ContactQuery, ContactsError, ContactsSource, Group,
-    Keep, Moved, PhotoSize,
+    AddressBook, Birthday, Contact, ContactFields, ContactPage, ContactQuery, ContactsError, ContactsSource,
+    DuplicateGroup, Group, Imported, Keep, Merged, Moved, PhotoSize,
 };
 
 use crate::{Request, Response};
@@ -16,6 +16,18 @@ use crate::{Request, Response};
 /// request over 1 MB, and Base64 makes a third more of it; an app scales larger pictures down
 /// before it sends them (decision 3 in the plan of issue #351).
 pub const MAX_PHOTO_BYTES: usize = 700 * 1024;
+
+/// The largest `.vcf` file `contacts.import_vcards` reads from `path` (issue #725): 20 MB.
+pub const MAX_IMPORT_BYTES: u64 = 20 * 1024 * 1024;
+
+/// The most cards `contacts.import_vcards` takes from one file, and the most ids of
+/// `contacts.export_vcards` (issue #725).
+pub const MAX_IMPORT_CARDS: usize = 10_000;
+
+/// The fewest and the most contacts `contacts.merge_contacts` and `contacts.dismiss_duplicates` name
+/// (issue #726).
+pub const MERGE_MIN: usize = 2;
+pub const MERGE_MAX: usize = 20;
 
 /// How many days `contacts.upcoming_birthdays` looks ahead when it is not told.
 pub const BIRTHDAY_DAYS: u32 = 14;
@@ -171,6 +183,54 @@ impl ContactsSource for ContactsClient {
             other => Err(unexpected(other)),
         }
     }
+
+    async fn import_vcards(
+        &self,
+        book: String,
+        data: Option<String>,
+        path: Option<String>,
+        dry_run: bool,
+    ) -> Result<Imported, ContactsError> {
+        match self.ask(Request::ImportVCards { book, data, path, dry_run }).await? {
+            Response::ContactsImported(imported) => Ok(imported),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn export_vcards(
+        &self,
+        book: Option<String>,
+        group: Option<String>,
+        ids: Vec<String>,
+    ) -> Result<(String, u32), ContactsError> {
+        match self.ask(Request::ExportVCards { book, group, ids }).await? {
+            Response::VCards { data, count, .. } => Ok((data, count)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn find_duplicates(&self, book: Option<String>) -> Result<Vec<DuplicateGroup>, ContactsError> {
+        match self.ask(Request::FindDuplicates { book }).await? {
+            Response::ContactDuplicates { groups } => Ok(groups),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn merge_contacts(
+        &self,
+        ids: Vec<String>,
+        etags: Vec<String>,
+        keep: String,
+    ) -> Result<Merged, ContactsError> {
+        match self.ask(Request::MergeContacts { ids, etags, keep }).await? {
+            Response::ContactsMerged(merged) => Ok(*merged),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn dismiss_duplicates(&self, ids: Vec<String>) -> Result<(), ContactsError> {
+        self.ok(Request::DismissDuplicates { ids }).await
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -238,6 +298,20 @@ mod tests {
             Request::ResolveContactConflict { id, keep, etag } => {
                 demo.resolve_conflict(id, keep, etag).await.map(|contacts| Response::ContactsResolved { contacts })
             }
+            Request::ImportVCards { book, data, path, dry_run } => {
+                demo.import_vcards(book, data, path, dry_run).await.map(Response::ContactsImported)
+            }
+            Request::ExportVCards { book, group, ids } => demo
+                .export_vcards(book, group, ids)
+                .await
+                .map(|(data, count)| Response::VCards { data, count, untrusted: true }),
+            Request::FindDuplicates { book } => {
+                demo.find_duplicates(book).await.map(|groups| Response::ContactDuplicates { groups })
+            }
+            Request::MergeContacts { ids, etags, keep } => {
+                demo.merge_contacts(ids, etags, keep).await.map(|merged| Response::ContactsMerged(Box::new(merged)))
+            }
+            Request::DismissDuplicates { ids } => demo.dismiss_duplicates(ids).await.map(|()| Response::Ok),
             _ => Ok(Response::Pong { version: "test".into(), api: 0 }),
         };
         answer.unwrap_or_else(error)
@@ -301,6 +375,16 @@ mod tests {
         assert!(!client.list_groups(None).await.expect("groups").is_empty());
         client.upcoming_birthdays(Some(14)).await.expect("birthdays");
         client.delete_contact(changed.id.clone(), changed.etag.clone().expect("etag")).await.expect("deleted");
+        // Issues #725 and #726: import, export and duplicates take the same way.
+        let file = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Kim Neu\r\nEND:VCARD\r\n".to_string();
+        let preview = client.import_vcards(CONTACTS.into(), Some(file), None, true).await.expect("import");
+        assert_eq!(preview.created, 1);
+        let (text, count) = client.export_vcards(Some(CONTACTS.into()), None, Vec::new()).await.expect("export");
+        assert!(count > 0 && text.contains("BEGIN:VCARD"));
+        let groups = client.find_duplicates(None).await.expect("duplicates");
+        let ids: Vec<String> = groups[0].contacts.iter().map(|c| c.id.clone()).collect();
+        client.dismiss_duplicates(ids).await.expect("dismissed");
+        assert!(client.find_duplicates(None).await.expect("none").is_empty());
         server.abort();
     }
 }
