@@ -4352,6 +4352,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Install SoX (brew install sox) or ffmpeg", "Installiere SoX (brew install sox) oder ffmpeg"),
     ("Install SoX or ffmpeg", "Installiere SoX oder ffmpeg"),
     ("Install a program that plays sound, such as paplay", "Installiere ein Programm, das Ton abspielt, etwa paplay"),
+    ("Fast, runs on the processor", "Schnell, läuft auf dem Prozessor"),
+    ("Install onnx-asr: pipx install \"onnx-asr[cpu]\"", "Installiere onnx-asr: pipx install \"onnx-asr[cpu]\""),
     (
         "Install pulseaudio-utils (parec) or alsa-utils (arecord)",
         "Installiere pulseaudio-utils (parec) oder alsa-utils (arecord)",
@@ -4381,13 +4383,20 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Lege ein whisper.cpp-Modell wie ggml-base.bin in den Sprachordner",
     ),
     (
+        "Put the folder parakeet-tdt-0.6b-v3 (Hugging Face: istupakov/parakeet-tdt-0.6b-v3-onnx) into the voice folder",
+        "Lege den Ordner parakeet-tdt-0.6b-v3 (Hugging Face: istupakov/parakeet-tdt-0.6b-v3-onnx) in den Sprachordner",
+    ),
+    (
         "Put hey_torro.onnx into the voice folder. Until then speech to text listens for the wake word.",
         "Lege hey_torro.onnx in den Sprachordner. Bis dahin hört die Spracherkennung auf das Weckwort.",
     ),
     ("Read aloud with Piper as well as shown", "Mit Piper vorgelesen und angezeigt"),
+    ("Recommended", "Empfohlen"),
     ("Recording", "Aufnahme"),
     ("Recording …", "Nimmt auf …"),
     ("Say something", "Sag etwas"),
+    ("Speech recognition", "Spracherkennung"),
+    ("whisper.cpp with a ggml model", "whisper.cpp mit einem ggml-Modell"),
     (
         "Say “Hey Torro” and your question. Everything stays on this computer. Approvals are only given with a click, never by voice.",
         "Sag „Hey Torro“ und deine Frage. Alles bleibt auf diesem Rechner. Freigaben gibt es nur per Klick, nie per Sprache.",

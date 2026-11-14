@@ -2,7 +2,8 @@
 //! task C.9, concept `docs/assistent.md`, "Sprache"): talking to the assistant by voice.
 //!
 //! Talking by voice on or off (`settings.set_setting voice_enabled`), the fixed wake word, "Speak
-//! answers", the microphone when the recording program can list them – a Torro dropdown in the group
+//! answers", the speech recognition – Parakeet (recommended) or Whisper, a dropdown as well
+//! (`settings.set_setting speech_recognizer`, issue #749) –, the microphone when the recording program can list them – a Torro dropdown in the group
 //! "Voice" since issue #547, as the number of microphones is open ([`State::menus`], [`overlay`]) –,
 //! and below the four programs the listener needs with whether each was found
 //! (`settings.voice_status`).
@@ -32,6 +33,7 @@ use iced::widget::{Space, column, toggler};
 use iced::{Element, Subscription};
 
 use torro_core::i18n::{tr, trf};
+use torro_core::settings::Recognizer;
 use torro_gui::theme;
 use torro_gui::widgets::{self, Align, DROPDOWN_SEARCH, Dropdown, DropdownEvent, MenuItem, MenuSection, Status};
 use torro_gui::{layout, style, typo};
@@ -52,6 +54,8 @@ const VOICE_POLLS: u8 = 5;
 /// The dropdowns of the page (issue #547).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Choice {
+    /// "Speech recognition": Parakeet or Whisper (issue #749).
+    Recognizer,
     /// "Microphone": the system's default or one the recording program lists.
     Microphone,
 }
@@ -93,6 +97,8 @@ pub enum Message {
     Enabled(bool),
     /// "Speak answers" on or off.
     SpeakAnswers(bool),
+    /// An entry of the dropdown "Speech recognition" (issue #749).
+    Recognizer(Recognizer),
     /// An entry of the dropdown "Microphone"; `None` for the system's default.
     Microphone(Option<String>),
     /// "Installed something?" / "Check again": ask how voice stands again.
@@ -124,6 +130,10 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             set(SettingKey::VoiceEnabled, serde_json::Value::Bool(on))
         }
         Message::SpeakAnswers(speak) => set(SettingKey::SpeakAnswers, serde_json::Value::Bool(speak)),
+        Message::Recognizer(recognizer) => {
+            state.menus.close();
+            set(SettingKey::SpeechRecognizer, serde_json::json!(recognizer))
+        }
         Message::Microphone(name) => {
             state.menus.close();
             set(SettingKey::Microphone, name.map_or(serde_json::Value::Null, serde_json::Value::String))
@@ -214,10 +224,24 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     column![voice_group(state, data), programs_group(data)].spacing(layout::section_gap()).into()
 }
 
-/// The open dropdown of the microphone, under its button: the system's default and every
-/// microphone the recording program lists, the chosen one marked.
+/// The open dropdown under its button: the two speech recognitions, Parakeet recommended, or the
+/// system's default and every microphone the recording program lists; the chosen one marked.
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
     let key = state.menus.open().filter(|_| super::is_on(data))?;
+    if *key == Choice::Recognizer {
+        let chosen = data.settings.voice.recognizer;
+        let items = vec![
+            MenuItem::plain(recognizer_name(Recognizer::Parakeet), Message::Recognizer(Recognizer::Parakeet))
+                .detail(tr("Fast, runs on the processor"))
+                .tag(tr("Recommended"), false)
+                .current(chosen == Recognizer::Parakeet),
+            MenuItem::plain(recognizer_name(Recognizer::Whisper), Message::Recognizer(Recognizer::Whisper))
+                .detail(tr("whisper.cpp with a ggml model"))
+                .current(chosen == Recognizer::Whisper),
+        ];
+        let sections = vec![MenuSection::new(items)];
+        return Some(state.menus.view(key, sections, widgets::menu_width(), Align::End, Message::Menus));
+    }
     let microphones = data.voice.as_ref().map(|voice| &voice.microphones).filter(|list| !list.is_empty())?;
     let chosen = data.settings.voice.microphone.as_deref();
     let default = MenuItem::plain(tr("System default"), Message::Microphone(None)).current(chosen.is_none());
@@ -231,10 +255,12 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
     Some(state.menus.view(key, sections, widgets::menu_width(), Align::End, Message::Menus))
 }
 
-/// Fresh data came ([`super::received`]): with no microphone listed any more the dropdown closes, so
-/// it neither takes the next Escape nor opens again by itself later.
+/// Fresh data came ([`super::received`]): with no microphone listed any more its dropdown closes, so
+/// it neither takes the next Escape nor opens again by itself later. The speech recognition's stays
+/// open: its two entries do not depend on what was found.
 pub fn loaded(state: &mut State, data: &Data) {
-    if !super::is_on(data) || data.voice.as_ref().is_none_or(|voice| voice.microphones.is_empty()) {
+    let no_microphones = data.voice.as_ref().is_none_or(|voice| voice.microphones.is_empty());
+    if !super::is_on(data) || (no_microphones && state.menus.is_open(&Choice::Microphone)) {
         state.menus.close();
     }
 }
@@ -244,8 +270,8 @@ pub fn escape(state: &State) -> Option<Message> {
     state.menus.open().map(|_| Message::Menus(DropdownEvent::Close))
 }
 
-/// "Voice": on or off with what the listener does, the wake word, "Speak answers", the microphone
-/// and the test.
+/// "Voice": on or off with what the listener does, the wake word, "Speak answers", the speech
+/// recognition, the microphone and the test.
 fn voice_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let settings = &data.settings.voice;
     let can_listen = data.voice.as_ref().is_none_or(VoiceStatus::can_listen);
@@ -276,7 +302,10 @@ fn voice_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let footer = tr(
         "Say “Hey Torro” and your question. Everything stays on this computer. Approvals are only given with a click, never by voice.",
     );
-    let mut rows = vec![on, wake, speak];
+    let recognizer =
+        state.menus.button(Choice::Recognizer, recognizer_name(data.settings.voice.recognizer), Message::Menus);
+    let recognizer = setting_row(None, tr("Speech recognition"), None, recognizer);
+    let mut rows = vec![on, wake, speak, recognizer];
     rows.extend(microphone_row(state, data));
     rows.push(test);
     widgets::group(tr("Voice"), rows, Some(footer.to_string()))
@@ -308,7 +337,9 @@ fn programs_group(data: &Data) -> Element<'_, Message> {
             again,
         )],
         Some(status) => {
-            let mut rows: Vec<Element<'_, Message>> = status.programs.iter().map(program_row).collect();
+            let recognizer = data.settings.voice.recognizer;
+            let mut rows: Vec<Element<'_, Message>> =
+                status.programs.iter().map(|program| program_row(program, recognizer)).collect();
             rows.push(setting_row(None, tr("Installed something?"), None, again));
             rows
         }
@@ -323,8 +354,8 @@ fn programs_group(data: &Data) -> Element<'_, Message> {
 }
 
 /// One part: its name, the program found or what to install, and a dot.
-fn program_row(program: &VoiceProgram) -> Element<'_, Message> {
-    let (status, detail) = program_state(program);
+fn program_row(program: &VoiceProgram, recognizer: Recognizer) -> Element<'_, Message> {
+    let (status, detail) = program_state(program, recognizer);
     setting_row(Some(widgets::status_dot(status)), part_label(program.part), Some(detail), Space::new())
 }
 
@@ -366,6 +397,15 @@ pub fn voice_state(enabled: bool, status: Option<&VoiceStatus>) -> (Status, Stri
     }
 }
 
+/// The name of a speech recognition, on its button and in its dropdown: names of programs, not
+/// translated.
+pub fn recognizer_name(recognizer: Recognizer) -> &'static str {
+    match recognizer {
+        Recognizer::Parakeet => "Parakeet",
+        Recognizer::Whisper => "Whisper",
+    }
+}
+
 /// "Speech to text", …
 pub fn part_label(part: VoicePart) -> &'static str {
     match part {
@@ -376,10 +416,10 @@ pub fn part_label(part: VoicePart) -> &'static str {
     }
 }
 
-/// The dot and the line of a part: the program found, or how to get what is missing. The wake word
-/// and speech are optional (speech to text stands in for the one, the window for the other), so
-/// they are only orange when missing.
-pub fn program_state(program: &VoiceProgram) -> (Status, String) {
+/// The dot and the line of a part: the program found, or how to get what is missing – for speech to
+/// text, of the chosen `recognizer`. The wake word and speech are optional (speech to text stands in
+/// for the one, the window for the other), so they are only orange when missing.
+pub fn program_state(program: &VoiceProgram, recognizer: Recognizer) -> (Status, String) {
     let optional = matches!(program.part, VoicePart::WakeWord | VoicePart::Speech);
     let Some(missing) = program.missing else {
         return (Status::Ok, program.program.clone().unwrap_or_default());
@@ -392,8 +432,14 @@ pub fn program_state(program: &VoiceProgram) -> (Status, String) {
             tr("Put hey_torro.onnx into the voice folder. Until then speech to text listens for the wake word.")
         }
         (VoicePart::Recorder, _) => recorder_hint(),
-        (VoicePart::SpeechToText, VoiceMissing::Program) => tr("Install whisper.cpp, so that whisper-cli is found"),
-        (VoicePart::SpeechToText, _) => tr("Put a whisper.cpp model such as ggml-base.bin into the voice folder"),
+        (VoicePart::SpeechToText, missing) => match (recognizer, missing) {
+            (Recognizer::Parakeet, VoiceMissing::Program) => tr("Install onnx-asr: pipx install \"onnx-asr[cpu]\""),
+            (Recognizer::Parakeet, _) => tr(
+                "Put the folder parakeet-tdt-0.6b-v3 (Hugging Face: istupakov/parakeet-tdt-0.6b-v3-onnx) into the voice folder",
+            ),
+            (Recognizer::Whisper, VoiceMissing::Program) => tr("Install whisper.cpp, so that whisper-cli is found"),
+            (Recognizer::Whisper, _) => tr("Put a whisper.cpp model such as ggml-base.bin into the voice folder"),
+        },
         (VoicePart::Speech, VoiceMissing::Program) => tr("Optional: install Piper to hear the answers"),
         (VoicePart::Speech, VoiceMissing::Model) => {
             tr("Put a Piper voice (.onnx with its .json) into the voice folder")
@@ -593,6 +639,7 @@ mod tests {
         assert_eq!(voice_state(true, None).1, tr("On"));
 
         let program = |part, missing| VoiceProgram { part, program: Some("whisper-cli".into()), missing };
+        let program_state = |program: &VoiceProgram| super::program_state(program, Recognizer::Whisper);
         assert_eq!(program_state(&program(VoicePart::SpeechToText, None)), (Status::Ok, "whisper-cli".to_string()));
         assert_eq!(program_state(&program(VoicePart::SpeechToText, Some(VoiceMissing::Model))).0, Status::Error);
         assert_eq!(program_state(&program(VoicePart::WakeWord, Some(VoiceMissing::Program))).0, Status::Attention);
@@ -602,6 +649,51 @@ mod tests {
         assert_eq!(program_state(&program(VoicePart::Speech, Some(VoiceMissing::Model))).0, Status::Attention);
         assert_eq!(program_state(&program(VoicePart::Recorder, Some(VoiceMissing::Program))).0, Status::Error);
         assert_eq!(part_label(VoicePart::SpeechToText), tr("Speech to text"));
+    }
+
+    /// Issue #749: "Speech recognition" is a dropdown of Parakeet and Whisper; a choice closes it and
+    /// sends the setting. It stays open over a load, also without microphones.
+    #[tokio::test]
+    async fn the_speech_recognition_is_a_dropdown() {
+        let data = Data { voice: Some(status(VoiceState::Listening, None)), ..data().await };
+        let mut state = State::default();
+        let _ = update(&mut state, Message::Menus(DropdownEvent::Toggle(Choice::Recognizer)), &data);
+        assert!(overlay(&state, &data).is_some());
+        let none = Data {
+            voice: Some(VoiceStatus { microphones: Vec::new(), ..status(VoiceState::Off, None) }),
+            ..data.clone()
+        };
+        loaded(&mut state, &none);
+        assert!(state.menus.is_open(&Choice::Recognizer) && overlay(&state, &none).is_some());
+        let _ = view(&state, &data);
+        let chosen = update(&mut state, Message::Recognizer(Recognizer::Whisper), &data);
+        assert_eq!(sent(chosen), (SettingKey::SpeechRecognizer, serde_json::json!("whisper")));
+        assert_eq!(state.menus.open(), None, "the choice closes it");
+        let chosen = update(&mut state, Message::Recognizer(Recognizer::Parakeet), &data);
+        assert_eq!(sent(chosen), (SettingKey::SpeechRecognizer, serde_json::json!("parakeet")));
+    }
+
+    /// Issue #749: what is missing for speech to text is told for the chosen recognition.
+    #[test]
+    fn speech_to_text_hints_follow_the_recognizer() {
+        let missing = |missing| VoiceProgram { part: VoicePart::SpeechToText, program: None, missing: Some(missing) };
+        let hint = |recognizer, what| program_state(&missing(what), recognizer);
+        assert_eq!(
+            hint(Recognizer::Parakeet, VoiceMissing::Program),
+            (Status::Error, tr("Install onnx-asr: pipx install \"onnx-asr[cpu]\"").to_string())
+        );
+        assert_eq!(
+            hint(Recognizer::Parakeet, VoiceMissing::Model).1,
+            tr(
+                "Put the folder parakeet-tdt-0.6b-v3 (Hugging Face: istupakov/parakeet-tdt-0.6b-v3-onnx) into the voice folder"
+            )
+        );
+        assert_eq!(
+            hint(Recognizer::Whisper, VoiceMissing::Program).1,
+            tr("Install whisper.cpp, so that whisper-cli is found")
+        );
+        let found = VoiceProgram { part: VoicePart::SpeechToText, program: Some("onnx-asr".into()), missing: None };
+        assert_eq!(program_state(&found, Recognizer::Parakeet), (Status::Ok, "onnx-asr".to_string()));
     }
 
     /// Issue #547: the microphone is a dropdown in "Voice" – opening it asks for the focus, Escape

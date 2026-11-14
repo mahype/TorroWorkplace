@@ -1079,7 +1079,7 @@ impl Demo {
             programs: vec![
                 VoiceProgram { part: VoicePart::WakeWord, program: None, missing: Some(VoiceMissing::Program) },
                 found(VoicePart::Recorder, "parec"),
-                found(VoicePart::SpeechToText, "whisper-cli"),
+                found(VoicePart::SpeechToText, "onnx-asr"),
                 found(VoicePart::Speech, "piper"),
             ],
             microphones: vec!["alsa_input.usb".into()],
