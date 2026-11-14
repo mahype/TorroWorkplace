@@ -1018,6 +1018,7 @@ Approval, bis zu fünf Auswahlgruppen, Voice, Microphone, Programs on this compu
 | Talk to the assistant | Sprache an/aus | Assistant › Voice; Tray „Mute microphone“ (nur aus) | `voice.enabled` | `set_setting voice_enabled` (an nur Menschen) | Assistent | bleibt, Assistent |
 | Wake word | nur Anzeige („Hey Torro“) | Assistant › Voice | `voice.wakeWord` | `set_setting wake_word` | – | bleibt als Anzeige |
 | Speak answers | Antworten vorlesen | Assistant › Voice | `voice.speakAnswers` | `set_setting speak_answers` | Assistent | bleibt, Assistent |
+| Speech recognition (Parakeet, Whisper) | welches Programm Sprache in Text wandelt (#749) | Assistant › Voice | `voice.recognizer` | `set_setting speech_recognizer` | Assistent | bleibt, Assistent |
 | Microphone (System default, Gerät) | welches Mikrofon | Assistant › Microphone (ohne Satz) | `voice.microphone` | `set_setting microphone` | Assistent | bleibt, Assistent |
 | – (Sprachmodell, Stimme) | whisper- und Piper-Datei | keine Oberfläche, erste im Ordner | `voice.sttModel`, `voice.voice` | `set_setting stt_model`, `set_setting voice` | Assistent | bleibt ohne Oberfläche, bis es mehr als eine Datei gibt |
 | Test the microphone, Check again | Prüfen (Aktion) | Assistant › Voice, Programs | – | `settings.test_voice` (nie), `settings.voice_status` | – | bleibt als Aktion |

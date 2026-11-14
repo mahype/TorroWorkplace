@@ -778,7 +778,7 @@ Open First gilt auch hier, und das Mikrofon verlässt den Rechner nie, solange n
 | Baustein | Lokal (Standard) | Hinweis |
 |---|---|---|
 | **Weckwort** | openWakeWord (offen, eigenes Wort trainierbar) | läuft dauerhaft, nur auf dem Rechner, kleiner Speicher (wenige Sekunden Ringpuffer, nie auf Platte) |
-| **Sprache → Text** | whisper.cpp bzw. faster-whisper (Modell wählbar nach Rechner) | optional über ein KI-Konto, wenn die Person es erlaubt |
+| **Sprache → Text** | Parakeet über onnx-asr (empfohlen, etwa dreimal so schnell) oder whisper.cpp, wählbar in Einstellungen › Voice (#749) | optional über ein KI-Konto, wenn die Person es erlaubt |
 | **Text → Sprache** | Piper (offene Stimmen, auch Deutsch) | abschaltbar, dann nur Fenster |
 
 - **Standard aus.** Einschalten nur in den Einstellungen des Assistenten (Zahnrad › Voice), mit
