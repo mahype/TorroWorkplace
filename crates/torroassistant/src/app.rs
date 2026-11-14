@@ -215,7 +215,7 @@ pub enum Menu {
     Bot { id: String },
     /// The "…" of the sidebar's group "Recent" (issue #697): Archive all…, Delete all….
     Recent,
-    /// The "…" of the open group "Archive" (issue #697): Empty archive….
+    /// The "…" of the group "Archive", open or closed (issue #697): Empty archive….
     Archive,
     /// The engine and model picker of the bot editor.
     BotPicker,
@@ -2229,7 +2229,17 @@ impl App {
 
     /// The question's yes to "Archive all…", "Delete all…" or "Empty archive…".
     fn confirm_many(&mut self) -> Task<Message> {
-        match self.dialog.take() {
+        // Only those still listed: one gone meanwhile (another window, a client, the retention) would make
+        // the core refuse the whole piece.
+        let listed = |ids: Vec<String>| -> Vec<String> {
+            ids.into_iter().filter(|id| self.conversations.iter().any(|c| c.id == *id)).collect()
+        };
+        let dialog = match self.dialog.take() {
+            Some(Dialog::ArchiveMany { ids }) => Some(Dialog::ArchiveMany { ids: listed(ids) }),
+            Some(Dialog::DeleteMany { ids, archive }) => Some(Dialog::DeleteMany { ids: listed(ids), archive }),
+            other => other,
+        };
+        match dialog {
             Some(Dialog::ArchiveMany { ids }) => self.archive(ids, true),
             Some(Dialog::DeleteMany { ids, .. }) => {
                 let tasks: Vec<Task<Message>> = ids
@@ -2262,7 +2272,10 @@ impl App {
             }
             Err(refusal) => {
                 self.note_failure(tr("Couldn't delete the conversations."), &refusal);
-                self.load_list()
+                // Past the check of the ids the others are gone (`error`): the open one may be among them.
+                let open = refusal.code != "not-found" && self.current.as_ref().is_some_and(|id| ids.contains(id));
+                let task = if open { self.new_chat() } else { Task::none() };
+                Task::batch([task, self.load_list()])
             }
         }
     }

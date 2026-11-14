@@ -685,9 +685,11 @@ fn archive_all_and_delete_all_take_the_recent_conversations() {
     sent(&mut app);
     let _ = app.update(Message::AskDeleteAll);
     assert_eq!(app.dialog, Some(Dialog::DeleteMany { ids: ordered.clone(), archive: false }));
+    // One gone meanwhile (another window): the rest still go, so the core does not refuse them all.
+    app.conversations.retain(|c| c.id != ordered[0]);
     let _ = app.update(Message::ConfirmMany);
     let requests = sent(&mut app);
-    assert_eq!(requests, [Request::DeleteConversations { ids: ordered.clone() }]);
+    assert_eq!(requests, [Request::DeleteConversations { ids: ordered[1..].to_vec() }]);
     let result = block_on(app.backend.ask(requests[0].clone()));
     let _ = app.update(answer_of(&requests[0], result));
     assert!(app.conversations.iter().all(|c| !ordered.contains(&c.id)));
