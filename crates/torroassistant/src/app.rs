@@ -183,6 +183,9 @@ pub const RENAME: &str = "assistant-rename";
 /// The section AI of the window's own settings (issue #410), where accounts are added and their
 /// models turned on.
 pub const AI_PAGE: &str = settings::AI_SECTION;
+
+/// The most of an answer the window sends to be read aloud (issue #745): what `assistant.speak` takes.
+const SPEAK_MOST: usize = 20_000;
 /// The section Voice of the window's settings, where speech recognition is set up (issue #699).
 pub const VOICE_PAGE: &str = "voice";
 
@@ -619,6 +622,8 @@ pub struct App {
     pub(crate) read_aloud: bool,
     /// The answer being read aloud now, by its number; [■] shows at it.
     pub(crate) reading: Option<u64>,
+    /// The conversation of [`App::reading`]: numbers count per conversation.
+    reading_in: Option<String>,
     /// New answers that came while the window watches and are not complete yet: each is read once
     /// it is.
     to_read: HashSet<u64>,
@@ -736,6 +741,7 @@ impl App {
             voice_asked: false,
             read_aloud: open == Some(Open::Reading),
             reading: (open == Some(Open::Reading)).then_some(demo::READ_ANSWER),
+            reading_in: (open == Some(Open::Reading)).then(|| demo::TOOLS.to_string()),
             to_read: HashSet::new(),
             ready_to_read: None,
             dictation: if open == Some(Open::Dictating) { Dictation::Recording } else { Dictation::Idle },
@@ -1638,6 +1644,12 @@ impl App {
         self.following = false;
         match loaded {
             Ok((summary, entries)) => {
+                // Answer numbers count per conversation: what waited to be read was the one before's,
+                // and what reads stops (issue #745).
+                self.to_read.clear();
+                self.ready_to_read = None;
+                let elsewhere = self.reading.is_some() && self.reading_in.as_deref() != Some(id.as_str());
+                let stopped = if elsewhere { self.stop_reading() } else { Task::none() };
                 // An open conversation answers with its own bot (or the assistant).
                 self.bot = summary.bot.clone();
                 self.transcript = Transcript::new(summary, entries);
@@ -1650,7 +1662,7 @@ impl App {
                 }
                 self.choose_default();
                 let scroll = self.scroll_to_hit(&id).unwrap_or_else(|| self.scroll_to_newest());
-                Task::batch([self.fetch_approvals(), self.fetch_cards(), scroll])
+                Task::batch([self.fetch_approvals(), self.fetch_cards(), scroll, stopped])
             }
             Err(refusal) if refusal.code == "not-found" => self.gone(),
             Err(refusal) => {
@@ -2130,10 +2142,20 @@ impl App {
     /// new one replaces the one being read: the core stops it.
     fn read_ready(&mut self) -> Task<Message> {
         let Some((seq, text)) = self.ready_to_read.take() else { return Task::none() };
-        if !self.read_aloud || self.is_glance() {
+        // "Hey Torro" speaks the answers of its conversation itself, after "Speak answers": read
+        // here as well, the two would interrupt each other.
+        let spoken = self
+            .transcript
+            .summary
+            .as_ref()
+            .is_some_and(|summary| summary.title == crate::voice::listen::voice_title());
+        if !self.read_aloud || self.is_glance() || spoken {
             return Task::none();
         }
         self.reading = Some(seq);
+        self.reading_in = self.current.clone();
+        // At most what the core takes; it reads the first 3000 characters anyway.
+        let text: String = text.chars().take(SPEAK_MOST).collect();
         self.ask(Request::Speak { text }, move |result| Message::Read(seq, result.map(drop)))
     }
 

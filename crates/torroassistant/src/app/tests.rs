@@ -1772,6 +1772,18 @@ fn a_new_answer_is_read_aloud_once_it_is_complete() {
     let _ = app.update(Message::Read(2, Ok(())));
     assert_eq!(app.reading, None);
 
+    // The conversation of "Hey Torro": the listener speaks its answers, the window does not.
+    let mut spoken = answering();
+    spoken.read_aloud = true;
+    if let Some(summary) = spoken.transcript.summary.as_mut() {
+        summary.title = crate::voice::listen::voice_title().to_string();
+    }
+    sent(&mut spoken);
+    let mut summary = head(&spoken, 2, false);
+    summary.title = crate::voice::listen::voice_title().to_string();
+    let _ = spoken.update(Message::Followed(id_of(&spoken), Ok((summary, vec![answer_entry(2, "Hi.")]))));
+    assert!(!sent(&mut spoken).iter().any(|request| matches!(request, Request::Speak { .. })));
+
     // Off: a new answer is only shown.
     let mut quiet = answering();
     sent(&mut quiet);

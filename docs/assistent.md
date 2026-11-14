@@ -829,7 +829,9 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
   das erste Vorlesen (einige GB, ca. 10 s Laden).
 - **Chatfenster:** Der Lautsprecher links vom Mikrofon schaltet `voice.read_aloud` (anfangs aus). Eine neue
   Antwort wird vorgelesen, sobald sie fertig ist; [■] an ihr und der Lautsprecher aus beenden das Vorlesen
-  sofort. „Speak answers“ bleibt der eigene Schalter für „Hey Torro“.
+  sofort. „Speak answers“ bleibt der eigene Schalter für „Hey Torro“: Der Hörer spricht die Antworten seiner
+  Unterhaltung „Voice“ selbst über `assistant.speak`, das Chatfenster liest diese Unterhaltung deshalb nicht noch
+  einmal vor. Wechselt das Fenster die Unterhaltung, endet das Vorlesen.
 - **Technisch:** Der Dienst hält den Helfer `torroassistant --speak` am Laufen (JSON-Zeilen, ein Auftrag
   zugleich, nach zehn Minuten ohne Auftrag beendet er sich und gibt den Grafikspeicher frei). Qwen rechnet
   im Helfer in Python, der Ton geht roh an `paplay`, `pw-play`, `aplay`, `play` oder `ffplay`. Den Ton von
