@@ -268,6 +268,8 @@ impl RawPlayer {
             }
             RawKind::PwPlay => {
                 vec![
+                    // Raw sound, no file container to look for (`-a`).
+                    "--raw".into(),
                     "--format".into(),
                     "s16".into(),
                     "--rate".into(),
@@ -448,19 +450,21 @@ fn raw_player(finder: &Finder) -> Option<RawPlayer> {
 /// `faster-qwen3-tts` (only looked up, not imported: that would load PyTorch for seconds).
 fn qwen_python_in(finder: &Finder) -> Option<PathBuf> {
     if let Some(folder) = &finder.folder {
+        // The environment counts only once the package is in it: `pip install` may have failed.
         let own = qwen_python(&qwen_folder(folder));
-        if own.is_file() {
+        if own.is_file() && finds_module(&own, "faster_qwen3_tts") {
             return Some(own);
         }
     }
     finder.program(&["python3", "python"]).filter(|python| finds_module(python, "faster_qwen3_tts"))
 }
 
-/// Whether `python` finds the module `name` without importing it.
+/// Whether `python` finds the module `name` without importing it, isolated (`-I`) as the speech
+/// helper starts it, so a package only the user's own site has is not counted.
 fn finds_module(python: &Path, name: &str) -> bool {
     let script = format!("import importlib.util, sys; sys.exit(importlib.util.find_spec('{name}') is None)");
     Command::new(python)
-        .args(["-c", &script])
+        .args(["-I", "-c", &script])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -660,10 +664,18 @@ pub mod tests {
         let found = Found::detect(&finder, &Voice::default());
         assert_eq!(found.raw_player.map(|player| player.kind), Some(RawKind::Play));
         assert!(found.qwen_python.is_none());
+        // An environment without the package does not count; with it, it does (a fake Python that
+        // answers like `find_spec`).
         let python = qwen_python(&qwen_folder(folder.path()));
-        fs::create_dir_all(python.parent().expect("bin")).expect("venv");
-        fs::write(&python, b"").expect("python");
-        assert_eq!(Found::detect(&finder, &Voice::default()).qwen_python, Some(python));
+        let bin = python.parent().expect("bin");
+        fs::create_dir_all(bin).expect("venv");
+        #[cfg(unix)]
+        {
+            fake_program(bin, "python", "exit 1");
+            assert!(Found::detect(&finder, &Voice::default()).qwen_python.is_none(), "pip install failed");
+            fake_program(bin, "python", "case \"$3\" in *faster_qwen3_tts*) exit 0 ;; esac; exit 1");
+            assert_eq!(Found::detect(&finder, &Voice::default()).qwen_python, Some(python));
+        }
         let setup = qwen_setup(&qwen_folder(folder.path()));
         assert!(setup.contains("-m venv") && setup.ends_with(QWEN_PACKAGES), "{setup}");
     }

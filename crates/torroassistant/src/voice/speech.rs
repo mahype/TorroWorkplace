@@ -152,7 +152,10 @@ pub enum Input {
 /// What to read and how ([`Input::Say`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Say {
-    pub provider: SpeechProvider,
+    /// `None` for the core's choice: Qwen where it is set up and the card is fast enough (a model is
+    /// named), else Piper (decision 1 of the plan of issue #745). The helper decides, since it knows
+    /// what is installed without starting itself again.
+    pub provider: Option<SpeechProvider>,
     pub text: String,
     /// The voice's id (Qwen); `None` for the recommended one.
     pub voice: Option<String>,
@@ -175,7 +178,10 @@ impl Input {
         }
         let text = |value: &Value, key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
         if let Some(say) = value.get("say") {
-            let provider = serde_json::from_value(say.get("provider")?.clone()).ok()?;
+            let provider = match say.get("provider") {
+                None | Some(Value::Null) => None,
+                Some(provider) => Some(serde_json::from_value(provider.clone()).ok()?),
+            };
             return Some(Input::Say(Say {
                 provider,
                 text: text(say, "text").unwrap_or_default(),
@@ -601,15 +607,19 @@ enum Job {
         playback: Option<Playback>,
         ended: bool,
     },
-    /// Piper's file plays.
+    /// Piper writes its file (`synth`), which then plays.
     Piper {
-        playback: Playback,
+        synth: Option<(Child, TempWav)>,
+        playback: Option<Playback>,
     },
 }
 
 /// The helper's state: what it found, the Qwen worker and the job.
 pub struct Helper<W: FnMut(Output)> {
     found: Found,
+    /// The settings to look for programs again with, when a job lacks one: installed meanwhile
+    /// (Qwen set up after "Preview" said it was missing). `None` in tests, which bring what is found.
+    voice: Option<Voice>,
     folder: Option<PathBuf>,
     qwen: Option<Qwen>,
     job: Job,
@@ -623,8 +633,26 @@ pub struct Helper<W: FnMut(Output)> {
 }
 
 impl<W: FnMut(Output)> Helper<W> {
-    pub fn new(found: Found, folder: Option<PathBuf>, write: W) -> Helper<W> {
-        Helper { found, folder, qwen: None, job: Job::Idle, next: 0, draining: false, pending: None, write }
+    pub fn new(found: Found, folder: Option<PathBuf>, voice: Option<Voice>, write: W) -> Helper<W> {
+        Helper { found, folder, voice, qwen: None, job: Job::Idle, next: 0, draining: false, pending: None, write }
+    }
+
+    /// The provider that reads `say`: the one named, or the core's choice ([`Say::provider`]).
+    fn provider_of(&self, say: &Say) -> SpeechProvider {
+        say.provider.unwrap_or(match say.model.is_some() && self.found.qwen_python.is_some() {
+            true => SpeechProvider::Qwen,
+            false => SpeechProvider::Piper,
+        })
+    }
+
+    /// Whether what `provider` needs here is missing as found.
+    fn lacks(&self, provider: SpeechProvider) -> bool {
+        let plays = self.found.plays();
+        match provider {
+            SpeechProvider::Qwen => self.found.qwen_python.is_none() || !plays,
+            SpeechProvider::Piper => self.found.piper.is_none() || self.found.voice.is_none() || !plays,
+            SpeechProvider::OpenAi => !plays,
+        }
     }
 
     /// Runs until the core closes the input or [`IDLE`] passes without a job.
@@ -755,7 +783,13 @@ impl<W: FnMut(Output)> Helper<W> {
     /// Starts reading `say`.
     fn say(&mut self, say: Say, sender: &Sender<Event>) {
         let text = speakable_up_to(&say.text, MOST_READ);
-        match say.provider {
+        // Something missing may have been installed since the helper started: look again, once.
+        if self.lacks(self.provider_of(&say))
+            && let Some(voice) = &self.voice
+        {
+            self.found = Found::detect(&Finder::system(), voice);
+        }
+        match self.provider_of(&say) {
             SpeechProvider::OpenAi => {
                 (self.write)(Output::Pieces(pieces(&text, PIECE)));
                 self.job = Job::Stream { playback: None, ended: false };
@@ -767,10 +801,7 @@ impl<W: FnMut(Output)> Helper<W> {
                 Err(failed) => (self.write)(failed),
             },
             SpeechProvider::Piper => match self.piper(&text) {
-                Ok(playback) => {
-                    (self.write)(Output::Playing);
-                    self.job = Job::Piper { playback };
-                }
+                Ok(synth) => self.job = Job::Piper { synth: Some(synth), playback: None },
                 Err(failed) => (self.write)(failed),
             },
         }
@@ -814,12 +845,15 @@ impl<W: FnMut(Output)> Helper<W> {
         Ok(())
     }
 
-    /// Piper reads `text` into a file, which then plays.
-    fn piper(&self, text: &str) -> Result<Playback, Output> {
+    /// Starts Piper reading `text` into a file; it plays once Piper is done ([`Helper::look_at_the_end`]),
+    /// and a stop meanwhile ends Piper.
+    fn piper(&self, text: &str) -> Result<(Child, TempWav), Output> {
         let (Some(piper), Some(voice)) = (&self.found.piper, &self.found.voice) else {
             return Err(Output::failed("unsupported", tr("Piper is not installed or has no voice.")));
         };
-        let Some(player) = &self.found.player else { return Err(no_player()) };
+        if self.found.player.is_none() {
+            return Err(no_player());
+        }
         let file = TempWav::empty();
         let mut child = Command::new(piper)
             .arg("--model")
@@ -832,14 +866,10 @@ impl<W: FnMut(Output)> Helper<W> {
             .spawn()
             .map_err(|err| Output::failed("error", format!("piper: {err}")))?;
         if let Some(mut input) = child.stdin.take() {
-            // Piper reads a line at a time.
+            // Piper reads a line at a time; its input closes here, so it ends after the line.
             let _ = writeln!(input, "{}", text.replace(['\n', '\r'], " "));
         }
-        let status = child.wait().map_err(|err| Output::failed("error", format!("piper: {err}")))?;
-        if !status.success() {
-            return Err(Output::failed("error", format!("piper ended with {status}")));
-        }
-        Playback::file(player, file)
+        Ok((child, file))
     }
 
     /// Ends what is read now; a Qwen job still computing is told to stop.
@@ -849,6 +879,10 @@ impl<W: FnMut(Output)> Helper<W> {
         {
             let told = writeln!(qwen.input, "stop {}", self.next).and_then(|()| qwen.input.flush());
             self.draining = told.is_ok();
+        }
+        if let Job::Piper { synth: Some((child, _)), .. } = &mut self.job {
+            let _ = child.kill();
+            let _ = child.wait();
         }
         // Dropping the playback kills the player.
         self.job = Job::Idle;
@@ -866,11 +900,30 @@ impl<W: FnMut(Output)> Helper<W> {
 
     /// A job whose sound is all there and has played is done.
     fn look_at_the_end(&mut self) {
+        // Piper wrote its file: it plays now.
+        if let Job::Piper { synth, playback } = &mut self.job
+            && let Some((child, _)) = synth
+            && !matches!(child.try_wait(), Ok(None))
+        {
+            let written = child.try_wait().ok().flatten().is_some_and(|status| status.success());
+            let started = match (synth.take(), &self.found.player) {
+                (Some((_, file)), Some(player)) if written => Playback::file(player, file),
+                _ => Err(Output::failed("error", tr("Piper could not read the text."))),
+            };
+            match started {
+                Ok(started) => {
+                    *playback = Some(started);
+                    (self.write)(Output::Playing);
+                }
+                Err(failed) => return self.fail(failed),
+            }
+        }
         let done = match &mut self.job {
             Job::Idle => false,
             Job::Qwen { playback: Some(playback), computed: true, .. }
             | Job::Stream { playback: Some(playback), ended: true } => playback.ended(),
-            Job::Piper { playback } => playback.ended(),
+            Job::Piper { playback: Some(playback), .. } => playback.ended(),
+            Job::Piper { .. } => false,
             Job::Qwen { .. } | Job::Stream { .. } => false,
         };
         if done {
@@ -899,7 +952,7 @@ pub fn serve(voice: Voice) {
         }
         let _ = lines.send(Event::Closed);
     });
-    let mut helper = Helper::new(found, finder.folder, |output: Output| {
+    let mut helper = Helper::new(found, finder.folder, Some(voice), |output: Output| {
         let mut out = std::io::stdout();
         // When the core no longer reads, it ended; so does the helper.
         if writeln!(out, "{}", output.line()).and_then(|()| out.flush()).is_err() {
@@ -919,7 +972,7 @@ mod tests {
     #[test]
     fn lines_go_both_ways() {
         let say = Input::Say(Say {
-            provider: SpeechProvider::Qwen,
+            provider: Some(SpeechProvider::Qwen),
             text: "Hello.".into(),
             voice: Some("calm_man".into()),
             model: Some("Qwen/Qwen3-TTS-12Hz-0.6B-Base".into()),
@@ -991,13 +1044,13 @@ mod tests {
     fn helper(found: Found) -> (Helper<impl FnMut(Output)>, Said) {
         let said = Rc::new(RefCell::new(Vec::new()));
         let log = Rc::clone(&said);
-        let helper = Helper::new(found, None, move |output| log.borrow_mut().push(output));
+        let helper = Helper::new(found, None, None, move |output| log.borrow_mut().push(output));
         (helper, said)
     }
 
     fn say(provider: SpeechProvider, text: &str) -> Event {
         Event::Input(Input::Say(Say {
-            provider,
+            provider: Some(provider),
             text: text.into(),
             voice: None,
             model: None,
@@ -1070,6 +1123,53 @@ mod tests {
             helper.look_at_the_end();
         }
         assert_eq!(said.borrow().last(), Some(&Output::Done), "played to its end");
+    }
+
+    /// Without a provider named the helper chooses: Qwen where it is found and a model is named,
+    /// else Piper.
+    #[test]
+    fn the_core_s_choice_is_qwen_where_it_is_set_up_else_piper() {
+        let auto = |model: Option<&str>| Say {
+            provider: None,
+            text: "Hello.".into(),
+            voice: None,
+            model: model.map(str::to_string),
+            language: "English".into(),
+        };
+        let (bare, _) = helper(Found::default());
+        assert_eq!(bare.provider_of(&auto(Some("Qwen/Qwen3-TTS-12Hz-1.7B-Base"))), SpeechProvider::Piper);
+        let (set_up, _) = helper(Found { qwen_python: Some(PathBuf::from("python3")), ..Found::default() });
+        assert_eq!(set_up.provider_of(&auto(Some("Qwen/Qwen3-TTS-12Hz-1.7B-Base"))), SpeechProvider::Qwen);
+        assert_eq!(set_up.provider_of(&auto(None)), SpeechProvider::Piper, "no card fast enough");
+        assert_eq!(
+            Input::parse(r#"{"say": {"provider": null, "text": "Hi"}}"#)
+                .map(|input| matches!(input, Input::Say(Say { provider: None, .. }))),
+            Some(true)
+        );
+    }
+
+    /// Piper writes its file outside the loop: a stop meanwhile ends it at once and nothing plays.
+    #[cfg(unix)]
+    #[test]
+    fn a_stop_ends_piper_while_it_writes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let piper = super::super::programs::tests::fake_program(dir.path(), "piper", "sleep 20");
+        let player = super::super::programs::tests::fake_program(dir.path(), "aplay", "exit 0");
+        let found = Found {
+            piper: Some(piper),
+            voice: Some(dir.path().join("de_DE-thorsten-medium.onnx")),
+            player: Some(Player { program: player, powershell: false }),
+            ..Found::default()
+        };
+        let (sender, _events) = mpsc::channel();
+        let (mut helper, said) = helper(found);
+        helper.handle(say(SpeechProvider::Piper, "Hello."), &sender);
+        assert!(said.borrow().is_empty(), "nothing plays while Piper writes");
+        let started = std::time::Instant::now();
+        helper.handle(Event::Input(Input::Stop), &sender);
+        assert!(started.elapsed() < Duration::from_secs(5), "the stop does not wait for Piper");
+        assert_eq!(said.borrow().as_slice(), [Output::Done]);
+        assert!(matches!(helper.job, Job::Idle));
     }
 
     /// A Qwen job stopped while it computes drops its remaining sound; the next one waits for its end.

@@ -9180,6 +9180,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Piper hat noch keine Stimme: Leg eine in den Sprachordner.",
     ),
     ("Piper is not installed.", "Piper ist nicht installiert."),
+    ("Piper could not read the text.", "Piper konnte den Text nicht vorlesen."),
     ("Piper is not installed or has no voice.", "Piper ist nicht installiert oder hat keine Stimme."),
     ("Qwen3-TTS could not read the text.", "Qwen3-TTS konnte den Text nicht vorlesen."),
     ("Qwen3-TTS could not start: {reason}", "Qwen3-TTS ließ sich nicht starten: {reason}"),
