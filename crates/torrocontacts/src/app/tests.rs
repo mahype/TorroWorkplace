@@ -38,8 +38,8 @@ async fn opened(app: &mut App, uid: &str) -> String {
 async fn the_views_filter_the_list() {
     let mut app = loaded(&["--demo"]).await;
     assert!(app.loaded && app.error.is_none());
-    assert_eq!(app.shown().len(), 40);
-    assert_eq!(app.rows().len(), 40, "one group each in the demo");
+    assert_eq!(app.shown().len(), 41);
+    assert_eq!(app.rows().len(), 41, "one group each in the demo");
     let _ = app.update(Message::Show(View::Favorites));
     assert_eq!(app.shown().len(), 5);
     let _ = app.update(Message::Show(View::Book(torro_contacts::demo::TEAM.into())));
@@ -69,7 +69,7 @@ async fn the_states_after_loading() {
 async fn a_later_failure_keeps_the_list() {
     let mut app = loaded(&["--demo"]).await;
     let _ = app.update(Message::Loaded(app.load_asked, Err(torro_contacts::ContactsError::Offline)));
-    assert_eq!(app.contacts.len(), 40);
+    assert_eq!(app.contacts.len(), 41);
     assert!(app.error.is_none());
     assert!(app.notice.is_some());
 }
@@ -87,7 +87,7 @@ async fn the_search_takes_the_answer_to_what_is_typed() {
     assert!(shown.contains(&"Anna Berg".to_owned()), "{shown:?}");
     assert_eq!(app.cursor.as_deref(), app.rows().first().map(String::as_str));
     let _ = app.update(Message::Search(String::new()));
-    assert_eq!(app.shown().len(), 40);
+    assert_eq!(app.shown().len(), 41);
     // A pause that ended after another key asks nothing.
     let stale = app.search_asked;
     let _ = app.update(Message::Search("x".into()));
@@ -100,9 +100,9 @@ async fn heads_fold_and_the_grouping_changes() {
     let mut app = loaded(&["--demo"]).await;
     let _ = app.update(Message::Fold(Key::Group("Work".into())));
     assert!(app.folded(&Key::Group("Work".into())));
-    assert!(app.rows().len() < 40);
+    assert!(app.rows().len() < 41);
     let _ = app.update(Message::Fold(Key::Group("Work".into())));
-    assert_eq!(app.rows().len(), 40);
+    assert_eq!(app.rows().len(), 41);
     let _ = app.update(Message::GroupBy(GroupBy::City));
     assert_eq!(app.group_by, GroupBy::City);
     assert!(!app.folded(&Key::Group("Work".into())), "folds belong to their grouping");
@@ -240,7 +240,7 @@ async fn the_cursor_reaches_every_contact_when_one_stands_under_two_groups() {
     let rows = app.rows();
     let unique: HashSet<&String> = rows.iter().collect();
     assert_eq!(rows.len(), unique.len(), "each contact once");
-    assert_eq!(rows.len(), 40);
+    assert_eq!(rows.len(), 41);
     for _ in 0..rows.len() {
         let _ = app.update(Message::Key(Press::Down));
     }
@@ -374,7 +374,7 @@ async fn an_older_load_never_overwrites_a_newer() {
     let old = app.load_asked;
     let _ = app.load();
     let _ = app.update(Message::Loaded(old, Ok(backend::Loaded::default())));
-    assert_eq!(app.contacts.len(), 40, "the older answer is dropped");
+    assert_eq!(app.contacts.len(), 41, "the older answer is dropped");
 }
 
 #[tokio::test]

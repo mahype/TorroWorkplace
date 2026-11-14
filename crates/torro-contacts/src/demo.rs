@@ -4,21 +4,27 @@
 //! two address books, "Contacts" (writable) and "Team" (shared with us, read-only), with 40
 //! contacts in three groups, five favourites, pictures and initials, birthdays in the next 14 days
 //! around "today", one contact in conflict and one changed offline, and addresses in several
-//! countries with coordinates (`GEO`) for the map of a later stage.
+//! countries with coordinates (`GEO`) for the map of a later stage. Anna Berg is kept twice, once as
+//! "Anna B." with the same address and number written otherwise: the duplicates to merge (issue
+//! #726).
 //!
 //! The sample content is data, not text of the suite, so it is not translated (as in
 //! `torro_pim::demo`).
 
+use std::collections::HashSet;
 use std::sync::{Mutex, MutexGuard};
 
 use chrono::{Datelike, Days, Local, NaiveDate};
 
+use crate::duplicates;
 use crate::model::{
-    AddressBook, Birthday, Contact, ContactFields, ContactPage, ContactQuery, ContactState, FieldKind, Geo, Group,
-    Keep, Labeled, Moved, Name, PartialDate, PhotoRef, PhotoSize, PostalAddress, book_of, contact_id,
+    AddressBook, Birthday, Contact, ContactFields, ContactPage, ContactQuery, ContactState, DuplicateGroup, FieldKind,
+    Geo, Group, Imported, Keep, Labeled, Merged, Moved, Name, PartialDate, PhotoRef, PhotoSize, PostalAddress, book_of,
+    contact_id,
 };
 use crate::provider::ContactsError;
 use crate::source::ContactsSource;
+use crate::vcard;
 
 /// The account of the sample.
 pub const ACCOUNT: &str = "nextcloud:anna@cloud.example.org";
@@ -26,6 +32,8 @@ pub const ACCOUNT: &str = "nextcloud:anna@cloud.example.org";
 pub const CONTACTS: &str = "nextcloud:anna@cloud.example.org/contacts";
 /// The read-only book shared with the account.
 pub const TEAM: &str = "nextcloud:anna@cloud.example.org/team";
+/// The numbers of the sample are German: the trunk prefix 0 means +49 ([`duplicates::country_code`]).
+const COUNTRY: Option<&str> = Some("49");
 
 #[derive(Debug, Default)]
 struct Data {
@@ -33,6 +41,8 @@ struct Data {
     contacts: Vec<Contact>,
     recent: Vec<String>,
     next: u64,
+    /// Pairs said to be different people ([`duplicates::pair`]).
+    dismissed: HashSet<(String, String)>,
 }
 
 impl Data {
@@ -92,7 +102,10 @@ impl DemoSource {
     /// The sample with birthdays around `today`.
     pub fn new(today: NaiveDate) -> DemoSource {
         let (books, contacts) = sample(today);
-        DemoSource { data: Mutex::new(Data { books, contacts, recent: Vec::new(), next: 100 }), today }
+        DemoSource {
+            data: Mutex::new(Data { books, contacts, recent: Vec::new(), next: 100, dismissed: HashSet::new() }),
+            today,
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, Data> {
@@ -325,6 +338,141 @@ impl ContactsSource for DemoSource {
             }
         }
     }
+
+    async fn import_vcards(
+        &self,
+        book: String,
+        data: Option<String>,
+        path: Option<String>,
+        dry_run: bool,
+    ) -> Result<Imported, ContactsError> {
+        // The demo reads no files: the app reads the one chosen and sends its text.
+        let (Some(text), None) = (data, path) else {
+            return Err(ContactsError::Other("Send the cards as `data`.".into()));
+        };
+        let mut store = self.lock();
+        if !store.book(&book)?.writable {
+            return Err(ContactsError::ReadOnly);
+        }
+        let mut imported = Imported::default();
+        let mut new: Vec<Contact> = Vec::new();
+        for raw in vcard::split(&text) {
+            let card = match vcard::read(&raw) {
+                Ok(card) if vcard::group_card(&raw).is_none() && !card.shown_name().is_empty() => card,
+                _ => {
+                    imported.skipped += 1;
+                    continue;
+                }
+            };
+            let known = store.contacts.iter().chain(&new).any(|held| {
+                (held.book == book && !card.uid.is_empty() && held.uid == card.uid)
+                    || !duplicates::same_person(&card, held, COUNTRY).is_empty()
+            });
+            if known {
+                imported.duplicates += 1;
+                continue;
+            }
+            imported.created += 1;
+            let uid = if card.uid.is_empty() {
+                format!("demo-new-{}", store.next + new.len() as u64)
+            } else {
+                card.uid.clone()
+            };
+            new.push(Contact { id: contact_id(&book, &uid), book: book.clone(), uid, untrusted: true, ..card });
+        }
+        if !dry_run {
+            for contact in new {
+                store.contacts.push(contact);
+                let at = store.contacts.len() - 1;
+                store.save(at);
+            }
+        }
+        Ok(imported)
+    }
+
+    async fn export_vcards(
+        &self,
+        book: Option<String>,
+        group: Option<String>,
+        ids: Vec<String>,
+    ) -> Result<(String, u32), ContactsError> {
+        let data = self.lock();
+        if let Some(book) = &book {
+            data.book(book)?;
+        }
+        let chosen: Vec<&Contact> = if ids.is_empty() {
+            data.contacts
+                .iter()
+                .filter(|c| book.as_ref().is_none_or(|b| *b == c.book))
+                .filter(|c| group.as_ref().is_none_or(|g| c.groups.contains(g)))
+                .collect()
+        } else {
+            ids.iter().map(|id| data.find(id).map(|at| &data.contacts[at])).collect::<Result<_, _>>()?
+        };
+        // The demo keeps no vCards: each contact is written anew.
+        let mut text = String::new();
+        for contact in &chosen {
+            let (raw, _) = vcard::new_vcard(&contact.uid, &ContactFields::of(contact), vcard::Version::V3)
+                .map_err(|err| ContactsError::Other(err.to_string()))?;
+            text.push_str(&raw);
+        }
+        Ok((text, u32::try_from(chosen.len()).unwrap_or(u32::MAX)))
+    }
+
+    async fn find_duplicates(&self, book: Option<String>) -> Result<Vec<DuplicateGroup>, ContactsError> {
+        let data = self.lock();
+        if let Some(book) = &book {
+            data.book(book)?;
+        }
+        let contacts: Vec<Contact> =
+            data.contacts.iter().filter(|c| book.as_ref().is_none_or(|b| *b == c.book)).cloned().collect();
+        Ok(duplicates::find(&contacts, COUNTRY, &data.dismissed))
+    }
+
+    async fn merge_contacts(
+        &self,
+        ids: Vec<String>,
+        etags: Vec<String>,
+        keep: String,
+    ) -> Result<Merged, ContactsError> {
+        let mut data = self.lock();
+        if ids.len() < 2 || ids.len() != etags.len() || !ids.contains(&keep) {
+            return Err(ContactsError::Other("Name two or more contacts with their etags, keep among them.".into()));
+        }
+        for (id, etag) in ids.iter().zip(&etags) {
+            data.writable(id, Some(etag))?;
+        }
+        let others: Vec<Contact> = ids
+            .iter()
+            .filter(|id| **id != keep)
+            .map(|id| data.find(id).map(|at| data.contacts[at].clone()))
+            .collect::<Result<_, _>>()?;
+        let at = data.find(&keep)?;
+        let mut merged = duplicates::merged(&data.contacts[at], &others, COUNTRY);
+        merged.favorite = merged.favorite || others.iter().any(|o| o.favorite);
+        if merged.photo.is_none() {
+            merged.photo = others.iter().find_map(|o| o.photo.clone());
+        }
+        data.contacts[at] = merged;
+        let contact = data.save(at);
+        let gone: Vec<String> = others.into_iter().map(|o| o.id).collect();
+        data.contacts.retain(|c| !gone.contains(&c.id));
+        data.recent.retain(|r| !gone.contains(r));
+        Ok(Merged { contact, left: Vec::new() })
+    }
+
+    async fn dismiss_duplicates(&self, ids: Vec<String>) -> Result<(), ContactsError> {
+        let mut data = self.lock();
+        for id in &ids {
+            data.find(id)?;
+        }
+        for (n, a) in ids.iter().enumerate() {
+            for b in &ids[n + 1..] {
+                data.dismissed.insert(duplicates::pair(a, b));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A square PNG of one colour, `edge` pixels wide: the demo's pictures.
@@ -513,6 +661,26 @@ pub fn sample(today: NaiveDate) -> (Vec<AddressBook>, Vec<Contact>) {
         conflict.state = ContactState::Conflict;
         conflict.server = Some(Box::new(server));
     }
+    // Anna Berg once more, kept by hand from a business card: the duplicates to merge (issue #726).
+    if let Some(anna) = contacts.iter().find(|c| c.uid == "demo-01").cloned() {
+        let mut twin = Contact {
+            id: contact_id(CONTACTS, "demo-41"),
+            uid: "demo-41".into(),
+            display_name: "Anna B.".into(),
+            name: Name { family: "B.".into(), given: "Anna".into(), ..Name::default() },
+            org: None,
+            title: None,
+            photo: None,
+            birthday: None,
+            favorite: false,
+            groups: vec!["Friends".into()],
+            etag: Some("\"demo-41\"".into()),
+            ..anna
+        };
+        twin.phones = vec![Labeled::new("0171 2345678".to_string(), FieldKind::Home)];
+        twin.emails[0].kind = FieldKind::Home;
+        contacts.push(twin);
+    }
     // One changed offline, not yet on the server.
     if let Some(pending) = contacts.iter_mut().find(|c| c.uid == "demo-08") {
         pending.title = Some("Head of Research".into());
@@ -540,7 +708,7 @@ mod tests {
         let books = demo.address_books(None).await.expect("books");
         assert_eq!(books.len(), 2);
         assert_eq!(books.iter().filter(|b| !b.writable).count(), 1);
-        assert_eq!(books.iter().map(|b| b.count).sum::<u32>(), 40);
+        assert_eq!(books.iter().map(|b| b.count).sum::<u32>(), 41);
         assert_eq!(
             demo.list_groups(None)
                 .await
@@ -590,7 +758,7 @@ mod tests {
             })
             .await
             .expect("page");
-        assert_eq!(second.contacts.len(), 25);
+        assert_eq!(second.contacts.len(), 26);
         assert_eq!(second.next_cursor, None);
     }
 
@@ -632,6 +800,42 @@ mod tests {
         assert_eq!(kept.len(), 2);
         demo.delete_contact(changed.id.clone(), changed.etag.clone().expect("etag")).await.expect("delete");
         assert_eq!(demo.get_contact(changed.id).await, Err(ContactsError::NotFound));
+    }
+
+    /// Issues #725 and #726: the demo imports without duplicates, exports, finds Anna Berg twice,
+    /// forgets a pair said to be two people, and merges.
+    #[tokio::test]
+    async fn import_export_and_duplicates_work_in_memory() {
+        let demo = demo();
+        let file = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:New Person\r\nEMAIL:new@example.org\r\nEND:VCARD\r\n\
+                    BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Anna\r\nEMAIL:ANNA.BERG@example.org\r\nEND:VCARD\r\n\
+                    BEGIN:VCARD\r\nVERSION:3.0\r\nNOTE:nobody\r\nEND:VCARD\r\n";
+        let preview = demo.import_vcards(CONTACTS.into(), Some(file.into()), None, true).await.expect("preview");
+        assert_eq!(preview, Imported { created: 1, duplicates: 1, skipped: 1 });
+        assert_eq!(demo.address_books(None).await.expect("books").iter().map(|b| b.count).sum::<u32>(), 41);
+        assert_eq!(demo.import_vcards(CONTACTS.into(), Some(file.into()), None, false).await, Ok(preview));
+        let again = demo.import_vcards(CONTACTS.into(), Some(file.into()), None, false).await.expect("again");
+        assert_eq!((again.created, again.duplicates), (0, 2), "nothing twice");
+        assert_eq!(demo.import_vcards(TEAM.into(), Some(file.into()), None, true).await, Err(ContactsError::ReadOnly));
+
+        let (text, count) =
+            demo.export_vcards(Some(CONTACTS.into()), Some("Work".into()), Vec::new()).await.expect("export");
+        assert_eq!(vcard::split(&text).len(), count as usize);
+        assert!(count > 0);
+
+        let groups = demo.find_duplicates(None).await.expect("duplicates");
+        assert_eq!(groups.len(), 1, "{groups:?}");
+        let ids: Vec<String> = groups[0].contacts.iter().map(|c| c.id.clone()).collect();
+        assert_eq!(ids[0], contact_id(CONTACTS, "demo-01"), "the fuller contact first");
+        demo.dismiss_duplicates(ids.clone()).await.expect("dismiss");
+        assert!(demo.find_duplicates(None).await.expect("none").is_empty());
+
+        let demo = super::DemoSource::new(NaiveDate::from_ymd_opt(2026, 10, 28).expect("date"));
+        let etags: Vec<String> = groups[0].contacts.iter().map(|c| c.etag.clone().expect("etag")).collect();
+        let merged = demo.merge_contacts(ids.clone(), etags, ids[0].clone()).await.expect("merged");
+        assert_eq!(merged.contact.display_name, "Anna Berg");
+        assert!(merged.contact.groups.contains(&"Friends".to_string()));
+        assert_eq!(demo.get_contact(ids[1].clone()).await, Err(ContactsError::NotFound));
     }
 
     #[test]

@@ -14,7 +14,7 @@ use std::sync::Arc;
 use torro_contacts::demo::DemoSource;
 use torro_contacts::{
     AddressBook, Birthday, Contact, ContactFields, ContactPage, ContactQuery, ContactSummary, ContactsError,
-    ContactsSource, Group, Keep, Moved, PhotoSize,
+    ContactsSource, DuplicateGroup, Group, Imported, Keep, Merged, Moved, PhotoSize,
 };
 use torro_ipc::contacts::{ContactsClient, MAX_BIRTHDAY_DAYS};
 use torro_ipc::{Request, Response};
@@ -176,6 +176,69 @@ impl ContactsSource for Backend {
             Backend::Demo(demo) => demo.resolve_conflict(id, keep, etag).await,
         }
     }
+
+    /// The demo reads no files: the app reads the one chosen for it and sends its text.
+    async fn import_vcards(
+        &self,
+        book: String,
+        data: Option<String>,
+        path: Option<String>,
+        dry_run: bool,
+    ) -> Result<Imported, ContactsError> {
+        match self {
+            Backend::Core(client) => client.import_vcards(book, data, path, dry_run).await,
+            Backend::Demo(demo) => {
+                let data = match (data, path) {
+                    (None, Some(path)) => Some(
+                        String::from_utf8_lossy(
+                            &std::fs::read(&path).map_err(|err| ContactsError::Other(err.to_string()))?,
+                        )
+                        .into_owned(),
+                    ),
+                    (data, _) => data,
+                };
+                demo.import_vcards(book, data, None, dry_run).await
+            }
+        }
+    }
+
+    async fn export_vcards(
+        &self,
+        book: Option<String>,
+        group: Option<String>,
+        ids: Vec<String>,
+    ) -> Result<(String, u32), ContactsError> {
+        match self {
+            Backend::Core(client) => client.export_vcards(book, group, ids).await,
+            Backend::Demo(demo) => demo.export_vcards(book, group, ids).await,
+        }
+    }
+
+    async fn find_duplicates(&self, book: Option<String>) -> Result<Vec<DuplicateGroup>, ContactsError> {
+        match self {
+            Backend::Core(client) => client.find_duplicates(book).await,
+            Backend::Demo(demo) => demo.find_duplicates(book).await,
+        }
+    }
+
+    async fn merge_contacts(
+        &self,
+        ids: Vec<String>,
+        etags: Vec<String>,
+        keep: String,
+    ) -> Result<Merged, ContactsError> {
+        match self {
+            Backend::Core(client) => client.merge_contacts(ids, etags, keep).await,
+            Backend::Demo(demo) => demo.merge_contacts(ids, etags, keep).await,
+        }
+    }
+
+    async fn dismiss_duplicates(&self, ids: Vec<String>) -> Result<(), ContactsError> {
+        match self {
+            Backend::Core(client) => client.dismiss_duplicates(ids).await,
+            Backend::Demo(demo) => demo.dismiss_duplicates(ids).await,
+        }
+    }
 }
 
 /// What the window shows, as one load brought it.
@@ -246,7 +309,7 @@ mod tests {
     async fn a_load_brings_every_page_and_the_extras() {
         let loaded = load(demo_backend()).await.expect("load");
         assert_eq!(loaded.books.len(), 2);
-        assert_eq!(loaded.contacts.len(), 40, "both books, every contact");
+        assert_eq!(loaded.contacts.len(), 41, "both books, every contact");
         assert!(!loaded.birthdays.is_empty());
         assert!(loaded.recent.is_empty(), "nothing used yet");
         assert!(loaded.contacts.iter().any(|c| !c.groups.is_empty()), "groups come with the list");
@@ -256,7 +319,7 @@ mod tests {
     async fn pages_are_joined() {
         let backend = demo_backend();
         let all = all_pages(&backend, ContactQuery::default()).await.expect("all");
-        assert_eq!(all.len(), 40);
+        assert_eq!(all.len(), 41);
         let found = search(backend.clone(), "Berg".into()).await.expect("search");
         assert!(found.iter().any(|id| id.ends_with("demo-01")), "{found:?}");
         backend.mark_used(found[0].clone()).await.expect("used");

@@ -1703,6 +1703,73 @@ pub enum Request {
     /// read-only book).
     #[serde(rename = "contacts.resolve_conflict")]
     ResolveContactConflict { id: String, keep: torro_contacts::Keep, etag: String },
+    /// Imports the cards of a `.vcf` file into `book` (issue #725, [`Response::ContactsImported`]):
+    /// the file's text in `data`, or the file at `path` (an absolute path to a file, no link, at most
+    /// [`contacts::MAX_IMPORT_BYTES`]; only the suite's own apps, for files larger than a request). A
+    /// card of a person in the address books already – the same UID in `book`, or the same mail
+    /// address, number, or name with company as a contact of a book not hidden, of `book` or of an
+    /// earlier card of the file – is left out, never merged in; a card that does not read, has no
+    /// name, mail address or number, or is a group card is skipped. Every card new is kept as the file
+    /// wrote it (a UID added where it has none) and written to the server. With `dry_run` nothing is
+    /// written and the answer says what would be. Codes: `error` (neither or both of `data` and
+    /// `path`, a file that cannot be read, more than [`contacts::MAX_IMPORT_CARDS`] cards: nothing is
+    /// written then), `forbidden` (`path` from a client), `not-found` (a book the client does not
+    /// reach), `unsupported` (a read-only book).
+    #[serde(rename = "contacts.import_vcards")]
+    ImportVCards {
+        /// The address book to import into.
+        book: String,
+        /// The text of the `.vcf` file.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<String>,
+        /// The file to read instead (the suite's apps only).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        /// Only count what would happen; write nothing.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        dry_run: bool,
+    },
+    /// The contacts as vCards, one after the other, each exactly as stored (issue #725,
+    /// [`Response::VCards`]): the contacts `ids`, else the group `group` of `book`, else `book`, else
+    /// every book the client reaches that is not hidden. Codes: `not-found` (a book or contact the
+    /// client does not reach), `error` (`group` without `book`, more than
+    /// [`contacts::MAX_IMPORT_CARDS`] ids). The cards are `untrusted`: text of other people.
+    #[serde(rename = "contacts.export_vcards")]
+    ExportVCards {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        book: Option<String>,
+        /// Only this group of `book`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group: Option<String>,
+        /// Only these contacts.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        ids: Vec<String>,
+    },
+    /// Contacts that look like one person (issue #726, [`Response::ContactDuplicates`]): the same mail
+    /// address, the same number however written, or the same name with the same company; an address
+    /// or number more than three contacts share does not count, and contacts said to be different
+    /// people (`contacts.dismiss_duplicates`) stay apart. Only in the books the client reaches that are
+    /// not hidden, or in `book` (which may be a hidden one). Code `not-found` for a book the client
+    /// does not reach. Every contact is `untrusted`.
+    #[serde(rename = "contacts.find_duplicates")]
+    FindDuplicates {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        book: Option<String>,
+    },
+    /// Merges contacts into the one `keep` (issue #726, [`Response::ContactsMerged`]): it keeps its
+    /// own name, company and other single fields, takes what is empty there from the others, and gets
+    /// their mail addresses, numbers, addresses, links and groups (never as the preferred ones); then
+    /// the others are deleted on the server, which cannot be undone. `ids` are 2 to 20 contacts with
+    /// `keep` among them, `etags` their versions in the same order. Codes: `not-found`, `conflict`
+    /// (one changed meanwhile: reload), `unsupported` (a read-only book, one in conflict, groups of a
+    /// book that keeps them as cards), `error`.
+    #[serde(rename = "contacts.merge_contacts")]
+    MergeContacts { ids: Vec<String>, etags: Vec<String>, keep: String },
+    /// Notes that the contacts `ids` (2 to 20) are different people (issue #726): no pair of them is a
+    /// duplicate any more. Kept on this device only. Code `not-found` for a contact the client does not
+    /// reach.
+    #[serde(rename = "contacts.dismiss_duplicates")]
+    DismissDuplicates { ids: Vec<String> },
 
     // Chat (`docs/chat.md`, issue #643): conversations and messages of the person's chat accounts,
     // Nextcloud Talk first.
@@ -2616,6 +2683,30 @@ pub enum Request {
         /// [`SUGGESTION_NOTES_MAX`] characters, else `error`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         notes: Option<String>,
+    },
+    /// Saves the sender of the mail entry `id` as a contact in `book` (issue #727,
+    /// [`Response::ContactFromItem`]), as "Save as contact" in the inbox app does; with a vCard
+    /// attached to the mail ("Add contact": the first attachment of type `text/vcard` or
+    /// `text/x-vcard`, or named `*.vcf`, at most 1 MB) the contact is made of its first card instead.
+    /// A person in the address books already (the sender's address in a book not hidden, the vCard as
+    /// `contacts.import_vcards` finds duplicates) is not made twice: the answer then names that
+    /// contact with `created: false`. `id` may also be an `m:…` id of a mail without an entry. The
+    /// entry stays as it is.
+    ///
+    /// The command is granted in the area `inbox` (Write), but it writes a contact too, so the core
+    /// checks the client's contacts rights itself, in this order: write access in `contacts`
+    /// (`forbidden`, named as `contacts.create_contact`), then the book (`not-found` for one the
+    /// client does not reach), then the entry (`not-found` for an unknown id or a mail the client may
+    /// not read, `unsupported` for an entry that is no mail). It waits for a person's approval when the
+    /// client's `confirm` asks for it on writes ([`Response::Pending`]); the core checks everything
+    /// again when it runs. Errors as for `contacts.create_contact` (`unsupported` for a read-only
+    /// book, `error` for a vCard that does not read).
+    #[serde(rename = "inbox.create_contact_from_item")]
+    CreateContactFromItem {
+        /// The entry's id from `inbox.list_items`, or an `m:…` id of a mail.
+        id: String,
+        /// The address book's id from `contacts.list_address_books`.
+        book: String,
     },
     /// Asks an AI what task the entry `id` asks for (issue #120, the sparkles in the inbox app's
     /// dialog of "Make task"): answered with [`Response::TaskSuggestion`] – a title, a note, the due
@@ -5424,6 +5515,21 @@ pub enum Response {
     ContactsResolved {
         contacts: Vec<torro_contacts::Contact>,
     },
+    /// What [`Request::ImportVCards`] did, or would do with `dry_run`.
+    ContactsImported(torro_contacts::Imported),
+    /// The cards of [`Request::ExportVCards`], one after the other as stored, and how many.
+    VCards {
+        data: String,
+        count: u32,
+    },
+    /// The groups of [`Request::FindDuplicates`].
+    ContactDuplicates {
+        groups: Vec<torro_contacts::DuplicateGroup>,
+    },
+    /// What [`Request::MergeContacts`] did.
+    ContactsMerged(Box<torro_contacts::Merged>),
+    /// The contact of [`Request::CreateContactFromItem`]: new, or the one there already.
+    ContactFromItem(Box<torro_contacts::FromItem>),
     /// The conversations of [`Request::ChatListConversations`], the most recent first.
     ChatConversations {
         conversations: Vec<torro_chat::Conversation>,
