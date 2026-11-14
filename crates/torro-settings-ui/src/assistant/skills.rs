@@ -4,7 +4,7 @@
 //!
 //! The section's own page lists the skills (`assistant.list_skills`, names and descriptions only),
 //! each with "Edit" and "Delete" (`assistant.delete_skill`, after asking); "Add skill" in the header
-//! bar. "Edit" fetches the text first (`assistant.get_skill` as an [`Action::Ask`]: the list holds no
+//! bar. Under the list [`super::page`] sets the group Tools ([`super::tools`], issue #763). "Edit" fetches the text first (`assistant.get_skill` as an [`Action::Ask`]: the list holds no
 //! texts) and opens the page below the section, where name, description and text are typed and
 //! saved with the suite's save bar (`assistant.save_skill`, with `replaces` for a skill that is
 //! changed). The editor closes as it is sent: the section never sees the answer, and the host shows
