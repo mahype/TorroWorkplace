@@ -6,6 +6,11 @@
 //! the voice folder `<data>/torroassistant/voice/` ([`voice_folder`]): `ggml-*.bin` for
 //! whisper.cpp, `*.onnx` with its `*.onnx.json` for Piper, `hey_torro.onnx` (or `.tflite`) for
 //! openWakeWord.
+//!
+//! Reading aloud (issue #745, [`super::speech`]) also needs Qwen3-TTS: the Python package
+//! `faster-qwen3-tts` in the folder's own environment `<voice>/qwen/venv` ([`qwen_folder`]), set up
+//! with [`qwen_setup`], or in a Python on `PATH`. Sound is best played raw from a pipe ([`RawPlayer`]),
+//! so the first words play while the rest is computed.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -22,6 +27,38 @@ pub const WAKE_MODEL: &str = "hey_torro";
 /// a home directory.
 pub fn voice_folder() -> Option<PathBuf> {
     AppPaths::for_app(AppId::ASSISTANT).map(|paths| paths.data.join("voice"))
+}
+
+/// The folder of Qwen3-TTS in the voice folder: its Python environment `venv` and the voice
+/// templates (`warm_woman.wav`).
+pub fn qwen_folder(folder: &Path) -> PathBuf {
+    folder.join("qwen")
+}
+
+/// The Python of the environment in `qwen` ([`qwen_folder`]).
+pub fn qwen_python(qwen: &Path) -> PathBuf {
+    if cfg!(windows) {
+        qwen.join("venv").join("Scripts").join("python.exe")
+    } else {
+        qwen.join("venv").join("bin").join("python")
+    }
+}
+
+/// The versions that run together (14 November 2026): `faster-qwen3-tts` 0.5.4 did not load with
+/// `transformers` 5.23.0.
+pub const QWEN_PACKAGES: &str = "faster-qwen3-tts==0.5.4 transformers==5.15.1";
+
+/// The command that sets up Qwen3-TTS in `qwen` ([`qwen_folder`]), for people to copy: a Python
+/// environment of its own with [`QWEN_PACKAGES`]. The models load at the first answer.
+pub fn qwen_setup(qwen: &Path) -> String {
+    let venv = qwen.join("venv");
+    let quoted = |path: &Path| format!("\"{}\"", path.display());
+    let (python, pip) = if cfg!(windows) {
+        ("python", venv.join("Scripts").join("pip.exe"))
+    } else {
+        ("python3", venv.join("bin").join("pip"))
+    };
+    format!("{python} -m venv {} && {} install {QWEN_PACKAGES}", quoted(&venv), quoted(&pip))
 }
 
 /// Where programs and files are looked for.
@@ -177,6 +214,103 @@ impl Player {
     }
 }
 
+/// A program that plays raw sound from its standard input (issue #745): signed 16-bit little endian,
+/// mono, at a rate it is told. Plays while the sound still comes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawKind {
+    /// PulseAudio's and PipeWire's `paplay` (Linux).
+    Paplay,
+    /// PipeWire's `pw-play` (Linux).
+    PwPlay,
+    /// ALSA's `aplay` (Linux).
+    Aplay,
+    /// SoX's `play`, every system.
+    Play,
+    /// `ffplay` of ffmpeg, every system.
+    Ffplay,
+}
+
+impl RawKind {
+    /// The kinds to try on this system, best first.
+    fn order() -> &'static [RawKind] {
+        if cfg!(target_os = "linux") {
+            &[RawKind::Paplay, RawKind::PwPlay, RawKind::Aplay, RawKind::Play, RawKind::Ffplay]
+        } else {
+            &[RawKind::Play, RawKind::Ffplay]
+        }
+    }
+
+    fn binary(self) -> &'static str {
+        match self {
+            RawKind::Paplay => "paplay",
+            RawKind::PwPlay => "pw-play",
+            RawKind::Aplay => "aplay",
+            RawKind::Play => "play",
+            RawKind::Ffplay => "ffplay",
+        }
+    }
+}
+
+/// A [`RawKind`] found at its path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawPlayer {
+    pub kind: RawKind,
+    pub program: PathBuf,
+}
+
+impl RawPlayer {
+    /// The command line that plays raw sound at `rate` from standard input and ends at its end.
+    pub fn command(&self, rate: u32) -> Vec<String> {
+        let mut command = vec![self.program.to_string_lossy().into_owned()];
+        let words: Vec<String> = match self.kind {
+            RawKind::Paplay => {
+                vec!["--raw".into(), "--format=s16le".into(), format!("--rate={rate}"), "--channels=1".into()]
+            }
+            RawKind::PwPlay => {
+                vec![
+                    "--format".into(),
+                    "s16".into(),
+                    "--rate".into(),
+                    rate.to_string(),
+                    "--channels".into(),
+                    "1".into(),
+                    "-".into(),
+                ]
+            }
+            RawKind::Aplay => {
+                vec![
+                    "-q".into(),
+                    "-t".into(),
+                    "raw".into(),
+                    "-f".into(),
+                    "S16_LE".into(),
+                    "-r".into(),
+                    rate.to_string(),
+                    "-c".into(),
+                    "1".into(),
+                ]
+            }
+            RawKind::Play => {
+                let mut words: Vec<String> = ["-q", "-t", "raw", "-r"].map(String::from).to_vec();
+                words.push(rate.to_string());
+                words.extend(["-e", "signed-integer", "-b", "16", "-c", "1", "-"].map(String::from));
+                words
+            }
+            RawKind::Ffplay => {
+                let mut words: Vec<String> =
+                    ["-hide_banner", "-loglevel", "error", "-nodisp", "-autoexit", "-f", "s16le", "-ar"]
+                        .map(String::from)
+                        .to_vec();
+                words.push(rate.to_string());
+                words.extend(["-ac", "1", "-i", "-"].map(String::from));
+                words
+            }
+        };
+        command.extend(words);
+        command
+    }
+}
+
 /// What the listener can use now, as found by [`Found::detect`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Found {
@@ -198,6 +332,10 @@ pub struct Found {
     pub player: Option<Player>,
     /// `pactl` or `arecord`, to list the microphones (Linux).
     pub lister: Option<PathBuf>,
+    /// A program that plays raw sound as it comes (issue #745).
+    pub raw_player: Option<RawPlayer>,
+    /// A Python with `faster-qwen3-tts` (issue #745): the one of [`qwen_folder`], else one on `PATH`.
+    pub qwen_python: Option<PathBuf>,
 }
 
 impl Found {
@@ -233,7 +371,14 @@ impl Found {
             voice: piper_voice,
             player: player(finder),
             lister: finder.program(&["pactl", "arecord"]).filter(|_| cfg!(target_os = "linux")),
+            raw_player: raw_player(finder),
+            qwen_python: qwen_python_in(finder),
         }
+    }
+
+    /// Whether some program plays sound, raw or from a file.
+    pub fn plays(&self) -> bool {
+        self.raw_player.is_some() || self.player.is_some()
     }
 
     /// Every part as `settings.voice_status` reports it, in the order of [`VoicePart`].
@@ -290,6 +435,37 @@ fn player(finder: &Finder) -> Option<Player> {
         let program = finder.program(&[name])?;
         Some(Player { program, powershell: *name == "powershell" })
     })
+}
+
+/// The first program that plays raw sound on this system.
+fn raw_player(finder: &Finder) -> Option<RawPlayer> {
+    RawKind::order()
+        .iter()
+        .find_map(|&kind| finder.program(&[kind.binary()]).map(|program| RawPlayer { kind, program }))
+}
+
+/// The Python of the Qwen environment when it is there, else a Python on `PATH` that has
+/// `faster-qwen3-tts` (only looked up, not imported: that would load PyTorch for seconds).
+fn qwen_python_in(finder: &Finder) -> Option<PathBuf> {
+    if let Some(folder) = &finder.folder {
+        let own = qwen_python(&qwen_folder(folder));
+        if own.is_file() {
+            return Some(own);
+        }
+    }
+    finder.program(&["python3", "python"]).filter(|python| finds_module(python, "faster_qwen3_tts"))
+}
+
+/// Whether `python` finds the module `name` without importing it.
+fn finds_module(python: &Path, name: &str) -> bool {
+    let script = format!("import importlib.util, sys; sys.exit(importlib.util.find_spec('{name}') is None)");
+    Command::new(python)
+        .args(["-c", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// Whether `python` can import openWakeWord: it is installed (`pip install openwakeword`).
@@ -464,6 +640,32 @@ pub mod tests {
         let alsa =
             "null\n    Discard all samples\ndefault\n    Default Audio Device\nhw:CARD=NTUSB,DEV=0\n    NT-USB\n";
         assert_eq!(alsa_devices(alsa), ["default", "hw:CARD=NTUSB,DEV=0"]);
+    }
+
+    /// Issue #745: raw players get the rate and read standard input; Qwen is found in its own
+    /// environment first.
+    #[test]
+    fn raw_players_read_their_input_at_the_rate() {
+        let paplay = RawPlayer { kind: RawKind::Paplay, program: PathBuf::from("paplay") };
+        assert_eq!(paplay.command(24_000).join(" "), "paplay --raw --format=s16le --rate=24000 --channels=1");
+        let play = RawPlayer { kind: RawKind::Play, program: PathBuf::from("play") };
+        assert!(play.command(22_050).join(" ").ends_with("-r 22050 -e signed-integer -b 16 -c 1 -"));
+        let ffplay = RawPlayer { kind: RawKind::Ffplay, program: PathBuf::from("ffplay") };
+        assert!(ffplay.command(24_000).ends_with(&["-ac", "1", "-i", "-"].map(String::from)));
+
+        let path = tempfile::tempdir().expect("temp dir");
+        let folder = tempfile::tempdir().expect("voice folder");
+        fake_program(path.path(), "play", "exit 0");
+        let finder = Finder { dirs: vec![path.path().to_path_buf()], folder: Some(folder.path().to_path_buf()) };
+        let found = Found::detect(&finder, &Voice::default());
+        assert_eq!(found.raw_player.map(|player| player.kind), Some(RawKind::Play));
+        assert!(found.qwen_python.is_none());
+        let python = qwen_python(&qwen_folder(folder.path()));
+        fs::create_dir_all(python.parent().expect("bin")).expect("venv");
+        fs::write(&python, b"").expect("python");
+        assert_eq!(Found::detect(&finder, &Voice::default()).qwen_python, Some(python));
+        let setup = qwen_setup(&qwen_folder(folder.path()));
+        assert!(setup.contains("-m venv") && setup.ends_with(QWEN_PACKAGES), "{setup}");
     }
 
     #[test]
