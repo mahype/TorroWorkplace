@@ -16,9 +16,9 @@ Scripts and other programs use the API with a key from Torro Workplace › "API 
 
 ## Rights
 
-Rights are set per area: no access, read, read and write, or full; narrower per command and for chosen calendars, lists, repositories, inbox sources and mail accounts. What a client may not see behaves as if it were not there. Each app's gear › "API and MCP" shows the rights of all keys and agents for that app.
+Rights are set per area: "None", "Read", "Write" or "Full"; narrower per command and for chosen calendars, lists, repositories, inbox sources and mail accounts. What a client may not see behaves as if it were not there. The settings of Calendar, Tasks, Mail, the Notification Hub and the Assistant have a section "API and MCP" with the rights of all keys and agents for that app.
 
-"Approve before" sets when a change waits for you: never, on delete (the default) or on every change. Sending mail out has its own setting: never, with approval (the default) or free.
+"Approval" › "Ask first" sets when a change waits for you: "Never", "On delete" (the default) or "On every change". Sending mail has its own row, "Send on my behalf": "Never", "Ask me each time" (the default) or "Always".
 
 ## Approvals
 
