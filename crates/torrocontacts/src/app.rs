@@ -254,7 +254,7 @@ pub enum Message {
     /// `contacts.mark_used` answered; nothing to show either way.
     Used,
     /// The maps of the version `id|etag` of the open contact (issue #355): what the settings say.
-    MapSettings(String, backend::Shown),
+    MapSettings(String, Option<backend::Shown>),
     /// Where its address number `usize` is (`contacts.locate_contact`), or the core's error code.
     Located(String, usize, Result<ContactLocation, String>),
     /// The picture of the map of its address number `usize`, `None` when it cannot be had.
@@ -1478,18 +1478,21 @@ impl App {
         }
     }
 
-    /// With maps off every address says so and nothing is asked; else the first address is located.
-    fn map_settings(&mut self, key: &str, shown: backend::Shown) -> Task<Message> {
+    /// With maps off every address says so and nothing is asked; without an answer of the core the
+    /// maps are not available; else the first address is located.
+    fn map_settings(&mut self, key: &str, shown: Option<backend::Shown>) -> Task<Message> {
         if self.maps_for(key).is_none() {
             return Task::none();
         }
-        if !shown.maps {
-            if let Some(detail) = &mut self.detail {
-                detail.maps.iter_mut().for_each(|map| *map = AddressMap::MapsOff);
-            }
-            return Task::none();
+        let all = match shown {
+            Some(shown) if shown.maps => return self.locate(key, 0),
+            Some(_) => AddressMap::MapsOff,
+            None => AddressMap::Unavailable,
+        };
+        if let Some(detail) = &mut self.detail {
+            detail.maps.iter_mut().for_each(|map| *map = all.clone());
         }
-        self.locate(key, 0)
+        Task::none()
     }
 
     /// Asks where the address number `index` of the open contact is.

@@ -483,6 +483,9 @@ pub struct Ui {
     /// When the app catalog last came ([`Message::AppCatalog`]): outside its section it is asked for
     /// once a minute, for the sidebar's count of updates.
     catalog_at: Option<Instant>,
+    /// The stored map data is to be asked for with the next reload (issue #355): when General opens and
+    /// after "Clear", not with every tick, since the core counts the tiles on disk for it.
+    maps_due: std::cell::Cell<bool>,
     /// The first-run setup while it is open (task W.4): it takes the window instead of the
     /// sections.
     setup: Option<setup::State>,
@@ -683,6 +686,7 @@ impl Ui {
             general: general::State::default(),
             apps: apps::State::default(),
             catalog_at: None,
+            maps_due: std::cell::Cell::new(false),
             setup: None,
             target: None,
         };
@@ -1265,7 +1269,7 @@ impl Ui {
             .as_ref()
             .filter(|setup| setup.step() == setup::Step::Ai)
             .map(|_| (self.data.ai_models_from.clone(), self.data.ai_models.clone()));
-        let maps = self.section == Section::General;
+        let maps = self.section == Section::General && self.maps_due.replace(false);
         let rest = match (self.launch.demo, self.section) {
             (true, _) => Task::none(),
             (false, _) if self.on_documents() => Task::batch([load(true, maps, None), load_catalog()]),
@@ -1388,7 +1392,11 @@ impl Ui {
                     Section::Mcp => mcp::opened(),
                     // The catalog is asked for only while the section is open (task MA.8), the stored map
                     // data likewise (issue #355).
-                    Section::Connections | Section::General => Action::Reload,
+                    Section::Connections => Action::Reload,
+                    Section::General => {
+                        self.maps_due.set(true);
+                        Action::Reload
+                    }
                     // What is new on GitHub (issue #411, decision 2).
                     Section::Apps => apps::opened(&mut self.apps),
                     _ => Action::None,
@@ -1454,7 +1462,10 @@ impl Ui {
                 // The catalog comes apart from the rest ([`Message::Catalog`]): a reload keeps it.
                 let catalog = std::mem::take(&mut self.data.catalog);
                 let app_catalog = std::mem::take(&mut self.data.app_catalog);
+                // The stored map data is asked for only now and then ([`Ui::maps_due`]): a reload keeps it.
+                let maps_status = self.data.maps_status;
                 self.data = *data;
+                self.data.maps_status = self.data.maps_status.or(maps_status);
                 self.data.catalog = catalog;
                 self.data.app_catalog = app_catalog;
                 let mut providers = Task::none();
@@ -1787,7 +1798,12 @@ impl Ui {
             Message::Mcp(m) => mcp::update(&mut self.mcp, m, &self.data),
             Message::Connections(m) => connections::update(&mut self.connections, m, &self.data),
             Message::Approvals(m) => approvals::update(&mut self.approvals, m, &self.data),
-            Message::General(m) => general::update(&mut self.general, m, &self.data),
+            Message::General(m) => {
+                if matches!(m, general::Message::ClearMaps) {
+                    self.maps_due.set(true);
+                }
+                general::update(&mut self.general, m, &self.data)
+            }
             Message::Privacy(m) => Action::Send(torro_settings_ui::privacy::update(m)),
             Message::Apps(m) => apps::update(&mut self.apps, m, &self.data),
         };

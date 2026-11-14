@@ -1711,8 +1711,10 @@ pub enum Request {
     /// to the place search service of the settings (at most [`contacts::MAX_LOOKUP_CHARS`] characters),
     /// and the point is kept on this device. A client never makes the core look up: it gets
     /// `not_looked_up` for an address nobody looked up yet. An address not found is not looked up
-    /// again for [`contacts::LOOKUP_RETRY_DAYS`] days, unless it changes. For the picture ask
-    /// `calendar.map_preview` with the point.
+    /// again for [`contacts::LOOKUP_RETRY_DAYS`] days, unless it changes. What is kept stays readable
+    /// after the switches are turned off (nothing leaves the device for it);
+    /// `settings.clear_maps_cache` removes it. For the picture ask `calendar.map_preview` with the
+    /// point.
     ///
     /// Codes: `not-found` for a contact the client does not reach or an address it does not have;
     /// `busy`, `offline` and `error` of the place search as for `calendar.search_places` (nothing is

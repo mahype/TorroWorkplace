@@ -47,17 +47,15 @@ impl Backend {
         matches!(self, Backend::Demo(_))
     }
 
-    /// What the window reads of the settings ([`Shown`]). A core that does not answer says no to
-    /// everything; the demo shows no hidden books and has maps and the lookup on.
-    pub async fn settings(&self) -> Shown {
-        let Backend::Core(client) = self else { return Shown { hidden_books: false, maps: true, lookup: true } };
+    /// What the window reads of the settings ([`Shown`]); `None` from a core that does not answer.
+    /// The demo shows no hidden books and has maps on.
+    pub async fn settings(&self) -> Option<Shown> {
+        let Backend::Core(client) = self else { return Some(Shown { hidden_books: false, maps: true }) };
         match torro_ipc::client::call(&client.socket, &Request::Settings).await {
-            Ok(Response::Settings { settings }) => Shown {
-                hidden_books: settings.contacts_show_hidden_books,
-                maps: settings.maps.enabled,
-                lookup: settings.maps.contact_lookup,
-            },
-            _ => Shown::default(),
+            Ok(Response::Settings { settings }) => {
+                Some(Shown { hidden_books: settings.contacts_show_hidden_books, maps: settings.maps.enabled })
+            }
+            _ => None,
         }
     }
 
@@ -104,10 +102,9 @@ pub struct Shown {
     /// The person wants the hidden address books (Nextcloud's system address book, "Recently
     /// contacted") in the app: `contacts_show_hidden_books`.
     pub hidden_books: bool,
-    /// Maps and place search are on (`maps.enabled`).
+    /// Maps and place search are on (`maps.enabled`). Whether the lookup of contact addresses is on
+    /// the core answers itself (`no_consent`, issue #355).
     pub maps: bool,
-    /// The lookup of contact addresses is on (`maps.contactLookup`, issue #355).
-    pub lookup: bool,
 }
 
 /// Every call goes to the side the backend stands for.
@@ -264,7 +261,7 @@ pub async fn all_pages(backend: &Backend, mut query: ContactQuery) -> Result<Vec
 /// ([`AddressBook::hidden_by_default`]) come along, with their contacts, only when the settings say so.
 /// Birthdays and the recent list are extras: when they fail, the list still shows.
 pub async fn load(backend: Backend) -> Result<Loaded, ContactsError> {
-    let show_hidden = backend.settings().await.hidden_books;
+    let show_hidden = backend.settings().await.is_some_and(|shown| shown.hidden_books);
     let mut books = backend.address_books(None).await?;
     books.retain(|book| show_hidden || !book.hidden_by_default);
     let shown = |book: &str| books.iter().any(|known| known.id == book);
@@ -321,7 +318,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_demo_shows_no_hidden_books_and_has_maps() {
-        assert_eq!(demo_backend().settings().await, Shown { hidden_books: false, maps: true, lookup: true });
+        assert_eq!(demo_backend().settings().await, Some(Shown { hidden_books: false, maps: true }));
     }
 
     /// Issue #355: the demo places the first address at the contact's `GEO`, opens nothing and has no

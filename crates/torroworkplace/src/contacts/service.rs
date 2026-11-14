@@ -54,6 +54,15 @@ pub struct AddressSpot {
     pub geo: Option<torro_contacts::Geo>,
 }
 
+impl AddressSpot {
+    /// What an approval of `contacts.open_in_maps` is pinned to: a hash of the address's key and the
+    /// contact's `GEO` (first address only), so neither can change unseen; never the address itself.
+    pub fn pin(&self) -> String {
+        let point = self.geo.map(|geo| format!("{},{}", geo.lat, geo.lon)).unwrap_or_default();
+        crate::audit::hashed(&format!("{}|{point}", self.line))
+    }
+}
+
 /// What a command needs of the store before it runs: its contact and the contact's book.
 struct Found {
     card: CardRow,
@@ -932,15 +941,29 @@ impl ContactsService {
     }
 
     /// Keeps the place of `spot`: `point`, or that the service found none, at `at` (seconds since
-    /// 1970).
+    /// 1970). Only while the contact still has that address: a lookup takes a while, and a contact
+    /// deleted or an address changed meanwhile has had its places removed, so keeping it now would
+    /// leave a place behind that nothing removes. Checked under the store's lock, where every change
+    /// of a card runs too.
     pub fn keep_place(&self, spot: &AddressSpot, point: Option<(f64, f64)>, at: i64) -> Result<(), ContactsError> {
-        with(self.store()?, |s| s.put_place(&spot.card, &spot.account, &spot.line, point, at))
+        with(self.store()?, |s| {
+            let still = s.card(&spot.card)?.and_then(|card| vcard::read(&card.vcard).ok()).is_some_and(|contact| {
+                contact.addresses.iter().any(|address| super::store::line_key(&address.value) == spot.line)
+            });
+            if still { s.put_place(&spot.card, &spot.account, &spot.line, point, at) } else { Ok(()) }
+        })
     }
 
     /// The ids of the books `reach` sees, or `None` for the person (every book).
+    /// A client without read access to contacts reaches no book here, whatever its selection says.
     fn place_books(&self, reach: Reach<'_>) -> Result<Option<Vec<String>>, ContactsError> {
         match reach {
             Reach::Suite => Ok(None),
+            Reach::Client(rights)
+                if !rights.area(torro_ipc::api::Area::Contacts).allows(torro_ipc::api::Access::Read) =>
+            {
+                Ok(Some(Vec::new()))
+            }
             Reach::Client(_) => Ok(Some(self.books_within(reach, None)?.into_iter().map(|book| book.id).collect())),
         }
     }

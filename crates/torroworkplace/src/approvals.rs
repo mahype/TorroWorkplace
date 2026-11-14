@@ -3462,6 +3462,22 @@ fn whole(text: &str) -> Vec<String> {
     pieces
 }
 
+/// The lines under the approval of `contacts.open_in_maps` (issue #355): the address as the store
+/// holds it and the app it goes to, so the person sees what leaves the computer.
+pub fn maps_details(address: &torro_contacts::PostalAddress, app: torro_core::settings::MapsApp) -> Vec<String> {
+    use torro_core::settings::MapsApp;
+    let app = match app {
+        MapsApp::Osm => "OpenStreetMap",
+        MapsApp::Google => "Google Maps",
+        MapsApp::Apple => "Apple Maps",
+        MapsApp::Geo => tr("the program for geo: links"),
+    };
+    vec![
+        trf("Address: \"{address}\"", &[("address", &quote(&address.one_line()))]),
+        trf("Opens with {app}", &[("app", &app)]),
+    ]
+}
+
 /// The fingerprint of the stored note a `assistant.forget` or a `remember` with `replaces` was
 /// shown with (task C.10): the hash of its text, so the approved command never changes a note the
 /// person changed meanwhile ([`Approvals::open_with_fingerprint`]). Empty when the note is unknown

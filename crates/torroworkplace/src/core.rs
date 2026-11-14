@@ -329,12 +329,12 @@ fn open_in_browser(url: &str) -> Result<(), String> {
 
 /// Opens a link of "Open in Maps" for `contacts.open_in_maps` (issue #355), as the calendar does
 /// ([`torro_core::maps::maps_link`] builds it): a `geo:` link with the program Linux has for it
-/// (`xdg-open`), anything else in the browser.
+/// (`xdg-open`, started and not waited for: it may run the maps app in the foreground, and the core
+/// must not hold a worker until it closes), anything else in the browser.
 fn open_map_link(url: &str) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     if url.starts_with("geo:") {
-        let status = std::process::Command::new("xdg-open").arg(url).status().map_err(|err| err.to_string())?;
-        return if status.success() { Ok(()) } else { Err(format!("xdg-open ended with {status}")) };
+        return std::process::Command::new("xdg-open").arg(url).spawn().map(|_| ()).map_err(|err| err.to_string());
     }
     webbrowser::open(url).map_err(|err| err.to_string())
 }
@@ -4734,6 +4734,12 @@ impl Core {
         {
             return Ok(refused);
         }
+        // Nor opening an address the contact does not have (issue #355).
+        if let Request::OpenContactInMaps { id, address } = &request
+            && let Err(err) = self.contacts.address_spot(id, *address)
+        {
+            return Ok(crate::contacts::service::error_response(&err));
+        }
         // Nor a move of a category or into a group that is not there (issue #481).
         if let Request::MoveCategory { category, group, position } = &request
             && let Err(refused) = self.inbox.plan_category_move(*category, *group, *position)
@@ -5541,11 +5547,12 @@ impl Core {
                     fingerprint = Some((pinned, crate::approvals::details(&request, &facts)));
                 }
                 // An address opens in maps only as it was when the person allowed it (issue #355): pinned
-                // to the key of its line, never the line itself.
+                // to a hash of its line and point. The details say which address goes to which app.
                 if let Request::OpenContactInMaps { id, address } = &request
                     && let Ok(spot) = self.contacts.address_spot(id, *address)
                 {
-                    fingerprint = Some((spot.line, crate::approvals::details(&request, &facts)));
+                    let app = torro_core::maps::on_this_system(self.settings.current().maps.open_with);
+                    fingerprint = Some((spot.pin(), crate::approvals::maps_details(&spot.address, app)));
                 }
                 // What a target shows (task E8.7a): the subject or title the core holds, looked up
                 // as the client may see it – for a file of the tools (task WZ.8) the register's title.
@@ -13073,7 +13080,7 @@ impl Core {
             Ok(spot) => spot,
             Err(err) => return crate::contacts::service::error_response(&err),
         };
-        if approved.is_some_and(|line| line != spot.line) {
+        if approved.is_some_and(|pin| pin != spot.pin()) {
             let message = "the address changed after the approval was asked for; nothing was opened";
             return refusal("conflict", message.into());
         }
@@ -34798,9 +34805,13 @@ mod tests {
         assert_eq!(core.handle(Request::OpenContactInMaps { id: id("ben"), address: 0 }).await, Response::Ok);
         let opened = OPENED_MAPS.lock().expect("lock").clone();
         assert_eq!(opened, ["https://www.openstreetmap.org/?mlat=53.5458&mlon=9.9672#map=17/53.5458/9.9672"]);
+        let nowhere = Request::OpenContactInMaps { id: id("carl"), address: 9 };
+        assert_eq!(code(&ask(&core, Some(&key), nowhere).await), "not-found", "nobody asked about no address");
         let open = || Request::OpenContactInMaps { id: id("carl"), address: 0 };
         let pending = waits(ask(&core, Some(&key), open()).await);
         assert!(pending.summary.contains("Carl"), "{}", pending.summary);
+        let details = pending.details.join("\n");
+        assert!(details.contains("Lindenweg 3") && details.contains("OpenStreetMap"), "{details}");
         assert_eq!(OPENED_MAPS.lock().expect("lock").len(), 1, "nothing opens before the person allows it");
         let done = approval(ask(&core, Some(&app_key), decide(&pending.id, true)).await);
         assert!(
@@ -34837,6 +34848,27 @@ mod tests {
         let Response::Error { message, .. } = answer else { panic!("an error") };
         assert!(!message.contains("Neuweg"), "{message}");
         assert_eq!(status(core.handle(Request::MapsStatus).await), 2, "secret and ben; carl not kept");
+
+        // A lookup that ends after the address changed keeps nothing (the change removed its places).
+        let spot = core.contacts.address_spot(&id("ben"), 0).expect("ben's address");
+        let Response::Contact { contact: ben } = core.handle(Request::GetContact { id: id("ben") }).await else {
+            panic!("ben")
+        };
+        let gone =
+            torro_contacts::ContactFields { addresses: Some(Vec::new()), ..torro_contacts::ContactFields::default() };
+        let update = Request::UpdateContact { id: id("ben"), etag: ben.etag.clone().unwrap_or_default(), fields: gone };
+        assert!(matches!(core.handle(update).await, Response::Contact { .. }));
+        core.contacts.keep_place(&spot, Some((1.0, 2.0)), 0).expect("kept or not");
+        assert_eq!(status(core.handle(Request::MapsStatus).await), 1, "only secret's place");
+
+        // Without read access to contacts a client counts and clears no place.
+        let mut blind = rights.clone();
+        blind.address_books = Selection::All;
+        blind.areas.remove(&Area::Contacts);
+        assert_eq!(core.clear_maps_cache(Reach::Client(&blind)), Response::Ok);
+        let Response::MapsStatus { status: seen } = core.maps_status(Reach::Client(&blind)) else { panic!("status") };
+        assert_eq!(seen.contact_places, 0);
+        assert_eq!(status(core.handle(Request::MapsStatus).await), 1, "nothing cleared");
     }
 
     /// Issue #351: a client sees contacts only in the address books of its rights – by list, search

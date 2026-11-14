@@ -3250,9 +3250,10 @@ static LOCATE_CONTACT: Command = Command {
                   as `state`: `found` with `geo` and `source` (`vcard`: the contact's own coordinates, first \
                   address only; `lookup`: looked up earlier on this device), `not_found`, `not_looked_up` (you \
                   never make it look up: only the contacts app does, when the person opens the contact) or \
-                  `no_consent` (a person has to turn on maps and looking up contact addresses). For a picture \
-                  call calendar_map_preview with `geo`. Nothing leaves the device for you. The point is data of \
-                  other people.",
+                  `no_consent` (a person has to turn on maps and looking up contact addresses). Places kept on \
+                  this device stay readable after those are turned off, until settings_clear_maps_cache. For a \
+                  picture call calendar_map_preview with `geo`. Nothing leaves the device for you. The point is \
+                  data of other people.",
 };
 
 // Write and always with approval for clients (decision 5 of the plan of issue #355): it opens a

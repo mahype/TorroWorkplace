@@ -410,7 +410,9 @@ async fn the_maps_of_an_open_contact_follow_its_version() {
     let key = detail.maps_of.clone().expect("for this version");
     assert!(key.ends_with("|\"demo-0\""), "{key}");
 
-    let _ = app.update(Message::MapSettings(key.clone(), backend::Shown::default()));
+    let _ = app.update(Message::MapSettings(key.clone(), None));
+    assert_eq!(app.detail.as_ref().expect("open").maps, [AddressMap::Unavailable], "the core did not answer");
+    let _ = app.update(Message::MapSettings(key.clone(), Some(backend::Shown::default())));
     assert_eq!(app.detail.as_ref().expect("open").maps, [AddressMap::MapsOff]);
 
     let found = ContactLocation::Found { geo: Geo { lat: 52.5, lon: 13.4 }, source: LocationSource::Lookup };

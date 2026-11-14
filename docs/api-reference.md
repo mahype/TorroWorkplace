@@ -899,7 +899,7 @@ Settles a contact that changed here and on the server in the same place (`state:
 
 Zugriff `read` · MCP-Tool `contacts_locate_contact`
 
-Says where an address of a contact is (`address`: 0 for the first, as get_contact lists them), as `state`: `found` with `geo` and `source` (`vcard`: the contact's own coordinates, first address only; `lookup`: looked up earlier on this device), `not_found`, `not_looked_up` (you never make it look up: only the contacts app does, when the person opens the contact) or `no_consent` (a person has to turn on maps and looking up contact addresses). For a picture call calendar_map_preview with `geo`. Nothing leaves the device for you. The point is data of other people.
+Says where an address of a contact is (`address`: 0 for the first, as get_contact lists them), as `state`: `found` with `geo` and `source` (`vcard`: the contact's own coordinates, first address only; `lookup`: looked up earlier on this device), `not_found`, `not_looked_up` (you never make it look up: only the contacts app does, when the person opens the contact) or `no_consent` (a person has to turn on maps and looking up contact addresses). Places kept on this device stay readable after those are turned off, until settings_clear_maps_cache. For a picture call calendar_map_preview with `geo`. Nothing leaves the device for you. The point is data of other people.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|

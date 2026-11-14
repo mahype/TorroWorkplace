@@ -167,7 +167,8 @@ von `walkers` (egui): Kachel-Mathematik, Laden mit Cache, Widget aus `canvas` un
      vorbehalten (`Request::kept_for_people`); ausschalten darf jeder mit Admin-Recht.
    - **Ins Netz gehen nur der Kern für die App** (App-Schlüssel), beim Öffnen eines Kontakts (#355). Für Clients
      antwortet `contacts.locate_contact` nur aus `GEO` und den gemerkten Orten. Nicht Gefundenes fragt der Kern
-     30 Tage lang nicht wieder, außer die Adresse ändert sich. Der Kern
+     30 Tage lang nicht wieder, außer die Adresse ändert sich. Gemerkte Orte bleiben nach dem Ausschalten lesbar,
+     bis „Clear“ unter „Stored map data“ sie löscht. Der Kern
      nimmt keinen Freitext an, nur Adressfelder gespeicherter Kontakte.
    - **Restweg, ehrlich benannt:** Ein Agent mit Schreibrecht kann einen Kontakt mit erfundener
      „Adresse“ anlegen, die der Hintergrund dann sucht. Das ist ein langsamer Kanal (1/s, nur
