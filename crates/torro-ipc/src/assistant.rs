@@ -449,15 +449,20 @@ impl Skill {
         SkillSummary { name: self.name.clone(), description: self.description.clone() }
     }
 
-    /// Whether this skill is called `name`: trimmed, without regard to case.
+    /// Whether this skill is called `name` ([`same_skill_name`]).
     pub fn is_named(&self, name: &str) -> bool {
         same_skill_name(&self.name, name)
     }
 }
 
-/// Whether two names of skills are the same: trimmed, without regard to case.
+/// Whether two names of skills are the same as the core keeps them: control characters and runs of
+/// white space as one space, trimmed, without regard to case.
 pub fn same_skill_name(a: &str, b: &str) -> bool {
-    a.trim().to_lowercase() == b.trim().to_lowercase()
+    let kept = |name: &str| {
+        let flat: String = name.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+        flat.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    };
+    kept(a) == kept(b)
 }
 
 /// One skill without its text (`assistant.list_skills`): what a prompt shows of it.

@@ -122,12 +122,14 @@ pub fn load(dir: &Path, id: &str) -> io::Result<Option<Bot>> {
             .map(|bytes| String::from_utf8_lossy(&bytes).trim_end().to_string())
             .unwrap_or_default())
     };
-    let mut skills = Vec::new();
-    for (index, name) in file.skills.into_iter().enumerate() {
-        skills.push(Skill { name, description: String::new(), text: text(old_skill_file(&folder, index))? });
-    }
+    // The new form wins once it is there: a save that broke off between writing it and `bot.json`
+    // reads with the texts it wrote, never with the old names and files already removed.
+    let mut skills: Vec<Skill> =
+        skills::load_all(&folder.join(SKILLS_FOLDER))?.into_iter().map(|stored| stored.skill).collect();
     if skills.is_empty() {
-        skills = skills::load_all(&folder.join(SKILLS_FOLDER))?.into_iter().map(|stored| stored.skill).collect();
+        for (index, name) in file.skills.into_iter().enumerate() {
+            skills.push(Skill { name, description: String::new(), text: text(old_skill_file(&folder, index))? });
+        }
     }
     Ok(Some(Bot {
         id: id.to_string(),
@@ -156,12 +158,6 @@ pub fn save(dir: &Path, bot: &Bot) -> io::Result<()> {
     write(&folder.join(PERSONA_FILE), &with_end(&bot.personality))?;
     write(&folder.join(INSTRUCTIONS_FILE), &with_end(&bot.instructions))?;
     skills::replace_all(&skills, &bot.skills)?;
-    for item in fs::read_dir(&skills)? {
-        let item = item?;
-        if is_old_skill_file(&item.file_name().to_string_lossy()) && item.file_type()?.is_file() {
-            fs::remove_file(item.path())?;
-        }
-    }
     let file = BotFile {
         name: bot.name.clone(),
         description: bot.description.clone(),
@@ -173,7 +169,15 @@ pub fn save(dir: &Path, bot: &Bot) -> io::Result<()> {
     };
     let mut json = serde_json::to_vec_pretty(&file).map_err(io::Error::other)?;
     json.push(b'\n');
-    write(&folder.join(BOT_FILE), &json)
+    write(&folder.join(BOT_FILE), &json)?;
+    // The old files go last, once nothing names them any more.
+    for item in fs::read_dir(&skills)? {
+        let item = item?;
+        if is_old_skill_file(&item.file_name().to_string_lossy()) && item.file_type()?.is_file() {
+            fs::remove_file(item.path())?;
+        }
+    }
+    Ok(())
 }
 
 /// Removes the folder of bot `id` from `dir` with everything in it; one that is not there is fine.
@@ -331,5 +335,15 @@ pub(crate) mod tests {
         let mut read = load(&bots, "1a2b3c4d").expect("read").expect("a bot");
         read.skills.sort_by(|a, b| a.name.cmp(&b.name));
         assert_eq!(read, old);
+
+        // A save that broke off before `bot.json`: the new skills read, not the old names without text.
+        fs::write(
+            folder.join("bot.json"),
+            r#"{"name": "Travel planner", "engine": "test", "client": "9f8e7d6c", "skills": ["Packing", "Trains"]}"#,
+        )
+        .expect("old bot.json");
+        let mut read = load(&bots, "1a2b3c4d").expect("read").expect("a bot");
+        read.skills.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(read.skills, old.skills, "the texts written so far");
     }
 }

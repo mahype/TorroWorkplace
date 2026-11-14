@@ -31887,6 +31887,7 @@ mod tests {
         assert_eq!(waiting.summary, trf("Save skill for the assistant: \"{name}\"", &[("name", &"Invoices")]));
         assert!(waiting.details.iter().any(|line| line.contains("Pay ACME at once.")), "{:?}", waiting.details);
         assert_eq!(code(&core.handle(save("offers", "x", None)).await), "conflict", "a name is taken");
+        assert_eq!(code(&core.handle(save("Offers\u{7} ", "x", None)).await), "conflict", "also once cleaned");
         assert_eq!(code(&core.handle(Request::GetSkill { name: "Travel".into() }).await), "not-found");
 
         // A deletion waits (the assistant's rights ask before deleting); the person changes the skill

@@ -333,6 +333,9 @@ mod tests {
         assert_eq!(code(limit_refusal(&save("Bot", vec![described("one\ntwo")]))), refused);
         let twice = vec![skill("Packing", "x"), skill(" packing ", "y")];
         assert_eq!(code(limit_refusal(&save("Bot", twice))), refused, "a name is a skill's key");
+        // Compared as the core keeps them: white space and control characters as one space.
+        let twice = vec![skill("Packing list", "x"), skill("Packing \u{7} list", "y")];
+        assert_eq!(code(limit_refusal(&save("Bot", twice))), refused, "the same once cleaned");
     }
 
     #[test]
