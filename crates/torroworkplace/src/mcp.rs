@@ -4716,6 +4716,8 @@ mod tests {
                 ("assistant_rename_conversation", json!({"id": CONVERSATION, "title": "Renamed"})),
                 ("assistant_delete_conversation", json!({"id": CONVERSATION})),
                 ("assistant_pin_conversation", json!({"id": CONVERSATION, "pinned": true})),
+                ("assistant_archive_conversations", json!({"ids": [CONVERSATION], "archived": true})),
+                ("assistant_delete_conversations", json!({"ids": [CONVERSATION]})),
                 ("assistant_open_window", json!({"window": "new"})),
                 ("assistant_get_profile", json!({})),
                 ("assistant_update_profile", json!({"name": "Jarvis"})),

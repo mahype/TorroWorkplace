@@ -720,6 +720,11 @@ impl Assistant {
             now,
         );
         let mut lines = if new { vec![conversation.started()] } else { Vec::new() };
+        // A message brings an archived conversation back (issue #697): it is in use again.
+        if conversation.archived {
+            lines.push(Line::Archived { archived: false });
+            conversation.apply(Line::Archived { archived: false });
+        }
         lines.push(Line::Entry { entry: entry.clone() });
         if let Err(message) = self.write(&conversation.id, lines).await {
             return failure(message);
@@ -994,8 +999,64 @@ impl Assistant {
         Response::Ok
     }
 
+    /// `assistant.archive_conversations` (issue #697): every id is checked first, so one unknown changes
+    /// nothing. Doubles and conversations already in that state are skipped; an answer that runs goes on.
+    /// A file that cannot be written stops there: the ones before keep their new state.
+    pub async fn archive(&self, ids: &[String], archived: bool) -> Response {
+        let mut state = self.state().await;
+        if let Some(id) = ids.iter().find(|id| !state.conversations.contains_key(id.as_str())) {
+            return unknown(id);
+        }
+        let mut seen = BTreeSet::new();
+        for id in ids {
+            if !seen.insert(id.as_str()) || state.conversations.get(id).is_some_and(|c| c.archived == archived) {
+                continue;
+            }
+            let line = Line::Archived { archived };
+            if let Err(message) = self.write(id, vec![line.clone()]).await {
+                return failure(message);
+            }
+            if let Some(conversation) = state.conversations.get_mut(id) {
+                conversation.apply(line);
+            }
+        }
+        Response::Ok
+    }
+
+    /// `assistant.delete_conversations` (issue #697): every id is checked first, so one unknown deletes
+    /// nothing; then each goes as with [`Assistant::delete`], its answer stopped. A file that cannot be
+    /// removed keeps its conversation, the others stay deleted, and the answer is `error` with how many are
+    /// left.
+    pub async fn delete_many(&self, ids: &[String]) -> Response {
+        if let Some(id) = {
+            let state = self.state().await;
+            ids.iter().find(|id| !state.conversations.contains_key(id.as_str())).cloned()
+        } {
+            return unknown(&id);
+        }
+        let mut seen = BTreeSet::new();
+        let mut left = 0;
+        for id in ids {
+            if !seen.insert(id.as_str()) {
+                continue;
+            }
+            match self.delete(id).await {
+                Response::Ok => {}
+                // Deleted meanwhile by another client: gone all the same.
+                Response::Error { code, .. } if code == "not-found" => {}
+                _ => left += 1,
+            }
+        }
+        match left {
+            0 => Response::Ok,
+            n => {
+                Response::Error { code: "error".into(), message: format!("{n} of the conversations cannot be deleted") }
+            }
+        }
+    }
+
     /// Removes every conversation whose last entry is older than `retention` at `now`, except the
-    /// pinned ones and those answering (decision 8). Answers how many went; one whose file cannot
+    /// pinned and archived ones (issue #697) and those answering (decision 8). Answers how many went; one whose file cannot
     /// be removed stays and is named on stderr.
     ///
     /// Then drops the tool results older than [`store::RESULT_HOURS`] from every conversation not
@@ -1012,7 +1073,7 @@ impl Assistant {
             let expired: Vec<String> = state
                 .conversations
                 .values()
-                .filter(|c| !c.pinned && c.updated() < oldest && !state.running.contains_key(&c.id))
+                .filter(|c| !c.pinned && !c.archived && c.updated() < oldest && !state.running.contains_key(&c.id))
                 .map(|c| c.id.clone())
                 .collect();
             for id in expired {
@@ -1529,6 +1590,8 @@ pub async fn answer_from(
         Request::RenameConversation { id, title } => assistant.rename(&id, &title).await,
         Request::DeleteConversation { id } => assistant.delete(&id).await,
         Request::PinConversation { id, pinned } => assistant.pin(&id, pinned).await,
+        Request::ArchiveConversations { ids, archived } => assistant.archive(&ids, archived).await,
+        Request::DeleteConversations { ids } => assistant.delete_many(&ids).await,
         Request::OpenChatWindow { window } => assistant.open_window(window).await,
         Request::ConfirmBot { conversation, bot } => assistant.confirm_bot(&conversation, &bot).await,
         other => failure(&format!("{} is no command of the assistant", other.operation().name())),
@@ -1864,6 +1927,111 @@ pub(crate) mod tests {
         let list = listed(answer(&again, &ai, Request::ListConversations).await);
         assert_eq!(list.len(), 1);
         assert_eq!((list[0].title.as_str(), list[0].pinned), ("Trip to Lisbon", true), "kept on disk");
+    }
+
+    /// Issue #697: conversations are archived and restored several at once; the state stays on disk, an answer that
+    /// runs goes on, one unknown id changes nothing, and a message brings an archived one back.
+    #[tokio::test]
+    async fn conversations_are_archived_restored_and_brought_back_by_a_message() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (assistant, ai) = (Arc::new(assistant_in(dir.path(), Duration::from_secs(60))), no_ai(dir.path()));
+        let (first, _) = opened(answer(&assistant, &ai, send(None, "First")).await);
+        let (second, _) = opened(answer(&assistant, &ai, send(None, "Second")).await);
+        assert_eq!(
+            answer(&assistant, &ai, Request::CancelAnswer { conversation: second.id.clone() }).await,
+            Response::Ok
+        );
+        let archived = |assistant: Arc<Assistant>| async move {
+            match assistant.list().await {
+                Response::Conversations { conversations } => {
+                    conversations.into_iter().map(|c| (c.id, c.archived, c.running)).collect::<Vec<_>>()
+                }
+                other => panic!("expected conversations, got {other:?}"),
+            }
+        };
+
+        let unknown =
+            Request::ArchiveConversations { ids: vec![first.id.clone(), "ffffffffffffffff".into()], archived: true };
+        assert_eq!(code(&answer(&assistant, &ai, unknown).await), "not-found");
+        assert!(archived(assistant.clone()).await.iter().all(|(_, archived, _)| !archived), "nothing changed");
+
+        let both = vec![first.id.clone(), second.id.clone(), first.id.clone()];
+        let archive = Request::ArchiveConversations { ids: both.clone(), archived: true };
+        assert_eq!(answer(&assistant, &ai, archive.clone()).await, Response::Ok);
+        assert_eq!(answer(&assistant, &ai, archive).await, Response::Ok, "already archived: skipped");
+        let list = archived(assistant.clone()).await;
+        assert!(list.iter().all(|(_, archived, _)| *archived), "{list:?}");
+        assert!(list.iter().any(|(id, _, running)| *id == first.id && *running), "its answer goes on");
+
+        // Read anew from the files.
+        let again = Arc::new(assistant_in(dir.path(), Duration::from_secs(60)));
+        assert!(archived(again.clone()).await.iter().all(|(_, archived, _)| *archived), "kept on disk");
+
+        let restore = Request::ArchiveConversations { ids: vec![first.id.clone()], archived: false };
+        assert_eq!(answer(&again, &ai, restore).await, Response::Ok);
+        let list = archived(again.clone()).await;
+        assert!(list.iter().any(|(id, archived, _)| *id == first.id && !archived));
+        assert!(list.iter().any(|(id, archived, _)| *id == second.id && *archived));
+
+        let (back, _) = opened(answer(&again, &ai, send(Some(&second.id), "Once more")).await);
+        assert!(!back.archived, "a message brings it back");
+        let reread = Arc::new(assistant_in(dir.path(), Duration::from_secs(60)));
+        assert!(archived(reread).await.iter().all(|(_, archived, _)| !archived), "also on disk");
+    }
+
+    /// Issue #697: several conversations go at once, an answer that runs stops, and one unknown id deletes nothing.
+    #[tokio::test]
+    async fn several_conversations_are_deleted_at_once() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (assistant, ai) = (Arc::new(assistant_in(dir.path(), Duration::from_secs(60))), no_ai(dir.path()));
+        let mut ids = Vec::new();
+        for text in ["First", "Second", "Third"] {
+            ids.push(opened(answer(&assistant, &ai, send(None, text)).await).0.id);
+        }
+        let file = |id: &str| dir.path().join("assistant").join(format!("{id}.jsonl"));
+
+        let unknown = Request::DeleteConversations { ids: vec![ids[0].clone(), "ffffffffffffffff".into()] };
+        assert_eq!(code(&answer(&assistant, &ai, unknown).await), "not-found");
+        assert!(file(&ids[0]).exists(), "nothing deleted");
+
+        let two = Request::DeleteConversations { ids: vec![ids[0].clone(), ids[1].clone(), ids[0].clone()] };
+        assert_eq!(answer(&assistant, &ai, two).await, Response::Ok);
+        assert!(!file(&ids[0]).exists() && !file(&ids[1]).exists(), "their files go");
+        assert!(assistant.state().await.running.keys().all(|id| *id == ids[2]), "their answers stop");
+        match assistant.list().await {
+            Response::Conversations { conversations } => {
+                assert_eq!(conversations.into_iter().map(|c| c.id).collect::<Vec<_>>(), [ids[2].clone()]);
+            }
+            other => panic!("expected conversations, got {other:?}"),
+        }
+    }
+
+    /// Issue #697, decision 1: archived conversations are kept beyond the retention time.
+    #[tokio::test]
+    async fn retention_keeps_archived_conversations() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (assistant, ai) = (Arc::new(assistant_in(dir.path(), Duration::ZERO)), no_ai(dir.path()));
+        let mut ids = Vec::new();
+        for text in ["old", "old and archived"] {
+            let (summary, _) = opened(answer(&assistant, &ai, send(None, text)).await);
+            finished(&assistant, &ai, &summary.id).await;
+            ids.push(summary.id);
+        }
+        let archive = Request::ArchiveConversations { ids: vec![ids[1].clone()], archived: true };
+        assert_eq!(answer(&assistant, &ai, archive).await, Response::Ok);
+        let now = Utc::now();
+        {
+            let mut state = assistant.state().await;
+            for id in &ids {
+                for entry in &mut state.conversations.get_mut(id).expect("held").entries {
+                    entry.time = now - chrono::Duration::days(31);
+                }
+            }
+        }
+        assert_eq!(assistant.clean_up(now, Retention::Days(30)).await, 1);
+        let state = assistant.state().await;
+        assert!(!state.conversations.contains_key(&ids[0]), "old goes");
+        assert!(state.conversations.contains_key(&ids[1]), "archived stays");
     }
 
     /// Writes a conversation `id` titled `title` with `contents`, its last entry a few minutes old, with what

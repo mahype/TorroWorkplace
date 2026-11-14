@@ -1282,6 +1282,11 @@ fn describe(request: &Request) -> String {
         Request::PinConversation { id, pinned } => {
             format!("{} conversation {id}", if *pinned { "pin" } else { "unpin" })
         }
+        // How many, never a title (issue #697).
+        Request::ArchiveConversations { ids, archived } => {
+            format!("{} {} conversations", if *archived { "archive" } else { "restore" }, ids.len())
+        }
+        Request::DeleteConversations { ids } => format!("delete {} conversations", ids.len()),
         Request::OpenChatWindow { .. } => "open an assistant window".into(),
         // Ids only, never a note or the personality (task C.10).
         Request::GetProfile => "assistant profile".into(),
