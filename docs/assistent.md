@@ -816,7 +816,7 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 - **Speicher:** `<data>/assistant/<id>.jsonl` (0600), je Unterhaltung Nachrichten und
   Werkzeug-Aufrufe. Inhalte von Mails stehen damit auf der Platte wie im Mail-Cache; „Delete
   conversation“ löscht die Datei. Unterhaltungen werden nach **30 Tagen** gelöscht (entschieden,
-  einstellbar bis „forever“); angeheftete bleiben. Was ein Werkzeug dem Modell geliefert hat
+  einstellbar bis „forever“); angeheftete und archivierte bleiben (Issue #697). Was ein Werkzeug dem Modell geliefert hat
   (etwa ein Mail-Text), bleibt kürzer: 24 Stunden nach dem Aufruf, auch in angehefteten
   Unterhaltungen und bei „forever“ (Issue #714); danach schreibt der nächste Lauf (beim Start und
   stündlich, eine antwortende Unterhaltung in einer späteren Runde) die Datei ohne diese Ergebnisse neu,
@@ -844,7 +844,9 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | Unterhaltung umbenennen | Kontextmenü | `assistant.rename_conversation` · Write | `assistant_rename_conversation` |
 | Unterhaltung als eigenes Fenster öffnen | „Open in new window“, „Ask about this“ | `assistant.open_window { conversation \| new \| bot }` · Write (startet `torroassistant --chat …`) | `assistant_open_window` |
 | Unterhaltung anheften (bleibt über die Aufbewahrung hinaus) | Kontextmenü | `assistant.pin_conversation` · Write | `assistant_pin_conversation` |
-| Unterhaltung löschen | Kontextmenü | `assistant.delete_conversation` · Delete | `assistant_delete_conversation` |
+| Unterhaltung löschen | Mülltonne an der Zeile, „…“ bzw. Kontextmenü | `assistant.delete_conversation` · Delete | `assistant_delete_conversation` |
+| Unterhaltungen archivieren und zurückholen (Gruppe „Archive“ unten, bleibt über die Aufbewahrung hinaus, eine Nachricht holt zurück; Issue #697) | „…“ an der Zeile bzw. Kontextmenü, „Archive all…“ an „Recent“ | `assistant.archive_conversations` · Write | `assistant_archive_conversations` |
+| Viele Unterhaltungen löschen (Issue #697) | „Delete all…“ an „Recent“, „Empty archive…“ an „Archive“ | `assistant.delete_conversations` · Delete | `assistant_delete_conversations` |
 | Standard-Antrieb, Aufbewahrung | Assistent › Einstellungen › General bzw. History | `settings.set_setting` · Admin (gibt es) | `settings_set_setting` |
 | Rechte des Assistenten | Assistent › Einstellungen › Access (seit #231), erster Start („Turn on assistant“) | `clients.update_client` (gibt es) | **Never** (Punkt 2: kein Agent ändert Rechte) |
 | Bereiche je Unterhaltung abschalten | Eingabefeld | Feld `without` in `assistant.send_message` | ebenso |
@@ -905,7 +907,7 @@ Getroffen am 2026-10-13.
 5. **Ein Client „Assistant“** für alle Antriebe, der Antrieb steht im Protokoll.
 6. **Dateien und Shell** beim Agent-Antrieb immer aus.
 7. **Bereich `assistant` für andere Agenten** standardmäßig aus, auch in *Full access*.
-8. **Aufbewahrung** 30 Tage, einstellbar; angeheftete Unterhaltungen bleiben.
+8. **Aufbewahrung** 30 Tage, einstellbar; angeheftete und archivierte Unterhaltungen bleiben (Issue #697).
 9. **Fremde MCP-Server über den Abschnitt „MCP servers“, #302** (ersetzt „Fremde MCP-Server im Chat nicht in Stufe 1; Klärung
    in #79“): Die Werkzeuge erlaubter Server stehen dem Assistenten, seinen Bots und den MCP-Clients offen, je Server
    nur mit einer Stufe, je Werkzeug nur nach Zustimmung der Person (Steuerzentrale › MCP servers, Abschnitt „Your
