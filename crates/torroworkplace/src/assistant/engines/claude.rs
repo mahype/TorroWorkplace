@@ -351,6 +351,10 @@ pub(crate) mod tests {
             "tools_copy_file",
             "tools_move_file",
             "tools_trash_file",
+            "tools_read_file",
+            "tools_search_in_files",
+            "tools_write_file",
+            "tools_edit_file",
         ]
         .iter()
         .map(|command| format!("{TOOL_PREFIX}{command}"))
@@ -358,7 +362,7 @@ pub(crate) mod tests {
         assert_eq!(
             denied_tools,
             others.iter().collect::<Vec<_>>(),
-            "only those of web and files, which are not usable"
+            "only those of web, files and file contents, which are not usable"
         );
         let every = denied_with(&ToolId::ALL);
         assert!(!every.iter().any(|tool| tool.starts_with(&format!("{TOOL_PREFIX}tools_"))), "{every:?}");

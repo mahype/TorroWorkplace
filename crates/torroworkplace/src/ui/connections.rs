@@ -1983,7 +1983,7 @@ pub fn page_order(tools: &[ToolInfo]) -> Vec<&ToolInfo> {
 /// files stands next to them.
 fn works_in_allowed_folders(tool: ToolId) -> bool {
     match tool {
-        ToolId::Files => true,
+        ToolId::Files | ToolId::FileContents => true,
         ToolId::Pdf | ToolId::Web => false,
     }
 }
@@ -3863,7 +3863,11 @@ mod tests {
         let listed: Vec<ToolId> = data.tools.iter().map(|info| info.id).collect();
         assert_eq!(listed, ToolId::ALL, "the core's order");
         let shown: Vec<ToolId> = page_order(&data.tools).iter().map(|info| info.id).collect();
-        assert_eq!(shown, [ToolId::Files, ToolId::Pdf, ToolId::Web], "web keeps its place after pdf");
+        assert_eq!(
+            shown,
+            [ToolId::Files, ToolId::FileContents, ToolId::Pdf, ToolId::Web],
+            "web keeps its place after pdf"
+        );
         #[cfg(unix)]
         {
             use std::os::unix::ffi::OsStrExt;

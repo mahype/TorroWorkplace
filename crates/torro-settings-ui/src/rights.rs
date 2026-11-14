@@ -3081,7 +3081,7 @@ mod tests {
         assert!(closed.extensions.is_empty());
 
         assert!(apply(&mut opened, Message::Tool(ToolId::Pdf, false)));
-        assert_eq!(opened.tools, Selection::Only(vec!["web".into(), "files".into()]));
+        assert_eq!(opened.tools, Selection::Only(vec!["web".into(), "files".into(), "file_contents".into()]));
         assert!(apply(&mut opened, Message::Tool(ToolId::Pdf, true)));
         assert!(ToolId::ALL.into_iter().all(|tool| opened.reaches_tool(tool)));
     }

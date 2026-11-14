@@ -1457,7 +1457,11 @@ impl PimService {
             | Request::CreateFolder { .. }
             | Request::CopyFile { .. }
             | Request::MoveFile { .. }
-            | Request::TrashFile { .. } => {
+            | Request::TrashFile { .. }
+            | Request::ReadFile { .. }
+            | Request::SearchInFiles { .. }
+            | Request::WriteFile { .. }
+            | Request::EditFile { .. } => {
                 return None;
             }
             // Address books are no calendar or task collection: the contacts service checks its

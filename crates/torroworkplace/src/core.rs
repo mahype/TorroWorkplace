@@ -4705,7 +4705,9 @@ impl Core {
         let question = matches!(request, Request::AskPermission { .. });
         // Moving a file to the trash always asks too (issue #304, decision 30), also a client that is never asked
         // otherwise (`Confirm::Never`): the person sees which entry goes, resolved, before it goes.
-        let trashes = matches!(request, Request::TrashFile { .. });
+        // A change of a file that exists too (issue #705): its old text is gone after it, so the person sees the
+        // change as the core worked it out, whatever the client's rights say.
+        let trashes = matches!(request, Request::TrashFile { .. } | Request::EditFile { .. });
         // A note kept on this computer was written after the assistant read mail (task C.10), and
         // any note after the conversation read data from outside the suite (task C.11): what a
         // mail, an agent's entry or an issue says must never become a lasting part of the
@@ -5393,6 +5395,21 @@ impl Core {
                 let summary = crate::approvals::summary(&request, &facts);
                 (request, None, summary)
             }
+            // A command of the tool `file_contents` that changes something (issue #705): the path as the core resolves
+            // it now and, for a change, the difference to the text it read, shown in the details; the approval pinned to
+            // the path, the entry, the version and what is replaced. A change of a file that changed since it was read
+            // is answered `conflict` at once.
+            (Request::WriteFile { .. } | Request::EditFile { .. }, _) => {
+                let folders = self.settings.current().tools.folders.clone();
+                let plan = match self.tools.plan_contents(&request, &folders).await {
+                    Ok(plan) => plan.unwrap_or_default(),
+                    Err(refused) => return Ok(refused),
+                };
+                let facts = Facts { paths: Some(plan.paths.clone()), diff: plan.diff.clone(), ..Facts::default() };
+                fingerprint = Some((plan.fingerprint.clone(), crate::approvals::details(&request, &facts)));
+                let summary = crate::approvals::summary(&request, &facts);
+                (request, None, summary)
+            }
             // A bot's texts go into its prompt (task B.1): the person sees every one of them whole.
             (Request::SaveBot { .. }, _) => {
                 let facts = self.facts(&request).await;
@@ -6006,6 +6023,12 @@ impl Core {
         ) {
             let approved = Some(fingerprint.unwrap_or_default());
             return self.tools.organize(request, &settings.tools.folders, approved).await;
+        }
+        // A command of the tool `file_contents` likewise (issue #705): a change runs only on the file and the version
+        // the person was shown, compared on the thread that then writes it.
+        if matches!(request, Request::WriteFile { .. } | Request::EditFile { .. }) {
+            let approved = Some(fingerprint.unwrap_or_default());
+            return self.tools.contents(request, &settings.tools.folders, approved).await;
         }
         if request.operation().area() == Area::Tools {
             let by_person = origin.consent.as_ref().is_some_and(|web| web.by_person);
@@ -7098,7 +7121,11 @@ impl Core {
             | Request::CreateFolder { .. }
             | Request::CopyFile { .. }
             | Request::MoveFile { .. }
-            | Request::TrashFile { .. }) => {
+            | Request::TrashFile { .. }
+            | Request::ReadFile { .. }
+            | Request::SearchInFiles { .. }
+            | Request::WriteFile { .. }
+            | Request::EditFile { .. }) => {
                 match reach {
                     Reach::Suite => self.tools_request(request, reach, Maker::App, false).await,
                     Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
@@ -11474,7 +11501,8 @@ impl Core {
     /// ([`crate::tools::limit_refusal`]), `tools.open_file` and `tools.save_file_as` for a file the
     /// client did not make or that changed (`not-found`); a command of the tool `files` (issue #304) whose paths do
     /// not resolve within the allowed folders as it needs them (`not-found`, `forbidden`, `unsupported`, `error`,
-    /// [`crate::tools::organize::plan`]). The handlers check again when it runs.
+    /// [`crate::tools::organize::plan`]); one of the tool `file_contents` likewise (issue #705,
+    /// [`crate::tools::contents::plan`]). The handlers check again when it runs.
     async fn tool_request_refusal(&self, request: &Request, maker: Maker<'_>) -> Option<Response> {
         match request {
             Request::CreatePdf { title, markdown, .. } => crate::tools::limit_refusal(title, markdown),
@@ -11485,6 +11513,11 @@ impl Core {
             request if is_files_command(request) => {
                 self.tools.plan(request, &self.settings.current().tools.folders).await.err()
             }
+            // The tool `file_contents` likewise (issue #705), and a change of a file at another version is `conflict`
+            // before anyone is asked.
+            request if is_contents_command(request) => {
+                self.tools.plan_contents(request, &self.settings.current().tools.folders).await.err()
+            }
             _ => None,
         }
     }
@@ -11492,7 +11525,8 @@ impl Core {
     /// The `tools.*` requests (issue #225, task WZ.4) for `reach`, files made and reached as
     /// `maker`: the handlers of [`crate::tools`] with the settings of now. `tools.save_file_as` is the app key's only.
     /// The commands of the tool `files` (issue #304) run within the allowed folders of now
-    /// ([`crate::tools::Tools::organize`]); `tools.trash_file` with the system's trash (task WD.3).
+    /// ([`crate::tools::Tools::organize`]); `tools.trash_file` with the system's trash (task WD.3). Those of
+    /// the tool `file_contents` (issue #705) there too ([`crate::tools::Tools::contents`]).
     /// `by_person` (task WEB.5): the address of a `tools.fetch_page` is one the person wrote in the
     /// conversation of the assistant's answer, so `robots.txt` does not hold; `false` for everyone else.
     async fn tools_request(&self, request: Request, reach: Reach<'_>, maker: Maker<'_>, by_person: bool) -> Response {
@@ -11506,6 +11540,11 @@ impl Core {
             (Request::SaveFileAs { file, path }, Maker::App) => self.tools.save_file_as(&file, &path).await,
             (request, _) if is_files_command(&request) => {
                 self.tools.organize(request, &settings.tools.folders, None).await
+            }
+            // The tool `file_contents` (issue #705): in the same folders; a change that waited for a person runs
+            // through `run_approved`, pinned to what the card showed.
+            (request, _) if is_contents_command(&request) => {
+                self.tools.contents(request, &settings.tools.folders, None).await
             }
             // The tool `web` (issue #305, task WEB.4): switch and selection are checked like the PDF
             // tool's, before; a client over API and MCP waits for no approval (they only read). Every
@@ -13669,6 +13708,13 @@ fn sees_searxng(rights: &torro_ipc::api::Rights) -> bool {
 /// `create_folder`, `copy_file`, `move_file`, `trash_file`.
 fn is_files_command(request: &Request) -> bool {
     torro_core::settings::ToolId::of_command(request.operation().name()) == Some(torro_core::settings::ToolId::Files)
+}
+
+/// Whether `request` is a command of the tool `file_contents` (issue #705): `tools.read_file`, `search_in_files`,
+/// `write_file`, `edit_file`.
+fn is_contents_command(request: &Request) -> bool {
+    torro_core::settings::ToolId::of_command(request.operation().name())
+        == Some(torro_core::settings::ToolId::FileContents)
 }
 
 /// `forbidden` with [`torro_ipc::api::Lack::Tool`] for a command of one of the assistant's own
@@ -16744,6 +16790,62 @@ mod tests {
         assert_eq!(ask(&core, Some(&app_key), trash("b.txt")).await, Response::Ok);
         assert_eq!(taken().last(), Some(&resolved.join("b.txt")));
         assert_eq!(asked().await, before, "the app key is not asked");
+    }
+
+    /// Issue #705: the tool `file_contents` needs its name in the selection ("all tools" is not enough); reading and
+    /// writing a new file run at once for a client that is never asked, a change always asks with the difference the
+    /// core worked out, and a file changed while the person decides is `conflict`.
+    #[tokio::test]
+    async fn a_change_of_a_file_always_asks_with_its_difference() {
+        use torro_core::settings::ToolId;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let docs = dir.path().join("Documents");
+        std::fs::create_dir_all(&docs).expect("made");
+        std::fs::write(docs.join("list.md"), b"eggs\nmilk\nbread\n").expect("written");
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.confirm = torro_ipc::api::Confirm::Never;
+        let (core, key, app_key) = files_core(dir.path(), &docs, rights.clone()).await;
+        let at = |relative: &str| docs.join(relative).to_string_lossy().into_owned();
+        let read = || Request::ReadFile { path: at("list.md"), from_line: None };
+
+        let refused = ask(&core, Some(&key), read()).await;
+        let not_granted = Lack::Tool { tool: ToolId::FileContents }.message();
+        assert!(code(&refused) == "forbidden" && message(&refused).contains(&not_granted), "all is not enough");
+        rights.tools = Selection::Only(vec!["file_contents".into()]);
+        let (_, key) = client(&core, rights).await;
+        let Response::FileText { file } = ask(&core, Some(&key), read()).await else { panic!("read") };
+        assert_eq!(file.text, "eggs\nmilk\nbread\n");
+        let written = ask(&core, Some(&key), Request::WriteFile { path: at("list.md"), text: "new".into() }).await;
+        let resolved = std::fs::canonicalize(&docs).expect("resolved");
+        assert_eq!(written, Response::FilePath { path: resolved.join("list-2.md").to_string_lossy().into_owned() });
+
+        let change = |version: &str| Request::EditFile {
+            path: at("list.md"),
+            version: version.into(),
+            find: "milk".into(),
+            replace: "oat milk".into(),
+            all: false,
+        };
+        assert_eq!(code(&ask(&core, Some(&key), change("stale")).await), "conflict", "before anyone is asked");
+        let asked = waits(ask(&core, Some(&key), change(&file.version)).await);
+        assert_eq!(asked.command, "tools.edit_file");
+        assert_eq!(
+            asked.summary,
+            trf("Change \"{name}\" in \"{folder}\"", &[("name", &"list.md"), ("folder", &"Documents")])
+        );
+        assert_eq!(asked.details[1..], ["  eggs", "- milk", "+ oat milk", "  bread"]);
+        std::fs::write(docs.join("list.md"), b"eggs\nmilk\nbread\nbutter\n").expect("changed in an editor");
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("ran: {allowed:?}") };
+        assert_eq!(code(&response), "conflict");
+        assert_eq!(std::fs::read(docs.join("list.md")).expect("read"), b"eggs\nmilk\nbread\nbutter\n");
+
+        let Response::FileText { file } = ask(&core, Some(&key), read()).await else { panic!("read") };
+        let asked = waits(ask(&core, Some(&key), change(&file.version)).await);
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("ran: {allowed:?}") };
+        assert!(matches!(*response, Response::FileEdited { .. }), "{response:?}");
+        assert_eq!(std::fs::read(docs.join("list.md")).expect("read"), b"eggs\noat milk\nbread\nbutter\n");
     }
 
     /// Issue #304, task WD.2: an approved command runs only on the paths the person was shown – a link exchanged

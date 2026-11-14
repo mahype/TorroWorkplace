@@ -648,6 +648,11 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::CopyFile { .. }
         | Request::MoveFile { .. }
         | Request::TrashFile { .. } => Vec::new(),
+        // The tool `file_contents` (issue #705): nothing either, every field is a path, a text searched for, a
+        // version or what a file holds.
+        Request::ReadFile { .. } | Request::SearchInFiles { .. } | Request::WriteFile { .. } | Request::EditFile { .. } => {
+            Vec::new()
+        }
         // The web (issue #305): never the search words, the language asked for or the address of a page;
         // a key by its provider only, never the key.
         Request::WebSearch { .. } | Request::FetchPage { .. } | Request::ListSearchProviders => Vec::new(),
@@ -1234,6 +1239,16 @@ pub(crate) mod tests {
             Request::CopyFile { from: path(), to: path() },
             Request::MoveFile { from: path(), to: path() },
             Request::TrashFile { path: path() },
+            Request::ReadFile { path: path(), from_line: Some(3) },
+            Request::SearchInFiles { folder: path(), text: "salary".into() },
+            Request::WriteFile { path: path(), text: "salary".into() },
+            Request::EditFile {
+                path: path(),
+                version: "v".into(),
+                find: "salary".into(),
+                replace: "pay".into(),
+                all: false,
+            },
         ] {
             assert!(super::ids(&request).is_empty(), "{request:?}");
         }
