@@ -1627,6 +1627,11 @@ fn the_microphone_writes_into_the_field_without_sending() {
     assert_eq!(app.dictation, Dictation::Idle);
     assert_eq!(app.editor.text().trim_end(), "Note: call Anna", "a space in front, at the caret");
     assert!(!sent(&mut app).iter().any(|request| matches!(request, Request::SendMessage { .. })), "nothing is sent");
+    // At the start of the field nothing stands before the caret: no space in front.
+    let _ = app.update(Message::Edit(text_editor::Action::Move(text_editor::Motion::DocumentStart)));
+    let _ = app.update(Message::Dictate);
+    let _ = app.update(Message::Dictated(Ok("Please".into())));
+    assert!(app.editor.text().starts_with("PleaseNote:"), "{:?}", app.editor.text());
 }
 
 /// Issue #699: nothing understood, speech recognition gone and other failures each say so; the

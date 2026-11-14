@@ -4159,6 +4159,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("How hard the model thinks", "Wie gründlich das Modell nachdenkt"),
     // Assistant app: the light composer and dictating (issue #699)
     ("Areas", "Bereiche"),
+    ("1 area off", "1 Bereich aus"),
     ("{n} areas off", "{n} Bereiche aus"),
     ("Allow again", "Wieder erlauben"),
     ("Dictate", "Diktieren"),

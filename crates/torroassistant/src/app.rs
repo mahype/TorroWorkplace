@@ -1063,6 +1063,10 @@ impl App {
             Message::Voice(Err(_)) => {}
             Message::Dictate => return self.dictate(),
             Message::Dictated(result) => return self.dictated(result),
+            // The demo records nothing: its `dictating` state has no dictation that could answer.
+            Message::DictationStopped if self.launch.demo && self.dictation == Dictation::Stopping => {
+                self.dictation = Dictation::Idle;
+            }
             Message::DictationStopped => {}
             // The section AI of this window's own settings (issue #410), not the control centre.
             Message::ManageModels => {
@@ -1924,8 +1928,12 @@ impl App {
                 Task::none()
             }
             Ok(text) => {
-                let before = self.editor.text();
-                let spaced = before.trim_end_matches('\n').chars().last().is_some_and(|c| !c.is_whitespace());
+                // What stands right before the caret decides the space, not the end of the field.
+                let at = self.editor.cursor().position;
+                let before = self.editor.line(at.line).map(|line| line.text.into_owned()).unwrap_or_default();
+                let before =
+                    before.get(..at.column).map_or_else(|| before.chars().take(at.column).collect(), str::to_owned);
+                let spaced = before.chars().last().is_some_and(|c| !c.is_whitespace());
                 let text = if spaced { format!(" {}", text.trim()) } else { text.trim().to_owned() };
                 self.editor.perform(text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new(text))));
                 operation::focus(EDITOR)

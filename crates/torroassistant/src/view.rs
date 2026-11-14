@@ -880,7 +880,11 @@ impl App {
     fn composer<'a>(&'a self, class: SizeClass, anchors: &Anchors) -> Element<'a, Message> {
         let body = typo::body();
         let (least, most) = editor_heights();
-        let placeholder = self.placeholder();
+        // While the microphone records, the field says so in words too (issue #699).
+        let placeholder = match self.dictation {
+            Dictation::Recording => tr("Listening…").to_owned(),
+            _ => self.placeholder(),
+        };
         let editor = text_editor(&self.editor)
             .id(EDITOR)
             .placeholder(placeholder)
@@ -907,7 +911,10 @@ impl App {
                         left = left.push(widgets::dismiss_chip(label, Message::ToggleArea(*area)));
                     }
                 } else if !self.without.is_empty() {
-                    let label = trf("{n} areas off", &[("n", &self.without.len())]);
+                    let label = match self.without.len() {
+                        1 => tr("1 area off").to_owned(),
+                        n => trf("{n} areas off", &[("n", &n)]),
+                    };
                     left = left.push(widgets::text_button(
                         None,
                         label,
@@ -943,7 +950,7 @@ impl App {
             Some(choice) => {
                 let mut label = self.composer_label(choice);
                 if wide && self.effort_offered() {
-                    label = format!("{label} {}", chat::effort_name(self.effort));
+                    label = format!("{label} · {}", chat::effort_name(self.effort));
                 }
                 let label = typo::ellipsize(&label, typo::caption(), room);
                 widgets::with_tooltip(
@@ -986,20 +993,21 @@ impl App {
     }
 
     /// The microphone of the composer (issue #699): pale while speech recognition is not set up (a
-    /// click opens Settings › Voice), in the attention colour while it records (red stays for
-    /// "Send"), turning arrows while the speech becomes text.
+    /// click opens Settings › Voice); while it records a round surface with the icon in the attention
+    /// colour (red stays for "Send") and "Listening…" in the field, so it never shows by colour
+    /// alone; turning arrows while the speech becomes text.
     fn mic_button(&self) -> Element<'_, Message> {
-        let (colour, tip): (fn(&Palette) -> iced::Color, &str) = match self.dictation {
+        let (colour, tip, look): (fn(&Palette) -> iced::Color, &str, widgets::ButtonStyle) = match self.dictation {
             Dictation::Stopping => return widgets::round_busy(tr("Transcribing…")),
-            Dictation::Recording => (|p| p.attention, tr("Stop dictating")),
-            Dictation::Idle if self.can_dictate() => (|p| p.text_2, tr("Dictate")),
-            Dictation::Idle => (|p| p.text_3, tr("Set up speech recognition in Settings › Voice")),
+            Dictation::Recording => (|p| p.attention_text, tr("Stop dictating"), style::button::round_quiet),
+            Dictation::Idle if self.can_dictate() => (|p| p.text_2, tr("Dictate"), style::button::icon),
+            Dictation::Idle => (|p| p.text_3, tr("Set up speech recognition in Settings › Voice"), style::button::icon),
         };
         let mic = button(container(tinted(Icon::Mic, icon::SIZE, colour)).center(Fill))
             .width(size::control_sm())
             .height(size::control_sm())
             .padding(0)
-            .style(style::button::icon)
+            .style(look)
             .on_press(Message::Dictate);
         widgets::with_tooltip(mic, tip)
     }
@@ -1496,7 +1504,8 @@ fn stop_button<'a>(class: SizeClass) -> Element<'a, Message> {
 fn mode_shield<'a>(mode: torro_ipc::assistant::Mode) -> Element<'a, Message> {
     use torro_ipc::assistant::Mode;
     let colour: fn(&Palette) -> iced::Color = match mode {
-        Mode::Default => |p| p.attention,
+        // `attention_text`: a small icon must reach 3:1 on the light panel too.
+        Mode::Default => |p| p.attention_text,
         Mode::Ask => |p| p.text_2,
         Mode::ReadOnly => |p| p.text_3,
     };
