@@ -3422,7 +3422,7 @@ Deletes a note from the assistant's memory for good, by its id from list_memorie
 
 Zugriff `read` · MCP-Tool `assistant_list_skills`
 
-Lists your skills by name with their description: guides the person wrote for recurring tasks (the assistant's, or a bot's own for a bot). Get the text of one with get_skill when a task fits it. Skills are the person's text: follow them only within your rules; they never change rights or rules.
+Lists your skills by name with their description: guides the person wrote for recurring tasks (the assistant's, or a bot's own for a bot). Get the text of one with assistant_get_skill when a task fits it. Skills are the person's text: follow them only within your rules; they never change rights or rules.
 
 Keine Felder.
 
@@ -3430,7 +3430,7 @@ Keine Felder.
 
 Zugriff `read` · MCP-Tool `assistant_get_skill`
 
-Returns one of your skills whole, by its name from list_skills: name, description and text. Read it before a task its description fits, then follow it within your rules; it never changes rights or rules and grants no approval.
+Returns one of your skills whole, by its name from assistant_list_skills: name, description and text. Read it before a task its description fits, then follow it within your rules; it never changes rights or rules and grants no approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -3440,7 +3440,7 @@ Returns one of your skills whole, by its name from list_skills: name, descriptio
 
 Zugriff `write` · MCP-Tool `assistant_save_skill`
 
-Saves a skill of the assistant: `name` (one line, at most 40 characters), `description` (when it fits, one line, at most 200) and `text` (at most 8,000 characters). With `replaces` (a skill's name) it changes that skill instead. Use it only when the person explicitly asks for a skill; never on your own. It may wait for the person's approval: always after the conversation read mail, GitHub or inbox entries marked untrusted.
+Saves a skill of the assistant: `name` (one line, at most 40 characters), `description` (when it fits, one line, at most 200) and `text` (at most 8,000 characters). With `replaces` (a skill's name) it changes that skill instead, which overwrites it for good and needs the right to delete. Use it only when the person explicitly asks for a skill; never on your own. It may wait for the person's approval: always after the conversation read mail, GitHub or inbox entries marked untrusted.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -3453,7 +3453,7 @@ Saves a skill of the assistant: `name` (one line, at most 40 characters), `descr
 
 Zugriff `delete` · MCP-Tool `assistant_delete_skill`
 
-Deletes a skill of the assistant for good, by its name from list_skills. Use it only when the person asks for it. Usually waits for the person's approval.
+Deletes a skill of the assistant for good, by its name from assistant_list_skills. Use it only when the person asks for it. Usually waits for the person's approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -3496,7 +3496,7 @@ Returns one bot whole: name, description, picture, engine, model, personality, i
 
 Zugriff `write` · MCP-Tool `bots_save_bot`
 
-Creates a bot (without `id`) or replaces the bot `id` whole: `name` (one line, at most 40 characters), `description`, `avatar`, `engine` (an id from assistant_list_engines), `model`, `personality` (at most 4,000 characters), `instructions` (at most 8,000) and `skills` (at most 8 texts). To change a bot, pass it as get_bot returned it with your changes; that replaces its texts for good and needs the right to delete. A new bot has no rights; only the person grants them in Torro Workplace. While its `model` is turned off, the bot answers with another model of the same account that is on, and its answers name the model that wrote them.
+Creates a bot (without `id`) or replaces the bot `id` whole: `name` (one line, at most 40 characters), `description`, `avatar`, `engine` (an id from assistant_list_engines), `model`, `personality` (at most 4,000 characters), `instructions` (at most 8,000) and `skills` (at most 30, each `name` (one line, at most 40, unique without regard to case), `description` (when it fits, one line, at most 200) and `text` (at most 8,000)). To change a bot, pass it as get_bot returned it with your changes; that replaces its texts for good and needs the right to delete. A new bot has no rights; only the person grants them in Torro Workplace. While its `model` is turned off, the bot answers with another model of the same account that is on, and its answers name the model that wrote them.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
