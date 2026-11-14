@@ -454,3 +454,27 @@ async fn the_maps_of_an_open_contact_follow_its_version() {
     }
     let _ = contact::address_map(&AddressMap::LookupOff, 0, iced::Color::BLACK);
 }
+
+/// Review of PR #735: the addresses of a contact are located one after the other: an answer for one
+/// asks for the next, the last asks for nothing more.
+#[tokio::test]
+async fn each_address_is_located_after_the_one_before() {
+    use torro_ipc::contacts::ContactLocation;
+    let mut app = loaded(&["--demo"]).await;
+    let _ = opened(&mut app, "demo-01").await;
+    let detail = app.detail.as_mut().expect("open");
+    let contact = detail.contact.as_mut().expect("fetched");
+    let second = contact.addresses[0].clone();
+    contact.addresses.push(second);
+    detail.maps_of = None;
+    let _ = app.update(Message::Used);
+    let detail = app.detail.as_ref().expect("open");
+    assert_eq!(detail.maps, [AddressMap::Finding, AddressMap::Finding]);
+    let key = detail.maps_of.clone().expect("for this version");
+    let first = app.update(Message::Located(key.clone(), 0, Ok(ContactLocation::NotFound)));
+    assert!(first.units() > 0, "the second address is asked for");
+    assert_eq!(app.detail.as_ref().expect("open").maps[1], AddressMap::Finding);
+    let last = app.update(Message::Located(key.clone(), 1, Ok(ContactLocation::NotFound)));
+    assert_eq!(last.units(), 0, "nothing after the last");
+    assert_eq!(app.detail.as_ref().expect("open").maps, [AddressMap::NotFound, AddressMap::NotFound]);
+}
