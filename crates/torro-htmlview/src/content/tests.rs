@@ -59,7 +59,7 @@ fn painted(snapshot: &Snapshot, scheme: Scheme) -> usize {
     snapshot.rgba.chunks(4).filter(|pixel| pixel.iter().zip(surface).any(|(a, b)| a.abs_diff(b) > 8)).count()
 }
 
-const FIXTURES: [&str; 5] = ["newsletter", "invoice", "outlook", "styled", "plain"];
+const FIXTURES: [&str; 7] = ["newsletter", "invoice", "outlook", "styled", "plain", "preheader", "hidden_siblings"];
 
 #[test]
 fn every_fixture_draws_at_both_widths_in_both_schemes() {
@@ -245,6 +245,25 @@ fn a_narrow_box_or_text_beside_it_is_no_wrapper() {
         assert_eq!(snapshot.pixel(2, 2), Some(background(Scheme::Light)), "the margin keeps the surface");
         assert_eq!(snapshot.pixel(296, 70), Some(background(Scheme::Light)), "the margin keeps the surface");
     }
+}
+
+/// The hidden preview text and the empty filler row beside the wrapper of a newsletter (#798) do not
+/// make it a mail without a background.
+#[test]
+fn hidden_siblings_beside_the_wrapper_do_not_hide_its_background() {
+    for (name, wrapper) in [("preheader", [0xe9, 0xe6, 0xdf, 255]), ("hidden_siblings", [0, 0, 0, 255])] {
+        let content = content(&fixture(name));
+        assert!(content.has_own_background(), "{name}");
+        let snapshot = content.snapshot(900.0, 1.0, Scheme::Light, 0.0, 76.0);
+        assert_eq!(snapshot.pixel(2, 2), Some(wrapper), "{name}: the canvas takes the wrapper's colour");
+        assert_ne!(snapshot.pixel(2, 2), Some(background(Scheme::Light)), "{name}");
+    }
+}
+
+#[test]
+fn a_visible_box_beside_the_wrapper_still_counts() {
+    let beside = content(&format!("{WRAPPED}<div style=\"height:20px\"></div>"));
+    assert!(!beside.has_own_background(), "two visible boxes are no wrapper");
 }
 
 /// Where the first black pixel is in row `y`, from the left.
