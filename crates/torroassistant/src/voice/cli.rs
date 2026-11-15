@@ -10,19 +10,28 @@
 //!   JSON, handed over by the core.
 //! - `--voice-test --voice <settings>`: records one sentence and writes it as text (a
 //!   [`Response::Transcript`], or a [`Response::Error`]), for `settings.test_voice`.
+//! - `--dictate --voice <settings>`: records what is said until a pause of two seconds, the end of
+//!   standard input (the core closes it for `assistant.stop_dictation`) or a minute, and writes it as
+//!   text like `--voice-test`, for `assistant.dictate` (issue #699).
+//! - `--speak --voice <settings>`: the helper that reads aloud for `assistant.speak` (issue #745,
+//!   [`super::speech`]), as long as the core gives it work.
+//! - `--speech-status --voice <settings>`: what is found for reading aloud, as one line of JSON (a
+//!   [`Response::Speech`]), for `settings.speech_status`.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::process::{Child, Command, ExitCode};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use torro_core::settings::Voice;
 use torro_ipc::{Response, VoiceState, VoiceStatus};
 
-use super::audio::{Endpoint, Limits, NoiseFloor};
-use super::external::{CommandRecorder, Parts, WhisperCli};
-use super::listen::{CoreAssistant, Ended, Listener};
+use super::audio::{Endpoint, FRAMES_PER_SECOND, Limits, NoiseFloor};
+use super::external::{CommandRecorder, Parts, transcriber_of};
+use super::listen::{CoreAssistant, CoreSpeaker, Ended, Listener};
 use super::programs::{Finder, Found};
-use super::{Recorder, Transcriber, VoiceError};
+use super::{Recorder, VoiceError};
 use crate::backend::Backend;
 
 /// A voice mode from the start parameters.
@@ -31,11 +40,14 @@ pub enum Mode {
     Listen,
     Status(Voice),
     Test(Voice),
+    Dictate(Voice),
+    Speak(Voice),
+    SpeechStatus(Voice),
 }
 
 impl Mode {
-    /// The voice mode `args` ask for; `Ok(None)` when they ask for a window. `--voice-status` and
-    /// `--voice-test` need `--voice` with the settings as JSON.
+    /// The voice mode `args` ask for; `Ok(None)` when they ask for a window. `--voice-status`,
+    /// `--voice-test` and `--dictate` need `--voice` with the settings as JSON.
     pub fn parse(args: &[String]) -> Result<Option<Mode>, String> {
         let has = |flag: &str| args.iter().any(|arg| arg == flag);
         let voice = || -> Result<Voice, String> {
@@ -43,12 +55,17 @@ impl Mode {
             let json = args.get(at + 1).ok_or("--voice needs the settings as JSON")?;
             serde_json::from_str(json).map_err(|err| format!("--voice: {err}"))
         };
-        match (has("--listen"), has("--voice-status"), has("--voice-test")) {
-            (false, false, false) => Ok(None),
-            (true, false, false) => Ok(Some(Mode::Listen)),
-            (false, true, false) => voice().map(|voice| Some(Mode::Status(voice))),
-            (false, false, true) => voice().map(|voice| Some(Mode::Test(voice))),
-            _ => Err("--listen, --voice-status and --voice-test cannot be used together".into()),
+        let flags = ["--listen", "--voice-status", "--voice-test", "--dictate", "--speak", "--speech-status"];
+        let given: Vec<&str> = flags.into_iter().filter(|flag| has(flag)).collect();
+        match given.as_slice() {
+            [] => Ok(None),
+            ["--listen"] => Ok(Some(Mode::Listen)),
+            ["--voice-status"] => voice().map(|voice| Some(Mode::Status(voice))),
+            ["--voice-test"] => voice().map(|voice| Some(Mode::Test(voice))),
+            ["--dictate"] => voice().map(|voice| Some(Mode::Dictate(voice))),
+            ["--speak"] => voice().map(|voice| Some(Mode::Speak(voice))),
+            ["--speech-status"] => voice().map(|voice| Some(Mode::SpeechStatus(voice))),
+            _ => Err(format!("{} cannot be used together", flags.join(", "))),
         }
     }
 
@@ -57,7 +74,17 @@ impl Mode {
         match self {
             Mode::Listen => listen(),
             Mode::Status(voice) => answer(&status(&voice)),
-            Mode::Test(voice) => answer(&test(&voice)),
+            Mode::Test(voice) => answer(&test(&voice, Limits::default(), &AtomicBool::new(false))),
+            Mode::Dictate(voice) => answer(&test(&voice, dictation(), &stop_at_end_of_input())),
+            Mode::Speak(voice) => {
+                super::speech::serve(voice);
+                ExitCode::SUCCESS
+            }
+            Mode::SpeechStatus(voice) => {
+                let finder = Finder::system();
+                let found = Found::detect(&finder, &voice);
+                answer(&Response::Speech { speech: super::speech::status(&found, &finder) })
+            }
         }
     }
 }
@@ -92,29 +119,52 @@ fn status(voice: &Voice) -> Response {
     }
 }
 
-/// One sentence from the microphone as text ([`Response::Transcript`]).
-fn test(voice: &Voice) -> Response {
+/// How long a dictation records: five seconds to start, a pause of two seconds ends it (the one
+/// second of a spoken question is too short for a thought), a minute at most.
+fn dictation() -> Limits {
+    Limits { wait: 5 * FRAMES_PER_SECOND, pause: 2 * FRAMES_PER_SECOND, most: 60 * FRAMES_PER_SECOND }
+}
+
+/// A flag that goes up when standard input ends: the core closes it to stop a dictation.
+fn stop_at_end_of_input() -> Arc<AtomicBool> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    std::thread::spawn(move || {
+        let mut sink = Vec::new();
+        // Whatever the core writes is ignored; only the end counts, also as an error.
+        let _ = std::io::stdin().read_to_end(&mut sink);
+        flag.store(true, Ordering::SeqCst);
+    });
+    stop
+}
+
+/// What is said into the microphone as text ([`Response::Transcript`]), recorded within `limits`
+/// or until `stop` goes up.
+fn test(voice: &Voice, limits: Limits, stop: &AtomicBool) -> Response {
     let found = Found::detect(&Finder::system(), voice);
     let refused = |code: &str, err: VoiceError| Response::Error { code: code.into(), message: err.to_string() };
-    let (mut recorder, mut whisper) =
-        match (CommandRecorder::of(&found, voice.microphone.as_deref()), WhisperCli::of(&found)) {
-            (Ok(recorder), Ok(whisper)) => (recorder, whisper),
-            (Err(err), _) | (_, Err(err)) => return refused("unsupported", err),
-        };
-    match record_sentence(&mut recorder).and_then(|sentence| whisper.transcribe(&sentence)) {
+    // The transcriber starts before the recording, so Parakeet loads its model while one speaks.
+    let parts = CommandRecorder::of(&found, voice.microphone.as_deref())
+        .and_then(|recorder| transcriber_of(&found).map(|transcriber| (recorder, transcriber)));
+    let (mut recorder, mut transcriber) = match parts {
+        Ok(parts) => parts,
+        Err(err) => return refused("unsupported", err),
+    };
+    match record_sentence(&mut recorder, limits, stop).and_then(|sentence| transcriber.transcribe(&sentence)) {
         Ok(text) => Response::Transcript { text },
         Err(err) => refused("error", err),
     }
 }
 
-/// Records until a pause after speech, five seconds of nothing or 15 seconds.
-fn record_sentence(recorder: &mut dyn Recorder) -> Result<Vec<i16>, VoiceError> {
+/// Records until a pause after speech, nothing said for a while or the longest sentence
+/// (`limits`), or until `stop` goes up; what was recorded until then counts.
+fn record_sentence(recorder: &mut dyn Recorder, limits: Limits, stop: &AtomicBool) -> Result<Vec<i16>, VoiceError> {
     let mut stream = recorder.open()?;
-    let mut end = Endpoint::new(NoiseFloor::default(), Limits::default());
+    let mut end = Endpoint::new(NoiseFloor::default(), limits);
     let mut sentence = Vec::new();
     while let Some(frame) = stream.frame()? {
         sentence.extend_from_slice(&frame);
-        if end.push(&frame) {
+        if end.push(&frame) || stop.load(Ordering::SeqCst) {
             break;
         }
     }
@@ -165,7 +215,7 @@ fn listen() -> ExitCode {
             recorder: parts.recorder,
             wake: parts.wake,
             transcriber: parts.transcriber,
-            speaker: parts.speaker,
+            speaker: through_the_core(parts.speaker),
             assistant: &mut core,
             report: Box::new(report),
             limits: Limits::default(),
@@ -184,6 +234,21 @@ fn listen() -> ExitCode {
             }
         }
     }
+}
+
+/// Speaks the answers through the core (issue #745), with the provider and voice of the settings;
+/// `local` plays the tone of the wake word. On a connection of its own, so the speaker can live as
+/// long as the listener's parts; without a runtime `local` speaks as before.
+fn through_the_core(local: Box<dyn super::Speaker>) -> Box<dyn super::Speaker> {
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("torroassistant: answers are spoken with Piper: {err}");
+            return local;
+        }
+    };
+    let backend = Backend::core();
+    Box::new(CoreSpeaker::new(move |request| runtime.block_on(backend.ask(request)), local))
 }
 
 /// Reports "off" and ends with `code`.
@@ -246,6 +311,27 @@ mod tests {
         assert!(Mode::parse(&args(&["--voice-test"])).is_err(), "the settings are needed");
         assert!(Mode::parse(&args(&["--voice-test", "--voice", "nope"])).is_err());
         assert!(Mode::parse(&args(&["--listen", "--voice-test"])).is_err());
+    }
+
+    /// Issue #699: dictating is a mode of its own with the settings, never together with another.
+    #[test]
+    fn dictating_comes_from_the_start_parameters() {
+        assert!(matches!(Mode::parse(&args(&["--dictate", "--voice", "{}"])), Ok(Some(Mode::Dictate(_)))));
+        assert!(Mode::parse(&args(&["--dictate"])).is_err(), "the settings are needed");
+        assert!(Mode::parse(&args(&["--dictate", "--voice-test", "--voice", "{}"])).is_err());
+        assert!(Mode::parse(&args(&["--dictate", "--listen"])).is_err());
+    }
+
+    /// Issue #745: the helper that reads aloud and its status are modes with the settings.
+    #[test]
+    fn reading_aloud_comes_from_the_start_parameters() {
+        assert!(matches!(Mode::parse(&args(&["--speak", "--voice", "{}"])), Ok(Some(Mode::Speak(_)))));
+        assert!(matches!(Mode::parse(&args(&["--speech-status", "--voice", "{}"])), Ok(Some(Mode::SpeechStatus(_)))));
+        assert!(Mode::parse(&args(&["--speak"])).is_err(), "the settings are needed");
+        assert!(Mode::parse(&args(&["--speak", "--listen"])).is_err());
+        let limits = dictation();
+        assert_eq!(limits.pause, 2 * FRAMES_PER_SECOND);
+        assert_eq!(limits.most, 60 * FRAMES_PER_SECOND);
     }
 
     #[test]

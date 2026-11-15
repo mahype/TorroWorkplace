@@ -78,9 +78,12 @@ Was offene Modelle brauchen, damit das gut geht:
   spätestens eine Stunde nach Ablauf, solange der Dienst läuft und die Unterhaltung gerade nicht
   antwortet (sonst in einer späteren Runde). Wer später
   weiterredet, bekommt vom Modell keine Antwort mehr aus den alten Treffern, es sucht bei Bedarf
-  neu. Ergebnisse von Websuche und Seitenabruf werden nie gespeichert (die Bedingungen von Brave
+  neu. Hatte ein entferntes Ergebnis das Kennzeichen `untrusted`, bleibt davon ein Vermerk mit
+  nur der Nummer der Werkzeugzeile (ohne Inhalt, Issue #724): Die Unterhaltung zählt weiter als
+  `untrusted`, neue Notizen des Gedächtnisses warten also auch am nächsten Tag auf eine Person.
+  Ergebnisse von Websuche und Seitenabruf werden nie gespeichert (die Bedingungen von Brave
   erlauben es nicht, darum für keinen Anbieter). Überschreitet der Verlauf die Hälfte des Kontextfensters des Modells
-  (laut Modell-Liste, sonst 32 000 Tokens), verdichtet der Dienst ihn selbst, ohne Modellaufruf
+  (laut Modell-Liste, sonst nach Anbieter oder Modell laut Tabelle im Kern, sonst 32 000 Tokens), verdichtet der Dienst ihn selbst, ohne Modellaufruf
   (`assistant/compact.rs`): zuerst werden ältere Ergebnisse zu ihrer Kurzzeile („12 results“),
   dann fallen ganze Schritte zwischen erster und letzter Nachricht der Person und vor den letzten
   vier Schritten weg, ersetzt durch einen Vermerk mit Zahl der Schritte und den Werkzeugen samt
@@ -133,7 +136,12 @@ Agenten im Terminal.
   Karte „Allow“ ist ein Klick des Menschen, nie ein Werkzeug des Modells.
 - **Keine Schleife:** Der Client des Assistenten darf im Bereich `assistant` nur sein Gedächtnis
   (`list_memories`, `remember`, `forget`) und Karten zeigen (`show_items`, `get_cards`); Nachrichten schicken, Unterhaltungen und das eigene Profil
-  sind für ihn gesperrt, fest im Kern, nicht über Rechte.
+  sind für ihn gesperrt, fest im Kern, nicht über Rechte. Zweite Ausnahme, nur zum Lesen (#704): Er darf
+  seine Unterhaltungen durchsuchen (`search_conversations`), auch ohne den Bereich `assistant`. Der Kern
+  antwortet ihm enger als anderen Clients: nur seine eigenen Unterhaltungen (keine mit Bots), keine zu einer
+  Mail, die er nicht lesen darf, und keinen Treffer nach einem Befehl eines Bereichs, den er heute nicht
+  lesen darf. Nach einer Suche gilt die Unterhaltung als eine, die fremde Daten gelesen hat (eine neue Notiz
+  wartet auf die Person, vor dem Web fragt er noch einmal). Bots bekommen die Suche nicht.
 - **Sichtbar:** Kopf des Chats zeigt kurz, worauf der Assistent gerade Zugriff hat (kleine Symbole
   je Bereich), damit man nicht raten muss.
 
@@ -329,7 +337,11 @@ Agenten mit eigenem Profil, die auf ein Fachgebiet zugeschnitten sind, z. B. „
 ## Die App `torroassistant`
 
 - **Fenster:** Seitenleiste mit Unterhaltungen (neueste oben, Suche), rechts der Verlauf, unten das
-  Eingabefeld mit Antrieb-Auswahl. Mini-Größe: nur Eingabe und letzte Antwort (für eine Kachel).
+  Eingabefeld mit Antrieb-Auswahl. Die Suche filtert mit einem Zeichen die Titel; ab zwei Zeichen sucht sie
+  im Verlauf aller Unterhaltungen (#704) und zeigt unter „Results“ je Unterhaltung einen Ausschnitt. Ein
+  Treffer öffnet die Unterhaltung an der Fundstelle, die Nachricht neutral hinterlegt. Gesucht wird in
+  Titeln, Nachrichten und Antworten, nie in dem, was ein Werkzeug geantwortet hat; Protokoll und Log nennen
+  keine Suchwörter. Mini-Größe: nur Eingabe und letzte Antwort (für eine Kachel).
 - **Werkzeug-Aufrufe** erscheinen zusammengeklappt als eine Zeile („Searched mail · 12 results“,
   „Created event · Tue 14:00“), aufklappbar mit Eingabe und Ergebnis. Was geändert wurde, ist
   anklickbar und öffnet die passende App (Termin im Kalender, Eintrag in der Inbox).
@@ -766,8 +778,8 @@ Open First gilt auch hier, und das Mikrofon verlässt den Rechner nie, solange n
 | Baustein | Lokal (Standard) | Hinweis |
 |---|---|---|
 | **Weckwort** | openWakeWord (offen, eigenes Wort trainierbar) | läuft dauerhaft, nur auf dem Rechner, kleiner Speicher (wenige Sekunden Ringpuffer, nie auf Platte) |
-| **Sprache → Text** | whisper.cpp bzw. faster-whisper (Modell wählbar nach Rechner) | optional über ein KI-Konto, wenn die Person es erlaubt |
-| **Text → Sprache** | Piper (offene Stimmen, auch Deutsch) | abschaltbar, dann nur Fenster |
+| **Sprache → Text** | Parakeet über onnx-asr (empfohlen, etwa dreimal so schnell) oder whisper.cpp, wählbar in Einstellungen › Voice (#749) | optional über ein KI-Konto, wenn die Person es erlaubt |
+| **Text → Sprache** | Qwen3-TTS oder Piper, auf Wunsch OpenAI (siehe „Vorlesen“) | abschaltbar, dann nur Fenster |
 
 - **Standard aus.** Einschalten nur in den Einstellungen des Assistenten (Zahnrad › Voice), mit
   Wahl des Mikrofons und Test.
@@ -781,11 +793,58 @@ Open First gilt auch hier, und das Mikrofon verlässt den Rechner nie, solange n
   nicht erteilen, nur per Klick (sonst könnte ein Video im Hintergrund „Allow“ sagen).
 - **Technisch:** Das Lauschen läuft als eigener Prozess `torroassistant --listen` (Mikrofon und
   Modelle getrennt vom Dienst), erkannter Text geht als `assistant.send_message` an den Kern.
+- **Diktieren** (Issue #699): Das Mikrofon im Eingabefeld nimmt auf, bis man zwei Sekunden schweigt,
+  es noch einmal drückt oder eine Minute um ist, und schreibt den Text an die Schreibmarke, ohne zu
+  senden. Es braucht kein Weckwort und geht auch, wenn „Hey Torro“ aus ist. Aufgenommen wird über
+  den Dienst (`assistant.dictate`, der `torroassistant --dictate` startet; `assistant.stop_dictation`
+  schließt dessen Eingabe und beendet die Aufnahme), nie im Fenster selbst; der Text kommt nicht ins
+  Protokoll. Ohne eingerichtete Spracherkennung ist das Mikrofon blass und öffnet Einstellungen ›
+  Voice. Mini- und Leistenkachel haben kein Mikrofon.
 
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
 | Sprache an/aus, Weckwort, Mikrofon, Stimme | Assistent › Einstellungen › Voice, Tray | `settings.set_setting` · Admin | **Never** für das Einschalten des Mikrofons (Punkt 6); Stimme und Weckwort über `settings_set_setting` |
 | Gesprochene Nachricht | Schnellfenster | `assistant.send_message` (gibt es dann) | ebenso |
+| Diktieren ins Eingabefeld | Mikrofon im Eingabefeld | `assistant.dictate`, `assistant.stop_dictation` · Admin | **Never** (Punkt 6: das Mikrofon schaltet nur ein Mensch ein) |
+
+### Vorlesen (Issue #745)
+
+Der Assistent liest seine Antworten auf Wunsch vor, im Chatfenster und nach „Hey Torro“, mit dem
+Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Read aloud“.
+
+| Anbieter | Läuft | Braucht | Stimmen |
+|---|---|---|---|
+| **Lokal: Qwen3-TTS** | auf dem Rechner, Ton stückweise schon während des Rechnens (erster Ton nach ca. 0,2 s) | NVIDIA-Grafikkarte ab 4 GB (ab 8 GB das Modell 1.7B, sonst 0.6B), Python-Paket `faster-qwen3-tts` 0.5.4 mit `transformers` 5.15.1 | „Warm woman“ (empfohlen), „Calm man“: Vorlagen, die mit dem Assistenten kommen und für jede Antwort geklont werden, damit jede Antwort gleich klingt |
+| **Online: OpenAI** | `gpt-4o-mini-tts` über `POST /v1/audio/speech` | das OpenAI-Konto aus Einstellungen › KI (kein eigener Schlüssel) | die 13 Stimmen der Schnittstelle, empfohlen Marin und Cedar |
+| **Lokal: Piper** | auf dem Rechner, auch ohne Grafikkarte und Netz | Piper und eine Stimme im Sprachordner | die gefundene Stimme |
+
+- **Wer liest:** Ohne eigene Wahl Qwen3-TTS, wenn der Rechner schnell genug und Qwen eingerichtet ist, sonst
+  Piper. OpenAI nur nach ausdrücklicher Wahl, weil der Text jeder Antwort dann an OpenAI geht; diese Wahl
+  trifft nur ein Mensch (`settings.set_setting speech_provider "openai"` bekommt von jedem Client
+  `forbidden`, [api.md](api.md), Punkt 6).
+- **Empfehlung:** Die Einstellungen sagen, ob der Rechner für lokale Stimmen schnell genug ist (Grafikkarte
+  aus der Messung des Rechners), und empfehlen danach Qwen3-TTS oder OpenAI.
+- **Einrichten von Qwen:** Die Person führt den Befehl aus, den die Einstellungen zeigen („Copy“): eine eigene
+  Python-Umgebung unter `<Sprachordner>/qwen/venv`. Torro findet sie danach von selbst; die Modelle lädt
+  das erste Vorlesen (einige GB, ca. 10 s Laden).
+- **Chatfenster:** Der Lautsprecher links vom Mikrofon schaltet `voice.read_aloud` (anfangs aus). Eine neue
+  Antwort wird vorgelesen, sobald sie fertig ist; [■] an ihr und der Lautsprecher aus beenden das Vorlesen
+  sofort. „Speak answers“ bleibt der eigene Schalter für „Hey Torro“: Der Hörer spricht die Antworten seiner
+  Unterhaltung „Voice“ selbst über `assistant.speak`, das Chatfenster liest diese Unterhaltung deshalb nicht noch
+  einmal vor. Wechselt das Fenster die Unterhaltung, endet das Vorlesen.
+- **Technisch:** Der Dienst hält den Helfer `torroassistant --speak` am Laufen (JSON-Zeilen, ein Auftrag
+  zugleich, nach zehn Minuten ohne Auftrag beendet er sich und gibt den Grafikspeicher frei; ein anderer Anbieter
+  beendet ihn sofort, eine andere Stimme nicht, sie geht mit dem nächsten Auftrag mit). Qwen rechnet
+  im Helfer in Python, der Ton geht roh an `paplay`, `pw-play`, `aplay`, `play` oder `ffplay`. Den Ton von
+  OpenAI holt der Dienst selbst, weil er den Schlüssel hält, in Stücken aus ganzen Sätzen (bis 500
+  Zeichen), das nächste, während das vorige spielt. Vorgelesen werden höchstens 3000 Zeichen, ohne
+  Markdown. Der Text kommt nicht ins Protokoll.
+
+| Funktion | Oberfläche | API · Zugriff | MCP |
+|---|---|---|---|
+| Text vorlesen, Vorlesen stoppen | Chatfenster (Lautsprecher, [■]), „Preview“ in Voice | `assistant.speak`, `assistant.stop_speaking` · Write | `assistant_speak`, `assistant_stop_speaking` |
+| Wer vorlesen kann | Voice › Read aloud | `settings.speech_status` · Read | `settings_speech_status` |
+| An/aus, Anbieter, Stimmen | Voice › Read aloud, Lautsprecher im Chatfenster | `settings.set_setting` `read_aloud`, `speech_provider`, `qwen_voice`, `openai_voice` · Admin | `settings_set_setting` (OpenAI als Anbieter nur Menschen) |
 
 ## Wo die Logik liegt
 
@@ -796,11 +855,13 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 - **Speicher:** `<data>/assistant/<id>.jsonl` (0600), je Unterhaltung Nachrichten und
   Werkzeug-Aufrufe. Inhalte von Mails stehen damit auf der Platte wie im Mail-Cache; „Delete
   conversation“ löscht die Datei. Unterhaltungen werden nach **30 Tagen** gelöscht (entschieden,
-  einstellbar bis „forever“); angeheftete bleiben. Was ein Werkzeug dem Modell geliefert hat
+  einstellbar bis „forever“); angeheftete und archivierte bleiben (Issue #697). Was ein Werkzeug dem Modell geliefert hat
   (etwa ein Mail-Text), bleibt kürzer: 24 Stunden nach dem Aufruf, auch in angehefteten
   Unterhaltungen und bei „forever“ (Issue #714); danach schreibt der nächste Lauf (beim Start und
   stündlich, eine antwortende Unterhaltung in einer späteren Runde) die Datei ohne diese Ergebnisse neu,
-  Nachrichten und Werkzeugzeilen bleiben. Ob die Quelle (etwa die Mail) noch
+  Nachrichten und Werkzeugzeilen bleiben. Ein als `untrusted` markiertes Ergebnis hinterlässt
+  dabei eine Zeile ohne Inhalt, die nur die Nummer der Werkzeugzeile nennt (Issue #724); ein
+  älterer Dienst überspringt sie wie jede unbekannte Zeile. Ob die Quelle (etwa die Mail) noch
   existiert, prüft der Dienst nicht; die kurze Frist deckt das ab. Ergebnisse von Websuche und
   Seitenabruf werden nie gespeichert.
 - **Protokoll** (`audit.jsonl`) wie immer ohne Inhalte: Client `assistant`, Befehl, Kennungen.
@@ -813,6 +874,7 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 |---|---|---|---|
 | Antriebe auflisten (installiert, verbunden, Modell) | Auswahl im Eingabefeld | `assistant.list_engines` · Read | `assistant_list_engines` |
 | Unterhaltungen auflisten | Seitenleiste | `assistant.list_conversations` · Read | `assistant_list_conversations` |
+| Unterhaltungen durchsuchen (#704) | Suchfeld der Seitenleiste (ab zwei Zeichen) | `assistant.search_conversations` · Read (der Assistent durch seine Art, nur seine eigenen; Bots nie) | `assistant_search_conversations` |
 | Unterhaltung lesen (ab Stelle) | Verlauf | `assistant.get_conversation` · Read | `assistant_get_conversation` |
 | Nachricht schicken (neue oder bestehende Unterhaltung) | Eingabefeld | `assistant.send_message` · Write (startet einen Modelllauf) | `assistant_send_message` |
 | Fragen zu einer Mail | Mail › „Ask AI…“ (Paneel) | `assistant.send_message` mit `about` · Write | `assistant_send_message` mit `about` |
@@ -821,7 +883,9 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | Unterhaltung umbenennen | Kontextmenü | `assistant.rename_conversation` · Write | `assistant_rename_conversation` |
 | Unterhaltung als eigenes Fenster öffnen | „Open in new window“, „Ask about this“ | `assistant.open_window { conversation \| new \| bot }` · Write (startet `torroassistant --chat …`) | `assistant_open_window` |
 | Unterhaltung anheften (bleibt über die Aufbewahrung hinaus) | Kontextmenü | `assistant.pin_conversation` · Write | `assistant_pin_conversation` |
-| Unterhaltung löschen | Kontextmenü | `assistant.delete_conversation` · Delete | `assistant_delete_conversation` |
+| Unterhaltung löschen | Mülltonne an der Zeile, „…“ bzw. Kontextmenü | `assistant.delete_conversation` · Delete | `assistant_delete_conversation` |
+| Unterhaltungen archivieren und zurückholen (Gruppe „Archive“ unten, bleibt über die Aufbewahrung hinaus, eine Nachricht holt zurück; Issue #697) | „…“ an der Zeile bzw. Kontextmenü, „Archive all…“ an „Recent“ | `assistant.archive_conversations` · Write | `assistant_archive_conversations` |
+| Viele Unterhaltungen löschen (Issue #697) | „Delete all…“ an „Recent“, „Empty archive…“ an „Archive“ | `assistant.delete_conversations` · Delete | `assistant_delete_conversations` |
 | Standard-Antrieb, Aufbewahrung | Assistent › Einstellungen › General bzw. History | `settings.set_setting` · Admin (gibt es) | `settings_set_setting` |
 | Rechte des Assistenten | Assistent › Einstellungen › Access (seit #231), erster Start („Turn on assistant“) | `clients.update_client` (gibt es) | **Never** (Punkt 2: kein Agent ändert Rechte) |
 | Bereiche je Unterhaltung abschalten | Eingabefeld | Feld `without` in `assistant.send_message` | ebenso |
@@ -834,7 +898,7 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | **Stufe 2:** Bots auflisten | Seitenleiste „Bots“ | `bots.list_bots` · Read | `bots_list_bots` |
 | **Stufe 2:** Bot anlegen/ändern (ohne Rechte an Daten; von einem Client angelegt auch ohne Werkzeuge und Server) | Bot-Editor | `bots.save_bot` · Write | `bots_save_bot` |
 | **Stufe 2:** Bot löschen | Bot-Editor | `bots.delete_bot` · Delete | `bots_delete_bot` |
-| **Stufe 2:** Bot fragen | Chat mit dem Bot; Hauptbot gibt ab | `bots.ask_bot` · Write (startet einen Modelllauf) | `bots_ask_bot` |
+| **Stufe 2:** Bot fragen | Chat mit dem Bot; Hauptbot gibt ab | `bots.ask_bot` · Write (startet einen Modelllauf; für einen Client mit dem, was Bot und Client beide dürfen, #698) | `bots_ask_bot` |
 | **Stufe 2:** Rechte eines Bots | Bot-Editor › Access (Stufen je Bereich, „Ask first“, B.5); alles Feinere in Assistent › Einstellungen › Access bei diesem Bot | `clients.list_clients` · Admin, `clients.update_client` · Admin (gibt es, nur App-Schlüssel) | **Never** (Punkt 2) |
 | Freigabe im Chat entscheiden | Karte „Allow“/„Deny“, auf Entwurfs- und Eintragskarten „Send“/„Discard“ bzw. „Delete“/„Keep“ | `approvals.decide_approval` (gibt es) | **Never** (Punkt 3) |
 | Einträge als Karten zeigen | Karten im Verlauf | `assistant.show_items` · Write (nur Kennungen aus dieser Unterhaltung, max. 10) | `assistant_show_items` |
@@ -845,6 +909,12 @@ Neue Bereiche `assistant` und (Stufe 2) `bots` im Katalog. Ein Bot (Client `bot`
 `bots` nichts (keine Ketten); der Hauptbot darf `bots.list_bots` und `bots.ask_bot`. Ein fremder Agent, der `assistant_send_message` darf, lässt
 damit den Assistenten mit **dessen** Rechten arbeiten. Darum ist der Bereich `assistant` für andere
 Clients standardmäßig „Kein Zugriff“, auch in der Vorlage *Full access* (entschieden); man schaltet ihn je Agent bewusst an.
+Einen Bot dagegen, den ein fremder Client fragt (`bots.ask_bot`) oder dem er schreibt (`assistant.send_message` mit
+`bot`), lässt der Dienst nur mit dem arbeiten, was Bot und Client beide dürfen (`Rights::common`, wie beim
+Assistenten, Issue #698): Server, Werkzeuge und Bereiche, die der Client nicht hat, bleiben auch dem Bot zu; die
+Websuche braucht das Ja des Menschen in der Unterhaltung des Bots, und das Protokoll nennt den Client als
+Auftraggeber (`for:<client>`). Schreibt ein Client einen Bot um, öffnet ihm das also nichts. Chats des Menschen mit
+einem Bot laufen weiter mit den Rechten des Bots.
 
 ## Reihenfolge
 
@@ -876,7 +946,7 @@ Getroffen am 2026-10-13.
 5. **Ein Client „Assistant“** für alle Antriebe, der Antrieb steht im Protokoll.
 6. **Dateien und Shell** beim Agent-Antrieb immer aus.
 7. **Bereich `assistant` für andere Agenten** standardmäßig aus, auch in *Full access*.
-8. **Aufbewahrung** 30 Tage, einstellbar; angeheftete Unterhaltungen bleiben.
+8. **Aufbewahrung** 30 Tage, einstellbar; angeheftete und archivierte Unterhaltungen bleiben (Issue #697).
 9. **Fremde MCP-Server über den Abschnitt „MCP servers“, #302** (ersetzt „Fremde MCP-Server im Chat nicht in Stufe 1; Klärung
    in #79“): Die Werkzeuge erlaubter Server stehen dem Assistenten, seinen Bots und den MCP-Clients offen, je Server
    nur mit einer Stufe, je Werkzeug nur nach Zustimmung der Person (Steuerzentrale › MCP servers, Abschnitt „Your

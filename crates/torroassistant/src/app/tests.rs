@@ -100,6 +100,8 @@ fn answer_of(request: &Request, result: Result<Response, Refusal>) -> Message {
             Message::Changed(result.map(|_| ()), "failed")
         }
         Request::DeleteConversation { id } => Message::Deleted(id.clone(), result.map(|_| ())),
+        Request::ArchiveConversations { .. } => Message::Changed(result.map(|_| ()), "failed"),
+        Request::DeleteConversations { ids } => Message::DeletedMany(ids.clone(), result.map(|_| ())),
         Request::OpenChatWindow { .. } => Message::WindowOpened(result.map(|_| ())),
         Request::GetProfile => Message::Profile(result.and_then(|response| match response {
             Response::Profile { profile } => Ok(profile),
@@ -126,6 +128,20 @@ fn answer_of(request: &Request, result: Result<Response, Refusal>) -> Message {
         Request::OpenFile { .. } | Request::SaveFileAs { .. } | Request::OpenApp { .. } => {
             Message::FileDone(result.map(|_| None), "failed")
         }
+        Request::VoiceStatus => Message::Voice(result.and_then(|response| match response {
+            Response::Voice { voice } => Ok(voice),
+            other => Err(Refusal::unexpected(&other)),
+        })),
+        Request::Dictate => Message::Dictated(result.and_then(|response| match response {
+            Response::Transcript { text } => Ok(text),
+            other => Err(Refusal::unexpected(&other)),
+        })),
+        Request::StopDictation => Message::DictationStopped,
+        // Issue #745: the answer a reading belongs to is the test's to hand in (`Message::Read`).
+        Request::SetSetting { key: torro_ipc::SettingKey::ReadAloud, value } => {
+            Message::ReadAloudSet(value.as_bool().unwrap_or_default(), result.map(|_| ()))
+        }
+        Request::Speak { .. } | Request::StopSpeaking => Message::ReadingStopped,
         Request::ConfirmBot { conversation, bot } => Message::BotConfirmed(
             crate::bots::Proposal { conversation: conversation.clone(), bot: bot.clone() },
             result.map(|_| ()),
@@ -340,9 +356,10 @@ fn the_picker_offers_only_models_that_can_call_tools() {
 /// account again for its models, closed ones too.
 #[test]
 fn the_effort_goes_with_the_message_where_the_model_thinks() {
+    // Issue #699: the effort is a row in the model's menu; `--open effort` opens that menu.
     let mut app = started(&["--open", "effort"]);
     also_offered(&mut app, claude_code());
-    assert_eq!(app.menu, Some(Menu::Effort));
+    assert_eq!(app.menu, Some(Menu::Picker));
     assert!(app.effort_offered(), "qwen3:14b thinks");
     let _ = app.update(Message::PickEffort(Some(torro_core::ai::Effort::High)));
     assert_eq!((app.effort, app.menu.as_ref()), (Some(torro_core::ai::Effort::High), None));
@@ -636,6 +653,76 @@ fn the_menu_renames_pins_opens_and_deletes() {
     assert!(!app.conversations.iter().any(|c| c.id == TOOLS));
 }
 
+/// Issue #697: the bin at a row asks first and deletes that one conversation.
+#[test]
+fn the_bin_at_a_row_asks_and_deletes_its_conversation() {
+    let mut app = started(&[]);
+    sent(&mut app);
+    let row = app.conversations.iter().find(|c| !c.pinned && !c.archived).map(|c| c.id.clone()).expect("a recent one");
+    let _ = app.update(Message::AskDelete(row.clone()));
+    assert!(matches!(&app.dialog, Some(Dialog::Delete { id, .. }) if *id == row));
+    assert!(sent(&mut app).is_empty(), "deleting asks first");
+    let _ = app.update(Message::ConfirmDelete);
+    assert_eq!(sent(&mut app), [Request::DeleteConversation { id: row }]);
+}
+
+/// Issue #697: "Archive all…" and "Delete all…" take exactly what stands under "Recent", whatever the
+/// search shows – no pinned and no archived one –, ask with the number and go out as one request.
+#[test]
+fn archive_all_and_delete_all_take_the_recent_conversations() {
+    let mut app = started(&[]);
+    sent(&mut app);
+    let recent: Vec<String> =
+        app.conversations.iter().filter(|c| !c.pinned && !c.archived).map(|c| c.id.clone()).collect();
+    let ordered: Vec<String> = chat::sidebar_groups(&app.conversations, "").1.iter().map(|c| c.id.clone()).collect();
+    assert!(!recent.is_empty() && recent.len() < app.conversations.len());
+    let _ = app.update(Message::Search("Lisbon".into()));
+    sent(&mut app);
+
+    let _ = app.update(Message::AskArchiveAll);
+    assert_eq!(app.dialog, Some(Dialog::ArchiveMany { ids: ordered.clone() }), "the search narrows nothing");
+    assert!(sent(&mut app).is_empty(), "it asks first");
+    let _ = app.update(Message::ConfirmMany);
+    assert_eq!(sent(&mut app), [Request::ArchiveConversations { ids: ordered.clone(), archived: true }]);
+    assert!(app.conversations.iter().filter(|c| recent.contains(&c.id)).all(|c| c.archived));
+
+    let mut app = started(&[]);
+    sent(&mut app);
+    let _ = app.update(Message::AskDeleteAll);
+    assert_eq!(app.dialog, Some(Dialog::DeleteMany { ids: ordered.clone(), archive: false }));
+    // One gone meanwhile (another window): the rest still go, so the core does not refuse them all.
+    app.conversations.retain(|c| c.id != ordered[0]);
+    let _ = app.update(Message::ConfirmMany);
+    let requests = sent(&mut app);
+    assert_eq!(requests, [Request::DeleteConversations { ids: ordered[1..].to_vec() }]);
+    let result = block_on(app.backend.ask(requests[0].clone()));
+    let _ = app.update(answer_of(&requests[0], result));
+    assert!(app.conversations.iter().all(|c| !ordered.contains(&c.id)));
+    assert!(app.conversations.iter().any(|c| c.pinned) && app.conversations.iter().any(|c| c.archived), "these stay");
+}
+
+/// Issue #697: archived conversations stand closed in "Archive"; restoring one and emptying the archive
+/// go to the core.
+#[test]
+fn the_archive_restores_and_empties() {
+    let mut app = started(&[]);
+    sent(&mut app);
+    let archived: Vec<String> = chat::archived_group(&app.conversations, "").iter().map(|c| c.id.clone()).collect();
+    assert_eq!(archived.len(), 3, "the demo's archive");
+    assert!(!app.archive_open, "closed at the start");
+    let _ = app.update(Message::ToggleArchive);
+    assert!(app.archive_open);
+
+    let _ = app.update(Message::Archive(vec![archived[0].clone()], false));
+    assert_eq!(sent(&mut app), [Request::ArchiveConversations { ids: vec![archived[0].clone()], archived: false }]);
+    assert!(app.conversations.iter().any(|c| c.id == archived[0] && !c.archived), "shown at once");
+
+    let _ = app.update(Message::AskEmptyArchive);
+    assert_eq!(app.dialog, Some(Dialog::DeleteMany { ids: archived[1..].to_vec(), archive: true }));
+    let _ = app.update(Message::ConfirmMany);
+    assert_eq!(sent(&mut app), [Request::DeleteConversations { ids: archived[1..].to_vec() }]);
+}
+
 #[test]
 fn opening_a_conversation_takes_its_engine_and_areas() {
     let mut app = started(&[]);
@@ -736,6 +823,7 @@ fn claude_code() -> Engine {
         tools: Some(true),
         open_weights: Some(false),
         context: None,
+        max_output: None,
         parameters: None,
         quantization: None,
         size: None,
@@ -1042,7 +1130,8 @@ fn access_opens_the_bots_rights_and_a_window_is_asked_of_the_core() {
         sent(&mut app);
         let _ = app.update(Message::BotAccess(TRAVEL.into()));
         settings_loaded(&mut app);
-        assert_eq!(pane(&app).host.current().id, settings::access::ID);
+        // A bot's rights are a page below Bots since issue #763.
+        assert_eq!(pane(&app).host.current().id, settings::bots::BOTS);
         let bot = settings::access::open_bot(&pane(&app).sections.access, pane(&app).host.data());
         assert_eq!(bot.map(|summary| summary.id.as_str()), Some(TRAVEL));
         assert!(app.sections.is_empty() && sent(&mut app).is_empty(), "no request, no control centre");
@@ -1302,7 +1391,7 @@ fn the_sections_reach_the_editor_and_access() {
     settings_loaded(&mut app);
     sent(&mut app);
     let _ = app.update(Message::SettingsPage(settings::Message::Bots(section::Message::Access(TRAVEL.into()))));
-    assert_eq!(pane(&app).host.current().id, settings::access::ID);
+    assert_eq!(pane(&app).host.current().id, section::BOTS, "the bot's rights, below Bots (issue #763)");
     let bot = settings::access::open_bot(&pane(&app).sections.access, pane(&app).host.data());
     assert_eq!(bot.map(|summary| summary.id.as_str()), Some(TRAVEL));
     assert!(app.sections.is_empty(), "not the control centre");
@@ -1312,14 +1401,15 @@ fn the_sections_reach_the_editor_and_access() {
 }
 
 /// Issue #547: the demo states of the settings open their section and press on its page once the
-/// data is in – the profile editor, with a changed name its save bar, and the tabs of Access.
+/// data is in – the profile editor under General (issue #763), with a changed name its save bar, the
+/// tabs of Access and a bot's rights below Bots.
 #[test]
 fn the_settings_demo_states_open_their_page() {
     for (word, section) in [
-        ("profile-editor", "profile"),
-        ("profile-changed", "profile"),
+        ("profile-editor", "general"),
+        ("profile-changed", "general"),
         ("access-selections", "access"),
-        ("access-bots", "access"),
+        ("access-bots", "bots"),
     ] {
         let mut app = started(&["--open", word]);
         assert_eq!(pane(&app).host.current().id, section, "{word}");
@@ -1327,22 +1417,28 @@ fn the_settings_demo_states_open_their_page() {
         assert!(app.settings_steps.is_empty(), "{word}: pressed once the data is in");
         let pane = pane(&app);
         let page = settings::page(&pane.sections, pane.host.data(), section, SizeClass::Wide);
-        if section == "profile" {
+        if section == "general" {
             assert!(page.sub_page.is_some(), "{word}: the editor is open");
             assert_eq!(page.save_bar.is_some(), word == "profile-changed", "{word}");
+        }
+        if section == "bots" {
+            let name = pane.host.data().bots.iter().find(|bot| bot.id == TRAVEL).map(|bot| bot.name.clone());
+            assert_eq!(page.sub_page.map(|(name, _)| name), name, "{word}: the travel planner's rights");
         }
     }
 }
 
-/// `--bot <id> --settings access` opens Access at that bot in the bot's window (task S.34).
+/// `--bot <id> --settings access` opens that bot's rights in the bot's window (task S.34), below
+/// Bots since issue #763; the main window's `--settings access` the assistant's, under Access.
 #[test]
 fn settings_access_with_a_bot_starts_at_the_bot() {
     let mut app = started(&["--bot", TRAVEL, "--settings", "access"]);
-    assert_eq!(pane(&app).host.current().id, settings::access::ID);
+    assert_eq!(pane(&app).host.current().id, settings::bots::BOTS);
     settings_loaded(&mut app);
     let bot = settings::access::open_bot(&pane(&app).sections.access, pane(&app).host.data());
     assert_eq!(bot.map(|summary| summary.id.as_str()), Some(TRAVEL));
     let main = started(&["--settings", "access"]);
+    assert_eq!(pane(&main).host.current().id, settings::access::ID);
     assert!(settings::access::open_bot(&pane(&main).sections.access, pane(&main).host.data()).is_none());
 }
 
@@ -1594,4 +1690,262 @@ fn an_answer_stored_under_another_number_goes_on_where_it_was() {
 fn an_answer_waiting_for_approval_is_followed_slowly() {
     assert!(started(&["--open", "approval"]).waits_for_approval());
     assert!(!started(&["--open", "streaming"]).waits_for_approval());
+}
+
+/// Issue #704: from two characters on the search asks the core; an answer for other words than those in
+/// the field is dropped, and fewer than two characters filter the titles only.
+#[test]
+fn the_search_asks_the_core_and_drops_stale_hits() {
+    let mut app = started(&[]);
+    sent(&mut app);
+    let _ = app.update(Message::Search("A".into()));
+    assert!(sent(&mut app).is_empty(), "one character filters the titles");
+    let _ = app.update(Message::Search(" An ".into()));
+    assert_eq!(sent(&mut app), [Request::SearchConversations { query: "An".into(), limit: Some(MAX_HITS) }]);
+    let _ = app.update(Message::Search("Ann".into()));
+    sent(&mut app);
+    let _ = app.update(Message::Hits("An".into(), Ok(Vec::new())));
+    assert!(app.hits.is_none(), "stale");
+    let _ = app.update(Message::Hits("Ann".into(), Ok(Vec::new())));
+    assert_eq!((app.hits.clone(), app.hits_for.as_str()), (Some(Ok(Vec::new())), "Ann"));
+    let _ = app.update(Message::Search("Anx".into()));
+    assert_eq!((app.hits_for.as_str(), app.asked.as_str()), ("Ann", "Anx"), "the last hits stay while asking");
+    let _ = app.update(Message::Hits("Anx".into(), Ok(Vec::new())));
+    assert_eq!(app.hits_for, "Anx");
+    let _ = app.update(Message::Search("A".into()));
+    assert!(app.hits.is_none(), "back to the titles");
+}
+
+/// Issue #704: a hit opens its conversation with the entry marked and the history not following the
+/// newest entry; choosing another conversation unmarks it.
+#[test]
+fn a_hit_opens_its_conversation_at_the_place() {
+    let mut app = started(&[]);
+    let _ = app.update(Message::Search(demo::SEARCH_WORD.into()));
+    settle(&mut app);
+    let hit = match &app.hits {
+        Some(Ok(hits)) => hits.first().cloned().expect("the demo holds the word"),
+        other => panic!("expected hits, got {other:?}"),
+    };
+    let seq = hit.seq.expect("an entry");
+    let _ = app.update(Message::OpenHit(hit.conversation.clone(), Some(seq)));
+    settle(&mut app);
+    assert_eq!(app.current.as_deref(), Some(hit.conversation.as_str()));
+    assert_eq!(app.marked, Some((hit.conversation.clone(), seq)));
+    assert!(app.transcript.entries.iter().any(|entry| entry.seq == seq), "the entry is there");
+    assert!(!app.follow_bottom && app.snap.is_none(), "scrolled to the hit, not to the newest");
+    let other = app.conversations.iter().find(|c| c.id != hit.conversation).map(|c| c.id.clone()).expect("another");
+    let _ = app.update(Message::Select(other));
+    assert_eq!(app.marked, None);
+    // A deleted conversation goes from the hits: listing again searches again.
+    sent(&mut app);
+    let _ = app.update(Message::Listed(Ok(app.conversations.clone())));
+    assert!(sent(&mut app).iter().any(|request| matches!(request, Request::SearchConversations { .. })));
+}
+
+/// Issue #699: the microphone dictates into the field and sends nothing; a second press stops the
+/// recording, the text then comes as it was heard.
+#[test]
+fn the_microphone_writes_into_the_field_without_sending() {
+    let mut app = started(&[]);
+    assert!(app.can_dictate(), "the demo has speech recognition");
+    sent(&mut app);
+    let _ = app.update(Message::Edit(text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new("Note:".into())))));
+    let _ = app.update(Message::Dictate);
+    assert_eq!(app.dictation, Dictation::Recording);
+    let requests = sent(&mut app);
+    assert!(matches!(requests.as_slice(), [Request::Dictate]), "{requests:?}");
+    let _ = app.update(Message::Dictate);
+    assert_eq!(app.dictation, Dictation::Stopping);
+    assert!(matches!(sent(&mut app).as_slice(), [Request::StopDictation]));
+    let _ = app.update(Message::Dictate);
+    assert!(sent(&mut app).is_empty(), "nothing more while the speech turns into text");
+    let _ = app.update(Message::Dictated(Ok("call Anna".into())));
+    assert_eq!(app.dictation, Dictation::Idle);
+    assert_eq!(app.editor.text().trim_end(), "Note: call Anna", "a space in front, at the caret");
+    assert!(!sent(&mut app).iter().any(|request| matches!(request, Request::SendMessage { .. })), "nothing is sent");
+    // At the start of the field nothing stands before the caret: no space in front.
+    let _ = app.update(Message::Edit(text_editor::Action::Move(text_editor::Motion::DocumentStart)));
+    let _ = app.update(Message::Dictate);
+    let _ = app.update(Message::Dictated(Ok("Please".into())));
+    assert!(
+        app.editor.text().starts_with("Please Note: call Anna"),
+        "a space behind, before the word: {:?}",
+        app.editor.text()
+    );
+}
+
+/// Issue #699: nothing understood, speech recognition gone and other failures each say so; the
+/// field stays as it was.
+#[test]
+fn a_dictation_that_brings_nothing_says_why() {
+    let mut app = started(&[]);
+    let _ = app.update(Message::Dictate);
+    let _ = app.update(Message::Dictated(Ok("  ".into())));
+    assert_eq!(app.notice.as_ref().map(|notice| notice.text.as_str()), Some(tr("Nothing was understood.")));
+    assert!(app.editor.text().trim().is_empty());
+    sent(&mut app);
+    let _ = app.update(Message::Dictate);
+    let _ = app.update(Message::Dictated(Err(Refusal::new("unsupported", "whisper-cli is missing"))));
+    assert_eq!(app.notice.as_ref().map(|notice| notice.text.as_str()), Some(tr("Speech recognition isn't set up.")));
+    assert!(
+        sent(&mut app).iter().any(|request| matches!(request, Request::VoiceStatus)),
+        "asks again how voice stands"
+    );
+    let _ = app.update(Message::Dictate);
+    let _ = app.update(Message::Dictated(Err(Refusal::new("error", "the recording failed"))));
+    assert_eq!(app.notice.as_ref().map(|notice| notice.text.as_str()), Some(tr("Couldn't dictate.")));
+    assert_eq!(app.dictation, Dictation::Idle);
+}
+
+/// Issue #699: without speech recognition the microphone opens Settings › Voice and records nothing.
+#[test]
+fn without_speech_recognition_the_microphone_opens_the_settings() {
+    let mut app = started(&[]);
+    app.voice = Some(torro_ipc::VoiceStatus { installed: true, ..torro_ipc::VoiceStatus::default() });
+    assert!(!app.can_dictate());
+    sent(&mut app);
+    let _ = app.update(Message::Dictate);
+    assert_eq!(app.dictation, Dictation::Idle);
+    assert_eq!(pane(&app).host.current().id, VOICE_PAGE);
+    assert!(!sent(&mut app).iter().any(|request| matches!(request, Request::Dictate)));
+    for size in SIZES {
+        let _ = app.update(Message::Resized(size));
+        let _ = app.view();
+    }
+}
+
+/// Issue #699: a bot's chat has neither the plus with the areas nor the mode; the assistant's has
+/// both, and the composer builds in every size while it records.
+#[test]
+fn a_bots_chat_has_no_areas_and_no_mode() {
+    assert!(started(&[]).offers_areas_and_mode());
+    assert!(!started(&["--bot", TRAVEL]).offers_areas_and_mode());
+    let mut app = started(&["--open", "dictating"]);
+    assert_eq!(app.dictation, Dictation::Recording);
+    for size in SIZES {
+        let _ = app.update(Message::Resized(size));
+        let _ = app.view();
+    }
+}
+
+/// Issue #745: with the speaker on, a new answer is read aloud once it is complete, once; an answer
+/// that was there on opening is not, and off reads nothing.
+#[test]
+fn a_new_answer_is_read_aloud_once_it_is_complete() {
+    let mut app = answering();
+    app.read_aloud = true;
+    sent(&mut app);
+    let entries = vec![answer_entry(2, "Let me look.")];
+    let _ = app.update(Message::Followed(id_of(&app), Ok((head(&app, 1, true), entries))));
+    assert!(!sent(&mut app).iter().any(|request| matches!(request, Request::Speak { .. })), "not complete yet");
+    let entries = vec![answer_entry(2, "Let me look. Found it.")];
+    let _ = app.update(Message::Followed(id_of(&app), Ok((head(&app, 2, false), entries))));
+    let speak: Vec<_> = sent(&mut app).into_iter().filter(|request| matches!(request, Request::Speak { .. })).collect();
+    assert_eq!(speak, [Request::Speak { text: "Let me look. Found it.".into() }]);
+    assert_eq!(app.reading, Some(2), "[■] shows at it");
+    let _ = app.update(Message::Followed(
+        id_of(&app),
+        Ok((head(&app, 2, false), vec![answer_entry(2, "Let me look. Found it.")])),
+    ));
+    assert!(!sent(&mut app).iter().any(|request| matches!(request, Request::Speak { .. })), "read once");
+    let conversation = app.current.clone();
+    let _ = app.update(Message::Read(conversation, 2, Ok(())));
+    assert_eq!(app.reading, None);
+
+    // Answer, tool, answer: nothing is read while the run goes on, then only the last answer.
+    let mut parts = answering();
+    parts.read_aloud = true;
+    sent(&mut parts);
+    let entries = vec![answer_entry(2, "I'll look at your calendar."), answer_entry(3, "Three events.")];
+    let _ = parts.update(Message::Followed(id_of(&parts), Ok((head(&parts, 3, true), entries.clone()))));
+    assert!(!sent(&mut parts).iter().any(|request| matches!(request, Request::Speak { .. })), "the run goes on");
+    let _ = parts.update(Message::Followed(id_of(&parts), Ok((head(&parts, 3, false), entries))));
+    let speak: Vec<_> =
+        sent(&mut parts).into_iter().filter(|request| matches!(request, Request::Speak { .. })).collect();
+    assert_eq!(speak, [Request::Speak { text: "Three events.".into() }]);
+
+    // A new chat stops what the old conversation reads, and [■] never stands at another's answer.
+    assert_eq!(parts.reading, Some(3));
+    let _ = parts.update(Message::NewChat);
+    assert!(sent(&mut parts).contains(&Request::StopSpeaking));
+    assert_eq!(parts.reading, None);
+
+    // The conversation of "Hey Torro": the listener speaks its answers, the window does not.
+    let mut spoken = answering();
+    spoken.read_aloud = true;
+    if let Some(summary) = spoken.transcript.summary.as_mut() {
+        summary.title = crate::voice::listen::voice_title().to_string();
+    }
+    sent(&mut spoken);
+    let mut summary = head(&spoken, 2, false);
+    summary.title = crate::voice::listen::voice_title().to_string();
+    let _ = spoken.update(Message::Followed(id_of(&spoken), Ok((summary, vec![answer_entry(2, "Hi.")]))));
+    assert!(!sent(&mut spoken).iter().any(|request| matches!(request, Request::Speak { .. })));
+
+    // Off: a new answer is only shown.
+    let mut quiet = answering();
+    sent(&mut quiet);
+    let _ = quiet.update(Message::Followed(id_of(&quiet), Ok((head(&quiet, 2, false), vec![answer_entry(2, "Hi.")]))));
+    assert!(!sent(&mut quiet).iter().any(|request| matches!(request, Request::Speak { .. })));
+    // Opening a conversation reads nothing of what is there.
+    let mut opened = started(&["--chat", TOOLS]);
+    opened.read_aloud = true;
+    let _ = opened.update(Message::Select(TOOLS.into()));
+    settle(&mut opened);
+    assert_eq!(opened.reading, None);
+}
+
+/// Issue #745: the speaker switches the setting and back when the core refuses; switching it off
+/// and [■] stop what is read at once; a failure says why.
+#[test]
+fn the_speaker_switches_reading_aloud_and_stops_it() {
+    let mut app = started(&["--open", "reading"]);
+    assert!(app.read_aloud && app.reading == Some(demo::READ_ANSWER));
+    sent(&mut app);
+    let _ = app.update(Message::StopReading);
+    assert_eq!(sent(&mut app), [Request::StopSpeaking]);
+    assert_eq!(app.reading, None);
+
+    // Off stops only what this window reads.
+    let _ = app.update(Message::ToggleReadAloud);
+    assert!(!sent(&mut app).contains(&Request::StopSpeaking), "nothing of this window reads");
+    let _ = app.update(Message::ToggleReadAloud);
+    sent(&mut app);
+    app.reading = Some(demo::READ_ANSWER);
+    let _ = app.update(Message::ToggleReadAloud);
+    let requests = sent(&mut app);
+    let off = Request::SetSetting { key: torro_ipc::SettingKey::ReadAloud, value: serde_json::json!(false) };
+    assert!(requests.contains(&off) && requests.contains(&Request::StopSpeaking), "{requests:?}");
+    assert!(!app.read_aloud && app.reading.is_none());
+    let _ = app.update(Message::ToggleReadAloud);
+    assert!(app.read_aloud);
+    let _ = app.update(Message::ReadAloudSet(true, Err(Refusal::new("forbidden", "no"))));
+    assert!(!app.read_aloud, "back as it was");
+
+    // Escape stops reading first; settings loaded while the switch is on its way do not turn it back.
+    app.reading = Some(4);
+    let _ = app.update(Message::Escape);
+    assert_eq!(app.reading, None);
+    assert!(sent(&mut app).contains(&Request::StopSpeaking));
+    let _ = app.update(Message::ToggleReadAloud);
+    assert!(app.read_aloud);
+    let mut stale = torro_core::settings::Settings::default();
+    stale.voice.read_aloud = false;
+    app.launch.open = None;
+    let _ = app.update(Message::Settings(Ok(Box::new(stale.clone()))));
+    assert!(app.read_aloud, "the old value of a load that overlapped the switch");
+    let _ = app.update(Message::ReadAloudSet(true, Ok(())));
+    let _ = app.update(Message::Settings(Ok(Box::new(stale))));
+    assert!(!app.read_aloud, "switched in another window afterwards");
+
+    let message = "Connect an OpenAI account in Settings › AI to read aloud with OpenAI.";
+    app.reading = Some(4);
+    let _ = app.update(Message::Read(app.current.clone(), 4, Err(Refusal::new("unsupported", message))));
+    assert_eq!(app.reading, None);
+    assert_eq!(app.notice.as_ref().map(|notice| notice.text.as_str()), Some(message), "the core's words");
+    for size in SIZES {
+        let _ = app.update(Message::Resized(size));
+        let _ = app.view();
+    }
 }

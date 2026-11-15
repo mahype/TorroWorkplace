@@ -6,15 +6,21 @@
 //!
 //! - **"Edit"** opens the bot's editor in the assistant ([`super::AppAction::EditBot`]), where who
 //!   the bot is – name, picture, personality, instructions, skills, engine – is written.
-//! - **"Access"** opens the section Access at this bot (task S.34, [`super::access`]), where what
-//!   the bot may use is chosen: a bot's rights are `clients.*`, which only Access sends, and a new
-//!   bot may use nothing until a person allows it there. [`super::update`] takes the message, so
-//!   Access opens at the bot; [`update`] alone only opens the section.
+//! - **"Access"** opens the bot's rights on a page below this section, "Bots › Travel planner"
+//!   (task S.34, issue #763), where what the bot may use is chosen: a bot's rights are `clients.*`,
+//!   which only [`super::access`] draws and sends, and a new bot may use nothing until a person
+//!   allows it there. [`super::update`] takes the message, so the page opens at the bot; [`update`]
+//!   alone only opens the section.
+//!
+//! Under each bot's name stand its rights in words (issue #763), so the list says what each may use
+//! without a second list under Access; its description is in its editor. The words come from
+//! Access as text ([`super::access::bot_rights`]): this section touches no rights.
 //!
 //! The section reads and writes nothing itself: the bots come with [`Data`] (`bots.list_bots`).
 
 use iced::widget::{Space, row};
 use iced::{Element, Length};
+use torro_ipc::bots::BotSummary;
 
 use torro_core::i18n::tr;
 use torro_gui::icon::Icon;
@@ -22,15 +28,18 @@ use torro_gui::layout::SizeClass;
 use torro_gui::theme::{size, space};
 use torro_gui::{style, widgets};
 
-use super::{Action, AppAction, access, avatar};
+use super::{Action, AppAction, avatar};
 use crate::Data;
 use crate::parts::setting_row;
+
+/// The section's id, as the list, `--settings bots` and [`crate::Action::Open`] name it.
+pub const BOTS: &str = "bots";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message {
     /// "Edit" at the bot with this id: its editor in the assistant.
     Edit(String),
-    /// "Access" at the bot with this id: the section Access at this bot.
+    /// "Access" at the bot with this id: its rights on a page below this section.
     Access(String),
 }
 
@@ -38,21 +47,25 @@ pub fn update(message: Message, _data: &Data) -> Action {
     match message {
         Message::Edit(id) => Action::App(AppAction::EditBot(id)),
         // Which bot is the sections' state ([`super::show_access`]); here only the way there.
-        Message::Access(_) => Action::Open(access::ID),
+        Message::Access(_) => Action::Open(BOTS),
     }
 }
 
 // ----- Views --------------------------------------------------------------------------------
 
-/// A row per bot with its picture, name and description, and the two ways to it; without bots,
-/// where they are made. In a narrow window the two ways are icons with a tooltip, so the name
-/// keeps its room (design skill, section 6).
-pub fn view(data: &Data, class: SizeClass) -> Element<'_, Message> {
+/// A row per bot with its picture, name and its rights in words (`rights`, from Access), and the two
+/// ways to it; without bots, where they are made. In a narrow window the two ways are icons with a
+/// tooltip, so the name keeps its room (design skill, section 6).
+pub fn view<'a>(
+    data: &'a Data,
+    class: SizeClass,
+    rights: impl Fn(&BotSummary) -> Option<String>,
+) -> Element<'a, Message> {
     if !super::is_on(data) {
         return super::off_group(tr("Bots"));
     }
     let words = matches!(class, SizeClass::Wide | SizeClass::Medium);
-    let mut rows: Vec<Element<'_, Message>> = data.bots.iter().map(|bot| bot_row(bot, words)).collect();
+    let mut rows: Vec<Element<'a, Message>> = data.bots.iter().map(|bot| bot_row(bot, rights(bot), words)).collect();
     if rows.is_empty() {
         let hint = tr("Make one with New bot in the sidebar.");
         rows.push(setting_row(None, tr("No bots yet"), Some(hint.to_string()), Space::new()));
@@ -63,9 +76,10 @@ pub fn view(data: &Data, class: SizeClass) -> Element<'_, Message> {
     widgets::group(tr("Bots"), rows, Some(footer.to_string()))
 }
 
-/// One bot: its picture, name and description, "Edit" in the assistant and "Access" in these
-/// settings, with their words or as icons (`words`).
-fn bot_row(bot: &torro_ipc::bots::BotSummary, words: bool) -> Element<'_, Message> {
+/// One bot: its picture, name and rights in words, "Edit" in the assistant and "Access" in these
+/// settings, with their words or as icons (`words`). Without words for its rights the core lists
+/// no client of the bot: then the line says what to do.
+fn bot_row(bot: &BotSummary, rights: Option<String>, words: bool) -> Element<'_, Message> {
     let (edit, access) = (Message::Edit(bot.id.clone()), Message::Access(bot.id.clone()));
     let buttons = match words {
         true => row![
@@ -78,9 +92,10 @@ fn bot_row(bot: &torro_ipc::bots::BotSummary, words: bool) -> Element<'_, Messag
         ],
     };
     let buttons = buttons.spacing(space::s()).width(Length::Shrink);
-    let description = Some(bot.description.clone()).filter(|text| !text.is_empty());
+    let rights = rights
+        .unwrap_or_else(|| tr("Save the bot once more in its editor; until then it may use nothing.").to_string());
     let face = avatar(&bot.name, &bot.avatar, size::control_sm());
-    setting_row(Some(face), bot.name.as_str(), description, buttons)
+    setting_row(Some(face), bot.name.as_str(), Some(rights), buttons)
 }
 
 #[cfg(test)]
@@ -96,17 +111,21 @@ mod tests {
         let bot = data.bots.first().expect("the demo has a bot");
         let edit = update(Message::Edit(bot.id.clone()), &data);
         assert_eq!(edit, Act::App(AppAction::EditBot(bot.id.clone())));
-        assert_eq!(update(Message::Access(bot.id.clone()), &data), Act::Open("access"));
+        assert_eq!(update(Message::Access(bot.id.clone()), &data), Act::Open("bots"));
     }
 
-    /// With bots, without bots, and while the assistant is off; with words and as icons.
+    /// With bots, without bots, and while the assistant is off; with words and as icons; with the
+    /// rights in words and without.
     #[tokio::test]
     async fn the_list_builds_in_every_state() {
         let data = data().await;
+        let words = |_: &BotSummary| Some("Reads calendars".to_string());
+        let none = |_: &BotSummary| None;
         for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow, SizeClass::Mini, SizeClass::Strip] {
-            let _ = view(&data, class);
-            let _ = view(&Data { bots: Vec::new(), ..data.clone() }, class);
-            let _ = view(&turned_off(&data), class);
+            let _ = view(&data, class, words);
+            let _ = view(&data, class, none);
+            let _ = view(&Data { bots: Vec::new(), ..data.clone() }, class, words);
+            let _ = view(&turned_off(&data), class, words);
         }
     }
 }

@@ -568,6 +568,7 @@ impl App {
             suggestions: contact::suggestions(&known, &on, &detail.group_text),
             busy: detail.busy,
             error: detail.error.as_deref(),
+            maps: &detail.maps,
         }
     }
 

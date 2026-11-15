@@ -10,8 +10,9 @@
 //!   starts it this way, and a workspace template brings the same bot back with its argument.
 //! - `--demo`: sample conversations in memory instead of the core ([`crate::demo`]).
 //! - `--settings <section>`: open the window with its settings in the content area, at this
-//!   section (`general`, `access`, `profile`, `bots`, `voice`, `history`; tasks S.18, S.34). In a
-//!   bot's window `--bot <id> --settings access` opens Access at that bot. A start parameter, so
+//!   section (`general`, `voice`, `skills`, `bots`, `access`; tasks S.18, S.34, issue #763), or at a
+//!   page of the suite (`ai`, `appearance`, …). In a bot's window `--bot <id> --settings access` opens
+//!   that bot's rights, below Bots. A start parameter, so
 //!   only a person starting the program opens the settings: no text of an answer can, and the
 //!   links of an answer stay on `http(s)` ([`crate::app`]).
 //! - `--open <state>`: start in a state ([`Open`]), for screenshots; needs `--demo`.
@@ -57,10 +58,19 @@ pub enum Open {
     Forbidden,
     /// The model picker of the composer.
     Picker,
-    /// The effort menu of the composer (issue #131).
+    /// The effort of the composer (issue #131): since issue #699 a row in the model's menu, which
+    /// this state opens like `picker`.
     Effort,
     /// The permission mode menu under the composer (issue #132).
     Mode,
+    /// The composer while the microphone records (issue #699).
+    Dictating,
+    /// "Plan for tomorrow" while its answer is read aloud (issue #745): the speaker on, [■] at the
+    /// answer.
+    Reading,
+    /// The composer with two areas switched off: a chip for each, "2 areas off" when narrow
+    /// (issue #699).
+    AreasOff,
     /// The "…" menu of the open conversation (Rename, Pin, Open in new window, Delete).
     Menu,
     /// The dialog that renames the open conversation.
@@ -97,19 +107,31 @@ pub enum Open {
     BotGone,
     /// "Train or plane to Vienna?": the assistant proposes a bot; the card "Ask Travel planner?".
     BotProposal,
-    /// The settings at Profile, its editor open (issue #547).
+    /// The settings at General › Profile, its editor open (issue #547).
     ProfileEditor,
     /// The profile editor with the name changed: the save bar shows (issue #547).
     ProfileChanged,
     /// The settings at Access, its tab Selections (issue #547).
     AccessSelections,
-    /// The settings at Access, its tab Bots (issue #547).
+    /// The rights of the demo's travel planner, below Bots (issue #547; the tab Bots of Access it
+    /// showed is gone with issue #763).
     AccessBots,
+    /// The sidebar's search through the history with a word of the demo, its first hit opened and marked
+    /// (issue #704).
+    Search,
+    /// The sidebar's group "Archive" open, with its three conversations (issue #697).
+    Archive,
+    /// The "…" menu of a conversation's row in the sidebar: Rename, Pin, Archive, … (issue #697).
+    RowMenu,
+    /// The "…" menu of the sidebar's group "Recent": Archive all…, Delete all… (issue #697).
+    RecentMenu,
+    /// The question before deleting every conversation under "Recent" (issue #697).
+    DeleteAll,
 }
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 30] = [
+    pub const ALL: [(&'static str, Open); 38] = [
         ("new", Open::New),
         ("tools", Open::Tools),
         ("approval", Open::Approval),
@@ -118,6 +140,9 @@ impl Open {
         ("picker", Open::Picker),
         ("effort", Open::Effort),
         ("mode", Open::Mode),
+        ("dictating", Open::Dictating),
+        ("reading", Open::Reading),
+        ("areas-off", Open::AreasOff),
         ("menu", Open::Menu),
         ("rename", Open::Rename),
         ("delete", Open::Delete),
@@ -140,6 +165,11 @@ impl Open {
         ("profile-changed", Open::ProfileChanged),
         ("access-selections", Open::AccessSelections),
         ("access-bots", Open::AccessBots),
+        ("search", Open::Search),
+        ("archive", Open::Archive),
+        ("row-menu", Open::RowMenu),
+        ("recent-menu", Open::RecentMenu),
+        ("delete-all", Open::DeleteAll),
     ];
 }
 
@@ -380,7 +410,8 @@ mod tests {
             let parsed = Launch::parse(&args(&["--demo", "--settings", suite])).expect("valid");
             assert_eq!(parsed.settings.as_deref(), Some(suite));
         }
-        for bad in ["rights", "", "Voice"] {
+        // Issue #763: the parts that became tabs or groups of a section are no section of their own.
+        for bad in ["rights", "", "Voice", "profile", "tools", "history"] {
             let refused = Launch::parse(&args(&["--settings", bad]));
             assert!(matches!(refused, Err(LaunchError::UnknownValue { flag: "--settings", .. })), "{bad:?}");
         }

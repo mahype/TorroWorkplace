@@ -884,6 +884,7 @@ mod tests {
             tools: None,
             open_weights: None,
             context: None,
+            max_output: None,
             parameters: None,
             quantization: None,
             size: None,

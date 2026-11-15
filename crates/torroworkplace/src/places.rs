@@ -292,7 +292,7 @@ impl Places {
         if let Some(places) = self.answer(&key, Instant::now()) {
             return Ok(places);
         }
-        let url = search_url(maps, query, near, lang)?;
+        let url = search_url(maps, query, near, lang, SEARCH_LIMIT)?;
         self.wait_turn(Service::Search, asker).await?;
         let Fetched::Body { bytes, .. } = self.get(Service::Search, url, None).await? else {
             return Err(Failure::Broken);
@@ -303,6 +303,38 @@ impl Places {
         };
         self.keep_answer(key, places.clone(), Instant::now());
         Ok(places)
+    }
+
+    /// Where the search service of `maps` puts the address `line` of a contact (issue #355,
+    /// `contacts.locate_contact`; the core checked the switches and that a person opened the
+    /// contact): the first place it finds, `Ok(None)` when it finds none, or the answer for why it
+    /// gave none (`busy`, `offline`, `error`). Always asked as the person ([`Asker::Person`]): only the
+    /// contacts app makes the core look up, and it waits for the next free second. Nothing is kept in
+    /// memory here; the core keeps the point with the contact.
+    pub async fn lookup(&self, maps: &Maps, line: &str) -> Result<Option<Geo>, Response> {
+        let failed = |failure: Failure| failure.response(Service::Search);
+        let url = search_url(maps, line, None, language(), 1).map_err(failed)?;
+        self.wait_turn(Service::Search, Asker::Person).await.map_err(failed)?;
+        let Fetched::Body { bytes, .. } = self.get(Service::Search, url, None).await.map_err(failed)? else {
+            return Err(failed(Failure::Broken));
+        };
+        let places = match maps.geocoder_kind {
+            GeocoderKind::Photon => photon_places(&bytes),
+            GeocoderKind::Nominatim => nominatim_places(&bytes),
+        }
+        .map_err(failed)?;
+        Ok(places.first().map(|place| place.geo))
+    }
+
+    /// The bytes of the map tiles on disk (`settings.maps_status`, issue #355).
+    pub fn tile_bytes(&self) -> u64 {
+        self.tiles.bytes()
+    }
+
+    /// Removes every map tile on disk (`settings.clear_maps_cache`, issue #355); maps fetch them
+    /// again afterwards.
+    pub fn clear_tiles(&self) {
+        self.tiles.clear();
     }
 
     /// A kept answer for `key` younger than [`ANSWER_FOR`] at `now`.
@@ -480,13 +512,14 @@ fn answer_key(maps: &Maps, query: &str, near: Option<Geo>, lang: &str) -> String
     format!("{kind}|{}|{lang}|{}|{near}", maps.geocoder, query.trim().to_lowercase())
 }
 
-/// The address of the search for `query` at the service of `maps`: Photon
+/// The address of the search for `query` at the service of `maps`, for at most `limit` places
+/// ([`SEARCH_LIMIT`] for the editor, 1 for the address of a contact): Photon
 /// `/api?q=…&limit=6&lang=…` (with `lat`/`lon` of `near`), Nominatim
 /// `/search?format=jsonv2&q=…&limit=6&accept-language=…` (Nominatim has no "near"). Only `http`
 /// and `https`.
-fn search_url(maps: &Maps, query: &str, near: Option<Geo>, lang: &str) -> Result<reqwest::Url, Failure> {
+fn search_url(maps: &Maps, query: &str, near: Option<Geo>, lang: &str, limit: usize) -> Result<reqwest::Url, Failure> {
     let base = maps.geocoder.trim().trim_end_matches('/');
-    let limit = SEARCH_LIMIT.to_string();
+    let limit = limit.to_string();
     let query = query.trim();
     let url = match maps.geocoder_kind {
         GeocoderKind::Photon => {
@@ -825,6 +858,29 @@ impl TileCache {
         }
     }
 
+    /// The bytes of every tile and `ETag` on disk; 0 without a directory.
+    fn bytes(&self) -> u64 {
+        let Some(dir) = &self.dir else { return 0 };
+        let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+        entries
+            .flatten()
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "tile" || ext == "etag"))
+            .filter_map(|entry| entry.metadata().ok())
+            .map(|meta| meta.len())
+            .sum()
+    }
+
+    /// Removes every tile and `ETag` (only those: nothing else of the directory).
+    fn clear(&self) {
+        let Some(dir) = &self.dir else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            if entry.path().extension().is_some_and(|ext| ext == "tile" || ext == "etag") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
     /// The service said the tile at `url` is unchanged: fresh again from `now`.
     fn touch(&self, url: &str, now: SystemTime) {
         if let Some((tile, _)) = self.files(url) {
@@ -920,20 +976,21 @@ mod tests {
     #[test]
     fn search_addresses_follow_the_service() {
         let maps = Maps { geocoder: "https://photon.example.org/".into(), ..Maps::default() };
-        let url = search_url(&maps, " Alexanderplatz 1 ", Some(geo(52.5, 13.4)), "de").expect("an address");
+        let url =
+            search_url(&maps, " Alexanderplatz 1 ", Some(geo(52.5, 13.4)), "de", SEARCH_LIMIT).expect("an address");
         assert_eq!(url.as_str(), "https://photon.example.org/api?q=Alexanderplatz+1&limit=6&lang=de&lat=52.5&lon=13.4");
         let nominatim = Maps {
             geocoder: "https://nominatim.example.org".into(),
             geocoder_kind: GeocoderKind::Nominatim,
             ..Maps::default()
         };
-        let url = search_url(&nominatim, "Alex", Some(geo(52.5, 13.4)), "en").expect("an address");
+        let url = search_url(&nominatim, "Alex", Some(geo(52.5, 13.4)), "en", SEARCH_LIMIT).expect("an address");
         assert_eq!(
             url.as_str(),
             "https://nominatim.example.org/search?format=jsonv2&q=Alex&limit=6&accept-language=en"
         );
         let ftp = Maps { geocoder: "ftp://photon.example.org".into(), ..Maps::default() };
-        assert_eq!(search_url(&ftp, "Alex", None, "en"), Err(Failure::Address));
+        assert_eq!(search_url(&ftp, "Alex", None, "en", SEARCH_LIMIT), Err(Failure::Address));
     }
 
     #[test]
@@ -1126,6 +1183,48 @@ mod tests {
         let again = places.search(&maps, " alexanderplatz ", None, Asker::Client, Vec::new()).await;
         assert_eq!(again, Response::Places { places: found });
         assert_eq!(photon.calls_async().await, 1);
+    }
+
+    /// Issue #355: an address of a contact asks for one place, never from memory, and the first one is
+    /// the point; none found is `None`.
+    #[tokio::test]
+    async fn an_address_asks_for_one_place_each_time() {
+        let server = MockServer::start_async().await;
+        let photon = server
+            .mock_async(|when, then| {
+                when.method(GET).path("/api").query_param("q", "Example Street 1, Berlin").query_param("limit", "1");
+                then.status(200).body(fixture("photon.json"));
+            })
+            .await;
+        let nothing = server
+            .mock_async(|when, then| {
+                when.method(GET).path("/api").query_param("q", "Nowhere");
+                then.status(200).body(r#"{"features": []}"#);
+            })
+            .await;
+        let places = Places::new(None);
+        let maps = maps_at(&server, GeocoderKind::Photon);
+        let found = places.lookup(&maps, "Example Street 1, Berlin").await.expect("an answer");
+        assert_eq!(found, Some(geo(52.5219184, 13.4132147)), "the first place");
+        assert_eq!(places.lookup(&maps, "Nowhere").await.expect("an answer"), None);
+        assert_eq!(nothing.calls_async().await, 1);
+        let _ = places.lookup(&maps, "Example Street 1, Berlin").await;
+        assert_eq!(photon.calls_async().await, 2, "nothing kept in memory: the core keeps the point");
+    }
+
+    #[tokio::test]
+    async fn tiles_on_disk_are_counted_and_cleared() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let tiles = dir.path().join("tiles");
+        let places = Places::new(Some(tiles.clone()));
+        assert_eq!(places.tile_bytes(), 0, "no directory yet");
+        places.tiles.write("https://tile.example.org/1/2/3.png", &[1, 2, 3, 4], Some("\"v1\""));
+        std::fs::write(tiles.join("other.txt"), b"kept").expect("another file");
+        assert_eq!(places.tile_bytes(), 4 + 4, "the tile and its ETag");
+        places.clear_tiles();
+        assert_eq!(places.tile_bytes(), 0);
+        assert!(tiles.join("other.txt").exists(), "only tiles go");
+        assert_eq!(Places::new(None).tile_bytes(), 0);
     }
 
     #[tokio::test]

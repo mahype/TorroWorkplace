@@ -262,6 +262,18 @@ pub enum Icon {
     Play,
     /// A file dragged over a chat window (issue #643): dropping sends it.
     Upload,
+    // Added for the assistant's composer (issue #699).
+    /// Dictating into the assistant's input field.
+    Mic,
+    // Added for reading answers aloud (issue #745).
+    /// Reading answers aloud is on, in the assistant's composer.
+    Volume2,
+    /// Reading answers aloud is off.
+    VolumeX,
+    /// The permission mode of the assistant's composer, in the mode's colour.
+    Shield,
+    /// "Send" of the assistant's composer, in its round button.
+    ArrowUp,
 }
 
 impl Icon {
@@ -408,6 +420,11 @@ impl Icon {
         Icon::ALargeSmall,
         Icon::Play,
         Icon::Upload,
+        Icon::Mic,
+        Icon::Volume2,
+        Icon::VolumeX,
+        Icon::Shield,
+        Icon::ArrowUp,
     ];
 
     /// The icon as an SVG handle with its stroke in `color` (opaque), for drawing it on a canvas,
@@ -564,6 +581,11 @@ impl Icon {
             Icon::ALargeSmall => include_bytes!("../assets/icons/a-large-small.svg"),
             Icon::Play => include_bytes!("../assets/icons/play.svg"),
             Icon::Upload => include_bytes!("../assets/icons/upload.svg"),
+            Icon::Mic => include_bytes!("../assets/icons/mic.svg"),
+            Icon::Volume2 => include_bytes!("../assets/icons/volume-2.svg"),
+            Icon::VolumeX => include_bytes!("../assets/icons/volume-x.svg"),
+            Icon::Shield => include_bytes!("../assets/icons/shield.svg"),
+            Icon::ArrowUp => include_bytes!("../assets/icons/arrow-up.svg"),
         }
     }
 }

@@ -29,6 +29,7 @@
 //! the core marks a list it answers with ([`AiAccounts::mark_enabled`]). Where a model computes,
 //! is said by [`torro_core::ai::place_of`]: only people turn on a model elsewhere.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -228,6 +229,12 @@ fn refuses_reasoning(error: &AiError) -> bool {
         && ["not support", "unsupported", "unknown parameter", "invalid"].iter().any(|word| message.contains(word))
 }
 
+/// OpenAI's model that reads aloud (issue #745).
+pub const SPEECH_MODEL: &str = "gpt-4o-mini-tts";
+
+/// The rate of OpenAI's raw sound (`response_format: pcm`): 24 kHz.
+pub const SPEECH_RATE: u32 = 24_000;
+
 /// An OpenAI-compatible account: Chat Completions for most providers, Responses for OpenAI.
 /// `Debug` never shows the key ([`Secret`]).
 #[derive(Debug, Clone)]
@@ -274,6 +281,15 @@ impl OpenAiCompatible {
             }
             _ => self.list().await.map(drop),
         }
+    }
+
+    /// `POST <base>/audio/speech` (issue #745): `input` read by `voice` with [`SPEECH_MODEL`], as raw
+    /// signed 16-bit mono at [`SPEECH_RATE`]. The text goes to the server; no error repeats it or
+    /// the key ([`Wire::send`]).
+    pub async fn speech(&self, voice: &str, input: &str) -> Result<Vec<u8>, AiError> {
+        let body = json!({"model": SPEECH_MODEL, "voice": voice, "input": input, "response_format": "pcm"});
+        let response = self.wire.send(self.wire.request(reqwest::Method::POST, "audio/speech").json(&body)).await?;
+        self.wire.body(response).await
     }
 
     /// `GET <base>/models`, without asking local Ollama about tools: what finding a server needs.
@@ -579,12 +595,24 @@ impl Provider for DecisionOnly {
 #[derive(Debug, Clone)]
 pub struct Anthropic {
     wire: Wire,
+    /// The output limit of each model the account's list describes ([`AiModel::max_output`], by
+    /// [`AiModel::id`]), which caps the ceiling a chat sends (issue #223). Empty until
+    /// [`Anthropic::with_output_limits`] fills it; a model missing here gets the default ceiling.
+    output_limits: HashMap<String, u32>,
 }
 
 impl Anthropic {
     /// The server at `base` with `key`. Sends nothing yet.
     pub fn new(http: reqwest::Client, base: &str, key: Option<Secret>) -> Anthropic {
-        Anthropic { wire: Wire::new(http, base, key, Auth::ApiKey) }
+        Anthropic { wire: Wire::new(http, base, key, Auth::ApiKey), output_limits: HashMap::new() }
+    }
+
+    /// The same server, with the output limit of every model in `known` that names one, so a chat
+    /// with such a model never asks for more than it may write ([`anthropic::answer_ceiling`]).
+    pub fn with_output_limits(mut self, known: &[AiModel]) -> Anthropic {
+        self.output_limits =
+            known.iter().filter_map(|model| model.max_output.map(|limit| (model.id.clone(), limit))).collect();
+        self
     }
 
     /// Whether the server takes this account: by listing its models, which needs the key, so a
@@ -633,14 +661,15 @@ impl Provider for Anthropic {
     }
 
     /// `POST <base>/messages` with `stream: true` and the effort as `output_config.effort`
-    /// ([`anthropic::chat_body`]); read as server-sent events.
+    /// ([`anthropic::chat_body`]); read as server-sent events. The ceiling of the answer is capped
+    /// at the model's output limit where the account's list names one (issue #223).
     fn chat<'a>(
         &'a self,
         request: &'a ChatRequest,
         on_text: &'a mut (dyn FnMut(&str) + Send),
     ) -> BoxFuture<'a, Result<ChatReply, AiError>> {
         Box::pin(async move {
-            let body = anthropic::chat_body(request, true);
+            let body = anthropic::chat_body(request, self.output_limits.get(&request.model).copied(), true);
             let builder = self.wire.request(reqwest::Method::POST, "messages").json(&body);
             let response = self.wire.send(builder).await?;
             self.stream(response, on_text).await
@@ -662,9 +691,23 @@ enum AiClient {
 impl AiClient {
     /// The server of `provider` at `base` with `key`. Anthropic speaks its own protocol, Jev only
     /// the SystemOne one ([`DecisionOnly`]), every other provider the OpenAI-compatible one.
-    fn new(http: reqwest::Client, provider: AiProvider, base: &str, key: Option<Secret>) -> AiClient {
+    /// `known` is the account's model list where it is held: Anthropic caps each answer at the
+    /// model's output limit from it (issue #223); the other protocols send no ceiling and ignore it.
+    fn new(
+        http: reqwest::Client,
+        provider: AiProvider,
+        base: &str,
+        key: Option<Secret>,
+        known: Option<&[AiModel]>,
+    ) -> AiClient {
         match provider {
-            AiProvider::Anthropic => AiClient::Anthropic(Anthropic::new(http, base, key)),
+            AiProvider::Anthropic => {
+                let client = Anthropic::new(http, base, key);
+                AiClient::Anthropic(match known {
+                    Some(known) => client.with_output_limits(known),
+                    None => client,
+                })
+            }
             AiProvider::Jev => AiClient::DecisionOnly(DecisionOnly::new(http, provider, base, key)),
             _ => AiClient::OpenAi(OpenAiCompatible::new(http, provider, base, key)),
         }
@@ -1128,7 +1171,13 @@ impl AiAccounts {
         if slot.key.is_none() && slot.provider().needs_key() {
             return Err(AiError::NoKey);
         }
-        let mut client = AiClient::new(self.http()?.clone(), slot.provider(), &slot.account.server, slot.key.clone());
+        let mut client = AiClient::new(
+            self.http()?.clone(),
+            slot.provider(),
+            &slot.account.server,
+            slot.key.clone(),
+            slot.models.as_deref(),
+        );
         if let AiClient::OpenAi(client) = &mut client {
             client.program = slot.account.ai_program.clone();
         }
@@ -1241,7 +1290,8 @@ impl AiAccounts {
         {
             return Err(AiError::Invalid(tr("This server does not answer as Strata. Check the address.").into()));
         }
-        let client = AiClient::new(self.http()?.clone(), provider, &base, key.clone());
+        // Only checked, never chatted with: no model list is needed.
+        let client = AiClient::new(self.http()?.clone(), provider, &base, key.clone(), None);
         client.check().await?;
         let mut account = Account::ai(provider, &base);
         // Legacy reconnects may replace a key, never erase evidence that this account is a relay.
@@ -1817,6 +1867,15 @@ impl AiAccounts {
             Ok(()) => *switches = changed,
             Err(err) => eprintln!("torroworkplace: cannot forget the models of a removed AI account: {err}"),
         }
+    }
+
+    /// The first OpenAI account with a key on this device, to read aloud with (issue #745); `None`
+    /// when there is none. Reading aloud has no key of its own: the core holds this one already.
+    pub async fn speaker(&self) -> Option<OpenAiCompatible> {
+        let http = self.http().ok()?.clone();
+        let slots = self.slots.read().await;
+        let slot = slots.iter().find(|slot| slot.provider() == AiProvider::OpenAi && slot.key.is_some())?;
+        Some(OpenAiCompatible::new(http, AiProvider::OpenAi, &slot.account.server, slot.key.clone()))
     }
 
     /// The HTTP client of the AI accounts, also for downloads of models ([`super::pull`]).
@@ -2877,6 +2936,36 @@ pub(crate) mod tests {
         assert_eq!(responses.calls_async().await, 1);
     }
 
+    /// Issue #745: reading aloud asks OpenAI for raw sound with the voice; an error repeats neither
+    /// the key nor the text.
+    #[tokio::test]
+    async fn openai_reads_aloud_as_raw_sound() {
+        let server = MockServer::start_async().await;
+        let speech = server
+            .mock_async(|when, then| {
+                when.method("POST")
+                    .path("/v1/audio/speech")
+                    .header("authorization", format!("Bearer {KEY}"))
+                    .json_body(
+                        json!({"model": SPEECH_MODEL, "voice": "marin", "input": "Hello.", "response_format": "pcm"}),
+                    );
+                then.status(200).body([1u8, 2, 3, 4]);
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/audio/speech");
+                then.status(401).json_body(json!({"error": {"message": format!("Incorrect API key {KEY}")}}));
+            })
+            .await;
+        let openai = OpenAiCompatible::new(http(), AiProvider::OpenAi, &server.url("/v1"), Some(Secret::new(KEY)));
+        assert_eq!(openai.speech("marin", "Hello.").await.expect("sound"), [1, 2, 3, 4]);
+        assert_eq!(speech.calls_async().await, 1);
+        let refused = openai.speech("marin", "Secret plans.").await.expect_err("refused");
+        let message = refused.to_string();
+        assert!(!message.contains(KEY) && !message.contains("Secret plans"), "{message}");
+    }
+
     #[tokio::test]
     async fn openai_uses_responses_for_tool_rounds_with_reasoning() {
         let server = MockServer::start_async().await;
@@ -3193,6 +3282,69 @@ pub(crate) mod tests {
         let reply = client.chat(&request, &mut |text| pieces.push(text.to_string())).await.expect("reply");
         assert_eq!(reply.text, "Fine.", "a server that answers whole still hands out its text");
         assert_eq!(pieces, ["Fine."]);
+    }
+
+    /// A fake Anthropic that lists `claude-old` with an output limit of 8192 and answers a chat
+    /// only when its body asks for `max_tokens` (issue #223).
+    async fn fake_anthropic_answering_a_ceiling_of(max_tokens: u32) -> MockServer {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models").header("x-api-key", CLAUDE_KEY);
+                then.status(200).json_body(json!({"data": [
+                    {"type": "model", "id": "claude-old", "display_name": "Claude Old", "max_tokens": 8_192},
+                ], "has_more": false}));
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.method("POST")
+                    .path("/v1/messages")
+                    .json_body_includes(json!({"model": "claude-old", "max_tokens": max_tokens}).to_string());
+                then.status(200).json_body(json!({"type": "message", "content": [{"type": "text", "text": "Fine."}],
+                        "stop_reason": "end_turn", "usage": {"input_tokens": 3, "output_tokens": 1}}));
+            })
+            .await;
+        server
+    }
+
+    /// Issue #223: a model whose output limit is below the default ceiling gets its limit; a client
+    /// that does not know the limit keeps the default.
+    #[tokio::test]
+    async fn anthropic_caps_the_ceiling_at_the_models_output_limit() {
+        let request = ChatRequest { model: "claude-old".into(), ..ask_calendar() };
+        let known = [AiModel { max_output: Some(8_192), ..AiModel::named("claude-old") }];
+
+        let capped = fake_anthropic_answering_a_ceiling_of(8_192).await;
+        let client =
+            Anthropic::new(http(), &capped.url("/v1"), Some(Secret::new(CLAUDE_KEY))).with_output_limits(&known);
+        let reply = client.chat(&request, &mut |_| ()).await.expect("the limit is sent");
+        assert_eq!(reply.text, "Fine.");
+
+        let open = fake_anthropic_answering_a_ceiling_of(anthropic::DEFAULT_MAX_TOKENS).await;
+        let client = Anthropic::new(http(), &open.url("/v1"), Some(Secret::new(CLAUDE_KEY)));
+        let reply = client.chat(&request, &mut |_| ()).await.expect("the default is sent");
+        assert_eq!(reply.text, "Fine.");
+    }
+
+    /// Issue #223: the account's provider carries the limits of the list it holds.
+    #[tokio::test]
+    async fn an_anthropic_account_caps_the_ceiling_once_it_has_listed_its_models() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let server = fake_anthropic_answering_a_ceiling_of(8_192).await;
+        let ai = service(dir.path(), &keys, Vec::new());
+        let info = ai
+            .connect(AiProvider::Anthropic, Some(&server.url("/v1")), Secret::new(CLAUDE_KEY))
+            .await
+            .expect("the server takes the key");
+        let listed = ai.known_models(&info.id, Some("claude-old")).await.expect("models");
+        assert_eq!(listed[0].max_output, Some(8_192));
+
+        let request = ChatRequest { model: "claude-old".into(), ..ask_calendar() };
+        let provider = ai.provider(&info.id).await.expect("provider");
+        let reply = provider.chat(&request, &mut |_| ()).await.expect("the limit is sent");
+        assert_eq!(reply.text, "Fine.");
     }
 
     #[tokio::test]

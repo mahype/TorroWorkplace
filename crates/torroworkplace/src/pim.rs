@@ -1423,6 +1423,7 @@ impl PimService {
             // No collection: the assistant's conversations are its own (task C.1).
             Request::ListEngines
             | Request::ListConversations
+            | Request::SearchConversations { .. }
             | Request::GetConversation { .. }
             | Request::GetCards { .. }
             | Request::SendMessage { .. }
@@ -1431,9 +1432,19 @@ impl PimService {
             | Request::RenameConversation { .. }
             | Request::DeleteConversation { .. }
             | Request::PinConversation { .. }
+            | Request::ArchiveConversations { .. }
+            | Request::DeleteConversations { .. }
             | Request::OpenChatWindow { .. }
             | Request::VoiceStatus
-            | Request::TestVoice => return None,
+            | Request::TestVoice
+            | Request::Dictate
+            | Request::StopDictation
+            | Request::Speak { .. }
+            | Request::StopSpeaking
+            | Request::SpeechStatus
+            // Map data (issue #355): tiles are the suite's, places are checked by address book.
+            | Request::MapsStatus
+            | Request::ClearMapsCache => return None,
             // No collection: the assistant's profile and memory are its own (task C.10).
             Request::GetProfile
             | Request::UpdateProfile { .. }
@@ -1490,6 +1501,8 @@ impl PimService {
             | Request::MoveContact { .. }
             | Request::DeleteContact { .. }
             | Request::ResolveContactConflict { .. }
+            | Request::LocateContact { .. }
+            | Request::OpenContactInMaps { .. }
             | Request::ImportVCards { .. }
             | Request::ExportVCards { .. }
             | Request::FindDuplicates { .. }

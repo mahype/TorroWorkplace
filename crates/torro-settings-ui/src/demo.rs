@@ -868,6 +868,7 @@ impl Demo {
                 tools: Some(true),
                 open_weights: Some(true),
                 context: Some(40960),
+                max_output: None,
                 parameters: Some("8.2B".into()),
                 quantization: Some("Q4_K_M".into()),
                 size: Some(5225388164),
@@ -882,6 +883,7 @@ impl Demo {
                 tools: Some(false),
                 open_weights: Some(true),
                 context: Some(131072),
+                max_output: None,
                 parameters: Some("3.8B".into()),
                 quantization: Some("Q4_K_M".into()),
                 size: Some(2491000000),
@@ -896,6 +898,7 @@ impl Demo {
                 tools: Some(true),
                 open_weights: Some(true),
                 context: None,
+                max_output: None,
                 parameters: None,
                 quantization: None,
                 size: None,
@@ -912,6 +915,7 @@ impl Demo {
                 tools: Some(false),
                 open_weights: Some(true),
                 context: Some(131072),
+                max_output: None,
                 parameters: None,
                 quantization: None,
                 size: None,
@@ -1075,7 +1079,7 @@ impl Demo {
             programs: vec![
                 VoiceProgram { part: VoicePart::WakeWord, program: None, missing: Some(VoiceMissing::Program) },
                 found(VoicePart::Recorder, "parec"),
-                found(VoicePart::SpeechToText, "whisper-cli"),
+                found(VoicePart::SpeechToText, "onnx-asr"),
                 found(VoicePart::Speech, "piper"),
             ],
             microphones: vec!["alsa_input.usb".into()],
@@ -1381,6 +1385,9 @@ impl Backend for Demo {
                 }
             }
             Request::VoiceStatus => Response::Voice { voice: self.voice() },
+            Request::SpeechStatus => Response::Speech { speech: speech_status(self.settings.voice.speech_provider) },
+            // "Preview" (issue #745): nothing sounds in the demo.
+            Request::Speak { .. } | Request::StopSpeaking => Response::Ok,
             Request::Accounts => Response::Accounts { accounts: self.accounts() },
             Request::MailAccountStats { .. } => Response::MailAccountStats { accounts: self.mail_stats() },
             // Always the same run: the demo never moves on, so it answers at once even with `after`
@@ -1603,6 +1610,51 @@ fn pim_accounts() -> Vec<AccountInfo> {
             }
         })
         .collect()
+}
+
+/// Who reads aloud on the sample computer (issue #745), for the demos of the settings and the
+/// control centre: a graphics card fast enough for Qwen3-TTS,
+/// which is not set up yet, no OpenAI account, and Piper with its voice; the core's choice is Piper.
+pub fn speech_status(current: Option<torro_core::settings::SpeechProvider>) -> torro_ipc::SpeechStatus {
+    use torro_core::settings::{OPENAI_RECOMMENDED, OPENAI_VOICES, QWEN_RECOMMENDED, QWEN_VOICES, SpeechProvider};
+    use torro_ipc::{SpeechMissing, SpeechOption, SpeechStatus, SpeechVoice};
+    let voices = |ids: &[&str], recommended: &dyn Fn(&str) -> bool| {
+        ids.iter().map(|id| SpeechVoice { id: (*id).to_string(), recommended: recommended(id) }).collect()
+    };
+    SpeechStatus {
+        gpu: Some("NVIDIA GeForce RTX 4090, 24 GB".into()),
+        fast_enough: true,
+        recommended: SpeechProvider::Qwen,
+        current: current.unwrap_or(SpeechProvider::Piper),
+        providers: vec![
+            SpeechOption {
+                provider: SpeechProvider::Qwen,
+                missing: Some(SpeechMissing::Program),
+                voices: voices(&QWEN_VOICES, &|id| id == QWEN_RECOMMENDED),
+                model: Some("Qwen/Qwen3-TTS-12Hz-1.7B-Base".into()),
+                setup: Some(
+                    "python3 -m venv \"/home/anna/.local/share/torroassistant/voice/qwen/venv\" && \
+                     \"/home/anna/.local/share/torroassistant/voice/qwen/venv/bin/pip\" install \
+                     faster-qwen3-tts==0.5.4 transformers==5.15.1"
+                        .into(),
+                ),
+            },
+            SpeechOption {
+                provider: SpeechProvider::OpenAi,
+                missing: Some(SpeechMissing::Account),
+                voices: voices(&OPENAI_VOICES, &|id| OPENAI_RECOMMENDED.contains(&id)),
+                model: Some("gpt-4o-mini-tts".into()),
+                setup: None,
+            },
+            SpeechOption {
+                provider: SpeechProvider::Piper,
+                missing: None,
+                voices: vec![SpeechVoice { id: "de_DE-thorsten-medium".into(), recommended: true }],
+                model: None,
+                setup: None,
+            },
+        ],
+    }
 }
 
 #[cfg(test)]

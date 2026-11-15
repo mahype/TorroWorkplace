@@ -1,7 +1,7 @@
 //! Assistant › Access (task S.34, concept `docs/settings.md` › "Assistent und Bots"): what the
 //! assistant and each of its bots may use, in the assistant's own window.
 //!
-//! Three tabs (issue #547: more than three groups take tabs):
+//! Two tabs (issue #547, since issue #763 without "Bots"):
 //!
 //! ```text
 //! Access       Status            the assistant on or off
@@ -11,10 +11,11 @@
 //!                                           issue #666)
 //!              Turn off assistant…          while it is on, after a question; last, as what destroys
 //! Selections   the calendars, lists, accounts … of each area it may use ([`rights::Part`]), not the tools
-//! Bots         a row per bot; it opens the rights editor of the bot's own client
 //! ```
 //!
-//! A bot's page has the first two tabs, Access and Selections, of its own client. A tab only
+//! A bot's rights are a page below the section Bots since issue #763 ([`bot_page`], "Bots › Travel
+//! planner"), with the same two tabs of its own client; the list of bots shows each one's rights in
+//! words ([`bot_rights`]). This module still draws and sends both, as the one with rights. A tab only
 //! changes what is shown; it sends nothing.
 //!
 //! While the assistant has no client the page is its first start: "Start from" and the rights it
@@ -53,14 +54,14 @@ use torro_core::i18n::tr;
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::style;
-use torro_gui::theme::{palette, size};
+use torro_gui::theme::palette;
 use torro_gui::widgets::{self, Status};
 use torro_ipc::api::{ASSISTANT_CLIENT, BOT_CLIENT, Rights, RightsTemplate};
 use torro_ipc::bots::BotSummary;
 use torro_ipc::{ClientInfo, Request, Response};
 
-use super::{Action, avatar};
-use crate::parts::{chevron, confirm, pressable, setting_row};
+use super::Action;
+use crate::parts::{confirm, pressable, setting_row};
 use crate::rights::{self, Known, Naming, Part};
 use crate::{Data, Page};
 
@@ -116,24 +117,22 @@ impl Preset {
     }
 }
 
-/// The tabs of the page (issue #547); a bot's page has the first two.
+/// The tabs of the page (issue #547), the assistant's and a bot's alike.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Access,
     Selections,
-    Bots,
 }
 
 impl Tab {
     /// Every tab, in the order of the row; the index is what [`Message::Tab`] carries.
-    pub const ALL: [Tab; 3] = [Tab::Access, Tab::Selections, Tab::Bots];
+    pub const ALL: [Tab; 2] = [Tab::Access, Tab::Selections];
 
     /// Its word, translated.
     pub fn label(self) -> &'static str {
         match self {
             Tab::Access => tr("Access"),
             Tab::Selections => tr("Selections"),
-            Tab::Bots => tr("Bots"),
         }
     }
 }
@@ -144,8 +143,8 @@ impl Tab {
 pub struct State {
     /// The tab on screen; a bot opened or closed starts at Access again.
     tab: Tab,
-    /// The bot (its [`BotSummary::id`]) whose rights are open on a page below the section; `None`
-    /// shows the section's own page, the assistant's.
+    /// The bot (its [`BotSummary::id`]) whose rights are open on a page below the section Bots;
+    /// `None` while the assistant's are.
     bot: Option<String>,
     /// What the first start offers until "Turn on assistant": [`Rights::assistant`], then what the
     /// person changed.
@@ -184,9 +183,7 @@ pub enum Message {
     TurnOff,
     /// "Cancel", Escape or a click next to the confirmation.
     CloseDialog,
-    /// The row of the bot with this id: its rights on a page below the section.
-    OpenBot(String),
-    /// Back from a bot's page to the section's own.
+    /// Back from a bot's page to the list of bots.
     Back,
     /// A control of the rights editor, its clock included ([`subscription`]).
     Rights(rights::Message),
@@ -203,15 +200,13 @@ pub enum Message {
 ///   assistant's client; the next first start begins from the suggestion again.
 /// - With a client, a control of the editor changes the draft of the client on screen – the
 ///   assistant's, or the open bot's – and the clock sends `clients.update_client` once it is due
-///   ([`rights::update`]). [`Message::OpenBot`] and [`Message::Back`] save a waiting draft at once.
+///   ([`rights::update`]). [`Message::Back`] saves a waiting draft at once.
 ///
 /// Nothing else is ever sent, and only as [`crate::Action::Send`].
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     match message {
         Message::Tab(index) => {
-            // A bot's page has no tab Bots.
-            let tabs = tabs(open_bot(state, data).is_some());
-            state.tab = tabs.get(index).copied().unwrap_or(Tab::Access);
+            state.tab = Tab::ALL.get(index).copied().unwrap_or(Tab::Access);
             Action::None
         }
         Message::Preset(preset) => {
@@ -250,11 +245,6 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.asking = false;
             Action::None
         }
-        Message::OpenBot(id) => {
-            let action = rights::save_now(&mut state.rights);
-            show(state, Some(id));
-            action
-        }
         Message::Back => {
             let action = rights::save_now(&mut state.rights);
             show(state, None);
@@ -264,15 +254,46 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     }
 }
 
-/// Opens the section at the assistant (`None`) or at the bot with this id – what "Access" in the
+/// Opens the rights of the assistant (`None`) or of the bot with this id – what "Access" in the
 /// Bots section, the bot editor's "What the bot may use", "Change access" under a refused tool and
-/// `--settings access [--bot <id>]` ask for. A bot the loaded data does not list shows the
-/// assistant's page instead. The editor closes its open areas; a waiting draft is saved as usual.
+/// `--settings access [--bot <id>]` ask for. A bot the loaded data does not list has no page
+/// ([`bot_page`]), so Bots shows its list. The editor closes its open areas; a waiting draft is
+/// saved as usual.
 pub fn show(state: &mut State, bot: Option<String>) {
     state.bot = bot;
     state.tab = Tab::Access;
     state.asking = false;
     rights::leave(&mut state.rights);
+}
+
+/// A control of the assistant's own page (issue #763): a bot's page left open below Bots is closed
+/// first – its waiting draft saved at once, as [`Message::Back`] does –, so the editor changes the
+/// assistant's rights the page shows and never the bot's. The editor's clock passes as it is: it
+/// saves whatever draft waits, whichever page is on screen. The page of a bot sends to [`update`].
+pub fn update_assistant(state: &mut State, message: Message, data: &Data) -> Action {
+    let clock = matches!(message, Message::Rights(rights::Message::Clock(_)));
+    if clock || state.bot.is_none() {
+        return update(state, message, data);
+    }
+    let saved = rights::save_now(&mut state.rights);
+    show(state, None);
+    match (saved, update(state, message, data)) {
+        (Action::Send(mut first), Action::Send(then)) => {
+            first.extend(then);
+            Action::Send(first)
+        }
+        (Action::None, then) => then,
+        (first, _) => first,
+    }
+}
+
+/// Shows the assistant's own page again when Access is reached another way than its own controls
+/// (the list, General's status row; issue #763): a bot's page left open below Bots closes, so Access
+/// opens at its first tab without the bot's open areas. A waiting draft still goes with the clock.
+pub fn leave_bot(state: &mut State) {
+    if state.bot.is_some() {
+        show(state, None);
+    }
 }
 
 /// The bot whose page is open: [`State`]'s bot, as long as the data lists it.
@@ -368,45 +389,25 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
 
 // ----- Views --------------------------------------------------------------------------------
 
-/// The tabs of a page: Access, Selections and – not on a bot's page – Bots.
-fn tabs(bot: bool) -> &'static [Tab] {
-    match bot {
-        true => &Tab::ALL[..2],
-        false => &Tab::ALL,
-    }
-}
-
-/// The tab on screen, as far as the page has it: a bot's page shows Access for Bots.
-fn shown_tab(state: &State, bot: bool) -> Tab {
-    if tabs(bot).contains(&state.tab) { state.tab } else { Tab::Access }
-}
-
-/// The row of tabs over a page, `bot` for a bot's page.
-fn tab_row<'a>(state: &State, bot: bool) -> Element<'a, Message> {
-    let tabs = tabs(bot);
-    let labels = tabs.iter().map(|tab| (tab.label().to_string(), None)).collect();
-    let chosen = tabs.iter().position(|tab| *tab == shown_tab(state, bot)).unwrap_or(0);
+/// The row of tabs over a page.
+fn tab_row<'a>(state: &State) -> Element<'a, Message> {
+    let labels = Tab::ALL.iter().map(|tab| (tab.label().to_string(), None)).collect();
+    let chosen = Tab::ALL.iter().position(|tab| *tab == state.tab).unwrap_or(0);
     widgets::tabs(labels, chosen, Message::Tab)
 }
 
-/// The page: a bot's rights below the section while one is open, else the assistant's – on, or its
-/// first start with "Turn on assistant" in the header, the page's one primary button. Each under its
-/// row of tabs.
+/// The assistant's page – on, or its first start with "Turn on assistant" in the header, the page's
+/// one primary button – under its row of tabs.
 pub fn page<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Page<'a, Message> {
-    if let Some(bot) = open_bot(state, data) {
-        let body = column![tab_row(state, true), bot_page(state, data, bot)].spacing(layout::section_gap());
-        return Page::new(body).sub_page(bot.name.clone(), Message::Back);
-    }
     let client = super::client(data);
-    let body = match shown_tab(state, false) {
+    let body = match state.tab {
         Tab::Access => access_tab(state, data, client),
         Tab::Selections => {
             let rights = client.map_or(&state.choice, |client| rights::shown(&state.rights, client));
             editor(state, data, rights, ASSISTANT_CLIENT, tr("What the assistant may use"), Part::Selections)
         }
-        Tab::Bots => bots_group(state, data),
     };
-    let page = Page::new(column![tab_row(state, false), body].spacing(layout::section_gap()));
+    let page = Page::new(column![tab_row(state), body].spacing(layout::section_gap()));
     match client {
         Some(_) => page,
         None => page.actions(vec![turn_on_button(state, class)]),
@@ -453,15 +454,30 @@ fn access_tab<'a>(state: &'a State, data: &'a Data, client: Option<&'a ClientInf
     }
 }
 
+/// The page of the open bot's rights, below the section Bots (issue #763): its name follows in the
+/// path, "Back" leads to the list. `None` while no bot is open, or the data no longer lists it.
+pub fn bot_page<'a>(state: &'a State, data: &'a Data) -> Option<Page<'a, Message>> {
+    let bot = open_bot(state, data)?;
+    let body = column![tab_row(state), bot_rights_tab(state, data, bot)].spacing(layout::section_gap());
+    Some(Page::new(body).sub_page(bot.name.clone(), Message::Back))
+}
+
+/// A bot's rights in words, as the list of bots shows them under its name (issue #763): the
+/// draft's, while one waits. `None` where the core lists no client of the bot.
+pub fn bot_rights(state: &State, data: &Data, bot: &BotSummary) -> Option<String> {
+    let client = data.clients.iter().find(|client| client.id == bot.client && client.kind == BOT_CLIENT)?;
+    Some(rights::rights_summary(rights::shown(&state.rights, client), BOT_CLIENT))
+}
+
 /// A bot's page under its tabs: the part of the editor of its own client, or, where the core lists
 /// none, what to do.
-fn bot_page<'a>(state: &'a State, data: &'a Data, bot: &'a BotSummary) -> Element<'a, Message> {
+fn bot_rights_tab<'a>(state: &'a State, data: &'a Data, bot: &'a BotSummary) -> Element<'a, Message> {
     match shown_client(state, data) {
         Some(client) => {
             let rights = rights::shown(&state.rights, client);
-            let part = match shown_tab(state, true) {
+            let part = match state.tab {
                 Tab::Selections => Part::Selections,
-                Tab::Access | Tab::Bots => Part::Access,
+                Tab::Access => Part::Access,
             };
             editor(state, data, rights, BOT_CLIENT, tr("What the bot may use"), part)
         }
@@ -506,28 +522,6 @@ fn preset_group<'a>(choice: &Rights) -> Element<'a, Message> {
         .collect();
     let footer = tr("A starting point: every row below can be changed. None of them sends mail without asking.");
     widgets::group(tr("Start from"), rows, Some(footer.to_string()))
-}
-
-/// A row per bot – its picture, name and rights in words – that opens its page; without bots,
-/// where they are made. No button removes a bot here: that is the bot editor's.
-fn bots_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let mut rows: Vec<Element<'a, Message>> = data
-        .bots
-        .iter()
-        .map(|bot| {
-            let client = data.clients.iter().find(|client| client.id == bot.client && client.kind == BOT_CLIENT);
-            let summary = client.map(|client| rights::rights_summary(rights::shown(&state.rights, client), BOT_CLIENT));
-            let face = avatar(&bot.name, &bot.avatar, size::control_sm());
-            let row = setting_row(Some(face), bot.name.as_str(), summary, chevron());
-            pressable(row, Some(Message::OpenBot(bot.id.clone())))
-        })
-        .collect();
-    if rows.is_empty() {
-        let hint = tr("Make one with New bot in the sidebar.");
-        rows.push(setting_row(None, tr("No bots yet"), Some(hint.to_string()), Space::new()));
-    }
-    let footer = tr("Each bot has rights of its own. A new bot may use nothing until you allow it here.");
-    widgets::group(tr("Bots"), rows, Some(footer.to_string()))
 }
 
 /// "Turn on assistant", the page's primary button: with its word, in narrow windows only its icon,
@@ -583,8 +577,8 @@ mod tests {
         requests(save_now(state))
     }
 
-    /// With the assistant on, the page is its editor with "Turn off assistant…" and the bots, and
-    /// the header holds no button; every size builds.
+    /// With the assistant on, the page is its editor with "Turn off assistant…", and the header
+    /// holds no button; every size builds.
     #[tokio::test]
     async fn with_a_client_the_page_edits_the_assistant() {
         let data = data().await;
@@ -668,20 +662,21 @@ mod tests {
         assert!(requests(update(&mut state, Message::TurnOff, &off)).is_empty());
     }
 
-    /// The row of a bot opens the editor of the bot's own client below the section; its changes
-    /// go to that client, "Back" saves them at once.
+    /// A bot opens the editor of the bot's own client on a page of its own ([`bot_page`]); its
+    /// changes go to that client, "Back" saves them at once.
     #[tokio::test]
     async fn a_bot_row_opens_the_editor_of_the_bot() {
         let data = data().await;
         let (bot, client) = travel(&data);
         let mut state = State::default();
-        let _ = update(&mut state, Message::OpenBot(bot.id.clone()), &data);
+        show(&mut state, Some(bot.id.clone()));
         assert_eq!(open_bot(&state, &data).map(|open| open.id.as_str()), Some(bot.id.as_str()));
         {
-            let below = page(&state, &data, SizeClass::Wide);
+            let below = bot_page(&state, &data).expect("the bot's page");
             assert_eq!(below.sub_page.as_ref().map(|(name, _)| name.as_str()), Some(bot.name.as_str()));
             assert!(below.actions.is_empty(), "a bot's page has no button, none to remove it either");
         }
+        assert!(page_of(&state, &data).sub_page.is_none(), "Access itself shows the assistant");
 
         let _ = update(&mut state, Message::Rights(rights::Message::Level(Area::Tasks, Level::Read)), &data);
         let sent = requests(update(&mut state, Message::Back, &data));
@@ -691,15 +686,18 @@ mod tests {
         );
         assert!(open_bot(&state, &data).is_none(), "back on the assistant's page");
 
-        // A bot the data does not list shows the assistant's page.
+        // A bot the data does not list has no page.
         show(&mut state, Some("gone".into()));
         assert!(open_bot(&state, &data).is_none());
-        assert!(page_of(&state, &data).sub_page.is_none());
-        // A bot whose client is missing says what to do and changes nothing.
+        assert!(bot_page(&state, &data).is_none());
+        // A bot whose client is missing says what to do and changes nothing; its rights have no
+        // words.
         let without =
             Data { clients: data.clients.iter().filter(|c| c.id != client.id).cloned().collect(), ..data.clone() };
         show(&mut state, Some(bot.id.clone()));
-        let _ = page_of(&state, &without).body;
+        assert!(bot_page(&state, &without).is_some_and(|page| page.sub_page.is_some()));
+        assert!(bot_rights(&state, &without, bot).is_none());
+        assert!(bot_rights(&state, &data, bot).is_some_and(|words| !words.is_empty()));
         let _ = update(&mut state, Message::Rights(rights::Message::Level(Area::Tasks, Level::Write)), &without);
         assert!(saved(&mut state).is_empty());
     }
@@ -708,17 +706,18 @@ mod tests {
         page(state, data, SizeClass::Wide)
     }
 
-    /// Issue #547: the page has the tabs Access, Selections and Bots, a bot's page the first two; a
-    /// tab sends nothing, and opening or leaving a bot starts at Access again.
+    /// Issue #547, narrowed by issue #763: the assistant's page and a bot's have the tabs Access and
+    /// Selections; a tab sends nothing, and opening or leaving a bot starts at Access again.
     #[tokio::test]
     async fn the_tabs_show_a_part_and_send_nothing() {
         let data = data().await;
         let (bot, _) = travel(&data);
         let mut state = State::default();
-        assert_eq!(shown_tab(&state, false), Tab::Access);
+        assert_eq!(state.tab, Tab::Access);
+        assert_eq!(Tab::ALL, [Tab::Access, Tab::Selections]);
         for (index, tab) in Tab::ALL.into_iter().enumerate() {
             assert_eq!(update(&mut state, Message::Tab(index), &data), Act::None, "{tab:?}");
-            assert_eq!(shown_tab(&state, false), tab);
+            assert_eq!(state.tab, tab);
             for on in [&data, &turned_off(&data)] {
                 for class in [SizeClass::Wide, SizeClass::Narrow] {
                     let _ = page(&state, on, class).body;
@@ -726,20 +725,16 @@ mod tests {
             }
         }
         assert_eq!(update(&mut state, Message::Tab(7), &data), Act::None);
-        assert_eq!(shown_tab(&state, false), Tab::Access, "an index past the row is Access");
+        assert_eq!(state.tab, Tab::Access, "an index past the row is Access");
 
         let _ = update(&mut state, Message::Tab(1), &data);
-        let _ = update(&mut state, Message::OpenBot(bot.id.clone()), &data);
-        assert_eq!(shown_tab(&state, true), Tab::Access, "a bot opens at Access");
-        assert_eq!(tabs(true), [Tab::Access, Tab::Selections]);
+        show(&mut state, Some(bot.id.clone()));
+        assert_eq!(state.tab, Tab::Access, "a bot opens at Access");
         let _ = update(&mut state, Message::Tab(1), &data);
-        assert_eq!(shown_tab(&state, true), Tab::Selections);
-        let _ = page_of(&state, &data).body;
-        let _ = update(&mut state, Message::Tab(2), &data);
-        assert_eq!(shown_tab(&state, true), Tab::Access, "a bot's page has no tab Bots");
-        let _ = update(&mut state, Message::Tab(1), &data);
+        assert_eq!(state.tab, Tab::Selections);
+        let _ = bot_page(&state, &data).map(|page| page.body);
         let _ = update(&mut state, Message::Back, &data);
-        assert_eq!(shown_tab(&state, false), Tab::Access, "back at Access");
+        assert_eq!(state.tab, Tab::Access, "back at Access");
     }
 
     /// A draft goes once the core took it and the reload brought it, and drops when the send
@@ -779,28 +774,29 @@ mod tests {
         if let Some(client) = foreign.clients.iter_mut().find(|client| client.id == bot_client.id) {
             client.kind = "script".into();
         }
+        // `None` opens the bot's page, as "Access" in the list of bots does ([`show`]).
         let messages = || {
             vec![
-                Message::Preset(Preset::Suggested),
-                Message::Rights(rights::Message::Level(Area::Calendar, Level::Write)),
-                Message::Rights(rights::Message::Admin(Area::Settings, true)),
-                Message::Rights(rights::Message::Command("calendar.list_events", false)),
-                Message::Rights(rights::Message::Confirm(torro_ipc::api::Confirm::OnEveryChange)),
-                Message::Rights(rights::Message::All(rights::Pick::Calendars, false)),
-                Message::Rights(rights::Message::Tick(rights::Pick::Calendars, "x".into(), true)),
-                Message::Rights(rights::Message::Outbound(torro_ipc::api::Outbound::Never)),
-                Message::TurnOn,
-                Message::AskTurnOff,
-                Message::TurnOff,
-                Message::OpenBot(bot.id.clone()),
-                Message::Rights(rights::Message::Level(Area::Tasks, Level::Read)),
-                Message::Rights(rights::Message::All(rights::Pick::TaskLists, true)),
-                Message::Back,
-                Message::CloseDialog,
+                Some(Message::Preset(Preset::Suggested)),
+                Some(Message::Rights(rights::Message::Level(Area::Calendar, Level::Write))),
+                Some(Message::Rights(rights::Message::Admin(Area::Settings, true))),
+                Some(Message::Rights(rights::Message::Command("calendar.list_events", false))),
+                Some(Message::Rights(rights::Message::Confirm(torro_ipc::api::Confirm::OnEveryChange))),
+                Some(Message::Rights(rights::Message::All(rights::Pick::Calendars, false))),
+                Some(Message::Rights(rights::Message::Tick(rights::Pick::Calendars, "x".into(), true))),
+                Some(Message::Rights(rights::Message::Outbound(torro_ipc::api::Outbound::Never))),
+                Some(Message::TurnOn),
+                Some(Message::AskTurnOff),
+                Some(Message::TurnOff),
+                None,
+                Some(Message::Rights(rights::Message::Level(Area::Tasks, Level::Read))),
+                Some(Message::Rights(rights::Message::All(rights::Pick::TaskLists, true))),
+                Some(Message::Back),
+                Some(Message::CloseDialog),
             ]
         };
         let mut on_foreign = State::default();
-        let _ = update(&mut on_foreign, Message::OpenBot(bot.id.clone()), &foreign);
+        show(&mut on_foreign, Some(bot.id.clone()));
         let level = Message::Rights(rights::Message::Level(Area::Tasks, Level::Read));
         assert_eq!(update(&mut on_foreign, level, &foreign), Act::None);
         assert!(saved(&mut on_foreign).is_empty(), "no other kind of client is changed here");
@@ -809,7 +805,10 @@ mod tests {
         for data in [&on, &off] {
             let mut state = State::default();
             for message in messages() {
-                sent.extend(requests(update(&mut state, message, data)));
+                match message {
+                    Some(message) => sent.extend(requests(update(&mut state, message, data))),
+                    None => show(&mut state, Some(bot.id.clone())),
+                }
                 sent.extend(saved(&mut state));
             }
         }

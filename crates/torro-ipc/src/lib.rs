@@ -51,6 +51,7 @@ pub use torro_core::account::{NtfyTopic, Secret};
 use torro_core::ai::{AiModel, AiProvider};
 use torro_core::paths::AppPaths;
 use torro_core::settings::Settings;
+pub use torro_core::settings::SpeechProvider;
 use torro_inbox::item::{MuteEffect, MuteOption, MuteScope, Muted};
 use torro_inbox::{AgentInfo, AgentKind, Item, Kind, Lane, Link, Rule, SourceInfo, SourceRef, StateFilter};
 /// Newest or oldest first for `mail.search_messages` and `inbox.list_items` (task E8.15).
@@ -69,7 +70,8 @@ use torro_setups::{Startup, TemplateSummary};
 
 use crate::api::{Area, Rights, RightsTemplate};
 use crate::assistant::{
-    CardEntry, ChatWindow, ConversationSummary, Engine, Entry, MyAccess, Note, Profile, Skill, SkillSummary,
+    CardEntry, ChatWindow, ConversationHit, ConversationSummary, Engine, Entry, MyAccess, Note, Profile, Skill,
+    SkillSummary,
 };
 use crate::bots::{Bot, BotSummary};
 use crate::help::{HelpTopic, HelpTopicSummary};
@@ -1703,6 +1705,42 @@ pub enum Request {
     /// read-only book).
     #[serde(rename = "contacts.resolve_conflict")]
     ResolveContactConflict { id: String, keep: torro_contacts::Keep, etag: String },
+    /// Where the address number `address` of a contact is on the map (issue #355,
+    /// [`Response::ContactLocation`], [`contacts::ContactLocation`]): the first address at the vCard's
+    /// `GEO` when it has one, else the point looked up earlier on this device. The contacts app makes
+    /// the core look an address up when the person opens the contact, and only while a person turned
+    /// on maps and the lookup of contact addresses (`maps` with `contactLookup`); the address then goes
+    /// to the place search service of the settings (at most [`contacts::MAX_LOOKUP_CHARS`] characters),
+    /// and the point is kept on this device. A client never makes the core look up: it gets
+    /// `not_looked_up` for an address nobody looked up yet. An address not found is not looked up
+    /// again for [`contacts::LOOKUP_RETRY_DAYS`] days, unless it changes. What is kept stays readable
+    /// after the switches are turned off (nothing leaves the device for it);
+    /// `settings.clear_maps_cache` removes it. For the picture ask `calendar.map_preview` with the
+    /// point.
+    ///
+    /// Codes: `not-found` for a contact the client does not reach or an address it does not have;
+    /// `busy`, `offline` and `error` of the place search as for `calendar.search_places` (nothing is
+    /// kept then). The address and the point are never logged.
+    #[serde(rename = "contacts.locate_contact")]
+    LocateContact {
+        /// The contact's id.
+        id: String,
+        /// Which of its addresses, 0 for the first, as `contacts.get_contact` lists them.
+        address: usize,
+    },
+    /// Opens the address number `address` of a contact in the maps app the settings name (`maps`,
+    /// `openWith`; [`Response::Ok`]): at the point of `GEO` or the one kept on this device, else the
+    /// address as a search. That sends the address or the point to that app's service (Google, Apple
+    /// or OpenStreetMap), so for a client it always waits for a person's approval, whatever its rights
+    /// say. Works with maps off. Codes: `not-found` (contact or address), `conflict` when the address
+    /// changed after the approval was asked for (nothing opens), `error` when the system cannot open it.
+    #[serde(rename = "contacts.open_in_maps")]
+    OpenContactInMaps {
+        /// The contact's id.
+        id: String,
+        /// Which of its addresses, 0 for the first.
+        address: usize,
+    },
     /// Imports the cards of a `.vcf` file into `book` (issue #725, [`Response::ContactsImported`]):
     /// the file's text in `data`, or the file at `path` (an absolute path to a file, no link, at most
     /// [`contacts::MAX_IMPORT_BYTES`]; only the suite's own apps, for files larger than a request). A
@@ -4214,6 +4252,24 @@ pub enum Request {
     /// be read (the core's log says why).
     #[serde(rename = "assistant.list_conversations")]
     ListConversations,
+    /// Searches the conversations for words (issue #704, [`Response::ConversationHits`]): a part of
+    /// a conversation hits when it holds every word of `query` (split at white space, compared in
+    /// small letters). Parts are the title, the messages and the answers, never what a tool answered.
+    /// The most recently active conversations first, at most [`assistant::HITS_PER_CONVERSATION`] hits
+    /// each (the newest), each with a short snippet around the first word ([`assistant::SNIPPET_CHARS`]).
+    /// The caller sees what `assistant.list_conversations` lists it; the assistant's own client only
+    /// its own conversations (none with a bot) and no hit after a command of an area it may not read
+    /// now. `error` for an empty query or one beyond [`assistant::MAX_QUERY_CHARS`] characters. The
+    /// words are never logged.
+    #[serde(rename = "assistant.search_conversations")]
+    SearchConversations {
+        /// The words to look for, at most [`assistant::MAX_QUERY_CHARS`] characters.
+        query: String,
+        /// At most this many hits, [`assistant::DEFAULT_HITS`] when left out, kept within
+        /// 1..=[`assistant::MAX_HITS`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
+    },
     /// One conversation with its entries in order ([`Response::Conversation`]); with `after` only
     /// the entries numbered higher, so a window follows a running answer by asking again with the
     /// last number it has. `not-found` for an unknown id.
@@ -4281,7 +4337,8 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "assistant::Mode::is_default")]
         mode: assistant::Mode,
         /// Chat with this bot instead of the assistant (task B.1): its id from `bots.list_bots`. The
-        /// bot answers with its own client's rights and its own prompt, with `engine` and `model`
+        /// bot answers with its own prompt, for a client (issue #698) with what both the bot and the
+        /// caller may, for the person with its own client's rights, with `engine` and `model`
         /// as given (left without `model`, the bot's own when `engine` is the bot's). A new
         /// conversation belongs to the bot for good; continuing one needs the same `bot` it was
         /// started with (`error` otherwise), and one of a deleted bot is `not-found`. A client also
@@ -4347,6 +4404,27 @@ pub enum Request {
         /// The conversation's id.
         id: String,
         pinned: bool,
+    },
+    /// Archives (`archived: true`) or restores the conversations `ids` (issue #697, [`Response::Ok`]).
+    /// An archived conversation leaves "Pinned" and "Recent" for the group "Archive", is kept beyond
+    /// the retention time and comes back by itself when a message is sent in it; an answer that runs
+    /// finishes. Ids already in that state and doubles are skipped. `not-found` when one id is unknown,
+    /// and then nothing changes; `error` without ids or with more than [`assistant::MAX_BULK_IDS`].
+    #[serde(rename = "assistant.archive_conversations")]
+    ArchiveConversations {
+        /// The conversations' ids.
+        ids: Vec<String>,
+        /// `true` archives, `false` restores.
+        archived: bool,
+    },
+    /// Deletes the conversations `ids` and their files for good, stopping answers that run (issue
+    /// #697, [`Response::Ok`]); doubles are skipped. `not-found` when one id is unknown, and then
+    /// nothing is deleted; `error` without ids, with more than [`assistant::MAX_BULK_IDS`], or when a
+    /// file could not be removed (the others stay deleted; the message says how many are left).
+    #[serde(rename = "assistant.delete_conversations")]
+    DeleteConversations {
+        /// The conversations' ids.
+        ids: Vec<String>,
     },
     /// Opens a chat window of the assistant app: `torroassistant --chat <id>` for a conversation,
     /// `--chat new` for a new one, `--bot <id>` for a bot ([`Response::Ok`]). Each call starts one
@@ -4535,7 +4613,8 @@ pub enum Request {
     },
     /// Sends `text` to the bot `bot`, in its conversation `conversation` or a new one, and starts
     /// its answer in the background with the bot's engine and model, like `assistant.send_message`
-    /// ([`Response::Conversation`], at once). The bot works with its own client's rights.
+    /// ([`Response::Conversation`], at once). The bot works with what both it and the caller may
+    /// (issue #698); for the app key with its own client's rights.
     /// `not-found` for an unknown bot or conversation (also one of another bot), `busy` while the
     /// conversation still answers, `unsupported` when the bot's AI account has no model turned on
     /// (task S.24), `error` for a limit.
@@ -4948,6 +5027,62 @@ pub enum Request {
     /// it needs are missing, `error` when the recording fails.
     #[serde(rename = "settings.test_voice")]
     TestVoice,
+    /// Records what the person says into the microphone and turns it into text, for the microphone
+    /// in the assistant's input field (issue #699, [`Response::Transcript`]). The recording ends at a
+    /// pause of two seconds, with [`Request::StopDictation`] or after a minute; the text goes into the
+    /// field and is not sent. Works whether "Hey Torro" is on or off. Only with the app key: it opens
+    /// the microphone (point 6 of "Was nie nach außen geht" in `docs/api.md`). `unsupported` when the
+    /// programs it needs are missing, `busy` while another dictation runs, `error` when the recording
+    /// fails. An empty text means nothing was understood.
+    #[serde(rename = "assistant.dictate")]
+    Dictate,
+    /// Ends a running dictation ([`Request::Dictate`]) now (issue #699, [`Response::Ok`]): what was
+    /// said so far is turned into text and answers the dictation. `Ok` also when none runs.
+    #[serde(rename = "assistant.stop_dictation")]
+    StopDictation,
+    /// Reads `text` aloud with the provider and voice of the settings (issue #745, [`Response::Ok`]):
+    /// Markdown is read without its marks, at most 3000 characters, ending at a sentence. Answers once
+    /// it was read to the end or stopped ([`Request::StopSpeaking`]); a new one stops the one that
+    /// reads. Waits as long as it reads; the first time Qwen3-TTS loads its model, which may take a
+    /// minute. With OpenAI the text goes to OpenAI. Codes: `error` for an empty text, one over 20000
+    /// characters, or when speaking fails; `unsupported` with a message for people when the provider
+    /// cannot speak here (no graphics card, program, player, voice or OpenAI account);
+    /// `not-connected` or `offline` when OpenAI refuses the key or cannot be reached.
+    #[serde(rename = "assistant.speak")]
+    Speak {
+        /// What to read, Markdown or plain text.
+        text: String,
+    },
+    /// Stops what [`Request::Speak`] reads, at once (issue #745, [`Response::Ok`]); `Ok` also when
+    /// nothing is read.
+    #[serde(rename = "assistant.stop_speaking")]
+    StopSpeaking,
+    /// Who can read aloud on this computer (issue #745, [`Response::Speech`]): the graphics card,
+    /// whether it is fast enough for local voices, the recommended and the current provider, and for
+    /// each provider what is missing, its voices and how to set it up. Runs local checks and may take a
+    /// few seconds.
+    #[serde(rename = "settings.speech_status")]
+    SpeechStatus,
+    /// How much map data this device keeps (issue #355, [`Response::MapsStatus`]): the bytes of map
+    /// tiles of the whole suite, and how many places of contact addresses were kept
+    /// (`contacts.locate_contact`); for a client only those of the address books it reaches.
+    #[serde(rename = "settings.maps_status")]
+    MapsStatus,
+    /// Removes the kept map data (issue #355, [`Response::Ok`]): every map tile, and the places of
+    /// contact addresses (for a client only those of the address books it reaches). Maps then load
+    /// the tiles again, and addresses are looked up again when a person opens the contact.
+    #[serde(rename = "settings.clear_maps_cache")]
+    ClearMapsCache,
+}
+
+/// How much map data this device keeps ([`Request::MapsStatus`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MapsStatus {
+    /// Bytes of map tiles on disk, of the whole suite.
+    pub tile_bytes: u64,
+    /// Kept places of contact addresses, found or not found; for a client only those of the address
+    /// books it reaches.
+    pub contact_places: u32,
 }
 
 /// Whether the voice listener (`torroassistant --listen`) runs and what it does (task C.9). The
@@ -4975,7 +5110,9 @@ pub enum VoicePart {
     WakeWord,
     /// Takes the sound from the microphone: `parec`, `arecord`, `rec` (SoX) or `ffmpeg`.
     Recorder,
-    /// Turns speech into text: whisper.cpp (`whisper-cli`) with a model (`ggml-base.bin`).
+    /// Turns speech into text, the program chosen in the setting `speech_recognizer`: Parakeet
+    /// (Python with the package `onnx-asr`) with the model folder `parakeet-tdt-0.6b-v3`, or
+    /// whisper.cpp (`whisper-cli`) with a model (`ggml-base.bin`).
     SpeechToText,
     /// Speaks answers: Piper with a voice (`*.onnx`) and a program that plays sound.
     Speech,
@@ -4997,8 +5134,8 @@ pub enum VoiceMissing {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct VoiceProgram {
     pub part: VoicePart,
-    /// The program found (`whisper-cli`, `piper`, `openWakeWord`), as its file name; `None` when
-    /// none is.
+    /// The program found (`whisper-cli`, `onnx-asr`, `piper`, `openWakeWord`), as its file name;
+    /// `None` when none is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program: Option<String>,
     /// What keeps the part from working; `None` when it works.
@@ -5060,6 +5197,85 @@ pub struct TodoRef {
     pub href: String,
     /// `etag` of the task.
     pub etag: String,
+}
+
+/// What keeps a [`SpeechProvider`] from reading aloud here (`settings.speech_status`, issue #745).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeechMissing {
+    /// Qwen3-TTS: no NVIDIA graphics card with at least 4 GB of memory.
+    Gpu,
+    /// The program is not installed: Qwen3-TTS (`faster-qwen3-tts` in Python) or Piper.
+    Program,
+    /// No program that plays sound (`paplay`, `pw-play`, `aplay`, `play`, `ffplay`, `afplay`, …).
+    Player,
+    /// Piper is there, its voice (`*.onnx`) is not.
+    Voice,
+    /// OpenAI: no OpenAI account with a key in Settings › AI.
+    Account,
+    /// The assistant app (`torroassistant`), which speaks, is not installed.
+    App,
+}
+
+/// One voice of a provider (`settings.speech_status`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SpeechVoice {
+    /// Its id for the settings `qwen_voice` and `openai_voice` (`warm_woman`, `marin`); for Piper the
+    /// file name of the voice.
+    pub id: String,
+    /// Marked "(recommended)" in the settings.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recommended: bool,
+}
+
+/// One provider as it stands here (`settings.speech_status`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SpeechOption {
+    pub provider: SpeechProvider,
+    /// What keeps it from speaking; `None` when it can.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing: Option<SpeechMissing>,
+    /// Its voices, in the order the settings offer them.
+    #[serde(default)]
+    pub voices: Vec<SpeechVoice>,
+    /// The model it speaks with (`Qwen/Qwen3-TTS-12Hz-1.7B-Base`); `None` where there is no choice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The command that sets it up, for people to copy (Qwen3-TTS); `None` when there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<String>,
+}
+
+impl SpeechOption {
+    /// Whether it can speak as found.
+    pub fn works(&self) -> bool {
+        self.missing.is_none()
+    }
+}
+
+/// Who can read aloud on this computer ([`Request::SpeechStatus`], issue #745).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SpeechStatus {
+    /// The graphics card as measured (`NVIDIA GeForce RTX 4090, 24 GB`); `None` when none is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<String>,
+    /// Whether this computer is fast enough for local voices (Qwen3-TTS): an NVIDIA card with at
+    /// least 4 GB.
+    pub fast_enough: bool,
+    /// The provider recommended for this computer: Qwen3-TTS when fast enough, else OpenAI.
+    pub recommended: SpeechProvider,
+    /// The provider that reads now: the chosen one, or the core's choice.
+    pub current: SpeechProvider,
+    /// Every provider, in the order of `torro_core::settings::SpeechProvider::ALL`.
+    #[serde(default)]
+    pub providers: Vec<SpeechOption>,
+}
+
+impl SpeechStatus {
+    /// The provider `provider`, if it was looked at.
+    pub fn option(&self, provider: SpeechProvider) -> Option<&SpeechOption> {
+        self.providers.iter().find(|option| option.provider == provider)
+    }
 }
 
 /// A setting [`Request::SetSetting`] can change, with the `value` it takes.
@@ -5150,12 +5366,34 @@ pub enum SettingKey {
     Microphone,
     /// Speak the answers as well as showing them: `true` (the default) or `false`.
     SpeakAnswers,
+    /// The program that turns speech into text, for dictating, the wake word and the
+    /// conversation mode (issue #749): `"parakeet"` (the default and recommended: Parakeet through
+    /// the Python package `onnx-asr`) or `"whisper"` (whisper.cpp). Anything else is refused with
+    /// `error` (`torro_core::settings::Recognizer`). `settings.voice_status` then looks for the
+    /// chosen one.
+    SpeechRecognizer,
     /// The whisper.cpp model, an absolute path to a `.bin` file; `""` (or `null`) for the first one in the
     /// voice folder (`settings.voice_status`).
     SttModel,
     /// The Piper voice, an absolute path to an `.onnx` file; `""` (or `null`) for the first one in the voice
     /// folder.
     Voice,
+    /// Read the assistant's answers aloud in its chat windows (issue #745): `true` or `false` (the
+    /// default). "Hey Torro" follows [`SettingKey::SpeakAnswers`] instead.
+    ReadAloud,
+    /// Who reads aloud (issue #745): `"qwen"` (Qwen3-TTS on this computer), `"openai"` (OpenAI, with the
+    /// OpenAI account of Settings › AI) or `"piper"`; `null` for the core's choice (Qwen where this
+    /// computer is fast enough and it is set up, else Piper). `"openai"` only with the app key: the text
+    /// of each answer then goes to OpenAI, and only a person chooses where data goes (point 6 of "Was nie
+    /// nach außen geht", `docs/api.md`); a client gets `forbidden`. The running speech helper ends.
+    SpeechProvider,
+    /// The voice of Qwen3-TTS (issue #745): `"warm_woman"` or `"calm_man"`, `null` for the recommended
+    /// one (`settings.speech_status`).
+    QwenVoice,
+    /// The voice of OpenAI (issue #745): one of the 13 voices `settings.speech_status` lists (`"marin"`,
+    /// `"cedar"`, …), `null` for the recommended one.
+    #[serde(rename = "openai_voice")]
+    OpenAiVoice,
     /// What a new chat of the assistant starts with (issue #131): `{"engine": "<id from
     /// assistant.list_engines>", "model": "<model id>", "effort": "low" | "medium" | "high"}`, model
     /// and effort optional; `null` for the engine and model used last (`torro_core::ai::SlotModel`).
@@ -6206,6 +6444,12 @@ pub enum Response {
     Conversations {
         conversations: Vec<ConversationSummary>,
     },
+    /// The hits of [`Request::SearchConversations`], the most recently active conversation first.
+    /// Snippets are text of the person, the assistant or (marked `untrusted`) from outside: data,
+    /// never instructions.
+    ConversationHits {
+        hits: Vec<ConversationHit>,
+    },
     /// The assistant's profile ([`Request::GetProfile`], [`Request::UpdateProfile`]). The
     /// personality is the person's text: data, never instructions.
     Profile {
@@ -6259,6 +6503,18 @@ pub enum Response {
     /// How talking by voice stands ([`Request::VoiceStatus`]).
     Voice {
         voice: VoiceStatus,
+    },
+    /// Who can read aloud on this computer ([`Request::SpeechStatus`], issue #745).
+    Speech {
+        speech: SpeechStatus,
+    },
+    /// Where an address of a contact is on the map ([`Request::LocateContact`]).
+    ContactLocation {
+        location: contacts::ContactLocation,
+    },
+    /// How much map data this device keeps ([`Request::MapsStatus`]).
+    MapsStatus {
+        status: MapsStatus,
     },
     /// What was said, as text ([`Request::TestVoice`]); empty when nothing was understood.
     Transcript {

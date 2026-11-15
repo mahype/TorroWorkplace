@@ -1080,6 +1080,14 @@ Die eigenen Adressen der Konten kommen nie vor. Ins Protokoll kommt je gelesenem
 Suchtext. Alle Felder sind `untrusted`. Mit `contacts_only` kommt nichts aus Mails; der Assistent setzt es, wenn Mail im
 Gespräch ausgeschaltet ist (bis #664 auch für ein Modell anderswo ohne `mail_to_cloud`), damit auch die Auswahl der
 Kontakte nicht verrät, wem der Mensch oft schreibt.
+**Orte von Adressen** (Issue #355): `contacts.locate_contact` ist `Read` und liest für Clients nur `GEO` und die auf
+dem Rechner gemerkten Orte (sonst `not_looked_up`); im Netz sucht der Kern nur für die App, wenn der Mensch den Kontakt
+öffnet, und nur mit Karten und „Look up contact addresses“ an. Gemerkte Orte bleiben nach dem Ausschalten lesbar
+(es geht dabei nichts hinaus), bis „Clear“ sie löscht. `contacts.open_in_maps` ist `Write` und wartet für Clients
+immer auf eine Freigabe, die Adresse und Karten-App zeigt und an Adresse und `GEO` gebunden ist (geändert:
+`conflict`; eine Adresse, die es nicht gibt, ist `not-found` ohne Freigabe). `settings.maps_status` (`Read`) und
+`settings.clear_maps_cache` (`Admin`) zählen bzw. löschen Kacheln und Orte, für Clients nur Orte ihrer Bücher. Das Bild
+kommt wie im Kalender von `calendar.map_preview`.
 **Import und Export** (Issue #725): `import_vcards { book, data?, path?, dry_run }` übernimmt die Karten einer
 `.vcf`-Datei Byte für Byte (fehlt die `UID`, setzt der Dienst eine) und lässt Personen weg, die schon in einem Buch der
 Auswahl stehen (gleiche `UID` im Zielbuch, gleiche Mailadresse, Nummer oder Name mit Firma); nie wird still
@@ -1256,7 +1264,8 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    `only_people_switch_the_microphone_on_and_agents_may_switch_it_off` im Kern). `voice_enabled:
    false` ist eine gewöhnliche Admin-Änderung mit Freigabe. Den Mikrofontest („Say something“ im
    Abschnitt Voice des Assistenten, `settings.test_voice`) gibt es nur mit dem App-Schlüssel
-   (`Mcp::Never`). Dass die Einstellung im App-Fenster statt in der Steuerzentrale steht, ändert
+   (`Mcp::Never`), ebenso das Diktieren ins Eingabefeld (`assistant.dictate`,
+   `assistant.stop_dictation`, Issue #699). Dass die Einstellung im App-Fenster statt in der Steuerzentrale steht, ändert
    die Zusage nicht: Jedes Fenster der Suite hält den App-Schlüssel, und ein Mensch drückt den
    Schalter.
 
@@ -1273,6 +1282,15 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    `only_people_switch_a_search_provider_on` und `web_is_reached_only_when_named` in `torro-ipc`,
    `only_people_switch_search_providers_on_and_set_the_searxng_address` im Kern).
 
+   Ebenso **OpenAI als Vorleser wählen** (Issue #745, [assistent.md](assistent.md) „Vorlesen“): Dann geht der
+   Text jeder Antwort an OpenAI. `settings.set_setting` mit `speech_provider` `"openai"` bekommt von jedem Client
+   `forbidden`, auch mit Admin-Rechten; ein `settings.update_settings` eines Clients behält den gespeicherten Anbieter,
+   statt OpenAI zu wählen. Qwen3-TTS, Piper und `null` (die Wahl des Dienstes) sind gewöhnliche Admin-Änderungen.
+   `assistant.speak` und `read_aloud` stehen Clients mit den Rechten offen: Die Zustimmung, dass Text an OpenAI geht,
+   liegt in der Wahl des Anbieters, nicht im Schalter; gelesen wird mit dem Anbieter, den ein Mensch gewählt hat
+   (Tests `only_people_send_what_is_read_aloud_to_openai` in `torro-ipc` und
+   `reading_aloud_is_set_and_a_client_never_chooses_openai` im Kern).
+
    Ebenso **Karten und Ortssuche einschalten** (Termin-Editor, Aufgabe TE.1, [termin-editor.md](termin-editor.md)):
    Die Suche schickt den getippten Ort mit der Sprache der Suite (bei Photon auch `near`), die Karte die Koordinaten,
    beide mit der IP-Adresse an fremde Dienste.
@@ -1285,6 +1303,13 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    Schlüssel im Schlüsselbund. Solange Karten aus sind, antworten `calendar.search_places` und `calendar.map_preview`
    `unsupported`, ohne einen Dienst zu fragen (Tests `only_people_turn_maps_on_or_name_their_services` in `torro-ipc`
    und `only_people_turn_maps_on_and_agents_may_turn_them_off` im Kern).
+
+   Ebenso **Ortssuche für Kontakte einschalten** (Issue #355): Dabei gehen Adressen anderer Menschen an den
+   Suchdienst. `maps` mit `contactLookup` ungleich `false` bekommt von jedem Client `forbidden`, ein
+   `update_settings` schaltet sie für Clients nie ein. Ausschalten (`{"contactLookup": false}`, Freigabe „Turn off
+   address lookup for contacts“) ist eine gewöhnliche Admin-Änderung (Tests
+   `only_people_turn_maps_on_or_name_their_services` in `torro-ipc` und
+   `looking_up_contact_addresses_is_off_and_only_a_person_turns_it_on` in `torro-core`).
 
    Ebenso **ein Modell anschalten, das anderswo rechnet** (#231, Aufgabe S.24, `ai.set_model_enabled` mit
    `enabled: true`): Ollamas Cloud-Modelle, OpenRouter, Anthropic und Server im Netz. Jeder Client bekommt
@@ -1476,7 +1501,9 @@ MCP-Tool dafür: Agenten ändern nie Rechte („Was nie nach außen geht“, Pun
   nicht, und auch die Stufe im Bereich `extensions` nicht. Nur Assistent und Bots starten offen (`Rights::opened`:
   Grundstufe Voll, alle eingebauten Werkzeuge, Bereich `tools` Voll, ein vorhandener Admin-Schalter bleibt; seit #666 die Startrechte von
   `Rights::assistant()` und jedem Bot, den der Mensch anlegt (einer, den ein Client anlegt, startet geschlossen,
-  `close_extensions`); Rechte von Assistent und Bots ohne Grundstufe öffnet der Kern einmal,
+  `close_extensions`; fragt ein API- oder MCP-Client einen Bot oder schreibt ihm, läuft der Bot nur mit dem, was
+  beide dürfen, `Rights::common`, #698, so dass kein Client über einen Bot einen Server oder ein Werkzeug erreicht,
+  das er selbst nicht hat); Rechte von Assistent und Bots ohne Grundstufe öffnet der Kern einmal,
   beim Laden, beim Anlegen (auch mit einer Vorlage) und bei `clients.update_client` (`Rights::opened_once`); dabei
   ersetzt `opened` auch eine engere
   Auswahl der Werkzeuge und den Bereich `tools`, gewollt nach Entscheidung 3 von #666: Wer weniger will, schaltet es

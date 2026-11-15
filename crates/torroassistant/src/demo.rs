@@ -36,8 +36,26 @@ use torro_ipc::bots::{Bot, Skill};
 use torro_ipc::{AccountInfo, ApprovalInfo, ApprovalState, ClientInfo, Request, Response};
 use torro_pim::{AccountState, Collection, CollectionKind};
 
+/// `text` from a little before `word`, white space folded, at most about `chars` characters ("…" where cut).
+fn snippet(text: &str, word: &str, chars: usize) -> String {
+    let folded: Vec<char> = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().collect();
+    let lowered: Vec<char> = folded.iter().map(|c| c.to_lowercase().next().unwrap_or(*c)).collect();
+    let word: Vec<char> = word.chars().collect();
+    let at = (0..lowered.len()).find(|at| lowered[*at..].starts_with(&word)).unwrap_or(0);
+    let start = at.saturating_sub(chars / 4);
+    let end = (start + chars).min(folded.len());
+    let middle: String = folded[start..end].iter().collect();
+    format!("{}{middle}{}", if start > 0 { "…" } else { "" }, if end < folded.len() { "…" } else { "" })
+}
+
+/// A word the demo's conversations hold in every language, for `--open search` (issue #704).
+pub const SEARCH_WORD: &str = "Anna";
+
 /// "Plan for tomorrow": messages, tool lines and an answer in Markdown. Pinned.
 pub const TOOLS: &str = "d000000000000001";
+
+/// The answer of [`TOOLS`] that the state `reading` reads aloud (issue #745): its fourth entry.
+pub const READ_ANSWER: u64 = 4;
 /// "Block the afternoon": a tool waits for the person's approval.
 pub const APPROVAL: &str = "d000000000000002";
 /// "Draft a reply to Anna": an answer still being written.
@@ -63,6 +81,8 @@ pub const GONE: &str = "d000000000000009";
 /// "Design review on Thursday": a chat about a mail (issue #605, "Ask AI…" in the mail window), with
 /// the mail's mark in the sidebar and the event it read out as a suggestion card.
 pub const MAIL_CHAT: &str = "d00000000000000b";
+/// "Invoice for March": the newest of three archived conversations (issue #697).
+pub const ARCHIVED: &str = "d00000000000000c";
 
 /// The bot "Travel planner".
 pub const TRAVEL: &str = "b0000001";
@@ -168,6 +188,10 @@ impl Demo {
             Request::Accounts => Response::Accounts { accounts: accounts() },
             Request::ListConversations => Response::Conversations { conversations: state.summaries() },
             Request::GetConversation { id, after } => state.get(&id, after.unwrap_or(0)),
+            // Issue #704, in short: every word in a message or answer, the newest conversations first.
+            Request::SearchConversations { query, limit } => {
+                Response::ConversationHits { hits: state.search(&query, limit) }
+            }
             Request::SendMessage { conversation, engine, model, effort, text, without, mode, bot, about: _ } => {
                 state.send(conversation, (engine, model, effort), text, (without, mode), bot)
             }
@@ -181,6 +205,23 @@ impl Demo {
                 state.conversations.retain(|c| c.summary.id != id);
                 if state.conversations.len() < before { Response::Ok } else { unknown(&id) }
             }
+            // Issue #697: as the core does, every id checked first.
+            Request::ArchiveConversations { ids, archived } => match state.unknown_of(&ids) {
+                Some(id) => unknown(&id),
+                None => {
+                    for conversation in state.conversations.iter_mut().filter(|c| ids.contains(&c.summary.id)) {
+                        conversation.summary.archived = archived;
+                    }
+                    Response::Ok
+                }
+            },
+            Request::DeleteConversations { ids } => match state.unknown_of(&ids) {
+                Some(id) => unknown(&id),
+                None => {
+                    state.conversations.retain(|c| !ids.contains(&c.summary.id));
+                    Response::Ok
+                }
+            },
             Request::OpenChatWindow { window } => open_window(&state, window),
             Request::ApprovalStatus { id } => match state.approvals.iter().find(|a| a.id == id) {
                 Some(approval) => Response::Approval { approval: approval.clone() },
@@ -227,6 +268,13 @@ impl Demo {
                 state.clients.retain(|known| Some(&known.id) != client.as_ref());
                 if state.bots.len() < before { Response::Ok } else { no_bot(&id) }
             }
+            // Speech recognition is set up in the demo (issue #699): the microphone dictates a fixed
+            // sentence and records nothing.
+            Request::VoiceStatus => Response::Voice { voice: voice() },
+            Request::Dictate => Response::Transcript { text: tr("Remind me to call Anna tomorrow.").to_owned() },
+            Request::StopDictation => Response::Ok,
+            // Reading aloud (issue #745): nothing sounds in the demo.
+            Request::Speak { .. } | Request::StopSpeaking => Response::Ok,
             other => refused("unsupported", &format!("{} is not in the demo", other.operation().name())),
         }
     }
@@ -278,6 +326,42 @@ impl State {
         list
     }
 
+    /// The hits of `query` (issue #704) as the core finds them, in short: a message or answer that holds
+    /// every word in any case, at most three per conversation (the newest), the most recent first; the
+    /// snippet the text's start.
+    fn search(&self, query: &str, limit: Option<u32>) -> Vec<torro_ipc::assistant::ConversationHit> {
+        use torro_ipc::assistant::{ConversationHit, HITS_PER_CONVERSATION, HitKind, MAX_HITS, SNIPPET_CHARS};
+        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        let mut conversations: Vec<&Conversation> = self.conversations.iter().collect();
+        conversations.sort_by_key(|c| std::cmp::Reverse(c.summary.updated));
+        let mut hits = Vec::new();
+        for conversation in conversations {
+            let found = conversation.entries.iter().rev().filter_map(|entry| {
+                let (kind, text) = match &entry.content {
+                    EntryContent::Message { text, .. } => (HitKind::Message, text),
+                    EntryContent::Answer { text, .. } => (HitKind::Answer, text),
+                    _ => return None,
+                };
+                let lowered = text.to_lowercase();
+                words.iter().all(|word| lowered.contains(word.as_str())).then_some((entry.seq, kind, text))
+            });
+            for (seq, kind, text) in found.take(HITS_PER_CONVERSATION) {
+                hits.push(ConversationHit {
+                    conversation: conversation.summary.id.clone(),
+                    title: conversation.summary.title.clone(),
+                    updated: conversation.summary.updated,
+                    bot: conversation.summary.bot.clone(),
+                    seq: Some(seq),
+                    kind,
+                    snippet: snippet(text, words.first().map_or("", String::as_str), SNIPPET_CHARS),
+                    untrusted: false,
+                });
+            }
+        }
+        hits.truncate(limit.unwrap_or(MAX_HITS).clamp(1, MAX_HITS) as usize);
+        hits
+    }
+
     fn find(&mut self, id: &str) -> Option<&mut Conversation> {
         self.conversations.iter_mut().find(|c| c.summary.id == id)
     }
@@ -325,6 +409,7 @@ impl State {
                     created: now,
                     updated: now,
                     pinned: false,
+                    archived: false,
                     running: false,
                     last: 0,
                     bot: bot.clone(),
@@ -346,6 +431,8 @@ impl State {
             (engine.clone(), model.clone(), effort);
         let message =
             conversation.push(now, EntryContent::Message { text, engine, model, effort, without, mode, from: None });
+        // As the core: a message brings an archived conversation back (issue #697).
+        conversation.summary.archived = false;
         conversation.summary.running = true;
         conversation.growing = Some(Growing { text: tr(reply).to_owned(), shown: 0, frozen: false });
         Response::Conversation { conversation: conversation.summary.clone(), entries: vec![message] }
@@ -405,6 +492,11 @@ impl State {
         conversation.push(now, EntryContent::Stopped);
         conversation.summary.running = false;
         Response::Ok
+    }
+
+    /// The first of `ids` the demo does not have.
+    fn unknown_of(&self, ids: &[String]) -> Option<String> {
+        ids.iter().find(|id| !self.conversations.iter().any(|c| c.summary.id == **id)).cloned()
     }
 
     fn change(&mut self, id: &str, change: impl FnOnce(&mut Conversation)) -> Response {
@@ -529,6 +621,7 @@ fn sample(id: &str, title: &str, now: DateTime<Utc>, ago: Duration, entries: Vec
         created: updated - Duration::minutes(3),
         updated,
         pinned: false,
+        archived: false,
         running: false,
         last: entries.len() as u64,
         bot: None,
@@ -721,7 +814,31 @@ fn samples(now: DateTime<Utc>) -> Vec<Conversation> {
         ],
     );
     review.summary.about = Some(mail);
-    vec![plan, block, draft, forbidden, trip, release, lisbon, porto, gone, vienna, review]
+    // Issue #697: three conversations in the archive, closed at the bottom of the sidebar.
+    let archived = [
+        (ARCHIVED, tr("Invoice for March"), Duration::days(12), tr("Is the invoice for March paid?")),
+        (
+            "d00000000000000d",
+            tr("Flat viewing in Altona"),
+            Duration::days(20),
+            tr("When was the flat viewing in Altona?"),
+        ),
+        (
+            "d00000000000000e",
+            tr("Gift ideas for Tom"),
+            Duration::days(41),
+            tr("What could I give Tom for his birthday?"),
+        ),
+    ]
+    .map(|(id, title, ago, question)| {
+        let mut conversation =
+            sample(id, title, now, ago, vec![message(question), answer(tr("Here is what I found."))]);
+        conversation.summary.archived = true;
+        conversation
+    });
+    let mut all = vec![plan, block, draft, forbidden, trip, release, lisbon, porto, gone, vienna, review];
+    all.extend(archived);
+    all
 }
 
 /// The cards of `entries` as the core resolves them (task WZ.8): [`PDF`] as a file on the desktop,
@@ -745,6 +862,18 @@ fn cards(entries: &[Entry], now: DateTime<Utc>) -> Vec<CardEntry> {
             _ => None,
         })
         .collect()
+}
+
+/// How talking by voice stands in the demo (issue #699): recording and speech to text are there,
+/// the listener is off – the microphone of the composer can dictate.
+fn voice() -> torro_ipc::VoiceStatus {
+    use torro_ipc::{VoicePart, VoiceProgram, VoiceStatus};
+    let found = |part, program: &str| VoiceProgram { part, program: Some(program.into()), missing: None };
+    VoiceStatus {
+        installed: true,
+        programs: vec![found(VoicePart::Recorder, "parec"), found(VoicePart::SpeechToText, "whisper-cli")],
+        ..VoiceStatus::default()
+    }
 }
 
 /// The event "Design review" read out of the mail of [`MAIL_CHAT`]: two days on at 14:00 for an hour.
@@ -960,6 +1089,7 @@ fn models(account: &str) -> Option<Vec<AiModel>> {
         tools,
         open_weights: Some(true),
         context: None,
+        max_output: None,
         parameters: None,
         quantization: None,
         size: None,

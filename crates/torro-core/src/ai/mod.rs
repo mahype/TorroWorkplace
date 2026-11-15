@@ -378,6 +378,7 @@ impl AiProvider {
                 tools: Some(false),
                 open_weights: Some(false),
                 context: None,
+                max_output: None,
                 parameters: None,
                 quantization: None,
                 size: None,
@@ -414,6 +415,11 @@ pub struct AiModel {
     /// How many tokens fit into one conversation, when the server tells.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<u64>,
+    /// The most tokens **one answer** may have, where the server tells (Anthropic's `max_tokens`,
+    /// issue #223); `None` where it is silent. Unlike [`AiModel::context`], which counts the whole
+    /// conversation, this bounds only what the model writes back, thinking included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output: Option<u32>,
     /// How many parameters the model has, as the server writes it (`8.2B`, issue #431): only
     /// Ollama tells (`details.parameter_size` in `/api/tags`), never estimated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -467,6 +473,7 @@ impl AiModel {
             tools: None,
             open_weights: None,
             context: None,
+            max_output: None,
             parameters: None,
             quantization: None,
             size: None,
@@ -1182,6 +1189,44 @@ pub fn place_of(provider: AiProvider, server: &str, model: &AiModel) -> Place {
     }
 }
 
+/// Context windows assumed when a provider's model list names none (issue #716): `(provider, id
+/// prefix, tokens)`, the first match wins, so a longer prefix stands before a shorter one; the empty
+/// prefix is the provider's default. Each default is the smallest window of the provider's usual chat
+/// models: too small only condenses a conversation earlier, too large makes the provider refuse it.
+const ASSUMED_CONTEXT: &[(AiProvider, &str, u64)] = &[
+    (AiProvider::OpenAi, "gpt-4.1", 1_000_000),
+    (AiProvider::OpenAi, "gpt-5-chat", 128_000),
+    (AiProvider::OpenAi, "gpt-5", 400_000),
+    (AiProvider::OpenAi, "o3", 200_000),
+    (AiProvider::OpenAi, "o4", 200_000),
+    (AiProvider::OpenAi, "", 128_000),
+    // No default: Gemini's endpoint also lists Gemma, whose window is much smaller.
+    (AiProvider::Gemini, "gemini-", 1_000_000),
+    (AiProvider::Anthropic, "", 200_000),
+    (AiProvider::MiniMax, "", 200_000),
+    (AiProvider::Kimi, "moonshot-v1-8k", 8_000),
+    (AiProvider::Kimi, "moonshot-v1-32k", 32_000),
+    (AiProvider::Kimi, "", 128_000),
+    (AiProvider::Mistral, "", 128_000),
+    (AiProvider::DeepSeek, "", 128_000),
+    (AiProvider::Qwen, "", 128_000),
+    (AiProvider::Glm, "", 128_000),
+];
+
+/// The context window in tokens to assume for `model` of `provider` when its model list names none
+/// (issue #716), from [`ASSUMED_CONTEXT`]. `None` for local servers, servers of your own,
+/// OpenRouter and Ollama Cloud (a local server often runs a smaller window than the model could,
+/// and OpenRouter lists its own) and for a model the table does not know: the caller keeps its
+/// own default. Never part of the model list, which shows only what the server says.
+pub fn assumed_context(provider: AiProvider, model: &str) -> Option<u64> {
+    let id = model.to_lowercase();
+    let id = id.strip_prefix("models/").unwrap_or(&id);
+    ASSUMED_CONTEXT
+        .iter()
+        .find(|(of, prefix, _)| *of == provider && id.starts_with(prefix))
+        .map(|(_, _, tokens)| *tokens)
+}
+
 /// Where sorting's "Automatic" selection counts before a concrete model is chosen. Only the
 /// three local runtimes on loopback restrict Automatic to local models even with mail permission.
 /// Other accounts, including OpenAI-compatible ones, require permission for a remote selection;
@@ -1198,6 +1243,27 @@ pub fn key_may_travel(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_model_without_a_listed_window_gets_the_one_of_its_provider_or_family() {
+        let of = assumed_context;
+        assert_eq!(of(AiProvider::OpenAi, "gpt-4.1-mini"), Some(1_000_000));
+        assert_eq!(of(AiProvider::OpenAi, "gpt-4o"), Some(128_000));
+        assert_eq!(of(AiProvider::OpenAi, "gpt-5-chat-latest"), Some(128_000));
+        assert_eq!(of(AiProvider::OpenAi, "gpt-5.1"), Some(400_000));
+        assert_eq!(of(AiProvider::OpenAi, "o3-mini"), Some(200_000));
+        assert_eq!(of(AiProvider::Gemini, "models/gemini-2.5-pro"), Some(1_000_000));
+        assert_eq!(of(AiProvider::Gemini, "gemma-3-27b-it"), None);
+        assert_eq!(of(AiProvider::Kimi, "moonshot-v1-8k"), Some(8_000));
+        assert_eq!(of(AiProvider::Kimi, "kimi-k2"), Some(128_000));
+        assert_eq!(of(AiProvider::Mistral, "mistral-large-latest"), Some(128_000));
+        assert_eq!(of(AiProvider::Anthropic, "claude-sonnet-5-5"), Some(200_000));
+        for local in [AiProvider::Ollama, AiProvider::LmStudio, AiProvider::Strata, AiProvider::OpenRouter] {
+            assert_eq!(of(local, "qwen3:8b"), None, "{local:?}");
+        }
+        assert_eq!(of(AiProvider::OllamaCloud, "glm-5.3:cloud"), None);
+        assert_eq!(of(AiProvider::OpenAiCompatible, "gpt-4o"), None);
+    }
 
     #[test]
     fn ollama_cloud_is_a_separate_remote_provider_even_behind_loopback() {
@@ -1233,6 +1299,7 @@ mod tests {
             tools: None,
             open_weights,
             context: None,
+            max_output: None,
             parameters: None,
             quantization: None,
             size: None,

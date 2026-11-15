@@ -3,7 +3,9 @@
 //!
 //! Two kinds of window from one program ([`Window`]): the main window (class `torro-assistant`)
 //! with the conversations in the sidebar – pinned on top, then the newest, with a search – and the
-//! chat beside them; and a single chat window (`--chat <id>|new`, class `torro-assistant-chat`,
+//! chat beside them; from [`SEARCH_FROM`] characters on the search looks through the whole history
+//! (`assistant.search_conversations`, issue #704), and a hit opens its conversation at the place; and a
+//! single chat window (`--chat <id>|new`, class `torro-assistant-chat`,
 //! [`CHAT`]) with the chat alone. "Open in new window" in a conversation's menu, or a double
 //! click on it in the sidebar, sends `assistant.open_window`; the core starts the chat window. A
 //! chat window whose conversation was deleted meanwhile becomes a new chat, as a workspace
@@ -107,10 +109,11 @@ use torro_gui::zoom::{self, Zoom};
 use torro_ipc::api::{Area, Rights};
 use torro_ipc::assistant::Mode as PermissionMode;
 use torro_ipc::assistant::{
-    Card, CardEntry, ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, Profile,
+    Card, CardEntry, ChatWindow, ConversationHit, ConversationSummary, Engine, EngineKind, Entry, EntryContent,
+    MAX_BULK_IDS, MAX_HITS, Profile,
 };
 use torro_ipc::bots::{Bot, BotSummary};
-use torro_ipc::{ApprovalInfo, Request, Response};
+use torro_ipc::{ApprovalInfo, Request, Response, VoiceStatus};
 use torro_settings_ui::assistant::{self as settings, AppAction};
 use torro_settings_ui::{Host, Outcome};
 
@@ -167,6 +170,10 @@ pub const EDITOR: &str = "assistant-composer";
 pub const MINI_INPUT: &str = "assistant-mini";
 /// The id of the sidebar's search field.
 pub const SEARCH: &str = "assistant-search";
+
+/// From this many characters on (trimmed) the sidebar's search looks through the history of every
+/// conversation (issue #704); below, it filters the titles only.
+pub const SEARCH_FROM: usize = 2;
 /// The id of the bot editor's name field: "Save" goes there while the name keeps it back.
 pub const BOT_NAME: &str = "assistant-bot-name";
 /// The id of the bot editor's scrolling form: a "Save" that finds a problem goes to its top.
@@ -176,6 +183,11 @@ pub const RENAME: &str = "assistant-rename";
 /// The section AI of the window's own settings (issue #410), where accounts are added and their
 /// models turned on.
 pub const AI_PAGE: &str = settings::AI_SECTION;
+
+/// The most of an answer the window sends to be read aloud (issue #745): what `assistant.speak` takes.
+const SPEAK_MOST: usize = 20_000;
+/// The section Voice of the window's settings, where speech recognition is set up (issue #699).
+pub const VOICE_PAGE: &str = "voice";
 
 /// The id of the scrolling entries of the open conversation.
 pub const HISTORY: &str = "assistant-history";
@@ -194,8 +206,6 @@ pub type Reply = Box<dyn Fn(Result<Response, Refusal>) -> Message + Send>;
 pub enum Menu {
     /// The engine and model picker of the composer.
     Picker,
-    /// The effort of the composer (issue #131).
-    Effort,
     /// The permission mode under the composer (issue #132).
     Mode,
     /// The areas of the composer ("Without Mail").
@@ -206,8 +216,24 @@ pub enum Menu {
     /// The menu of a bot in the sidebar (right click): New chat, Edit, Access, Open in new window,
     /// Delete.
     Bot { id: String },
+    /// The "…" of the sidebar's group "Recent" (issue #697): Archive all…, Delete all….
+    Recent,
+    /// The "…" of the group "Archive", open or closed (issue #697): Empty archive….
+    Archive,
     /// The engine and model picker of the bot editor.
     BotPicker,
+}
+
+/// The microphone of the composer (issue #699).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Dictation {
+    /// Nothing is recorded.
+    #[default]
+    Idle,
+    /// The core records (`assistant.dictate` is out); a press stops it.
+    Recording,
+    /// The recording was stopped and the speech turns into text.
+    Stopping,
 }
 
 /// Where a conversation's menu opens.
@@ -226,6 +252,11 @@ pub enum Dialog {
     Delete { id: String, title: String },
     /// Delete the bot `id` (named `name`) for good, after asking.
     DeleteBot { id: String, name: String },
+    /// Delete the conversations `ids` for good, after asking (issue #697): those under "Recent"
+    /// ("Delete all…") or, with `archive`, the whole archive ("Empty archive…").
+    DeleteMany { ids: Vec<String>, archive: bool },
+    /// Archive the conversations `ids` under "Recent", after asking ("Archive all…", issue #697).
+    ArchiveMany { ids: Vec<String> },
 }
 
 /// What the window knows of the assistant's own client (kind `assistant`).
@@ -391,6 +422,26 @@ pub enum Message {
     PickEffort(Option<Effort>),
     /// From the permission mode's menu (issue #132).
     PickMode(PermissionMode),
+    /// How talking by voice stands (`settings.voice_status`, issue #699): whether the microphone
+    /// can dictate.
+    Voice(Result<VoiceStatus, Refusal>),
+    /// The microphone of the composer (issue #699): records, stops a recording, or – without speech
+    /// recognition – opens Settings › Voice.
+    Dictate,
+    /// What was dictated, as text; empty when nothing was understood.
+    Dictated(Result<String, Refusal>),
+    /// The core took "stop dictating"; the text comes with [`Message::Dictated`].
+    DictationStopped,
+    /// The speaker of the composer (issue #745): reading answers aloud on or off.
+    ToggleReadAloud,
+    /// The core took the switch, or refused it (then it goes back).
+    ReadAloudSet(bool, Result<(), Refusal>),
+    /// [■] at the answer being read (issue #745): reading stops at once.
+    StopReading,
+    /// The core took "stop reading"; [`Message::Read`] follows for the answer.
+    ReadingStopped,
+    /// The answer `seq` of the conversation was read to its end, stopped, or could not be read.
+    Read(Option<String>, u64, Result<(), Refusal>),
     /// "Manage models…" at the end of the picker and under "No model is turned on" (task S.26): the
     /// section AI of the settings ([`AI_PAGE`]), where the models of each AI account are turned on and off.
     ManageModels,
@@ -417,6 +468,18 @@ pub enum Message {
     ConfirmDelete,
     /// "Pin" (`true`) or "Unpin".
     Pin(String, bool),
+    /// "Archive" (`true`) or "Restore" for these conversations (issue #697).
+    Archive(Vec<String>, bool),
+    /// Open or close the sidebar's group "Archive".
+    ToggleArchive,
+    /// "Archive all…", "Delete all…" at "Recent", "Empty archive…" at "Archive": asks first.
+    AskArchiveAll,
+    AskDeleteAll,
+    AskEmptyArchive,
+    /// The question's "Archive … conversations" or "Delete … conversations".
+    ConfirmMany,
+    /// These conversations were deleted (or not) at once.
+    DeletedMany(Vec<String>, Result<(), Refusal>),
     /// The core's answer to a rename or pin; the text says what failed.
     Changed(Result<(), Refusal>, &'static str),
     /// The conversation with this id was deleted (or not).
@@ -425,6 +488,10 @@ pub enum Message {
     CloseDialog,
     /// What is typed into the sidebar's search.
     Search(String),
+    /// The core's hits for the search with these words (issue #704).
+    Hits(String, Result<Vec<ConversationHit>, Refusal>),
+    /// A hit of the search: open its conversation at the entry with this number (`None`: the title).
+    OpenHit(String, Option<u64>),
     /// The pointer is on the sidebar row of this conversation (`None`: on none).
     Hover(Option<String>),
     /// From the tools at the top of the sidebar: search and "New".
@@ -566,12 +633,47 @@ pub struct App {
     pub(crate) take_without: bool,
     /// The message is on its way.
     pub(crate) sending: bool,
+    /// How talking by voice stands, as last asked (issue #699); `None` until the core answered.
+    pub(crate) voice: Option<VoiceStatus>,
+    /// The microphone of the composer.
+    pub(crate) dictation: Dictation,
+    /// How voice stands was asked once outside mini and strip.
+    voice_asked: bool,
+    /// Answers are read aloud (issue #745, the setting `voice.read_aloud`).
+    pub(crate) read_aloud: bool,
+    /// The answer being read aloud now, by its number; [■] shows at it.
+    pub(crate) reading: Option<u64>,
+    /// The conversation of [`App::reading`]: numbers count per conversation.
+    pub(crate) reading_in: Option<String>,
+    /// The speaker was switched and the core has not taken it yet: settings loaded meanwhile (every
+    /// [`REFRESH`]) may still say the old value, and must not switch it back.
+    read_aloud_switching: bool,
+    /// New answers that came while the window watches and are not complete yet: each is read once
+    /// it is.
+    to_read: HashSet<u64>,
+    /// A new answer that just became complete, to read aloud ([`App::read_ready`]).
+    ready_to_read: Option<(u64, String)>,
 
     pub(crate) menu: Option<Menu>,
     pub(crate) dialog: Option<Dialog>,
     pub(crate) search: String,
+    /// The core's hits for [`App::search`] (issue #704): `None` while there is no search through the
+    /// history (fewer than [`SEARCH_FROM`] characters) or before its first answer.
+    pub(crate) hits: Option<Result<Vec<ConversationHit>, Refusal>>,
+    /// The words [`App::hits`] answer: the sidebar shows them while the field holds these words, or while the
+    /// answer for the words in the field is on its way ([`App::asked`]), so the list does not jump at each key.
+    pub(crate) hits_for: String,
+    /// The words of the last search sent to the core.
+    pub(crate) asked: String,
+    /// The hit opened last (conversation, entry): its entry shows marked until another conversation is
+    /// chosen or the search is cleared.
+    pub(crate) marked: Option<(String, u64)>,
+    /// The entry to scroll to once its conversation is opened.
+    pub(crate) snap: Option<(String, u64)>,
     /// The sidebar row under the pointer.
     pub(crate) hover: Option<String>,
+    /// Whether the sidebar's group "Archive" is open (issue #697): closed at every start, not kept.
+    pub(crate) archive_open: bool,
     /// Whether the sidebar drawer is open (medium and narrow layouts).
     pub(crate) drawer: bool,
     /// The sidebar the user chose for the wide layout, kept in `ui.json`.
@@ -657,23 +759,43 @@ impl App {
             choice: None,
             effort: None,
             chosen: Chosen::Default,
-            without: Vec::new(),
+            without: if open == Some(Open::AreasOff) { vec![Area::Mail, Area::Calendar] } else { Vec::new() },
             mode: PermissionMode::Default,
             take_without: true,
             sending: false,
+            voice: None,
+            voice_asked: false,
+            read_aloud: open == Some(Open::Reading),
+            reading: (open == Some(Open::Reading)).then_some(demo::READ_ANSWER),
+            reading_in: (open == Some(Open::Reading)).then(|| demo::TOOLS.to_string()),
+            read_aloud_switching: false,
+            to_read: HashSet::new(),
+            ready_to_read: None,
+            dictation: if open == Some(Open::Dictating) { Dictation::Recording } else { Dictation::Idle },
             menu: match open {
-                Some(Open::Picker) => Some(Menu::Picker),
-                Some(Open::Effort) => Some(Menu::Effort),
+                Some(Open::Picker | Open::Effort) => Some(Menu::Picker),
                 Some(Open::Mode) => Some(Menu::Mode),
                 Some(Open::Menu) => Some(Menu::Conversation { id: demo::TOOLS.into(), at: MenuAt::Header }),
+                // A row under "Recent" (issue #697): the menu hangs at its "…", which stays shown.
+                Some(Open::RowMenu) => Some(Menu::Conversation { id: demo::STREAMING.into(), at: MenuAt::Row }),
+                Some(Open::RecentMenu) => Some(Menu::Recent),
                 Some(Open::BotMenu) => Some(Menu::Bot { id: demo::TRAVEL.into() }),
                 _ => None,
             },
             dialog: None,
             search: String::new(),
+            hits: None,
+            hits_for: String::new(),
+            asked: String::new(),
+            marked: None,
+            snap: None,
             hover: None,
+            archive_open: open == Some(Open::Archive),
             // Without a sidebar the bot's menu hangs in the drawer.
-            drawer: matches!(open, Some(Open::Drawer | Open::BotMenu)),
+            drawer: matches!(
+                open,
+                Some(Open::Drawer | Open::BotMenu | Open::RowMenu | Open::RecentMenu | Open::Archive)
+            ),
             sidebar: SidebarMode::default(),
             side: Split::default(),
             notice: None,
@@ -715,13 +837,15 @@ impl App {
             tasks.push(operation::focus(EDITOR));
         }
         // `--settings <section>`: the window opens with the settings in its content area; Access in
-        // a bot's window (`--bot <id> --settings access`) at that bot.
+        // a bot's window (`--bot <id> --settings access`) at that bot's rights, below Bots since
+        // issue #763.
         if let Some(section) = app.launch.settings.clone() {
-            tasks.push(app.open_settings(Some(&section)));
-            if let (Some(pane), Window::Bot(bot)) = (app.settings.as_mut(), &app.launch.window)
-                && section == settings::access::ID
-            {
-                settings::show_access(&mut pane.sections, Some(bot.clone()));
+            match (&app.launch.window, section.as_str()) {
+                (Window::Bot(bot), settings::access::ID) => {
+                    let bot = bot.clone();
+                    tasks.push(app.open_access(Some(bot)));
+                }
+                _ => tasks.push(app.open_settings(Some(&section))),
             }
         }
         // A demo state of the settings (issue #547): their section, and what is pressed on its page
@@ -886,11 +1010,22 @@ impl App {
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
             Message::Raise => return torro_gui::instance::bring_to_front(),
-            Message::Resized(size) => self.size = size,
+            Message::Resized(size) => {
+                self.size = size;
+                // Mini and strip have no [■] at the answer: reading stops as the window shrinks into
+                // them, so it never runs on out of reach (issue #745).
+                if self.reading.is_some() && self.is_glance() {
+                    return self.stop_reading();
+                }
+                // A window that grows out of mini or strip gets its microphone (issue #699).
+                if !self.waiting && self.voice.is_none() && !self.voice_asked && !self.is_glance() {
+                    return self.load_voice();
+                }
+            }
             Message::CoreReady => {
                 self.waiting = false;
                 // The chat window's conversation too: it waited with the rest (issue #206).
-                return Task::batch([self.load_all(), self.open_current()]);
+                return Task::batch([self.load_all(), self.open_current(), self.load_voice()]);
             }
             Message::Tick => {
                 let mut tasks = vec![self.load_all(), self.fetch_appearance(), self.zoom.fetch().map(Message::Zoom)];
@@ -909,6 +1044,10 @@ impl App {
                 self.choose_default();
             }
             Message::Settings(Ok(settings)) => {
+                // The demo state `reading` shows the speaker on, whatever the demo's settings say.
+                if self.launch.open != Some(Open::Reading) && !self.read_aloud_switching {
+                    self.read_aloud = settings.voice.read_aloud;
+                }
                 self.default = settings.ai_slots.chat;
                 self.choose_default();
             }
@@ -1008,7 +1147,10 @@ impl App {
                 return self.fetch_cards();
             }
             Message::Decided(id, result) => return self.decided(id, result),
-            Message::Select(id) => return self.select(id),
+            Message::Select(id) => {
+                self.marked = None;
+                return self.select(id);
+            }
             Message::NewChat => return self.new_chat(),
             Message::Edit(action) => self.editor.perform(action),
             Message::MiniInput(text) => self.mini = text,
@@ -1030,6 +1172,39 @@ impl App {
             Message::PickMode(mode) => {
                 self.mode = mode;
                 self.menu = None;
+            }
+            Message::Voice(Ok(voice)) => self.voice = Some(voice),
+            // An old core or none: the microphone stays as it was.
+            Message::Voice(Err(_)) => {}
+            Message::Dictate => return self.dictate(),
+            Message::Dictated(result) => return self.dictated(result),
+            // The demo records nothing: its `dictating` state has no dictation that could answer.
+            Message::DictationStopped if self.launch.demo && self.dictation == Dictation::Stopping => {
+                self.dictation = Dictation::Idle;
+            }
+            Message::DictationStopped => {}
+            Message::ToggleReadAloud => return self.toggle_read_aloud(),
+            Message::ReadAloudSet(on, Err(refusal)) => {
+                self.read_aloud_switching = false;
+                if self.read_aloud == on {
+                    self.read_aloud = !on;
+                }
+                self.note_failure(tr("Couldn't change reading aloud."), &refusal);
+            }
+            Message::ReadAloudSet(_, Ok(())) => self.read_aloud_switching = false,
+            Message::StopReading => return self.stop_reading(),
+            Message::ReadingStopped => {}
+            // A reading stopped by a change of conversation answers late: only its own conversation's
+            // answer is meant, and its failure is no longer worth a notice.
+            Message::Read(conversation, _, _) if conversation != self.reading_in && self.reading.is_some() => {}
+            Message::Read(conversation, seq, result) => {
+                if self.reading == Some(seq) && self.reading_in == conversation {
+                    self.reading = None;
+                }
+                if let Err(refusal) = result {
+                    let message = refusal.message.clone();
+                    self.note_failure(&message, &refusal);
+                }
             }
             // The section AI of this window's own settings (issue #410), not the control centre.
             Message::ManageModels => {
@@ -1097,6 +1272,32 @@ impl App {
                 let request = Request::PinConversation { id, pinned };
                 return self.ask(request, move |result| Message::Changed(result.map(|_| ()), failed));
             }
+            Message::Archive(ids, archived) => return self.archive(ids, archived),
+            Message::ToggleArchive => self.archive_open = !self.archive_open,
+            Message::AskArchiveAll => {
+                self.close_menus();
+                let ids = self.recent_ids();
+                if !ids.is_empty() {
+                    self.dialog = Some(Dialog::ArchiveMany { ids });
+                }
+            }
+            Message::AskDeleteAll => {
+                self.close_menus();
+                let ids = self.recent_ids();
+                if !ids.is_empty() {
+                    self.dialog = Some(Dialog::DeleteMany { ids, archive: false });
+                }
+            }
+            Message::AskEmptyArchive => {
+                self.close_menus();
+                let ids: Vec<String> =
+                    chat::archived_group(&self.conversations, "").iter().map(|c| c.id.clone()).collect();
+                if !ids.is_empty() {
+                    self.dialog = Some(Dialog::DeleteMany { ids, archive: true });
+                }
+            }
+            Message::ConfirmMany => return self.confirm_many(),
+            Message::DeletedMany(ids, result) => return self.deleted_many(ids, result),
             Message::Changed(Ok(()), _) => return self.load_list(),
             Message::Changed(Err(refusal), failed) => {
                 self.note_failure(failed, &refusal);
@@ -1104,7 +1305,27 @@ impl App {
             }
             Message::Deleted(id, result) => return self.deleted(id, result),
             Message::CloseDialog => self.dialog = None,
-            Message::Search(text) => self.search = text,
+            Message::Search(text) => return self.search_for(text),
+            Message::Hits(query, result) => {
+                // An answer for words no longer in the field is stale.
+                if query == self.search.trim() {
+                    // `--open search`: the first hit opened, so its marked entry shows.
+                    let first = match (&result, self.launch.open, &self.current) {
+                        // One whose answer runs would never settle for a picture.
+                        (Ok(hits), Some(Open::Search), None) => hits
+                            .iter()
+                            .find(|hit| self.conversations.iter().any(|c| c.id == hit.conversation && !c.running))
+                            .map(|hit| (hit.conversation.clone(), hit.seq)),
+                        _ => None,
+                    };
+                    self.hits = Some(result);
+                    self.hits_for = query;
+                    if let Some((id, seq)) = first {
+                        return self.open_hit(id, seq);
+                    }
+                }
+            }
+            Message::OpenHit(id, seq) => return self.open_hit(id, seq),
             Message::Hover(id) => self.hover = id,
             Message::Switcher(Switcher::Search) => {
                 self.menu = None;
@@ -1188,6 +1409,9 @@ impl App {
                     // Through the host: its open section menu or a page's own menu closes first
                     // (review of #554), else the host answers `Outcome::Close`.
                     return self.update(Message::SettingsHost(torro_settings_ui::host::Message::Back));
+                } else if self.reading.is_some() {
+                    // Reading aloud stops first (issue #745), the notice goes with the next Escape.
+                    return self.stop_reading();
                 } else {
                     self.notice = None;
                 }
@@ -1360,7 +1584,13 @@ impl App {
                 self.list_error = None;
                 self.choose_default();
                 self.open_launched();
-                return self.resolve_bot_window();
+                // `--open search` (issue #704): a word of the demo in the field.
+                let search = match self.launch.open == Some(Open::Search) && self.search.is_empty() {
+                    true => self.search_for(demo::SEARCH_WORD.into()),
+                    // A search in the field asks again, so a deleted conversation leaves its hits.
+                    false => self.search_for(self.search.clone()),
+                };
+                return Task::batch([self.resolve_bot_window(), search]);
             }
             Err(refusal) => self.list_error = Some(refusal.message),
         }
@@ -1483,6 +1713,12 @@ impl App {
         self.following = false;
         match loaded {
             Ok((summary, entries)) => {
+                // Answer numbers count per conversation: what waited to be read was the one before's,
+                // and what reads stops (issue #745).
+                self.to_read.clear();
+                self.ready_to_read = None;
+                let elsewhere = self.reading.is_some() && self.reading_in.as_deref() != Some(id.as_str());
+                let stopped = if elsewhere { self.stop_reading() } else { Task::none() };
                 // An open conversation answers with its own bot (or the assistant).
                 self.bot = summary.bot.clone();
                 self.transcript = Transcript::new(summary, entries);
@@ -1494,7 +1730,8 @@ impl App {
                     self.expanded.extend(first.map(|entry| entry.seq));
                 }
                 self.choose_default();
-                Task::batch([self.fetch_approvals(), self.fetch_cards(), self.scroll_to_newest()])
+                let scroll = self.scroll_to_hit(&id).unwrap_or_else(|| self.scroll_to_newest());
+                Task::batch([self.fetch_approvals(), self.fetch_cards(), scroll, stopped])
             }
             Err(refusal) if refusal.code == "not-found" => self.gone(),
             Err(refusal) => {
@@ -1516,6 +1753,9 @@ impl App {
                 if self.transcript.merge(summary, entries) {
                     self.after_change(true);
                 }
+                let read = self.read_ready();
+                // A hit that waited for its entry (issue #704).
+                let hit = self.scroll_to_hit(&id).unwrap_or_else(Task::none);
                 // A new card (after `tools.create_pdf`) is resolved at once, not on the next tick.
                 let cards = if self.transcript.cards() == cards { Task::none() } else { self.fetch_cards() };
                 let new: Vec<String> = self
@@ -1526,7 +1766,7 @@ impl App {
                     .map(str::to_owned)
                     .collect();
                 let tasks: Vec<Task<Message>> = new.into_iter().map(|id| self.fetch_approval(id)).collect();
-                Task::batch(tasks.into_iter().chain([cards]))
+                Task::batch(tasks.into_iter().chain([cards, hit, read]))
             }
             Err(refusal) if refusal.code == "not-found" => self.gone(),
             // The next tick asks again.
@@ -1567,6 +1807,20 @@ impl App {
         // The streaming answer is gone (stopped, or stored under another number): what it showed
         // goes on under the new number, nothing is written twice.
         let mut moved = self.stream.as_ref().is_some_and(|stream| !seen.contains(&stream.seq));
+        // A new answer that came while the window watches is read aloud once the run ended, the last
+        // one only: a remark before a tool ("I'll look at your calendar") would be cut off by the
+        // answer after it (issue #745). One that was there when the conversation opened is not.
+        for (seq, _, _) in &answers {
+            if animate && !self.answers.contains_key(seq) && self.stream.as_ref().is_none_or(|s| s.seq != *seq) {
+                self.to_read.insert(*seq);
+            }
+        }
+        self.to_read.retain(|seq| seen.contains(seq));
+        if !running && !self.to_read.is_empty() {
+            let last = answers.iter().rev().find(|(seq, _, complete)| *complete && self.to_read.contains(seq));
+            self.ready_to_read = last.map(|(seq, text, _)| (*seq, text.clone()));
+            self.to_read.clear();
+        }
         for (seq, text, complete) in answers {
             if let Some(stream) = self.stream.as_mut().filter(|stream| stream.seq == seq) {
                 stream.smoother.set(&text, complete);
@@ -1724,11 +1978,67 @@ impl App {
         }
         self.bot = self.conversations.iter().find(|c| c.id == id).and_then(|c| c.bot.clone());
         self.reset_chat(Some(id));
+        // What the old conversation reads stops at once, not only once the new one loaded.
+        let stopped = self.leave_reading();
         if self.chosen != Chosen::Person {
             self.chosen = Chosen::Default;
         }
         self.choose_default();
-        self.open_current()
+        Task::batch([self.open_current(), stopped])
+    }
+
+    /// The sidebar's search with `text` (issue #704): from [`SEARCH_FROM`] characters on it asks the core
+    /// for hits in every conversation; below, the titles are filtered as before and the hits go.
+    fn search_for(&mut self, text: String) -> Task<Message> {
+        self.search = text;
+        let query = self.search.trim().to_owned();
+        if query.chars().count() < SEARCH_FROM {
+            self.hits = None;
+            if query.is_empty() {
+                self.marked = None;
+            }
+            return Task::none();
+        }
+        self.asked = query.clone();
+        let request = Request::SearchConversations { query: query.clone(), limit: Some(MAX_HITS) };
+        self.ask(request, move |result| {
+            Message::Hits(
+                query.clone(),
+                result.and_then(|response| match response {
+                    Response::ConversationHits { hits } => Ok(hits),
+                    other => Err(Refusal::unexpected(&other)),
+                }),
+            )
+        })
+    }
+
+    /// Opens the hit at entry `seq` of the conversation `id` (issue #704): the entry marked and scrolled
+    /// to once it is there; a hit of the title opens the conversation as a click on it does.
+    fn open_hit(&mut self, id: String, seq: Option<u64>) -> Task<Message> {
+        self.marked = seq.map(|seq| (id.clone(), seq));
+        self.snap = self.marked.clone();
+        if self.current.as_ref() == Some(&id) && self.transcript.summary.is_some() {
+            // As a click on the conversation: the chat comes back in place of the settings or an editor.
+            self.close_menus();
+            self.leave_settings();
+            self.bot_draft = None;
+            // A newer entry than the window has comes with the next look; the scroll waits for it.
+            return self.scroll_to_hit(&id).unwrap_or_else(|| self.follow());
+        }
+        self.select(id)
+    }
+
+    /// Scrolls the history of the open conversation `id` to the hit waiting for it ([`App::snap`]), by its
+    /// share of the entries; `None` when none waits or its entry is not there yet (it keeps waiting). The
+    /// history then stays there and does not follow.
+    fn scroll_to_hit(&mut self, id: &str) -> Option<Task<Message>> {
+        let (_, seq) = self.snap.clone().filter(|(snap, _)| snap == id)?;
+        let entries = &self.transcript.entries;
+        let at = entries.iter().position(|entry| entry.seq == seq)?;
+        self.snap = None;
+        let share = if entries.len() <= 1 { 0.0 } else { at as f32 / (entries.len() - 1) as f32 };
+        self.follow_bottom = false;
+        Some(operation::snap_to(HISTORY, operation::RelativeOffset { x: None, y: Some(share) }))
     }
 
     /// A new chat: with the assistant in the main window, with its bot in a bot's chat window.
@@ -1744,12 +2054,16 @@ impl App {
         }
         self.reset_chat(None);
         self.choose_default();
-        operation::focus(EDITOR)
+        Task::batch([operation::focus(EDITOR), self.leave_reading()])
     }
 
     /// Leaves the open conversation for `current`: nothing of the old one stays.
     fn reset_chat(&mut self, current: Option<String>) {
         self.current = current;
+        // Answer numbers count per conversation (issue #745); what reads stops in the callers
+        // ([`App::leave_reading`]).
+        self.to_read.clear();
+        self.ready_to_read = None;
         self.transcript = Transcript::default();
         self.chat_error = None;
         self.following = false;
@@ -1804,9 +2118,11 @@ impl App {
             Ok((summary, entries)) => {
                 self.editor = Content::new();
                 self.mini.clear();
+                let mut stopped = Task::none();
                 if self.current.as_ref() != Some(&summary.id) {
                     let (without, mode) = (std::mem::take(&mut self.without), self.mode);
                     self.reset_chat(Some(summary.id.clone()));
+                    stopped = self.leave_reading();
                     (self.without, self.mode) = (without, mode);
                     self.take_without = false;
                     self.transcript = Transcript::new(summary, entries);
@@ -1814,8 +2130,9 @@ impl App {
                     self.transcript.merge(summary, entries);
                 }
                 self.after_change(true);
+                let read = self.read_ready();
                 // The person sent something: the history goes to it, wherever it was scrolled.
-                Task::batch([self.follow(), self.load_list(), self.scroll_to_newest()])
+                Task::batch([self.follow(), self.load_list(), self.scroll_to_newest(), read, stopped])
             }
             Err(refusal) => {
                 let what = match refusal.code.as_str() {
@@ -1824,6 +2141,157 @@ impl App {
                     _ => tr("Couldn't send the message."),
                 };
                 self.note_failure(what, &refusal);
+                Task::none()
+            }
+        }
+    }
+
+    /// How talking by voice stands (issue #699), for the microphone of the composer: at the start
+    /// and after the settings; never in mini and strip, which have no microphone.
+    fn load_voice(&mut self) -> Task<Message> {
+        if self.is_glance() {
+            return Task::none();
+        }
+        self.voice_asked = true;
+        self.ask(Request::VoiceStatus, |result| {
+            Message::Voice(result.and_then(|response| match response {
+                Response::Voice { voice } => Ok(voice),
+                other => Err(Refusal::unexpected(&other)),
+            }))
+        })
+    }
+
+    /// Whether the composer offers the plus with the areas and the permission mode (issue #699): not
+    /// in a bot's chat, which answers with its own client's rights – nothing of the assistant's to
+    /// switch off.
+    pub(crate) fn offers_areas_and_mode(&self) -> bool {
+        self.chat_bot().is_none()
+    }
+
+    /// Whether the microphone can dictate (issue #699): the programs to record and to turn speech
+    /// into text are there. "Hey Torro" need not be on.
+    pub(crate) fn can_dictate(&self) -> bool {
+        self.voice.as_ref().is_some_and(|voice| voice.installed && voice.can_listen())
+    }
+
+    /// The microphone (issue #699): records until a pause, stops a recording, or – without speech
+    /// recognition – opens Settings › Voice, where it is set up.
+    fn dictate(&mut self) -> Task<Message> {
+        match self.dictation {
+            Dictation::Stopping => Task::none(),
+            Dictation::Recording => {
+                self.dictation = Dictation::Stopping;
+                self.ask(Request::StopDictation, |_| Message::DictationStopped)
+            }
+            Dictation::Idle if !self.can_dictate() => {
+                self.close_menus();
+                self.open_settings(Some(VOICE_PAGE))
+            }
+            Dictation::Idle => {
+                self.dictation = Dictation::Recording;
+                self.ask(Request::Dictate, |result| {
+                    Message::Dictated(result.and_then(|response| match response {
+                        Response::Transcript { text } => Ok(text),
+                        other => Err(Refusal::unexpected(&other)),
+                    }))
+                })
+            }
+        }
+    }
+
+    /// The speaker of the composer (issue #745): switches reading aloud on or off for every chat
+    /// window; off also stops what is read now.
+    fn toggle_read_aloud(&mut self) -> Task<Message> {
+        self.read_aloud = !self.read_aloud;
+        self.read_aloud_switching = true;
+        let on = self.read_aloud;
+        let set = Request::SetSetting { key: torro_ipc::SettingKey::ReadAloud, value: serde_json::Value::Bool(on) };
+        let task = self.ask(set, move |result| Message::ReadAloudSet(on, result.map(drop)));
+        // Off stops only what this window reads: not "Hey Torro" or another window's preview.
+        match on || self.reading.is_none() {
+            true => task,
+            false => Task::batch([task, self.stop_reading()]),
+        }
+    }
+
+    /// Stops reading when it belongs to another conversation than the open one (issue #745).
+    fn leave_reading(&mut self) -> Task<Message> {
+        match self.reading.is_some() && self.reading_in != self.current {
+            true => self.stop_reading(),
+            false => Task::none(),
+        }
+    }
+
+    /// Stops reading aloud at once (issue #745).
+    fn stop_reading(&mut self) -> Task<Message> {
+        self.reading = None;
+        self.ask(Request::StopSpeaking, |_| Message::ReadingStopped)
+    }
+
+    /// Reads the answer that just became complete aloud, when reading aloud is on (issue #745). A
+    /// new one replaces the one being read: the core stops it.
+    fn read_ready(&mut self) -> Task<Message> {
+        let Some((seq, text)) = self.ready_to_read.take() else { return Task::none() };
+        // "Hey Torro" speaks the answers of its conversation itself, after "Speak answers": read
+        // here as well, the two would interrupt each other.
+        let spoken = self
+            .transcript
+            .summary
+            .as_ref()
+            .is_some_and(|summary| summary.title == crate::voice::listen::voice_title());
+        if !self.read_aloud || self.is_glance() || spoken {
+            return Task::none();
+        }
+        self.reading = Some(seq);
+        self.reading_in = self.current.clone();
+        // At most what the core takes; it reads the first 3000 characters anyway.
+        let text: String = text.chars().take(SPEAK_MOST).collect();
+        let conversation = self.current.clone();
+        self.ask(Request::Speak { text }, move |result| Message::Read(conversation.clone(), seq, result.map(drop)))
+    }
+
+    /// What was dictated goes into the field where the caret stands, nothing is sent; a space in
+    /// front where the text does not end in one.
+    fn dictated(&mut self, result: Result<String, Refusal>) -> Task<Message> {
+        self.dictation = Dictation::Idle;
+        match result {
+            Ok(text) if text.trim().is_empty() => {
+                self.note(tr("Nothing was understood.").to_owned());
+                Task::none()
+            }
+            Ok(text) => {
+                // What stands right before the caret decides the space, not the end of the field.
+                // The text around the caret – or around a selection, which the text replaces – decides
+                // the spaces: one in front after a word, one behind before a word.
+                let cursor = self.editor.cursor();
+                let (start, end) = match cursor.selection {
+                    Some(other) if (other.line, other.column) < (cursor.position.line, cursor.position.column) => {
+                        (other, cursor.position)
+                    }
+                    Some(other) => (cursor.position, other),
+                    None => (cursor.position, cursor.position),
+                };
+                let line = |at: usize| self.editor.line(at).map(|line| line.text.into_owned()).unwrap_or_default();
+                let (first, last) = (line(start.line), line(end.line));
+                let before = first.get(..start.column).and_then(|text| text.chars().last());
+                let after = last.get(end.column..).and_then(|text| text.chars().next());
+                let word = |c: Option<char>| c.is_some_and(|c| !c.is_whitespace());
+                let mut text = text.trim().to_owned();
+                if word(before) {
+                    text.insert(0, ' ');
+                }
+                if word(after) {
+                    text.push(' ');
+                }
+                self.editor.perform(text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new(text))));
+                operation::focus(EDITOR)
+            }
+            Err(refusal) if refusal.code == "unsupported" => {
+                self.note(tr("Speech recognition isn't set up.").to_owned());
+                self.load_voice()
+            }
+            Err(refusal) => {
+                self.note_failure(tr("Couldn't dictate."), &refusal);
                 Task::none()
             }
         }
@@ -1885,6 +2353,88 @@ impl App {
         self.ask(request, move |result| Message::Deleted(id.clone(), result.map(|_| ())))
     }
 
+    /// The ids under "Recent", whatever the search shows (issue #697): what "Archive all…" and "Delete
+    /// all…" take – every conversation that is neither pinned nor archived, those with bots too.
+    fn recent_ids(&self) -> Vec<String> {
+        chat::sidebar_groups(&self.conversations, "").1.iter().map(|c| c.id.clone()).collect()
+    }
+
+    /// "Archive" or "Restore" (issue #697): shown at once, then asked of the core in pieces of
+    /// [`MAX_BULK_IDS`]; the list is read anew after each answer.
+    fn archive(&mut self, ids: Vec<String>, archived: bool) -> Task<Message> {
+        self.close_menus();
+        for conversation in self.conversations.iter_mut().filter(|c| ids.contains(&c.id)) {
+            conversation.archived = archived;
+        }
+        let failed = match (archived, ids.len() > 1) {
+            (true, false) => tr("Couldn't archive the conversation."),
+            (true, true) => tr("Couldn't archive the conversations."),
+            (false, false) => tr("Couldn't restore the conversation."),
+            (false, true) => tr("Couldn't restore the conversations."),
+        };
+        let tasks: Vec<Task<Message>> = ids
+            .chunks(MAX_BULK_IDS)
+            .map(|piece| {
+                let request = Request::ArchiveConversations { ids: piece.to_vec(), archived };
+                self.ask(request, move |result| Message::Changed(result.map(|_| ()), failed))
+            })
+            .collect();
+        Task::batch(tasks)
+    }
+
+    /// The question's yes to "Archive all…", "Delete all…" or "Empty archive…".
+    fn confirm_many(&mut self) -> Task<Message> {
+        // Only those still listed: one gone meanwhile (another window, a client, the retention) would make
+        // the core refuse the whole piece.
+        let listed = |ids: Vec<String>| -> Vec<String> {
+            ids.into_iter().filter(|id| self.conversations.iter().any(|c| c.id == *id)).collect()
+        };
+        let dialog = match self.dialog.take() {
+            Some(Dialog::ArchiveMany { ids }) => Some(Dialog::ArchiveMany { ids: listed(ids) }),
+            Some(Dialog::DeleteMany { ids, archive }) => Some(Dialog::DeleteMany { ids: listed(ids), archive }),
+            other => other,
+        };
+        match dialog {
+            Some(Dialog::ArchiveMany { ids }) => self.archive(ids, true),
+            Some(Dialog::DeleteMany { ids, .. }) => {
+                let tasks: Vec<Task<Message>> = ids
+                    .chunks(MAX_BULK_IDS)
+                    .map(|piece| {
+                        let ids = piece.to_vec();
+                        let request = Request::DeleteConversations { ids: ids.clone() };
+                        self.ask(request, move |result| Message::DeletedMany(ids.clone(), result.map(|_| ())))
+                    })
+                    .collect();
+                Task::batch(tasks)
+            }
+            other => {
+                self.dialog = other;
+                Task::none()
+            }
+        }
+    }
+
+    /// The core's answer to deleting `ids` at once: as [`App::deleted`] for each, so the open one
+    /// makes room for a new chat; the list is read anew either way, as some may be gone.
+    fn deleted_many(&mut self, ids: Vec<String>, result: Result<(), Refusal>) -> Task<Message> {
+        match result {
+            Ok(()) => {
+                self.conversations.retain(|c| !ids.contains(&c.id));
+                self.note(tr("Conversations deleted").to_owned());
+                let open = self.current.as_ref().is_some_and(|id| ids.contains(id));
+                let task = if open { self.new_chat() } else { Task::none() };
+                Task::batch([task, self.load_list()])
+            }
+            Err(refusal) => {
+                self.note_failure(tr("Couldn't delete the conversations."), &refusal);
+                // Past the check of the ids the others are gone (`error`): the open one may be among them.
+                let open = refusal.code != "not-found" && self.current.as_ref().is_some_and(|id| ids.contains(id));
+                let task = if open { self.new_chat() } else { Task::none() };
+                Task::batch([task, self.load_list()])
+            }
+        }
+    }
+
     fn deleted(&mut self, id: String, result: Result<(), Refusal>) -> Task<Message> {
         match result {
             Ok(()) => {
@@ -1910,7 +2460,8 @@ impl App {
         self.close_menus();
         if self.settings.is_some() {
             self.settings = None;
-            return Task::none();
+            // Speech recognition may have been set up meanwhile (issue #699).
+            return self.load_voice();
         }
         self.open_settings(None)
     }
@@ -1945,9 +2496,10 @@ impl App {
         load.map(Message::SettingsHost)
     }
 
-    /// The settings at Access, at the bot with this id or at the assistant (`None`), task S.34: what
-    /// "Set up access", "Change access", "Access…" and "What the bot may use" open. Open settings
-    /// switch to it; closed ones open there, with their first load.
+    /// The rights of the bot with this id or of the assistant (`None`), task S.34: what "Set up
+    /// access", "Change access", "Access…" and "What the bot may use" open – a bot's on a page below
+    /// Bots, the assistant's under Access (issue #763). Open settings switch to it; closed ones open
+    /// there, with their first load.
     fn open_access(&mut self, bot: Option<String>) -> Task<Message> {
         self.close_menus();
         let load = match self.settings.is_some() {
@@ -1955,8 +2507,12 @@ impl App {
             false => self.open_settings(None),
         };
         if let Some(pane) = self.settings.as_mut() {
+            let section = match bot {
+                Some(_) => settings::bots::BOTS,
+                None => settings::access::ID,
+            };
             settings::show_access(&mut pane.sections, bot);
-            pane.host.open(settings::access::ID);
+            pane.host.open(section);
         }
         load
     }
@@ -2042,11 +2598,11 @@ impl App {
             // A section changed something: the window loads what it shows itself – the engines,
             // the profile, the client, the conversations – right now instead of on its next tick,
             // so a changed default or a new bot is in the chat at once.
-            Outcome::Changed => Task::batch([self.fetch_appearance(), self.load_all()]),
+            Outcome::Changed => Task::batch([self.fetch_appearance(), self.load_all(), self.load_voice()]),
             Outcome::Close => {
                 let save = self.save_settings().unwrap_or_else(Task::none);
                 self.settings = None;
-                save
+                Task::batch([save, self.load_voice()])
             }
             Outcome::OpenUrl(url) => open_link(url),
             Outcome::Answer(result) => {
@@ -2100,6 +2656,7 @@ impl App {
         match self.launch.open {
             Some(Open::Rename) => self.dialog = Some(Dialog::Rename { id, title }),
             Some(Open::Delete) => self.dialog = Some(Dialog::Delete { id, title }),
+            Some(Open::DeleteAll) => self.dialog = Some(Dialog::DeleteMany { ids: self.recent_ids(), archive: false }),
             _ => {}
         }
     }
@@ -2189,18 +2746,24 @@ impl App {
 }
 
 /// The settings section a demo state opens and what it then presses on the page (issue #547), so the
-/// profile editor, its save bar and the tabs of Access can be photographed; `None` for every other
-/// state.
+/// profile editor, its save bar, the tabs of Access and a bot's rights can be photographed; `None`
+/// for every other state.
 fn settings_state(open: Option<Open>) -> Option<(&'static str, Vec<settings::Message>)> {
-    use settings::{access, profile};
+    use settings::{access, bots, profile};
+    // The profile is the tab Profile of General since issue #763.
+    let profile_tab = settings::Message::GeneralTab(1);
     let open_profile = settings::Message::Profile(profile::Message::OpenProfile);
     match open? {
-        Open::ProfileEditor => Some(("profile", vec![open_profile])),
-        Open::ProfileChanged => {
-            Some(("profile", vec![open_profile, settings::Message::Profile(profile::Message::Name("Jarvis".into()))]))
-        }
+        Open::ProfileEditor => Some(("general", vec![profile_tab, open_profile])),
+        Open::ProfileChanged => Some((
+            "general",
+            vec![profile_tab, open_profile, settings::Message::Profile(profile::Message::Name("Jarvis".into()))],
+        )),
         Open::AccessSelections => Some((access::ID, vec![settings::Message::Access(access::Message::Tab(1))])),
-        Open::AccessBots => Some((access::ID, vec![settings::Message::Access(access::Message::Tab(2))])),
+        // The tab Bots of Access is gone (issue #763): a bot's rights, below Bots.
+        Open::AccessBots => {
+            Some((bots::BOTS, vec![settings::Message::Bots(bots::Message::Access(crate::demo::TRAVEL.into()))]))
+        }
         _ => None,
     }
 }
@@ -2208,7 +2771,7 @@ fn settings_state(open: Option<Open>) -> Option<(&'static str, Vec<settings::Mes
 /// The conversation the main window starts on in a demo state; a new chat otherwise.
 fn start_conversation(open: Option<Open>) -> Option<String> {
     match open {
-        Some(Open::Tools | Open::Menu | Open::Rename | Open::Delete) => Some(demo::TOOLS.into()),
+        Some(Open::Tools | Open::Menu | Open::Rename | Open::Delete | Open::Reading) => Some(demo::TOOLS.into()),
         Some(Open::Approval) => Some(demo::APPROVAL.into()),
         Some(Open::Streaming) => Some(demo::STREAMING.into()),
         Some(Open::Forbidden) => Some(demo::FORBIDDEN.into()),

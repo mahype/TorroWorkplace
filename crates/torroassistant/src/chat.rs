@@ -319,18 +319,31 @@ pub fn open_mail_request(account: &str, id: &str) -> Request {
 }
 
 /// The sidebar's conversations: pinned ones, then the rest, each newest first, both narrowed to
-/// the titles that contain `query` (any case; all of them for a blank query).
+/// the titles that contain `query` (any case; all of them for a blank query). Archived ones are left
+/// out: they stand in [`archived_group`] (issue #697).
 pub fn sidebar_groups<'a>(
     conversations: &'a [ConversationSummary],
     query: &str,
 ) -> (Vec<&'a ConversationSummary>, Vec<&'a ConversationSummary>) {
+    matching(conversations, query, false).into_iter().partition(|conversation| conversation.pinned)
+}
+
+/// The sidebar's group "Archive" (issue #697): the archived conversations, newest first, narrowed to
+/// `query` as [`sidebar_groups`] does.
+pub fn archived_group<'a>(conversations: &'a [ConversationSummary], query: &str) -> Vec<&'a ConversationSummary> {
+    matching(conversations, query, true)
+}
+
+/// The conversations archived or not whose titles contain `query`, newest first.
+fn matching<'a>(conversations: &'a [ConversationSummary], query: &str, archived: bool) -> Vec<&'a ConversationSummary> {
     let query = query.trim().to_lowercase();
     let mut shown: Vec<&ConversationSummary> = conversations
         .iter()
+        .filter(|conversation| conversation.archived == archived)
         .filter(|conversation| query.is_empty() || conversation.title.to_lowercase().contains(&query))
         .collect();
     shown.sort_by_key(|conversation| std::cmp::Reverse(conversation.updated));
-    shown.into_iter().partition(|conversation| conversation.pinned)
+    shown
 }
 
 #[cfg(test)]
@@ -355,6 +368,7 @@ mod tests {
             created: at(0),
             updated: at(1),
             pinned: false,
+            archived: false,
             running,
             last,
             bot: None,
@@ -390,6 +404,7 @@ mod tests {
             tools,
             open_weights: None,
             context: None,
+            max_output: None,
             parameters: None,
             quantization: None,
             size: None,
@@ -659,5 +674,33 @@ mod tests {
         );
         let (pinned, recent) = sidebar_groups(&list, "  LISBON ");
         assert_eq!((titles(pinned).len(), titles(recent)), (0, vec!["Trip to Lisbon".to_owned()]));
+    }
+
+    /// Issue #697: archived conversations leave "Pinned" and "Recent" for the archive, which searches alike.
+    #[test]
+    fn archived_conversations_stand_in_their_own_group() {
+        let mut list = Vec::new();
+        for (minute, title, pinned, archived) in [
+            (1, "Trip to Lisbon", false, true),
+            (5, "Plan for tomorrow", true, false),
+            (3, "Old invoice", true, true),
+            (4, "Release", false, false),
+        ] {
+            let mut conversation = summary(title, 1, false);
+            conversation.title = title.into();
+            conversation.updated = at(minute);
+            conversation.pinned = pinned;
+            conversation.archived = archived;
+            list.push(conversation);
+        }
+        let titles = |group: Vec<&ConversationSummary>| group.iter().map(|c| c.title.clone()).collect::<Vec<_>>();
+        let (pinned, recent) = sidebar_groups(&list, "");
+        assert_eq!(
+            (titles(pinned), titles(recent)),
+            (vec!["Plan for tomorrow".to_owned()], vec!["Release".to_owned()])
+        );
+        assert_eq!(titles(archived_group(&list, "")), ["Old invoice", "Trip to Lisbon"], "newest first");
+        assert_eq!(titles(archived_group(&list, " lisbon")), ["Trip to Lisbon"]);
+        assert!(archived_group(&list, "release").is_empty());
     }
 }

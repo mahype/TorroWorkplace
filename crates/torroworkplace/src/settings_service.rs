@@ -32,7 +32,7 @@ use torro_core::privacy::{ForeignContent, ProviderChange};
 use torro_core::settings::{
     self, AssistantDefault, AttachmentClick, ComponentSwitch, ComposePaper, FocusSlots, FolderChange, Language,
     ListOrderEntry, MailAppearance, MailAttachments, MailFormat, Maps, Night, PdfSettings, PdfTemplate, PdfTemplateId,
-    Reminders, Retention, SearchProviderSwitch, Settings, SetupState, Voice, WebSearch, WorkingHours, Zoom,
+    Recognizer, Reminders, Retention, SearchProviderSwitch, Settings, SetupState, Voice, WebSearch, WorkingHours, Zoom,
 };
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
@@ -185,7 +185,14 @@ impl SettingsStore {
             // changes it with `set_setting mail_sender`, which checks the account.
             let mail_sender = settings.mail_sender.take();
             let enabled = settings.voice.enabled && new.voice.enabled;
-            let voice = Voice { enabled, ..new.voice.clone() };
+            // Nor does it send what is read aloud to OpenAI (issue #745): that stays only as stored.
+            let speech_provider = match new.voice.speech_provider {
+                Some(provider) if provider.online() && settings.voice.speech_provider != Some(provider) => {
+                    settings.voice.speech_provider
+                }
+                provider => provider,
+            };
+            let voice = Voice { enabled, speech_provider, ..new.voice.clone() };
             let ai_slots = std::mem::take(&mut settings.ai_slots);
             let reminders = Reminders { calendars, ..new.reminders.clone() };
             let tools = settings.tools.from_client(&new.tools);
@@ -567,8 +574,16 @@ enum Change {
     WakeWord(String),
     Microphone(Option<String>),
     SpeakAnswers(bool),
+    /// The program that turns speech into text (issue #749).
+    SpeechRecognizer(Recognizer),
     SttModel(Option<String>),
     Voice(Option<String>),
+    /// Reading aloud in the chat windows (issue #745).
+    ReadAloud(bool),
+    /// Who reads aloud; who may choose OpenAI is the core's check (`Request::kept_for_people`).
+    SpeechProvider(Option<torro_core::settings::SpeechProvider>),
+    QwenVoice(Option<String>),
+    OpenAiVoice(Option<String>),
     /// What a new chat of the assistant starts with (issue #131): the slot Chat (issue #325), written
     /// without the checks of `ai.set_slot`; `None` for the one used last.
     AssistantDefault(Option<AssistantDefault>),
@@ -669,8 +684,19 @@ impl Change {
             SettingKey::WakeWord => Change::WakeWord(Voice::wake_word_from(value)?),
             SettingKey::Microphone => Change::Microphone(Voice::microphone_from(value)?),
             SettingKey::SpeakAnswers => Change::SpeakAnswers(serde_json::from_value(value.clone()).map_err(invalid)?),
+            SettingKey::SpeechRecognizer => {
+                Change::SpeechRecognizer(serde_json::from_value(value.clone()).map_err(invalid)?)
+            }
             SettingKey::SttModel => Change::SttModel(Voice::file_from(value, "bin")?),
             SettingKey::Voice => Change::Voice(Voice::file_from(value, "onnx")?),
+            SettingKey::ReadAloud => Change::ReadAloud(serde_json::from_value(value.clone()).map_err(invalid)?),
+            SettingKey::SpeechProvider => Change::SpeechProvider(Voice::speech_provider_from(value)?),
+            SettingKey::QwenVoice => {
+                Change::QwenVoice(Voice::speech_voice_from(value, &torro_core::settings::QWEN_VOICES)?)
+            }
+            SettingKey::OpenAiVoice => {
+                Change::OpenAiVoice(Voice::speech_voice_from(value, &torro_core::settings::OPENAI_VOICES)?)
+            }
             SettingKey::AssistantDefault => Change::AssistantDefault(AssistantDefault::from_value(value)?),
             SettingKey::Setup => Change::Setup(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::Component => Change::Component(serde_json::from_value(value.clone()).map_err(invalid)?),
@@ -777,8 +803,13 @@ impl Change {
             Change::WakeWord(phrase) => settings.voice.wake_word = phrase,
             Change::Microphone(name) => settings.voice.microphone = name,
             Change::SpeakAnswers(speak) => settings.voice.speak_answers = speak,
+            Change::SpeechRecognizer(recognizer) => settings.voice.recognizer = recognizer,
             Change::SttModel(path) => settings.voice.stt_model = path,
             Change::Voice(path) => settings.voice.voice = path,
+            Change::ReadAloud(on) => settings.voice.read_aloud = on,
+            Change::SpeechProvider(provider) => settings.voice.speech_provider = provider,
+            Change::QwenVoice(id) => settings.voice.qwen_voice = id,
+            Change::OpenAiVoice(id) => settings.voice.openai_voice = id,
             Change::AssistantDefault(default) => settings.ai_slots.chat = default,
             Change::Setup(state) => settings.setup = settings.setup.moved_to(state),
             Change::Component(switch) => settings.set_component(switch.component, switch.enabled),
@@ -1952,6 +1983,22 @@ mod tests {
         assert_eq!(store.current().mail_attachments.click, AttachmentClick::Open);
     }
 
+    /// Issue #749: the recognizer takes both names and refuses anything else, without a change.
+    #[test]
+    fn the_speech_recognizer_is_set_and_checked() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SettingsStore::at(dir.path().join("settings.json"));
+        assert_eq!(store.current().voice.recognizer, Recognizer::Parakeet);
+        store.set(SettingKey::SpeechRecognizer, &json!("whisper")).expect("whisper");
+        assert_eq!(store.current().voice.recognizer, Recognizer::Whisper);
+        for refused in [json!("Parakeet"), json!("vosk"), json!(true), json!(null)] {
+            assert!(store.set(SettingKey::SpeechRecognizer, &refused).is_err(), "{refused}");
+        }
+        assert_eq!(store.current().voice.recognizer, Recognizer::Whisper, "unchanged");
+        store.set(SettingKey::SpeechRecognizer, &json!("parakeet")).expect("parakeet");
+        assert_eq!(store.current().voice.recognizer, Recognizer::Parakeet);
+    }
+
     /// Task C.9: the voice settings are set one by one and checked; a client's whole settings
     /// never switch the microphone on, but may switch it off.
     #[test]
@@ -2001,6 +2048,46 @@ mod tests {
         sent.voice.enabled = false;
         store.update_keeping_hidden(sent).expect("written");
         assert!(!store.current().voice.enabled);
+    }
+
+    /// Issue #745: reading aloud, its provider and voices are set one by one and checked; a client's
+    /// whole settings never choose OpenAI, but keep it when a person chose it and may choose another.
+    #[test]
+    fn reading_aloud_is_set_and_a_client_never_chooses_openai() {
+        use torro_core::settings::SpeechProvider;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SettingsStore::at(dir.path().join("settings.json"));
+        for (key, value) in [
+            (SettingKey::ReadAloud, json!(true)),
+            (SettingKey::SpeechProvider, json!("qwen")),
+            (SettingKey::QwenVoice, json!("calm_man")),
+            (SettingKey::OpenAiVoice, json!("Cedar")),
+        ] {
+            store.set(key, &value).expect("a valid value");
+        }
+        let voice = store.current().voice;
+        assert!(voice.read_aloud);
+        assert_eq!(voice.speech_provider, Some(SpeechProvider::Qwen));
+        assert_eq!((voice.qwen_voice.as_deref(), voice.openai_voice.as_deref()), (Some("calm_man"), Some("cedar")));
+        for (key, value) in [
+            (SettingKey::ReadAloud, json!("yes")),
+            (SettingKey::SpeechProvider, json!("grok")),
+            (SettingKey::QwenVoice, json!("marin")),
+            (SettingKey::OpenAiVoice, json!("warm_woman")),
+        ] {
+            assert!(store.set(key, &value).is_err(), "{key:?} {value}");
+        }
+
+        let mut sent = store.current();
+        sent.voice.speech_provider = Some(SpeechProvider::OpenAi);
+        store.update_keeping_hidden(sent.clone()).expect("written");
+        assert_eq!(store.current().voice.speech_provider, Some(SpeechProvider::Qwen), "never OpenAI from a client");
+        store.set(SettingKey::SpeechProvider, &json!("openai")).expect("the person");
+        store.update_keeping_hidden(sent.clone()).expect("written");
+        assert_eq!(store.current().voice.speech_provider, Some(SpeechProvider::OpenAi), "kept as chosen");
+        sent.voice.speech_provider = Some(SpeechProvider::Piper);
+        store.update_keeping_hidden(sent).expect("written");
+        assert_eq!(store.current().voice.speech_provider, Some(SpeechProvider::Piper));
     }
 
     /// Issue #325 (task MW.2): a client's whole settings never change a slot – `ai.set_slot` checks

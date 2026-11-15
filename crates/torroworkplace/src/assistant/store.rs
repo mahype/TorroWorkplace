@@ -14,7 +14,12 @@
 //! sends the model its calls with their results again. It never leaves the core: `assistant.get_conversation`
 //! shows the entries only, as a result can hold what another area's data said. It is kept for
 //! [`RESULT_HOURS`] after its call only (issue #714): a mail read then may be deleted since, and the
-//! conversation would otherwise keep a copy of it as long as the conversation lives.
+//! conversation would otherwise keep a copy of it as long as the conversation lives. A result marked `untrusted`
+//! leaves a note without content in its place ([`Line::Untrusted`], issue #724): the conversation keeps counting as
+//! untrusted for the memory, and nothing of what was read stays on the disk.
+//!
+//! Searching (issue #704, [`Conversation::find`]) reads what the core holds in memory, without an index of
+//! its own: titles, messages and answers, never a result, a tool line, an approval, an error or a card.
 //!
 //! Errors carry the path only for the core's own log; what goes to a client says nothing of it.
 
@@ -26,7 +31,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use torro_core::ai::Effort;
-use torro_ipc::assistant::{ConversationSummary, Entry, EntryContent, MailRef};
+use torro_ipc::assistant::{ConversationSummary, Entry, EntryContent, HitKind, MailRef, SNIPPET_CHARS};
 
 /// The extension of a conversation's file.
 const EXTENSION: &str = "jsonl";
@@ -60,9 +65,14 @@ pub enum Line {
     Renamed { title: String },
     /// `assistant.pin_conversation`.
     Pinned { pinned: bool },
+    /// `assistant.archive_conversations` (issue #697), and a message sent in an archived one.
+    Archived { archived: bool },
     /// What the model read of the tool call whose line is the entry `seq` (issue #701): kept for later turns
     /// ([`Conversation::results`]), never shown to a client.
     Result { seq: u64, text: String },
+    /// The result of the tool call `seq` was marked `untrusted` and has been dropped (issue #724): only its number
+    /// stays, so the conversation still counts as untrusted ([`Conversation::untrusted`]).
+    Untrusted { seq: u64 },
 }
 
 /// One conversation as the core holds it in memory.
@@ -73,6 +83,8 @@ pub struct Conversation {
     pub title: String,
     pub created: DateTime<Utc>,
     pub pinned: bool,
+    /// In the archive (issue #697, [`Line::Archived`]): kept beyond the retention time.
+    pub archived: bool,
     /// In order of their `seq`.
     pub entries: Vec<Entry>,
     /// The bot it is with (task B.1), fixed when it starts; `None` for the assistant.
@@ -81,6 +93,9 @@ pub struct Conversation {
     pub about: Option<MailRef>,
     /// What the model read of each tool call, by the number of its tool line (issue #701, [`Line::Result`]).
     pub results: BTreeMap<u64, String>,
+    /// Whether a result marked `untrusted` was dropped from it (issue #724, [`Line::Untrusted`]): the conversation
+    /// has read what another's data said, though no result tells so any more.
+    pub untrusted: bool,
 }
 
 impl Conversation {
@@ -91,10 +106,12 @@ impl Conversation {
             title: title_of(text),
             created: now,
             pinned: false,
+            archived: false,
             entries: Vec::new(),
             bot: None,
             about: None,
             results: BTreeMap::new(),
+            untrusted: false,
         }
     }
 
@@ -117,10 +134,12 @@ impl Conversation {
             title,
             created,
             pinned: false,
+            archived: false,
             entries: Vec::new(),
             bot,
             about,
             results: BTreeMap::new(),
+            untrusted: false,
         };
         for line in lines {
             conversation.apply(line);
@@ -137,11 +156,14 @@ impl Conversation {
             Line::Entry { .. } => {}
             Line::Renamed { title } => self.title = title,
             Line::Pinned { pinned } => self.pinned = pinned,
+            Line::Archived { archived } => self.archived = archived,
             // Only for a tool line it has, so a damaged file adds no result to an answer or a message.
             Line::Result { seq, text } if self.is_tool(seq) => {
                 self.results.insert(seq, text);
             }
             Line::Result { .. } => {}
+            Line::Untrusted { seq } if self.is_tool(seq) => self.untrusted = true,
+            Line::Untrusted { .. } => {}
         }
     }
 
@@ -204,6 +226,7 @@ impl Conversation {
             created: self.created,
             updated: self.updated(),
             pinned: self.pinned,
+            archived: self.archived,
             running,
             last: self.last(),
             bot: self.bot.clone(),
@@ -217,6 +240,108 @@ impl Conversation {
         let after = after.unwrap_or(0);
         self.entries.iter().filter(|entry| entry.seq > after).cloned().collect()
     }
+}
+
+/// A part of a conversation that holds every word of a search ([`Conversation::find`], issue #704).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    /// The entry's number; `None` for the title.
+    pub seq: Option<u64>,
+    pub kind: HitKind,
+    /// The words with text around them ([`snippet`]).
+    pub snippet: String,
+    /// The text may come from outside the suite ([`torro_ipc::assistant::ConversationHit::untrusted`]).
+    pub untrusted: bool,
+    /// The commands that ran before it in the conversation and did not fail, by their names as the tool lines
+    /// keep them (a server's tool as `ext_…`): what its text may tell of.
+    pub after: BTreeSet<String>,
+}
+
+impl Conversation {
+    /// The parts that hold every one of `words` (in small letters, none empty), in order: the messages
+    /// and answers, then the title (`seq` `None`), which a search shows only when none of the others is
+    /// left to show (it is mostly the start of the first message). Never a result, a tool line, an approval, an error or a card: what a tool answered can
+    /// tell of an area the searcher may not read, and the other entries hold the core's words.
+    ///
+    /// A part is untrusted when the conversation is about a mail or with a bot, when a client sent the
+    /// message, or after a command that may have read data from outside
+    /// ([`super::tools::may_have_read_untrusted`]); the title when the conversation is so or its first
+    /// message came from a client.
+    pub fn find(&self, words: &[String]) -> Vec<Found> {
+        if words.is_empty() {
+            return Vec::new();
+        }
+        let foreign = self.about.is_some() || self.bot.is_some();
+        let mut outside = false;
+        let mut after = BTreeSet::new();
+        let mut found = Vec::new();
+        for entry in &self.entries {
+            let (kind, text, sent) = match &entry.content {
+                EntryContent::Message { text, from, .. } => (HitKind::Message, text, from.is_some()),
+                EntryContent::Answer { text, .. } => (HitKind::Answer, text, false),
+                EntryContent::Tool { name, error: None, .. } => {
+                    outside |= super::tools::may_have_read_untrusted(name);
+                    after.insert(name.clone());
+                    continue;
+                }
+                _ => continue,
+            };
+            if let Some(snippet) = snippet(text, words) {
+                let untrusted = foreign || sent || outside;
+                found.push(Found { seq: Some(entry.seq), kind, snippet, untrusted, after: after.clone() });
+            }
+        }
+        if let Some(snippet) = snippet(&self.title, words) {
+            let first_sent = self.entries.iter().find_map(|entry| match &entry.content {
+                EntryContent::Message { from, .. } => Some(from.is_some()),
+                _ => None,
+            });
+            let untrusted = foreign || first_sent.unwrap_or(false);
+            found.push(Found { seq: None, kind: HitKind::Title, snippet, untrusted, after: BTreeSet::new() });
+        }
+        found
+    }
+}
+
+/// The words of a search (issue #704): `query` split at white space, in small letters letter by letter, as
+/// [`snippet`] lowers the text (`str::to_lowercase` would end a word in `ς` where the text has `σ`).
+pub fn words_of(query: &str) -> Vec<String> {
+    query.split_whitespace().map(|word| word.chars().flat_map(char::to_lowercase).collect()).collect()
+}
+
+/// When `text` holds every one of `words` (in small letters): the text around the first of them, white
+/// space folded to single spaces, at most [`SNIPPET_CHARS`] characters with "…" where it was cut, cut at
+/// characters only. `None` when a word is missing.
+pub fn snippet(text: &str, words: &[String]) -> Option<String> {
+    let chars: Vec<char> = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().collect();
+    // The text in small letters, and for each of its characters the character of `chars` it comes from:
+    // a letter may become several in small letters.
+    let mut lowered = String::new();
+    let mut origin = Vec::new();
+    for (at, char) in chars.iter().enumerate() {
+        for small in char.to_lowercase() {
+            origin.push((lowered.len(), at));
+            lowered.push(small);
+        }
+    }
+    if !words.iter().all(|word| lowered.contains(word.as_str())) {
+        return None;
+    }
+    let byte = words.first().and_then(|word| lowered.find(word.as_str())).unwrap_or(0);
+    let at = origin.iter().find(|(start, _)| *start >= byte).map_or(0, |(_, at)| *at);
+    if chars.len() <= SNIPPET_CHARS {
+        return Some(chars.into_iter().collect());
+    }
+    // A little before the word, so it reads in its sentence; the window kept within the text.
+    let mut start = at.saturating_sub(SNIPPET_CHARS / 4);
+    let end = (start + SNIPPET_CHARS).min(chars.len());
+    start = end.saturating_sub(SNIPPET_CHARS);
+    let (cut_start, cut_end) = (start > 0, end < chars.len());
+    let from = start + usize::from(cut_start);
+    let to = end - usize::from(cut_end);
+    let middle: String = chars[from..to].iter().collect();
+    let middle = middle.trim();
+    Some(format!("{}{middle}{}", if cut_start { "…" } else { "" }, if cut_end { "…" } else { "" }))
 }
 
 /// A title from the first message: its first line that is not blank, trimmed, cut after
@@ -308,7 +433,8 @@ pub fn append(dir: &Path, id: &str, lines: &[Line]) -> io::Result<()> {
 }
 
 /// Removes the results numbered `seqs` from the file of conversation `id` in `dir` (issue #714):
-/// every other line stays as it was, also one that does not read. The file is written anew as
+/// every other line stays as it was, also one that does not read. A result marked `untrusted` ([`marked_untrusted`])
+/// is replaced by a [`Line::Untrusted`] with its number, so only the mark is kept (issue #724). The file is written anew as
 /// `<id>.jsonl.tmp` (0600) and renamed over the old one, so a crash leaves either whole. Nothing to
 /// drop, or no file, writes nothing.
 pub fn drop_results(dir: &Path, id: &str, seqs: &BTreeSet<u64>) -> io::Result<()> {
@@ -324,12 +450,15 @@ pub fn drop_results(dir: &Path, id: &str, seqs: &BTreeSet<u64>) -> io::Result<()
     let mut kept = Vec::with_capacity(old.len());
     // By bytes and with their line ends, so a line that does not read (or is not text) stays word for word.
     for line in old.split_inclusive(|byte| *byte == b'\n') {
-        let dropped = matches!(
-            serde_json::from_slice::<Line>(line.trim_ascii_end()),
-            Ok(Line::Result { seq, .. }) if seqs.contains(&seq)
-        );
-        if !dropped {
-            kept.extend_from_slice(line);
+        match serde_json::from_slice::<Line>(line.trim_ascii_end()) {
+            Ok(Line::Result { seq, text }) if seqs.contains(&seq) => {
+                if marked_untrusted(&text) {
+                    // A line of its own, so the next one does not stick to it.
+                    serde_json::to_writer(&mut kept, &Line::Untrusted { seq })?;
+                    kept.push(b'\n');
+                }
+            }
+            _ => kept.extend_from_slice(line),
         }
     }
     let temp = temp_file(dir, id);
@@ -346,6 +475,12 @@ pub fn drop_results(dir: &Path, id: &str, seqs: &BTreeSet<u64>) -> io::Result<()
         eprintln!("torroworkplace: cannot sync the folder of the conversation {id}: {err}");
     }
     Ok(())
+}
+
+/// Whether a result as the model read it is marked `untrusted` at its top (`tools::for_model`).
+pub fn marked_untrusted(result: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(result)
+        .is_ok_and(|value| value.get("untrusted").and_then(serde_json::Value::as_bool) == Some(true))
 }
 
 /// Writes `bytes` to a new file `path` (0600), on the disk before it answers.
@@ -389,6 +524,27 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 10, 13, 9, minute, 0).single().expect("valid time")
     }
 
+    /// Issue #704: a snippet holds the first word with text around it, cut at characters with "…", within
+    /// [`SNIPPET_CHARS`]; small letters that grow (`İ`) shift nothing.
+    #[test]
+    fn a_snippet_shows_the_word_in_its_sentence() {
+        let words = words_of("Flight");
+        assert_eq!(snippet("no match here", &words), None);
+        assert_eq!(snippet("Our  flight\nleaves", &words).as_deref(), Some("Our flight leaves"));
+        let long = format!("{} the flight leaves at nine {}", "ä".repeat(200), "ö".repeat(200));
+        let cut = snippet(&long, &words).expect("found");
+        assert!(cut.starts_with('…') && cut.ends_with('…'), "{cut}");
+        assert!(cut.contains("the flight leaves at nine"), "{cut}");
+        assert!(cut.chars().count() <= SNIPPET_CHARS, "{}", cut.chars().count());
+        let start = format!("flight {}", "x".repeat(300));
+        let first = snippet(&start, &words).expect("found");
+        assert!(first.starts_with("flight") && first.ends_with('…'), "{first}");
+        let grown = format!("{} İİİ flight", "y".repeat(200));
+        assert!(snippet(&grown, &words).expect("found").contains("flight"), "a letter of two in small letters");
+        assert_eq!(words_of("  Lisbon\tFLIGHT "), ["lisbon", "flight"]);
+        assert!(snippet("ΟΔΟΣ", &words_of("ΟΔΟΣ")).is_some(), "the same small letters for words and text");
+    }
+
     fn answer(text: &str) -> EntryContent {
         EntryContent::Answer { text: text.into(), engine: "test".into(), model: None }
     }
@@ -419,10 +575,16 @@ mod tests {
         let first = conversation.next(answer("Hi"), at(1));
         conversation.apply(Line::Entry { entry: first.clone() });
         append(&folder, &conversation.id, &[conversation.started(), Line::Entry { entry: first }]).expect("written");
-        append(&folder, &conversation.id, &[Line::Renamed { title: "Greeting".into() }, Line::Pinned { pinned: true }])
-            .expect("written");
-        conversation.apply(Line::Renamed { title: "Greeting".into() });
-        conversation.apply(Line::Pinned { pinned: true });
+        let changes = [
+            Line::Renamed { title: "Greeting".into() },
+            Line::Pinned { pinned: true },
+            Line::Archived { archived: true },
+        ];
+        append(&folder, &conversation.id, &changes).expect("written");
+        for line in changes {
+            conversation.apply(line);
+        }
+        assert!(conversation.summary(false).archived);
 
         // A line cut off by a crash and files that are no conversation are left out.
         let path = file(&folder, &conversation.id);
@@ -580,6 +742,54 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).expect("the file"), text);
         drop_results(&folder, "fedcba9876543210", &expired).expect("no file");
         assert!(!file(&folder, "fedcba9876543210").exists());
+    }
+
+    /// Issue #724: an old result marked `untrusted` leaves a note without content, an unmarked one nothing; the
+    /// conversation counts as untrusted after reading, and a note for a line that is no tool line changes nothing.
+    #[test]
+    fn a_dropped_untrusted_result_leaves_only_its_mark() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let folder = dir.path().join("assistant");
+        let mut conversation = Conversation::new("0123456789abcdef".into(), "Hello", at(0));
+        let mut lines = vec![conversation.started()];
+        for (minute, text) in
+            [(1, "{\"untrusted\":true,\"data\":\"the marked text\"}"), (2, "{\"data\":\"the plain text\"}")]
+        {
+            let tool = EntryContent::Tool {
+                name: "tasks.get".into(),
+                input: serde_json::json!({}),
+                summary: "1 task".into(),
+                error: None,
+                lack: None,
+            };
+            let entry = conversation.next(tool, at(minute));
+            let result = Line::Result { seq: entry.seq, text: text.into() };
+            conversation.apply(Line::Entry { entry: entry.clone() });
+            conversation.apply(result.clone());
+            lines.extend([Line::Entry { entry }, result]);
+        }
+        assert!(!conversation.untrusted);
+        append(&folder, &conversation.id, &lines).expect("written");
+        drop_results(&folder, &conversation.id, &conversation.expired_results(at(10))).expect("dropped");
+
+        let text = fs::read_to_string(file(&folder, &conversation.id)).expect("the file");
+        assert!(!text.contains("the marked text") && !text.contains("the plain text"), "{text}");
+        let read = load_all(&folder).expect("read");
+        assert!(read[0].untrusted);
+        assert!(read[0].results.is_empty());
+
+        // A note for a message, not a tool line, is of no use.
+        let message = conversation.next(answer("Hi"), at(11));
+        let mut plain = Conversation::new("fedcba9876543210".into(), "Hello", at(0));
+        plain.apply(Line::Entry { entry: message.clone() });
+        plain.apply(Line::Untrusted { seq: message.seq });
+        assert!(!plain.untrusted);
+    }
+
+    #[test]
+    fn marked_results_are_told_by_their_top() {
+        assert!(marked_untrusted(&serde_json::json!({"untrusted": true, "data": {}}).to_string()));
+        assert!(!marked_untrusted("{\"result\":\"todo\"}") && !marked_untrusted("not json"));
     }
 
     #[test]

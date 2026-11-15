@@ -57,6 +57,16 @@ pub enum Open {
     NoAccount,
     /// The first load failed (set after loading).
     Error,
+    /// Anna Berg open, maps off in the settings (issue #355).
+    MapOff,
+    /// Anna Berg open, maps on but the lookup of contact addresses off.
+    MapLookupOff,
+    /// Anna Berg open while her address is being found.
+    MapFinding,
+    /// Anna Berg open, her address not found on the map.
+    MapNotFound,
+    /// Anna Berg open, the map service not reachable.
+    MapUnavailable,
     /// The view "Duplicates" with Anna Berg twice (issue #726).
     Duplicates,
     /// The dialog "Import vCard" with sample numbers, without a file (issue #725).
@@ -71,7 +81,7 @@ pub enum Open {
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 23] = [
+    pub const ALL: [(&'static str, Open); 28] = [
         ("list", Open::List),
         ("by-city", Open::ByCity),
         ("by-book", Open::ByBook),
@@ -90,6 +100,11 @@ impl Open {
         ("empty", Open::Empty),
         ("no-account", Open::NoAccount),
         ("error", Open::Error),
+        ("map-off", Open::MapOff),
+        ("map-lookup-off", Open::MapLookupOff),
+        ("map-finding", Open::MapFinding),
+        ("map-not-found", Open::MapNotFound),
+        ("map-unavailable", Open::MapUnavailable),
         ("duplicates", Open::Duplicates),
         ("import", Open::Import),
         ("merge", Open::Merge),
@@ -100,10 +115,35 @@ impl Open {
     /// The uid of the demo contact this state opens in the side panel, if it opens one.
     pub fn contact(self) -> Option<&'static str> {
         match self {
-            Open::Contact | Open::Edit | Open::Delete | Open::Move | Open::ContactMenu => Some("demo-01"),
+            Open::Contact
+            | Open::Edit
+            | Open::Delete
+            | Open::Move
+            | Open::ContactMenu
+            | Open::MapOff
+            | Open::MapLookupOff
+            | Open::MapFinding
+            | Open::MapNotFound
+            | Open::MapUnavailable => Some("demo-01"),
             Open::Conflict => Some("demo-04"),
             Open::Readonly => Some("demo-05"),
             Open::Pending => Some("demo-08"),
+            _ => None,
+        }
+    }
+}
+
+impl Open {
+    /// The map every address of the contact shows in this state, instead of asking (issue #355);
+    /// `None` for states that ask as the window does (`contact` shows the demo's map).
+    pub fn map_state(self) -> Option<crate::contact::AddressMap> {
+        use crate::contact::AddressMap;
+        match self {
+            Open::MapOff => Some(AddressMap::MapsOff),
+            Open::MapLookupOff => Some(AddressMap::LookupOff),
+            Open::MapFinding => Some(AddressMap::Finding),
+            Open::MapNotFound => Some(AddressMap::NotFound),
+            Open::MapUnavailable => Some(AddressMap::Unavailable),
             _ => None,
         }
     }

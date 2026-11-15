@@ -1271,6 +1271,8 @@ fn describe(request: &Request) -> String {
         // Ids only, never a message or a title (task C.1).
         Request::ListEngines => "assistant engines".into(),
         Request::ListConversations => "assistant conversations".into(),
+        // Never the words (issue #704).
+        Request::SearchConversations { .. } => "search the assistant conversations".into(),
         Request::GetConversation { id, .. } => format!("conversation {id}"),
         // Never a file's title or path (issue #225).
         Request::GetCards { conversation } => format!("cards of conversation {conversation}"),
@@ -1281,6 +1283,14 @@ fn describe(request: &Request) -> String {
         Request::DeleteConversation { id } => format!("delete conversation {id}"),
         Request::PinConversation { id, pinned } => {
             format!("{} conversation {id}", if *pinned { "pin" } else { "unpin" })
+        }
+        // How many, never a title (issue #697); a double counts once, as in the approval.
+        Request::ArchiveConversations { ids, archived } => {
+            let n = ids.iter().collect::<std::collections::BTreeSet<_>>().len();
+            format!("{} {n} conversations", if *archived { "archive" } else { "restore" })
+        }
+        Request::DeleteConversations { ids } => {
+            format!("delete {} conversations", ids.iter().collect::<std::collections::BTreeSet<_>>().len())
         }
         Request::OpenChatWindow { .. } => "open an assistant window".into(),
         // Ids only, never a note or the personality (task C.10).
@@ -1307,6 +1317,14 @@ fn describe(request: &Request) -> String {
         Request::ConfirmBot { bot, .. } => format!("confirm asking bot {bot}"),
         Request::VoiceStatus => "voice status".into(),
         Request::TestVoice => "voice test".into(),
+        Request::Dictate => "dictation".into(),
+        Request::StopDictation => "stop dictation".into(),
+        // Never the text read (issue #745).
+        Request::Speak { .. } => "read aloud".into(),
+        Request::StopSpeaking => "stop reading aloud".into(),
+        Request::SpeechStatus => "speech status".into(),
+        Request::MapsStatus => "map data".into(),
+        Request::ClearMapsCache => "clear map data".into(),
         // Ids only, never a title, the content or a path (issue #225).
         Request::ListTools => "tools".into(),
         Request::CreatePdf { .. } => "make a PDF".into(),
@@ -1359,6 +1377,9 @@ fn describe(request: &Request) -> String {
         Request::AddContactToGroup { .. } => "add a contact to a group".into(),
         Request::RemoveContactFromGroup { .. } => "take a contact out of a group".into(),
         Request::MarkContactUsed { .. } => "note a contact as used".into(),
+        // Never the address or the point (issue #355).
+        Request::LocateContact { .. } => "find a contact's address on the map".into(),
+        Request::OpenContactInMaps { .. } => "open a contact's address in maps".into(),
         Request::SetContactPhoto { .. } => "change a contact's picture".into(),
         Request::MoveContact { .. } => "move a contact".into(),
         Request::DeleteContact { .. } => "delete a contact".into(),

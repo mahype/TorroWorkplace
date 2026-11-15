@@ -27,14 +27,19 @@
 //! [`Listener`] is the one app the core keeps running itself: the voice listener
 //! `torroassistant --listen` (task C.9), started while the setting `voice.enabled` is on and
 //! stopped when it goes off. It reports what it does on its output; the tray shows it.
+//!
+//! [`SpeechHelper`] keeps `torroassistant --speak` running while it reads aloud (issue #745,
+//! `assistant.speak`): one job at a time, talked to in JSON lines ([`SpeechLine`]); a new job or
+//! `assistant.stop_speaking` stops the one that reads.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::watch;
 use torro_core::AppId;
 use torro_ipc::{AppInfo, Response, VoiceState};
@@ -529,6 +534,33 @@ pub struct Listener {
     running: Arc<Mutex<Running>>,
     /// Told whenever the state changes; the daemon then rebuilds the tray menu.
     changes: watch::Sender<()>,
+    /// The running dictation (`--dictate`, issue #699); closing its standard input ends the
+    /// recording ([`Listener::stop_dictation`]).
+    dictation: Mutex<Dictation>,
+    /// When a stop came while no dictation ran yet: the window's stop can overtake its start (two
+    /// requests on two connections). A dictation that starts within [`STOP_AHEAD`] ends at once.
+    stop_ahead: Mutex<Option<std::time::Instant>>,
+}
+
+/// The one place for a dictation: free, or taken by one that runs with its standard input (`None`
+/// once it was closed – the program still turns what it heard into text).
+#[derive(Debug, Default)]
+enum Dictation {
+    #[default]
+    Free,
+    Running(Option<ChildStdin>),
+}
+
+/// How long a stop that came before its dictation counts ([`Listener::stop_dictation`]).
+const STOP_AHEAD: Duration = Duration::from_secs(2);
+
+/// Why [`Listener::dictate`] got no answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DictateError {
+    /// Another dictation runs.
+    Busy,
+    /// The program could not run or answered nothing usable, for people.
+    Failed(String),
 }
 
 impl Listener {
@@ -549,7 +581,13 @@ impl Listener {
     }
 
     fn with(program: Program) -> Listener {
-        Listener { program, running: Arc::default(), changes: watch::Sender::new(()) }
+        Listener {
+            program,
+            running: Arc::default(),
+            changes: watch::Sender::new(()),
+            dictation: Mutex::default(),
+            stop_ahead: Mutex::default(),
+        }
     }
 
     /// The program, when it is installed.
@@ -674,6 +712,58 @@ impl Listener {
         serde_json::from_str(line).map_err(|err| format!("{} answered no voice answer: {err}", AppId::ASSISTANT.binary))
     }
 
+    /// Runs the program once with `args` like [`Listener::ask`], but keeps its standard input open
+    /// so [`Listener::stop_dictation`] can end the recording (issue #699, `--dictate`). One at a
+    /// time: [`DictateError::Busy`] while another runs.
+    pub async fn dictate(&self, args: &[String], wait: Duration) -> Result<Response, DictateError> {
+        let program = self
+            .program()
+            .ok_or_else(|| DictateError::Failed(format!("{} is not installed", AppId::ASSISTANT.binary)))?;
+        let child = {
+            let mut dictation = self.dictation.lock().unwrap_or_else(PoisonError::into_inner);
+            if matches!(*dictation, Dictation::Running(_)) {
+                return Err(DictateError::Busy);
+            }
+            let mut child = Command::new(&program)
+                .args(args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .kill_on_drop(true)
+                .spawn()
+                .map_err(|err| DictateError::Failed(format!("cannot start {}: {err}", program.display())))?;
+            let stopped = self.stop_ahead.lock().unwrap_or_else(PoisonError::into_inner).take();
+            // A stop that overtook this start ends the recording at once: its input closes (tokio
+            // closes what stays in the child before it waits). The place is taken either way.
+            let input = if stopped.is_some_and(|at| at.elapsed() < STOP_AHEAD) { None } else { child.stdin.take() };
+            *dictation = Dictation::Running(input);
+            child
+        };
+        let output = tokio::time::timeout(wait, child.wait_with_output()).await;
+        // Whatever happened, the next dictation may start.
+        *self.dictation.lock().unwrap_or_else(PoisonError::into_inner) = Dictation::Free;
+        let output = output
+            .map_err(|_| DictateError::Failed(format!("{} did not answer in time", AppId::ASSISTANT.binary)))?
+            .map_err(|err| DictateError::Failed(err.to_string()))?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let line = text.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or_default();
+        serde_json::from_str(line)
+            .map_err(|err| DictateError::Failed(format!("{} answered no voice answer: {err}", AppId::ASSISTANT.binary)))
+    }
+
+    /// Ends a running dictation: its standard input closes, it stops recording and answers with
+    /// what it heard. Nothing happens when none runs.
+    pub fn stop_dictation(&self) {
+        let mut dictation = self.dictation.lock().unwrap_or_else(PoisonError::into_inner);
+        match &mut *dictation {
+            Dictation::Running(input) => drop(input.take()),
+            // Kept under the same lock, so a start cannot slip in between and miss it.
+            Dictation::Free => {
+                *self.stop_ahead.lock().unwrap_or_else(PoisonError::into_inner) = Some(std::time::Instant::now());
+            }
+        }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Running> {
         self.running.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -681,6 +771,260 @@ impl Listener {
     fn set(&self, running: &mut Running, state: VoiceState) {
         running.state = state;
         self.changes.send_replace(());
+    }
+}
+
+/// A line of `torroassistant --speak` (issue #745, `voice::speech` in the app).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpeechLine {
+    /// The pieces to fetch from OpenAI and send as sound.
+    Pieces(Vec<String>),
+    /// The first sound plays.
+    Playing,
+    /// Read to its end, or stopped.
+    Done,
+    /// It cannot read, with the core's code and a message for people.
+    Failed { code: String, message: String },
+}
+
+impl SpeechLine {
+    /// `line` as the helper wrote it; `None` for one that does not read.
+    pub fn parse(line: &str) -> Option<SpeechLine> {
+        let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+        match value.as_str() {
+            Some("playing") => return Some(SpeechLine::Playing),
+            Some("done") => return Some(SpeechLine::Done),
+            Some(_) => return None,
+            None => {}
+        }
+        if let Some(pieces) = value.get("pieces").and_then(serde_json::Value::as_array) {
+            let pieces = pieces.iter().filter_map(serde_json::Value::as_str).map(str::to_string).collect();
+            return Some(SpeechLine::Pieces(pieces));
+        }
+        let failed = value.get("failed")?;
+        let field = |key: &str| failed.get(key).and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+        Some(SpeechLine::Failed { code: field("code"), message: field("message") })
+    }
+}
+
+/// Why [`SpeechHelper::begin`] or a [`SpeechJob`] could not go on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpeechError {
+    /// A newer job or a stop came first: nothing is left to do.
+    Overtaken,
+    /// The app is not installed.
+    Missing,
+    /// The helper did not start, or it ended; for the log.
+    Failed(String),
+}
+
+/// The helper as it runs, started with `args`.
+#[derive(Debug)]
+struct Speaking {
+    child: Child,
+    lines: Lines<BufReader<ChildStdout>>,
+    args: Vec<String>,
+}
+
+/// The helper that reads aloud, `torroassistant --speak --voice <settings>` (issue #745). It stays
+/// running between jobs, so Qwen3-TTS loads once, and ends itself after ten minutes without one; a
+/// change of the voice settings starts it anew ([`SpeechHelper::begin`], [`SpeechHelper::end`]).
+#[derive(Debug)]
+pub struct SpeechHelper {
+    program: Program,
+    /// Taken by the job that reads, for as long as it reads: one job at a time.
+    running: tokio::sync::Mutex<Option<Speaking>>,
+    /// The helper's input, apart from [`SpeechHelper::running`], so a stop gets through while a job
+    /// waits for the helper.
+    input: tokio::sync::Mutex<Option<ChildStdin>>,
+    /// Counts jobs and stops: a job whose number is no longer the last was overtaken.
+    jobs: AtomicU64,
+}
+
+/// One job of the [`SpeechHelper`], holding it until it is dropped. Dropped before the helper said
+/// `done`, the helper is ended: what it still writes would belong to no job.
+#[derive(Debug)]
+pub struct SpeechJob<'a> {
+    helper: &'a SpeechHelper,
+    running: tokio::sync::MutexGuard<'a, Option<Speaking>>,
+    number: u64,
+    finished: bool,
+}
+
+impl SpeechHelper {
+    /// The installed app's helper.
+    pub fn system() -> SpeechHelper {
+        SpeechHelper::with(Program::Installed)
+    }
+
+    /// A helper that is never installed: tests start none unless they bring a fake.
+    pub fn none() -> SpeechHelper {
+        SpeechHelper::with(Program::Missing)
+    }
+
+    /// The helper `program`, for tests.
+    #[cfg(all(test, unix))]
+    pub fn at(program: PathBuf) -> SpeechHelper {
+        SpeechHelper::with(Program::At(program))
+    }
+
+    fn with(program: Program) -> SpeechHelper {
+        SpeechHelper {
+            program,
+            running: tokio::sync::Mutex::new(None),
+            input: tokio::sync::Mutex::new(None),
+            jobs: AtomicU64::new(0),
+        }
+    }
+
+    /// The program, when it is installed.
+    pub fn program(&self) -> Option<PathBuf> {
+        match &self.program {
+            Program::Installed => listener_program(bundled_program(AppId::ASSISTANT), &search_dirs()),
+            #[cfg(all(test, unix))]
+            Program::At(path) => Some(path.clone()),
+            Program::Missing => None,
+        }
+    }
+
+    /// Stops what reads now; the job that reads gets `done` from the helper. Nothing when nothing
+    /// reads.
+    pub async fn stop(&self) {
+        self.jobs.fetch_add(1, Ordering::SeqCst);
+        if let Some(input) = self.input.lock().await.as_mut() {
+            let _ = input.write_all(b"\"stop\"\n").await;
+            let _ = input.flush().await;
+        }
+    }
+
+    /// Stops what reads and ends the helper, so the next job starts it anew: after a change of the
+    /// voice settings, and so Qwen's graphics memory is free when another provider reads.
+    pub async fn end(&self) {
+        self.stop().await;
+        let mut running = self.running.lock().await;
+        self.input.lock().await.take();
+        // `kill_on_drop` ends the process.
+        running.take();
+    }
+
+    /// Takes the next job's place: stops the one that reads. A stop or another job after this
+    /// overtakes it ([`SpeechHelper::begin_claimed`]).
+    pub async fn claim(&self) -> u64 {
+        self.stop().await;
+        self.jobs.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Starts a job: [`SpeechHelper::claim`], then [`SpeechHelper::begin_claimed`].
+    #[cfg(test)]
+    pub async fn begin(&self, args: &[String]) -> Result<SpeechJob<'_>, SpeechError> {
+        let number = self.claim().await;
+        self.begin_claimed(number, args).await
+    }
+
+    /// Starts the job `number` ([`SpeechHelper::claim`]): waits for the one that reads to end, and
+    /// starts the helper with `args` unless it runs with them. [`SpeechError::Overtaken`] when
+    /// another job or a stop came since the claim.
+    pub async fn begin_claimed(&self, number: u64, args: &[String]) -> Result<SpeechJob<'_>, SpeechError> {
+        let mut running = self.running.lock().await;
+        if self.jobs.load(Ordering::SeqCst) != number {
+            return Err(SpeechError::Overtaken);
+        }
+        let usable = running
+            .as_mut()
+            .is_some_and(|speaking| speaking.args == args && matches!(speaking.child.try_wait(), Ok(None)));
+        if !usable {
+            running.take();
+            let program = self.program().ok_or(SpeechError::Missing)?;
+            let mut child = Command::new(&program)
+                .args(args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .kill_on_drop(true)
+                .spawn()
+                .map_err(|err| SpeechError::Failed(format!("cannot start {}: {err}", program.display())))?;
+            let (Some(input), Some(output)) = (child.stdin.take(), child.stdout.take()) else {
+                return Err(SpeechError::Failed("the speech helper has no pipes".into()));
+            };
+            *self.input.lock().await = Some(input);
+            *running = Some(Speaking { child, lines: BufReader::new(output).lines(), args: args.to_vec() });
+        }
+        Ok(SpeechJob { helper: self, running, number, finished: false })
+    }
+}
+
+impl SpeechJob<'_> {
+    /// Gives the helper back without a job sent: it is idle, and stays running for the next one.
+    pub fn leave(mut self) {
+        self.finished = true;
+    }
+
+    /// Whether no newer job or stop came since this one began.
+    pub fn current(&self) -> bool {
+        self.helper.jobs.load(Ordering::SeqCst) == self.number
+    }
+
+    /// Writes `line` to the helper while no stop or newer job came since this one began; `false`
+    /// when one did. Under the lock of the input, so a stop is either before (and counts here) or
+    /// after the line (and the helper gets it).
+    pub async fn send_if_current(&mut self, line: &str) -> Result<bool, SpeechError> {
+        let mut input = self.helper.input.lock().await;
+        if !self.current() {
+            return Ok(false);
+        }
+        let input = input.as_mut().ok_or_else(|| SpeechError::Failed("the speech helper ended".into()))?;
+        let written = async {
+            input.write_all(line.as_bytes()).await?;
+            input.write_all(b"\n").await?;
+            input.flush().await
+        };
+        written.await.map(|()| true).map_err(|err| SpeechError::Failed(format!("the speech helper ended: {err}")))
+    }
+
+    /// Writes `line` to the helper.
+    pub async fn send(&mut self, line: &str) -> Result<(), SpeechError> {
+        let mut input = self.helper.input.lock().await;
+        let input = input.as_mut().ok_or_else(|| SpeechError::Failed("the speech helper ended".into()))?;
+        let written = async {
+            input.write_all(line.as_bytes()).await?;
+            input.write_all(b"\n").await?;
+            input.flush().await
+        };
+        written.await.map_err(|err| SpeechError::Failed(format!("the speech helper ended: {err}")))
+    }
+
+    /// The helper's next line it understands; [`SpeechLine::Done`] and [`SpeechLine::Failed`] end
+    /// the job.
+    pub async fn next(&mut self) -> Result<SpeechLine, SpeechError> {
+        let speaking = self.running.as_mut().ok_or_else(|| SpeechError::Failed("the speech helper ended".into()))?;
+        loop {
+            match speaking.lines.next_line().await {
+                Ok(Some(line)) => {
+                    let Some(line) = SpeechLine::parse(&line) else { continue };
+                    if matches!(line, SpeechLine::Done | SpeechLine::Failed { .. }) {
+                        self.finished = true;
+                    }
+                    return Ok(line);
+                }
+                Ok(None) | Err(_) => {
+                    self.finished = true;
+                    self.running.take();
+                    return Err(SpeechError::Failed("the speech helper ended".into()));
+                }
+            }
+        }
+    }
+}
+
+impl Drop for SpeechJob<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            // Its lines would belong to the next job: the helper goes, the next job starts it anew.
+            self.running.take();
+            if let Ok(mut input) = self.helper.input.try_lock() {
+                input.take();
+            }
+        }
     }
 }
 
@@ -1008,6 +1352,119 @@ pub mod tests {
         assert_eq!(listener.ask(&[], Duration::from_secs(5)).await, Ok(Response::Transcript { text: "Hi".into() }));
         let slow = Listener::at(fake_program(dir.path(), "sleep 5"));
         assert!(slow.ask(&[], Duration::from_millis(200)).await.is_err(), "it does not wait for ever");
+    }
+
+    /// Issue #745: a job reads until the helper says `done`; a stop gets through while it reads, a
+    /// new job overtakes the one waiting, and the helper is started anew for other settings.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_speech_helper_reads_one_job_at_a_time() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // Like `--speak`: answers a `say` with its pieces (the settings' word), and `done` for a stop or
+        // the end of a job, never while none reads.
+        let script = r#"active=0
+while read line; do
+  case "$line" in
+    *say*) echo "{\"pieces\": [\"$3\"]}"; active=1;;
+    '"stop"'|'"end"') if [ $active = 1 ]; then echo '"done"'; active=0; fi;;
+  esac
+done"#;
+        let helper = Arc::new(SpeechHelper::at(fake_program(dir.path(), script)));
+        let args = |voice: &str| vec!["--speak".to_string(), "--voice".to_string(), voice.to_string()];
+        let say = r#"{"say": {"provider": "openai", "text": "Hello."}}"#;
+        let mut job = helper.begin(&args("one")).await.expect("started");
+        job.send(say).await.expect("sent");
+        assert_eq!(job.next().await, Ok(SpeechLine::Pieces(vec!["one".into()])));
+        job.send("\"end\"").await.expect("sent");
+        assert_eq!(job.next().await, Ok(SpeechLine::Done));
+        drop(job);
+
+        // The same settings keep the helper; a stop reaches the job that reads.
+        let mut job = helper.begin(&args("one")).await.expect("again");
+        job.send(say).await.expect("sent");
+        assert_eq!(job.next().await, Ok(SpeechLine::Pieces(vec!["one".into()])));
+        assert!(job.current());
+        let stopper = Arc::clone(&helper);
+        tokio::spawn(async move { stopper.stop().await });
+        assert_eq!(job.next().await, Ok(SpeechLine::Done));
+        assert!(!job.current(), "the stop overtook it");
+        drop(job);
+
+        // Other settings start it anew.
+        let mut job = helper.begin(&args("two")).await.expect("anew");
+        job.send(say).await.expect("sent");
+        assert_eq!(job.next().await, Ok(SpeechLine::Pieces(vec!["two".into()])));
+        // A job dropped before `done` ends the helper; the next one starts it anew and is not
+        // answered with the old job's `done`.
+        drop(job);
+        let mut job = helper.begin(&args("two")).await.expect("anew after a drop");
+        job.send("\"end\"").await.expect("sent");
+        job.send(say).await.expect("sent");
+        assert_eq!(job.next().await, Ok(SpeechLine::Pieces(vec!["two".into()])));
+        drop(job);
+
+        // A job that waits is overtaken by a newer one.
+        let first = helper.begin(&args("two")).await.expect("holds the helper");
+        let waiting = {
+            let helper = Arc::clone(&helper);
+            tokio::spawn(async move { helper.begin(&args("two")).await.map(|_| ()) })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        helper.stop().await;
+        drop(first);
+        assert_eq!(waiting.await.expect("joined"), Err(SpeechError::Overtaken));
+        assert_eq!(SpeechHelper::none().begin(&args("one")).await.err(), Some(SpeechError::Missing));
+
+        // A stop while a job gets ready (after its claim) overtakes it.
+        let number = helper.claim().await;
+        helper.stop().await;
+        assert_eq!(helper.begin_claimed(number, &args("two")).await.err(), Some(SpeechError::Overtaken));
+    }
+
+    #[test]
+    fn speech_lines_are_read() {
+        assert_eq!(SpeechLine::parse("\"playing\""), Some(SpeechLine::Playing));
+        assert_eq!(
+            SpeechLine::parse(r#"{"pieces": ["One.", "Two."]}"#),
+            Some(SpeechLine::Pieces(vec!["One.".into(), "Two.".into()]))
+        );
+        assert_eq!(
+            SpeechLine::parse(r#"{"failed": {"code": "unsupported", "message": "No player"}}"#),
+            Some(SpeechLine::Failed { code: "unsupported".into(), message: "No player".into() })
+        );
+        assert_eq!(SpeechLine::parse("noise"), None);
+    }
+
+    /// Issue #699: a dictation records until its standard input closes; a second one meanwhile is
+    /// busy, and once it answered the next may start.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_dictation_ends_when_it_is_stopped() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let answer = serde_json::to_string(&Response::Transcript { text: "Buy milk".into() }).expect("json");
+        // Like `--dictate`: waits for the end of its input (at most 20 s), then answers.
+        let listener =
+            Arc::new(Listener::at(fake_program(dir.path(), &format!("timeout 20 cat > /dev/null; echo '{answer}'"))));
+        let running = {
+            let listener = Arc::clone(&listener);
+            tokio::spawn(async move { listener.dictate(&[], Duration::from_secs(30)).await })
+        };
+        while matches!(*listener.dictation.lock().expect("lock"), Dictation::Free) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(listener.dictate(&[], Duration::from_secs(1)).await, Err(DictateError::Busy));
+        let started = std::time::Instant::now();
+        listener.stop_dictation();
+        let heard = running.await.expect("joined");
+        assert_eq!(heard, Ok(Response::Transcript { text: "Buy milk".into() }));
+        assert!(started.elapsed() < Duration::from_secs(10), "stopping ends it now");
+        assert!(matches!(*listener.dictation.lock().expect("lock"), Dictation::Free), "the next one may start");
+        // A stop that overtakes its dictation (two connections) still ends it at once.
+        listener.stop_dictation();
+        let started = std::time::Instant::now();
+        let heard = listener.dictate(&[], Duration::from_secs(30)).await;
+        assert_eq!(heard, Ok(Response::Transcript { text: "Buy milk".into() }));
+        assert!(started.elapsed() < Duration::from_secs(10), "the early stop counts");
     }
 
     #[test]

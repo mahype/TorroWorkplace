@@ -308,7 +308,10 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::MarkContactUsed { id: contact }
         | Request::SetContactPhoto { id: contact, .. }
         | Request::DeleteContact { id: contact, .. }
-        | Request::ResolveContactConflict { id: contact, .. } => vec![format!("item:{}", hashed(contact))],
+        | Request::ResolveContactConflict { id: contact, .. }
+        // Where an address is (issue #355): the contact hashed, never the address or the point.
+        | Request::LocateContact { id: contact, .. }
+        | Request::OpenContactInMaps { id: contact, .. } => vec![format!("item:{}", hashed(contact))],
         Request::MoveContact { id: contact, to_book, .. } => {
             vec![format!("item:{}", hashed(contact)), collection(to_book)]
         }
@@ -556,8 +559,14 @@ pub fn ids(request: &Request) -> Vec<String> {
         // engine (decision 5: the log says which engine the assistant used), never a text, a title
         // or a model's name.
         Request::ListEngines | Request::ListConversations => Vec::new(),
+        // Issue #704: never the words searched for, nor how many hits were asked for.
+        Request::SearchConversations { .. } => Vec::new(),
         // Voice (task C.9): no ids, never what was said.
-        Request::VoiceStatus | Request::TestVoice => Vec::new(),
+        Request::VoiceStatus | Request::TestVoice | Request::Dictate | Request::StopDictation => Vec::new(),
+        // Reading aloud (issue #745): never the text read.
+        Request::Speak { .. } | Request::StopSpeaking | Request::SpeechStatus => Vec::new(),
+        // Map data (issue #355): no ids.
+        Request::MapsStatus | Request::ClearMapsCache => Vec::new(),
         // A chat about a mail (issue #605): the account and the mail hashed as for its suggestions.
         Request::SendMessage { conversation, engine, bot, about, .. } => conversation
             .iter()
@@ -580,6 +589,10 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::PinConversation { id: conversation, .. }
         | Request::OpenChatWindow { window: ChatWindow::Conversation(conversation) } => {
             vec![random("conversation", conversation)]
+        }
+        // Several conversations at once (issue #697): each by the id the core made.
+        Request::ArchiveConversations { ids, .. } | Request::DeleteConversations { ids } => {
+            ids.iter().map(|id| random("conversation", id)).collect()
         }
         // The assistant's profile and memory (task C.10): a note by the id the core made, never
         // its text, a name or the personality.
@@ -734,11 +747,11 @@ pub fn engine_id(engine: &str) -> String {
     }
 }
 
-/// The ids that say a bot ran for the assistant (task B.2), next to the line of the bot's client:
-/// `bot:<the bot's id>` and `for:<the assistant's client id>`, so the log names both. Ids that do
-/// not have the form the core makes are hashed.
-pub fn delegation_ids(bot: &str, assistant: &str) -> Vec<String> {
-    vec![made_id("bot", bot), behalf_id(assistant)]
+/// The ids that say a bot ran for another client (task B.2: the assistant; issue #698: a client from
+/// outside), next to the line of the bot's client: `bot:<the bot's id>` and `for:<the caller's client id>`,
+/// so the log names both. Ids that do not have the form the core makes are hashed.
+pub fn delegation_ids(bot: &str, caller: &str) -> Vec<String> {
+    vec![made_id("bot", bot), behalf_id(caller)]
 }
 
 /// `account:<id>` for each mail account `contacts.suggest_recipients` read (issue #460), as
@@ -1078,6 +1091,8 @@ pub(crate) mod tests {
         assert_eq!(super::ids(&named), vec![format!("conversation:hash:{}", hashed("salary talks"))]);
         assert_eq!(super::ids(&Request::OpenChatWindow { window: ChatWindow::New }), Vec::<String>::new());
         assert_eq!(super::ids(&Request::ListConversations), Vec::<String>::new());
+        let search = Request::SearchConversations { query: "flight Lisbon".into(), limit: Some(5) };
+        assert_eq!(super::ids(&search), Vec::<String>::new(), "never the words (issue #704)");
     }
 
     #[test]

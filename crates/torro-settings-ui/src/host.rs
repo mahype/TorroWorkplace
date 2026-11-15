@@ -1076,6 +1076,7 @@ impl Host {
                 Outcome::Work(Task::perform(ask, |result| Message::Answered(Box::new(result))))
             }
             Action::OpenUrl(url) => Outcome::OpenUrl(url),
+            Action::Copy(text) => Outcome::Work(iced::clipboard::write(text)),
             // A page opened by a row of another (General's "Manage models…" in the assistant) asks
             // for what it shows, as when it is chosen in the list.
             Action::Open(id) => {

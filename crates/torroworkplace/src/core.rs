@@ -38,7 +38,7 @@ use crate::account::hardware::{Probe, SystemProbe};
 use crate::account::ntfy::NtfyAccounts;
 use crate::account::torromail::TorroMail;
 use crate::approvals::{Approvals, ApprovalsError, Decision, EntryPin, Facts};
-use crate::apps::Listener;
+use crate::apps::{Listener, SpeechError, SpeechHelper, SpeechLine};
 use crate::assistant::{Assistant, Place};
 use crate::audit::Audit;
 use crate::categorize;
@@ -324,6 +324,21 @@ fn main_app_only() -> (bool, Vec<torro_ipc::AppInfo>) {
 /// Opens `url` in the system browser, for `inbox.open_item`. The inbox let only `http`/`https`
 /// through ([`Inbox::opening`]).
 fn open_in_browser(url: &str) -> Result<(), String> {
+    webbrowser::open(url).map_err(|err| err.to_string())
+}
+
+/// Opens a link of "Open in Maps" for `contacts.open_in_maps` (issue #355), as the calendar does
+/// ([`torro_core::maps::maps_link`] builds it): a `geo:` link with the program Linux has for it
+/// (`xdg-open`, started and not waited for: it may run the maps app in the foreground, and the core
+/// must not hold a worker until it closes), anything else in the browser.
+fn open_map_link(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if url.starts_with("geo:") {
+        let mut child = std::process::Command::new("xdg-open").arg(url).spawn().map_err(|err| err.to_string())?;
+        // Reaped on a thread of its own, so the long-running core keeps no zombie.
+        std::thread::spawn(move || child.wait());
+        return Ok(());
+    }
     webbrowser::open(url).map_err(|err| err.to_string())
 }
 
@@ -2626,6 +2641,10 @@ const VOICE_STATUS_WAIT: std::time::Duration = std::time::Duration::from_secs(15
 /// to text.
 const VOICE_TEST_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How long `torroassistant --dictate` may take (issue #699): a dictation is at most a minute, then
+/// speech to text.
+const DICTATE_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
+
 /// The arguments of a voice helper `mode` of the assistant app, with the voice settings.
 fn voice_args(mode: &str, voice: &torro_core::settings::Voice) -> Vec<String> {
     vec![mode.to_string(), "--voice".to_string(), serde_json::to_string(voice).unwrap_or_default()]
@@ -2639,6 +2658,189 @@ fn unexpected_kind(response: &Response) -> String {
         .and_then(|value| value.get("result").and_then(|result| result.as_str()).map(str::to_string))
         .unwrap_or_default();
     format!("unexpected answer {kind:?}")
+}
+
+/// The longest text `assistant.speak` takes, in characters (issue #745); at most
+/// [`SPEAK_READ`] of it is read.
+const MAX_SPEAK_CHARS: usize = 20_000;
+
+/// How much of a text is read aloud, in characters: the window shows all of it.
+const SPEAK_READ: usize = 3000;
+
+/// How much of OpenAI's sound goes to the helper in one line, in bytes.
+const PCM_LINE: usize = 48_000;
+
+/// Qwen3-TTS's large model, for an NVIDIA card with at least [`QWEN_LARGE_BYTES`].
+const QWEN_LARGE: &str = "Qwen/Qwen3-TTS-12Hz-1.7B-Base";
+
+/// Qwen3-TTS's small model, for an NVIDIA card with at least [`QWEN_SMALL_BYTES`].
+const QWEN_SMALL: &str = "Qwen/Qwen3-TTS-12Hz-0.6B-Base";
+
+/// The graphics memory of the large model (4.7 GB measured, decided in the planning of #745).
+const QWEN_LARGE_BYTES: u64 = 8 << 30;
+
+/// The graphics memory below which local voices are not fast enough (the small model needs 2.8 GB).
+const QWEN_SMALL_BYTES: u64 = 4 << 30;
+
+/// The Qwen3-TTS model for `hardware` (issue #745): the large one from 8 GB on an NVIDIA card, the
+/// small one from 4 GB; `None` without such a card.
+fn qwen_model(hardware: &torro_core::ai::hardware::Hardware) -> Option<&'static str> {
+    let gpu = hardware.gpu.as_ref()?;
+    let nvidia = gpu.name.as_deref().is_some_and(|name| name.to_lowercase().contains("nvidia"));
+    match gpu.vram_bytes? {
+        _ if !nvidia => None,
+        bytes if bytes >= QWEN_LARGE_BYTES => Some(QWEN_LARGE),
+        bytes if bytes >= QWEN_SMALL_BYTES => Some(QWEN_SMALL),
+        _ => None,
+    }
+}
+
+/// The graphics card for people: `NVIDIA GeForce RTX 4090, 24 GB`.
+fn gpu_label(hardware: &torro_core::ai::hardware::Hardware) -> Option<String> {
+    let gpu = hardware.gpu.as_ref()?;
+    let name = gpu.name.clone()?;
+    Some(match gpu.vram_bytes {
+        Some(bytes) => format!("{name}, {} GB", (bytes + (1 << 29)) >> 30),
+        None => name,
+    })
+}
+
+/// The language Qwen3-TTS reads in: that of the suite.
+fn speech_language() -> &'static str {
+    match torro_core::i18n::lang() {
+        torro_core::i18n::Lang::De => "German",
+        torro_core::i18n::Lang::En => "English",
+    }
+}
+
+/// The settings the speech helper is started with: only the provider and Piper's voice file. The
+/// voices of Qwen and OpenAI go with each job, so choosing another voice does not start the helper
+/// anew and make Qwen load its model again; neither does switching the listener or the speaker.
+fn speech_settings(voice: &torro_core::settings::Voice) -> torro_core::settings::Voice {
+    torro_core::settings::Voice {
+        speech_provider: voice.speech_provider,
+        voice: voice.voice.clone(),
+        ..torro_core::settings::Voice::default()
+    }
+}
+
+/// What the speech helper is started with ([`speech_settings`]): another provider or Piper voice
+/// ends it.
+fn speech_choice(
+    voice: &torro_core::settings::Voice,
+) -> (Option<torro_core::settings::SpeechProvider>, Option<String>) {
+    (voice.speech_provider, voice.voice.clone())
+}
+
+/// The answer of `assistant.speak` when the helper failed: a sentence for people; what went wrong
+/// (a path, the program's words) only into the log.
+fn speech_failure(err: &SpeechError) -> Response {
+    if let SpeechError::Failed(detail) = err {
+        eprintln!("torroworkplace: reading aloud failed: {detail}");
+    }
+    match err {
+        SpeechError::Overtaken => Response::Ok,
+        SpeechError::Missing => {
+            Response::Error { code: "unsupported".into(), message: tr("The assistant app is not installed.").into() }
+        }
+        SpeechError::Failed(_) => {
+            Response::Error { code: "error".into(), message: tr("Reading aloud failed. Try again.").into() }
+        }
+    }
+}
+
+/// What reads aloud here without the assistant app: nothing local.
+fn speech_without_app() -> torro_ipc::SpeechStatus {
+    use torro_core::settings::{QWEN_RECOMMENDED, QWEN_VOICES, SpeechProvider};
+    let option = |provider, voices: Vec<torro_ipc::SpeechVoice>| torro_ipc::SpeechOption {
+        provider,
+        missing: Some(torro_ipc::SpeechMissing::App),
+        voices,
+        model: None,
+        setup: None,
+    };
+    let qwen = QWEN_VOICES
+        .iter()
+        .map(|id| torro_ipc::SpeechVoice { id: (*id).to_string(), recommended: *id == QWEN_RECOMMENDED })
+        .collect();
+    torro_ipc::SpeechStatus {
+        gpu: None,
+        fast_enough: false,
+        recommended: SpeechProvider::Piper,
+        current: SpeechProvider::Piper,
+        providers: vec![option(SpeechProvider::Qwen, qwen), option(SpeechProvider::Piper, Vec::new())],
+    }
+}
+
+/// Fetches `pieces` from OpenAI with `voice` and sends their sound to the helper of `job`, each piece
+/// while the one before plays, until the helper says it is done (issue #745). A stop ends the
+/// fetching; an error of OpenAI stops what plays and is the answer.
+async fn read_with_openai(
+    mut job: crate::apps::SpeechJob<'_>,
+    speaker: &crate::account::ai::OpenAiCompatible,
+    voice: &str,
+    pieces: Vec<String>,
+) -> Response {
+    use base64::Engine as _;
+    let fetch = |piece: String| {
+        let (speaker, voice) = (speaker.clone(), voice.to_string());
+        Box::pin(async move { speaker.speech(&voice, &piece).await })
+    };
+    let mut pieces = pieces.into_iter();
+    let mut fetching = pieces.next().map(fetch);
+    if fetching.is_none()
+        && let Err(err) = job.send("\"end\"").await
+    {
+        return speech_failure(&err);
+    }
+    let mut failed = None;
+    loop {
+        let sound = async {
+            match fetching.as_mut() {
+                Some(fetch) => fetch.await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            sound = sound => {
+                fetching = None;
+                match sound {
+                    // Stopped meanwhile: the helper says `done`, nothing more goes to it.
+                    Ok(_) if !job.current() => {}
+                    Ok(pcm) => {
+                        for part in pcm.chunks(PCM_LINE) {
+                            let line = serde_json::json!({"pcm": {
+                                "rate": crate::account::ai::SPEECH_RATE,
+                                "data": base64::engine::general_purpose::STANDARD.encode(part),
+                            }});
+                            if let Err(err) = job.send(&line.to_string()).await {
+                                return speech_failure(&err);
+                            }
+                        }
+                        fetching = pieces.next().map(fetch);
+                        if fetching.is_none() && let Err(err) = job.send("\"end\"").await {
+                            return speech_failure(&err);
+                        }
+                    }
+                    // Stopped or overtaken meanwhile: the helper says `done`, and the answer is `Ok`.
+                    Err(_) if !job.current() => {}
+                    Err(err) => {
+                        // What plays stops; the answer is OpenAI's error once the helper is done.
+                        failed = Some(ai_error(&err));
+                        if let Err(err) = job.send("\"stop\"").await {
+                            return speech_failure(&err);
+                        }
+                    }
+                }
+            }
+            line = job.next() => match line {
+                Ok(SpeechLine::Done) => return failed.unwrap_or(Response::Ok),
+                Ok(SpeechLine::Failed { code, message }) => return Response::Error { code, message },
+                Ok(SpeechLine::Playing | SpeechLine::Pieces(_)) => {}
+                Err(err) => return speech_failure(&err),
+            },
+        }
+    }
 }
 
 /// The `error` answer of a voice helper that failed.
@@ -2834,6 +3036,9 @@ pub struct Core {
     open_app_accounts: fn(AppId) -> AppOpening,
     /// Opens a web page for `inbox.open_item` ([`open_in_browser`]); tests record it instead.
     open_url: fn(&str) -> Result<(), String>,
+    /// Opens an address in the maps app for `contacts.open_in_maps` ([`open_map_link`], issue #355);
+    /// tests record it instead.
+    open_map: fn(&str) -> Result<(), String>,
     /// Tells a remote source that one of its entries is done (task E5.2,
     /// [`crate::sources::settle_done`]); tests record it instead.
     settle_done: fn(&Sources, &torro_inbox::Item),
@@ -2865,6 +3070,9 @@ pub struct Core {
     /// `voice.enabled` is on ([`Core::follow_voice`]); tests start none unless they bring a fake
     /// ([`Core::with_listener`]).
     voice: Listener,
+    /// The helper that reads aloud, `torroassistant --speak` (issue #745, `assistant.speak`); tests
+    /// start none unless they bring a fake ([`Core::with_speech`]).
+    speech: SpeechHelper,
     /// What the keys lent for runs of engine B are for (task B.2, [`LentScope`]): the assistant's
     /// conversation, or a bot's run for the assistant. In memory only, as the leases are.
     lent_scopes: std::sync::Mutex<Vec<LentScope>>,
@@ -3009,6 +3217,7 @@ impl Core {
             installed: if cfg!(test) { main_app_only } else { installed_now },
             open_app_accounts,
             open_url: if cfg!(test) { no_browser } else { open_in_browser },
+            open_map: if cfg!(test) { no_browser } else { open_map_link },
             settle_done: crate::sources::settle_done,
             mail_discovery: OnceLock::new(),
             make_mail_discoverer: if cfg!(test) { offline_mail_discoverer } else { system_mail_discoverer },
@@ -3018,6 +3227,7 @@ impl Core {
             torromail: if cfg!(test) { TorroMail::none() } else { TorroMail::system() },
             assistant: Arc::new(Assistant::system()),
             voice: if cfg!(test) { Listener::none() } else { Listener::system() },
+            speech: if cfg!(test) { SpeechHelper::none() } else { SpeechHelper::system() },
             lent_scopes: std::sync::Mutex::new(Vec::new()),
             accounts_read: tokio::sync::watch::Sender::new(true),
             reminders: Arc::new(Reminders::system()),
@@ -3436,6 +3646,13 @@ impl Core {
     #[cfg(all(test, unix))]
     pub(crate) fn with_listener(mut self, listener: Listener) -> Core {
         self.voice = listener;
+        self
+    }
+
+    /// The core with the speech helper `speech` instead of none, for tests.
+    #[cfg(all(test, unix))]
+    pub(crate) fn with_speech(mut self, speech: SpeechHelper) -> Core {
+        self.speech = speech;
         self
     }
 
@@ -4136,10 +4353,10 @@ impl Core {
         let mut scope = None;
         if let Some((key, engine)) = key.and_then(|key| self.clients.lent_for(key).map(|engine| (key, engine))) {
             ids.push(crate::audit::engine_id(&engine));
-            // A bot that runs for the assistant (task B.2): the log names the bot and the assistant.
+            // A bot that runs for another client (task B.2, issue #698): the log names the bot and the caller.
             scope = self.lent_scope(key);
             if let Some(LentFor::Delegated(delegation)) = &scope {
-                ids.extend(crate::audit::delegation_ids(&delegation.bot, &delegation.assistant));
+                ids.extend(crate::audit::delegation_ids(&delegation.bot, &delegation.caller));
             }
         }
         let read = match &admitted {
@@ -4224,7 +4441,8 @@ impl Core {
     ///   for it (task B.2, handled before this in [`Core::handle_client`]): here, never,
     /// - it proposes new bots only, never changes one (`bots.save_bot` with an `id`),
     /// - any client chats with a bot through `assistant.send_message` only with write access to
-    ///   `bots` as well, as `bots.ask_bot` needs: either way the bot works with its own rights.
+    ///   `bots` as well, as `bots.ask_bot` needs: either way the bot works with what both it and the
+    ///   client may (issue #698).
     ///
     /// A bot's client never gets this far with a `bots` or `assistant` command
     /// ([`torro_ipc::api::loops_back`]).
@@ -4337,10 +4555,11 @@ impl Core {
                 via.asking = Some(AskedFrom { conversation, without, mode });
             }
             Some(LentFor::Delegated(delegation)) => {
-                // The lease took its areas out of the bot's rights already; the assistant's, narrowed
-                // the same way, bound them as well. Its client removed meanwhile: nothing runs.
-                let theirs = self.assistant_client().filter(|info| info.id == delegation.assistant);
-                via.origin.behalf = Some(delegation.assistant);
+                // The lease took its areas out of the bot's rights already; the caller's (the assistant's
+                // or a client's from outside, issue #698), narrowed the same way, bound them as well. Its
+                // client removed meanwhile: nothing runs.
+                let theirs = self.caller_client(&delegation.caller);
+                via.origin.behalf = Some(delegation.caller);
                 match via.origin.effective(&rights, theirs.as_ref().map(|info| &info.rights)) {
                     Some(bound) => rights = bound,
                     None => return Err(Refused::Forbidden { command: request.operation().name() }),
@@ -4511,6 +4730,15 @@ impl Core {
         // as for every other command, and what the request came through.
         if matches!(request, Request::MyAccess) {
             return Ok(my_access(&rights, &via.origin));
+        }
+        // Searching the conversations (issue #704) with the rights narrowed by what the conversation switched
+        // off, as its access tells them: a hit after mail stays out of a chat without mail.
+        if let Request::SearchConversations { query, limit } = &request {
+            let narrowed = match my_access(&rights, &via.origin) {
+                Response::MyAccess { access } => access.rights,
+                _ => rights.clone(),
+            };
+            return Ok(self.search_conversations(query, *limit, Reach::Client(&narrowed), Some(&id)).await);
         }
         // A bot reads its own skills (issue #703), never the assistant's: looked up by its client.
         if matches!(request, Request::ListSkills | Request::GetSkill { .. })
@@ -4746,6 +4974,12 @@ impl Core {
         {
             return Ok(refused);
         }
+        // Nor opening an address the contact does not have (issue #355).
+        if let Request::OpenContactInMaps { id, address } = &request
+            && let Err(err) = self.contacts.address_spot(id, *address)
+        {
+            return Ok(crate::contacts::service::error_response(&err));
+        }
         // Nor a contact of a mail the client may not read or of an entry that is no mail (issue #727).
         if let (Some(info), Request::CreateContactFromItem { id, .. }) = (&inbox_client, &request)
             && let Err(refused) = Box::pin(self.contact_mail(id, Some(info), reach)).await
@@ -4765,6 +4999,9 @@ impl Core {
         // A change of a file that exists too (issue #705): its old text is gone after it, so the person sees the
         // change as the core worked it out, whatever the client's rights say.
         let trashes = matches!(request, Request::TrashFile { .. } | Request::EditFile { .. });
+        // Opening an address in a maps app always asks too (issue #355, decision 5): it starts a program
+        // on the person's screen and sends the address to Google, Apple or OpenStreetMap.
+        let opens_maps = matches!(request, Request::OpenContactInMaps { .. });
         // A note kept on this computer was written after the assistant read mail (task C.10), and
         // any note after the conversation read data from outside the suite (task C.11): what a
         // mail, an agent's entry or an issue says must never become a lasting part of the
@@ -4775,6 +5012,7 @@ impl Core {
         // `needs_approval_of`: sending mail also waits as `Rights::outbound` says (task M2.1).
         if question
             || trashes
+            || opens_maps
             || from_mail
             || matches!(request, Request::RunWorkflow { .. })
             || rights.needs_approval_of(operation)
@@ -4926,16 +5164,22 @@ impl Core {
         self.clients.list().into_iter().find(|info| info.id == client && info.kind == torro_ipc::api::BOT_CLIENT)
     }
 
-    /// The bot's client of `delegation` (task B.2) with the rights it runs with for the assistant:
-    /// what both the bot's and the assistant's client may now, without the areas of
-    /// [`crate::assistant::Delegation::without`]. `None` when either client is not there (also an
-    /// assistant client other than the one that asked).
+    /// The bot's client of `delegation` (task B.2) with the rights it runs with for its caller: what
+    /// both the bot's and the calling client (the assistant's, or since issue #698 a client from outside)
+    /// may now, without the areas of [`crate::assistant::Delegation::without`]. `None` when either client
+    /// is not there, and for a caller that is a bot's client (no chains).
     fn delegated_client(&self, delegation: &crate::assistant::Delegation) -> Option<torro_ipc::ClientInfo> {
         let mut bot = self.bot_client(&delegation.client)?;
-        let assistant = self.assistant_client().filter(|info| info.id == delegation.assistant)?;
+        let caller = self.caller_client(&delegation.caller)?;
         let origin = delegation_origin(None, delegation);
-        bot.rights = origin.effective(&bot.rights, Some(&assistant.rights))?;
+        bot.rights = origin.effective(&bot.rights, Some(&caller.rights))?;
         Some(bot)
+    }
+
+    /// The client a bot runs for (issue #698, [`crate::assistant::Delegation::caller`]) as stored now: any
+    /// client but a bot's. `None` when it is not there.
+    fn caller_client(&self, caller: &str) -> Option<torro_ipc::ClientInfo> {
+        self.clients.list().into_iter().find(|info| info.id == caller && info.kind != torro_ipc::api::BOT_CLIENT)
     }
 
     /// [`Core::handle_as_assistant`] for the client `client`: the assistant's own or a bot's (task
@@ -4979,7 +5223,7 @@ impl Core {
                 asking = Some(AskedFrom { conversation, without: without.to_vec(), mode });
             }
             Scope::Delegated(delegation) => {
-                ids.extend(crate::audit::delegation_ids(&delegation.bot, &delegation.assistant));
+                ids.extend(crate::audit::delegation_ids(&delegation.bot, &delegation.caller));
                 origin = delegation_origin(Some(engine), delegation);
             }
         }
@@ -5573,6 +5817,14 @@ impl Core {
                     facts.tasks = titles;
                     fingerprint = Some((pinned, crate::approvals::details(&request, &facts)));
                 }
+                // An address opens in maps only as it was when the person allowed it (issue #355): pinned
+                // to a hash of its line and point. The details say which address goes to which app.
+                if let Request::OpenContactInMaps { id, address } = &request
+                    && let Ok(spot) = self.contacts.address_spot(id, *address)
+                {
+                    let app = torro_core::maps::on_this_system(self.settings.current().maps.open_with);
+                    fingerprint = Some((spot.pin(app), crate::approvals::maps_details(&spot.address, app)));
+                }
                 // What a target shows (task E8.7a): the subject or title the core holds, looked up
                 // as the client may see it – for a file of the tools (task WZ.8) the register's title.
                 if let Request::OpenApp { app, target: Some(target) } = &request {
@@ -5822,6 +6074,7 @@ impl Core {
             | Request::MoveContact { .. }
             | Request::DeleteContact { .. }
             | Request::ResolveContactConflict { .. }
+            | Request::OpenContactInMaps { .. }
             | Request::ImportVCards { .. }
             | Request::MergeContacts { .. }
             | Request::DismissDuplicates { .. }) => {
@@ -5966,11 +6219,11 @@ impl Core {
             let message = format!("the client that asked for {command} was removed meanwhile");
             return Response::Error { code: "forbidden".into(), message };
         };
-        // A bot that ran for the assistant (task B.2): what both may now, never more.
+        // A bot that ran for another client (task B.2, issue #698): what both may now, never more.
         let behalf =
             origin.behalf.as_ref().and_then(|behalf| self.clients.list().into_iter().find(|info| info.id == *behalf));
         let Some(effective) = origin.effective(&info.rights, behalf.as_ref().map(|info| &info.rights)) else {
-            let message = format!("the assistant that the bot asked {command} for was removed meanwhile");
+            let message = format!("the client the bot asked {command} for was removed meanwhile");
             return Response::Error { code: "forbidden".into(), message };
         };
         info.rights = effective;
@@ -6026,6 +6279,11 @@ impl Core {
         let reach = Reach::Client(rights);
         if let Some(outside) = self.out_of_reach(reach, &request).await {
             return not_reached(&request, &outside);
+        }
+        // The address the person allowed, else `conflict` (issue #355); an approval without a
+        // fingerprint matches none.
+        if let Request::OpenContactInMaps { id, address } = &request {
+            return self.open_contact_in_maps(id, *address, Some(fingerprint.unwrap_or_default()));
         }
         // Today's focus plan runs only as the person was shown it (issue #596).
         if let Request::PostponeFocusPlan = request
@@ -6747,6 +7005,7 @@ impl Core {
             Request::SetSetting { key: SettingKey::ListOrder, value } => self.set_list_order(&value).await,
             Request::SetSetting { key: SettingKey::Reminders, value } => Box::pin(self.set_reminders(&value)).await,
             Request::UpdateSettings { settings } => {
+                let speech_before = speech_choice(&self.settings.current().voice);
                 // A client never sees the hidden collections, so what it sends back says nothing
                 // about them; they change only through `set_collection_shown`. Kept under the
                 // settings lock, so a collection hidden meanwhile stays hidden.
@@ -6755,6 +7014,10 @@ impl Core {
                     false => self.settings.update(settings),
                 };
                 self.follow_components();
+                // Another provider or Piper voice ends the helper, as `set_setting` does (issue #745).
+                if speech_choice(&self.settings.current().voice) != speech_before {
+                    self.speech.end().await;
+                }
                 match updated {
                     Ok(()) => Response::Ok,
                     Err(message) => Response::Error { code: "error".into(), message },
@@ -6769,11 +7032,18 @@ impl Core {
                 }
                 // A client keeps or removes the PDF paths but never sets one (point 9, issue #225),
                 // judged again under the settings lock.
+                let speech_before = speech_choice(&self.settings.current().voice);
                 let set = match client {
                     true => self.settings.set_by_client(key, &value),
                     false => self.settings.set(key, &value),
                 };
                 self.follow_components();
+                // Another provider or Piper voice (issue #745): the helper ends, Qwen's graphics memory
+                // is free, and the next answer starts it with the new settings. Another voice of Qwen
+                // or OpenAI goes with the next job and keeps the model loaded; so does the same value.
+                if set.is_ok() && speech_choice(&self.settings.current().voice) != speech_before {
+                    self.speech.end().await;
+                }
                 match set {
                     Ok(()) => Response::Ok,
                     Err(message) => Response::Error { code: "error".into(), message },
@@ -6781,6 +7051,19 @@ impl Core {
             }
             Request::VoiceStatus => self.voice_status().await,
             Request::TestVoice => self.test_voice().await,
+            Request::Dictate => self.dictate().await,
+            Request::StopDictation => {
+                self.voice.stop_dictation();
+                Response::Ok
+            }
+            Request::Speak { text } => self.speak(&text).await,
+            Request::StopSpeaking => {
+                self.speech.stop().await;
+                Response::Ok
+            }
+            Request::SpeechStatus => self.speech_status().await,
+            Request::MapsStatus => self.maps_status(reach),
+            Request::ClearMapsCache => self.clear_maps_cache(reach),
             Request::SetCollectionShown { collection, shown } => self.set_collection_shown(&collection, shown).await,
             Request::ListDesigns => Response::Designs { designs: self.list_designs() },
             Request::ListFonts => Response::Fonts { fonts: self.list_fonts().await },
@@ -7136,6 +7419,10 @@ impl Core {
             // Unsubscribing (issue #416): for a client after `Core::handle_client` checked its
             // sending; the handler checks the mail itself.
             Request::Unsubscribe { account, id } => self.unsubscribe(&account, &id, reach, None).await,
+            // Searching the conversations (issue #704): rights were checked in `handle_from`.
+            Request::SearchConversations { query, limit } => {
+                self.search_conversations(&query, limit, reach, caller).await
+            }
             // The assistant (task C.1): rights were checked in `handle_from`; the assistant runs
             // with its own client, not with the caller's reach.
             request @ (Request::ListEngines
@@ -7147,6 +7434,8 @@ impl Core {
             | Request::RenameConversation { .. }
             | Request::DeleteConversation { .. }
             | Request::PinConversation { .. }
+            | Request::ArchiveConversations { .. }
+            | Request::DeleteConversations { .. }
             | Request::OpenChatWindow { .. }
             | Request::ConfirmBot { .. }
             | Request::AskBot { .. }) => {
@@ -7261,6 +7550,9 @@ impl Core {
             | Request::MoveContact { .. }
             | Request::DeleteContact { .. }
             | Request::ResolveContactConflict { .. }
+            // The place of an address (issue #355): with the settings and the place search of the core.
+            | Request::LocateContact { .. }
+            | Request::OpenContactInMaps { .. }
             // Import, export and duplicates (issues #725, #726).
             | Request::ImportVCards { .. }
             | Request::ExportVCards { .. }
@@ -10286,6 +10578,12 @@ impl Core {
                 Request::SuggestRecipients { query, limit, contacts_only } => {
                     self.suggest_ranked(&query, limit, contacts_only, reach).await
                 }
+                Request::LocateContact { id, address } => self.locate_contact(&id, address, reach).await,
+                // A client's approval came with its fingerprint (`Core::run_approved`); here only the app.
+                Request::OpenContactInMaps { id, address } => match reach {
+                    Reach::Suite => self.open_contact_in_maps(&id, address, None),
+                    Reach::Client(_) => Refused::NeedsApproval { command: "contacts.open_in_maps" }.response(),
+                },
                 other => self.contacts.handle(other, reach).await,
             }
         })
@@ -11642,9 +11940,15 @@ impl Core {
     /// `not-found` for a request of the assistant that names a conversation about a mail (issue #605) of an account
     /// `reach` may not read: for that caller the conversation is not there at all, since its entries (tool lines,
     /// cards, answers) tell what the mail says. As the assistant answers an unknown conversation. `None` for every
-    /// other request, the suite, and a conversation about no mail or a mail the caller reads.
+    /// other request, the suite, and a conversation about no mail or a mail the caller reads. A request that names
+    /// several (issue #697) is refused for the first hidden one, before anything changes.
     async fn about_hidden(&self, request: &Request, reach: Reach<'_>) -> Option<Response> {
-        self.hidden_conversation(request.conversation()?, reach).await
+        for id in request.conversation_ids() {
+            if let Some(hidden) = self.hidden_conversation(id, reach).await {
+                return Some(hidden);
+            }
+        }
+        None
     }
 
     /// [`Core::about_hidden`] for the conversation `id`.
@@ -11652,6 +11956,46 @@ impl Core {
         let about = self.assistant.about(id).await?;
         (!reads_mail(reach, &about.account))
             .then(|| Response::Error { code: "not-found".into(), message: format!("no conversation {id:?}") })
+    }
+
+    /// `assistant.search_conversations` (issue #704) for `reach` and the client `caller`. A caller sees the
+    /// conversations `assistant.list_conversations` lists it (one about a mail only while it may read that
+    /// mail, issue #605) and every hit in them: it may read each of them whole anyway. The assistant's own
+    /// client sees narrower (decision 2 of the plan): its own conversations only, none with a bot, and no
+    /// hit after a command whose answer its rights of now would not let it read again
+    /// ([`crate::assistant::readable`], the rule of issue #713: areas, switched-off commands, its tools, the
+    /// servers offered to it), and none after a search or a bot's answer, which may retell what any area said.
+    /// Its rights come narrowed by what its conversation switched off
+    /// ([`Core::handle_from`]).
+    async fn search_conversations(
+        &self,
+        query: &str,
+        limit: Option<u32>,
+        reach: Reach<'_>,
+        caller: Option<&str>,
+    ) -> Response {
+        // Checked here for every caller: the app key's request comes to no other check of its limits.
+        let request = Request::SearchConversations { query: query.to_owned(), limit };
+        if let Some(refused) = torro_ipc::assistant::limit_refusal(&request) {
+            return refused;
+        }
+        let assistant = caller.is_some_and(|id| {
+            self.clients.list().iter().any(|info| info.id == id && info.kind == torro_ipc::api::ASSISTANT_CLIENT)
+        });
+        let reads_about = |about: &torro_ipc::assistant::MailRef| reads_mail(reach, &about.account);
+        let servers = if assistant { self.extension_tools(reach) } else { Vec::new() };
+        // After a search or a bot's answer an answer may retell anything, of any area read then: never again.
+        let readable = |name: &str| match reach {
+            Reach::Suite => true,
+            Reach::Client(_) if matches!(name, "assistant.search_conversations" | "bots.ask_bot") => false,
+            Reach::Client(rights) => crate::assistant::readable(name, rights, &servers),
+        };
+        let scope = crate::assistant::Scope {
+            own_only: assistant,
+            readable: assistant.then_some(&readable as &(dyn Fn(&str) -> bool + Sync)),
+            reads_about: &reads_about,
+        };
+        self.assistant.search(query, limit, &scope).await
     }
 
     /// `answered`, an answer of the assistant, without the conversations about a mail (issue #605) of an account
@@ -13150,6 +13494,115 @@ impl Core {
         }
     }
 
+    /// `contacts.locate_contact` (issue #355), in this order: an address the contact does not have is
+    /// `not-found`; the first address with the vCard's `GEO` is there; a place kept on this device is
+    /// there; an address kept as not found less than [`torro_ipc::contacts::LOOKUP_RETRY_DAYS`] days
+    /// ago is `not_found`; with maps or the lookup of contact addresses off `no_consent`; a client
+    /// gets `not_looked_up` (it never makes the core look up, decision 3); an empty address is
+    /// `not_found` without asking; else the person's lookup asks the place search
+    /// ([`crate::places::Places::lookup`], at most [`torro_ipc::contacts::MAX_LOOKUP_CHARS`]
+    /// characters) and keeps what it says. `busy`, `offline` and `error` come back as they are,
+    /// with nothing kept. No answer and no message repeats the address or the point.
+    async fn locate_contact(&self, id: &str, index: usize, reach: Reach<'_>) -> Response {
+        use torro_ipc::contacts::{ContactLocation, LOOKUP_RETRY_DAYS, LocationSource, MAX_LOOKUP_CHARS};
+        let located = |location| Response::ContactLocation { location };
+        let found =
+            |lat, lon, source| located(ContactLocation::Found { geo: torro_pim::model::Geo { lat, lon }, source });
+        let spot = match self.contacts.address_spot(id, index) {
+            Ok(spot) => spot,
+            Err(err) => return crate::contacts::service::error_response(&err),
+        };
+        if let Some(geo) = spot.geo {
+            return found(geo.lat, geo.lon, LocationSource::Vcard);
+        }
+        let now = Utc::now().timestamp();
+        match self.contacts.kept_place(&spot) {
+            Ok(Some(kept)) => match kept.point {
+                Some((lat, lon)) => return found(lat, lon, LocationSource::Lookup),
+                None if now - kept.at < LOOKUP_RETRY_DAYS * 24 * 60 * 60 => return located(ContactLocation::NotFound),
+                None => {}
+            },
+            Ok(None) => {}
+            Err(err) => return crate::contacts::service::error_response(&err),
+        }
+        let maps = self.settings.current().maps;
+        if !(maps.enabled && maps.contact_lookup) {
+            return located(ContactLocation::NoConsent);
+        }
+        if let Reach::Client(_) = reach {
+            return located(ContactLocation::NotLookedUp);
+        }
+        let line = spot.address.one_line().split_whitespace().collect::<Vec<_>>().join(" ");
+        if line.is_empty() {
+            return located(ContactLocation::NotFound);
+        }
+        let line: String = line.chars().take(MAX_LOOKUP_CHARS).collect();
+        match self.places.lookup(&maps, &line).await {
+            Ok(point) => {
+                let point = point.map(|geo| (geo.lat, geo.lon));
+                // Not kept (the store says why on stderr): the answer is still right, the next opening
+                // asks again.
+                let _ = self.contacts.keep_place(&spot, point, now);
+                match point {
+                    Some((lat, lon)) => found(lat, lon, LocationSource::Lookup),
+                    None => located(ContactLocation::NotFound),
+                }
+            }
+            Err(failure) => failure,
+        }
+    }
+
+    /// `contacts.open_in_maps` (issue #355): the address number `index` of the contact `id` in the
+    /// maps app of the settings, at the point of `GEO` or the one kept, else as a search
+    /// ([`torro_core::maps::maps_link`]). With `approved` (a client's approval, `Core::run_approved`)
+    /// only when the address is still the one the person allowed ([`crate::contacts::store::line_key`]),
+    /// else `conflict` and nothing opens. No message repeats the address.
+    fn open_contact_in_maps(&self, id: &str, index: usize, approved: Option<&str>) -> Response {
+        let spot = match self.contacts.address_spot(id, index) {
+            Ok(spot) => spot,
+            Err(err) => return crate::contacts::service::error_response(&err),
+        };
+        let app = torro_core::maps::on_this_system(self.settings.current().maps.open_with);
+        if approved.is_some_and(|pin| pin != spot.pin(app)) {
+            let message = "the address changed after the approval was asked for; nothing was opened";
+            return refusal("conflict", message.into());
+        }
+        let point = match spot.geo {
+            Some(geo) => Some((geo.lat, geo.lon)),
+            None => self.contacts.kept_place(&spot).ok().flatten().and_then(|kept| kept.point),
+        };
+        let link = torro_core::maps::link_for(app, &spot.address.one_line(), point);
+        match (self.open_map)(&link) {
+            Ok(()) => Response::Ok,
+            Err(_) => refusal("error", tr("The maps app could not be opened.").into()),
+        }
+    }
+
+    /// `settings.maps_status` (issue #355): the bytes of the map tiles and the places kept of
+    /// addresses `reach` sees. Without contacts on this device none are kept.
+    fn maps_status(&self, reach: Reach<'_>) -> Response {
+        let contact_places = match self.contacts.store() {
+            Ok(_) => match self.contacts.place_count(reach) {
+                Ok(count) => count,
+                Err(err) => return crate::contacts::service::error_response(&err),
+            },
+            Err(_) => 0,
+        };
+        Response::MapsStatus { status: torro_ipc::MapsStatus { tile_bytes: self.places.tile_bytes(), contact_places } }
+    }
+
+    /// `settings.clear_maps_cache` (issue #355): every map tile, and the places kept of addresses
+    /// `reach` sees.
+    fn clear_maps_cache(&self, reach: Reach<'_>) -> Response {
+        self.places.clear_tiles();
+        if self.contacts.store().is_ok()
+            && let Err(err) = self.contacts.clear_places(reach)
+        {
+            return crate::contacts::service::error_response(&err);
+        }
+        Response::Ok
+    }
+
     /// The earlier places for `query` ([`crate::places::recent_places`]) among the events of the
     /// calendars `reach` may read: the calendar service leaves out the others before it reads any
     /// event (`calendar.list_events`). The window lies inside what a sync keeps
@@ -13183,6 +13636,133 @@ impl Core {
         Response::Voice { voice: status }
     }
 
+    /// What the assistant app finds here for reading aloud (`torroassistant --speech-status`, issue
+    /// #745); without the app, that it is missing.
+    async fn local_speech(&self, voice: &torro_core::settings::Voice) -> Result<torro_ipc::SpeechStatus, Response> {
+        if self.voice.program().is_none() {
+            return Ok(speech_without_app());
+        }
+        match self.voice.ask(&voice_args("--speech-status", voice), VOICE_STATUS_WAIT).await {
+            Ok(Response::Speech { speech }) => Ok(speech),
+            Ok(other) => Err(voice_failure(&unexpected_kind(&other))),
+            Err(message) => Err(voice_failure(&message)),
+        }
+    }
+
+    /// `settings.speech_status` (issue #745): what the app finds, with the graphics card, Qwen's
+    /// model, OpenAI's account and voices, the recommended provider and the one that reads now.
+    async fn speech_status(&self) -> Response {
+        use torro_core::settings::{OPENAI_RECOMMENDED, OPENAI_VOICES, SpeechProvider};
+        let voice = self.settings.current().voice;
+        let hardware = self.measured_hardware().await;
+        let model = qwen_model(&hardware);
+        let mut status = match self.local_speech(&voice).await {
+            Ok(status) => status,
+            Err(failed) => return failed,
+        };
+        if let Some(qwen) = status.providers.iter_mut().find(|option| option.provider == SpeechProvider::Qwen) {
+            qwen.model = model.map(str::to_string);
+            if model.is_none() && qwen.missing != Some(torro_ipc::SpeechMissing::App) {
+                qwen.missing = Some(torro_ipc::SpeechMissing::Gpu);
+            }
+        }
+        let openai = torro_ipc::SpeechOption {
+            provider: SpeechProvider::OpenAi,
+            missing: self.ai.speaker().await.is_none().then_some(torro_ipc::SpeechMissing::Account),
+            voices: OPENAI_VOICES
+                .iter()
+                .map(|id| torro_ipc::SpeechVoice {
+                    id: (*id).to_string(),
+                    recommended: OPENAI_RECOMMENDED.contains(id),
+                })
+                .collect(),
+            model: Some(crate::account::ai::SPEECH_MODEL.to_string()),
+            setup: None,
+        };
+        let at =
+            status.providers.iter().position(|option| option.provider == SpeechProvider::Qwen).map_or(0, |at| at + 1);
+        status.providers.insert(at, openai);
+        status.gpu = gpu_label(&hardware);
+        status.fast_enough = model.is_some();
+        status.recommended = if status.fast_enough { SpeechProvider::Qwen } else { SpeechProvider::OpenAi };
+        let qwen_works = status.option(SpeechProvider::Qwen).is_some_and(torro_ipc::SpeechOption::works);
+        status.current =
+            voice.speech_provider.unwrap_or(if qwen_works { SpeechProvider::Qwen } else { SpeechProvider::Piper });
+        Response::Speech { speech: status }
+    }
+
+    /// `assistant.speak` (issue #745): reads `text` with the provider of the settings, or the core's
+    /// choice, through the helper; the helper makes that choice (Qwen where it is set up and the card
+    /// is fast enough, else Piper), so no answer waits for a check of the programs. Answers once it
+    /// was read or stopped. OpenAI's sound is fetched here, where its key is, a piece ahead of what
+    /// plays. Its place among the jobs is taken first, so a stop that comes while it gets ready
+    /// counts for it.
+    async fn speak(&self, text: &str) -> Response {
+        use torro_core::settings::SpeechProvider;
+        let refused = |code: &str, message: &str| Response::Error { code: code.into(), message: message.into() };
+        if text.trim().is_empty() {
+            return refused("error", tr("There is nothing to read."));
+        }
+        if text.chars().count() > MAX_SPEAK_CHARS {
+            return refused("error", tr("The text is too long to read aloud."));
+        }
+        let number = self.speech.claim().await;
+        let voice = self.settings.current().voice;
+        let model = qwen_model(&self.measured_hardware().await);
+        let provider = voice.speech_provider;
+        let speaker = match provider {
+            Some(SpeechProvider::OpenAi) => match self.ai.speaker().await {
+                Some(speaker) => Some(speaker),
+                None => {
+                    return refused(
+                        "unsupported",
+                        tr("Connect an OpenAI account in Settings › AI to read aloud with OpenAI."),
+                    );
+                }
+            },
+            Some(SpeechProvider::Qwen) if model.is_none() => {
+                return refused("unsupported", tr("Local voices need an NVIDIA graphics card with at least 4 GB."));
+            }
+            _ => None,
+        };
+        let read: String = text.chars().take(SPEAK_READ * 2).collect();
+        let say = serde_json::json!({"say": {
+            "provider": provider,
+            "text": read,
+            "voice": voice.qwen_voice_or_default(),
+            "model": model,
+            "language": speech_language(),
+        }});
+        let mut job = match self.speech.begin_claimed(number, &voice_args("--speak", &speech_settings(&voice))).await {
+            Ok(job) => job,
+            Err(err) => return speech_failure(&err),
+        };
+        // Stopped while the helper started: nothing is sent, nothing is read. Checked as the line
+        // goes out, so a stop is either before it (and counts) or after it (and the helper gets it).
+        match job.send_if_current(&say.to_string()).await {
+            Ok(true) => {}
+            Ok(false) => {
+                job.leave();
+                return Response::Ok;
+            }
+            Err(err) => return speech_failure(&err),
+        }
+        loop {
+            match job.next().await {
+                Ok(SpeechLine::Playing) => {}
+                Ok(SpeechLine::Done) => return Response::Ok,
+                Ok(SpeechLine::Failed { code, message }) => return Response::Error { code, message },
+                Ok(SpeechLine::Pieces(pieces)) => match &speaker {
+                    Some(speaker) => {
+                        return read_with_openai(job, speaker, voice.openai_voice_or_default(), pieces).await;
+                    }
+                    None => return refused("error", tr("Reading aloud failed. Try again.")),
+                },
+                Err(err) => return speech_failure(&err),
+            }
+        }
+    }
+
     /// `settings.test_voice` (task C.9, app key only): one sentence from the microphone as text,
     /// recorded by `torroassistant --voice-test`.
     async fn test_voice(&self) -> Response {
@@ -13197,6 +13777,27 @@ impl Core {
             Ok(answer @ (Response::Transcript { .. } | Response::Error { .. })) => answer,
             Ok(other) => voice_failure(&unexpected_kind(&other)),
             Err(message) => voice_failure(&message),
+        }
+    }
+
+    /// `assistant.dictate` (issue #699, app key only): what the person says as text, recorded by
+    /// `torroassistant --dictate` until a pause or `assistant.stop_dictation`. Whether "Hey Torro" is
+    /// on does not matter. The text goes to the window only, never into the log.
+    async fn dictate(&self) -> Response {
+        if self.voice.program().is_none() {
+            return Response::Error {
+                code: "unsupported".into(),
+                message: format!("{} is not installed", AppId::ASSISTANT.binary),
+            };
+        }
+        let voice = self.settings.current().voice;
+        match self.voice.dictate(&voice_args("--dictate", &voice), DICTATE_WAIT).await {
+            Ok(answer @ (Response::Transcript { .. } | Response::Error { .. })) => answer,
+            Ok(other) => voice_failure(&unexpected_kind(&other)),
+            Err(crate::apps::DictateError::Busy) => {
+                Response::Error { code: "busy".into(), message: "a dictation is already running".into() }
+            }
+            Err(crate::apps::DictateError::Failed(message)) => voice_failure(&message),
         }
     }
 
@@ -13431,14 +14032,14 @@ impl crate::assistant::Host for Core {
     /// First the model, then where it runs (task S.23): the model asked or "Automatic" among the
     /// account's models as last listed ([`AiAccounts::known_models`], asked anew only for a model
     /// the list lacks), then [`torro_core::ai::place_of`] for that model. Only models turned on
-    /// count (task S.24, [`crate::assistant::ModelAccess::choose_on`]).
+    /// count (task S.24, [`crate::assistant::ModelAccess::choose_on`]). The provider is built after
+    /// the list, so it carries the models' output limits (issue #223).
     fn model<'a>(
         &'a self,
         engine: &'a str,
         model: Option<&'a str>,
     ) -> torro_core::ai::BoxFuture<'a, Result<crate::assistant::ModelAccess, torro_core::ai::AiError>> {
         Box::pin(async move {
-            let provider = self.ai.provider(engine).await?;
             let server = self.ai.server(engine).await;
             // An account removed meanwhile counts as elsewhere: nothing of mail goes to it.
             let place = |described: &torro_core::ai::AiModel| match &server {
@@ -13451,6 +14052,10 @@ impl crate::assistant::Host for Core {
                 Ok(models) => Ok(self.ai.mark_enabled(engine, models).await),
                 Err(err) => Err(err),
             };
+            // Built only now, once the account holds its list, so Anthropic caps each answer at the
+            // model's output limit (issue #223). The errors stay those of the first step:
+            // `known_models` fails through the same lookup.
+            let provider = self.ai.provider(engine).await?;
             let asked_on = match model {
                 Some(model) => self.ai.is_on(engine, model, listed.as_deref().ok()).await,
                 None => false,
@@ -13463,7 +14068,12 @@ impl crate::assistant::Host for Core {
                 .map(|models| models.iter().map(|listed| (listed.id.clone(), listed.context)).collect())
                 .unwrap_or_default();
             let (model, place) = crate::assistant::ModelAccess::choose_on(listed, model, asked_on, place, off)?;
-            let context = windows.into_iter().find(|(id, _)| *id == model).and_then(|(_, context)| context);
+            // The list wins; where it names none, the provider's usual window (issue #716).
+            let context = windows
+                .into_iter()
+                .find(|(id, _)| *id == model)
+                .and_then(|(_, context)| context)
+                .or_else(|| server.as_ref().and_then(|(kind, _)| torro_core::ai::assumed_context(*kind, &model)));
             Ok(crate::assistant::ModelAccess { provider, model, place, context })
         })
     }
@@ -13785,13 +14395,13 @@ fn key_hash(key: &Key) -> [u8; 32] {
     sha2::Sha256::digest(key.expose().as_bytes()).into()
 }
 
-/// The origin of a bot's request for the assistant (task B.2): the engine, the areas taken out and
-/// the assistant's client, so an approval never runs with more than both may.
+/// The origin of a bot's request for another client (task B.2, issue #698): the engine, the areas taken
+/// out and the calling client, so an approval never runs with more than both may.
 fn delegation_origin(engine: Option<&str>, delegation: &crate::assistant::Delegation) -> crate::approvals::Origin {
     crate::approvals::Origin {
         engine: engine.map(str::to_string),
         without: delegation.without.clone(),
-        behalf: Some(delegation.assistant.clone()),
+        behalf: Some(delegation.caller.clone()),
         mode: delegation.mode,
         consent: None,
     }
@@ -18798,6 +19408,8 @@ mod tests {
         assert!(!voice.installed && voice.programs.is_empty());
         assert_eq!(voice.listener, torro_ipc::VoiceState::Off);
         assert_eq!(code(&core.handle(Request::TestVoice).await), "unsupported");
+        assert_eq!(code(&core.handle(Request::Dictate).await), "unsupported", "issue #699: dictating too");
+        assert_eq!(core.handle(Request::StopDictation).await, Response::Ok, "nothing to stop is fine");
 
         let mut rights = RightsTemplate::ReadOnly.rights();
         rights.areas.insert(Area::Settings, AreaRights { level: Level::Read, admin: false });
@@ -18818,7 +19430,7 @@ mod tests {
         .expect("json");
         let heard = serde_json::to_string(&Response::Transcript { text: "What is on today?".into() }).expect("json");
         let body = format!(
-            "case \"$1\" in\n  --voice-status) echo '{status}' ;;\n  --voice-test) echo '{heard}' ;;\n  --listen) echo '\"listening\"'; sleep 30 ;;\nesac"
+            "case \"$1\" in\n  --voice-status) echo '{status}' ;;\n  --voice-test) echo '{heard}' ;;\n  --dictate) echo '{heard}' ;;\n  --listen) echo '\"listening\"'; sleep 30 ;;\nesac"
         );
         let program = crate::apps::tests::fake_program(dir.path(), &body);
         let core = core(dir.path()).with_listener(crate::apps::Listener::at(program));
@@ -18827,6 +19439,8 @@ mod tests {
         assert!(voice.installed);
         assert_eq!(voice.microphones, ["usb"]);
         assert_eq!(core.handle(Request::TestVoice).await, Response::Transcript { text: "What is on today?".into() });
+        // Issue #699: dictating answers with what was heard, through `--dictate`.
+        assert_eq!(core.handle(Request::Dictate).await, Response::Transcript { text: "What is on today?".into() });
 
         let mut changes = core.voice_changes();
         let set = |on: bool| Request::SetSetting { key: SettingKey::VoiceEnabled, value: serde_json::json!(on) };
@@ -18835,6 +19449,219 @@ mod tests {
         assert_eq!(core.snapshot().await.voice, VoiceState::Listening, "the tray shows it");
         assert_eq!(core.handle(set(false)).await, Response::Ok);
         assert_eq!(core.voice.state(), VoiceState::Off, "stopped at once");
+    }
+
+    /// Issue #745: the helper starts only with the provider and Piper's voice: another voice of Qwen
+    /// or OpenAI, the speaker or the listener keep it running with its model loaded.
+    #[test]
+    fn the_speech_helper_keeps_running_for_another_voice() {
+        use torro_core::settings::{SpeechProvider, Voice};
+        let chosen = Voice { speech_provider: Some(SpeechProvider::Qwen), ..Voice::default() };
+        let other = Voice {
+            qwen_voice: Some("calm_man".into()),
+            openai_voice: Some("cedar".into()),
+            read_aloud: true,
+            enabled: true,
+            ..chosen.clone()
+        };
+        assert_eq!(voice_args("--speak", &speech_settings(&chosen)), voice_args("--speak", &speech_settings(&other)));
+        assert_eq!(speech_choice(&chosen), speech_choice(&other));
+        let piper = Voice { speech_provider: Some(SpeechProvider::Piper), ..chosen.clone() };
+        assert_ne!(speech_choice(&chosen), speech_choice(&piper), "another provider ends it");
+    }
+
+    /// Issue #745: Qwen's model follows the graphics card; only an NVIDIA card with 4 GB is fast
+    /// enough, from 8 GB the large model.
+    #[test]
+    fn qwen_follows_the_graphics_card() {
+        use torro_core::ai::hardware::{Gpu, Hardware};
+        let card = |name: &str, gb: u64| Hardware {
+            gpu: Some(Gpu { name: Some(name.into()), vram_bytes: Some(gb << 30) }),
+            ..Hardware::default()
+        };
+        assert_eq!(qwen_model(&card("NVIDIA GeForce RTX 4090", 24)), Some(QWEN_LARGE));
+        assert_eq!(qwen_model(&card("NVIDIA GeForce RTX 4060", 8)), Some(QWEN_LARGE));
+        assert_eq!(qwen_model(&card("NVIDIA GeForce GTX 1650", 4)), Some(QWEN_SMALL));
+        assert_eq!(qwen_model(&card("NVIDIA GeForce GT 1030", 2)), None);
+        assert_eq!(qwen_model(&card("AMD Radeon RX 7900 XTX", 24)), None, "Qwen3-TTS needs CUDA");
+        assert_eq!(qwen_model(&Hardware::default()), None);
+        assert_eq!(gpu_label(&card("NVIDIA GeForce RTX 4090", 24)).as_deref(), Some("NVIDIA GeForce RTX 4090, 24 GB"));
+    }
+
+    /// Issue #745: the speech status adds the graphics card, Qwen's model and OpenAI to what the app
+    /// finds; without the app, nothing local reads. The core's choice is Qwen where it works.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_speech_status_says_who_can_read_aloud() {
+        use torro_core::settings::SpeechProvider;
+        use torro_ipc::SpeechMissing;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let Response::Speech { speech } = core(dir.path()).handle(Request::SpeechStatus).await else {
+            panic!("a speech status")
+        };
+        assert_eq!(speech.option(SpeechProvider::Qwen).and_then(|qwen| qwen.missing), Some(SpeechMissing::App));
+        assert_eq!(
+            speech.option(SpeechProvider::OpenAi).and_then(|openai| openai.missing),
+            Some(SpeechMissing::Account)
+        );
+        assert_eq!(
+            (speech.fast_enough, speech.recommended, speech.current),
+            (false, SpeechProvider::OpenAi, SpeechProvider::Piper)
+        );
+
+        let mut found = torro_ipc::SpeechStatus {
+            gpu: None,
+            fast_enough: false,
+            recommended: SpeechProvider::Piper,
+            current: SpeechProvider::Piper,
+            providers: vec![
+                torro_ipc::SpeechOption {
+                    provider: SpeechProvider::Qwen,
+                    missing: None,
+                    voices: vec![torro_ipc::SpeechVoice { id: "warm_woman".into(), recommended: true }],
+                    model: None,
+                    setup: Some("python3 -m venv qwen/venv".into()),
+                },
+                torro_ipc::SpeechOption {
+                    provider: SpeechProvider::Piper,
+                    missing: Some(SpeechMissing::Program),
+                    voices: Vec::new(),
+                    model: None,
+                    setup: None,
+                },
+            ],
+        };
+        let answer = serde_json::to_string(&Response::Speech { speech: found.clone() }).expect("json");
+        let program = crate::apps::tests::fake_program(dir.path(), &format!("echo '{answer}'"));
+        let core = core(dir.path()).with_listener(crate::apps::Listener::at(program)).with_probe(Measured(large_pc()));
+        let Response::Speech { speech } = core.handle(Request::SpeechStatus).await else { panic!("a speech status") };
+        let order: Vec<_> = speech.providers.iter().map(|option| option.provider).collect();
+        assert_eq!(order, [SpeechProvider::Qwen, SpeechProvider::OpenAi, SpeechProvider::Piper]);
+        assert_eq!(speech.gpu.as_deref(), Some("NVIDIA GeForce RTX 4060, 8 GB"));
+        assert_eq!(
+            (speech.fast_enough, speech.recommended, speech.current),
+            (true, SpeechProvider::Qwen, SpeechProvider::Qwen)
+        );
+        let qwen = speech.option(SpeechProvider::Qwen).expect("qwen");
+        assert_eq!((qwen.model.as_deref(), qwen.missing), (Some(QWEN_LARGE), None));
+        let openai = speech.option(SpeechProvider::OpenAi).expect("openai");
+        let recommended: Vec<_> =
+            openai.voices.iter().filter(|voice| voice.recommended).map(|voice| voice.id.as_str()).collect();
+        assert_eq!((openai.voices.len(), recommended), (13, vec!["cedar", "marin"]));
+
+        // Without Qwen set up the core reads with Piper; a chosen provider is the current one.
+        found.providers[0].missing = Some(SpeechMissing::Program);
+        let answer = serde_json::to_string(&Response::Speech { speech: found }).expect("json");
+        let program = crate::apps::tests::fake_program(dir.path(), &format!("echo '{answer}'"));
+        let core =
+            self::core(dir.path()).with_listener(crate::apps::Listener::at(program)).with_probe(Measured(large_pc()));
+        let Response::Speech { speech } = core.handle(Request::SpeechStatus).await else { panic!("a speech status") };
+        assert_eq!((speech.recommended, speech.current), (SpeechProvider::Qwen, SpeechProvider::Piper));
+        let set = Request::SetSetting { key: torro_ipc::SettingKey::SpeechProvider, value: serde_json::json!("qwen") };
+        assert_eq!(core.handle(set).await, Response::Ok);
+        let Response::Speech { speech } = core.handle(Request::SpeechStatus).await else { panic!("a speech status") };
+        assert_eq!(speech.current, SpeechProvider::Qwen);
+    }
+
+    /// Issue #745: reading aloud goes through the helper and answers when it is done; what cannot read
+    /// here says so for people, and a client may read aloud but never choose OpenAI.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reading_aloud_goes_through_the_helper() {
+        use torro_ipc::SettingKey;
+        let dir = tempfile::tempdir().expect("temp dir");
+        // Like `--speak`: plays what it is told to say, and says what it was told.
+        let body = r#"while read line; do
+  case "$line" in
+    *'"provider":"qwen"'*) case "$line" in *'"model":"Qwen/Qwen3-TTS-12Hz-1.7B-Base"'*) echo '"playing"'; echo '"done"' ;; esac ;;
+    *'"say"'*) echo '{"failed": {"code": "unsupported", "message": "Piper is not installed or has no voice."}}' ;;
+  esac
+done"#;
+        let program = crate::apps::tests::fake_program(dir.path(), body);
+        let core =
+            core(dir.path()).with_speech(crate::apps::SpeechHelper::at(program)).with_probe(Measured(large_pc()));
+        let speak = |text: &str| Request::Speak { text: text.into() };
+        assert_eq!(code(&core.handle(speak(" ")).await), "error");
+        assert_eq!(code(&core.handle(speak(&"a".repeat(MAX_SPEAK_CHARS + 1))).await), "error");
+        // The core's choice on a computer where Qwen is not found: Piper, which the fake does not have.
+        let Response::Error { code: failed, message } = core.handle(speak("Hello.")).await else { panic!("refused") };
+        assert_eq!((failed.as_str(), message.as_str()), ("unsupported", "Piper is not installed or has no voice."));
+        let set = |key, value| Request::SetSetting { key, value };
+        assert_eq!(core.handle(set(SettingKey::SpeechProvider, serde_json::json!("qwen"))).await, Response::Ok);
+        assert_eq!(core.handle(speak("**Hello.**")).await, Response::Ok);
+        assert_eq!(core.handle(Request::StopSpeaking).await, Response::Ok);
+        // OpenAI without an account, Qwen without a card: messages for people, nothing started.
+        assert_eq!(core.handle(set(SettingKey::SpeechProvider, serde_json::json!("openai"))).await, Response::Ok);
+        let Response::Error { code: failed, message } = core.handle(speak("Hello.")).await else { panic!("refused") };
+        assert_eq!(
+            (failed.as_str(), message.as_str()),
+            ("unsupported", tr("Connect an OpenAI account in Settings › AI to read aloud with OpenAI."))
+        );
+        let small = core.with_probe(Measured(torro_core::ai::hardware::Hardware::default()));
+        assert_eq!(small.handle(set(SettingKey::SpeechProvider, serde_json::json!("qwen"))).await, Response::Ok);
+        assert_eq!(code(&small.handle(speak("Hello.")).await), "unsupported");
+
+        // A client with the rights reads aloud, but never sends it to OpenAI.
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        rights.confirm = torro_ipc::api::Confirm::Never;
+        let (_, key) = client(&small, rights).await;
+        let openai = set(SettingKey::SpeechProvider, serde_json::json!("openai"));
+        assert_eq!(code(&ask(&small, Some(&key), openai).await), "forbidden");
+    }
+
+    /// Issue #745: with OpenAI the core fetches each piece the helper names, with the account's key,
+    /// and sends its sound on until the helper is done.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn openai_sound_is_fetched_by_the_core() {
+        use torro_core::account::Secret;
+        use torro_core::ai::AiProvider;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = httpmock::MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(200).json_body(serde_json::json!({"data": [{"id": "gpt-5"}]}));
+            })
+            .await;
+        let speech = server
+            .mock_async(|when, then| {
+                when.method("POST")
+                    .path("/v1/audio/speech")
+                    .header("authorization", format!("Bearer {}", crate::account::ai::tests::KEY))
+                    .json_body_includes(r#"{"voice": "cedar"}"#);
+                then.status(200).body([0u8, 1, 2, 3]);
+            })
+            .await;
+        let body = r#"n=0
+while read line; do
+  case "$line" in
+    *'"say"'*) echo '{"pieces": ["One.", "Two."]}' ;;
+    *'"pcm"'*) n=$((n+1)); [ $n = 1 ] && echo '"playing"' ;;
+    '"end"') [ $n = 2 ] && echo '"done"' || echo "{\"failed\": {\"code\": \"error\", \"message\": \"$n\"}}" ;;
+  esac
+done"#;
+        let program = crate::apps::tests::fake_program(dir.path(), body);
+        let core = core_with_ai(dir.path(), &MemoryTokens::default(), Vec::new())
+            .with_speech(crate::apps::SpeechHelper::at(program));
+        core.ai
+            .connect(AiProvider::OpenAi, Some(&server.url("/v1")), Secret::new(crate::account::ai::tests::KEY))
+            .await
+            .expect("connected");
+        let set = |key, value| Request::SetSetting { key, value };
+        assert_eq!(
+            core.handle(set(torro_ipc::SettingKey::SpeechProvider, serde_json::json!("openai"))).await,
+            Response::Ok
+        );
+        assert_eq!(
+            core.handle(set(torro_ipc::SettingKey::OpenAiVoice, serde_json::json!("cedar"))).await,
+            Response::Ok
+        );
+        assert_eq!(core.handle(Request::Speak { text: "One. Two.".into() }).await, Response::Ok);
+        assert_eq!(speech.calls_async().await, 2, "one call per piece");
     }
 
     #[tokio::test]
@@ -31846,10 +32673,10 @@ mod tests {
         let delegated = crate::assistant::Actor::Delegated(crate::assistant::Delegation {
             bot: bot.id.clone(),
             client: bot.client.clone(),
-            assistant: client.clone(),
+            caller: client.clone(),
             without: Vec::new(),
             mode: Mode::Default,
-            conversation: "main".into(),
+            conversation: Some("main".into()),
         });
         let web = crate::approvals::WebConsent { conversation: "main".into(), outside: false, by_person: false };
         let search = || Request::WebSearch { query: "Lisbon trams".into(), count: None, language: None };
@@ -32017,6 +32844,58 @@ mod tests {
         // Another agent reads its own only with the area `assistant`, as every assistant command.
         let (_, agent) = client(&core, RightsTemplate::FullAccess.rights()).await;
         assert_eq!(code(&ask(&core, Some(&agent), Request::MyAccess).await), "forbidden");
+    }
+
+    /// Issue #704: the assistant's own client finds its own conversations only, none with a bot, and no hit
+    /// after a command of an area it may not read now; another client with the area finds what it lists; a
+    /// bot's client is refused. The log names no word.
+    #[tokio::test]
+    async fn the_search_keeps_to_the_rights_of_the_caller() {
+        use crate::assistant::tests::{hits, message, said, tool, written};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let folder = dir.path().join("assistant");
+        let (own, bots) = ("0000000000000001", "0000000000000002");
+        let contents = vec![
+            message("Our flight?"),
+            tool("mail.get_message"),
+            said("The flight from the mail"),
+            tool("assistant.search_conversations"),
+            said("As found: the flight again"),
+        ];
+        written(&folder, own, "Trip", contents, &[], |_| {});
+        written(&folder, bots, "Planner", vec![said("A bot's flight")], &[], |c| c.bot = Some("b1".into()));
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let search = || Request::SearchConversations { query: "FLIGHT".into(), limit: None };
+        let places = |response: Response| -> Vec<(String, Option<u64>)> {
+            hits(response).into_iter().map(|hit| (hit.conversation, hit.seq)).collect()
+        };
+
+        let (assistant, key) =
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant()).await.expect("added");
+        assert_eq!(places(ask(&core, Some(&key), search()).await), [(own.to_string(), Some(1))], "no mail, no bot");
+        let mut reading = Rights::assistant();
+        reading.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+        core.clients.update(&assistant.id, reading).await.expect("updated");
+        let found = places(ask(&core, Some(&key), search()).await);
+        assert_eq!(found, [(own.to_string(), Some(3)), (own.to_string(), Some(1))], "with mail, never after a search");
+
+        let mut agent = RightsTemplate::ReadAndWrite.rights();
+        agent.areas.insert(Area::Assistant, AreaRights { level: Level::Read, admin: false });
+        let (_, other) = client(&core, agent).await;
+        let found = places(ask(&core, Some(&other), search()).await);
+        assert_eq!(found.len(), 4, "what it lists, the bot's too: {found:?}");
+        let (_, without) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
+        assert_eq!(code(&ask(&core, Some(&without), search()).await), "forbidden", "the area is off");
+        let (_, bot) = core.clients.add("Planner", torro_ipc::api::BOT_CLIENT, Rights::none()).await.expect("bot");
+        assert_eq!(code(&ask(&core, Some(&bot), search()).await), "forbidden", "never for a bot");
+        let blank = || Request::SearchConversations { query: " ".into(), limit: None };
+        assert_eq!(code(&ask(&core, Some(&key), blank()).await), "error");
+        assert_eq!(code(&core.handle(blank()).await), "error", "the app key's too");
+
+        let text = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        assert!(text.contains("assistant.search_conversations"), "{text}");
+        assert!(!text.to_lowercase().contains("flight"), "never the words:\n{text}");
     }
 
     /// Task C.7: the key lent to an agent that drives the assistant runs as the assistant's
@@ -32543,10 +33422,10 @@ mod tests {
             crate::assistant::Actor::Delegated(crate::assistant::Delegation {
                 bot: bot.id.clone(),
                 client: bot.client.clone(),
-                assistant: client.id.clone(),
+                caller: client.id.clone(),
                 without,
                 mode: torro_ipc::assistant::Mode::Default,
-                conversation: "main".into(),
+                conversation: Some("main".into()),
             })
         };
         let actor = delegation(Vec::new());
@@ -32595,6 +33474,144 @@ mod tests {
         core.clients.remove(&client.id).await.expect("removed");
         assert!(Host::client_of(core, &actor).is_none());
         assert_eq!(code(&run(actor, Request::CalendarCollections).await), "forbidden");
+    }
+
+    // ----- A client asks a bot (issue #698) -----
+
+    /// A client from outside (kind `claude-code`) with `rights` and its key.
+    async fn outside_client(core: &Core, rights: Rights) -> (torro_ipc::ClientInfo, Key) {
+        core.clients.add("Agent", "claude-code", rights).await.expect("an agent")
+    }
+
+    /// Rights with only `areas` at `Level::Full`: no tools, no MCP server, nothing waits for a person.
+    fn only_full(areas: &[Area]) -> Rights {
+        let mut rights = Rights::none();
+        for area in areas {
+            rights.areas.insert(*area, AreaRights { level: Level::Full, admin: false });
+        }
+        rights.confirm = torro_ipc::api::Confirm::Never;
+        rights
+    }
+
+    /// Issue #698: a bot the person made starts open (every tool, every server, issue #666) and may read the
+    /// calendar here; a client with nothing but `bots` (and `assistant` for chatting) reaches through it neither
+    /// the web nor the calendar, by `bots.ask_bot` and by `assistant.send_message` with `bot` alike. Nothing is
+    /// offered, a call is refused before anyone is asked, nothing goes out, and the log names the client as the
+    /// one the bot ran for. The person's own chat with the bot still runs with the bot's rights.
+    #[tokio::test]
+    async fn a_client_reaches_through_a_bot_only_what_it_may_itself() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (ollama, pages) = (fake_ollama().await, lisbon_pages().await);
+        let mojeek = provider();
+        let tries = || {
+            [
+                calls("tools_web_search", serde_json::json!({"query": "Lisbon trams"})),
+                calls("calendar_list_calendars", serde_json::json!({})),
+                says("I may not."),
+            ]
+        };
+        let script = Script::new(Vec::new());
+        script.steps.lock().expect("lock").extend(tries().into_iter().chain(tries()));
+        script
+            .steps
+            .lock()
+            .expect("lock")
+            .extend([calls("calendar_list_calendars", serde_json::json!({})), says("Here.")]);
+        let (core, _host, engine, _) = web_core(dir.path(), &ollama, &pages, &mojeek, Arc::clone(&script)).await;
+        let bot = bot_with(&core, "Travel planner", &engine, reading(&[Area::Calendar, Area::Tools])).await;
+        let opened = core.clients.list().into_iter().find(|info| info.id == bot.client).expect("its client").rights;
+        assert!(opened.extensions_default.is_some(), "the person's bot starts open: {opened:?}");
+        let (agent, key) = outside_client(&core, only_full(&[Area::Bots, Area::Assistant])).await;
+
+        let asked = Request::AskBot { bot: bot.id.clone(), text: "Search Lisbon trams".into(), conversation: None };
+        let mut chat = to_bot(&bot.id, None);
+        if let Request::SendMessage { engine: of_chat, model, .. } = &mut chat {
+            (*of_chat, *model) = (engine.clone(), Some("qwen3:8b".into()));
+        }
+        for (way, request) in [("bots.ask_bot", asked), ("assistant.send_message", chat)] {
+            let at = script.asked().len();
+            let Response::Conversation { conversation, .. } = ask(&core, Some(&key), request).await else {
+                panic!("{way}: a conversation with the bot")
+            };
+            let entries = conversation_until(&core, &conversation.id, |running, _| !running).await;
+            let lines = tool_lines(&entries);
+            assert_eq!(lines.len(), 2, "{way}: {lines:?}");
+            assert!(lines.iter().all(|(_, error)| error.is_some()), "{way}: refused: {lines:?}");
+            let offered: Vec<String> = script.asked()[at].tools.iter().map(|tool| tool.name.clone()).collect();
+            assert!(
+                offered.iter().all(|tool| !tool.starts_with("tools_") && !tool.starts_with("calendar_")),
+                "{way}: {offered:?}"
+            );
+        }
+        assert_eq!((approvals_asked(&core).await, mojeek.calls()), (0, 0), "nobody asked, nothing sent");
+        let behalf = crate::audit::behalf_id(&agent.id);
+        let refused: Vec<_> = audit_lines(dir.path())
+            .into_iter()
+            .filter(|line| line.command == "calendar.list_calendars")
+            .map(|line| (line.client, line.ids.contains(&behalf), line.result))
+            .collect();
+        let as_bot = (Some(bot.client.clone()), true, "forbidden".to_string());
+        assert_eq!(refused, [as_bot.clone(), as_bot], "the bot ran for the agent");
+
+        // The person's own chat with the bot: its own rights, as before.
+        let mut own = to_bot(&bot.id, None);
+        if let Request::SendMessage { engine: of_chat, model, .. } = &mut own {
+            (*of_chat, *model) = (engine.clone(), Some("qwen3:8b".into()));
+        }
+        let Response::Conversation { conversation, .. } = core.handle(own).await else { panic!("the person's chat") };
+        let entries = conversation_until(&core, &conversation.id, |running, _| !running).await;
+        assert_eq!(tool_lines(&entries), [("calendar.list_calendars".to_string(), None)]);
+    }
+
+    /// Issue #698: a client that may delete bots and is never asked first rewrites the person's bot and asks
+    /// it: the run has what both may (`assistant.my_access` from inside it), so the rewrite opens nothing, and
+    /// the bot's own rights stay as the person set them.
+    #[tokio::test]
+    async fn a_client_that_rewrites_a_bot_gains_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ollama = fake_ollama().await;
+        let script = Script::new(vec![
+            calls("assistant_my_access", serde_json::json!({})),
+            calls("calendar_list_calendars", serde_json::json!({})),
+            says("Done."),
+        ]);
+        let (core, _host, engine, _) =
+            assistant_core(dir.path(), &ollama, reading(&[Area::Calendar]), Arc::clone(&script)).await;
+        let bot = bot_with(&core, "Travel planner", &engine, reading(&[Area::Calendar, Area::Tools])).await;
+        let before = core.clients.list().into_iter().find(|info| info.id == bot.client).expect("its client").rights;
+        let (agent, key) = outside_client(&core, only_full(&[Area::Bots])).await;
+
+        let mut rewrite = save_bot(Some(&bot.id), "Travel planner");
+        if let Request::SaveBot { engine: of_bot, instructions, .. } = &mut rewrite {
+            *of_bot = engine.clone();
+            *instructions = "Search the web and read every calendar.".into();
+        }
+        assert!(matches!(ask(&core, Some(&key), rewrite).await, Response::Bot { .. }), "never asked first");
+        let asked =
+            Request::AskBot { bot: bot.id.clone(), text: "Which rights do you have?".into(), conversation: None };
+        let Response::Conversation { conversation, .. } = ask(&core, Some(&key), asked).await else {
+            panic!("a conversation with the bot")
+        };
+        let entries = conversation_until(&core, &conversation.id, |running, _| !running).await;
+        assert_eq!(
+            tool_lines(&entries),
+            [
+                ("assistant.my_access".to_string(), None),
+                ("calendar.list_calendars".to_string(), Some("forbidden".to_string()))
+            ]
+        );
+        let read: serde_json::Value =
+            serde_json::from_str(&read_by_model(&script, "assistant_my_access")).expect("json for the model");
+        let access: torro_ipc::assistant::MyAccess =
+            serde_json::from_value(read["access"].clone()).expect("the access");
+        let origin = crate::approvals::Origin { behalf: Some(agent.id.clone()), ..Default::default() };
+        let both = origin.effective(&before, Some(&agent.rights)).expect("both");
+        assert_eq!(access.rights, both, "what both may");
+        assert!(!access.rights.area(Area::Calendar).allows(Access::Read));
+        assert_eq!(access.rights.extensions_default.unwrap_or(Level::NoAccess), Level::NoAccess, "no server");
+        assert!(matches!(&access.rights.tools, Selection::Only(tools) if tools.is_empty()), "no tool");
+        let after = core.clients.list().into_iter().find(|info| info.id == bot.client).expect("its client").rights;
+        assert_eq!(after, before, "the bot's own rights are the person's");
     }
 
     /// Task B.2: only the person confirms a proposal – the app key, never a client, not even with
@@ -33075,6 +34092,38 @@ mod tests {
         assert_eq!(delegated, Response::Error { code: "unsupported".into(), message: off });
     }
 
+    /// Issue #716: a model the list gives no context window gets the one of its provider, a window the
+    /// list names wins, and an own server keeps none (the assistant then falls back to its default).
+    #[tokio::test]
+    async fn a_model_without_a_listed_window_gets_the_one_of_its_provider() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let mistral = httpmock::MockServer::start_async().await;
+        mistral
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(200).json_body(serde_json::json!({"object": "list", "data": [
+                    {"id": "mistral-large-latest"},
+                    {"id": "mistral-small-latest", "context_length": 32768},
+                ]}));
+            })
+            .await;
+        let core = Arc::new(core_with_ai(dir.path(), &keys, Vec::new()));
+        let account = core
+            .ai
+            .connect(AiProvider::Mistral, Some(&mistral.url("/v1")), torro_core::account::Secret::new("k"))
+            .await;
+        let account = account.expect("mistral");
+        for model in ["mistral-large-latest", "mistral-small-latest"] {
+            assert_eq!(core.handle(switch(&account.id, model, true)).await, Response::Ok);
+        }
+
+        let access = Host::model(&*core, &account.id, Some("mistral-large-latest")).await.expect("a model");
+        assert_eq!(access.context, Some(128_000), "the provider's window");
+        let access = Host::model(&*core, &account.id, Some("mistral-small-latest")).await.expect("a model");
+        assert_eq!(access.context, Some(32_768), "the list wins");
+    }
+
     /// Task B.2: an approval the bot asks for while it runs for the assistant keeps the narrowing:
     /// "Allow" runs it with what both clients may then, never more – the assistant's right taken
     /// away meanwhile, nothing runs – and its log lines name the bot and the assistant.
@@ -33094,10 +34143,10 @@ mod tests {
         let actor = crate::assistant::Actor::Delegated(crate::assistant::Delegation {
             bot: bot.id.clone(),
             client: bot.client.clone(),
-            assistant: client.id.clone(),
+            caller: client.id.clone(),
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
-            conversation: "main".into(),
+            conversation: Some("main".into()),
         });
         let delete = |id: &str| Request::DeleteTemplate { id: id.into() };
         let first = waits(Host::run_as(&core, &actor, delete("old"), "test", false).await);
@@ -33179,10 +34228,10 @@ mod tests {
         let actor = crate::assistant::Actor::Delegated(crate::assistant::Delegation {
             bot: bot.id.clone(),
             client: bot.client.clone(),
-            assistant: client.id.clone(),
+            caller: client.id.clone(),
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
-            conversation: "main".into(),
+            conversation: Some("main".into()),
         });
         assert!(Host::lend_as(&core, &actor, "claude-code", &[]).is_none(), "only with the narrowing remembered");
         // A bot's key the core lent without knowing its run does nothing; lent for the bot's own run
@@ -33238,10 +34287,10 @@ mod tests {
         let actor = crate::assistant::Actor::Delegated(crate::assistant::Delegation {
             bot: bot.id.clone(),
             client: bot.client.clone(),
-            assistant: client.id.clone(),
+            caller: client.id.clone(),
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
-            conversation: "main".into(),
+            conversation: Some("main".into()),
         });
         let lent = Host::lend_in(&core, &actor, &conversation.id, "claude-code", &[]).expect("lent");
 
@@ -33517,6 +34566,9 @@ mod tests {
             // For a caller that may not read the account the chat is not there at all: its tool lines,
             // cards and answers tell what the mail says.
             assert!(listed(ask(&core, Some(&stranger), Request::ListConversations).await).is_empty());
+            // Issue #704: nor found by a search; a reader of the account finds it.
+            let date = || Request::SearchConversations { query: "date".into(), limit: None };
+            assert!(crate::assistant::tests::hits(ask(&core, Some(&stranger), date()).await).is_empty());
             let named = conversation.id.clone();
             for request in [
                 Request::GetConversation { id: named.clone(), after: None },
@@ -33525,10 +34577,35 @@ mod tests {
                 Request::PinConversation { id: named.clone(), pinned: true },
                 Request::CancelAnswer { conversation: named.clone() },
                 Request::DeleteConversation { id: named.clone() },
+                Request::ArchiveConversations { ids: vec![named.clone()], archived: true },
+                Request::DeleteConversations { ids: vec![named.clone()] },
             ] {
                 let name = request.operation().name();
                 assert_eq!(code(&ask(&core, Some(&stranger), request).await), "not-found", "{name}");
             }
+            // Issue #697: a request about several is refused for the hidden one before it changes any.
+            let Response::Conversation { conversation: own, .. } = ask(&core, Some(&stranger), send(None, None)).await
+            else {
+                panic!("the stranger chats of its own")
+            };
+            conversation_until(&core, &own.id, |running, _| !running).await;
+            let both = vec![own.id.clone(), named.clone()];
+            let archive = Request::ArchiveConversations { ids: both.clone(), archived: true };
+            assert_eq!(code(&ask(&core, Some(&stranger), archive).await), "not-found");
+            assert_eq!(
+                code(&ask(&core, Some(&stranger), Request::DeleteConversations { ids: both }).await),
+                "not-found"
+            );
+            let Response::Conversation { conversation: still, .. } =
+                ask(&core, Some(&stranger), Request::GetConversation { id: own.id.clone(), after: None }).await
+            else {
+                panic!("its own conversation is still there")
+            };
+            assert!(!still.archived, "and not archived");
+            assert_eq!(
+                ask(&core, Some(&app_key), Request::DeleteConversations { ids: vec![own.id.clone()] }).await,
+                Response::Ok
+            );
             assert_eq!(listed(ask(&core, Some(&app_key), Request::ListConversations).await), [Some(mail.clone())]);
             let get = Request::GetConversation { id: named.clone(), after: None };
             let Response::Conversation { conversation: kept, .. } = ask(&core, Some(&app_key), get).await else {
@@ -33541,6 +34618,8 @@ mod tests {
             anna.mail_accounts = Selection::Only(vec![ANNA.into()]);
             let (_, reader) = client(&core, anna).await;
             assert_eq!(listed(ask(&core, Some(&reader), Request::ListConversations).await), [Some(mail.clone())]);
+            let found = crate::assistant::tests::hits(ask(&core, Some(&reader), date()).await);
+            assert!(!found.is_empty() && found.iter().all(|hit| hit.conversation == named && hit.untrusted));
             assert!(matches!(
                 ask(&core, Some(&reader), send(Some(&named), None)).await,
                 Response::Conversation { conversation, .. } if conversation.about.as_ref() == Some(&mail)
@@ -34683,6 +35762,222 @@ mod tests {
         assert_eq!(line.ids, [format!("account:{}", anna.id)]);
         let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("the log");
         assert!(!log.contains("\"jo\"") && !log.contains("bob\"") && !log.contains("posteo"), "no search, no person");
+    }
+
+    /// The links a test core opened instead of a maps app (issue #355).
+    static OPENED_MAPS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    fn record_map(url: &str) -> Result<(), String> {
+        OPENED_MAPS.lock().expect("lock").push(url.to_string());
+        Ok(())
+    }
+
+    /// Issue #355: where the address of a contact is. The vCard's `GEO` and kept places need no
+    /// service; only the person with both switches on makes the core look up, once per address
+    /// (and an address not found stays quiet for 30 days); a client reads what is kept, never more,
+    /// and never of a book outside its rights; opening in maps always waits for the person and only
+    /// for the address they saw; clearing as a client leaves other books' places.
+    #[test]
+    fn contact_addresses_are_located_only_for_the_person_and_kept() {
+        let worker = std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+            runtime.block_on(contact_addresses_are_located());
+        });
+        worker.expect("thread").join().expect("the test ran through");
+    }
+
+    async fn contact_addresses_are_located() {
+        use torro_ipc::contacts::{ContactLocation, LocationSource};
+        let service = httpmock::MockServer::start_async().await;
+        let hafen = service
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/api").query_param_includes("q", "Hafenstr");
+                then.status(200).body(
+                    r#"{"features":[{"geometry":{"coordinates":[9.9672,53.5458]},"properties":{"name":"Hafenstraße 4"}}]}"#,
+                );
+            })
+            .await;
+        let nowhere = service
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/api").query_param_includes("q", "Nowhere");
+                then.status(200).body(r#"{"features":[]}"#);
+            })
+            .await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let books = Arc::new(crate::contacts::sync::fake::Server::default());
+        let work = books.add_book("contacts", true, false);
+        let private = books.add_book("privat", true, false);
+        books.put_card(
+            &work,
+            "anna",
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:anna\r\nFN:Anna Berg\r\nGEO:geo:52.52,13.40\r\n\
+             ADR;TYPE=HOME:;;Example Street 1;Berlin;;10115;\r\n\
+             ADR;TYPE=WORK:;;Hafenstraße 4;Hamburg;;20359;\r\nEND:VCARD\r\n",
+        );
+        books.put_card(
+            &work,
+            "ben",
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:ben\r\nFN:Ben Koch\r\nADR;TYPE=HOME:;;Nowhere 1;Atlantis;;;\r\nEND:VCARD\r\n",
+        );
+        books.put_card(
+            &work,
+            "carl",
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:carl\r\nFN:Carl\r\nADR;TYPE=HOME:;;Lindenweg 3;Bonn;;;\r\nEND:VCARD\r\n",
+        );
+        books.put_card(
+            &private,
+            "secret",
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:secret\r\nFN:Secret\r\nADR;TYPE=HOME:;;Hafenstraße 4;Hamburg;;;\r\nEND:VCARD\r\n",
+        );
+        let account = "nextcloud:anna@cloud.example.org";
+        let contacts =
+            crate::contacts::ContactsService::in_dir(&dir.path().join("contacts"), vec![(account.into(), books)]);
+        contacts.sync_all().await;
+        let core = Core { open_map: record_map, ..core(dir.path()) }.with_contacts(contacts);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.address_books = Selection::Only(vec![format!("{account}/contacts")]);
+        let (_, key) = client(&core, rights.clone()).await;
+        let id = |uid: &str| format!("{account}/contacts/{uid}");
+        let secret = format!("{account}/privat/secret");
+        let locate = |id: &str, address: usize| Request::LocateContact { id: id.into(), address };
+        let location = |response: Response| match response {
+            Response::ContactLocation { location } => location,
+            other => panic!("a location, got {other:?}"),
+        };
+        let at = |lat, lon, source| ContactLocation::Found { geo: torro_pim::model::Geo { lat, lon }, source };
+        let calls = || async { hafen.calls_async().await + nowhere.calls_async().await };
+
+        // The contact's own coordinates, for its first address only, also with maps off.
+        let vcard = at(52.52, 13.40, LocationSource::Vcard);
+        assert_eq!(location(core.handle(locate(&id("anna"), 0)).await), vcard);
+        assert_eq!(location(ask(&core, Some(&key), locate(&id("anna"), 0)).await), vcard);
+        assert_eq!(location(core.handle(locate(&id("anna"), 1)).await), ContactLocation::NoConsent);
+        let maps_only = serde_json::json!({"enabled": true, "geocoder": service.base_url()});
+        assert_eq!(core.handle(Request::SetSetting { key: SettingKey::Maps, value: maps_only }).await, Response::Ok);
+        assert_eq!(location(core.handle(locate(&id("anna"), 1)).await), ContactLocation::NoConsent, "maps alone");
+        assert_eq!(calls().await, 0, "nothing asked without consent");
+        let lookup = serde_json::json!({"contactLookup": true});
+        assert_eq!(core.handle(Request::SetSetting { key: SettingKey::Maps, value: lookup }).await, Response::Ok);
+
+        // A client never makes the core look up; the person does, once.
+        assert_eq!(location(ask(&core, Some(&key), locate(&id("anna"), 1)).await), ContactLocation::NotLookedUp);
+        assert_eq!(calls().await, 0, "a client asks nothing");
+        let hamburg = at(53.5458, 9.9672, LocationSource::Lookup);
+        assert_eq!(location(core.handle(locate(&id("anna"), 1)).await), hamburg);
+        assert_eq!(location(core.handle(locate(&id("anna"), 1)).await), hamburg, "kept");
+        assert_eq!(location(ask(&core, Some(&key), locate(&id("anna"), 1)).await), hamburg, "and read by the client");
+        assert_eq!(hafen.calls_async().await, 1);
+
+        // Not found: quiet for 30 days.
+        assert_eq!(location(core.handle(locate(&id("ben"), 0)).await), ContactLocation::NotFound);
+        assert_eq!(location(core.handle(locate(&id("ben"), 0)).await), ContactLocation::NotFound);
+        assert_eq!(nowhere.calls_async().await, 1, "not asked again");
+
+        // Outside the client's books, or an address the contact does not have: `not-found`.
+        assert_eq!(code(&ask(&core, Some(&key), locate(&secret, 0)).await), "not-found");
+        assert_eq!(code(&ask(&core, Some(&key), locate(&id("anna"), 5)).await), "not-found");
+        assert_eq!(location(core.handle(locate(&secret, 0)).await), at(53.5458, 9.9672, LocationSource::Lookup));
+
+        // Counted per book; a client clears only the places of its books, and every tile.
+        let status = |response: Response| match response {
+            Response::MapsStatus { status } => status.contact_places,
+            other => panic!("a status, got {other:?}"),
+        };
+        assert_eq!(status(core.handle(Request::MapsStatus).await), 3);
+        assert_eq!(status(ask(&core, Some(&key), Request::MapsStatus).await), 2);
+        assert_eq!(core.clear_maps_cache(Reach::Client(&rights)), Response::Ok);
+        assert_eq!(status(core.handle(Request::MapsStatus).await), 1, "the private book's place stays");
+
+        // A new address is looked up anew, also within 30 days.
+        let Response::Contact { contact: ben } = core.handle(Request::GetContact { id: id("ben") }).await else {
+            panic!("ben")
+        };
+        let moved = torro_contacts::ContactFields {
+            addresses: Some(vec![torro_contacts::Labeled::new(
+                torro_contacts::PostalAddress {
+                    street: "Hafenstraße 4".into(),
+                    locality: "Hamburg".into(),
+                    ..torro_contacts::PostalAddress::default()
+                },
+                torro_contacts::FieldKind::Home,
+            )]),
+            ..torro_contacts::ContactFields::default()
+        };
+        let update =
+            Request::UpdateContact { id: id("ben"), etag: ben.etag.clone().unwrap_or_default(), fields: moved };
+        assert!(matches!(core.handle(update).await, Response::Contact { .. }));
+        assert_eq!(location(core.handle(locate(&id("ben"), 0)).await), hamburg);
+
+        // Opening in maps: the app at once, a client only after the person allowed that address.
+        OPENED_MAPS.lock().expect("lock").clear();
+        assert_eq!(core.handle(Request::OpenContactInMaps { id: id("ben"), address: 0 }).await, Response::Ok);
+        let opened = OPENED_MAPS.lock().expect("lock").clone();
+        assert_eq!(opened, ["https://www.openstreetmap.org/?mlat=53.5458&mlon=9.9672#map=17/53.5458/9.9672"]);
+        let nowhere = Request::OpenContactInMaps { id: id("carl"), address: 9 };
+        assert_eq!(code(&ask(&core, Some(&key), nowhere).await), "not-found", "nobody asked about no address");
+        let open = || Request::OpenContactInMaps { id: id("carl"), address: 0 };
+        let pending = waits(ask(&core, Some(&key), open()).await);
+        assert!(pending.summary.contains("Carl"), "{}", pending.summary);
+        let details = pending.details.join("\n");
+        assert!(details.contains("Lindenweg 3") && details.contains("OpenStreetMap"), "{details}");
+        assert_eq!(OPENED_MAPS.lock().expect("lock").len(), 1, "nothing opens before the person allows it");
+        let done = approval(ask(&core, Some(&app_key), decide(&pending.id, true)).await);
+        assert!(
+            matches!(&done.state, torro_ipc::ApprovalState::Done { response } if **response == Response::Ok),
+            "{:?}",
+            done.state
+        );
+        let searched = OPENED_MAPS.lock().expect("lock").last().cloned().unwrap_or_default();
+        assert!(searched.starts_with("https://www.openstreetmap.org/search?query=Lindenweg"), "{searched}");
+        let pending = waits(ask(&core, Some(&key), open()).await);
+        let Response::Contact { contact: carl } = core.handle(Request::GetContact { id: id("carl") }).await else {
+            panic!("carl")
+        };
+        let elsewhere = torro_contacts::ContactFields {
+            addresses: Some(vec![torro_contacts::Labeled::new(
+                torro_contacts::PostalAddress { street: "Neuweg 1".into(), ..torro_contacts::PostalAddress::default() },
+                torro_contacts::FieldKind::Home,
+            )]),
+            ..torro_contacts::ContactFields::default()
+        };
+        let update =
+            Request::UpdateContact { id: id("carl"), etag: carl.etag.clone().unwrap_or_default(), fields: elsewhere };
+        assert!(matches!(core.handle(update).await, Response::Contact { .. }));
+        let done = approval(ask(&core, Some(&app_key), decide(&pending.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = &done.state else { panic!("done: {:?}", done.state) };
+        assert_eq!(code(response), "conflict", "the address changed after the person allowed it");
+        assert_eq!(OPENED_MAPS.lock().expect("lock").len(), 2, "nothing more opened");
+
+        // A service that cannot be reached: `offline`, nothing kept, and no message names the address.
+        let unreachable = serde_json::json!({"geocoder": "http://127.0.0.1:9"});
+        assert_eq!(core.handle(Request::SetSetting { key: SettingKey::Maps, value: unreachable }).await, Response::Ok);
+        let answer = core.handle(locate(&id("carl"), 0)).await;
+        assert_eq!(code(&answer), "offline");
+        let Response::Error { message, .. } = answer else { panic!("an error") };
+        assert!(!message.contains("Neuweg"), "{message}");
+        assert_eq!(status(core.handle(Request::MapsStatus).await), 2, "secret and ben; carl not kept");
+
+        // A lookup that ends after the address changed keeps nothing (the change removed its places).
+        let spot = core.contacts.address_spot(&id("ben"), 0).expect("ben's address");
+        let Response::Contact { contact: ben } = core.handle(Request::GetContact { id: id("ben") }).await else {
+            panic!("ben")
+        };
+        let gone =
+            torro_contacts::ContactFields { addresses: Some(Vec::new()), ..torro_contacts::ContactFields::default() };
+        let update = Request::UpdateContact { id: id("ben"), etag: ben.etag.clone().unwrap_or_default(), fields: gone };
+        assert!(matches!(core.handle(update).await, Response::Contact { .. }));
+        core.contacts.keep_place(&spot, Some((1.0, 2.0)), 0).expect("kept or not");
+        assert_eq!(status(core.handle(Request::MapsStatus).await), 1, "only secret's place");
+
+        // Without read access to contacts a client counts and clears no place.
+        let mut blind = rights.clone();
+        blind.address_books = Selection::All;
+        blind.areas.remove(&Area::Contacts);
+        assert_eq!(core.clear_maps_cache(Reach::Client(&blind)), Response::Ok);
+        let Response::MapsStatus { status: seen } = core.maps_status(Reach::Client(&blind)) else { panic!("status") };
+        assert_eq!(seen.contact_places, 0);
+        assert_eq!(status(core.handle(Request::MapsStatus).await), 1, "nothing cleared");
     }
 
     /// Issue #351: a client sees contacts only in the address books of its rights – by list, search

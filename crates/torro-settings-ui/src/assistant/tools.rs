@@ -1,4 +1,5 @@
-//! Assistant › Tools: where the assistant's own tools went (task MA.7, issue #302). The switches, the
+//! Assistant › Skills › Tools: where the assistant's own tools went (task MA.7, issue #302); since
+//! issue #763 a group under the list of skills ([`super::page`]), no section of its own. The switches, the
 //! PDF tool's folder and its templates (task WZ.6) moved to the control centre's section "MCP
 //! servers" as its built-in tools, next to the MCP servers, because a tool exists for every client there, not only for
 //! the assistant (`docs/assistent.md`, "Eigene Werkzeuge").

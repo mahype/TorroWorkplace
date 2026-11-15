@@ -25,6 +25,7 @@
 //!   (`layout::inset()`, `layout::page_padding()` …).
 //! - [`links`]: web and mail addresses in plain text (`links::pieces`, `links::openable`,
 //!   `links::meeting`), to make them clickable.
+//! - [`map`]: the small map of a place with its pin, "Open in Maps" and the attribution (issue #355).
 //! - [`markdown`]: Markdown to read (GitHub texts) in the Torro look.
 //! - [`selectable`]: text to read that can be selected and copied but not changed, with the
 //!   "Links" of its addresses below it.
@@ -50,6 +51,7 @@ pub mod installed;
 pub mod instance;
 pub mod layout;
 pub mod links;
+pub mod map;
 pub mod markdown;
 pub mod panel;
 pub mod scheme;

@@ -28,6 +28,8 @@ torro-pim.workspace = true
 chrono.workspace = true
 iced.workspace = true
 serde_json.workspace = true
+# The sound the core fetches for reading aloud (issue #745) comes as base64 in JSON lines.
+base64.workspace = true
 # The voice listener (`--listen`, task C.9) asks the core from a plain loop, without a window.
 tokio.workspace = true
 # The system's choosers for the PDF tool's folder and logos in the settings (task WZ.6).

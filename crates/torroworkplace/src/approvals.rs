@@ -646,10 +646,10 @@ pub struct Origin {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub without: Vec<Area>,
     /// The client a bot ran for (task B.2): the assistant's own client, when the assistant asked
-    /// the bot. An allowed command then runs with what both the asking client and this one may at
-    /// that moment ([`Rights::common`]), each without [`Origin::without`], and not at all once
-    /// this client was removed – so a person's "Allow" never gives the bot more than the assistant
-    /// had. `None` for every other request.
+    /// the bot, or a client from outside that asked it or wrote to it (issue #698). An allowed command
+    /// then runs with what both the asking client and this one may at that moment ([`Rights::common`]),
+    /// each without [`Origin::without`], and not at all once this client was removed – so a person's
+    /// "Allow" never gives the bot more than its caller had. `None` for every other request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behalf: Option<String>,
     /// The permission mode of the assistant's answer that asked (issue #132): an allowed command
@@ -705,8 +705,8 @@ impl Origin {
     }
 
     /// The rights an allowed command of a client with `rights` runs with: [`Origin::narrow`]ed, and
-    /// for a bot that ran for the assistant (task B.2, [`Origin::behalf`]) in common with the
-    /// assistant's client's rights `behalf` (narrowed the same way). `None` when [`Origin::behalf`]
+    /// for a bot that ran for another client (task B.2, issue #698, [`Origin::behalf`]) in common with
+    /// that client's rights `behalf` (narrowed the same way). `None` when [`Origin::behalf`]
     /// names a client and `behalf` is `None` (it was removed): then nothing runs.
     pub fn effective(&self, rights: &Rights, behalf: Option<&Rights>) -> Option<Rights> {
         let own = self.narrow(rights);
@@ -1963,6 +1963,11 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         {
             tr("Turn off maps and place search").to_string()
         }
+        Request::SetSetting { key: torro_ipc::SettingKey::Maps, value }
+            if *value == serde_json::json!({"contactLookup": false}) =>
+        {
+            tr("Turn off address lookup for contacts").to_string()
+        }
         // Issue #484: a design as the level the core really stores – `compact` and `console` are
         // `dense` – so the person sees what will be set; an id that is no level stays as sent (the core
         // refuses it).
@@ -2121,6 +2126,8 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         | Request::RenameConversation { .. }
         | Request::DeleteConversation { .. }
         | Request::PinConversation { .. }
+        | Request::ArchiveConversations { .. }
+        | Request::DeleteConversations { .. }
         | Request::OpenChatWindow { .. }) => assistant_summary(request, facts),
         request @ (Request::UpdateProfile { .. }
         | Request::Remember { .. }
@@ -2241,9 +2248,12 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         | Request::MoveContact { .. }
         | Request::DeleteContact { .. }
         | Request::ResolveContactConflict { .. }
+        | Request::OpenContactInMaps { .. }
         | Request::ImportVCards { .. }
         | Request::MergeContacts { .. }
         | Request::DismissDuplicates { .. }) => contact_summary(request, facts.contact.as_deref()),
+        // Issue #355: every map tile, and the kept places of the address books the client sees.
+        Request::ClearMapsCache => tr("Clear stored map tiles and contact places").to_string(),
         request if matches!(request.operation().area(), Area::Chat | Area::Presence) => {
             chat_summary(request, facts.chat.as_deref())
         }
@@ -2641,6 +2651,7 @@ fn contact_summary(request: &Request, facts: Option<&ContactFacts>) -> String {
             trf("Take {name} out of the group \"{group}\"", &[("name", &name), ("group", &quote(group))])
         }
         Request::MarkContactUsed { .. } => trf("Note {name} as used", &[("name", &name)]),
+        Request::OpenContactInMaps { .. } => trf("Open the address of {name} in Maps", &[("name", &name)]),
         Request::SetContactPhoto { data: Some(_), .. } => trf("{name}: photo replaced", &[("name", &name)]),
         Request::SetContactPhoto { data: None, .. } => trf("{name}: photo removed", &[("name", &name)]),
         Request::MoveContact { .. } => trf(
@@ -3192,9 +3203,29 @@ fn assistant_summary(request: &Request, facts: &Facts) -> String {
         (Request::OpenChatWindow { window: ChatWindow::Conversation(_) }, None) => {
             tr("Open an unknown assistant conversation in a window").to_string()
         }
+        // Several at once (issue #697): how many, each counted once; unknown ones are refused before
+        // anyone is asked, so the number is what goes.
+        (Request::ArchiveConversations { ids, archived }, _) => {
+            let n = distinct(ids);
+            match (archived, n) {
+                (true, 1) => tr("Archive 1 assistant conversation").to_string(),
+                (true, _) => trf("Archive {n} assistant conversations", &[("n", &n)]),
+                (false, 1) => tr("Restore 1 assistant conversation").to_string(),
+                (false, _) => trf("Restore {n} assistant conversations", &[("n", &n)]),
+            }
+        }
+        (Request::DeleteConversations { ids }, _) => match distinct(ids) {
+            1 => tr("Delete 1 assistant conversation for good").to_string(),
+            n => trf("Delete {n} assistant conversations for good", &[("n", &n)]),
+        },
         // Bots do not exist yet and are refused before anyone is asked; say which command it is.
         (other, _) => trf("Run {command}", &[("command", &other.operation().name())]),
     }
+}
+
+/// How many different ids `ids` holds (issue #697): a double is one conversation.
+fn distinct(ids: &[String]) -> usize {
+    ids.iter().collect::<std::collections::BTreeSet<_>>().len()
 }
 
 /// What `accounts.set_ntfy_topic` would do, in words (task E5.12): the account by its label
@@ -3487,6 +3518,22 @@ fn whole(text: &str) -> Vec<String> {
         }
     }
     pieces
+}
+
+/// The lines under the approval of `contacts.open_in_maps` (issue #355): the address as the store
+/// holds it and the app it goes to, so the person sees what leaves the computer.
+pub fn maps_details(address: &torro_contacts::PostalAddress, app: torro_core::settings::MapsApp) -> Vec<String> {
+    use torro_core::settings::MapsApp;
+    let app = match app {
+        MapsApp::Osm => "OpenStreetMap",
+        MapsApp::Google => "Google Maps",
+        MapsApp::Apple => "Apple Maps",
+        MapsApp::Geo => tr("the program for geo: links"),
+    };
+    vec![
+        trf("Address: \"{address}\"", &[("address", &quote(&address.one_line()))]),
+        trf("Opens with {app}", &[("app", &app)]),
+    ]
 }
 
 /// The fingerprint of the stored note a `assistant.forget` or a `remember` with `replaces` was
@@ -6042,6 +6089,17 @@ pub(crate) mod tests {
         );
         assert_eq!(summary(&open(ChatWindow::New), &held), tr("Open a new assistant conversation in a window"));
 
+        // Issue #697: several at once by their number, a double counted once.
+        let ids = |n: usize| (0..n).map(|i| format!("{i:016x}")).chain([format!("{:016x}", 0)]).collect::<Vec<_>>();
+        let delete = |n| Request::DeleteConversations { ids: ids(n) };
+        assert_eq!(summary(&delete(7), &unknown), trf("Delete {n} assistant conversations for good", &[("n", &7)]));
+        assert_eq!(summary(&delete(1), &unknown), tr("Delete 1 assistant conversation for good"));
+        let archive = |n, archived| Request::ArchiveConversations { ids: ids(n), archived };
+        assert_eq!(summary(&archive(3, true), &unknown), trf("Archive {n} assistant conversations", &[("n", &3)]));
+        assert_eq!(summary(&archive(1, true), &unknown), tr("Archive 1 assistant conversation"));
+        assert_eq!(summary(&archive(2, false), &unknown), trf("Restore {n} assistant conversations", &[("n", &2)]));
+        assert_eq!(summary(&archive(1, false), &unknown), tr("Restore 1 assistant conversation"));
+
         let send = |conversation: Option<String>| Request::SendMessage {
             conversation,
             engine: "ai:ollama@localhost:11434".into(),
@@ -6443,6 +6501,29 @@ pub(crate) mod tests {
         let text = "Unsubscribe {account} from {sender}: nothing is sent, only the address {target} is given";
         assert_eq!(web, filled(text, "https://shop.example/u", None));
         assert_eq!(summary(&request, &Facts::default()), tr("Unsubscribe from an unknown mailing list"));
+    }
+
+    /// Issue #355: opening an address names the contact from the store, clearing map data says what goes,
+    /// and turning the lookup of contact addresses off is said plainly.
+    #[test]
+    fn maps_of_contacts_are_said_plainly() {
+        let open = Request::OpenContactInMaps { id: "a/b/c".into(), address: 0 };
+        let contact =
+            torro_contacts::Contact { display_name: "Anna Berg".into(), ..torro_contacts::Contact::default() };
+        let facts = Facts {
+            contact: Some(Box::new(ContactFacts { contact: Some(contact), ..ContactFacts::default() })),
+            ..Facts::default()
+        };
+        assert_eq!(summary(&open, &facts), trf("Open the address of {name} in Maps", &[("name", &"\"Anna Berg\"")]));
+        assert_eq!(
+            summary(&Request::ClearMapsCache, &Facts::default()),
+            tr("Clear stored map tiles and contact places")
+        );
+        let off = Request::SetSetting {
+            key: torro_ipc::SettingKey::Maps,
+            value: serde_json::json!({"contactLookup": false}),
+        };
+        assert_eq!(summary(&off, &Facts::default()), tr("Turn off address lookup for contacts"));
     }
 
     /// Issue #411: uninstalling names the app as the suite does, never the client's text.

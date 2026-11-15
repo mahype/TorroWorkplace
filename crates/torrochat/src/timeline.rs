@@ -362,9 +362,10 @@ mod tests {
             .collect()
     }
 
-    /// The demo's "Design sync": Gesa's four header pictures, sent at once, are 13 to 16.
+    /// The demo's "Design sync" up to Gesa's four header pictures, sent at once (13 to 16); without the
+    /// YouTube video after them (17), so the grid ends the page.
     fn design() -> Vec<Message> {
-        page(DESIGN).messages
+        page(DESIGN).messages.into_iter().filter(|message| message.number() <= 16).collect()
     }
 
     fn numbered(messages: &mut [Message], number: u64) -> &mut Message {

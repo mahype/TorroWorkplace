@@ -41,31 +41,43 @@ pub const VERSION: &str = "2023-06-01";
 
 /// The ceiling for one answer when a [`ChatRequest`] names none, which it never does today: the
 /// protocol demands the field. It is a ceiling, not a reservation – only what the model writes is
-/// paid for, and an answer that reaches it ends as [`Finish::Length`].
+/// paid for, and an answer that reaches it ends as [`Finish::Length`]. A model whose own limit
+/// ([`AiModel::max_output`]) is smaller gets that limit instead ([`answer_ceiling`], issue #223);
+/// this value is what a model of unknown limit gets.
 ///
 /// 32768 for two reasons. The tokens a model spends thinking count against the same ceiling, so a
-/// tight one would eat the thinking and then cut the answer; and it has to stay well under the
-/// smallest output limit of the models Anthropic serves (64000), so a new model with a smaller
-/// limit does not turn every request into an error.
+/// tight one would eat the thinking and then cut the answer; and it sits well under the smallest
+/// output limit of the current models Anthropic serves (64000), so a model the list does not
+/// describe most likely still takes it. That is the choice of a fallback, no promise: an older
+/// model with a smaller limit is held by its own limit, not by this value.
 pub const DEFAULT_MAX_TOKENS: u32 = 32_768;
+
+/// The `max_tokens` to send: the number `asked` by the request, else [`DEFAULT_MAX_TOKENS`], and
+/// never more than the model's own `limit` where it is known ([`AiModel::max_output`]). A server
+/// refuses every request whose ceiling exceeds the model's limit, so a small limit wins; a large
+/// one leaves the ceiling as it is, because raising it would change when an answer is cut short.
+pub fn answer_ceiling(asked: Option<u32>, limit: Option<u32>) -> u32 {
+    let ceiling = asked.unwrap_or(DEFAULT_MAX_TOKENS);
+    limit.map_or(ceiling, |limit| ceiling.min(limit))
+}
 
 /// What stands in for a block the suite would otherwise send empty, which the server refuses. It
 /// is read by the model, not by people, so it is English and not translated.
 const EMPTY: &str = "(empty)";
 
 /// The body of `POST <base>/messages` for `request`: the model, the ceiling for the answer
-/// ([`DEFAULT_MAX_TOKENS`] when none is named), `stream`, the conversation ([`messages_json`]), the
-/// instructions as `system` and the tools as `input_schema` tools. Both are left out when there
-/// are none.
+/// ([`answer_ceiling`] of the number the request names and the model's own `limit`), `stream`,
+/// the conversation ([`messages_json`]), the instructions as `system` and the tools as
+/// `input_schema` tools. Both are left out when there are none.
 ///
 /// With [`ChatRequest::effort`] the body also carries `output_config.effort` with the effort's
 /// [`super::Effort::id`] and `thinking: {"type": "adaptive"}`, so the effort takes hold on the
 /// models that do not think unless asked. Not `thinking.budget_tokens`: the current models answer
 /// that with HTTP 400.
-pub fn chat_body(request: &ChatRequest, stream: bool) -> Value {
+pub fn chat_body(request: &ChatRequest, limit: Option<u32>, stream: bool) -> Value {
     let mut body = json!({
         "model": request.model,
-        "max_tokens": request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
+        "max_tokens": answer_ceiling(request.max_tokens, limit),
         "stream": stream,
         "messages": messages_json(&request.messages),
     });
@@ -422,6 +434,7 @@ impl StreamDecoder {
 ///
 /// - `display_name` as the name, else the id;
 /// - `max_input_tokens` as [`AiModel::context`];
+/// - `max_tokens` as [`AiModel::max_output`], the most one answer may have (issue #223);
 /// - `capabilities.effort.supported` as [`AiModel::reasoning`]: whether the model takes an
 ///   [`super::Effort`]. `None` for an answer that does not say, so apps still offer one.
 ///
@@ -447,6 +460,12 @@ pub fn parse_models(body: &[u8]) -> Result<Vec<AiModel>, AiError> {
                 tools: Some(true),
                 open_weights: None,
                 context: model.get("max_input_tokens").and_then(Value::as_u64),
+                // A limit of 0 would make every request ask for nothing: no limit is better.
+                max_output: model
+                    .get("max_tokens")
+                    .and_then(Value::as_u64)
+                    .and_then(|n| u32::try_from(n).ok())
+                    .filter(|n| *n > 0),
                 parameters: None,
                 quantization: None,
                 size: None,
@@ -585,7 +604,7 @@ mod tests {
 
     #[test]
     fn the_body_lifts_the_system_text_out_and_writes_blocks_as_the_protocol_says() {
-        let body = chat_body(&request(), true);
+        let body = chat_body(&request(), None, true);
         assert_eq!(body["model"], "claude-opus-5");
         assert_eq!(body["stream"], true);
         assert_eq!(body["max_tokens"], 512);
@@ -614,7 +633,7 @@ mod tests {
 
     #[test]
     fn without_tools_or_a_ceiling_the_body_still_names_one_and_leaves_tools_out() {
-        let body = chat_body(&ChatRequest { tools: Vec::new(), max_tokens: None, ..request() }, false);
+        let body = chat_body(&ChatRequest { tools: Vec::new(), max_tokens: None, ..request() }, None, false);
         assert!(body.get("tools").is_none(), "{body}");
         assert_eq!(body["max_tokens"], DEFAULT_MAX_TOKENS, "the protocol demands a ceiling");
         assert_eq!(body["stream"], false);
@@ -622,9 +641,26 @@ mod tests {
     }
 
     #[test]
+    fn a_small_output_limit_caps_the_ceiling_and_an_unknown_one_keeps_it() {
+        // (asked, limit) → what is sent
+        let cases = [
+            ((None, Some(8_192)), 8_192),
+            ((None, Some(128_000)), DEFAULT_MAX_TOKENS),
+            ((None, None), DEFAULT_MAX_TOKENS),
+            ((Some(512), Some(200)), 200),
+            ((Some(512), None), 512),
+        ];
+        for ((asked, limit), sent) in cases {
+            assert_eq!(answer_ceiling(asked, limit), sent, "asked {asked:?}, limit {limit:?}");
+            let body = chat_body(&ChatRequest { max_tokens: asked, ..request() }, limit, true);
+            assert_eq!(body["max_tokens"], sent, "asked {asked:?}, limit {limit:?}");
+        }
+    }
+
+    #[test]
     fn the_effort_is_the_output_config_and_turns_thinking_on() {
         for effort in Effort::ALL {
-            let body = chat_body(&ChatRequest { effort: Some(effort), ..request() }, true);
+            let body = chat_body(&ChatRequest { effort: Some(effort), ..request() }, None, true);
             assert_eq!(body["output_config"], json!({"effort": effort.id()}), "{effort:?}");
             assert_eq!(body["thinking"], json!({"type": "adaptive"}), "{effort:?}");
             // A budget anywhere in the body is HTTP 400 on the current models.
@@ -649,7 +685,7 @@ mod tests {
             ],
             ..request()
         };
-        let body = chat_body(&asked, true);
+        let body = chat_body(&asked, None, true);
         let messages = body["messages"].as_array().expect("messages");
         assert_eq!(messages.len(), 3, "the two results merged into one message: {body}");
         assert_eq!(body["messages"][1]["content"][0], json!({"type": "text", "text": "On it."}));
@@ -671,7 +707,7 @@ mod tests {
             ],
             ..request()
         };
-        let body = chat_body(&asked, true);
+        let body = chat_body(&asked, None, true);
         assert_eq!(body["system"], "First.\n\nSecond.");
         assert_eq!(body["messages"].as_array().map(Vec::len), Some(1), "the assistant's turn before it fell away");
         assert_eq!(body["messages"][0]["role"], "user");
@@ -873,7 +909,7 @@ mod tests {
             ],
             ..request()
         };
-        let body = chat_body(&asked, true);
+        let body = chat_body(&asked, None, true);
         let blocks = body["messages"][1]["content"].as_array().expect("blocks");
         assert_eq!(blocks.len(), 1, "no text block for blank words: {body}");
         assert_eq!(blocks[0]["type"], "tool_use");
@@ -924,7 +960,7 @@ mod tests {
             ],
             ..request()
         };
-        let body = chat_body(&asked, true);
+        let body = chat_body(&asked, None, true);
         let blocks = body["messages"][1]["content"].as_array().expect("blocks");
         assert_eq!(blocks[0], reply.thinking[0], "unchanged, and before everything else");
         assert_eq!(blocks[1]["type"], "tool_use", "the call follows its thinking");
@@ -952,7 +988,7 @@ mod tests {
 
     #[test]
     fn a_protocol_without_thinking_sends_no_blocks_and_the_body_has_none() {
-        let body = chat_body(&request(), true);
+        let body = chat_body(&request(), None, true);
         assert!(!body.to_string().contains("thinking"), "nothing was kept, so nothing goes back: {body}");
         let whole = br#"{"type":"message","content":[{"type":"text","text":"Hi."}],"stop_reason":"end_turn"}"#;
         assert!(parse_reply(whole).expect("reply").thinking.is_empty());
@@ -1033,14 +1069,18 @@ mod tests {
             {"type":"model","id":"claude-opus-4-5","display_name":"Claude Opus 4.5",
              "capabilities":{"effort":{"supported":true},
              "thinking":{"supported":true,"types":{"enabled":{"supported":true},"adaptive":{"supported":false}}}}},
-            {"type":"model","id":"claude-old"},
+            {"type":"model","id":"claude-old","max_tokens":0},
             {"type":"model","display_name":"No id"}],"has_more":false}"#;
         let models = parse_models(body).expect("models");
         assert_eq!(models.len(), 4, "the one without an id is dropped");
         assert_eq!(models[0].id, "claude-opus-5");
         assert_eq!(models[0].name, "Claude Opus 5");
         assert_eq!(models[0].context, Some(1_000_000));
+        assert_eq!(models[0].max_output, Some(128_000), "max_tokens is the model's output limit");
         assert_eq!(models[0].reasoning, Some(true));
+        for model in &models[1..] {
+            assert_eq!(model.max_output, None, "{}: the answer names no usable limit", model.id);
+        }
         assert_eq!(models[1].name, "claude-haiku-4-5", "no name given: the id");
         assert_eq!(models[1].reasoning, Some(false), "so apps offer no effort for it");
         assert_eq!(

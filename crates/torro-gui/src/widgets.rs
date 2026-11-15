@@ -2039,6 +2039,24 @@ pub fn row_actions<'a, M: Clone + 'a>(
     with_actions(row.into(), actions, shown, words, Place::Middle)
 }
 
+/// [`row_actions`] with the bar `right` in from the row's end instead of [`layout::row_padding`]
+/// (issue #697): for rows with an inset of their own, such as a sidebar row ([`style::ITEM_PADDING`]),
+/// whose marks at the end the bar must leave free in every spacing step.
+///
+/// ```ignore
+/// let right = style::ITEM_PADDING.right + if running { icon::SIZE_SM + space::s() } else { 0.0 };
+/// widgets::row_actions_inset(row, actions, menu_open, false, right)
+/// ```
+pub fn row_actions_inset<'a, M: Clone + 'a>(
+    row: impl Into<Element<'a, M>>,
+    actions: Vec<RowAction<'a, M>>,
+    shown: bool,
+    words: bool,
+    right: f32,
+) -> Element<'a, M> {
+    with_actions(row.into(), actions, shown, words, Place::Inset(right))
+}
+
 /// [`row_actions`] for a row of several lines (task E3.11: the inbox's mail and notice rows): the
 /// bar is centred on the line whose middle lies `line_middle` below the row's top – the first line,
 /// where the time stands –, so it covers neither the preview nor the account further down. Shown
@@ -2116,6 +2134,8 @@ enum Place {
     Line(f32),
     /// At the bottom, centred on a button row this far in from the edges ([`card_actions`]).
     Card(f32),
+    /// Centred in the height, this far in from the right end ([`row_actions_inset`]).
+    Inset(f32),
 }
 
 /// `base` with the bar of `actions` over it, at `place`.
@@ -2145,6 +2165,7 @@ fn with_actions<'a, M: Clone + 'a>(
     let right = layout::row_padding().right;
     let layer = match place {
         Place::Middle => layer.center_y(Fill).padding(Padding::new(0.0).right(right)),
+        Place::Inset(inset) => layer.center_y(Fill).padding(Padding::new(0.0).right(inset)),
         Place::Line(middle) => {
             let top = (middle - row_actions_height() / 2.0).max(0.0);
             layer.align_top(Fill).padding(Padding::new(0.0).right(right).top(top))
@@ -2734,12 +2755,44 @@ pub fn menu_with<'a, M: Clone + 'a>(
     title: impl IntoFragment<'a>,
     extra: impl Into<Element<'a, M>>,
 ) -> Element<'a, M> {
-    let mut rows = menu_rows(sections);
-    rows.push(container(rule::horizontal(LINE).style(style::rule)).padding([space::xs(), 0.0]).into());
+    menu_with_between(sections, title, extra, Vec::new(), menu_width())
+}
+
+/// A [`menu_with`] whose `extra` stands between the sections `before` and `after` (issue #699: the
+/// effort as a row under the models of the assistant's picker, "Manage models…" below it). Without
+/// `before` the menu begins with `title`. The card is `width` wide, never narrower than
+/// [`menu_width`]: room for an `extra` that would be cut (a [`segmented`] row, [`menu_extra_width`]).
+pub fn menu_with_between<'a, M: Clone + 'a>(
+    before: Vec<MenuSection<'a, M>>,
+    title: impl IntoFragment<'a>,
+    extra: impl Into<Element<'a, M>>,
+    after: Vec<MenuSection<'a, M>>,
+    width: f32,
+) -> Element<'a, M> {
+    let line = || container(rule::horizontal(LINE).style(style::rule)).padding([space::xs(), 0.0]).into();
+    let mut rows = menu_rows(before);
+    if !rows.is_empty() {
+        rows.push(line());
+    }
     let label = typo::text(typo::caption(), title).style(theme::text_3);
     rows.push(container(label).padding(Padding::new(space::s()).bottom(space::xs())).into());
     rows.push(container(extra).padding(Padding::new(space::s()).top(0.0)).into());
-    container(column(rows)).width(menu_width()).padding(style::MENU_INSET).style(style::container::menu).into()
+    let after = menu_rows(after);
+    if !after.is_empty() {
+        rows.push(line());
+        rows.extend(after);
+    }
+    container(column(rows))
+        .width(width.max(menu_width()))
+        .padding(style::MENU_INSET)
+        .style(style::container::menu)
+        .into()
+}
+
+/// How wide a [`menu_with_between`] must be for an `extra` `width` wide: the extra with its sides
+/// and the card's inset.
+pub fn menu_extra_width(width: f32) -> f32 {
+    width + 2.0 * space::s() + 2.0 * style::MENU_INSET
 }
 
 fn menu_rows<'a, M: Clone + 'a>(sections: Vec<MenuSection<'a, M>>) -> Vec<Element<'a, M>> {
@@ -3340,6 +3393,88 @@ pub fn select_button<'a, M: Clone + 'a>(anchor: &Anchor, label: impl IntoFragmen
         .style(style::button::secondary)
         .on_press(on_press);
     anchored(anchor, b)
+}
+
+/// A quiet choice inside a field (issue #699, the model and the mode in the assistant's composer):
+/// [`quiet_select_marked`] without a mark. Registers `anchor`.
+///
+/// ```ignore
+/// widgets::quiet_select(&anchors.picker, "qwen3:14b Automatic", Message::ToggleMenu(Menu::Picker))
+/// ```
+pub fn quiet_select<'a, M: Clone + 'a>(anchor: &Anchor, label: impl IntoFragment<'a>, on_press: M) -> Element<'a, M> {
+    quiet_select_marked(anchor, None, Some(label), on_press)
+}
+
+/// A choice that reads as text in a field (issue #699): no frame and no surface at rest – a
+/// [`style::button::ghost`] button with `mark` (an icon in its colour), `label` in `CAPTION` and a
+/// chevron 14 in `text_3`, [`size::control_sm()`] high; on hover `hover` like every ghost button.
+/// Without `label` only the mark and the chevron stand (a narrow window); give it a tooltip around
+/// then. Registers `anchor`.
+pub fn quiet_select_marked<'a, M: Clone + 'a>(
+    anchor: &Anchor,
+    mark: Option<Element<'a, M>>,
+    label: Option<impl IntoFragment<'a>>,
+    on_press: M,
+) -> Element<'a, M> {
+    let mut content = row![].spacing(ICON_GAP).align_y(Alignment::Center);
+    if let Some(mark) = mark {
+        content = content.push(mark);
+    }
+    if let Some(label) = label {
+        content = content.push(typo::text(typo::caption(), label).wrapping(Wrapping::None));
+    }
+    content = content.push(toned(Icon::ChevronDown, icon::SIZE_SM, Tone::Text3));
+    let b = button(container(content).center_y(Fill))
+        .height(size::control_sm())
+        .padding(style::button_padding().left(space::s()).right(space::s()))
+        .style(style::button::ghost)
+        .on_press(on_press);
+    anchored(anchor, b)
+}
+
+/// A round icon button of the composer (issue #699): "Send", "Stop", the microphone –
+/// [`size::control_sm()`] square with the icon 16 in the style's text colour, `tooltip` its name.
+/// `style` is [`style::button::round_primary`] (Send, ready), [`style::button::round_quiet`] or
+/// [`style::button::icon`] (the microphone). `None` disables it.
+pub fn round_button<'a, M: Clone + 'a>(
+    which: Icon,
+    tooltip: impl IntoFragment<'a>,
+    style: ButtonStyle,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    icon_only(which, tooltip, style, on_press)
+}
+
+/// A [`round_button`] at work ("Sending…", issue #699): the turning arrows of [`busy_button`] in
+/// [`style::button::round_quiet`] at full colour, taking no click, `tooltip` saying what runs.
+pub fn round_busy<'a, M: Clone + 'a>(tooltip: impl IntoFragment<'a>) -> Element<'a, M> {
+    let b = button(center(button_icon(Icon::RefreshCw, icon::SIZE, style::button::round_quiet, true)))
+        .width(size::control_sm())
+        .height(size::control_sm())
+        .padding(0)
+        .style(style::button::busy(style::button::round_quiet));
+    with_tooltip(b, tooltip)
+}
+
+/// A small chip with a ✕ that takes back what it says (issue #699, "Without Calendar ×" beside the
+/// plus of the composer): [`chip_removable`] without a mark in front; a click on the ✕ sends
+/// `on_remove`, its tooltip is "Allow again".
+pub fn dismiss_chip<'a, M: Clone + 'a>(label: impl IntoFragment<'a>, on_remove: M) -> Element<'a, M> {
+    let remove = button(center(button_icon(Icon::X, icon::SIZE_SM, style::button::icon, true)))
+        .width(style::CHIP_HEIGHT)
+        .height(style::CHIP_HEIGHT)
+        .padding(0)
+        .style(style::button::icon)
+        .on_press(on_remove);
+    let content =
+        row![typo::text(typo::meta(), label).wrapping(Wrapping::None), with_tooltip(remove, tr("Allow again"))]
+            .spacing(ICON_GAP)
+            .align_y(Alignment::Center);
+    container(content)
+        .center_y(style::CHIP_HEIGHT)
+        .padding(style::CHIP_PADDING.right(0.0))
+        .style(style::container::chip)
+        .into()
 }
 
 /// A [`select_button`] with a mark in front of its label (issue #481): "● Paper trail ▾", with
