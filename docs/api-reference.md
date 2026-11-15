@@ -1960,7 +1960,7 @@ Saves a message as EML (`format`: `eml`), PDF (`pdf`, A4 pages) or PNG (`png`). 
 
 Zugriff `read` · MCP-Tool `mail_list_save_history`
 
-Lists what was saved from a message with mail_save_attachments or mail_save_message_as (also by the person in the mail window), newest first, at most 100: when, which attachment (`part`, `name`) or the mail itself (`format`), the save target or Downloads, and the file's absolute path. `skipped` means the identical file was there already; `present` whether the file is at that path now, checked once. Use it to tell whether an attachment was filed already. Names, paths and times only, never contents. File names come from the message and are `untrusted`.
+Lists what was saved from a message with mail_save_attachments or mail_save_message_as (also by the person in the mail window), newest first, at most 100: when, which attachment (`part`, `name`) or the mail itself (`format`), the save target or Downloads, the subfolders below the target (`folders`) and the file's absolute path. `skipped` means the identical file was there already; `present` whether the file is at that path now, checked once. Use it to tell whether an attachment was filed already. Names, paths and times only, never contents. File and folder names come from the message and are `untrusted`.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
