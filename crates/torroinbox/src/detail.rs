@@ -31,7 +31,9 @@
 //! E8.10). "Move to Info" has the circled "i" (`app::lane_icon`), never a bell. "Make task"
 //! (`t`, task E3.5) is an
 //! icon button next to "Later": its words would not fit beside the others in the panel's 400, and
-//! so is "Make event" beside it (`c`, task E8.5b: the hub's dialog of an event).
+//! so is "Make event" beside it (`c`, task E8.5b: the hub's dialog of an event). A mail entry has
+//! "Save as contact" – "Add contact" for a mail with a vCard – after them (issue #727,
+//! [`Footer::contact`], `crate::contact`), while there is an address book to write to.
 //! Approvals have neither – they close once decided, and a task would not decide them – and no
 //! "Later" either (task E8.5): an approval waits for yes or no and must not vanish by accident.
 //! Their dialogs fill themselves in with the person's AI on request (issue #120, the sparkles in the
@@ -69,9 +71,10 @@ use torro_gui::theme::{self, space};
 
 use torro_gui::widgets::{self, Anchor, Mark, RowAction, Status};
 use torro_gui::{datetime, style, typo};
-use torro_inbox::{Action, Item, Kind, Lane, Link, State, rules};
+use torro_inbox::{Action, Item, Kind, Lane, Link, SourceKind, State, rules};
 
 use crate::app::{self, Message};
+use crate::contact::{self, ContactOffer};
 use crate::keys::Command;
 use crate::{hub, list, mail};
 
@@ -241,6 +244,9 @@ pub struct Footer {
     /// "Copy text") in the second, in the order of the reader's former Torro bar. `None` for every other
     /// entry: one row as before.
     pub view: Option<mail::ViewTools>,
+    /// "Save as contact" – "Add contact" for a mail with a vCard – beside "Make event" (issue #727):
+    /// `Some` while there is an address book to write to; shown for mail entries only.
+    pub contact: Option<ContactOffer>,
 }
 
 /// The panel for `item`, reached through the view `view_name`; `now` for the times; the footer's
@@ -486,6 +492,10 @@ fn button_groups<'a>(item: &'a Item, footer: &Footer) -> (Vec<Element<'a, Messag
         let event =
             widgets::icon_button(Icon::CalendarPlus, tr("Make event"), Some(Message::AskEvent(item.id.clone())));
         buttons.push(widgets::anchored(&footer.anchors.event, event));
+        // It opens nothing, so it has no anchor.
+        if let Some((label, save)) = contact_button(item, footer) {
+            buttons.push(widgets::icon_button(Icon::UserPlus, label, save));
+        }
     }
     let mut side = Vec::new();
     let lane = app::other_lane(item.lane);
@@ -518,6 +528,15 @@ fn button_groups<'a>(item: &'a Item, footer: &Footer) -> (Vec<Element<'a, Messag
     }
     side.extend(footer.view.map(mail::view_controls).unwrap_or_default());
     (buttons, side)
+}
+
+/// "Save as contact" or "Add contact" of the footer (issue #727): its words (the tooltip) and what a
+/// click sends – `None` while a save runs. Only for a mail entry, which has a sender to keep, and only
+/// with [`Footer::contact`].
+fn contact_button(item: &Item, footer: &Footer) -> Option<(&'static str, Option<Message>)> {
+    let offer = footer.contact.filter(|_| item.source.kind == SourceKind::Mail)?;
+    let save = (!offer.busy).then(|| Message::SaveContact(item.id.clone()));
+    Some((contact::label(offer.vcard), save))
 }
 
 /// The entry's lane and, when a rule put it there, why (issue #128): "Info · Mailing list
@@ -721,7 +740,15 @@ mod tests {
     }
 
     fn footer(hide: bool) -> Footer {
-        Footer { anchors: Anchors::default(), hide, bell: false, deciding: false, compact: false, view: None }
+        Footer {
+            anchors: Anchors::default(),
+            hide,
+            bell: false,
+            deciding: false,
+            compact: false,
+            view: None,
+            contact: None,
+        }
     }
 
     #[test]
@@ -791,6 +818,27 @@ mod tests {
         assert_eq!(word, tr("Done"), "an agent's entry keeps Done");
         assert!(matches!(sent, Message::SetDone(id, true) if id == "demo-1"));
         assert_eq!(buttons(&mail, &footer(true)).len(), buttons(&sample("demo-6"), &footer(true)).len());
+    }
+
+    /// Issue #727: a mail entry's footer has "Save as contact" after "Make event" while there is a
+    /// book to write to – "Add contact" for a mail with a vCard –, which sends the entry's id; other
+    /// entries and a footer without a book have none.
+    #[test]
+    fn a_mail_entry_saves_its_sender_as_contact() {
+        let notice = sample("demo-6");
+        let link = Some(Link::Mail { message: "m:w1".into() });
+        let mail = Item { source: torro_inbox::SourceRef::mail("anna@work.example.org"), link, ..notice };
+        let offer = |vcard, busy| Footer { contact: Some(ContactOffer { vcard, busy }), ..footer(true) };
+        assert!(contact_button(&mail, &footer(true)).is_none(), "no book, no action");
+        let (label, save) = contact_button(&mail, &offer(false, false)).expect("the action");
+        assert_eq!(label, tr("Save as contact"));
+        assert!(matches!(save, Some(Message::SaveContact(id)) if id == mail.id));
+        assert_eq!(contact_button(&mail, &offer(true, false)).map(|(label, _)| label), Some(tr("Add contact")));
+        assert!(contact_button(&mail, &offer(false, true)).is_some_and(|(_, save)| save.is_none()), "busy");
+        assert!(contact_button(&sample("demo-1"), &offer(false, false)).is_none(), "an agent's entry has no sender");
+        let plain = buttons(&mail, &footer(true)).len();
+        assert_eq!(buttons(&mail, &offer(false, false)).len(), plain + 1);
+        assert_eq!(buttons(&sample("demo-1"), &offer(false, false)).len(), 7, "unchanged for others");
     }
 
     #[test]

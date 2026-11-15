@@ -864,6 +864,12 @@ impl Inbox {
             Request::SetItemDone { id, .. } | Request::SnoozeItem { id, .. } | Request::SetItemLane { id, .. } => {
                 changeable(db, id, Some(client)).map(drop)
             }
+            // A contact of an entry leaves the entry as it is (issue #727): seeing it is enough. A
+            // mail without an entry (`m:…`), and whether the entry is a mail the client may read, the
+            // core checks against the mail store (`Core::contact_mail`).
+            Request::CreateContactFromItem { id, .. } if !rules::is_message_id(id) => {
+                visible_item(db, id, Some(client)).map(drop)
+            }
             Request::MuteSource { source, .. } => changeable_source(source, Some(client)),
             // Nobody is asked to approve muting by a trait the entry lacks, until a time gone by, or
             // hiding mail (issue #339).
@@ -1250,6 +1256,7 @@ impl Inbox {
                 | Request::MuteItem { id, .. }
                 | Request::CreateTaskFromItem { id, .. }
                 | Request::CreateEventFromItem { id, .. }
+                | Request::CreateContactFromItem { id, .. }
                 | Request::SuggestTaskFromItem { id, .. }
                 | Request::SuggestEventFromItem { id } => {
                     let item = read_items(db, &Scope::All, "id = ?", by_id(id), "")?.pop().map(|stored| stored.item);
@@ -1350,6 +1357,21 @@ impl Inbox {
             let item = changeable(db, id, client)?.item;
             check_done(db, &item, client)?;
             Ok(item)
+        })
+        .map_err(|failure| Box::new(failure.response()))
+    }
+
+    /// The entry `id` of `inbox.create_contact_from_item` (issue #727) for `client`: one it sees
+    /// (`not-found` else). The entry stays as it is, so changing it is not asked for.
+    pub fn entry_for_contact(
+        &self,
+        id: &str,
+        client: Option<&ClientInfo>,
+        now: DateTime<Utc>,
+    ) -> Result<Item, Box<Response>> {
+        self.with(|db| {
+            wake_due(db, now)?;
+            Ok(visible_item(db, id, client)?.item)
         })
         .map_err(|failure| Box::new(failure.response()))
     }
@@ -2661,6 +2683,11 @@ fn answer(
         Request::CreateEventFromItem { .. } => {
             Err(Failure::Invalid("inbox.create_event_from_item is answered by the core".into()))
         }
+        // A contact is written by the contacts service (issue #727): the core answers it with
+        // `Inbox::entry_for_contact`.
+        Request::CreateContactFromItem { .. } => {
+            Err(Failure::Invalid("inbox.create_contact_from_item is answered by the core".into()))
+        }
         Request::GetQuiet => Err(Failure::Invalid("inbox.get_quiet is answered by the core".into())),
         Request::ListRules => {
             let rules = list_rules(db, client, now)?;
@@ -3779,6 +3806,9 @@ fn check_message(
         Request::SetItemCategory { .. } | Request::ClassifyItem { .. } => {
             api::check_item_change(stand_in, client).map_err(Failure::Forbidden)
         }
+        // A contact of a mail leaves the mail and its entry as they are (issue #727): seeing it is
+        // enough.
+        Request::CreateContactFromItem { .. } => Ok(()),
         _ => Err(Failure::Invalid("only muting, snoozing and the category take the id of a mail".into())),
     }
 }

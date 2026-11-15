@@ -65,6 +65,7 @@
 mod app;
 mod ask;
 mod compose;
+mod contact;
 mod detail;
 #[cfg(test)]
 mod empty;

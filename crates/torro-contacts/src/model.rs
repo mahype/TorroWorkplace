@@ -665,6 +665,28 @@ fn text_field(text: &str) -> Option<String> {
 }
 
 impl ContactFields {
+    /// Every field of `contact`, as a new contact with the same content would be made of it (the
+    /// demo's export, issue #725).
+    pub fn of(contact: &Contact) -> ContactFields {
+        let text = |value: &Option<String>| value.clone().filter(|v| !v.is_empty());
+        ContactFields {
+            name: (!contact.name.is_empty()).then(|| contact.name.clone()),
+            display_name: Some(contact.display_name.clone()).filter(|d| !d.is_empty()),
+            nickname: text(&contact.nickname),
+            org: text(&contact.org),
+            title: text(&contact.title),
+            emails: (!contact.emails.is_empty()).then(|| contact.emails.clone()),
+            phones: (!contact.phones.is_empty()).then(|| contact.phones.clone()),
+            addresses: (!contact.addresses.is_empty()).then(|| contact.addresses.clone()),
+            urls: (!contact.urls.is_empty()).then(|| contact.urls.clone()),
+            impps: (!contact.impps.is_empty()).then(|| contact.impps.clone()),
+            birthday: contact.birthday.map(|b| b.to_string()),
+            anniversary: contact.anniversary.map(|a| a.to_string()),
+            note: text(&contact.note),
+            groups: (!contact.groups.is_empty()).then(|| contact.groups.clone()),
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         *self == ContactFields::default()
     }
@@ -910,6 +932,62 @@ pub struct Moved {
     /// The old book refused to let it go: it is in both now.
     #[serde(default, skip_serializing_if = "is_false")]
     pub left_in_source: bool,
+}
+
+/// What `contacts.import_vcards` did, or would do with `dry_run` (issue #725): how many cards of the
+/// file became contacts, how many were in the address books already and were left out (never merged
+/// in silently), and how many could not be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+pub struct Imported {
+    /// New contacts (with `dry_run`: that would be made).
+    pub created: u32,
+    /// Cards of people already in a book (the same UID in the target book, or the same mail address,
+    /// number, or name with company): left out.
+    pub duplicates: u32,
+    /// Cards that do not read, have no name, mail address or number, or are group cards.
+    pub skipped: u32,
+}
+
+/// Why two contacts look like one person (`contacts.find_duplicates`, issue #726).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DuplicateReason {
+    /// The same mail address, whatever its case.
+    Mail,
+    /// The same number, written alike or not ("0171 2345678" and "+49 171 2345678").
+    Phone,
+    /// The same name and the same company, both set.
+    NameAndCompany,
+}
+
+/// Contacts that look like one person (`contacts.find_duplicates`, issue #726): the one with the
+/// most fields first, every reason that ties them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DuplicateGroup {
+    pub reasons: Vec<DuplicateReason>,
+    /// Two or more contacts with every field.
+    pub contacts: Vec<Contact>,
+}
+
+/// What `contacts.merge_contacts` did (issue #726).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Merged {
+    /// The contact that stays, with what the others brought.
+    pub contact: Contact,
+    /// The ids of the other contacts that are still there: their deletion failed, or the merged
+    /// contact has not reached the server yet (offline) and they stay until it has. Do not delete
+    /// them by hand while the merged contact is `pending`: they hold what it brings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub left: Vec<String>,
+}
+
+/// What `inbox.create_contact_from_item` did (issue #727).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FromItem {
+    /// The new contact, or the one that holds the sender or the vCard already.
+    pub contact: Contact,
+    /// `false`: the person was in the address books already, nothing was made.
+    pub created: bool,
 }
 
 fn is_false(value: &bool) -> bool {

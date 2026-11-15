@@ -18,6 +18,8 @@
 //! - **Places** of addresses (issue #355, `contacts.locate_contact`): where the place search service
 //!   put an address, or that it found none, keyed by the contact and the SHA-256 of the address on
 //!   one line ([`line_key`]), so an address that changes is looked up anew and the old one goes.
+//! - **Not duplicates** (layout 3, issue #726): pairs of contacts the person said are different
+//!   people, on this device only; they go with either contact, its book and its account.
 //!
 //! `secure_delete` is on, so removed contacts do not linger in free pages; removing an account
 //! truncates the write-ahead log as well ([`Store::forget_account`]). Errors never carry a name or
@@ -33,7 +35,7 @@ use torro_contacts::{Contact, ContactState, vcard};
 use crate::mail::{create_private, make_private};
 
 /// The newest layout this version writes (`PRAGMA user_version`).
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// The most contacts "Recent" keeps per account.
 pub const RECENT_MAX: usize = 50;
@@ -115,6 +117,11 @@ pub fn line_key(address: &torro_contacts::PostalAddress) -> String {
     let line = address.one_line().split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
     Sha256::digest(line.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()
 }
+
+/// Layout 3 (issue #726): pairs said to be different people, the smaller id in `a`.
+const SCHEMA_V3: &str = "
+CREATE TABLE not_duplicates (a TEXT NOT NULL, b TEXT NOT NULL, PRIMARY KEY (a, b));
+";
 
 /// Why the store failed. Never a name, an address or a number: the text may reach a log.
 #[derive(Debug)]
@@ -420,6 +427,11 @@ impl Store {
         tx.execute("DELETE FROM places WHERE card IN (SELECT id FROM cards WHERE book = ?1)", [id])?;
         tx.execute("DELETE FROM favorites WHERE card IN (SELECT id FROM cards WHERE book = ?1)", [id])?;
         tx.execute("DELETE FROM recent WHERE card IN (SELECT id FROM cards WHERE book = ?1)", [id])?;
+        tx.execute(
+            "DELETE FROM not_duplicates WHERE a IN (SELECT id FROM cards WHERE book = ?1)
+                 OR b IN (SELECT id FROM cards WHERE book = ?1)",
+            [id],
+        )?;
         tx.execute("DELETE FROM queue WHERE book = ?1", [id])?;
         tx.execute("DELETE FROM cards WHERE book = ?1", [id])?;
         tx.execute("DELETE FROM books WHERE id = ?1", [id])?;
@@ -436,6 +448,13 @@ impl Store {
         self.db.execute("DELETE FROM favorites WHERE account = ?1", [account])?;
         self.db.execute("DELETE FROM recent WHERE account = ?1", [account])?;
         self.db.execute("DELETE FROM places WHERE account = ?1", [account])?;
+        // A pair whose cards went before their book (a contact removed on the server) still names
+        // the account at the start of its ids.
+        self.db.execute(
+            "DELETE FROM not_duplicates WHERE substr(a, 1, length(?1) + 1) = ?1 || '/'
+                 OR substr(b, 1, length(?1) + 1) = ?1 || '/'",
+            [account],
+        )?;
         self.db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         Ok(())
     }
@@ -539,6 +558,7 @@ impl Store {
         for table in ["search", "favorites", "recent", "queue", "places"] {
             tx.execute(&format!("DELETE FROM {table} WHERE card = ?1"), [id])?;
         }
+        tx.execute("DELETE FROM not_duplicates WHERE a = ?1 OR b = ?1", [id])?;
         tx.execute("DELETE FROM cards WHERE id = ?1", [id])?;
         tx.commit()?;
         Ok(())
@@ -672,6 +692,30 @@ impl Store {
             params![account, RECENT_MAX as i64],
         )?;
         Ok(())
+    }
+
+    // ----- not duplicates (issue #726) -----
+
+    /// Notes that every pair of `cards` are different people.
+    pub fn dismiss_duplicates(&self, cards: &[String]) -> Result<(), StoreError> {
+        let tx = self.db.unchecked_transaction()?;
+        for (n, a) in cards.iter().enumerate() {
+            for b in &cards[n + 1..] {
+                let (a, b) = torro_contacts::duplicates::pair(a, b);
+                if a != b {
+                    tx.execute("INSERT OR IGNORE INTO not_duplicates (a, b) VALUES (?1, ?2)", [a, b])?;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The pairs said to be different people, as [`torro_contacts::duplicates::pair`] orders them.
+    pub fn not_duplicates(&self) -> Result<std::collections::HashSet<(String, String)>, StoreError> {
+        let mut statement = self.db.prepare("SELECT a, b FROM not_duplicates")?;
+        let pairs = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<Result<_, _>>()?;
+        Ok(pairs)
     }
 
     // ----- reading -----
@@ -828,6 +872,9 @@ fn migrate(db: &Connection) -> Result<(), StoreError> {
     }
     if version < 2 {
         tx.execute_batch(SCHEMA_V2)?;
+    }
+    if version < 3 {
+        tx.execute_batch(SCHEMA_V3)?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
@@ -1117,12 +1164,71 @@ mod tests {
         }
         let store = Store::open(&folder).expect("migrated");
         let version: i64 = store.db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
-        assert_eq!(version, 2);
+        assert_eq!(version, SCHEMA_VERSION);
         assert_eq!(store.books(None).expect("books").len(), 1, "the book stays");
         assert!(store.is_favorite("x").expect("favourite"), "and the favourite");
         store.put_place("x", &work.account, "line", Some((1.0, 2.0)), 1).expect("the new table");
         drop(store);
         let again = Store::open(&folder).expect("opened again");
         assert_eq!(again.count_places(None).expect("count"), 1);
+    }
+
+    /// Issue #726: a store of layout 1 gets the table of pairs and keeps its contacts; a pair goes
+    /// with either contact, its book and its account.
+    #[test]
+    fn layout_one_is_migrated_and_pairs_go_with_their_contacts() {
+        let dir = tempfile::tempdir().expect("dir");
+        let account = "nextcloud:anna@cloud.example.org";
+        let work = book(account, "contacts");
+        {
+            let db = Connection::open(dir.path().join("contacts.sqlite")).expect("db");
+            db.execute_batch(SCHEMA_V1).expect("layout 1");
+            db.execute_batch("PRAGMA user_version = 1").expect("version");
+            db.execute(
+                "INSERT INTO books (id, account, href, name, display_name, writable, hidden) VALUES (?1, ?2, 'h', 'n', 'n', 1, 0)",
+                [&work.id, account],
+            )
+            .expect("book");
+        }
+        let store = Store::open(dir.path()).expect("migrated");
+        let version: i64 = store.db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(store.books(None).expect("books").len(), 1, "what was there stays");
+        for uid in ["a", "b", "c"] {
+            store.put_card(&card(&work.id, uid, &vcard(uid, "1", ""))).expect("card");
+        }
+        let ids: Vec<String> = ["a", "b", "c"].iter().map(|uid| format!("{}/{uid}", work.id)).collect();
+        store.dismiss_duplicates(&ids).expect("dismiss");
+        store.dismiss_duplicates(&ids).expect("again changes nothing");
+        assert_eq!(store.not_duplicates().expect("pairs").len(), 3);
+        assert!(store.not_duplicates().expect("pairs").contains(&torro_contacts::duplicates::pair(&ids[1], &ids[0])));
+        store.remove_card(&ids[0]).expect("removed");
+        assert_eq!(store.not_duplicates().expect("pairs").len(), 1, "a contact takes its pairs along");
+        store.forget_account(account).expect("forgotten");
+        assert!(store.not_duplicates().expect("pairs").is_empty());
+        drop(store);
+        assert!(Store::open(dir.path()).is_ok(), "layout 3 opens again");
+    }
+
+    /// A store of layout 2 (places, issue #355) gets the table of pairs and keeps its places.
+    #[test]
+    fn layout_two_gains_the_pairs_and_keeps_its_places() {
+        let dir = tempfile::tempdir().expect("dir");
+        {
+            let db = Connection::open(dir.path().join("contacts.sqlite")).expect("db");
+            db.execute_batch(SCHEMA_V1).expect("layout 1");
+            db.execute_batch(SCHEMA_V2).expect("layout 2");
+            db.execute_batch("PRAGMA user_version = 2").expect("version");
+            db.execute(
+                "INSERT INTO places (card, account, line, lat, lon, at) VALUES ('x', 'a', 'line', 1.0, 2.0, 1)",
+                [],
+            )
+            .expect("place");
+        }
+        let store = Store::open(dir.path()).expect("migrated");
+        let version: i64 = store.db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(store.count_places(None).expect("count"), 1, "the place stays");
+        assert!(store.not_duplicates().expect("pairs").is_empty(), "the new table");
     }
 }

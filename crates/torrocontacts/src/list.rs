@@ -620,7 +620,7 @@ mod tests {
         let refs: Vec<&ContactSummary> = summaries.iter().collect();
         let by_group = heads(&refs, GroupBy::Group, &books);
         assert_eq!(by_group.len(), 3);
-        assert_eq!(by_group.iter().map(|h| h.members.len()).sum::<usize>(), 40);
+        assert_eq!(by_group.iter().map(|h| h.members.len()).sum::<usize>(), 41);
         let by_book = heads(&refs, GroupBy::Book, &books);
         assert_eq!(by_book.len(), 2);
     }

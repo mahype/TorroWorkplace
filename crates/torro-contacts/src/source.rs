@@ -7,7 +7,8 @@
 use std::future::Future;
 
 use crate::model::{
-    AddressBook, Birthday, Contact, ContactFields, ContactPage, ContactQuery, Group, Keep, Moved, PhotoSize,
+    AddressBook, Birthday, Contact, ContactFields, ContactPage, ContactQuery, DuplicateGroup, Group, Imported, Keep,
+    Merged, Moved, PhotoSize,
 };
 use crate::provider::ContactsError;
 
@@ -106,4 +107,41 @@ pub trait ContactsSource: Send + Sync {
         keep: Keep,
         etag: String,
     ) -> impl Future<Output = Result<Vec<Contact>, ContactsError>> + Send;
+
+    /// `contacts.import_vcards` (issue #725): the cards of a `.vcf` file into `book`, the text in
+    /// `data` or the file at `path` (the suite's apps only); with `dry_run` nothing is written and the
+    /// answer says what would be.
+    fn import_vcards(
+        &self,
+        book: String,
+        data: Option<String>,
+        path: Option<String>,
+        dry_run: bool,
+    ) -> impl Future<Output = Result<Imported, ContactsError>> + Send;
+
+    /// `contacts.export_vcards` (issue #725): the cards of `ids`, of `group` in `book`, of `book`, or
+    /// of every book not hidden, as the store keeps them; and how many.
+    fn export_vcards(
+        &self,
+        book: Option<String>,
+        group: Option<String>,
+        ids: Vec<String>,
+    ) -> impl Future<Output = Result<(String, u32), ContactsError>> + Send;
+
+    /// `contacts.find_duplicates` (issue #726).
+    fn find_duplicates(
+        &self,
+        book: Option<String>,
+    ) -> impl Future<Output = Result<Vec<DuplicateGroup>, ContactsError>> + Send;
+
+    /// `contacts.merge_contacts` (issue #726): the contacts of `ids` into `keep`, the others deleted.
+    fn merge_contacts(
+        &self,
+        ids: Vec<String>,
+        etags: Vec<String>,
+        keep: String,
+    ) -> impl Future<Output = Result<Merged, ContactsError>> + Send;
+
+    /// `contacts.dismiss_duplicates` (issue #726): the contacts of `ids` are different people.
+    fn dismiss_duplicates(&self, ids: Vec<String>) -> impl Future<Output = Result<(), ContactsError>> + Send;
 }

@@ -22,10 +22,12 @@
 mod app;
 mod backend;
 mod contact;
+mod duplicates;
 mod edit;
 mod glance;
 mod launch;
 mod list;
+mod transfer;
 mod view;
 
 use std::process::ExitCode;
@@ -81,9 +83,11 @@ fn main() -> ExitCode {
 }
 
 /// The window whose single instance this start is ([`torro_gui::instance`], issue #279): the window of
-/// a plain start; `None` for the demo, which the visual checks start next to the real window.
+/// a plain start; `None` for the demo, which the visual checks start next to the real window, and for
+/// a start on a contact (`--contact`, issue #727): a running window cannot be told to show another
+/// one, so "Open contact" opens a window of its own, as "Open task" does in the tasks app.
 fn instance_of(launch: &Launch) -> Option<AppId> {
-    (!launch.demo).then_some(APP)
+    (!launch.demo && launch.contact.is_none()).then_some(APP)
 }
 
 /// The window on `backend`; with `shots` its pictures instead ([`torro_gui::shots::run`]).
