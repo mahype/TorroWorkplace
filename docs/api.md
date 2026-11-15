@@ -1408,7 +1408,7 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
     Zeit, Anhang bzw. Format, Ziel und endgültigen Pfad ein, nie Inhalte. `mail.list_save_history` (Lesen, MCP-Tool
     `mail_list_save_history`) liefert das, neueste zuerst, mit `present`, ob die Datei beim Lesen noch dort liegt.
     Die Mail erkennt der Dienst an ihrer Message-ID, ohne sie an ihrer Kennung. Das Protokoll liegt im Speicher des
-    Kontos und geht mit dem Konto. Ein Client mit Leserecht für Mail sieht damit auch Pfade aus dem Dialog des
+    Kontos und geht mit dem Konto; nach dem Löschen einer Mail bleibt es, weil die Message-ID kein Fremdschlüssel ist (so übersteht es auch das Verschieben). Ein Client mit Leserecht für Mail sieht damit auch Pfade aus dem Dialog des
     Systems, die kein Ablageziel sind.
     EML (`message/rfc822`) enthält die geprüften Originalbytes mit allen MIME-Teilen und Anhängen,
     keine Rekonstruktion. Ein lokal fehlendes oder nicht beweisbar vollständiges Original wird einmal
