@@ -410,6 +410,9 @@ pub enum Message {
     CardRequest(Box<Request>, &'static str),
     /// The core's answer to a [`Message::CardRequest`], with the text to say when it failed.
     CardAnswered(Result<(), Refusal>, &'static str),
+    /// "Try again" on a card whose server could not be reached (S3 of issue #784): the cards are asked for again
+    /// (`assistant.get_cards`).
+    RetryCards,
     /// The picture of the link card `seq` of the conversation (issue #785, `assistant.get_card_picture`), as the
     /// core sent it.
     CardPicture(String, u64, Result<torro_ipc::chat::ChatPicture, Refusal>),
@@ -1216,6 +1219,7 @@ impl App {
             Message::CardRequest(request, failed) => {
                 return self.ask(*request, move |result| Message::CardAnswered(result.map(|_| ()), failed));
             }
+            Message::RetryCards => return self.fetch_cards(),
             // A refusal (no picture, no Nextcloud) keeps the kind's icon, and the card asks no more until it changes.
             Message::CardPicture(conversation, seq, result) => {
                 if self.current.as_deref() != Some(conversation.as_str()) {

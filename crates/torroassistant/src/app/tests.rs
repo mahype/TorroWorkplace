@@ -241,11 +241,11 @@ fn open_in_mail_on_a_suggestion_opens_its_mail() {
 }
 
 /// Task WZ.8: a conversation with cards asks the core what they show (`assistant.get_cards`) and
-/// draws a card only once it is resolved; the file card's buttons each send their request – "Save
-/// as…" only after the person chose a place in the system's dialog.
+/// draws a card's content only once it is resolved (a placeholder until then, issue #784); the file card's buttons
+/// each send their request – "Save as…" only after the person chose a place in the system's dialog.
 #[test]
 fn file_cards_come_from_the_core_and_each_button_sends_its_request() {
-    // Before the core resolved them, no card is drawn and none takes room.
+    // Before the core resolved them, nothing of them is known: they stand as placeholders.
     let mut app = start(&["--chat", CARDS]);
     let requests = sent(&mut app);
     let opened = requests.iter().find(|r| matches!(r, Request::GetConversation { .. })).expect("the conversation");
@@ -292,6 +292,36 @@ fn file_cards_come_from_the_core_and_each_button_sends_its_request() {
     // Another conversation leaves its cards behind.
     let _ = app.update(Message::Select(TOOLS.into()));
     assert!(app.cards.is_empty());
+}
+
+/// S3 of issue #784: a card the core has not resolved yet stands as a placeholder (`State::Loading`), never as
+/// nothing; a card whose item went is gone with the head of its kind; "Try again" asks for the cards again.
+#[test]
+fn unresolved_cards_load_gone_ones_say_so_and_try_again_asks_anew() {
+    use crate::view::CardLook;
+    let mut app = start(&["--chat", demo::CONTENT]);
+    let requests = sent(&mut app);
+    let opened = requests.iter().find(|r| matches!(r, Request::GetConversation { .. })).expect("the conversation");
+    let _ = app.update(answer_of(opened, block_on(app.backend.ask(opened.clone()))));
+    sent(&mut app);
+    let seqs = app.transcript.cards();
+    assert!(!seqs.is_empty());
+    assert!(seqs.iter().all(|seq| app.card_look(*seq) == CardLook::Pending), "nothing resolved yet");
+    for seq in &seqs {
+        assert!(app.card(*seq).is_some(), "a placeholder in the card's size, not nothing");
+    }
+
+    let app = started(&["--chat", demo::CONTENT]);
+    let gone = content_seq(&app, |card| matches!(card, Card::Unavailable));
+    assert_eq!(app.card_look(gone), CardLook::Gone);
+    assert!(app.card(gone).is_some() && app.card_line(gone).is_some());
+    let shown = content_seq(&app, |card| matches!(card, Card::Mail { .. }));
+    assert_eq!(app.card_look(shown), CardLook::Shown);
+
+    let mut app = app;
+    sent(&mut app);
+    let _ = app.update(Message::RetryCards);
+    assert_eq!(sent(&mut app), [Request::GetCards { conversation: demo::CONTENT.into() }]);
 }
 
 /// Design review of WZ.8: a tool line right above a file card leaves the file's name to the card;

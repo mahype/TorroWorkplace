@@ -26,6 +26,18 @@ fn decide(key: &str, choice: &str) -> Message {
     card_request(request, tr("Couldn't change Settings › Privacy."))
 }
 
+/// The host of `url` without `www.`, for the head of a link card the core has not resolved: "example.org"; the
+/// address itself when it has no host.
+pub(super) fn domain(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let host = host.rsplit_once('@').map_or(host, |(_, host)| host);
+    match host.strip_prefix("www.").unwrap_or(host) {
+        "" => url.to_owned(),
+        host => host.to_owned(),
+    }
+}
+
 /// The icon of a link card's kind, for its line, told by the details it carries (each kind has its own).
 fn kind_icon(card: &LinkCard) -> Icon {
     if card.github.is_some() {

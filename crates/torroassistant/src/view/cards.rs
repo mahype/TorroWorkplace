@@ -6,8 +6,12 @@
 //!   in the head, its name, the path on one line (cut with "…"), and three buttons – "Open", "Save as…", "Send by
 //!   mail" – with their words where the card has room, else as icons with the word as tooltip ("Open" keeps its word
 //!   first).
-//! - **No longer available:** the file went, changed or is out of reach; no buttons, and the tile
-//!   only its quiet mark in `text_3` without its surface, so it never reads as a file to open.
+//! - **No longer available:** the item went, changed or is out of reach: `ContentCard::state(State::Gone)` with the
+//!   kind's icon and word in the head (from the entry's reference, a neutral icon for a kind the window does not
+//!   know), "No longer available" and no button; in one line its short form.
+//! - **Not resolved yet:** an entry whose card the core has not answered for yet shows as `State::Loading` in the
+//!   card's size, never as nothing, so the answer does not jump when it comes (S3 of issue #784). A link whose server
+//!   could not be reached (`offline`) shows as `State::Failed` with "Try again", which asks for the cards again.
 //! - **Suggestion of a mail** (issue #605, a chat about a mail): only its short form – the kind's
 //!   tile, what was read out (or the kind's word) and "Accept it in Mail" – and one button, "Open in
 //!   Mail": accepting opens the filled dialog in the mail window, where the mail shows the whole card.
@@ -29,17 +33,16 @@ use chrono::Utc;
 use iced::widget::{container, row};
 use iced::{Alignment, Element, Fill};
 use torro_core::i18n::{tr, trf};
-use torro_gui::content_card::{Action, ContentCard, Head};
-use torro_gui::icon::{self, Icon};
+use torro_gui::content_card::{Action, ContentCard, Head, State};
+use torro_gui::icon::Icon;
 use torro_gui::theme::{self, size, space};
 use torro_gui::widgets::{self, TileFace, TileSize};
 use torro_gui::{style, typo};
 use torro_ipc::Request;
 use torro_ipc::actions::Suggestion;
-use torro_ipc::assistant::Card;
+use torro_ipc::assistant::{Card, CardRef, EntryContent};
 use torro_ipc::tools::FileInfo;
 
-use super::tinted;
 use crate::app::{App, Message};
 use crate::chat;
 
@@ -63,17 +66,86 @@ fn with_actions(card: ContentCard<Message>, actions: Vec<Action<Message>>) -> Co
 /// (`widgets::file_chip`) – what the file becomes when it goes by mail.
 pub(super) const FILE_ICON: Icon = Icon::Paperclip;
 
+/// How far the card of an entry is, as the window shows it (S3 of issue #784).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CardLook {
+    /// The core has not answered for it yet: `State::Loading` in the card's size.
+    Pending,
+    /// A link whose server could not be reached: `State::Failed` with "Try again".
+    Offline,
+    /// Gone or out of reach: `State::Gone`.
+    Gone,
+    /// What the core resolved, drawn by its kind.
+    Shown,
+}
+
+/// Whether the core could not reach the server of a link card (Nextcloud, GitHub) when it resolved it.
+///
+/// S3: Coder K adds `Card::Link::offline`; the coordination reads it here (`Card::Link { offline, .. } => *offline`).
+/// Until then no card is offline.
+fn offline(card: &Card) -> bool {
+    let _ = card;
+    false
+}
+
+/// The head of a card known only by its reference `card` (not resolved yet, or gone): the kind's icon and word, a
+/// link's domain; a neutral icon for a kind the window does not know. Never `untrusted`: it shows nothing foreign.
+fn kind_head(card: Option<&CardRef>) -> Head {
+    match card {
+        Some(CardRef::File { .. }) => Head::new(FILE_ICON, tr("File")),
+        Some(CardRef::Suggestion { .. } | CardRef::Mail { .. }) => Head::new(Icon::Mail, tr("Mail")),
+        Some(CardRef::Link { url, .. }) => Head::new(Icon::Globe, link::domain(url)),
+        Some(CardRef::Event { .. }) => Head::new(Icon::Calendar, tr("Calendar")),
+        Some(CardRef::Todo { .. }) => Head::new(Icon::ListTodo, tr("Tasks")),
+        Some(CardRef::Draft { .. }) => Head::new(Icon::FilePenLine, tr("Draft")),
+        Some(CardRef::Contact { .. }) => Head::new(Icon::User, tr("Contacts")),
+        Some(CardRef::Group { area, .. }) => Head { untrusted: false, ..group::head(*area) },
+        Some(CardRef::Unknown) | None => Head::new(Icon::Square, tr("Unknown")),
+    }
+}
+
 impl App {
-    /// The card of the entry `seq` as the core resolved it last; `None` while it is not resolved,
-    /// so it takes no room (and no gap) until it can show something.
-    pub(super) fn card(&self, seq: u64) -> Option<Element<'_, Message>> {
-        let card = self.cards.get(&seq)?;
-        Some(match card {
-            Card::File(file) => file_content(file).view(self.card_room()),
-            Card::Suggestion { account, id, suggestion } => suggestion_card(account, id, suggestion),
-            Card::Unavailable | Card::Unknown => gone_card(self.card_room()),
-            content => self.content_view(seq, content, self.card_room())?,
+    /// The card of the entry `seq`: as the core resolved it last, or – not resolved yet – a quiet placeholder in the
+    /// card's size ([`CardLook::Pending`]); `None` only for a link that stays a link in the answer.
+    pub(crate) fn card(&self, seq: u64) -> Option<Element<'_, Message>> {
+        let room = self.card_room();
+        let Some(card) = self.cards.get(&seq) else {
+            return Some(self.state_card(seq, State::Loading).view(room));
+        };
+        Some(match self.card_look(seq) {
+            CardLook::Pending => self.state_card(seq, State::Loading).view(room),
+            CardLook::Offline => self.state_card(seq, State::Failed { retry: Some(Message::RetryCards) }).view(room),
+            CardLook::Gone => self.state_card(seq, State::Gone).view(room),
+            CardLook::Shown => match card {
+                Card::File(file) => file_content(file).view(room),
+                Card::Suggestion { account, id, suggestion } => suggestion_card(account, id, suggestion),
+                content => self.content_view(seq, content, room)?,
+            },
         })
+    }
+
+    /// How far the card of the entry `seq` is ([`CardLook`]).
+    pub(crate) fn card_look(&self, seq: u64) -> CardLook {
+        match self.cards.get(&seq) {
+            None => CardLook::Pending,
+            Some(Card::Unavailable | Card::Unknown) => CardLook::Gone,
+            Some(card) if offline(card) => CardLook::Offline,
+            Some(_) => CardLook::Shown,
+        }
+    }
+
+    /// The reference of the card entry `seq` in the open conversation.
+    fn card_ref(&self, seq: u64) -> Option<&CardRef> {
+        self.transcript.entries.iter().find(|entry| entry.seq == seq).and_then(|entry| match &entry.content {
+            EntryContent::Card { card } => Some(card),
+            _ => None,
+        })
+    }
+
+    /// The card of the entry `seq` in `state` (loading, failed, gone): the head of its kind ([`kind_head`]), nothing
+    /// of the item.
+    fn state_card(&self, seq: u64, state: State<Message>) -> ContentCard<Message> {
+        ContentCard::new(kind_head(self.card_ref(seq)), "").state(state)
     }
 
     /// How wide a content card is (issue #784): the history's reading column within the window, so a card grows with
@@ -100,7 +172,8 @@ impl App {
             Card::Draft { draft, approval } => draft::view(draft, approval.as_deref(), room),
             Card::Contact { contact } => contact::view(contact, room),
             Card::Group { items, area, total } => self.group_card(seq, items, *area, *total, room),
-            Card::Unavailable | Card::Unknown => gone_card(room),
+            // An item of a group that went: gone, with the head of the group's kind.
+            Card::Unavailable | Card::Unknown => ContentCard::new(kind_head(None), "").state(State::Gone).view(room),
             Card::File(_) | Card::Suggestion { .. } => return None,
         })
     }
@@ -117,7 +190,7 @@ impl App {
             Card::Draft { draft, approval } => draft::line(draft, approval.as_deref()),
             Card::Contact { contact } => contact::line(contact),
             Card::Group { items, .. } => return self.content_line(items.first()?),
-            Card::Unavailable | Card::Unknown => gone_line(),
+            Card::Unavailable | Card::Unknown => ContentCard::new(kind_head(None), "").state(State::Gone).short(),
             Card::File(_) | Card::Suggestion { .. } => return None,
         })
     }
@@ -154,14 +227,14 @@ impl App {
 
     /// The card of the entry `seq` as one line, for mini and strip tiles; `None` while it is not
     /// resolved.
-    pub(super) fn card_line(&self, seq: u64) -> Option<Element<'_, Message>> {
+    pub(crate) fn card_line(&self, seq: u64) -> Option<Element<'_, Message>> {
         let (tile, name): (_, Element<'_, Message>) = match self.cards.get(&seq)? {
             Card::File(file) => return Some(file_content(file).short()),
             Card::Suggestion { suggestion, .. } => (
                 suggestion_tile(suggestion, TileSize::Small),
                 widgets::ellipsized(typo::body(), suggestion_title(suggestion), theme::text),
             ),
-            Card::Unavailable | Card::Unknown => return Some(gone_line()),
+            Card::Unavailable | Card::Unknown => return Some(self.state_card(seq, State::Gone).short()),
             content => return self.content_line(content),
         };
         Some(row![tile, container(name).width(Fill)].spacing(space::s()).align_y(Alignment::Center).into())
@@ -172,14 +245,6 @@ impl App {
     pub(crate) fn file_card_after(&self, seq: u64) -> bool {
         self.transcript.card_after(seq).is_some_and(|card| matches!(self.cards.get(&card), Some(Card::File(_))))
     }
-}
-
-/// The tile of a file that is gone: the same room, but only the paperclip in `text_3`, without
-/// the tile's surface – quiet, so it does not look like a file that can be opened.
-fn gone_tile<'a>(size: TileSize) -> Element<'a, Message> {
-    let edge = size.edge();
-    let mark = if size == TileSize::Small { icon::SIZE_SM } else { icon::SIZE };
-    container(tinted(FILE_ICON, mark, |p| p.text_3)).center(edge).into()
 }
 
 /// The buttons of a file card, each a person's click: "Open" (`tools.open_file`), "Save as…" (the
@@ -256,19 +321,4 @@ fn suggestion_card<'a>(account: &str, id: &str, suggestion: &Suggestion) -> Elem
     let button =
         widgets::text_button(Some(Icon::ArrowUpRight), tr("Open in Mail"), style::button::secondary, Some(open));
     widgets::card(vec![head, button], false, None)
-}
-
-/// A card whose item is gone or out of reach, in one line: the quiet mark and "No longer available".
-fn gone_line<'a>() -> Element<'a, Message> {
-    let words = widgets::ellipsized(typo::body(), tr("No longer available"), theme::text_3);
-    row![gone_tile(TileSize::Small), container(words).width(Fill)].spacing(space::s()).align_y(Alignment::Center).into()
-}
-
-/// A card whose item is gone or out of reach: said so, without buttons; why is not told (the core
-/// does not say it either). As wide as the content cards beside it, at most `room`.
-fn gone_card<'a>(room: f32) -> Element<'a, Message> {
-    let tile = gone_tile(TileSize::Large);
-    let head =
-        widgets::card_head(Some(tile), tr("No longer available"), tr("Moved, changed, deleted or out of reach."), None);
-    container(widgets::card(vec![head], false, None)).width(room.min(size::list())).into()
 }

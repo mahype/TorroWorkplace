@@ -34,7 +34,7 @@ fn app_of(area: Area) -> Option<&'static str> {
 }
 
 /// The head of a group of short forms of `area`: its icon and word, `untrusted` for mail (its texts are foreign).
-fn group_head(area: Area) -> Head {
+pub(super) fn head(area: Area) -> Head {
     match area {
         Area::Mail => Head::new(Icon::Mail, tr("Mail")).untrusted(),
         Area::Calendar => Head::new(Icon::Calendar, tr("Calendar")),
@@ -90,7 +90,7 @@ impl App {
         } else {
             let lines: Vec<Element<'a, Message>> = items.iter().filter_map(|item| self.content_line(item)).collect();
             let found = trf("{count} found", &[("count", &lines.len())]);
-            column![content_card::short_group(&group_head(area), Some(found), lines, width)]
+            column![content_card::short_group(&head(area), Some(found), lines, width)]
         };
         if let Some(line) = line {
             let words = container(widgets::ellipsized(typo::meta(), line, theme::text_2)).width(Fill);
