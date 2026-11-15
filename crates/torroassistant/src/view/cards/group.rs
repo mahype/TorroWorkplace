@@ -1,12 +1,14 @@
 //! A group of items in the assistant's chat (issue #786, "Grenzen" in `docs/inhaltskarten.md`): one to three as full
-//! cards, four to ten as short forms (each with its "Open"), and with `total` the line "{n} … match" with "Show all"
-//! (`apps.open_app` of the area's app, without a target: the app as it starts, not a search the window made up).
+//! cards, four to ten as short forms on one card (`content_card::short_group`: a head with the area's icon and word and
+//! "{n} found", the lines with hairlines between, each with its "Open"), and with `total` the line "{n} … match" with
+//! "Show all" (`apps.open_app` of the area's app, without a target: the app as it starts, not a search the window
+//! made up).
 
 use iced::widget::{Column, column, container, row};
 use iced::{Alignment, Element, Fill};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
-use torro_gui::content_card::Action;
+use torro_gui::content_card::{self, Action, Head};
 use torro_gui::icon::Icon;
 use torro_gui::theme::{self, size, space};
 use torro_gui::{style, typo, widgets};
@@ -28,6 +30,17 @@ fn app_of(area: Area) -> Option<&'static str> {
         Area::Tasks => Some(AppId::TASKS.binary),
         Area::Contacts => Some(AppId::CONTACTS.binary),
         _ => None,
+    }
+}
+
+/// The head of a group of short forms of `area`: its icon and word, `untrusted` for mail (its texts are foreign).
+fn group_head(area: Area) -> Head {
+    match area {
+        Area::Mail => Head::new(Icon::Mail, tr("Mail")).untrusted(),
+        Area::Calendar => Head::new(Icon::Calendar, tr("Calendar")),
+        Area::Tasks => Head::new(Icon::ListTodo, tr("Tasks")),
+        Area::Contacts => Head::new(Icon::User, tr("Contacts")),
+        _ => Head::new(Icon::LayoutGrid, tr("Items")),
     }
 }
 
@@ -75,8 +88,9 @@ impl App {
         let mut parts: Column<'a, Message> = if full {
             column(items.iter().filter_map(|item| self.content_view(seq, item, room))).spacing(size::card_gap())
         } else {
-            let lines = items.iter().filter_map(|item| self.content_line(item)).collect();
-            column![container(widgets::card(lines, false, None)).width(width)]
+            let lines: Vec<Element<'a, Message>> = items.iter().filter_map(|item| self.content_line(item)).collect();
+            let found = trf("{count} found", &[("count", &lines.len())]);
+            column![content_card::short_group(&group_head(area), Some(found), lines, width)]
         };
         if let Some(line) = line {
             let words = container(widgets::ellipsized(typo::meta(), line, theme::text_2)).width(Fill);

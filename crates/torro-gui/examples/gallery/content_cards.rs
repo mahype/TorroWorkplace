@@ -277,7 +277,17 @@ fn cards<'a>(width: f32, only: Option<Part>) -> Element<'a, Msg> {
         (Part::Items, section("Events and tasks", items)),
         (Part::States, section("States", states)),
         (Part::Question, section("Question (Settings › Privacy at Ask)", ask)),
-        (Part::Short, column![heading("Short forms"), short_list(size::content_max())].spacing(space::s()).into()),
+        (
+            Part::Short,
+            column![
+                heading("Short forms"),
+                short_list(size::content_max()),
+                heading("A group of short forms"),
+                group(room)
+            ]
+            .spacing(space::s())
+            .into(),
+        ),
     ];
     let shown = all.into_iter().filter(|(part, _)| only.is_none_or(|only| only == *part)).map(|(_, section)| section);
     let sections = Column::with_children(shown).spacing(layout::section_gap()).padding(pad);
@@ -298,6 +308,22 @@ fn heading<'a>(title: &'a str) -> Element<'a, Msg> {
 fn shorts<'a>() -> Element<'a, Msg> {
     let list = container(short_list(size::content_max())).padding(space::m());
     scrollable(list).direction(scrollable::Direction::Vertical(style::scrollbar())).style(style::scrollable).into()
+}
+
+/// Five mails found together, as the assistant shows four to ten items: one card of short forms with its head.
+fn group<'a>(room: f32) -> Element<'a, Msg> {
+    let mails =
+        [("API review notes", "Thu"), ("Re: Offer", "Wed"), ("Invoice 2026-114", "Mon"), ("Signed offer", "Mon")];
+    let shorts = mails
+        .into_iter()
+        .map(|(title, when)| {
+            ContentCard::new(Head::new(Icon::Mail, "Mail"), title)
+                .line(Icon::Clock, when)
+                .main(Action::new(Icon::ArrowUpRight, "Open in mail", Msg::Noop))
+                .short()
+        })
+        .collect();
+    content_card::short_group(&Head::new(Icon::Mail, "Mail").untrusted(), Some("4 found".into()), shorts, room)
 }
 
 /// Short forms of every kind, one line each with a hairline between, at most `max` wide.

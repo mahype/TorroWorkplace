@@ -27,7 +27,7 @@
 
 use chrono::{Datelike, NaiveDate, Utc};
 use iced::widget::text::Wrapping;
-use iced::widget::{Row, Space, column, container, image, responsive, row, stack, svg};
+use iced::widget::{Column, Row, Space, column, container, image, responsive, row, rule, stack, svg};
 use iced::{Alignment, Background, Color, ContentFit, Element, Fill, FillPortion, Padding, Size, Theme, border};
 use torro_chat::{ForeignProvider, GithubState, LinkCard, LinkCardKind};
 use torro_core::i18n::{tr, trc, trf};
@@ -435,6 +435,29 @@ pub fn short_detail_width(detail: &str, room: f32) -> Option<f32> {
     // A little more than the measured width: the estimate must never cut a short date ("Wed", "17:14").
     let own = typo::text_width(detail, typo::meta()) + space::xs();
     Some(own.min(room * 2.0 / 5.0))
+}
+
+/// Four to ten items as one card of short forms (`docs/inhaltskarten.md`, "Grenzen"; the gallery's short list):
+/// the `head` (the kind's icon, the source, `untrusted` when it is) with `note` at its end in `text_3` ("5 found"),
+/// then the short forms ([`ContentCard::short`]) one under the other with a hairline between them. `room` wide.
+pub fn short_group<'a, M: Clone + 'a>(
+    head: &Head,
+    note: Option<String>,
+    shorts: Vec<Element<'a, M>>,
+    room: f32,
+) -> Element<'a, M> {
+    let mut top = row![container(head_line(head)).width(Fill)].spacing(space::s()).align_y(Alignment::Center);
+    if let Some(note) = note {
+        top = top.push(typo::text(typo::meta().tabular(), note).style(theme::text_3).wrapping(Wrapping::None));
+    }
+    let mut list = Column::new().width(Fill);
+    for (i, short) in shorts.into_iter().enumerate() {
+        if i > 0 {
+            list = list.push(rule::horizontal(HAIRLINE).style(style::rule));
+        }
+        list = list.push(short);
+    }
+    container(widgets::card(vec![top.into(), list.into()], false, None)).width(room.max(0.0)).into()
 }
 
 /// The head: the kind's icon, the source in `text_3`, and the tag `untrusted` at the end when it is.
