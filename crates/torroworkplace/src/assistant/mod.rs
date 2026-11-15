@@ -73,6 +73,7 @@ mod engines;
 mod model;
 pub(crate) mod profile;
 mod prompt;
+pub(crate) mod sentences;
 pub(crate) mod skills;
 mod store;
 mod tools;
@@ -550,6 +551,7 @@ impl Assistant {
             bot,
             on_behalf: None,
             from: None,
+            spoken: false,
         };
         self.engine_and_about_refusal(ai, &message, about.clone(), actor).await
     }
@@ -575,6 +577,7 @@ impl Assistant {
             bot: None,
             on_behalf: None,
             from: None,
+            spoken: false,
         };
         self.engine_and_about_refusal(ai, &message, Some(about), &Actor::Assistant).await
     }
@@ -745,8 +748,8 @@ impl Assistant {
         let (history, results, untrusted) =
             (conversation.entries.clone(), conversation.results.clone(), conversation.untrusted);
         state.conversations.insert(id.clone(), conversation);
-        let (engine, model, effort, without, mode) =
-            (message.engine, message.model, message.effort, message.without, message.mode);
+        let (engine, model, effort, without, mode, spoken) =
+            (message.engine, message.model, message.effort, message.without, message.mode, message.spoken);
         let actor = match message.on_behalf {
             Some(delegation) => Actor::Delegated(delegation),
             None => Actor::of(message.bot.as_ref()),
@@ -766,6 +769,7 @@ impl Assistant {
             actor,
             bot: message.bot,
             about,
+            spoken,
         };
         match kind {
             EngineKind::Test => self.start_test_answer(&mut state, &id, engine),
@@ -1465,6 +1469,8 @@ struct Message {
     /// wrote it (task B.2), sent with the app key. Only the person's message can name a bot for the
     /// assistant to ask ([`State::said`]), and only it is their word in any later answer.
     from: Option<String>,
+    /// The person spoke it (issue #747): the answer is short, to be read aloud.
+    spoken: bool,
 }
 
 /// Why a message for `bot` (`None`: the assistant) cannot go into `conversation` (task B.1): a
@@ -1540,7 +1546,7 @@ pub async fn answer_from(
         // The core answers it with the caller's scope (issue #704); this is the app key's.
         Request::SearchConversations { query, limit } => assistant.search(&query, limit, &Scope::all()).await,
         Request::GetConversation { id, after } => assistant.get(&id, after).await,
-        Request::SendMessage { conversation, engine, model, effort, text, without, mode, bot, about } => {
+        Request::SendMessage { conversation, engine, model, effort, text, without, mode, bot, about, spoken } => {
             let bot = match bot {
                 Some(id) => match assistant.bots.get(&id).await {
                     Some(bot) => Some(bot),
@@ -1558,7 +1564,8 @@ pub async fn answer_from(
                 Ok(kind) => kind,
                 Err(refused) => return refused,
             };
-            let message = Message { conversation, engine, model, effort, text, without, mode, bot, on_behalf, from };
+            let message =
+                Message { conversation, engine, model, effort, text, without, mode, bot, on_behalf, from, spoken };
             // A chat about a mail (issue #605): refused before anything is stored.
             let about = match assistant.about_for(&message, about, kind).await {
                 Ok(about) => about,
@@ -1590,6 +1597,7 @@ pub async fn answer_from(
                 bot: Some(bot),
                 on_behalf,
                 from,
+                spoken: false,
             };
             assistant.send(message, kind, Utc::now()).await
         }
@@ -1689,6 +1697,7 @@ pub(crate) mod tests {
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         }
     }
 
@@ -1804,6 +1813,7 @@ pub(crate) mod tests {
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         };
         assert_eq!(code(&answer(&assistant, &ai, other).await), "not-found", "no such engine");
         assert_eq!(code(&answer(&assistant, &ai, send(None, " ")).await), "error", "limits first");
@@ -1866,6 +1876,7 @@ pub(crate) mod tests {
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         };
         assert_eq!(code(&answer(&assistant, &ai, to_ollama).await), "unsupported");
         assert_eq!(

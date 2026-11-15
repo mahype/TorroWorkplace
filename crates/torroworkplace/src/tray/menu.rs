@@ -288,6 +288,8 @@ pub fn voice_line(state: VoiceState) -> &'static str {
         VoiceState::Listening => tr("Listening for “Hey Torro”"),
         VoiceState::Recording => tr("Recording …"),
         VoiceState::Answering => tr("Answering …"),
+        // Issue #747: the microphone waits for the next sentence of a conversation.
+        VoiceState::Conversing => tr("Listening …"),
     }
 }
 
@@ -749,7 +751,7 @@ mod tests {
     #[test]
     fn the_menu_shows_listening_and_mutes_the_microphone() {
         assert_eq!(labels(&build(&snapshot()))[0], tr("Notification Hub"), "off: nothing");
-        for state in [VoiceState::Listening, VoiceState::Recording, VoiceState::Answering] {
+        for state in [VoiceState::Listening, VoiceState::Recording, VoiceState::Answering, VoiceState::Conversing] {
             let menu = build(&Snapshot { voice: state, ..snapshot() });
             assert_eq!(
                 labels(&menu)[..3],

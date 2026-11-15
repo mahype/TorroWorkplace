@@ -144,6 +144,7 @@ impl Assistant {
             // The assistant's model wrote it, not the person (issue #305).
             from: Some(delegation.caller.clone()),
             on_behalf: Some(delegation),
+            spoken: false,
         };
         let started = self.send(message, kind, Utc::now()).await;
         let Response::Conversation { conversation: summary, entries } = &started else { return started };

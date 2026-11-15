@@ -3056,6 +3056,18 @@ pub struct Core {
     /// The helper that reads aloud, `torroassistant --speak` (issue #745, `assistant.speak`); tests
     /// start none unless they bring a fake ([`Core::with_speech`]).
     speech: SpeechHelper,
+    /// The conversation by voice that runs (issue #747, `assistant.start_talk`): the listener runs for
+    /// it also while "Hey Torro" is off ([`Core::follow_voice`]).
+    talk: std::sync::Mutex<Option<TalkSlot>>,
+    /// Whether "Hey Torro" was on when the listener last followed the settings: switched off, it ends
+    /// the conversation by voice (issue #747).
+    voice_was_on: std::sync::atomic::AtomicBool,
+    /// How many readings aloud run (`assistant.speak`, `assistant.speak_answer`), whoever asked for
+    /// them: the listener keeps the microphone closed meanwhile (issue #747).
+    speaking: Arc<std::sync::atomic::AtomicUsize>,
+    /// The answer `assistant.speak_answer` reads now (issue #747): another call for it waits for the
+    /// same end.
+    reading: Mutex<Option<Reading>>,
     /// What the keys lent for runs of engine B are for (task B.2, [`LentScope`]): the assistant's
     /// conversation, or a bot's run for the assistant. In memory only, as the leases are.
     lent_scopes: std::sync::Mutex<Vec<LentScope>>,
@@ -3211,6 +3223,10 @@ impl Core {
             assistant: Arc::new(Assistant::system()),
             voice: if cfg!(test) { Listener::none() } else { Listener::system() },
             speech: if cfg!(test) { SpeechHelper::none() } else { SpeechHelper::system() },
+            talk: std::sync::Mutex::new(None),
+            voice_was_on: std::sync::atomic::AtomicBool::new(false),
+            speaking: Arc::default(),
+            reading: Mutex::new(None),
             lent_scopes: std::sync::Mutex::new(Vec::new()),
             accounts_read: tokio::sync::watch::Sender::new(true),
             reminders: Arc::new(Reminders::system()),
@@ -7006,6 +7022,13 @@ impl Core {
                 Response::Ok
             }
             Request::SpeechStatus => self.speech_status().await,
+            Request::StartTalk { conversation } => self.start_talk(conversation, reach).await,
+            Request::EndTalk => {
+                self.end_talk().await;
+                Response::Ok
+            }
+            Request::TalkStatus => self.talk_status(),
+            Request::SpeakAnswer { conversation } => self.speak_answer(&conversation, reach).await,
             Request::MapsStatus => self.maps_status(reach),
             Request::ClearMapsCache => self.clear_maps_cache(reach),
             Request::SetCollectionShown { collection, shown } => self.set_collection_shown(&collection, shown).await,
@@ -7396,7 +7419,17 @@ impl Core {
                 if let Err(refused) = self.about_reach(&request, reach).await {
                     return refused;
                 }
+                let deleted = match &request {
+                    Request::DeleteConversation { id } => Some(id.clone()),
+                    _ => None,
+                };
                 let answered = Box::pin(self.assistant_request(request, from)).await;
+                // A conversation by voice ends with its conversation (issue #747).
+                if let Some(id) = deleted
+                    && answered == Response::Ok
+                {
+                    self.end_talk_in(&id).await;
+                }
                 self.about_within(answered, reach)
             }
             // Cards (issue #225): resolved with the rights of the conversation's client, not the caller's
@@ -12928,10 +12961,85 @@ impl Core {
     }
 
     fn follow_voice(&self) {
+        use std::sync::atomic::Ordering;
         // Listening is part of the assistant: turned off (task W.2), the microphone stays closed.
         let settings = self.settings.current();
         let assistant = settings.component_on(torro_core::settings::Component::Assistant);
-        self.voice.follow(settings.voice.enabled && assistant);
+        let was_on = self.voice_was_on.swap(settings.voice.enabled, Ordering::SeqCst);
+        // "Hey Torro" switched off, or the assistant: a conversation by voice ends too (issue #747).
+        if (was_on && !settings.voice.enabled) || !assistant {
+            self.forget_talk();
+        }
+        let talking = self.lock_talk().is_some();
+        // Issue #747, decision 1: a conversation by voice opens the microphone also while "Hey
+        // Torro" is off, for as long as it runs.
+        self.voice.follow((settings.voice.enabled || talking) && assistant);
+    }
+
+    fn lock_talk(&self) -> std::sync::MutexGuard<'_, Option<TalkSlot>> {
+        self.talk.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Forgets the conversation by voice (issue #747); the tray and the windows learn it.
+    fn forget_talk(&self) {
+        if self.lock_talk().take().is_some() {
+            self.voice.notify();
+        }
+    }
+
+    /// `assistant.start_talk` (issue #747, app key only): a conversation by voice in `conversation`,
+    /// or in a new one the first sentence starts. It replaces one that runs; the listener starts for
+    /// it, also while "Hey Torro" is off.
+    async fn start_talk(&self, conversation: Option<String>, reach: Reach<'_>) -> Response {
+        let refused = |code: &str, message: &str| Response::Error { code: code.into(), message: message.into() };
+        if self.voice.program().is_none() {
+            return refused("unsupported", tr("The assistant app is not installed."));
+        }
+        if !self.settings.current().component_on(torro_core::settings::Component::Assistant) {
+            return refused("unsupported", "the assistant is switched off");
+        }
+        if let Some(id) = &conversation {
+            if let Some(hidden) = self.hidden_conversation(id, reach).await {
+                return hidden;
+            }
+            if self.assistant.title(id).await.is_none() {
+                return refused("not-found", &format!("no conversation {id:?}"));
+            }
+        }
+        *self.lock_talk() = Some(TalkSlot { conversation });
+        self.follow_voice();
+        self.voice.notify();
+        self.talk_status()
+    }
+
+    /// `assistant.end_talk` (issue #747): the microphone closes unless "Hey Torro" is on, and what is
+    /// read aloud stops. Nothing to end is fine.
+    async fn end_talk(&self) {
+        self.forget_talk();
+        self.follow_voice();
+        self.speech.stop().await;
+    }
+
+    /// Ends the conversation by voice when it runs in `conversation` (issue #747): it was deleted.
+    async fn end_talk_in(&self, conversation: &str) {
+        let in_it = self.lock_talk().as_ref().is_some_and(|talk| talk.conversation.as_deref() == Some(conversation));
+        if in_it {
+            self.end_talk().await;
+        }
+    }
+
+    /// `assistant.talk_status` (issue #747): the conversation by voice and what the listener does,
+    /// and whether anything is read aloud. A listener that ended took the conversation with it.
+    fn talk_status(&self) -> Response {
+        use std::sync::atomic::Ordering;
+        if !self.voice.running() {
+            self.forget_talk();
+        }
+        let talk = self
+            .lock_talk()
+            .as_ref()
+            .map(|talk| torro_ipc::Talk { conversation: talk.conversation.clone(), state: self.voice.state() });
+        Response::Talk { talk, speaking: self.speaking.load(Ordering::SeqCst) > 0 }
     }
 
     /// Wakes whenever what the voice listener does may have changed, for the tray.
@@ -13509,7 +13617,6 @@ impl Core {
     /// plays. Its place among the jobs is taken first, so a stop that comes while it gets ready
     /// counts for it.
     async fn speak(&self, text: &str) -> Response {
-        use torro_core::settings::SpeechProvider;
         let refused = |code: &str, message: &str| Response::Error { code: code.into(), message: message.into() };
         if text.trim().is_empty() {
             return refused("error", tr("There is nothing to read."));
@@ -13517,7 +13624,18 @@ impl Core {
         if text.chars().count() > MAX_SPEAK_CHARS {
             return refused("error", tr("The text is too long to read aloud."));
         }
+        let _speaking = Speaking::new(&self.speaking);
         let number = self.speech.claim().await;
+        // Another call for the answer that is read takes the place: this one is no reading of it.
+        *self.reading.lock().await = None;
+        self.speak_claimed(number, text).await
+    }
+
+    /// Reads `text` as the job `number` of the helper ([`SpeechHelper::claim`]): one piece of
+    /// `assistant.speak` or `assistant.speak_answer` (issue #747). Answers once it was read or stopped.
+    async fn speak_claimed(&self, number: u64, text: &str) -> Response {
+        use torro_core::settings::SpeechProvider;
+        let refused = |code: &str, message: &str| Response::Error { code: code.into(), message: message.into() };
         let voice = self.settings.current().voice;
         let model = qwen_model(&self.measured_hardware().await);
         let provider = voice.speech_provider;
@@ -13571,6 +13689,118 @@ impl Core {
                 },
                 Err(err) => return speech_failure(&err),
             }
+        }
+    }
+
+    /// `assistant.speak_answer` (issue #747): reads the answer after the last message of `conversation`
+    /// sentence by sentence, the one that runs as it grows ([`Core::read_answer`]). A call for the
+    /// answer that is read already waits for the same end; any other stops what reads.
+    async fn speak_answer(&self, conversation: &str, reach: Reach<'_>) -> Response {
+        use torro_ipc::assistant::EntryContent;
+        if let Some(hidden) = self.hidden_conversation(conversation, reach).await {
+            return hidden;
+        }
+        let (running, entries) = match self.assistant.get(conversation, None).await {
+            Response::Conversation { conversation, entries } => (conversation.running, entries),
+            other => return other,
+        };
+        let nothing = || Response::Error { code: "error".into(), message: "there is no answer to read".into() };
+        let Some(after) =
+            entries.iter().rev().find(|entry| matches!(entry.content, EntryContent::Message { .. })).map(|e| e.seq)
+        else {
+            return nothing();
+        };
+        let answered = entries.iter().any(|entry| {
+            entry.seq > after
+                && matches!(
+                    entry.content,
+                    EntryContent::Answer { .. } | EntryContent::Approval { .. } | EntryContent::Error { .. }
+                )
+        });
+        if !running && !answered {
+            return nothing();
+        }
+        let mut reading = self.reading.lock().await;
+        if let Some(same) =
+            reading.as_ref().filter(|reading| reading.conversation == conversation && reading.after == after)
+        {
+            let mut done = same.done.clone();
+            drop(reading);
+            return match done.wait_for(Option::is_some).await {
+                Ok(end) => end.clone().unwrap_or(Response::Ok),
+                Err(_) => Response::Ok,
+            };
+        }
+        let _speaking = Speaking::new(&self.speaking);
+        let number = self.speech.claim().await;
+        let (tell, done) = tokio::sync::watch::channel(None);
+        *reading = Some(Reading { conversation: conversation.to_string(), after, number, done });
+        drop(reading);
+        let end = self.read_answer(number, conversation, after).await;
+        tell.send_replace(Some(end.clone()));
+        let mut reading = self.reading.lock().await;
+        if reading.as_ref().is_some_and(|reading| reading.number == number) {
+            *reading = None;
+        }
+        end
+    }
+
+    /// Reads the answer after the entry `after` of `conversation` as the job `number` (issue #747): every
+    /// [`READ_EVERY`] the answer as far as it is written, its complete sentences
+    /// ([`crate::assistant::sentences`]) as one piece while the one before plays; an approval or a failure
+    /// as a sentence saying so. Ends once the answer is over and read, when stopped, or after [`READ_IDLE`]
+    /// without more text.
+    async fn read_answer(&self, number: u64, conversation: &str, after: u64) -> Response {
+        use torro_ipc::assistant::EntryContent;
+        let mut sentences = crate::assistant::sentences::Sentences::default();
+        let (mut written, mut idle) = (0, tokio::time::Instant::now());
+        loop {
+            if !self.speech.is_current(number) {
+                return Response::Ok;
+            }
+            let (running, entries) = match self.assistant.get(conversation, Some(after)).await {
+                Response::Conversation { conversation, entries } => (conversation.running, entries),
+                // Deleted meanwhile: there is nothing more to read.
+                _ => return Response::Ok,
+            };
+            let mut text = String::new();
+            let mut last_word = None;
+            for entry in &entries {
+                match &entry.content {
+                    EntryContent::Answer { text: answer, .. } => {
+                        if !text.is_empty() {
+                            text.push_str("\n\n");
+                        }
+                        text.push_str(answer);
+                    }
+                    EntryContent::Approval { .. } => {
+                        last_word = Some(tr("The assistant needs your approval. Please look at the window."));
+                    }
+                    EntryContent::Error { .. } => last_word = Some(tr("The assistant could not answer.")),
+                    _ => {}
+                }
+            }
+            let mut pieces = sentences.push(&text);
+            let over = last_word.is_some() || !running;
+            if over {
+                pieces.extend(sentences.finish());
+                pieces.extend(last_word.map(str::to_string));
+            }
+            if text.len() != written {
+                (written, idle) = (text.len(), tokio::time::Instant::now());
+            }
+            if !pieces.is_empty() {
+                let read = self.speak_claimed(number, &pieces.join(" ")).await;
+                if read != Response::Ok || over {
+                    return read;
+                }
+                idle = tokio::time::Instant::now();
+                continue;
+            }
+            if over || idle.elapsed() >= READ_IDLE {
+                return Response::Ok;
+            }
+            tokio::time::sleep(READ_EVERY).await;
         }
     }
 
@@ -19473,6 +19703,139 @@ done"#;
         );
         assert_eq!(core.handle(Request::Speak { text: "One. Two.".into() }).await, Response::Ok);
         assert_eq!(speech.calls_async().await, 2, "one call per piece");
+    }
+
+    /// A message to the test engine in a new conversation, answered after `step` twice.
+    async fn test_message(core: &Core) -> String {
+        let send = Request::SendMessage {
+            conversation: None,
+            engine: torro_ipc::assistant::TEST_ENGINE.into(),
+            model: None,
+            effort: None,
+            text: "What is on today?".into(),
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            bot: None,
+            about: None,
+            spoken: true,
+        };
+        let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
+        conversation.id
+    }
+
+    /// The conversation by voice as `assistant.talk_status` says.
+    async fn talk_of(core: &Core) -> (Option<torro_ipc::Talk>, bool) {
+        let Response::Talk { talk, speaking } = core.handle(Request::TalkStatus).await else { panic!("a talk") };
+        (talk, speaking)
+    }
+
+    /// Issue #747: a conversation by voice starts the listener also while "Hey Torro" is off, in a
+    /// conversation or in a new one; it ends with `end_talk`, its deleted conversation, "Hey Torro"
+    /// switched off and the listener's end.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_conversation_by_voice_opens_the_microphone_until_it_ends() {
+        use torro_ipc::{SettingKey, Talk, VoiceState};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        assert_eq!(
+            code(&core(dir.path()).with_assistant(assistant).handle(Request::StartTalk { conversation: None }).await),
+            "unsupported",
+            "no app, no microphone"
+        );
+        let program = crate::apps::tests::fake_program(dir.path(), r#"echo '"conversing"'; sleep 30"#);
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = core(dir.path()).with_assistant(assistant).with_listener(crate::apps::Listener::at(program));
+        let id = test_message(&core).await;
+        assert_eq!(code(&core.handle(Request::StartTalk { conversation: Some("nope".into()) }).await), "not-found");
+        assert!(!core.voice.running(), "nothing started");
+
+        let started = core.handle(Request::StartTalk { conversation: Some(id.clone()) }).await;
+        assert!(
+            matches!(&started, Response::Talk { talk: Some(Talk { conversation: Some(c), .. }), .. } if *c == id),
+            "{started:?}"
+        );
+        assert!(core.voice.running(), "decision 1: listening although \"Hey Torro\" is off");
+        let mut changes = core.voice_changes();
+        crate::apps::tests::until(&core.voice, &mut changes, VoiceState::Conversing).await;
+        assert_eq!(talk_of(&core).await.0.map(|talk| talk.state), Some(VoiceState::Conversing));
+        assert_eq!(core.handle(Request::EndTalk).await, Response::Ok);
+        assert_eq!(talk_of(&core).await, (None, false));
+        assert!(!core.voice.running(), "the microphone is closed again");
+        assert_eq!(core.handle(Request::EndTalk).await, Response::Ok, "nothing to end is fine");
+
+        // A new conversation the first sentence starts; deleting the talk's conversation ends it.
+        let Response::Talk { talk: Some(talk), .. } = core.handle(Request::StartTalk { conversation: None }).await
+        else {
+            panic!("a talk")
+        };
+        assert_eq!(talk.conversation, None);
+        assert!(matches!(
+            core.handle(Request::StartTalk { conversation: Some(id.clone()) }).await,
+            Response::Talk { .. }
+        ));
+        assert_eq!(core.handle(Request::DeleteConversation { id }).await, Response::Ok);
+        assert_eq!(talk_of(&core).await.0, None, "gone with its conversation");
+
+        // "Hey Torro" switched off ends it; the listener's end too.
+        let voice = |on: bool| Request::SetSetting { key: SettingKey::VoiceEnabled, value: serde_json::json!(on) };
+        assert_eq!(core.handle(voice(true)).await, Response::Ok);
+        assert!(matches!(core.handle(Request::StartTalk { conversation: None }).await, Response::Talk { .. }));
+        assert_eq!(core.handle(voice(false)).await, Response::Ok);
+        assert_eq!(talk_of(&core).await.0, None, "switched off with \"Hey Torro\"");
+        assert!(!core.voice.running());
+        assert!(matches!(core.handle(Request::StartTalk { conversation: None }).await, Response::Talk { .. }));
+        core.voice.follow(false);
+        assert_eq!(talk_of(&core).await.0, None, "the listener ended");
+    }
+
+    /// Issue #747: `speak_answer` reads the answer that runs once it is written, says `speaking`
+    /// meanwhile, whoever asked for it, and a second call for the same answer waits for the same end.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_answer_is_read_aloud_as_it_comes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let said = dir.path().join("said.log");
+        let body = format!(
+            r#"while read line; do
+  case "$line" in
+    *'"say"'*) printf '%s\n' "$line" >> '{}'; echo '"playing"'; sleep 0.4; echo '"done"' ;;
+  esac
+done"#,
+            said.display()
+        );
+        let speaker = dir.path().join("speaker");
+        crate::apps::tests::fake_at(&speaker, &body);
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::from_millis(200));
+        let core = Arc::new(
+            core(dir.path())
+                .with_assistant(assistant)
+                .with_speech(crate::apps::SpeechHelper::at(speaker))
+                .with_probe(Measured(large_pc())),
+        );
+        assert_eq!(code(&core.handle(Request::SpeakAnswer { conversation: "nope".into() }).await), "not-found");
+        let id = test_message(&core).await;
+        let read = |core: Arc<Core>, id: String| {
+            tokio::spawn(async move { core.handle(Request::SpeakAnswer { conversation: id }).await })
+        };
+        let (first, second) = (read(Arc::clone(&core), id.clone()), read(Arc::clone(&core), id.clone()));
+        let mut seen_speaking = false;
+        while !first.is_finished() {
+            seen_speaking |= talk_of(&core).await.1;
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(first.await.expect("read"), Response::Ok);
+        assert_eq!(second.await.expect("read"), Response::Ok, "the same end");
+        assert!(seen_speaking, "the listener knows it reads");
+        assert!(!talk_of(&core).await.1);
+        let log = std::fs::read_to_string(&said).expect("read aloud");
+        assert_eq!(log.lines().count(), 1, "read once: {log}");
+        let answer =
+            tr("This is the test engine. It answers every message the same way, without a model and without tools.");
+        assert!(log.contains(answer), "the whole answer, in one piece: {log}");
+        // Read again on its own, now that it is stored.
+        assert_eq!(core.handle(Request::SpeakAnswer { conversation: id }).await, Response::Ok);
+        assert_eq!(std::fs::read_to_string(&said).expect("read aloud").lines().count(), 2);
     }
 
     #[tokio::test]
@@ -28433,6 +28796,7 @@ done"#;
                 mode: torro_ipc::assistant::Mode::Default,
                 bot: None,
                 about: None,
+                spoken: false,
             },
             Request::CancelAnswer { conversation: id.into() },
             Request::RenameConversation { id: id.into(), title: "Renamed".into() },
@@ -28627,6 +28991,7 @@ done"#;
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         };
         let Response::Conversation { conversation, entries } = ask(&core, Some(&app_key), send).await else {
             panic!("the person starts a conversation")
@@ -28696,6 +29061,7 @@ done"#;
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         };
         let Response::Conversation { conversation, entries } = ask(&core, Some(&key), send).await else {
             panic!("the agent starts a conversation")
@@ -28722,6 +29088,7 @@ done"#;
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         };
         assert_eq!(code(&ask(&core, Some(&key), nowhere).await), "not-found", "no such engine");
         let bot = Request::OpenChatWindow { window: torro_ipc::assistant::ChatWindow::Bot("travel".into()) };
@@ -28804,6 +29171,7 @@ done"#;
             mode: torro_ipc::assistant::Mode::Default,
             bot: Some(bot.into()),
             about: None,
+            spoken: false,
         }
     }
 
@@ -31746,6 +32114,7 @@ done"#;
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         };
         match core.handle(send).await {
             Response::Conversation { conversation, .. } => conversation.id,
@@ -31937,6 +32306,7 @@ done"#;
                     mode: torro_ipc::assistant::Mode::Default,
                     bot: None,
                     about: None,
+                    spoken: false,
                 };
                 let Response::Conversation { conversation, .. } = core.handle(send).await else {
                     panic!("a conversation")
@@ -32128,6 +32498,7 @@ done"#;
             mode: torro_ipc::assistant::Mode::Default,
             bot: Some(bot.id.clone()),
             about: None,
+            spoken: false,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         conversation_until(&core, &conversation.id, |running, _| !running).await;
@@ -32207,6 +32578,7 @@ done"#;
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         };
         assert!(matches!(core.handle(send).await, Response::Conversation { .. }), "sent");
     }
@@ -32446,6 +32818,7 @@ done"#;
             mode: torro_ipc::assistant::Mode::Default,
             bot: Some(bot.id.clone()),
             about: None,
+            spoken: false,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         let asked = waiting_approval(&core).await;
@@ -32570,6 +32943,7 @@ done"#;
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         let entries = conversation_until(&core, &conversation.id, |running, _| !running).await;
@@ -33071,6 +33445,7 @@ done"#;
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         conversation_until(core, &conversation.id, |running, _| !running).await;
@@ -33151,6 +33526,7 @@ done"#;
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         };
         assert!(matches!(core.handle(named).await, Response::Conversation { .. }));
         let entries = conversation_until(&core, &first, |running, _| !running).await;
@@ -33492,6 +33868,7 @@ done"#;
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         };
         assert!(matches!(ask(&core, Some(&agent_key), by_agent).await, Response::Conversation { .. }));
         conversation_until(&core, &named, |running, _| !running).await;
@@ -33893,6 +34270,7 @@ done"#;
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         };
         let label = core.ai.label_of(&account.id).await.expect("a label");
         let off = trf("Turn on a model of {provider} in Settings › AI.", &[("provider", &label)]);
@@ -34325,6 +34703,7 @@ done"#;
                     mode: torro_ipc::assistant::Mode::Default,
                     bot: None,
                     about,
+                    spoken: false,
                 };
             // Without the assistant's own client nobody reads the mail for it.
             assert_eq!(code(&ask(&core, Some(&app_key), send(None, Some(mail.clone()))).await), "forbidden");
@@ -34487,6 +34866,7 @@ done"#;
                 mode: torro_ipc::assistant::Mode::Default,
                 bot: None,
                 about: Some(mail.clone()),
+                spoken: false,
             };
             // Every change of these clients waits for the person.
             let careful = |account: &str| {
@@ -36750,3 +37130,44 @@ done"#;
         assert_eq!(shown[0].task.as_ref().and_then(|task| task.list.clone()), None);
     }
 }
+
+/// The conversation by voice that runs (issue #747, `assistant.start_talk`).
+#[derive(Debug, Clone)]
+struct TalkSlot {
+    /// Where what is said goes; `None` until the first sentence starts a new conversation.
+    conversation: Option<String>,
+}
+
+/// The answer `assistant.speak_answer` reads (issue #747): the conversation, the message it answers,
+/// and the end, which every call for it waits for.
+#[derive(Debug)]
+struct Reading {
+    conversation: String,
+    after: u64,
+    /// The helper's job it reads as ([`SpeechHelper::claim`]).
+    number: u64,
+    done: tokio::sync::watch::Receiver<Option<Response>>,
+}
+
+/// Counts a reading aloud while it lives (issue #747, `Core::speaking`).
+struct Speaking(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Speaking {
+    fn new(count: &Arc<std::sync::atomic::AtomicUsize>) -> Speaking {
+        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Speaking(Arc::clone(count))
+    }
+}
+
+impl Drop for Speaking {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// How often `assistant.speak_answer` looks at the answer as it grows (issue #747).
+const READ_EVERY: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// How long `assistant.speak_answer` waits for more of an answer that writes nothing (issue #747):
+/// then it ends, so the microphone of a conversation does not stay closed for good.
+const READ_IDLE: std::time::Duration = std::time::Duration::from_secs(120);
