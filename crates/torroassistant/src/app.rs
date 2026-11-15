@@ -639,8 +639,11 @@ pub struct App {
     /// task WZ.8), by the number of their entry; a card not resolved yet is not drawn.
     pub(crate) cards: HashMap<u64, Card>,
     /// The pictures of link cards (issue #785, `assistant.get_card_picture`), by conversation and the card's entry,
-    /// decoded to draw ([`App::fetch_card_picture`]). Strand 2g of issue #784 fills it.
+    /// decoded to draw ([`App::fetch_card_picture`]).
     pub(crate) card_pictures: HashMap<(String, u64), iced::widget::image::Handle>,
+    /// The link cards whose picture was asked for, by conversation and entry: asked once per card, also when the core
+    /// had none, until the card changes ([`App::take_cards`]).
+    pub(crate) card_pictures_asked: HashSet<(String, u64)>,
     /// The tool lines unfolded, by number.
     pub(crate) expanded: HashSet<u64>,
     /// The answers as Markdown blocks, by number, with the text they were made from: for the
@@ -805,6 +808,7 @@ impl App {
             deciding: None,
             cards: HashMap::new(),
             card_pictures: HashMap::new(),
+            card_pictures_asked: HashSet::new(),
             expanded: HashSet::new(),
             answers: HashMap::new(),
             stream: None,
@@ -1178,7 +1182,7 @@ impl App {
             }
             Message::Approval(id, Err(refusal)) => eprintln!("cannot read the approval {id}: {}", refusal.message),
             Message::Decide(id, allow) => return self.decide(id, allow),
-            Message::Cards(id, result) => self.take_cards(&id, result),
+            Message::Cards(id, result) => return self.take_cards(&id, result),
             Message::OpenFile(id) => {
                 let failed = tr("Couldn't open the file.");
                 let request = chat::open_file_request(&id);
@@ -1212,11 +1216,14 @@ impl App {
             Message::CardRequest(request, failed) => {
                 return self.ask(*request, move |result| Message::CardAnswered(result.map(|_| ()), failed));
             }
-            // Must (strand 2g of issue #784): decode the picture (PNG, JPEG, GIF, WebP, as `torrochat::system::
-            // picture_handle` does) into `card_pictures` under `(conversation, seq)`, for the conversation still open;
-            // a refusal keeps the kind's icon and asks no more for that card until the cards change.
+            // A refusal (no picture, no Nextcloud) keeps the kind's icon, and the card asks no more until it changes.
             Message::CardPicture(conversation, seq, result) => {
-                let _ = (conversation, seq, result);
+                if self.current.as_deref() != Some(conversation.as_str()) {
+                    // Left meanwhile: asked anew when the conversation is open again.
+                    self.card_pictures_asked.remove(&(conversation, seq));
+                } else if let Some(handle) = result.ok().as_ref().and_then(card_picture) {
+                    self.card_pictures.insert((conversation, seq), handle);
+                }
             }
             Message::CardAnswered(result, failed) => {
                 if let Err(refusal) = result {
@@ -2078,14 +2085,8 @@ impl App {
         Task::batch(tasks)
     }
 
-    /// The cards of the open conversation as they are now (`assistant.get_cards`, task WZ.8); nothing
-    /// for a conversation without cards.
     /// Asks for the picture of the link card `seq` of `conversation` (issue #785): `assistant.get_card_picture`
-    /// small, answered with [`Message::CardPicture`].
-    ///
-    /// Must (strand 2g of issue #784): call it after the cards came for each [`Card::Link`] whose card has `image`
-    /// and whose picture is not in `card_pictures` yet, once per card.
-    #[allow(dead_code, reason = "scaffold of issue #784: strand 2g calls it once the cards are drawn with pictures")]
+    /// small, answered with [`Message::CardPicture`]. [`App::fetch_card_pictures`] calls it once per card.
     pub(crate) fn fetch_card_picture(&mut self, conversation: String, seq: u64) -> Task<Message> {
         let request = Request::GetCardPicture {
             conversation: conversation.clone(),
@@ -2101,6 +2102,32 @@ impl App {
         })
     }
 
+    /// Asks for the pictures of the open conversation's link cards that show a card with `image` and were not asked
+    /// for yet ([`App::fetch_card_picture`]); each is asked once ([`App::card_pictures_asked`]).
+    fn fetch_card_pictures(&mut self) -> Task<Message> {
+        let Some(conversation) = self.current.clone() else {
+            return Task::none();
+        };
+        let mut wanted: Vec<u64> = self
+            .cards
+            .iter()
+            .filter(|(_, card)| matches!(card, Card::Link { card: Some(link), .. } if link.image))
+            .map(|(seq, _)| *seq)
+            .filter(|seq| !self.card_pictures_asked.contains(&(conversation.clone(), *seq)))
+            .collect();
+        wanted.sort_unstable();
+        let tasks: Vec<Task<Message>> = wanted
+            .into_iter()
+            .map(|seq| {
+                self.card_pictures_asked.insert((conversation.clone(), seq));
+                self.fetch_card_picture(conversation.clone(), seq)
+            })
+            .collect();
+        Task::batch(tasks)
+    }
+
+    /// The cards of the open conversation as they are now (`assistant.get_cards`, task WZ.8); nothing
+    /// for a conversation without cards.
     fn fetch_cards(&mut self) -> Task<Message> {
         let Some(id) = self.current.clone().filter(|_| !self.transcript.cards().is_empty()) else {
             return Task::none();
@@ -2117,15 +2144,30 @@ impl App {
         })
     }
 
-    /// The cards of the conversation `id`, when it is still the open one. A refusal (an old core, a
-    /// core that is restarting) leaves the cards as they were.
-    fn take_cards(&mut self, id: &str, result: Result<Vec<CardEntry>, Refusal>) {
+    /// The cards of the conversation `id`, when it is still the open one, and the pictures of its link cards not
+    /// asked for yet. A card that changed (shown once, gone) drops its picture and is asked for anew. A refusal (an
+    /// old core, a core that is restarting) leaves the cards as they were.
+    fn take_cards(&mut self, id: &str, result: Result<Vec<CardEntry>, Refusal>) -> Task<Message> {
         if self.current.as_deref() != Some(id) {
-            return;
+            return Task::none();
         }
         match result {
-            Ok(cards) => self.cards = cards.into_iter().map(|entry| (entry.seq, entry.card)).collect(),
-            Err(refusal) => eprintln!("{}: cannot read the cards ({}: {})", MAIN.binary, refusal.code, refusal.message),
+            Ok(cards) => {
+                let cards: HashMap<u64, Card> = cards.into_iter().map(|entry| (entry.seq, entry.card)).collect();
+                for (seq, before) in &self.cards {
+                    if cards.get(seq) != Some(before) {
+                        let key = (id.to_owned(), *seq);
+                        self.card_pictures.remove(&key);
+                        self.card_pictures_asked.remove(&key);
+                    }
+                }
+                self.cards = cards;
+                self.fetch_card_pictures()
+            }
+            Err(refusal) => {
+                eprintln!("{}: cannot read the cards ({}: {})", MAIN.binary, refusal.code, refusal.message);
+                Task::none()
+            }
         }
     }
 
@@ -3109,6 +3151,16 @@ pub(crate) fn composer_binding(press: KeyPress) -> Option<Binding<Message>> {
         return Some(Binding::Custom(Message::Send));
     }
     Binding::from_key_press(press)
+}
+
+/// The picture of a link card as the core sent it (`assistant.get_card_picture`), decoded to draw: PNG, JPEG, GIF or
+/// WebP, as the chat window decodes its previews; `None` for data that is no such picture (the kind's icon stays).
+fn card_picture(picture: &torro_ipc::chat::ChatPicture) -> Option<iced::widget::image::Handle> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(&picture.base64.0).ok()?;
+    let pixels = image::load_from_memory(&bytes).ok()?.into_rgba8();
+    let (width, height) = pixels.dimensions();
+    Some(iced::widget::image::Handle::from_rgba(width, height, pixels.into_raw()))
 }
 
 mod bots;

@@ -142,6 +142,21 @@ fn answer_of(request: &Request, result: Result<Response, Refusal>) -> Message {
             Message::ReadAloudSet(value.as_bool().unwrap_or_default(), result.map(|_| ()))
         }
         Request::Speak { .. } | Request::StopSpeaking => Message::ReadingStopped,
+        // Issue #784: the picture of a link card, and the buttons of content cards.
+        Request::GetCardPicture { conversation, seq, .. } => Message::CardPicture(
+            conversation.clone(),
+            *seq,
+            result.and_then(|response| match response {
+                Response::ChatPicture { picture } => Ok(picture),
+                other => Err(Refusal::unexpected(&other)),
+            }),
+        ),
+        Request::ShowAssistantCard { .. }
+        | Request::SaveTodo { .. }
+        | Request::SendDraft { .. }
+        | Request::SetSetting { key: torro_ipc::SettingKey::PrivacyProvider, .. } => {
+            Message::CardAnswered(result.map(|_| ()), "failed")
+        }
         Request::ConfirmBot { conversation, bot } => Message::BotConfirmed(
             crate::bots::Proposal { conversation: conversation.clone(), bot: bot.clone() },
             result.map(|_| ()),
@@ -317,6 +332,199 @@ fn a_new_card_is_resolved_at_once_and_only_for_the_open_conversation() {
     sent(&mut app);
     let _ = app.update(Message::Followed(CARDS.into(), Ok((summary, vec![card]))));
     assert!(sent(&mut app).contains(&Request::GetCards { conversation: CARDS.into() }));
+}
+
+/// The entry of the first content card of `CONTENT` that `pick` takes.
+fn content_seq(app: &App, pick: impl Fn(&Card) -> bool) -> u64 {
+    let mut seqs: Vec<u64> = app.cards.iter().filter(|(_, card)| pick(card)).map(|(seq, _)| *seq).collect();
+    seqs.sort_unstable();
+    *seqs.first().expect("the demo has such a card")
+}
+
+/// What a click on the button `label` of the card `seq` sent to the core.
+fn press(app: &mut App, seq: u64, label: &str) -> Vec<Request> {
+    let actions = app.card_actions(seq);
+    let action = actions.into_iter().find(|action| action.label == label).expect("the button");
+    sent(app);
+    let _ = app.update(action.on_press.expect("a button that does something"));
+    sent(app)
+}
+
+/// Issue #784 (strand 2g): every button of a content card is the person's click with one request – mail, event,
+/// task, contact and "Show all" open the app on the item (`apps.open_app`), "Done" saves the task done, the draft
+/// with an approval only decides it, the question about a provider shows the card once or changes Settings ›
+/// Privacy. A link's card opens the address in the browser (not pressed here).
+#[test]
+fn each_button_of_a_content_card_sends_its_request() {
+    let mut app = started(&["--chat", demo::CONTENT]);
+    let account = "mail:anna@work.example.org";
+
+    let mail = content_seq(&app, |card| matches!(card, Card::Mail { .. }));
+    let opened = press(&mut app, mail, tr("Open in Mail"));
+    let target = Some(format!("message:{account}:m:c1"));
+    assert_eq!(opened, [Request::OpenApp { app: "torro-inbox-mail".into(), target }]);
+
+    let event = content_seq(&app, |card| matches!(card, Card::Event { .. }));
+    let Some(Card::Event { event: shown, .. }) = app.cards.get(&event).cloned() else { panic!("an event") };
+    let target = Some(format!("event:{}", shown.uid));
+    assert_eq!(
+        press(&mut app, event, tr("Open in calendar")),
+        [Request::OpenApp { app: "torrocalendar".into(), target }]
+    );
+
+    let todo = content_seq(&app, |card| matches!(card, Card::Todo { .. }));
+    let Some(Card::Todo { todo: task, .. }) = app.cards.get(&todo).cloned() else { panic!("a task") };
+    assert!(!task.completed, "the demo's task is open");
+    let target = Some(format!("task:{}", task.uid));
+    assert_eq!(press(&mut app, todo, tr("Open in tasks")), [Request::OpenApp { app: "torrotasks".into(), target }]);
+    let done = torro_pim::Todo { completed: true, ..*task };
+    assert_eq!(press(&mut app, todo, tr("Done")), [Request::SaveTodo { todo: done }]);
+
+    let draft = content_seq(&app, |card| matches!(card, Card::Draft { approval: Some(_), .. }));
+    let allow = Request::DecideApproval { id: APPROVAL_ID.into(), allow: true };
+    assert_eq!(press(&mut app, draft, tr("Send")), [allow], "with an approval Send only allows it");
+    let deny = Request::DecideApproval { id: APPROVAL_ID.into(), allow: false };
+    assert_eq!(press(&mut app, draft, tr("Discard")), [deny], "and Discard denies it");
+
+    let contact = content_seq(&app, |card| matches!(card, Card::Contact { .. }));
+    let target = Some("contact:demo/anna".to_owned());
+    assert_eq!(
+        press(&mut app, contact, tr("Open in contacts")),
+        [Request::OpenApp { app: "torrocontacts".into(), target }]
+    );
+
+    let page = content_seq(&app, |card| matches!(card, Card::Link { card: Some(_), .. }));
+    let actions = app.card_actions(page);
+    assert!(matches!(&actions[0].on_press, Some(Message::OpenLink(url)) if url.starts_with("https://example.org/")));
+
+    let asked = content_seq(&app, |card| matches!(card, Card::Link { ask: Some(_), .. }));
+    let once = Request::ShowAssistantCard { conversation: demo::CONTENT.into(), seq: asked };
+    assert_eq!(press(&mut app, asked, tr("Show once")), [once]);
+    let choice = |choice: &str| Request::SetSetting {
+        key: torro_ipc::SettingKey::PrivacyProvider,
+        value: serde_json::json!({"provider": "news.example.com", "choice": choice}),
+    };
+    let always = trf("Always allow {provider}", &[("provider", &"news.example.com")]);
+    assert_eq!(press(&mut app, asked, &always), [choice("allowed")]);
+    let never = trf("Never for {provider}", &[("provider", &"news.example.com")]);
+    assert_eq!(press(&mut app, asked, &never), [choice("blocked")]);
+
+    let counted = content_seq(&app, |card| matches!(card, Card::Group { total: Some(_), .. }));
+    assert_eq!(
+        press(&mut app, counted, tr("Show all")),
+        [Request::OpenApp { app: "torro-inbox-mail".into(), target: None }]
+    );
+    let listed = content_seq(&app, |card| matches!(card, Card::Group { total: None, .. }));
+    assert!(app.card_actions(listed).iter().all(|action| action.label != tr("Show all")), "every item is shown");
+
+    // A click that failed says so and asks for the cards again: the item may have changed.
+    let _ =
+        app.update(Message::CardAnswered(Err(Refusal::new("conflict", "changed")), tr("Couldn't mark the task done.")));
+    assert_eq!(app.notice.as_ref().map(|notice| notice.text.as_str()), Some(tr("Couldn't mark the task done.")));
+    assert!(sent(&mut app).contains(&Request::GetCards { conversation: demo::CONTENT.into() }));
+}
+
+/// Issue #784 (strand 2g): a draft without an open approval sends only with `mail.send_draft` (the person's click
+/// with the app key); "Discard" is switched off and sends nothing, and nothing decides an approval.
+#[test]
+fn a_draft_without_an_approval_sends_only_through_send_draft() {
+    let mut app = started(&["--chat", demo::CONTENT]);
+    let seq = content_seq(&app, |card| matches!(card, Card::Draft { .. }));
+    let Some(Card::Draft { draft, .. }) = app.cards.get(&seq).cloned() else { panic!("a draft") };
+    app.cards.insert(seq, Card::Draft { draft: draft.clone(), approval: None });
+    let actions = app.card_actions(seq);
+    let discard = actions.iter().find(|action| action.label == tr("Discard")).expect("Discard");
+    assert!(discard.on_press.is_none(), "Discard does nothing without an approval");
+    let sending = press(&mut app, seq, tr("Send"));
+    assert_eq!(sending, [Request::SendDraft { id: draft.id.clone().expect("a saved draft") }]);
+    assert!(!sending.iter().any(|request| matches!(request, Request::DecideApproval { .. })));
+    // A draft never saved has nothing to send.
+    app.cards.insert(seq, Card::Draft { draft: Box::new(torro_mail::Draft { id: None, ..*draft }), approval: None });
+    assert!(app.card_actions(seq).iter().all(|action| action.on_press.is_none()));
+    for size in SIZES {
+        let _ = app.update(Message::Resized(size));
+        let _ = app.view();
+    }
+}
+
+/// Issue #784 (strand 2g, "Grenzen" in `docs/inhaltskarten.md`): one to three items are full cards, four to ten
+/// short forms, and with more found than shown the line "{n} … match" with "Show all" stands below them.
+#[test]
+fn a_group_shows_cards_short_forms_and_the_total() {
+    let line = |total: u64| Some(trf("{count} mails match", &[("count", &total)]));
+    assert_eq!(App::group_look(Area::Mail, 3, None), (true, None), "three are cards");
+    assert_eq!(App::group_look(Area::Mail, 4, None), (false, None), "four are short forms");
+    assert_eq!(App::group_look(Area::Mail, 10, Some(11)), (false, line(11)), "eleven found: ten lines and the total");
+    assert_eq!(App::group_look(Area::Mail, 3, Some(3)), (true, None), "a total that is all shown says nothing");
+    let tasks = App::group_look(Area::Tasks, 10, Some(25)).1;
+    assert_eq!(tasks, Some(trf("{count} tasks match", &[("count", &25_u64)])));
+
+    // Each of them draws in every size, from the demo's mails.
+    let mut app = started(&["--chat", demo::CONTENT]);
+    let seq = content_seq(&app, |card| matches!(card, Card::Group { .. }));
+    let Some(Card::Group { items, area, .. }) = app.cards.get(&seq).cloned() else { panic!("a group") };
+    let mail = items.first().cloned().expect("an item");
+    for (count, total) in [(3, None), (4, None), (10, Some(11))] {
+        app.cards.insert(seq, Card::Group { items: vec![mail.clone(); count], area, total });
+        let opens = app.card_actions(seq).iter().filter(|action| action.label == tr("Open in Mail")).count();
+        assert_eq!(opens, count, "every item keeps its Open");
+        for size in SIZES {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.view();
+        }
+    }
+}
+
+/// Issue #785 (strand 2g): the picture of a link card is asked for once per card (`assistant.get_card_picture`),
+/// decoded when it comes and drawn; a refusal keeps the icon and asks no more until the card changes.
+#[test]
+fn a_link_card_asks_for_its_picture_once() {
+    use base64::Engine as _;
+    let mut app = start(&["--chat", demo::CONTENT]);
+    settle(&mut app);
+    let page = content_seq(&app, |card| matches!(card, Card::Link { card: Some(_), .. }));
+    let key = (demo::CONTENT.to_owned(), page);
+    assert!(app.card_pictures_asked.contains(&key), "asked once the cards came");
+    assert!(!app.card_pictures.contains_key(&key), "the demo has no picture: the icon stays");
+    // The cards again: the card did not change, so its picture is not asked for again.
+    let _ = app.update(Message::CardAnswered(Ok(()), "failed"));
+    let again = sent(&mut app);
+    let cards = again.iter().find(|request| matches!(request, Request::GetCards { .. })).expect("the cards");
+    let _ = app.update(answer_of(cards, block_on(app.backend.ask(cards.clone()))));
+    assert!(!sent(&mut app).iter().any(|request| matches!(request, Request::GetCardPicture { .. })));
+
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image::RgbaImage::new(3, 2))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .expect("a PNG");
+    let picture = torro_ipc::chat::ChatPicture {
+        content_type: "image/png".into(),
+        base64: torro_ipc::chat::FileData(base64::engine::general_purpose::STANDARD.encode(png.into_inner())),
+        width: Some(3),
+        height: Some(2),
+    };
+    // A picture for a conversation no longer open is not kept, and is asked for anew there.
+    let _ = app.update(Message::CardPicture(TOOLS.into(), page, Ok(picture.clone())));
+    assert!(!app.card_pictures.contains_key(&(TOOLS.to_owned(), page)));
+    let _ = app.update(Message::CardPicture(demo::CONTENT.into(), page, Ok(picture)));
+    assert!(app.card_pictures.contains_key(&key), "decoded to draw");
+    for size in SIZES {
+        let _ = app.update(Message::Resized(size));
+        let _ = app.view();
+    }
+    // A card that changes asks for its picture anew.
+    let mut changed = app.cards.clone();
+    if let Some(Card::Link { card: Some(card), .. }) = changed.get_mut(&page) {
+        card.title = "Another title".into();
+    }
+    let entries = changed.into_iter().map(|(seq, card)| CardEntry { seq, card }).collect();
+    let _ = app.update(Message::Cards(demo::CONTENT.into(), Ok(entries)));
+    assert!(!app.card_pictures.contains_key(&key));
+    assert!(sent(&mut app).contains(&Request::GetCardPicture {
+        conversation: demo::CONTENT.into(),
+        seq: page,
+        size: torro_ipc::chat::PreviewSize::Small,
+    }));
 }
 
 #[test]

@@ -11269,6 +11269,7 @@ dependencies = [
  "cpal",
  "crane-core",
  "iced",
+ "image",
  "livekit-wakeword",
  "rfd",
  "serde_json",

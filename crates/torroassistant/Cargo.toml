@@ -35,6 +35,8 @@ torro-contacts.workspace = true
 chrono.workspace = true
 iced.workspace = true
 serde_json.workspace = true
+# The pictures of link cards (issue #785): PNG, JPEG, GIF or WebP from the core, decoded to draw.
+image.workspace = true
 # The sound the core fetches for reading aloud (issue #745) comes as base64 in JSON lines.
 base64.workspace = true
 # The voice listener (`--listen`, task C.9) asks the core from a plain loop, without a window.
