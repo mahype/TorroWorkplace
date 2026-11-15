@@ -9456,7 +9456,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("It imitates the voices of the assistant.", "Es ahmt die Stimmen des Assistenten nach."),
     // Content cards (issue #784: #785, #786, #797, #789, #790); the last four are the assistant's demo.
     ("Not available right now", "Gerade nicht verfügbar"),
-    ("untrusted", "nicht vertrauenswürdig"),
+    ("untrusted", "fremd"),
     ("Open in chat", "Im Chat öffnen"),
     ("Not planned", "Nicht geplant"),
     ("Open in tasks", "In Aufgaben öffnen"),
