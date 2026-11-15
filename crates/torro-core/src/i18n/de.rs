@@ -9212,6 +9212,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("No sound output found", "Keine Tonausgabe gefunden"),
     ("No sound output was found.", "Es wurde keine Tonausgabe gefunden."),
     ("Parakeet detects the language itself.", "Parakeet erkennt die Sprache selbst."),
+    ("Pocket TTS, German", "Pocket TTS, Deutsch"),
     ("Pocket TTS reads on this computer.", "Pocket TTS liest auf diesem Rechner vor."),
     ("The download failed. Try again.", "Das Herunterladen hat nicht geklappt. Versuch es noch einmal."),
     ("The listener stopped. Check the models below.", "Das Zuhören wurde beendet. Prüf die Modelle unten."),

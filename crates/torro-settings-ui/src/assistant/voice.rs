@@ -633,14 +633,15 @@ fn models_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
 fn model_row(model: &VoiceModel) -> Element<'_, Message> {
     let button = |label, message| widgets::text_button(None, label, style::button::secondary, Some(message));
     let detail = Some(model_detail(model));
-    let name = marked(&model.name, model.recommended);
+    let name = marked(model_name(model), model.recommended);
     match model.state {
         VoiceModelState::Ready => {
             let done = typo::text(typo::meta(), tr("Downloaded")).style(theme::text_2);
             let control = row![done, button(tr("Remove"), Message::Remove(model.id.clone()))]
                 .spacing(space::m())
                 .align_y(Alignment::Center);
-            setting_row(Some(widgets::status_dot(Status::Ok)), name, detail, control)
+            // No dot: "Downloaded" says it, and the rows keep one axis (design review of #547).
+            setting_row(None, name, detail, control)
         }
         VoiceModelState::Running => {
             let percent = percent(model);
@@ -685,6 +686,14 @@ pub fn model_detail(model: &VoiceModel) -> String {
             &[("kind", &kind), ("size", &size), ("percent", &percent(model))],
         ),
         _ => format!("{kind} · {size}"),
+    }
+}
+
+/// The name of a model for people: the product's name, the language of a voice model in words.
+pub fn model_name(model: &VoiceModel) -> &str {
+    match model.id.as_str() {
+        torro_core::voice_models::POCKET_DE => tr("Pocket TTS, German"),
+        _ => &model.name,
     }
 }
 
