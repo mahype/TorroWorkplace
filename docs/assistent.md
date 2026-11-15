@@ -785,7 +785,7 @@ Open First gilt auch hier, und das Mikrofon verlässt den Rechner nie, solange n
 
 **Alles eingebaut (Issue #762):** Erkennung, Vorlesen, Weckwort, Aufnahme und Wiedergabe laufen im Assistenten
 selbst, ohne fremde Programme, ohne Python und ohne Befehle im Terminal. Rechnen: sherpa-onnx (ONNX Runtime,
-fest eingebunden); Ton: cpal (unter Linux das PulseAudio-Protokoll, das PipeWire über `pipewire-pulse` bedient, mit ALSA als Rückfall; auf dem Mac Core Audio, unter Windows WASAPI). Was fehlt, ist
+fest eingebunden); Ton: cpal (unter Linux das PulseAudio-Protokoll, das PipeWire über `pipewire-pulse` bedient, mit ALSA als Rückfall, Vorlesen und Signalton über ALSA; auf dem Mac Core Audio, unter Windows WASAPI). Was fehlt, ist
 höchstens ein Modell, und das lädt ein Knopf in Einstellungen › Assistent › Voice › Models:
 
 | Modell | Wofür | Größe | Quelle |
