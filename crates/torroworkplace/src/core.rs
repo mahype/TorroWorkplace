@@ -19816,6 +19816,58 @@ done"#;
         assert_eq!(talk_of(&core).await.0, None, "the listener ended");
     }
 
+    /// Review of PR #768: the first sentence of an answer is read while the model still writes the rest,
+    /// the rest once it comes, each sentence once.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_first_sentence_is_read_while_the_answer_is_written() {
+        use crate::assistant::tests::{finish_growing, growing, message, written};
+        const ID: &str = "0000000000000747";
+        let dir = tempfile::tempdir().expect("temp dir");
+        let said = dir.path().join("said.log");
+        let body = format!(
+            r#"while read line; do
+  case "$line" in
+    *'"say"'*) printf '%s\n' "$line" >> '{}'; echo '"playing"'; echo '"done"' ;;
+  esac
+done"#,
+            said.display()
+        );
+        let speaker = dir.path().join("speaker");
+        crate::apps::tests::fake_at(&speaker, &body);
+        written(&dir.path().join("assistant"), ID, "Today", vec![message("What is on today?")], &[], |_| {});
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = Arc::new(
+            core(dir.path())
+                .with_assistant(assistant)
+                .with_speech(crate::apps::SpeechHelper::at(speaker))
+                .with_probe(Measured(large_pc())),
+        );
+        let (run, partial) = growing(&core.assistant, ID).await;
+        partial.lock().unwrap_or_else(PoisonError::into_inner).text = "Three events today. The first".into();
+        let reader = Arc::clone(&core);
+        let read = tokio::spawn(async move { reader.handle(Request::SpeakAnswer { conversation: ID.into() }).await });
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if std::fs::read_to_string(&said).is_ok_and(|log| !log.is_empty()) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(first.is_ok(), "the first sentence is read before the answer is over");
+        assert!(!read.is_finished(), "still reading along");
+        let log = std::fs::read_to_string(&said).expect("read aloud");
+        assert!(log.contains("Three events today.") && !log.contains("The first"), "{log}");
+        finish_growing(&core.assistant, ID, run, "Three events today. The first is at nine.").await;
+        assert_eq!(read.await.expect("read"), Response::Ok);
+        let log = std::fs::read_to_string(&said).expect("read aloud");
+        assert_eq!(log.lines().count(), 2, "{log}");
+        assert!(log.lines().nth(1).is_some_and(|line| line.contains("The first is at nine.")), "{log}");
+        assert_eq!(log.matches("Three events today.").count(), 1, "each sentence once: {log}");
+    }
+
     /// Issue #747 (review): an answer is read from after the last message, or after an approval that
     /// was answered on, so what follows the approval is read and nothing twice.
     #[test]

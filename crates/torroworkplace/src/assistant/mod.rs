@@ -1675,6 +1675,27 @@ pub(crate) mod tests {
     pub(crate) use super::model::tests::{Script, Scripted, calls, says};
     use super::*;
 
+    /// A running answer in conversation `id` whose text a test writes itself (issue #747): its run's
+    /// number and the text as it grows. [`finish_growing`] stores the answer and ends the run.
+    pub(crate) async fn growing(assistant: &Assistant, id: &str) -> (u64, Arc<StdMutex<Partial>>) {
+        let mut state = assistant.state().await;
+        state.next_run += 1;
+        let run = state.next_run;
+        let task = tokio::spawn(std::future::pending::<()>());
+        let partial: Arc<StdMutex<Partial>> = Arc::default();
+        let engine = TEST_ENGINE.to_string();
+        state
+            .running
+            .insert(id.into(), Run { id: run, task: task.abort_handle(), engine, partial: Arc::clone(&partial) });
+        (run, partial)
+    }
+
+    /// Stores `text` as the answer of the run `run` of [`growing`] and ends it.
+    pub(crate) async fn finish_growing(assistant: &Assistant, id: &str, run: u64, text: &str) {
+        let answer = EntryContent::Answer { text: text.into(), engine: TEST_ENGINE.into(), model: None };
+        assert!(assistant.add_to_run(id, run, answer, true, None).await, "the run still runs");
+    }
+
     /// An assistant in `dir/assistant` with the test engine taking `step` per step, starting no app.
     pub(crate) fn assistant_in(dir: &std::path::Path, step: Duration) -> Assistant {
         Assistant::new(Some(dir.join("assistant")), Some(step), no_app).with_config(dir.join("config/assistant"))
