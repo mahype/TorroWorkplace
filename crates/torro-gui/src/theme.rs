@@ -764,6 +764,13 @@ pub mod size {
     pub fn card_gap() -> f32 {
         design::with(|t| t.design.size.card_gap)
     }
+    /// 150: the highest a content card's picture stands (issue #784, prototype `docs/prototypes/inhaltskarten/`);
+    /// a wider card crops its picture (`ContentFit::Cover`) rather than growing taller, so a page in the reading
+    /// column never pushes the conversation out of view. Derived from `control_lg` (Comfort 165, Dense 135), so it
+    /// follows the step like the other heights.
+    pub fn card_picture_max() -> f32 {
+        control_lg() * 3.75
+    }
     /// 40: the avatar of a card (task E8.2): a sender's initials, round, beside a mail card's
     /// lines. A mail row has its own (`[list] avatar`, [`crate::layout::list`]).
     pub fn avatar() -> f32 {

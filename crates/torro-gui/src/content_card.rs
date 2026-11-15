@@ -8,8 +8,9 @@
 //!
 //! - **Head** ([`Head`]): the kind's icon, the source (a domain, an account, "From <name>"), and the mark
 //!   `untrusted` for text from outside the suite. Always one line, the source never left out.
-//! - **Picture** ([`Picture`]): at most one, 3:2 ([`Ratio::Photo`]) or 16:9 ([`Ratio::Video`], with the play mark);
-//!   without its pixels yet the kind's icon stands in its place, so the card does not jump.
+//! - **Picture** ([`Picture`]): at most one, 3:2 ([`Ratio::Photo`]) or 16:9 ([`Ratio::Video`], with the play mark),
+//!   at most `size::card_picture_max()` high (a wider card crops it); without its pixels yet the kind's icon stands
+//!   in its place, as high, so the card does not jump.
 //! - **Title**: one line, cut with "…".
 //! - **Lines** ([`ContentCard::line`]): up to [`MAX_LINES`] with an icon each (place, time, sender …), the most
 //!   important first.
@@ -79,12 +80,18 @@ pub enum Ratio {
 }
 
 impl Ratio {
-    /// The picture's height for `width`.
+    /// The picture's height for `width` in its ratio.
     pub fn height(self, width: f32) -> f32 {
         match self {
             Ratio::Photo => width * 2.0 / 3.0,
             Ratio::Video => width * 9.0 / 16.0,
         }
+    }
+
+    /// The height the picture stands at in a card `width` wide: its ratio, at most `size::card_picture_max()`. A
+    /// wider card crops it (`ContentFit::Cover`); the stand-in without pixels takes the same height.
+    pub fn shown_height(self, width: f32) -> f32 {
+        self.height(width).min(size::card_picture_max())
     }
 }
 
@@ -397,10 +404,11 @@ fn bar_button<'a, M: 'a>() -> Element<'a, M> {
     container(bar(width, size::control_sm(), size::control_sm())).width(width).into()
 }
 
-/// The picture `width` wide in its ratio; without its pixels the kind's icon in a neutral tile on the panel
-/// surface; a video with the play mark over it (alone, without the tile, so the two do not crowd the middle).
+/// The picture `width` wide in its ratio, at most `size::card_picture_max()` high and cropped to it
+/// ([`Ratio::shown_height`]); without its pixels the kind's icon in a neutral tile on the panel surface, as high; a
+/// video with the play mark over it (alone, without the tile, so the two do not crowd the middle).
 fn picture_frame<'a, M: 'a>(picture: Picture, kind: Icon, width: f32) -> Element<'a, M> {
-    let height = picture.ratio.height(width);
+    let height = picture.ratio.shown_height(width);
     let shown: Element<'a, M> = match picture.handle {
         Some(handle) => {
             image(handle).width(width).height(height).content_fit(ContentFit::Cover).border_radius(radius::sm()).into()
@@ -676,6 +684,15 @@ mod tests {
     fn pictures_keep_their_ratio() {
         assert_eq!(Ratio::Photo.height(300.0), 200.0);
         assert_eq!(Ratio::Video.height(320.0), 180.0);
+    }
+
+    #[test]
+    fn pictures_stand_at_most_the_token_high() {
+        let max = size::card_picture_max();
+        assert_eq!(Ratio::Photo.shown_height(720.0), max, "a wide card crops its picture");
+        assert_eq!(Ratio::Video.shown_height(720.0), max);
+        let small = max * 0.75;
+        assert_eq!(Ratio::Photo.shown_height(small), small * 2.0 / 3.0, "a narrow one keeps its ratio");
     }
 
     #[test]
