@@ -122,7 +122,7 @@ fn account_of(request: &Request) -> Result<Option<&str>, ()> {
         | Request::ChatGetPreview { id, .. }
         | Request::ChatGetAttachment { id, .. }
         | Request::ChatSaveAttachment { id, .. }
-        | Request::ChatShowCard { id } => message(id).map(Some),
+        | Request::ChatShowCard { id, .. } => message(id).map(Some),
         Request::ChatListShared { conversation: id, .. } => conversation(id).map(Some),
         Request::ChatPrepareFile { account, .. }
         | Request::ChatUploadFile { account, .. }
@@ -410,14 +410,19 @@ impl ChatService {
             Request::ChatReleaseFiles { account, ids } => return self.release(&account, &ids, &[], caller),
             Request::ChatGetUpload { id } => return self.upload_state(&id, caller),
             Request::ChatCancelUpload { id } => return self.cancel(&id, caller),
-            Request::ChatGetPreview { id, file, card, size } => {
+            // `index` (issue #785) picks one of up to three cards; until the core holds more than one per message
+            // (strand 2b of issue #784), only the first is there.
+            Request::ChatGetPreview { index: Some(1..), .. } | Request::ChatShowCard { index: Some(1..), .. } => {
+                return error_response(&ChatError::NotFound);
+            }
+            Request::ChatGetPreview { id, file, card, size, index: _ } => {
                 return self.get_preview(&id, file.as_deref(), card, size, caller).await;
             }
             Request::ChatGetAttachment { id, file } => return self.get_attachment(&id, &file, caller).await,
             Request::ChatListShared { conversation, kind, before, limit } => {
                 return self.list_shared(&conversation, kind, before.as_deref(), limit, caller).await;
             }
-            Request::ChatShowCard { id } => return self.show_card(&id).await,
+            Request::ChatShowCard { id, index: _ } => return self.show_card(&id).await,
             Request::ChatGetCall { conversation } => self.get_call(&conversation, caller).await,
             Request::ChatDeclineCall { conversation } => self.decline_call(&conversation, caller).await,
             Request::ChatLeaveCall { conversation } => self.leave_call(&conversation).await,

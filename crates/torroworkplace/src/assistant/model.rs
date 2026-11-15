@@ -137,6 +137,16 @@ pub trait Host: Send + Sync {
         Box::pin(async { false })
     }
 
+    /// Whether a look at the content card `card` (issue #784, an event, a task or a draft that engine B's agent
+    /// handed over as text) finds it for `actor`'s client now ([`super::cards::look`] with the core's
+    /// [`super::cards::Lookup`] for that client, [`super::cards::found`]). Engine B asks before it adds such a card
+    /// ([`super::cards::of_agent`]), as it asks [`Host::knows_file`] for a file. The default finds none, so a host
+    /// without the services adds no card.
+    fn looks_up<'a>(&'a self, actor: &'a Actor, card: &'a torro_ipc::assistant::CardRef) -> BoxFuture<'a, bool> {
+        let _ = (actor, card);
+        Box::pin(async { false })
+    }
+
     /// Runs `request` as the assistant's own client, exactly as a request with its key would run
     /// (`Core::handle_from`): its rights of now (`forbidden` when they do not cover it, and always
     /// for the area `assistant` but its memory, `torro_ipc::api::own_memory`), its collections

@@ -1430,6 +1430,8 @@ impl PimService {
             | Request::SearchConversations { .. }
             | Request::GetConversation { .. }
             | Request::GetCards { .. }
+            | Request::ShowItems { .. }
+            | Request::ShowAssistantCard { .. }
             | Request::SendMessage { .. }
             | Request::CheckAbout { .. }
             | Request::CancelAnswer { .. }

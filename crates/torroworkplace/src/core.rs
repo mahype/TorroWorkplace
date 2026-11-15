@@ -1104,7 +1104,7 @@ const TARGET_MAX: usize = 1000;
 
 /// A caller that may read the mail account `account`: the suite, or a client with read access to
 /// `mail` and the account in its `mail_accounts`.
-fn reads_mail(reach: Reach<'_>, account: &str) -> bool {
+pub(crate) fn reads_mail(reach: Reach<'_>, account: &str) -> bool {
     match reach {
         Reach::Suite => true,
         Reach::Client(rights) => rights.area(Area::Mail).allows(Access::Read) && rights.reaches_mail_account(account),
@@ -3128,6 +3128,9 @@ pub struct Core {
     /// The mails whose suggestions wait to be read out (issue #603, [`Core::read_suggestions`]):
     /// filled by the sorting of new mail, worked through one at a time.
     readings: crate::actions::Readings,
+    /// The link cards a person had shown once in the assistant's conversations (issue #785, `assistant.show_card`),
+    /// in memory only ([`crate::assistant::cards::link::Shown`]).
+    shown_links: crate::assistant::cards::link::Shown,
 }
 
 /// How long a measurement without shared memory counts ([`Core::hardware`]): long enough that the
@@ -3253,6 +3256,7 @@ impl Core {
             catalog: if cfg!(test) { crate::catalog::Catalog::none() } else { crate::catalog::Catalog::system() },
             announcements: crate::announcements::Announcements::system(),
             readings: crate::actions::Readings::default(),
+            shown_links: crate::assistant::cards::link::Shown::default(),
         };
         let allowed = core.allowed_folders();
         Core {
@@ -7513,6 +7517,12 @@ impl Core {
                 }
                 self.about_within(answered, reach)
             }
+            // Content cards (issue #784): showing what an answer found (strand 2f, issue #786) and "Show once" of a
+            // link card (strand 2b, issue #785) come with the strands; until then neither is there.
+            Request::ShowItems { .. } | Request::ShowAssistantCard { .. } => Response::Error {
+                code: "unsupported".into(),
+                message: tr("This version cannot show these cards yet.").into(),
+            },
             // Cards (issue #225): resolved with the rights of the conversation's client, not the caller's
             // alone.
             // A chat about a mail the caller may not read is not there for it (issue #605).
@@ -12090,6 +12100,47 @@ impl Core {
         held
     }
 
+    /// What a look at a content card (issue #784, [`crate::assistant::cards::look`]) gets of the core: the
+    /// conversation's `client` with `rights` (its own, cut to the asker's), the conversation and the services.
+    fn lookup<'a>(
+        &'a self,
+        client: &'a torro_ipc::ClientInfo,
+        rights: &'a torro_ipc::api::Rights,
+        conversation: &'a str,
+    ) -> crate::assistant::cards::Lookup<'a> {
+        crate::assistant::cards::Lookup {
+            client,
+            rights,
+            conversation,
+            mail: &self.mail,
+            pim: &self.pim,
+            contacts: &self.contacts,
+            chat: &self.chat,
+            github: &self.github,
+            approvals: &self.approvals,
+            shown: &self.shown_links,
+        }
+    }
+
+    /// What the content cards among `entries` show now (issue #784), by their entry's number: each looked up with
+    /// `lookup` ([`crate::assistant::cards::look`]), one after the other; files and suggestions are left to
+    /// [`crate::assistant::cards::resolve`].
+    async fn looked(
+        &self,
+        entries: &[torro_ipc::assistant::Entry],
+        lookup: &crate::assistant::cards::Lookup<'_>,
+    ) -> crate::assistant::cards::Looked {
+        let mut looked = crate::assistant::cards::Looked::new();
+        for entry in entries {
+            if let torro_ipc::assistant::EntryContent::Card { card } = &entry.content
+                && let Some(shown) = crate::assistant::cards::look(lookup, entry.seq, card).await
+            {
+                looked.insert(entry.seq, shown);
+            }
+        }
+        looked
+    }
+
     /// `assistant.get_cards` (issue #225, task WZ.5) for `reach`: the cards of the conversation
     /// `conversation` as they are now ([`crate::assistant::cards::resolve`]). Resolved with the rights
     /// of the conversation's client – the assistant's own, or the bot's for a conversation with a bot
@@ -12122,11 +12173,15 @@ impl Core {
             Reach::Client(asker) => client.rights.common(asker),
         });
         let held = self.held_suggestions(&entries, rights.as_ref()).await;
+        let looked = match client.as_ref().zip(rights.as_ref()) {
+            Some((client, rights)) => self.looked(&entries, &self.lookup(client, rights, conversation)).await,
+            None => crate::assistant::cards::Looked::new(),
+        };
         let maker =
             client.zip(rights).filter(|(_, rights)| crate::tools::reaches_files(rights)).map(|(client, _)| client.id);
         let register = self.tools.register().clone();
         let resolved = tokio::task::spawn_blocking(move || {
-            crate::assistant::cards::resolve(&entries, &register, maker.as_deref(), &held)
+            crate::assistant::cards::resolve(&entries, &register, maker.as_deref(), &held, &looked)
         });
         match resolved.await {
             Ok(cards) => Response::Cards { cards },
@@ -14380,6 +14435,22 @@ impl crate::assistant::Host for Core {
                 Some(client) => self.tools.file(id, Maker::Client(&client.id)).await.is_some(),
                 None => false,
             }
+        })
+    }
+
+    /// Issue #784: a look with the rights of `actor`'s client as they are now; the conversation does not matter for
+    /// the cards engine B takes (events, tasks, drafts), so it is left empty.
+    fn looks_up<'a>(
+        &'a self,
+        actor: &'a crate::assistant::Actor,
+        card: &'a torro_ipc::assistant::CardRef,
+    ) -> torro_core::ai::BoxFuture<'a, bool> {
+        Box::pin(async move {
+            let Some(client) = crate::assistant::Host::client_of(self, actor) else { return false };
+            let lookup = self.lookup(&client, &client.rights, "");
+            crate::assistant::cards::look(&lookup, 0, card)
+                .await
+                .is_some_and(|card| crate::assistant::cards::found(&card))
         })
     }
 

@@ -211,6 +211,7 @@ fn card_of(link: &str, reference: torro_nextcloud::Reference) -> Card {
             domain: domain_of(link),
             image: reference.image.is_some(),
             video: torro_chat::video_of(link),
+            ..LinkCard::default()
         }),
         image: reference.image,
     }
@@ -226,6 +227,7 @@ fn unresolved(link: &str) -> Card {
         domain: domain_of(link),
         image: false,
         video: Some(video),
+        ..LinkCard::default()
     });
     Card { card, image: None }
 }

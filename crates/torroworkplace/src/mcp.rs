@@ -4072,15 +4072,21 @@ mod tests {
             .collect();
         assert_eq!(
             catalogue.len(),
-            29,
+            30,
             "nine of task C.1, five of C.10, one of issue #134, one of #225, one of #605, four of #703, one of #704, \
-             two of #697, two of #745, three of #747: {catalogue:?}"
+             two of #697, two of #745, three of #747, one of #786: {catalogue:?}"
         );
         assert!(catalogue.iter().all(|name| name.starts_with("assistant_") && names.contains(name.as_str())));
         // But the person's yes to asking a bot (task B.2), which no agent may give, dictating (issue
-        // #699) and a conversation by voice (issue #747): only a person switches the microphone on.
-        let people_only =
-            ["assistant.confirm_bot", "assistant.dictate", "assistant.stop_dictation", "assistant.start_talk"];
+        // #699) and a conversation by voice (issue #747): only a person switches the microphone on. "Show once" of a
+        // link card (issue #785): only a person lets a foreign page learn when it was read.
+        let people_only = [
+            "assistant.confirm_bot",
+            "assistant.dictate",
+            "assistant.stop_dictation",
+            "assistant.start_talk",
+            "assistant.show_card",
+        ];
         let assistant = CATALOGUE.iter().filter(|c| c.area == Area::Assistant && !people_only.contains(&c.name));
         assert!(assistant.clone().all(|c| c.mcp == Mcp::Tool));
     }
@@ -4796,6 +4802,8 @@ mod tests {
                 "assistant_save_skill",
                 "assistant_delete_skill",
                 "assistant_search_conversations",
+                // Issue #786: showing what it found as cards, in its own conversation only.
+                "assistant_show_items",
             ];
             let tools: BTreeSet<&str> =
                 tools().iter().map(|tool| tool.name.as_ref()).filter(|name| name.starts_with("assistant_")).collect();
