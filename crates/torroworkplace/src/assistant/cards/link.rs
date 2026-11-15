@@ -55,10 +55,11 @@ enum Held {
     Resolved { account: String, resolved: Box<Resolved>, rights: Option<Box<Rights>> },
     /// The server could not be reached then.
     Failed(Instant),
-    /// A GitHub link without an item for `rights` (issue #784: no account, no right, none shows it), so GitHub is not
-    /// asked again while the rights stay the same and the link is the page it is; `failed` when GitHub could not be
+    /// A GitHub link without an item for `rights` at `at` (issue #784: no account, no right, none shows it), so GitHub
+    /// is not asked again while the rights stay the same and the link is the page it is – for
+    /// [`link_cards::NO_ITEM_AFTER`], so an account connected later brings its card; `failed` when GitHub could not be
     /// asked then, asked again after [`RETRY_AFTER`].
-    NoItem { rights: Box<Rights>, failed: Option<Instant> },
+    NoItem { rights: Box<Rights>, at: Instant, failed: bool },
 }
 
 /// The link cards of the assistant's conversations the core holds, by conversation and entry number: those a person
@@ -130,8 +131,9 @@ impl Shown {
 /// Whether what the command `name` (its catalogue name, as a tool line keeps it) answered counts as read for
 /// [`after_answer`] (decision 1 of issue #784): only a command that reads ([`torro_ipc::api::Access::Read`] in the
 /// catalogue). What a command that writes answers echoes what the model sent it (`mail.save_draft` answers the
-/// draft the model wrote), so an address in it is the model's; so is one from a server's tool, which the catalogue
-/// does not know.
+/// draft the model wrote), so an address in it is the model's; so is one from a server's tool or from a tool built
+/// into the agent of engine B (Claude Code's own fetch and search), which the catalogue does not know: such an
+/// address asks first.
 pub fn reads(name: &str) -> bool {
     torro_ipc::api::CATALOGUE
         .iter()
@@ -229,6 +231,34 @@ pub async fn look_in(at: &Place<'_>, conversation: &str, seq: u64, url: &str, fr
         _ => None,
     };
     let failed = matches!(held, Some(Held::Failed(at)) if now.duration_since(at) < RETRY_AFTER);
+    // A client's read asks no server (issue #784): it sees a card of the own server or GitHub the person's window
+    // holds, when its own rights reach it, else the link (a quote: unavailable). So reads of a person and a client in
+    // turn neither ask the server anew each time nor overwrite what the other holds.
+    if !at.person && !matches!(kind, LinkKind::Web) {
+        let card = match &held {
+            Some(Held::Resolved { resolved, rights: Some(_), .. }) => resolved.card.clone(),
+            _ => None,
+        };
+        let reaches = match (&kind, &own) {
+            (LinkKind::NextcloudFile(_), Some(own)) => nextcloud::reads_files(reach, &own.account),
+            (LinkKind::ChatMessage { token, .. }, Some(own)) => {
+                link_cards::chat::reads_conversation(reach, &own.account, token)
+            }
+            (LinkKind::Github { repo, .. }, _) => link_cards::github::reads_repo(reach, repo),
+            _ => false,
+        };
+        let item_held = matches!(held, Some(Held::Resolved { rights: Some(_), .. }));
+        let card = card.filter(|_| reaches);
+        return match &kind {
+            LinkKind::ChatMessage { .. } => link_cards::chat::assistant_card(url, card),
+            // No item held: the page it is, as held for the person. An item held this client may not see: the link,
+            // never the held item as a page.
+            LinkKind::Github { .. } if card.is_none() && !item_held => {
+                at.page(conversation, seq, url, from, false).await
+            }
+            _ => shown(card),
+        };
+    }
     match (&kind, own) {
         (LinkKind::NextcloudFile(file), Some(own)) => {
             let found = match mine {
@@ -255,13 +285,13 @@ pub async fn look_in(at: &Place<'_>, conversation: &str, seq: u64, url: &str, fr
         (LinkKind::Github { repo, number, .. }, _) => {
             // What was held of GitHub with these rights: nothing to show (`None`), or a failure then (`Some`).
             let no_item = match &held {
-                Some(Held::NoItem { rights, failed }) if **rights == *at.rights => Some(*failed),
+                Some(Held::NoItem { rights, at: then, failed }) if **rights == *at.rights => Some((*then, *failed)),
                 _ => None,
             };
             let found = match (mine, no_item) {
                 (Some(card), _) => card,
-                (None, Some(Some(then))) if now.duration_since(then) < RETRY_AFTER => return offline(),
-                (None, Some(None)) => None,
+                (None, Some((then, true))) if now.duration_since(then) < RETRY_AFTER => return offline(),
+                (None, Some((then, false))) if now.duration_since(then) < link_cards::NO_ITEM_AFTER => None,
                 (None, _) if failed => return offline(),
                 (None, _) if matches!(held, Some(Held::Resolved { rights: None, .. })) => None,
                 (None, _) => {
@@ -270,11 +300,11 @@ pub async fn look_in(at: &Place<'_>, conversation: &str, seq: u64, url: &str, fr
                     match asked {
                         Ok(Some(card)) => Some(card),
                         Ok(None) => {
-                            at.shown.put(conversation, seq, Held::NoItem { rights, failed: None });
+                            at.shown.put(conversation, seq, Held::NoItem { rights, at: now, failed: false });
                             None
                         }
                         Err(_) => {
-                            at.shown.put(conversation, seq, Held::NoItem { rights, failed: Some(now) });
+                            at.shown.put(conversation, seq, Held::NoItem { rights, at: now, failed: true });
                             return offline();
                         }
                     }
@@ -730,6 +760,40 @@ mod tests {
         assert!(asked >= 1, "asked at first");
         assert_eq!(look_in(&at, "c1", 2, ISSUE, LinkOrigin::Person).await, offline);
         assert_eq!(record.lock().expect("record").len(), asked, "not asked again within a minute");
+    }
+
+    /// Issue #784 (second review): a client's look asks GitHub nothing – with nothing held it gets the link; once the
+    /// person's window holds the card, a client whose rights reach the repository sees it, one without does not, and
+    /// neither overwrites what the person's window holds.
+    #[tokio::test]
+    async fn a_clients_look_asks_github_nothing() {
+        const ISSUE: &str = "https://github.com/torro/workplace/issues/9";
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (chat, _server) = chat(Privacy::default());
+        let shown = Shown::default();
+        let rights = rights();
+        let item = r#"{"data":{"i0":{"issueOrPullRequest":{"__typename":"Issue","number":9,"title":"Calendar",
+            "state":"OPEN","url":"https://github.com/torro/workplace/issues/9",
+            "repository":{"nameWithOwner":"torro/workplace"}}}}}"#;
+        let (github, record) = github_answering(dir.path(), (200, item)).await;
+        let client = Place { chat: &chat, github: &github, rights: &rights, shown: &shown, person: false };
+        let first = look_in(&client, "c1", 1, ISSUE, LinkOrigin::Person).await;
+        assert!(matches!(&first, Card::Link { card: None, .. }), "a link: {first:?}");
+        assert!(record.lock().expect("record").is_empty(), "a client's look asks GitHub nothing");
+
+        let person = Place { chat: &chat, github: &github, rights: &rights, shown: &shown, person: true };
+        let held = look_in(&person, "c1", 1, ISSUE, LinkOrigin::Person).await;
+        let asked = record.lock().expect("record").len();
+        if let Card::Link { card: Some(_), .. } = &held {
+            assert_eq!(look_in(&client, "c1", 1, ISSUE, LinkOrigin::Person).await, held, "the held card");
+            let mut narrow = rights.clone();
+            narrow.areas.remove(&torro_ipc::api::Area::Github);
+            let blind = Place { chat: &chat, github: &github, rights: &narrow, shown: &shown, person: false };
+            let theirs = look_in(&blind, "c1", 1, ISSUE, LinkOrigin::Person).await;
+            assert!(matches!(&theirs, Card::Link { card: None, .. }), "no card without the right: {theirs:?}");
+            assert_eq!(look_in(&person, "c1", 1, ISSUE, LinkOrigin::Person).await, held, "the person's stays");
+        }
+        assert_eq!(record.lock().expect("record").len(), asked, "nothing asked after the person's look");
     }
 
     /// Issue #790: a file of the own server reaches a client only with the chat right of its account
