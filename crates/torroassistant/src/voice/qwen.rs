@@ -101,8 +101,9 @@ pub fn without_lead(samples: &[f32], rate: u32) -> &[f32] {
 
 /// Crane reads the speech tokenizer from `<model>/speech_tokenizer/`; the catalogue keeps its files flat
 /// as `speech_tokenizer.<name>` (`torro_core::voice_models::QWEN`). Links each into place, as a hard
-/// link (no copy of 680 MB, and it works on every system); a link that is there with the size of its
-/// file is kept. The folder of the model in the voice folder `folder`.
+/// link (no copy of 680 MB, and it works on every system), or copies it where the file system has none
+/// (FAT, some network shares); one that is there with the size of its file is kept. The folder of the
+/// model in the voice folder `folder`.
 pub fn place_tokenizer(folder: &Path) -> Result<PathBuf, VoiceError> {
     let model = torro_core::voice_models::model(QWEN)
         .ok_or_else(|| VoiceError::program("Qwen3-TTS", "this build has no Qwen3-TTS"))?;
@@ -118,7 +119,7 @@ pub fn place_tokenizer(folder: &Path) -> Result<PathBuf, VoiceError> {
         }
         // A link of a file downloaded again (or cut short) is replaced.
         let _ = std::fs::remove_file(&to);
-        std::fs::hard_link(&from, &to).map_err(failed)?;
+        std::fs::hard_link(&from, &to).or_else(|_| std::fs::copy(&from, &to).map(|_| ())).map_err(failed)?;
     }
     Ok(home)
 }
