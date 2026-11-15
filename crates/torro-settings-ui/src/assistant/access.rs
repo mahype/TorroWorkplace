@@ -183,8 +183,6 @@ pub enum Message {
     TurnOff,
     /// "Cancel", Escape or a click next to the confirmation.
     CloseDialog,
-    /// The bot with this id: its rights on a page below the section Bots.
-    OpenBot(String),
     /// Back from a bot's page to the list of bots.
     Back,
     /// A control of the rights editor, its clock included ([`subscription`]).
@@ -202,7 +200,7 @@ pub enum Message {
 ///   assistant's client; the next first start begins from the suggestion again.
 /// - With a client, a control of the editor changes the draft of the client on screen – the
 ///   assistant's, or the open bot's – and the clock sends `clients.update_client` once it is due
-///   ([`rights::update`]). [`Message::OpenBot`] and [`Message::Back`] save a waiting draft at once.
+///   ([`rights::update`]). [`Message::Back`] saves a waiting draft at once.
 ///
 /// Nothing else is ever sent, and only as [`crate::Action::Send`].
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
@@ -246,11 +244,6 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         Message::CloseDialog => {
             state.asking = false;
             Action::None
-        }
-        Message::OpenBot(id) => {
-            let action = rights::save_now(&mut state.rights);
-            show(state, Some(id));
-            action
         }
         Message::Back => {
             let action = rights::save_now(&mut state.rights);
@@ -676,7 +669,7 @@ mod tests {
         let data = data().await;
         let (bot, client) = travel(&data);
         let mut state = State::default();
-        let _ = update(&mut state, Message::OpenBot(bot.id.clone()), &data);
+        show(&mut state, Some(bot.id.clone()));
         assert_eq!(open_bot(&state, &data).map(|open| open.id.as_str()), Some(bot.id.as_str()));
         {
             let below = bot_page(&state, &data).expect("the bot's page");
@@ -735,7 +728,7 @@ mod tests {
         assert_eq!(state.tab, Tab::Access, "an index past the row is Access");
 
         let _ = update(&mut state, Message::Tab(1), &data);
-        let _ = update(&mut state, Message::OpenBot(bot.id.clone()), &data);
+        show(&mut state, Some(bot.id.clone()));
         assert_eq!(state.tab, Tab::Access, "a bot opens at Access");
         let _ = update(&mut state, Message::Tab(1), &data);
         assert_eq!(state.tab, Tab::Selections);
@@ -781,28 +774,29 @@ mod tests {
         if let Some(client) = foreign.clients.iter_mut().find(|client| client.id == bot_client.id) {
             client.kind = "script".into();
         }
+        // `None` opens the bot's page, as "Access" in the list of bots does ([`show`]).
         let messages = || {
             vec![
-                Message::Preset(Preset::Suggested),
-                Message::Rights(rights::Message::Level(Area::Calendar, Level::Write)),
-                Message::Rights(rights::Message::Admin(Area::Settings, true)),
-                Message::Rights(rights::Message::Command("calendar.list_events", false)),
-                Message::Rights(rights::Message::Confirm(torro_ipc::api::Confirm::OnEveryChange)),
-                Message::Rights(rights::Message::All(rights::Pick::Calendars, false)),
-                Message::Rights(rights::Message::Tick(rights::Pick::Calendars, "x".into(), true)),
-                Message::Rights(rights::Message::Outbound(torro_ipc::api::Outbound::Never)),
-                Message::TurnOn,
-                Message::AskTurnOff,
-                Message::TurnOff,
-                Message::OpenBot(bot.id.clone()),
-                Message::Rights(rights::Message::Level(Area::Tasks, Level::Read)),
-                Message::Rights(rights::Message::All(rights::Pick::TaskLists, true)),
-                Message::Back,
-                Message::CloseDialog,
+                Some(Message::Preset(Preset::Suggested)),
+                Some(Message::Rights(rights::Message::Level(Area::Calendar, Level::Write))),
+                Some(Message::Rights(rights::Message::Admin(Area::Settings, true))),
+                Some(Message::Rights(rights::Message::Command("calendar.list_events", false))),
+                Some(Message::Rights(rights::Message::Confirm(torro_ipc::api::Confirm::OnEveryChange))),
+                Some(Message::Rights(rights::Message::All(rights::Pick::Calendars, false))),
+                Some(Message::Rights(rights::Message::Tick(rights::Pick::Calendars, "x".into(), true))),
+                Some(Message::Rights(rights::Message::Outbound(torro_ipc::api::Outbound::Never))),
+                Some(Message::TurnOn),
+                Some(Message::AskTurnOff),
+                Some(Message::TurnOff),
+                None,
+                Some(Message::Rights(rights::Message::Level(Area::Tasks, Level::Read))),
+                Some(Message::Rights(rights::Message::All(rights::Pick::TaskLists, true))),
+                Some(Message::Back),
+                Some(Message::CloseDialog),
             ]
         };
         let mut on_foreign = State::default();
-        let _ = update(&mut on_foreign, Message::OpenBot(bot.id.clone()), &foreign);
+        show(&mut on_foreign, Some(bot.id.clone()));
         let level = Message::Rights(rights::Message::Level(Area::Tasks, Level::Read));
         assert_eq!(update(&mut on_foreign, level, &foreign), Act::None);
         assert!(saved(&mut on_foreign).is_empty(), "no other kind of client is changed here");
@@ -811,7 +805,10 @@ mod tests {
         for data in [&on, &off] {
             let mut state = State::default();
             for message in messages() {
-                sent.extend(requests(update(&mut state, message, data)));
+                match message {
+                    Some(message) => sent.extend(requests(update(&mut state, message, data))),
+                    None => show(&mut state, Some(bot.id.clone())),
+                }
                 sent.extend(saved(&mut state));
             }
         }
