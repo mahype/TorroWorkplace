@@ -1080,7 +1080,7 @@ impl Demo {
             installed: true,
             problem: None,
             programs: vec![
-                found(VoicePart::WakeWord, "whisper-turbo"),
+                found(VoicePart::WakeWord, torro_core::voice_models::HEY_TORRO),
                 found(VoicePart::Recorder, "USB microphone"),
                 found(VoicePart::SpeechToText, "whisper-turbo"),
                 VoiceProgram { part: VoicePart::Speech, program: None, missing: Some(VoiceMissing::Model) },
