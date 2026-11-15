@@ -812,12 +812,17 @@ impl App {
     }
 }
 
-/// `text` without its web addresses, its words joined by single spaces: what a message says besides the link its
-/// card stands for.
+/// What a message says before its links, for the glance above its card ("Our intro" of "Our intro: https://…"):
+/// the words before the first address, when only addresses follow them. Empty when words stand between or after
+/// the addresses – cut out of a sentence, they would no longer say anything.
 fn without_links(text: &str) -> String {
-    let words: Vec<&str> =
-        text.split_whitespace().filter(|word| !word.starts_with("https://") && !word.starts_with("http://")).collect();
-    words.join(" ").trim_end_matches(':').trim().to_owned()
+    let is_link = |word: &&str| word.starts_with("https://") || word.starts_with("http://");
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let first = words.iter().position(is_link).unwrap_or(words.len());
+    if !words[first..].iter().all(is_link) {
+        return String::new();
+    }
+    words[..first].join(" ").trim_end_matches(':').trim().to_owned()
 }
 
 /// What stands under a message's files: its text (unless it only names its one file, or it is a voice message). Its
@@ -1031,6 +1036,7 @@ mod tests {
     fn the_glance_keeps_the_words_around_a_link_its_card_stands_for() {
         assert_eq!(without_links("https://youtu.be/M7lc1UVf-VE"), "");
         assert_eq!(without_links("Our intro: https://youtu.be/M7lc1UVf-VE"), "Our intro");
-        assert_eq!(without_links("See http://a.example/x and  https://b.example"), "See and");
+        assert_eq!(without_links("See http://a.example/x and  https://b.example"), "", "a cut sentence says nothing");
+        assert_eq!(without_links("Two:  https://a.example https://b.example"), "Two");
     }
 }
