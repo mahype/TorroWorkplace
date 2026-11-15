@@ -605,6 +605,12 @@ enum Change {
     /// The voice of Pocket TTS (issue #762).
     PocketVoice(Option<String>),
     OpenAiVoice(Option<String>),
+    /// How fast Pocket TTS speaks, in percent (issue #782); `None` for 100.
+    PocketSpeed(Option<u16>),
+    /// The extra pause after each sentence of Pocket TTS, in milliseconds (issue #782).
+    PocketPause(Option<u16>),
+    /// How OpenAI speaks (issue #782); never logged or repeated in a refusal.
+    OpenAiStyle(Option<String>),
     /// What a new chat of the assistant starts with (issue #131): the slot Chat (issue #325), written
     /// without the checks of `ai.set_slot`; `None` for the one used last.
     AssistantDefault(Option<AssistantDefault>),
@@ -722,6 +728,9 @@ impl Change {
             SettingKey::OpenAiVoice => {
                 Change::OpenAiVoice(Voice::speech_voice_from(value, &torro_core::settings::OPENAI_VOICES)?)
             }
+            SettingKey::PocketSpeed => Change::PocketSpeed(Voice::pocket_speed_from(value)?),
+            SettingKey::PocketPause => Change::PocketPause(Voice::pocket_pause_from(value)?),
+            SettingKey::OpenAiStyle => Change::OpenAiStyle(Voice::openai_style_from(value)?),
             SettingKey::AssistantDefault => Change::AssistantDefault(AssistantDefault::from_value(value)?),
             SettingKey::Setup => Change::Setup(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::Component => Change::Component(serde_json::from_value(value.clone()).map_err(invalid)?),
@@ -834,6 +843,9 @@ impl Change {
             Change::SpeechProvider(provider) => settings.voice.speech_provider = provider,
             Change::PocketVoice(id) => settings.voice.pocket_voice = id,
             Change::OpenAiVoice(id) => settings.voice.openai_voice = id,
+            Change::PocketSpeed(speed) => settings.voice.pocket_speed = speed,
+            Change::PocketPause(pause) => settings.voice.pocket_pause = pause,
+            Change::OpenAiStyle(style) => settings.voice.openai_style = style,
             Change::AssistantDefault(default) => settings.ai_slots.chat = default,
             Change::Setup(state) => settings.setup = settings.setup.moved_to(state),
             Change::Component(switch) => settings.set_component(switch.component, switch.enabled),
@@ -2117,6 +2129,38 @@ mod tests {
         sent.voice.speech_provider = Some(SpeechProvider::Pocket);
         store.update_keeping_hidden(sent).expect("written");
         assert_eq!(store.current().voice.speech_provider, Some(SpeechProvider::Pocket));
+    }
+
+    /// Issue #782: speed, pause and speaking style are stored per provider, rounded to their steps,
+    /// cleared with `null`; a refused speaking style is not repeated in the message.
+    #[test]
+    fn the_delivery_of_the_voice_is_set_and_checked() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SettingsStore::at(dir.path().join("settings.json"));
+        for (key, value) in [
+            (SettingKey::PocketSpeed, json!(124)),
+            (SettingKey::PocketPause, json!(500)),
+            (SettingKey::OpenAiStyle, json!(" calm, slow ")),
+        ] {
+            store.set(key, &value).expect("a valid value");
+        }
+        let voice = store.current().voice;
+        assert_eq!((voice.pocket_speed, voice.pocket_pause), (Some(120), Some(500)));
+        assert_eq!(voice.openai_style.as_deref(), Some("calm, slow"));
+        for (key, value) in [
+            (SettingKey::PocketSpeed, json!(200)),
+            (SettingKey::PocketPause, json!("long")),
+            (SettingKey::OpenAiStyle, json!("private\nwords")),
+        ] {
+            let message = store.set(key, &value).expect_err("refused");
+            assert!(!message.contains("private"), "{key:?}: {message}");
+        }
+        assert_eq!(store.current().voice.pocket_speed, Some(120), "a refusal changes nothing");
+        for key in [SettingKey::PocketSpeed, SettingKey::PocketPause, SettingKey::OpenAiStyle] {
+            store.set(key, &json!(null)).expect("back to the default");
+        }
+        let voice = store.current().voice;
+        assert_eq!((voice.pocket_speed, voice.pocket_pause, voice.openai_style), (None, None, None));
     }
 
     /// Issue #762: the keys and providers of whisper.cpp, Piper and Qwen3-TTS are gone (`unsupported` in

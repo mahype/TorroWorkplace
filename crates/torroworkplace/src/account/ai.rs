@@ -284,10 +284,14 @@ impl OpenAiCompatible {
     }
 
     /// `POST <base>/audio/speech` (issue #745): `input` read by `voice` with [`SPEECH_MODEL`], as raw
-    /// signed 16-bit mono at [`SPEECH_RATE`]. The text goes to the server; no error repeats it or
-    /// the key ([`Wire::send`]).
-    pub async fn speech(&self, voice: &str, input: &str) -> Result<Vec<u8>, AiError> {
-        let body = json!({"model": SPEECH_MODEL, "voice": voice, "input": input, "response_format": "pcm"});
+    /// signed 16-bit mono at [`SPEECH_RATE`], spoken as `instructions` say (the speaking style of
+    /// issue #782; left out for OpenAI's own way). The text goes to the server; no error repeats it,
+    /// the style or the key ([`Wire::send`]).
+    pub async fn speech(&self, voice: &str, input: &str, instructions: Option<&str>) -> Result<Vec<u8>, AiError> {
+        let mut body = json!({"model": SPEECH_MODEL, "voice": voice, "input": input, "response_format": "pcm"});
+        if let Some(instructions) = instructions {
+            body["instructions"] = json!(instructions);
+        }
         let response = self.wire.send(self.wire.request(reqwest::Method::POST, "audio/speech").json(&body)).await?;
         self.wire.body(response).await
     }
@@ -2959,11 +2963,38 @@ pub(crate) mod tests {
             })
             .await;
         let openai = OpenAiCompatible::new(http(), AiProvider::OpenAi, &server.url("/v1"), Some(Secret::new(KEY)));
-        assert_eq!(openai.speech("marin", "Hello.").await.expect("sound"), [1, 2, 3, 4]);
+        assert_eq!(openai.speech("marin", "Hello.", None).await.expect("sound"), [1, 2, 3, 4]);
         assert_eq!(speech.calls_async().await, 1);
-        let refused = openai.speech("marin", "Secret plans.").await.expect_err("refused");
+        let refused = openai.speech("marin", "Secret plans.", None).await.expect_err("refused");
         let message = refused.to_string();
         assert!(!message.contains(KEY) && !message.contains("Secret plans"), "{message}");
+    }
+
+    /// Issue #782: the speaking style goes to OpenAI as `instructions`, only when there is one.
+    #[tokio::test]
+    async fn openai_reads_aloud_in_the_speaking_style() {
+        let server = MockServer::start_async().await;
+        let styled = server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/audio/speech").json_body(json!({
+                    "model": SPEECH_MODEL, "voice": "cedar", "input": "Hello.", "response_format": "pcm",
+                    "instructions": "whisper slowly",
+                }));
+                then.status(200).body([5u8, 6]);
+            })
+            .await;
+        let plain = server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/audio/speech").json_body(
+                    json!({"model": SPEECH_MODEL, "voice": "cedar", "input": "Hello.", "response_format": "pcm"}),
+                );
+                then.status(200).body([7u8, 8]);
+            })
+            .await;
+        let openai = OpenAiCompatible::new(http(), AiProvider::OpenAi, &server.url("/v1"), Some(Secret::new(KEY)));
+        assert_eq!(openai.speech("cedar", "Hello.", Some("whisper slowly")).await.expect("sound"), [5, 6]);
+        assert_eq!(openai.speech("cedar", "Hello.", None).await.expect("sound"), [7, 8]);
+        assert_eq!((styled.calls_async().await, plain.calls_async().await), (1, 1));
     }
 
     #[tokio::test]

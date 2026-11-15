@@ -2739,19 +2739,20 @@ fn speech_without_app() -> torro_ipc::SpeechStatus {
     }
 }
 
-/// Fetches `pieces` from OpenAI with `voice` and sends their sound to the helper of `job`, each piece
+/// Fetches `pieces` from OpenAI with `voice` and the speaking style `instructions` (issue #782) and sends their sound to the helper of `job`, each piece
 /// while the one before plays, until the helper says it is done (issue #745). A stop ends the
 /// fetching; an error of OpenAI stops what plays and is the answer.
 async fn read_with_openai(
     mut job: crate::apps::SpeechJob<'_>,
     speaker: &crate::account::ai::OpenAiCompatible,
     voice: &str,
+    instructions: Option<&str>,
     pieces: Vec<String>,
 ) -> Response {
     use base64::Engine as _;
     let fetch = |piece: String| {
-        let (speaker, voice) = (speaker.clone(), voice.to_string());
-        Box::pin(async move { speaker.speech(&voice, &piece).await })
+        let (speaker, voice, instructions) = (speaker.clone(), voice.to_string(), instructions.map(str::to_string));
+        Box::pin(async move { speaker.speech(&voice, &piece, instructions.as_deref()).await })
     };
     let mut pieces = pieces.into_iter();
     let mut fetching = pieces.next().map(fetch);
@@ -13869,6 +13870,9 @@ impl Core {
             "provider": provider,
             "text": read,
             "voice": voice.pocket_voice_or_default(),
+            // How Pocket TTS speaks (issue #782); OpenAI's style stays here, with its key.
+            "speed": voice.pocket_speed_or_default(),
+            "pause": voice.pocket_pause_or_default(),
         }});
         let mut job = match self.speech.begin_claimed(number, &voice_args("--speak", &speech_settings(&voice))).await {
             Ok(job) => job,
@@ -13891,7 +13895,8 @@ impl Core {
                 Ok(SpeechLine::Failed { code, message }) => return Response::Error { code, message },
                 Ok(SpeechLine::Pieces(pieces)) => match &speaker {
                     Some(speaker) => {
-                        return read_with_openai(job, speaker, voice.openai_voice_or_default(), pieces).await;
+                        let (openai_voice, style) = (voice.openai_voice_or_default(), voice.openai_style_or_none());
+                        return read_with_openai(job, speaker, openai_voice, style, pieces).await;
                     }
                     None => return refused("error", tr("Reading aloud failed. Try again.")),
                 },
@@ -20065,6 +20070,43 @@ done"#;
             talk.since = std::time::Instant::now().checked_sub(TALK_START).unwrap_or(talk.since);
         }
         assert_eq!(talk_of(&core).await.0, None, "the listener ended");
+    }
+
+    /// Issue #782: Pocket's speed and pause go with each `say`, as before without a choice; the
+    /// speaking style of OpenAI never goes to the helper.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_delivery_goes_with_each_say() {
+        use torro_ipc::SettingKey;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let said = dir.path().join("said.log");
+        let body = format!(
+            r#"while read line; do
+  case "$line" in
+    *'"say"'*) printf '%s\n' "$line" >> '{}'; echo '"playing"'; echo '"done"' ;;
+  esac
+done"#,
+            said.display()
+        );
+        let speaker = dir.path().join("speaker");
+        crate::apps::tests::fake_at(&speaker, &body);
+        let core = core(dir.path()).with_speech(crate::apps::SpeechHelper::at(speaker));
+        let set = |key, value| Request::SetSetting { key, value };
+        assert_eq!(core.handle(Request::Speak { text: "Hello.".into() }).await, Response::Ok);
+        for (key, value) in [
+            (SettingKey::PocketSpeed, serde_json::json!(130)),
+            (SettingKey::PocketPause, serde_json::json!(500)),
+            (SettingKey::OpenAiStyle, serde_json::json!("whisper slowly")),
+        ] {
+            assert_eq!(core.handle(set(key, value)).await, Response::Ok, "{key:?}");
+        }
+        assert_eq!(core.handle(Request::Speak { text: "Hello again.".into() }).await, Response::Ok);
+        let log = std::fs::read_to_string(&said).expect("read aloud");
+        let lines: Vec<_> = log.lines().collect();
+        assert_eq!(lines.len(), 2, "{log}");
+        assert!(lines[0].contains(r#""speed":100"#) && lines[0].contains(r#""pause":0"#), "{log}");
+        assert!(lines[1].contains(r#""speed":130"#) && lines[1].contains(r#""pause":500"#), "{log}");
+        assert!(!log.contains("whisper"), "the style stays with the core: {log}");
     }
 
     /// Review of PR #768: the first sentence of an answer is read while the model still writes the rest,

@@ -4,9 +4,11 @@
 //!
 //! The core talks to it in JSON lines ([`Input`], [`Output`]):
 //!
-//! - `{"say": {"provider": "pocket", "text": …, "voice": "alba"}}` reads `text` (Markdown, at most
-//!   [`MOST_READ`] characters) with Pocket TTS on this computer (issue #762); `null` as the provider is
-//!   Pocket too, a `model` or `language` from earlier versions is ignored. With `"openai"` the helper
+//! - `{"say": {"provider": "pocket", "text": …, "voice": "alba", "speed": 100, "pause": 0}}` reads
+//!   `text` (Markdown, at most [`MOST_READ`] characters) with Pocket TTS on this computer (issue #762),
+//!   at `speed` percent with `pause` extra milliseconds after each sentence (issue #782; missing for
+//!   as before); `null` as the provider is Pocket too, a `model` or `language` from earlier versions
+//!   is ignored. With `"openai"` the helper
 //!   only answers the pieces to fetch (`{"pieces": [...]}`, whole sentences of at most [`PIECE`]
 //!   characters): the key stays in the core, which fetches the sound and sends it as
 //!   `{"pcm": {"rate": 24000, "data": "<base64>"}}`, then `"end"`.
@@ -33,7 +35,7 @@ use std::time::Duration;
 use base64::Engine as _;
 use serde_json::{Value, json};
 use torro_core::i18n::tr;
-use torro_core::settings::{POCKET_RECOMMENDED, POCKET_VOICES, SpeechProvider, Voice};
+use torro_core::settings::{POCKET_PAUSES, POCKET_RECOMMENDED, POCKET_SPEEDS, POCKET_VOICES, SpeechProvider, Voice};
 use torro_core::voice_models::{POCKET_DE, voice_folder};
 use torro_ipc::{SpeechMissing, SpeechOption, SpeechStatus, SpeechVoice, VoiceMissing};
 
@@ -41,7 +43,7 @@ use super::VoiceError;
 use super::audio::to_float;
 use super::listen::speakable_up_to;
 use super::parts::model_ready;
-use super::pocket::{Pocket, Synth};
+use super::pocket::{Delivery, Pocket, Synth};
 use super::sound::{Devices, Player, Sound, SystemDevices};
 
 /// The most of a text that is read, in characters: the window shows all of it.
@@ -78,6 +80,8 @@ pub struct Say {
     pub text: String,
     /// The Pocket voice's id; `None` for the one of the settings.
     pub voice: Option<String>,
+    /// How Pocket speaks (issue #782); the default when the core sends none.
+    pub delivery: Delivery,
 }
 
 impl Input {
@@ -97,10 +101,19 @@ impl Input {
                 None | Some(Value::Null) => None,
                 Some(provider) => Some(serde_json::from_value(provider.clone()).ok()?),
             };
+            let number = |key: &str, default: u16| {
+                say.get(key).and_then(Value::as_u64).and_then(|n| u16::try_from(n).ok()).unwrap_or(default)
+            };
+            let standard = Delivery::default();
             return Some(Input::Say(Say {
                 provider,
                 text: text(say, "text").unwrap_or_default(),
                 voice: text(say, "voice"),
+                delivery: Delivery {
+                    // Within the ranges of the settings, whoever wrote the line.
+                    speed: number("speed", standard.speed).clamp(POCKET_SPEEDS.0, POCKET_SPEEDS.1),
+                    pause_ms: number("pause", standard.pause_ms).clamp(POCKET_PAUSES.0, POCKET_PAUSES.1),
+                },
             }));
         }
         let pcm = value.get("pcm")?;
@@ -114,9 +127,14 @@ impl Input {
     #[cfg(test)]
     pub fn line(&self) -> String {
         match self {
-            Input::Say(say) => {
-                json!({"say": {"provider": say.provider, "text": say.text, "voice": say.voice}}).to_string()
-            }
+            Input::Say(say) => json!({"say": {
+                "provider": say.provider,
+                "text": say.text,
+                "voice": say.voice,
+                "speed": say.delivery.speed,
+                "pause": say.delivery.pause_ms,
+            }})
+            .to_string(),
             Input::Pcm { rate, data } => {
                 json!({"pcm": {"rate": rate, "data": base64::engine::general_purpose::STANDARD.encode(data)}})
                     .to_string()
@@ -176,19 +194,125 @@ impl Output {
     }
 }
 
-/// `text` in pieces of whole sentences, each at most `most` characters; a longer sentence is cut
-/// between words.
-pub fn pieces(text: &str, most: usize) -> Vec<String> {
+/// What may close a quote or an aside after the sign of a sentence: `„Ja.“ Dann`, `(siehe oben.)`.
+const CLOSERS: [char; 12] = [')', ']', '}', '"', '\'', '“', '”', '’', '‘', '«', '»', '›'];
+
+/// The sentences of `text`, each with its sign at the end, and the quotes or brackets that close
+/// after it; the last may have none.
+fn sentences(text: &str) -> Vec<String> {
     let mut sentences = Vec::new();
     let mut sentence = String::new();
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
         sentence.push(c);
-        if matches!(c, '.' | '!' | '?' | '…') && chars.peek().is_none_or(|next| next.is_whitespace()) {
+        if !matches!(c, '.' | '!' | '?' | '…') {
+            continue;
+        }
+        while let Some(closer) = chars.next_if(|next| CLOSERS.contains(next)) {
+            sentence.push(closer);
+        }
+        if chars.peek().is_none_or(|next| next.is_whitespace()) {
             sentences.push(std::mem::take(&mut sentence));
         }
     }
     sentences.push(sentence);
+    sentences
+}
+
+/// Shortenings after which a sentence goes on, lower case and without their last point (issue #782).
+/// Ones that often end a sentence ("etc.", English "no.") are left out: a pause too many there is
+/// better than none where a sentence ends.
+const ABBREVIATIONS: [&str; 33] = [
+    "bzw", "ca", "ggf", "inkl", "exkl", "zzgl", "usw", "evtl", "vgl", "bspw", "sog", "mwst", "dr", "prof", "nr", "str",
+    "tel", "jan", "feb", "apr", "jun", "jul", "aug", "sep", "sept", "okt", "nov", "dez", "mr", "mrs", "ms", "vs",
+    "approx",
+];
+
+/// Months, lower case, after which "3." is a day and not the end of a sentence (issue #782).
+const MONTHS: [&str; 24] = [
+    "januar",
+    "februar",
+    "märz",
+    "april",
+    "mai",
+    "juni",
+    "juli",
+    "august",
+    "september",
+    "oktober",
+    "november",
+    "dezember",
+    "january",
+    "february",
+    "march",
+    "may",
+    "june",
+    "july",
+    "october",
+    "december",
+    "jan",
+    "feb",
+    "apr",
+    "okt",
+];
+
+/// Whether `sentence` ends with a point that ends no sentence, `next` being the sentence after it: a
+/// shortening with a point inside ("z.B.", "e.g.") or one of [`ABBREVIATIONS`] always; a single letter
+/// or a number of one or two digits only when what follows shows it goes on – a small letter ("u. a."),
+/// another single letter ("z. B.") or a month ("3. Mai"); the second letter of such a shortening
+/// (`continued`: the sentence before was kept open) always. So "Plan A. Dann" and "Es sind 12. Danach"
+/// end a sentence, and so do "Ja." and a year.
+fn goes_on(sentence: &str, next: Option<&str>, continued: bool) -> bool {
+    let Some(word) = sentence.trim_end().strip_suffix('.').and_then(|head| head.split_whitespace().last()) else {
+        return false;
+    };
+    let word = word.trim_start_matches(|c: char| !c.is_alphanumeric());
+    if (word.contains('.') && !word.ends_with('.')) || ABBREVIATIONS.contains(&word.to_lowercase().as_str()) {
+        return true;
+    }
+    let digits = !word.is_empty() && word.chars().all(|c| c.is_ascii_digit());
+    let letter = word.chars().count() == 1 && word.chars().all(char::is_alphabetic);
+    if letter && continued {
+        return true;
+    }
+    let short = letter || (digits && word.len() <= 2);
+    let Some(following) = next.and_then(|next| next.split_whitespace().next()) else { return false };
+    let bare = following.trim_end_matches(|c: char| !c.is_alphanumeric());
+    short
+        && (following.chars().next().is_some_and(|c| c.is_lowercase() || c.is_ascii_digit())
+            || (bare.chars().count() == 1 && following.ends_with('.'))
+            || MONTHS.contains(&bare.to_lowercase().as_str()))
+}
+
+/// `text` with each sentence a piece of its own (issue #782: a pause falls after each), a sentence
+/// longer than `most` characters cut as in [`pieces`], each piece with whether a sentence ends there:
+/// only the last piece of a sentence does, wherever a long one is cut. A point that ends no sentence
+/// ([`goes_on`]) keeps it open, so no pause falls inside one.
+pub fn sentence_pieces(text: &str, most: usize) -> Vec<(String, bool)> {
+    let mut whole: Vec<String> = Vec::new();
+    let mut open = false;
+    let split = sentences(text);
+    for (number, sentence) in split.iter().enumerate() {
+        match whole.last_mut() {
+            Some(last) if open => last.push_str(sentence),
+            _ => whole.push(sentence.clone()),
+        }
+        open = goes_on(sentence, split.get(number + 1).map(String::as_str), open);
+    }
+    whole
+        .iter()
+        .flat_map(|sentence| {
+            let cut = pieces(sentence, most);
+            let last = cut.len().saturating_sub(1);
+            cut.into_iter().enumerate().map(move |(number, piece)| (piece, number == last))
+        })
+        .collect()
+}
+
+/// `text` in pieces of whole sentences, each at most `most` characters; a longer sentence is cut
+/// between words.
+pub fn pieces(text: &str, most: usize) -> Vec<String> {
+    let sentences = sentences(text);
     let mut pieces: Vec<String> = Vec::new();
     let mut piece = String::new();
     let words = sentences.iter().flat_map(|sentence| {
@@ -278,6 +402,7 @@ struct Spoken {
     id: u64,
     text: String,
     voice: String,
+    delivery: Delivery,
 }
 
 /// Makes the [`Synth`] on its thread: [`Pocket::load`] in the helper, a fake in the tests.
@@ -316,7 +441,7 @@ fn start_worker(make: Arc<MakeSynth>, events: Sender<Event>, current: Arc<Atomic
                 now.load(Ordering::SeqCst) == id
                     && to.send(Event::Chunk { id, rate, samples: samples.to_vec() }).is_ok()
             });
-            let event = match synth.speak(&job.text, &job.voice, chunk) {
+            let event = match synth.speak(&job.text, &job.voice, job.delivery, chunk) {
                 Ok(()) => Event::Computed { id },
                 Err(err) => {
                     // The error names the part, never the text.
@@ -497,7 +622,7 @@ impl<W: FnMut(Output)> Helper<W> {
             SpeechProvider::Pocket if text.is_empty() => (self.write)(Output::Done),
             SpeechProvider::Pocket => {
                 let voice = say.voice.unwrap_or_else(|| self.voice.clone());
-                match self.ask_pocket(text, voice, sender) {
+                match self.ask_pocket(text, voice, say.delivery, sender) {
                     Ok(id) => self.job = Job::Pocket { id, sound: None, computed: false },
                     Err(failed) => (self.write)(failed),
                 }
@@ -506,14 +631,20 @@ impl<W: FnMut(Output)> Helper<W> {
     }
 
     /// Gives `text` to the thread of Pocket TTS, started first; the job's id.
-    fn ask_pocket(&mut self, text: String, voice: String, sender: &Sender<Event>) -> Result<u64, Output> {
+    fn ask_pocket(
+        &mut self,
+        text: String,
+        voice: String,
+        delivery: Delivery,
+        sender: &Sender<Event>,
+    ) -> Result<u64, Output> {
         if !model_ready(POCKET_DE, self.folder.as_deref()) {
             return Err(not_downloaded());
         }
         self.next += 1;
         let id = self.next;
         self.current.store(id, Ordering::SeqCst);
-        let mut job = Spoken { id, text, voice };
+        let mut job = Spoken { id, text, voice, delivery };
         // A thread that broke down is started again, once.
         for _ in 0..2 {
             if self.worker.is_none() {
@@ -632,6 +763,7 @@ mod tests {
             provider: Some(SpeechProvider::Pocket),
             text: "Hello.".into(),
             voice: Some("marius".into()),
+            delivery: Delivery { speed: 130, pause_ms: 500 },
         });
         for input in [say, Input::Pcm { rate: 24_000, data: vec![1, 2, 3, 4] }, Input::End, Input::Stop] {
             assert_eq!(Input::parse(&input.line()), Some(input.clone()), "{}", input.line());
@@ -656,7 +788,12 @@ mod tests {
         let line = r#"{"say": {"provider": null, "text": "Hi", "voice": "alba", "model": "x", "language": "German"}}"#;
         assert_eq!(
             Input::parse(line),
-            Some(Input::Say(Say { provider: None, text: "Hi".into(), voice: Some("alba".into()) }))
+            Some(Input::Say(Say {
+                provider: None,
+                text: "Hi".into(),
+                voice: Some("alba".into()),
+                delivery: Delivery::default(),
+            }))
         );
         assert_eq!(Input::parse(r#"{"say": {"provider": "qwen", "text": "Hi"}}"#), None, "a provider that is gone");
     }
@@ -672,6 +809,61 @@ mod tests {
         assert!(cut.iter().all(|piece| piece.chars().count() <= 50 && !piece.ends_with(' ')), "{cut:?}");
         assert_eq!(cut.join(" "), long.trim());
         assert_eq!(pieces(&"x".repeat(12), 5), ["xxxxx", "xxxxx", "xx"]);
+    }
+
+    /// Issue #782: with a pause every sentence is a piece of its own; a long one is still cut.
+    #[test]
+    fn sentence_pieces_are_one_sentence_each() {
+        let texts = |text: &str, most| -> Vec<String> {
+            sentence_pieces(text, most).into_iter().map(|(piece, _)| piece).collect()
+        };
+        assert_eq!(texts("One. Two!  Three?", 500), ["One.", "Two!", "Three?"]);
+        assert!(sentence_pieces("", 500).is_empty());
+        assert!(sentence_pieces("One. Two!", 500).iter().all(|(_, ends)| *ends), "each ends a sentence");
+        let long = format!("{}. Short.", "word ".repeat(40).trim());
+        let cut = sentence_pieces(&long, 50);
+        assert!(cut.len() > 2 && cut.iter().all(|(piece, _)| piece.chars().count() <= 50), "{cut:?}");
+        assert_eq!(cut.last(), Some(&("Short.".to_string(), true)));
+        let ends: Vec<_> = cut.iter().filter(|(_, ends)| *ends).map(|(piece, _)| piece.as_str()).collect();
+        assert_eq!(ends.len(), 2, "only the end of each sentence, not where a long one is cut: {cut:?}");
+        assert_eq!(
+            texts("Am 3. Mai kommt z. B. Anna. Gut!", 500),
+            ["Am 3. Mai kommt z. B. Anna.", "Gut!"],
+            "no sentence ends after a day or a single letter"
+        );
+        assert_eq!(texts("Ja. Das war 2024. Gut.", 500), ["Ja.", "Das war 2024.", "Gut."]);
+        // Review of PR #806: a short word or number at the end of a sentence ends it when a sentence follows.
+        assert_eq!(
+            texts("Es sind 12. Danach kommt Plan A. Dann Ende.", 500),
+            ["Es sind 12.", "Danach kommt Plan A.", "Dann Ende."]
+        );
+        assert_eq!(texts("Er kam u. a. am 12. Oktober. Ja.", 500), ["Er kam u. a. am 12. Oktober.", "Ja."]);
+        assert_eq!(texts("Wir sind 3. Und fertig.", 500), ["Wir sind 3.", "Und fertig."]);
+    }
+
+    /// Issue #782 (review): shortenings keep a sentence open, also with a point inside; a sentence
+    /// closed by a quote or a bracket ends after it; a long sentence cut after "3." has its pause
+    /// only at its end.
+    #[test]
+    fn shortenings_quotes_and_cuts_keep_the_pause_at_the_end() {
+        let texts =
+            |text: &str| -> Vec<String> { sentence_pieces(text, 500).into_iter().map(|(piece, _)| piece).collect() };
+        assert_eq!(
+            texts("Das kostet ca. 5 € inkl. MwSt. pro Monat. Gut."),
+            ["Das kostet ca. 5 € inkl. MwSt. pro Monat.", "Gut."]
+        );
+        assert_eq!(
+            texts("Etwa z.B. morgen, bzw. am Okt. danach. Ja."),
+            ["Etwa z.B. morgen, bzw. am Okt. danach.", "Ja."]
+        );
+        assert_eq!(texts("Er sagte „Ja.“ Dann ging er."), ["Er sagte „Ja.“", "Dann ging er."]);
+        assert_eq!(texts("Siehe oben (wie gesagt.) Weiter!"), ["Siehe oben (wie gesagt.)", "Weiter!"]);
+        assert_eq!(pieces("Er sagte „Ja.“ Dann ging er.", 500), ["Er sagte „Ja.“ Dann ging er."]);
+        let long = format!("{} am 3. Mai {}.", "wort ".repeat(30).trim(), "wort ".repeat(30).trim());
+        let cut = sentence_pieces(&long, 160);
+        assert!(cut.len() > 1, "{cut:?}");
+        assert_eq!(cut.iter().filter(|(_, ends)| *ends).count(), 1, "{cut:?}");
+        assert!(cut.last().is_some_and(|(_, ends)| *ends));
     }
 
     /// What a fake sound output played.
@@ -705,6 +897,8 @@ mod tests {
     /// when told.
     struct FakeSynth {
         pause: Duration,
+        /// How each job was to be spoken.
+        delivered: Arc<std::sync::Mutex<Vec<Delivery>>>,
     }
 
     impl Synth for FakeSynth {
@@ -712,7 +906,8 @@ mod tests {
             24_000
         }
 
-        fn speak(&mut self, text: &str, voice: &str, mut chunk: Chunk) -> Result<(), VoiceError> {
+        fn speak(&mut self, text: &str, voice: &str, delivery: Delivery, mut chunk: Chunk) -> Result<(), VoiceError> {
+            self.delivered.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(delivery);
             if voice == "broken" {
                 return Err(VoiceError::program("fake", "broken"));
             }
@@ -729,11 +924,24 @@ mod tests {
     /// What the helper answered.
     type Said = Rc<RefCell<Vec<Output>>>;
 
+    /// How the fake synth was told to speak, job by job.
+    type Delivered = Arc<std::sync::Mutex<Vec<Delivery>>>;
+
     /// A helper with the voice folder `folder`, a sound output if `output`, the fake synth.
     fn helper(
         folder: Option<&Path>,
         output: bool,
         pause: Duration,
+    ) -> (Helper<impl FnMut(Output)>, Said, Rc<RefCell<Played>>) {
+        helper_telling(folder, output, pause, Delivered::default())
+    }
+
+    /// [`helper`] with the fake synth noting in `delivered` how it was told to speak.
+    fn helper_telling(
+        folder: Option<&Path>,
+        output: bool,
+        pause: Duration,
+        delivered: Delivered,
     ) -> (Helper<impl FnMut(Output)>, Said, Rc<RefCell<Played>>) {
         let said = Rc::new(RefCell::new(Vec::new()));
         let log = Rc::clone(&said);
@@ -746,14 +954,20 @@ mod tests {
             sound.borrow_mut().opened += 1;
             Ok(Box::new(FakeSound(Rc::clone(&sound))) as Box<dyn Sound>)
         });
-        let make: Arc<MakeSynth> = Arc::new(move || Ok(Box::new(FakeSynth { pause }) as Box<dyn Synth>));
+        let make: Arc<MakeSynth> =
+            Arc::new(move || Ok(Box::new(FakeSynth { pause, delivered: Arc::clone(&delivered) }) as Box<dyn Synth>));
         let helper =
             Helper::new(folder.map(Path::to_path_buf), "alba", open, make, move |output| log.borrow_mut().push(output));
         (helper, said, played)
     }
 
     fn say(provider: SpeechProvider, text: &str) -> Event {
-        Event::Input(Input::Say(Say { provider: Some(provider), text: text.into(), voice: None }))
+        Event::Input(Input::Say(Say {
+            provider: Some(provider),
+            text: text.into(),
+            voice: None,
+            delivery: Delivery::default(),
+        }))
     }
 
     /// Feeds what Pocket TTS sends to the helper until `until` holds, ten seconds at most.
@@ -854,6 +1068,25 @@ mod tests {
         assert_eq!(said.borrow().last(), Some(&Output::Done));
     }
 
+    /// Issue #782: the speed and pause of a `say` reach Pocket TTS; a `say` without them speaks as before.
+    #[test]
+    fn the_delivery_reaches_pocket() {
+        let (sender, events) = mpsc::channel();
+        let folder = tempfile::tempdir().expect("voice folder");
+        download(folder.path(), POCKET_DE);
+        let delivered = Delivered::default();
+        let (mut helper, said, _) = helper_telling(Some(folder.path()), true, Duration::ZERO, Arc::clone(&delivered));
+        let line = r#"{"say": {"provider": "pocket", "text": "Hallo.", "voice": "alba", "speed": 130, "pause": 500}}"#;
+        let plain = r#"{"say": {"provider": "pocket", "text": "Ja.", "voice": "alba"}}"#;
+        for line in [line, plain] {
+            helper.handle(Event::Input(Input::parse(line).expect("a say")), &sender);
+            pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Pocket { computed: true, .. }));
+        }
+        assert!(said.borrow().contains(&Output::Playing));
+        let delivered = delivered.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        assert_eq!(delivered, [Delivery { speed: 130, pause_ms: 500 }, Delivery::default()]);
+    }
+
     /// Issue #762: a stop ends the sound at once and Pocket stops computing; what it still sends of the
     /// stopped job is not played, and the next job reads.
     #[test]
@@ -886,7 +1119,12 @@ mod tests {
         download(folder.path(), POCKET_DE);
         let (mut helper, said, _) = helper(Some(folder.path()), true, Duration::ZERO);
         helper.handle(
-            Event::Input(Input::Say(Say { provider: None, text: "Hi.".into(), voice: Some("broken".into()) })),
+            Event::Input(Input::Say(Say {
+                provider: None,
+                text: "Hi.".into(),
+                voice: Some("broken".into()),
+                delivery: Delivery::default(),
+            })),
             &sender,
         );
         pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Idle));
