@@ -111,12 +111,20 @@ pub struct Action<M> {
     pub icon: Icon,
     pub label: String,
     pub on_press: Option<M>,
+    /// A button that only lets the item go ("Done", "Dismiss", "Not now"): drawn `ghost` instead of `secondary`
+    /// (torro-design, "Knopfleisten auf Karten"). Set with [`Action::quiet`].
+    pub quiet: bool,
 }
 
 impl<M> Action<M> {
-    /// A button with `icon` and `label` that sends `on_press`.
+    /// A button with `icon` and `label` that sends `on_press`, `secondary`.
     pub fn new(icon: Icon, label: impl Into<String>, on_press: M) -> Self {
-        Self { icon, label: label.into(), on_press: Some(on_press) }
+        Self { icon, label: label.into(), on_press: Some(on_press), quiet: false }
+    }
+
+    /// The same button drawn quiet (`ghost`): it only lets the item go.
+    pub fn quiet(self) -> Self {
+        Self { quiet: true, ..self }
     }
 }
 
@@ -460,14 +468,18 @@ fn play_mark<'a, M: 'a>() -> Element<'a, M> {
         .into()
 }
 
-/// The buttons of a card in one row, all `secondary` (torro-design, "Knopfleisten auf Karten": a card's visible
-/// buttons are secondary); with words where they fit `room`, else icons with the word as tooltip (the main one
-/// keeps its word first, `widgets::bar_words`).
+/// The buttons of a card in one row, `secondary`, a quiet one ([`Action::quiet`]) `ghost` (torro-design,
+/// "Knopfleisten auf Karten": a card's visible buttons are secondary, what only lets the item go is ghost); with
+/// words where they fit `room`, else icons with the word as tooltip (the main one keeps its word first,
+/// `widgets::bar_words`).
 fn buttons<'a, M: Clone + 'a>(actions: Vec<Action<M>>, room: f32) -> Element<'a, M> {
     let labels: Vec<&str> = actions.iter().map(|action| action.label.as_str()).collect();
     let words = widgets::bar_words(&labels, true, 0, room);
     let buttons = actions.into_iter().enumerate().map(|(i, action)| match words.worded(i) {
-        true => widgets::text_button(Some(action.icon), action.label, style::button::secondary, action.on_press),
+        true => {
+            let look = if action.quiet { style::button::ghost } else { style::button::secondary };
+            widgets::text_button(Some(action.icon), action.label, look, action.on_press)
+        }
         false => widgets::icon_button(action.icon, action.label, action.on_press),
     });
     Row::with_children(buttons).spacing(space::s()).align_y(Alignment::Center).into()

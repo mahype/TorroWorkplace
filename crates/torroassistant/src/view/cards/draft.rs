@@ -41,8 +41,8 @@ fn decide(id: &str, allow: bool) -> Message {
 /// The buttons of the card, the main one first: "Send", then "Discard" (switched off without an approval).
 pub(super) fn actions(draft: &Draft, approval: Option<&str>) -> Vec<Action<Message>> {
     vec![
-        Action { icon: Icon::Send, label: tr("Send").to_owned(), on_press: send(draft, approval) },
-        Action { icon: Icon::Trash2, label: tr("Discard").to_owned(), on_press: discard(approval) },
+        Action { icon: Icon::Send, label: tr("Send").to_owned(), on_press: send(draft, approval), quiet: false },
+        Action { icon: Icon::Trash2, label: tr("Discard").to_owned(), on_press: discard(approval), quiet: false },
     ]
 }
 

@@ -29,11 +29,12 @@ pub(super) fn done(todo: &Todo) -> Message {
     card_request(request, tr("Couldn't mark the task done."))
 }
 
-/// The buttons of the card of `todo`, the main one first: "Open in tasks", and "Done" while it is open.
+/// The buttons of the card of `todo`, the main one first: "Open in tasks", and "Done" while it is open – quiet
+/// (`ghost`), as it only lets the task go.
 pub(super) fn actions(todo: &Todo) -> Vec<Action<Message>> {
     let mut actions = vec![Action::new(Icon::ArrowUpRight, tr("Open in tasks"), open(todo))];
     if !todo.completed {
-        actions.push(Action::new(Icon::Check, tr("Done"), done(todo)));
+        actions.push(Action::new(Icon::Check, tr("Done"), done(todo)).quiet());
     }
     actions
 }

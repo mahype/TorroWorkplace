@@ -377,6 +377,8 @@ fn each_button_of_a_content_card_sends_its_request() {
     assert!(!task.completed, "the demo's task is open");
     let target = Some(format!("task:{}", task.uid));
     assert_eq!(press(&mut app, todo, tr("Open in tasks")), [Request::OpenApp { app: "torrotasks".into(), target }]);
+    let quiet: Vec<bool> = app.card_actions(todo).iter().map(|action| action.quiet).collect();
+    assert_eq!(quiet, [false, true], "Done only lets the task go: ghost");
     let done = torro_pim::Todo { completed: true, ..*task };
     assert_eq!(press(&mut app, todo, tr("Done")), [Request::SaveTodo { todo: done }]);
 
