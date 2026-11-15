@@ -873,3 +873,18 @@ fn a_tall_message_keeps_the_picture_in_view_when_another_of_it_goes() {
     assert!(matches!(pictures.get(&top), Some(Shown::Away)), "the one out of view went");
     assert_eq!(count(&app, true), HELD_PICTURES + 1);
 }
+
+#[test]
+fn a_picture_that_comes_beyond_the_limit_lets_the_longest_unseen_go() {
+    use crate::app::files::{FilesMsg, HELD_PICTURES, Shown};
+    let mut app = holding(HELD_PICTURES);
+    let key = pictured_key(&app);
+    // Its line was seen last, as its sensor tells before the preview comes.
+    app.chat.as_mut().expect("a chat window").files.last_seen.insert(key.clone(), 100);
+    let picture = block_on(app.backend.clone().preview(key.0.clone(), key.1.clone(), torro_chat::PreviewSize::Medium));
+    let _ = app.update(Message::Chat(Msg::Files(FilesMsg::Picture(key.clone(), picture))));
+    let pictures = &chat(&app).files.pictures;
+    assert!(matches!(pictures.get(&key), Some(Shown::Ready(_))), "the demo's picture came");
+    assert!(matches!(pictures.get(&("m0".into(), Some("f".into()))), Some(Shown::Away)), "m0 was seen longest ago");
+    assert_eq!(count(&app, true), HELD_PICTURES);
+}
