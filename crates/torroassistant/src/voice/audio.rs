@@ -201,7 +201,6 @@ pub fn decode_wav(bytes: &[u8]) -> Result<Wave, VoiceError> {
     Ok(Wave { rate: format.rate, samples })
 }
 
-/// `samples` as a WAV file: PCM, [`RATE`], mono, 16 bit. For the tests.
 /// Makes sound faster or slower without changing its pitch (issue #782): WSOLA, the overlap-add of
 /// short windowed frames, each taken where it best continues the one before, so the voice keeps its
 /// pitch and does not crackle. Pocket TTS hands its sound out piece by piece; so does this, a frame
@@ -284,11 +283,12 @@ impl Stretch {
         let Some(mut wsola) = self.wsola else { return Vec::new() };
         let length = (wsola.pushed as f64 * wsola.hop as f64 / wsola.step).round() as usize;
         let mut rest = Vec::new();
-        while wsola.given + rest.len() < length {
+        // `given` counts what `frames` gave out, `rest` included.
+        while wsola.given < length {
             // Zeros behind, so the last frames find their input.
             let behind = wsola.frame + 2 * wsola.seek + wsola.step.ceil() as usize;
             wsola.input.extend(std::iter::repeat_n(0.0, behind));
-            let wanted = length - wsola.given - rest.len();
+            let wanted = length - wsola.given;
             let given_before = wsola.given;
             rest.extend(wsola.frames(wanted));
             if wsola.given == given_before {
@@ -357,6 +357,7 @@ impl Wsola {
     }
 }
 
+/// `samples` as a WAV file: PCM, [`RATE`], mono, 16 bit. For the tests.
 #[cfg(test)]
 pub fn wav_bytes(samples: &[i16]) -> Vec<u8> {
     let data = (samples.len() * 2) as u32;

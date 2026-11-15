@@ -167,12 +167,11 @@ impl Synth for Pocket {
         let text = text.replace('\0', " ");
         // As before without a choice; with a pause each sentence is a piece of its own, so the pause
         // falls between sentences. sherpa-onnx's own `silence_scale` does not reach streamed sound.
-        let pieces = match delivery == Delivery::default() {
+        let pieces = match delivery.pause_ms == 0 {
             true => pieces(&text, PIECE),
             false => sentence_pieces(&text, PIECE),
         };
-        let last = pieces.len().saturating_sub(1);
-        for (number, piece) in pieces.into_iter().enumerate() {
+        for piece in pieces {
             // Each piece is stretched on its own, so its end comes out whole before the pause.
             let stretch = Rc::new(RefCell::new(Some(Stretch::new(rate, delivery.speed))));
             let heard = Rc::new(Cell::new(false));
@@ -187,7 +186,11 @@ impl Synth for Pocket {
                     Some(stretch) => stretch.push(samples),
                     None => samples.to_vec(),
                 };
-                let go_on = sound.is_empty() || (give.borrow_mut())(&sound);
+                // Nothing out yet: a stop asked for earlier still holds.
+                if sound.is_empty() {
+                    return !stop.get();
+                }
+                let go_on = (give.borrow_mut())(&sound);
                 stop.set(!go_on);
                 go_on
             };
@@ -205,7 +208,10 @@ impl Synth for Pocket {
                 }
                 rest.extend(stretch.finish());
             }
-            if number < last {
+            // After each sentence, also the last of this text: an answer read as it grows comes in
+            // several texts, and the pause falls between them too. A long sentence cut in pieces has
+            // none inside.
+            if delivery.pause_ms > 0 && piece.trim_end().ends_with(['.', '!', '?', '…']) {
                 rest.extend(std::iter::repeat_n(0.0, rate as usize * usize::from(delivery.pause_ms) / 1000));
             }
             if !rest.is_empty() && !(chunk.borrow_mut())(&rest) {

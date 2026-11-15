@@ -35,7 +35,7 @@ use std::time::Duration;
 use base64::Engine as _;
 use serde_json::{Value, json};
 use torro_core::i18n::tr;
-use torro_core::settings::{POCKET_RECOMMENDED, POCKET_VOICES, SpeechProvider, Voice};
+use torro_core::settings::{POCKET_PAUSES, POCKET_RECOMMENDED, POCKET_SPEEDS, POCKET_VOICES, SpeechProvider, Voice};
 use torro_core::voice_models::{POCKET_DE, voice_folder};
 use torro_ipc::{SpeechMissing, SpeechOption, SpeechStatus, SpeechVoice, VoiceMissing};
 
@@ -110,8 +110,9 @@ impl Input {
                 text: text(say, "text").unwrap_or_default(),
                 voice: text(say, "voice"),
                 delivery: Delivery {
-                    speed: number("speed", standard.speed),
-                    pause_ms: number("pause", standard.pause_ms),
+                    // Within the ranges of the settings, whoever wrote the line.
+                    speed: number("speed", standard.speed).clamp(POCKET_SPEEDS.0, POCKET_SPEEDS.1),
+                    pause_ms: number("pause", standard.pause_ms).clamp(POCKET_PAUSES.0, POCKET_PAUSES.1),
                 },
             }));
         }
@@ -209,9 +210,20 @@ fn sentences(text: &str) -> Vec<String> {
 }
 
 /// `text` with each sentence a piece of its own (issue #782: a pause falls after each), a sentence
-/// longer than `most` characters cut as in [`pieces`].
+/// longer than `most` characters cut as in [`pieces`]. A point after a number or a word of one or two
+/// letters ("3. Mai", "z. B.") ends no sentence, so no pause falls inside one.
 pub fn sentence_pieces(text: &str, most: usize) -> Vec<String> {
-    sentences(text).iter().flat_map(|sentence| pieces(sentence, most)).collect()
+    let mut whole: Vec<String> = Vec::new();
+    let mut open = false;
+    for sentence in sentences(text) {
+        match whole.last_mut() {
+            Some(last) if open => last.push_str(&sentence),
+            _ => whole.push(sentence.clone()),
+        }
+        let word = sentence.trim_end().strip_suffix('.').and_then(|head| head.split_whitespace().last());
+        open = word.is_some_and(|word| word.chars().count() <= 2 || word.chars().all(|c| c.is_ascii_digit()));
+    }
+    whole.iter().flat_map(|sentence| pieces(sentence, most)).collect()
 }
 
 /// `text` in pieces of whole sentences, each at most `most` characters; a longer sentence is cut
@@ -725,6 +737,11 @@ mod tests {
         let cut = sentence_pieces(&long, 50);
         assert!(cut.len() > 2 && cut.iter().all(|piece| piece.chars().count() <= 50), "{cut:?}");
         assert_eq!(cut.last().map(String::as_str), Some("Short."));
+        assert_eq!(
+            sentence_pieces("Am 3. Mai kommt z. B. Anna. Gut!", 500),
+            ["Am 3. Mai kommt z. B. Anna.", "Gut!"],
+            "no sentence ends after a number or a short word"
+        );
     }
 
     /// What a fake sound output played.
