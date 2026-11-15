@@ -4159,7 +4159,10 @@ static SET_SETTING: Command = Command {
                   false; the chat windows read answers aloud), `speech_provider` (\"pocket\" or null for the \
                   core's choice, Pocket TTS on this computer; \"openai\" is forbidden: only a person sends answers \
                   to OpenAI), `pocket_voice` (\"alba\", \"fantine\", \"marius\", \"warm_woman\", \"calm_man\" or \
-                  null) or `openai_voice` (one of the OpenAI voices or null); `stt_model`, `voice` and `qwen_voice` \
+                  null), `openai_voice` (one of the OpenAI voices or null), `pocket_speed` (percent from 70 to \
+                  150 in tens, or null for 100), `pocket_pause` (extra milliseconds after each sentence from 0 to \
+                  1000 in 250s, or null for none) or `openai_style` (how OpenAI speaks, one line of at most 500 \
+                  characters like \"calm, slow\", or null; it only reaches OpenAI once a person chose OpenAI); `stt_model`, `voice` and `qwen_voice` \
                   are gone and refused or \
                   `assistant_default` (what a new chat of the assistant starts with: {\"engine\": \"<id from \
                   assistant_list_engines>\", \"model\": \"<model id>\", \"effort\": \"low\"|\"medium\"|\"high\"}, \
@@ -8302,6 +8305,11 @@ mod tests {
         for local in [serde_json::json!("pocket"), serde_json::Value::Null] {
             assert!(!provider(local).kept_for_people());
         }
+        // Issue #782: how the voice speaks is open to agents; the style only travels once a person
+        // chose OpenAI above.
+        for key in [SettingKey::PocketSpeed, SettingKey::PocketPause, SettingKey::OpenAiStyle] {
+            assert!(!Request::SetSetting { key, value: serde_json::json!("whisper") }.kept_for_people(), "{key:?}");
+        }
         let mut rights = RightsTemplate::FullAccess.rights();
         for area in Area::ALL {
             rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
@@ -9236,6 +9244,9 @@ mod tests {
                 "qwen_voice",
                 "pocket_voice",
                 "openai_voice",
+                "pocket_speed",
+                "pocket_pause",
+                "openai_style",
                 "assistant_default",
                 "setup",
                 "component",

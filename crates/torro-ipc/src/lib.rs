@@ -5528,6 +5528,17 @@ pub enum SettingKey {
     /// `"cedar"`, …), `null` for the recommended one.
     #[serde(rename = "openai_voice")]
     OpenAiVoice,
+    /// How fast Pocket TTS speaks, in percent (issue #782): a number from 70 to 150, rounded to tens;
+    /// `null` for 100. Anything else is refused with `error`.
+    PocketSpeed,
+    /// The extra pause after each sentence of Pocket TTS, in milliseconds (issue #782): a number from
+    /// 0 to 1000, rounded to 250; `null` for none. Anything else is refused with `error`.
+    PocketPause,
+    /// How OpenAI speaks (issue #782, `instructions` of its speech API): one line of at most 500
+    /// characters, like `"calm, slow, friendly"`; `null` or `""` for OpenAI's own way. Open to agents
+    /// like the voice: the style only travels once a person chose OpenAI ([`SettingKey::SpeechProvider`]).
+    #[serde(rename = "openai_style")]
+    OpenAiStyle,
     /// What a new chat of the assistant starts with (issue #131): `{"engine": "<id from
     /// assistant.list_engines>", "model": "<model id>", "effort": "low" | "medium" | "high"}`, model
     /// and effort optional; `null` for the engine and model used last (`torro_core::ai::SlotModel`).
