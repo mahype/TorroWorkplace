@@ -2083,6 +2083,79 @@ pub struct Tools {
     /// ([`Tools::check_folders`]); an entry this version cannot read is dropped when the file is read.
     #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "readable_entries")]
     pub folders: Vec<AllowedFolder>,
+    /// The assistant's terminal (issue #754, `docs/terminal.md`): whether it may run commands, when it
+    /// asks before one and what a person allowed for good. Only a person changes any of it (point 15 of
+    /// "Was nie nach außen geht"); it stands outside the rights, since only the assistant can have it.
+    #[serde(skip_serializing_if = "TerminalSettings::is_default")]
+    pub terminal: TerminalSettings,
+}
+
+/// When the assistant asks before it runs a command in the terminal ([`TerminalSettings::mode`], issue #754).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalMode {
+    /// `every`: before every command, unless that exact command was allowed for good in its folder. The default.
+    #[default]
+    Every,
+    /// `dangerous`: only before a command that looks dangerous by the patterns taken over from Hermes Agent, unless
+    /// each pattern it matches was allowed for good.
+    Dangerous,
+}
+
+/// One thing a person allowed the terminal for good ("Always", issue #754): in the mode
+/// [`TerminalMode::Dangerous`] a pattern of dangerous commands by its name, in [`TerminalMode::Every`] one exact
+/// command in one folder.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TerminalAlways {
+    /// `pattern`: every command that matches the pattern `key` (its description, `recursive delete`), in any
+    /// allowed folder.
+    Pattern {
+        /// The pattern's description, as the approval card names it.
+        key: String,
+    },
+    /// `command`: exactly this command text in exactly this folder.
+    Command {
+        /// The whole command as it runs (`cargo test`, or the shell line).
+        command: String,
+        /// The working folder, as the core resolved it.
+        folder: String,
+    },
+}
+
+/// At most this many entries of [`TerminalSettings::always`]; beyond them the oldest goes.
+pub const MAX_TERMINAL_ALWAYS: usize = 200;
+
+/// The settings of the assistant's terminal ([`Tools::terminal`], issue #754).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct TerminalSettings {
+    /// The assistant may run commands at all. Off by default.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub enabled: bool,
+    /// When it asks before a command.
+    pub mode: TerminalMode,
+    /// What a person allowed for good, at most [`MAX_TERMINAL_ALWAYS`]; an entry this version cannot read is
+    /// dropped when the file is read.
+    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "readable_entries")]
+    pub always: Vec<TerminalAlways>,
+}
+
+impl TerminalSettings {
+    /// Nothing set: off, every command asks, nothing allowed for good.
+    pub fn is_default(&self) -> bool {
+        *self == TerminalSettings::default()
+    }
+
+    /// Keeps `entry` for good, once; the oldest entries go beyond [`MAX_TERMINAL_ALWAYS`].
+    pub fn allow_always(&mut self, entry: TerminalAlways) {
+        if self.always.contains(&entry) {
+            return;
+        }
+        self.always.push(entry);
+        let over = self.always.len().saturating_sub(MAX_TERMINAL_ALWAYS);
+        self.always.drain(..over);
+    }
 }
 
 /// At most this many allowed folders ([`Tools::folders`]).
@@ -2183,6 +2256,8 @@ impl Tools {
             tools.pdf.template_mut(id).logo = kept_or_removed(&self.pdf.template(id).logo, &sent.pdf.template(id).logo);
         }
         tools.folders = self.folders.clone();
+        // The terminal is a person's alone (issue #754), in either direction.
+        tools.terminal = self.terminal.clone();
         tools
     }
 
@@ -3588,6 +3663,14 @@ mod tests {
             tools: Tools {
                 pdf: Box::new(PdfSettings { folder: Some("/Users/anna/PDFs".into()), ..PdfSettings::default() }),
                 folders: vec![AllowedFolder { path: "/Users/anna/Documents".into(), access: FolderAccess::Read }],
+                terminal: TerminalSettings {
+                    enabled: true,
+                    mode: TerminalMode::Dangerous,
+                    always: vec![
+                        TerminalAlways::Pattern { key: "recursive delete".into() },
+                        TerminalAlways::Command { command: "cargo test".into(), folder: "/Users/anna/demo".into() },
+                    ],
+                },
             },
             web_search: WebSearch {
                 providers: BTreeSet::from([SearchProviderId::Duckduckgo, SearchProviderId::Wikipedia]),

@@ -1546,7 +1546,7 @@ mod tests {
                 assert!(crate::approvals::is_question(asked));
                 assert!(asked.summary.contains(&question.details), "{}", asked.summary);
                 assert!(asked.summary.starts_with(agent.label()), "{}", asked.summary);
-                let decide = Request::DecideApproval { id: asked.id.clone(), allow };
+                let decide = Request::DecideApproval { id: asked.id.clone(), allow, scope: None };
                 let decided = torro_ipc::client::call(&socket, &decide).await.expect("decided");
                 assert!(matches!(decided, Response::Approval { .. }), "{decided:?}");
 

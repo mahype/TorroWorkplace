@@ -148,6 +148,11 @@ pub enum Open {
     /// The page of the search providers below the tool `web` (task WEB.6, here since #302), as
     /// `connections` sets them up.
     SearchProviders,
+    /// The page of the assistant's terminal below the built-in tools (issue #754): on, asking only before dangerous
+    /// commands, with two entries allowed for good.
+    Terminal,
+    /// The same page as the terminal starts: off, nothing allowed for good.
+    TerminalEmpty,
     /// MCP servers without any server, the PDF tool as it starts and the assistant without it
     /// ([`demo_connections_empty`]).
     ConnectionsEmpty,
@@ -202,7 +207,7 @@ pub enum Open {
     /// The point AI on this page with the demo's suggestion and models; `true` keeps the models the demo
     /// has chosen ("Keep"), `false` starts without any.
     SetupAi(super::setup::AiPage, bool),
-    /// The section Apps (issue #411) with the demo's catalog ([`super::apps::demo_catalog`]): two
+    /// Overview with the app catalog (issue #411, on Overview since issue #803) and the demo's catalog ([`super::apps::demo_catalog`]): two
     /// updates, a package manager's app, one missing.
     Apps,
     /// The same with the menu "…" of the Calendar's card open.
@@ -241,7 +246,7 @@ impl Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 146] = [
+    pub const ALL: [(&'static str, Open); 148] = [
         ("setup-ai-form", Open::AiSetup("form")),
         ("setup-ai-download", Open::AiSetup("download")),
         ("setup-ai-warning", Open::AiSetup("warning")),
@@ -344,6 +349,8 @@ impl Open {
         ("connections-own", Open::ConnectionsOwn),
         ("connections-empty", Open::ConnectionsEmpty),
         ("search-providers", Open::SearchProviders),
+        ("terminal", Open::Terminal),
+        ("terminal-empty", Open::TerminalEmpty),
         ("catalog-install", Open::CatalogInstall),
         ("catalog-install-tools", Open::CatalogInstallTools),
         ("extension-detail", Open::ExtensionDetail),
@@ -395,12 +402,12 @@ impl Open {
 
 /// The start parameters of `torroworkplace ui`:
 ///
-/// - `--section overview|apps|accounts|ai|api|mcp|connections|approvals|workspaces|appearance|general`: the page to
+/// - `--section overview|accounts|ai|api|mcp|connections|approvals|workspaces|appearance|privacy|general`: the page to
 ///   start on. The states of `--open` that belong to a page choose that page themselves. Other
 ///   programs open a page this way (`torroworkplace ui --section accounts`). The words of pages
 ///   that moved keep working ([`Section::from_arg`]): `agents` is MCP (task S.35), `inbox` is
-///   General, where the suite's parts are switched on and opened; `apps` is the app catalog again
-///   (issue #411), where they are switched on and off now. `assistant` and
+///   General, where the suite's parts are switched on and opened; `apps` is Overview, where the app
+///   catalog stands since issue #803 and the apps are switched on and off. `assistant` and
 ///   `bot:<id>` ([`Launch::client`]) bring the assistant's window to the front instead of a page:
 ///   what the assistant and its bots may use is set there, under Access (task S.34).
 /// - `--demo`: sample accounts, templates, settings, apps, agents, approvals and inbox rules in memory instead
@@ -451,6 +458,9 @@ pub struct Launch {
     pub saved: bool,
     /// `--app-job=<target>`: the window of an app job ([`super::app_job::Target`]).
     pub app_job: Option<String>,
+    /// `--section apps`: the app catalog was asked for by its word. It stands on Overview since issue
+    /// #803, yet the start opens a window of its own as the section Apps did ([`super::instance_of`]).
+    pub catalog: bool,
 }
 
 impl Default for Launch {
@@ -469,6 +479,7 @@ impl Default for Launch {
             template: None,
             saved: false,
             app_job: None,
+            catalog: false,
         }
     }
 }
@@ -545,7 +556,7 @@ impl Launch {
                 Some(id) if is_bot_id(id) => (Section::Overview, Some(ClientTarget::Bot(id.to_owned()))),
                 _ => {
                     let mut valid: Vec<&str> = Section::ALL.iter().map(|s| s.arg()).collect();
-                    valid.extend(["assistant", "bot:<id>", "agents", "inbox"]);
+                    valid.extend(["assistant", "bot:<id>", "agents", "apps", "inbox"]);
                     (Section::from_arg(word).ok_or_else(|| unknown("--section", word, valid))?, None)
                 }
             },
@@ -624,6 +635,7 @@ impl Launch {
             template,
             saved,
             app_job,
+            catalog: flag_value(args, "--section")? == Some("apps"),
         })
     }
 }
@@ -1692,9 +1704,10 @@ mod tests {
         }
         let inbox = Launch::parse(&args(&["--section", "inbox"])).expect("inbox");
         assert_eq!((inbox.section, inbox.client), (Section::General, None));
-        // Issue #411: the apps have their own section again, the catalog.
+        // Issue #411: the word leads to the catalog, on Overview since issue #803.
         let apps = Launch::parse(&args(&["--section", "apps"])).expect("apps");
-        assert_eq!((apps.section, apps.client), (Section::Apps, None));
+        assert_eq!((apps.section, apps.client), (Section::Overview, None), "the catalog is on Overview (issue #803)");
+        assert!(apps.catalog && !Launch::parse(&args(&["--section", "overview"])).expect("overview").catalog);
         let agents = Launch::parse(&args(&["--section", "agents"])).expect("the old word");
         assert_eq!((agents.section, agents.client), (Section::Mcp, None));
     }
@@ -1803,7 +1816,7 @@ mod tests {
         let err = Launch::parse(&args(&["--section", "mail"])).expect_err("unknown section");
         assert!(
             err.to_string().ends_with(
-                "valid values: overview, apps, accounts, ai, api, mcp, connections, approvals, workspaces, appearance, privacy, general, assistant, bot:<id>, agents, inbox"
+                "valid values: overview, accounts, ai, api, mcp, connections, approvals, workspaces, appearance, privacy, general, assistant, bot:<id>, agents, apps, inbox"
             ),
             "{err}"
         );

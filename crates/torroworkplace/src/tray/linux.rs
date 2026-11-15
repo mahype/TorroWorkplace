@@ -168,8 +168,8 @@ mod tests {
             .collect()
     }
 
-    /// Where the template entries start: after the seven apps and a separator.
-    const TEMPLATES: usize = 8;
+    /// Where the template entries start: after the control centre, the seven apps and a separator.
+    const TEMPLATES: usize = 9;
 
     fn snapshot() -> Snapshot {
         Snapshot {
@@ -196,6 +196,7 @@ mod tests {
         assert_eq!(
             labels(&build_menu(&snapshot())),
             [
+                tr("Control centre").to_string(),
                 tr("Notification Hub").to_string(),
                 tr("Mail").to_string(),
                 tr("App Feed").to_string(),
@@ -210,7 +211,6 @@ mod tests {
                 tr("Save workspace…").to_string(),
                 tr("Manage workspaces…").to_string(),
                 "-".to_string(),
-                tr("Settings…").to_string(),
                 tr("Quit").to_string(),
             ]
         );

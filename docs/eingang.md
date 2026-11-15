@@ -375,7 +375,7 @@ im Eingang, nur die Oberfläche teilt sich auf.
   damit Kachel-Regeln sie auseinanderhalten. Die Filter `--source` und `--lane` aus E3.6 bleiben.
 - **Agenten und Freigaben** zeigt die Zentrale. Im App Feed lassen sie sich als Quelle zuschalten.
 - **Keine Links zu anderen Apps unten in der Seitenleiste.** Die anderen Fenster erreicht man über das Tray,
-  Dock bzw. Taskleiste, Steuerzentrale › Apps und die Tastatur (einen App-Umschalter gibt es seit #530 nicht mehr). Weniger zeigen, damit das Wichtige übersichtlich bleibt.
+  Dock bzw. Taskleiste, Steuerzentrale › Übersicht und die Tastatur (einen App-Umschalter gibt es seit #530 nicht mehr). Weniger zeigen, damit das Wichtige übersichtlich bleibt.
 - **Seitenleiste des Mail-Fensters** (E18.4, E19.4, #337, #398, #445, #455, #476): ganz oben **New email**, der eine
   Primärknopf des Fensters (Akzentfarbe, Stift, Wort und Taste hell darauf; in der Leiste der Stift auf Rot; ohne
   Mail-Konto gerahmt und abgeschaltet wie vor #476), dann **All** (bis #445 „Unfiltered“, bis #337 „All“: der Posteingang aller

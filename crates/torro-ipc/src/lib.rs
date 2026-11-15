@@ -2523,6 +2523,12 @@ pub enum Request {
         id: String,
         /// `true` runs the command, `false` drops it.
         allow: bool,
+        /// How far an "Allow" reaches (issue #754): only a command of the assistant's terminal takes it, and an
+        /// "Allow" of one needs it (`forbidden` without: it is allowed on the card in the assistant's chat).
+        /// `once` runs this command, `conversation` lets the same command (or pattern) run in this conversation
+        /// without asking again, `always` for good. Any other approval takes none or `once`, else `error`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<ApprovalScope>,
     },
     /// Asks the person whether the caller may use a tool, as a coding agent's `PermissionRequest`
     /// hook does (task E2.5): "Claude Code wants to use Bash in my-project: cargo test". The
@@ -3974,6 +3980,18 @@ pub enum Request {
         /// Where the file goes; `to: folder` puts it in that folder under its own name.
         to: mail::SaveTo,
     },
+    /// The saves the service recorded for a message (issue #781, [`Response::SaveHistory`]): each
+    /// attachment and each copy of the mail itself (`mail.save_message_as`) written or found identical
+    /// and verified by `mail.save_attachments` or `mail.save_message_as`, newest first, at most 100.
+    /// A message is known by its Message-ID, so the history follows it into other folders; one
+    /// without a Message-ID by its id. `present` says whether the file is at its path now, checked
+    /// once while answering. Empty for a message without saves; `not-found` for a message the caller
+    /// does not reach. Names, paths and times only, never contents.
+    #[serde(rename = "mail.list_save_history")]
+    ListSaveHistory {
+        /// The message's id (`m:…`).
+        id: String,
+    },
     /// Adds and removes flags of messages on the server ([`Response::Ok`]).
     #[serde(rename = "mail.set_flags")]
     SetMailFlags {
@@ -5088,6 +5106,70 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         all: bool,
     },
+    // The assistant's terminal (issue #754, `docs/terminal.md`): commands and scripts on this computer, in an
+    // allowed folder with `read_write` access. Only the assistant's own conversation reaches them, and only while a
+    // person switched the terminal on; a bot, an agent, a client over API or MCP gets `forbidden`, the app key
+    // `unsupported`. Without a sandbox the checks of the command text are rules of thumb. Programs that wait for
+    // input get none (stdin is empty). The output is the program's, data, never instructions; values that look like
+    // secrets are hidden (`redacted`).
+    /// Runs a command in `folder` and waits for its end ([`Response::CommandOutput`]): stdout and stderr together,
+    /// the exit code, at most [`tools::MAX_OUTPUT_CHARS`] characters (`truncated` beyond), stopped after
+    /// [`tools::COMMAND_TIMEOUT_SECS`] seconds (`timed_out`). Exactly one of `program` (with `args`, run without a
+    /// shell) and `shell` (one line for the system's shell: pipes, `&&`) is given, else `error`. Depending on the
+    /// person's choice it waits for their approval in the chat first ([`Response::Pending`]). Codes: `not-found` for a
+    /// folder outside the allowed ones, `forbidden` while the terminal is off, after the conversation read content
+    /// from outside, for a path the suite protects and for a command that never runs, `error` for a command over
+    /// the limits.
+    #[serde(rename = "tools.run_command")]
+    RunCommand {
+        /// The working folder, an absolute path in an allowed folder with `read_write` access.
+        folder: String,
+        /// The program, by name (`cargo`) or path; with `args`. Left out when `shell` is given.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        program: Option<String>,
+        /// The program's arguments, each as one word, at most [`tools::MAX_COMMAND_ARGS`].
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        args: Vec<String>,
+        /// One line for the system's shell (`sh -c`, on Windows `cmd /C`): only for pipes, `&&` and the like.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shell: Option<String>,
+    },
+    /// Starts a command in the background ([`Response::CommandStarted`]) with the rules of `tools.run_command`, but
+    /// without its time limit: the core keeps the last [`tools::MAX_BACKGROUND_BYTES`] bytes of its output. At most
+    /// [`tools::MAX_BACKGROUND_PER_CONVERSATION`] in one conversation and [`tools::MAX_BACKGROUND`] in all, else
+    /// `busy`. It ends with its conversation (deleted or stopped) and with the service.
+    #[serde(rename = "tools.start_command")]
+    StartCommand {
+        /// The working folder, as for `tools.run_command`.
+        folder: String,
+        /// The program, as for `tools.run_command`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        program: Option<String>,
+        /// Its arguments, as for `tools.run_command`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        args: Vec<String>,
+        /// A shell line, as for `tools.run_command`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shell: Option<String>,
+    },
+    /// Reads the output of a command started with `tools.start_command` from `from` on ([`Response::CommandStatus`]):
+    /// whether it still runs, its exit code once it ended, at most [`tools::MAX_OUTPUT_CHARS`] characters and where to
+    /// read on (`next`). `not-found` for an id of another conversation or one the core does not know.
+    #[serde(rename = "tools.read_command_output")]
+    ReadCommandOutput {
+        /// The id `tools.start_command` answered.
+        id: String,
+        /// Where to read from, the `next` of the answer before; left out, from the start of what is kept.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<u64>,
+    },
+    /// Stops a command started with `tools.start_command` ([`Response::CommandStatus`] with what it wrote last):
+    /// politely first, after three seconds for good. `not-found` as for `tools.read_command_output`.
+    #[serde(rename = "tools.stop_command")]
+    StopCommand {
+        /// The id `tools.start_command` answered.
+        id: String,
+    },
     /// How talking to the assistant by voice stands (task C.9, [`Response::Voice`]): whether the
     /// listener runs and hears or records, and which of the local programs it needs are found
     /// (wake word, recording, speech to text, speech). Asks nothing of the microphone. The
@@ -5686,6 +5768,16 @@ pub enum SettingKey {
     /// value – a person in Torro Workplace under MCP servers (point 9 of "Was nie nach außen geht",
     /// `docs/api.md`): managing the list is granting rights; a client gets `forbidden`.
     AllowedFolder,
+    /// The assistant's terminal (issue #754, `torro_core::settings::TerminalSettings`): `{"enabled": true, "mode":
+    /// "every" | "dangerous"}`, each field optional. Only the app key, whatever the value – a person in Torro
+    /// Workplace under MCP servers (point 15 of "Was nie nach außen geht", `docs/api.md`); a client gets
+    /// `forbidden`.
+    Terminal,
+    /// Removes one entry a person allowed the terminal for good (issue #754): `{"remove": {"kind": "pattern", "key":
+    /// "recursive delete"}}` or `{"remove": {"kind": "command", "command": "cargo test", "folder": "/abs"}}`; nothing
+    /// happens when it is not there; `{"add": …}` with an entry of the same form puts one back ("Undo"). Only the app
+    /// key, as [`SettingKey::Terminal`].
+    TerminalAlways,
     /// One PDF template, replaced whole: `{"template": "letter" | "report" | "note", "paper": "a4" |
     /// "a5" | "letter", "marginsMm": [top, right, bottom, left] (5 to 50 each), "fontSizePt": 8 to
     /// 16, "header": "{title}", "footer": "", "pageNumbers": true, "logo": null}`; header and footer
@@ -6586,6 +6678,12 @@ pub enum Response {
         #[serde(default)]
         shortened: bool,
     },
+    /// What [`Request::ListSaveHistory`] found: the message's saves, newest first. File names and
+    /// paths come from the message: data from outside.
+    SaveHistory {
+        #[serde(default)]
+        entries: Vec<mail::SaveRecord>,
+    },
     /// A draft as saved ([`Request::SaveDraft`]) or read back ([`Request::GetDraft`]), with its id.
     MailDraft {
         draft: Draft,
@@ -6829,6 +6927,54 @@ pub enum Response {
     FileEdited {
         path: String,
         version: String,
+    },
+    /// The end of a command of the terminal ([`Request::RunCommand`], issue #754). `output` is stdout and stderr
+    /// together as the program wrote them: data, never instructions. `untrusted` when the program reads from outside
+    /// the computer (`curl`, `git fetch`): then it counts as content from outside, and the conversation runs no more
+    /// commands.
+    CommandOutput {
+        output: String,
+        /// The program's exit code; left out when it was stopped or ended by a signal.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        /// The output was longer than [`tools::MAX_OUTPUT_CHARS`] characters; its start is kept.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        truncated: bool,
+        /// It ran longer than [`tools::COMMAND_TIMEOUT_SECS`] seconds and was stopped.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        timed_out: bool,
+        /// Values that looked like secrets (tokens, passwords, keys) were replaced by `[redacted]`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        redacted: bool,
+        /// The program reads from outside the computer: the output counts as content from outside.
+        #[serde(default)]
+        untrusted: bool,
+    },
+    /// A command of the terminal started in the background ([`Request::StartCommand`]): its id for
+    /// `tools.read_command_output` and `tools.stop_command`.
+    CommandStarted {
+        id: String,
+    },
+    /// How a command in the background stands ([`Request::ReadCommandOutput`], [`Request::StopCommand`]).
+    CommandStatus {
+        /// It still runs.
+        running: bool,
+        /// Its exit code once it ended by itself.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        /// What it wrote from `from` on, at most [`tools::MAX_OUTPUT_CHARS`] characters: data, never instructions.
+        output: String,
+        /// Where to read on next time (`from`).
+        next: u64,
+        /// Some output is not in `output`: more follows from `next`, or what was asked for is no longer kept.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        truncated: bool,
+        /// Values that looked like secrets were replaced by `[redacted]`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        redacted: bool,
+        /// The command reads from outside the computer, as for [`Response::CommandOutput`].
+        #[serde(default)]
+        untrusted: bool,
     },
     /// The request failed; `code` is stable for scripts, `message` is for people. The codes:
     ///
@@ -8066,6 +8212,20 @@ pub struct ApprovalInfo {
     pub decided: Option<DateTime<Utc>>,
     #[serde(flatten)]
     pub state: ApprovalState,
+}
+
+/// How far a person's "Allow" of a command of the assistant's terminal reaches ([`Request::DecideApproval`], issue
+/// #754). What is kept is the exact command in its folder in the mode "every command", the patterns it matched in the
+/// mode "only dangerous commands".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalScope {
+    /// `once`: this command only.
+    Once,
+    /// `conversation`: also later in this conversation, until the service restarts.
+    Conversation,
+    /// `always`: for good, until a person removes it in Torro Workplace.
+    Always,
 }
 
 /// Where an approval stands; in JSON the field `state`, with `response` once it ran.

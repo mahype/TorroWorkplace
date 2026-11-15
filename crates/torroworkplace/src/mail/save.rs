@@ -31,13 +31,14 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use chrono::{Local, NaiveDate};
+use chrono::{Local, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use torro_core::i18n::{tr, trf};
 use torro_ipc::Request;
 use torro_ipc::Response;
 use torro_ipc::mail::{
-    AttachmentPlan, ExportFormat, ExportPlan, FailedFile, PlannedPlace, SaveTo, SavedFile, limit_refusal,
+    AttachmentPlan, ExportFormat, ExportPlan, FailedFile, PlannedPlace, SaveRecord, SaveTo, SavedFile, SavedVia,
+    SavedWhat, limit_refusal,
 };
 use torro_mail::save_target::{resolve, suggestion};
 use torro_mail::{
@@ -46,7 +47,8 @@ use torro_mail::{
 use torro_mail_imap::mime::{self, MimeError};
 
 use super::read::{self, ATTACHMENT_MAX_BYTES};
-use super::service::MailService;
+use super::service::{MailError, MailService};
+use super::store::MessageRef;
 use crate::pim::Reach;
 
 /// The file of the save targets in the mail data directory (`<data>/mail/`).
@@ -402,6 +404,7 @@ pub async fn answer(mail: &MailService, reach: Reach<'_>, context: &Context, req
             .map_err(boxed),
         Request::SaveMailAttachments { id, parts, to } => save(mail, reach, context, &id, &parts, &to).await,
         Request::SaveMailAs { id, format, to } => save_message(mail, reach, context, &id, format, &to, None).await,
+        Request::ListSaveHistory { id } => history(mail, reach, &id).await,
         other => {
             let message = format!("{} is not a command for saving attachments", other.operation().name());
             Err(Box::new(Response::Error { code: "unsupported".into(), message }))
@@ -666,6 +669,8 @@ struct Saved {
     saved: Vec<SavedFile>,
     skipped: Vec<SavedFile>,
     failed: Vec<FailedFile>,
+    /// The file name from the message of each part saved or skipped, for the history (issue #781).
+    names: Vec<(String, String)>,
 }
 
 impl Saved {
@@ -673,7 +678,28 @@ impl Saved {
         Response::SavedAttachments { saved: self.saved, skipped: self.skipped, failed: self.failed }
     }
 
+    /// What the history keeps of this call (issue #781): each file saved or found identical, never
+    /// one that failed.
+    fn records(&self, how: &How) -> Vec<SaveRecord> {
+        let name = |part: &str| {
+            self.names.iter().find(|(known, _)| known == part).map(|(_, name)| name.clone()).unwrap_or_default()
+        };
+        let files = self.saved.iter().map(|file| (file, false)).chain(self.skipped.iter().map(|file| (file, true)));
+        files
+            .map(|(file, skipped)| {
+                how.record(
+                    SavedWhat::Attachment { part: file.part.clone(), name: name(&file.part) },
+                    &file.path,
+                    skipped,
+                )
+            })
+            .collect()
+    }
+
     fn record(&mut self, part: &str, name: &str, written: Result<Written, Problem>) {
+        if written.is_ok() {
+            self.names.push((part.into(), name.into()));
+        }
         match written {
             Ok(Written::Saved(path)) => self.saved.push(SavedFile { part: part.into(), path: shown(&path) }),
             Ok(Written::Skipped(path)) => self.skipped.push(SavedFile { part: part.into(), path: shown(&path) }),
@@ -726,7 +752,123 @@ async fn save(
     for part in wanted {
         save_one(&raw, &part, &place, &shared, ATTACHMENT_MAX_BYTES, &mut saved).await;
     }
+    let how = How::new(to, &place);
+    note(&located, saved.records(&how), how.base).await;
     Ok(saved.response())
+}
+
+// ----- the save history (issue #781) -----
+
+/// The kind of action the history notes in the store ([`super::store::MailStore::record_action`]).
+const SAVED: &str = "saved";
+
+/// The key a mail's history is kept under: its Message-ID, which stays when another mail program
+/// moves the mail and the core's id changes; its id when it has none.
+fn history_key(place: &MessageRef) -> String {
+    match place.rfc_message_id.as_deref().map(str::trim).filter(|rfc| !rfc.is_empty()) {
+        Some(rfc) => format!("rfc:{rfc}"),
+        None => format!("id:{}", place.id),
+    }
+}
+
+/// How the place of one call was chosen, shared by every file it saved.
+struct How {
+    at: chrono::DateTime<Utc>,
+    via: SavedVia,
+    target: Option<String>,
+    target_name: Option<String>,
+    /// The target's folder as the person set it; [`note`] resolves it to tell the subfolders.
+    base: Option<PathBuf>,
+}
+
+impl How {
+    fn new(to: &SaveTo, place: &Place) -> How {
+        let (via, target) = match to {
+            SaveTo::Downloads => (SavedVia::Downloads, None),
+            SaveTo::Target(id) => (SavedVia::Target, Some(id.clone())),
+            SaveTo::Folder(_) => (SavedVia::Folder, None),
+            SaveTo::File(_) => (SavedVia::File, None),
+        };
+        let (target_name, base) = match place {
+            Place::Target(spec) => (Some(spec.name.clone()), Some(PathBuf::from(&spec.folder))),
+            Place::Folder(_) | Place::File(_) => (None, None),
+        };
+        How { at: Utc::now(), via, target, target_name, base }
+    }
+
+    fn record(&self, what: SavedWhat, path: &str, skipped: bool) -> SaveRecord {
+        SaveRecord {
+            at: self.at,
+            what,
+            via: self.via,
+            target: self.target.clone(),
+            target_name: self.target_name.clone(),
+            path: path.to_string(),
+            folders: Vec::new(),
+            skipped,
+            present: true,
+        }
+    }
+}
+
+/// Notes `records` in the history of the mail at `located`, each with the subfolders below `base`,
+/// the save target's folder, it lies in ([`below`]). A save that could not be noted is still a save:
+/// the answer stays a success, and the log names no path, name or store message.
+async fn note(located: &read::Located, mut records: Vec<SaveRecord>, base: Option<PathBuf>) {
+    if records.is_empty() {
+        return;
+    }
+    let key = history_key(&located.place);
+    let noted = located
+        .store
+        .run(move |store| {
+            // Resolved as the save resolved it (`target_dir`), off the runtime: the paths noted are the
+            // resolved ones, a folder behind a link or `\\?\` on Windows would not match otherwise.
+            if let Some(base) = base.and_then(|base| base.canonicalize().ok()) {
+                for record in &mut records {
+                    record.folders = below(&base, &record.path);
+                }
+            }
+            for record in &records {
+                let data = serde_json::to_string(record).unwrap_or_default();
+                store.record_action(&key, SAVED, record.at, &data)?;
+            }
+            Ok(())
+        })
+        .await;
+    if noted.is_err() {
+        eprintln!("torroworkplace: mail: a save could not be noted in the mail's history");
+    }
+}
+
+/// The folders between `base` and the file at `path`: `["2026", "11"]`; empty for a file right in
+/// `base` or one outside it.
+fn below(base: &Path, path: &str) -> Vec<String> {
+    Path::new(path)
+        .parent()
+        .and_then(|parent| parent.strip_prefix(base).ok())
+        .map(|rest| rest.components().map(|part| part.as_os_str().to_string_lossy().into_owned()).collect())
+        .unwrap_or_default()
+}
+
+/// `mail.list_save_history`: the message in the stores `reach` sees (`not-found`), then its saves,
+/// newest first, each with `present` checked once off the runtime. Nothing is written back.
+async fn history(mail: &MailService, reach: Reach<'_>, id: &str) -> Answer<Response> {
+    let stores = mail.stores(reach).await;
+    let located = read::locate(&stores, id).await?;
+    let key = history_key(&located.place);
+    let rows = located
+        .store
+        .run(move |store| store.actions(&key, SAVED))
+        .await
+        .map_err(|err| Box::new(MailError::Store(err).response()))?;
+    let entries: Vec<SaveRecord> = rows.iter().filter_map(|data| serde_json::from_str(data).ok()).collect();
+    let entries = tokio::task::spawn_blocking(move || {
+        entries.into_iter().map(|entry| SaveRecord { present: Path::new(&entry.path).is_file(), ..entry }).collect()
+    })
+    .await
+    .unwrap_or_default();
+    Ok(Response::SaveHistory { entries })
 }
 
 /// The place `to` names, checked: a known target whose folder exists, an existing Downloads or
@@ -1479,15 +1621,7 @@ async fn save_message(
         let (account, months) = (account_name(mail, &located.account).await, month_names());
         let job = export_destination(&place, &summary, format, &account, &months).map_err(|err| err.failed())?;
         let written = tokio::task::spawn_blocking(move || job.run_file(original)).await.unwrap_or(Err(Problem::Write));
-        return match written {
-            Ok(Written::Saved(path)) => {
-                Ok(Response::SavedMail { path: shown(&path), skipped: false, shortened: false })
-            }
-            Ok(Written::Skipped(path)) => {
-                Ok(Response::SavedMail { path: shown(&path), skipped: true, shortened: false })
-            }
-            Err(problem) => Err(problem.failed()),
-        };
+        return saved_mail(&located, format, to, &place, written, false).await;
     }
     let message = read::stored_message(&located).await?;
     let summary = &message.summary;
@@ -1515,12 +1649,27 @@ async fn save_message(
     let job = export_destination(&place, summary, format, &account, &months).map_err(|problem| problem.failed())?;
     let bytes = drawn.bytes;
     let written = tokio::task::spawn_blocking(move || job.run(&bytes)).await.unwrap_or(Err(Problem::Write));
-    let shortened = drawn.shortened;
-    match written {
-        Ok(Written::Saved(path)) => Ok(Response::SavedMail { path: shown(&path), skipped: false, shortened }),
-        Ok(Written::Skipped(path)) => Ok(Response::SavedMail { path: shown(&path), skipped: true, shortened }),
-        Err(problem) => Err(problem.failed()),
-    }
+    saved_mail(&located, format, to, &place, written, drawn.shortened).await
+}
+
+/// The answer of `mail.save_message_as` once its file is `written`, noted in the mail's history
+/// when it was saved or found identical (issue #781); nothing is noted for a failure.
+async fn saved_mail(
+    located: &read::Located,
+    format: ExportFormat,
+    to: &SaveTo,
+    place: &Place,
+    written: Result<Written, Problem>,
+    shortened: bool,
+) -> Answer<Response> {
+    let (path, skipped) = match written {
+        Ok(Written::Saved(path)) => (shown(&path), false),
+        Ok(Written::Skipped(path)) => (shown(&path), true),
+        Err(problem) => return Err(problem.failed()),
+    };
+    let how = How::new(to, place);
+    note(located, vec![how.record(SavedWhat::Mail { format }, &path, skipped)], how.base).await;
+    Ok(Response::SavedMail { path, skipped, shortened })
 }
 
 /// Runs an approved EML save with the exact target snapshot fingerprinted by the core. Never
@@ -2906,6 +3055,88 @@ pub(crate) mod tests {
                 assert_eq!(fs::read_dir(context.downloads.as_ref().expect("folder")).expect("files").count(), 0);
             }
         }
+    }
+
+    /// Issue #781: the history of a mail is empty at first, then holds each attachment saved and each
+    /// one found identical, and the mail saved as PDF, newest first, with where they went; a failed
+    /// call adds nothing, a deleted file reads as not `present`, and a client without the account finds
+    /// no history.
+    #[tokio::test]
+    async fn saves_are_noted_in_the_mails_history() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let files: [(&str, &[u8]); 2] = [("Rechnung.pdf", b"pdf"), ("Liste.pdf", b"list")];
+        server.add("INBOX", &raw_with(&files), &[]);
+        let service = synced(dir.path(), &server).await;
+        let id = message_id(&service, "Ihre Rechnung").await;
+        let downloads = dir.path().join("Downloads");
+        fs::create_dir(&downloads).expect("downloads");
+        let context = Context { downloads: Some(downloads.clone()), categories: Category::BUILT_IN.to_vec() };
+        // The target's folder through a link: the history still tells the subfolder below it.
+        let real = dir.path().join("real");
+        fs::create_dir(&real).expect("the folder");
+        let linked = dir.path().join("linked");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &linked).expect("the link");
+        #[cfg(not(unix))]
+        let linked = real.clone();
+        let target = SaveTargetSpec {
+            on_conflict: OnConflict::SkipIdentical,
+            subfolders: "{year}".into(),
+            ..spec("Invoices", &linked)
+        };
+        let made = service.save_targets().create(target, &context.categories).expect("stored");
+        let history =
+            async |reach| answer(&service, reach, &context, Request::ListSaveHistory { id: id.clone() }).await;
+        let entries = |response: Response| match response {
+            Response::SaveHistory { entries } => entries,
+            other => panic!("history: {other:?}"),
+        };
+        assert!(entries(history(Reach::Suite).await).is_empty(), "nothing saved yet");
+
+        let to_target = Request::SaveMailAttachments {
+            id: id.clone(),
+            parts: vec!["2".into()],
+            to: SaveTo::Target(made.id.clone()),
+        };
+        let first = answer(&service, Reach::Suite, &context, to_target.clone()).await;
+        let Response::SavedAttachments { saved, .. } = first else { panic!("saved: {first:?}") };
+        let second = answer(&service, Reach::Suite, &context, to_target).await;
+        let Response::SavedAttachments { skipped, .. } = second else { panic!("skipped: {second:?}") };
+        assert_eq!(skipped.len(), 1, "identical");
+        let unknown = Request::SaveMailAttachments { id: id.clone(), parts: vec!["9".into()], to: SaveTo::Downloads };
+        assert_eq!(code(&answer(&service, Reach::Suite, &context, unknown).await), "not-found");
+        let pdf = Request::SaveMailAs { id: id.clone(), format: ExportFormat::Pdf, to: SaveTo::Downloads };
+        let mail = answer(&service, Reach::Suite, &context, pdf).await;
+        let Response::SavedMail { path: pdf_path, .. } = mail else { panic!("saved: {mail:?}") };
+
+        let found = entries(history(Reach::Suite).await);
+        assert_eq!(found.len(), 3, "{found:?}");
+        assert_eq!(found[0].what, SavedWhat::Mail { format: ExportFormat::Pdf });
+        assert_eq!(
+            (found[0].via, found[0].path.as_str(), found[0].skipped),
+            (SavedVia::Downloads, pdf_path.as_str(), false)
+        );
+        assert_eq!(found[1].what, SavedWhat::Attachment { part: "2".into(), name: "Rechnung.pdf".into() });
+        assert!(found[1].skipped, "the second save found the file there");
+        assert!(!found[2].skipped);
+        assert_eq!(found[2].path, saved[0].path);
+        for entry in &found[1..] {
+            assert_eq!((entry.via, entry.target.as_deref()), (SavedVia::Target, Some(made.id.as_str())));
+            assert_eq!(entry.target_name.as_deref(), Some("Invoices"));
+            assert_eq!(entry.folders, ["2026"], "the subfolder below the target, though its folder is a link");
+        }
+        assert!(found[0].folders.is_empty(), "Downloads has none");
+        assert!(found.iter().all(|entry| entry.present), "every file is there");
+        assert!(found[0].at >= found[2].at);
+
+        fs::remove_file(&pdf_path).expect("removed");
+        let found = entries(history(Reach::Suite).await);
+        assert_eq!(found.iter().map(|entry| entry.present).collect::<Vec<_>>(), [false, true, true]);
+
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.mail_accounts = Selection::Only(Vec::new());
+        assert_eq!(code(&history(Reach::Client(&rights)).await), "not-found");
     }
 
     /// Issue #501: "Skip if identical" finds the same drawing of the mail there and writes nothing, as

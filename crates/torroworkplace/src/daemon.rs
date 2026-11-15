@@ -612,6 +612,10 @@ async fn serve(shows: Shows, takeover: bool) -> Result<(), String> {
     if tokio::time::timeout(EXTENSIONS_WAIT, servers.stop_all()).await.is_err() {
         eprintln!("torroworkplace: the MCP servers did not end in time");
     }
+    // So do the terminal's commands in the background (issue #754), each with everything it started.
+    if tokio::time::timeout(EXTENSIONS_WAIT, core.stop_terminal()).await.is_err() {
+        eprintln!("torroworkplace: the terminal's commands did not end in time");
+    }
     let _ = std::fs::remove_file(&socket);
     result
 }
@@ -1167,7 +1171,7 @@ fn describe(request: &Request) -> String {
         Request::ClientActivity { id } => format!("activity of client {id}"),
         Request::ListApprovals => "approvals".into(),
         Request::ApprovalStatus { id } => format!("approval {id}"),
-        Request::DecideApproval { id, allow } => format!("{} approval {id}", if *allow { "allow" } else { "deny" }),
+        Request::DecideApproval { id, allow, .. } => format!("{} approval {id}", if *allow { "allow" } else { "deny" }),
         // Never the tool or the command: they are what the agent would run.
         Request::AskPermission { .. } => "ask for permission".into(),
         // Ids only, never a title, a body or a thread key (security rule 7 of the inbox).
@@ -1251,6 +1255,7 @@ fn describe(request: &Request) -> String {
         Request::SaveMailAs { format: torro_ipc::mail::ExportFormat::Pdf, .. } => "save mail as pdf".into(),
         Request::SaveMailAs { format: torro_ipc::mail::ExportFormat::Png, .. } => "save mail as image".into(),
         Request::SaveMailAs { format: torro_ipc::mail::ExportFormat::Eml, .. } => "save mail as eml".into(),
+        Request::ListSaveHistory { .. } => "list mail save history".into(),
         // Never a filter's search, account or folder (issue #339).
         Request::ListMailFilters => "list mail filters".into(),
         Request::CreateMailFilter { .. } => "create a mail filter".into(),
@@ -1385,6 +1390,11 @@ fn describe(request: &Request) -> String {
         Request::SearchInFiles { .. } => "search in files".into(),
         Request::WriteFile { .. } => "write a file".into(),
         Request::EditFile { .. } => "change a file".into(),
+        // Never a folder, a program or what it was given (issue #754).
+        Request::RunCommand { .. } => "run a command".into(),
+        Request::StartCommand { .. } => "start a command".into(),
+        Request::ReadCommandOutput { .. } => "read a command's output".into(),
+        Request::StopCommand { .. } => "stop a command".into(),
         // Never a name, a search, a group or a field: contacts are people (`docs/kontakte.md`).
         Request::ListAddressBooks { .. } => "list address books".into(),
         Request::ListContacts { .. } => "list contacts".into(),

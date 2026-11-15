@@ -6,8 +6,8 @@
 //!   the lookup of contact addresses and clears the stored map data (issue #355); "Startup" ([`startup`])
 //!   has the "Start at login" switch, the one of Workspaces and "Run setup again" for the first-run
 //!   setup (issue #548: one group less instead of tabs, so the page stays at a glance). The group
-//!   "Apps" of task S.21 is the section Apps since issue #411: each app's card switches it, opens it
-//!   and names its window class there (`super::apps`).
+//!   "Apps" of task S.21 is the app catalog since issue #411, on Overview since issue #803: each app's
+//!   card switches it, opens it and names its window class there (`super::apps`).
 //! - **Appearance** ([`appearance`], its own page in the sidebar since S.14, so it is found at a
 //!   glance): the suite's page of `torro_settings_ui::suite` (issue #408), which an app without the
 //!   main application shows too; how it looks and works is described there.
@@ -145,7 +145,7 @@ pub enum Message {
     /// Appearance, Language and Startup: the suite's pages (issue #408).
     Suite(suite::Message),
     /// A part of the suite was switched on or off: Workspaces under Startup (task W.2; the apps are
-    /// switched on their cards in the section Apps since issue #411).
+    /// switched on their cards in the app catalog since issue #411, on Overview since issue #803).
     Component(Component, bool),
     /// "Run setup again" (task W.9).
     RunSetup,
@@ -596,7 +596,7 @@ mod tests {
     }
 
     /// Issue #411: General switches Workspaces under Startup, next to "Start at login"; the apps are
-    /// switched on their cards in the section Apps.
+    /// switched on their cards in the app catalog on Overview (issue #803).
     #[test]
     fn startup_switches_workspaces_and_start_at_login() {
         let data = Data::default();

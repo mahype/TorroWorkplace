@@ -77,7 +77,25 @@ const CORRESPONDENT_ROWS: u32 = 5_000;
 pub const BODY_RETENTION_DAYS: i64 = 90;
 
 /// The newest layout this version writes (`PRAGMA user_version`).
-const SCHEMA_VERSION: i64 = 17;
+const SCHEMA_VERSION: i64 = 18;
+
+/// Version 18 (issue #781): what was done with a mail, as the service did it – today the saves of
+/// its attachments and of the mail itself (`kind` `saved`), open for later actions. `mail_key` is
+/// `rfc:<Message-ID>` or `id:<m:…>` ([`MailStore::record_action`]), so it is no foreign key: a
+/// record stays when its message moves to another folder and gets a new id. `data` is JSON.
+const SCHEMA_V18: &str = "
+CREATE TABLE IF NOT EXISTS mail_actions (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    mail_key TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    data TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS mail_actions_key ON mail_actions(mail_key, seq);
+";
+
+/// The most actions of one kind [`MailStore::record_action`] keeps for one mail; older ones go.
+pub const ACTIONS_KEPT: i64 = 100;
 
 /// Workflow delivery provenance is separate from the disposable body cache. An incomplete
 /// baseline survives restarts; an outbox row survives removal of its source message until ack.
@@ -1648,6 +1666,33 @@ impl MailStore {
     pub fn set_sender_check(&self, id: &str, domain: Option<&str>) -> Result<bool, MailStoreError> {
         let value = domain.unwrap_or_default();
         Ok(self.db.execute("UPDATE messages SET sender_check = ?2 WHERE id = ?1", params![id, value])? > 0)
+    }
+
+    /// Notes an action on the mail `key` (issue #781): `kind` (`saved`), when and its `data` (JSON),
+    /// keeping the newest [`ACTIONS_KEPT`] of that kind for that mail. `key` is `rfc:<Message-ID>`,
+    /// which survives moving the mail, or `id:<m:…>` for a mail without one.
+    pub fn record_action(&self, key: &str, kind: &str, at: DateTime<Utc>, data: &str) -> Result<(), MailStoreError> {
+        let tx = self.db.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO mail_actions (mail_key, kind, at, data) VALUES (?1, ?2, ?3, ?4)",
+            params![key, kind, at.timestamp_millis(), data],
+        )?;
+        tx.execute(
+            "DELETE FROM mail_actions WHERE mail_key = ?1 AND kind = ?2 AND seq NOT IN (
+                SELECT seq FROM mail_actions WHERE mail_key = ?1 AND kind = ?2 ORDER BY seq DESC LIMIT ?3)",
+            params![key, kind, ACTIONS_KEPT],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The `data` of the actions of `kind` on the mail `key` ([`MailStore::record_action`]), newest
+    /// first; empty for a mail without any.
+    pub fn actions(&self, key: &str, kind: &str) -> Result<Vec<String>, MailStoreError> {
+        let mut statement =
+            self.db.prepare("SELECT data FROM mail_actions WHERE mail_key = ?1 AND kind = ?2 ORDER BY seq DESC")?;
+        let rows = statement.query_map(params![key, kind], |row| row.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// The core's verified DKIM sender domain, never a logo/display preference or an untrusted
@@ -3702,6 +3747,9 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
             ON workflow_deliveries(arrived_at) WHERE notification_done = 0;",
         )?;
     }
+    if version < 18 {
+        tx.execute_batch(SCHEMA_V18)?;
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
     Ok(())
@@ -4434,7 +4482,10 @@ mod tests {
         store.import_workflow_message(&inbox, 7, &message(2, "Inventory only"), day(21)).expect("inventory");
         baseline(&store, &inbox, 2);
         assert!(store.workflow_events(None, 500).expect("no retrospective arrival").is_empty());
-        assert_eq!(store.db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).expect("version"), 17);
+        assert_eq!(
+            store.db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).expect("version"),
+            SCHEMA_VERSION
+        );
     }
 
     #[test]
@@ -6036,6 +6087,57 @@ mod tests {
         drop(store);
         let store = MailStore::open(&dirs, ACCOUNT).expect("opened again");
         assert_eq!(store.local_originals_page(0, 10).expect("listed").len(), 3);
+    }
+
+    // ----- actions on a mail (issue #781) -----
+
+    /// Actions are read back newest first, by kind, only for their key; a mail without any has none,
+    /// and they are still there after the store is opened again.
+    #[test]
+    fn actions_are_kept_per_mail_and_kind_newest_first() {
+        let (_tmp, dirs, store) = open();
+        assert!(store.actions("rfc:<a@example.org>", "saved").expect("read").is_empty(), "nothing yet");
+        store.record_action("rfc:<a@example.org>", "saved", day(1), r#"{"n":1}"#).expect("noted");
+        store.record_action("rfc:<a@example.org>", "saved", day(2), r#"{"n":2}"#).expect("noted");
+        store.record_action("rfc:<a@example.org>", "other", day(3), r#"{"n":3}"#).expect("noted");
+        store.record_action("id:m:9", "saved", day(3), r#"{"n":4}"#).expect("noted");
+        assert_eq!(store.actions("rfc:<a@example.org>", "saved").expect("read"), [r#"{"n":2}"#, r#"{"n":1}"#]);
+        assert_eq!(store.actions("id:m:9", "saved").expect("read"), [r#"{"n":4}"#]);
+        assert!(store.actions("rfc:<b@example.org>", "saved").expect("read").is_empty());
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("again");
+        assert_eq!(store.actions("rfc:<a@example.org>", "saved").expect("read").len(), 2, "kept on disk");
+    }
+
+    /// Only the newest [`ACTIONS_KEPT`] of a kind stay for one mail; other mails keep theirs.
+    #[test]
+    fn actions_keep_only_the_newest_hundred() {
+        let (_tmp, _dirs, store) = open();
+        store.record_action("id:m:2", "saved", day(1), "other").expect("noted");
+        for n in 0..ACTIONS_KEPT + 5 {
+            store.record_action("id:m:1", "saved", day(1), &n.to_string()).expect("noted");
+        }
+        let kept = store.actions("id:m:1", "saved").expect("read");
+        assert_eq!(kept.len() as i64, ACTIONS_KEPT);
+        assert_eq!(kept.first().map(String::as_str), Some("104"), "the newest");
+        assert_eq!(kept.last().map(String::as_str), Some("5"), "the oldest kept");
+        assert_eq!(store.actions("id:m:2", "saved").expect("read"), ["other"]);
+    }
+
+    /// A store of version 17 gets `mail_actions` and keeps its rows.
+    #[test]
+    fn version_18_adds_the_actions_and_keeps_the_rows() {
+        let (_tmp, dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let id = add(&store, &inbox, &message(1, "before"));
+        store.db.execute_batch("DROP TABLE mail_actions; PRAGMA user_version = 17;").expect("a store of version 17");
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("migrated");
+        let version: i64 = store.db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(store.summary(&id).expect("read").map(|summary| summary.subject).as_deref(), Some("before"));
+        store.record_action("id:m:1", "saved", day(1), "{}").expect("noted");
+        assert_eq!(store.actions("id:m:1", "saved").expect("read"), ["{}"]);
     }
 }
 

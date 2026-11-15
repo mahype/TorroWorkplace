@@ -603,9 +603,12 @@ fn client_page<'a>(state: &'a State, data: &'a Data, client: &'a ClientInfo) -> 
     })
     .height(Length::Shrink);
     let editor: Element<'a, rights::Message> = editor.into();
-    column![editor.map(Message::Rights), foot(tr("Other rights of this client are set in Torro Workplace."), section)]
-        .spacing(layout::section_gap())
-        .into()
+    column![
+        editor.map(Message::Rights),
+        foot(tr("Other rights of this client are set in the control centre."), section)
+    ]
+    .spacing(layout::section_gap())
+    .into()
 }
 
 /// "Updating…" in place of a client's editor until the fresh list of clients is in.
@@ -623,9 +626,13 @@ fn updating_group<'a>(title: &'a str) -> Element<'a, Message> {
 /// clients" in Torro Workplace, where keys are made and clients connected; without it the sentence.
 fn foot_list<'a>() -> Element<'a, Message> {
     if !torro_gui::installed::main_app() {
-        let line =
-            setting_row(None, tr("Keys and clients are created in Torro Workplace."), None, iced::widget::Space::new());
-        return widgets::group(tr("Torro Workplace"), vec![line], None);
+        let line = setting_row(
+            None,
+            tr("Keys and clients are created in the control centre."),
+            None,
+            iced::widget::Space::new(),
+        );
+        return widgets::group(tr("Control centre"), vec![line], None);
     }
     let row = |label: &'a str, detail: &'a str, section: &'static str| {
         let line = setting_row(None, label, Some(detail.to_string()), arrow());
@@ -635,7 +642,7 @@ fn foot_list<'a>() -> Element<'a, Message> {
         row(tr("API clients"), tr("Create keys for scripts and programs"), "api"),
         row(tr("MCP clients"), tr("Connect coding agents and apps"), "mcp"),
     ];
-    widgets::group(tr("Torro Workplace"), rows, None)
+    widgets::group(tr("Control centre"), rows, None)
 }
 
 /// The arrow of a row that opens another window.
@@ -650,12 +657,16 @@ fn arrow<'a>() -> Element<'a, Message> {
 /// they are made in Torro Workplace (issue #538 brings them to a single app).
 fn foot<'a>(sentence: &'static str, section: &'static str) -> Element<'a, Message> {
     if !torro_gui::installed::main_app() {
-        let line =
-            setting_row(None, tr("Keys and clients are created in Torro Workplace."), None, iced::widget::Space::new());
-        return widgets::group(tr("Torro Workplace"), vec![line], None);
+        let line = setting_row(
+            None,
+            tr("Keys and clients are created in the control centre."),
+            None,
+            iced::widget::Space::new(),
+        );
+        return widgets::group(tr("Control centre"), vec![line], None);
     }
-    let line = setting_row(None, tr("Open Torro Workplace"), Some(sentence.to_string()), arrow());
-    widgets::group(tr("Torro Workplace"), vec![pressable(line, Some(Message::ControlCentre(section)))], None)
+    let line = setting_row(None, tr("Open control centre"), Some(sentence.to_string()), arrow());
+    widgets::group(tr("Control centre"), vec![pressable(line, Some(Message::ControlCentre(section)))], None)
 }
 
 #[cfg(test)]

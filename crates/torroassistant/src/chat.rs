@@ -151,10 +151,32 @@ pub fn send_request(
     })
 }
 
-/// The request of the approval card's "Allow" (`allow`) or "Deny": `approvals.decide_approval`.
-/// Only ever sent for a person's click; the model has no way to it.
-pub fn decide_request(approval: &str, allow: bool) -> Request {
-    Request::DecideApproval { id: approval.to_owned(), allow }
+/// What the person pressed on the approval card: "Deny", "Allow", or for a command of the terminal (issue #754)
+/// "Allow once", "In this conversation" or "Always".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    Deny,
+    /// "Allow" of every other approval: no reach.
+    Allow,
+    /// "Allow once", "In this conversation" or "Always" of a command of the terminal.
+    Scoped(torro_ipc::ApprovalScope),
+}
+
+impl Answer {
+    /// Whether it allows.
+    pub fn allows(self) -> bool {
+        self != Answer::Deny
+    }
+}
+
+/// The request of the approval card's answer: `approvals.decide_approval`, with the reach of a command of the
+/// terminal (issue #754). Only ever sent for a person's click; the model has no way to it.
+pub fn decide_request(approval: &str, answer: Answer) -> Request {
+    let scope = match answer {
+        Answer::Scoped(scope) => Some(scope),
+        Answer::Deny | Answer::Allow => None,
+    };
+    Request::DecideApproval { id: approval.to_owned(), allow: answer.allows(), scope }
 }
 
 /// The area of the catalogue command `name` (`calendar.list_events` → calendar); `None` for a name
@@ -248,7 +270,7 @@ pub fn refusal_hint(area: Option<Area>, lack: Option<Lack>, who: Answerer<'_>) -
         }
         Lack::Admin { area } => trf("The assistant needs admin rights for {area}.", &[("area", &name(area))]),
         Lack::Outbound => tr("Sending mail on your behalf is switched off for the assistant.").to_owned(),
-        Lack::ForPeople => tr("Only you can do this, in Torro Workplace.").to_owned(),
+        Lack::ForPeople => tr("Only you can do this, in the control centre.").to_owned(),
         Lack::SwitchedOff { area } => trf("You switched off {area} for this conversation.", &[("area", &name(area))]),
         Lack::ReadOnly => {
             tr("This conversation is read only. Pick another mode under the message field to let it change things.")
@@ -524,12 +546,17 @@ mod tests {
     #[test]
     fn the_approval_card_decides_with_the_app_request() {
         assert_eq!(
-            decide_request("9c1f0a7e3b2d4c58", true),
-            Request::DecideApproval { id: "9c1f0a7e3b2d4c58".into(), allow: true }
+            decide_request("9c1f0a7e3b2d4c58", Answer::Allow),
+            Request::DecideApproval { id: "9c1f0a7e3b2d4c58".into(), allow: true, scope: None }
         );
         assert_eq!(
-            decide_request("9c1f0a7e3b2d4c58", false),
-            Request::DecideApproval { id: "9c1f0a7e3b2d4c58".into(), allow: false }
+            decide_request("9c1f0a7e3b2d4c58", Answer::Deny),
+            Request::DecideApproval { id: "9c1f0a7e3b2d4c58".into(), allow: false, scope: None }
+        );
+        let always = torro_ipc::ApprovalScope::Always;
+        assert_eq!(
+            decide_request("9c1f0a7e3b2d4c58", Answer::Scoped(always)),
+            Request::DecideApproval { id: "9c1f0a7e3b2d4c58".into(), allow: true, scope: Some(always) }
         );
     }
 

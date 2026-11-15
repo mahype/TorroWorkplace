@@ -1403,6 +1403,7 @@ impl PimService {
             | Request::RemoveSaveTarget { .. }
             | Request::SaveMailAttachments { .. }
             | Request::SaveMailAs { .. }
+            | Request::ListSaveHistory { .. }
             | Request::ListMailFilters
             | Request::CreateMailFilter { .. }
             | Request::UpdateMailFilter { .. }
@@ -1506,7 +1507,11 @@ impl PimService {
             | Request::ReadFile { .. }
             | Request::SearchInFiles { .. }
             | Request::WriteFile { .. }
-            | Request::EditFile { .. } => {
+            | Request::EditFile { .. }
+            | Request::RunCommand { .. }
+            | Request::StartCommand { .. }
+            | Request::ReadCommandOutput { .. }
+            | Request::StopCommand { .. } => {
                 return None;
             }
             // Address books are no calendar or task collection: the contacts service checks its

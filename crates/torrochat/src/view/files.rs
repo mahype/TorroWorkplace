@@ -11,7 +11,7 @@
 //! grid ([`album_tiles`]), each tile filled with its picture.
 
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, column, container, image, mouse_area, row, stack};
+use iced::widget::{Space, column, container, image, mouse_area, row, sensor, stack};
 use iced::{Alignment, Background, Color, ContentFit, Element, Fill, Rectangle, Theme, border, mouse};
 use torro_chat::{FileRef, ForeignProvider, LinkCard, Message as ChatMessage, MessageKind};
 use torro_core::i18n::{tr, trf};
@@ -178,16 +178,22 @@ fn placeholder<'a>(which: Icon, width: f32, height: f32, corners: border::Radius
         .into()
 }
 
-/// `shown` in `width` × `height`, filling the frame, or the placeholder with `which`; a preview that
-/// failed keeps the placeholder, so the frame stays.
+/// The picture `key` as `shown` in `width` × `height`, filling the frame, or the placeholder with
+/// `which`; a preview that failed keeps the placeholder, so the frame stays. It tells the window when
+/// it comes into view (a picture's height ahead) and goes out of it, so the window holds the
+/// pictures where the person reads (issue #690). By picture rather than by line: a message taller
+/// than the window would else count as out of view while its middle stands there. Keyed by the
+/// picture, because iced matches widgets by place and a page put before them would else leave the
+/// sensor silent.
 fn picture<'a>(
+    key: &PictureKey,
     shown: Option<&Shown>,
     which: Icon,
     width: f32,
     height: f32,
     corners: border::Radius,
 ) -> Element<'a, Message> {
-    match shown {
+    let face: Element<'a, Message> = match shown {
         Some(Shown::Ready(handle)) => image(handle.clone())
             .width(width)
             .height(height)
@@ -195,7 +201,14 @@ fn picture<'a>(
             .border_radius(image_corners(corners))
             .into(),
         _ => placeholder(which, width, height, corners),
-    }
+    };
+    let shows = key.clone();
+    sensor(face)
+        .key(key.clone())
+        .anticipate(size::panel())
+        .on_show(move |_| wrap(FilesMsg::InView(shows.clone())))
+        .on_hide(wrap(FilesMsg::OutOfView(key.clone())))
+        .into()
 }
 
 /// `corners` as the image shader of `iced_wgpu` 0.14 reads them: it rounds a picture's corners
@@ -304,11 +317,12 @@ impl App {
         if !file.content_type.starts_with("video/") {
             let view = wrap(FilesMsg::View(id, file_id));
             let tip = trf("Show {name} large", &[("name", &file.name)]);
-            return clickable(picture(shown, Icon::Image, width, height, corners), view, tip);
+            return clickable(picture(&key, shown, Icon::Image, width, height, corners), view, tip);
         }
-        let frame = stack![picture(shown, Icon::Video, width, height, corners), container(play_mark()).center(Fill)]
-            .width(width)
-            .height(height);
+        let frame =
+            stack![picture(&key, shown, Icon::Video, width, height, corners), container(play_mark()).center(Fill)]
+                .width(width)
+                .height(height);
         let (press, tip) = if file.hide_download {
             (wrap(FilesMsg::Nextcloud(file_id)), tr("Opens in Nextcloud: the sender turned downloads off"))
         } else {
@@ -330,7 +344,7 @@ impl App {
     ) -> Element<'a, Message> {
         let key: PictureKey = (message.id.clone(), Some(file.id.clone()));
         let shown = chat.files.picture(&key);
-        let face = picture(shown, Icon::Image, tile.width, tile.height, corners);
+        let face = picture(&key, shown, Icon::Image, tile.width, tile.height, corners);
         let face: Element<'a, Message> = match more {
             Some(more) => {
                 stack![face, container(more_mark(more)).center(Fill)].width(tile.width).height(tile.height).into()

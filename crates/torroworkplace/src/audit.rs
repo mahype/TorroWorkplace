@@ -659,6 +659,8 @@ pub fn ids(request: &Request) -> Vec<String> {
             [Some(format!("message:{}", hashed(message))), target].into_iter().flatten().collect()
         }
         Request::ListSaveTargets { id, .. } => id.iter().map(|message| format!("message:{}", hashed(message))).collect(),
+        // The save history of a mail (issue #781): the message hashed, never a file name or path.
+        Request::ListSaveHistory { id: message } => vec![format!("message:{}", hashed(message))],
         // Mail filters (issue #339): a filter by the id the core made (`f<n>`, hex digits) and the
         // account it names, never its search or category – the person's words about their mail.
         Request::ListMailFilters => Vec::new(),
@@ -702,6 +704,10 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::ReadFile { .. } | Request::SearchInFiles { .. } | Request::WriteFile { .. } | Request::EditFile { .. } => {
             Vec::new()
         }
+        // The terminal (issue #754): never a folder, a program, an argument or a shell line; the id of a command in
+        // the background is random, made by the core.
+        Request::RunCommand { .. } | Request::StartCommand { .. } => Vec::new(),
+        Request::ReadCommandOutput { id, .. } | Request::StopCommand { id } => vec![random("command", id)],
         // The web (issue #305): never the search words, the language asked for or the address of a page;
         // a key by its provider only, never the key.
         Request::WebSearch { .. } | Request::FetchPage { .. } | Request::ListSearchProviders => Vec::new(),

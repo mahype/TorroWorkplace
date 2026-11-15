@@ -253,7 +253,7 @@ fn default_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
 /// main application, these settings without (issue #547).
 fn turned_off_text() -> &'static str {
     match torro_gui::installed::main_app() {
-        true => tr("Turned off in Torro Workplace › AI"),
+        true => tr("Turned off in Control centre › AI"),
         false => tr("Turned off in Settings › AI"),
     }
 }
@@ -269,7 +269,7 @@ fn no_engine_row<'a>() -> Element<'a, Message> {
 /// turned on.
 fn no_model_row<'a>() -> Element<'a, Message> {
     let detail = match torro_gui::installed::main_app() {
-        true => tr("Turn on models in Torro Workplace › AI."),
+        true => tr("Turn on models in Control centre › AI."),
         false => tr("Turn on models in Settings › AI."),
     };
     let row = setting_row(None, tr("No model is turned on"), Some(detail.to_string()), chevron());

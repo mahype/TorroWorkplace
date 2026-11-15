@@ -263,7 +263,10 @@ pub fn allowed_for(kind: &str, rights: Option<&Rights>, without: &[Area], server
             || !rights.hidden_address_books.is_empty();
         let workflow_mail = !torro_ipc::workflows::reads_mail(tool.command.name)
             || (!without.contains(&Area::Mail) && rights.area(Area::Mail).allows(Access::Read));
+        // The terminal (issue #754) never by the rights: only [`with_terminal`] offers it.
+        let terminal = torro_ipc::tools::is_terminal_command(tool.command.name);
         (area.grantable() || help)
+            && !terminal
             && !without.contains(&area)
             && (granted || by_kind)
             && tool_reached
@@ -289,6 +292,30 @@ pub fn with_skills(allowed: Vec<Arc<Tool>>, any: bool) -> Vec<Arc<Tool>> {
         true => allowed,
         false => allowed.into_iter().filter(|tool| !NEED_ONE.contains(&tool.command.name)).collect(),
     }
+}
+
+/// `allowed` with the four commands of the terminal (issue #754, `torro_ipc::tools::TERMINAL_COMMANDS`) when `kind`
+/// is the assistant's own client, a person switched the terminal on (`enabled`) and `tools` is not switched off in
+/// the conversation (`without`); in the permission mode `mode` only those it does not refuse. A bot, an agent and
+/// every other client are never offered them: the terminal stands outside the rights.
+pub fn with_terminal(
+    mut allowed: Vec<Arc<Tool>>,
+    kind: &str,
+    enabled: bool,
+    without: &[Area],
+    mode: Mode,
+) -> Vec<Arc<Tool>> {
+    if kind != ASSISTANT_CLIENT || !enabled || without.contains(&Area::Tools) {
+        return allowed;
+    }
+    allowed.extend(
+        catalogue()
+            .iter()
+            .filter(|tool| torro_ipc::tools::is_terminal_command(tool.command.name))
+            .filter(|tool| !mode.refuses(Operation { command: tool.command, access: tool.access }))
+            .cloned(),
+    );
+    allowed
 }
 
 /// The assistant's own tools an answer may use (issue #225): each with its level in `tools`
@@ -463,6 +490,11 @@ pub fn for_model(area: Area, value: Value) -> String {
 /// does not fit (one of many quotes or backslashes), which [`shorten`] then cuts.
 fn whole_page(value: &Value) -> Option<String> {
     let answer = value.get("data").unwrap_or(value);
+    // The output of a command of the terminal (issue #754) whole: the core cut it to 20,000 characters already
+    // and says so, and the model would take a start cut here for all of it.
+    if matches!(answer.get("result").and_then(Value::as_str), Some("command-output" | "command-status")) {
+        return Some(value.to_string());
+    }
     (answer.get("result").and_then(Value::as_str) == Some("file-text")).then_some(())?;
     let text = value.to_string();
     (text.chars().count() <= RESULT_CHARS).then_some(text)
@@ -629,6 +661,31 @@ pub fn summary(response: &Response) -> String {
     if let Response::Error { code, .. } = response {
         return error_summary(code);
     }
+    // A command of the terminal (issue #754): how it ended, and whether something was hidden or left out.
+    let terminal = match response {
+        Response::CommandOutput { exit_code, truncated, timed_out, redacted, .. } => {
+            Some((*exit_code, *truncated, *redacted, *timed_out, false))
+        }
+        Response::CommandStatus { exit_code, truncated, redacted, running, .. } => {
+            Some((*exit_code, *truncated, *redacted, false, *running))
+        }
+        _ => None,
+    };
+    if let Some((exit_code, truncated, redacted, timed_out, running)) = terminal {
+        let mut parts = vec![match (exit_code, timed_out, running) {
+            (_, true, _) => tr("stopped after 120 s").to_string(),
+            (_, _, true) => tr("still running").to_string(),
+            (Some(code), ..) => trf("exit {code}", &[("code", &code)]),
+            (None, ..) => tr("ended without an exit code").to_string(),
+        }];
+        if truncated {
+            parts.push(tr("output cut").to_string());
+        }
+        if redacted {
+            parts.push(tr("some values hidden").to_string());
+        }
+        return parts.join(" · ");
+    }
     let value = serde_json::to_value(response).unwrap_or(Value::Null);
     let lists: Vec<usize> = value
         .as_object()
@@ -666,7 +723,8 @@ const REACHES_OUT: [&str; 2] = ["tools.web_search", "tools.fetch_page"];
 /// out, so the chat writes no draft, creates no task and sends nothing; the core still checks every call's rights.
 pub fn fits_about_mail(tool: &Tool) -> bool {
     let out = tool.command.is_outbound() || REACHES_OUT.contains(&tool.command.name);
-    !tool.is_server() && !tool.is_bots() && !out && (tool.reads() || tool.command.name == EXTRACT_ACTION)
+    let terminal = torro_ipc::tools::is_terminal_command(tool.command.name);
+    !tool.is_server() && !tool.is_bots() && !out && !terminal && (tool.reads() || tool.command.name == EXTRACT_ACTION)
 }
 
 /// The tools of `tools` a chat about a mail of `account` may use ([`fits_about_mail`]), in their order. Applied
@@ -889,6 +947,25 @@ mod tests {
     }
 
     use super::*;
+
+    /// Issue #754, Erledigt point 8: only the assistant's own client is offered the terminal, while it is on and
+    /// `tools` is not switched off; a read-only answer only reads; the rights never offer it.
+    #[test]
+    fn only_the_assistant_is_offered_the_terminal() {
+        let names = |tools: &[Arc<Tool>]| tools.iter().map(|tool| tool.command.name).collect::<Vec<_>>();
+        let every = |kind: &str, on: bool, without: &[Area], mode: Mode| {
+            names(&with_terminal(Vec::new(), kind, on, without, mode))
+        };
+        assert_eq!(every(ASSISTANT_CLIENT, true, &[], Mode::Default), torro_ipc::tools::TERMINAL_COMMANDS);
+        assert!(every(torro_ipc::api::BOT_CLIENT, true, &[], Mode::Default).is_empty());
+        assert!(every(ASSISTANT_CLIENT, false, &[], Mode::Default).is_empty());
+        assert!(every(ASSISTANT_CLIENT, true, &[Area::Tools], Mode::Default).is_empty());
+        assert_eq!(every(ASSISTANT_CLIENT, true, &[], Mode::ReadOnly), ["tools.read_command_output"]);
+        let mut all = Rights::assistant();
+        all.areas.insert(Area::Tools, torro_ipc::api::AreaRights { level: torro_ipc::api::Level::Full, admin: true });
+        let granted = allowed_for(ASSISTANT_CLIENT, Some(&all), &[], &[]);
+        assert!(!granted.iter().any(|tool| torro_ipc::tools::is_terminal_command(tool.command.name)), "not by rights");
+    }
 
     /// The tool of the MCP name `name` among `allowed`.
     fn named<'a>(allowed: &'a [Arc<Tool>], name: &str) -> Option<&'a Tool> {

@@ -1238,7 +1238,7 @@ mod tests {
             Duration::ZERO,
         );
         for request in [
-            Request::DecideApproval { id: "ap1".into(), allow: true },
+            Request::DecideApproval { id: "ap1".into(), allow: true, scope: None },
             Request::SetSetting { key: torro_ipc::SettingKey::VoiceEnabled, value: serde_json::json!(true) },
             Request::Speak { text: "Hi".into() },
         ] {

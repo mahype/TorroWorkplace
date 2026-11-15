@@ -5,7 +5,8 @@
 //! `file_contents` answers them ([`FileText`], [`FileMatch`], issue #705) – the limits of
 //! `tools.create_pdf`, `tools.list_folder`, `tools.find_files` and the commands of `file_contents`, and
 //! the level each tool needs in the area `tools` ([`ToolAccess`]). The tool `web` has its types in
-//! [`crate::web`].
+//! [`crate::web`]. The assistant's terminal (issue #754) has its commands and limits here too
+//! ([`TERMINAL_COMMANDS`]), but no [`ToolId`]: it stands outside the rights.
 //!
 //! A tool is a skill of the suite's own, made first for the assistant and its bots and granted like
 //! any area (the templates of the rights include it). The tools are always there (issue #666); their
@@ -22,8 +23,11 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 /// The tools, the PDF templates and the allowed folders live in `torro_core::settings`, which names
-/// them; here they are the API's types.
-pub use torro_core::settings::{AllowedFolder, FolderAccess, PdfTemplateId, ToolId};
+/// them; here they are the API's types. So do the terminal's settings (issue #754).
+pub use torro_core::settings::{
+    AllowedFolder, FolderAccess, MAX_TERMINAL_ALWAYS, PdfTemplateId, TerminalAlways, TerminalMode, TerminalSettings,
+    ToolId,
+};
 
 use crate::api::Access;
 
@@ -89,6 +93,39 @@ pub const MAX_WRITE_BYTES: usize = 1024 * 1024;
 /// At most this many characters in what `tools.search_in_files` looks for, and in the line of a hit it
 /// answers ([`FileMatch::text`]).
 pub const MAX_MATCH_CHARS: usize = 200;
+
+/// The commands of the assistant's terminal (issue #754, `docs/terminal.md`). They have no [`ToolId`]: the terminal
+/// stands outside the rights, a person switches it on in Torro Workplace, and only the assistant's own conversation
+/// reaches it; every other way (a bot, an agent, a client over API or MCP, the app key) is refused.
+pub const TERMINAL_COMMANDS: [&str; 4] =
+    ["tools.run_command", "tools.start_command", "tools.read_command_output", "tools.stop_command"];
+
+/// Whether `command` (a catalogue name) is one of [`TERMINAL_COMMANDS`].
+pub fn is_terminal_command(command: &str) -> bool {
+    TERMINAL_COMMANDS.contains(&command)
+}
+
+/// A command of `tools.run_command` is stopped after this many seconds (`timed_out`).
+pub const COMMAND_TIMEOUT_SECS: u64 = 120;
+
+/// At most this many characters of output in one answer of `tools.run_command` and `tools.read_command_output`;
+/// beyond them the answer says `truncated`.
+pub const MAX_OUTPUT_CHARS: usize = 20_000;
+
+/// The core keeps at most the last this many bytes (1 MiB) of output of one command in the background.
+pub const MAX_BACKGROUND_BYTES: usize = 1024 * 1024;
+
+/// At most this many commands run in the background in one conversation at a time.
+pub const MAX_BACKGROUND_PER_CONVERSATION: usize = 3;
+
+/// At most this many commands run in the background at a time in all.
+pub const MAX_BACKGROUND: usize = 8;
+
+/// At most this many characters in a command: the program and its arguments together, or the shell line.
+pub const MAX_COMMAND_CHARS: usize = 8_000;
+
+/// At most this many arguments of one program.
+pub const MAX_COMMAND_ARGS: usize = 200;
 
 /// What an entry of a folder is ([`FolderEntry::kind`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -248,6 +285,8 @@ mod tests {
                 Area::Tools if matches!(command.name, "tools.list_tools" | "tools.list_search_providers") => {
                     assert_eq!(tool, None, "{}", command.name)
                 }
+                // The terminal (issue #754) stands outside the rights: no tool of the selection.
+                Area::Tools if is_terminal_command(command.name) => assert_eq!(tool, None, "{}", command.name),
                 Area::Tools if matches!(command.name, "tools.web_search" | "tools.fetch_page") => {
                     assert_eq!(tool, Some(ToolId::Web), "{}", command.name)
                 }

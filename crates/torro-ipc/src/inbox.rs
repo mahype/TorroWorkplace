@@ -29,7 +29,8 @@
 //! [`InboxClient::save_targets`] (`mail.list_save_targets`, [`SaveTargets`]) and
 //! [`InboxClient::save_attachments`] (`mail.save_attachments`, [`SavedAttachments`]); saving the mail
 //! itself as PDF or picture (issue #501) [`InboxClient::save_mail_as`] (`mail.save_message_as`,
-//! [`SavedMail`]). Everything a
+//! [`SavedMail`]), and what was saved from a mail (issue #781) [`InboxClient::save_history`]
+//! (`mail.list_save_history`). Everything a
 //! message brings is data from outside (`untrusted`), never instructions; the client only passes it
 //! on. The search field (issue #136)
 //! searches across folders and accounts with [`InboxClient::find_mail`] and asks how far the
@@ -81,7 +82,7 @@ use crate::actions::{ActionKind, Suggestion};
 use crate::assistant::EngineKind;
 use crate::mail::{
     AttachmentPlan, Delivery, ExportFormat, ExportPlan, FailedFile, MailHighlight, MailIndexProgress, MailOverview,
-    MailSort, MoveTarget, PileFilter, SaveTo, SavedFile, UnsubscribeVia,
+    MailSort, MoveTarget, PileFilter, SaveRecord, SaveTo, SavedFile, UnsubscribeVia,
 };
 use crate::{EventSuggestion, InboxStats, IpcError, Quiet, Request, Response, StatsRange, TaskSuggestion};
 
@@ -584,6 +585,16 @@ impl InboxClient {
     pub async fn save_mail_as(&self, id: String, format: ExportFormat, to: SaveTo) -> Result<SavedMail, InboxError> {
         match self.ask(Request::SaveMailAs { id, format, to }).await? {
             Response::SavedMail { path, skipped, shortened } => Ok(SavedMail { path, skipped, shortened }),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.list_save_history` (issue #781): what was saved from the message `id`, when and where,
+    /// newest first, with `present` checked by the core once; empty for a message without saves.
+    /// `NotFound` for an unknown message.
+    pub async fn save_history(&self, id: String) -> Result<Vec<SaveRecord>, InboxError> {
+        match self.ask(Request::ListSaveHistory { id }).await? {
+            Response::SaveHistory { entries } => Ok(entries),
             other => Err(unexpected(other)),
         }
     }
@@ -1340,7 +1351,8 @@ impl InboxSource for InboxClient {
     /// approval as it stands now, which the app does not need: the entry is done either way, and
     /// the next list shows it. `conflict` (decided already or expired) is [`InboxError::Settled`].
     async fn decide_approval(&self, approval: String, allow: bool) -> Result<(), InboxError> {
-        let answer = crate::client::call(&self.socket, &Request::DecideApproval { id: approval, allow }).await;
+        let answer =
+            crate::client::call(&self.socket, &Request::DecideApproval { id: approval, allow, scope: None }).await;
         if let Ok(Response::Error { code, .. }) = &answer
             && code == "conflict"
         {
@@ -2307,7 +2319,7 @@ mod tests {
     async fn deciding_sends_the_decision_and_a_settled_approval_is_its_own_error() {
         let core = start(|request| async move {
             match request {
-                Request::DecideApproval { id, allow: true } if id == "a1" => Response::Approval {
+                Request::DecideApproval { id, allow: true, .. } if id == "a1" => Response::Approval {
                     approval: crate::ApprovalInfo {
                         id,
                         client: "c1".into(),

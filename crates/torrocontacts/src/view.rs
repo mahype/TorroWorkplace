@@ -12,7 +12,7 @@
 //! - **Mini and strip:** the glance ([`crate::glance`]).
 //!
 //! Before the first load the window shows "Loading", after a failed one the error with "Retry", and
-//! without an account with an address book "Connect an account in Torro Workplace".
+//! without an account with an address book "Connect an account in the control centre".
 
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, column, container, row, scrollable, stack, text_input};
@@ -800,11 +800,11 @@ pub fn account_name(account: &str) -> String {
 fn no_account<'a>() -> Element<'a, Message> {
     calm(
         Some(Icon::BookUser),
-        tr("Connect an account in Torro Workplace"),
+        tr("Connect an account in the control centre"),
         tr("Your contacts come from the address books of your accounts, such as Nextcloud."),
         Some(widgets::text_button(
             Some(Icon::ArrowUpRight),
-            tr("Open Torro Workplace"),
+            tr("Open control centre"),
             style::button::secondary,
             Some(Message::OpenWorkplace),
         )),

@@ -26,13 +26,15 @@
 //! request and reloads [`Data`].
 //!
 //! The window is the Linear frame of the suite (`torro_gui::shell`, design skill section 0):
-//! wide windows show the sidebar with its tools and the sections; medium and narrow ones
+//! wide windows show the sidebar with the sections, "General" at its foot; medium and narrow ones
 //! put the sections into a menu at the top left ("Accounts ▾") and the sidebar into a drawer, the
 //! same way the calendar and the tasks app do. In wide windows the sidebar collapses to a rail of
 //! icons (U.2: panel button or `[`, remembered in `ui.json`); medium windows always show that rail,
 //! and the panel button opens the drawer. On macOS the panel button sits in the band right of the
-//! traffic lights and "General" in its top right corner (U.10); elsewhere at the sidebar's top and
-//! foot. The page sits under a 44-high header bar with
+//! traffic lights (U.10), elsewhere at the sidebar's top. No search, no "New" and no settings button
+//! (issue #803): the control centre has nothing to search, adds accounts under Accounts and is itself
+//! the settings of the suite; "Control centre" is its name in the top row, the window title and the
+//! tray. The page sits under a 44-high header bar with
 //! its title and actions, flush beside the sidebar and as wide as the content area (issue #464: its
 //! rows, lists and columns adapt to the width instead of a cap leaving the sides empty).
 //!
@@ -42,8 +44,8 @@
 //! The pages are settings pages: `widgets::group`s of rows built with [`setting_row`] (design
 //! skill, section 5), rows that open a page through [`pressable`] with a [`chevron`].
 //!
-//! The section Apps ([`apps`], issue #411) is the app catalog: what is installed, what is new and
-//! what is missing. Its jobs run in a small window of their own, `torroworkplace ui --app-job=…`
+//! The app catalog ([`apps`], issue #411) stands on Overview below its parts since issue #803: what
+//! is installed, what is new and what is missing; "Update all" sits in Overview's header. Its jobs run in a small window of their own, `torroworkplace ui --app-job=…`
 //! ([`app_job`]), which this window starts once the core answered with the job.
 //!
 //! One control centre per person (issue #279, [`torro_gui::instance`]): a second `torroworkplace ui`
@@ -91,7 +93,7 @@ use torro_core::timing;
 use torro_gui::design::{self, Chosen, Follow, Forced};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons, TopRow};
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, TitleButtons, TopRow};
 use torro_gui::shots::{RunError, Shots};
 use torro_gui::split::{self, Limits, Split, SplitEvent};
 use torro_gui::theme::{self, Appearance, palette, size, space};
@@ -112,10 +114,10 @@ use accounts::{connect, wizard};
 /// The sections in sidebar order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
+    /// The state of the suite and, below it, the app catalog (issue #411, since issue #803 no section of
+    /// its own): every app of the suite with its version, installing, updating and uninstalling, and its
+    /// switch. `--section apps` opens it too.
     Overview,
-    /// The app catalog (issue #411): every app of the suite with its version, installing, updating
-    /// and uninstalling, and its switch. `--section apps`.
-    Apps,
     Accounts,
     Ai,
     /// "API clients": programs that use Torro Workplace with a key, and the keys with their rights
@@ -140,9 +142,8 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 12] = [
+    pub const ALL: [Section; 11] = [
         Section::Overview,
-        Section::Apps,
         Section::Accounts,
         Section::Ai,
         Section::Api,
@@ -164,7 +165,6 @@ impl Section {
     pub fn label(self) -> &'static str {
         match self {
             Section::Overview => tr("Overview"),
-            Section::Apps => tr("Apps"),
             Section::Accounts => tr("Accounts"),
             Section::Ai => tr("AI"),
             Section::Api => tr("API clients"),
@@ -184,10 +184,6 @@ impl Section {
     fn icon(self) -> Icon {
         match self {
             Section::Overview => Icon::LayoutGrid,
-            // A package: what is installed and what can be. Not the grid the plan names, which is
-            // Overview's beside it and the main application's own icon: in the rail the two
-            // sections would look the same.
-            Section::Apps => Icon::Package,
             Section::Accounts => Icon::Cloud,
             Section::Ai => Icon::Sparkles,
             // Code: programs that call Torro Workplace.
@@ -215,7 +211,6 @@ impl Section {
     pub fn arg(self) -> &'static str {
         match self {
             Section::Overview => "overview",
-            Section::Apps => "apps",
             Section::Accounts => "accounts",
             Section::Ai => "ai",
             Section::Api => "api",
@@ -230,14 +225,15 @@ impl Section {
     }
 
     /// `--section accounts` and friends, and the words of the pages that moved: `inbox` (task S.21)
-    /// now means General, `agents` (task S.35) MCP; `apps`, General from task S.21 on, is the app
-    /// catalog since issue #411, where the apps are switched and opened now. Programs out there keep
-    /// working; `assistant` and `bot:<id>` are read apart ([`Launch::parse`]), since they bring the
+    /// now means General, `agents` (task S.35) MCP; `apps`, General from task S.21 on and the app
+    /// catalog since issue #411, is Overview since issue #803, where the catalog stands now. Programs
+    /// out there keep working; `assistant` and `bot:<id>` are read apart ([`Launch::parse`]), since they bring the
     /// assistant's window to the front.
     pub fn from_arg(arg: &str) -> Option<Section> {
         match arg {
             "inbox" => Some(Section::General),
             "agents" => Some(Section::Mcp),
+            "apps" => Some(Section::Overview),
             arg => Section::ALL.into_iter().find(|section| section.arg() == arg),
         }
     }
@@ -379,7 +375,7 @@ pub enum Action {
     /// [`launch::demo_answer`].
     AskAi(Vec<(accounts::Asked, Request)>),
     /// Ask the core to check GitHub for new releases (`apps.check_updates`, issue #411) and hand the
-    /// catalog it answers with to the section Apps ([`apps::checked`]). The demo answers with its own.
+    /// catalog it answers with to the app catalog on Overview ([`apps::checked`]). The demo answers with its own.
     CheckApps,
     /// Start an app job (`apps.install_app`, `apps.update_apps`) and open its window once the core
     /// answered with it ([`apps::started`]); a refusal is the notice in words for people. The demo
@@ -480,8 +476,8 @@ pub struct Ui {
     approvals: approvals::State,
     general: general::State,
     apps: apps::State,
-    /// When the app catalog last came ([`Message::AppCatalog`]): outside its section it is asked for
-    /// once a minute, for the sidebar's count of updates.
+    /// When the app catalog last came ([`Message::AppCatalog`]): asked for again after
+    /// [`CATALOG_ON_OVERVIEW`] while Overview shows it, else after [`CATALOG_EVERY`].
     catalog_at: Option<Instant>,
     /// The stored map data is to be asked for with the next reload (issue #355): when General opens and
     /// after "Clear", not with every tick, since the core counts the tiles on disk for it.
@@ -525,8 +521,6 @@ pub enum Message {
     StoredWidths(HashMap<String, f32>),
     /// The window has this size (at start and after every resize).
     Resized(Size),
-    /// The tools at the top of the sidebar: search and "New".
-    Switcher(Switcher),
     Loaded(Box<Data>),
     Sent(Result<Response, String>),
     WizardAnswered(agent_wizard::Asked, Result<Response, String>),
@@ -606,7 +600,7 @@ pub fn run(launch: Launch, shots: Option<&Shots>) -> Result<(), RunError> {
         .settings(torro_gui::settings())
         .title(|ui: &Ui| {
             let page = if ui.setup.is_some() { tr("Setup") } else { ui.section.label() };
-            format!("Torro Workplace · {page}")
+            format!("{} · {page}", tr("Control centre"))
         })
         .theme(Ui::theme)
         .scale_factor(|ui: &Ui| ui.zoom.factor())
@@ -621,9 +615,11 @@ pub fn run(launch: Launch, shots: Option<&Shots>) -> Result<(), RunError> {
 /// would stay on its page: a page (`--section accounts`, also `assistant` and `bot:<id>`), the setup
 /// (`--setup`, `--setup-if-open`, `--step`), the template dialog (`--template`); and for the demo, which
 /// the visual checks start next to the real window. `--section overview` asks for the page a plain
-/// start shows and counts as plain.
+/// start shows and counts as plain; `--section apps` opens a window of its own on Overview, as the
+/// section Apps did before issue #803.
 fn instance_of(launch: &Launch) -> Option<AppId> {
     let target = launch.section != Section::Overview
+        || launch.catalog
         || launch.client.is_some()
         || launch.setup.is_some()
         || launch.setup_if_open
@@ -1056,6 +1052,26 @@ impl Ui {
                 launch::demo_connections(&mut self.data);
                 vec![Message::Select(Section::Connections), Message::Connections(connections::Message::SearchProviders)]
             }
+            // The same, on the page of the terminal (issue #754), switched on with two entries for good.
+            Open::Terminal => {
+                launch::demo_connections(&mut self.data);
+                let terminal = &mut self.data.settings.tools.terminal;
+                terminal.enabled = true;
+                terminal.mode = torro_core::settings::TerminalMode::Dangerous;
+                terminal.always = vec![
+                    torro_core::settings::TerminalAlways::Pattern { key: "recursive delete".into() },
+                    torro_core::settings::TerminalAlways::Command {
+                        command: "cargo test --workspace".into(),
+                        folder: "/home/anna/Projects/torro".into(),
+                    },
+                ];
+                vec![Message::Select(Section::Connections), Message::Connections(connections::Message::Terminal)]
+            }
+            // The same page as the terminal starts: off, nothing allowed for good.
+            Open::TerminalEmpty => {
+                launch::demo_connections(&mut self.data);
+                vec![Message::Select(Section::Connections), Message::Connections(connections::Message::Terminal)]
+            }
             // No server installed, the PDF tool as it starts, the assistant without it.
             Open::ConnectionsEmpty => {
                 launch::demo_connections_empty(&mut self.data);
@@ -1177,10 +1193,10 @@ impl Ui {
             // The app catalog (issue #411); the states of the job's window run in their own window
             // ([`run`]) and only choose the section here.
             Open::Apps | Open::AppsInstall | Open::AppsInstalled | Open::AppsUninstall | Open::AppsSelfUpdate => {
-                vec![Message::Select(Section::Apps)]
+                vec![Message::Select(Section::Overview)]
             }
             Open::AppsMenu => vec![
-                Message::Select(Section::Apps),
+                Message::Select(Section::Overview),
                 Message::Apps(apps::Message::ToggleMenu(AppId::CALENDAR.window_class.into())),
             ],
             Open::AppsInstalling => {
@@ -1189,14 +1205,14 @@ impl Ui {
                     catalog.job = Some(job.id.clone());
                 }
                 self.data.app_catalog.job = Some(job);
-                vec![Message::Select(Section::Apps)]
+                vec![Message::Select(Section::Overview)]
             }
             // The main application came from a package manager (decision 1): every app shows its command.
             Open::AppsManaged => {
                 if let apps::Catalog::Listed(catalog) = &mut self.data.app_catalog.catalog {
                     apps::demo_managed(catalog);
                 }
-                vec![Message::Select(Section::Apps)]
+                vec![Message::Select(Section::Overview)]
             }
             // The main application's update waits: its question card over the cards.
             Open::AppsMainUpdate => {
@@ -1204,30 +1220,30 @@ impl Ui {
                     catalog.main.installed = Some("0.1.0".into());
                     catalog.main.state = torro_ipc::CatalogState::Update;
                 }
-                vec![Message::Select(Section::Apps)]
+                vec![Message::Select(Section::Overview)]
             }
             Open::AppsEmpty => {
                 if let apps::Catalog::Listed(catalog) = &mut self.data.app_catalog.catalog {
                     catalog.apps.clear();
                 }
-                vec![Message::Select(Section::Apps)]
+                vec![Message::Select(Section::Overview)]
             }
             Open::AppsNoMatch => {
-                vec![Message::Select(Section::Apps), Message::Apps(apps::Message::Query("Photoshop".into()))]
+                vec![Message::Select(Section::Overview), Message::Apps(apps::Message::Query("Photoshop".into()))]
             }
             Open::AppsError => {
                 self.data.app_catalog = apps::Loaded {
                     catalog: apps::Catalog::Failed("the core refused apps.list_catalog".into()),
                     job: None,
                 };
-                vec![Message::Select(Section::Apps)]
+                vec![Message::Select(Section::Overview)]
             }
             Open::AppsOffline => {
                 if let apps::Catalog::Listed(catalog) = &mut self.data.app_catalog.catalog {
                     catalog.error = Some("offline".into());
                     catalog.checked = Some(chrono::Utc::now() - chrono::Duration::days(3));
                 }
-                vec![Message::Select(Section::Apps)]
+                vec![Message::Select(Section::Overview)]
             }
             Open::Design | Open::DesignSchemes | Open::DesignSwitched | Open::DesignFonts | Open::DesignFontsSearch => {
                 self.data.settings.design =
@@ -1281,12 +1297,16 @@ impl Ui {
         Task::batch([rest, self.reload_app_catalog()])
     }
 
-    /// The app catalog with the reload while Apps is open or a job runs, else once a minute for the
-    /// sidebar's count: the core reads what is installed for it each time (issue #411).
+    /// The app catalog with every reload while a job runs or the last load failed, else every few
+    /// seconds while Overview shows it and once a minute elsewhere: the core reads what is installed
+    /// for it each time (issue #411, #803).
     fn reload_app_catalog(&self) -> Task<Message> {
-        let due = self.section == Section::Apps
-            || apps::job_runs(&self.data)
-            || self.catalog_at.is_none_or(|at| at.elapsed() >= CATALOG_EVERY);
+        let every = if self.section == Section::Overview { CATALOG_ON_OVERVIEW } else { CATALOG_EVERY };
+        let due = apps::job_runs(&self.data)
+            // A failed catalog is asked for again with every tick only where it is shown, so an offline
+            // core is not asked every three seconds on every page.
+            || (self.section == Section::Overview && matches!(self.data.app_catalog.catalog, apps::Catalog::Failed(_)))
+            || self.catalog_at.is_none_or(|at| at.elapsed() >= every);
         if self.launch.demo || !due {
             return Task::none();
         }
@@ -1363,8 +1383,8 @@ impl Ui {
                 self.waiting = false;
                 // `--section assistant`: the core starts the assistant's window or brings it up.
                 let open = self.target.take().map_or_else(Task::none, |target| send(target.request()));
-                // A start on Apps checks GitHub as opening it does (issue #411).
-                let check = match self.section == Section::Apps {
+                // A start on Overview checks GitHub as opening it does (issue #411).
+                let check = match self.section == Section::Overview {
                     true => {
                         let ask = apps::opened(&mut self.apps);
                         self.perform(ask)
@@ -1398,8 +1418,8 @@ impl Ui {
                         self.maps_due.set(true);
                         Action::Reload
                     }
-                    // What is new on GitHub (issue #411, decision 2).
-                    Section::Apps => apps::opened(&mut self.apps),
+                    // What is new on GitHub (issue #411, decision 2): the catalog stands on Overview.
+                    Section::Overview => apps::opened(&mut self.apps),
                     _ => Action::None,
                 }
             }
@@ -1448,7 +1468,6 @@ impl Ui {
                 self.size = size;
                 Action::None
             }
-            Message::Switcher(switcher) => self.switcher(switcher),
             Message::Loaded(data) => {
                 // A reload that did not reach the core keeps what the pages show: the lists stay, and
                 // why it failed stands as a line over them (issue #396). Only a window that never
@@ -1694,7 +1713,7 @@ impl Ui {
                     Section::Api => api::escape(&self.api).map(Message::Api),
                     Section::Mcp => mcp::escape(&self.mcp).map(Message::Mcp),
                     Section::Connections => connections::escape(&self.connections).map(Message::Connections),
-                    Section::Apps => apps::escape(&self.apps).map(Message::Apps),
+                    Section::Overview => apps::escape(&self.apps).map(Message::Apps),
                     Section::Appearance => {
                         suite::escape(&self.general.suite).map(|close| Message::General(general::Message::Suite(close)))
                     }
@@ -1845,23 +1864,6 @@ impl Ui {
                 .map(|(mark, name, open)| (mark, name, open.map(Message::Accounts)))
                 .collect(),
             _ => Vec::new(),
-        }
-    }
-
-    /// What the sidebar's tools do in the control centre.
-    fn switcher(&mut self, switcher: Switcher) -> Action {
-        match switcher {
-            // The control centre has nothing to search yet; the button only closes open menus.
-            Switcher::Search => {
-                self.close_menus();
-                Action::None
-            }
-            // "New" here means a new account, the one thing the control centre creates. Which kind
-            // is chosen by the "Add" of its group (task S.30), so it opens the accounts' list.
-            Switcher::New => {
-                self.select(Section::Accounts);
-                accounts::act(accounts::opened(&mut self.accounts))
-            }
         }
     }
 
@@ -2137,16 +2139,15 @@ impl Ui {
         !matches!(layout::of(self.size), SizeClass::Mini | SizeClass::Strip) && self.setup.is_none()
     }
 
-    /// The window's top row (issue #459): the panel button, "General" as the settings, and what lies
-    /// over the top of the window.
+    /// The window's top row (issue #459): the panel button and what lies over the top of the window.
+    /// No settings button (issue #803): this window is the settings of the suite, and "General" stands
+    /// at the sidebar's foot.
     fn top_row(&self, class: SizeClass) -> TopRow<Message> {
         let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
         TopRow::new(self.zoom.factor(), Message::DragWindow)
             .title(AppId::WORKPLACE)
             .sidebar(label, Message::ToggleSidebar)
             .sidebar_at_edge(true)
-            .settings(Message::Select(Section::General))
-            .settings_open(self.section == Section::General)
             .cover(self.cover())
     }
 
@@ -2226,15 +2227,17 @@ impl Ui {
             Section::Mcp => api::listed(&self.data, api::Home::Mcp).count(),
             Section::Connections => connections::count(&self.data),
             Section::Approvals => approvals::pending(&self.data.approvals).count(),
-            Section::Apps => apps::updates(&self.data),
+            // Overview has only its dot for waiting updates (issue #803): a count there would read as its
+            // problems; "Update all (n)" counts them.
             _ => 0,
         };
         if count > 0 { Trail::Count(count) } else { Trail::None }
     }
 
-    /// The sidebar in `mode`: search and "New", the sections, and the version at the foot. The rail
-    /// (U.2) has no room for the version line. The panel button and "General" lie in the top row
-    /// (issue #459).
+    /// The sidebar in `mode`: the sections, and "General" with the version at the foot. The rail (U.2)
+    /// has no room for the version line. The panel button lies in the top row (issue #459). No search
+    /// and no "New" at the top (issue #803): the control centre has nothing to search, and accounts are
+    /// added under Accounts.
     fn sidebar(&self, mode: SidebarMode) -> Element<'_, Message> {
         // The sidebar may draw in a theme of its own (a design pack's sidebar colours).
         let palette = palette(&theme::sidebar_theme(&self.theme()));
@@ -2266,15 +2269,20 @@ impl Ui {
             .center_y(size::row_sidebar())
             .padding(style::ITEM_PADDING)
             .clip(true);
-        let mut footer = Vec::new();
+        // "General" at the foot, where Linear keeps "Settings": the top row has no settings button here.
+        let general = Section::General;
+        let mut footer = vec![widgets::sidebar_item_in(
+            mode,
+            self.mark(general, &palette),
+            general.label(),
+            Trail::None,
+            self.section == general,
+            Message::Select(general),
+        )];
         if mode == SidebarMode::Expanded {
             footer.push(version.into());
         }
-        shell::sidebar(
-            shell::sidebar_tools(mode, true, Message::Switcher),
-            Section::nav().flat_map(item).collect(),
-            footer,
-        )
+        shell::sidebar(iced::widget::space(), Section::nav().flat_map(item).collect(), footer)
     }
 
     /// What stands in front of a section in the sidebar and the section menu: its icon, for MCP
@@ -2290,7 +2298,7 @@ impl Ui {
             (Section::Connections, Some(_)) => widgets::Mark::Badged(section.icon(), palette.attention_text),
             // Updates wait, the main application's too (issue #411): the dot as for an account that
             // needs the person; the count beside it is that of "Update all".
-            (Section::Apps, _) if apps::waiting(&self.data) => {
+            (Section::Overview, _) if apps::waiting(&self.data) => {
                 widgets::Mark::Badged(section.icon(), palette.attention_text)
             }
             _ => widgets::Mark::Icon(section.icon()),
@@ -2334,7 +2342,7 @@ impl Ui {
             Section::Mcp => mcp::header(&self.mcp, &self.data, class).map(Message::Mcp),
             Section::Connections => connections::header(&self.connections, &self.data, class).map(Message::Connections),
             Section::Workspaces => workspaces::header(&self.workspaces, &self.data, class).map(Message::Workspaces),
-            Section::Apps => apps::header(&self.apps, &self.data, class).map(Message::Apps),
+            Section::Overview => apps::header(&self.apps, &self.data, class).map(Message::Apps),
             _ => Header::default(),
         }
     }
@@ -2362,7 +2370,7 @@ impl Ui {
             Section::Connections => connections::overlay(&self.connections, &self.data, layout::of(self.size))
                 .map(|e| e.map(Message::Connections)),
             Section::Appearance => general::overlay(&self.general, &self.data).map(|e| e.map(Message::General)),
-            Section::Apps => apps::overlay(&self.apps, &self.data).map(|e| e.map(Message::Apps)),
+            Section::Overview => apps::overlay(&self.apps, &self.data).map(|e| e.map(Message::Apps)),
             _ => None,
         }
     }
@@ -2372,12 +2380,6 @@ impl Ui {
     /// back button and its name; the page's actions right.
     fn header(&self, class: SizeClass, nav: &Anchor) -> Element<'_, Message> {
         let Header { sub_page, actions } = self.page_header(class);
-        // A quiet word beside the title, where the wide layout has room (design skill, section 0): how
-        // many apps are installed and wait for an update (issue #411).
-        let note = match self.section {
-            Section::Apps => apps::note(&self.data),
-            _ => None,
-        };
         let section = self.section;
         let menu = Message::ToggleMenu(Menu::Nav);
         let form = head_form(class, sub_page.is_some());
@@ -2401,7 +2403,9 @@ impl Ui {
                 let arrow = widgets::icon_button(Icon::ChevronLeft, tr("Back"), Some(back));
                 (vec![arrow], widgets::menu_button(nav, Some(section.icon()), widgets::path_menu_label(&name), menu))
             }
-            (HeadForm::Title, _) => (vec![], shell::header_title(Some(section.icon()), section.label(), note)),
+            // How many apps are installed and wait for an update stands at the catalog's title on Overview
+            // (issue #803), not beside the page's title.
+            (HeadForm::Title, _) => (vec![], shell::header_title(Some(section.icon()), section.label(), None)),
             (_, _) => (vec![], widgets::menu_button(nav, Some(section.icon()), section.label(), menu)),
         };
         shell::header_bar(leading, title, actions)
@@ -2447,12 +2451,19 @@ impl Ui {
         let theme = self.theme();
         let palette = palette(&theme);
         let page: Element<'_, Message> = match self.section {
-            Section::Overview => overview::view(&self.overview, &self.data).map(Message::Overview),
-            Section::Apps => {
+            // The state of the suite, and the app catalog below it (issue #803).
+            Section::Overview => {
                 // The cards' grid takes the room inside the page's margin (issue #411).
                 let margin = page_margin(class);
                 let room = self.content_room() - margin.left - margin.right;
-                apps::view(&self.apps, &self.data, class, room).map(Message::Apps)
+                let catalog = column![
+                    apps::title(&self.apps, &self.data, class).map(Message::Apps),
+                    apps::view(&self.apps, &self.data, class, room).map(Message::Apps),
+                ]
+                .spacing(layout::item_gap());
+                column![overview::view(&self.overview, &self.data).map(Message::Overview), catalog]
+                    .spacing(layout::section_gap())
+                    .into()
             }
             Section::Accounts => accounts::view(&self.accounts, &self.data, class, &palette).map(Message::Accounts),
             Section::Ai => accounts::ai_view(&self.accounts, &self.data, class).map(Message::Accounts),
@@ -2732,9 +2743,14 @@ fn load(with_providers: bool, with_maps: bool, ai_cache: Option<MailDeciderCache
     )
 }
 
-/// How often the app catalog is asked for while its section is closed (issue #411), for the
+/// How often the app catalog is asked for while Overview does not show it (issue #411), for the
 /// sidebar's count of updates.
 const CATALOG_EVERY: Duration = Duration::from_secs(60);
+
+/// How often the app catalog is asked for while Overview shows it (issue #803): soon enough that a
+/// job this window did not start (an uninstall from its own window, one from MCP) shows on the cards,
+/// yet not with every tick of the page a control centre starts and stays on.
+const CATALOG_ON_OVERVIEW: Duration = Duration::from_secs(10);
 
 /// Loads the app catalog (`apps.list_catalog`, issue #411) and, while a job runs, how far it is
 /// (`apps.app_job`), apart from [`load`]: [`Ui::reload_app_catalog`] says when.
@@ -3025,6 +3041,8 @@ mod tests {
         for exception in [
             &["--section", "accounts"][..],
             &["--section", "workspaces"],
+            // The catalog's word opens a window of its own on Overview, as the section Apps did (issue #803).
+            &["--section", "apps"],
             &["--section", "assistant"],
             &["--setup"],
             &["--setup", "--step", "calendar"],
@@ -3602,9 +3620,8 @@ mod tests {
     #[test]
     fn escape_closes_the_menu_before_the_dialog_below_it() {
         let mut ui = ui(Section::Overview);
-        let _ = ui.update(Message::Switcher(Switcher::New));
-        assert_eq!(ui.section, Section::Accounts, "New in the sidebar adds an account");
-        assert!(ui.accounts.wizard.is_none(), "where its group's Add chooses the kind (task S.30)");
+        let _ = ui.update(Message::Select(Section::Accounts));
+        assert_eq!(ui.section, Section::Accounts);
         let _ = ui.update(Message::Accounts(accounts::Message::Add(wizard::Provider::Nextcloud)));
         assert!(ui.accounts.wizard.is_some());
         ui.menu = Some(Menu::Nav);
@@ -3613,6 +3630,86 @@ mod tests {
         assert!(ui.accounts.wizard.is_some(), "the dialog stays for the next Escape");
         let _ = ui.update(Message::Escape);
         assert!(ui.accounts.wizard.is_none());
+    }
+
+    /// One `iced_test::Simulator` at a time: several in parallel threads crash the test process
+    /// (as in `torro_gui::shell`'s tests).
+    fn one_simulator() -> std::sync::MutexGuard<'static, ()> {
+        static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        ONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Issue #803: "General" stands at the sidebar's foot, expanded and as a rail, since the top row
+    /// has no settings button here.
+    #[test]
+    fn general_stands_at_the_foot_of_the_sidebar_and_of_the_rail() {
+        let _one = one_simulator();
+        let ui = started(&["--demo"]);
+        let height = 900.0;
+        let mut expanded = iced_test::Simulator::with_size(
+            iced::Settings::default(),
+            Size::new(size::sidebar(), height),
+            ui.sidebar(SidebarMode::Expanded),
+        );
+        assert!(expanded.click(tr("General")).is_ok(), "the row with its name");
+        assert!(expanded.into_messages().any(|m| matches!(m, Message::Select(Section::General))));
+        // The rail shows only icons: the lowest row that answers is General's.
+        let mut rail = iced_test::Simulator::with_size(
+            iced::Settings::default(),
+            Size::new(shell::rail(), height),
+            ui.sidebar(SidebarMode::Rail),
+        );
+        let mut lowest = None;
+        for y in (0..height as u32).step_by(4) {
+            rail.point_at(iced::Point::new(shell::rail() / 2.0, y as f32));
+            rail.simulate(iced_test::simulator::click());
+        }
+        for message in rail.into_messages() {
+            if let Message::Select(section) = message {
+                lowest = Some(section);
+            }
+        }
+        assert_eq!(lowest, Some(Section::General));
+    }
+
+    /// Issue #803: the control centre's top row has no settings button – the window is the settings –
+    /// and its sidebar no search and no "New": nothing at the top right or at the top of the sidebar
+    /// leads to General or to Accounts.
+    #[test]
+    fn the_control_centre_has_no_settings_button_and_no_sidebar_tools() {
+        let _one = one_simulator();
+        let mut ui = started(&["--demo"]);
+        let size = Size::new(1600.0, 1000.0);
+        ui.size = size;
+        let mut sim = iced_test::Simulator::with_size(iced::Settings::default(), size, ui.window(SizeClass::Wide));
+        // The top right corner, where the settings button stood (issue #530).
+        for x in (0..96).step_by(4) {
+            for y in (0..48).step_by(4) {
+                sim.point_at(iced::Point::new(size.width - x as f32, y as f32));
+                sim.simulate(iced_test::simulator::click());
+            }
+        }
+        let messages: Vec<Message> = sim.into_messages().collect();
+        assert!(!messages.iter().any(|m| matches!(m, Message::Select(Section::General))), "no settings button");
+        // Above the first section, where search and "New" stood.
+        let mut sidebar = iced_test::Simulator::with_size(
+            iced::Settings::default(),
+            Size::new(size::sidebar(), 900.0),
+            ui.sidebar(SidebarMode::Expanded),
+        );
+        let first = sidebar.find(tr("Overview")).expect("the first section").bounds();
+        for x in (0..size::sidebar() as u32).step_by(4) {
+            for y in (0..first.y as u32).step_by(4) {
+                sidebar.point_at(iced::Point::new(x as f32, y as f32));
+                sidebar.simulate(iced_test::simulator::click());
+            }
+        }
+        assert!(sidebar.find(tr("New")).is_err(), "no \"New\"");
+        // Over the text of the first row a click still lands on that row, never on anything else.
+        assert!(
+            sidebar.into_messages().all(|m| matches!(m, Message::Select(Section::Overview))),
+            "no tools over the sections"
+        );
     }
 
     #[test]
@@ -3681,7 +3778,9 @@ mod tests {
             approvals::Message::Decide { id: id.clone(), allow: false },
             &demo.data,
         );
-        assert!(matches!(action, Action::Send(Request::DecideApproval { id: ref sent, allow: false }) if *sent == id));
+        assert!(
+            matches!(action, Action::Send(Request::DecideApproval { id: ref sent, allow: false, .. }) if *sent == id)
+        );
         assert_eq!(ui(Section::Approvals).perform(action).units(), 1, "outside the demo it is a request");
 
         let empty = started(&["--demo", "--open", "approvals-empty"]);
@@ -3788,8 +3887,13 @@ mod tests {
             let mut ui = started(&["--section", word]);
             assert_eq!(ui.section, Section::Overview, "{word}");
             assert!(ui.target.is_some(), "{word}: waits for the core");
-            // The app catalog comes with the first load, for the sidebar's count (issue #411).
-            assert_eq!(ui.update(Message::CoreReady).units(), 3, "{word}: the load, the catalog and apps.open_app");
+            // The app catalog comes with the first load, for the sidebar's count (issue #411), and the start
+            // on Overview checks for updates, since the catalog stands there (issue #803).
+            assert_eq!(
+                ui.update(Message::CoreReady).units(),
+                4,
+                "{word}: the load, the catalog, apps.open_app and apps.check_updates"
+            );
             assert!(ui.target.is_none(), "{word}: once");
             let demo = started(&["--demo", "--section", word]);
             assert!(demo.target.is_none(), "{word}: the demo starts nothing");
@@ -3914,7 +4018,6 @@ mod tests {
             words,
             [
                 "overview",
-                "apps",
                 "accounts",
                 "ai",
                 "api",
@@ -3927,7 +4030,7 @@ mod tests {
                 "general"
             ]
         );
-        assert_eq!(Section::ALL.len(), 12, "Apps joined after Overview (issue #411), Privacy before General (#672)");
+        assert_eq!(Section::ALL.len(), 11, "Apps went into Overview (issue #803), Privacy before General (#672)");
         assert_eq!(Section::Connections.label(), tr("MCP servers"));
         assert_eq!(Section::Mcp.label(), tr("MCP clients"));
         let labels: Vec<&str> = Section::ALL.iter().map(|section| section.label()).collect();
@@ -3935,7 +4038,7 @@ mod tests {
         let nav: Vec<Section> = Section::nav().collect();
         assert!(!nav.contains(&Section::General), "General sits at the foot");
         assert_eq!(nav.len(), Section::ALL.len() - 1);
-        assert_eq!(Section::from_arg("apps"), Some(Section::Apps), "the app catalog (issue #411)");
+        assert_eq!(Section::from_arg("apps"), Some(Section::Overview), "the app catalog is on Overview (issue #803)");
         assert_eq!(Section::from_arg("inbox"), Some(Section::General));
         assert_eq!(Section::from_arg("ai"), Some(Section::Ai));
 
@@ -3958,23 +4061,23 @@ mod tests {
         assert!(ui.loaded && ui.data.error.is_none());
         assert!(!ui.data.accounts.is_empty() && !ui.data.templates.is_empty() && ui.data.apps.is_some());
         assert!(!started(&[]).loaded, "without --demo the page waits for the core");
-        // Issue #411: the word leads to the app catalog again.
+        // Issue #411: the word leads to the app catalog again, on Overview since issue #803.
         let apps = started(&["--demo", "--section", "apps"]);
-        assert_eq!(apps.section, Section::Apps);
+        assert_eq!(apps.section, Section::Overview);
         assert!(apps.data.app_catalog.catalog.listed().is_some(), "the demo's catalog");
     }
 
-    /// Issue #411: the section Apps checks GitHub when it opens, counts its updates in the sidebar
+    /// Issue #411: the app catalog checks GitHub when it opens, counts its updates in the sidebar
     /// with the dot of a section that needs the person, and its states of `--open` go where a click
-    /// would; a refused job is the notice in words for people.
+    /// would; a refused job is the notice in words for people. Since issue #803 all of it is Overview's.
     #[test]
     fn the_app_catalog_opens_checks_and_counts() {
         let _switching = switching();
         let mut ui = started(&["--demo", "--open", "apps"]);
-        assert_eq!(ui.section, Section::Apps);
-        assert_eq!(ui.trail(Section::Apps), Trail::Count(2));
+        assert_eq!(ui.section, Section::Overview);
+        assert_eq!(ui.trail(Section::Overview), Trail::None, "only the dot (issue #803)");
         let palette = palette(&ui.theme());
-        assert!(matches!(ui.mark(Section::Apps, &palette), widgets::Mark::Badged(Icon::Package, _)));
+        assert!(matches!(ui.mark(Section::Overview, &palette), widgets::Mark::Badged(Icon::LayoutGrid, _)));
         let menu = started(&["--demo", "--open", "apps-menu"]);
         assert!(menu.page_overlay().is_some(), "the menu of the Calendar's card");
         let installing = started(&["--demo", "--open", "apps-installing"]);
@@ -4169,10 +4272,29 @@ mod tests {
         // Without --demo the same action is a request.
         assert_eq!(ui(Section::Overview).perform(sync()).units(), 1);
         assert_eq!(ui(Section::Overview).update(Message::Tick).units(), 3, "the reload, the app catalog and the zoom");
-        // Once the catalog came, outside Apps it waits a minute (issue #411).
-        let mut later = ui(Section::Overview);
-        let _ = later.update(Message::AppCatalog(Box::default()));
-        assert_eq!(later.update(Message::Tick).units(), 2, "the reload and the zoom");
+        // Once the catalog came, the next tick waits: on Overview a few seconds, elsewhere a minute (issue
+        // #411, #803).
+        for section in [Section::Overview, Section::Accounts] {
+            let mut later = ui(section);
+            let _ = later.update(Message::AppCatalog(Box::new(apps::Loaded {
+                catalog: apps::Catalog::Listed(Box::new(apps::demo_catalog(chrono::Utc::now()))),
+                job: None,
+            })));
+            assert_eq!(later.update(Message::Tick).units(), 2, "{section:?}: the reload and the zoom");
+            later.catalog_at = Instant::now().checked_sub(CATALOG_ON_OVERVIEW);
+            let expected = if section == Section::Overview { 3 } else { 2 };
+            assert_eq!(later.update(Message::Tick).units(), expected, "{section:?}: after a few seconds");
+        }
+        // A failed load is asked for again with the next tick on Overview, where it shows, and
+        // elsewhere only after a minute, so an offline core is not asked every few seconds.
+        for (section, expected) in [(Section::Overview, 3), (Section::Accounts, 2)] {
+            let mut failed = ui(section);
+            let _ = failed.update(Message::AppCatalog(Box::new(apps::Loaded {
+                catalog: apps::Catalog::Failed("no answer".into()),
+                job: None,
+            })));
+            assert_eq!(failed.update(Message::Tick).units(), expected, "{section:?}: a failed catalog");
+        }
     }
 
     #[test]

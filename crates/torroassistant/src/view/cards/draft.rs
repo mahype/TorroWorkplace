@@ -35,7 +35,7 @@ pub(super) fn discard(approval: Option<&str>) -> Option<Message> {
 
 /// `approvals.decide_approval` of `id`, as the person's click with the app key.
 fn decide(id: &str, allow: bool) -> Message {
-    card_request(Request::DecideApproval { id: id.to_owned(), allow }, tr("Couldn't decide the approval."))
+    card_request(Request::DecideApproval { id: id.to_owned(), allow, scope: None }, tr("Couldn't decide the approval."))
 }
 
 /// The buttons of the card, the main one first: "Send", then "Discard" (switched off without an approval).

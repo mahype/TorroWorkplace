@@ -511,7 +511,7 @@ fn ctl_request(words: &[&str], options: &Options) -> Result<Request, UsageError>
 /// `ctl allow <id>` and `ctl deny <id>`: a person's decision on an open approval.
 fn decide_request(verb: &str, args: &[&str]) -> Result<Request, UsageError> {
     match args {
-        [id] => Ok(Request::DecideApproval { id: id.to_string(), allow: verb == "allow" }),
+        [id] => Ok(Request::DecideApproval { id: id.to_string(), allow: verb == "allow", scope: None }),
         [] => Err(UsageError::new(trf(
             "ctl {verb} needs the id of an approval; `ctl approvals` lists them",
             &[("verb", &verb)],
@@ -1538,8 +1538,14 @@ mod tests {
     #[test]
     fn approvals_are_listed_allowed_and_denied() {
         assert_eq!(request(&["ctl", "approvals"]), Request::ListApprovals);
-        assert_eq!(request(&["ctl", "allow", "9c1f"]), Request::DecideApproval { id: "9c1f".into(), allow: true });
-        assert_eq!(request(&["ctl", "deny", "9c1f"]), Request::DecideApproval { id: "9c1f".into(), allow: false });
+        assert_eq!(
+            request(&["ctl", "allow", "9c1f"]),
+            Request::DecideApproval { id: "9c1f".into(), allow: true, scope: None }
+        );
+        assert_eq!(
+            request(&["ctl", "deny", "9c1f"]),
+            Request::DecideApproval { id: "9c1f".into(), allow: false, scope: None }
+        );
         assert!(parse_strs(&["ctl", "approvals", "list"]).is_err());
         assert!(parse_strs(&["ctl", "allow"]).is_err());
         assert!(parse_strs(&["ctl", "deny", "a", "b"]).is_err());

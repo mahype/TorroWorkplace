@@ -111,7 +111,8 @@ use iced::{Alignment, Element, Fill, Length, Theme};
 
 use torro_core::i18n::{tr, trc, trf};
 use torro_core::settings::{
-    AllowedFolder, FolderAccess, MAX_ALLOWED_FOLDERS, Paper, PdfTemplate, PdfTemplateId, ToolId,
+    AllowedFolder, FolderAccess, MAX_ALLOWED_FOLDERS, Paper, PdfTemplate, PdfTemplateId, TerminalAlways, TerminalMode,
+    ToolId,
 };
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
@@ -219,6 +220,9 @@ pub enum Page {
     PdfTemplates,
     /// "Search providers", below the row of that name of the tool `web`: a group per provider (task WEB.6).
     SearchProviders,
+    /// "Terminal", below the row of that name (issue #754): the switch, when the assistant asks, and what it may do
+    /// for good.
+    Terminal,
     /// The page of the installed server with this id (task MA.8), below its row in the list.
     Server(String),
 }
@@ -284,6 +288,9 @@ pub struct State {
     web: web::State,
     /// The dropdown of a template that is open (issue #554).
     menus: Dropdown<TemplateMenu>,
+    /// What was removed from the terminal's "Always allowed" while its page is open, newest last: each stays as a
+    /// row with "Undo" until the page is left (design review of #754).
+    removed: Vec<TerminalAlways>,
 }
 
 /// The install dialog (task MA.8): first the form, then the tools the server reported.
@@ -782,6 +789,16 @@ pub enum Message {
     Templates,
     /// The row "Search providers": their page.
     SearchProviders,
+    /// The row "Terminal": its page (issue #754).
+    Terminal,
+    /// "Allow terminal" switched on or off.
+    TerminalEnabled(bool),
+    /// "Ask": before every command or only before dangerous ones.
+    TerminalMode(TerminalMode),
+    /// The × of an entry under "Always allowed".
+    RemoveAlways(TerminalAlways),
+    /// "Undo" at an entry removed there.
+    UndoRemove(TerminalAlways),
     /// A control of the search providers' page ([`web`]).
     Web(web::Message),
     /// The back button of a page below the list, or Escape there.
@@ -940,6 +957,29 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.page = Page::SearchProviders;
             Action::None
         }
+        Message::Terminal => {
+            state.page = Page::Terminal;
+            state.removed.clear();
+            Action::None
+        }
+        Message::TerminalEnabled(on) => Action::Send(terminal_request(serde_json::json!({ "enabled": on }))),
+        Message::TerminalMode(mode) => Action::Send(terminal_request(serde_json::json!({ "mode": mode }))),
+        Message::RemoveAlways(entry) => {
+            if !state.removed.contains(&entry) {
+                state.removed.push(entry.clone());
+            }
+            Action::Send(Request::SetSetting {
+                key: torro_ipc::SettingKey::TerminalAlways,
+                value: serde_json::json!({ "remove": entry }),
+            })
+        }
+        Message::UndoRemove(entry) => {
+            state.removed.retain(|gone| *gone != entry);
+            Action::Send(Request::SetSetting {
+                key: torro_ipc::SettingKey::TerminalAlways,
+                value: serde_json::json!({ "add": entry }),
+            })
+        }
         // The check's answer comes back here alone ([`checked`]).
         Message::Web(web::Message::CheckAddress) => {
             match web::update(&mut state.web, web::Message::CheckAddress, &data.search_providers) {
@@ -954,6 +994,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         // search provider is dropped.
         Message::Back => {
             state.page = Page::List;
+            state.removed.clear();
             state.server = ServerState::default();
             state.web = web::State::default();
             state.menus.close();
@@ -1534,7 +1575,7 @@ pub fn escape(state: &State) -> Option<Message> {
     }
     match (&state.draft, &state.page) {
         (Some(_), _) => Some(Message::DiscardLine),
-        (None, Page::PdfTemplates | Page::SearchProviders | Page::Server(_)) => Some(Message::Back),
+        (None, Page::PdfTemplates | Page::SearchProviders | Page::Terminal | Page::Server(_)) => Some(Message::Back),
         (None, Page::List) => None,
     }
 }
@@ -1549,6 +1590,7 @@ pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<
         Page::SearchProviders => {
             Header { sub_page: Some((tr("Search providers").to_string(), Message::Back)), actions: vec![] }
         }
+        Page::Terminal => Header { sub_page: Some((tr("Terminal").to_string(), Message::Back)), actions: vec![] },
         Page::Server(id) => {
             let name = server_of(data, id).map_or_else(|| id.clone(), |server| server.name.clone());
             Header { sub_page: Some((name, Message::Back)), actions: vec![] }
@@ -1758,6 +1800,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'
         }
         Page::PdfTemplates => templates_page(state, data, words),
         Page::SearchProviders => providers_page(state, data, class),
+        Page::Terminal => terminal_page(state, data, words),
         Page::Server(id) => server_page(state, data, id, words),
     };
     column![].push(state.problem.clone().map(notice)).push(body).spacing(layout::section_gap()).into()
@@ -1766,6 +1809,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'
 /// The section is left: the list picks its tab again on the next visit, unless the person chose one.
 pub fn leave(state: &mut State) {
     state.held = None;
+    state.removed.clear();
 }
 
 /// The tab of the list shown: the one the person chose, else the one held since a server's page
@@ -1835,6 +1879,8 @@ fn tools_group<'a>(data: &'a Data, words: bool) -> Element<'a, Message> {
             rows.push(providers_row(data));
         }
     }
+    // The terminal (issue #754) is no tool of the rights: only the assistant can have it, and a person switches it on.
+    rows.push(terminal_row(data));
     if rows.is_empty() {
         rows.push(setting_row(None, tr("No tools"), None, Space::new()));
     }
@@ -1998,6 +2044,142 @@ fn providers_row(data: &Data) -> Element<'_, Message> {
     };
     let row = setting_row(None, tr("Search providers"), Some(detail), chevron());
     pressable(row, Some(Message::SearchProviders))
+}
+
+/// "Terminal" among the built-in tools (issue #754): off, or when the assistant asks, and the page it is set on.
+fn terminal_row(data: &Data) -> Element<'_, Message> {
+    let terminal = &data.settings.tools.terminal;
+    // What it does, as the other tools' rows say, then how it stands (design review of #754).
+    let state = match (terminal.enabled, terminal.mode) {
+        (false, _) => tr("Off"),
+        (true, TerminalMode::Every) => tr("On · Asks before every command"),
+        (true, TerminalMode::Dangerous) => tr("On · Asks only before dangerous commands"),
+    };
+    let detail =
+        trf("Runs commands and scripts in the allowed folders for the assistant · {state}", &[("state", &state)]);
+    let row = setting_row(None, tr("Terminal"), Some(detail), chevron());
+    pressable(row, Some(Message::Terminal))
+}
+
+/// How the person chooses when the terminal asks, in its segments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ModeChoice(TerminalMode);
+
+impl ModeChoice {
+    const ALL: [ModeChoice; 2] = [ModeChoice(TerminalMode::Every), ModeChoice(TerminalMode::Dangerous)];
+}
+
+impl fmt::Display for ModeChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.0 {
+            TerminalMode::Every => tr("Every command"),
+            TerminalMode::Dangerous => tr("Only dangerous"),
+        })
+    }
+}
+
+/// "Terminal" (issue #754): "Allow terminal" and "Ask", then "Always allowed" with an × per entry. Only this window
+/// (the app key) changes any of it; no agent can (point 15 of "Was nie nach außen geht").
+fn terminal_page<'a>(state: &'a State, data: &'a Data, words: bool) -> Element<'a, Message> {
+    let terminal = &data.settings.tools.terminal;
+    let allow = setting_row(
+        None,
+        tr("Allow terminal"),
+        Some(
+            tr("The assistant may run commands and scripts in the allowed folders with Read and write, only in its own chat.")
+                .to_string(),
+        ),
+        switch(terminal.enabled, Message::TerminalEnabled),
+    );
+    let why = match terminal.mode {
+        TerminalMode::Every => {
+            tr("Asks before every command, unless you allowed that exact command always (recommended).")
+        }
+        TerminalMode::Dangerous => {
+            tr("Runs ordinary commands right away and asks only before ones that look dangerous.")
+        }
+    };
+    // Off, the mode is drawn at 40 % and takes no click (design review of #754): it says nothing then.
+    let on = terminal.enabled;
+    let choice = move || -> Element<'_, Message> {
+        let active = ModeChoice::ALL.iter().position(|choice| choice.0 == terminal.mode).unwrap_or(usize::MAX);
+        let options =
+            ModeChoice::ALL.iter().map(|choice| (choice.to_string(), on.then_some(Message::TerminalMode(choice.0))));
+        widgets::segmented_maybe(options, active)
+    };
+    let mode = stacking_row(
+        tr("Ask"),
+        Some(why.to_string()),
+        segments_width(&ModeChoice::ALL),
+        move || setting_row(None, tr("Ask"), Some(why.to_string()), choice()),
+        choice,
+    );
+    let footer = tr(
+        "No sandbox: the checks of the command text and the hiding of secrets are rules of thumb, not a guarantee. After the assistant read mail or a web page, that chat runs no commands.",
+    );
+    let settings = widgets::group(tr("Terminal"), vec![allow, mode], Some(footer.to_string()));
+    let mut always: Vec<Element<'a, Message>> = terminal.always.iter().map(|entry| always_row(entry, words)).collect();
+    // Removed while the page is open, with "Undo" (design review of #754); one put back again is a row above.
+    let gone = state.removed.iter().filter(|entry| !terminal.always.contains(entry));
+    always.extend(gone.map(removed_row));
+    let note = tr(
+        "What you allowed with \"Always\" on an approval card in the assistant's chat. Remove an entry to be asked again.",
+    );
+    // Nothing yet: a quiet sentence instead of an empty group (design review of #754).
+    let always: Element<'a, Message> = match always.is_empty() {
+        true => column![
+            widgets::section_title(tr("Always allowed")),
+            typo::text(
+                typo::meta(),
+                tr("Nothing yet. What you allow with \"Always\" in the assistant's chat appears here.")
+            )
+            .style(theme::text_3)
+            .wrapping(Wrapping::WordOrGlyph),
+        ]
+        .spacing(space::s())
+        .into(),
+        false => widgets::group(tr("Always allowed"), always, Some(note.to_string())),
+    };
+    column![settings, always].spacing(layout::section_gap()).into()
+}
+
+/// An entry removed from "Always allowed" while the page is open: its name, "Removed" below, and "Undo".
+fn removed_row(entry: &TerminalAlways) -> Element<'_, Message> {
+    let label = match entry {
+        TerminalAlways::Pattern { key } => crate::tools::terminal::patterns::label(key),
+        TerminalAlways::Command { command, .. } => command.clone(),
+    };
+    let undo = widgets::text_button(
+        Some(Icon::History),
+        tr("Undo"),
+        style::button::ghost,
+        Some(Message::UndoRemove(entry.clone())),
+    );
+    setting_row(None, label, Some(tr("Removed").to_string()), undo)
+}
+
+/// One entry under "Always allowed": a pattern by its name, or a command with its folder below, and its ×.
+fn always_row(entry: &TerminalAlways, words: bool) -> Element<'_, Message> {
+    let (label, detail) = match entry {
+        TerminalAlways::Pattern { key } => (
+            crate::tools::terminal::patterns::label(key),
+            Some(tr("Every command that matches this pattern").to_string()),
+        ),
+        TerminalAlways::Command { command, folder } => {
+            (command.clone(), Some(trf("in {folder}", &[("folder", folder)])))
+        }
+    };
+    let remove = Message::RemoveAlways(entry.clone());
+    let remove = match words {
+        true => widgets::text_button(None, tr("Remove"), style::button::ghost, Some(remove)),
+        false => widgets::icon_button(Icon::X, tr("Remove"), Some(remove)),
+    };
+    setting_row(None, label, detail, remove)
+}
+
+/// `settings.set_setting terminal` with `value` (issue #754): only the fields it names change.
+fn terminal_request(value: serde_json::Value) -> Request {
+    Request::SetSetting { key: torro_ipc::SettingKey::Terminal, value }
 }
 
 /// "Search providers": the order they are asked in and that the assistant asks first ([`web::summary`]), then a

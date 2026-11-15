@@ -154,7 +154,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
 | `contacts` ²⁸ | `list_address_books`, `list_contacts`, `get_contact`, `get_photo`, `list_groups`, `upcoming_birthdays`, `export_vcards`, `find_duplicates`, `import_vcards` mit `dry_run` | `create_contact`, `add_to_contact`, `set_favorite`, `add_to_group`, `mark_used`, `move_contact`, `resolve_conflict` mit `both`, `import_vcards`, `dismiss_duplicates` | `update_contact`, `remove_from_group`, `set_photo`, `delete_contact`, `resolve_conflict` mit `mine`/`theirs`, `merge_contacts` | |
 | `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_pile` ²⁶, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `create_contact_from_item` ²⁸, `mute_item` mit `conversation`, `hide` (nicht für Mail ¹⁰)/`info`, ohne `until` ¹¹ | | `mute_source`, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ², `move_category` ²⁹ |
-| `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `overview` ⁷, `sync_status`, `get_message`, `get_thread`, `get_attachment`, `get_draft`, `prepare_paste`, `list_filters` ²⁷, `preview_filter` ²⁷ | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `prepare_image`, `upload_image`, `respond_to_invitation` ⁷ ¹⁶, `unsubscribe` ⁷ | `delete_messages`, `release_images` | `create_filter`, `update_filter`, `remove_filter`, `apply_filter` ²⁷ |
+| `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `overview` ⁷, `sync_status`, `get_message`, `get_thread`, `get_attachment`, `get_draft`, `prepare_paste`, `list_save_history`, `list_filters` ²⁷, `preview_filter` ²⁷ | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `prepare_image`, `upload_image`, `respond_to_invitation` ⁷ ¹⁶, `unsubscribe` ⁷ | `delete_messages`, `release_images` | `create_filter`, `update_filter`, `remove_filter`, `apply_filter` ²⁷ |
 | `chat` ³⁰ | `list_conversations`, `get_messages`, `suggest_mentions`, `find_people`, `search_messages`, `get_upload`, `get_preview`, `get_attachment`, `list_shared`, `get_call` | `send_message` (nach außen, auch mit `files` und `items`), `mark_read`, `mark_unread`, `create_conversation` (nach außen), `react` (nach außen), `set_favorite`, `set_notification_level`, `prepare_file` (`source: path` **nur App-Schlüssel**, Punkt 10 unten), `upload_file`, `cancel_upload`, `save_attachment` (`to: file`/`folder` **nur App-Schlüssel**), `show_card` (**nur App-Schlüssel**, Punkt 14), `decline_call`, `leave_call` | `edit_message`, `delete_message` (beide nach außen), `release_files` | |
 | `presence` ³⁰ | `list_people`, `find_people`, `get_own_status` | `add_person`, `remove_person`, `set_own_status` (nach außen) | | |
 | `workflows` (#556) | Vorlagen, Abläufe, Regeln, Läufe, Dokumentstücke und lokale Vorschau (siehe unten) | Entwürfe, getestete Abläufe, Start/Abbruch, Öffnen/Zeigen | Ablauf/Regel entfernen | Regeln verwalten; Dauergrant erteilen/widerrufen **nur App-Schlüssel** |
@@ -1407,6 +1407,13 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
     gespeicherte Zusammenfassung: `files` ist leer und entfällt im JSON, Exportpläne für `pdf`, `png`, `eml`,
     kein Body-/Netzabruf.
     Ohne Opt-in bleiben ausschließlich PDF-/PNG-Pläne im bisherigen Antwortformat, ohne `id` nur Ziele.
+    Was abgelegt wurde, hält der Dienst je Mail fest (Issue #781): Nach jedem geprüften Speichern über
+    `mail.save_attachments` oder `mail.save_message_as`, auch für eine schon identisch vorhandene Datei, trägt er
+    Zeit, Anhang bzw. Format, Ziel und endgültigen Pfad ein, nie Inhalte. `mail.list_save_history` (Lesen, MCP-Tool
+    `mail_list_save_history`) liefert das, neueste zuerst, mit `present`, ob die Datei beim Lesen noch dort liegt.
+    Die Mail erkennt der Dienst an ihrer Message-ID, ohne sie an ihrer Kennung. Das Protokoll liegt im Speicher des
+    Kontos und geht mit dem Konto; nach dem Löschen einer Mail bleibt es, weil die Message-ID kein Fremdschlüssel ist (so übersteht es auch das Verschieben). Ein Client mit Leserecht für Mail sieht damit auch Pfade aus dem Dialog des
+    Systems, die kein Ablageziel sind.
     EML (`message/rfc822`) enthält die geprüften Originalbytes mit allen MIME-Teilen und Anhängen,
     keine Rekonstruktion. Ein lokal fehlendes oder nicht beweisbar vollständiges Original wird einmal
     per IMAP `BODY.PEEK[]` geholt; weder externe Bilder noch Lesemarkierung oder Cacheänderung.
@@ -1463,6 +1470,15 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
     Mail hat es keinen Befehl, weil nur das Fenster lädt und nichts gespeichert wird. `mail.save_message_as` (PDF,
     Bild) lädt externe Bilder nur nach der gespeicherten Einstellung, „Show once“ zählt dort nicht, weil auch Agenten
     speichern dürfen.
+15. **Das Terminal des Assistenten einstellen** (Issue #754, [terminal.md](terminal.md)): den Schalter und den Modus
+    (`settings.set_setting terminal`) und die „Immer“-Liste (`settings.set_setting terminal_always`, `remove` und für
+    „Undo“ auf der Seite `add`) ändert nur der App-Schlüssel, also ein Mensch in der Steuerzentrale › MCP servers › Built-in › Terminal. Jeder Wert, auch das
+    Abschalten und das Entfernen eines Eintrags, bekommt von jedem Client `forbidden`, auch mit Admin-Rechten
+    (`Request::kept_for_people`, `SettingsStore::set_by_client`); `settings.update_settings` eines Clients lässt
+    `tools.terminal`, wie es ist, und `settings.get_settings` zeigt einem Client die „Immer“-Liste nicht (sie nennt
+    Befehle und Ordner der Person). Erlaubt wird ein Befehl nur auf der Karte im Chat des Assistenten. Grund: Ein
+    Befehl läuft mit den Rechten der Person auf ihrem Rechner, ohne Sandbox; kein Agent soll das einschalten, sich
+    einen Befehl für immer erlauben oder der Person eine Rückfrage abnehmen.
 
 Allgemein gilt: Jeder Befehl mit `Mcp::Never` ist nur mit dem App-Schlüssel erlaubt. `Rights::allows`
 setzt das durch (seit G.1), auch ein Script-Schlüssel mit Admin-Rechten bekommt `forbidden`.
@@ -1603,7 +1619,11 @@ freigeben. Das machen wir anders:
 vor Code, der schon als derselbe Nutzer läuft. Ein solches Programm könnte den App-Schlüssel neben
 dem Socket lesen; ebenso wird das D-Bus-Signal `ActionInvoked`, mit dem die Benachrichtigung
 „Allow“ meldet, nicht nach Absender gefiltert. Eine Sandbox gegen Programme desselben Nutzers ist
-nicht Ziel.
+nicht Ziel. Deshalb nimmt der Dienst für einen Befehl des Terminals (Issue #754) kein „Allow“ der Benachrichtigung an,
+und die Reichweite `scope` von `approvals.decide_approval` (`once`, `conversation`, `always`) ist nur eine Absprache
+zwischen Karte und Dienst: Wer den App-Schlüssel hat, kann sie setzen, und ebenso mit `settings.set_setting
+terminal_always` und `add` (das „Undo“ der Seite Terminal) einen Eintrag ohne Karte dauerhaft erlauben. Ein Befehl des Terminals selbst ist ein
+solches Programm ([terminal.md](terminal.md), „Ausgangslage“).
 
 Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](app-catalog.md).
 
@@ -1785,7 +1805,7 @@ Getroffen am 2026-10-11.
    (`calendar.list_calendars`); die alten Draht-Namen (`calendar-collections`) entfallen.
 7. **Volle Schemata**: `Event`, `Todo`, `Settings` und `LoadMode` bekommen JSON-Schemata
    (`schemars`), damit Agenten wissen, welche Felder nötig sind (A.0c).
-8. **Tray-Befehle**: „Settings…“ öffnet die Steuerzentrale über `apps.open_app` (auch für API
+8. **Tray-Befehle**: „Control centre“ (ganz oben, bis #803 „Settings…“ am Ende) öffnet die Steuerzentrale über `apps.open_app` (auch für API
    und MCP); „Quit“ wird `system.quit`, nur App-Schlüssel (siehe „Was nie nach außen geht“).
 
 Getroffen am 2026-10-19 (#231):

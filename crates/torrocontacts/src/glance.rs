@@ -203,7 +203,7 @@ pub fn failed<'a>(err: &str) -> Element<'a, Message> {
 pub fn no_account<'a>() -> Element<'a, Message> {
     let line = row![
         tinted(Icon::BookUser, icon::SIZE, |p| p.text_3),
-        typo::text(typo::body(), tr("Connect an account in Torro Workplace"))
+        typo::text(typo::body(), tr("Connect an account in the control centre"))
             .style(theme::text_2)
             .wrapping(Wrapping::WordOrGlyph),
     ]

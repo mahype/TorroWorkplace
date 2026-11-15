@@ -78,6 +78,9 @@ rrule = "0.14.0"
 # the Known Folder on Windows, `~/Desktop` on macOS.
 dirs = "7.0.0"
 getrandom = "0.4.3"
+# The assistant's terminal (issue #754): the patterns of dangerous commands taken over from Hermes Agent, nine of
+# which look around (`(?<!\S)`, `(?!…)`), which `regex` does not. MIT.
+fancy-regex = "0.19.2"
 # DNS SRV and TXT lookups for finding a mail provider's CalDAV service (torro-pim-caldav, M7.1).
 hickory-resolver = { version = "0.26.3", default-features = false, features = ["system-config", "tokio"] }
 # A local HTTP server for the discovery tests (torro-pim-caldav, M7.1); only a dev-dependency.

@@ -1,0 +1,450 @@
+<title>Ablage-Vermerk an Mails</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap">
+<style>
+/* Layout: eine ruhige Lesespalte wie die übrigen Mail-Prototypen (mail-layout, inbox/mail-anhaenge).
+   Jede Bühne zeigt einen Ausschnitt des Mail-Fensters mit den Torro-Tokens, dunkel oder hell über „Fenster“. */
+:root{
+  --bg:#f3f3f1; --fg:#1d1e21; --muted:#5d5f66; --line:#dcdcd7; --card:#ffffff; --accent:#c93b24; --note:#b98a0c;
+  --font-page:"Figtree",ui-sans-serif,system-ui,sans-serif;
+  --font-app:"Inter",ui-sans-serif,system-ui,sans-serif;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#121315; --fg:#ececee; --muted:#9a9ca3; --line:#2b2d31; --card:#1a1b1e; --accent:#ef5a40; --note:#e8b931; color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#121315; --fg:#ececee; --muted:#9a9ca3; --line:#2b2d31; --card:#1a1b1e; --accent:#ef5a40; --note:#e8b931; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--font-page);font-size:16px;line-height:1.55;margin:0}
+.wrap{max-width:1080px;margin:0 auto;padding-block:40px 80px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+h1{font-size:clamp(28px,4vw,40px);line-height:1.15;margin:0 0 12px;text-wrap:balance;letter-spacing:-.01em}
+h2{font-size:26px;margin:0;text-wrap:balance}
+h3{font-size:16px;margin:0 0 8px}
+p{margin:0 0 12px;max-width:68ch}
+.lead{font-size:18px;color:var(--muted);max-width:70ch}
+.hint{font-size:14px;color:var(--muted);margin:6px 0 0}
+nav.jump{display:flex;flex-wrap:wrap;gap:8px;margin:24px 0 8px}
+nav.jump a{color:var(--fg);text-decoration:none;border:1px solid var(--line);background:var(--card);border-radius:999px;padding:8px 16px;font-weight:600}
+nav.jump a:hover,nav.jump a:focus-visible{border-color:var(--accent);outline:none}
+section{margin-top:64px}
+.head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+.tag{font-weight:700;color:var(--accent);font-size:15px;letter-spacing:.04em}
+.states{display:flex;flex-wrap:wrap;gap:6px;margin:14px 0 0;align-items:center}
+.states .olbl{font-size:14px;color:var(--muted);margin-right:4px;min-width:84px}
+.states button{font:600 14px var(--font-page);color:var(--fg);background:var(--card);border:1px solid var(--line);border-radius:999px;padding:6px 14px;cursor:pointer}
+.states button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+.states button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.stagebox{overflow-x:auto;width:fit-content;max-width:100%;margin:16px 0 22px;border-radius:14px;box-shadow:0 1px 0 var(--line),0 18px 50px -24px rgba(0,0,0,.45)}
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px}
+.note{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;min-width:0}
+.note p{font-size:15px;margin:0 0 8px}
+.note p:last-child{margin:0}
+.note ul{margin:0;padding-left:18px;font-size:15px}
+.note li{margin:4px 0}
+.pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,440px),1fr));gap:20px;align-items:start}
+.pair > div{min-width:0}
+.pair figcaption{font-size:14px;color:var(--muted);margin:-12px 0 0}
+.keep{border-left:3px solid var(--note);padding:4px 0 4px 18px;margin:0}
+.keep li{margin:8px 0;max-width:75ch}
+.ask{margin-top:64px;border-top:1px solid var(--line);padding-top:24px}
+.ask ol{padding-left:22px;max-width:76ch}
+.ask li{margin:12px 0}
+.ask li b{display:block}
+.ask .rec{color:var(--muted)}
+@media (prefers-reduced-motion: reduce){.app *{transition:none !important}}
+
+/* ---------- Das Mail-Fenster (Torro-Tokens) ---------- */
+.app{--a-bg:#08090A;--a-panel:#0F1011;--a-raise:#141518;--a-hover:#1a1b1f;--a-sel:#1C1E22;--a-menu:#17181B;
+  --a-fg:#EDEEF0;--a-fg2:#B4B8BF;--a-fg3:#8A8F98;--a-line:rgba(255,255,255,.06);--a-strong:rgba(255,255,255,.10);
+  --a-acc:#D50C0C;--a-ok:#3FB984;--a-warn:#E0A43A;--a-focus:rgba(255,255,255,.35);--a-av:#262a33;--a-avfg:#c9ccd3;--a-text:#d9dade;
+  background:var(--a-panel);color:var(--a-fg);font-family:var(--font-app);font-size:14px;line-height:22px;position:relative;user-select:none}
+.app.light{--a-bg:#F7F7F8;--a-panel:#FFFFFF;--a-raise:#F3F4F6;--a-hover:#ECEDEF;--a-sel:#E6E8EB;--a-menu:#FFFFFF;
+  --a-fg:#16171A;--a-fg2:#4B4F57;--a-fg3:#6B7079;--a-line:rgba(0,0,0,.07);--a-strong:rgba(0,0,0,.12);
+  --a-ok:#16855A;--a-warn:#A86A00;--a-focus:rgba(0,0,0,.4);--a-av:#E4E6EA;--a-avfg:#3B3F47;--a-text:#2A2C31}
+.app *{box-sizing:border-box}
+.app svg{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+:where(.app) button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
+.app button:focus-visible{outline:2px solid var(--a-focus);outline-offset:1px}
+.meta{font-size:13px;line-height:18px;color:var(--a-fg3);font-variant-numeric:tabular-nums}
+.cap{font-size:12px;line-height:16px;font-weight:500;color:var(--a-fg3)}
+
+/* Leser */
+.reader{width:880px;min-height:600px;display:grid;grid-template-columns:1fr 60px}
+.rmain{padding:28px 40px 0 48px;display:flex;flex-direction:column;min-width:0}
+.rail{border-left:1px solid var(--a-line);display:flex;flex-direction:column;align-items:center;gap:6px;padding-top:12px;color:var(--a-fg3)}
+.rail span{width:40px;height:40px;border-radius:4px;display:grid;place-items:center}
+.rail span.r{background:var(--a-acc);color:#fff}
+.rail i{display:block;width:28px;height:1px;background:var(--a-line);margin:2px 0}
+.subject{font-size:22px;line-height:28px;font-weight:600;margin:0 0 16px}
+.from{display:flex;gap:12px;align-items:center;margin-bottom:14px}
+.av{width:48px;height:48px;border-radius:50%;background:var(--a-av);display:grid;place-items:center;font-weight:600;font-size:15px;color:var(--a-avfg);flex:none}
+.from b{display:block;font-weight:500}
+.mtext{font-size:16px;line-height:26px;color:var(--a-text);max-width:600px;margin-top:8px}
+.mtext p{margin:0 0 14px;max-width:none}
+
+/* Vermerk: eine ruhige Zeile je Speicherung, Haken grün, Ziel als Pfad mit ›, Zeit tabellarisch */
+.filed{display:flex;flex-direction:column;gap:2px;margin:0 0 10px}
+.fline{display:flex;align-items:center;gap:8px;min-height:24px;font-size:13px;line-height:18px;color:var(--a-fg2);border-radius:4px;padding:1px 6px 1px 0;width:fit-content;max-width:100%}
+.fline > svg{width:14px;height:14px;color:var(--a-ok)}
+.fline .where{color:var(--a-fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fline .sep{color:var(--a-fg3)}
+.fline.gone > svg{color:var(--a-warn)}
+.fline.gone .where{color:var(--a-fg3);text-decoration:line-through;text-decoration-color:var(--a-fg3)}
+.fline.more{color:var(--a-fg3);padding-left:22px}
+.fline.more:hover{color:var(--a-fg)}
+
+/* Anhänge: gerahmter Block wie heute (Kopf mit Anzahl und Größe, darunter je Datei eine Zeile) */
+.attline{margin-top:auto;padding:8px 0 20px}
+.attbox{border:1px solid var(--a-strong);border-radius:4px}
+.atthead{display:flex;align-items:center;gap:8px;height:44px;padding:0 6px 0 14px;background:color-mix(in srgb,var(--a-fg) 3%,transparent);border-bottom:1px solid var(--a-strong);border-radius:3px 3px 0 0}
+.atthead > svg{color:var(--a-fg3)}
+.atthead .ttl{font-weight:500}
+.atthead .grow{flex:1}
+.atthead .ghost{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 10px;border-radius:4px;color:var(--a-fg2);font-size:12px;font-weight:500}
+.atthead .ghost:hover{background:var(--a-hover);color:var(--a-fg)}
+.atthead .filedsum{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--a-fg2)}
+.atthead .filedsum svg{width:14px;height:14px;color:var(--a-ok)}
+.arow{display:flex;align-items:center;gap:10px;height:40px;padding:0 6px 0 14px;position:relative}
+.arow + .arow{border-top:1px solid var(--a-line)}
+.arow:hover{background:var(--a-hover)}
+.arow > svg{color:var(--a-fg3)}
+.arow .nm{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.arow .grow{flex:1}
+.arow .tri{width:28px;height:28px;border-radius:4px;display:grid;place-items:center;color:var(--a-fg2)}
+.arow .tri:hover,.arow .tri[aria-expanded="true"]{background:var(--a-sel);color:var(--a-fg)}
+/* Badge am Anhang: Haken mit Zielordner, Tooltip mit vollem Pfad und Zeit */
+.badge{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px 0 6px;border-radius:4px;font-size:12px;line-height:16px;font-weight:500;
+  color:var(--a-fg2);background:color-mix(in srgb,var(--a-ok) 12%,transparent);white-space:nowrap;max-width:280px;position:relative}
+.badge svg{width:13px;height:13px;color:var(--a-ok)}
+.badge span{overflow:hidden;text-overflow:ellipsis}
+.badge.gone{background:color-mix(in srgb,var(--a-warn) 12%,transparent);color:var(--a-fg3)}
+.badge.gone svg{color:var(--a-warn)}
+.badge.only{padding:0 5px;background:none}
+.tip{position:absolute;left:0;bottom:calc(100% + 8px);z-index:25;background:var(--a-menu);border:1px solid var(--a-strong);border-radius:4px;padding:8px 10px;
+  box-shadow:0 16px 40px -10px rgba(0,0,0,.6);color:var(--a-fg);font-size:12px;line-height:18px;font-weight:400;white-space:nowrap;display:none}
+.tip code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.tip .t{color:var(--a-fg3)}
+.badge:hover .tip,.badge:focus-visible .tip,.badge.show .tip{display:block}
+
+/* Menü */
+.menu{position:absolute;z-index:20;min-width:300px;background:var(--a-menu);border:1px solid var(--a-strong);border-radius:4px;padding:4px;
+  box-shadow:0 16px 40px -10px rgba(0,0,0,.7)}
+.menu[hidden]{display:none}
+.mi{display:flex;align-items:center;gap:10px;width:100%;height:30px;padding:0 8px;border-radius:4px;text-align:left;color:var(--a-fg)}
+.mi svg{color:var(--a-fg2)}
+.mi:hover,.mi:focus-visible{background:var(--a-sel);outline:none}
+.mi .lbl{flex:1;white-space:nowrap}
+.mi .click{font-size:11px;line-height:14px;font-weight:600;color:var(--a-fg3);border:1px solid var(--a-strong);border-radius:4px;padding:1px 6px}
+.mi.off{color:var(--a-fg3);cursor:default}
+.mi.off:hover{background:none}
+.mi.tall{height:auto;min-height:44px;padding:4px 8px;align-items:flex-start}
+.mi.tall svg{margin-top:3px}
+.mi.tall .lbl{white-space:normal}
+.mi.tall .lbl small{display:block;font-size:12px;line-height:16px;color:var(--a-fg3);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.mi.tall.ok svg{color:var(--a-ok)}
+.mi.tall.gone svg{color:var(--a-warn)}
+.msec{font-size:12px;line-height:16px;font-weight:500;color:var(--a-fg3);padding:8px 8px 4px}
+.msep{height:1px;background:var(--a-line);margin:4px 0}
+
+/* Liste */
+.listbox{width:520px;min-height:340px;position:relative;background:var(--a-panel)}
+.lrow{display:grid;grid-template-columns:40px 1fr;gap:12px;padding:14px 20px;border-bottom:1px solid var(--a-line)}
+.lrow.sel{background:var(--a-sel);box-shadow:inset 2px 0 0 var(--a-acc)}
+.lrow .av{width:40px;height:40px;font-size:13px}
+.lrow .t{display:flex;gap:8px;align-items:center}
+.lrow .t b{font-weight:500}
+.lrow .t .meta{margin-left:auto}
+.lrow .s{display:flex;align-items:center;gap:6px;min-width:0}
+.lrow .s .sj{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.lrow .s svg{width:13px;height:13px;color:var(--a-fg3)}
+.lrow .s .fk{color:var(--a-ok)}
+.lrow .s .grow{flex:1}
+.lrow .s .fw{font-size:12px;line-height:16px;color:var(--a-fg3);display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+.lrow .s .fw svg{color:var(--a-ok)}
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-clip" viewBox="0 0 24 24"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-open" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+  <symbol id="i-dl" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></symbol>
+  <symbol id="i-save" viewBox="0 0 24 24"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></symbol>
+  <symbol id="i-reply" viewBox="0 0 24 24"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></symbol>
+  <symbol id="i-dots" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
+  <symbol id="i-flag" viewBox="0 0 24 24"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" x2="4" y1="22" y2="15"/></symbol>
+  <symbol id="i-hist" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></symbol>
+</svg>
+
+<div class="wrap">
+  <h1>Ablage-Vermerk an Mails</h1>
+  <p class="lead">Entwurf zu #781: Wer einen Anhang oder die Mail selbst ablegt, sieht das beim nächsten Öffnen an der Mail. Ein Vermerk sagt wann und wohin, am Anhang steht ein Haken mit dem Zielordner. So bleibt beim Durcharbeiten vieler Mails klar, was schon abgelegt ist.</p>
+  <p class="hint">Die Oberfläche ist englisch wie die App, Deutsch kommt als Übersetzung dazu. Alles hier ist klickbar: Fall, Variante und Fenster über den Knöpfen, das Dreieck am Anhang öffnet sein Menü, der Haken zeigt beim Überfahren den vollen Pfad.</p>
+  <div class="states" data-opt="theme" role="group" aria-label="Fenster">
+    <span class="olbl">Fenster:</span>
+    <button type="button" data-v="dark" aria-pressed="true">Dunkel</button>
+    <button type="button" data-v="light" aria-pressed="false">Hell</button>
+  </div>
+  <nav class="jump" aria-label="Abschnitte">
+    <a href="#leser">A · Geöffnete Mail</a><a href="#menue">B · Menü am Anhang</a><a href="#liste">C · Mail-Liste</a><a href="#festhalten">Festhalten</a><a href="#offen">Offen</a>
+  </nav>
+
+  <!-- ===================== A ===================== -->
+  <section id="leser">
+    <div class="head"><span class="tag">A</span><h2>Die geöffnete Mail</h2></div>
+    <p>Zwei Orte für den Vermerk zum Vergleich. <b>Variante 1</b> schreibt ihn als Zeile unter den Kopf, je Speicherung eine, ab drei zusammengeklappt. <b>Variante 2</b> lässt den Kopf frei und fasst ihn im Kopf des Anhangblocks zusammen; „Saved as PDF“ steht dann allein unter dem Kopf, weil es keinen Anhang gibt, an dem es hängen könnte. In beiden trägt der gespeicherte Anhang den Haken mit dem Zielordner.</p>
+    <div class="states" data-opt="case" role="group" aria-label="Fall">
+      <span class="olbl">Fall:</span>
+      <button type="button" data-v="one" aria-pressed="true">Ein Anhang gespeichert</button>
+      <button type="button" data-v="many" aria-pressed="false">Mehrere Speicherungen</button>
+      <button type="button" data-v="pdf" aria-pressed="false">Mail als PDF</button>
+      <button type="button" data-v="gone" aria-pressed="false">Datei nicht mehr da</button>
+      <button type="button" data-v="none" aria-pressed="false">Nie gespeichert</button>
+    </div>
+    <div class="states" data-opt="variant" role="group" aria-label="Variante">
+      <span class="olbl">Variante:</span>
+      <button type="button" data-v="head" aria-pressed="true">1 · Zeile unter dem Kopf</button>
+      <button type="button" data-v="block" aria-pressed="false">2 · Im Anhangblock</button>
+    </div>
+    <div class="stagebox">
+      <div class="app reader" id="readerApp">
+        <div class="rmain">
+          <div class="subject">Rechnung Oktober 2026</div>
+          <div class="from"><div class="av">SB</div><div><b>Stadtwerke Bonn</b><span class="meta">rechnung@stadtwerke-bonn.de · to me</span></div><span class="meta" style="margin-left:auto">Wed, 12 Nov · 07:58</span></div>
+          <div class="filed" id="filed"></div>
+          <div class="mtext">
+            <p>Guten Tag,</p>
+            <p>anbei erhalten Sie Ihre Rechnung für Oktober 2026, die Allgemeinen Geschäftsbedingungen und die Zahlungserinnerung vom September. Der Betrag von 84,20 € wird am 15.11. abgebucht.</p>
+            <p>Mit freundlichen Grüßen<br>Ihre Stadtwerke Bonn</p>
+          </div>
+          <div class="attline"><div class="attbox">
+            <div class="atthead" id="atthead"></div>
+            <div id="arows"></div>
+          </div></div>
+        </div>
+        <div class="rail" aria-hidden="true"><span class="r"><svg><use href="#i-reply"/></svg></span><i></i><span><svg><use href="#i-check"/></svg></span><span><svg><use href="#i-flag"/></svg></span><span><svg><use href="#i-dots"/></svg></span></div>
+        <div class="menu" id="menu" role="menu" hidden></div>
+      </div>
+    </div>
+    <div class="notes">
+      <div class="note"><h3>Vermerk</h3><ul>
+        <li>„Saved 1 attachment · 14 Nov, 10:32 · Invoices › 2026 › 11“: was, wann, wohin. Bei einem Ablageziel steht sein Name vorn, sonst der Ordner ab dem Home-Verzeichnis.</li>
+        <li>Mehrere Speicherungen stehen als eigene Zeilen, die neueste oben. Ab der dritten heißt die letzte Zeile „2 earlier saves“ und klappt auf.</li>
+        <li>Die Mail selbst: „Saved as PDF“, „Saved as picture“, „Saved as EML“.</li>
+      </ul></div>
+      <div class="note"><h3>Am Anhang</h3><ul>
+        <li>Haken mit dem letzten Ordnernamen („11“ wäre zu wenig, darum Ziel › Monat: „Invoices › 11“).</li>
+        <li>Tooltip mit vollem Pfad und Zeit, bei mehreren Speicherungen alle.</li>
+        <li>Ein nie gespeicherter Anhang sieht aus wie heute.</li>
+      </ul></div>
+      <div class="note"><h3>Datei nicht mehr da</h3><ul>
+        <li>Der Dienst sieht beim Öffnen der Mail einmal nach. Fehlt die Datei, steht am Anhang „File no longer there“ in Grau mit gelbem Warnzeichen, der Vermerk streicht das Ziel durch.</li>
+        <li>„Show in folder“ entfällt dann im Menü. Laufend überwacht wird nichts.</li>
+      </ul></div>
+    </div>
+  </section>
+
+  <!-- ===================== B ===================== -->
+  <section id="menue">
+    <div class="head"><span class="tag">B</span><h2>Menü am Anhang</h2></div>
+    <p>Das Dreieck bietet wie heute Öffnen und Speichern an. Ist der Anhang gespeichert, kommt oben „Show in folder“ dazu und darunter der Verlauf: jede Speicherung mit Zeit und Pfad. Ein Klick auf einen Eintrag des Verlaufs öffnet dessen Ordner. Im Fenster oben öffnet sich das Menü am Dreieck von „Rechnung-10.pdf“; hier stehen die Fälle nebeneinander.</p>
+    <div class="pair">
+      <div><div class="stagebox"><div class="app" style="padding:20px;min-height:320px" id="menuSaved"></div></div><figcaption>Gespeichert, zweimal</figcaption></div>
+      <div><div class="stagebox"><div class="app" style="padding:20px;min-height:320px" id="menuGone"></div></div><figcaption>Datei am Ziel fehlt</figcaption></div>
+    </div>
+  </section>
+
+  <!-- ===================== C ===================== -->
+  <section id="liste">
+    <div class="head"><span class="tag">C</span><h2>Mail-Liste: mit oder ohne Vermerk</h2></div>
+    <p>Nur zum Vergleich. Der Plan sieht die Liste unverändert vor: Der Vermerk steht in der geöffneten Mail. Mit Vermerk bekäme jede Zeile mit abgelegtem Anhang ein kleines Zeichen; dafür müsste der Dienst das Protokoll für die ganze Liste mitliefern. Wird diese Variante gewählt, entsteht ein eigenes Issue.</p>
+    <div class="pair">
+      <div><div class="stagebox"><div class="app listbox" id="listPlain"></div></div><figcaption>Ohne Vermerk (wie heute, so geplant)</figcaption></div>
+      <div><div class="stagebox"><div class="app listbox" id="listMarked"></div></div><figcaption>Mit Vermerk (eigenes Issue)</figcaption></div>
+    </div>
+  </section>
+
+  <section id="festhalten">
+    <div class="head"><h2>Festhalten für die Umsetzung</h2></div>
+    <ul class="keep">
+      <li><b>Erkennung an der Message-ID.</b> Verschiebt ein anderes Mailprogramm die Mail, bleibt der Vermerk. Nur eine Mail ohne Message-ID wird an der Kennung im Dienst erkannt.</li>
+      <li><b>Eingetragen wird nur, was gespeichert und geprüft ist,</b> auch eine Datei, die schon identisch am Ziel lag. Kein Eintrag bei Fehler oder Abbruch des Dialogs.</li>
+      <li><b>Was Workflows automatisch ablegen, steht nicht im Vermerk:</b> Die Mail zeigt deren Ergebnisse schon eigens.</li>
+      <li><b>Ein Agent liest dasselbe Protokoll</b> über <code>mail_list_save_history</code>: Zeit, Datei, Ziel und Pfad, keine Inhalte.</li>
+    </ul>
+  </section>
+
+  <section class="ask" id="offen">
+    <h2>Offene Fragen</h2>
+    <ol>
+      <li><b>Variante 1 oder 2 für den Vermerk?</b><span class="rec">Empfehlung: Variante 1. Der Vermerk steht dort, wo man beim Öffnen hinsieht, und „Saved as PDF“ hat denselben Platz wie gespeicherte Anhänge. Variante 2 hält den Kopf ruhiger, trennt aber Mail-Export und Anhänge.</span></li>
+      <li><b>Badge am Anhang mit Ordnernamen oder nur der Haken?</b><span class="rec">Empfehlung: mit Ordnernamen („✓ Invoices › 11“). Nur der Haken sagt „abgelegt“, aber nicht wohin; der Pfad stünde dann nur im Tooltip.</span></li>
+      <li><b>Mail-Liste mit Vermerk?</b><span class="rec">Empfehlung: nein, wie geplant. Wer sie will, bekommt ein eigenes Issue.</span></li>
+    </ol>
+  </section>
+</div>
+
+<script>
+const app = document.getElementById('readerApp');
+const state = {case:'one', variant:'head', theme:'dark'};
+
+// Beispieldaten: die Speicherungen der Mail je Fall. present=false heißt: Datei am Ziel fehlt.
+const files = [
+  {name:'Rechnung-10.pdf', size:'180 KB'},
+  {name:'AGB.pdf', size:'232 KB'},
+  {name:'Mahnung-09.pdf', size:'40 KB'},
+];
+const S = {
+  inv:  {what:'att', file:0, at:'14 Nov, 10:32', target:'Invoices', short:'Invoices › 11', where:'Invoices › 2026 › 11', path:'~/Documents/Invoices/2026/11/Rechnung-10.pdf', present:true},
+  inv2: {what:'att', file:0, at:'12 Nov, 08:10', target:null, short:'Downloads', where:'Downloads', path:'~/Downloads/Rechnung-10.pdf', present:true},
+  agb:  {what:'att', file:1, at:'12 Nov, 08:10', target:null, short:'Downloads', where:'Downloads', path:'~/Downloads/AGB.pdf', present:true},
+  pdf:  {what:'pdf', at:'12 Nov, 08:05', target:null, where:'Documents › Mail', path:'~/Documents/Mail/2026-11-12 Rechnung Oktober 2026.pdf', present:true},
+  mah:  {what:'att', file:2, at:'3 Oct, 16:40', target:'Invoices', short:'Invoices › 09', where:'Invoices › 2026 › 09', path:'~/Documents/Invoices/2026/09/Mahnung-09.pdf', present:false},
+};
+const cases = {
+  one:  [S.inv],
+  many: [S.inv, S.pdf, S.inv2, S.agb],
+  pdf:  [S.pdf],
+  gone: [S.inv, S.mah],
+  none: [],
+};
+
+const svg = id => `<svg><use href="#${id}"/></svg>`;
+const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+
+// Speicherungen, die zusammen geschahen (gleiche Zeit, gleiches Ziel), werden eine Zeile: „Saved 2 attachments“.
+function groups(list){
+  const out = [];
+  for (const e of list){
+    const g = out.find(g => g.what===e.what && g.at===e.at && g.where===e.where);
+    if (g && e.what==='att') { g.n++; g.present = g.present && e.present; } else out.push({...e, n:1});
+  }
+  return out;
+}
+function lineText(g){
+  if (g.what==='pdf') return 'Saved as PDF';
+  return g.n===1 ? 'Saved 1 attachment' : `Saved ${g.n} attachments`;
+}
+function fline(g){
+  const gone = !g.present;
+  const icon = gone ? svg('i-warn') : svg('i-check');
+  const where = gone ? `<span class="where">${esc(g.where)}</span><span class="sep">·</span><span>File no longer there</span>` : `<span class="where">${esc(g.where)}</span>`;
+  return `<div class="fline${gone?' gone':''}" title="${esc(g.path)}">${icon}<span>${lineText(g)}</span><span class="sep">·</span><span>${g.at}</span><span class="sep">·</span>${where}</div>`;
+}
+
+let expanded = false;
+function render(){
+  const list = cases[state.case];
+  const gs = groups(list);
+  const filed = document.getElementById('filed');
+  // Variante 1: alle Zeilen unter dem Kopf. Variante 2: nur die Mail selbst (PDF) unter dem Kopf, Anhänge im Blockkopf.
+  let head = state.variant==='head' ? gs : gs.filter(g => g.what==='pdf');
+  let html = '';
+  if (head.length > 2 && !expanded){
+    html = head.slice(0,2).map(fline).join('') + `<button type="button" class="fline more" data-act="expand">${head.length-2} earlier ${head.length-2===1?'save':'saves'}</button>`;
+  } else html = head.map(fline).join('');
+  filed.innerHTML = html;
+  filed.style.display = html ? 'flex' : 'none';
+
+  const attSaved = list.filter(e => e.what==='att');
+  const savedFiles = new Set(attSaved.map(e => e.file));
+  let sum = '';
+  if (state.variant==='block' && attSaved.length){
+    const latest = attSaved[0];
+    sum = `<span class="filedsum">${svg('i-check')}${savedFiles.size} of ${files.length} saved · ${latest.at}</span>`;
+  }
+  document.getElementById('atthead').innerHTML =
+    `${svg('i-clip')}<span class="ttl">Attachments</span><span class="meta">3 files · 452 KB</span><span class="grow"></span>${sum}<button class="ghost" type="button">${svg('i-dl')}Save all${svg('i-down')}</button>`;
+
+  document.getElementById('arows').innerHTML = files.map((f,i) => {
+    const mine = attSaved.filter(e => e.file===i);
+    let badge = '';
+    if (mine.length){
+      const last = mine[0];
+      const tip = mine.map(e => `<div><code>${esc(e.path)}</code> <span class="t">· ${e.at}${e.present?'':' · no longer there'}</span></div>`).join('');
+      badge = last.present
+        ? `<span class="badge" tabindex="0">${svg('i-check')}<span>${esc(last.short)}</span><span class="tip">${tip}</span></span>`
+        : `<span class="badge gone" tabindex="0">${svg('i-warn')}<span>File no longer there</span><span class="tip">${tip}</span></span>`;
+    }
+    return `<div class="arow">${svg('i-clip')}<span class="nm">${esc(f.name)}</span>${badge}<span class="grow"></span><span class="meta">${f.size}</span><button class="tri" type="button" data-file="${i}" aria-haspopup="menu" aria-expanded="false" aria-label="More ways to open or save">${svg('i-down')}</button></div>`;
+  }).join('');
+  closeMenu();
+}
+
+function menuHtml(saves){
+  const present = saves.length && saves[0].present;
+  let h = '';
+  if (saves.length){
+    h += present ? `<button class="mi" type="button">${svg('i-folder')}<span class="lbl">Show in folder</span></button>`
+                 : `<div class="mi off">${svg('i-folder')}<span class="lbl">Show in folder</span></div>`;
+    h += '<div class="msep"></div>';
+  }
+  h += `<button class="mi" type="button">${svg('i-open')}<span class="lbl">Open</span><span class="click">Click</span></button>`;
+  h += `<button class="mi" type="button">${svg('i-dl')}<span class="lbl">Save to Downloads</span></button>`;
+  h += `<button class="mi" type="button">${svg('i-save')}<span class="lbl">Save as…</span></button>`;
+  h += `<div class="msep"></div><div class="msec">Save to</div>`;
+  h += `<button class="mi" type="button">${svg('i-folder')}<span class="lbl">Invoices</span></button>`;
+  if (saves.length){
+    h += `<div class="msep"></div><div class="msec">Saved</div>`;
+    h += saves.map(e => `<button class="mi tall ${e.present?'ok':'gone'}" type="button">${e.present?svg('i-check'):svg('i-warn')}<span class="lbl">${e.at}${e.present?'':' · File no longer there'}<small>${esc(e.path)}</small></span></button>`).join('');
+  }
+  return h;
+}
+
+const menu = document.getElementById('menu');
+let openTri = null;
+function closeMenu(){ menu.hidden = true; if (openTri) openTri.setAttribute('aria-expanded','false'); openTri = null; }
+app.addEventListener('click', ev => {
+  const exp = ev.target.closest('[data-act="expand"]');
+  if (exp){ expanded = true; render(); return; }
+  const tri = ev.target.closest('.tri');
+  if (tri){
+    if (openTri === tri){ closeMenu(); return; }
+    closeMenu();
+    const i = +tri.dataset.file;
+    menu.innerHTML = menuHtml(cases[state.case].filter(e => e.what==='att' && e.file===i));
+    const r = tri.getBoundingClientRect(), a = app.getBoundingClientRect();
+    menu.hidden = false;
+    menu.style.left = (r.right - a.left - menu.offsetWidth) + 'px';
+    menu.style.top = Math.max(8, r.top - a.top - menu.offsetHeight - 6) + 'px';
+    tri.setAttribute('aria-expanded','true'); openTri = tri; return;
+  }
+  if (!ev.target.closest('.menu')) closeMenu();
+});
+document.addEventListener('keydown', ev => { if (ev.key==='Escape') closeMenu(); });
+
+// Die Menüs in B stehen offen nebeneinander.
+document.getElementById('menuSaved').innerHTML = `<div class="menu" style="position:static;width:340px">${menuHtml([S.inv, S.inv2])}</div>`;
+document.getElementById('menuGone').innerHTML = `<div class="menu" style="position:static;width:340px">${menuHtml([S.mah])}</div>`;
+
+// Mail-Liste
+const rows = [
+  {i:'AK', f:'Anna Kühn', t:'09:12', s:'Protokoll vom Dienstag', att:true, filed:null},
+  {i:'SB', f:'Stadtwerke Bonn', t:'12 Nov', s:'Rechnung Oktober 2026', att:true, filed:'Invoices', sel:true},
+  {i:'JM', f:'Jonas Meier', t:'11 Nov', s:'Angebot Website-Relaunch', att:false, filed:null},
+  {i:'VB', f:'Versicherung Bonn', t:'10 Nov', s:'Ihre Beitragsrechnung 2027', att:true, filed:'Insurance'},
+];
+function listHtml(marked){
+  return rows.map(r => {
+    let tail = r.att ? svg('i-clip') : '';
+    if (marked && r.filed) tail = `<span class="grow"></span><span class="fw" title="Saved to ${r.filed}">${svg('i-check')}${r.filed}</span>`;
+    return `<div class="lrow${r.sel?' sel':''}"><div class="av">${r.i}</div><div style="min-width:0"><div class="t"><b>${r.f}</b><span class="meta">${r.t}</span></div><div class="s"><span class="sj">${r.s}</span>${tail}</div></div></div>`;
+  }).join('');
+}
+document.getElementById('listPlain').innerHTML = listHtml(false);
+document.getElementById('listMarked').innerHTML = listHtml(true);
+
+// Umschalter
+document.querySelectorAll('.states').forEach(g => g.addEventListener('click', ev => {
+  const b = ev.target.closest('button'); if (!b) return;
+  g.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x===b ? 'true' : 'false'));
+  state[g.dataset.opt] = b.dataset.v;
+  if (g.dataset.opt==='theme'){
+    document.querySelectorAll('.app').forEach(a => a.classList.toggle('light', b.dataset.v==='light'));
+    return;
+  }
+  expanded = false; render();
+}));
+render();
+</script>

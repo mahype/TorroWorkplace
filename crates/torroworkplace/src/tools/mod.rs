@@ -13,6 +13,8 @@
 //!   trash (task WD.3).
 //! - `contents`: the commands of the tool `file_contents` (issue #705) – read a text file, search in text files, write
 //!   a new one, change one by find and replace, in the bounds of `folders`.
+//! - `terminal`: the assistant's terminal (issue #754) – commands and scripts in an allowed folder, for the
+//!   assistant's own conversation only.
 //!
 //! [`Tools`] answers the `tools.*` requests (task WZ.4). The core checks before: for a client its rights and
 //! selection (`Lack::Tool`) and that a file is its own; the tools are always there (issue #666). The handlers
@@ -25,6 +27,7 @@ pub mod folders;
 pub mod organize;
 pub mod pdf;
 pub mod place;
+pub mod terminal;
 pub mod web;
 
 use std::fs;
@@ -80,6 +83,8 @@ pub struct Tools {
     changes: Arc<Mutex<()>>,
     /// The tool `web`: router, page reader and keys of the whole service (task WEB.4).
     web: web::Web,
+    /// The assistant's terminal (issue #754): its checks and the commands in the background.
+    terminal: terminal::Terminal,
 }
 
 impl Tools {
@@ -112,6 +117,7 @@ impl Tools {
             trash,
             changes: Arc::default(),
             web: web::Web::system(),
+            terminal: terminal::Terminal::system(),
         }
     }
 
@@ -129,6 +135,7 @@ impl Tools {
             trash,
             changes: Arc::default(),
             web: web::Web::system(),
+            terminal: terminal::Terminal::system(),
         }
     }
 
@@ -137,6 +144,11 @@ impl Tools {
     pub fn with_web(mut self, web: web::Web) -> Tools {
         self.web = web;
         self
+    }
+
+    /// The assistant's terminal (issue #754).
+    pub fn terminal(&self) -> &terminal::Terminal {
+        &self.terminal
     }
 
     /// The tool `web`, for its commands (`tools.web_search`, `tools.fetch_page`, `tools.list_search_providers`,

@@ -379,8 +379,11 @@ pub enum Message {
     Followed(String, Loaded),
     /// An approval the conversation waits for (or waited for).
     Approval(String, Result<ApprovalInfo, Refusal>),
-    /// "Allow" (`true`) or "Deny" on the approval card: a person's click.
-    Decide(String, bool),
+    /// "Allow", "Deny" or, for a command of the terminal, how far it is allowed, on the approval card: a person's
+    /// click.
+    Decide(String, chat::Answer),
+    /// "Show all" or "Show less" of the command on the approval card with this id (issue #754).
+    ToggleCommand(String),
     /// The cards of the conversation with this id as the core resolved them (task WZ.8).
     Cards(String, Result<Vec<CardEntry>, Refusal>),
     /// "Open" on the card of the file with this id: a person's click.
@@ -649,6 +652,8 @@ pub struct App {
     pub(crate) card_pictures_asked: HashSet<(String, u64)>,
     /// The tool lines unfolded, by number.
     pub(crate) expanded: HashSet<u64>,
+    /// The approval cards whose command of the terminal shows whole, by approval id (issue #754).
+    pub(crate) whole_commands: HashSet<String>,
     /// The answers as Markdown blocks, by number, with the text they were made from: for the
     /// answer in [`App::stream`] what of it shows ([`crate::stream::display`]).
     pub(crate) answers: HashMap<u64, (String, Vec<markdown::Item>)>,
@@ -813,6 +818,7 @@ impl App {
             card_pictures: HashMap::new(),
             card_pictures_asked: HashSet::new(),
             expanded: HashSet::new(),
+            whole_commands: HashSet::new(),
             answers: HashMap::new(),
             stream: None,
             follow_bottom: true,
@@ -1184,7 +1190,12 @@ impl App {
                 self.approvals.insert(id, approval);
             }
             Message::Approval(id, Err(refusal)) => eprintln!("cannot read the approval {id}: {}", refusal.message),
-            Message::Decide(id, allow) => return self.decide(id, allow),
+            Message::Decide(id, answer) => return self.decide(id, answer),
+            Message::ToggleCommand(id) => {
+                if !self.whole_commands.remove(&id) {
+                    self.whole_commands.insert(id);
+                }
+            }
             Message::Cards(id, result) => return self.take_cards(&id, result),
             Message::OpenFile(id) => {
                 let failed = tr("Couldn't open the file.");
@@ -2604,13 +2615,13 @@ impl App {
     }
 
     /// "Allow" or "Deny": only while the approval waits and no decision is on its way.
-    fn decide(&mut self, id: String, allow: bool) -> Task<Message> {
+    fn decide(&mut self, id: String, answer: chat::Answer) -> Task<Message> {
         let open = self.approvals.get(&id).is_some_and(|approval| approval.state.is_pending());
         if !open || self.deciding.is_some() {
             return Task::none();
         }
         self.deciding = Some(id.clone());
-        self.ask(chat::decide_request(&id, allow), move |result| Message::Decided(id.clone(), approval_of(result)))
+        self.ask(chat::decide_request(&id, answer), move |result| Message::Decided(id.clone(), approval_of(result)))
     }
 
     fn decided(&mut self, id: String, result: Result<ApprovalInfo, Refusal>) -> Task<Message> {
@@ -3076,6 +3087,7 @@ fn start_conversation(open: Option<Open>) -> Option<String> {
             Some(demo::TOOLS.into())
         }
         Some(Open::Approval) => Some(demo::APPROVAL.into()),
+        Some(Open::Terminal) => Some(demo::TERMINAL.into()),
         Some(Open::Streaming) => Some(demo::STREAMING.into()),
         Some(Open::Forbidden) => Some(demo::FORBIDDEN.into()),
         Some(Open::Bot) => Some(demo::BOT_CHAT.into()),
