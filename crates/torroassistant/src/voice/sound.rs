@@ -8,9 +8,13 @@
 //! callbacks only move samples; turning them into 16 kHz or into the device's rate happens outside,
 //! with sherpa-onnx's [`LinearResampler`].
 //!
+//! On Linux the microphone speaks the PulseAudio protocol, which PipeWire serves (`pipewire-pulse`): the
+//! names are those of the volume control, and a device another program uses can be chosen too. Without
+//! that socket cpal takes ALSA. Reading aloud and the tone stay on ALSA.
+//!
 //! A microphone is named as the system names it ([`name_of`]). A stored name cpal does not know (the
-//! `pactl` names of earlier versions, a device unplugged) falls back to the system's default, and so
-//! does one that cannot be opened (a card PipeWire holds).
+//! `pactl` or ALSA names of earlier versions, a device unplugged) falls back to the system's default, and
+//! so does one that cannot be opened (with ALSA, a card PipeWire holds).
 
 use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -69,7 +73,7 @@ impl Devices for SystemDevices {
     }
 
     fn has_output(&self) -> bool {
-        cpal::default_host().default_output_device().is_some()
+        output_host().default_output_device().is_some()
     }
 
     fn opens(&self, name: &str) -> bool {
@@ -109,7 +113,7 @@ fn offered_inputs(host: &cpal::Host) -> Vec<(String, cpal::Device)> {
     let Ok(devices) = host.input_devices() else { return Vec::new() };
     let mut found: Vec<(String, cpal::Device)> = Vec::new();
     for device in devices {
-        let offer = device.id().is_ok_and(|id| offered(id.id()));
+        let offer = device.id().is_ok_and(|id| offered(&id));
         let name = name_of(&device);
         if offer && !name.is_empty() && found.iter().all(|(known, _)| *known != name) {
             found.push((name, device));
@@ -118,17 +122,31 @@ fn offered_inputs(host: &cpal::Host) -> Vec<(String, cpal::Device)> {
     found
 }
 
-/// Whether the device of id `id` is one people choose. ALSA lists every plugin and each card many times
+/// Whether the device `id` is one people choose. ALSA lists every plugin and each card many times
 /// (`hw:`, `plughw:`, `front:`, `dsnoop:` …); the one per card that shares it with other programs is
-/// `sysdefault:CARD=…`. The other systems list each microphone once.
-#[cfg(target_os = "linux")]
-fn offered(id: &str) -> bool {
-    id.starts_with("sysdefault:CARD=")
+/// `sysdefault:CARD=…`. PulseAudio also lists the monitor of each output, which is no microphone. The
+/// other systems list each microphone once.
+fn offered(id: &cpal::DeviceId) -> bool {
+    #[cfg(target_os = "linux")]
+    match id.host() {
+        cpal::HostId::Alsa => id.id().starts_with("sysdefault:CARD="),
+        cpal::HostId::PulseAudio => !id.id().ends_with(".monitor"),
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = id;
+        true
+    }
 }
 
-#[cfg(not(target_os = "linux"))]
-fn offered(_id: &str) -> bool {
-    true
+/// The host to play sound on. On Linux ALSA (the microphone alone moves to PulseAudio, issue #772), else
+/// the system's default.
+fn output_host() -> cpal::Host {
+    #[cfg(target_os = "linux")]
+    if let Ok(host) = cpal::host_from_id(cpal::HostId::Alsa) {
+        return host;
+    }
+    cpal::default_host()
 }
 
 /// A cpal error as a [`VoiceError::Sound`].
@@ -358,7 +376,7 @@ pub struct Player {
 impl Player {
     /// Opens the default output; without one [`VoiceError::Missing`] with [`VoiceMissing::Player`].
     pub fn open() -> Result<Player, VoiceError> {
-        let device = cpal::default_host()
+        let device = output_host()
             .default_output_device()
             .ok_or(VoiceError::Missing(VoicePart::Speech, VoiceMissing::Player))?;
         let config = device.default_output_config().map_err(sound)?;
@@ -488,6 +506,12 @@ pub mod tests {
             in_use(Some("alsa_input.usb-Rode_NT-USB-00.analog-stereo")).as_deref(),
             Some("Default Audio Device")
         );
+        // Issue #772: a card name from the ALSA days is no PulseAudio name; the default takes over.
+        let pulse = FakeDevices { microphones: vec!["Elgato Wave XLR Mono".into()], ..devices.clone() };
+        assert_eq!(
+            microphone_in_use(&pulse, Some("Elgato Wave XLR, USB Audio")).as_deref(),
+            Some("Default Audio Device")
+        );
         assert_eq!(in_use(None).as_deref(), Some("Default Audio Device"));
         let no_default = FakeDevices { default: None, ..devices.clone() };
         assert_eq!(microphone_in_use(&no_default, None).as_deref(), Some("Elgato Wave XLR, USB Audio"));
@@ -503,10 +527,20 @@ pub mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn alsa_offers_one_device_per_card() {
-        assert!(offered("sysdefault:CARD=XLR"));
+        let alsa = |id: &str| cpal::DeviceId::new(cpal::HostId::Alsa, id);
+        assert!(offered(&alsa("sysdefault:CARD=XLR")));
         for id in ["default", "null", "pipewire", "hw:CARD=0,DEV=0", "plughw:CARD=0,DEV=0", "front:CARD=XLR,DEV=0"] {
-            assert!(!offered(id), "{id}");
+            assert!(!offered(&alsa(id)), "{id}");
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pulse_offers_sources_without_monitors() {
+        let pulse = |id: &str| cpal::DeviceId::new(cpal::HostId::PulseAudio, id);
+        assert!(offered(&pulse("alsa_input.usb-Elgato_Wave_XLR-00.mono-fallback")));
+        assert!(offered(&pulse("bluez_input.80_C3_BA_12_34_56.headset-head-unit")));
+        assert!(!offered(&pulse("alsa_output.pci-0000_00_1f.3.analog-stereo.monitor")));
     }
 
     #[test]

@@ -238,8 +238,8 @@ unicode-segmentation = "1.13.3"
 # reading aloud (Pocket TTS) on the processor, without Python or other programs. k2-fsa's bindings link ONNX Runtime
 # statically; the first build downloads its prebuilt libraries (about 23 MB) from GitHub. Apache-2.0.
 sherpa-onnx = "2.0.1"
-# The microphone and the sound output of each system (torroassistant, issue #762): ALSA on Linux (alsa-lib, which
-# PipeWire and PulseAudio serve too), Core Audio on macOS, WASAPI on Windows. Apache-2.0.
+# The microphone and the sound output of each system (torroassistant, issues #762, #772): on Linux the PulseAudio
+# protocol (PipeWire serves it) for the microphone, else ALSA; Core Audio on macOS, WASAPI on Windows. Apache-2.0.
 cpal = "0.18.2"
 # The PDF tool of the assistant (torroworkplace, WZ.3, spike in spikes/printpdf): pulldown-cmark reads the model's
 # Markdown, the core writes clean HTML from its events, printpdf's HTML layout (azul-layout) sets the pages, PNG and

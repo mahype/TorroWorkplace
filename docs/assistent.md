@@ -785,7 +785,7 @@ Open First gilt auch hier, und das Mikrofon verlässt den Rechner nie, solange n
 
 **Alles eingebaut (Issue #762):** Erkennung, Vorlesen, Weckwort, Aufnahme und Wiedergabe laufen im Assistenten
 selbst, ohne fremde Programme, ohne Python und ohne Befehle im Terminal. Rechnen: sherpa-onnx (ONNX Runtime,
-fest eingebunden); Ton: cpal (unter Linux ALSA, auf dem Mac Core Audio, unter Windows WASAPI). Was fehlt, ist
+fest eingebunden); Ton: cpal (unter Linux das PulseAudio-Protokoll, das PipeWire über `pipewire-pulse` bedient, mit ALSA als Rückfall, Vorlesen und Signalton über ALSA; auf dem Mac Core Audio, unter Windows WASAPI). Was fehlt, ist
 höchstens ein Modell, und das lädt ein Knopf in Einstellungen › Assistent › Voice › Models:
 
 | Modell | Wofür | Größe | Quelle |
@@ -803,7 +803,7 @@ höchstens ein Modell, und das lädt ein Knopf in Einstellungen › Assistent �
 - **Sprache der Erkennung:** Whisper hört auf die gewählte Sprache, ohne Wahl die der Suite; „Automatic“ lässt
   Whisper raten, was bei kurzen Sätzen und beim Weckwort oft danebengeht. Parakeet erkennt die Sprache selbst.
 - **Bauen:** sherpa-onnx lädt beim ersten Bau fertige Bibliotheken (ca. 23 MB je Ziel) von GitHub, ohne Netz
-  über `SHERPA_ONNX_ARCHIVE_DIR`; unter Linux braucht der Bau `libasound2-dev` (bzw. `alsa-lib`). Unter Windows gibt es sherpa-onnx nur gegen die statische C-Laufzeit gebaut, deshalb linkt die Suite
+  über `SHERPA_ONNX_ARCHIVE_DIR`; unter Linux braucht der Bau `libasound2-dev` (bzw. `alsa-lib`), für das Mikrofon über PipeWire (Issue #772) kommt nichts dazu: Der PulseAudio-Weg ist reines Rust. Vorlesen und Signalton laufen weiter über ALSA. Unter Windows gibt es sherpa-onnx nur gegen die statische C-Laufzeit gebaut, deshalb linkt die Suite
   dort mit `+crt-static` (`.cargo/config.toml`). Auf dem Mac
   fragt das System beim ersten Diktieren nach dem Mikrofon (`NSMicrophoneUsageDescription`).
 
