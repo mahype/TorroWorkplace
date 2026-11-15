@@ -1,12 +1,15 @@
 //! The wake word: [`TranscriptWake`] turns the last two seconds into text once a second, while
 //! something louder than the room was heard, and looks for "Hey Torro" ([`is_wake_phrase`]). It uses
 //! the recogniser of the sentences (decision 5 of #762), so no model of its own has to be downloaded;
-//! silence costs nothing.
+//! silence costs nothing. A recogniser that takes longer than a second for the window (Whisper turbo
+//! needs about one on a fast processor) is asked less often, up to every two seconds, so the listener
+//! never falls behind the microphone ([`check_every`]).
 //!
 //! [`strip_wake_phrase`] takes the wake word off the front of a sentence, for when it was recorded
 //! with it.
 
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 use super::audio::{FRAMES_PER_SECOND, NoiseFloor, rms};
 use super::{Transcriber, VoiceError, WakeWord};
@@ -16,6 +19,14 @@ const WINDOW_FRAMES: usize = 2 * FRAMES_PER_SECOND;
 
 /// How often the window is turned into text: once a second.
 const CHECK_EVERY: usize = FRAMES_PER_SECOND;
+
+/// After how many frames the window is turned into text again, when that took `cost`: once a second,
+/// or a quarter more than it took, so the frames that came meanwhile are read before the next check –
+/// but at most every [`WINDOW_FRAMES`], so no part of what is said slips between two windows.
+pub fn check_every(cost: Duration) -> usize {
+    let frames = (cost.as_secs_f64() * 1.25 * FRAMES_PER_SECOND as f64).ceil() as usize;
+    frames.clamp(CHECK_EVERY, WINDOW_FRAMES)
+}
 
 /// Words heard for "hey"; speech to text writes the greeting in many ways.
 const HEY: &[&str] = &["hey", "hei", "hay", "hej", "he", "hi", "a"];
@@ -66,13 +77,22 @@ pub struct TranscriptWake {
     transcriber: Box<dyn Transcriber>,
     window: VecDeque<i16>,
     since: usize,
+    /// Frames between two checks ([`check_every`] of the last one).
+    every: usize,
     floor: NoiseFloor,
     loud: bool,
 }
 
 impl TranscriptWake {
     pub fn new(transcriber: Box<dyn Transcriber>) -> TranscriptWake {
-        TranscriptWake { transcriber, window: VecDeque::new(), since: 0, floor: NoiseFloor::default(), loud: false }
+        TranscriptWake {
+            transcriber,
+            window: VecDeque::new(),
+            since: 0,
+            every: CHECK_EVERY,
+            floor: NoiseFloor::default(),
+            loud: false,
+        }
     }
 }
 
@@ -89,7 +109,7 @@ impl WakeWord for TranscriptWake {
             self.window.pop_front();
         }
         self.since += 1;
-        if self.since < CHECK_EVERY {
+        if self.since < self.every {
             return Ok(false);
         }
         self.since = 0;
@@ -97,7 +117,9 @@ impl WakeWord for TranscriptWake {
             return Ok(false);
         }
         let samples: Vec<i16> = self.window.iter().copied().collect();
+        let started = Instant::now();
         let heard = is_wake_phrase(&self.transcriber.transcribe(&samples)?);
+        self.every = check_every(started.elapsed());
         if heard {
             self.window.clear();
         }
@@ -118,6 +140,14 @@ mod tests {
     use super::super::audio::FRAME;
     use super::super::audio::tests::fixture;
     use super::*;
+
+    /// Review of #762: a recogniser slower than a second is asked less often, never beyond the window.
+    #[test]
+    fn a_slow_recogniser_is_asked_less_often() {
+        assert_eq!(check_every(Duration::from_millis(20)), CHECK_EVERY);
+        assert_eq!(check_every(Duration::from_millis(1200)), (1.5 * FRAMES_PER_SECOND as f64).ceil() as usize);
+        assert_eq!(check_every(Duration::from_secs(5)), WINDOW_FRAMES);
+    }
 
     /// Answers with `text` and counts how often it was asked.
     struct Says {
