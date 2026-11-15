@@ -16,7 +16,7 @@ Der Sprachchat läuft streng nacheinander (`crates/torroassistant/src/voice/list
 3. Die **KI** bekommt den vollen Prompt und antwortet.
 4. **Vorlesen** Satz für Satz (`assistant.speak_answer`, Pocket, Qwen oder OpenAI).
 
-Beim Vorlesen ist das Mikrofon zu, danach folgen 300 ms Pause (`Listener::quiet_now`); das Gespräch endet nach 8 s
+Beim Vorlesen ist das Mikrofon zu, danach folgen 300 ms Pause (`Listener::quiet`, Feld `pause`); das Gespräch endet nach 8 s
 Schweigen (`TALK_WAIT_SECONDS`). Das ist sicher, der Assistent hört sich nicht selbst, hat aber drei Nachteile: Es dauert
 lange bis zur Antwort, man kann ihn nicht unterbrechen, und eine Denkpause („ähm“, „warte mal kurz“) beendet den Satz.
 
@@ -44,8 +44,8 @@ legen fest, wofür die Issues der Stufe 2 optimieren; die gemessenen Werte träg
 |---|---|---|---|
 | Satzende erkannt | ≤ 350 ms | offen (#828) | [#833](https://github.com/mahype/TorroWorkplace/issues/833), [#836](https://github.com/mahype/TorroWorkplace/issues/836) |
 | Text erkannt (nach dem Satzende) | ≤ 100 ms | offen (#828) | [#833](https://github.com/mahype/TorroWorkplace/issues/833) |
-| Erstes Wort der KI | ≤ 250 ms | offen (#828) | [#831](https://github.com/mahype/TorroWorkplace/issues/831) |
-| Erster Ton | ≤ 250 ms | offen (#828) | [#829](https://github.com/mahype/TorroWorkplace/issues/829) |
+| Erstes Wort der KI | ≤ 250 ms | offen (#828) | noch kein Issue, entscheidet sich nach der Messung (#828) |
+| Erster Ton | ≤ 250 ms | offen (#828) | noch kein Issue, entscheidet sich nach der Messung (#828) |
 | **Summe** | **< 1 s** | offen (#828) | |
 
 Dauert ein Schritt trotzdem länger (Werkzeug, langsames Modell), füllt die Ansage aus
@@ -139,6 +139,6 @@ Die Issues sind so geschnitten, dass mehrere Agenten parallel arbeiten, ohne sic
 - **Issues an `voice/listen.rs` laufen nie parallel in einer Welle:** #828 und #829 nacheinander, #833 und #834 in
   getrennten Abschnitten der Datei oder nacheinander, #835 und #836 ebenso. Wer ein Issue beginnt, prüft vorher, ob ein
   anderes dieselbe Datei offen hat.
-- **Modelle:** Dieses Konzept mit Fable. Pläne für die Issues der Stufe 2 und Weg B empfohlen mit Fable, Umsetzung aller
+- **Modelle:** Pläne für die Issues der Stufe 2 und Weg B empfohlen mit Fable, Umsetzung aller
   Issues mit Opus (`strong-model-recommended`).
 - **Übersetzungen:** Laufen Issues parallel, trägt nur die Koordination in `de.rs` ein (Regel 6).
