@@ -117,6 +117,7 @@ pub mod tests {
             microphones: vec!["HD Pro Webcam C920, USB Audio".into()],
             default: Some("Default Audio Device".into()),
             output: true,
+            held: Vec::new(),
         }
     }
 

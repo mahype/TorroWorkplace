@@ -36,14 +36,20 @@ pub trait Devices {
 
     /// Whether the system has a sound output to play on.
     fn has_output(&self) -> bool;
+
+    /// Whether the microphone `name` can be opened now: a card PipeWire or another program holds may be
+    /// listed and still refuse (review of #762).
+    fn opens(&self, name: &str) -> bool;
 }
 
-/// The microphone recorded from with the setting `wanted`: that one when the system knows it, else the
-/// default, else the first one there is; `None` without any microphone.
+/// The microphone recorded from with the setting `wanted`: that one when the system knows it and it
+/// opens ([`CpalRecorder`] falls back the same way), else the default, else the first one there is;
+/// `None` without any microphone.
 pub fn microphone_in_use(devices: &dyn Devices, wanted: Option<&str>) -> Option<String> {
     let known = devices.microphones();
     if let Some(name) = wanted
         && known.iter().any(|known| known == name)
+        && devices.opens(name)
     {
         return Some(name.to_string());
     }
@@ -65,6 +71,28 @@ impl Devices for SystemDevices {
     fn has_output(&self) -> bool {
         cpal::default_host().default_output_device().is_some()
     }
+
+    fn opens(&self, name: &str) -> bool {
+        // Building the stream opens the device; it is dropped at once, before anything is recorded.
+        offered_inputs(&cpal::default_host())
+            .into_iter()
+            .find(|(known, _)| known == name)
+            .is_some_and(|(_, device)| probe_input(&device))
+    }
+}
+
+/// Whether `device` gives a stream to record from; the stream is built, never started.
+fn probe_input(device: &cpal::Device) -> bool {
+    let Ok(config) = device.default_input_config() else { return false };
+    device
+        .build_input_stream_raw(
+            config.config(),
+            config.sample_format(),
+            |_: &cpal::Data, _: &cpal::InputCallbackInfo| {},
+            |_| {},
+            None,
+        )
+        .is_ok()
 }
 
 /// The name people see for `device`; its id when it has no description.
@@ -427,6 +455,8 @@ pub mod tests {
         pub microphones: Vec<String>,
         pub default: Option<String>,
         pub output: bool,
+        /// Microphones that are listed but refuse to open.
+        pub held: Vec<String>,
     }
 
     impl Devices for FakeDevices {
@@ -441,6 +471,10 @@ pub mod tests {
         fn has_output(&self) -> bool {
             self.output
         }
+
+        fn opens(&self, name: &str) -> bool {
+            !self.held.contains(&name.to_string())
+        }
     }
 
     /// Issue #762: a stored microphone cpal does not know (an old `pactl` name) gives the default.
@@ -450,6 +484,7 @@ pub mod tests {
             microphones: vec!["Elgato Wave XLR, USB Audio".into(), "HD Pro Webcam C920, USB Audio".into()],
             default: Some("Default Audio Device".into()),
             output: true,
+            held: Vec::new(),
         };
         let in_use = |wanted: Option<&str>| microphone_in_use(&devices, wanted);
         assert_eq!(in_use(Some("HD Pro Webcam C920, USB Audio")).as_deref(), Some("HD Pro Webcam C920, USB Audio"));
@@ -461,6 +496,12 @@ pub mod tests {
         let no_default = FakeDevices { default: None, ..devices.clone() };
         assert_eq!(microphone_in_use(&no_default, None).as_deref(), Some("Elgato Wave XLR, USB Audio"));
         assert_eq!(microphone_in_use(&FakeDevices::default(), Some("USB")), None);
+        // Review of #762: one that is listed but held by another program is not the one in use.
+        let held = FakeDevices { held: vec!["HD Pro Webcam C920, USB Audio".into()], ..devices.clone() };
+        assert_eq!(
+            microphone_in_use(&held, Some("HD Pro Webcam C920, USB Audio")).as_deref(),
+            Some("Default Audio Device")
+        );
     }
 
     #[cfg(target_os = "linux")]
