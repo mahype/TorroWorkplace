@@ -69,7 +69,9 @@ aus einem Guss wirkt:
   Schreibfenster, Vorlagen-Dialog) haben nur die Ampel und keinen Knopf. Die freie Fläche zieht das
   Fenster, Dialoge und Schublade dimmen die Zeile (`Cover`). Wer seine Kopfzeile nach Spalten teilt, zieht
   `shell::head_inset` vom ersten Teil ab. Suche und „Neu“ stehen als erste Zeile der Seitenleiste
-  (`shell::sidebar_tools`), schmal als erste Zeile der Schublade. Ohne Shell (Anmelden, Glance, Schreibfenster)
+  (`shell::sidebar_tools`), schmal als erste Zeile der Schublade; nicht in der Steuerzentrale (#803), die nichts zu
+  suchen hat und Konten unter Accounts anlegt, und ohne Einstellungsknopf, weil sie selbst die Einstellungen ist
+  (General unten in der Seitenleiste). Ohne Shell (Anmelden, Glance, Schreibfenster)
   bleibt `shell::titlebar`.
 - **Seitenleiste** auf dem Fenstergrund `BG`, **Inhalt bündig** (#291, `layout::inset()` = 0 in allen
   eingebauten Designs): die Fläche `PANEL` reicht bis an die Fensterränder, eine 1-px-`LINE` trennt sie von

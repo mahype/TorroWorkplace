@@ -138,7 +138,7 @@ Entscheidung 10):
 
 ## App-Katalog (#411)
 
-Der Abschnitt **Apps** der Steuerzentrale (gleich nach Overview, `--section apps`) zeigt die Hauptanwendung und jede
+Der App-Katalog der Steuerzentrale (seit #803 unten in Overview, `--section apps` öffnet Overview) zeigt die Hauptanwendung und jede
 App mit Icon, Frage, Beschreibung und Version: installierte oben, fehlende darunter. Entwurf:
 [prototypes/app-catalog/index.html](prototypes/app-catalog/index.html); wo der Plan zu #411 abweicht, gilt der Plan
 (kein Sortieren, keine Listenansicht, kein „Reinstall“, keine Karte „Coming soon“). Nach der Design-Prüfung
