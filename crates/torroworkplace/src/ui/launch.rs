@@ -202,7 +202,7 @@ pub enum Open {
     /// The point AI on this page with the demo's suggestion and models; `true` keeps the models the demo
     /// has chosen ("Keep"), `false` starts without any.
     SetupAi(super::setup::AiPage, bool),
-    /// The section Apps (issue #411) with the demo's catalog ([`super::apps::demo_catalog`]): two
+    /// Overview with the app catalog (issue #411, on Overview since issue #803) and the demo's catalog ([`super::apps::demo_catalog`]): two
     /// updates, a package manager's app, one missing.
     Apps,
     /// The same with the menu "…" of the Calendar's card open.
@@ -395,12 +395,12 @@ impl Open {
 
 /// The start parameters of `torroworkplace ui`:
 ///
-/// - `--section overview|apps|accounts|ai|api|mcp|connections|approvals|workspaces|appearance|general`: the page to
+/// - `--section overview|accounts|ai|api|mcp|connections|approvals|workspaces|appearance|privacy|general`: the page to
 ///   start on. The states of `--open` that belong to a page choose that page themselves. Other
 ///   programs open a page this way (`torroworkplace ui --section accounts`). The words of pages
 ///   that moved keep working ([`Section::from_arg`]): `agents` is MCP (task S.35), `inbox` is
-///   General, where the suite's parts are switched on and opened; `apps` is the app catalog again
-///   (issue #411), where they are switched on and off now. `assistant` and
+///   General, where the suite's parts are switched on and opened; `apps` is Overview, where the app
+///   catalog stands since issue #803 and the apps are switched on and off. `assistant` and
 ///   `bot:<id>` ([`Launch::client`]) bring the assistant's window to the front instead of a page:
 ///   what the assistant and its bots may use is set there, under Access (task S.34).
 /// - `--demo`: sample accounts, templates, settings, apps, agents, approvals and inbox rules in memory instead
@@ -1692,9 +1692,9 @@ mod tests {
         }
         let inbox = Launch::parse(&args(&["--section", "inbox"])).expect("inbox");
         assert_eq!((inbox.section, inbox.client), (Section::General, None));
-        // Issue #411: the apps have their own section again, the catalog.
+        // Issue #411: the word leads to the catalog, on Overview since issue #803.
         let apps = Launch::parse(&args(&["--section", "apps"])).expect("apps");
-        assert_eq!((apps.section, apps.client), (Section::Apps, None));
+        assert_eq!((apps.section, apps.client), (Section::Overview, None), "the catalog is on Overview (issue #803)");
         let agents = Launch::parse(&args(&["--section", "agents"])).expect("the old word");
         assert_eq!((agents.section, agents.client), (Section::Mcp, None));
     }
@@ -1803,7 +1803,7 @@ mod tests {
         let err = Launch::parse(&args(&["--section", "mail"])).expect_err("unknown section");
         assert!(
             err.to_string().ends_with(
-                "valid values: overview, apps, accounts, ai, api, mcp, connections, approvals, workspaces, appearance, privacy, general, assistant, bot:<id>, agents, inbox"
+                "valid values: overview, accounts, ai, api, mcp, connections, approvals, workspaces, appearance, privacy, general, assistant, bot:<id>, agents, inbox"
             ),
             "{err}"
         );

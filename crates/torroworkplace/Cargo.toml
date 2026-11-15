@@ -121,6 +121,8 @@ winit.workspace = true
 global-hotkey.workspace = true
 
 [dev-dependencies]
+# Clicks on the control centre's sidebar and top row without a window (issue #803).
+iced_test.workspace = true
 # The fake IMAP server derives MIME sections for bounded image FETCH tests (#461).
 mail-parser.workspace = true
 # Fake AI servers (Ollama, OpenRouter) for the tests of the AI accounts (task KI.1a).
