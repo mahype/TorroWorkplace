@@ -1216,6 +1216,22 @@ pub fn file_block_head<'a, M: 'a>(
     meta: impl IntoFragment<'a>,
     action: Option<Element<'a, M>>,
 ) -> Element<'a, M> {
+    file_block_head_noted(title, meta, None, action)
+}
+
+/// [`file_block_head`] with `note` after `meta`: a short state of the files as a whole, such as
+/// "✓ 1 of 3 saved · 14 Nov" (issue #781), with its own icon and words. `None` is
+/// [`file_block_head`].
+///
+/// ```ignore
+/// widgets::file_block_head_noted("Attachments", "3 files · 452 KB", Some(saved), Some(save_all))
+/// ```
+pub fn file_block_head_noted<'a, M: 'a>(
+    title: impl IntoFragment<'a>,
+    meta: impl IntoFragment<'a>,
+    note: Option<Element<'a, M>>,
+    action: Option<Element<'a, M>>,
+) -> Element<'a, M> {
     let mut head = row![
         toned(Icon::Paperclip, icon::SIZE, Tone::Text3),
         container(typo::text(typo::body_strong(), title).wrapping(Wrapping::None)).width(Fill).clip(true),
@@ -1223,6 +1239,9 @@ pub fn file_block_head<'a, M: 'a>(
     ]
     .spacing(ICON_GAP)
     .align_y(Alignment::Center);
+    if let Some(note) = note {
+        head = head.push(note);
+    }
     if let Some(action) = action {
         head = head.push(action);
     }
@@ -9268,6 +9287,15 @@ mod tests {
         );
         let chips: Element<'_, Msg> = row![file_chip("a.pdf", "", None)].into();
         let _: Element<'_, Msg> = file_block(head, chips);
+        // Issue #781: a note on the files as a whole after the size, with and without the action.
+        let note = || Some(row![toned(Icon::CircleCheck, icon::SIZE_SM, Tone::Text3), "1 of 2 saved"].into());
+        let _: Element<'_, Msg> = file_block_head_noted("2 attachments", "3 KB", note(), None);
+        let _: Element<'_, Msg> = file_block_head_noted(
+            "2 attachments",
+            "3 KB",
+            note(),
+            Some(split_action(Icon::Download, "Save all", tip, None, None, None)),
+        );
     }
 
     /// Task M12.5: a menu entry takes a detail line and at most two tags; a third is left out.

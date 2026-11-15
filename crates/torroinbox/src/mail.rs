@@ -4643,8 +4643,21 @@ pub fn attachment_line<'a>(
 ) -> Option<Element<'a, Message>> {
     let files = files_of(reading)?;
     let action = save_all_control(reading, &files, anchors, false);
-    let head = widgets::file_block_head(tr("Attachments"), files_head_meta(reading, &files), action);
-    let rows = files.iter().enumerate().map(|(at, file)| attachment_row(reading, at, file, anchors));
+    // A block narrower than the reading column (the reader beside the list in a smaller wide window)
+    // keeps the names readable: no note in its head, the rows' notes as their icon (issue #781).
+    let compact = room < size::reading_max();
+    let note =
+        reading.saves.filter(|_| !compact).and_then(|saves| files_saved(saves, &files, reading.now)).map(|saved| {
+            row![
+                save_icon(true),
+                typo::text(typo::meta().tabular(), saved).style(theme::text_2).wrapping(Wrapping::None)
+            ]
+            .spacing(space::xs())
+            .align_y(Alignment::Center)
+            .into()
+        });
+    let head = widgets::file_block_head_noted(tr("Attachments"), files_meta(&files), note, action);
+    let rows = files.iter().enumerate().map(|(at, file)| attachment_row(reading, at, file, anchors, compact));
     let rows = container(bounded_scroll(column(rows))).max_height(rows_max_height(FOOT_ROWS));
     let block = container(widgets::file_block(head, rows)).max_width(room);
     Some(
@@ -4899,7 +4912,7 @@ fn attachment_rows<'a>(reading: &Reading<'_>, anchors: &detail::Anchors, rows: f
         head = head.push(all);
     }
     let head = container(head).padding(Padding { bottom: space::xs(), ..style::ITEM_PADDING });
-    let list = files.iter().enumerate().map(|(at, file)| attachment_row(reading, at, file, anchors));
+    let list = files.iter().enumerate().map(|(at, file)| attachment_row(reading, at, file, anchors, false));
     let list = container(bounded_scroll(column(list))).max_height(rows_max_height(rows));
     Some(column![head, list].into())
 }
@@ -4907,12 +4920,14 @@ fn attachment_rows<'a>(reading: &Reading<'_>, anchors: &detail::Anchors, rows: f
 /// The attachment `file`, the `at`-th of the mail's, as a row: the paperclip, its name and size – a
 /// click does what the setting says ([`Message::OpenAttachment`], tooltip [`click_tooltip`]) – and at
 /// the right its triangle, which opens its menu ([`Message::AskAttachment`]) and carries the menu's
-/// anchor while it is open (`anchors.attachment`).
+/// anchor while it is open (`anchors.attachment`). Before the triangle where it was saved
+/// ([`saved_badge`], issue #781), `compact` as its icon alone.
 fn attachment_row<'a>(
     reading: &Reading<'_>,
     at: usize,
     file: &AttachmentInfo,
     anchors: &detail::Anchors,
+    compact: bool,
 ) -> Element<'a, Message> {
     let line = row![
         container(widgets::prop_value(attachment_name(file))).width(Fill),
@@ -4933,7 +4948,7 @@ fn attachment_row<'a>(
     let axis = Padding::new(0.0).right(size::HAIRLINE);
     // Where it was saved (issue #781) stands beside the name, outside its button: its tooltip names
     // every save, the name's says what a click does.
-    let badge = reading.saves.and_then(|saves| saved_badge(&saves_of(saves, file)));
+    let badge = reading.saves.and_then(|saves| saved_badge(&saves_of(saves, file), compact));
     container(
         row![container(name).width(Fill)].push(badge).push(triangle).spacing(space::xs()).align_y(Alignment::Center),
     )
@@ -5009,8 +5024,13 @@ fn save_icon<'a>(present: bool) -> Element<'a, Message> {
 /// The note at an attachment saved before (issue #781): the check and where the newest save went
 /// ([`saved_where`]), or "File no longer there" when that file is gone; every save in the tooltip.
 /// `None` for an attachment never saved, which looks as it always did.
-fn saved_badge<'a>(saves: &[&SaveRecord]) -> Option<Element<'a, Message>> {
+fn saved_badge<'a>(saves: &[&SaveRecord], compact: bool) -> Option<Element<'a, Message>> {
     let newest = saves.first()?;
+    if compact {
+        // The icon alone, its shape says saved or gone; the words stand in the tooltip.
+        let words = if newest.present { saved_where(newest) } else { tr("File no longer there").to_owned() };
+        return Some(widgets::with_tooltip(save_icon(newest.present), format!("{words}\n{}", saves_tooltip(saves))));
+    }
     let (words, style): (String, fn(&Theme) -> iced::widget::text::Style) = if newest.present {
         (saved_where(newest), theme::text_2)
     } else {
@@ -5020,16 +5040,6 @@ fn saved_badge<'a>(saves: &[&SaveRecord]) -> Option<Element<'a, Message>> {
         .spacing(space::xs())
         .align_y(Alignment::Center);
     Some(widgets::with_tooltip(note, saves_tooltip(saves)))
-}
-
-/// "3 files · 452 KB", with "1 of 3 saved · 14 Nov 10:32" after it once any of them was saved
-/// (issue #781, variant 2: the note stands in the attachments' head, not under the mail's).
-fn files_head_meta(reading: &Reading<'_>, files: &[&AttachmentInfo]) -> String {
-    let meta = files_meta(files);
-    match reading.saves.and_then(|saves| files_saved(saves, files, reading.now)) {
-        Some(saved) => format!("{meta} · {saved}"),
-        None => meta,
-    }
 }
 
 /// "1 of 3 saved · 14 Nov 10:32": how many of `files` were saved, and when the newest save was;
@@ -6834,8 +6844,9 @@ mod tests {
         let saved_to = |path: &str| trf("Saved to {path} · {when}", &[("path", &path), ("when", &exact)]);
         assert_eq!(lines[0], saved_to("/home/anna/Inv/2026/11/a.pdf"));
         assert_eq!(lines[1], format!("{} · {}", saved_to("/home/anna/Ablage/b.pdf"), tr("File no longer there")));
-        assert!(saved_badge(&[]).is_none(), "an attachment never saved looks as before");
-        assert!(saved_badge(&[&chosen]).is_some());
+        assert!(saved_badge(&[], false).is_none(), "an attachment never saved looks as before");
+        assert!(saved_badge(&[&chosen], false).is_some());
+        assert!(saved_badge(&[&chosen], true).is_some(), "the icon alone in a narrow block");
     }
 
     /// Issue #781: an attachment's section "Saved" offers "Show in folder" only while its newest file
