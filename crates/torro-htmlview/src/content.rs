@@ -30,9 +30,13 @@ use crate::fetch::{CidSource, Fetcher, Limits, Web};
 use crate::recolor::{DarkScene, Recolor};
 
 /// Mail clients' defaults on top of the browser's: a sans-serif face when the mail names none, and long
-/// words and plain-text lines that wrap instead of running out of the reader.
+/// words and plain-text lines that wrap instead of running out of the reader. Table cells stay cells even
+/// when a template (e.g. "Zurb Ink") sets them to `display: block !important`: Blitz lays such a cell out
+/// with no height, so the mail shrinks to a strip. An important rule of the user agent beats an important
+/// one of the author, so this wins over the template (#796).
 const MAIL_DEFAULTS: &str = "html { font-family: sans-serif; overflow-wrap: break-word; } \
-                             pre { white-space: pre-wrap; overflow-wrap: anywhere; }";
+                             pre { white-space: pre-wrap; overflow-wrap: anywhere; } \
+                             td, th { display: table-cell !important; }";
 
 /// The margin browsers give `body` (logical pixels), kept unless the app sets another for a mail
 /// without a background of its own ([`crate::HtmlView::margin`]).
