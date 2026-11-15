@@ -138,7 +138,7 @@ Entscheidung 10):
 
 ## App-Katalog (#411)
 
-Der Abschnitt **Apps** der Steuerzentrale (gleich nach Overview, `--section apps`) zeigt die Hauptanwendung und jede
+Der App-Katalog der Steuerzentrale (seit #803 unten in Overview, `--section apps` öffnet Overview) zeigt die Hauptanwendung und jede
 App mit Icon, Frage, Beschreibung und Version: installierte oben, fehlende darunter. Entwurf:
 [prototypes/app-catalog/index.html](prototypes/app-catalog/index.html); wo der Plan zu #411 abweicht, gilt der Plan
 (kein Sortieren, keine Listenansicht, kein „Reinstall“, keine Karte „Coming soon“). Nach der Design-Prüfung
@@ -187,7 +187,7 @@ bisherigen Manager und selbstverwalteten Installationen; macOS wird wie bisher s
 |---|---|---|---|
 | Ist die Hauptanwendung installiert? | Apps entscheiden danach, was sie zeigen | `apps.list_apps`, Feld `main_app` | `apps_list_apps` |
 | Aussehen, Sprache, Start beim Anmelden | Steuerzentrale bzw. App | `settings.set_setting`, Listen der Designs, Schriften, Farbschemata | `settings_*` (vorhanden) |
-| Apps mit Versionen, auf Updates prüfen | Abschnitt Apps | `apps.list_catalog`, `apps.check_updates` | `apps_list_catalog`, `apps_check_updates` |
+| Apps mit Versionen, auf Updates prüfen | Steuerzentrale › Übersicht (bis #803 Abschnitt Apps) | `apps.list_catalog`, `apps.check_updates` | `apps_list_catalog`, `apps_check_updates` |
 | Stand eines Auftrags, Abbrechen | Fenster des Auftrags | `apps.app_job`, `apps.cancel_app_job` | `apps_app_job`, `apps_cancel_app_job` |
 | App entfernen | Menü „…“ › Uninstall… | `apps.uninstall_app` (Admin) | `apps_uninstall_app`, immer mit Freigabe |
 | App installieren, aktualisieren (auch „Update all“ und die Hauptanwendung) | Knopf der Karte, „Update all“ | `apps.install_app`, `apps.update_apps` (nur App-Schlüssel) | keins: Wer installiert, entscheidet, welcher Code läuft (Punkt 11 in „Was nie nach außen geht“, [api.md](api.md)) |

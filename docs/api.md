@@ -1787,7 +1787,7 @@ Getroffen am 2026-10-11.
    (`calendar.list_calendars`); die alten Draht-Namen (`calendar-collections`) entfallen.
 7. **Volle Schemata**: `Event`, `Todo`, `Settings` und `LoadMode` bekommen JSON-Schemata
    (`schemars`), damit Agenten wissen, welche Felder nötig sind (A.0c).
-8. **Tray-Befehle**: „Settings…“ öffnet die Steuerzentrale über `apps.open_app` (auch für API
+8. **Tray-Befehle**: „Control centre“ (ganz oben, bis #803 „Settings…“ am Ende) öffnet die Steuerzentrale über `apps.open_app` (auch für API
    und MCP); „Quit“ wird `system.quit`, nur App-Schlüssel (siehe „Was nie nach außen geht“).
 
 Getroffen am 2026-10-19 (#231):

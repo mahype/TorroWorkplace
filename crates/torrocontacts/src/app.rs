@@ -415,7 +415,9 @@ pub struct App {
 pub fn failed(err: &ContactsError) -> String {
     match err {
         ContactsError::Offline => tr("The server cannot be reached. Changes wait until it can.").to_owned(),
-        ContactsError::Auth => tr("The server refused the sign-in. Check the account in Torro Workplace.").to_owned(),
+        ContactsError::Auth => {
+            tr("The server refused the sign-in. Check the account in the control centre.").to_owned()
+        }
         ContactsError::ReadOnly => tr("This address book is read-only.").to_owned(),
         ContactsError::TooLarge => tr("The server refuses a contact this large.").to_owned(),
         ContactsError::NotFound => tr("The contact is gone.").to_owned(),

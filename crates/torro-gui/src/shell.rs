@@ -1524,7 +1524,7 @@ pub enum Switcher {
     New,
 }
 
-/// The short name of an app ("Tasks", "Calendar", "Workplace"); the inbox's three
+/// The short name of an app ("Tasks", "Calendar", "Control centre"); the inbox's three
 /// windows by their kind ("Notification Hub", "Mail", "App Feed"), since they share one binary. The
 /// three names share no word (issue #127), so nobody takes one window for another. Translated; the
 /// accounts' "Used by …" names the apps with it too (issue #410).
@@ -1538,7 +1538,9 @@ pub fn app_name(app: AppId) -> &'static str {
         "torro-assistant" => tr("Assistant"),
         "torro-chat" => tr("Chat"),
         "torro-contacts" => tr("Contacts"),
-        _ => tr("Workplace"),
+        // The main application's window is the control centre, named so everywhere (issue #803): in
+        // the tray, at the top left of its window and in its window title.
+        _ => tr("Control centre"),
     }
 }
 
@@ -2432,7 +2434,7 @@ mod tests {
     fn every_suite_app_has_a_short_name_and_icon() {
         assert_eq!(app_name(AppId::TASKS), tr("Tasks"));
         assert_eq!(app_name(AppId::CALENDAR), tr("Calendar"));
-        assert_eq!(app_name(AppId::WORKPLACE), tr("Workplace"));
+        assert_eq!(app_name(AppId::WORKPLACE), tr("Control centre"));
         assert_ne!(app_icon(AppId::TASKS), app_icon(AppId::CALENDAR));
         assert_eq!(app_name(AppId::INBOX), tr("Notification Hub"));
         assert_eq!(app_name(AppId::INBOX_MAIL), tr("Mail"));

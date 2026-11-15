@@ -11402,6 +11402,7 @@ dependencies = [
  "html5ever 0.39.0",
  "httpmock",
  "iced",
+ "iced_test",
  "image",
  "jsonc-parser",
  "keyring",

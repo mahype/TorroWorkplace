@@ -81,8 +81,14 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 ## Fenster und Navigation
 
 - Eigener Prozess `torroworkplace ui`, Iced, App-ID `torro-workplace`. Spricht über IPC mit dem
-  Dienst; der Dienst bleibt leicht. Geöffnet aus dem Tray („Settings…“), aus den Apps oder mit
-  `torroworkplace ui --section accounts`.
+  Dienst; der Dienst bleibt leicht. Geöffnet aus dem Tray („Control centre“ ganz oben, #803), aus den Apps oder mit
+  `torroworkplace ui --section accounts`. Sie heißt überall „Control centre“ bzw. „Steuerzentrale“: im Tray, oben
+  links im Fenster und im Fenstertitel („Steuerzentrale · Übersicht“), weil „Einstellungen“ in den Apps deren eigene
+  Einstellungen meint (#803). „Torro Workplace“ bleibt der Name der Hauptanwendung im App-Katalog und in der
+  Versionszeile.
+- **Kein Einstellungsknopf, keine Suche, kein „Neu“** (#803): Die Steuerzentrale ist selbst die Einstellung der
+  Suite; General steht unten in der Seitenleiste (auch in der Icon-Leiste), schmal am Ende des Abschnittsmenüs. Suche
+  und „Neu“ fehlen oben in der Seitenleiste, Konten legt man unter Accounts mit „Add“ an.
 - **Links eine Seitenleiste** (220 px) mit Abschnitten als Symbol + Wort; unten leise
   „Torro Workplace · Version x.y“. **Rechts die Seite** des Abschnitts. Keine Reiter für die
   Abschnitte; Reiter gibt es innerhalb einer Seite, sobald sie mehr als drei Gruppen hat (#529, in der
@@ -122,8 +128,8 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 
 | Abschnitt | Inhalt | |
 |---|---|---|
-| **Overview** | Auf einen Blick: Dienst läuft, Tiling-Manager erkannt, Konten (Zahl, Probleme), letzter Sync, „Needs your attention“ mit Konten, die eine neue Anmeldung brauchen | v1 |
-| **Apps** | App-Katalog (#411): jede App mit Icon, Frage, Beschreibung und Version, installierte oben, fehlende darunter; Installieren, Aktualisieren („Update all“, auch die Hauptanwendung) und Entfernen in einem eigenen Fenster mit Schritten und Fortschritt; Ein/Aus einer App im Menü „…“ ihrer Karte; per Paketmanager installierte Apps zeigen den Befehl. Siehe [einzelne-apps.md](einzelne-apps.md), „App-Katalog“ | #411 |
+| **Overview** | Auf einen Blick: Dienst läuft, Tiling-Manager erkannt, Konten (Zahl, Probleme), letzter Sync, „Needs your attention“ mit Konten, die eine neue Anmeldung brauchen; darunter seit #803 der App-Katalog (Gruppe **Apps**, unten), „Update all“ oben in der Kopfleiste, der Punkt für wartende Updates an Overview, `--section apps` öffnet Overview | v1 |
+| **Apps** (seit #803 in Overview) | App-Katalog (#411): jede App mit Icon, Frage, Beschreibung und Version, installierte oben, fehlende darunter; Installieren, Aktualisieren („Update all“, auch die Hauptanwendung) und Entfernen in einem eigenen Fenster mit Schritten und Fortschritt; Ein/Aus einer App im Menü „…“ ihrer Karte; per Paketmanager installierte Apps zeigen den Befehl. Siehe [einzelne-apps.md](einzelne-apps.md), „App-Katalog“ | #411 |
 | **Accounts** | Externe Konten in festen Gruppen (Nextcloud, Mail, GitHub, ntfy): Anbieter links, Konten rechts; Status, Verbindung und Dienste je Konto. | v1 |
 | **AI** | Ständiger Abschnitt für KI-Anbieter, ihre Konten und Modelle (an/aus). Bis #664 auch die Modelle für *Chat* und *Sorting* und die Datenregel „Mail to cloud models“. | seit 2026-10-20 |
 | **API clients** | Die Keys für Programme, die die API mit eigenem Schlüssel nutzen, mit ihren Rechten bis auf einzelne Endpunkte (`--section api`; bis #665 „API“ mit dem Schalter „Allow API keys“). Konzept: [api.md](api.md) | #231 (S.35), #665 |
@@ -133,16 +139,16 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 | **Workspaces** | Fenstermanager, Tasten 1 … 0 mit wählbarem Modifikator, Vorlagen bearbeiten, aktualisieren, löschen, beim Anmelden laden. Strategie je Fenster später; die F1–F10 der alten App sind verworfen. Siehe [Workspaces (#243)](#workspaces-243) | #243 (WS.6), Rest später |
 | **Appearance** | Abstände (Komfort, Standard, Dicht), Schrift, Farben (Farbschema, hell/dunkel), Zoom ([design-pakete.md](design-pakete.md)); gilt für alle Apps, die Apps verweisen hierher | v1 |
 | **Privacy** | Inhalte fremder Anbieter (#672): ob eingebettete Videos, Link-Vorschauen im Chat und externe Bilder in Mails immer, nach Rückfrage (Standard) oder nie geladen werden, und die Anbieter, über die jemand entschieden hat (`--section privacy`). Siehe [Privacy (#672)](#privacy-672) | #672 |
-| **General** | Sprache (System / English / Deutsch als Segmente, #548), Start beim Anmelden (dort auch der Schalter für Workspaces und seit #548 „Run setup again“). Die frühere Gruppe **Apps** (je App „On“ und „Open“) ist seit #411 der Abschnitt **Apps** | v1 |
-| **Updates** | Steht seit #411 im Abschnitt Apps: der Dienst prüft täglich und beim Öffnen von Apps, ohne Schalter; „⟳“ prüft sofort, der Fuß zeigt, wann zuletzt geprüft wurde | #411 |
+| **General** | Sprache (System / English / Deutsch als Segmente, #548), Start beim Anmelden (dort auch der Schalter für Workspaces und seit #548 „Run setup again“). Die frühere Gruppe **Apps** (je App „On“ und „Open“) ist seit #411 der App-Katalog, seit #803 in Overview | v1 |
+| **Updates** | Steht seit #411 im App-Katalog, seit #803 in Overview: der Dienst prüft täglich und beim Öffnen von Apps, ohne Schalter; „⟳“ prüft sofort, der Fuß zeigt, wann zuletzt geprüft wurde | #411 |
 | **Diagnostics** | Log-Datei, Sync-Protokoll, Verbindung testen | später |
 | **Help** | Kurzanleitung, Tastenkürzel, Links | später |
 
-Die Seitenleiste hat **eine** Liste: Overview, Apps (#411), Accounts, AI, API clients (bis #665 „API“), MCP clients, MCP servers (#302), Approvals, Workspaces,
+Die Seitenleiste hat **eine** Liste: Overview (mit den Apps, #803), Accounts, AI, API clients (bis #665 „API“), MCP clients, MCP servers (#302), Approvals, Workspaces,
 Appearance, Privacy (#672); General am Fuß (#231). Die heutigen Seiten **Apps**, **Assistant** und **Notification Hub** entfallen (entschieden
 2026-10-16, #210): Apps geht in General auf, die Einstellungen von Assistent und Eingang ziehen in deren Fenster.
 Mit #231 ziehen die Rechte von Assistent und Bots in das Fenster des Assistenten. Die Datenregel stand
-seit 2026-10-20 unter AI und ist mit #664 entfallen; „Agents & API“ entfällt. Seit #411 gibt es wieder einen Abschnitt **Apps**, jetzt als App-Katalog gleich nach Overview; die Gruppe Apps unter General entfällt.
+seit 2026-10-20 unter AI und ist mit #664 entfallen; „Agents & API“ entfällt. Seit #411 gibt es wieder einen Abschnitt **Apps**, jetzt als App-Katalog gleich nach Overview; die Gruppe Apps unter General entfällt. Mit #803 zieht der App-Katalog in Overview, der Abschnitt Apps entfällt wieder.
 
 ## Einstellungen in den Apps
 
@@ -316,7 +322,7 @@ Ordner- oder Ausführungsgrants.
   nur lesende Verbindung und wartet nicht auf Synchronisierung oder Indizierung. Die Statistik merkt er
   sich je Konto; `mail.account_stats` antwortet aus diesem Stand mit seinem Zeitpunkt (`as_of`, auf der
   Seite „As of …“) und rechnet im Hintergrund neu, wenn er älter als eine Minute ist.
-- „Open“ im Abschnitt Apps und an den Kontoseiten schickt `apps.open_app` mit der Fensterklasse (Mail:
+- „Open“ im App-Katalog (Übersicht, #803) und an den Kontoseiten schickt `apps.open_app` mit der Fensterklasse (Mail:
   `torro-inbox-mail`).
 - Der Schlüssel eines neuen Clients gelangt nie in einen App-Prozess. Bis #231 hieß das: Apps senden keine
   schreibenden `clients.*`. Seit #231 dürfen **nur** zwei Abschnitte schreibende `clients.*` senden: Access des
@@ -969,7 +975,8 @@ ihre Zeile hat.
 ### Apps
 
 Die Seite ist mit S.21 weg; die Komponenten stehen als Gruppe **Apps** unter General, mit „Open“ und dem Satz, dass
-die Einstellungen einer App hinter ihrem Zahnrad liegen. `--section apps` öffnet General.
+die Einstellungen einer App hinter ihrem Zahnrad liegen. `--section apps` öffnet seit #411 den App-Katalog, seit #803
+Overview.
 
 | Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
 |---|---|---|---|---|---|---|
@@ -1136,8 +1143,9 @@ Kein Ort für Einstellungen: Sie wählen beim Start, was ein Fenster zeigt, oder
 | `--view`, `--lane`, `--source`, `--account`, `--open`, `--size`, `--now`, `--task` | wählen Fensterart, Ausschnitt, Größe und Zeitpunkt | Apps | bleibt, keine Einstellung |
 | `--reminders`, `--all-displays`, `--monitors`, `--cover` | das Erinnerungsfenster, das der Kern selbst startet (`torrocalendar::reminder`) | Kalender | bleibt, keine Einstellung |
 
-Das Tray öffnet mit „Settings…“ die Steuerzentrale ohne `--section` (`apps.open_app` auf `torroworkplace`, ohne
-Ziel) und landet damit auf **Overview**; das Zahnrad der Steuerzentrale öffnet General. Das Zahnrad einer App führte
+Das Tray öffnet mit „Control centre“ (bis #803 „Settings…“ am Ende) die Steuerzentrale ohne `--section`
+(`apps.open_app` auf `torroworkplace`, ohne Ziel) und landet damit auf **Overview**; General steht seit #803 unten
+in der Seitenleiste, einen Einstellungsknopf hat die Steuerzentrale nicht mehr. Das Zahnrad einer App führte
 am 2026-10-16 auf Accounts (Befund 1) und öffnet seit S.18–S.21 die Einstellungen im Fenster der App.
 
 ### Kein Einstellungs-Ort

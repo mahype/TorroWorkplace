@@ -59,7 +59,7 @@ aus einem Guss wirkt:
   (`ui_state::save_right_column_task`); ohne rechte Spalte (mittel, schmal, Aufgaben, Assistent, Steuerzentrale) gibt
   es ihn nicht. Im Mail-Fenster schließt das Ausblenden die offene Mail; öffnet man im breiten Fenster eine Mail,
   kommt der Leser zurück (Cursor und Aktualisieren lassen die Spalte aus). **Kein App-Umschalter** (#530): Zwischen den Apps
-  wechselt man über das Tray-Menü, das Dock bzw. die Taskleiste und Steuerzentrale › Apps; im Fenster kommt dafür
+  wechselt man über das Tray-Menü, das Dock bzw. die Taskleiste und Steuerzentrale › Übersicht; im Fenster kommt dafür
   nichts dazu. Sprünge mit Bezug („Open in …“, „↗ andere App“) bleiben, ebenso der Kern-Befehl `OpenApp`. Daneben
   die **Kopfzeile der App** (`shell::header_bar`), ganz rechts die **Einstellungen** mit Schiebereglern
   (`shell::SETTINGS_ICON`, nie das Zahnrad; markiert, solange sie offen sind), `control_sm − space::s()` im Quadrat (28 im
@@ -69,7 +69,9 @@ aus einem Guss wirkt:
   Schreibfenster, Vorlagen-Dialog) haben nur die Ampel und keinen Knopf. Die freie Fläche zieht das
   Fenster, Dialoge und Schublade dimmen die Zeile (`Cover`). Wer seine Kopfzeile nach Spalten teilt, zieht
   `shell::head_inset` vom ersten Teil ab. Suche und „Neu“ stehen als erste Zeile der Seitenleiste
-  (`shell::sidebar_tools`), schmal als erste Zeile der Schublade. Ohne Shell (Anmelden, Glance, Schreibfenster)
+  (`shell::sidebar_tools`), schmal als erste Zeile der Schublade; nicht in der Steuerzentrale (#803), die nichts zu
+  suchen hat und Konten unter Accounts anlegt, und ohne Einstellungsknopf, weil sie selbst die Einstellungen ist
+  (General unten in der Seitenleiste). Ohne Shell (Anmelden, Glance, Schreibfenster)
   bleibt `shell::titlebar`.
 - **Seitenleiste** auf dem Fenstergrund `BG`, **Inhalt bündig** (#291, `layout::inset()` = 0 in allen
   eingebauten Designs): die Fläche `PANEL` reicht bis an die Fensterränder, eine 1-px-`LINE` trennt sie von

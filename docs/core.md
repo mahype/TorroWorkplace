@@ -77,6 +77,10 @@ belegt, fragt das Menü nicht nach, sondern bietet die Wahl direkt als Untermen�
 ```
 Torro Workplace
 ────────────────────────────
+Steuerzentrale
+Mitteilungszentrale (3)
+E-Mail · App-Feed · Kalender · Aufgaben · Assistent · Chat
+────────────────────────────
 Workspaces · Hyprland        (nur Anzeige)
 Entwicklung · 1           ▸
 Kommunikation · 0         ▸
@@ -85,7 +89,6 @@ Notizen                   ▸
 Workspace speichern…
 Workspaces verwalten…
 ────────────────────────────
-Einstellungen…
 Beenden
 ```
 
@@ -93,8 +96,9 @@ Jede Vorlage hat ein Untermenü mit „Hier laden“, „Hinzufügen“, „Erse
 Dialog). „Hier laden“ ist nur aktiv, wenn der Workspace leer ist. Vorlagen mit Taste tragen die Ziffer hinter
 dem Namen („· 1“), weil Tray-Menüs keine rechtsbündigen Hinweise kennen. „Aktualisieren“ und „Löschen“ gibt es
 nur auf der Seite Workspaces der Steuerzentrale. Ein Linksklick auf das Icon öffnet das Menü. Die Einträge
-bleiben kurz, weil die Omarchy-Leiste Tray-Menüs nur etwa 232 px breit zeichnet. Später kommen
-„Steuerzentrale öffnen …“ und die Apps hinzu.
+bleiben kurz, weil die Omarchy-Leiste Tray-Menüs nur etwa 232 px breit zeichnet. „Steuerzentrale“ steht ganz
+oben (#803): Die Leiste zeigt Tray-Menüs höchstens 420 px hoch und scrollt darin, ein Eintrag am Ende läge außer
+Sicht.
 
 ## Prozesse
 

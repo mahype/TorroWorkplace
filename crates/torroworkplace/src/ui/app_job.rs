@@ -835,8 +835,15 @@ fn steps<'a>(job: &'a AppJobInfo) -> Element<'a, Event> {
                     .find(|step| step.status != StepStatus::Done)
                     .or(of.last())
                     .map(|step| step_label(step.step, job.kind));
-                let name =
-                    AppId::find(app).map_or_else(|| app.to_string(), |id| format!("Torro {}", shell::app_name(id)));
+                // The main application by its product name, as its card has it: its short name is the
+                // control centre's (issue #803).
+                let name = AppId::find(app).map_or_else(
+                    || app.to_string(),
+                    |id| match id == AppId::WORKPLACE {
+                        true => "Torro Workplace".to_string(),
+                        false => format!("Torro {}", shell::app_name(id)),
+                    },
+                );
                 step_row(status, name, at.map(str::to_string))
             })
             .collect()

@@ -1124,7 +1124,7 @@ impl App {
 pub(crate) fn chat_failed(err: &ChatError) -> String {
     match err {
         ChatError::Offline => tr("The server cannot be reached. Try again when you are online.").to_owned(),
-        ChatError::Auth => tr("The sign-in was refused. Sign in again in Torro Workplace.").to_owned(),
+        ChatError::Auth => tr("The sign-in was refused. Sign in again in the control centre.").to_owned(),
         ChatError::NotConnected => tr("This account has no chat on its server.").to_owned(),
         ChatError::NotFound => tr("This conversation is no longer available.").to_owned(),
         ChatError::Busy => tr("Too many calls. Try again later.").to_owned(),

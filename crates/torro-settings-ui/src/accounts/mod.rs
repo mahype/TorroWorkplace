@@ -24,7 +24,7 @@
 //! sets up: the AI accounts and, on an account's page, its models on and off; it chooses no model for
 //! anything. The choice belongs to the app that uses it: Mail's *Sorting* stands in the mail window's
 //! AI section, the assistant's *Chat* under its General, with its effort. With the main application
-//! installed, an app window points at the control centre for the rest ("Open Torro Workplace",
+//! installed, an app window points at the control centre for the rest ("Open control centre",
 //! [`Message::ControlCentre`]): on an AI account's page its model switches. [`ai_parts`] decides.
 //!
 //! **The two slots (issue #325, task MW.8).** Where a window shows one, the AI section has the group
@@ -185,7 +185,7 @@ pub enum Action {
     /// Put the keyboard focus into the text field with this id: the search field of a model menu
     /// that has just opened ([`widgets::DROPDOWN_SEARCH`], issue #554).
     Focus(&'static str),
-    /// Open the control centre at this section (issue #547): "Open Torro Workplace" of an app
+    /// Open the control centre at this section (issue #547): "Open control centre" of an app
     /// window's AI section, where the AI accounts and their models are set.
     ControlCentre(String),
 }
@@ -767,7 +767,7 @@ pub enum Message {
     Recommend,
     /// "Retry" after a step failed: what started it, again.
     RetrySlot,
-    /// "Open Torro Workplace" in an app window's AI section (issue #547): the control centre at
+    /// "Open control centre" in an app window's AI section (issue #547): the control centre at
     /// this section.
     ControlCentre(&'static str),
 }
@@ -2695,7 +2695,7 @@ fn list<'a>(
 pub struct AiParts {
     /// The slots of the group "Models"; none leaves the group out.
     pub slots: Vec<AiSlot>,
-    /// "Open Torro Workplace" ([`refer_group`]), where the AI accounts and their models are set up;
+    /// "Open control centre" ([`refer_group`]), where the AI accounts and their models are set up;
     /// on an AI account's page also in place of its model switches.
     pub refer: bool,
 }
@@ -2726,8 +2726,8 @@ fn refer_group<'a>() -> Element<'a, Message> {
         .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) })
         .into();
     let detail = tr("AI accounts and their models are set there for the whole suite.");
-    let line = setting_row(None, tr("Open Torro Workplace"), Some(detail.to_string()), arrow);
-    widgets::group(tr("Torro Workplace"), vec![pressable(line, Some(Message::ControlCentre("ai")))], None)
+    let line = setting_row(None, tr("Open control centre"), Some(detail.to_string()), arrow);
+    widgets::group(tr("Control centre"), vec![pressable(line, Some(Message::ControlCentre("ai")))], None)
 }
 
 /// The providers as chips above the list in the narrow class (task S.37), the shown one chosen.
@@ -6881,7 +6881,7 @@ mod tests {
             state.selected = Some(ai.id.clone());
             draw_ai(&state, &data);
         }
-        // "Open Torro Workplace" opens the control centre at AI.
+        // "Open control centre" opens the control centre at AI.
         let action = update(&mut State::default(), Message::ControlCentre("ai"), &data);
         assert_eq!(action, Action::ControlCentre("ai".to_string()));
         drop(refer_group());
