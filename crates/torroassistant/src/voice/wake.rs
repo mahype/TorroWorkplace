@@ -58,16 +58,28 @@ impl ModelWake {
 fn write_model(voice: &Path) -> std::io::Result<PathBuf> {
     let folder = voice.join("wake");
     let path = folder.join(MODEL_FILE);
-    let same = std::fs::metadata(&path).is_ok_and(|meta| meta.is_file() && meta.len() == MODEL.len() as u64)
-        && std::fs::read(&path).is_ok_and(|bytes| bytes == MODEL);
-    if same {
+    if is_model(&path) {
         return Ok(path);
     }
     std::fs::create_dir_all(&folder)?;
     let part = folder.join(format!("{MODEL_FILE}.{}.part", std::process::id()));
-    std::fs::write(&part, MODEL)?;
-    std::fs::rename(&part, &path)?;
+    let written = std::fs::write(&part, MODEL).and_then(|()| std::fs::rename(&part, &path));
+    if let Err(err) = written {
+        // No half model stays behind; the name holds the process id, so the next start would not overwrite it.
+        let _ = std::fs::remove_file(&part);
+        // Another listener may have put the model there meanwhile and hold it open (Windows refuses the
+        // rename then).
+        if !is_model(&path) {
+            return Err(err);
+        }
+    }
     Ok(path)
+}
+
+/// Whether `path` is the built-in model byte for byte.
+fn is_model(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() == MODEL.len() as u64)
+        && std::fs::read(path).is_ok_and(|bytes| bytes == MODEL)
 }
 
 impl WakeWord for ModelWake {
@@ -370,6 +382,17 @@ mod tests {
         assert!(std::fs::read(folder.join(MODEL_FILE)).expect("model") == MODEL, "the built-in model");
         let left: Vec<_> = std::fs::read_dir(&folder).expect("folder").collect();
         assert_eq!(left.len(), 1, "no part left");
+    }
+
+    /// Issue #765: a model that cannot be put in place leaves no part file behind.
+    #[test]
+    fn a_failed_write_leaves_no_part_behind() {
+        let voice = tempfile::tempdir().expect("voice folder");
+        let folder = voice.path().join("wake");
+        std::fs::create_dir_all(folder.join(MODEL_FILE)).expect("a folder where the model goes");
+        assert!(ModelWake::load(voice.path()).is_err());
+        let left: Vec<_> = std::fs::read_dir(&folder).expect("folder").collect();
+        assert_eq!(left.len(), 1, "only the folder in the way");
     }
 
     /// Issue #765: a voice folder that is a file gives an error, no panic.
