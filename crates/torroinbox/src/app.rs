@@ -14618,7 +14618,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             // Where it was saved before (issue #781), after the ways to open and save it.
             if let Some(part) = part
                 && let Some(saved) =
-                    reading.saves.and_then(|saves| mail::saved_menu_section(&mail::saves_of(saves, part), self.now))
+                    reading.saves.and_then(|saves| mail::saved_menu_section(&mail::saves_of(saves, part)))
             {
                 sections.insert(1.min(sections.len()), saved);
             }

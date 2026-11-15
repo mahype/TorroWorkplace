@@ -4933,7 +4933,7 @@ fn attachment_row<'a>(
     let axis = Padding::new(0.0).right(size::HAIRLINE);
     // Where it was saved (issue #781) stands beside the name, outside its button: its tooltip names
     // every save, the name's says what a click does.
-    let badge = reading.saves.and_then(|saves| saved_badge(&saves_of(saves, &file.part), reading.now));
+    let badge = reading.saves.and_then(|saves| saved_badge(&saves_of(saves, &file.part), reading.saving));
     container(
         row![container(name).width(Fill)].push(badge).push(triangle).spacing(space::xs()).align_y(Alignment::Center),
     )
@@ -4957,13 +4957,21 @@ fn mail_saves(saves: &[SaveRecord]) -> Vec<&SaveRecord> {
 }
 
 /// "Invoices › 11", "Downloads", "Rechnungen": where a save went, short – the target with the folder
-/// the file lies in, Downloads, else the name of that folder. Names are data from outside, on one line.
-pub fn saved_where(save: &SaveRecord) -> String {
-    let folder = Path::new(&save.path)
-        .parent()
-        .and_then(Path::file_name)
-        .map(|name| list::one_line(&name.to_string_lossy()))
-        .unwrap_or_default();
+/// the file lies in below the target's own (`saving` knows the target's folder; the target alone when
+/// the file lies right in it), Downloads, else the name of that folder. Without the target in `saving`
+/// the target's name stands with the folder's unless they are the same. Names are data from outside,
+/// on one line.
+pub fn saved_where(save: &SaveRecord, saving: Option<&SaveTargets>) -> String {
+    let parent = Path::new(&save.path).parent();
+    let folder =
+        parent.and_then(Path::file_name).map(|name| list::one_line(&name.to_string_lossy())).unwrap_or_default();
+    if save.via == SavedVia::Target
+        && let Some(target) = save.target.as_deref().and_then(|id| saving?.target(id))
+        && let Some(below) = parent.and_then(|parent| parent.strip_prefix(&target.spec.folder).ok())
+    {
+        let name = list::one_line(save.target_name.as_deref().unwrap_or(&target.spec.name));
+        return if below.as_os_str().is_empty() { name } else { format!("{name} › {folder}") };
+    }
     match (save.via, save.target_name.as_deref().map(list::one_line)) {
         (SavedVia::Downloads, _) => tr("Downloads").to_owned(),
         (SavedVia::Target, Some(name)) if !folder.is_empty() && folder != name => format!("{name} › {folder}"),
@@ -4974,14 +4982,12 @@ pub fn saved_where(save: &SaveRecord) -> String {
 
 /// "Saved to /home/anna/Invoices/2026/11/Rechnung.pdf · 14 Nov 10:32", one line per save, with
 /// "File no longer there" for one that is gone: the tooltip of an attachment's note.
-fn saves_tooltip(saves: &[&SaveRecord], now: DateTime<Utc>) -> String {
+fn saves_tooltip(saves: &[&SaveRecord]) -> String {
     saves
         .iter()
         .map(|save| {
-            let line = trf(
-                "Saved to {path} · {when}",
-                &[("path", &save.path), ("when", &datetime::format_moment(save.at, now))],
-            );
+            let line =
+                trf("Saved to {path} · {when}", &[("path", &save.path), ("when", &datetime::format_exact(save.at))]);
             if save.present { line } else { format!("{line} · {}", tr("File no longer there")) }
         })
         .collect::<Vec<_>>()
@@ -5003,17 +5009,17 @@ fn save_icon<'a>(present: bool) -> Element<'a, Message> {
 /// The note at an attachment saved before (issue #781): the check and where the newest save went
 /// ([`saved_where`]), or "File no longer there" when that file is gone; every save in the tooltip.
 /// `None` for an attachment never saved, which looks as it always did.
-fn saved_badge<'a>(saves: &[&SaveRecord], now: DateTime<Utc>) -> Option<Element<'a, Message>> {
+fn saved_badge<'a>(saves: &[&SaveRecord], saving: Option<&SaveTargets>) -> Option<Element<'a, Message>> {
     let newest = saves.first()?;
     let (words, style): (String, fn(&Theme) -> iced::widget::text::Style) = if newest.present {
-        (saved_where(newest), theme::text_2)
+        (saved_where(newest, saving), theme::text_2)
     } else {
         (tr("File no longer there").to_owned(), theme::text_3)
     };
     let note = row![save_icon(newest.present), typo::text(typo::meta(), words).style(style).wrapping(Wrapping::None)]
         .spacing(space::xs())
         .align_y(Alignment::Center);
-    Some(widgets::with_tooltip(note, saves_tooltip(saves, now)))
+    Some(widgets::with_tooltip(note, saves_tooltip(saves)))
 }
 
 /// "3 files · 452 KB", with "1 of 3 saved · 14 Nov 10:32" after it once any of them was saved
@@ -5061,12 +5067,13 @@ fn mail_save_lines<'a>(reading: &Reading<'_>) -> Option<Element<'a, Message>> {
         return None;
     }
     let lines = saves.iter().take(MAIL_SAVE_LINES).map(|save| {
-        let place = if save.present { saved_where(save) } else { tr("File no longer there").to_owned() };
+        let place =
+            if save.present { saved_where(save, reading.saving) } else { tr("File no longer there").to_owned() };
         let words = format!("{} · {place}", mail_save_words(save, reading.now));
         let line = row![save_icon(save.present), typo::text(typo::meta(), words).style(theme::text_2)]
             .spacing(space::xs())
             .align_y(Alignment::Center);
-        widgets::with_tooltip(line, saves_tooltip(&[save], reading.now))
+        widgets::with_tooltip(line, saves_tooltip(&[save]))
     });
     Some(column(lines).spacing(space::xs()).into())
 }
@@ -5074,7 +5081,7 @@ fn mail_save_lines<'a>(reading: &Reading<'_>) -> Option<Element<'a, Message>> {
 /// The section "Saved" of an attachment's menu (issue #781): "Show in folder" while the newest file is
 /// there, then each save with its time and path, which opens the folder it went to. `None` for an
 /// attachment never saved.
-pub fn saved_menu_section<'a>(saves: &[&SaveRecord], now: DateTime<Utc>) -> Option<MenuSection<'a, Message>> {
+pub fn saved_menu_section<'a>(saves: &[&SaveRecord]) -> Option<MenuSection<'a, Message>> {
     let newest = saves.first()?;
     let folder = |save: &SaveRecord| Path::new(&save.path).parent().map(Path::to_path_buf);
     let mut items = Vec::new();
@@ -5085,7 +5092,7 @@ pub fn saved_menu_section<'a>(saves: &[&SaveRecord], now: DateTime<Utc>) -> Opti
     }
     for save in saves {
         let Some(dir) = folder(save) else { continue };
-        let when = datetime::format_moment(save.at, now);
+        let when = datetime::format_exact(save.at);
         let label = if save.present { when } else { format!("{when} · {}", tr("File no longer there")) };
         let mark = if save.present { Icon::CircleCheck } else { Icon::TriangleAlert };
         items.push(MenuItem::new(mark, label, Message::ShowSavedFolder(dir)).detail(save.path.clone()));
@@ -6776,10 +6783,21 @@ mod tests {
         let downloads = save(attachment("2"), SavedVia::Downloads, None, "/home/anna/Downloads/a.pdf", true);
         let chosen = save(attachment("3"), SavedVia::Folder, None, "/home/anna/Ablage/b.pdf", false);
         let flat = save(attachment("3"), SavedVia::Target, Some("Inv"), "/home/anna/Inv/b.pdf", true);
-        assert_eq!(saved_where(&invoices), "Invoices › 11");
-        assert_eq!(saved_where(&downloads), tr("Downloads"));
-        assert_eq!(saved_where(&chosen), "Ablage");
-        assert_eq!(saved_where(&flat), "Inv", "the target's own folder is not said twice");
+        assert_eq!(saved_where(&invoices, None), "Invoices › 11");
+        assert_eq!(saved_where(&downloads, None), tr("Downloads"));
+        assert_eq!(saved_where(&chosen, None), "Ablage");
+        assert_eq!(saved_where(&flat, None), "Inv", "the target's own folder is not said twice");
+        // With the targets known, a file right in the target's folder names the target alone, whatever
+        // that folder is called; one below it names the folder it lies in.
+        let mut target = demo::save_targets().remove(0);
+        target.id = "t1".into();
+        target.spec.folder = "/home/anna/Rechnungen".into();
+        let saving = SaveTargets { targets: vec![target], ..SaveTargets::default() };
+        let right_in = save(attachment("2"), SavedVia::Target, Some("Invoices"), "/home/anna/Rechnungen/a.pdf", true);
+        assert_eq!(saved_where(&right_in, Some(&saving)), "Invoices");
+        let below =
+            save(attachment("2"), SavedVia::Target, Some("Invoices"), "/home/anna/Rechnungen/2026/11/a.pdf", true);
+        assert_eq!(saved_where(&below, Some(&saving)), "Invoices › 11");
 
         let when = datetime::format_moment(now(), now());
         let file = |part: &str| AttachmentInfo {
@@ -6807,13 +6825,15 @@ mod tests {
         assert_eq!(mail_save_words(&eml, now()), trf("Saved as EML · {when}", &[("when", &when)]));
         assert_eq!(mail_saves(&[pdf.clone(), invoices.clone()]), [&pdf]);
 
-        let tip = saves_tooltip(&[&invoices, &chosen], now());
+        // The tooltip names the exact moment, also of a save days ago.
+        let tip = saves_tooltip(&[&invoices, &chosen]);
         let lines: Vec<&str> = tip.lines().collect();
-        let saved_to = |path: &str| trf("Saved to {path} · {when}", &[("path", &path), ("when", &when)]);
+        let exact = datetime::format_exact(now());
+        let saved_to = |path: &str| trf("Saved to {path} · {when}", &[("path", &path), ("when", &exact)]);
         assert_eq!(lines[0], saved_to("/home/anna/Inv/2026/11/a.pdf"));
         assert_eq!(lines[1], format!("{} · {}", saved_to("/home/anna/Ablage/b.pdf"), tr("File no longer there")));
-        assert!(saved_badge(&[], now()).is_none(), "an attachment never saved looks as before");
-        assert!(saved_badge(&[&chosen], now()).is_some());
+        assert!(saved_badge(&[], None).is_none(), "an attachment never saved looks as before");
+        assert!(saved_badge(&[&chosen], None).is_some());
     }
 
     /// Issue #781: an attachment's section "Saved" offers "Show in folder" only while its newest file
@@ -6822,7 +6842,7 @@ mod tests {
     fn the_saved_section_shows_the_folder_only_while_the_file_is_there() {
         let there = save(attachment("2"), SavedVia::Downloads, None, "/home/anna/Downloads/a.pdf", true);
         let gone = save(attachment("2"), SavedVia::Downloads, None, "/home/anna/Old/a.pdf", false);
-        let section = saved_menu_section(&[&there, &gone], now()).expect("saved");
+        let section = saved_menu_section(&[&there, &gone]).expect("saved");
         assert_eq!(section.title.as_deref(), Some(tr("Saved")));
         assert_eq!(section.items.len(), 3);
         assert_eq!(section.items[0].label.as_ref(), tr("Show in folder"));
@@ -6830,9 +6850,9 @@ mod tests {
             matches!(&section.items[0].on_press, Message::ShowSavedFolder(dir) if dir == Path::new("/home/anna/Downloads"))
         );
         assert_eq!(section.items[2].detail.as_deref(), Some("/home/anna/Old/a.pdf"));
-        let section = saved_menu_section(&[&gone], now()).expect("saved");
+        let section = saved_menu_section(&[&gone]).expect("saved");
         assert_eq!(section.items.len(), 1, "no Show in folder for a file that is gone");
-        assert!(saved_menu_section(&[], now()).is_none());
+        assert!(saved_menu_section(&[]).is_none());
     }
 
     /// Issue #781: the demo's invoice shows every state of the note – the mail as PDF, an attachment
