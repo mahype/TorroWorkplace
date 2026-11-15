@@ -37,8 +37,8 @@ use iced::widget::operation::{self, RelativeOffset};
 use iced::widget::text_editor::{Action, Content, Edit};
 use iced::{Point, Size, Task};
 use torro_chat::{
-    ChatError, ChatSource, Fetched, LinkCard, Message as ChatMessage, MessagePage, Outgoing, Picture, PreparedFile,
-    PreviewSize, SaveTo, Sending, SharedItem, SharedKind, SharedPage, UploadProgress, UploadState,
+    ChatError, Fetched, LinkCard, Message as ChatMessage, MessagePage, Outgoing, Picture, PreparedFile, PreviewSize,
+    SaveTo, Sending, SharedItem, SharedKind, SharedPage, UploadProgress, UploadState,
 };
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
@@ -355,33 +355,6 @@ pub fn foreign_index(message: &ChatMessage, account: &str) -> u8 {
     at.and_then(|at| u8::try_from(at).ok()).unwrap_or(0)
 }
 
-/// `chat.get_preview` of the link card `index` of the message `id` (issue #785), straight from the source:
-/// [`crate::backend::Backend::preview`] knows only the first card.
-async fn card_preview(
-    backend: crate::backend::Backend,
-    id: String,
-    index: u8,
-    size: PreviewSize,
-) -> Result<Picture, ChatError> {
-    match backend {
-        crate::backend::Backend::Core(core) => ChatSource::preview(&core, id, None, Some(index), size).await,
-        crate::backend::Backend::Demo(demo) => demo.preview(id, None, Some(index), size).await,
-    }
-}
-
-/// `chat.show_card` ("Show once") of the link `index` of the message `id` (issue #785): the first through
-/// [`crate::backend::Backend::show_card`], a later one straight from the source, which the backend does not
-/// offer yet.
-async fn show_card_at(backend: crate::backend::Backend, id: String, index: u8) -> Result<Option<LinkCard>, ChatError> {
-    if index == 0 {
-        return backend.show_card(id).await;
-    }
-    match backend {
-        crate::backend::Backend::Core(core) => ChatSource::show_card(&core, id, index).await,
-        crate::backend::Backend::Demo(demo) => demo.show_card(id, index).await,
-    }
-}
-
 /// `card` among the `cards` of a message with `text`: in the place of a card of the same link, else in the order
 /// of the links in the text, at most [`torro_ipc::assistant::MAX_LINK_CARDS`].
 fn with_card(cards: &mut Vec<LinkCard>, card: LinkCard, text: &str) {
@@ -684,7 +657,7 @@ impl App {
                     return Task::none();
                 };
                 chat.files.cards.insert(message.clone(), CardAsk::Asking);
-                return Task::perform(show_card_at(backend, message.clone(), index), move |result| {
+                return Task::perform(backend.show_card(message.clone(), index), move |result| {
                     wrap(FilesMsg::Card(message.clone(), result))
                 });
             }
@@ -929,7 +902,7 @@ impl App {
                     continue;
                 }
                 chat.files.card_pictures.insert(key.clone(), Shown::Loading);
-                let task = card_preview(backend.clone(), key.0.clone(), index, PreviewSize::Small);
+                let task = backend.clone().card_preview(key.0.clone(), index, PreviewSize::Small);
                 tasks
                     .push(Task::perform(task, move |result| wrap(FilesMsg::CardPicture(key.0.clone(), key.1, result))));
             }
