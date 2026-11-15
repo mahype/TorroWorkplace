@@ -375,7 +375,7 @@ pub enum Action {
     /// [`launch::demo_answer`].
     AskAi(Vec<(accounts::Asked, Request)>),
     /// Ask the core to check GitHub for new releases (`apps.check_updates`, issue #411) and hand the
-    /// catalog it answers with to the section Apps ([`apps::checked`]). The demo answers with its own.
+    /// catalog it answers with to the app catalog on Overview ([`apps::checked`]). The demo answers with its own.
     CheckApps,
     /// Start an app job (`apps.install_app`, `apps.update_apps`) and open its window once the core
     /// answered with it ([`apps::started`]); a refusal is the notice in words for people. The demo
@@ -1275,12 +1275,11 @@ impl Ui {
         Task::batch([rest, self.reload_app_catalog()])
     }
 
-    /// The app catalog with the reload while Overview is open or a job runs, else once a minute for the
-    /// sidebar's count: the core reads what is installed for it each time (issue #411).
+    /// The app catalog with every reload while a job runs, else once a minute: the core reads what is
+    /// installed for it each time (issue #411). Not with every reload while Overview is open (issue
+    /// #803): Overview is the page a control centre starts on and stays on.
     fn reload_app_catalog(&self) -> Task<Message> {
-        let due = self.section == Section::Overview
-            || apps::job_runs(&self.data)
-            || self.catalog_at.is_none_or(|at| at.elapsed() >= CATALOG_EVERY);
+        let due = apps::job_runs(&self.data) || self.catalog_at.is_none_or(|at| at.elapsed() >= CATALOG_EVERY);
         if self.launch.demo || !due {
             return Task::none();
         }
@@ -2437,7 +2436,7 @@ impl Ui {
                     widgets::section_title(tr("Apps")),
                     apps::view(&self.apps, &self.data, class, room).map(Message::Apps),
                 ]
-                .spacing(space::s());
+                .spacing(layout::item_gap());
                 column![overview::view(&self.overview, &self.data).map(Message::Overview), catalog]
                     .spacing(layout::section_gap())
                     .into()
@@ -3674,6 +3673,7 @@ mod tests {
                 sidebar.simulate(iced_test::simulator::click());
             }
         }
+        assert!(sidebar.find(tr("New")).is_err(), "no \"New\"");
         // Over the text of the first row a click still lands on that row, never on anything else.
         assert!(
             sidebar.into_messages().all(|m| matches!(m, Message::Select(Section::Overview))),

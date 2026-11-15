@@ -1,4 +1,4 @@
-//! The section Apps (issue #411, sub-issue #480): the app catalog. Every app of the suite as a card
+//! The app catalog (issue #411, sub-issue #480), on Overview below its parts since issue #803. Every app of the suite as a card
 //! with its icon, its question and a sentence about it, its version and what can be done with it –
 //! the installed apps first, the missing ones below –, a search over them, "Update all" and the update
 //! of the main application. Draft: `docs/prototypes/app-catalog/index.html`; the target picture of the
@@ -23,8 +23,8 @@
 //! column too wide), else one column; narrow ones one column. One column comes only where two cards
 //! do not fit (or the catalog has a single app, which the suite's catalog of all its apps never has),
 //! so it is never wider than two cards and needs no cap of its own (issue #548). The
-//! narrow header keeps "Check for updates" and "Update all" as icons and the search moves over the
-//! cards.
+//! narrow header keeps "Check for updates" and "Update all" as icons; below wide the search moves over
+//! the cards (issue #803: beside "Overview ▾" a medium header has no room for it).
 
 use chrono::{DateTime, Utc};
 use iced::widget::text::Wrapping;
@@ -458,8 +458,9 @@ fn needed_by(app: &CatalogApp, catalog: &AppCatalog) -> Vec<String> {
         .collect()
 }
 
-/// The header: "Apps" with how many are installed and wait for an update, and at the right "Check
-/// for updates", the search (not in narrow windows, where it stands over the cards) and "Update all
+/// Overview's header (issue #803): how many apps are installed and wait for an update, and at the right "Check
+/// for updates", the search (only in wide windows; elsewhere it stands over the cards, since beside
+/// "Overview ▾" the header has no room left for it, issue #803) and "Update all
 /// (2)" as the window's one primary button while there are updates.
 pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<'a, Message> {
     let catalog = data.app_catalog.catalog.listed();
@@ -467,7 +468,7 @@ pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<
     let check = (!state.checking).then_some(Message::Check);
     let mut actions: Vec<Element<'a, Message>> =
         vec![widgets::icon_button(Icon::RefreshCw, tr("Check for updates"), check)];
-    if !narrow {
+    if class == SizeClass::Wide {
         actions.push(search(state, Length::Fixed(size::sidebar())));
     }
     let count = catalog.map(updatable).map_or(0, |apps| apps.len());
@@ -525,7 +526,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass, width: f32) 
     };
     let job = data.app_catalog.job.as_ref();
     let mut page = column![].spacing(layout::section_gap()).width(Fill);
-    if !matches!(class, SizeClass::Wide | SizeClass::Medium) {
+    if class != SizeClass::Wide {
         page = page.push(search(state, Fill));
     }
     if let Some(code) = catalog.error.as_deref() {
