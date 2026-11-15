@@ -32,7 +32,8 @@ use torro_core::privacy::{ForeignContent, ProviderChange};
 use torro_core::settings::{
     self, AssistantDefault, AttachmentClick, ComponentSwitch, ComposePaper, FocusSlots, FolderChange, Language,
     ListOrderEntry, MailAppearance, MailAttachments, MailFormat, Maps, Night, PdfSettings, PdfTemplate, PdfTemplateId,
-    Recognizer, Reminders, Retention, SearchProviderSwitch, Settings, SetupState, Voice, WebSearch, WorkingHours, Zoom,
+    QWEN_BUILT, Recognizer, Reminders, Retention, SearchProviderSwitch, Settings, SetupState, Voice, WebSearch,
+    WorkingHours, Zoom,
 };
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
@@ -539,19 +540,23 @@ fn login_item_outdated(current: Option<&str>, wanted: &str) -> bool {
     current.is_some_and(|current| current != wanted)
 }
 
-/// Why `key` with `value` is refused with `unsupported` (issue #762): the keys `stt_model`, `voice` and
-/// `qwen_voice` and the speech providers `qwen` and `piper` are gone with whisper.cpp, Piper and Qwen3-TTS.
-/// `None` for everything else, which [`SettingsStore::set`] checks as before.
+/// Why `key` with `value` is refused with `unsupported` (issue #762): the keys `stt_model` and `voice` and
+/// the speech provider `piper` are gone with whisper.cpp and Piper; `qwen_voice` and the provider `qwen`
+/// only in a build without Qwen3-TTS (issue #764, `torro_core::settings::QWEN_BUILT`). `None` for
+/// everything else, which [`SettingsStore::set`] checks as before.
 pub fn gone(key: SettingKey, value: &serde_json::Value) -> Option<String> {
     match key {
         SettingKey::SttModel => {
             Some("stt_model is gone: the speech models are downloaded with settings.download_voice_model".into())
         }
         SettingKey::Voice => Some("voice is gone with Piper: choose pocket_voice for Pocket TTS".into()),
-        SettingKey::QwenVoice => Some("qwen_voice is gone with Qwen3-TTS: choose pocket_voice for Pocket TTS".into()),
+        SettingKey::QwenVoice if !QWEN_BUILT => {
+            Some("this build has no Qwen3-TTS: choose pocket_voice for Pocket TTS".into())
+        }
         SettingKey::SpeechProvider => match value.as_str().map(str::trim) {
-            Some(provider @ ("qwen" | "piper")) => {
-                Some(format!("the speech provider {provider} is gone: send \"pocket\", \"openai\" or null"))
+            Some("piper") => Some("the speech provider piper is gone: send \"pocket\", \"openai\" or null".into()),
+            Some("qwen") if !QWEN_BUILT => {
+                Some("this build has no Qwen3-TTS: send \"pocket\", \"openai\" or null".into())
             }
             _ => None,
         },
@@ -604,6 +609,8 @@ enum Change {
     SpeechProvider(Option<torro_core::settings::SpeechProvider>),
     /// The voice of Pocket TTS (issue #762).
     PocketVoice(Option<String>),
+    /// The voice of Qwen3-TTS (issue #764), in builds with it.
+    QwenVoice(Option<String>),
     OpenAiVoice(Option<String>),
     /// How fast Pocket TTS speaks, in percent (issue #782); `None` for 100.
     PocketSpeed(Option<u16>),
@@ -715,11 +722,16 @@ impl Change {
                 Change::SpeechRecognizer(serde_json::from_value(value.clone()).map_err(invalid)?)
             }
             SettingKey::SpeechLanguage => Change::SpeechLanguage(Voice::speech_language_from(value)?),
-            // Gone with whisper.cpp, Piper and Qwen3-TTS (issue #762); `Core` answers them with `unsupported`
-            // through [`gone`] before they get here.
-            SettingKey::SttModel | SettingKey::Voice | SettingKey::QwenVoice => {
+            // Gone with whisper.cpp and Piper (issue #762); `Core` answers them with `unsupported` through
+            // [`gone`] before they get here.
+            SettingKey::SttModel | SettingKey::Voice => {
                 return Err(gone(key, value).unwrap_or_default());
             }
+            // Only in builds with Qwen3-TTS (issue #764); elsewhere [`gone`] refuses it first.
+            SettingKey::QwenVoice => match gone(key, value) {
+                Some(refused) => return Err(refused),
+                None => Change::QwenVoice(Voice::speech_voice_from(value, &torro_core::settings::QWEN_VOICES)?),
+            },
             SettingKey::ReadAloud => Change::ReadAloud(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::SpeechProvider => Change::SpeechProvider(Voice::speech_provider_from(value)?),
             SettingKey::PocketVoice => {
@@ -842,6 +854,7 @@ impl Change {
             Change::ReadAloud(on) => settings.voice.read_aloud = on,
             Change::SpeechProvider(provider) => settings.voice.speech_provider = provider,
             Change::PocketVoice(id) => settings.voice.pocket_voice = id,
+            Change::QwenVoice(id) => settings.voice.qwen_voice = id,
             Change::OpenAiVoice(id) => settings.voice.openai_voice = id,
             Change::PocketSpeed(speed) => settings.voice.pocket_speed = speed,
             Change::PocketPause(pause) => settings.voice.pocket_pause = pause,
@@ -2110,10 +2123,9 @@ mod tests {
         for (key, value) in [
             (SettingKey::ReadAloud, json!("yes")),
             (SettingKey::SpeechProvider, json!("grok")),
-            (SettingKey::SpeechProvider, json!("qwen")),
             (SettingKey::PocketVoice, json!("marin")),
             (SettingKey::PocketVoice, json!("cosette")),
-            (SettingKey::QwenVoice, json!("calm_man")),
+            (SettingKey::QwenVoice, json!("alba")),
             (SettingKey::OpenAiVoice, json!("alba")),
         ] {
             assert!(store.set(key, &value).is_err(), "{key:?} {value}");
@@ -2129,6 +2141,23 @@ mod tests {
         sent.voice.speech_provider = Some(SpeechProvider::Pocket);
         store.update_keeping_hidden(sent).expect("written");
         assert_eq!(store.current().voice.speech_provider, Some(SpeechProvider::Pocket));
+
+        // Qwen3-TTS only in a build with it (issue #764).
+        let qwen = (
+            store.set(SettingKey::SpeechProvider, &json!("qwen")),
+            store.set(SettingKey::QwenVoice, &json!("Calm_Man")),
+        );
+        match torro_core::settings::QWEN_BUILT {
+            true => {
+                assert!(qwen.0.is_ok() && qwen.1.is_ok(), "{qwen:?}");
+                let voice = store.current().voice;
+                assert_eq!(
+                    (voice.speech_provider, voice.qwen_voice.as_deref()),
+                    (Some(SpeechProvider::Qwen), Some("calm_man"))
+                );
+            }
+            false => assert!(qwen.0.is_err() && qwen.1.is_err(), "{qwen:?}"),
+        }
     }
 
     /// Issue #782: speed, pause and speaking style are stored per provider, rounded to their steps,
@@ -2163,19 +2192,21 @@ mod tests {
         assert_eq!((voice.pocket_speed, voice.pocket_pause, voice.openai_style), (None, None, None));
     }
 
-    /// Issue #762: the keys and providers of whisper.cpp, Piper and Qwen3-TTS are gone (`unsupported` in
-    /// the core); everything else is checked as before.
+    /// Issue #762: the keys and providers of whisper.cpp and Piper are gone (`unsupported` in the core), and
+    /// those of Qwen3-TTS in a build without it (issue #764); everything else is checked as before.
     #[test]
     fn the_voice_settings_of_earlier_versions_are_gone() {
         for (key, value) in [
             (SettingKey::SttModel, json!("/m/ggml-base.bin")),
             (SettingKey::SttModel, json!(null)),
             (SettingKey::Voice, json!("")),
-            (SettingKey::QwenVoice, json!("warm_woman")),
-            (SettingKey::SpeechProvider, json!("qwen")),
             (SettingKey::SpeechProvider, json!(" piper ")),
         ] {
             assert!(gone(key, &value).is_some(), "{key:?} {value}");
+        }
+        for (key, value) in [(SettingKey::QwenVoice, json!("warm_woman")), (SettingKey::SpeechProvider, json!("qwen"))]
+        {
+            assert_eq!(gone(key, &value).is_some(), !torro_core::settings::QWEN_BUILT, "{key:?} {value}");
         }
         for (key, value) in [
             (SettingKey::SpeechProvider, json!("pocket")),
