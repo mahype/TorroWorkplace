@@ -961,13 +961,24 @@ impl Answering {
                 return Err(Ended::Empty);
             }
             if !reply.text.trim().is_empty() {
+                // Up to three link cards follow the final answer (issue #785), the last of them ends the run.
+                let cards = if done { self.link_cards(&reply.text, &messages) } else { Vec::new() };
                 let text = EntryContent::Answer {
                     text: reply.text.clone(),
                     engine: self.job.engine.clone(),
                     model: Some(model.clone()),
                     spoken: None,
                 };
-                if !self.add(text, done).await || done {
+                if !self.add(text, done && cards.is_empty()).await {
+                    return Ok(());
+                }
+                let count = cards.len();
+                for (n, card) in cards.into_iter().enumerate() {
+                    if !self.add(card, n + 1 == count).await {
+                        return Ok(());
+                    }
+                }
+                if done {
                     return Ok(());
                 }
             }
@@ -984,6 +995,38 @@ impl Answering {
             }
         }
         Err(Ended::TooManySteps(steps))
+    }
+
+    /// The link cards after the final answer `answer` (issue #785, [`super::cards::link::after_answer`]): an address
+    /// is the person's when it stands in one of their own messages of this conversation (none for a bot's run for
+    /// the assistant, whose messages the assistant's model wrote), read when it stands in what a command answered,
+    /// of an earlier turn (`Job::results`) or of this answer as `messages` hold it; else the model's, which asks.
+    fn link_cards(&self, answer: &str, messages: &[ChatMessage]) -> Vec<EntryContent> {
+        let person: Vec<&str> = match &self.job.actor {
+            Actor::Delegated(_) => Vec::new(),
+            Actor::Assistant | Actor::Bot(_) => self
+                .job
+                .history
+                .iter()
+                .filter_map(|entry| match &entry.content {
+                    EntryContent::Message { text, from: None, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect(),
+        };
+        let read: Vec<&str> = self
+            .job
+            .results
+            .values()
+            .map(String::as_str)
+            .chain(
+                messages
+                    .iter()
+                    .filter(|message| message.role == torro_core::ai::Role::Tool)
+                    .map(|message| message.content.as_str()),
+            )
+            .collect();
+        super::cards::link::after_answer(answer, &person, &read)
     }
 
     /// Counts `call` for this answer (issue #701): `true` when the model called the same tool with the same input
@@ -2646,6 +2689,45 @@ pub(crate) mod tests {
         assert!(
             tool_result(&script, "calendar_list_calendars").contains("switched off calendar for this conversation")
         );
+    }
+
+    /// Issue #785: the final answer brings link cards for its first three addresses, each saying where the address
+    /// came from (the person's message, else the model); the last card ends the run.
+    #[tokio::test]
+    async fn an_answer_with_links_brings_up_to_three_link_cards() {
+        use torro_ipc::assistant::{CardRef, LinkOrigin};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = Script::new(vec![says(
+            "See https://a.example.org/x, https://b.example.org/y, https://c.example.org/z and https://d.example.org/w.",
+        )]);
+        let (assistant, _host) = set_up(dir.path(), Some(reader()), Place::Local, Arc::clone(&script));
+        let id = ask(&assistant, None, "Compare https://a.example.org/x with the others", Vec::new()).await;
+        let entries = finished(&assistant, &id).await;
+        let links: Vec<(&str, LinkOrigin)> = entries
+            .iter()
+            .filter_map(|entry| match &entry.content {
+                EntryContent::Card { card: CardRef::Link { url, from } } => Some((url.as_str(), *from)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            links,
+            [
+                ("https://a.example.org/x", LinkOrigin::Person),
+                ("https://b.example.org/y", LinkOrigin::Model),
+                ("https://c.example.org/z", LinkOrigin::Model),
+            ]
+        );
+        let kinds: Vec<&str> = content(&entries)
+            .into_iter()
+            .map(|content| match content {
+                EntryContent::Message { .. } => "message",
+                EntryContent::Answer { .. } => "answer",
+                EntryContent::Card { .. } => "card",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["message", "answer", "card", "card", "card"]);
     }
 
     #[tokio::test]
