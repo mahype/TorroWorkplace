@@ -410,11 +410,12 @@ impl<M: Clone> ContentCard<M> {
                 );
             }
             // Without a button its room stays empty, so the details of a list of short forms end on one edge.
-            line.push(match button.clone() {
+            let line = line.push(match button.clone() {
                 Some(main) => widgets::icon_button(main.icon, main.label, main.on_press),
                 None => Space::new().width(size::control_sm()).into(),
-            })
-            .into()
+            });
+            // `responsive` takes the whole height: the line stands in its middle, with a button or without.
+            container(line).center_y(Fill).into()
         });
         container(line).center_y(size::control_lg()).width(Fill).into()
     }
