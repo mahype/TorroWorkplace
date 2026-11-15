@@ -1291,7 +1291,12 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    `assistant.speak` und `read_aloud` stehen Clients mit den Rechten offen: Die Zustimmung, dass Text an OpenAI geht,
    liegt in der Wahl des Anbieters, nicht im Schalter; gelesen wird mit dem Anbieter, den ein Mensch gewählt hat
    (Tests `only_people_send_what_is_read_aloud_to_openai` in `torro-ipc` und
-   `reading_aloud_is_set_and_a_client_never_chooses_openai` im Kern).
+   `reading_aloud_is_set_and_a_client_never_chooses_openai` im Kern). „Repeat“ und „Stop“ unter einer vorgelesenen
+   Antwort (Issue #774) sind dieselben Befehle: „Repeat“ schickt `assistant.speak` mit dem gesprochenen Teil, „Stop“
+   `assistant.stop_speaking`. Den gesprochenen und den dargestellten Teil einer Antwort liest jeder Client mit
+   `assistant.get_conversation` (Felder `spoken` und `text`), Agenten mit `assistant_get_conversation`; die
+   Trennzeile `---shown---` sieht niemand, und `assistant.speak_answer` liest nur `spoken`, ohne ihn höchstens etwa
+   600 Zeichen bis zu einem Satzende.
 
    Ebenso **Karten und Ortssuche einschalten** (Termin-Editor, Aufgabe TE.1, [termin-editor.md](termin-editor.md)):
    Die Suche schickt den getippten Ort mit der Sprache der Suite (bei Photon auch `near`), die Karte die Koordinaten,

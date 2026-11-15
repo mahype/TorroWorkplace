@@ -995,7 +995,12 @@ fn demo_tool(name: &str, summary: &str) -> EntryContent {
 }
 
 fn demo_answer(text: &str) -> EntryContent {
-    EntryContent::Answer { text: text.to_owned(), engine: demo_engine().id, model: Some("qwen3:8b".to_owned()) }
+    EntryContent::Answer {
+        text: text.to_owned(),
+        engine: demo_engine().id,
+        model: Some("qwen3:8b".to_owned()),
+        spoken: None,
+    }
 }
 
 /// The demo's event read out of the mail `summary`: its subject on the Thursday after it, 14:00 to

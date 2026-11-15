@@ -621,8 +621,9 @@ pub(super) struct Job {
     /// ends with [`prompt::about_mail`]. Only with the assistant and engine A; the assistant checked the rights
     /// before it stored the message. `None` for every other conversation.
     pub about: Option<MailRef>,
-    /// The person spoke the message (issue #747): the prompt ends with [`prompt::spoken`], so the answer is
-    /// short and can be read aloud.
+    /// The answer is read aloud (issue #747): the person spoke the message, or the chat window reads its
+    /// answers aloud (issue #774). The prompt ends with [`prompt::spoken`], so the answer comes in a short
+    /// spoken part and a shown part.
     pub spoken: bool,
 }
 
@@ -954,6 +955,7 @@ impl Answering {
                     text: reply.text.clone(),
                     engine: self.job.engine.clone(),
                     model: Some(model.clone()),
+                    spoken: None,
                 };
                 if !self.add(text, done).await || done {
                     return Ok(());
@@ -2658,6 +2660,7 @@ pub(crate) mod tests {
                     text: "You have no calendars.".into(),
                     engine: ENGINE.into(),
                     model: Some("qwen3:8b".into()),
+                    spoken: None,
                 },
             ],
             "the default model is the first that calls tools"

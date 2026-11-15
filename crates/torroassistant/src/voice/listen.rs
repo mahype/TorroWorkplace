@@ -880,6 +880,7 @@ mod tests {
                     text: "You have **two** events today: [Standup](https://x) and lunch.".into(),
                     engine: "ai:openrouter".into(),
                     model: None,
+                    spoken: None,
                 }],
                 talk: None,
                 speaking: VecDeque::new(),

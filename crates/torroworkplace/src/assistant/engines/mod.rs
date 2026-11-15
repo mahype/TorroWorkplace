@@ -240,7 +240,8 @@ pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: 
         Ok(Ended::Stopped) => {}
         Ok(Ended::Done(_)) if run.answered => run.assistant.end_run(&run.job.conversation, run.job.run).await,
         Ok(Ended::Done(text)) if !text.trim().is_empty() => {
-            let answer = EntryContent::Answer { text, engine: run.job.engine.clone(), model: run.model.clone() };
+            let answer =
+                EntryContent::Answer { text, engine: run.job.engine.clone(), model: run.model.clone(), spoken: None };
             run.add(answer, true).await;
         }
         Ok(Ended::Done(_)) => run.error("error", tr("The agent gave no answer. Try again.")).await,
@@ -481,7 +482,12 @@ impl Running {
             }
             claude::Event::Text(text) if text.trim().is_empty() => {}
             claude::Event::Text(text) => {
-                let answer = EntryContent::Answer { text, engine: self.job.engine.clone(), model: self.model.clone() };
+                let answer = EntryContent::Answer {
+                    text,
+                    engine: self.job.engine.clone(),
+                    model: self.model.clone(),
+                    spoken: None,
+                };
                 if !self.add(answer, false).await {
                     return Some(Ok(Ended::Stopped));
                 }
