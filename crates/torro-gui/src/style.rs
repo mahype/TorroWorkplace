@@ -587,6 +587,14 @@ pub mod container {
         Style { border: outline(palette(theme).line_strong, radius::lg()), ..menu(theme) }
     }
 
+    /// The bubble of what the assistant said aloud (issue #827): `panel`, 1-px `line_strong` border,
+    /// radius [`radius::lg()`], text `text`. It stands apart from the person's message ([`group`]:
+    /// `raised`, `line`, `md`) and from what the answer only shows, which has no frame.
+    pub fn spoken(theme: &Theme) -> Style {
+        let p = palette(theme);
+        Style { text_color: Some(p.text), border: outline(p.line_strong, radius::lg()), ..surface(p.panel) }
+    }
+
     /// The frame of the assistant's composer when it holds no editor (issue #747: the line of a
     /// conversation by voice in its place): `panel`, the border of [`super::text_editor_composer`]
     /// (1-px `line_strong`), radius [`radius::lg()`], so nothing moves when one replaces the other.
@@ -1465,6 +1473,8 @@ mod tests {
         assert_eq!(container::menu(&theme).shadow, p.shadow);
         assert_eq!(container::popover(&theme).shadow, p.shadow);
         assert_eq!(container::chip(&theme).border.radius, radius::xs().into());
+        assert_eq!(container::spoken(&theme).border.radius, radius::lg().into());
+        assert_eq!(container::spoken(&theme).border.color, p.line_strong);
         assert_eq!(container::kbd(&theme).text_color, Some(p.text_3));
         assert_eq!(button::secondary(&theme, Status::Active).border.radius, radius::sm().into());
         assert_eq!(button::segment(true)(&theme, Status::Active).border.radius, radius::xs().into());
