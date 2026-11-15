@@ -201,6 +201,9 @@ pub struct FilesState {
     pub pictures: HashMap<PictureKey, Shown>,
     /// The pictures of link cards (issue #785), by message and the card's `index` (where its link stands).
     pub card_pictures: HashMap<(String, u8), Shown>,
+    /// The link each of [`FilesState::card_pictures`] was asked for: a card at the same index with another link (an
+    /// edited message, a new page, a card shown once) drops the picture and asks again ([`App::want_pictures`]).
+    card_picture_urls: HashMap<(String, u8), String>,
     /// The small previews of the shared media, apart from the history's larger ones.
     pub thumbs: HashMap<PictureKey, Shown>,
     /// File actions under way: (message, file).
@@ -255,6 +258,21 @@ impl FilesState {
     /// far as it came.
     pub fn card_picture(&self, message: &str, index: u8) -> Option<&Shown> {
         self.card_pictures.get(&(message.to_owned(), index))
+    }
+
+    /// Whether the picture of the link card `card` of the message `message` is to be asked for, marked as coming
+    /// ([`Shown::Loading`]) when it is: not while one for the same link is there or coming. A picture held for
+    /// another link at that `index` (the message was edited, a new page or "Show once" put another card there) is
+    /// dropped, so the card never shows the picture of the link before.
+    pub fn wants_card_picture(&mut self, message: &str, card: &LinkCard) -> bool {
+        let key = (message.to_owned(), card.index);
+        let same = self.card_picture_urls.get(&key).is_some_and(|url| *url == card.url);
+        if same && self.card_pictures.contains_key(&key) {
+            return false;
+        }
+        self.card_picture_urls.insert(key.clone(), card.url.clone());
+        self.card_pictures.insert(key, Shown::Loading);
+        true
     }
 
     /// The picture of `key` for the shared media: the history's once it is there, else the small one
@@ -969,12 +987,11 @@ impl App {
         for message in &chat.messages {
             let cards = message.cards.iter().take(torro_ipc::assistant::MAX_LINK_CARDS);
             // By the `index` the core gave each card (S1 of issue #785), not by its place among the cards.
-            for index in cards.filter(|card| card.image).map(|card| card.index) {
-                let key = (message.id.clone(), index);
-                if chat.files.card_pictures.contains_key(&key) {
+            for card in cards.filter(|card| card.image) {
+                if !chat.files.wants_card_picture(&message.id, card) {
                     continue;
                 }
-                chat.files.card_pictures.insert(key.clone(), Shown::Loading);
+                let (index, key) = (card.index, (message.id.clone(), card.index));
                 let task = backend.clone().card_preview(key.0.clone(), index, PreviewSize::Small);
                 tasks
                     .push(Task::perform(task, move |result| wrap(FilesMsg::CardPicture(key.0.clone(), key.1, result))));
@@ -1097,5 +1114,21 @@ mod tests {
         assert_eq!((cards.len(), cards[1].title.as_str()), (3, "New"));
         with_card(&mut cards, card("https://d.org/4", 3));
         assert_eq!(cards.len(), 3, "at most three cards per message");
+    }
+
+    /// Review of #839: a card at the same index with another link (an edited message) does not keep the picture of
+    /// the link before; the same link asks only once.
+    #[test]
+    fn another_link_at_an_index_asks_for_its_own_picture() {
+        let mut files = FilesState::default();
+        let before = LinkCard { image: true, ..card("https://a.org/1", 0) };
+        assert!(files.wants_card_picture("m1", &before), "asked for");
+        assert!(!files.wants_card_picture("m1", &before), "coming already");
+        files.card_pictures.insert(("m1".into(), 0), Shown::Missing);
+        assert!(!files.wants_card_picture("m1", &before), "there for this link");
+        let edited = LinkCard { image: true, ..card("https://b.org/2", 0) };
+        assert!(files.wants_card_picture("m1", &edited), "the new link's own picture");
+        assert!(matches!(files.card_picture("m1", 0), Some(Shown::Loading)), "the old one is gone");
+        assert!(files.wants_card_picture("m2", &edited), "another message's card is its own");
     }
 }
