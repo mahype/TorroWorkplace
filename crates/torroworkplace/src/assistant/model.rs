@@ -621,8 +621,9 @@ pub(super) struct Job {
     /// ends with [`prompt::about_mail`]. Only with the assistant and engine A; the assistant checked the rights
     /// before it stored the message. `None` for every other conversation.
     pub about: Option<MailRef>,
-    /// The person spoke the message (issue #747): the prompt ends with [`prompt::spoken`], so the answer is
-    /// short and can be read aloud.
+    /// The answer is read aloud (issue #747): the person spoke the message, or the chat window reads its
+    /// answers aloud (issue #774). The prompt ends with [`prompt::spoken`], so the answer comes in a short
+    /// spoken part and a shown part.
     pub spoken: bool,
 }
 
