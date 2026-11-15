@@ -4527,6 +4527,12 @@ impl Core {
         request: Request,
         scope: Option<LentFor>,
     ) -> Result<Response, Refused> {
+        // What an answer found shows in the conversation the key is lent for (issue #786), whatever the agent named,
+        // as engine A does; a key whose run the core forgot names none (the owner's answering conversation then).
+        let request = match request {
+            Request::ShowItems { items, .. } => Request::ShowItems { conversation: self.lent_conversation(key), items },
+            other => other,
+        };
         match &request {
             Request::ListApprovals => {
                 return Ok(match self.list_approvals(Some(&id)).await {
@@ -5296,12 +5302,21 @@ impl Core {
         scopes.iter().find(|scope| scope.hash == hash).map(|scope| scope.lent_for.clone())
     }
 
-    /// Remembers what `lent` is for (task B.2), and forgets what was lent longer ago than any run
-    /// lasts ([`LENT_SCOPE_KEPT`]): those keys were taken back.
-    fn remember_lent(&self, lent: &crate::clients::LentKey, lent_for: LentFor) {
+    /// The conversation whose run the key `key` was lent for (issue #786), while the core remembers it.
+    fn lent_conversation(&self, key: &Key) -> Option<String> {
+        let hash = key_hash(key);
+        let scopes = self.lent_scopes.lock().unwrap_or_else(PoisonError::into_inner);
+        scopes.iter().find(|scope| scope.hash == hash).map(|scope| scope.conversation.clone())
+    }
+
+    /// Remembers what `lent` is for (task B.2) and the conversation of its run, and forgets what was lent longer ago
+    /// than any run lasts ([`LENT_SCOPE_KEPT`]): those keys were taken back.
+    fn remember_lent(&self, lent: &crate::clients::LentKey, lent_for: LentFor, conversation: &str) {
         let mut scopes = self.lent_scopes.lock().unwrap_or_else(PoisonError::into_inner);
         scopes.retain(|scope| scope.made.elapsed() < LENT_SCOPE_KEPT);
-        scopes.push(LentScope { hash: key_hash(lent.key()), made: std::time::Instant::now(), lent_for });
+        let made = std::time::Instant::now();
+        let conversation = conversation.to_owned();
+        scopes.push(LentScope { hash: key_hash(lent.key()), made, lent_for, conversation });
     }
 
     /// Whether `request` of the client `client` is `inbox.open_item` on an entry that opens a web
@@ -14787,19 +14802,19 @@ impl crate::assistant::Host for Core {
                 }
                 delegation.mode = delegation.mode.stricter(mode);
                 let lent = lend(&delegation.client, &delegation.without, delegation.mode)?;
-                self.remember_lent(&lent, LentFor::Delegated(delegation));
+                self.remember_lent(&lent, LentFor::Delegated(delegation), conversation);
                 Some(lent)
             }
             crate::assistant::Actor::Assistant => {
                 let client = self.assistant_client()?;
                 let lent = lend(&client.id, without, mode)?;
-                self.remember_lent(&lent, LentFor::Conversation(conversation.to_string()));
+                self.remember_lent(&lent, LentFor::Conversation(conversation.to_string()), conversation);
                 Some(lent)
             }
             crate::assistant::Actor::Bot(_) => {
                 let client = crate::assistant::Host::client_of(self, actor)?;
                 let lent = lend(&client.id, without, mode)?;
-                self.remember_lent(&lent, LentFor::Own);
+                self.remember_lent(&lent, LentFor::Own, conversation);
                 Some(lent)
             }
         }
@@ -14879,6 +14894,8 @@ struct LentScope {
     hash: [u8; 32],
     made: std::time::Instant,
     lent_for: LentFor,
+    /// The conversation whose run it was lent for: where `assistant.show_items` adds its card (issue #786).
+    conversation: String,
 }
 
 /// How long [`LentScope`]s are kept: longer than any run of engine B lasts (20 minutes), after
@@ -33315,6 +33332,49 @@ done"#,
         );
         assert_eq!(code(&ask(&core, Some(&blind_key), picture.clone()).await), "forbidden", "no picture right");
         assert!(matches!(core.handle(picture).await, Response::ChatPicture { .. }), "the person's window");
+    }
+
+    /// Issue #786: with a key lent for a run of engine B, `assistant.show_items` adds its card to the conversation the
+    /// key was lent for, whatever conversation the agent names – as engine A does.
+    #[tokio::test]
+    async fn a_lent_key_shows_items_in_the_conversation_it_was_lent_for() {
+        use torro_ipc::assistant::{CardRef, EntryContent, ItemRef};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let folder = dir.path().join("assistant");
+        let (own, other) = ("0123456789abcdef", "fedcba9876543210");
+        let mail = |n: usize| ItemRef::Mail { account: "mail:anna@example.org".into(), id: format!("m:{n}") };
+        for id in [own, other] {
+            let contents =
+                vec![crate::assistant::tests::message("Mails?"), crate::assistant::tests::tool("mail.search_messages")];
+            crate::assistant::tests::written(&folder, id, "Mails", contents, &[], |_| {});
+            let seen =
+                serde_json::json!({"line": "seen", "seq": 2, "refs": (0..3).map(mail).collect::<Vec<_>>(), "total": 3});
+            let mut file =
+                std::fs::OpenOptions::new().append(true).open(folder.join(format!("{id}.jsonl"))).expect("the file");
+            std::io::Write::write_all(&mut file, format!("{seen}\n").as_bytes()).expect("written");
+        }
+        let keys = MemoryTokens::default();
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = core_with_ai(dir.path(), &keys, Vec::new()).with_assistant(assistant);
+        core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant()).await.expect("added");
+        let lent = crate::assistant::Host::lend_in(&core, &crate::assistant::Actor::Assistant, own, "claude-code", &[])
+            .expect("lent");
+        let show = Request::ShowItems { conversation: Some(other.into()), items: vec![mail(1)] };
+        assert_eq!(ask(&core, Some(lent.key()), show).await, Response::Ok);
+        let cards = |id: &str| {
+            let core = &core;
+            let id = id.to_owned();
+            async move {
+                match core.handle(Request::GetConversation { id, after: None }).await {
+                    Response::Conversation { entries, .. } => entries
+                        .into_iter()
+                        .filter(|entry| matches!(entry.content, EntryContent::Card { card: CardRef::Mail { .. } }))
+                        .count(),
+                    other => panic!("a conversation: {other:?}"),
+                }
+            }
+        };
+        assert_eq!((cards(own).await, cards(other).await), (1, 0), "in the conversation it was lent for");
     }
 
     /// Issue #786: `assistant.show_items` of the assistant's own client adds a card for an item a search of its
