@@ -1067,6 +1067,11 @@ impl Ui {
                 ];
                 vec![Message::Select(Section::Connections), Message::Connections(connections::Message::Terminal)]
             }
+            // The same page as the terminal starts: off, nothing allowed for good.
+            Open::TerminalEmpty => {
+                launch::demo_connections(&mut self.data);
+                vec![Message::Select(Section::Connections), Message::Connections(connections::Message::Terminal)]
+            }
             // No server installed, the PDF tool as it starts, the assistant without it.
             Open::ConnectionsEmpty => {
                 launch::demo_connections_empty(&mut self.data);

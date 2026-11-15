@@ -71,11 +71,13 @@ wird auch bei einem Client mit „Ask first: Never“.
 
 ## Freigabe
 
-- **Die Karte im Chat** zeigt den Ordner, den ganzen Befehl entschärft (Steuerzeichen und unsichtbare Zeichen
+- **Die Karte im Chat** hat die kurze Überschrift „Run a command“ (im Hintergrund „Start a command in the
+  background“) und zeigt darunter den Ordner, den ganzen Befehl entschärft (Steuerzeichen und unsichtbare Zeichen
   sichtbar gemacht) – lange Befehle gekürzt mit „Show all“ –, die Muster, die er trifft („Looks dangerous: recursive
   delete“), die Grenzen und „No sandbox: Torro can't stop this command from reading or changing other files.“. Die
   Zeilen baut der Kern aus dem geprüften Befehl, nie aus dem Text des Modells (`approvals::terminal_question`).
-- **Antworten:** „Allow once“, „In this conversation“, „Always“, „Deny“. „In this conversation“ gilt im Speicher, bis
+- **Antworten:** „Deny“ zuerst, dann „Allow once“, „In this conversation“, „Always“ (im schmalen Fenster bricht die
+  Gruppe der drei erlaubenden Knöpfe gemeinsam um). „In this conversation“ gilt im Speicher, bis
   die Unterhaltung gelöscht wird oder der Dienst neu startet (ein Stopp der Antwort behält es); „Always“ steht in den Einstellungen
   (`tools.terminal.always`, höchstens 200 Einträge).
 - **Woran „Immer“ hängt** (in der Planung entschieden, 15. November 2026): im Modus „Nur bei gefährlichen“ wie bei
@@ -87,6 +89,9 @@ wird auch bei einem Client mit „Ask first: Never“.
   assistant's chat“ und nur „Deny“. Ablehnen geht überall.
 - **Freigaben nie per Stimme**, Befehle nie in geplanten Läufen: Dort gibt es keine Karte. In einer Unterhaltung per
   Stimme hat der Assistent das Terminal wie im Text; was nach dem Modus fragt, wartet auf die Karte im Chat.
+- **Stopp und Werkzeugaufruf:** Der Aufruf trägt den Zeitpunkt, zu dem die Antwort ihn machte. Wurde die Antwort
+  danach gestoppt oder die Unterhaltung gelöscht, läuft nichts (`conflict`), auch wenn der Aufruf erst später beim
+  Kern ankommt; ein Hintergrundbefehl, der in genau diesem Moment startet, wird sofort wieder gestoppt.
 - **Nach dem Ja** prüft der Kern noch einmal: Terminal an, Client der Assistent, die Unterhaltung seit der Frage
   weder gelöscht noch ihre Antwort gestoppt (sonst `conflict`), Befehl und Ordner wie gezeigt (sonst `conflict`),
   Ordner und harte Grenzen wie jetzt. Auf der Karte steht jeder Zeilenumbruch als `↵`, andere Steuer- und
@@ -162,7 +167,7 @@ Rückfrage: „This conversation has read content from outside. Start a new conv
 | Hintergrundbefehl beenden | Werkzeugzeile | `tools.stop_command` · Write | `tools_stop_command` (ebenso) |
 | Befehl freigeben | Karte im Chat | `approvals.decide_approval` mit `scope` | **Never** (Punkt 3) |
 | Schalter und Modus | Steuerzentrale › MCP servers › Built-in › Terminal | `settings.set_setting terminal` | **Never** (Punkt 15) |
-| „Immer“-Eintrag entfernen | ebenda, × je Eintrag | `settings.set_setting terminal_always` | **Never** (Punkt 15) |
+| „Immer“-Eintrag entfernen und zurückholen | ebenda, × je Eintrag, danach „Undo“, solange die Seite offen ist | `settings.set_setting terminal_always` mit `remove` bzw. `add` | **Never** (Punkt 15) |
 
 ## Später
 

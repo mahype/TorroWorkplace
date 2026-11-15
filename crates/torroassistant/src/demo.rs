@@ -1131,10 +1131,7 @@ fn terminal_approval(now: DateTime<Utc>) -> ApprovalInfo {
         client: "a55157a7".into(),
         client_name: "Assistant".into(),
         command: "tools.run_command".into(),
-        summary: trf(
-            "Run a command in {folder}: {command}",
-            &[("folder", &"~/Projects/demo"), ("command", &"rm -rf build/ && cargo build --release …")],
-        ),
+        summary: tr("Run a command").into(),
         details: vec![
             trf("Folder: {folder}", &[("folder", &"~/Projects/demo")]),
             format!("$ {command}"),

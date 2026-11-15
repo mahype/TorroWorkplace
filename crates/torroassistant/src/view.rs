@@ -1084,7 +1084,15 @@ impl App {
                 let open = self.deciding.is_none();
                 let decide = |answer: chat::Answer| open.then(|| Message::Decide(id.to_owned(), answer));
                 let scoped = |scope| decide(chat::Answer::Scoped(scope));
+                // "Deny" first and on its own, the three that allow together behind it: in a narrow chat they wrap as
+                // a group, never "Deny" alone by chance (design review of #754).
                 let buttons: Vec<Element<'a, Message>> = vec![
+                    widgets::text_button(
+                        Some(Icon::X),
+                        tr("Deny"),
+                        style::button::secondary,
+                        decide(chat::Answer::Deny),
+                    ),
                     widgets::text_button(
                         Some(Icon::Check),
                         tr("Allow once"),
@@ -1103,15 +1111,12 @@ impl App {
                         style::button::secondary,
                         scoped(torro_ipc::ApprovalScope::Always),
                     ),
-                    widgets::text_button(
-                        Some(Icon::X),
-                        tr("Deny"),
-                        style::button::secondary,
-                        decide(chat::Answer::Deny),
-                    ),
                 ];
-                // Four buttons do not fit a narrow chat in one row: they wrap.
-                iced::widget::row(buttons).spacing(space::s()).wrap().vertical_spacing(space::s()).into()
+                // Four buttons do not fit a narrow chat in one row: "Deny" keeps its own, the others wrap together.
+                let mut buttons = buttons.into_iter();
+                let deny = buttons.next();
+                let allow = iced::widget::row(buttons).spacing(space::s()).wrap().vertical_spacing(space::s());
+                iced::widget::row(deny).push(allow).spacing(space::s()).wrap().vertical_spacing(space::s()).into()
             }
             ApprovalState::Pending => {
                 let open = self.deciding.is_none();

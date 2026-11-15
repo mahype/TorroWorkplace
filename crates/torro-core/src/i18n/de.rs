@@ -9483,6 +9483,17 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Clean the build", "Build aufräumen"),
     ("Decide in the assistant's chat", "Entscheide im Chat des Assistenten"),
     ("Decide on the card there.", "Entscheide dort auf der Karte."),
+    ("Run a command", "Befehl ausführen"),
+    ("Start a command in the background", "Befehl im Hintergrund starten"),
+    (
+        "The answer was stopped or its conversation deleted, so the command did not run.",
+        "Die Antwort wurde gestoppt oder ihre Unterhaltung gelöscht, deshalb lief der Befehl nicht.",
+    ),
+    (
+        "Nothing yet. What you allow with \"Always\" in the assistant's chat appears here.",
+        "Noch nichts. Was du im Chat des Assistenten mit „Immer“ erlaubst, erscheint hier.",
+    ),
+    ("Removed", "Entfernt"),
     (
         "Runs commands and scripts in the allowed folders for the assistant · {state}",
         "Führt für den Assistenten Befehle und Skripte in den erlaubten Ordnern aus · {state}",
@@ -9517,16 +9528,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Keine Sandbox: Torro kann nicht verhindern, dass dieser Befehl andere Dateien liest oder ändert.",
     ),
     ("No such command in the background.", "Kein solcher Befehl im Hintergrund."),
-    ("Nothing yet", "Noch nichts"),
     ("On · Asks before every command", "An · Fragt vor jedem Befehl"),
     ("On · Asks only before dangerous commands", "An · Fragt nur vor gefährlichen Befehlen"),
     ("Only dangerous", "Nur gefährliche"),
     ("output cut", "Ausgabe gekürzt"),
-    ("Run a command in {folder}: {command}", "Befehl in {folder} ausführen: {command}"),
-    (
-        "Start a command in the background in {folder}: {command}",
-        "Befehl in {folder} im Hintergrund starten: {command}",
-    ),
     (
         "Runs ordinary commands right away and asks only before ones that look dangerous.",
         "Führt normale Befehle sofort aus und fragt nur vor solchen, die gefährlich aussehen.",

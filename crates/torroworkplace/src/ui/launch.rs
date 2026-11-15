@@ -151,6 +151,8 @@ pub enum Open {
     /// The page of the assistant's terminal below the built-in tools (issue #754): on, asking only before dangerous
     /// commands, with two entries allowed for good.
     Terminal,
+    /// The same page as the terminal starts: off, nothing allowed for good.
+    TerminalEmpty,
     /// MCP servers without any server, the PDF tool as it starts and the assistant without it
     /// ([`demo_connections_empty`]).
     ConnectionsEmpty,
@@ -244,7 +246,7 @@ impl Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 147] = [
+    pub const ALL: [(&'static str, Open); 148] = [
         ("setup-ai-form", Open::AiSetup("form")),
         ("setup-ai-download", Open::AiSetup("download")),
         ("setup-ai-warning", Open::AiSetup("warning")),
@@ -348,6 +350,7 @@ impl Open {
         ("connections-empty", Open::ConnectionsEmpty),
         ("search-providers", Open::SearchProviders),
         ("terminal", Open::Terminal),
+        ("terminal-empty", Open::TerminalEmpty),
         ("catalog-install", Open::CatalogInstall),
         ("catalog-install-tools", Open::CatalogInstallTools),
         ("extension-detail", Open::ExtensionDetail),
