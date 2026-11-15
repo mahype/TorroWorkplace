@@ -4729,7 +4729,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Sending mail on your behalf is switched off for the assistant.",
         "Mail in deinem Namen senden ist für den Assistenten ausgeschaltet.",
     ),
-    ("Only you can do this, in Torro Workplace.", "Das kannst nur du, in Torro Workplace."),
+    ("Only you can do this, in the control centre.", "Das kannst nur du, in der Steuerzentrale."),
     ("You switched off {area} for this conversation.", "Du hast {area} für diese Unterhaltung ausgeschaltet."),
     // Control centre: mail on the page Appearance (task M9.8)
     (
@@ -6288,8 +6288,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Neue Server sind erlaubt, bis du sie hier ausschaltest, neue Werkzeuge, solange alle Werkzeuge an sind.",
     ),
     (
-        "No MCP servers yet. Each one you add in Torro Workplace under MCP servers is allowed here.",
-        "Noch keine MCP-Server. Jeder, den du in Torro Workplace unter MCP-Server hinzufügst, ist hier erlaubt.",
+        "No MCP servers yet. Each one you add in the control centre under MCP servers is allowed here.",
+        "Noch keine MCP-Server. Jeder, den du in der Steuerzentrale unter MCP-Server hinzufügst, ist hier erlaubt.",
     ),
     (
         "Who may use a tool is set by the rights of each client. Only you can choose the folder and the logos.",
@@ -6390,8 +6390,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Nothing to choose while no area has access.", "Nichts zu wählen, solange kein Bereich Zugriff hat."),
     ("Profile changed", "Profil geändert"),
     ("Selections", "Auswahl"),
-    ("Turn on models in Torro Workplace › AI.", "Schalte Modelle unter Torro Workplace › KI an."),
-    ("Turned off in Torro Workplace › AI", "Abgeschaltet unter Torro Workplace › KI"),
+    ("Turn on models in Control centre › AI.", "Schalte Modelle unter Steuerzentrale › KI an."),
+    ("Turned off in Control centre › AI", "Abgeschaltet unter Steuerzentrale › KI"),
     ("Let {engine} ({model}) be the model for {slot}", "{engine} ({model}) für {slot} nehmen"),
     (
         "The model for Sorting changed. Resume the run to sort with the new one.",
@@ -6551,8 +6551,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("A name may be at most 255 bytes long.", "Ein Name darf höchstens 255 Bytes lang sein."),
     ("A name may not contain a colon.", "Ein Name darf keinen Doppelpunkt enthalten."),
     (
-        "The tools may only read in this folder; a person can allow more in Torro Workplace under MCP servers.",
-        "Die Werkzeuge dürfen in diesem Ordner nur lesen; mehr kann ein Mensch in Torro Workplace unter MCP-Server erlauben.",
+        "The tools may only read in this folder; a person can allow more in the control centre under MCP servers.",
+        "Die Werkzeuge dürfen in diesem Ordner nur lesen; mehr kann ein Mensch in der Steuerzentrale unter MCP-Server erlauben.",
     ),
     (
         "This is or holds an allowed folder or files the suite protects; it stays where it is.",
@@ -6722,8 +6722,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Im Web kann nicht gesucht werden: Es ließ sich keine Verbindung ins Internet aufbauen.",
     ),
     (
-        "No web search provider is on. A person chooses one in Torro Workplace under MCP servers.",
-        "Kein Websuche-Anbieter ist eingeschaltet. Ein Mensch wählt einen in Torro Workplace unter MCP-Server.",
+        "No web search provider is on. A person chooses one in the control centre under MCP servers.",
+        "Kein Websuche-Anbieter ist eingeschaltet. Ein Mensch wählt einen in der Steuerzentrale unter MCP-Server.",
     ),
     (
         "The web search providers that are on need a key, and none is stored. \
@@ -7529,8 +7529,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
          oder enthält etwas, das Torro schützt. Wähle in Torro Workplace unter „MCP-Server“ einen anderen.",
     ),
     (
-        "Choose a folder for {app} in Torro Workplace under MCP servers first. It works only in that folder.",
-        "Wähle zuerst in Torro Workplace unter „MCP-Server“ einen Ordner für {app}. Die App arbeitet nur dort.",
+        "Choose a folder for {app} in the control centre under MCP servers first. It works only in that folder.",
+        "Wähle zuerst in der Steuerzentrale unter „MCP-Server“ einen Ordner für {app}. Die App arbeitet nur dort.",
     ),
     (
         "Give the new file's path in “{argument}”: without it {app} saves over the original, and Torro saves changes \
@@ -8419,13 +8419,16 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("1 mail account", "1 Mail-Konto"),
     ("1 source", "1 Quelle"),
     ("API keys", "API-Schlüssel"),
-    ("Keys and clients are created in Torro Workplace.", "Schlüssel und Clients werden in Torro Workplace angelegt."),
+    (
+        "Keys and clients are created in the control centre.",
+        "Schlüssel und Clients werden in der Steuerzentrale angelegt.",
+    ),
     ("No program uses the API or MCP yet.", "Noch nutzt kein Programm die API oder MCP."),
-    ("Open Torro Workplace", "Torro Workplace öffnen"),
+    ("Open control centre", "Steuerzentrale öffnen"),
     ("This client no longer exists.", "Diesen Client gibt es nicht mehr."),
     (
-        "Other rights of this client are set in Torro Workplace.",
-        "Die übrigen Rechte dieses Clients stellst du in Torro Workplace ein.",
+        "Other rights of this client are set in the control centre.",
+        "Die übrigen Rechte dieses Clients stellst du in der Steuerzentrale ein.",
     ),
     // Chat and presence in the core (issue #643, `docs/chat.md`)
     ("This account has no chat on its server.", "Dieses Konto hat auf seinem Server keinen Chat."),
@@ -8553,8 +8556,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Clear after", "Löschen nach"),
     ("Clear status message", "Statusnachricht löschen"),
     (
-        "Connect a Nextcloud account with Talk in Torro Workplace to chat.",
-        "Verbinde in Torro Workplace ein Nextcloud-Konto mit Talk, um zu chatten.",
+        "Connect a Nextcloud account with Talk in the control centre to chat.",
+        "Verbinde in der Steuerzentrale ein Nextcloud-Konto mit Talk, um zu chatten.",
     ),
     ("{count} unread chats", "{count} ungelesene Chats"),
     ("{count} unread messages", "{count} ungelesene Nachrichten"),
@@ -8598,8 +8601,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Der Server ist nicht erreichbar. Versuch es noch einmal, wenn du online bist.",
     ),
     (
-        "The sign-in was refused. Sign in again in Torro Workplace.",
-        "Die Anmeldung wurde abgelehnt. Melde dich in Torro Workplace neu an.",
+        "The sign-in was refused. Sign in again in the control centre.",
+        "Die Anmeldung wurde abgelehnt. Melde dich in der Steuerzentrale neu an.",
     ),
     ("This conversation is no longer available", "Diese Unterhaltung gibt es nicht mehr"),
     ("This conversation is no longer available.", "Diese Unterhaltung gibt es nicht mehr."),
@@ -8653,7 +8656,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Choose picture…", "Bild wählen…"),
     ("City", "Ort"),
     ("Company", "Firma"),
-    ("Connect an account in Torro Workplace", "Verbinde ein Konto in Torro Workplace"),
+    ("Connect an account in the control centre", "Verbinde ein Konto in der Steuerzentrale"),
     ("Contact created", "Kontakt angelegt"),
     ("Contact deleted", "Kontakt gelöscht"),
     ("Contacts could not be loaded: {error}", "Die Kontakte konnten nicht geladen werden: {error}"),
@@ -8720,8 +8723,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Der Server ist nicht erreichbar. Änderungen warten, bis er es wieder ist.",
     ),
     (
-        "The server refused the sign-in. Check the account in Torro Workplace.",
-        "Der Server hat die Anmeldung abgelehnt. Prüf das Konto in Torro Workplace.",
+        "The server refused the sign-in. Check the account in the control centre.",
+        "Der Server hat die Anmeldung abgelehnt. Prüf das Konto in der Steuerzentrale.",
     ),
     (
         "This contact changed meanwhile. Check and save again.",

@@ -199,15 +199,15 @@ impl App {
             if let Some(err) = &self.error {
                 return no_people(
                     crate::app::chat_failed(err),
-                    Some((tr("Open Torro Workplace"), Message::OpenWorkplace)),
+                    Some((tr("Open control centre"), Message::OpenWorkplace)),
                 );
             }
             if !self.conversations_loaded {
                 return widgets::loading();
             }
             return no_people(
-                tr("Connect a Nextcloud account with Talk in Torro Workplace to chat.").to_owned(),
-                Some((tr("Open Torro Workplace"), Message::OpenWorkplace)),
+                tr("Connect a Nextcloud account with Talk in the control centre to chat.").to_owned(),
+                Some((tr("Open control centre"), Message::OpenWorkplace)),
             );
         }
         if self.tab == Tab::Messages {

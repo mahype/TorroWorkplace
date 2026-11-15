@@ -5360,7 +5360,7 @@ impl Core {
                 Some(Response::Error {
                     code: "not-connected".into(),
                     message: tr(
-                        "No web search provider is on. A person chooses one in Torro Workplace under MCP servers.",
+                        "No web search provider is on. A person chooses one in the control centre under MCP servers.",
                     )
                     .into(),
                 })
@@ -19388,7 +19388,7 @@ mod tests {
         assert_eq!(code(&none), "not-connected");
         assert_eq!(
             message(&none),
-            tr("No web search provider is on. A person chooses one in Torro Workplace under MCP servers.")
+            tr("No web search provider is on. A person chooses one in the control centre under MCP servers.")
         );
         assert_eq!(duckduckgo.calls(), 0, "nothing goes out while no provider is on");
         let switch = serde_json::json!({"provider": "duckduckgo", "enabled": true});

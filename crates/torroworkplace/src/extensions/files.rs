@@ -78,7 +78,7 @@ pub fn refusal(
         }
         Folder::None => {
             let message = trf(
-                "Choose a folder for {app} in Torro Workplace under MCP servers first. It works only in that folder.",
+                "Choose a folder for {app} in the control centre under MCP servers first. It works only in that folder.",
                 &[("app", &app)],
             );
             return Some(error("forbidden", message));
@@ -397,7 +397,7 @@ mod tests {
         let Some(Response::Error { code, message }) = unusable else { panic!("refused") };
         assert_eq!(code, "forbidden");
         let choose = trf(
-            "Choose a folder for {app} in Torro Workplace under MCP servers first. It works only in that folder.",
+            "Choose a folder for {app} in the control centre under MCP servers first. It works only in that folder.",
             &[("app", &"WordCraft")],
         );
         assert_ne!(message, choose);

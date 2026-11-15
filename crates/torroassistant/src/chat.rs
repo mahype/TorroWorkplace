@@ -248,7 +248,7 @@ pub fn refusal_hint(area: Option<Area>, lack: Option<Lack>, who: Answerer<'_>) -
         }
         Lack::Admin { area } => trf("The assistant needs admin rights for {area}.", &[("area", &name(area))]),
         Lack::Outbound => tr("Sending mail on your behalf is switched off for the assistant.").to_owned(),
-        Lack::ForPeople => tr("Only you can do this, in Torro Workplace.").to_owned(),
+        Lack::ForPeople => tr("Only you can do this, in the control centre.").to_owned(),
         Lack::SwitchedOff { area } => trf("You switched off {area} for this conversation.", &[("area", &name(area))]),
         Lack::ReadOnly => {
             tr("This conversation is read only. Pick another mode under the message field to let it change things.")
