@@ -4317,9 +4317,11 @@ static SPEAK: Command = Command {
     description: "Reads a text aloud on this computer with the provider and voice of the assistant's settings, \
                   Markdown without its marks, at most 3000 characters read (longer than 20000 is an error). \
                   Blocks until it was read or stopped, minutes for a long text; the first call with Pocket TTS \
-                  loads its model for a few seconds. A new call stops the one that reads. With the provider OpenAI \
-                  the text goes to OpenAI. `unsupported` says what is missing (the model, see \
-                  settings_list_voice_models, a sound output, the OpenAI account).",
+                  loads its model for a few seconds, with Qwen3-TTS (builds with it only) for longer, and it then \
+                  holds about 8 GB of graphics memory. A new call stops the one that reads. With the provider \
+                  OpenAI the text goes to OpenAI. `unsupported` says what is missing (the model, see \
+                  settings_list_voice_models, a sound output, the OpenAI account, Qwen3-TTS in this build); \
+                  without an NVIDIA card Qwen3-TTS fails with `error` (settings_speech_status says why).",
 };
 
 static STOP_SPEAKING: Command = Command {
@@ -4398,10 +4400,11 @@ static LIST_VOICE_MODELS: Command = Command {
     description: "Lists the models the assistant listens and speaks with on this computer: id, name, kind \
                   (`recognition` or `speech`), size in bytes, whether recommended, and state (`missing`, \
                   `running`, `ready`, `failed` with `error`, `cancelled`) with the bytes loaded (`completed`). \
-                  The list is fixed. Ask about once a second while one downloads.",
+                  The list is fixed for each build: `qwen3-tts` only in builds with Qwen3-TTS. Ask about once a \
+                  second while one downloads.",
 };
 
-// Admin like ai.pull_model: it loads up to a gigabyte onto the person's computer. Only models of the fixed
+// Admin like ai.pull_model: it loads gigabytes onto the person's computer (Qwen3-TTS 2.5 GB). Only models of the fixed
 // list, from a fixed revision with a checked hash, so nothing else can be loaded.
 static DOWNLOAD_VOICE_MODEL: Command = Command {
     name: "settings.download_voice_model",

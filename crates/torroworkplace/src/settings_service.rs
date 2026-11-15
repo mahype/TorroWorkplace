@@ -554,7 +554,10 @@ pub fn gone(key: SettingKey, value: &serde_json::Value) -> Option<String> {
             Some("this build has no Qwen3-TTS: choose pocket_voice for Pocket TTS".into())
         }
         SettingKey::SpeechProvider => match value.as_str().map(str::trim) {
-            Some("piper") => Some("the speech provider piper is gone: send \"pocket\", \"openai\" or null".into()),
+            Some("piper") => Some(match QWEN_BUILT {
+                true => "the speech provider piper is gone: send \"pocket\", \"qwen\", \"openai\" or null".into(),
+                false => "the speech provider piper is gone: send \"pocket\", \"openai\" or null".into(),
+            }),
             Some("qwen") if !QWEN_BUILT => {
                 Some("this build has no Qwen3-TTS: send \"pocket\", \"openai\" or null".into())
             }
