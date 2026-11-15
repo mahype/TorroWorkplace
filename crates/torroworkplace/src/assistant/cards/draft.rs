@@ -3,7 +3,8 @@
 //!
 //! The draft is read back as `mail.get_draft` reads it for the conversation's client: only one it wrote itself
 //! (`crate::mail::store::DraftAuthor`), in an account within its rights. The approval is the open one of
-//! `mail.send_draft` for this draft that this client asked for, and only while it still sums up the draft as it is
+//! `mail.send_draft` for this draft – its request names this draft's id, so a second draft that reads the same never
+//! takes it – that this client asked for, and only while it still sums up the draft as it is
 //! saved now: the core words the summary and its details from the stored draft ([`crate::approvals::Facts`], the
 //! rule `draft_sent` in `approvals.rs`), so a draft saved again with other recipients, subject, text or attachments no
 //! longer matches what the person was asked, and the card shows the new state without the approval. Should a change
@@ -49,9 +50,9 @@ async fn draft_card(mail: &MailService, approvals: &Approvals, client: &str, rig
     Card::Draft { draft: Box::new(draft), approval }
 }
 
-/// The id of the pending approval of `mail.send_draft` for the draft `id` that `client` asked for and that sums up the
-/// draft as it is saved now ([`matching`]); `None` without one. Reads the draft from the server a second time only
-/// while such an approval waits.
+/// The id of the pending approval of `mail.send_draft` for the draft `id` (its request names exactly this draft) that
+/// `client` asked for and that sums up the draft as it is saved now ([`matching`]); `None` without one. Reads the
+/// draft from the server a second time only while such an approval waits.
 async fn open_approval(
     mail: &MailService,
     approvals: &Approvals,
@@ -61,8 +62,8 @@ async fn open_approval(
 ) -> Option<String> {
     let send = Request::SendDraft { id: id.to_string() };
     let now = Utc::now();
-    let waiting = approvals.open_requests(Some(client), now).await.ok()?;
-    if !waiting.contains(&send) {
+    let waiting = approvals.open_with_requests(Some(client), now).await.ok()?;
+    if !waiting.iter().any(|(_, request)| *request == send) {
         return None;
     }
     // What the core would show the person for this draft now: summary and details from the stored draft, as
@@ -71,20 +72,21 @@ async fn open_approval(
     let (facts, _) = crate::mail::send::approval(mail, reach, &author, id).await.ok()?;
     let facts = Facts { mail: Some(facts), ..Facts::default() };
     let shown = (crate::approvals::summary(&send, &facts), crate::approvals::details(&send, &facts));
-    let listed = approvals.list(Some(client), now).await.ok()?;
-    matching(&listed, &send, &shown).map(|approval| approval.id.clone())
+    matching(&waiting, &send, &shown).map(|approval| approval.id.clone())
 }
 
-/// The newest of `listed` that waits for a person on `send` (`mail.send_draft`) and shows what `shown` (summary,
-/// details) says: the approval of exactly this state of the draft.
-fn matching<'a>(listed: &'a [ApprovalInfo], send: &Request, shown: &(String, Vec<String>)) -> Option<&'a ApprovalInfo> {
-    let command = send.operation().name();
-    listed.iter().find(|approval| {
-        approval.state.is_pending()
-            && approval.command == command
-            && approval.summary == shown.0
-            && approval.details == shown.1
-    })
+/// The newest of `waiting` (open approvals with their requests, newest first) that waits for a person on exactly
+/// `send` (`mail.send_draft` of this draft's id, not merely the same command) and shows what `shown` (summary,
+/// details) says: the approval of exactly this state of this draft.
+fn matching<'a>(
+    waiting: &'a [(ApprovalInfo, Request)],
+    send: &Request,
+    shown: &(String, Vec<String>),
+) -> Option<&'a ApprovalInfo> {
+    let fits = |(approval, request): &&(ApprovalInfo, Request)| {
+        approval.state.is_pending() && request == send && approval.summary == shown.0 && approval.details == shown.1
+    };
+    waiting.iter().find(fits).map(|(approval, _)| approval)
 }
 
 #[cfg(test)]
@@ -205,6 +207,23 @@ mod tests {
         assert_eq!(approval_of(&card(&room, ASSISTANT, &id).await), Some(again.id.as_str()));
         room.approvals.decide(&again.id, false, Utc::now()).await.expect("denied");
         assert_eq!(approval_of(&card(&room, ASSISTANT, &id).await), None, "denied");
+        assert!(room.smtp.sent().is_empty(), "nothing went out");
+    }
+
+    /// Issue #797: two drafts that read the same each get only the approval of their own id, never the other's.
+    #[tokio::test]
+    async fn the_approval_belongs_to_one_draft_even_when_another_reads_the_same() {
+        let room = room().await;
+        let author = DraftAuthor::Client(ASSISTANT.into());
+        let first = saved_by(&room, author.clone(), "Lunch", None).await;
+        let second = saved_by(&room, author, "Lunch", None).await;
+        assert_ne!(first, second);
+        let asked = ask_to_send(&room, ASSISTANT, &first).await;
+        assert_eq!(approval_of(&card(&room, ASSISTANT, &first).await), Some(asked.id.as_str()));
+        assert_eq!(approval_of(&card(&room, ASSISTANT, &second).await), None, "the other draft's approval");
+        let theirs = ask_to_send(&room, ASSISTANT, &second).await;
+        assert_eq!(approval_of(&card(&room, ASSISTANT, &second).await), Some(theirs.id.as_str()));
+        assert_eq!(approval_of(&card(&room, ASSISTANT, &first).await), Some(asked.id.as_str()), "still its own");
         assert!(room.smtp.sent().is_empty(), "nothing went out");
     }
 

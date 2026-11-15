@@ -1062,6 +1062,28 @@ impl Approvals {
             .collect())
     }
 
+    /// The open approvals `client` may see ([`Approvals::list`]) with the request each waits on, newest first: for a
+    /// check that needs an approval of exactly one request, such as the draft card's (issue #797, `mail.send_draft`
+    /// of one draft, `crate::assistant::cards::draft`).
+    pub async fn open_with_requests(
+        &self,
+        client: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<(ApprovalInfo, Request)>, ApprovalsError> {
+        if self.file.is_none() {
+            return Ok(Vec::new());
+        }
+        let state = self.state(now).await?;
+        let mut open: Vec<(ApprovalInfo, Request)> = state
+            .entries
+            .iter()
+            .filter(|entry| entry.info.state.is_pending() && visible(entry, client))
+            .map(|entry| (entry.info.clone(), entry.request.clone()))
+            .collect();
+        open.sort_by_key(|(info, _)| std::cmp::Reverse(info.created));
+        Ok(open)
+    }
+
     /// The approvals `client` may see, newest first: its own, or all for `None` (the app key).
     pub async fn list(&self, client: Option<&str>, now: DateTime<Utc>) -> Result<Vec<ApprovalInfo>, ApprovalsError> {
         let state = self.state(now).await?;
