@@ -1,8 +1,9 @@
 # Inhaltskarten: eine Gestalt für Assistent, Bots und Chat
 
-Stand: 2026-11-15. **Konzept (Planung #775), ohne Code.** Entwurf:
-[`docs/prototypes/inhaltskarten/index.html`](prototypes/inhaltskarten/index.html). Jede Karte, die hier noch
-fehlt, wird ein eigenes Issue aus der Liste (Abschnitt „Reihenfolge“).
+Stand: 2026-11-15. **Konzept (Planung #775); erste Welle gebaut (#784: #785, #786, #797, #789, #790).** Entwurf:
+[`docs/prototypes/inhaltskarten/index.html`](prototypes/inhaltskarten/index.html), Mockups im Artifact
+[„Vorschaukarten im Chat“](https://claude.ai/artifact/5BBebPFaWuBQ3oSPQq22yo). Jede Karte, die hier noch fehlt,
+wird ein eigenes Issue aus der Liste (Abschnitt „Reihenfolge“).
 
 ## Ziel
 
@@ -45,25 +46,25 @@ Stand je Zeile: `gebaut` (im Code und im Befehlskatalog), `geplant` (entschieden
 
 | Inhaltsart | Erkannt an | Zeigt | Zusatzinformation von | Gilt in | Stand |
 |---|---|---|---|---|---|
-| **Webseite** | `http(s)`-Link | Vorschaubild, Titel, Domain, etwas Text | im Chat: Nextcloud (`references/resolve`) oder, bei Privacy „Always“/„Show once“, die Seite selbst; im Assistenten: die Seite, nur mit Privacy | A B C | Chat `gebaut` (#636), Assistent/Bots `geplant` |
+| **Webseite** | `http(s)`-Link | Vorschaubild, Titel, Domain, etwas Text | im Chat: Nextcloud (`references/resolve`) oder, bei Privacy „Always“/„Show once“, die Seite selbst; im Assistenten: die Seite, nur mit Privacy | A B C | `gebaut` (Chat #636, Assistent/Bots #785) |
 | **YouTube** | `youtube.com/watch`, `youtu.be`, Shorts | Bild in 16:9, Abspielzeichen, Titel, „Open on YouTube“; Klick öffnet den Player | Link-Karte (`video`: Kennung, Start, Short) | A B C | Chat `gebaut` (#673), Assistent/Bots `geplant` |
 | **Andere Videos** (Vimeo, PeerTube, direkte Videodatei) | Link auf bekannten Anbieter | wie YouTube, ohne eigenen Player zuerst | Link-Karte | A B C | `Idee` |
-| **E-Mail**, gefunden oder referenziert | Treffer aus `mail.search` / `mail.get_message`; im Chat geteilte Mail-Karte | Absender, Betreff, Datum, Anfang des Textes, „Open in mail“; Kennzeichnung `untrusted` | der Kern aus dem Mail-Cache, nie aus dem Text des Modells | A B (C nur als geteilte Karte) | `geplant` |
+| **E-Mail**, gefunden oder referenziert | Treffer aus `mail.search` / `mail.get_message`; im Chat geteilte Mail-Karte | Absender, Betreff, Datum, Anfang des Textes, „Open in mail“; Kennzeichnung `untrusted` | der Kern aus dem Mail-Cache, nie aus dem Text des Modells | A B (C nur als geteilte Karte) | A B `gebaut` (#786), C geteilt `geplant` (#800) |
 | **Mail-Vorschlag** (Termin, Aufgabe aus einer Mail) | `mail.extract_action` | der Vorschlag mit „Accept“/„Dismiss“ | `mail.list_suggestions` | A B | `gebaut` (`CardRef::Suggestion`, #605) |
-| **Mail-Entwurf** | `mail.save_draft` | Kopfzeilen und Anfang, „Review“, „Send“ nach Freigabe | `mail.get_message` | A B | `geplant` (entworfen in [assistent.md](assistent.md)) |
-| **Termin** | `calendar.save_event` / `list_events` | Kalenderblatt, Ort, Teilnehmer, Überschneidung, „Open in calendar“ | `calendar.list_events` | A B C (geteilt) | `geplant` (entworfen) |
-| **Aufgabe** | `tasks.save_todo` / `list_todos` | Fälligkeit, Priorität, Liste, „Open in tasks“, „Done“ | `tasks.list_todos` | A B C (geteilt) | `geplant` (entworfen) |
+| **Mail-Entwurf** | `mail.save_draft` | Kopfzeilen und Anfang, „Review“, „Send“ nach Freigabe | `mail.get_message` | A B | `gebaut` (#797) |
+| **Termin** | `calendar.save_event` / `list_events` | Kalenderblatt, Ort, Teilnehmer, Überschneidung, „Open in calendar“ | `calendar.list_events` | A B C (geteilt) | A B `gebaut` (#797), C geteilt `geplant` (#800) |
+| **Aufgabe** | `tasks.save_todo` / `list_todos` | Fälligkeit, Priorität, Liste, „Open in tasks“, „Done“ | `tasks.list_todos` | A B C (geteilt) | A B `gebaut` (#797), C geteilt `geplant` (#800) |
 | **Issue-Entwurf** (GitHub) | `tasks.create_issue` (Vorschlag, [github.md](github.md)) | Titel, Repo, „Create“ nach Freigabe | der Kern | A B | `geplant` (entworfen) |
 | **Datei** | `tools.create_pdf` u. a. | Name, Größe, Art, „Open“, „Save as…“ | Register der eigenen Werkzeuge | A B | `gebaut` (`CardRef::File`) |
 | **Landkarte** | Link auf Google Maps, OpenStreetMap, Apple Maps | Kartenbild, Ort, „Open in maps“ | Ort aus dem Link gelesen (nichts geladen), Bild über `calendar.map_preview` | A B C | `geplant`, siehe „Landkarten“ |
 | **PDF** | Link oder Anhang `application/pdf` | Titel, Seitenzahl, Dateigröße; erste Seite als Bild | der Kern liest Eigenschaften der Datei; erste Seite über den Vorschau-Anbieter für PDF (Renderer offen) | A B C | Titel und Seitenzahl `geplant`, erste Seite `Idee`, siehe „Vorschau-Anbieter je Dateiart“ |
 | **Bild aus einem Programm** (z. B. ArtCraft) | Link oder Verweis eines angebundenen MCP-Servers | kleine Vorschau, Titel, „From <Name> (external, untrusted)“ | der MCP-Server, nur Titel, Kurztext, ein Bild | A B | `geplant`, siehe „MCP als Quelle“ |
-| **Foto und Album** | Treffer aus `photos.list_photos` / `photos.list_albums`; im Chat geteilte Karte | Bild (Album: Titelbild und Anzahl), Datum, Ort, „Open in photos“ | Bild über `photos.get_preview` ([fotos.md](fotos.md), PH1), nur mit dem Recht „Bildinhalte“; ohne das Recht Datum und Ort mit dem Symbol der Art | A B C (geteilt) | `Idee` |
-| **Notiz** | Treffer aus `notes.list_notes` / `notes.get_note`; im Chat geteilte Karte | Titel, Kategorie, Anfang des Textes, „Open in notes“ | `notes.get_note` ([notizen.md](notizen.md)) | A B C (geteilt) | `Idee` |
-| **Kontakt** | Treffer aus `contacts.list_contacts` / `contacts.get_contact`; im Chat geteilte Kontakt-Karte | Foto, Name, Firma, eine Angabe (Mail oder Telefon), „Open in contacts“ | `contacts.get_contact`, Foto über `contacts.get_photo`; baut auf der geteilten Karte aus [teilen.md](teilen.md) auf | A B C (geteilt) | `Idee` |
-| **Nextcloud-Datei** | Link auf den eigenen Nextcloud-Server (`/f/<id>`, `/s/<token>`, `/index.php/apps/files`) | Vorschaubild, Name, Größe, Ordner, „Open in Nextcloud“ | Vorschau vom eigenen Server; keine Privacy-Frage, weil kein fremder Anbieter gefragt wird | A B C | `Idee` |
-| **GitHub Issue / PR** | Link `github.com/<owner>/<repo>/issues/<nr>` oder `/pull/<nr>` | Nummer, Titel, Repo, Zustand (offen, geschlossen, gemergt), „Open on GitHub“ | der Kern über das verbundene GitHub-Konto ([github.md](github.md)); ohne Konto die Webseiten-Karte | A B C | `Idee` |
-| **Zitat einer Chat-Nachricht** | Link auf eine Nachricht des eigenen Servers; im Assistenten Treffer aus `chat.search_messages` | Absender, Unterhaltung, Zeit, Anfang der Nachricht, „Open in chat“ | `chat.get_messages`, nur wenn der Empfänger die Unterhaltung lesen darf | A B C | `Idee` |
+| **Foto und Album** | Treffer aus `photos.list_photos` / `photos.list_albums`; im Chat geteilte Karte | Bild (Album: Titelbild und Anzahl), Datum, Ort, „Open in photos“ | Bild über `photos.get_preview` ([fotos.md](fotos.md), PH1), nur mit dem Recht „Bildinhalte“; ohne das Recht Datum und Ort mit dem Symbol der Art | A B C (geteilt) | `geplant` (#799, wartet auf Fotos im Kern) |
+| **Notiz** | Treffer aus `notes.list_notes` / `notes.get_note`; im Chat geteilte Karte | Titel, Kategorie, Anfang des Textes, „Open in notes“ | `notes.get_note` ([notizen.md](notizen.md)) | A B C (geteilt) | `geplant` (#799, wartet auf Notizen im Kern) |
+| **Kontakt** | Treffer aus `contacts.list_contacts` / `contacts.get_contact`; im Chat geteilte Kontakt-Karte | Foto, Name, Firma, eine Angabe (Mail oder Telefon), „Open in contacts“ | `contacts.get_contact`, Foto über `contacts.get_photo`; baut auf der geteilten Karte aus [teilen.md](teilen.md) auf | A B C (geteilt) | A B `gebaut` (#789), C geteilt `geplant` (#800) |
+| **Nextcloud-Datei** | Link auf den eigenen Nextcloud-Server (`/f/<id>`, `/s/<token>`, `/index.php/apps/files`) | Vorschaubild, Name, Größe, Ordner, „Open in Nextcloud“ | Vorschau vom eigenen Server; keine Privacy-Frage, weil kein fremder Anbieter gefragt wird | A B C | `gebaut` (#790) |
+| **GitHub Issue / PR** | Link `github.com/<owner>/<repo>/issues/<nr>` oder `/pull/<nr>` | Nummer, Titel, Repo, Zustand (offen, geschlossen, gemergt), „Open on GitHub“ | der Kern über das verbundene GitHub-Konto ([github.md](github.md)); ohne Konto die Webseiten-Karte | A B C | `gebaut` (#790) |
+| **Zitat einer Chat-Nachricht** | Link auf eine Nachricht des eigenen Servers; im Assistenten Treffer aus `chat.search_messages` | Absender, Unterhaltung, Zeit, Anfang der Nachricht, „Open in chat“ | `chat.get_messages`, nur wenn der Empfänger die Unterhaltung lesen darf | A B C | `gebaut` (#790) |
 
 Die Liste wächst: Wer eine Inhaltsart vorschlägt, ergänzt eine Zeile (mit Stand `Idee`) und ein Issue folgt aus
 der Reihenfolge unten.
@@ -220,11 +221,14 @@ und kommt mit dem Issue der jeweiligen Karte in den Befehlskatalog (`torro-ipc`,
 |---|---|---|---|---|
 | Karten eines Assistenten-Verlaufs lesen | Chatfenster des Assistenten | `assistant.get_cards` (vorhanden) | Read | `assistant_get_cards` (vorhanden) |
 | Link-Karten einer Nachricht lesen | Chatfenster | Feld `cards` in `chat.get_messages` (vorhanden) | Read | `chat_get_messages` (vorhanden) |
-| Bild einer Karte holen | Chatfenster | `chat.get_preview { card: true }` (vorhanden) | Read | `chat_get_preview` (vorhanden) |
-| Link-Karte einmal zeigen („Show once“) | Chatfenster | `chat.show_card` (vorhanden) | Write | `Never`: nur Menschen, [api.md](api.md) Punkt 14 |
+| Bild einer Karte holen | Chatfenster | `chat.get_preview { card: true, index? }` (bis drei Karten je Nachricht, #785) | Read | `chat_get_preview` (vorhanden) |
+| Bild einer Webseiten-Karte im Assistenten | Chatfenster des Assistenten | `assistant.get_card_picture { conversation, seq }` (#785) | Read | `Never`: nur das Fenster braucht die Bilddaten; Agenten lesen Titel und Text über `assistant_get_cards` |
+| Link-Karte einmal zeigen („Show once“) | Chatfenster | `chat.show_card { index? }` (vorhanden) | Write | `Never`: nur Menschen, [api.md](api.md) Punkt 14 |
+| Webseiten-Karte im Assistenten einmal zeigen („Show once“) | Chatfenster des Assistenten | `assistant.show_card { conversation, seq }` (#785) | Write | `Never`: nur Menschen, [api.md](api.md) Punkt 14 |
 | Stufe und Anbieter ändern | Settings › Privacy | `settings.set_setting privacy_*` (vorhanden) | Admin, nur App-Schlüssel | im Katalog `Mcp::Tool`; Werte `privacy_*` bekommen von jedem Client `forbidden` (`kept_for_people`, [api.md](api.md) Punkt 14), Lesen über `settings_get_settings` |
-| Webseiten-Karte im Assistenten auflösen | Chatfenster des Assistenten | Vorschlag: `assistant.get_cards` mit `CardRef::Link` | Read | vorhandenes `assistant_get_cards` |
-| Gefundene Mail als Karte | Chatfenster des Assistenten | Vorschlag: `assistant.get_cards` mit `CardRef::Mail` | Read | vorhandenes `assistant_get_cards` |
+| Webseiten-Karte im Assistenten auflösen | Chatfenster des Assistenten | `assistant.get_cards` mit `CardRef::Link` (#785) | Read | vorhandenes `assistant_get_cards` |
+| Gefundene Mail als Karte | Chatfenster des Assistenten | `assistant.get_cards` mit `CardRef::Mail` (#786) | Read | vorhandenes `assistant_get_cards` |
+| Treffer als Karten zeigen (bis 10, Kurzform ab 4, „Show all“ ab 11) | Chatfenster des Assistenten, vom Assistenten selbst | `assistant.show_items { conversation?, items }` (#786); nur Kennungen, die der Assistent in dieser Unterhaltung gelesen hat | Write | `assistant_show_items` |
 | Landkarte als Karte | beide Chatfenster | Vorschlag: `CardRef::Map`, Bild über `calendar.map_preview` (vorhanden); der Kern holt es beim Auflösen der Karte selbst, das Modell sieht es nie | Read | Bild nicht für Assistenten (`calendar_map_preview`, [termin-editor.md](termin-editor.md)) |
 | Karte eines MCP-Servers | Chatfenster des Assistenten | Vorschlag: `CardRef::External` aus dem Werkzeugergebnis | Read | über das Werkzeug des Servers; kein eigenes Tool |
 | Karte zusammenführen (Kurzform) | alle Fenster | Teil derselben Antworten | Read | wie oben |
@@ -233,14 +237,15 @@ und kommt mit dem Issue der jeweiligen Karte in den Befehlskatalog (`torro-ipc`,
 | Vorschaubild einer Datei holen | alle Fenster | Teil der vorhandenen `assistant.get_cards` (`CardRef::File`) und `chat.get_preview { card: true }`; Vorschlag: der Kern fragt dabei den Anbieter der Dateiart | Read | vorhandene `assistant_get_cards`, `chat_get_preview`; kein eigenes Tool, das Bild entsteht nur beim Auflösen einer Karte |
 | Foto und Album als Karte | beide Chatfenster | Vorschlag: `CardRef::Photo` / `CardRef::Album`, Bild über `photos.get_preview` (Vorschlag in [fotos.md](fotos.md), PH1) | Read **und** Recht „Bildinhalte“ für das Bild | vorhandenes `assistant_get_cards`; Bild über `photos_get_preview` nur mit dem Recht |
 | Notiz als Karte | beide Chatfenster | Vorschlag: `CardRef::Note`, Inhalt über `notes.get_note` ([notizen.md](notizen.md)) | Read | vorhandenes `assistant_get_cards` |
-| Kontakt als Karte | beide Chatfenster | Vorschlag: `CardRef::Contact` über `contacts.get_contact` und `contacts.get_photo` (vorhanden); im Chat die geteilte Karte aus [teilen.md](teilen.md) | Read | vorhandenes `assistant_get_cards` |
-| Nextcloud-Datei als Karte | beide Chatfenster | Vorschlag: Link-Karte mit `kind: nextcloud_file` im Feld `cards` von `chat.get_messages`, im Assistenten `CardRef::Link` | Read | vorhandene `chat_get_messages`, `assistant_get_cards` |
-| GitHub Issue / PR als Karte | beide Chatfenster | Vorschlag: Link-Karte mit `kind: github`, aufgelöst über das GitHub-Konto des Kerns ([github.md](github.md)) | Read | vorhandene `chat_get_messages`, `assistant_get_cards` |
-| Zitat einer Chat-Nachricht als Karte | beide Chatfenster | Vorschlag: Link-Karte mit `kind: chat_message`, Inhalt über `chat.get_messages` (vorhanden), nur mit Leserecht des Empfängers | Read | vorhandene `chat_get_messages`, `assistant_get_cards` |
+| Kontakt als Karte | beide Chatfenster | `CardRef::Contact` (#789) über `contacts.get_contact` und `contacts.get_photo` (vorhanden); im Chat die geteilte Karte aus [teilen.md](teilen.md) | Read | vorhandenes `assistant_get_cards` |
+| Nextcloud-Datei als Karte | beide Chatfenster | Link-Karte mit `kind: nextcloud_file` im Feld `cards` von `chat.get_messages`, im Assistenten `CardRef::Link` | Read | vorhandene `chat_get_messages`, `assistant_get_cards` |
+| GitHub Issue / PR als Karte | beide Chatfenster | Link-Karte mit `kind: github`, aufgelöst über das GitHub-Konto des Kerns ([github.md](github.md)) | Read | vorhandene `chat_get_messages`, `assistant_get_cards` |
+| Zitat einer Chat-Nachricht als Karte | beide Chatfenster | Link-Karte mit `kind: chat_message`, Inhalt über `chat.get_messages` (vorhanden), nur mit Leserecht des Empfängers | Read | vorhandene `chat_get_messages`, `assistant_get_cards` |
 | Karte neu laden („Try again“) | alle Fenster | kein eigener Befehl: dieselbe Anfrage (`assistant.get_cards`, `chat.get_preview`) noch einmal | Read | wie oben |
 
-Es entsteht **kein Befehl, mit dem ein Agent eine Karte frei hinstellt** (`chat.show_card` ist bewusst `Never`):
-Eine Karte entsteht nur als Ergebnis eines Befehls oder Werkzeugs, das der Kern selbst ausführt.
+Es entsteht **kein Befehl, mit dem ein Agent eine Karte frei hinstellt** (`chat.show_card` und
+`assistant.show_card` sind bewusst `Never`): Eine Karte entsteht nur als Ergebnis eines Befehls oder Werkzeugs, das
+der Kern selbst ausführt. `assistant.show_items` wählt nur aus, was der Kern in dieser Unterhaltung schon gelesen hat.
 
 ## Reihenfolge
 
@@ -253,7 +258,8 @@ Vorschlag für die Folge-Issues, je ein Titel, hier nicht angelegt:
 3. **Inhaltskarten: Termin, Aufgabe und Mail-Entwurf** (die in [assistent.md](assistent.md) entworfenen Karten
    auf den Bausteinen bauen).
 4. **Inhaltskarten: Notiz, Kontakt, Foto und Album** (eigene Inhalte aus Torro; Kontakt baut auf der geteilten
-   Karte auf, Foto auf `photos.get_preview` und dem Recht „Bildinhalte“).
+   Karte auf, Foto auf `photos.get_preview` und dem Recht „Bildinhalte“). Gebaut ist der Kontakt (#789); Notiz,
+   Foto und Album folgen in #799, sobald der Kern Notizen und Fotos hat.
 5. **Inhaltskarten: Links auf den eigenen Server und GitHub** (Nextcloud-Datei, Zitat einer Chat-Nachricht,
    GitHub Issue / PR).
 6. **Inhaltskarten: Vorschau-Anbieter je Dateiart** (Zuordnung im Kern, eigene Renderer, Settings › Extensions,

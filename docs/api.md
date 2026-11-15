@@ -166,6 +166,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `extensions` ²⁵ | `list_extensions`, `get_extension`, `list_catalog`, `list_tools`, `read_logs` (**nur App-Schlüssel**, Punkt 10 unten) | `set_enabled` (einschalten **nur App-Schlüssel**) | `call_tool` (Zugriff des Werkzeugs, ²⁵) | `remove_extension`, `install_extension`, `confirm_tools`, `update_extension`, `set_secret`, `set_folder` (die letzten fünf **nur App-Schlüssel**) |
 | `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity` (**nur App-Schlüssel**, siehe unten) |
 | `approvals` | `list_approvals`, `approval_status` | `ask_permission` ⁵ | | `decide_approval` (**nur App-Schlüssel**) |
+| `assistant` (Karten, #784) | `get_cards`, `get_card_picture` (Bild einer Link-Karte, `Mcp::Never`: nur das Fenster braucht die Bilddaten) | `show_items` (Treffer als Karten; nur Kennungen, die der Assistent in dieser Unterhaltung gelesen hat, höchstens 10, auch für Bots), `show_card` (**nur App-Schlüssel**, Punkt 14) | | |
 
 ¹ `load_template` braucht `Write`, mit `mode: replace` aber `Delete`, weil es offene Fenster
 schließt. Die Stufe hängt also vom Request ab, nicht nur vom Namen (`Request::operation()`).
@@ -1454,7 +1455,8 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
     MCP-Servers in Punkt 10). Ein Client, der die ganzen Einstellungen schreibt, behält das gespeicherte `privacy`.
     Grund: Was geladen wird, verrät Dritten, dass und wann die Person liest; darüber entscheidet sie selbst, und
     kein Agent soll ihr eine Rückfrage abnehmen oder aufzwingen. Lesen dürfen Agenten den Stand
-    (`settings.get_settings`, Feld `privacy`). „Show once“ im Chat ist `chat.show_card` (ohnehin `Mcp::Never`); in der
+    (`settings.get_settings`, Feld `privacy`). „Show once“ im Chat ist `chat.show_card`, im Assistenten
+    `assistant.show_card` (Issue #784; beide `Mcp::Never`, Privacy bleibt dabei unverändert); in der
     Mail hat es keinen Befehl, weil nur das Fenster lädt und nichts gespeichert wird. `mail.save_message_as` (PDF,
     Bild) lädt externe Bilder nur nach der gespeicherten Einstellung, „Show once“ zählt dort nicht, weil auch Agenten
     speichern dürfen.
