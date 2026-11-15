@@ -5,7 +5,8 @@
 //!   voice is switched on or a conversation by voice starts, and stops it when both are over. Each
 //!   change of state goes to standard output as one JSON string per line (`"listening"`,
 //!   `"recording"`, `"answering"`, `"conversing"`, `"off"`: [`VoiceState`]), which the core reads to
-//!   show it in the tray. It exits 0 when voice went off, 1 when it could not listen.
+//!   show it in the tray. The half of a timed round (issue #828) goes there too, as `{"round": {…}}`
+//!   with durations only. It exits 0 when voice went off, 1 when it could not listen.
 //! - `--voice-status --voice <settings>`: what the listener would use, as one line of JSON (a
 //!   [`Response::Voice`]), for `settings.voice_status`. The settings are `Settings::voice` as
 //!   JSON, handed over by the core.
@@ -30,7 +31,7 @@ use torro_core::voice_models::voice_folder;
 use torro_ipc::{Response, VoiceState};
 
 use super::audio::{Endpoint, FRAMES_PER_SECOND, Limits, NoiseFloor};
-use super::listen::{Assistant, CoreAssistant, Ended, Listener};
+use super::listen::{Assistant, CoreAssistant, Ended, Heard, Listener};
 use super::parts::{Parts, voice_status};
 use super::recognize::{SherpaTranscriber, require};
 use super::sound::{CpalRecorder, SystemDevices};
@@ -215,6 +216,7 @@ fn listen() -> ExitCode {
             speaker: parts.speaker,
             assistant: &mut core,
             report: Box::new(report),
+            heard: Box::new(heard),
             limits: Limits::default(),
             // Issue #747: twice a second, so the microphone closes soon when something is read aloud.
             check_every: FRAMES_PER_SECOND / 2,
@@ -246,6 +248,22 @@ fn stopped(code: ExitCode) -> ExitCode {
 /// ended), the listener ends too: nobody could switch the microphone off any more.
 fn report(state: VoiceState) {
     let line = serde_json::to_string(&state).unwrap_or_default();
+    let mut out = std::io::stdout();
+    if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
+        std::process::exit(0);
+    }
+}
+
+/// Tells the core the listener's half of a timed round (issue #828) as `{"round": {…}}` on one line,
+/// durations only. Ends the listener like [`report`] when the core no longer reads.
+fn heard(round: Heard) {
+    let line = serde_json::json!({ "round": {
+        "conversation": round.conversation,
+        "after": round.after,
+        "pause_ms": round.pause_ms,
+        "recognize_ms": round.recognize_ms,
+    }})
+    .to_string();
     let mut out = std::io::stdout();
     if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
         std::process::exit(0);

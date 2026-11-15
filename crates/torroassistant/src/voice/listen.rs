@@ -81,6 +81,22 @@ pub struct Sent {
     pub after: u64,
 }
 
+/// The listener's half of a timed round (issue #828): how long the pause that ended the sentence
+/// was and how long speech recognition took, for the message `after` in `conversation`. The core adds
+/// the first word and the first sound once the answer was read. Only durations, never text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Heard {
+    pub conversation: String,
+    pub after: u64,
+    pub pause_ms: u32,
+    pub recognize_ms: u32,
+}
+
+/// `frames` of the microphone as milliseconds.
+fn frames_ms(frames: usize) -> u32 {
+    u32::try_from(frames.saturating_mul(1000) / FRAMES_PER_SECOND).unwrap_or(u32::MAX)
+}
+
 /// The assistant's answer to a spoken sentence.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Reply {
@@ -194,6 +210,8 @@ pub struct Listener<'a, A: Assistant> {
     pub assistant: &'a mut A,
     /// Told every change of state (the core reads it to show it in the tray).
     pub report: Box<dyn FnMut(VoiceState) + 'a>,
+    /// Told the listener's half of each round whose answer is read aloud ([`Heard`], issue #828).
+    pub heard: Box<dyn FnMut(Heard) + 'a>,
     pub limits: Limits,
     /// How many frames go by between two looks at the settings and the conversation by voice (about
     /// half a second).
@@ -294,7 +312,7 @@ impl<A: Assistant> Listener<'_, A> {
         // The microphone closes before the answer: it is not recorded, and it cannot wake it.
         drop(stream);
         (self.report)(VoiceState::Answering);
-        let ended = self.answer(voice, &sentence, end.heard_speech(), None, readings);
+        let ended = self.answer(voice, &sentence, end.heard_speech(), end.trailing_quiet(), None, readings);
         self.wake.reset();
         Ok(ended)
     }
@@ -365,7 +383,7 @@ impl<A: Assistant> Listener<'_, A> {
             return Ok(Ended::Nothing);
         }
         (self.report)(VoiceState::Answering);
-        Ok(self.answer(voice, &sentence, true, Some(talk), readings))
+        Ok(self.answer(voice, &sentence, true, end.trailing_quiet(), Some(talk), readings))
     }
 
     /// Looks at the settings and the conversation by voice: stop ([`Ended::VoiceOff`]) when voice is
@@ -436,12 +454,24 @@ impl<A: Assistant> Listener<'_, A> {
     /// The answer is read aloud if `voice` says so; one that waits for an approval ends the
     /// conversation by voice (decision 5). A closing sentence ends it without sending. `readings` were
     /// begun when the microphone opened: a reading that began since, even one already over, drops the
-    /// sentence.
-    fn answer(&mut self, voice: &Voice, sentence: &[i16], spoken: bool, talk: Option<Talk>, readings: u64) -> Ended {
+    /// sentence. `quiet` frames of pause ended the sentence; with the time speech recognition took they
+    /// go to [`Listener::heard`] once the sentence was sent, if the answer is read aloud.
+    fn answer(
+        &mut self,
+        voice: &Voice,
+        sentence: &[i16],
+        spoken: bool,
+        quiet: usize,
+        talk: Option<Talk>,
+        readings: u64,
+    ) -> Ended {
         if !spoken {
             return Ended::Nothing;
         }
-        let text = match self.transcriber.transcribe(sentence) {
+        let recognizing = Instant::now();
+        let transcribed = self.transcriber.transcribe(sentence);
+        let recognize_ms = u32::try_from(recognizing.elapsed().as_millis()).unwrap_or(u32::MAX);
+        let text = match transcribed {
             Ok(text) => strip_wake_phrase(&text),
             Err(err) => {
                 eprintln!("torroassistant: {err}");
@@ -481,6 +511,13 @@ impl<A: Assistant> Listener<'_, A> {
             self.assistant.open(&sent.conversation);
         }
         if voice.speak_answers {
+            // Only a round read aloud is timed (decision 1): without a first sound it is half a round.
+            (self.heard)(Heard {
+                conversation: sent.conversation.clone(),
+                after: sent.after,
+                pause_ms: frames_ms(quiet),
+                recognize_ms,
+            });
             if let Err(err) = self.assistant.speak_answer(&sent.conversation) {
                 eprintln!("torroassistant: cannot speak the answer: {err}");
             }
@@ -973,6 +1010,7 @@ mod tests {
         windows: Vec<String>,
         states: Vec<VoiceState>,
         talk: Option<Talk>,
+        heard: Vec<Heard>,
         ended: Result<Ended, VoiceError>,
     }
 
@@ -991,6 +1029,8 @@ mod tests {
         let states = Rc::new(RefCell::new(Vec::new()));
         let voice = core.borrow().voice.clone();
         let reported = Rc::clone(&states);
+        let told = Rc::new(RefCell::new(Vec::new()));
+        let rounds = Rc::clone(&told);
         let mut listener = Listener {
             recorder: Box::new(Files { files: files.iter().copied().collect(), opened: Rc::clone(&opened) }),
             wake: Box::new(WakeAt { at: wake, seen: 0 }),
@@ -998,6 +1038,7 @@ mod tests {
             speaker: Box::new(Tone(Rc::clone(&chimes))),
             assistant: &mut assistant,
             report: Box::new(move |state| reported.borrow_mut().push(state)),
+            heard: Box::new(move |round| rounds.borrow_mut().push(round)),
             limits: Limits::default(),
             check_every: 10,
             pause: Duration::ZERO,
@@ -1014,6 +1055,7 @@ mod tests {
             windows: windows.borrow().clone(),
             states: states.borrow().clone(),
             talk: core.talk.clone(),
+            heard: told.borrow().clone(),
             ended,
         }
     }
@@ -1032,6 +1074,21 @@ mod tests {
 
     fn talk_in(conversation: Option<&str>) -> Option<Talk> {
         Some(Talk { conversation: conversation.map(str::to_string), state: VoiceState::Conversing })
+    }
+
+    /// Issue #828: a sentence whose answer is read aloud tells its half of the round once, for the
+    /// message it went to; without "Speak answers" nothing is timed.
+    #[test]
+    fn a_round_read_aloud_tells_its_pause_and_recognition() {
+        let read = run(Core::new(on()), &["utterance.wav", PAUSE], Some(2), &[" Hey Torro, what is on today?"]);
+        assert_eq!(read.heard.len(), 1, "{:?}", read.heard);
+        let heard = &read.heard[0];
+        assert_eq!((heard.conversation.as_str(), heard.after), ("c9", 1), "the message the send answered");
+        assert_eq!(heard.pause_ms, 1000, "the pause of a second ended the sentence");
+
+        let quiet = Voice { speak_answers: false, ..on() };
+        let silent = run(Core::new(quiet), &["utterance.wav", PAUSE], Some(2), &[" Hey Torro, what is on today?"]);
+        assert!(messages(&silent.sent).len() == 1 && silent.heard.is_empty(), "sent, but not timed");
     }
 
     #[test]
@@ -1270,6 +1327,7 @@ mod tests {
             speaker: Box::new(Tone(Rc::default())),
             assistant: &mut assistant,
             report: Box::new(|_| {}),
+            heard: Box::new(|_| {}),
             limits: Limits::default(),
             check_every: 10,
             pause: Duration::ZERO,
