@@ -462,15 +462,11 @@ impl Drop for Gone {
 
 /// Starts the thread of a local provider numbered `number`: it makes the synth (loading the model takes
 /// seconds), then computes one job after the other while `current` names it, and hands the sound to
-/// `events`. It ends when the helper drops its sender, and with it the model.
-fn start_worker(
-    make: Arc<MakeSynth>,
-    events: Sender<Event>,
-    current: Arc<AtomicU64>,
-    number: u64,
-) -> (Sender<Spoken>, std::thread::JoinHandle<()>) {
+/// `events`. It ends when the helper drops its sender, and with it the model: the synth goes before
+/// [`Gone`] says so, so [`Event::WorkerGone`] comes once the model is off the graphics card.
+fn start_worker(make: Arc<MakeSynth>, events: Sender<Event>, current: Arc<AtomicU64>, number: u64) -> Sender<Spoken> {
     let (jobs, inbox) = mpsc::channel::<Spoken>();
-    let thread = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         let _gone = Gone(events.clone(), number);
         let mut synth = match make() {
             Ok(synth) => synth,
@@ -505,7 +501,7 @@ fn start_worker(
             }
         }
     });
-    (jobs, thread)
+    jobs
 }
 
 /// The job that reads now.
@@ -538,11 +534,12 @@ pub struct Helper<W: FnMut(Output)> {
     /// The thread of the local provider with its number and the provider it reads with; `None` until the
     /// first job and after it ended.
     worker: Option<(u64, SpeechProvider, Sender<Spoken>)>,
-    /// The thread of Qwen3-TTS that gave way to Pocket TTS, until it has ended: a new one waits for it, so
-    /// its model is never twice on the graphics card (issue #764).
-    retired: Option<std::thread::JoinHandle<()>>,
-    /// The thread of the worker that reads now, kept to retire it.
-    thread: Option<std::thread::JoinHandle<()>>,
+    /// The number of the thread of Qwen3-TTS that gave way to Pocket TTS, until it has ended: a new one
+    /// waits for it, so its model is never twice on the graphics card (issue #764).
+    retired: Option<u64>,
+    /// The Qwen job held back until [`Helper::retired`] has ended, with what makes Qwen. The helper goes
+    /// on meanwhile: a stop or a new job drops it at once.
+    waiting: Option<(Spoken, Arc<MakeSynth>)>,
     /// Counts the threads started, so the end of one replaced meanwhile fails no job of the next.
     workers: u64,
     /// The local job that may compute; 0 for none. The thread looks at it between two pieces of sound.
@@ -572,7 +569,7 @@ impl<W: FnMut(Output)> Helper<W> {
             make_qwen: None,
             worker: None,
             retired: None,
-            thread: None,
+            waiting: None,
             workers: 0,
             current: Arc::new(AtomicU64::new(0)),
             next: 0,
@@ -669,6 +666,16 @@ impl<W: FnMut(Output)> Helper<W> {
                     self.fail(failed_to_load(&err));
                 }
             }
+            Event::WorkerGone(number) if self.retired == Some(number) => {
+                self.retired = None;
+                // The Qwen job that waited starts now, unless it was stopped or replaced meanwhile.
+                if let Some((job, make)) = self.waiting.take()
+                    && self.current.load(Ordering::SeqCst) == job.id
+                    && let Err(failed) = self.send_job(SpeechProvider::Qwen, &make, job, sender)
+                {
+                    self.fail(failed);
+                }
+            }
             Event::WorkerGone(number) => {
                 if self.worker.as_ref().is_none_or(|(now, _, _)| *now != number) {
                     return;
@@ -745,36 +752,45 @@ impl<W: FnMut(Output)> Helper<W> {
         if !model_ready(model, self.folder.as_deref()) {
             return Err(not_downloaded());
         }
-        if self.worker.as_ref().is_some_and(|(_, reads, _)| *reads != provider) {
-            // Dropping its sender ends the thread once it is between two pieces, and frees its model.
-            let gave_way = self.worker.take().is_some_and(|(_, reads, _)| reads == SpeechProvider::Qwen);
-            let thread = self.thread.take();
-            if gave_way {
-                self.retired = thread;
-            }
-        }
-        if provider == SpeechProvider::Qwen
-            && let Some(retired) = self.retired.take()
+        // A job that waited for Qwen is replaced by this one.
+        self.waiting = None;
+        if self.worker.as_ref().is_some_and(|(_, reads, _)| *reads != provider)
+            && let Some((number, reads, _)) = self.worker.take()
+            && reads == SpeechProvider::Qwen
         {
-            // At most one piece long (about two seconds): its model must leave the card first.
-            let _ = retired.join();
+            // Dropping its sender ends the thread once it is between two pieces, and frees its model.
+            self.retired = Some(number);
         }
         self.next += 1;
         let id = self.next;
         self.current.store(id, Ordering::SeqCst);
-        let mut job = Spoken { id, text, voice, delivery };
+        let job = Spoken { id, text, voice, delivery };
+        if provider == SpeechProvider::Qwen && self.retired.is_some() {
+            // The model of the Qwen thread that gave way must leave the card first; its end starts this one.
+            self.waiting = Some((job, make));
+            return Ok(id);
+        }
+        self.send_job(provider, &make, job, sender).map(|()| id)
+    }
+
+    /// Gives `job` to the thread of `provider`, made by `make` and started first.
+    fn send_job(
+        &mut self,
+        provider: SpeechProvider,
+        make: &Arc<MakeSynth>,
+        mut job: Spoken,
+        sender: &Sender<Event>,
+    ) -> Result<(), Output> {
         // A thread that broke down is started again, once.
         for _ in 0..2 {
             if self.worker.is_none() {
                 self.workers += 1;
-                let (jobs, thread) =
-                    start_worker(Arc::clone(&make), sender.clone(), Arc::clone(&self.current), self.workers);
+                let jobs = start_worker(Arc::clone(make), sender.clone(), Arc::clone(&self.current), self.workers);
                 self.worker = Some((self.workers, provider, jobs));
-                self.thread = Some(thread);
             }
             let Some((_, _, worker)) = &self.worker else { break };
             match worker.send(job) {
-                Ok(()) => return Ok(id),
+                Ok(()) => return Ok(()),
                 Err(mpsc::SendError(returned)) => {
                     job = returned;
                     self.worker = None;
@@ -787,6 +803,7 @@ impl<W: FnMut(Output)> Helper<W> {
     /// Ends what is read now: the sound stops at once, the local provider stops computing.
     fn stop(&mut self) {
         self.current.store(0, Ordering::SeqCst);
+        self.waiting = None;
         // Dropping the sound stops it.
         self.job = Job::Idle;
     }
@@ -1454,6 +1471,42 @@ mod tests {
             failed_to_load(&VoiceError::program("Qwen3-TTS", "did not load")),
             Output::failed("error", tr("Reading aloud failed. Try again."))
         );
+    }
+
+    /// Review of #764: a Qwen job that waits for the thread that gave way starts with that thread's end, not
+    /// another's, and the helper goes on meanwhile: a stop acts at once and drops the job.
+    #[test]
+    fn a_waiting_qwen_job_starts_with_the_end_of_the_old_one() {
+        let (sender, events) = mpsc::channel();
+        let (helper, said, played) = helper(None, true, Duration::ZERO);
+        let (mut helper, made, _) = with_fake_qwen(helper);
+        let make = helper.make_qwen.clone().expect("with Qwen");
+        let spoken = |id| Spoken { id, text: "Hallo.".into(), voice: "calm_man".into(), delivery: Delivery::default() };
+
+        helper.retired = Some(7);
+        helper.current.store(1, Ordering::SeqCst);
+        helper.job = Job::Local { id: 1, sound: None, computed: false };
+        helper.waiting = Some((spoken(1), Arc::clone(&make)));
+        helper.handle(Event::WorkerGone(6), &sender);
+        assert_eq!(made.load(Ordering::SeqCst), 0, "another thread's end starts nothing");
+        helper.handle(Event::WorkerGone(7), &sender);
+        assert!(matches!(helper.worker, Some((_, SpeechProvider::Qwen, _))), "started with the old one's end");
+        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { computed: true, .. }));
+        assert_eq!(played.borrow().samples, [(24_000, 0.25)]);
+        assert_eq!(said.borrow().as_slice(), [Output::Playing]);
+
+        helper.stop();
+        helper.worker = None;
+        helper.retired = Some(9);
+        helper.current.store(2, Ordering::SeqCst);
+        helper.job = Job::Local { id: 2, sound: None, computed: false };
+        helper.waiting = Some((spoken(2), make));
+        helper.handle(Event::Input(Input::Stop), &sender);
+        assert_eq!(said.borrow().last(), Some(&Output::Done), "the stop acts at once");
+        assert!(helper.waiting.is_none());
+        helper.handle(Event::WorkerGone(9), &sender);
+        assert!(helper.worker.is_none(), "the stopped job does not start");
+        assert_eq!(made.load(Ordering::SeqCst), 1);
     }
 
     /// Issue #764: after Pocket TTS read, a new Qwen3-TTS thread waits until the one that gave way has ended,
