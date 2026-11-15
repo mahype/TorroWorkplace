@@ -81,7 +81,7 @@ pub enum Shown {
     /// The server has none: the file shows as a line.
     Missing,
     /// Let go to keep the window small: the placeholder stands there, and the picture comes again
-    /// when its message scrolls into view.
+    /// when it scrolls into view.
     Away,
 }
 
@@ -917,7 +917,7 @@ impl App {
     /// Asks for the previews the history and the shared media show and do not have yet: pictures
     /// and videos of the history `medium`, pictures of link cards `small`, the shared media `small`
     /// (unless the history's picture is there already). A picture let go ([`Shown::Away`]) is asked
-    /// for again only while its message is in view; a new page asks for all it lacks at once, so
+    /// for again only while it is in view; a new page asks for all it lacks at once, so
     /// windows without sensors (`--shots`) show them too.
     pub(crate) fn want_pictures(&mut self) -> Task<Message> {
         let backend = self.backend.clone();
