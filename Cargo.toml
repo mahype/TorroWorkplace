@@ -241,6 +241,10 @@ sherpa-onnx = "2.0.1"
 # The microphone and the sound output of each system (torroassistant, issues #762, #772): on Linux the PulseAudio
 # protocol (PipeWire serves it) for the microphone, else ALSA; Core Audio on macOS, WASAPI on Windows. Apache-2.0.
 cpal = "0.18.2"
+# The wake word "Hey Torro" with a small model of its own (torroassistant, issue #765), so the listener does not run
+# speech recognition all the time. Pure Rust: its ONNX runs on tract (ort-tract), no second ONNX Runtime next to
+# sherpa-onnx's. Apache-2.0.
+livekit-wakeword = "0.2.0"
 # The PDF tool of the assistant (torroworkplace, WZ.3, spike in spikes/printpdf): pulldown-cmark reads the model's
 # Markdown, the core writes clean HTML from its events, printpdf's HTML layout (azul-layout) sets the pages, PNG and
 # JPEG only for the template's logo. Pinned exactly: the core works around gaps of this layout version (lists,
