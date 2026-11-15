@@ -88,6 +88,9 @@ struct Entry {
     error: Option<String>,
     /// The task while it runs.
     task: Option<tokio::task::JoinHandle<()>>,
+    /// A cancelled task until it has really stopped: abort only marks it, and it may still write the
+    /// piece it holds; a new download waits for it with `busy` (review of #762).
+    stopping: Option<tokio::task::AbortHandle>,
     /// Which start this is, so a task that was cancelled and started again does not end the new one.
     run: u64,
 }
@@ -139,7 +142,11 @@ impl VoiceDownloads {
         let Some(http) = self.http.clone() else { return Err(VoiceModelError::Error(unsaved())) };
         {
             let mut entries = self.entries();
-            if entries.get(model.id).is_some_and(|entry| entry.state == VoiceModelState::Running) {
+            let busy = |entry: &Entry| {
+                entry.state == VoiceModelState::Running
+                    || entry.stopping.as_ref().is_some_and(|task| !task.is_finished())
+            };
+            if entries.get(model.id).is_some_and(busy) {
                 return Err(VoiceModelError::Busy);
             }
             if model.ready(&folder) {
@@ -151,7 +158,8 @@ impl VoiceDownloads {
                     let outcome = fetch_model(&http, &model.folder(&folder), model.files).await;
                     downloads.end(model.id, run, outcome);
                 });
-                let entry = Entry { state: VoiceModelState::Running, error: None, task: Some(task), run };
+                let entry =
+                    Entry { state: VoiceModelState::Running, error: None, task: Some(task), stopping: None, run };
                 entries.insert(model.id, entry);
             }
         }
@@ -168,7 +176,9 @@ impl VoiceDownloads {
             match entries.get_mut(model.id) {
                 Some(entry) if entry.state == VoiceModelState::Running => {
                     entry.state = VoiceModelState::Cancelled;
-                    aborted(entry.task.take())
+                    let task = aborted(entry.task.take());
+                    entry.stopping = task.as_ref().map(tokio::task::JoinHandle::abort_handle);
+                    task
                 }
                 _ => None,
             }
@@ -251,9 +261,8 @@ impl VoiceDownloads {
     }
 }
 
-/// Aborts `task` and waits until it has stopped.
-/// `task`, told to stop while the caller still holds the lock of the entries: a download started right
-/// after the lock is let go must not find the old task still writing (review of #762).
+/// `task`, told to stop while the caller still holds the lock of the entries (review of #762). Abort only
+/// marks it; the entry keeps its [`tokio::task::AbortHandle`] until it ended, so a new download waits.
 fn aborted(task: Option<tokio::task::JoinHandle<()>>) -> Option<tokio::task::JoinHandle<()>> {
     if let Some(task) = &task {
         task.abort();
@@ -261,6 +270,7 @@ fn aborted(task: Option<tokio::task::JoinHandle<()>>) -> Option<tokio::task::Joi
     task
 }
 
+/// Waits until `task`, aborted, has stopped.
 async fn stopped(task: Option<tokio::task::JoinHandle<()>>) {
     if let Some(task) = task {
         task.abort();
