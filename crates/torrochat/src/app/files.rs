@@ -15,7 +15,8 @@
 //!   until then a calm placeholder of the same size stands there. The window holds at most
 //!   [`HELD_PICTURES`] of them unpacked (issue #690): beyond that the ones farthest from where the
 //!   person reads go back to the placeholder ([`Shown::Away`]) and come again from the core when
-//!   their message scrolls into view; pictures in view always stay. "Open" fetches the file
+//!   they scroll into view; each picture tells its own coming and going, so pictures in view
+//!   always stay, also in a message taller than the window. "Open" fetches the file
 //!   (`chat.get_attachment`) and opens it with the system's program, "Download" saves it to
 //!   Downloads (`chat.save_attachment`), "Save as…" asks the system's dialog first. Under a link to
 //!   another provider not asked about yet (issue #672), "Show once" asks for its card
@@ -211,11 +212,13 @@ pub struct FilesState {
     pub highlight: Option<String>,
     /// How much wider the window was made for the shared media, to give it back on closing.
     grew: Option<f32>,
-    /// The messages whose pictures stand in view (or about to), as the history's sensors say.
-    pub in_view: HashSet<String>,
-    /// When each message was last seen coming or going ([`FilesState::seen_tick`]): the longest
-    /// unseen pictures go first.
-    pub last_seen: HashMap<String, u64>,
+    /// The pictures that stand in view (or about to), as their sensors in the history say. Kept
+    /// by picture, not by message: a tall message with several pictures can show one while another
+    /// is out of view.
+    pub in_view: HashSet<PictureKey>,
+    /// When each picture was last seen coming or going ([`FilesState::seen_tick`]): the longest
+    /// unseen go first.
+    pub last_seen: HashMap<PictureKey, u64>,
     seen_tick: u64,
     /// Pictures let go and asked for again: one that fails then keeps its placeholder rather than
     /// turning into a line, so the history does not jump.
@@ -255,16 +258,14 @@ impl FilesState {
         self.next_key
     }
 
-    /// Notes that the messages `ids` came into view (`shown`) or went out of it, now.
-    fn seen(&mut self, ids: Vec<String>, shown: bool) {
+    /// Notes that the picture `key` came into view (`shown`) or went out of it, now.
+    fn seen(&mut self, key: PictureKey, shown: bool) {
         self.seen_tick += 1;
-        for id in ids {
-            self.last_seen.insert(id.clone(), self.seen_tick);
-            if shown {
-                self.in_view.insert(id);
-            } else {
-                self.in_view.remove(&id);
-            }
+        self.last_seen.insert(key.clone(), self.seen_tick);
+        if shown {
+            self.in_view.insert(key);
+        } else {
+            self.in_view.remove(&key);
         }
     }
 
@@ -277,8 +278,8 @@ impl FilesState {
         let mut ready: Vec<(u64, usize, PictureKey)> = self
             .pictures
             .iter()
-            .filter(|(key, shown)| matches!(shown, Shown::Ready(_)) && !self.in_view.contains(&key.0))
-            .map(|(key, _)| (self.last_seen.get(&key.0).copied().unwrap_or(0), place(&key.0), key.clone()))
+            .filter(|(key, shown)| matches!(shown, Shown::Ready(_)) && !self.in_view.contains(*key))
+            .map(|(key, _)| (self.last_seen.get(key).copied().unwrap_or(0), place(&key.0), key.clone()))
             .collect();
         let held = self.pictures.values().filter(|shown| matches!(shown, Shown::Ready(_))).count();
         let over = held.saturating_sub(HELD_PICTURES);
@@ -290,12 +291,6 @@ impl FilesState {
         }
         went
     }
-}
-
-/// Whether `message` shows a picture in the history: a file with a preview, or the picture of its
-/// link card.
-pub(crate) fn pictured(message: &torro_chat::Message) -> bool {
-    message.files.iter().any(crate::view::has_preview) || message.cards.first().is_some_and(|card| card.image)
 }
 
 /// What happens to files and media in a chat window.
@@ -360,10 +355,10 @@ pub enum FilesMsg {
     Stored(HashMap<String, f32>),
     /// The menu of a shared item, at the pointer.
     ItemMenu(usize, Point),
-    /// A line of the history with pictures came into view (or about to): its messages.
-    InView(Vec<String>),
-    /// The line went out of view.
-    OutOfView(Vec<String>),
+    /// A picture of the history came into view (or about to).
+    InView(PictureKey),
+    /// The picture went out of view.
+    OutOfView(PictureKey),
 }
 
 /// `msg` as a message of the window.
@@ -826,12 +821,12 @@ impl App {
             }
             FilesMsg::Stored(widths) => files.split.restore(widths.get(MEDIA_SPLIT).copied()),
             FilesMsg::ItemMenu(index, at) => self.menu = Some(Menu::Shared { index, at }),
-            FilesMsg::InView(ids) => {
-                files.seen(ids, true);
+            FilesMsg::InView(key) => {
+                files.seen(key, true);
                 return self.want_pictures();
             }
-            FilesMsg::OutOfView(ids) => {
-                files.seen(ids, false);
+            FilesMsg::OutOfView(key) => {
+                files.seen(key, false);
                 return self.thinned();
             }
         }
@@ -942,7 +937,7 @@ impl App {
         for (key, size) in wanted {
             match chat.files.pictures.get(&key) {
                 None => {}
-                Some(Shown::Away) if chat.files.in_view.contains(&key.0) => {
+                Some(Shown::Away) if chat.files.in_view.contains(&key) => {
                     chat.files.again.insert(key.clone());
                 }
                 Some(_) => continue,

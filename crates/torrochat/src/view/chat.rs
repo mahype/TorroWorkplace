@@ -26,8 +26,7 @@ use std::collections::BTreeMap;
 use iced::widget::text::{Rich, Span, Wrapping};
 use iced::widget::text_editor::{Binding, KeyPress};
 use iced::widget::{
-    Space, button, column, container, mouse_area, rich_text, row, rule, scrollable, sensor, stack,
-    text_editor as editor,
+    Space, button, column, container, mouse_area, rich_text, row, rule, scrollable, stack, text_editor as editor,
 };
 use iced::{Alignment, Background, Element, Fill, Padding, Rectangle, Size, Theme, border, keyboard};
 use torro_chat::{Conversation, Mention, MessageKind, NotifyLevel, Person};
@@ -325,18 +324,9 @@ impl App {
                 Item::New => new_divider(),
                 Item::System(message) => system_line(message),
                 Item::Message { message, first, last } => {
-                    let line = self.message_line(chat, message, first, last, group, room, anchors);
-                    if files::pictured(message) { watched(line, vec![message.id.clone()]) } else { line }
+                    self.message_line(chat, message, first, last, group, room, anchors)
                 }
-                Item::Album { tiles, first, last } => {
-                    let mut ids: Vec<String> = Vec::new();
-                    for (message, _) in &tiles {
-                        if !ids.contains(&message.id) {
-                            ids.push(message.id.clone());
-                        }
-                    }
-                    watched(self.album_line(chat, &tiles, first, last, group, room, anchors), ids)
-                }
+                Item::Album { tiles, first, last } => self.album_line(chat, &tiles, first, last, group, room, anchors),
             });
         }
         let content = column(lines).spacing(space::xs()).padding([space::m(), space::l()]).width(Fill);
@@ -986,20 +976,6 @@ fn system_line<'a>(message: &'a torro_chat::Message) -> Element<'a, Message> {
     let words = format!("{} · {}", message.text, timeline::time_label(message.at));
     content = content.push(typo::text(typo::caption(), words).style(theme::text_3).wrapping(Wrapping::WordOrGlyph));
     centred(content)
-}
-
-/// `line` of the history, with its pictures' messages `ids`, telling the window when it comes into
-/// view (a picture's height ahead) and goes out of it, so the window holds the pictures where the
-/// person reads (issue #690). Keyed by all its messages: iced matches lines by place, and a page
-/// put before them, or a picture joining an album in view, would otherwise leave the sensor silent.
-fn watched<'a>(line: Element<'a, Message>, ids: Vec<String>) -> Element<'a, Message> {
-    let shown = ids.clone();
-    sensor(line)
-        .key(ids.clone())
-        .anticipate(size::panel())
-        .on_show(move |_| files::wrap(FilesMsg::InView(shown.clone())))
-        .on_hide(files::wrap(FilesMsg::OutOfView(ids)))
-        .into()
 }
 
 /// The divider "New": a line on either side of the word.
