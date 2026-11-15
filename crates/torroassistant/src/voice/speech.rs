@@ -432,6 +432,9 @@ enum Event {
     /// The thread of a local provider of this number ended: its model did not load, it broke down, or
     /// the other provider took its place.
     WorkerGone(u64),
+    /// The model of the thread of this number did not load, and why (issue #764: Qwen3-TTS without an
+    /// NVIDIA card says so for people). [`Event::WorkerGone`] follows.
+    LoadFailed(u64, VoiceError),
 }
 
 /// A job for the thread of a local provider.
@@ -460,14 +463,23 @@ impl Drop for Gone {
 /// Starts the thread of a local provider numbered `number`: it makes the synth (loading the model takes
 /// seconds), then computes one job after the other while `current` names it, and hands the sound to
 /// `events`. It ends when the helper drops its sender, and with it the model.
-fn start_worker(make: Arc<MakeSynth>, events: Sender<Event>, current: Arc<AtomicU64>, number: u64) -> Sender<Spoken> {
+fn start_worker(
+    make: Arc<MakeSynth>,
+    events: Sender<Event>,
+    current: Arc<AtomicU64>,
+    number: u64,
+) -> (Sender<Spoken>, std::thread::JoinHandle<()>) {
     let (jobs, inbox) = mpsc::channel::<Spoken>();
-    std::thread::spawn(move || {
+    let thread = std::thread::spawn(move || {
         let _gone = Gone(events.clone(), number);
         let mut synth = match make() {
             Ok(synth) => synth,
-            // The error names the provider.
-            Err(err) => return eprintln!("torroassistant: {err}"),
+            Err(err) => {
+                // The error names the provider.
+                eprintln!("torroassistant: {err}");
+                let _ = events.send(Event::LoadFailed(number, err));
+                return;
+            }
         };
         let rate = synth.rate();
         for job in inbox {
@@ -493,7 +505,7 @@ fn start_worker(make: Arc<MakeSynth>, events: Sender<Event>, current: Arc<Atomic
             }
         }
     });
-    jobs
+    (jobs, thread)
 }
 
 /// The job that reads now.
@@ -526,6 +538,11 @@ pub struct Helper<W: FnMut(Output)> {
     /// The thread of the local provider with its number and the provider it reads with; `None` until the
     /// first job and after it ended.
     worker: Option<(u64, SpeechProvider, Sender<Spoken>)>,
+    /// The thread of Qwen3-TTS that gave way to Pocket TTS, until it has ended: a new one waits for it, so
+    /// its model is never twice on the graphics card (issue #764).
+    retired: Option<std::thread::JoinHandle<()>>,
+    /// The thread of the worker that reads now, kept to retire it.
+    thread: Option<std::thread::JoinHandle<()>>,
     /// Counts the threads started, so the end of one replaced meanwhile fails no job of the next.
     workers: u64,
     /// The local job that may compute; 0 for none. The thread looks at it between two pieces of sound.
@@ -554,6 +571,8 @@ impl<W: FnMut(Output)> Helper<W> {
             qwen_voice: QWEN_RECOMMENDED.to_string(),
             make_qwen: None,
             worker: None,
+            retired: None,
+            thread: None,
             workers: 0,
             current: Arc::new(AtomicU64::new(0)),
             next: 0,
@@ -641,6 +660,15 @@ impl<W: FnMut(Output)> Helper<W> {
                     self.fail(Output::failed("error", tr("Reading aloud failed. Try again.")));
                 }
             }
+            Event::LoadFailed(number, err) => {
+                if self.worker.as_ref().is_none_or(|(now, _, _)| *now != number) {
+                    return;
+                }
+                self.worker = None;
+                if matches!(self.job, Job::Local { .. }) {
+                    self.fail(failed_to_load(&err));
+                }
+            }
             Event::WorkerGone(number) => {
                 if self.worker.as_ref().is_none_or(|(now, _, _)| *now != number) {
                     return;
@@ -701,11 +729,17 @@ impl<W: FnMut(Output)> Helper<W> {
         delivery: Delivery,
         sender: &Sender<Event>,
     ) -> Result<u64, Output> {
-        let (make, model) = match provider {
-            SpeechProvider::Qwen => match &self.make_qwen {
-                Some(make) => (Arc::clone(make), QWEN),
-                None => return Err(Output::failed("unsupported", tr("This build has no Qwen3-TTS."))),
-            },
+        // A build without Qwen3-TTS reads with Pocket TTS what a core with it asks of Qwen (issue #764), in
+        // the same voice where Pocket has it: the two templates are voices of both.
+        let (provider, voice) = match provider {
+            SpeechProvider::Qwen if self.make_qwen.is_none() => {
+                let voice = if POCKET_VOICES.contains(&voice.as_str()) { voice } else { self.voice.clone() };
+                (SpeechProvider::Pocket, voice)
+            }
+            provider => (provider, voice),
+        };
+        let (make, model) = match (provider, &self.make_qwen) {
+            (SpeechProvider::Qwen, Some(make)) => (Arc::clone(make), QWEN),
             _ => (Arc::clone(&self.make_synth), POCKET_DE),
         };
         if !model_ready(model, self.folder.as_deref()) {
@@ -713,7 +747,17 @@ impl<W: FnMut(Output)> Helper<W> {
         }
         if self.worker.as_ref().is_some_and(|(_, reads, _)| *reads != provider) {
             // Dropping its sender ends the thread once it is between two pieces, and frees its model.
-            self.worker = None;
+            let gave_way = self.worker.take().is_some_and(|(_, reads, _)| reads == SpeechProvider::Qwen);
+            let thread = self.thread.take();
+            if gave_way {
+                self.retired = thread;
+            }
+        }
+        if provider == SpeechProvider::Qwen
+            && let Some(retired) = self.retired.take()
+        {
+            // At most one piece long (about two seconds): its model must leave the card first.
+            let _ = retired.join();
         }
         self.next += 1;
         let id = self.next;
@@ -723,8 +767,10 @@ impl<W: FnMut(Output)> Helper<W> {
         for _ in 0..2 {
             if self.worker.is_none() {
                 self.workers += 1;
-                let jobs = start_worker(Arc::clone(&make), sender.clone(), Arc::clone(&self.current), self.workers);
+                let (jobs, thread) =
+                    start_worker(Arc::clone(&make), sender.clone(), Arc::clone(&self.current), self.workers);
                 self.worker = Some((self.workers, provider, jobs));
+                self.thread = Some(thread);
             }
             let Some((_, _, worker)) = &self.worker else { break };
             match worker.send(job) {
@@ -777,6 +823,16 @@ fn failed_to_play(err: &VoiceError) -> Output {
             eprintln!("torroassistant: sound output: {err}");
             Output::failed("error", tr("Reading aloud failed. Try again."))
         }
+    }
+}
+
+/// Why the model of a local provider did not load, for people: Qwen3-TTS without an NVIDIA card says so.
+fn failed_to_load(err: &VoiceError) -> Output {
+    match err {
+        VoiceError::Missing(_, VoiceMissing::Gpu) => {
+            Output::failed("unsupported", tr("No NVIDIA graphics card was found."))
+        }
+        _ => Output::failed("error", tr("Reading aloud failed. Try again.")),
     }
 }
 
@@ -1287,15 +1343,30 @@ mod tests {
         (helper.with_qwen("calm_man", make), made, voices)
     }
 
-    /// Issue #764: a build without Qwen3-TTS says so for people, and with it a model not downloaded asks for
-    /// the download, as Pocket's does.
+    /// Issue #764: a build without Qwen3-TTS reads what a core with it asks of Qwen with Pocket TTS, in the
+    /// same voice where Pocket has it; with Qwen a model not downloaded asks for the download, as Pocket's does.
     #[test]
     fn qwen_needs_its_build_and_its_model() {
-        let (sender, _events) = mpsc::channel();
+        let (sender, events) = mpsc::channel();
         let folder = tempfile::tempdir().expect("voice folder");
-        let (mut helper, said, _) = helper(Some(folder.path()), true, Duration::ZERO);
-        helper.handle(say(SpeechProvider::Qwen, "Hallo."), &sender);
-        assert_eq!(said.borrow().as_slice(), [Output::failed("unsupported", tr("This build has no Qwen3-TTS."))]);
+        download(folder.path(), POCKET_DE);
+        let (mut helper, said, played) = helper(Some(folder.path()), true, Duration::ZERO);
+        helper.handle(
+            Event::Input(Input::Say(Say {
+                provider: Some(SpeechProvider::Qwen),
+                text: "Hallo.".into(),
+                voice: Some("calm_man".into()),
+            })),
+            &sender,
+        );
+        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { computed: true, .. }));
+        assert_eq!(said.borrow().as_slice(), [Output::Playing], "read with Pocket TTS");
+        assert_eq!(played.borrow().samples.len(), "Hallo.".len());
+        assert!(matches!(helper.worker, Some((_, SpeechProvider::Pocket, _))));
+        helper.stop();
+
+        let folder = tempfile::tempdir().expect("voice folder");
+        let (helper, said, _) = super::tests::helper(Some(folder.path()), true, Duration::ZERO);
         let (mut helper, made, _) = with_fake_qwen(helper);
         helper.handle(say(SpeechProvider::Qwen, "Hallo."), &sender);
         assert_eq!(said.borrow().last(), Some(&not_downloaded()), "the catalogue lists no model to find here");
@@ -1359,6 +1430,71 @@ mod tests {
             download(folder.path(), QWEN);
             assert_eq!(qwen_option(Some(folder.path()), &devices, true).missing, None);
         }
+    }
+
+    /// Issue #764: a model that does not load for want of an NVIDIA card says so for people; another reason
+    /// is the general failure, and the end of a thread replaced meanwhile is not heard.
+    #[test]
+    fn a_missing_graphics_card_is_said_for_people() {
+        let (sender, _events) = mpsc::channel();
+        let (mut helper, said, _) = helper(None, true, Duration::ZERO);
+        let gpu = VoiceError::Missing(torro_ipc::VoicePart::Speech, VoiceMissing::Gpu);
+        let (jobs, _inbox) = mpsc::channel();
+        helper.worker = Some((3, SpeechProvider::Qwen, jobs));
+        helper.job = Job::Local { id: 1, sound: None, computed: false };
+        helper.handle(Event::LoadFailed(2, gpu.clone()), &sender);
+        assert!(said.borrow().is_empty(), "another thread's");
+        helper.handle(Event::LoadFailed(3, gpu), &sender);
+        assert_eq!(said.borrow().as_slice(), [Output::failed("unsupported", tr("No NVIDIA graphics card was found."))]);
+        assert!(helper.worker.is_none() && matches!(helper.job, Job::Idle));
+        assert_eq!(
+            failed_to_load(&VoiceError::program("Qwen3-TTS", "did not load")),
+            Output::failed("error", tr("Reading aloud failed. Try again."))
+        );
+    }
+
+    /// Issue #764: after Pocket TTS read, a new Qwen3-TTS thread waits until the one that gave way has ended,
+    /// so its model is never twice on the graphics card.
+    #[cfg(feature = "qwen-cuda")]
+    #[test]
+    fn qwen_is_never_loaded_twice() {
+        struct Counted(Arc<AtomicU64>);
+        impl Drop for Counted {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        impl Synth for Counted {
+            fn rate(&self) -> u32 {
+                24_000
+            }
+            fn speak(&mut self, _text: &str, _voice: &str, mut chunk: Chunk) -> Result<(), VoiceError> {
+                // One piece that cannot be interrupted, as Qwen's.
+                std::thread::sleep(Duration::from_millis(300));
+                chunk(&[0.5]);
+                Ok(())
+            }
+        }
+        let (sender, events) = mpsc::channel();
+        let folder = tempfile::tempdir().expect("voice folder");
+        download(folder.path(), POCKET_DE);
+        download(folder.path(), QWEN);
+        let (helper, _, _) = helper(Some(folder.path()), true, Duration::ZERO);
+        let (alive, most) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
+        let (now, peak) = (Arc::clone(&alive), Arc::clone(&most));
+        let make: Arc<MakeSynth> = Arc::new(move || {
+            let count = now.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(count, Ordering::SeqCst);
+            Ok(Box::new(Counted(Arc::clone(&now))) as Box<dyn Synth>)
+        });
+        let mut helper = helper.with_qwen("warm_woman", make);
+        helper.handle(say(SpeechProvider::Qwen, "Eins."), &sender);
+        // Qwen computes its piece while Pocket takes over at once, and Qwen is asked again right away.
+        std::thread::sleep(Duration::from_millis(50));
+        helper.handle(say(SpeechProvider::Pocket, "Zwei."), &sender);
+        helper.handle(say(SpeechProvider::Qwen, "Drei."), &sender);
+        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { computed: true, .. }));
+        assert_eq!(most.load(Ordering::SeqCst), 1, "one Qwen model at a time");
     }
 
     /// Issue #762: Pocket's status names what it misses, its voices with Alba recommended and its model.

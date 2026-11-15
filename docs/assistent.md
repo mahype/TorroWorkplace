@@ -888,8 +888,10 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
   Bau-Option `qwen-cuda`, weil es eine NVIDIA-Karte und CUDA braucht. Die Releases enthalten es nicht: Dort
   fehlt es in der Auswahl und in der Modell-Liste, `speech_provider` `"qwen"` und `qwen_voice` beantwortet der
   Dienst mit `unsupported`, und eine Einstellung mit Qwen liest mit Pocket TTS. In einem Build mit Qwen gilt sie
-  wieder samt der gewählten Stimme. Ist der NVIDIA-Treiber da, aber keine Karte antwortet, sagt die Zeile unter
-  „Provider“ „No NVIDIA graphics card was found.“; ohne Treiber startet ein solcher Build gar nicht
+  wieder samt der gewählten Stimme. Ein Assistent ohne Qwen liest, was ein Dienst mit Qwen von Qwen verlangt, mit
+  Pocket TTS in derselben Stimme. Ist der NVIDIA-Treiber da, aber keine Karte antwortet, sagen die Zeile unter
+  „Provider“, die Zeile „No NVIDIA graphics card found“ unter den Geräten (`settings.voice_status`, `gpu`) und das
+  Vorlesen selbst „No NVIDIA graphics card was found.“; ohne Treiber startet ein solcher Build gar nicht
   ([install.md](install.md#qwen3-tts-selbst-bauen-nur-nvidia)). Den Messbericht mit Crane und qwen3-tts.cpp, Proben und der Begründung der Wahl enthält
   [messung-qwen3-tts.md](messung-qwen3-tts.md). Pocket TTS bleibt die empfohlene Stimme.
 - **Stimmen und Lizenzen:** Cosette und Jean fehlen, weil ihre Aufnahmen nur nichtgewerblich genutzt werden
@@ -905,7 +907,8 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
   zugleich, nach zehn Minuten ohne Auftrag beendet er sich und gibt den Grafikspeicher frei; ein anderer Anbieter
   beendet ihn sofort, eine andere Stimme nicht, sie geht mit dem nächsten Auftrag mit). Pocket TTS und Qwen3-TTS
   rechnen im Helfer, der das Modell einmal lädt, immer nur einer: Liest der andere, endet der Rechenfaden des
-  ersten, und Qwen gibt seinen Grafikspeicher frei. Qwen schneidet die Stille vor dem ersten Wort jedes Stücks
+  ersten, und Qwen gibt seinen Grafikspeicher frei; ein neuer Qwen-Faden wartet, bis der alte beendet ist, damit
+  das Modell nie zweimal auf der Karte liegt. Qwen schneidet die Stille vor dem ersten Wort jedes Stücks
   bis auf 50 ms ab und begrenzt die Länge eines Stücks, weil das Modell manchmal nicht von selbst endet; der Ton geht über cpal an die Tonausgabe des Systems. Den Ton von
   OpenAI holt der Dienst selbst, weil er den Schlüssel hält, in Stücken aus ganzen Sätzen (bis 500
   Zeichen), das nächste, während das vorige spielt. Vorgelesen werden höchstens 3000 Zeichen, ohne

@@ -9443,7 +9443,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     // Qwen3-TTS on the graphics card, in builds with it (issue #764).
     ("Local: Qwen3-TTS (graphics card)", "Lokal: Qwen3-TTS (Grafikkarte)"),
-    ("This build has no Qwen3-TTS.", "Diese Version enthält kein Qwen3-TTS."),
+    ("No NVIDIA graphics card found", "Keine NVIDIA-Grafikkarte gefunden"),
+    (
+        "Qwen3-TTS needs one. Choose Pocket TTS under Read aloud.",
+        "Qwen3-TTS braucht eine. Wähle unter Vorlesen Pocket TTS.",
+    ),
     ("No NVIDIA graphics card was found.", "Es wurde keine NVIDIA-Grafikkarte gefunden."),
     (
         "Qwen3-TTS reads on this computer’s NVIDIA graphics card and keeps about 8 GB of its memory while it reads.",
