@@ -754,7 +754,6 @@ mod tests {
         }
     }
 
-    /// Issue #134: the prompt says what the assistant may do in each area, as the person set it.
     /// Issue #774: an answer read aloud is asked for in two parts, split by the line the core looks for.
     #[test]
     fn a_spoken_answer_is_asked_for_in_two_parts() {
@@ -764,6 +763,7 @@ mod tests {
         assert!(part.contains("spoken part") && part.contains("shown part"), "{part}");
     }
 
+    /// Issue #134: the prompt says what the assistant may do in each area, as the person set it.
     #[test]
     fn the_prompt_says_what_the_assistant_may_do() {
         use torro_ipc::api::AreaRights;

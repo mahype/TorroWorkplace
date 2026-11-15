@@ -1072,10 +1072,10 @@ fn bot_clients(now: DateTime<Utc>) -> Vec<ClientInfo> {
     ]
 }
 
-/// The answer of "Plan for tomorrow", in Markdown.
 /// The spoken part of [`PLAN_ANSWER`] (issue #774): what the state `reading` reads aloud.
 const PLAN_SPOKEN: &str = "Four events tomorrow, have a look at the list. The review with Anna matters most.";
 
+/// The answer of "Plan for tomorrow", in Markdown.
 const PLAN_ANSWER: &str = "Tomorrow you have **four events**:\n\n\
 - 09:30 Stand-up\n\
 - 11:00 Review API concept with Anna\n\
