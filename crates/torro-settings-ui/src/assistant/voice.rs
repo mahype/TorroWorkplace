@@ -630,7 +630,16 @@ fn microphone_row<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Me
     }
     let label = data.settings.voice.microphone.clone().unwrap_or_else(|| tr("System default").to_string());
     let button = state.menus.button(Choice::Microphone, label, Message::Menus);
-    Some(setting_row(None, tr("Microphone"), None, button))
+    Some(setting_row(None, tr("Microphone"), microphone_detail(data), button))
+}
+
+/// The line under "Microphone" when the chosen one does not record (review of #762): it is gone or
+/// another program holds it, and the system's default records instead.
+pub fn microphone_detail(data: &Data) -> Option<String> {
+    let chosen = data.settings.voice.microphone.as_deref()?;
+    let recorder = data.voice.as_ref()?.program(VoicePart::Recorder)?;
+    let in_use = recorder.program.as_deref()?;
+    (in_use != chosen).then(|| tr("This microphone cannot be used now, the system default records.").to_string())
 }
 
 /// "Models" (issue #762): every model with its size and button, the reason when a request was
@@ -1258,6 +1267,21 @@ mod tests {
         let _ = update(&mut state, Message::Preview, &data);
         assert!(matches!(update(&mut state, Message::Remove("parakeet".into()), &data), Act::None), "Remove waits");
         views(&state, &data);
+    }
+
+    /// Review of #762: a chosen microphone that does not record says so; the default records.
+    #[tokio::test]
+    async fn a_microphone_that_does_not_record_says_so() {
+        let mut data = Data { voice: Some(status(VoiceState::Listening, None)), ..data().await };
+        assert_eq!(microphone_detail(&data), None, "the default needs no line");
+        data.settings.voice.microphone = Some("x".into());
+        assert_eq!(microphone_detail(&data), None, "it records");
+        data.settings.voice.microphone = Some("HD Pro Webcam C920".into());
+        assert_eq!(
+            microphone_detail(&data).as_deref(),
+            Some(tr("This microphone cannot be used now, the system default records."))
+        );
+        views(&State::default(), &data);
     }
 
     /// Issue #762: every state of a model builds, with its button; nothing asks to install or copy.

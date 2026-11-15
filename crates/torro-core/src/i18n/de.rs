@@ -9273,4 +9273,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "This computer could not be checked. Use Check again under Models.",
         "Dieser Rechner ließ sich nicht prüfen. Nutze „Erneut prüfen“ unter Modelle.",
     ),
+    (
+        "This microphone cannot be used now, the system default records.",
+        "Dieses Mikrofon lässt sich gerade nicht nutzen, es nimmt der Systemstandard auf.",
+    ),
 ];
