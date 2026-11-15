@@ -11403,6 +11403,20 @@ impl Core {
                 let task = task.ok_or_else(|| Box::new(refusal("not-found", "no such task".into())))?;
                 Ok((crate::apps::Opened::Task { uid: task.uid }, task.summary))
             }
+            // An event (issue #797, "Open in calendar" on an event card): one of a calendar the caller reaches, by the
+            // uid the cache holds; a client without read access to `calendar` finds none.
+            crate::apps::Target::Event { uid } => {
+                let reads = match reach {
+                    Reach::Suite => true,
+                    Reach::Client(rights) => rights.area(Area::Calendar).allows(Access::Read),
+                };
+                let event = match reads {
+                    true => self.pim.cached_events_within(reach).await.into_iter().find(|event| event.uid == uid),
+                    false => None,
+                };
+                let event = event.ok_or_else(|| Box::new(refusal("not-found", "no such event".into())))?;
+                Ok((crate::apps::Opened::Event { uid: event.uid }, event.summary))
+            }
             crate::apps::Target::File { id } => {
                 let reaches = match (reach, maker) {
                     (Reach::Suite, _) => true,
@@ -24089,6 +24103,29 @@ done"#,
         assert_eq!(event.summary, "Deploy failed");
         assert_eq!(created_on(&fake), 1);
         assert!(matches!(entry(&core, dir.path(), &id).await.state, torro_inbox::State::Done { .. }));
+    }
+
+    /// Issue #797: `event:<uid>` opens the calendar on an event of a calendar the caller reaches, by the uid the cache
+    /// holds; out of reach or gone it is `not-found`.
+    #[tokio::test]
+    async fn an_event_target_opens_the_calendar_on_an_event_in_reach() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, fake) = core_with_tasks(dir.path()).await;
+        let sync = torro_pim::Event {
+            summary: "Weekly sync".into(),
+            ..event_in(&fake.work, Some("https://cloud.example.org/cal/work/sync.ics"))
+        };
+        core.pim.cache_events_as_synced(vec![sync.clone()]).await;
+        let target = format!("event:{}", sync.uid);
+        let opened = core.open_target("torrocalendar", &target, Reach::Suite, Maker::App).await.expect("the event");
+        assert_eq!(opened, (crate::apps::Opened::Event { uid: sync.uid.clone() }, "Weekly sync".to_string()));
+        let reader = Rights::assistant();
+        assert!(core.open_target("torrocalendar", &target, Reach::Client(&reader), Maker::App).await.is_ok());
+        let blind = Rights { calendars: Selection::Only(Vec::new()), ..Rights::assistant() };
+        let refused = core.open_target("torrocalendar", &target, Reach::Client(&blind), Maker::App).await;
+        assert_eq!(refused.err().map(|refused| code(&refused).to_string()).as_deref(), Some("not-found"));
+        let gone = core.open_target("torrocalendar", "event:gone", Reach::Suite, Maker::App).await;
+        assert_eq!(gone.err().map(|refused| code(&refused).to_string()).as_deref(), Some("not-found"));
     }
 
     #[tokio::test]

@@ -1075,6 +1075,23 @@ impl PimService {
         self.seen(reach, Role::TaskList).await
     }
 
+    /// The calendars `reach` sees, as `calendar.list_calendars` answers them (issue #797: the event cards of the
+    /// assistant name the calendar of their event).
+    pub async fn calendars_within(&self, reach: Reach<'_>) -> Vec<Collection> {
+        self.seen(reach, Role::Calendar).await
+    }
+
+    /// The cached events of the calendars `reach` sees, every occurrence of a series on its own, never read from a
+    /// server: only the cached window ([`WINDOW_BACK_DAYS`] back, [`WINDOW_AHEAD_DAYS`] ahead). For what looks an
+    /// event up by its uid (issue #797: the event cards of the assistant, `apps.open_app` with `event:<uid>`); events
+    /// of other calendars are not read.
+    pub async fn cached_events_within(&self, reach: Reach<'_>) -> Vec<Event> {
+        let calendars = ids(self.seen(reach, Role::Calendar).await);
+        let state = self.state.read().await;
+        let cached = state.accounts.iter().flat_map(|slot| &slot.events);
+        cached.filter(|event| calendars.contains(&event.collection)).cloned().collect()
+    }
+
     /// The cached collections of all accounts that `reach` sees as `role`.
     async fn seen(&self, reach: Reach<'_>, role: Role) -> Vec<Collection> {
         let hidden = self.hidden_collections();
