@@ -27,8 +27,8 @@
 
 use chrono::Utc;
 use iced::widget::text::Wrapping;
-use iced::widget::{Row, Space, column, container, image, row, stack, svg};
-use iced::{Alignment, Background, Color, ContentFit, Element, Fill, FillPortion, Padding, Theme, border};
+use iced::widget::{Row, Space, column, container, image, responsive, row, stack, svg};
+use iced::{Alignment, Background, Color, ContentFit, Element, Fill, FillPortion, Padding, Size, Theme, border};
 use torro_chat::{ForeignProvider, GithubState, LinkCard, LinkCardKind};
 use torro_core::i18n::{tr, trc, trf};
 
@@ -326,10 +326,11 @@ impl<M: Clone> ContentCard<M> {
     /// The card in one line ("Kurzform"), `size::control_lg()` high: the kind's icon, the title and its first line,
     /// and the main button as an icon with its word as tooltip. For mini and strip tiles and lists of four to ten.
     ///
-    /// The title takes the larger part of the line, the first line (a date, a sender) the rest, set against the end
-    /// in `text_3`; each is cut with "…" rather than pushing the button out. Loading says so in place of the first
-    /// line, failed shows the source and "Not available right now" with "Try again" as an icon, gone says "No longer
-    /// available" without a button.
+    /// The title takes the line; the first line (a date, a sender) stands against the end in `text_3`, in its own
+    /// width up to two fifths of the line ([`short_detail_width`]), cut with "…" rather than pushing the button out.
+    /// In a line narrower than [`short_detail_from`] (a mini tile) the first line is left out, so the title stays
+    /// readable. Loading says so in place of the first line, failed shows the source and "Not available right now"
+    /// with "Try again" as an icon, gone says "No longer available" without a button.
     pub fn short<'a>(self) -> Element<'a, M>
     where
         M: 'a,
@@ -344,24 +345,46 @@ impl<M: Clone> ContentCard<M> {
             ),
             State::Gone => (tr("No longer available").to_owned(), None, None),
         };
-        let mut line = row![
-            mark(self.head.mark, icon::SIZE_SM, None),
-            container(widgets::ellipsized(typo::body(), title, theme::text)).width(FillPortion(3))
-        ]
-        .spacing(space::s())
-        .align_y(Alignment::Center);
-        if let Some(detail) = detail {
-            line = line.push(
-                container(widgets::ellipsized_end(typo::meta().tabular(), detail, theme::text_3)).width(FillPortion(2)),
-            );
-        }
-        // Without a button its room stays empty, so the details of a list of short forms end on one edge.
-        line = line.push(match button {
-            Some(main) => widgets::icon_button(main.icon, main.label, main.on_press),
-            None => Space::new().width(size::control_sm()).into(),
+        let kind = self.head.mark;
+        let line = responsive(move |room: Size| {
+            let mut line = row![
+                mark(kind, icon::SIZE_SM, None),
+                container(widgets::ellipsized(typo::body(), title.clone(), theme::text)).width(Fill)
+            ]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
+            if let Some(width) = detail.as_deref().and_then(|detail| short_detail_width(detail, room.width)) {
+                let detail = detail.clone().unwrap_or_default();
+                line = line.push(
+                    container(widgets::ellipsized_end(typo::meta().tabular(), detail, theme::text_3)).width(width),
+                );
+            }
+            // Without a button its room stays empty, so the details of a list of short forms end on one edge.
+            line.push(match button.clone() {
+                Some(main) => widgets::icon_button(main.icon, main.label, main.on_press),
+                None => Space::new().width(size::control_sm()).into(),
+            })
+            .into()
         });
         container(line).center_y(size::control_lg()).width(Fill).into()
     }
+}
+
+/// Below this width a short form leaves its first line out ([`ContentCard::short`]): a mini tile's line (240 less
+/// its margins), where the title alone is what reads from a distance. 280: a sidebar and one large control.
+pub fn short_detail_from() -> f32 {
+    size::sidebar() + size::control_lg()
+}
+
+/// How wide the first line `detail` of a short form stands in a line `room` wide: its own width, at most two fifths
+/// of the line; `None` below [`short_detail_from`], where it is left out.
+pub fn short_detail_width(detail: &str, room: f32) -> Option<f32> {
+    if room < short_detail_from() || detail.trim().is_empty() {
+        return None;
+    }
+    // A little more than the measured width: the estimate must never cut a short date ("Wed", "17:14").
+    let own = typo::text_width(detail, typo::meta()) + space::xs();
+    Some(own.min(room * 2.0 / 5.0))
 }
 
 /// The head: the kind's icon, the source in `text_3`, and the tag `untrusted` at the end when it is.
@@ -732,6 +755,17 @@ mod tests {
         assert!(matches!(card.lines[0].lead, Lead::Priority(3)));
         let Lead::Icon(_, Some(tone)) = card.lines[1].lead else { panic!("a toned icon") };
         assert_eq!(tone(&Palette::dark()), Palette::dark().attention);
+    }
+
+    #[test]
+    fn a_short_form_keeps_its_first_line_in_its_own_width_and_drops_it_in_a_mini_tile() {
+        let from = short_detail_from();
+        assert_eq!(short_detail_width("Wed", from - 1.0), None, "a mini tile shows the title alone");
+        let own = short_detail_width("Wed", from).expect("room enough");
+        assert!(own < from / 4.0, "a short date takes its own width, not a share: {own}");
+        let long = "A long description that would take the whole line if it could";
+        assert_eq!(short_detail_width(long, 600.0), Some(240.0), "at most two fifths");
+        assert_eq!(short_detail_width("  ", 600.0), None);
     }
 
     #[test]
