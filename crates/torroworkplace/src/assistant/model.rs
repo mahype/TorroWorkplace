@@ -913,6 +913,9 @@ impl Answering {
             let areas: BTreeSet<Area> = allowed
                 .iter()
                 .filter(|tool| !tool.is_server())
+                // The terminal (issue #754) is switched on by a person, not granted with an area; the prompt names it
+                // on a line of its own.
+                .filter(|tool| !torro_ipc::tools::is_terminal_command(tool.command.name))
                 .map(|tool| tool.command.area)
                 // The help (issue #702) is the one tool of `system`, no area the person granted.
                 .filter(|area| !matches!(area, Area::Assistant | Area::Bots | Area::System))
@@ -1343,11 +1346,12 @@ impl Answering {
             None => !self.skills.is_empty(),
         };
         let allowed = tools::with_skills(allowed, any_skill);
-        // The terminal (issue #754) for the assistant's own answers only, while a person switched it on.
+        // The terminal (issue #754) for the assistant's own answers only, while a person switched it on, and never
+        // without a client: then the model gets no tools at all.
         let allowed = tools::with_terminal(
             allowed,
             self.job.actor.kind(),
-            self.host.terminal_enabled(),
+            rights.is_some() && self.host.terminal_enabled(),
             &self.job.without,
             self.job.mode,
         );
