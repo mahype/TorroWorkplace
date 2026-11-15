@@ -56,8 +56,14 @@ Stand je Zeile: `gebaut` (im Code und im Befehlskatalog), `geplant` (entschieden
 | **Issue-Entwurf** (GitHub) | `tasks.create_issue` (Vorschlag, [github.md](github.md)) | Titel, Repo, „Create“ nach Freigabe | der Kern | A B | `geplant` (entworfen) |
 | **Datei** | `tools.create_pdf` u. a. | Name, Größe, Art, „Open“, „Save as…“ | Register der eigenen Werkzeuge | A B | `gebaut` (`CardRef::File`) |
 | **Landkarte** | Link auf Google Maps, OpenStreetMap, Apple Maps | Kartenbild, Ort, „Open in maps“ | Ort aus dem Link gelesen (nichts geladen), Bild über `calendar.map_preview` | A B C | `geplant`, siehe „Landkarten“ |
-| **PDF** | Link oder Anhang `application/pdf` | Titel, Seitenzahl, Dateigröße; erste Seite als Bild | der Kern liest Eigenschaften der Datei; erste Seite braucht einen Renderer | A B C | Titel und Seitenzahl `geplant`, erste Seite `Idee` |
+| **PDF** | Link oder Anhang `application/pdf` | Titel, Seitenzahl, Dateigröße; erste Seite als Bild | der Kern liest Eigenschaften der Datei; erste Seite über den Vorschau-Anbieter für PDF (Renderer offen) | A B C | Titel und Seitenzahl `geplant`, erste Seite `Idee`, siehe „Vorschau-Anbieter je Dateiart“ |
 | **Bild aus einem Programm** (z. B. ArtCraft) | Link oder Verweis eines angebundenen MCP-Servers | kleine Vorschau, Titel, „From <Name> (external, untrusted)“ | der MCP-Server, nur Titel, Kurztext, ein Bild | A B | `geplant`, siehe „MCP als Quelle“ |
+| **Foto und Album** | Treffer aus `photos.list_photos` / `photos.list_albums`; im Chat geteilte Karte | Bild (Album: Titelbild und Anzahl), Datum, Ort, „Open in photos“ | Bild über `photos.get_preview` ([fotos.md](fotos.md), PH1), nur mit dem Recht „Bildinhalte“; ohne das Recht Datum und Ort mit dem Symbol der Art | A B C (geteilt) | `Idee` |
+| **Notiz** | Treffer aus `notes.list_notes` / `notes.get_note`; im Chat geteilte Karte | Titel, Kategorie, Anfang des Textes, „Open in notes“ | `notes.get_note` ([notizen.md](notizen.md)) | A B C (geteilt) | `Idee` |
+| **Kontakt** | Treffer aus `contacts.list_contacts` / `contacts.get_contact`; im Chat geteilte Kontakt-Karte | Foto, Name, Firma, eine Angabe (Mail oder Telefon), „Open in contacts“ | `contacts.get_contact`, Foto über `contacts.get_photo`; baut auf der geteilten Karte aus [teilen.md](teilen.md) auf | A B C (geteilt) | `Idee` |
+| **Nextcloud-Datei** | Link auf den eigenen Nextcloud-Server (`/f/<id>`, `/s/<token>`, `/index.php/apps/files`) | Vorschaubild, Name, Größe, Ordner, „Open in Nextcloud“ | Vorschau vom eigenen Server; keine Privacy-Frage, weil kein fremder Anbieter gefragt wird | A B C | `Idee` |
+| **GitHub Issue / PR** | Link `github.com/<owner>/<repo>/issues/<nr>` oder `/pull/<nr>` | Nummer, Titel, Repo, Zustand (offen, geschlossen, gemergt), „Open on GitHub“ | der Kern über das verbundene GitHub-Konto ([github.md](github.md)); ohne Konto die Webseiten-Karte | A B C | `Idee` |
+| **Zitat einer Chat-Nachricht** | Link auf eine Nachricht des eigenen Servers; im Assistenten Treffer aus `chat.search_messages` | Absender, Unterhaltung, Zeit, Anfang der Nachricht, „Open in chat“ | `chat.get_messages`, nur wenn der Empfänger die Unterhaltung lesen darf | A B C | `Idee` |
 
 Die Liste wächst: Wer eine Inhaltsart vorschlägt, ergänzt eine Zeile (mit Stand `Idee`) und ein Issue folgt aus
 der Reihenfolge unten.
@@ -94,6 +100,7 @@ Bausteine sind gemeinsam.
 | **Zusatzzeilen** | höchstens drei Zeilen mit Symbol (Ort, Zeit, Absender, Seiten …) | die wichtigsten zuerst, der Rest in „Open“ |
 | **Knöpfe** | ein Haupt-Knopf („Open …“) und höchstens drei weitere | im Chat mit Leuten nur Knöpfe, die nichts schreiben („Open“, „Play“, „Open in <App>“, „Save as…“) |
 | **Kurzform** | Symbol, Titel, eine Zusatzangabe in 40 Pixel Höhe | für Mini-Kachel, Schnellfenster und Listen |
+| **Laden / Nicht erreichbar** | Platzhalter in der Größe der fertigen Karte; danach „Not available right now“ mit „Try again“ | die Karte springt nicht: Der Platz steht, bevor der Inhalt kommt; Kopf und Quelle stehen auch im Fehlerfall; „No longer available“ (gelöscht, gesperrt) bleibt davon getrennt und hat keinen Knopf |
 
 Abweichungen sind nur dort erlaubt, wo eine Art es braucht (Kalenderblatt statt Bild beim Termin, Player-Fenster
 beim Video). Der Entwurf zeigt jede Inhaltsart im Assistenten und im Chat nebeneinander. Die Bausteine kommen als
@@ -111,14 +118,16 @@ Wie viele Treffer als Karte erscheinen, hängt an der Zahl, nicht am Gefühl:
 | ab 11 | ein Satz mit der Anzahl und „Show all“, das die passende App öffnet („12 mails match“) |
 
 Zwei Mails sind also Karten, 300 sind ein Satz. Zehn volle Karten sind verworfen: Sie füllen das Fenster. Im Chat
-mit Leuten bleibt es beim **ersten Link** einer Nachricht (wie in Talk-Web); mehr als eine Karte unter einer
-Nachricht gibt es dort nicht.
+mit Leuten zeigt eine Nachricht **bis zu drei Karten**, in der Reihenfolge der Links; ab dem vierten Link stehen
+die übrigen nur als Links im Text. Bisher galt nur der erste Link (wie in Talk-Web); das reichte nicht, sobald eine
+Nachricht ein Issue und einen PR oder zwei Dateien nennt. Die Grenze gilt je Nachricht, nicht je Unterhaltung.
 
 ## Chat mit Leuten
 
 Der Chat erkennt Mails und Termine **nur aus geteilten Karten und aus Links auf den eigenen Nextcloud-Server**.
 Er rät nicht aus freiem Text: Eine fremde Mail liegt nicht im eigenen Postfach, und ein Datum im Satz ist kein
-Termin. Webseiten, Videos und Landkarten erkennt er am Link wie heute die Link-Karte (Entscheidung 23).
+Termin. Webseiten, Videos und Landkarten erkennt er am Link wie heute die Link-Karte (Entscheidung 23), ebenso
+Dateien und Nachrichten des eigenen Nextcloud-Servers und GitHub Issues / PRs.
 Wer Mail oder Termin teilen will, teilt eine Karte über „Share…“ ([teilen.md](teilen.md)); der Kern baut sie aus
 seinem Cache.
 
@@ -153,6 +162,41 @@ seines Bildes. Das ist die gefährlichste Quelle, weil ihr Text von außen kommt
 - **Nur Assistent und Bots**, nicht der Chat mit Leuten: Dort gibt es kein Werkzeug des Menschen, das den Server
   gerufen hätte.
 
+## Vorschau-Anbieter je Dateiart
+
+**Grundsatz: Vorschaukarten gelten zuerst für eigene Inhalte aus Torro** (Mails, Termine, Fotos, Notizen,
+Dateien der eigenen Konten und des eigenen Nextcloud-Servers). Fremde Seiten und fremde Programme kommen danach
+und nur mit den Regeln aus „Datenschutz“ und „MCP als Quelle“.
+
+Welches Bild eine Datei bekommt, entscheidet eine **Zuordnung Dateiart → Anbieter** im Kern. Die Dateiart ist der
+Medientyp (`application/pdf`, `image/png` …), bei unbekanntem Typ die Endung. Je Art gilt der erste Anbieter, der
+eine Vorschau liefert:
+
+1. **Eigene Renderer der Suite.** Der Kern selbst (verkleinerte Bilder PNG, JPEG, WebP), die Fotos-App
+   (`photos.get_preview`), der eigene Nextcloud-Server für seine Dateien. Ein eigener Renderer trägt sich mit
+   seiner App für die Arten ein, die er kann.
+2. **Freigegebene MCP-Server.** Ein Server, den ein Mensch angebunden und dessen Werkzeuge er freigegeben hat
+   ([erweiterungen.md](erweiterungen.md)), kann sich für eine Art eintragen, etwa ArtCraft für seine Projektdateien.
+   Er gilt **nur für Dateien aus dem Ergebnis eines seiner freigegebenen Werkzeuge in dieser Unterhaltung**, nur in
+   Assistent und Bots: Der Kern fragt ihn nie von sich aus und nie für eine Datei, die von anderswo kommt (Regel aus
+   „MCP als Quelle“). Der Eintrag sagt also nur, *welche* Art der Server bebildern darf, nicht, dass er gefragt wird.
+   Er liefert nur ein Bild nach den Regeln aus „MCP als Quelle“: PNG, JPEG oder WebP bis 1 MiB, **kein SVG**, und
+   der Kopf der Karte trägt „From <Name> (external, untrusted)“. Ein eigener Renderer geht vor, ein Server
+   überschreibt ihn nicht.
+3. **Rückfall: das Symbol der Art.** Gibt es keinen Anbieter oder antwortet keiner, zeigt die Karte das Symbol
+   (Baustein „Bild“) und alles Übrige wie sonst. Eine Karte wartet nie auf einen Anbieter (Baustein „Laden / Nicht
+   erreichbar“).
+
+Die **erste PDF-Seite** ist damit ein Fall dieses Weges: Sie braucht einen Anbieter für `application/pdf`. Welcher
+Renderer das wird, bleibt offen (siehe „Offene Fragen“), Stand weiter `Idee`. Ein MCP-Server ersetzt diesen Renderer
+nicht: Er bebildert nur PDFs, die sein eigenes Werkzeug geliefert hat, und nur in Assistent und Bots.
+
+- **Eintragen und Reihenfolge ändert nur ein Mensch** (Settings › Extensions). Ein Agent sieht die Zuordnung, ändert
+  sie aber nie: Sonst könnte er sich selbst zum Anbieter für fremde Dateien machen.
+- **Im Chat mit Leuten nur eigene Renderer:** Dort gibt es kein Werkzeug, das den Server gerufen hätte, und er
+  sähe sonst Dateien anderer Leute.
+- Ein Anbieter bekommt **nur die eine Datei**, die angezeigt wird, nie einen Ordner oder eine Liste.
+
 ## Datenschutz
 
 Karten fremder Anbieter folgen **Settings › Privacy** wie die Link-Karten heute ([settings.md](settings.md),
@@ -184,6 +228,16 @@ und kommt mit dem Issue der jeweiligen Karte in den Befehlskatalog (`torro-ipc`,
 | Landkarte als Karte | beide Chatfenster | Vorschlag: `CardRef::Map`, Bild über `calendar.map_preview` (vorhanden); der Kern holt es beim Auflösen der Karte selbst, das Modell sieht es nie | Read | Bild nicht für Assistenten (`calendar_map_preview`, [termin-editor.md](termin-editor.md)) |
 | Karte eines MCP-Servers | Chatfenster des Assistenten | Vorschlag: `CardRef::External` aus dem Werkzeugergebnis | Read | über das Werkzeug des Servers; kein eigenes Tool |
 | Karte zusammenführen (Kurzform) | alle Fenster | Teil derselben Antworten | Read | wie oben |
+| Vorschau-Anbieter je Dateiart lesen | Settings › Extensions | Vorschlag: `extensions.list_preview_providers` (Art, Anbieter, Reihenfolge) | Read | Vorschlag: `extensions_list_preview_providers` |
+| Vorschau-Anbieter eintragen, entfernen, ordnen | Settings › Extensions | Vorschlag: `extensions.set_preview_provider { kind, provider, position? }` | Admin, nur App-Schlüssel | im Katalog `Mcp::Tool`, jeder Client bekommt `forbidden` (`kept_for_people` wie `privacy_*`); Grund: ein Agent machte sich sonst selbst zum Anbieter (siehe „Offene Fragen“) |
+| Vorschaubild einer Datei holen | alle Fenster | Teil der vorhandenen `assistant.get_cards` (`CardRef::File`) und `chat.get_preview { card: true }`; Vorschlag: der Kern fragt dabei den Anbieter der Dateiart | Read | vorhandene `assistant_get_cards`, `chat_get_preview`; kein eigenes Tool, das Bild entsteht nur beim Auflösen einer Karte |
+| Foto und Album als Karte | beide Chatfenster | Vorschlag: `CardRef::Photo` / `CardRef::Album`, Bild über `photos.get_preview` (Vorschlag in [fotos.md](fotos.md), PH1) | Read **und** Recht „Bildinhalte“ für das Bild | vorhandenes `assistant_get_cards`; Bild über `photos_get_preview` nur mit dem Recht |
+| Notiz als Karte | beide Chatfenster | Vorschlag: `CardRef::Note`, Inhalt über `notes.get_note` ([notizen.md](notizen.md)) | Read | vorhandenes `assistant_get_cards` |
+| Kontakt als Karte | beide Chatfenster | Vorschlag: `CardRef::Contact` über `contacts.get_contact` und `contacts.get_photo` (vorhanden); im Chat die geteilte Karte aus [teilen.md](teilen.md) | Read | vorhandenes `assistant_get_cards` |
+| Nextcloud-Datei als Karte | beide Chatfenster | Vorschlag: Link-Karte mit `kind: nextcloud_file` im Feld `cards` von `chat.get_messages`, im Assistenten `CardRef::Link` | Read | vorhandene `chat_get_messages`, `assistant_get_cards` |
+| GitHub Issue / PR als Karte | beide Chatfenster | Vorschlag: Link-Karte mit `kind: github`, aufgelöst über das GitHub-Konto des Kerns ([github.md](github.md)) | Read | vorhandene `chat_get_messages`, `assistant_get_cards` |
+| Zitat einer Chat-Nachricht als Karte | beide Chatfenster | Vorschlag: Link-Karte mit `kind: chat_message`, Inhalt über `chat.get_messages` (vorhanden), nur mit Leserecht des Empfängers | Read | vorhandene `chat_get_messages`, `assistant_get_cards` |
+| Karte neu laden („Try again“) | alle Fenster | kein eigener Befehl: dieselbe Anfrage (`assistant.get_cards`, `chat.get_preview`) noch einmal | Read | wie oben |
 
 Es entsteht **kein Befehl, mit dem ein Agent eine Karte frei hinstellt** (`chat.show_card` ist bewusst `Never`):
 Eine Karte entsteht nur als Ergebnis eines Befehls oder Werkzeugs, das der Kern selbst ausführt.
@@ -192,19 +246,29 @@ Eine Karte entsteht nur als Ergebnis eines Befehls oder Werkzeugs, das der Kern 
 
 Vorschlag für die Folge-Issues, je ein Titel, hier nicht angelegt:
 
-1. **Inhaltskarten: gemeinsame Bausteine und Webseiten-Karte** (Widgets nach „Gemeinsame Gestalt“, Link-Karte
-   und Datei-Karte darauf legen, Webseite im Assistenten mit Privacy-Rückfrage).
+1. **Inhaltskarten: gemeinsame Bausteine und Webseiten-Karte** (Widgets nach „Gemeinsame Gestalt“ samt „Laden /
+   Nicht erreichbar“, Link-Karte und Datei-Karte darauf legen, Webseite im Assistenten mit Privacy-Rückfrage, bis zu
+   drei Karten je Chat-Nachricht).
 2. **Inhaltskarten: gefundene Mail als Karte** (`CardRef::Mail`, Kurzform, Grenzen aus „Grenzen“).
 3. **Inhaltskarten: Termin, Aufgabe und Mail-Entwurf** (die in [assistent.md](assistent.md) entworfenen Karten
    auf den Bausteinen bauen).
-4. **Inhaltskarten: Videos** (YouTube im Assistenten, andere Anbieter).
-5. **Inhaltskarten: Landkarten** (Google Maps, OpenStreetMap, Apple Maps).
-6. **Inhaltskarten: PDF** (Titel und Seitenzahl, erste Seite nach Entscheidung zum Renderer).
-7. **Inhaltskarten: Bild eines MCP-Servers** (ArtCraft als erster Fall, nach „MCP als Quelle“).
+4. **Inhaltskarten: Notiz, Kontakt, Foto und Album** (eigene Inhalte aus Torro; Kontakt baut auf der geteilten
+   Karte auf, Foto auf `photos.get_preview` und dem Recht „Bildinhalte“).
+5. **Inhaltskarten: Links auf den eigenen Server und GitHub** (Nextcloud-Datei, Zitat einer Chat-Nachricht,
+   GitHub Issue / PR).
+6. **Inhaltskarten: Vorschau-Anbieter je Dateiart** (Zuordnung im Kern, eigene Renderer, Settings › Extensions,
+   `extensions.list_preview_providers` und `extensions.set_preview_provider`).
+7. **Inhaltskarten: Videos** (YouTube im Assistenten, andere Anbieter).
+8. **Inhaltskarten: Landkarten** (Google Maps, OpenStreetMap, Apple Maps).
+9. **Inhaltskarten: PDF** (Titel und Seitenzahl, erste Seite als Anbieter für `application/pdf` nach Entscheidung
+   zum Renderer).
+10. **Inhaltskarten: Bild eines MCP-Servers** (ArtCraft als erster Fall, nach „MCP als Quelle“; MCP-Server als
+    Vorschau-Anbieter).
 
 Grund der Reihenfolge: Die Bausteine (1) braucht jede andere Karte; die Mail (2) ist der häufigste Fall des
-Assistenten; Termin und Aufgabe (3) sind schon entworfen; MCP (7) kommt zuletzt, weil es die meisten
-Sicherheitsfragen hat.
+Assistenten; Termin und Aufgabe (3) sind schon entworfen; eigene Inhalte (4, 5) gehen vor fremden, wie es der
+Grundsatz aus „Vorschau-Anbieter je Dateiart“ verlangt; die Zuordnung (6) kommt vor PDF (9) und MCP (10), die auf ihr aufbauen; MCP
+kommt zuletzt, weil es die meisten Sicherheitsfragen hat.
 
 ## Entscheidungen (Planung #775)
 
@@ -224,5 +288,14 @@ Sicherheitsfragen hat.
   ([termin-editor.md](termin-editor.md), Punkt 9). Geht er in Privacy auf, gäbe es einen Ort für alles, was
   fremde Server fragt; dagegen spricht, dass `maps` auch getippte Adressen an einen Suchdienst schickt.
 - **Renderer für die erste PDF-Seite:** Es gibt keinen in der Suite; ein zusätzlicher Baustein braucht eine
-  eigene Entscheidung (Größe, Lizenz, Sicherheit bei fremden Dateien).
+  eigene Entscheidung (Größe, Lizenz, Sicherheit bei fremden Dateien). Er wird der eigene Vorschau-Anbieter für
+  `application/pdf`; bis dahin bleibt das Symbol der Art.
 - **Weitere Videoanbieter:** welche, und ob ein Anbieter ohne Player-Fenster nur öffnet.
+- **Vorschau-Anbieter eintragen: `kept_for_people` oder „Was nie nach außen geht“?** Vorschlag ist der Weg der
+  Werte `privacy_*` (im Katalog `Mcp::Tool`, jeder Client bekommt `forbidden`). Gehört das Eintragen eher zu den
+  Freigaben ([api.md](api.md), „Was nie nach außen geht“, Punkt 3), wäre es ein neuer Punkt dort und MCP `Never`.
+- **Nextcloud-Vorschau für fremde Server:** Links auf einen Nextcloud-Server, der nicht der eigene ist, sind eine
+  Webseite und laufen über Privacy; ob föderierte Freigaben (`/s/<token>` eines anderen Servers) wie eigene gelten,
+  ist offen.
+- **GitHub ohne Konto:** ob die Karte dann nur die Webseiten-Karte ist oder die öffentliche API ohne Anmeldung
+  fragt (dann ein fremder Anbieter mit Privacy-Rückfrage).
