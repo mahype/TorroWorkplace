@@ -168,7 +168,7 @@ impl VoiceDownloads {
             match entries.get_mut(model.id) {
                 Some(entry) if entry.state == VoiceModelState::Running => {
                     entry.state = VoiceModelState::Cancelled;
-                    entry.task.take()
+                    aborted(entry.task.take())
                 }
                 _ => None,
             }
@@ -182,7 +182,7 @@ impl VoiceDownloads {
     /// [`VoiceModelError::Error`] when its folder cannot be deleted.
     pub async fn remove(&self, id: &str) -> Result<Vec<VoiceModel>, VoiceModelError> {
         let model = self.model(id).ok_or(VoiceModelError::NotFound)?;
-        let task = self.entries().remove(model.id).and_then(|entry| entry.task);
+        let task = aborted(self.entries().remove(model.id).and_then(|entry| entry.task));
         stopped(task).await;
         if let Some(folder) = &self.folder {
             match std::fs::remove_dir_all(model.folder(folder)) {
@@ -206,17 +206,19 @@ impl VoiceDownloads {
     }
 
     /// Ends the run `run` of the model `id`: a download that ended well leaves no entry (the disk says
-    /// `ready`), one that failed keeps its sentence. Nothing when it was cancelled or started anew since.
+    /// `ready`), also when a cancel came while it finished; one that failed keeps its sentence. Nothing
+    /// when it was started anew since, and no failure of a cancelled one.
     fn end(&self, id: &'static str, run: u64, outcome: Result<(), String>) {
         let mut entries = self.entries();
         let Some(entry) = entries.get_mut(id) else { return };
-        if entry.run != run || entry.state != VoiceModelState::Running {
+        if entry.run != run {
             return;
         }
         match outcome {
             Ok(()) => {
                 entries.remove(id);
             }
+            Err(_) if entry.state != VoiceModelState::Running => {}
             Err(error) => {
                 entry.state = VoiceModelState::Failed;
                 entry.error = Some(error);
@@ -250,6 +252,15 @@ impl VoiceDownloads {
 }
 
 /// Aborts `task` and waits until it has stopped.
+/// `task`, told to stop while the caller still holds the lock of the entries: a download started right
+/// after the lock is let go must not find the old task still writing (review of #762).
+fn aborted(task: Option<tokio::task::JoinHandle<()>>) -> Option<tokio::task::JoinHandle<()>> {
+    if let Some(task) = &task {
+        task.abort();
+    }
+    task
+}
+
 async fn stopped(task: Option<tokio::task::JoinHandle<()>>) {
     if let Some(task) = task {
         task.abort();
