@@ -318,6 +318,29 @@ pub trait Host: Send + Sync {
         Box::pin(async move { forbidden(request.operation().name()) })
     }
 
+    /// A command of the assistant's terminal (issue #754, `torro_ipc::tools::TERMINAL_COMMANDS`) from an answer of
+    /// `actor` in the permission mode `mode`, with the conversation and whether it read content from outside
+    /// (`terminal`). Only this way reaches the terminal, and only for [`Actor::Assistant`]: the core then checks the
+    /// switch, the conversation, the command and asks the person where the mode says (`Core::terminal_gate`). The
+    /// default is `forbidden`, so a host that cannot ask runs nothing.
+    fn run_terminal<'a>(
+        &'a self,
+        actor: &'a Actor,
+        request: Request,
+        engine: &'a str,
+        mode: Mode,
+        terminal: crate::approvals::TerminalContext,
+    ) -> BoxFuture<'a, Response> {
+        let _ = (actor, engine, mode, terminal);
+        Box::pin(async move { forbidden(request.operation().name()) })
+    }
+
+    /// Whether a person switched the assistant's terminal on (issue #754): only then the loop offers its commands.
+    /// The default is no.
+    fn terminal_enabled(&self) -> bool {
+        false
+    }
+
     /// [`Host::lend_in`] for a run in the permission mode `mode` (issue #132): every request with the
     /// key runs with the client's rights narrowed by it, and its approvals keep it. The default lends
     /// for [`Mode::Default`] only: a host that cannot narrow a key lends none.
@@ -905,6 +928,7 @@ impl Answering {
                 memory: &self.memory,
                 skills: &self.skills,
                 servers: &servers,
+                terminal: allowed.iter().any(|tool| torro_ipc::tools::is_terminal_command(tool.command.name)),
             };
             let mut system = match &self.job.bot {
                 Some(bot) => prompt::bot_system(Some(&self.persona), &prompt::BotParts::of(bot), &context),
@@ -1236,6 +1260,14 @@ impl Answering {
             None => !self.skills.is_empty(),
         };
         let allowed = tools::with_skills(allowed, any_skill);
+        // The terminal (issue #754) for the assistant's own answers only, while a person switched it on.
+        let allowed = tools::with_terminal(
+            allowed,
+            self.job.actor.kind(),
+            self.host.terminal_enabled(),
+            &self.job.without,
+            self.job.mode,
+        );
         match &self.job.about {
             Some(about) => tools::about_mail(allowed, rights, &self.job.without, &about.account),
             None => allowed,
@@ -1276,11 +1308,21 @@ impl Answering {
         let (main, without) = (self.job.conversation.clone(), self.job.without.clone());
         let web = self.web_consent(&request);
         let about = self.job.about.clone();
+        // The terminal (issue #754): its conversation, and whether it read content from outside – what the tools
+        // marked `untrusted` (mail, a page, a program that reads from outside), an earlier tool that may have, or a
+        // client's message. Then it runs no more commands.
+        let terminal = torro_ipc::tools::is_terminal_command(request.operation().name()).then(|| {
+            crate::approvals::TerminalContext { conversation: main.clone(), tainted: self.untrusted || self.outside }
+        });
         // Asking a bot (task B.2) needs the conversation: the person must have asked for the bot here;
         // and so does the web (task WEB.5): the person says yes once per conversation. A chat about a mail
         // (issue #605) names it, so its suggestion counts as reading.
         let ran = tokio::spawn(async move {
             match (&actor, &request, web, about) {
+                (Actor::Assistant, ..) if terminal.is_some() => {
+                    let terminal = terminal.unwrap_or_default();
+                    host.run_terminal(&actor, request, &engine, mode, terminal).await
+                }
                 (Actor::Assistant, Request::AskBot { .. }, ..) => {
                     let from = AskedIn { main: &main, without: &without, mode };
                     host.ask_bot_in(from, request, &engine, untrusted).await
