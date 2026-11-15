@@ -4355,9 +4355,11 @@ pub enum Request {
         /// (`forbidden` otherwise, nothing stored) and a caller that sees the account (`not-found`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         about: Option<assistant::MailRef>,
-        /// The message was spoken (issue #747): the assistant answers briefly, in sentences to be read
-        /// aloud, without tables and lists. It changes only what the model is told; `false` when left
-        /// out.
+        /// The answer will be read aloud (issue #747): the message was spoken, or the window reads its
+        /// answers aloud. The answer then comes in two parts (issue #774): a short spoken part in plain
+        /// sentences, the one to read aloud, and the shown part for the chat, as long as it needs to be.
+        /// `assistant.get_conversation` gives them apart (the answer's `spoken` and `text`). It changes
+        /// only what the model is told; `false` when left out.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         spoken: bool,
     },
@@ -5088,7 +5090,9 @@ pub enum Request {
     TalkStatus,
     /// Reads the answer of `conversation` aloud sentence by sentence (issue #747, [`Response::Ok`]):
     /// the answer that runs, as the model writes it, the first sentence as soon as it is written;
-    /// without one the answer after the last message. Answers once it was read to its end or stopped
+    /// without one the answer after the last message. Of an answer in two parts (issue #774) only its
+    /// `spoken` part is read; one without it up to a sentence end within
+    /// [`assistant::SPOKEN_MOST`] characters. Answers once it was read to its end or stopped
     /// ([`Request::StopSpeaking`]); a call for the answer that is read already waits for the same end,
     /// any other one stops it. An answer that waits for an approval or fails is read as a sentence
     /// saying so. Errors as [`Request::Speak`]; `not-found` for an unknown conversation, `error` when
