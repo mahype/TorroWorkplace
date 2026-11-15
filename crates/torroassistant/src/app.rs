@@ -2006,9 +2006,9 @@ impl App {
     /// first letter, and then takes no room.
     pub(crate) fn answer_shows(&self, seq: u64) -> bool {
         // A spoken part shows as the answer's lead at once (issue #774), whatever its shown part does.
-        let spoken = self.transcript.entries.iter().any(|entry| {
-            entry.seq == seq
-                && matches!(&entry.content, EntryContent::Answer { spoken: Some(spoken), .. } if !spoken.trim().is_empty())
+        let spoken = self.transcript.entries.iter().any(|entry| match &entry.content {
+            EntryContent::Answer { spoken: Some(spoken), .. } => entry.seq == seq && !spoken.trim().is_empty(),
+            _ => false,
         });
         spoken || self.answers.get(&seq).is_none_or(|(shown, _)| !shown.is_empty())
     }

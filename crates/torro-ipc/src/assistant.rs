@@ -796,11 +796,11 @@ pub const SHOWN_MARK: &str = "---shown---";
 pub const SPOKEN_MOST: usize = 600;
 
 /// Splits an answer's text into its spoken and its shown part (issue #774) at the first line that is,
-/// trimmed (and without backticks around it, which models add at times), [`SHOWN_MARK`]: what comes before is spoken (trimmed only at its end, so it stays a start
-/// of the text, which matters while it is read sentence by sentence), what comes after is shown
-/// (trimmed, it may be empty). Without such a line `(None, text)`; with nothing but blanks before it
-/// `(None, shown)`. While the answer is still written
-/// (`running`), a last line that may become the mark (it starts with `-` and is a start of
+/// trimmed (and without backticks around it, which models add at times), [`SHOWN_MARK`]: what comes
+/// before is spoken (trimmed only at its end, so it stays a start of the text, which matters while it
+/// is read sentence by sentence), what comes after is shown (trimmed, it may be empty). Without such a
+/// line `(None, text)`; with nothing but blanks before it `(None, shown)`. While the answer is still
+/// written (`running`), a last line that may become the mark (it starts with `-` and is a start of
 /// [`SHOWN_MARK`]) is left out of the text, so the mark never flashes up in the chat.
 pub fn split_spoken(text: &str, running: bool) -> (Option<String>, String) {
     let mut at = 0;
