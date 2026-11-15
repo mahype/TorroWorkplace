@@ -159,6 +159,8 @@ pub struct Data {
     pub voice: Option<VoiceStatus>,
     /// Who can read aloud here (`settings.speech_status`, issue #745); `None` until an answer came.
     pub speech: Option<SpeechStatus>,
+    /// The models the assistant listens and speaks with (`settings.list_voice_models`, issue #762).
+    pub voice_models: Vec<torro_ipc::VoiceModel>,
     /// Every account with its collections, hidden ones included (`accounts.list_accounts`): the
     /// calendar app's "Calendars" and the tasks app's "Lists" group by it (task S.19,
     /// [`collections`]). A sign-in that still runs has an empty id and no collections.
@@ -329,6 +331,7 @@ impl Data {
             Response::SortRules { rules } => self.sort_rules = rules,
             Response::Voice { voice } => self.voice = Some(voice),
             Response::Speech { speech } => self.speech = Some(speech),
+            Response::VoiceModels { models } => self.voice_models = models,
             Response::Accounts { accounts } => self.accounts = accounts,
             Response::MailAccountStats { accounts } => self.mail_stats = accounts,
             Response::MailCachePolicy { policy } => {

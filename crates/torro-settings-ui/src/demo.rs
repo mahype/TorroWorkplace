@@ -108,6 +108,8 @@ pub struct Demo {
     sent: Mutex<Vec<Request>>,
     category_job: Mutex<Option<CategoryJob>>,
     category_clear_job: Mutex<Option<CategoryClearJob>>,
+    /// The voice models as Download, Cancel and Remove left them (issue #762).
+    voice_models: Mutex<Vec<torro_ipc::VoiceModel>>,
     cache_policy: Mutex<Option<MailCachePolicy>>,
     cache_job: Mutex<Option<MailCacheJob>>,
     /// The sample catalogue once a category was moved (`inbox.move_category`, issue #481), for the
@@ -176,6 +178,7 @@ impl Demo {
             sent: Mutex::new(Vec::new()),
             category_job: Mutex::new(None),
             category_clear_job: Mutex::new(None),
+            voice_models: Mutex::new(voice_models()),
             cache_policy: Mutex::new(None),
             cache_job: Mutex::new(None),
             catalogue: Mutex::new(None),
@@ -1068,8 +1071,8 @@ impl Demo {
         }
     }
 
-    /// How voice stands on the sample computer: everything there but the wake word, one
-    /// microphone.
+    /// How voice stands on the sample computer: Whisper turbo downloaded, one microphone, Pocket TTS
+    /// still downloading.
     fn voice(&self) -> VoiceStatus {
         let found = |part, program: &str| VoiceProgram { part, program: Some(program.into()), missing: None };
         VoiceStatus {
@@ -1077,12 +1080,12 @@ impl Demo {
             installed: true,
             problem: None,
             programs: vec![
-                VoiceProgram { part: VoicePart::WakeWord, program: None, missing: Some(VoiceMissing::Program) },
-                found(VoicePart::Recorder, "parec"),
-                found(VoicePart::SpeechToText, "onnx-asr"),
-                found(VoicePart::Speech, "piper"),
+                found(VoicePart::WakeWord, "whisper-turbo"),
+                found(VoicePart::Recorder, "USB microphone"),
+                found(VoicePart::SpeechToText, "whisper-turbo"),
+                VoiceProgram { part: VoicePart::Speech, program: None, missing: Some(VoiceMissing::Model) },
             ],
-            microphones: vec!["alsa_input.usb".into()],
+            microphones: vec!["USB microphone".into()],
             folder: Some("/home/anna/.local/share/torroassistant/voice".into()),
         }
     }
@@ -1386,6 +1389,15 @@ impl Backend for Demo {
             }
             Request::VoiceStatus => Response::Voice { voice: self.voice() },
             Request::SpeechStatus => Response::Speech { speech: speech_status(self.settings.voice.speech_provider) },
+            // Issue #762: the models follow the buttons, nothing is downloaded.
+            Request::ListVoiceModels
+            | Request::DownloadVoiceModel { .. }
+            | Request::CancelVoiceDownload { .. }
+            | Request::RemoveVoiceModel { .. } => {
+                let mut models = self.voice_models.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                demo_voice_models(&mut models, &request);
+                Response::VoiceModels { models: models.clone() }
+            }
             // "Preview" (issue #745): nothing sounds in the demo.
             Request::Speak { .. } | Request::StopSpeaking => Response::Ok,
             Request::Accounts => Response::Accounts { accounts: self.accounts() },
@@ -1612,32 +1624,27 @@ fn pim_accounts() -> Vec<AccountInfo> {
         .collect()
 }
 
-/// Who reads aloud on the sample computer (issue #745), for the demos of the settings and the
-/// control centre: a graphics card fast enough for Qwen3-TTS,
-/// which is not set up yet, no OpenAI account, and Piper with its voice; the core's choice is Piper.
+/// Who reads aloud on the sample computer (issues #745, #762), for the demos of the settings and the
+/// control centre: Pocket TTS, whose model is still downloading, and no OpenAI account; the core's
+/// choice is Pocket TTS.
 pub fn speech_status(current: Option<torro_core::settings::SpeechProvider>) -> torro_ipc::SpeechStatus {
-    use torro_core::settings::{OPENAI_RECOMMENDED, OPENAI_VOICES, QWEN_RECOMMENDED, QWEN_VOICES, SpeechProvider};
+    use torro_core::settings::{OPENAI_RECOMMENDED, OPENAI_VOICES, POCKET_RECOMMENDED, POCKET_VOICES, SpeechProvider};
     use torro_ipc::{SpeechMissing, SpeechOption, SpeechStatus, SpeechVoice};
     let voices = |ids: &[&str], recommended: &dyn Fn(&str) -> bool| {
         ids.iter().map(|id| SpeechVoice { id: (*id).to_string(), recommended: recommended(id) }).collect()
     };
     SpeechStatus {
-        gpu: Some("NVIDIA GeForce RTX 4090, 24 GB".into()),
+        gpu: None,
         fast_enough: true,
-        recommended: SpeechProvider::Qwen,
-        current: current.unwrap_or(SpeechProvider::Piper),
+        recommended: SpeechProvider::Pocket,
+        current: current.unwrap_or(SpeechProvider::Pocket),
         providers: vec![
             SpeechOption {
-                provider: SpeechProvider::Qwen,
-                missing: Some(SpeechMissing::Program),
-                voices: voices(&QWEN_VOICES, &|id| id == QWEN_RECOMMENDED),
-                model: Some("Qwen/Qwen3-TTS-12Hz-1.7B-Base".into()),
-                setup: Some(
-                    "python3 -m venv \"/home/anna/.local/share/torroassistant/voice/qwen/venv\" && \
-                     \"/home/anna/.local/share/torroassistant/voice/qwen/venv/bin/pip\" install \
-                     faster-qwen3-tts==0.5.4 transformers==5.15.1"
-                        .into(),
-                ),
+                provider: SpeechProvider::Pocket,
+                missing: Some(SpeechMissing::Model),
+                voices: voices(&POCKET_VOICES, &|id| id == POCKET_RECOMMENDED),
+                model: Some(torro_core::voice_models::POCKET_DE.into()),
+                setup: None,
             },
             SpeechOption {
                 provider: SpeechProvider::OpenAi,
@@ -1646,14 +1653,55 @@ pub fn speech_status(current: Option<torro_core::settings::SpeechProvider>) -> t
                 model: Some("gpt-4o-mini-tts".into()),
                 setup: None,
             },
-            SpeechOption {
-                provider: SpeechProvider::Piper,
-                missing: None,
-                voices: vec![SpeechVoice { id: "de_DE-thorsten-medium".into(), recommended: true }],
-                model: None,
-                setup: None,
-            },
         ],
+    }
+}
+
+/// The voice models of the sample computer (issue #762), one in each state the design review looks
+/// at: Whisper turbo downloaded, Parakeet failed without a network, Pocket TTS at 62 %.
+pub fn voice_models() -> Vec<torro_ipc::VoiceModel> {
+    use torro_ipc::{VoiceModel, VoiceModelState};
+    torro_core::voice_models::MODELS
+        .iter()
+        .map(|model| {
+            let (state, completed, error) = match model.id {
+                torro_core::voice_models::WHISPER_TURBO => (VoiceModelState::Ready, model.bytes(), None),
+                torro_core::voice_models::PARAKEET => (
+                    VoiceModelState::Failed,
+                    0,
+                    Some(tr("No connection to the internet. Check the network and try again.").to_string()),
+                ),
+                _ => (VoiceModelState::Running, model.bytes() * 62 / 100, None),
+            };
+            VoiceModel {
+                id: model.id.into(),
+                name: model.name.into(),
+                kind: model.kind,
+                bytes: model.bytes(),
+                recommended: model.recommended,
+                state,
+                completed,
+                error,
+            }
+        })
+        .collect()
+}
+
+/// What Download, Cancel and Remove do to the demo's `models`: the state changes, nothing loads.
+pub fn demo_voice_models(models: &mut [torro_ipc::VoiceModel], request: &Request) {
+    use torro_ipc::VoiceModelState;
+    let (id, state) = match request {
+        Request::DownloadVoiceModel { model } => (model, VoiceModelState::Running),
+        Request::CancelVoiceDownload { model } => (model, VoiceModelState::Cancelled),
+        Request::RemoveVoiceModel { model } => (model, VoiceModelState::Missing),
+        _ => return,
+    };
+    for model in models.iter_mut().filter(|model| model.id == *id) {
+        model.state = state;
+        model.error = None;
+        if state == VoiceModelState::Missing {
+            model.completed = 0;
+        }
     }
 }
 
