@@ -1,0 +1,34 @@
+<!-- Self-made sample for #796, not a real mail: shortened after the "Zurb Ink" receipt template, whose style
+     sheet turns table cells into blocks with !important. -->
+<style>
+  body { background: #f8f8f8; font-family: Arial, sans-serif; }
+  .wrapper { width: 100%; background: #f8f8f8; }
+  .container { display: block !important; max-width: 580px !important; margin: 0 auto !important; clear: both !important; }
+  .content { max-width: 580px; margin: 0 auto; padding: 16px; background: #ffffff; }
+</style>
+<table class="wrapper">
+  <tr>
+    <td class="container">
+      <div class="content">
+        <table>
+          <tr>
+            <td><b>Example Billing</b></td>
+          </tr>
+        </table>
+        <p>Your payment was successful.</p>
+        <p>Thank you for your payment of $27.00. The receipt for invoice 0000-0001 is below.</p>
+        <table>
+          <tr>
+            <td>Username</td>
+            <td>example-user</td>
+          </tr>
+          <tr>
+            <td>Invoice total</td>
+            <td>$27.00</td>
+          </tr>
+        </table>
+        <p>Questions about this receipt? Reply to this mail and we will help.</p>
+      </div>
+    </td>
+  </tr>
+</table>

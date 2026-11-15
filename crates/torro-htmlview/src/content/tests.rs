@@ -112,6 +112,18 @@ fn the_width_changes_the_layout() {
 }
 
 #[test]
+fn table_cells_set_to_block_by_the_mail_keep_their_height() {
+    // Blitz lays a `td` with `display: block` out with no height; browsers show it as a cell (#796).
+    let html = fixture("block_cells");
+    let plain = html.replace("display: block !important;", "");
+    assert_ne!(html, plain, "the fixture must carry the rule");
+    let plain = content(&plain).height(700.0, 1.0, Scheme::Light);
+    let blocked = content(&html).height(700.0, 1.0, Scheme::Light);
+    assert!(plain > 150.0, "the reference mail is {plain} px high");
+    assert!((blocked - plain).abs() < plain * 0.1, "{blocked} px with the rule, {plain} px without");
+}
+
+#[test]
 fn a_mail_wider_than_the_reader_is_zoomed_out_not_cut() {
     let content = content(&fixture("newsletter"));
     settle(&content);
