@@ -10,15 +10,10 @@
 //!
 //! Every text a card shows is foreign: data, never instructions. Nothing here logs an address.
 
-// Strand 2c of issue #784 makes the kinds of the own server and GitHub; the coordination removes this once it does.
-#![allow(dead_code, reason = "scaffold of issue #784: the parsers and their cards come with strand 2c")]
-
 pub(crate) mod chat;
 pub(crate) mod github;
 pub(crate) mod nextcloud;
 pub(crate) mod web;
-
-use torro_chat::LinkCardKind;
 
 /// At most this many addresses of one text get a card (issue #785): the chat with people shows up to three cards per
 /// message, the assistant up to three after an answer ([`torro_ipc::assistant::MAX_LINK_CARDS`]).
@@ -58,18 +53,6 @@ pub enum FileLink {
     Share(String),
     /// `/index.php/apps/files?dir=…` with the file it opens (`openfile`, `scrollto`), when it names one.
     Files { dir: String, file: Option<String> },
-}
-
-impl LinkKind {
-    /// The kind of the card it becomes ([`torro_chat::LinkCard::kind`]).
-    pub fn card_kind(&self) -> LinkCardKind {
-        match self {
-            LinkKind::Web => LinkCardKind::Web,
-            LinkKind::NextcloudFile(_) => LinkCardKind::NextcloudFile,
-            LinkKind::ChatMessage { .. } => LinkCardKind::ChatMessage,
-            LinkKind::Github { .. } => LinkCardKind::Github,
-        }
-    }
 }
 
 /// What `link` is, `own` being the origin of the own Nextcloud server (`https://cloud.example.org`, `None` without
@@ -170,6 +153,5 @@ mod tests {
         assert_eq!(classify("https://example.org/blog", own), LinkKind::Web);
         assert_eq!(classify("http://cloud.example.org/f/12", own), LinkKind::Web, "not https");
         assert_eq!(classify("no address", None), LinkKind::Web);
-        assert_eq!(LinkKind::Github { repo: "o/r".into(), number: 1, is_pull: true }.card_kind(), LinkCardKind::Github);
     }
 }

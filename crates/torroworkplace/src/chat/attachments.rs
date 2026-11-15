@@ -193,11 +193,13 @@ fn decided(privacy: &torro_core::privacy::Privacy, link: &str, server: Option<&s
     (link_cards::classify(link, server), web::decide(privacy, link, server))
 }
 
-/// Whether the card `card` may go to a reader who is no app (issue #790): a page, a video, and nothing else. A file
-/// of the own server, a quoted message and a GitHub item were resolved with the person's rights, which a client's
-/// rights need not cover (`crate::link_cards::{nextcloud,chat,github}` check them only when they resolve).
+/// Whether the card `card` may go to a reader who is no app (issue #790): a page, a video, and a file of the own
+/// server – a reader of the message reads the chat of its account, the right a file card asks for
+/// ([`crate::link_cards::nextcloud::reads_files`], decided in issue #784). A quoted message and a GitHub item were
+/// resolved with the person's rights, which a client's rights need not cover
+/// (`crate::link_cards::{chat,github}` check them only when they resolve).
 fn for_everyone(card: &torro_chat::LinkCard) -> bool {
-    card.kind == torro_chat::LinkCardKind::Web
+    matches!(card.kind, torro_chat::LinkCardKind::Web | torro_chat::LinkCardKind::NextcloudFile)
 }
 
 /// `bytes` as a picture answer with its size, when they are a PNG, JPEG, GIF or WebP.
@@ -713,7 +715,8 @@ impl ChatService {
     }
 
     /// `chat.show_card` for the first link of the message `id` ([`ChatService::show_card_at`] with
-    /// index 0).
+    /// index 0); the tests' short way.
+    #[cfg(test)]
     pub async fn show_card(self: &Arc<Self>, id: &str) -> Response {
         self.show_card_at(id, 0).await
     }
@@ -1017,9 +1020,10 @@ mod tests {
     }
 
     /// Issue #790: a link to a file of the own server gets its file card for the app, with the server's preview as
-    /// its picture; a client gets neither the card nor its picture.
+    /// its picture; a client that reads the chat of the account gets both too (issue #784), one without the right
+    /// to picture content not the picture.
     #[tokio::test]
-    async fn a_file_of_the_own_server_is_for_the_app_only() {
+    async fn a_file_of_the_own_server_goes_to_readers_of_its_chat() {
         use torro_chat::{LinkCardKind, conversation_id, message_id};
         use torro_ipc::Request;
         use torro_ipc::api::RightsTemplate;
@@ -1065,8 +1069,12 @@ mod tests {
         rights.image_content = true;
         rights.chat_accounts = torro_ipc::api::Selection::Only(vec![ACCOUNT.into()]);
         let agent = Caller { reach: Reach::Client(&rights), client: Some("agent") };
-        assert!(card(chat.handle(read, agent).await).is_none(), "not for a client");
-        assert!(matches!(chat.card_preview(&id, 0, small, agent).await, Response::Error { .. }));
+        let theirs = card(chat.handle(read, agent).await).expect("a reader of the chat gets the card");
+        assert_eq!(theirs.kind, LinkCardKind::NextcloudFile);
+        assert!(matches!(chat.card_preview(&id, 0, small, agent).await, Response::ChatPicture { .. }));
+        rights.image_content = false;
+        let blind = Caller { reach: Reach::Client(&rights), client: Some("agent") };
+        assert!(matches!(chat.card_preview(&id, 0, small, blind).await, Response::Error { .. }), "no picture right");
     }
 
     #[test]

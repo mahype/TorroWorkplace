@@ -572,8 +572,9 @@ mod tests {
         assert_eq!(server.count("resolve"), 0);
     }
 
-    /// Issue #790: a file of the own server reaches no client yet (`nextcloud::reads_files`) and stays a link, never
-    /// a page card; a quote of a conversation the client may not read is unavailable, without any text.
+    /// Issue #790: a file of the own server reaches a client only with the chat right of its account
+    /// (`nextcloud::reads_files`, issue #784), else it stays a link, never a page card; a quote of a conversation the
+    /// client may not read is unavailable, without any text.
     #[tokio::test]
     async fn the_own_server_goes_by_the_rights_of_the_conversations_client() {
         let (chat, server) = chat(always());
@@ -583,11 +584,11 @@ mod tests {
         let shown = Shown::default();
         let github = github();
         let mut rights = rights();
+        rights.chat_accounts = torro_ipc::api::Selection::Only(Vec::new());
         let at = Place { chat: &chat, github: &github, rights: &rights, shown: &shown };
         let card = look_in(&at, "c1", 1, file, LinkOrigin::Person).await;
         assert_eq!(card, Card::Link { url: file.into(), card: None, ask: None });
         assert_eq!(server.count("resolve"), 0, "nothing asked, no page card");
-        rights.chat_accounts = torro_ipc::api::Selection::Only(Vec::new());
         let at = Place { chat: &chat, github: &github, rights: &rights, shown: &shown };
         let quote = "https://cloud.example.org/call/ben4chat#message_5";
         assert_eq!(look_in(&at, "c1", 2, quote, LinkOrigin::Model).await, Card::Unavailable);

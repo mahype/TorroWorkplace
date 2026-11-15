@@ -1,7 +1,7 @@
 //! Files of the own Nextcloud server (issue #790, `docs/inhaltskarten.md` "Nextcloud-Datei"): their links
 //! ([`parse`]), the own server a link lies on ([`own_server`]) and their cards ([`resolve`]: name, type, folder,
-//! the server's preview), without Settings › Privacy, since no foreign provider is asked; only for a reader with
-//! read access to files ([`reads_files`]).
+//! the server's preview), without Settings › Privacy, since no foreign provider is asked; only for a reader who
+//! may read the chat of that Nextcloud account ([`reads_files`]).
 
 use torro_chat::{ChatError, LinkCard, LinkCardKind, LinkFile};
 use url::Url;
@@ -10,6 +10,7 @@ use super::{FileLink, LinkKind};
 use crate::chat::ChatService;
 use crate::chat::remote::FileError;
 use crate::pim::Reach;
+use torro_ipc::api::{Access, Area};
 
 /// What `url` on the own server `own` names as a file ([`super::FileLink`]); `None` for any other address. `url` is
 /// on `own` already ([`super::classify`] checked). Each form also below `/index.php`:
@@ -94,14 +95,17 @@ pub async fn own_server(chat: &ChatService, link: &str) -> Option<OwnServer> {
     None
 }
 
-/// Whether `reach` may see files of the own Nextcloud: the app key (the person) always.
+/// Whether `reach` may see files of the own Nextcloud of the chat account `account`: the app key (the person)
+/// always; a client with read access to `chat` that reaches `account` (`chat_accounts`).
 ///
-/// A client needs read access to files, and the catalogue has no area for the files of the own Nextcloud yet
-/// (`torro_ipc::api::Area` knows none; the tool `files` is the computer's own folders). Until it has one, no client
-/// gets a file card, so no agent learns a file's name by trying ids (`/f/1`, `/f/2` …). With an area `files` this
-/// becomes `rights.area(Area::Files).allows(Access::Read)`.
-pub fn reads_files(reach: Reach<'_>) -> bool {
-    matches!(reach, Reach::Suite)
+/// The catalogue has no area for the files of the own Nextcloud (the tool `files` is the computer's own folders).
+/// The chat right stands in for it, decided in issue #784: the card is resolved through the same Nextcloud account
+/// the client may read the chat of, and a link on that server reaches it in a chat message anyway.
+pub fn reads_files(reach: Reach<'_>, account: &str) -> bool {
+    match reach {
+        Reach::Suite => true,
+        Reach::Client(rights) => rights.area(Area::Chat).allows(Access::Read) && rights.chat_accounts.contains(account),
+    }
 }
 
 /// The card of the file `file`, linked as `link` on the server of the chat account `account`, for `reach`.
@@ -123,7 +127,7 @@ pub async fn resolve(
     link: &str,
     file: &FileLink,
 ) -> Result<Option<LinkCard>, ChatError> {
-    if !reads_files(reach) {
+    if !reads_files(reach, account) {
         return Ok(None);
     }
     let remote = match chat.remote(account).await {
@@ -289,17 +293,24 @@ mod tests {
         assert!(!card.image, "no picture known for it");
     }
 
-    /// A client without read access to files (none can have it yet, not even with full access) gets no card, and
-    /// the server is not asked.
+    /// A client without read access to the chat of the account (issue #784: the chat right stands in for files)
+    /// gets no card, and the server is not asked; with it, the card comes.
     #[tokio::test]
-    async fn a_client_without_the_right_to_files_gets_nothing_and_nothing_is_asked() {
+    async fn a_client_without_the_chat_right_gets_nothing_and_nothing_is_asked() {
         let (chat, server) = service();
         let link = format!("{SERVER}/f/123");
+        server.state().references.insert(
+            link.clone(),
+            torro_nextcloud::Reference { title: "Plan.pdf".into(), description: None, image: None },
+        );
         let mut rights = RightsTemplate::FullAccess.rights();
-        rights.chat_accounts = torro_ipc::api::Selection::All;
+        rights.chat_accounts = torro_ipc::api::Selection::Only(Vec::new());
         let card = resolve(&chat, Reach::Client(&rights), ACCOUNT, &link, &FileLink::Id(123)).await;
         assert_eq!(card, Ok(None));
         assert_eq!(server.count("resolve"), 0, "nothing asked before the right");
+        rights.chat_accounts = torro_ipc::api::Selection::Only(vec![ACCOUNT.into()]);
+        let card = resolve(&chat, Reach::Client(&rights), ACCOUNT, &link, &FileLink::Id(123)).await;
+        assert_eq!(card.expect("asked").map(|card| card.title), Some("Plan.pdf".into()));
     }
 
     #[tokio::test]
