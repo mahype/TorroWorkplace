@@ -76,7 +76,7 @@ impl App {
             Some(Shown::Missing) => {
                 widgets::empty_state(tr("No preview of this picture"), tr("Open it in Nextcloud to see it."))
             }
-            Some(Shown::Loading) | None => widgets::loading(),
+            Some(Shown::Loading | Shown::Away) | None => widgets::loading(),
         };
         container(content).width(Fill).height(Fill).center(Fill).into()
     }

@@ -12,7 +12,11 @@
 //!   [`UPLOAD_POLL`]) with ✕ (`chat.cancel_upload`). A sending that failed says why there.
 //! - **History:** previews come with `chat.get_preview` as soon as a page arrives, `medium` for
 //!   pictures and videos (sharp at the history's largest size, issue #674), `small` for link cards;
-//!   until then a calm placeholder of the same size stands there. "Open" fetches the file
+//!   until then a calm placeholder of the same size stands there. The window holds at most
+//!   [`HELD_PICTURES`] of them unpacked (issue #690): beyond that the ones farthest from where the
+//!   person reads go back to the placeholder ([`Shown::Away`]) and come again from the core when
+//!   they scroll into view; each picture tells its own coming and going, so pictures in view
+//!   always stay, also in a message taller than the window. "Open" fetches the file
 //!   (`chat.get_attachment`) and opens it with the system's program, "Download" saves it to
 //!   Downloads (`chat.save_attachment`), "Save as…" asks the system's dialog first. Under a link to
 //!   another provider not asked about yet (issue #672), "Show once" asks for its card
@@ -26,7 +30,7 @@
 //! What the core refuses (a file shared without download, a server that cannot) is said in the calm
 //! line above the composer ([`super::chat::Note`]), never as a failure of the window.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -60,6 +64,11 @@ pub const MEDIA_SPLIT: &str = "chat.media";
 /// The name a pasted picture goes out with: a file name, so not translated.
 pub const PASTED_NAME: &str = "Pasted image.png";
 
+/// How many previews of the history the window holds unpacked at most, beside those in view
+/// (issue #690): at 1024 pixels about 100 MB, mostly far less. A count rather than megabytes, so a
+/// test can check it.
+pub const HELD_PICTURES: usize = 24;
+
 /// A picture of the history: the message and its file, or `None` for the picture of its link card.
 pub type PictureKey = (String, Option<String>);
 
@@ -71,6 +80,9 @@ pub enum Shown {
     Ready(Handle),
     /// The server has none: the file shows as a line.
     Missing,
+    /// Let go to keep the window small: the placeholder stands there, and the picture comes again
+    /// when it scrolls into view.
+    Away,
 }
 
 /// A file chosen for sending, above the composer.
@@ -200,6 +212,17 @@ pub struct FilesState {
     pub highlight: Option<String>,
     /// How much wider the window was made for the shared media, to give it back on closing.
     grew: Option<f32>,
+    /// The pictures that stand in view (or about to), as their sensors in the history say. Kept
+    /// by picture, not by message: a tall message with several pictures can show one while another
+    /// is out of view.
+    pub in_view: HashSet<PictureKey>,
+    /// When each picture was last seen coming or going ([`FilesState::seen_tick`]): the longest
+    /// unseen go first.
+    pub last_seen: HashMap<PictureKey, u64>,
+    seen_tick: u64,
+    /// Pictures let go and asked for again: one that fails then keeps its placeholder rather than
+    /// turning into a line, so the history does not jump.
+    again: HashSet<PictureKey>,
 }
 
 impl FilesState {
@@ -233,6 +256,40 @@ impl FilesState {
     fn key(&mut self) -> u64 {
         self.next_key += 1;
         self.next_key
+    }
+
+    /// Notes that the picture `key` came into view (`shown`) or went out of it, now.
+    fn seen(&mut self, key: PictureKey, shown: bool) {
+        self.seen_tick += 1;
+        self.last_seen.insert(key.clone(), self.seen_tick);
+        if shown {
+            self.in_view.insert(key);
+        } else {
+            self.in_view.remove(&key);
+        }
+    }
+
+    /// Lets pictures go while more than [`HELD_PICTURES`] are unpacked: of those out of view, the
+    /// one seen longest ago goes first, among equals the oldest of `messages`. Pictures in view
+    /// always stay, even beyond the limit, so a picture the person looks at never turns into a
+    /// placeholder. Says whether it let any go.
+    pub fn thin_out(&mut self, messages: &[torro_chat::Message]) -> bool {
+        let place = |id: &str| messages.iter().position(|message| message.id == id).unwrap_or(0);
+        let mut ready: Vec<(u64, usize, PictureKey)> = self
+            .pictures
+            .iter()
+            .filter(|(key, shown)| matches!(shown, Shown::Ready(_)) && !self.in_view.contains(*key))
+            .map(|(key, _)| (self.last_seen.get(key).copied().unwrap_or(0), place(&key.0), key.clone()))
+            .collect();
+        let held = self.pictures.values().filter(|shown| matches!(shown, Shown::Ready(_))).count();
+        let over = held.saturating_sub(HELD_PICTURES);
+        ready.sort();
+        let mut went = false;
+        for (_, _, key) in ready.into_iter().take(over) {
+            self.pictures.insert(key, Shown::Away);
+            went = true;
+        }
+        went
     }
 }
 
@@ -298,6 +355,10 @@ pub enum FilesMsg {
     Stored(HashMap<String, f32>),
     /// The menu of a shared item, at the pointer.
     ItemMenu(usize, Point),
+    /// A picture of the history came into view (or about to).
+    InView(PictureKey),
+    /// The picture went out of view.
+    OutOfView(PictureKey),
 }
 
 /// `msg` as a message of the window.
@@ -525,11 +586,14 @@ impl App {
             },
             FilesMsg::DismissUpload => files.upload = None,
             FilesMsg::Picture(key, result) => {
+                let again = files.again.remove(&key);
                 let shown = match result {
                     Ok(picture) => system::picture_handle(&picture.bytes).map_or(Shown::Missing, Shown::Ready),
+                    Err(_) if again => Shown::Away,
                     Err(_) => Shown::Missing,
                 };
                 files.pictures.insert(key, shown);
+                return self.thinned();
             }
             FilesMsg::Thumb(key, result) => {
                 let shown = match result {
@@ -757,6 +821,24 @@ impl App {
             }
             FilesMsg::Stored(widths) => files.split.restore(widths.get(MEDIA_SPLIT).copied()),
             FilesMsg::ItemMenu(index, at) => self.menu = Some(Menu::Shared { index, at }),
+            FilesMsg::InView(key) => {
+                files.seen(key, true);
+                return self.want_pictures();
+            }
+            FilesMsg::OutOfView(key) => {
+                files.seen(key, false);
+                return self.thinned();
+            }
+        }
+        Task::none()
+    }
+
+    /// [`FilesState::thin_out`] of the chat window. The shared media showed the history's picture
+    /// of a tile let go, so while they are open their small ones are asked for.
+    fn thinned(&mut self) -> Task<Message> {
+        let Some(chat) = self.chat.as_mut() else { return Task::none() };
+        if chat.files.thin_out(&chat.messages) && chat.files.media.is_some() {
+            return self.want_pictures();
         }
         Task::none()
     }
@@ -834,7 +916,9 @@ impl App {
 
     /// Asks for the previews the history and the shared media show and do not have yet: pictures
     /// and videos of the history `medium`, pictures of link cards `small`, the shared media `small`
-    /// (unless the history's picture is there already).
+    /// (unless the history's picture is there already). A picture let go ([`Shown::Away`]) is asked
+    /// for again only while it is in view; a new page asks for all it lacks at once, so
+    /// windows without sensors (`--shots`) show them too.
     pub(crate) fn want_pictures(&mut self) -> Task<Message> {
         let backend = self.backend.clone();
         let Some(chat) = self.chat.as_mut() else { return Task::none() };
@@ -851,8 +935,12 @@ impl App {
         }
         let mut tasks: Vec<Task<Message>> = Vec::new();
         for (key, size) in wanted {
-            if chat.files.pictures.contains_key(&key) {
-                continue;
+            match chat.files.pictures.get(&key) {
+                None => {}
+                Some(Shown::Away) if chat.files.in_view.contains(&key) => {
+                    chat.files.again.insert(key.clone());
+                }
+                Some(_) => continue,
             }
             chat.files.pictures.insert(key.clone(), Shown::Loading);
             let task = backend.clone().preview(key.0.clone(), key.1.clone(), size);

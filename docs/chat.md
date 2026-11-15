@@ -459,7 +459,9 @@ roh darin: Sie sind fremder Text und kämen sonst ungeprüft zu einem Agenten.
     einem fremden Server verriete, wann und wo der Mensch die Nachricht liest. Gibt es kein Bild vom eigenen Server,
     gibt es keins.
   - **Nur im Speicher** (Entscheidung 21): höchstens 64 MiB Vorschauen je Konto (mit `medium` im Verlauf grob 200 bis
-    400 Bilder; ältere fallen heraus und kommen beim Zurückscrollen neu vom Server). Geöffnete Anhänge liegen in einem
+    400 Bilder; ältere fallen heraus und kommen beim Zurückscrollen neu vom Server). Das Chatfenster hält davon
+    höchstens 24 entpackte Vorschauen, dazu die gerade sichtbaren (#690); die übrigen stehen als Platzhalter in
+    Bildgröße da und kommen beim Zurückscrollen neu vom Kern. Geöffnete Anhänge liegen in einem
     eigenen Ordner des Chats, `<cache>/chat-attachments/<konto>/` (Ordner 0700, Dateien 0600, nach einem Tag
     gelöscht), nicht im Anhangsordner der Mail: `mail.save_draft` nimmt jede Datei aus jenem Ordner an und prüft nur
     den Ort, ein Agent mit `mail`, aber ohne `chat`, hängte sonst Chat-Bilder an einen Entwurf. `mail.save_draft` nimmt
