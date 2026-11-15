@@ -919,8 +919,12 @@ pub fn reveal_label() -> &'static str {
 /// says is installed. A local action without a request, as opening a folder of Appearance is
 /// (`docs/api.md`, footnote 9): nothing is read or changed. Returns what went wrong, for the notice.
 pub fn reveal(app: AppId, path: Option<&str>) -> Result<(), String> {
-    let missing =
-        || trf("Couldn't find {app} on this computer.", &[("app", &format!("Torro {}", shell::app_name(app)))]);
+    // The main application by its product name, as its card has it (issue #803).
+    let name = match app == AppId::WORKPLACE {
+        true => "Torro Workplace".to_string(),
+        false => format!("Torro {}", shell::app_name(app)),
+    };
+    let missing = || trf("Couldn't find {app} on this computer.", &[("app", &name)]);
     let program = path.map(std::path::PathBuf::from).filter(|path| path.is_absolute() && path.exists());
     let program = program.ok_or_else(missing)?;
     #[cfg(target_os = "macos")]
