@@ -876,14 +876,21 @@ fn cards(entries: &[Entry], now: DateTime<Utc>) -> Vec<CardEntry> {
         .collect()
 }
 
-/// How talking by voice stands in the demo (issue #699): recording and speech to text are there,
-/// the listener is off – the microphone of the composer can dictate.
+/// How talking by voice stands in the demo (issues #699, #762): the models are downloaded and the
+/// microphone is the system's default, the listener is off – the microphone of the composer can dictate.
 fn voice() -> torro_ipc::VoiceStatus {
+    use torro_core::voice_models::{POCKET_DE, WHISPER_TURBO};
     use torro_ipc::{VoicePart, VoiceProgram, VoiceStatus};
     let found = |part, program: &str| VoiceProgram { part, program: Some(program.into()), missing: None };
     VoiceStatus {
         installed: true,
-        programs: vec![found(VoicePart::Recorder, "parec"), found(VoicePart::SpeechToText, "whisper-cli")],
+        programs: vec![
+            found(VoicePart::WakeWord, WHISPER_TURBO),
+            found(VoicePart::Recorder, "Default Audio Device"),
+            found(VoicePart::SpeechToText, WHISPER_TURBO),
+            found(VoicePart::Speech, POCKET_DE),
+        ],
+        microphones: vec!["USB Microphone".into()],
         ..VoiceStatus::default()
     }
 }

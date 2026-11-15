@@ -702,6 +702,24 @@ impl Listener {
         });
     }
 
+    /// Ends a running listener and waits until its process is gone (at most five seconds), so the files
+    /// it holds open are closed: Windows deletes no open file (removing a speech model, issue #762).
+    /// [`Listener::follow`] starts it again afterwards.
+    pub async fn end(&self) {
+        let child = {
+            let mut running = self.lock();
+            let child = running.child.take();
+            running.generation += 1;
+            running.problem = None;
+            self.set(&mut running, VoiceState::Off);
+            child
+        };
+        if let Some(mut child) = child {
+            let _ = child.start_kill();
+            let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+        }
+    }
+
     /// Runs the program once with `args` and reads its answer, the last line of its output as a
     /// [`Response`]; waits `wait` at most. For `--voice-status` and `--voice-test`.
     pub async fn ask(&self, args: &[String], wait: Duration) -> Result<Response, String> {
@@ -1328,6 +1346,28 @@ pub mod tests {
         listener.follow(false);
         assert_eq!(listener.state(), VoiceState::Off);
         assert_eq!(listener.problem(), None);
+    }
+
+    /// Issue #762: before a speech model is removed the listener ends and its process is gone, so its
+    /// files are closed; following again starts it anew.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_listener_ends_and_waits_for_its_process() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let pid = dir.path().join("pid");
+        let script = format!("echo $$ > '{}'; echo '\"listening\"'; sleep 30", pid.display());
+        let listener = Listener::at(fake_program(dir.path(), &script));
+        let mut changes = listener.changes();
+        listener.follow(true);
+        until(&listener, &mut changes, VoiceState::Listening).await;
+        let id = std::fs::read_to_string(&pid).expect("pid").trim().to_string();
+        listener.end().await;
+        assert_eq!((listener.state(), listener.problem()), (VoiceState::Off, None));
+        let alive = std::process::Command::new("kill").args(["-0", &id]).status().expect("kill -0");
+        assert!(!alive.success(), "the process is gone when end returns");
+        listener.follow(true);
+        until(&listener, &mut changes, VoiceState::Listening).await;
+        listener.follow(false);
     }
 
     #[cfg(unix)]

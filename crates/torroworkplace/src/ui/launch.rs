@@ -1344,20 +1344,20 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
     ]
 }
 
-/// The voice status of the demo: openWakeWord without its model, `parec`, whisper.cpp with a model,
-/// Piper without a voice; two microphones.
+/// The voice status of the demo (issue #762): Whisper turbo downloaded, two microphones, the model of
+/// Pocket TTS not yet there.
 fn demo_voice() -> torro_ipc::VoiceStatus {
     use torro_ipc::{VoiceMissing, VoicePart, VoiceProgram, VoiceState, VoiceStatus};
-    let part = |part, program: &str, missing| VoiceProgram { part, program: Some(program.into()), missing };
+    let found = |part, program: &str| VoiceProgram { part, program: Some(program.into()), missing: None };
     VoiceStatus {
         listener: VoiceState::Off,
         installed: true,
         problem: None,
         programs: vec![
-            part(VoicePart::WakeWord, "openWakeWord", Some(VoiceMissing::Model)),
-            part(VoicePart::Recorder, "parec", None),
-            part(VoicePart::SpeechToText, "whisper-cli", None),
-            part(VoicePart::Speech, "piper", Some(VoiceMissing::Model)),
+            found(VoicePart::WakeWord, torro_core::voice_models::WHISPER_TURBO),
+            found(VoicePart::Recorder, "alsa_input.usb-RODE_NT-USB-00.analog-stereo"),
+            found(VoicePart::SpeechToText, torro_core::voice_models::WHISPER_TURBO),
+            VoiceProgram { part: VoicePart::Speech, program: None, missing: Some(VoiceMissing::Model) },
         ],
         microphones: vec![
             "alsa_input.pci-0000_00_1f.3.analog-stereo".into(),
@@ -1385,12 +1385,20 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
         | Request::SetTemplateShortcut { .. }
         | Request::SetTemplateStartup { .. }
         | Request::DeleteTemplate { .. } => Some(Response::Ok),
-        // Voice (task C.9): every program found but Piper's voice, two microphones; the test hears
-        // a sentence. Nothing records.
+        // Voice (task C.9): Whisper turbo there, Pocket TTS not yet, two microphones; the test hears a
+        // sentence. Nothing records.
         Request::VoiceStatus => Some(Response::Voice { voice: demo_voice() }),
         // Reading aloud (issue #745): the sample computer of the settings' demo; nothing sounds.
         Request::SpeechStatus => Some(Response::Speech { speech: torro_settings_ui::demo::speech_status(None) }),
         Request::Speak { .. } | Request::StopSpeaking => Some(Response::Ok),
+        // The speech models (issue #762): the sample list of the settings' demo, with the command's
+        // change in this answer only; nothing is downloaded or removed.
+        Request::ListVoiceModels => Some(Response::VoiceModels { models: torro_settings_ui::demo::voice_models() }),
+        Request::DownloadVoiceModel { .. } | Request::CancelVoiceDownload { .. } | Request::RemoveVoiceModel { .. } => {
+            let mut models = torro_settings_ui::demo::voice_models();
+            torro_settings_ui::demo::demo_voice_models(&mut models, request);
+            Some(Response::VoiceModels { models })
+        }
         // Map data (issue #355): the demo keeps its numbers, clearing changes nothing.
         Request::MapsStatus => Some(Response::MapsStatus { status: data.maps_status.unwrap_or_default() }),
         Request::ClearMapsCache => Some(Response::Ok),

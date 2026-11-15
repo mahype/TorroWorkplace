@@ -16,6 +16,10 @@ workspace = true
 [package.metadata.dist.dependencies.homebrew]
 "mahype/torro/torroworkplace" = { stage = ["run"] }
 
+# The built-in sound (cpal, issue #762) needs ALSA's headers to build on Linux; the release runner installs them.
+[package.metadata.dist.dependencies.apt]
+libasound2-dev = "*"
+
 [dependencies]
 torro-core.workspace = true
 torro-gui.workspace = true
@@ -32,6 +36,10 @@ serde_json.workspace = true
 base64.workspace = true
 # The voice listener (`--listen`, task C.9) asks the core from a plain loop, without a window.
 tokio.workspace = true
+# Speech built in (issue #762): speech to text, the wake word and reading aloud with sherpa-onnx, the microphone and
+# the sound output with cpal; no program is looked for on `PATH` any more.
+sherpa-onnx.workspace = true
+cpal.workspace = true
 # The system's choosers for the PDF tool's folder and logos in the settings (task WZ.6).
 rfd.workspace = true
 unicode-segmentation.workspace = true

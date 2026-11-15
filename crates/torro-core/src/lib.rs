@@ -24,6 +24,7 @@ pub mod text;
 pub mod theme;
 pub mod timing;
 pub mod version;
+pub mod voice_models;
 
 pub use account::Account;
 pub use app::AppId;

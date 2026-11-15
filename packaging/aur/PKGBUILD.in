@@ -26,10 +26,11 @@ pkgdesc='@DESC@'
 arch=('x86_64' 'aarch64')
 url='https://github.com/mahype/TorroWorkplace'
 license=('MIT OR Apache-2.0')
-# The Iced GUIs dlopen these at runtime (wayland, xkbcommon, vulkan/EGL; X11 is optional).
-# Behind them the background service and the suite's other packages this program needs (the depends
-# placeholder, see the head).
-depends=('glibc' 'gcc-libs' 'libxkbcommon' 'wayland' 'libglvnd' 'vulkan-icd-loader' 'torroworkplace-bin'@DEPENDS@)
+# The Iced GUIs dlopen these at runtime (wayland, xkbcommon, vulkan/EGL; X11 is optional). alsa-lib:
+# the assistant records and plays sound itself (issue #762); the template is shared, and every desktop
+# has it anyway. Behind them the background service and the suite's other packages this program needs
+# (the depends placeholder, see the head).
+depends=('glibc' 'gcc-libs' 'libxkbcommon' 'wayland' 'libglvnd' 'vulkan-icd-loader' 'alsa-lib' 'torroworkplace-bin'@DEPENDS@)
 optdepends=('libx11: run on X11 instead of Wayland')
 provides=('@BIN@')
 conflicts=('@BIN@')

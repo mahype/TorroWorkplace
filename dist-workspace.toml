@@ -7,7 +7,9 @@ members = ["cargo:."]
 cargo-dist-version = "0.32.0"
 # CI backend to use
 ci = "github"
-# Installers to generate for the release. Pure Rust, no system libraries needed at build time.
+# Installers to generate for the release. Pure Rust except the assistant: its speech (sherpa-onnx, issue #762)
+# downloads prebuilt ONNX Runtime libraries at build time, and on Linux its sound needs ALSA's headers
+# (`libasound2-dev`, `[package.metadata.dist.dependencies.apt]` in crates/torroassistant/Cargo.toml).
 installers = ["shell", "powershell", "homebrew"]
 # Target platforms to build apps for. Linux uses gnu (not musl): the Iced GUIs dlopen
 # libwayland, libxkbcommon, libvulkan and libEGL at runtime, which a static musl binary cannot do.

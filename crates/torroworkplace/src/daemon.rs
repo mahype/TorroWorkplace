@@ -981,6 +981,11 @@ fn tells_on_desktop(request: &Request) -> bool {
         && !matches!(request, Request::SetTemplateShortcut { .. } | Request::SetTemplateStartup { .. })
 }
 
+/// The id of the speech model `model` as the catalogue has it, `unknown` for any other (issue #762).
+fn voice_model_id(model: &str) -> &'static str {
+    torro_core::voice_models::model(model).map_or("unknown", |known| known.id)
+}
+
 /// A short name for a request, for messages.
 fn describe(request: &Request) -> String {
     match request {
@@ -1039,6 +1044,13 @@ fn describe(request: &Request) -> String {
         Request::PullAiModel { account, model } => format!("download {model} to {account}"),
         Request::AiPulls => "list model downloads".into(),
         Request::CancelAiPull { id } => format!("cancel the download {id}"),
+        // A speech model by its id in the catalogue, never the client's text (issue #762).
+        Request::ListVoiceModels => "list speech models".into(),
+        Request::DownloadVoiceModel { model } => format!("download the speech model {}", voice_model_id(model)),
+        Request::CancelVoiceDownload { model } => {
+            format!("cancel the download of the speech model {}", voice_model_id(model))
+        }
+        Request::RemoveVoiceModel { model } => format!("remove the speech model {}", voice_model_id(model)),
         Request::ListCategories { .. } => "list categories".into(),
         Request::SetItemCategory { id, remember, .. } => {
             format!("file {id}{}", if *remember { " and remember" } else { "" })

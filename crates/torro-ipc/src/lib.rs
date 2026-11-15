@@ -52,6 +52,7 @@ use torro_core::ai::{AiModel, AiProvider};
 use torro_core::paths::AppPaths;
 use torro_core::settings::Settings;
 pub use torro_core::settings::SpeechProvider;
+pub use torro_core::voice_models::VoiceModelKind;
 use torro_inbox::item::{MuteEffect, MuteOption, MuteScope, Muted};
 use torro_inbox::{AgentInfo, AgentKind, Item, Kind, Lane, Link, Rule, SourceInfo, SourceRef, StateFilter};
 /// Newest or oldest first for `mail.search_messages` and `inbox.list_items` (task E8.15).
@@ -5048,10 +5049,10 @@ pub enum Request {
     /// Reads `text` aloud with the provider and voice of the settings (issue #745, [`Response::Ok`]):
     /// Markdown is read without its marks, at most 3000 characters, ending at a sentence. Answers once
     /// it was read to the end or stopped ([`Request::StopSpeaking`]); a new one stops the one that
-    /// reads. Waits as long as it reads; the first time Qwen3-TTS loads its model, which may take a
-    /// minute. With OpenAI the text goes to OpenAI. Codes: `error` for an empty text, one over 20000
+    /// reads. Waits as long as it reads; the first time Pocket TTS loads its model, which takes a few
+    /// seconds. With OpenAI the text goes to OpenAI. Codes: `error` for an empty text, one over 20000
     /// characters, or when speaking fails; `unsupported` with a message for people when the provider
-    /// cannot speak here (no graphics card, program, player, voice or OpenAI account);
+    /// cannot speak here (its model is not downloaded, no sound output, no OpenAI account);
     /// `not-connected` or `offline` when OpenAI refuses the key or cannot be reached.
     #[serde(rename = "assistant.speak")]
     Speak {
@@ -5097,12 +5098,43 @@ pub enum Request {
         /// The conversation's id from `assistant.list_conversations`.
         conversation: String,
     },
-    /// Who can read aloud on this computer (issue #745, [`Response::Speech`]): the graphics card,
-    /// whether it is fast enough for local voices, the recommended and the current provider, and for
-    /// each provider what is missing, its voices and how to set it up. Runs local checks and may take a
-    /// few seconds.
+    /// Who can read aloud on this computer (issue #745, [`Response::Speech`]): the recommended and the
+    /// current provider, and for each provider what is missing and its voices. Runs local checks and
+    /// may take a few seconds.
     #[serde(rename = "settings.speech_status")]
     SpeechStatus,
+    /// The models the assistant listens and speaks with (issue #762, [`Response::VoiceModels`]): each
+    /// with what it does, its size, whether it is recommended and where its download stands. The list
+    /// is fixed (`torro_core::voice_models::MODELS`); nothing else is ever downloaded.
+    #[serde(rename = "settings.list_voice_models")]
+    ListVoiceModels,
+    /// Downloads the model `model` in the background from the page of its maker on Hugging Face
+    /// (issue #762, [`Response::VoiceModels`] with it `running`). A download cancelled before goes on
+    /// where it stopped. Every file is checked against its SHA-256. Follow it with
+    /// `settings.list_voice_models`. Codes: `not-found` for a model the list does not have (before any
+    /// approval); `busy` while it downloads already. A model that is there already answers the list.
+    #[serde(rename = "settings.download_voice_model")]
+    DownloadVoiceModel {
+        /// The model's id from `settings.list_voice_models` (`whisper-turbo`).
+        model: String,
+    },
+    /// Cancels the running download of `model` (issue #762, [`Response::VoiceModels`] with it
+    /// `cancelled`); what was loaded so far stays, and the next download goes on there. A model that
+    /// does not download stays as it is. `not-found` for a model the list does not have.
+    #[serde(rename = "settings.cancel_voice_download")]
+    CancelVoiceDownload {
+        /// The model's id from `settings.list_voice_models`.
+        model: String,
+    },
+    /// Removes the model `model` from this computer, with what a cancelled download left (issue #762,
+    /// [`Response::VoiceModels`] with it `missing`); a running download is cancelled first. Dictating or
+    /// reading aloud with it needs a new download afterwards. `not-found` for a model the list does not
+    /// have; `error` when its files cannot be removed.
+    #[serde(rename = "settings.remove_voice_model")]
+    RemoveVoiceModel {
+        /// The model's id from `settings.list_voice_models`.
+        model: String,
+    },
     /// How much map data this device keeps (issue #355, [`Response::MapsStatus`]): the bytes of map
     /// tiles of the whole suite, and how many places of contact addresses were kept
     /// (`contacts.locate_contact`); for a client only those of the address books it reaches.
@@ -5155,20 +5187,19 @@ pub struct Talk {
     pub state: VoiceState,
 }
 
-/// One part the listener needs, found or not (`settings.voice_status`).
+/// One part the listener needs, found or not (`settings.voice_status`). Every part is built into the
+/// assistant app (issue #762); what may be missing is a model or a sound device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum VoicePart {
-    /// Hears the wake word: openWakeWord (Python) with the model `hey_torro.onnx`; without it the
-    /// listener finds the wake word with speech to text, which costs more computing time.
+    /// Hears the wake word, with the speech recognition on short windows.
     WakeWord,
-    /// Takes the sound from the microphone: `parec`, `arecord`, `rec` (SoX) or `ffmpeg`.
+    /// Takes the sound from the microphone the system offers.
     Recorder,
-    /// Turns speech into text, the program chosen in the setting `speech_recognizer`: Parakeet
-    /// (Python with the package `onnx-asr`) with the model folder `parakeet-tdt-0.6b-v3`, or
-    /// whisper.cpp (`whisper-cli`) with a model (`ggml-base.bin`).
+    /// Turns speech into text with the model chosen in the setting `speech_recognizer`
+    /// (`settings.list_voice_models`).
     SpeechToText,
-    /// Speaks answers: Piper with a voice (`*.onnx`) and a program that plays sound.
+    /// Speaks answers with the provider of reading aloud and the system's sound output.
     Speech,
 }
 
@@ -5176,11 +5207,11 @@ pub enum VoicePart {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum VoiceMissing {
-    /// The program is not installed (not on `PATH`).
+    /// No sound device: no microphone for recording, no output for speech.
     Program,
-    /// The program is there, its model or voice file is not.
+    /// Its model is not downloaded (`settings.download_voice_model`).
     Model,
-    /// Speech only: Piper is there, but no program to play sound.
+    /// Speech only: no sound output.
     Player,
 }
 
@@ -5188,8 +5219,8 @@ pub enum VoiceMissing {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct VoiceProgram {
     pub part: VoicePart,
-    /// The program found (`whisper-cli`, `onnx-asr`, `piper`, `openWakeWord`), as its file name;
-    /// `None` when none is.
+    /// The model or device it uses (`whisper-turbo`, `pocket-de`, a microphone); `None` when none
+    /// is there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program: Option<String>,
     /// What keeps the part from working; `None` when it works.
@@ -5219,12 +5250,12 @@ pub struct VoiceStatus {
     /// Every [`VoicePart`] in order: wake word, recorder, speech to text, speech.
     #[serde(default)]
     pub programs: Vec<VoiceProgram>,
-    /// The microphones the recording program can name, for the setting `microphone`; empty when
-    /// they cannot be listed (then only the system's default is offered).
+    /// The microphones the system offers, for the setting `microphone`; empty when they cannot be
+    /// listed (then only the system's default is offered). A stored microphone that is no longer
+    /// there is used as the default.
     #[serde(default)]
     pub microphones: Vec<String>,
-    /// The folder where the listener looks for models and voices (`ggml-*.bin`, `*.onnx`,
-    /// `hey_torro.onnx`) when the settings name none.
+    /// The voice folder; the models are in its folder `models`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
 }
@@ -5257,14 +5288,16 @@ pub struct TodoRef {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SpeechMissing {
-    /// Qwen3-TTS: no NVIDIA graphics card with at least 4 GB of memory.
+    /// No longer reported: the local voice needs no graphics card since issue #762.
     Gpu,
-    /// The program is not installed: Qwen3-TTS (`faster-qwen3-tts` in Python) or Piper.
+    /// No longer reported since issue #762: everything is built in.
     Program,
-    /// No program that plays sound (`paplay`, `pw-play`, `aplay`, `play`, `ffplay`, `afplay`, …).
+    /// No sound output.
     Player,
-    /// Piper is there, its voice (`*.onnx`) is not.
+    /// No longer reported since issue #762.
     Voice,
+    /// The provider's model is not downloaded (`settings.download_voice_model`, issue #762).
+    Model,
     /// OpenAI: no OpenAI account with a key in Settings › AI.
     Account,
     /// The assistant app (`torroassistant`), which speaks, is not installed.
@@ -5274,8 +5307,7 @@ pub enum SpeechMissing {
 /// One voice of a provider (`settings.speech_status`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SpeechVoice {
-    /// Its id for the settings `qwen_voice` and `openai_voice` (`warm_woman`, `marin`); for Piper the
-    /// file name of the voice.
+    /// Its id for the settings `pocket_voice` and `openai_voice` (`alba`, `marin`).
     pub id: String,
     /// Marked "(recommended)" in the settings.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -5292,10 +5324,10 @@ pub struct SpeechOption {
     /// Its voices, in the order the settings offer them.
     #[serde(default)]
     pub voices: Vec<SpeechVoice>,
-    /// The model it speaks with (`Qwen/Qwen3-TTS-12Hz-1.7B-Base`); `None` where there is no choice.
+    /// The model it speaks with (`pocket-de` from `settings.list_voice_models`, `gpt-4o-mini-tts`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// The command that sets it up, for people to copy (Qwen3-TTS); `None` when there is none.
+    /// No longer set since issue #762: nothing is set up by hand; always `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<String>,
 }
@@ -5313,10 +5345,9 @@ pub struct SpeechStatus {
     /// The graphics card as measured (`NVIDIA GeForce RTX 4090, 24 GB`); `None` when none is known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu: Option<String>,
-    /// Whether this computer is fast enough for local voices (Qwen3-TTS): an NVIDIA card with at
-    /// least 4 GB.
+    /// Always `true` since issue #762: the local voice runs on the processor.
     pub fast_enough: bool,
-    /// The provider recommended for this computer: Qwen3-TTS when fast enough, else OpenAI.
+    /// The provider recommended: Pocket TTS, on this computer.
     pub recommended: SpeechProvider,
     /// The provider that reads now: the chosen one, or the core's choice.
     pub current: SpeechProvider,
@@ -5330,6 +5361,44 @@ impl SpeechStatus {
     pub fn option(&self, provider: SpeechProvider) -> Option<&SpeechOption> {
         self.providers.iter().find(|option| option.provider == provider)
     }
+}
+
+/// One model of `settings.list_voice_models` (issue #762).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct VoiceModel {
+    /// Its id for the other commands (`whisper-turbo`, `parakeet`, `pocket-de`).
+    pub id: String,
+    /// Its name for people (`Whisper turbo`); a product name.
+    pub name: String,
+    pub kind: VoiceModelKind,
+    /// The bytes of all its files.
+    pub bytes: u64,
+    /// Marked "(recommended)" in the settings.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recommended: bool,
+    pub state: VoiceModelState,
+    /// Bytes loaded so far, also what a cancelled or failed download left; `bytes` once `ready`.
+    #[serde(default)]
+    pub completed: u64,
+    /// Why the last download failed, for people in the core's language; only with `failed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Where a model stands ([`VoiceModel::state`]). A new state would be a new version of the API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceModelState {
+    /// `"missing"`: not on this computer.
+    Missing,
+    /// `"running"`: downloading.
+    Running,
+    /// `"ready"`: downloaded and checked.
+    Ready,
+    /// `"failed"`: the last download stopped with `error`.
+    Failed,
+    /// `"cancelled"`: the download was cancelled; what it loaded stays for the next one.
+    Cancelled,
 }
 
 /// A setting [`Request::SetSetting`] can change, with the `value` it takes.
@@ -5420,30 +5489,36 @@ pub enum SettingKey {
     Microphone,
     /// Speak the answers as well as showing them: `true` (the default) or `false`.
     SpeakAnswers,
-    /// The program that turns speech into text, for dictating, the wake word and the
-    /// conversation mode (issue #749): `"parakeet"` (the default and recommended: Parakeet through
-    /// the Python package `onnx-asr`) or `"whisper"` (whisper.cpp). Anything else is refused with
-    /// `error` (`torro_core::settings::Recognizer`). `settings.voice_status` then looks for the
-    /// chosen one.
+    /// The model that turns speech into text, for dictating, the wake word and the conversation
+    /// mode (issues #749, #762): `"whisper"` (the default and recommended: Whisper turbo) or
+    /// `"parakeet"` (Parakeet, faster, finds the language itself). Anything else is refused with
+    /// `error` (`torro_core::settings::Recognizer`). Its model comes from
+    /// `settings.download_voice_model`.
     SpeechRecognizer,
-    /// The whisper.cpp model, an absolute path to a `.bin` file; `""` (or `null`) for the first one in the
-    /// voice folder (`settings.voice_status`).
+    /// The language Whisper listens for (issue #762): `"auto"` to let it guess, or a code of its
+    /// languages (`"de"`, `"en"`, `torro_core::voice_models::WHISPER_LANGUAGES`); `null` (or `""`) for
+    /// the language of the suite. Anything else is refused with `error`. Parakeet finds the language
+    /// itself and takes no language.
+    SpeechLanguage,
+    /// Gone with whisper.cpp (issue #762): always refused with `unsupported`.
     SttModel,
-    /// The Piper voice, an absolute path to an `.onnx` file; `""` (or `null`) for the first one in the voice
-    /// folder.
+    /// Gone with Piper (issue #762): always refused with `unsupported`.
     Voice,
     /// Read the assistant's answers aloud in its chat windows (issue #745): `true` or `false` (the
     /// default). "Hey Torro" follows [`SettingKey::SpeakAnswers`] instead.
     ReadAloud,
-    /// Who reads aloud (issue #745): `"qwen"` (Qwen3-TTS on this computer), `"openai"` (OpenAI, with the
-    /// OpenAI account of Settings › AI) or `"piper"`; `null` for the core's choice (Qwen where this
-    /// computer is fast enough and it is set up, else Piper). `"openai"` only with the app key: the text
-    /// of each answer then goes to OpenAI, and only a person chooses where data goes (point 6 of "Was nie
-    /// nach außen geht", `docs/api.md`); a client gets `forbidden`. The running speech helper ends.
+    /// Who reads aloud (issues #745, #762): `"pocket"` (Pocket TTS on this computer) or `"openai"`
+    /// (OpenAI, with the OpenAI account of Settings › AI); `null` for the core's choice (Pocket TTS).
+    /// `"openai"` only with the app key: the text of each answer then goes to OpenAI, and only a person
+    /// chooses where data goes (point 6 of "Was nie nach außen geht", `docs/api.md`); a client gets
+    /// `forbidden`. The `"qwen"` and `"piper"` of earlier versions are refused with `unsupported`. The
+    /// running speech helper ends.
     SpeechProvider,
-    /// The voice of Qwen3-TTS (issue #745): `"warm_woman"` or `"calm_man"`, `null` for the recommended
-    /// one (`settings.speech_status`).
+    /// Gone with Qwen3-TTS (issue #762): always refused with `unsupported`; see `pocket_voice`.
     QwenVoice,
+    /// The voice of Pocket TTS (issue #762): `"alba"`, `"fantine"`, `"marius"`, `"warm_woman"` or
+    /// `"calm_man"`, `null` for the recommended one (`settings.speech_status`).
+    PocketVoice,
     /// The voice of OpenAI (issue #745): one of the 13 voices `settings.speech_status` lists (`"marin"`,
     /// `"cedar"`, …), `null` for the recommended one.
     #[serde(rename = "openai_voice")]
@@ -6561,6 +6636,11 @@ pub enum Response {
     /// Who can read aloud on this computer ([`Request::SpeechStatus`], issue #745).
     Speech {
         speech: SpeechStatus,
+    },
+    /// The models the assistant listens and speaks with, in the order of the settings
+    /// ([`Request::ListVoiceModels`] and the commands that download and remove them, issue #762).
+    VoiceModels {
+        models: Vec<VoiceModel>,
     },
     /// How the conversation by voice stands ([`Request::StartTalk`], [`Request::TalkStatus`], issue
     /// #747): `None` when none runs; `speaking` while anything is read aloud, whoever asked for it;

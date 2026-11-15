@@ -1291,8 +1291,8 @@ pub const WAKE_WORD: &str = "hey torro";
 
 /// Talking to the assistant by voice (task C.9): the listener `torroassistant --listen` waits for
 /// the wake word, records what follows, turns it into text and sends it to the assistant; the
-/// answer is shown and, if wanted, spoken. Everything runs on this computer with programs the
-/// person installed (openWakeWord, whisper.cpp, Piper).
+/// answer is shown and, if wanted, spoken. Everything runs on this computer, built into the assistant
+/// app, with models downloaded in the settings (issue #762, [`crate::voice_models`]).
 ///
 /// Switching it on is a person's switch (point 6 of "Was nie nach außen geht" in `docs/api.md`):
 /// only the app key may set [`Voice::enabled`] to `true`; anyone allowed to change settings may
@@ -1306,72 +1306,66 @@ pub struct Voice {
     /// The phrase that wakes the assistant; fixed to [`WAKE_WORD`] for now.
     #[serde(default = "wake_word")]
     pub wake_word: String,
-    /// The microphone by the name the recording program knows it (`pactl list sources`); `None`
-    /// for the system's default.
+    /// The microphone by the name the system's sound layer gives it (`settings.voice_status`); `None`
+    /// for the system's default. A name that is no longer there falls back to the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub microphone: Option<String>,
     /// Speak the answers after "Hey Torro" as well as showing them, with the provider and voice of
     /// reading aloud (issue #745). On unless turned off.
     #[serde(default = "on")]
     pub speak_answers: bool,
-    /// The program that turns speech into text, for dictating, the wake word and the
-    /// conversation mode. Parakeet unless Whisper is chosen, also for files written before the
-    /// choice existed.
+    /// The model that turns speech into text, for dictating, the wake word and the conversation
+    /// mode. Whisper unless Parakeet is chosen (decision 3 of #762), also for files written before
+    /// the choice existed.
     #[serde(default)]
     pub recognizer: Recognizer,
-    /// The whisper.cpp model file (`ggml-base.bin`), an absolute path; `None` for the first
-    /// model found in the voice folder.
+    /// The language Whisper recognises (decision 4 of #762): `"auto"` or a code of
+    /// [`crate::voice_models::WHISPER_LANGUAGES`]; `None` for the language of the suite
+    /// ([`Voice::language_or_default`]). Parakeet finds the language itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stt_model: Option<String>,
-    /// The Piper voice (`de_DE-thorsten-medium.onnx`, its `.onnx.json` next to it), an absolute
-    /// path; `None` for the first voice found in the voice folder.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub voice: Option<String>,
+    pub language: Option<String>,
     /// Read the assistant's answers aloud in its chat windows (issue #745, the speaker in the input
     /// field). Off unless switched on: "Speak answers" above was on before, and the chat should not
     /// start talking after an update. "Hey Torro" follows [`Voice::speak_answers`] instead.
     #[serde(default)]
     pub read_aloud: bool,
-    /// Who reads aloud (issue #745); `None` until a person chooses: then Qwen3-TTS where this computer
-    /// is fast enough and it is set up, else Piper ([`SpeechProvider`]). OpenAI only when chosen,
-    /// since the text leaves the computer.
+    /// Who reads aloud (issue #745); `None` until a person chooses: then Pocket TTS on this computer
+    /// ([`SpeechProvider`], #762). OpenAI only when chosen, since the text leaves the computer. A
+    /// file with Qwen3-TTS or Piper, which are gone, reads as `None`.
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_provider")]
     pub speech_provider: Option<SpeechProvider>,
-    /// The voice of Qwen3-TTS, one of [`QWEN_VOICES`]; `None` for [`QWEN_RECOMMENDED`].
+    /// The voice of Pocket TTS, one of [`POCKET_VOICES`]; `None` for [`POCKET_RECOMMENDED`] (#762).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub qwen_voice: Option<String>,
+    pub pocket_voice: Option<String>,
     /// The voice of OpenAI, one of [`OPENAI_VOICES`]; `None` for the first of [`OPENAI_RECOMMENDED`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openai_voice: Option<String>,
 }
 
 /// Who reads the assistant's answers aloud (issue #745, `docs/assistent.md` "Vorlesen"). More may
-/// come later; a file with one this version does not know reads as `None` (the core's choice).
+/// come later; a file with one this version does not know reads as `None` (the core's choice), so
+/// do the Qwen3-TTS and Piper of earlier versions (#762).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum SpeechProvider {
-    /// `qwen`: Qwen3-TTS on this computer, with a voice cloned from a template; needs an NVIDIA
-    /// graphics card and the Python package `faster-qwen3-tts`.
-    #[serde(rename = "qwen")]
-    Qwen,
+    /// `pocket`: Pocket TTS by Kyutai, built into the assistant, on the processor and without a
+    /// graphics card or network (#762); its model is downloaded in the settings.
+    #[serde(rename = "pocket")]
+    Pocket,
     /// `openai`: OpenAI's `gpt-4o-mini-tts` with the OpenAI account of Settings › AI. The text of each
     /// answer goes to OpenAI, so only a person chooses it (`torro_ipc::Request::kept_for_people`).
     #[serde(rename = "openai")]
     OpenAi,
-    /// `piper`: Piper on this computer, also without a graphics card or network.
-    #[serde(rename = "piper")]
-    Piper,
 }
 
 impl SpeechProvider {
     /// Every provider, in the order the settings offer them.
-    pub const ALL: [SpeechProvider; 3] = [SpeechProvider::Qwen, SpeechProvider::OpenAi, SpeechProvider::Piper];
+    pub const ALL: [SpeechProvider; 2] = [SpeechProvider::Pocket, SpeechProvider::OpenAi];
 
-    /// Its name in settings and requests: `qwen`, `openai`, `piper`.
+    /// Its name in settings and requests: `pocket`, `openai`.
     pub fn id(self) -> &'static str {
         match self {
-            SpeechProvider::Qwen => "qwen",
+            SpeechProvider::Pocket => "pocket",
             SpeechProvider::OpenAi => "openai",
-            SpeechProvider::Piper => "piper",
         }
     }
 
@@ -1381,12 +1375,13 @@ impl SpeechProvider {
     }
 }
 
-/// The voices of Qwen3-TTS (issue #745): templates that ship with the assistant, cloned for each
-/// answer, so every answer sounds alike. "Warm woman" first: it won the comparison of 14 November 2026.
-pub const QWEN_VOICES: [&str; 2] = ["warm_woman", "calm_man"];
+/// The voices of Pocket TTS (#762, decision 2): Alba, Fantine and Marius by Kyutai (their files come
+/// with the model [`crate::voice_models::POCKET_DE`]) and the templates of the assistant, "Warm
+/// woman" and "Calm man". Cosette and Jean are left out: their recordings are for non-commercial use.
+pub const POCKET_VOICES: [&str; 5] = ["alba", "fantine", "marius", "warm_woman", "calm_man"];
 
-/// The Qwen voice used when none is chosen, marked "(recommended)".
-pub const QWEN_RECOMMENDED: &str = "warm_woman";
+/// The Pocket voice used when none is chosen, marked "(recommended)".
+pub const POCKET_RECOMMENDED: &str = "alba";
 
 /// The voices of OpenAI's speech endpoint (`POST /v1/audio/speech`, `gpt-4o-mini-tts`).
 pub const OPENAI_VOICES: [&str; 13] =
@@ -1399,17 +1394,27 @@ fn wake_word() -> String {
     WAKE_WORD.to_string()
 }
 
-/// The program that turns speech into text (`settings.set_setting speech_recognizer`, #749).
-/// Parakeet is recommended: about three times as fast as Whisper on the processor.
+/// The model that turns speech into text (`settings.set_setting speech_recognizer`, #749). Both are
+/// built into the assistant (#762); Whisper turbo is recommended and the default (decision 3): it
+/// takes the language to listen for ([`Voice::language`]), Parakeet is faster and finds it itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Recognizer {
-    /// `"parakeet"`: Nvidia Parakeet TDT 0.6B v3 through the Python package `onnx-asr`, the model
-    /// folder in the voice folder.
-    #[default]
+    /// `"parakeet"`: Nvidia Parakeet TDT 0.6B v3 ([`crate::voice_models::PARAKEET`]).
     Parakeet,
-    /// `"whisper"`: whisper.cpp (`whisper-cli`) with a ggml model.
+    /// `"whisper"`: Whisper turbo ([`crate::voice_models::WHISPER_TURBO`]).
+    #[default]
     Whisper,
+}
+
+impl Recognizer {
+    /// The model of the catalogue it recognises with.
+    pub fn model(self) -> &'static str {
+        match self {
+            Recognizer::Parakeet => crate::voice_models::PARAKEET,
+            Recognizer::Whisper => crate::voice_models::WHISPER_TURBO,
+        }
+    }
 }
 
 /// A provider this version does not know (written by a newer one) reads as `None`, the core's choice,
@@ -1427,11 +1432,10 @@ impl Default for Voice {
             microphone: None,
             speak_answers: on(),
             recognizer: Recognizer::default(),
-            stt_model: None,
-            voice: None,
+            language: None,
             read_aloud: false,
             speech_provider: None,
-            qwen_voice: None,
+            pocket_voice: None,
             openai_voice: None,
         }
     }
@@ -1440,7 +1444,7 @@ impl Default for Voice {
 /// The longest microphone name `settings.set_setting` takes, in characters.
 const MAX_MICROPHONE_CHARS: usize = 200;
 
-/// The longest model or voice path `settings.set_setting` takes, in bytes.
+/// The longest path `settings.set_setting` takes, in bytes.
 const MAX_PATH_BYTES: usize = 4096;
 
 impl Voice {
@@ -1476,32 +1480,41 @@ impl Voice {
             && !name.chars().any(char::is_control);
         fits.then(|| Some(name.to_string())).ok_or_else(refused)
     }
-
-    /// A model or voice file in `value`: an absolute path ending in `.{extension}`, or `null` or
-    /// `""` for the first one found in the voice folder. Whether the file exists is the
-    /// listener's check: it may be on a drive that is not mounted yet. For `settings.set_setting`.
-    pub fn file_from(value: &serde_json::Value, extension: &str) -> Result<Option<String>, String> {
-        let refused = || format!("{value} is not a .{extension} file: send an absolute path or null");
-        let path = match value {
-            serde_json::Value::Null => return Ok(None),
-            serde_json::Value::String(path) => path.trim(),
-            _ => return Err(refused()),
-        };
-        if path.is_empty() {
-            return Ok(None);
-        }
-        let fits = path.len() <= MAX_PATH_BYTES
-            && !path.chars().any(char::is_control)
-            && Path::new(path).is_absolute()
-            && Path::new(path).extension().is_some_and(|found| found.eq_ignore_ascii_case(extension));
-        fits.then(|| Some(path.to_string())).ok_or_else(refused)
-    }
 }
 
 impl Voice {
-    /// The Qwen voice to speak with: the chosen one, or [`QWEN_RECOMMENDED`].
-    pub fn qwen_voice_or_default(&self) -> &str {
-        self.qwen_voice.as_deref().filter(|id| QWEN_VOICES.contains(id)).unwrap_or(QWEN_RECOMMENDED)
+    /// The Pocket voice to speak with: the chosen one, or [`POCKET_RECOMMENDED`].
+    pub fn pocket_voice_or_default(&self) -> &str {
+        self.pocket_voice.as_deref().filter(|id| POCKET_VOICES.contains(id)).unwrap_or(POCKET_RECOMMENDED)
+    }
+
+    /// The language Whisper listens for: the chosen one, else the language of the suite (`"de"`,
+    /// `"en"`); `"auto"` lets Whisper guess (decision 4 of #762).
+    pub fn language_or_default(&self) -> &str {
+        match self.language.as_deref() {
+            Some(code) if code == "auto" || crate::voice_models::whisper_language(code).is_some() => code,
+            _ => match crate::i18n::lang() {
+                crate::i18n::Lang::De => "de",
+                crate::i18n::Lang::En => "en",
+            },
+        }
+    }
+
+    /// The language in `value`: `"auto"` or a code of [`crate::voice_models::WHISPER_LANGUAGES`]
+    /// (any case), or `null` or `""` for the language of the suite. For `settings.set_setting`.
+    pub fn speech_language_from(value: &serde_json::Value) -> Result<Option<String>, String> {
+        let refused = || format!("{value} is not a language: send \"auto\", a code like \"de\" or null");
+        match value {
+            serde_json::Value::Null => Ok(None),
+            serde_json::Value::String(code) if code.trim().is_empty() => Ok(None),
+            serde_json::Value::String(code) => {
+                let code = code.trim().to_lowercase();
+                (code == "auto" || crate::voice_models::whisper_language(&code).is_some())
+                    .then_some(Some(code))
+                    .ok_or_else(refused)
+            }
+            _ => Err(refused()),
+        }
     }
 
     /// The OpenAI voice to speak with: the chosen one, or the first of [`OPENAI_RECOMMENDED`].
@@ -1509,23 +1522,23 @@ impl Voice {
         self.openai_voice.as_deref().filter(|id| OPENAI_VOICES.contains(id)).unwrap_or(OPENAI_RECOMMENDED[0])
     }
 
-    /// The provider in `value`: `"qwen"`, `"openai"` or `"piper"`, or `null` or `""` for the core's
-    /// choice. For `settings.set_setting`.
+    /// The provider in `value`: `"pocket"` or `"openai"`, or `null` or `""` for the core's choice.
+    /// For `settings.set_setting`; the `"qwen"` and `"piper"` of earlier versions are refused.
     pub fn speech_provider_from(value: &serde_json::Value) -> Result<Option<SpeechProvider>, String> {
         match value {
             serde_json::Value::Null => Ok(None),
             serde_json::Value::String(id) if id.trim().is_empty() => Ok(None),
-            serde_json::Value::String(id) => {
-                SpeechProvider::ALL.into_iter().find(|provider| provider.id() == id.trim()).map(Some).ok_or_else(|| {
-                    format!("{value} is not a speech provider: send \"qwen\", \"openai\", \"piper\" or null")
-                })
-            }
-            _ => Err(format!("{value} is not a speech provider: send \"qwen\", \"openai\", \"piper\" or null")),
+            serde_json::Value::String(id) => SpeechProvider::ALL
+                .into_iter()
+                .find(|provider| provider.id() == id.trim())
+                .map(Some)
+                .ok_or_else(|| format!("{value} is not a speech provider: send \"pocket\", \"openai\" or null")),
+            _ => Err(format!("{value} is not a speech provider: send \"pocket\", \"openai\" or null")),
         }
     }
 
     /// The voice in `value`, one of `voices`, or `null` or `""` for the recommended one. For
-    /// `settings.set_setting` with `qwen_voice` and `openai_voice`.
+    /// `settings.set_setting` with `pocket_voice` and `openai_voice`.
     pub fn speech_voice_from(value: &serde_json::Value, voices: &[&str]) -> Result<Option<String>, String> {
         let refused = || format!("{value} is not a voice: send one of {} or null", voices.join(", "));
         match value {
@@ -2843,15 +2856,44 @@ mod tests {
         assert_eq!(load_from(&path), written, "a file of this version is not taken over again");
     }
 
-    /// Issue #749: a file from before the choice recognizes with Parakeet, and both names read.
+    /// Issues #749 and #762: a file from before the choice recognizes with Whisper turbo, both names
+    /// read, and the paths of whisper.cpp and Piper of earlier versions are passed over.
     #[test]
-    fn the_recognizer_is_parakeet_unless_whisper_is_chosen() {
-        let old: Settings = serde_json::from_str(r#"{"voice": {"enabled": true, "sttModel": "/m/ggml-base.bin"}}"#)
-            .expect("a file from before the choice");
-        assert_eq!(old.voice.recognizer, Recognizer::Parakeet);
-        let chosen: Voice = serde_json::from_str(r#"{"recognizer": "whisper"}"#).expect("whisper reads");
-        assert_eq!(chosen.recognizer, Recognizer::Whisper);
-        assert_eq!(serde_json::to_value(Recognizer::Parakeet).expect("json"), serde_json::json!("parakeet"));
+    fn the_recognizer_is_whisper_unless_parakeet_is_chosen() {
+        let old: Settings = serde_json::from_str(
+            r#"{"voice": {"enabled": true, "sttModel": "/m/ggml-base.bin", "voice": "/v/thorsten.onnx"}}"#,
+        )
+        .expect("a file from before the choice");
+        assert_eq!(old.voice.recognizer, Recognizer::Whisper);
+        assert!(old.voice.enabled, "the rest still reads");
+        let chosen: Voice = serde_json::from_str(r#"{"recognizer": "parakeet"}"#).expect("parakeet reads");
+        assert_eq!(chosen.recognizer, Recognizer::Parakeet);
+        assert_eq!(serde_json::to_value(Recognizer::Whisper).expect("json"), serde_json::json!("whisper"));
+        assert_eq!(Recognizer::Parakeet.model(), crate::voice_models::PARAKEET);
+        assert_eq!(Recognizer::Whisper.model(), crate::voice_models::WHISPER_TURBO);
+    }
+
+    /// Issue #762, decision 4: Whisper listens for the language of the suite unless one is chosen;
+    /// "auto" and Whisper's codes are taken, anything else is refused.
+    #[test]
+    fn the_speech_language_follows_the_suite_unless_chosen() {
+        use serde_json::json;
+        let suite = match crate::i18n::lang() {
+            crate::i18n::Lang::De => "de",
+            crate::i18n::Lang::En => "en",
+        };
+        assert_eq!(Voice::default().language_or_default(), suite);
+        let chosen = Voice { language: Some("fr".into()), ..Voice::default() };
+        assert_eq!(chosen.language_or_default(), "fr");
+        let gone = Voice { language: Some("klingon".into()), ..Voice::default() };
+        assert_eq!(gone.language_or_default(), suite, "a code that does not read falls back");
+        assert_eq!(Voice::speech_language_from(&json!("Auto")), Ok(Some("auto".into())));
+        assert_eq!(Voice::speech_language_from(&json!(" EN ")), Ok(Some("en".into())));
+        assert_eq!(Voice::speech_language_from(&json!(null)), Ok(None));
+        assert_eq!(Voice::speech_language_from(&json!("")), Ok(None));
+        for refused in [json!("english"), json!("xx"), json!(1), json!(["de"])] {
+            assert!(Voice::speech_language_from(&refused).is_err(), "{refused}");
+        }
     }
 
     /// Task C.9: voice is off unless switched on, answers are spoken unless turned off, and the
@@ -2876,13 +2918,6 @@ mod tests {
         for refused in [json!("-D hw:0"), json!("two\nlines"), json!(7), json!("m".repeat(201))] {
             assert!(Voice::microphone_from(&refused).is_err(), "{refused}");
         }
-
-        let model = if cfg!(windows) { r"C:\models\ggml-base.bin" } else { "/models/ggml-base.bin" };
-        assert_eq!(Voice::file_from(&json!(model), "bin"), Ok(Some(model.into())));
-        assert_eq!(Voice::file_from(&json!(""), "bin"), Ok(None));
-        for refused in [json!("ggml-base.bin"), json!("/models/ggml-base.onnx"), json!(1)] {
-            assert!(Voice::file_from(&refused, "bin").is_err(), "{refused}");
-        }
     }
 
     /// Issue #745: reading aloud is off, the provider is the core's choice and the voices are the
@@ -2892,7 +2927,7 @@ mod tests {
         use serde_json::json;
         let old: Voice = serde_json::from_str("{}").expect("json");
         assert!(!old.read_aloud && old.speech_provider.is_none());
-        assert_eq!((old.qwen_voice_or_default(), old.openai_voice_or_default()), ("warm_woman", "marin"));
+        assert_eq!((old.pocket_voice_or_default(), old.openai_voice_or_default()), ("alba", "marin"));
         let newer: Voice = serde_json::from_str(r#"{"speechProvider": "grok", "readAloud": true}"#).expect("json");
         assert_eq!((newer.speech_provider, newer.read_aloud), (None, true), "the rest still reads");
         let chosen: Voice =
@@ -2900,18 +2935,26 @@ mod tests {
         assert_eq!((chosen.speech_provider, chosen.openai_voice_or_default()), (Some(SpeechProvider::OpenAi), "cedar"));
         assert_eq!(serde_json::to_value(SpeechProvider::OpenAi).expect("json"), json!("openai"));
 
-        assert_eq!(Voice::speech_provider_from(&json!("qwen")), Ok(Some(SpeechProvider::Qwen)));
+        assert_eq!(Voice::speech_provider_from(&json!("pocket")), Ok(Some(SpeechProvider::Pocket)));
+        // Qwen3-TTS and Piper are gone (#762): a file with them reads as the core's choice.
+        for gone in ["qwen", "piper"] {
+            assert!(Voice::speech_provider_from(&json!(gone)).is_err(), "{gone}");
+            let old: Voice = serde_json::from_value(json!({"speechProvider": gone})).expect("json");
+            assert_eq!(old.speech_provider, None, "{gone}");
+        }
         assert_eq!(Voice::speech_provider_from(&json!(null)), Ok(None));
         assert_eq!(Voice::speech_provider_from(&json!("")), Ok(None));
-        for refused in [json!("grok"), json!(1), json!({"provider": "qwen"})] {
+        for refused in [json!("grok"), json!(1), json!({"provider": "pocket"})] {
             assert!(Voice::speech_provider_from(&refused).is_err(), "{refused}");
         }
         assert_eq!(Voice::speech_voice_from(&json!("Marin"), &OPENAI_VOICES), Ok(Some("marin".into())));
-        assert_eq!(Voice::speech_voice_from(&json!(null), &QWEN_VOICES), Ok(None));
-        assert!(Voice::speech_voice_from(&json!("marin"), &QWEN_VOICES).is_err(), "not a Qwen voice");
-        assert!(Voice::speech_voice_from(&json!(true), &QWEN_VOICES).is_err());
-        let unknown = Voice { qwen_voice: Some("gone".into()), ..Voice::default() };
-        assert_eq!(unknown.qwen_voice_or_default(), QWEN_RECOMMENDED, "a voice no longer shipped falls back");
+        assert_eq!(Voice::speech_voice_from(&json!(null), &POCKET_VOICES), Ok(None));
+        assert_eq!(Voice::speech_voice_from(&json!("Fantine"), &POCKET_VOICES), Ok(Some("fantine".into())));
+        assert!(Voice::speech_voice_from(&json!("marin"), &POCKET_VOICES).is_err(), "not a Pocket voice");
+        assert!(Voice::speech_voice_from(&json!("cosette"), &POCKET_VOICES).is_err(), "non-commercial only");
+        assert!(Voice::speech_voice_from(&json!(true), &POCKET_VOICES).is_err());
+        let unknown = Voice { pocket_voice: Some("gone".into()), ..Voice::default() };
+        assert_eq!(unknown.pocket_voice_or_default(), POCKET_RECOMMENDED, "a voice no longer shipped falls back");
     }
 
     /// Task M9.5: mail shows as HTML in the suite's colours unless set otherwise; the values are
@@ -3279,8 +3322,8 @@ mod tests {
                 enabled: true,
                 microphone: Some("alsa_input.usb-Rode".into()),
                 speak_answers: false,
-                stt_model: Some("/models/ggml-base.bin".into()),
-                voice: Some("/voices/de_DE-thorsten-medium.onnx".into()),
+                language: Some("en".into()),
+                pocket_voice: Some("marius".into()),
                 ..Voice::default()
             },
             ai_slots: crate::ai::AiSlots {

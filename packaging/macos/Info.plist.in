@@ -27,5 +27,10 @@
     <string>12.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <!-- Without it macOS gives no microphone to the assistant's built-in recording (issue #762). Every
+         app of the suite carries it: the listener runs as a child of the service, and macOS asks in the
+         name of the app that started it. -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Torro listens to you when you dictate or say “Hey Torro”.</string>
 </dict>
 </plist>
