@@ -2084,6 +2084,10 @@ pub enum Request {
         /// The picture of the message's link card instead of a file.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         card: bool,
+        /// With `card`: which of the message's link cards (issue #785), in the order of its `cards`,
+        /// counted from 0; left out: the first.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        index: Option<u8>,
         /// `small` (256 pixels, when left out), `medium` (1024) or `large` (1600).
         #[serde(default)]
         size: chat::PreviewSize,
@@ -2130,7 +2134,7 @@ pub enum Request {
         #[schemars(range(min = 1, max = 100))]
         limit: Option<u32>,
     },
-    /// Fetches the card of the first link of a message ("Show once", [`Response::ChatCard`]): the
+    /// Fetches the card of a link of a message ("Show once", [`Response::ChatCard`]): the
     /// account's server asks the link's address for it, so its owner may learn when it was read. App
     /// key only: a person decides. `unsupported` for a provider Settings › Privacy blocks and while it
     /// says "Never show" (issue #672); nothing is stored about the provider.
@@ -2138,6 +2142,10 @@ pub enum Request {
     ChatShowCard {
         /// The message (`<conversation>/<number>`).
         id: String,
+        /// Which of the message's links that may have a card (issue #785: up to three, in the order
+        /// they stand in its text), counted from 0; left out: the first.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        index: Option<u8>,
     },
 
     // Calls (`docs/chat.md`, stage 6b): ringing, declining and leaving. The call itself runs in the
@@ -2306,7 +2314,9 @@ pub enum Request {
     /// with that conversation (`docs/chat.md`, `torrochat --conversation=<id>`; a client needs read
     /// access to `chat` and the account, else `not-found`), `chat:contacts` the contact list and
     /// `contact:<id>` a contact in the contacts app (issue #727, `torrocontacts --contact=<id>`; a
-    /// client needs read access to `contacts` and the book, else `not-found`).
+    /// client needs read access to `contacts` and the book, else `not-found`) and `event:<uid>` an
+    /// event in the calendar (issue #797, `torrocalendar --event=<uid>`: the week with the event chosen;
+    /// a client needs read access to `calendar` and the event's calendar, else `not-found`).
     /// `app` must be the app the target
     /// opens in (any inbox window for a mail, the inbox for a file, `torroworkplace` for a
     /// template), else `error`. The core checks the target and builds the arguments; nothing of it
@@ -2322,6 +2332,7 @@ pub enum Request {
         /// Binary name or window class, from `apps.list_apps`.
         app: String,
         /// What the app shows: `mail:<address>:<Message-ID>`, `message:<account>:<id>`, `task:<uid>`,
+        /// `event:<uid>` (an event in the calendar), `contact:<id>` (a contact),
         /// `file:<id>` (a new mail with that file of the assistant's tools attached), `template:<id>` (the dialog
         /// to edit a workspace template) or `chat:<conversation>`/`chat:contacts` (a chat window,
         /// the contact list); left out: the app as it starts.
@@ -4293,6 +4304,40 @@ pub enum Request {
     GetCards {
         /// The conversation's id from `assistant.list_conversations`.
         conversation: String,
+    },
+    /// Shows items the assistant or a bot found as cards in its conversation (issue #786, "Grenzen" in
+    /// `docs/inhaltskarten.md`): adds one [`assistant::EntryContent::Card`] with a
+    /// [`assistant::CardRef::Group`] of `items`, or with the item itself when there is one, and answers
+    /// [`Response::Ok`]. What the cards show `assistant.get_cards` looks up, with the rights of the
+    /// conversation's client. Only items a command of this conversation found (`mail.search_messages`,
+    /// `calendar.list_events`, `contacts.list_contacts` …) and at most [`assistant::MAX_SHOWN_ITEMS`];
+    /// the total of a larger search comes from that search, never from here. For the assistant's and a
+    /// bot's own client: without `conversation` the one that answers now, else one of its own. Codes:
+    /// `forbidden` for an item no command of the conversation found, more than ten, or one that may not
+    /// stand in a group ([`assistant::items_refusal`]); `not-found` for a conversation that is not the
+    /// client's own (every other client has none); `error` for no items or an id beyond its limit.
+    #[serde(rename = "assistant.show_items")]
+    ShowItems {
+        /// The conversation; left out: the one whose answer runs now.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation: Option<String>,
+        /// The items in the order to show them: mails, events, tasks or contacts.
+        items: Vec<assistant::ItemRef>,
+    },
+    /// Fetches the card of the address of one link card in a conversation of the assistant once ("Show
+    /// once", issue #785), [`Response::Cards`] with that one card: the own Nextcloud asks the page for it,
+    /// so its owner may learn when it was read. App key only: a person decides (`docs/api.md`, "Was nie
+    /// nach außen geht", point 14, like `chat.show_card`). Settings › Privacy stays as it is; the core
+    /// keeps the card in memory, so `assistant.get_cards` shows it until the core restarts. Codes:
+    /// `not-found` for an unknown conversation or an entry that is no link card, `unsupported` for a
+    /// provider Settings › Privacy blocks and while it says "Never show", `not-connected` without a
+    /// Nextcloud account.
+    #[serde(rename = "assistant.show_card")]
+    ShowAssistantCard {
+        /// The conversation's id from `assistant.list_conversations`.
+        conversation: String,
+        /// The number of the card's entry ([`assistant::Entry::seq`]).
+        seq: u64,
     },
     /// Adds the person's message to the conversation `conversation`, or to a new one, and starts
     /// the answer in the background. Answered at once with [`Response::Conversation`]: the

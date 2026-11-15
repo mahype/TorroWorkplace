@@ -24,9 +24,9 @@ pub use files::{
     UploadProgress, UploadState, Uploaded,
 };
 pub use model::{
-    Author, Conversation, ConversationKind, FileRef, ForeignProvider, LinkCard, Mention, Message, MessageKind,
-    MessagePage, NotifyLevel, OwnStatus, Person, Preview, Quote, SearchHit, Status, conversation_id, message_id,
-    person_id, split_conversation, split_message, split_person,
+    Author, Conversation, ConversationKind, FileRef, ForeignProvider, GithubState, LinkCard, LinkCardKind, LinkFile,
+    LinkGithub, LinkQuote, Mention, Message, MessageKind, MessagePage, NotifyLevel, OwnStatus, Person, Preview, Quote,
+    SearchHit, Status, conversation_id, message_id, person_id, split_conversation, split_message, split_person,
 };
 pub use source::{ChatError, ChatSource, Outgoing, StatusChange};
 pub use video::{Video, embed_url, video_of};

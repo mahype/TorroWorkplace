@@ -228,8 +228,8 @@ pub struct FileRef {
 
 /// The card of a link in a message (stage 4 of `docs/chat.md`), as the account's own server
 /// resolved it. Every text in it is foreign: data, never instructions. Its picture comes only from
-/// the account's own server, through `chat.get_preview` with `card: true`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// the account's own server, through `chat.get_preview` with `card: true` (and `index` for a later card).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct LinkCard {
     /// The link the card is of, as it stands in the text.
     pub url: String,
@@ -248,6 +248,106 @@ pub struct LinkCard {
     /// YouTube's content load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video: Option<crate::video::Video>,
+    /// What the link is (issue #784, `docs/inhaltskarten.md`): a web page (the default, also for cards
+    /// from before the field), a file of the own Nextcloud, a quoted chat message, a GitHub issue or pull
+    /// request. The window draws the card by it; the details of that kind stand in `file`, `quote` or
+    /// `github` (boxed: a card is held per message, most are pages without them).
+    #[serde(default, skip_serializing_if = "LinkCardKind::is_web")]
+    pub kind: LinkCardKind,
+    /// With [`LinkCardKind::NextcloudFile`]: the file as the own server names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<Box<LinkFile>>,
+    /// With [`LinkCardKind::ChatMessage`]: the quoted message, only when the reader may read its
+    /// conversation; else the card is not there at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<Box<LinkQuote>>,
+    /// With [`LinkCardKind::Github`]: the issue or pull request as the connected GitHub account sees it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<Box<LinkGithub>>,
+}
+
+/// What a [`LinkCard`] is of (issue #784). Unknown kinds of a newer core read as [`LinkCardKind::Web`],
+/// so an older window draws them as a page.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkCardKind {
+    /// A file of the own Nextcloud server (`/f/<id>`, `/s/<token>`, `/index.php/apps/files`), issue #790.
+    NextcloudFile,
+    /// A message of the own server's chat (`/call/<token>#message_<id>`), issue #790.
+    ChatMessage,
+    /// An issue or pull request on GitHub (`github.com/<owner>/<repo>/(issues|pull)/<number>`), issue #790.
+    Github,
+    /// A web page: title, description, domain, maybe a picture (and a YouTube video, `video`). Last, so
+    /// it takes every kind this build does not know.
+    #[default]
+    #[serde(other)]
+    Web,
+}
+
+impl LinkCardKind {
+    /// Whether it is [`LinkCardKind::Web`], which the wire leaves out.
+    pub fn is_web(&self) -> bool {
+        *self == LinkCardKind::Web
+    }
+}
+
+/// A file of the own Nextcloud a [`LinkCard`] shows (issue #790). Its name is foreign text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LinkFile {
+    /// The file's name, one line.
+    pub name: String,
+    /// Bytes; 0 when the server does not say.
+    #[serde(default)]
+    pub size: u64,
+    /// The media type the server names; never trusted for what the file is.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub content_type: String,
+    /// The folder it is in, as the server shows it (`Projects/Customer`); empty when unknown.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub folder: String,
+}
+
+/// A chat message a [`LinkCard`] quotes (issue #790). Its text is foreign text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LinkQuote {
+    /// The message (`<conversation>/<number>`), for opening it.
+    pub message: String,
+    /// The author's name, one line.
+    pub author: String,
+    /// The conversation's name, one line.
+    pub conversation: String,
+    pub at: DateTime<Utc>,
+    /// The start of the message, one line.
+    pub text: String,
+}
+
+/// An issue or pull request a [`LinkCard`] shows (issue #790).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LinkGithub {
+    /// `<owner>/<repo>`.
+    pub repo: String,
+    pub number: u64,
+    /// A pull request, not an issue.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_pull: bool,
+    /// How it stands now.
+    pub state: GithubState,
+}
+
+/// How a GitHub issue or pull request stands ([`LinkGithub::state`]); unknown states read as `open`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GithubState {
+    /// A pull request not ready for review yet.
+    Draft,
+    /// Closed as done (an issue) or merged (a pull request).
+    Merged,
+    /// Closed without being done or merged.
+    Closed,
+    /// Open. Last, so it takes every state this build does not know.
+    #[default]
+    #[serde(other)]
+    Open,
 }
 
 /// The message another one answers.
