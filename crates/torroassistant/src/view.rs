@@ -199,6 +199,9 @@ fn area_icon(area: Option<Area>) -> Icon {
     }
 }
 
+/// How many characters of a command of the terminal the approval card shows before "Show all" (issue #754).
+const COMMAND_SHOWN: usize = 160;
+
 impl App {
     /// The window with the zoom badge and the notice over it; in mini and strip the glance.
     pub fn view(&self) -> Element<'_, Message> {
@@ -1020,18 +1023,76 @@ impl App {
             card = card.push(typo::text(typo::meta(), tr("Loading …")).style(theme::text_3));
             return container(card).width(Fill).padding(layout::panel_padding()).style(style::container::group).into();
         };
+        // A command of the terminal (issue #754): its line shortened until "Show all", and four answers.
+        let terminal = torro_ipc::tools::is_terminal_command(&approval.command);
         card = card.push(typo::text(typo::body(), approval.summary.as_str()).wrapping(Wrapping::WordOrGlyph));
         for line in &approval.details {
-            card =
-                card.push(typo::text(typo::meta(), line.as_str()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
+            let long = terminal && line.starts_with("$ ") && line.chars().count() > COMMAND_SHOWN;
+            let whole = self.whole_commands.contains(id);
+            let shown = match long && !whole {
+                true => format!("{}…", line.chars().take(COMMAND_SHOWN).collect::<String>()),
+                false => line.clone(),
+            };
+            card = card.push(typo::text(typo::meta(), shown).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
+            if long {
+                let (icon, label) = match whole {
+                    true => (Icon::ChevronDown, tr("Show less")),
+                    false => (Icon::ChevronRight, tr("Show all")),
+                };
+                let toggle = Some(Message::ToggleCommand(id.to_owned()));
+                card = card.push(widgets::text_button(Some(icon), label, style::button::ghost, toggle));
+            }
         }
         let footer: Element<'a, Message> = match &approval.state {
+            ApprovalState::Pending if terminal => {
+                let open = self.deciding.is_none();
+                let decide = |answer: chat::Answer| open.then(|| Message::Decide(id.to_owned(), answer));
+                let scoped = |scope| decide(chat::Answer::Scoped(scope));
+                let buttons: Vec<Element<'a, Message>> = vec![
+                    widgets::text_button(
+                        Some(Icon::Check),
+                        tr("Allow once"),
+                        style::button::secondary,
+                        scoped(torro_ipc::ApprovalScope::Once),
+                    ),
+                    widgets::text_button(
+                        None,
+                        tr("In this conversation"),
+                        style::button::secondary,
+                        scoped(torro_ipc::ApprovalScope::Conversation),
+                    ),
+                    widgets::text_button(
+                        None,
+                        tr("Always"),
+                        style::button::secondary,
+                        scoped(torro_ipc::ApprovalScope::Always),
+                    ),
+                    widgets::text_button(
+                        Some(Icon::X),
+                        tr("Deny"),
+                        style::button::secondary,
+                        decide(chat::Answer::Deny),
+                    ),
+                ];
+                // Four buttons do not fit a narrow chat in one row: they wrap.
+                iced::widget::row(buttons).spacing(space::s()).wrap().vertical_spacing(space::s()).into()
+            }
             ApprovalState::Pending => {
                 let open = self.deciding.is_none();
-                let decide = |allow: bool| open.then(|| Message::Decide(id.to_owned(), allow));
+                let decide = |answer: chat::Answer| open.then(|| Message::Decide(id.to_owned(), answer));
                 row![
-                    widgets::text_button(Some(Icon::Check), tr("Allow"), style::button::secondary, decide(true)),
-                    widgets::text_button(Some(Icon::X), tr("Deny"), style::button::secondary, decide(false)),
+                    widgets::text_button(
+                        Some(Icon::Check),
+                        tr("Allow"),
+                        style::button::secondary,
+                        decide(chat::Answer::Allow)
+                    ),
+                    widgets::text_button(
+                        Some(Icon::X),
+                        tr("Deny"),
+                        style::button::secondary,
+                        decide(chat::Answer::Deny)
+                    ),
                 ]
                 .spacing(space::s())
                 .into()

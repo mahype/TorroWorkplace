@@ -576,18 +576,18 @@ fn the_approval_card_allows_only_on_a_click_and_once() {
     assert!(app.sent.iter().all(|request| !matches!(request, Request::DecideApproval { .. })));
     settle(&mut app);
 
-    let _ = app.update(Message::Decide(APPROVAL_ID.into(), true));
-    assert_eq!(sent(&mut app), [chat::decide_request(APPROVAL_ID, true)]);
+    let _ = app.update(Message::Decide(APPROVAL_ID.into(), chat::Answer::Allow));
+    assert_eq!(sent(&mut app), [chat::decide_request(APPROVAL_ID, chat::Answer::Allow)]);
     assert_eq!(app.deciding.as_deref(), Some(APPROVAL_ID), "the buttons are off until the core answered");
-    let _ = app.update(Message::Decide(APPROVAL_ID.into(), false));
+    let _ = app.update(Message::Decide(APPROVAL_ID.into(), chat::Answer::Deny));
     assert!(sent(&mut app).is_empty(), "a second click sends nothing");
 
-    let result = block_on(app.backend.ask(chat::decide_request(APPROVAL_ID, true)));
+    let result = block_on(app.backend.ask(chat::decide_request(APPROVAL_ID, chat::Answer::Allow)));
     let _ = app.update(Message::Decided(APPROVAL_ID.into(), approval_of(result)));
     assert_eq!(app.deciding, None);
     assert!(matches!(app.approvals.get(APPROVAL_ID).map(|a| &a.state), Some(ApprovalState::Done { .. })));
     settle(&mut app);
-    let _ = app.update(Message::Decide(APPROVAL_ID.into(), false));
+    let _ = app.update(Message::Decide(APPROVAL_ID.into(), chat::Answer::Deny));
     assert!(sent(&mut app).is_empty(), "decided: nothing to send");
     let tools: Vec<&str> = app
         .transcript
@@ -605,8 +605,8 @@ fn the_approval_card_allows_only_on_a_click_and_once() {
 fn deny_sends_the_same_request_with_no() {
     let mut app = started(&["--open", "approval"]);
     sent(&mut app);
-    let _ = app.update(Message::Decide(APPROVAL_ID.into(), false));
-    assert_eq!(sent(&mut app), [Request::DecideApproval { id: APPROVAL_ID.into(), allow: false }]);
+    let _ = app.update(Message::Decide(APPROVAL_ID.into(), chat::Answer::Deny));
+    assert_eq!(sent(&mut app), [Request::DecideApproval { id: APPROVAL_ID.into(), allow: false, scope: None }]);
 }
 
 #[test]

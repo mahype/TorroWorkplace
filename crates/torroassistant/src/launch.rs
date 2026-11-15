@@ -52,6 +52,9 @@ pub enum Open {
     Tools,
     /// "Block the afternoon": a tool waits for approval; the card shows Allow and Deny.
     Approval,
+    /// "Clean the build": a command of the terminal waits for approval; the card shows the command shortened with
+    /// "Show all" and four answers (issue #754).
+    Terminal,
     /// "Draft a reply to Anna": an answer the model is still writing, with Stop.
     Streaming,
     /// "Tasks from Anna's mails": a tool the assistant may not use, with the hint to change it.
@@ -134,10 +137,11 @@ pub enum Open {
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 39] = [
+    pub const ALL: [(&'static str, Open); 40] = [
         ("new", Open::New),
         ("tools", Open::Tools),
         ("approval", Open::Approval),
+        ("terminal", Open::Terminal),
         ("streaming", Open::Streaming),
         ("forbidden", Open::Forbidden),
         ("picker", Open::Picker),
