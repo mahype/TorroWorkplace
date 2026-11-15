@@ -752,7 +752,8 @@ async fn save(
     for part in wanted {
         save_one(&raw, &part, &place, &shared, ATTACHMENT_MAX_BYTES, &mut saved).await;
     }
-    note(&located, saved.records(&How::new(to, &place))).await;
+    let how = How::new(to, &place);
+    note(&located, saved.records(&how), how.base).await;
     Ok(saved.response())
 }
 
@@ -776,6 +777,8 @@ struct How {
     via: SavedVia,
     target: Option<String>,
     target_name: Option<String>,
+    /// The target's folder as the person set it; [`note`] resolves it to tell the subfolders.
+    base: Option<PathBuf>,
 }
 
 impl How {
@@ -786,11 +789,11 @@ impl How {
             SaveTo::Folder(_) => (SavedVia::Folder, None),
             SaveTo::File(_) => (SavedVia::File, None),
         };
-        let target_name = match place {
-            Place::Target(spec) => Some(spec.name.clone()),
-            Place::Folder(_) | Place::File(_) => None,
+        let (target_name, base) = match place {
+            Place::Target(spec) => (Some(spec.name.clone()), Some(PathBuf::from(&spec.folder))),
+            Place::Folder(_) | Place::File(_) => (None, None),
         };
-        How { at: Utc::now(), via, target, target_name }
+        How { at: Utc::now(), via, target, target_name, base }
     }
 
     fn record(&self, what: SavedWhat, path: &str, skipped: bool) -> SaveRecord {
@@ -801,15 +804,17 @@ impl How {
             target: self.target.clone(),
             target_name: self.target_name.clone(),
             path: path.to_string(),
+            folders: Vec::new(),
             skipped,
             present: true,
         }
     }
 }
 
-/// Notes `records` in the history of the mail at `located`. A save that could not be noted is still
-/// a save: the answer stays a success, and the log names no path, name or store message.
-async fn note(located: &read::Located, records: Vec<SaveRecord>) {
+/// Notes `records` in the history of the mail at `located`, each with the subfolders below `base`,
+/// the save target's folder, it lies in ([`below`]). A save that could not be noted is still a save:
+/// the answer stays a success, and the log names no path, name or store message.
+async fn note(located: &read::Located, mut records: Vec<SaveRecord>, base: Option<PathBuf>) {
     if records.is_empty() {
         return;
     }
@@ -817,6 +822,13 @@ async fn note(located: &read::Located, records: Vec<SaveRecord>) {
     let noted = located
         .store
         .run(move |store| {
+            // Resolved as the save resolved it (`target_dir`), off the runtime: the paths noted are the
+            // resolved ones, a folder behind a link or `\\?\` on Windows would not match otherwise.
+            if let Some(base) = base.and_then(|base| base.canonicalize().ok()) {
+                for record in &mut records {
+                    record.folders = below(&base, &record.path);
+                }
+            }
             for record in &records {
                 let data = serde_json::to_string(record).unwrap_or_default();
                 store.record_action(&key, SAVED, record.at, &data)?;
@@ -827,6 +839,16 @@ async fn note(located: &read::Located, records: Vec<SaveRecord>) {
     if noted.is_err() {
         eprintln!("torroworkplace: mail: a save could not be noted in the mail's history");
     }
+}
+
+/// The folders between `base` and the file at `path`: `["2026", "11"]`; empty for a file right in
+/// `base` or one outside it.
+fn below(base: &Path, path: &str) -> Vec<String> {
+    Path::new(path)
+        .parent()
+        .and_then(|parent| parent.strip_prefix(base).ok())
+        .map(|rest| rest.components().map(|part| part.as_os_str().to_string_lossy().into_owned()).collect())
+        .unwrap_or_default()
 }
 
 /// `mail.list_save_history`: the message in the stores `reach` sees (`not-found`), then its saves,
@@ -1645,7 +1667,8 @@ async fn saved_mail(
         Ok(Written::Skipped(path)) => (shown(&path), true),
         Err(problem) => return Err(problem.failed()),
     };
-    note(located, vec![How::new(to, place).record(SavedWhat::Mail { format }, &path, skipped)]).await;
+    let how = How::new(to, place);
+    note(located, vec![how.record(SavedWhat::Mail { format }, &path, skipped)], how.base).await;
     Ok(Response::SavedMail { path, skipped, shortened })
 }
 
@@ -3049,7 +3072,19 @@ pub(crate) mod tests {
         let downloads = dir.path().join("Downloads");
         fs::create_dir(&downloads).expect("downloads");
         let context = Context { downloads: Some(downloads.clone()), categories: Category::BUILT_IN.to_vec() };
-        let target = SaveTargetSpec { on_conflict: OnConflict::SkipIdentical, ..spec("Invoices", dir.path()) };
+        // The target's folder through a link: the history still tells the subfolder below it.
+        let real = dir.path().join("real");
+        fs::create_dir(&real).expect("the folder");
+        let linked = dir.path().join("linked");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &linked).expect("the link");
+        #[cfg(not(unix))]
+        let linked = real.clone();
+        let target = SaveTargetSpec {
+            on_conflict: OnConflict::SkipIdentical,
+            subfolders: "{year}".into(),
+            ..spec("Invoices", &linked)
+        };
         let made = service.save_targets().create(target, &context.categories).expect("stored");
         let history =
             async |reach| answer(&service, reach, &context, Request::ListSaveHistory { id: id.clone() }).await;
@@ -3089,7 +3124,9 @@ pub(crate) mod tests {
         for entry in &found[1..] {
             assert_eq!((entry.via, entry.target.as_deref()), (SavedVia::Target, Some(made.id.as_str())));
             assert_eq!(entry.target_name.as_deref(), Some("Invoices"));
+            assert_eq!(entry.folders, ["2026"], "the subfolder below the target, though its folder is a link");
         }
+        assert!(found[0].folders.is_empty(), "Downloads has none");
         assert!(found.iter().all(|entry| entry.present), "every file is there");
         assert!(found[0].at >= found[2].at);
 

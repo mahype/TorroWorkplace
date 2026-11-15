@@ -527,6 +527,11 @@ pub struct SaveRecord {
     pub target_name: Option<String>,
     /// The file's absolute path.
     pub path: String,
+    /// The subfolders below the save target's folder the file lies in (`via: target`), as the target's
+    /// schemes made them: `["2026", "11"]`; empty for a file right in the target's folder and for the
+    /// other ways. Data from outside like the names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folders: Vec<String>,
     /// Nothing was written: a file with the same content was there already; `path` is that file.
     #[serde(default)]
     pub skipped: bool,
