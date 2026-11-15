@@ -779,7 +779,7 @@ Open First gilt auch hier, und das Mikrofon verlässt den Rechner nie, solange n
 
 | Baustein | Lokal (Standard) | Hinweis |
 |---|---|---|
-| **Weckwort** | die eingebaute Spracherkennung auf kurzen Abschnitten (#762, Entscheidung 5; ein eigenes Weckwort-Modell ist #765) | läuft dauerhaft, nur auf dem Rechner, kleiner Speicher (wenige Sekunden Ringpuffer, nie auf Platte); kostet etwas Rechenzeit, solange es an ist |
+| **Weckwort** | ein eigenes kleines Modell „Hey Torro“, eingebaut (`livekit-wakeword`, #765); lädt es nicht, hört die Spracherkennung auf kurzen Abschnitten (#762) | läuft dauerhaft, nur auf dem Rechner, kleiner Speicher (wenige Sekunden Ringpuffer, nie auf Platte); die Spracherkennung arbeitet erst nach dem Weckwort |
 | **Sprache → Text** | Whisper turbo (empfohlen, Vorgabe) oder Parakeet, beide eingebaut (sherpa-onnx), wählbar in Einstellungen › Voice (#749, #762) | optional über ein KI-Konto, wenn die Person es erlaubt |
 | **Text → Sprache** | Pocket TTS, eingebaut, auf Wunsch OpenAI (siehe „Vorlesen“) | abschaltbar, dann nur Fenster |
 
@@ -806,6 +806,26 @@ höchstens ein Modell, und das lädt ein Knopf in Einstellungen › Assistent �
   über `SHERPA_ONNX_ARCHIVE_DIR`; unter Linux braucht der Bau `libasound2-dev` (bzw. `alsa-lib`), für das Mikrofon über PipeWire (Issue #772) kommt nichts dazu: Der PulseAudio-Weg ist reines Rust. Vorlesen und Signalton laufen weiter über ALSA. Unter Windows gibt es sherpa-onnx nur gegen die statische C-Laufzeit gebaut, deshalb linkt die Suite
   dort mit `+crt-static` (`.cargo/config.toml`). Auf dem Mac
   fragt das System beim ersten Diktieren nach dem Mikrofon (`NSMicrophoneUsageDescription`).
+
+**Weckwort-Modell trainieren (Issue #765):** Das Modell `crates/torroassistant/assets/wake/hey_torro.onnx`
+(7,4 MB) steckt im Assistenten; der Hörer schreibt es beim Start nach `wake/hey_torro.onnx` im Sprachordner, weil
+`livekit-wakeword` nur aus einer Datei lädt. Ein neues Modell kommt nur mit einer neuen Version zu den Nutzern.
+Trainiert wurde es einmal von Hand mit `livekit-wakeword` 2.1.2 (Python, mit GPU, etwa 30 Minuten), die Stimmen
+kommen von LiveKit Inference (Konto bei LiveKit Cloud, `lk cloud auth`, dann `lk app env -w`):
+
+```bash
+uv tool install --python 3.13 "livekit-wakeword[train]"
+livekit-wakeword setup --wakeword "hey torro" --pronounce "torro=T AO1 R OW0" --eval
+livekit-wakeword train --wakeword "hey torro" --type standard
+livekit-wakeword eval --wakeword "hey torro"
+```
+
+Ergebnis auf dem zurückgehaltenen Testsatz bei der Schwelle 0,5: 95 % der Weckwörter erkannt, 2,3 Fehlauslöser je
+Stunde Fremdgeräusch. Ins Training flossen nur: Stimmen von Cartesia, Rime, Inworld und xAI über LiveKit
+Inference; fremde Sprache aus LibriSpeech und Google FLEURS (CC BY 4.0) und Common Voice 17 (CC0); Rauschen aus
+MUSAN und der DNS Challenge (CC BY 4.0) und Raumhall aus MIT RIR; die Encoder von `livekit/livekit-wakeword`
+(Apache-2.0). Die Datensätze des Testsatzes (u. a. ESC-50, WHAM!) dienen nur der Bewertung und stecken nicht im
+Modell. Dass das Modell mit diesen Quellen eingebaut wird, ist in #765 entschieden.
 
 - **Standard aus.** Einschalten nur in den Einstellungen des Assistenten (Zahnrad › Voice), mit
   Wahl des Mikrofons und Test.
