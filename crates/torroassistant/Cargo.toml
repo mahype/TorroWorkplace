@@ -42,6 +42,8 @@ sherpa-onnx.workspace = true
 cpal.workspace = true
 # The wake word heard by a model of its own (issue #765), built in; speech recognition only takes the sentence.
 livekit-wakeword.workspace = true
+# Qwen3-TTS on an NVIDIA card (issue #764), only with the feature `qwen-cuda`.
+crane-core = { workspace = true, optional = true }
 # The system's choosers for the PDF tool's folder and logos in the settings (task WZ.6).
 rfd.workspace = true
 unicode-segmentation.workspace = true
@@ -55,6 +57,13 @@ cpal = { workspace = true, features = ["pulseaudio"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[features]
+# Qwen3-TTS as a second local voice through Crane on an NVIDIA card (issue #764): builds it in and switches on
+# `torro-core/qwen-tts`, so the core of the same build (`cargo build -p torroworkplace -p torroassistant --features
+# torroassistant/qwen-cuda`) offers it too. Needs the CUDA toolkit to build and its libraries to run; the releases
+# are built without it.
+qwen-cuda = ["dep:crane-core", "crane-core/cuda", "torro-core/qwen-tts"]
 
 # Not under `[target.'cfg(windows)'.build-dependencies]`: Cargo checks that `cfg` against the host that runs the build
 # script, so a cross build for Windows (cargo-xwin) would not get the crate. `build.rs` decides by the target OS.

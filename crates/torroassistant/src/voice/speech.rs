@@ -8,7 +8,9 @@
 //!   `text` (Markdown, at most [`MOST_READ`] characters) with Pocket TTS on this computer (issue #762),
 //!   at `speed` percent with `pause` extra milliseconds after each sentence (issue #782; missing for
 //!   as before); `null` as the provider is Pocket too, a `model` or `language` from earlier versions
-//!   is ignored. With `"openai"` the helper
+//!   is ignored. `"qwen"` reads with Qwen3-TTS on the graphics card in builds with `qwen-cuda` (issue #764), in
+//!   its voice (`"warm_woman"`, `"calm_man"`), without speed and pause, which are Pocket's; other builds read it
+//!   with Pocket TTS. With `"openai"` the helper
 //!   only answers the pieces to fetch (`{"pieces": [...]}`, whole sentences of at most [`PIECE`]
 //!   characters): the key stays in the core, which fetches the sound and sends it as
 //!   `{"pcm": {"rate": 24000, "data": "<base64>"}}`, then `"end"`.
@@ -17,13 +19,15 @@
 //!   end or stopped, `{"failed": {"code": …, "message": …}}` when it cannot read, with a message
 //!   for people.
 //!
-//! Pocket TTS computes on a thread of its own ([`Synth`], [`super::pocket::Pocket`]) and hands its sound
-//! out piece by piece; it plays at once on the system's output ([`Sound`], [`super::sound::Player`]), so
+//! Pocket TTS and Qwen3-TTS compute on a thread of their own ([`Synth`], [`super::pocket::Pocket`],
+//! [`super::qwen`]), one at a time: when the other reads, the thread of the first ends, so Qwen's
+//! graphics memory is free again. Each hands its sound out piece by piece; it plays at once on the system's output ([`Sound`], [`super::sound::Player`]), so
 //! the first words sound after a few seconds while the rest is computed. A stop ends the sound at once
 //! and tells the thread to stop computing. Neither text nor sound touch the disk.
 //!
-//! `torroassistant --speech-status --voice <settings>` says how Pocket TTS stands here ([`status`]); the
-//! core adds OpenAI (`settings.speech_status`).
+//! `torroassistant --speech-status --voice <settings>` says how Pocket TTS stands here ([`status`]) and,
+//! in builds with Qwen3-TTS, it and the graphics card ([`qwen_option`]); the core adds OpenAI
+//! (`settings.speech_status`).
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -35,8 +39,11 @@ use std::time::Duration;
 use base64::Engine as _;
 use serde_json::{Value, json};
 use torro_core::i18n::tr;
-use torro_core::settings::{POCKET_PAUSES, POCKET_RECOMMENDED, POCKET_SPEEDS, POCKET_VOICES, SpeechProvider, Voice};
-use torro_core::voice_models::{POCKET_DE, voice_folder};
+use torro_core::settings::{
+    POCKET_PAUSES, POCKET_RECOMMENDED, POCKET_SPEEDS, POCKET_VOICES, QWEN_RECOMMENDED, QWEN_VOICES, SpeechProvider,
+    Voice,
+};
+use torro_core::voice_models::{POCKET_DE, QWEN, voice_folder};
 use torro_ipc::{SpeechMissing, SpeechOption, SpeechStatus, SpeechVoice, VoiceMissing};
 
 use super::VoiceError;
@@ -78,7 +85,7 @@ pub struct Say {
     /// `None` for the core's choice, which is Pocket TTS here (#762).
     pub provider: Option<SpeechProvider>,
     pub text: String,
-    /// The Pocket voice's id; `None` for the one of the settings.
+    /// The voice's id of the local provider (Pocket's or Qwen's); `None` for the one of the settings.
     pub voice: Option<String>,
     /// How Pocket speaks (issue #782); the default when the core sends none.
     pub delivery: Delivery,
@@ -374,30 +381,60 @@ pub fn status(voice: &Voice, folder: Option<&Path>, devices: &dyn Devices) -> Sp
     }
 }
 
-/// One event of the helper's loop: a line from the core or what Pocket TTS computed.
+/// Qwen3-TTS as it stands here (issue #764), after Pocket TTS in the status: what keeps it from reading
+/// (no sound output, then no NVIDIA card, then its model not downloaded), its voices with "Warm woman"
+/// recommended and its model. Only builds with `qwen-cuda` list it ([`system_status`]).
+#[cfg_attr(
+    all(not(feature = "qwen-cuda"), not(test)),
+    expect(dead_code, reason = "only builds with Qwen3-TTS list it")
+)]
+pub fn qwen_option(folder: Option<&Path>, devices: &dyn Devices, card: bool) -> SpeechOption {
+    let missing = if !devices.has_output() {
+        Some(SpeechMissing::Player)
+    } else if !card {
+        Some(SpeechMissing::Gpu)
+    } else if !model_ready(QWEN, folder) {
+        Some(SpeechMissing::Model)
+    } else {
+        None
+    };
+    SpeechOption {
+        provider: SpeechProvider::Qwen,
+        missing,
+        voices: QWEN_VOICES
+            .iter()
+            .map(|id| SpeechVoice { id: (*id).to_string(), recommended: *id == QWEN_RECOMMENDED })
+            .collect(),
+        model: Some(QWEN.to_string()),
+        setup: None,
+    }
+}
+
+/// One event of the helper's loop: a line from the core or what a local provider computed.
 enum Event {
     Input(Input),
     /// The core closed the helper's input: it ended.
     Closed,
-    /// Sound of the Pocket job `id`, mono at `rate`.
+    /// Sound of the local job `id`, mono at `rate`.
     Chunk {
         id: u64,
         rate: u32,
         samples: Vec<f32>,
     },
-    /// The Pocket job `id` is computed to its end, or stopped.
+    /// The local job `id` is computed to its end, or stopped.
     Computed {
         id: u64,
     },
-    /// The Pocket job `id` could not be computed.
+    /// The local job `id` could not be computed.
     Failed {
         id: u64,
     },
-    /// The thread of Pocket TTS of this number ended: its model did not load, or it broke down.
+    /// The thread of a local provider of this number ended: its model did not load, it broke down, or
+    /// the other provider took its place.
     WorkerGone(u64),
 }
 
-/// A job for the thread of Pocket TTS.
+/// A job for the thread of a local provider.
 struct Spoken {
     id: u64,
     text: String,
@@ -405,13 +442,13 @@ struct Spoken {
     delivery: Delivery,
 }
 
-/// Makes the [`Synth`] on its thread: [`Pocket::load`] in the helper, a fake in the tests.
+/// Makes the [`Synth`] on its thread: [`Pocket::load`] or `Qwen::load` in the helper, a fake in the tests.
 type MakeSynth = dyn Fn() -> Result<Box<dyn Synth>, VoiceError> + Send + Sync;
 
 /// Opens the sound output for a job: [`Player::open`] in the helper, a fake in the tests.
 type OpenSound = dyn FnMut() -> Result<Box<dyn Sound>, VoiceError>;
 
-/// Sends [`Event::WorkerGone`] when the thread of Pocket TTS ends, also when it breaks down.
+/// Sends [`Event::WorkerGone`] when the thread of a local provider ends, also when it breaks down.
 struct Gone(Sender<Event>, u64);
 
 impl Drop for Gone {
@@ -420,15 +457,17 @@ impl Drop for Gone {
     }
 }
 
-/// Starts the thread of Pocket TTS numbered `number`: it makes the synth (loading the model takes seconds),
-/// then computes one job after the other while `current` names it, and hands the sound to `events`.
+/// Starts the thread of a local provider numbered `number`: it makes the synth (loading the model takes
+/// seconds), then computes one job after the other while `current` names it, and hands the sound to
+/// `events`. It ends when the helper drops its sender, and with it the model.
 fn start_worker(make: Arc<MakeSynth>, events: Sender<Event>, current: Arc<AtomicU64>, number: u64) -> Sender<Spoken> {
     let (jobs, inbox) = mpsc::channel::<Spoken>();
     std::thread::spawn(move || {
         let _gone = Gone(events.clone(), number);
         let mut synth = match make() {
             Ok(synth) => synth,
-            Err(err) => return eprintln!("torroassistant: Pocket TTS: {err}"),
+            // The error names the provider.
+            Err(err) => return eprintln!("torroassistant: {err}"),
         };
         let rate = synth.rate();
         for job in inbox {
@@ -460,8 +499,8 @@ fn start_worker(make: Arc<MakeSynth>, events: Sender<Event>, current: Arc<Atomic
 /// The job that reads now.
 enum Job {
     Idle,
-    /// Pocket TTS computes the job `id` and plays it.
-    Pocket {
+    /// A local provider (Pocket TTS, Qwen3-TTS) computes the job `id` and plays it.
+    Local {
         id: u64,
         sound: Option<Box<dyn Sound>>,
         computed: bool,
@@ -473,20 +512,25 @@ enum Job {
     },
 }
 
-/// The helper's state: where the model is, the thread of Pocket TTS and the job.
+/// The helper's state: where the models are, the thread of the local provider and the job.
 pub struct Helper<W: FnMut(Output)> {
     folder: Option<PathBuf>,
-    /// The voice read with when the core names none: the one of the settings.
+    /// The Pocket voice read with when the core names none: the one of the settings.
     voice: String,
     open_sound: Box<OpenSound>,
     make_synth: Arc<MakeSynth>,
-    /// The thread of Pocket TTS with its number; `None` until the first job and after it ended.
-    worker: Option<(u64, Sender<Spoken>)>,
+    /// The Qwen voice read with when the core names none ([`Helper::with_qwen`]).
+    qwen_voice: String,
+    /// Makes Qwen3-TTS; `None` in a build without it (issue #764).
+    make_qwen: Option<Arc<MakeSynth>>,
+    /// The thread of the local provider with its number and the provider it reads with; `None` until the
+    /// first job and after it ended.
+    worker: Option<(u64, SpeechProvider, Sender<Spoken>)>,
     /// Counts the threads started, so the end of one replaced meanwhile fails no job of the next.
     workers: u64,
-    /// The Pocket job that may compute; 0 for none. The thread looks at it between two pieces of sound.
+    /// The local job that may compute; 0 for none. The thread looks at it between two pieces of sound.
     current: Arc<AtomicU64>,
-    /// The id of the last Pocket job.
+    /// The id of the last local job.
     next: u64,
     job: Job,
     write: W,
@@ -507,6 +551,8 @@ impl<W: FnMut(Output)> Helper<W> {
             voice: voice.to_string(),
             open_sound,
             make_synth,
+            qwen_voice: QWEN_RECOMMENDED.to_string(),
+            make_qwen: None,
             worker: None,
             workers: 0,
             current: Arc::new(AtomicU64::new(0)),
@@ -514,6 +560,18 @@ impl<W: FnMut(Output)> Helper<W> {
             job: Job::Idle,
             write,
         }
+    }
+
+    /// The helper reading with Qwen3-TTS too (issue #764), made by `make_qwen`, in `voice` when the core
+    /// names none.
+    #[cfg_attr(
+        all(not(feature = "qwen-cuda"), not(test)),
+        expect(dead_code, reason = "only builds with Qwen3-TTS read with it")
+    )]
+    pub fn with_qwen(mut self, voice: &str, make_qwen: Arc<MakeSynth>) -> Helper<W> {
+        self.qwen_voice = voice.to_string();
+        self.make_qwen = Some(make_qwen);
+        self
     }
 
     /// Runs until the core closes the input or [`IDLE`] passes without a job.
@@ -562,12 +620,12 @@ impl<W: FnMut(Output)> Helper<W> {
                 }
             }
             Event::Chunk { id, rate, samples } => {
-                if matches!(self.job, Job::Pocket { id: now, .. } if now == id) {
+                if matches!(self.job, Job::Local { id: now, .. } if now == id) {
                     self.play(rate, &samples);
                 }
             }
             Event::Computed { id } => {
-                if let Job::Pocket { id: now, sound, computed } = &mut self.job
+                if let Job::Local { id: now, sound, computed } = &mut self.job
                     && *now == id
                 {
                     *computed = true;
@@ -579,16 +637,16 @@ impl<W: FnMut(Output)> Helper<W> {
                 }
             }
             Event::Failed { id } => {
-                if matches!(self.job, Job::Pocket { id: now, .. } if now == id) {
+                if matches!(self.job, Job::Local { id: now, .. } if now == id) {
                     self.fail(Output::failed("error", tr("Reading aloud failed. Try again.")));
                 }
             }
             Event::WorkerGone(number) => {
-                if self.worker.as_ref().is_none_or(|(now, _)| *now != number) {
+                if self.worker.as_ref().is_none_or(|(now, _, _)| *now != number) {
                     return;
                 }
                 self.worker = None;
-                if matches!(self.job, Job::Pocket { .. }) {
+                if matches!(self.job, Job::Local { .. }) {
                     self.fail(Output::failed("error", tr("Reading aloud failed. Try again.")));
                 }
             }
@@ -598,7 +656,7 @@ impl<W: FnMut(Output)> Helper<W> {
 
     /// Plays `samples` at `rate` in the job's sound, opened with the first of them.
     fn play(&mut self, rate: u32, samples: &[f32]) {
-        let (Job::Pocket { sound, .. } | Job::Stream { sound, .. }) = &mut self.job else { return };
+        let (Job::Local { sound, .. } | Job::Stream { sound, .. }) = &mut self.job else { return };
         if sound.is_none() {
             match (self.open_sound)() {
                 Ok(opened) => *sound = Some(opened),
@@ -619,27 +677,43 @@ impl<W: FnMut(Output)> Helper<W> {
                 (self.write)(Output::Pieces(pieces(&text, PIECE)));
                 self.job = Job::Stream { sound: None, ended: false };
             }
-            SpeechProvider::Pocket if text.is_empty() => (self.write)(Output::Done),
-            SpeechProvider::Pocket => {
-                let voice = say.voice.unwrap_or_else(|| self.voice.clone());
-                match self.ask_pocket(text, voice, say.delivery, sender) {
-                    Ok(id) => self.job = Job::Pocket { id, sound: None, computed: false },
+            _ if text.is_empty() => (self.write)(Output::Done),
+            local => {
+                let voice = say.voice.unwrap_or_else(|| match local {
+                    SpeechProvider::Qwen => self.qwen_voice.clone(),
+                    _ => self.voice.clone(),
+                });
+                match self.ask_local(local, text, voice, say.delivery, sender) {
+                    Ok(id) => self.job = Job::Local { id, sound: None, computed: false },
                     Err(failed) => (self.write)(failed),
                 }
             }
         }
     }
 
-    /// Gives `text` to the thread of Pocket TTS, started first; the job's id.
-    fn ask_pocket(
+    /// Gives `text` to the thread of the local provider `provider`, started first; the job's id. The thread
+    /// of the other one ends first: only one model is loaded at a time.
+    fn ask_local(
         &mut self,
+        provider: SpeechProvider,
         text: String,
         voice: String,
         delivery: Delivery,
         sender: &Sender<Event>,
     ) -> Result<u64, Output> {
-        if !model_ready(POCKET_DE, self.folder.as_deref()) {
+        let (make, model) = match provider {
+            SpeechProvider::Qwen => match &self.make_qwen {
+                Some(make) => (Arc::clone(make), QWEN),
+                None => return Err(Output::failed("unsupported", tr("This build has no Qwen3-TTS."))),
+            },
+            _ => (Arc::clone(&self.make_synth), POCKET_DE),
+        };
+        if !model_ready(model, self.folder.as_deref()) {
             return Err(not_downloaded());
+        }
+        if self.worker.as_ref().is_some_and(|(_, reads, _)| *reads != provider) {
+            // Dropping its sender ends the thread once it is between two pieces, and frees its model.
+            self.worker = None;
         }
         self.next += 1;
         let id = self.next;
@@ -649,11 +723,10 @@ impl<W: FnMut(Output)> Helper<W> {
         for _ in 0..2 {
             if self.worker.is_none() {
                 self.workers += 1;
-                let jobs =
-                    start_worker(Arc::clone(&self.make_synth), sender.clone(), Arc::clone(&self.current), self.workers);
-                self.worker = Some((self.workers, jobs));
+                let jobs = start_worker(Arc::clone(&make), sender.clone(), Arc::clone(&self.current), self.workers);
+                self.worker = Some((self.workers, provider, jobs));
             }
-            let Some((_, worker)) = &self.worker else { break };
+            let Some((_, _, worker)) = &self.worker else { break };
             match worker.send(job) {
                 Ok(()) => return Ok(id),
                 Err(mpsc::SendError(returned)) => {
@@ -665,7 +738,7 @@ impl<W: FnMut(Output)> Helper<W> {
         Err(Output::failed("error", tr("Reading aloud failed. Try again.")))
     }
 
-    /// Ends what is read now: the sound stops at once, Pocket TTS stops computing.
+    /// Ends what is read now: the sound stops at once, the local provider stops computing.
     fn stop(&mut self) {
         self.current.store(0, Ordering::SeqCst);
         // Dropping the sound stops it.
@@ -685,8 +758,9 @@ impl<W: FnMut(Output)> Helper<W> {
     /// A job whose sound is all there and has played is done.
     fn look_at_the_end(&mut self) {
         let done = match &self.job {
-            Job::Pocket { sound: Some(sound), computed: true, .. }
-            | Job::Stream { sound: Some(sound), ended: true } => sound.ended(),
+            Job::Local { sound: Some(sound), computed: true, .. } | Job::Stream { sound: Some(sound), ended: true } => {
+                sound.ended()
+            }
             _ => false,
         };
         if done {
@@ -731,19 +805,40 @@ pub fn serve(voice: Voice) {
         Ok(Box::new(Pocket::load(folder)?) as Box<dyn Synth>)
     });
     let open: Box<OpenSound> = Box::new(|| Ok(Box::new(Player::open()?) as Box<dyn Sound>));
-    let mut helper = Helper::new(folder, voice.pocket_voice_or_default(), open, make, |output: Output| {
+    let helper = Helper::new(folder.clone(), voice.pocket_voice_or_default(), open, make, |output: Output| {
         let mut out = std::io::stdout();
         // When the core no longer reads, it ended; so does the helper.
         if writeln!(out, "{}", output.line()).and_then(|()| out.flush()).is_err() {
             std::process::exit(0);
         }
     });
+    #[cfg(feature = "qwen-cuda")]
+    let helper = {
+        let code = voice.language_or_default().to_string();
+        let make_qwen: Arc<MakeSynth> = Arc::new(move || {
+            let folder =
+                folder.as_deref().ok_or(VoiceError::Missing(torro_ipc::VoicePart::Speech, VoiceMissing::Model))?;
+            Ok(Box::new(super::qwen::Qwen::load(folder, &code)?) as Box<dyn Synth>)
+        });
+        helper.with_qwen(voice.qwen_voice_or_default(), make_qwen)
+    };
+    let mut helper = helper;
     helper.run(&events, &sender);
 }
 
-/// The status of Pocket TTS on this system, for `--speech-status`.
+/// The status of Pocket TTS on this system, for `--speech-status`; with Qwen3-TTS and the graphics card in
+/// builds with `qwen-cuda` (issue #764).
 pub fn system_status(voice: &Voice) -> SpeechStatus {
-    status(voice, voice_folder().as_deref(), &SystemDevices)
+    let folder = voice_folder();
+    #[cfg_attr(not(feature = "qwen-cuda"), expect(unused_mut, reason = "only Qwen3-TTS adds to it"))]
+    let mut status = status(voice, folder.as_deref(), &SystemDevices);
+    #[cfg(feature = "qwen-cuda")]
+    {
+        let card = super::qwen::graphics_card();
+        status.providers.push(qwen_option(folder.as_deref(), &SystemDevices, card.is_some()));
+        status.gpu = card;
+    }
+    status
 }
 
 #[cfg(test)]
@@ -795,7 +890,17 @@ mod tests {
                 delivery: Delivery::default(),
             }))
         );
-        assert_eq!(Input::parse(r#"{"say": {"provider": "qwen", "text": "Hi"}}"#), None, "a provider that is gone");
+        assert_eq!(Input::parse(r#"{"say": {"provider": "piper", "text": "Hi"}}"#), None, "a provider that is gone");
+        // Qwen3-TTS reads again (#764); a build without it answers so when it is asked to read.
+        let qwen = Input::parse(r#"{"say": {"provider": "qwen", "text": "Hi", "voice": "calm_man"}}"#);
+        assert_eq!(
+            qwen,
+            Some(Input::Say(Say {
+                provider: Some(SpeechProvider::Qwen),
+                text: "Hi".into(),
+                voice: Some("calm_man".into())
+            }))
+        );
     }
 
     #[test]
@@ -1058,7 +1163,7 @@ mod tests {
         download(folder.path(), POCKET_DE);
         let (mut helper, said, played) = helper(Some(folder.path()), true, Duration::ZERO);
         helper.handle(say(SpeechProvider::Pocket, "Hallo."), &sender);
-        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Pocket { computed: true, .. }));
+        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { computed: true, .. }));
         assert_eq!(said.borrow().as_slice(), [Output::Playing]);
         assert_eq!(played.borrow().samples.len(), "Hallo.".len(), "every piece");
         assert!(played.borrow().samples.iter().all(|(rate, _)| *rate == 24_000));
@@ -1104,7 +1209,7 @@ mod tests {
         let heard = played.borrow().samples.len();
 
         helper.handle(say(SpeechProvider::Pocket, "Ja."), &sender);
-        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Pocket { computed: true, .. }));
+        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { computed: true, .. }));
         assert_eq!(played.borrow().samples.len(), heard + "Ja.".len(), "only the new job's sound");
         assert_eq!(played.borrow().opened, 2, "a sound output each");
         assert_eq!(said.borrow().as_slice(), [Output::Playing, Output::Done, Output::Playing]);
@@ -1144,14 +1249,116 @@ mod tests {
         let (sender, _events) = mpsc::channel();
         let (mut helper, said, _) = helper(None, true, Duration::ZERO);
         let (jobs, _inbox) = mpsc::channel();
-        helper.worker = Some((2, jobs));
-        helper.job = Job::Pocket { id: 1, sound: None, computed: false };
+        helper.worker = Some((2, SpeechProvider::Pocket, jobs));
+        helper.job = Job::Local { id: 1, sound: None, computed: false };
         helper.handle(Event::WorkerGone(1), &sender);
         assert!(said.borrow().is_empty());
-        assert!(matches!(helper.job, Job::Pocket { .. }) && helper.worker.is_some(), "the job still reads");
+        assert!(matches!(helper.job, Job::Local { .. }) && helper.worker.is_some(), "the job still reads");
         helper.handle(Event::WorkerGone(2), &sender);
         assert_eq!(codes(&said), ["error: true"]);
         assert!(helper.worker.is_none());
+    }
+
+    /// The helper with a fake Qwen3-TTS too, which counts how often it is made; the voice it read with goes
+    /// to `voices`.
+    fn with_fake_qwen<W: FnMut(Output)>(
+        helper: Helper<W>,
+    ) -> (Helper<W>, Arc<AtomicU64>, Arc<std::sync::Mutex<Vec<String>>>) {
+        struct FakeQwen(Arc<std::sync::Mutex<Vec<String>>>);
+        impl Synth for FakeQwen {
+            fn rate(&self) -> u32 {
+                24_000
+            }
+            fn speak(&mut self, _text: &str, voice: &str, _: Delivery, mut chunk: Chunk) -> Result<(), VoiceError> {
+                if let Ok(mut voices) = self.0.lock() {
+                    voices.push(voice.to_string());
+                }
+                chunk(&[0.25]);
+                Ok(())
+            }
+        }
+        let made = Arc::new(AtomicU64::new(0));
+        let voices = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (count, heard) = (Arc::clone(&made), Arc::clone(&voices));
+        let make: Arc<MakeSynth> = Arc::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(FakeQwen(Arc::clone(&heard))) as Box<dyn Synth>)
+        });
+        (helper.with_qwen("calm_man", make), made, voices)
+    }
+
+    /// Issue #764: a build without Qwen3-TTS says so for people, and with it a model not downloaded asks for
+    /// the download, as Pocket's does.
+    #[test]
+    fn qwen_needs_its_build_and_its_model() {
+        let (sender, _events) = mpsc::channel();
+        let folder = tempfile::tempdir().expect("voice folder");
+        let (mut helper, said, _) = helper(Some(folder.path()), true, Duration::ZERO);
+        helper.handle(say(SpeechProvider::Qwen, "Hallo."), &sender);
+        assert_eq!(said.borrow().as_slice(), [Output::failed("unsupported", tr("This build has no Qwen3-TTS."))]);
+        let (mut helper, made, _) = with_fake_qwen(helper);
+        helper.handle(say(SpeechProvider::Qwen, "Hallo."), &sender);
+        assert_eq!(said.borrow().last(), Some(&not_downloaded()), "the catalogue lists no model to find here");
+        assert_eq!(made.load(Ordering::SeqCst), 0, "nothing is loaded");
+        assert!(matches!(helper.job, Job::Idle));
+    }
+
+    /// Issue #764: Qwen3-TTS reads on a thread of its own in its voice of the settings; when Pocket reads
+    /// next, Qwen's thread ends (its graphics memory is free), and the next Qwen job loads it again.
+    #[cfg(feature = "qwen-cuda")]
+    #[test]
+    fn qwen_reads_on_its_own_thread_and_gives_way_to_pocket() {
+        let (sender, events) = mpsc::channel();
+        let folder = tempfile::tempdir().expect("voice folder");
+        download(folder.path(), POCKET_DE);
+        download(folder.path(), QWEN);
+        let (helper, said, played) = helper(Some(folder.path()), true, Duration::ZERO);
+        let (mut helper, made, voices) = with_fake_qwen(helper);
+        let computed = |helper: &Helper<_>| matches!(helper.job, Job::Local { computed: true, .. });
+
+        helper.handle(say(SpeechProvider::Qwen, "Hallo."), &sender);
+        pump(&mut helper, &events, &sender, computed);
+        assert_eq!(said.borrow().as_slice(), [Output::Playing]);
+        assert_eq!(played.borrow().samples, [(24_000, 0.25)]);
+        assert!(matches!(helper.worker, Some((_, SpeechProvider::Qwen, _))));
+        assert_eq!(voices.lock().map(|voices| voices.clone()).unwrap_or_default(), ["calm_man"]);
+
+        helper.handle(say(SpeechProvider::Pocket, "Ja."), &sender);
+        pump(&mut helper, &events, &sender, computed);
+        assert!(matches!(helper.worker, Some((_, SpeechProvider::Pocket, _))), "Qwen's thread gave way");
+        helper.handle(
+            Event::Input(Input::Say(Say {
+                provider: Some(SpeechProvider::Qwen),
+                text: "Gut.".into(),
+                voice: Some("warm_woman".into()),
+            })),
+            &sender,
+        );
+        pump(&mut helper, &events, &sender, computed);
+        assert_eq!(made.load(Ordering::SeqCst), 2, "loaded again after Pocket read");
+        assert_eq!(voices.lock().map(|voices| voices.clone()).unwrap_or_default(), ["calm_man", "warm_woman"]);
+    }
+
+    /// Issue #764: Qwen's status names the sound output first, then the graphics card, then its model, with
+    /// "Warm woman" recommended.
+    #[test]
+    fn the_qwen_status_names_what_is_missing() {
+        let folder = tempfile::tempdir().expect("voice folder");
+        let devices = FakeDevices { output: true, ..FakeDevices::default() };
+        assert_eq!(
+            qwen_option(Some(folder.path()), &FakeDevices::default(), true).missing,
+            Some(SpeechMissing::Player)
+        );
+        assert_eq!(qwen_option(Some(folder.path()), &devices, false).missing, Some(SpeechMissing::Gpu));
+        let option = qwen_option(Some(folder.path()), &devices, true);
+        assert_eq!(option.missing, Some(SpeechMissing::Model));
+        assert_eq!((option.provider, option.model.as_deref()), (SpeechProvider::Qwen, Some(QWEN)));
+        let voices: Vec<_> = option.voices.iter().map(|voice| (voice.id.as_str(), voice.recommended)).collect();
+        assert_eq!(voices, [("warm_woman", true), ("calm_man", false)]);
+        if torro_core::settings::QWEN_BUILT {
+            download(folder.path(), QWEN);
+            assert_eq!(qwen_option(Some(folder.path()), &devices, true).missing, None);
+        }
     }
 
     /// Issue #762: Pocket's status names what it misses, its voices with Alba recommended and its model.
