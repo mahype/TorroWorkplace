@@ -44,6 +44,14 @@ impl Sentences {
         Self { taken: String::new(), open: String::new(), open_at: 0, in_code: false, given: 0, most: most.min(MOST) }
     }
 
+    /// From now on up to [`MOST`] characters in all, as `assistant.speak` reads (issue #774: a spoken
+    /// part is read whole). Nothing changes once the lower limit was reached.
+    pub fn lift_limit(&mut self) {
+        if self.given < self.most {
+            self.most = MOST;
+        }
+    }
+
     /// The pieces of `text` – the whole answer written so far – that became complete since the last
     /// call, in order. A `text` that does not go on from the last one (the model's text was replaced)
     /// goes on where both agree.
@@ -235,6 +243,13 @@ mod tests {
         let mut line = Sentences::with_most(20);
         assert_eq!(line.push("Ja: das passt gut so, alles klar\n"), ["Ja:"], "cut after its own sentence end");
         assert_eq!(Sentences::with_most(MOST + 1).most, MOST, "never more than speak reads");
+        let mut lifted = Sentences::with_most(10);
+        lifted.lift_limit();
+        assert_eq!(lifted.push("Ein sehr langer Satz. "), ["Ein sehr langer Satz."], "up to MOST once lifted");
+        let mut reached = Sentences::with_most(5);
+        assert_eq!(reached.push("Ein Satz. Noch einer. "), ["Ein S"]);
+        reached.lift_limit();
+        assert!(reached.push("Ein Satz. Noch einer. Und mehr. ").is_empty(), "reached stays reached");
     }
 
     #[test]

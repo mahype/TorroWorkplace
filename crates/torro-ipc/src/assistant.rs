@@ -791,7 +791,8 @@ pub fn profile_refusal(
 pub const SHOWN_MARK: &str = "---shown---";
 
 /// At most about this many characters of an answer are read aloud when it has no spoken part
-/// (issue #774): the reading ends at the last sentence end before them.
+/// (issue #774): the reading ends at the last sentence end before them. A spoken part is read whole,
+/// as `assistant.speak` reads it.
 pub const SPOKEN_MOST: usize = 600;
 
 /// Splits an answer's text into its spoken and its shown part (issue #774) at the first line that is,

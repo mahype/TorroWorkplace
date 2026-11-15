@@ -881,7 +881,8 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
   Gespräch nach „Hey Torro“; `assistant.send_message` mit `spoken`), schreibt das Modell zuerst einen
   **gesprochenen Teil**, ein bis drei kurze Sätze ohne Markdown, die auf den Inhalt verweisen dürfen („Schau
   mal in die Liste“), dann eine Zeile nur `---shown---`, dann den **dargestellten Teil** für die Chatbox, so
-  ausführlich wie nötig, in Markdown. Vorgelesen wird nur der gesprochene Teil. Die Trennzeile geht mit allen
+  ausführlich wie nötig, in Markdown. Vorgelesen wird nur der gesprochene Teil, ganz und mit seinem letzten Satz,
+  sobald die Trennzeile steht, nicht erst, wenn der dargestellte Teil fertig ist. Die Trennzeile geht mit allen
   Anbietern und beim Streamen: Der erste Satz klingt so früh wie vorher. Der Dienst speichert den Text, wie
   das Modell ihn schrieb, und trennt ihn beim Lesen: `assistant.get_conversation` liefert den gesprochenen
   Teil im Feld `spoken` der Antwort und in `text` nur den dargestellten, niemand sieht die Trennzeile (auch
