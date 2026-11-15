@@ -9441,4 +9441,13 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Read the assistant's answer in an unknown conversation aloud",
         "Die Antwort des Assistenten in einer unbekannten Unterhaltung vorlesen",
     ),
+    // Qwen3-TTS on the graphics card, in builds with it (issue #764).
+    ("Local: Qwen3-TTS (graphics card)", "Lokal: Qwen3-TTS (Grafikkarte)"),
+    ("This build has no Qwen3-TTS.", "Diese Version enthält kein Qwen3-TTS."),
+    ("No NVIDIA graphics card was found.", "Es wurde keine NVIDIA-Grafikkarte gefunden."),
+    (
+        "Qwen3-TTS reads on this computer’s NVIDIA graphics card and keeps about 8 GB of its memory while it reads.",
+        "Qwen3-TTS liest auf der NVIDIA-Grafikkarte dieses Rechners vor und belegt dabei etwa 8 GB ihres Speichers.",
+    ),
+    ("It imitates the voices of the assistant.", "Es ahmt die Stimmen des Assistenten nach."),
 ];
