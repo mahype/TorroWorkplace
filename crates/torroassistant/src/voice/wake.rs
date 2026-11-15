@@ -2,8 +2,10 @@
 //! something louder than the room was heard, and looks for "Hey Torro" ([`is_wake_phrase`]). It uses
 //! the recogniser of the sentences (decision 5 of #762), so no model of its own has to be downloaded;
 //! silence costs nothing. A recogniser that takes longer than a second for the window (Whisper turbo
-//! needs about one on a fast processor) is asked less often, up to every two seconds, so the listener
-//! never falls behind the microphone ([`check_every`]).
+//! needs about one on a fast processor) is asked less often, up to once per window ([`check_every`]),
+//! so it keeps up with the microphone as long as one check takes less than about 1.5 s. The price: the
+//! windows overlap less, and a wake word right on the edge of two may be missed. A processor slower
+//! than that still falls behind while the room is loud; an own wake word model is #765.
 //!
 //! [`strip_wake_phrase`] takes the wake word off the front of a sentence, for when it was recorded
 //! with it.
@@ -22,7 +24,7 @@ const CHECK_EVERY: usize = FRAMES_PER_SECOND;
 
 /// After how many frames the window is turned into text again, when that took `cost`: once a second,
 /// or a quarter more than it took, so the frames that came meanwhile are read before the next check –
-/// but at most every [`WINDOW_FRAMES`], so no part of what is said slips between two windows.
+/// but at most every [`WINDOW_FRAMES`], so every sample is in at least one window.
 pub fn check_every(cost: Duration) -> usize {
     let frames = (cost.as_secs_f64() * 1.25 * FRAMES_PER_SECOND as f64).ceil() as usize;
     frames.clamp(CHECK_EVERY, WINDOW_FRAMES)
