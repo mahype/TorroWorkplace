@@ -4961,7 +4961,8 @@ pub fn terminal_question(
     mode: torro_core::settings::TerminalMode,
 ) -> (String, Vec<String>) {
     let folder = harmless(&checked.folder.to_string_lossy());
-    let command = quote(&checked.text);
+    // Line breaks and gaps shown in the summary too (review of #754): it is read first.
+    let command = quote(&command_shown(&checked.text));
     let background = matches!(request, Request::StartCommand { .. });
     let summary = match background {
         true => trf(
@@ -4998,17 +4999,32 @@ pub fn terminal_question(
 /// `⟨U+XXXX⟩` – so `echo ok` and a second command on the next line never read as one `echo`.
 fn command_shown(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
+    let mut blanks = 0usize;
+    // A run of spaces as `␣×n` from [`BLANK_RUN`] on, as [`harmless`] writes it: nothing hides behind a wide gap.
+    let flush = |out: &mut String, blanks: &mut usize| {
+        match *blanks {
+            n if n >= BLANK_RUN => out.push_str(&format!("␣×{n}")),
+            n => out.extend(std::iter::repeat_n(' ', n)),
+        }
+        *blanks = 0;
+    };
     for c in text.chars() {
+        if c == ' ' {
+            blanks += 1;
+            continue;
+        }
+        flush(&mut out, &mut blanks);
         match c {
             '\n' => out.push_str(" ↵ "),
             '\r' => out.push('␍'),
             '\t' => out.push('⇥'),
-            c if c.is_control() || is_format(c) || is_blank(c) || (c.is_whitespace() && c != ' ') => {
+            c if c.is_control() || is_format(c) || is_blank(c) || c.is_whitespace() => {
                 out.push_str(&format!("⟨U+{:04X}⟩", u32::from(c)))
             }
             c => out.push(c),
         }
     }
+    flush(&mut out, &mut blanks);
     out
 }
 

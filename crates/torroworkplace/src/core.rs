@@ -3099,6 +3099,9 @@ pub struct Core {
     /// When a conversation of the assistant last ended for the terminal (deleted, or its answer stopped), per client
     /// and conversation: an approval asked before then runs nothing (review of #754). In memory only.
     terminal_ended: std::sync::Mutex<HashMap<(String, String), chrono::DateTime<Utc>>>,
+    /// When this core started: an approval of the terminal asked before runs nothing, as the answer that asked for it
+    /// is gone with the service that ran it (review of #754).
+    terminal_since: chrono::DateTime<Utc>,
     /// Measures this computer for `ai.recommend` (task MW.6): [`SystemProbe`] in the service, a
     /// computer measured beforehand in tests ([`Measured`], [`Core::with_probe`]) – no test reads
     /// the real hardware.
@@ -3247,6 +3250,7 @@ impl Core {
             web_consents: std::sync::Mutex::new(HashMap::new()),
             terminal_allowed: std::sync::Mutex::new(HashMap::new()),
             terminal_ended: std::sync::Mutex::new(HashMap::new()),
+            terminal_since: Utc::now(),
             // Tests never measure the computer they run on (`Core::with_probe`).
             probe: if cfg!(test) { Box::new(Measured::default()) } else { Box::new(SystemProbe) },
             hardware: tokio::sync::Mutex::new(None),
@@ -5482,7 +5486,8 @@ impl Core {
             .unwrap_or_else(PoisonError::into_inner)
             .get(&(client.id.clone(), terminal.conversation.clone()))
             .copied();
-        if ended.is_some_and(|ended| terminal.asked.is_none_or(|asked| asked <= ended)) {
+        let before_start = terminal.asked.is_none_or(|asked| asked < self.terminal_since);
+        if before_start || ended.is_some_and(|ended| terminal.asked.is_none_or(|asked| asked <= ended)) {
             let message = "the conversation was deleted or its answer stopped after the approval was asked for";
             return Response::Error { code: "conflict".into(), message: message.into() };
         }
@@ -7798,11 +7803,15 @@ impl Core {
                     _ => Vec::new(),
                 };
                 let answered = Box::pin(self.assistant_request(request, from)).await;
-                // Only once the deletion or the stop went through (review of #754).
+                // Only once the deletion or the stop went through (review of #754); of several deleted, those that are
+                // gone, also when another could not be deleted.
                 let done = !matches!(answered, Response::Error { .. });
-                if let Some(assistant) = self.assistant_client().filter(|_| done && !ended.is_empty()) {
+                if let Some(assistant) = self.assistant_client().filter(|_| !ended.is_empty()) {
                     for conversation in &ended {
-                        self.end_terminal_conversation(&assistant.id, conversation, deletes).await;
+                        let gone = deletes && self.assistant.title(conversation).await.is_none();
+                        if done || gone {
+                            self.end_terminal_conversation(&assistant.id, conversation, deletes).await;
+                        }
                     }
                 }
                 // A conversation by voice ends with its conversation (issue #747).

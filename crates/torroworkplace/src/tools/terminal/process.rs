@@ -257,15 +257,28 @@ impl Sink for Ring {
 
 impl Ring {
     /// From `from` on (the start of what is kept when left out or no longer kept), at most `max_chars` characters as
-    /// text, where to go on, and whether something was left out (before or after).
-    fn read(&self, from: Option<u64>, max_chars: usize) -> (String, u64, bool) {
+    /// text, where to go on, and whether something was left out (before or after). Always whole lines where it can
+    /// (review of #754): a secret on a line is never split between two reads, where the patterns that hide it would
+    /// see neither half whole. So a read that may start in the middle of a line (`aligned` false: the start of what
+    /// is kept after older output went, a position of the core's own) starts after its first line break, and one that
+    /// ends before the end of a line – because more follows, or the command still `running` may write the rest of
+    /// it – ends after its last one. A line longer than `max_chars` is cut where it must be.
+    fn read(&self, from: Option<u64>, max_chars: usize, running: bool, aligned: bool) -> (String, u64, bool) {
         let end = self.start + self.data.len() as u64;
         let wanted = from.unwrap_or(self.start);
-        let from = wanted.clamp(self.start, end);
+        let mut from = wanted.clamp(self.start, end);
         let gone = wanted < self.start;
         let skip = usize::try_from(from - self.start).unwrap_or(usize::MAX);
-        let bytes: Vec<u8> = self.data.iter().skip(skip).copied().collect();
+        let mut bytes: Vec<u8> = self.data.iter().skip(skip).copied().collect();
+        // Older output went (or the position is the core's own): its first line may be the rest of one.
+        let mid_line = (!aligned && from > 0) || gone || (from == self.start && self.start > 0);
+        if mid_line && let Some(at) = bytes.iter().position(|byte| *byte == b'\n') {
+            from += at as u64 + 1;
+            bytes.drain(..=at);
+        }
+        // The text, how many bytes of the ring it took, and both as they were after the last line break.
         let (mut text, mut used, mut chars) = (String::new(), 0usize, 0usize);
+        let mut line_end: Option<(usize, usize)> = None;
         'chunks: for chunk in bytes.utf8_chunks() {
             for char in chunk.valid().chars() {
                 if chars == max_chars {
@@ -274,6 +287,9 @@ impl Ring {
                 text.push(char);
                 used += char.len_utf8();
                 chars += 1;
+                if char == '\n' {
+                    line_end = Some((text.len(), used));
+                }
             }
             if !chunk.invalid().is_empty() {
                 if chars == max_chars {
@@ -284,13 +300,20 @@ impl Ring {
                 chars += 1;
             }
         }
-        // More follows: end at the last line break, so a secret on a line is never split between two reads and
-        // passes the patterns that hide it in neither half (review of #754).
-        if from + (used as u64) < end
-            && let Some(cut) = text.rfind('\n')
-        {
-            used = text[..=cut].len();
-            text.truncate(cut + 1);
+        let open_line = !text.ends_with('\n') && (from + (used as u64) < end || running);
+        if open_line {
+            match line_end {
+                Some((text_len, raw)) => {
+                    text.truncate(text_len);
+                    used = raw;
+                }
+                // Only the start of a line that is still being written: wait for its end.
+                None if running && from + (used as u64) == end => {
+                    text.clear();
+                    used = 0;
+                }
+                None => {}
+            }
         }
         let next = from + used as u64;
         (text, next, gone || next < end)
@@ -431,7 +454,7 @@ impl Background {
         let entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
         let entry = entries.get(id).filter(|entry| entry.owner == *owner)?;
         let state = entry.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let (output, next, truncated) = state.ring.read(from, self.limits.max_chars);
+        let (output, next, truncated) = state.ring.read(from, self.limits.max_chars, state.running, true);
         Some(Snapshot {
             outside: entry.outside,
             running: state.running,
@@ -457,8 +480,9 @@ impl Background {
         self.end(entry).await;
         let state = state.lock().unwrap_or_else(PoisonError::into_inner);
         let end = state.ring.start + state.ring.data.len() as u64;
-        let from = end.saturating_sub(self.limits.max_chars as u64 * 4).max(state.ring.start);
-        let (output, next, truncated) = state.ring.read(Some(from), self.limits.max_chars);
+        // The last of it: about as many bytes as an answer has characters, from the start of a line.
+        let from = end.saturating_sub(self.limits.max_chars as u64).max(state.ring.start);
+        let (output, next, truncated) = state.ring.read(Some(from), self.limits.max_chars, false, false);
         let truncated = truncated || from > 0;
         Some(Snapshot { outside, running: false, exit_code: state.exit_code, output, next, truncated })
     }
@@ -525,18 +549,32 @@ mod tests {
     fn the_ring_keeps_the_last_bytes_and_reads_on() {
         let mut ring = Ring { cap: 8, ..Ring::default() };
         ring.push(b"hello ");
-        assert_eq!(ring.read(None, 100), ("hello ".into(), 6, false));
+        assert_eq!(ring.read(None, 100, false, true), ("hello ".into(), 6, false));
         ring.push(b"world!");
         assert_eq!((ring.start, ring.data.len()), (4, 8));
-        assert_eq!(ring.read(Some(0), 100), ("o world!".into(), 12, true), "what is gone is said");
-        assert_eq!(ring.read(Some(6), 3), ("wor".into(), 9, true), "more follows");
-        assert_eq!(ring.read(Some(12), 3), (String::new(), 12, false));
+        assert_eq!(ring.read(Some(0), 100, false, true), ("o world!".into(), 12, true), "what is gone is said");
+        assert_eq!(ring.read(Some(6), 3, false, true), ("wor".into(), 9, true), "more follows, one long line");
+        assert_eq!(ring.read(Some(12), 3, false, true), (String::new(), 12, false));
         let mut ring = Ring { cap: 100, ..Ring::default() };
         ring.push(b"one\ntoken=abcdefgh\n");
-        assert_eq!(ring.read(None, 10), ("one\n".into(), 4, true), "ends at a line break when more follows");
+        assert_eq!(
+            ring.read(None, 10, false, true),
+            ("one\n".into(), 4, true),
+            "ends at a line break when more follows"
+        );
+        ring.push(b"export API_TOKEN=ab");
+        assert_eq!(ring.read(Some(4), 100, true, true), ("token=abcdefgh\n".into(), 19, true), "the open line waits");
+        assert_eq!(ring.read(Some(19), 100, true, true), (String::new(), 19, true), "only an open line: nothing yet");
+        let mut ring = Ring { cap: 100, ..Ring::default() };
+        ring.push(b"\xe9\xe9\xe9\nPASSWORD=hunter2\nmore");
+        let (text, next, _) = ring.read(None, 100, true, true);
+        assert_eq!((text.chars().count(), next), (21, 21), "bytes of the ring, not of the text");
+        let mut ring = Ring { cap: 12, ..Ring::default() };
+        ring.push(b"KEY=secret1\nok\n");
+        assert_eq!(ring.read(None, 100, false, true).0, "ok\n", "the rest of a line that went is left out");
         let mut ring = Ring { cap: 100, ..Ring::default() };
         ring.push("äö".as_bytes());
-        assert_eq!(ring.read(None, 1), ("ä".into(), 2, true), "characters, not bytes");
+        assert_eq!(ring.read(None, 1, false, true), ("ä".into(), 2, true), "characters, not bytes");
     }
 
     #[test]

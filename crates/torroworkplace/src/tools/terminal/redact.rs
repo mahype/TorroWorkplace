@@ -18,6 +18,8 @@ static RULES: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         // The body of a private key without its first line (it was in an earlier read): two lines or more of
         // Base64 as long as a key's lines.
         (r"(?m)(?:^[A-Za-z0-9+/=]{60,76}\r?(?:\n|\z)){2,}", "[redacted]\n"),
+        // Its last lines, the short one included, up to the line that ends it.
+        (r"(?m)(?:^[A-Za-z0-9+/=]{1,76}\r?\n)+-----END [A-Z0-9 ]*PRIVATE KEY-----", REDACTED),
         // A user and password in an address: https://anna:secret@host.
         (r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@:]+:[^\s/@]+@", "${1}[redacted]@"),
         // An Authorization or a key header.
@@ -76,7 +78,7 @@ mod tests {
 
     #[test]
     fn every_rule_compiles() {
-        assert_eq!(RULES.len(), 13);
+        assert_eq!(RULES.len(), 14);
     }
 
     /// Erledigt point 7 of issue #754: a token in the output reaches the model only hidden.
@@ -95,6 +97,10 @@ mod tests {
             ("AKIAABCDEFGHIJKLMNOP", "AKIAABCDEFGHIJKLMNOP"),
             ("-----BEGIN OPENSSH PRIVATE KEY-----\nb3Blbn\n-----END OPENSSH PRIVATE KEY-----", "b3Blbn"),
             (KEY_BODY, "b3Blbn"),
+            (
+                "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nAAAEbm9uZQ==\n-----END PRIVATE KEY-----",
+                "AAAEbm9uZQ",
+            ),
         ] {
             let (out, hidden) = redact(text);
             assert!(hidden && !out.contains(gone), "{text} -> {out}");
