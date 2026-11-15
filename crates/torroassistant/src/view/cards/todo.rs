@@ -39,20 +39,20 @@ pub(super) fn actions(todo: &Todo) -> Vec<Action<Message>> {
     actions
 }
 
-/// The word of an iCalendar priority as the tasks app shows it (1 urgent, 2–4 high, 5 medium, 6–9 low); `None`
-/// without one.
-fn priority(priority: Option<u8>) -> Option<&'static str> {
+/// The level (`widgets::priority_dot`: 1 low … 4 urgent) and word of an iCalendar priority as the tasks app shows
+/// it (1 urgent, 2–4 high, 5 medium, 6–9 low); `None` without one.
+fn priority(priority: Option<u8>) -> Option<(usize, &'static str)> {
     match priority? {
-        1 => Some(tr("Urgent")),
-        2..=4 => Some(tr("High")),
-        5 => Some(tr("Medium")),
-        6..=9 => Some(tr("Low")),
+        1 => Some((4, tr("Urgent"))),
+        2..=4 => Some((3, tr("High"))),
+        5 => Some((2, tr("Medium"))),
+        6..=9 => Some((1, tr("Low"))),
         _ => None,
     }
 }
 
 /// The card of `todo` in the list `list` (its colour `color`, not drawn yet), `now` for the due date: when it is
-/// due, its priority, and whether it is done.
+/// due, its priority (its dot in the priority's colour, with the word), and whether it is done.
 pub(super) fn content(todo: &Todo, list: &str, color: Option<&str>, now: DateTime<Utc>) -> ContentCard<Message> {
     let _ = color;
     let today = datetime::to_local(now).date();
@@ -72,8 +72,8 @@ pub(super) fn content(todo: &Todo, list: &str, color: Option<&str>, now: DateTim
         };
         card = card.line(Icon::CalendarClock, trf("Due {date}", &[("date", &date)]));
     }
-    if let Some(word) = priority(todo.priority) {
-        card = card.line(Icon::SignalHigh, word);
+    if let Some((level, word)) = priority(todo.priority) {
+        card = card.line_priority(level, word);
     }
     with_actions(card, actions(todo))
 }

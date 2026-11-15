@@ -102,7 +102,8 @@ pub(super) fn content(
         .line(Icon::Clock, when(&event.start, event.end.as_ref(), today))
         .line(Icon::MapPin, event.location.clone().unwrap_or_default());
     if let Some(overlap) = overlapping(overlaps, more, today) {
-        card = card.line(Icon::TriangleAlert, overlap);
+        // The words say it; the icon in `attention` only marks it (torro-design: status never by colour alone).
+        card = card.line_toned(Icon::TriangleAlert, overlap, Some(|p| p.attention));
     }
     with_actions(card, actions(event))
 }

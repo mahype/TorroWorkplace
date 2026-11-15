@@ -43,6 +43,10 @@ pub const MAX_LINES: usize = 3;
 /// At most this many buttons besides the main one ([`ContentCard::more`]); more are left out.
 pub const MAX_MORE: usize = 3;
 
+/// The mark of a card that is gone ([`State::Gone`]): not the `CircleSlash` of an issue closed as not planned, so the
+/// two never read alike.
+pub const GONE_ICON: Icon = Icon::Ban;
+
 /// A hairline: frames of the picture, the `untrusted` tag and the question (torro-design, section 2).
 const HAIRLINE: f32 = 1.0;
 
@@ -145,14 +149,22 @@ pub enum State<M> {
 
 /// The colour of a line's icon, picked from the palette when drawn so it follows light and dark; `None` keeps it
 /// in `text_3` like every other mark.
-type Tone = Option<fn(&Palette) -> Color>;
+pub type Tone = Option<fn(&Palette) -> Color>;
+
+/// What leads a line under the title.
+#[derive(Debug, Clone, Copy)]
+enum Lead {
+    /// An icon in its tone.
+    Icon(Icon, Tone),
+    /// A task's priority as its dot (`widgets::priority_dot`, 0 none … 4 urgent), the word beside it.
+    Priority(usize),
+}
 
 /// A line under the title.
 #[derive(Debug, Clone)]
 struct Line {
-    mark: Icon,
+    lead: Lead,
     text: String,
-    tone: Tone,
 }
 
 /// One content card, built with its parts and drawn with [`ContentCard::view`] or [`ContentCard::short`].
@@ -200,11 +212,22 @@ impl<M: Clone> ContentCard<M> {
         self.line_toned(mark, text, None)
     }
 
-    /// [`ContentCard::line`] with the icon in the colour `tone` picks (a state: the GitHub state's colour).
-    fn line_toned(mut self, mark: Icon, text: impl Into<String>, tone: Tone) -> Self {
-        let text = text.into();
+    /// [`ContentCard::line`] with the icon in the colour `tone` picks: a state, never the line's only sign of it –
+    /// the word says it (the GitHub state's colour, an overlap in `attention`).
+    pub fn line_toned(self, mark: Icon, text: impl Into<String>, tone: Tone) -> Self {
+        self.push_line(Lead::Icon(mark, tone), text.into())
+    }
+
+    /// A line with a task's priority: its dot (`widgets::priority_dot`, `prio` 0 none … 4 urgent) and its `word`
+    /// ("High"), as the tasks app shows it in a chip or a menu (torro-design, "Priorität und Fokus").
+    pub fn line_priority(self, prio: usize, word: impl Into<String>) -> Self {
+        self.push_line(Lead::Priority(prio), word.into())
+    }
+
+    /// One more line, unless the card has [`MAX_LINES`] already or `text` is empty.
+    fn push_line(mut self, lead: Lead, text: String) -> Self {
         if self.lines.len() < MAX_LINES && !text.trim().is_empty() {
-            self.lines.push(Line { mark, text, tone });
+            self.lines.push(Line { lead, text });
         }
         self
     }
@@ -277,9 +300,8 @@ impl<M: Clone> ContentCard<M> {
             }
             State::Failed { retry } => {
                 parts.push(detail_line(Line {
-                    mark: Icon::CircleAlert,
+                    lead: Lead::Icon(Icon::CircleAlert, None),
                     text: tr("Not available right now").to_owned(),
-                    tone: None,
                 }));
                 if let Some(retry) = retry {
                     parts.push(widgets::text_button(
@@ -291,9 +313,8 @@ impl<M: Clone> ContentCard<M> {
                 }
             }
             State::Gone => parts.push(detail_line(Line {
-                mark: Icon::CircleSlash,
+                lead: Lead::Icon(GONE_ICON, None),
                 text: tr("No longer available").to_owned(),
-                tone: None,
             })),
         }
         let card = widgets::card(parts, false, on_press);
@@ -370,15 +391,17 @@ fn untrusted_tag<'a, M: 'a>() -> Element<'a, M> {
         .into()
 }
 
-/// A line under the title: its icon (in its tone) and its text in `text_2`, one line.
+/// A line under the title: its icon (in its tone) or a priority's dot in the icon's cell, and its text in `text_2`,
+/// one line.
 fn detail_line<'a, M: 'a>(line: Line) -> Element<'a, M> {
-    row![
-        mark(line.mark, icon::SIZE_SM, line.tone),
-        container(widgets::ellipsized(typo::body(), line.text, theme::text_2)).width(Fill)
-    ]
-    .spacing(space::s())
-    .align_y(Alignment::Center)
-    .into()
+    let lead: Element<'a, M> = match line.lead {
+        Lead::Icon(which, tone) => mark(which, icon::SIZE_SM, tone),
+        Lead::Priority(prio) => container(widgets::priority_dot(prio)).center(icon::SIZE_SM).into(),
+    };
+    row![lead, container(widgets::ellipsized(typo::body(), line.text, theme::text_2)).width(Fill)]
+        .spacing(space::s())
+        .align_y(Alignment::Center)
+        .into()
 }
 
 /// An icon in `tone`, `text_3` without one.
@@ -695,6 +718,16 @@ mod tests {
     }
 
     #[test]
+    fn a_priority_line_leads_with_its_dot_and_a_toned_line_with_its_tone() {
+        let card: ContentCard<u8> = ContentCard::new(Head::new(Icon::ListTodo, "Work"), "Sort")
+            .line_priority(3, "High")
+            .line_toned(Icon::TriangleAlert, "Overlaps", Some(|p| p.attention));
+        assert!(matches!(card.lines[0].lead, Lead::Priority(3)));
+        let Lead::Icon(_, Some(tone)) = card.lines[1].lead else { panic!("a toned icon") };
+        assert_eq!(tone(&Palette::dark()), Palette::dark().attention);
+    }
+
+    #[test]
     fn pictures_keep_their_ratio() {
         assert_eq!(Ratio::Photo.height(300.0), 200.0);
         assert_eq!(Ratio::Video.height(320.0), 180.0);
@@ -802,7 +835,8 @@ mod tests {
         let card = link_content(&issue, None, press());
         assert_eq!(card.head.source, "torro/workplace");
         assert_eq!(card.title, "#142 Calendar opens on the wrong day");
-        assert_eq!((card.lines[0].mark, card.lines[0].text.as_str()), (Icon::CircleDot, trc("state", "Open")));
+        assert!(matches!(card.lines[0].lead, Lead::Icon(Icon::CircleDot, Some(_))));
+        assert_eq!(card.lines[0].text, trc("state", "Open"));
         assert_eq!(labels(&card), vec![tr("Open on GitHub").to_owned()]);
     }
 
