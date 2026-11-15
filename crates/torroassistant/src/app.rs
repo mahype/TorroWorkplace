@@ -441,8 +441,11 @@ pub enum Message {
     ToggleReadAloud,
     /// The core took the switch, or refused it (then it goes back).
     ReadAloudSet(bool, Result<(), Refusal>),
-    /// [■] at the answer being read (issue #745): reading stops at once.
+    /// "Stop" under the answer being read (issue #745, #774): reading stops at once.
     StopReading,
+    /// "Repeat" under an answer in two parts (issue #774): its spoken part, by the answer's number, is
+    /// read aloud again (`assistant.speak`).
+    RepeatSpoken(u64),
     /// The core took "stop reading"; [`Message::Read`] follows for the answer.
     ReadingStopped,
     /// The answer `seq` of the conversation was read to its end, stopped, or could not be read.
@@ -457,8 +460,9 @@ pub enum Message {
     TalkEnded(Result<(), Refusal>),
     /// Time to ask how the conversation by voice stands ([`TALK_EVERY`], [`TALK_OWN_EVERY`]).
     TalkTick,
-    /// How the conversation by voice stands (`assistant.talk_status`).
-    TalkStatus(Result<Option<torro_ipc::Talk>, Refusal>),
+    /// How the conversation by voice stands (`assistant.talk_status`), and whether anything is read
+    /// aloud now (issue #774).
+    TalkStatus(Result<(Option<torro_ipc::Talk>, bool), Refusal>),
     /// "Manage models…" at the end of the picker and under "No model is turned on" (task S.26): the
     /// section AI of the settings ([`AI_PAGE`]), where the models of each AI account are turned on and off.
     ManageModels,
@@ -676,6 +680,9 @@ pub struct App {
     read_for: Option<(Option<String>, u64)>,
     /// The conversation by voice as the core last told (issue #747, `assistant.talk_status`).
     pub(crate) talk: Option<torro_ipc::Talk>,
+    /// Something was read aloud when the core last told how the conversation by voice stands (issue
+    /// #774): "Stop" under its last answer is active.
+    pub(crate) talk_speaking: bool,
     /// This window started [`App::talk`] in a new chat: it follows it into the conversation its first
     /// sentence starts.
     talk_started: bool,
@@ -804,6 +811,7 @@ impl App {
                 conversation: Some(demo::TOOLS.to_string()),
                 state: torro_ipc::VoiceState::Conversing,
             }),
+            talk_speaking: open == Some(Open::Talk),
             talk_started: false,
             talk_starting: false,
             dictation: if open == Some(Open::Dictating) { Dictation::Recording } else { Dictation::Idle },
@@ -1236,6 +1244,7 @@ impl App {
             }
             Message::ReadAloudSet(_, Ok(())) => self.read_aloud_switching = false,
             Message::StopReading => return self.stop_reading(),
+            Message::RepeatSpoken(seq) => return self.repeat_spoken(seq),
             Message::ReadingStopped => {}
             // A reading stopped by a change of conversation answers late: only its own conversation's
             // answer is meant, and its failure is no longer worth a notice.
@@ -1279,9 +1288,12 @@ impl App {
             Message::TalkEnded(Ok(())) => {}
             Message::TalkEnded(Err(refusal)) => self.note_failure(tr("Couldn't end the conversation."), &refusal),
             Message::TalkTick => return self.fetch_talk(),
-            Message::TalkStatus(Ok(talk)) => return self.take_talk(talk),
+            Message::TalkStatus(Ok((talk, speaking))) => {
+                self.talk_speaking = speaking;
+                return self.take_talk(talk);
+            }
             // An old core or none: no conversation by voice to show.
-            Message::TalkStatus(Err(_)) => {}
+            Message::TalkStatus(Err(_)) => self.talk_speaking = false,
             Message::AiAccounts(Ok(any)) => self.ai_accounts = any,
             // An old core or none: the window keeps what it said.
             Message::AiAccounts(Err(_)) => {}
@@ -1972,7 +1984,12 @@ impl App {
     /// Whether the answer `seq` shows anything yet: the streaming answer shows nothing before its
     /// first letter, and then takes no room.
     pub(crate) fn answer_shows(&self, seq: u64) -> bool {
-        self.answers.get(&seq).is_none_or(|(shown, _)| !shown.is_empty())
+        // A spoken part shows as the answer's lead at once (issue #774), whatever its shown part does.
+        let spoken = self.transcript.entries.iter().any(|entry| {
+            entry.seq == seq
+                && matches!(&entry.content, EntryContent::Answer { spoken: Some(spoken), .. } if !spoken.trim().is_empty())
+        });
+        spoken || self.answers.get(&seq).is_none_or(|(shown, _)| !shown.is_empty())
     }
 
     /// The number of the answer still appearing: the entries after it wait until it shows whole.
@@ -2175,7 +2192,7 @@ impl App {
             (self.without.clone(), self.mode)
         };
         let effort = self.offered_effort();
-        let Some(request) = chat::send_request(
+        let Some(mut request) = chat::send_request(
             self.current.as_deref(),
             self.choice.as_ref(),
             effort,
@@ -2185,6 +2202,11 @@ impl App {
         ) else {
             return Task::none();
         };
+        // With the speaker on the answer is read aloud, so it comes in two parts (issue #774): a short
+        // spoken one and the shown one. Not in mini and strip, which read nothing.
+        if let Request::SendMessage { spoken, .. } = &mut request {
+            *spoken = self.read_aloud && !self.is_glance();
+        }
         self.sending = true;
         self.ask(request, |result| Message::Sent(conversation_of(result)))
     }
@@ -2299,10 +2321,27 @@ impl App {
         }
     }
 
-    /// Stops reading aloud at once (issue #745).
+    /// Stops reading aloud at once (issue #745): what this window reads, and in its conversation by
+    /// voice what the listener reads; the conversation goes on listening.
     fn stop_reading(&mut self) -> Task<Message> {
         self.reading = None;
+        self.talk_speaking = false;
         self.ask(Request::StopSpeaking, |_| Message::ReadingStopped)
+    }
+
+    /// "Repeat" (issue #774): reads the spoken part of the answer `seq` of the open conversation again
+    /// (`assistant.speak`), in place of what is read now; "Stop" stands under it meanwhile.
+    fn repeat_spoken(&mut self, seq: u64) -> Task<Message> {
+        let spoken =
+            self.transcript.entries.iter().find(|entry| entry.seq == seq).and_then(|entry| match &entry.content {
+                torro_ipc::assistant::EntryContent::Answer { spoken: Some(spoken), .. } => Some(spoken.clone()),
+                _ => None,
+            });
+        let Some(text) = spoken.filter(|spoken| !spoken.trim().is_empty()) else { return Task::none() };
+        self.reading = Some(seq);
+        self.reading_in = self.current.clone();
+        let conversation = self.current.clone();
+        self.ask(Request::Speak { text }, move |result| Message::Read(conversation.clone(), seq, result.map(drop)))
     }
 
     /// Reads the answer that just began aloud, when reading aloud is on (issue #745): from its first
@@ -2373,7 +2412,7 @@ impl App {
         }
         self.ask(Request::TalkStatus, |result| {
             Message::TalkStatus(result.and_then(|response| match response {
-                Response::Talk { talk, .. } => Ok(talk),
+                Response::Talk { talk, speaking, .. } => Ok((talk, speaking)),
                 other => Err(Refusal::unexpected(&other)),
             }))
         })
