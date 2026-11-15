@@ -18,9 +18,9 @@ use torro_core::voice_models::{self, POCKET_DE, POCKET_VOICE_FILES};
 use torro_ipc::{VoiceMissing, VoicePart};
 
 use super::VoiceError;
-use super::audio::{Wave, decode_wav};
+use super::audio::{Stretch, Wave, decode_wav};
 use super::recognize::threads;
-use super::speech::pieces;
+use super::speech::{pieces, sentence_pieces};
 
 /// The voice templates that ship with the assistant (step 4 of the plan of issue #745): made once from a
 /// description, 24 kHz mono, about nine seconds.
@@ -39,6 +39,20 @@ const NAME: &str = "Pocket TTS";
 /// Takes computed sound ([`Synth::speak`]); `false` to stop.
 pub type Chunk = Box<dyn FnMut(&[f32]) -> bool>;
 
+/// How Pocket TTS speaks (issue #782): `speed` in percent, `pause_ms` the extra silence after each
+/// sentence. The default speaks as before the setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Delivery {
+    pub speed: u16,
+    pub pause_ms: u16,
+}
+
+impl Default for Delivery {
+    fn default() -> Delivery {
+        Delivery { speed: 100, pause_ms: 0 }
+    }
+}
+
 /// Computes speech: [`Pocket`], a fake in the tests.
 pub trait Synth {
     /// The rate of the sound it makes.
@@ -46,8 +60,9 @@ pub trait Synth {
 
     /// Reads `text` in the voice `voice` (an id of `torro_core::settings::POCKET_VOICES`; another reads as
     /// the recommended one), handing the sound to `chunk` piece by piece as it is computed: mono, between
-    /// -1 and 1, at [`Synth::rate`]. Stops soon after `chunk` returns `false`, and that is no error.
-    fn speak(&mut self, text: &str, voice: &str, chunk: Chunk) -> Result<(), VoiceError>;
+    /// -1 and 1, at [`Synth::rate`], spoken as `delivery` says. Stops soon after `chunk` returns `false`,
+    /// and that is no error.
+    fn speak(&mut self, text: &str, voice: &str, delivery: Delivery, chunk: Chunk) -> Result<(), VoiceError>;
 }
 
 /// The configuration of Pocket TTS with its files in the voice folder `folder` (`<folder>/models/pocket-de/…`).
@@ -137,27 +152,42 @@ impl Synth for Pocket {
         u32::try_from(self.tts.sample_rate()).unwrap_or(24_000)
     }
 
-    fn speak(&mut self, text: &str, voice: &str, chunk: Chunk) -> Result<(), VoiceError> {
+    fn speak(&mut self, text: &str, voice: &str, delivery: Delivery, chunk: Chunk) -> Result<(), VoiceError> {
         let reference = self.voice(voice)?;
         let config = GenerationConfig {
             reference_sample_rate: i32::try_from(reference.rate).unwrap_or(24_000),
             reference_audio: Some(reference.samples),
             ..GenerationConfig::default()
         };
+        let rate = self.rate();
         // sherpa-onnx takes the callback for `'static`; it lives in these cells across the pieces.
         let chunk = Rc::new(RefCell::new(chunk));
         let stopped = Rc::new(Cell::new(false));
         // A NUL would end the text early for sherpa-onnx's C side (and its binding refuses it).
         let text = text.replace('\0', " ");
-        for piece in pieces(&text, PIECE) {
+        // As before without a choice; with a pause each sentence is a piece of its own, so the pause
+        // falls between sentences. sherpa-onnx's own `silence_scale` does not reach streamed sound.
+        let pieces = match delivery == Delivery::default() {
+            true => pieces(&text, PIECE),
+            false => sentence_pieces(&text, PIECE),
+        };
+        let last = pieces.len().saturating_sub(1);
+        for (number, piece) in pieces.into_iter().enumerate() {
+            // Each piece is stretched on its own, so its end comes out whole before the pause.
+            let stretch = Rc::new(RefCell::new(Some(Stretch::new(rate, delivery.speed))));
             let heard = Rc::new(Cell::new(false));
-            let (give, stop, got) = (Rc::clone(&chunk), Rc::clone(&stopped), Rc::clone(&heard));
+            let (give, stop, got, stretching) =
+                (Rc::clone(&chunk), Rc::clone(&stopped), Rc::clone(&heard), Rc::clone(&stretch));
             let callback = move |samples: &[f32], _progress: f32| {
                 if samples.is_empty() {
                     return true;
                 }
                 got.set(true);
-                let go_on = (give.borrow_mut())(samples);
+                let sound = match stretching.borrow_mut().as_mut() {
+                    Some(stretch) => stretch.push(samples),
+                    None => samples.to_vec(),
+                };
+                let go_on = sound.is_empty() || (give.borrow_mut())(&sound);
                 stop.set(!go_on);
                 go_on
             };
@@ -166,8 +196,19 @@ impl Synth for Pocket {
                 return Ok(());
             }
             let audio = audio.ok_or_else(|| VoiceError::program(NAME, "made no sound"))?;
-            // A model that does not call back as it computes hands out the whole piece at its end.
-            if !heard.get() && !(chunk.borrow_mut())(audio.samples()) {
+            let mut rest = Vec::new();
+            let stretch = stretch.borrow_mut().take();
+            if let Some(mut stretch) = stretch {
+                // A model that does not call back as it computes hands out the whole piece at its end.
+                if !heard.get() {
+                    rest = stretch.push(audio.samples());
+                }
+                rest.extend(stretch.finish());
+            }
+            if number < last {
+                rest.extend(std::iter::repeat_n(0.0, rate as usize * usize::from(delivery.pause_ms) / 1000));
+            }
+            if !rest.is_empty() && !(chunk.borrow_mut())(&rest) {
                 return Ok(());
             }
         }
