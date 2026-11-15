@@ -3324,7 +3324,7 @@ Keine Felder.
 
 Zugriff `read` · MCP-Tool `assistant_talk_status`
 
-Says whether a conversation by voice runs, in which conversation and what the listener does (conversing, recording, answering), and whether anything is read aloud now.
+Says whether a conversation by voice runs (`talk` is left out when none does), in which conversation and what the listener does (conversing, recording, answering), and with `speaking` whether anything is read aloud now, whoever asked for it.
 
 Keine Felder.
 
@@ -3332,7 +3332,7 @@ Keine Felder.
 
 Zugriff `write` · MCP-Tool `assistant_speak_answer`
 
-Reads the answer of a conversation aloud in the room on this computer, sentence by sentence while the model still writes it; without a running answer the one after the last message. Blocks until it was read or stopped, minutes for a long answer. It stops what else is read aloud. With the provider OpenAI the text goes to OpenAI.
+Reads the answer of a conversation aloud in the room on this computer, sentence by sentence while the model still writes it; without a running answer the one after the last message. Blocks until it was read or stopped, minutes for a long answer. It stops what else is read aloud, and the microphone of a conversation by voice stays closed meanwhile. With the provider OpenAI the text goes to OpenAI.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|

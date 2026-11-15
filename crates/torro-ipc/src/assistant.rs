@@ -791,9 +791,12 @@ impl Request {
             | Request::DeleteConversation { id }
             | Request::PinConversation { id, .. }
             | Request::CancelAnswer { conversation: id }
+            | Request::SpeakAnswer { conversation: id }
             | Request::OpenChatWindow { window: ChatWindow::Conversation(id) }
             | Request::ConfirmBot { conversation: id, .. } => Some(id),
-            Request::SendMessage { conversation, .. } | Request::AskBot { conversation, .. } => conversation.as_deref(),
+            Request::SendMessage { conversation, .. }
+            | Request::AskBot { conversation, .. }
+            | Request::StartTalk { conversation } => conversation.as_deref(),
             _ => None,
         }
     }

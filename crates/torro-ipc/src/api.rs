@@ -4273,8 +4273,9 @@ static TALK_STATUS: Command = Command {
     area: Area::Assistant,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Says whether a conversation by voice runs, in which conversation and what the listener does \
-                  (conversing, recording, answering), and whether anything is read aloud now.",
+    description: "Says whether a conversation by voice runs (`talk` is left out when none does), in which \
+                  conversation and what the listener does (conversing, recording, answering), and with `speaking` \
+                  whether anything is read aloud now, whoever asked for it.",
 };
 
 // Like assistant.speak (issue #745): it opens no microphone, and the listener does not listen
@@ -4287,7 +4288,8 @@ static SPEAK_ANSWER: Command = Command {
     description: "Reads the answer of a conversation aloud in the room on this computer, sentence by sentence \
                   while the model still writes it; without a running answer the one after the last message. \
                   Blocks until it was read or stopped, minutes for a long answer. It stops what else is read \
-                  aloud. With the provider OpenAI the text goes to OpenAI.",
+                  aloud, and the microphone of a conversation by voice stays closed meanwhile. With the provider \
+                  OpenAI the text goes to OpenAI.",
 };
 
 static SPEECH_STATUS: Command = Command {

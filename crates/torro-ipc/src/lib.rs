@@ -6452,12 +6452,16 @@ pub enum Response {
         speech: SpeechStatus,
     },
     /// How the conversation by voice stands ([`Request::StartTalk`], [`Request::TalkStatus`], issue
-    /// #747): `None` when none runs; `speaking` while anything is read aloud, whoever asked for it.
+    /// #747): `None` when none runs; `speaking` while anything is read aloud, whoever asked for it;
+    /// `readings` counts every reading aloud that began since the core started, so the listener can
+    /// tell that one began and ended while it recorded.
     Talk {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         talk: Option<Talk>,
         #[serde(default)]
         speaking: bool,
+        #[serde(default)]
+        readings: u64,
     },
     /// Where an address of a contact is on the map ([`Request::LocateContact`]).
     ContactLocation {
