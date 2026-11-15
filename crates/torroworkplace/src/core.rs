@@ -13010,7 +13010,7 @@ impl Core {
                 _ => return refused("not-found", &format!("no conversation {id:?}")),
             }
         }
-        *self.lock_talk() = Some(TalkSlot { conversation });
+        *self.lock_talk() = Some(TalkSlot { conversation, since: std::time::Instant::now() });
         self.follow_voice();
         self.voice.notify();
         self.talk_status(reach).await
@@ -13036,15 +13036,18 @@ impl Core {
 
     /// `assistant.talk_status` (issue #747): the conversation by voice and what the listener does,
     /// whether anything is read aloud and how many readings began. A listener that ended took the
-    /// conversation with it: [`Listener::follow`] starts the process before it returns, so this never
-    /// forgets one that is just starting. A conversation the caller may not see is not named.
+    /// conversation with it, once [`TALK_START`] went by since it started: a look that comes between
+    /// the start and the listener's forgets nothing. A conversation the caller may not see is not named.
     async fn talk_status(&self, reach: Reach<'_>) -> Response {
-        if !self.voice.running() {
+        let ended = self.lock_talk().as_ref().is_some_and(|talk| talk.since.elapsed() >= TALK_START);
+        if ended && !self.voice.running() {
             self.forget_talk();
         }
         let slot = self.lock_talk().clone();
         let talk = match slot {
-            Some(TalkSlot { conversation: Some(id) }) if self.hidden_conversation(&id, reach).await.is_some() => None,
+            Some(TalkSlot { conversation: Some(id), .. }) if self.hidden_conversation(&id, reach).await.is_some() => {
+                None
+            }
             Some(slot) => Some(torro_ipc::Talk { conversation: slot.conversation, state: self.voice.state() }),
             None => None,
         };
@@ -19807,6 +19810,10 @@ done"#;
         assert!(!core.voice.running());
         assert!(matches!(core.handle(Request::StartTalk { conversation: None }).await, Response::Talk { .. }));
         core.voice.follow(false);
+        assert!(talk_of(&core).await.0.is_some(), "a listener just starting is not taken for one that ended");
+        if let Some(talk) = core.lock_talk().as_mut() {
+            talk.since = std::time::Instant::now().checked_sub(TALK_START).unwrap_or(talk.since);
+        }
         assert_eq!(talk_of(&core).await.0, None, "the listener ended");
     }
 
@@ -37185,7 +37192,13 @@ done"#,
 struct TalkSlot {
     /// Where what is said goes; `None` until the first sentence starts a new conversation.
     conversation: Option<String>,
+    /// When it started: a listener that is not running yet is no listener that ended.
+    since: std::time::Instant,
 }
+
+/// How long a conversation by voice waits for its listener before one that does not run counts as
+/// ended (issue #747): `assistant.talk_status` may come between the start and the listener's.
+const TALK_START: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The answer `assistant.speak_answer` reads (issue #747): the conversation, the message it answers,
 /// and the end, which every call for it waits for.
