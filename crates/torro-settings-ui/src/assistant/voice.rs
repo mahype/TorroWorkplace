@@ -318,15 +318,18 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) {
             state.downloading = models.iter().any(|model| model.state == VoiceModelState::Running);
             state.models = Some(models.clone());
         }
-        Err(message) if state.asking_models => {
-            state.asking_models = false;
-            state.models_failed = Some(message.clone());
-        }
         // The preview read to its end or was stopped (issue #745).
         Ok(Response::Ok) if state.previewing => state.previewing = false,
+        // A refusal goes to what waits for one the person sees: the preview and the test first. The
+        // list of models is asked again every second anyway, so it never waits for good (review of #762).
         Err(message) if state.previewing && !state.testing => {
             state.previewing = false;
+            state.asking_models = false;
             state.preview_failed = Some(message.clone());
+        }
+        Err(message) if state.asking_models && !state.testing => {
+            state.asking_models = false;
+            state.models_failed = Some(message.clone());
         }
         Ok(Response::Transcript { text }) => {
             state.testing = false;
@@ -335,6 +338,7 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) {
         }
         Err(message) if state.testing => {
             state.testing = false;
+            state.asking_models = false;
             state.heard = Some(Heard::Failed(message.clone()));
         }
         _ => {}
@@ -427,9 +431,11 @@ pub fn loaded(state: &mut State, data: &Data) {
     if !super::is_on(data) || (no_microphones && state.menus.is_open(&Choice::Microphone)) {
         state.menus.close();
     }
-    // An answer still out is newer than this load: it keeps its place when it comes.
+    // An answer still out is newer than this load: it keeps its place when it comes. Otherwise the
+    // load's list is the one the next answer is compared with, so a model removed or finished right
+    // after a load still loads the page again (review of #762).
     if !state.asking_models {
-        state.models = None;
+        state.models = Some(data.voice_models.clone());
     }
     state.downloading = models_of(state, data).iter().any(|model| model.state == VoiceModelState::Running);
 }
@@ -1188,6 +1194,31 @@ mod tests {
         answered(&mut state, &Err("Another download is running.".into()));
         assert_eq!(state.models_failed.as_deref(), Some("Another download is running."));
         views(&state, &data);
+    }
+
+    /// Review of #762: a model removed right after a load loads the page again, so "Talk to the
+    /// assistant" and the provider follow; a refusal while the list is asked goes to the preview.
+    #[tokio::test]
+    async fn a_removal_right_after_a_load_loads_again() {
+        let data = Data { voice_models: vec![model("whisper-turbo", VoiceModelState::Ready, 1_000)], ..data().await };
+        let mut state = State::default();
+        loaded(&mut state, &data);
+        let _ = update(&mut state, Message::Remove("whisper-turbo".into()), &data);
+        answered(
+            &mut state,
+            &Ok(Response::VoiceModels { models: vec![model("whisper-turbo", VoiceModelState::Missing, 0)] }),
+        );
+        assert_eq!(subscription(&state).units(), 1, "the clock runs for the load");
+        assert_eq!(update(&mut state, Message::ModelTick, &data), Act::Send(Vec::new()));
+
+        let running = Data { voice_models: vec![model("whisper-turbo", VoiceModelState::Running, 10)], ..data };
+        loaded(&mut state, &running);
+        assert_eq!(update(&mut state, Message::ModelTick, &running), Act::Ask(Request::ListVoiceModels));
+        let _ = update(&mut state, Message::Preview, &running);
+        answered(&mut state, &Err("Download the voice first.".into()));
+        assert_eq!(state.preview_failed.as_deref(), Some("Download the voice first."));
+        assert!(!state.previewing && state.models_failed.is_none(), "the preview took the refusal");
+        assert_eq!(update(&mut state, Message::ModelTick, &running), Act::Ask(Request::ListVoiceModels));
     }
 
     /// Issue #762: every state of a model builds, with its button; nothing asks to install or copy.
