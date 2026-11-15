@@ -4,8 +4,9 @@
 //! `auto` lets Whisper find it), or Parakeet, which finds the language itself. [`recognizer_config`]
 //! builds the configuration, [`SherpaTranscriber`] keeps the model loaded.
 //!
-//! The wake word is heard with the same recogniser on short windows ([`super::wake::TranscriptWake`]),
-//! so one model is loaded once ([`SharedTranscriber`]). The sound never touches the disk.
+//! The wake word has a model of its own (issue #765, [`super::wake::ModelWake`]). Only when that does not
+//! load is it heard with the same recogniser on short windows ([`super::wake::TranscriptWake`]), with one
+//! model loaded once ([`SharedTranscriber`]). The sound never touches the disk.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -127,9 +128,10 @@ pub fn transcript_of(output: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// One transcriber shared by the wake word ([`super::wake::TranscriptWake`], on a thread of its own)
-/// and the sentences, so one model is loaded. A sentence waits while a check of the wake word still
-/// runs: at most one check, about a second with Whisper turbo.
+/// One transcriber shared by the wake word heard with speech recognition ([`super::wake::TranscriptWake`],
+/// on a thread of its own, when the built-in model does not load) and the sentences, so one model is loaded.
+/// A sentence waits while a check of the wake word still runs: at most one check, about a second with
+/// Whisper turbo.
 #[derive(Clone)]
 pub struct SharedTranscriber(Arc<Mutex<Box<dyn Transcriber + Send>>>);
 

@@ -1354,7 +1354,7 @@ fn demo_voice() -> torro_ipc::VoiceStatus {
         installed: true,
         problem: None,
         programs: vec![
-            found(VoicePart::WakeWord, torro_core::voice_models::WHISPER_TURBO),
+            found(VoicePart::WakeWord, torro_core::voice_models::HEY_TORRO),
             found(VoicePart::Recorder, "alsa_input.usb-RODE_NT-USB-00.analog-stereo"),
             found(VoicePart::SpeechToText, torro_core::voice_models::WHISPER_TURBO),
             VoiceProgram { part: VoicePart::Speech, program: None, missing: Some(VoiceMissing::Model) },

@@ -61,6 +61,10 @@ pub const PARAKEET: &str = "parakeet";
 /// The German model of Pocket TTS with the voices of Kyutai (decision 1 of #762).
 pub const POCKET_DE: &str = "pocket-de";
 
+/// The wake word model "Hey Torro" (issue #765): built into the assistant, so it is not in the catalogue
+/// [`MODELS`] and never downloaded; `settings.voice_status` names it for the wake word.
+pub const HEY_TORRO: &str = "hey-torro";
+
 /// Every model, in the order the settings show them: speech recognition first, the recommended one on top.
 pub const MODELS: [Model; 3] = [
     Model {

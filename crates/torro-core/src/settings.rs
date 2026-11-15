@@ -1314,8 +1314,8 @@ pub struct Voice {
     /// reading aloud (issue #745). On unless turned off.
     #[serde(default = "on")]
     pub speak_answers: bool,
-    /// The model that turns speech into text, for dictating, the wake word and the conversation
-    /// mode. Whisper unless Parakeet is chosen (decision 3 of #762), also for files written before
+    /// The model that turns speech into text, for dictating, the sentence after the wake word and the
+    /// conversation mode. Whisper unless Parakeet is chosen (decision 3 of #762), also for files written before
     /// the choice existed.
     #[serde(default)]
     pub recognizer: Recognizer,

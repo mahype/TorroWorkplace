@@ -1,19 +1,105 @@
-//! The wake word: [`TranscriptWake`] turns the last two seconds into text once a second, while
-//! something louder than the room was heard, and looks for "Hey Torro" ([`is_wake_phrase`]). It uses
-//! the recogniser of the sentences (decision 5 of #762), so no model of its own has to be downloaded;
-//! silence costs nothing. The checks run on a thread of their own, so the listener never falls behind
-//! the microphone, however slow the recogniser: Whisper turbo takes about a second for the window on a
-//! fast processor. A slower one checks less often – the next check waits for the last – and a wake
-//! word between two checks may be missed; an own wake word model is #765.
+//! The wake word "Hey Torro", heard in one of two ways:
+//!
+//! - [`ModelWake`] (issue #765): a small model of its own, trained for "Hey Torro" and built into the
+//!   app. It scores every frame on the listener's beat and costs a fraction of speech recognition, so
+//!   the recogniser only works on the sentence after the wake word.
+//! - [`TranscriptWake`], when the built-in model does not load: it turns the last two seconds into
+//!   text once a second, while something louder than the room was heard, and looks for "Hey Torro"
+//!   ([`is_wake_phrase`]), with the recogniser of the sentences (decision 5 of #762). The checks run
+//!   on a thread of their own, so the listener never falls behind the microphone, however slow the
+//!   recogniser: Whisper turbo takes about a second for the window on a fast processor. A slower one
+//!   checks less often – the next check waits for the last – and a wake word between two checks may be
+//!   missed.
 //!
 //! [`strip_wake_phrase`] takes the wake word off the front of a sentence, for when it was recorded
 //! with it.
 
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 
-use super::audio::{FRAMES_PER_SECOND, NoiseFloor, rms};
+use livekit_wakeword::WakeWordModel;
+
+use super::audio::{FRAMES_PER_SECOND, NoiseFloor, RATE, rms};
 use super::{Transcriber, VoiceError, WakeWord};
+
+/// The model "Hey Torro", trained with `livekit-wakeword train` (`docs/assistent.md`, "Weckwort-Modell
+/// trainieren").
+const MODEL: &[u8] = include_bytes!("../../assets/wake/hey_torro.onnx");
+
+/// Its file name; `livekit-wakeword` names the score after the file stem, `hey_torro`.
+const MODEL_FILE: &str = "hey_torro.onnx";
+
+/// The score from which the wake word counts: the trainer calibrates its models to 0.5.
+const THRESHOLD: f32 = 0.5;
+
+/// The wake word heard by the built-in model (see the module). It runs on the listener's beat, without a
+/// thread of its own and without a gate on loudness: the model keeps a state across frames and needs every
+/// one of them.
+pub struct ModelWake {
+    model: WakeWordModel,
+}
+
+impl ModelWake {
+    /// Loads the built-in model. `livekit-wakeword` only loads from a file, so the model is written to
+    /// `<voice>/wake/hey_torro.onnx` first, when the file is missing or holds anything else (a copy cut off
+    /// or damaged, the model of an older version); it goes to a `.part` file of this process first, so a crash
+    /// never leaves half a model behind and two listeners starting at once never write into one file. Fails
+    /// when the folder cannot be written or the model does not load.
+    pub fn load(voice: &Path) -> Result<ModelWake, VoiceError> {
+        let path = write_model(voice).map_err(|err| VoiceError::program("wake word", err))?;
+        let model = WakeWordModel::new(&[path], RATE).map_err(|err| VoiceError::program("wake word", err))?;
+        Ok(ModelWake { model })
+    }
+}
+
+/// Writes [`MODEL`] into `<voice>/wake/` unless it is there byte for byte; where it lies. The whole file is
+/// compared, not its size: a newer model of the same architecture has the same size.
+fn write_model(voice: &Path) -> std::io::Result<PathBuf> {
+    let folder = voice.join("wake");
+    let path = folder.join(MODEL_FILE);
+    if is_model(&path) {
+        return Ok(path);
+    }
+    std::fs::create_dir_all(&folder)?;
+    let part = folder.join(format!("{MODEL_FILE}.{}.part", std::process::id()));
+    let written = std::fs::write(&part, MODEL).and_then(|()| std::fs::rename(&part, &path));
+    if let Err(err) = written {
+        // No half model stays behind; the name holds the process id, so the next start would not overwrite it.
+        let _ = std::fs::remove_file(&part);
+        // Another listener may have put the model there meanwhile and hold it open (Windows refuses the
+        // rename then).
+        if !is_model(&path) {
+            return Err(err);
+        }
+    }
+    Ok(path)
+}
+
+/// Whether `path` is the built-in model byte for byte.
+fn is_model(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() == MODEL.len() as u64)
+        && std::fs::read(path).is_ok_and(|bytes| bytes == MODEL)
+}
+
+impl WakeWord for ModelWake {
+    fn hears(&mut self, frame: &[i16]) -> Result<bool, VoiceError> {
+        let scores = self.model.predict(frame).map_err(|err| VoiceError::program("wake word", err))?;
+        let stem = MODEL_FILE.trim_end_matches(".onnx");
+        if scores.get(stem).is_some_and(|score| *score >= THRESHOLD) {
+            // The next wake word starts afresh, not on the tail of this one.
+            self.reset();
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn reset(&mut self) {
+        if let Err(err) = self.model.reset() {
+            eprintln!("torroassistant: the wake word could not start afresh: {err}");
+        }
+    }
+}
 
 /// How much is kept and turned into text: two seconds, a little more than "Hey Torro" takes.
 const WINDOW_FRAMES: usize = 2 * FRAMES_PER_SECOND;
@@ -262,6 +348,70 @@ mod tests {
         }
         assert!(woke, "the answer came at a later frame");
         wake.reset();
+    }
+
+    /// Issue #765: the built-in model is written into the voice folder and loads; silence never wakes it.
+    #[test]
+    fn the_built_in_model_loads_and_silence_does_not_wake_it() {
+        let voice = tempfile::tempdir().expect("voice folder");
+        let mut wake = ModelWake::load(voice.path()).expect("loads");
+        let written = std::fs::metadata(voice.path().join("wake").join(MODEL_FILE)).expect("written");
+        assert_eq!(written.len(), MODEL.len() as u64);
+        let silence = fixture("silence.wav");
+        for frame in silence.chunks(FRAME).cycle().take(5 * FRAMES_PER_SECOND) {
+            assert!(!wake.hears(frame).expect("hears"), "silence");
+        }
+        wake.reset();
+    }
+
+    /// Issue #765: the built-in model hears "Hey Torro" in a clip of the trainer's held-out test set (a TTS
+    /// voice, not trained on), with the name of its score and the threshold of the app; it wakes once, then
+    /// starts afresh.
+    #[test]
+    fn the_built_in_model_hears_hey_torro() {
+        let voice = tempfile::tempdir().expect("voice folder");
+        let mut wake = ModelWake::load(voice.path()).expect("loads");
+        let woke = fixture("hey_torro.wav").chunks(FRAME).filter(|frame| wake.hears(frame).expect("hears")).count();
+        assert_eq!(woke, 1, "woken once");
+    }
+
+    /// Issue #765: a model file cut off, or another model of the same size, is written anew.
+    #[test]
+    fn a_model_file_cut_off_or_changed_is_written_anew() {
+        let voice = tempfile::tempdir().expect("voice folder");
+        let folder = voice.path().join("wake");
+        std::fs::create_dir_all(&folder).expect("folder");
+        std::fs::write(folder.join(MODEL_FILE), &MODEL[..1024]).expect("cut off");
+        ModelWake::load(voice.path()).expect("loads");
+        assert!(std::fs::read(folder.join(MODEL_FILE)).expect("model") == MODEL);
+        let mut older = MODEL.to_vec();
+        if let Some(last) = older.last_mut() {
+            *last ^= 0xff;
+        }
+        std::fs::write(folder.join(MODEL_FILE), &older).expect("same size");
+        ModelWake::load(voice.path()).expect("loads");
+        assert!(std::fs::read(folder.join(MODEL_FILE)).expect("model") == MODEL, "the built-in model");
+        let left: Vec<_> = std::fs::read_dir(&folder).expect("folder").collect();
+        assert_eq!(left.len(), 1, "no part left");
+    }
+
+    /// Issue #765: a model that cannot be put in place leaves no part file behind.
+    #[test]
+    fn a_failed_write_leaves_no_part_behind() {
+        let voice = tempfile::tempdir().expect("voice folder");
+        let folder = voice.path().join("wake");
+        std::fs::create_dir_all(folder.join(MODEL_FILE)).expect("a folder where the model goes");
+        assert!(ModelWake::load(voice.path()).is_err());
+        let left: Vec<_> = std::fs::read_dir(&folder).expect("folder").collect();
+        assert_eq!(left.len(), 1, "only the folder in the way");
+    }
+
+    /// Issue #765: a voice folder that is a file gives an error, no panic.
+    #[test]
+    fn a_voice_folder_that_is_a_file_fails() {
+        let file = tempfile::NamedTempFile::new().expect("file");
+        let err = ModelWake::load(file.path()).err().expect("fails");
+        assert!(matches!(err, VoiceError::Program { ref program, .. } if program == "wake word"), "{err:?}");
     }
 
     #[test]

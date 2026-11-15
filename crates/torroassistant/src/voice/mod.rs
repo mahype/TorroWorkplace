@@ -13,7 +13,8 @@
 //!
 //! - speech to text with sherpa-onnx ([`recognize`]), as the setting `voice.recognizer` chooses:
 //!   Whisper turbo with the language of the setting `voice.language`, or Parakeet,
-//! - the wake word with the same recogniser on short windows ([`wake::TranscriptWake`]),
+//! - the wake word "Hey Torro" with a small model of its own, built in ([`wake::ModelWake`], issue #765);
+//!   only when it does not load, with the recogniser on short windows ([`wake::TranscriptWake`]),
 //! - the microphone and the sound output with cpal ([`sound`]),
 //! - reading aloud with Pocket TTS ([`pocket`], in the helper [`speech`]).
 //!
