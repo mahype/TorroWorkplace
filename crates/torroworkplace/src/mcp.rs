@@ -2628,6 +2628,9 @@ mod tests {
         assert_eq!(attachment, Ok(Request::GetMailAttachment { id: "m:1".into(), attachment: "2".into() }));
         // Issue #453: the logo is one message's, read from the core's copy only.
         assert_eq!(call("mail_get_sender_logo", json!({"id": "m:1"})), Ok(Request::GetSenderLogo { id: "m:1".into() }));
+        // Issue #781: what was saved of one message, read only.
+        let history = call("mail_list_save_history", json!({"id": "m:1"}));
+        assert_eq!(history, Ok(Request::ListSaveHistory { id: "m:1".into() }));
         let logo = tools().iter().find(|tool| tool.name == "mail_get_sender_logo").cloned().expect("a tool");
         let hints = logo.annotations.expect("hints");
         assert_eq!((hints.read_only_hint, hints.open_world_hint), (Some(true), Some(false)), "never a fetch");
@@ -2639,6 +2642,7 @@ mod tests {
             "mail_get_attachment",
             "mail_overview",
             "mail_get_draft",
+            "mail_list_save_history",
         ];
         let status = tools().iter().find(|tool| tool.name == "mail_index_status").cloned().expect("a tool");
         assert_eq!(status.annotations.and_then(|hints| hints.read_only_hint), Some(true));
