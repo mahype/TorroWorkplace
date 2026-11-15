@@ -21,6 +21,8 @@ pub struct Sentences {
     taken: String,
     /// What was taken but belongs to no complete sentence yet.
     open: String,
+    /// Where in [`Sentences::taken`] [`Sentences::open`] begins: what lies before it was given or dropped.
+    open_at: usize,
     /// Inside a code block (between two lines starting with three backticks).
     in_code: bool,
     /// How many characters were given.
@@ -34,9 +36,13 @@ impl Sentences {
     pub fn push(&mut self, text: &str) -> Vec<String> {
         let common = common_prefix(&self.taken, text);
         if common < self.taken.len() {
-            // Replaced: what was already given stays given; only the rest of the new text counts.
+            // Replaced: what was given stays given; what both agree on and was not given yet stays
+            // open, and whether a code block is open is counted again up to there.
             self.taken.truncate(common);
-            self.open.clear();
+            self.open_at = self.open_at.min(common);
+            self.open = self.taken[self.open_at..].to_string();
+            self.in_code =
+                self.taken[..self.open_at].lines().filter(|line| line.trim_start().starts_with("```")).count() % 2 == 1;
         }
         let new = &text[self.taken.len()..];
         self.taken.push_str(new);
@@ -56,6 +62,7 @@ impl Sentences {
                 self.give(&sentence, &mut pieces);
             }
         }
+        self.open_at = self.taken.len() - self.open.len();
         pieces
     }
 
@@ -189,6 +196,17 @@ mod tests {
         assert_eq!(sentences.push("Eins. Zwei"), ["Eins."]);
         assert_eq!(sentences.push("Eins. Drei. "), ["Drei."], "the new text from where both agree");
         assert!(sentences.finish().is_empty());
+    }
+
+    /// Review of PR #768: a replaced text keeps the start of the sentence both agree on.
+    #[test]
+    fn a_replaced_text_keeps_the_open_start_both_agree_on() {
+        let mut sentences = Sentences::default();
+        assert_eq!(sentences.push("Eins. Zwei und"), ["Eins."]);
+        assert_eq!(sentences.push("Eins. Zwei oder drei. "), ["Zwei oder drei."], "with its start");
+        let mut code = Sentences::default();
+        assert!(code.push("```\nfn main()").is_empty());
+        assert_eq!(code.push("```\nfn x()\n```\nJa. "), ["Ja."], "the code block is counted again");
     }
 
     #[test]
