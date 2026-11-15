@@ -777,6 +777,8 @@ mod tests {
         let part = spoken();
         assert!(part.starts_with(SPOKEN_HEADING));
         assert!(part.contains(&format!("a line with only {SHOWN_MARK} ")), "{part}");
+        // Issue #826: models wrote it bold, after a sentence or below a rule, so the prompt rules those out.
+        assert!(part.contains("on one line of its own: not bold, not after a sentence, no rule"), "{part}");
         assert!(part.contains("spoken part") && part.contains("shown part"), "{part}");
     }
 
