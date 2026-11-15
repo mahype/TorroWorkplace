@@ -14616,9 +14616,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             let name = files.get(at)?.filename.as_deref().map(list::one_line).filter(|name| !name.is_empty());
             sections.first_mut()?.title = Some(name.unwrap_or_else(|| tr("Attachment").to_owned()).into());
             // Where it was saved before (issue #781), after the ways to open and save it.
-            if let Some(part) = part
+            if let Some(file) = files.get(at)
                 && let Some(saved) =
-                    reading.saves.and_then(|saves| mail::saved_menu_section(&mail::saves_of(saves, part)))
+                    reading.saves.and_then(|saves| mail::saved_menu_section(&mail::saves_of(saves, file)))
             {
                 sections.insert(1.min(sections.len()), saved);
             }
