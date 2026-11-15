@@ -73,6 +73,8 @@ mod suggest;
 mod tools;
 mod tray;
 mod ui;
+// Downloads of the speech models (issue #762).
+mod voice_models;
 // The template keys (issue #243): what they are, and binding them on Hyprland (task WS.3).
 mod workflows;
 mod workspace_keys;
