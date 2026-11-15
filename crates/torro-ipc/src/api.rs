@@ -1373,7 +1373,7 @@ impl Request {
         let switches_on = |value: &serde_json::Value| value != &serde_json::Value::Bool(false);
         match self {
             Request::AuthorizeWorkflow { .. } | Request::RevokeWorkflowAuthorization { .. } => true,
-            // Only a person sends what the assistant says to OpenAI (issue #745); qwen, piper and the
+            // Only a person sends what the assistant says to OpenAI (issue #745); Pocket TTS and the
             // core's choice stay on this computer.
             Request::SetSetting { key: crate::SettingKey::SpeechProvider, value } => {
                 value.as_str().is_some_and(|id| id.trim() == crate::SpeechProvider::OpenAi.id())
@@ -2052,6 +2052,10 @@ impl Request {
             Request::Speak { .. } => &SPEAK,
             Request::StopSpeaking => &STOP_SPEAKING,
             Request::SpeechStatus => &SPEECH_STATUS,
+            Request::ListVoiceModels => &LIST_VOICE_MODELS,
+            Request::DownloadVoiceModel { .. } => &DOWNLOAD_VOICE_MODEL,
+            Request::CancelVoiceDownload { .. } => &CANCEL_VOICE_DOWNLOAD,
+            Request::RemoveVoiceModel { .. } => &REMOVE_VOICE_MODEL,
             Request::MapsStatus => &MAPS_STATUS,
             Request::ClearMapsCache => &CLEAR_MAPS_CACHE,
             Request::ListTools => &LIST_TOOLS,
@@ -2321,6 +2325,10 @@ pub static CATALOGUE: &[&Command] = &[
     &SPEAK,
     &STOP_SPEAKING,
     &SPEECH_STATUS,
+    &LIST_VOICE_MODELS,
+    &DOWNLOAD_VOICE_MODEL,
+    &CANCEL_VOICE_DOWNLOAD,
+    &REMOVE_VOICE_MODEL,
     &MAPS_STATUS,
     &CLEAR_MAPS_CACHE,
     &UPDATE_SETTINGS,
@@ -4066,15 +4074,16 @@ static SET_SETTING: Command = Command {
                   unpinned conversations within the hour) or the assistant's voice: `voice_enabled` (only false: \
                   switching the microphone on is for a person, true is forbidden), `wake_word` (\"hey torro\" for \
                   now), `microphone` (a name from settings_voice_status, or \"\" for the default), \
-                  `speak_answers` (true, false), `speech_recognizer` (\"parakeet\", the default and \
-                  faster, or \"whisper\": the program that turns speech into text), `stt_model` (absolute path \
-                  of a whisper.cpp .bin model, or \"\" for the first in the voice folder) or `voice` (absolute \
-                  path of a Piper .onnx voice, or \"\") or \
+                  `speak_answers` (true, false), `speech_recognizer` (\"whisper\", the default, or \
+                  \"parakeet\", faster: the model that turns speech into text, downloaded with \
+                  settings_download_voice_model), `speech_language` (\"auto\", a Whisper language code like \
+                  \"de\" or \"en\", or null for the language of the suite; Parakeet finds the language itself) or \
                   reading answers aloud (settings_speech_status lists providers and voices): `read_aloud` (true, \
-                  false; the chat windows read answers aloud), `speech_provider` (\"qwen\", \"piper\" or null for \
-                  the core's choice; \"openai\" is forbidden: only a person sends answers to OpenAI), \
-                  `qwen_voice` (\"warm_woman\", \"calm_man\" or null) or `openai_voice` (one of the OpenAI voices \
-                  or null) or \
+                  false; the chat windows read answers aloud), `speech_provider` (\"pocket\" or null for the \
+                  core's choice, Pocket TTS on this computer; \"openai\" is forbidden: only a person sends answers \
+                  to OpenAI), `pocket_voice` (\"alba\", \"fantine\", \"marius\", \"warm_woman\", \"calm_man\" or \
+                  null) or `openai_voice` (one of the OpenAI voices or null); `stt_model`, `voice` and `qwen_voice` \
+                  are gone and refused or \
                   `assistant_default` (what a new chat of the assistant starts with: {\"engine\": \"<id from \
                   assistant_list_engines>\", \"model\": \"<model id>\", \"effort\": \"low\"|\"medium\"|\"high\"}, \
                   model and effort optional, or null for the one used last; it writes the slot `chat`, prefer \
@@ -4178,10 +4187,10 @@ static VOICE_STATUS: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Says how talking to the assistant by voice stands: whether the listener runs and waits for the \
-                  wake word or records, whether the local programs it needs are installed (wake word, recording, \
-                  speech to text, speech) and which microphones there are. It runs local checks and may take a \
-                  few seconds. Switching voice on is for a person only; settings_set_setting with voice_enabled \
-                  false switches it off.",
+                  wake word or records, whether each part works (wake word, recording, speech to text, speech: \
+                  a model that is not downloaded or a missing sound device) and which microphones there are. It \
+                  runs local checks and may take a few seconds. Switching voice on is for a person only; \
+                  settings_set_setting with voice_enabled false switches it off.",
 };
 
 // Kept from agents (point 6 of "Was nie nach außen geht"): it opens the microphone.
@@ -4225,9 +4234,10 @@ static SPEAK: Command = Command {
     mcp: Mcp::Tool,
     description: "Reads a text aloud on this computer with the provider and voice of the assistant's settings, \
                   Markdown without its marks, at most 3000 characters read (longer than 20000 is an error). \
-                  Blocks until it was read or stopped, minutes for a long text; the first call with Qwen3-TTS \
-                  loads its model for about a minute. A new call stops the one that reads. With the provider OpenAI the text goes to OpenAI. `unsupported` \
-                  says what is missing (graphics card, program, voice, OpenAI account).",
+                  Blocks until it was read or stopped, minutes for a long text; the first call with Pocket TTS \
+                  loads its model for a few seconds. A new call stops the one that reads. With the provider OpenAI \
+                  the text goes to OpenAI. `unsupported` says what is missing (the model, see \
+                  settings_list_voice_models, a sound output, the OpenAI account).",
 };
 
 static STOP_SPEAKING: Command = Command {
@@ -4243,10 +4253,60 @@ static SPEECH_STATUS: Command = Command {
     area: Area::Settings,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Says who can read the assistant's answers aloud here: the graphics card, whether it is fast \
-                  enough for local voices, the recommended and the current provider (qwen, openai, piper), and \
-                  for each what is missing, its voices with the recommended ones, the model and the command to \
-                  set it up. Runs local checks and may take a few seconds.",
+    description: "Says who can read the assistant's answers aloud here: the recommended and the current provider \
+                  (pocket, openai), and for each what is missing (`model`: download it with \
+                  settings_download_voice_model), its voices with the recommended ones and its model. Runs local \
+                  checks and may take a few seconds.",
+};
+
+static LIST_VOICE_MODELS: Command = Command {
+    name: "settings.list_voice_models",
+    area: Area::Settings,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Lists the models the assistant listens and speaks with on this computer: id, name, kind \
+                  (`recognition` or `speech`), size in bytes, whether recommended, and state (`missing`, \
+                  `running`, `ready`, `failed` with `error`, `cancelled`) with the bytes loaded (`completed`). \
+                  The list is fixed. Ask about once a second while one downloads.",
+};
+
+// Admin like ai.pull_model: it loads up to a gigabyte onto the person's computer. Only models of the fixed
+// list, from a fixed revision with a checked hash, so nothing else can be loaded.
+static DOWNLOAD_VOICE_MODEL: Command = Command {
+    name: "settings.download_voice_model",
+    area: Area::Settings,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Downloads a model of settings_list_voice_models from Hugging Face onto this computer, in the \
+                  background; returns the list with it `running`. A cancelled download goes on where it stopped. \
+                  Needs the person's approval. Follow it with settings_list_voice_models until `ready`; then \
+                  speech_recognizer or speech_provider can use it. `not-found` for a model not on the list; \
+                  `busy` while it downloads already.",
+};
+
+// Admin, not Write like ai.cancel_pull: the area settings has no level between reading and admin, and a
+// level only for cancelling would mean nothing to people granting rights. What was loaded stays.
+static CANCEL_VOICE_DOWNLOAD: Command = Command {
+    name: "settings.cancel_voice_download",
+    area: Area::Settings,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Cancels the running download of a model by its id from settings_list_voice_models; returns the \
+                  list with it `cancelled`. What was loaded stays, and the next download goes on there. A model \
+                  that does not download stays as it is. `not-found` for a model not on the list.",
+};
+
+// Admin like apps.uninstall_app, so it always waits for the person: dictating or reading aloud with the
+// model stops working until it is downloaded again.
+static REMOVE_VOICE_MODEL: Command = Command {
+    name: "settings.remove_voice_model",
+    area: Area::Settings,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Removes a model of settings_list_voice_models from this computer, with what a cancelled \
+                  download left; a running download is cancelled first. Returns the list with it `missing`. \
+                  Needs the person's approval. Dictating or reading aloud with the model needs a new download \
+                  afterwards. `not-found` for a model not on the list.",
 };
 
 static MAPS_STATUS: Command = Command {
@@ -7236,6 +7296,10 @@ mod tests {
             Request::Speak { text: "Good morning.".into() },
             Request::StopSpeaking,
             Request::SpeechStatus,
+            Request::ListVoiceModels,
+            Request::DownloadVoiceModel { model: "whisper-turbo".into() },
+            Request::CancelVoiceDownload { model: "whisper-turbo".into() },
+            Request::RemoveVoiceModel { model: "parakeet".into() },
             Request::MapsStatus,
             Request::ClearMapsCache,
             Request::ListTools,
@@ -8073,7 +8137,7 @@ mod tests {
         let provider = |value| Request::SetSetting { key: SettingKey::SpeechProvider, value };
         let online = provider(serde_json::json!("openai"));
         assert!(online.kept_for_people() && provider(serde_json::json!(" openai ")).kept_for_people());
-        for local in [serde_json::json!("qwen"), serde_json::json!("piper"), serde_json::Value::Null] {
+        for local in [serde_json::json!("pocket"), serde_json::Value::Null] {
             assert!(!provider(local).kept_for_people());
         }
         let mut rights = RightsTemplate::FullAccess.rights();
@@ -8081,12 +8145,32 @@ mod tests {
             rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
         }
         assert!(!rights.allows_request(&online));
-        assert!(rights.allows_request(&provider(serde_json::json!("qwen"))));
+        assert!(rights.allows_request(&provider(serde_json::json!("pocket"))));
         for request in [Request::Speak { text: "Hello".into() }, Request::StopSpeaking] {
             assert_eq!(request.operation().command.mcp, Mcp::Tool);
             assert_eq!(request.operation().access, Access::Write);
         }
         assert_eq!(Request::SpeechStatus.operation().access, Access::Read);
+    }
+
+    /// Issue #762, decision 8: listing the models is read; downloading, cancelling and removing are admin
+    /// and wait for the person like ai.pull_model and apps.uninstall_app; all are tools.
+    #[test]
+    fn voice_models_are_tools_of_settings() {
+        for (name, access) in [
+            ("settings.list_voice_models", Access::Read),
+            ("settings.download_voice_model", Access::Admin),
+            ("settings.cancel_voice_download", Access::Admin),
+            ("settings.remove_voice_model", Access::Admin),
+        ] {
+            let command = CATALOGUE.iter().find(|command| command.name == name).expect(name);
+            assert_eq!((command.area, command.access, command.mcp), (Area::Settings, access, Mcp::Tool), "{name}");
+        }
+        let download = Request::DownloadVoiceModel { model: "parakeet".into() };
+        assert_eq!(
+            serde_json::to_value(&download).expect("json"),
+            serde_json::json!({"method": "settings.download_voice_model", "model": "parakeet"})
+        );
     }
 
     /// Issue #325: choosing the slots, recommending and downloading are commands of `ai` with their
@@ -8961,11 +9045,13 @@ mod tests {
                 "microphone",
                 "speak_answers",
                 "speech_recognizer",
+                "speech_language",
                 "stt_model",
                 "voice",
                 "read_aloud",
                 "speech_provider",
                 "qwen_voice",
+                "pocket_voice",
                 "openai_voice",
                 "assistant_default",
                 "setup",
