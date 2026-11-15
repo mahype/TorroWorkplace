@@ -59,7 +59,7 @@ pub fn update(state: &mut State, message: Message, _data: &Data) -> Action {
             if !state.deciding.insert(id.clone()) {
                 return Action::None;
             }
-            Action::Send(Request::DecideApproval { id, allow })
+            Action::Send(Request::DecideApproval { id, allow, scope: None })
         }
         Message::ToggleDetails(id) => {
             if !state.expanded.remove(&id) {
@@ -128,19 +128,30 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
 /// the time left below it, "Deny" and "Allow" at the right. While its decision is on its way both
 /// buttons are disabled. With details, "Show details" below opens them ([`details_block`]).
 fn open_row<'a>(state: &State, approval: &'a ApprovalInfo, now: DateTime<Utc>) -> Element<'a, Message> {
-    let detail = format!("{} · {}", approval.client_name, time_left(approval.expires, now));
+    // A command of the terminal is allowed on the card in the assistant's chat only (issue #754, decision 3): here
+    // a hint where, and only "Deny".
+    let terminal = torro_ipc::tools::is_terminal_command(&approval.command);
+    let detail = match terminal {
+        true => format!(
+            "{} · {} · {}",
+            approval.client_name,
+            time_left(approval.expires, now),
+            tr("Decide in the assistant's chat")
+        ),
+        false => format!("{} · {}", approval.client_name, time_left(approval.expires, now)),
+    };
     let lines = column![
         typo::text(typo::body(), approval.summary.as_str()).wrapping(Wrapping::WordOrGlyph),
         one_line(typo::text(typo::meta().tabular(), detail).style(theme::text_2)),
     ];
     let on =
         |allow| (!state.deciding.contains(&approval.id)).then(|| Message::Decide { id: approval.id.clone(), allow });
-    let buttons = row![
-        widgets::text_button(Some(Icon::X), tr("Deny"), style::button::secondary, on(false)),
-        widgets::text_button(Some(Icon::Check), tr("Allow"), style::button::secondary, on(true)),
-    ]
-    .spacing(space::s())
-    .align_y(Alignment::Center);
+    let mut buttons = row![widgets::text_button(Some(Icon::X), tr("Deny"), style::button::secondary, on(false))];
+    if !terminal {
+        buttons =
+            buttons.push(widgets::text_button(Some(Icon::Check), tr("Allow"), style::button::secondary, on(true)));
+    }
+    let buttons = buttons.spacing(space::s()).align_y(Alignment::Center);
     let content = row![lines.width(Fill), buttons].spacing(space::l()).align_y(Alignment::Center);
     let content = column![content].push(details_block(state, approval)).spacing(space::xs());
     container(content).width(Fill).padding([space::m(), space::l()]).into()
@@ -259,12 +270,12 @@ mod tests {
     fn allow_and_deny_send_the_decision_once() {
         let mut state = State::default();
         let allow = update(&mut state, Message::Decide { id: "9c1f".into(), allow: true }, &Data::default());
-        assert!(matches!(allow, Action::Send(Request::DecideApproval { ref id, allow: true }) if id == "9c1f"));
+        assert!(matches!(allow, Action::Send(Request::DecideApproval { ref id, allow: true, .. }) if id == "9c1f"));
         let again = update(&mut state, Message::Decide { id: "9c1f".into(), allow: false }, &Data::default());
         assert!(matches!(again, Action::None), "a second click while the first is on its way sends nothing");
 
         let deny = update(&mut state, Message::Decide { id: "77aa".into(), allow: false }, &Data::default());
-        assert!(matches!(deny, Action::Send(Request::DecideApproval { ref id, allow: false }) if id == "77aa"));
+        assert!(matches!(deny, Action::Send(Request::DecideApproval { ref id, allow: false, .. }) if id == "77aa"));
 
         answered(&mut state);
         let retry = update(&mut state, Message::Decide { id: "9c1f".into(), allow: true }, &Data::default());

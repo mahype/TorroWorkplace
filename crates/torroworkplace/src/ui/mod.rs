@@ -1052,6 +1052,21 @@ impl Ui {
                 launch::demo_connections(&mut self.data);
                 vec![Message::Select(Section::Connections), Message::Connections(connections::Message::SearchProviders)]
             }
+            // The same, on the page of the terminal (issue #754), switched on with two entries for good.
+            Open::Terminal => {
+                launch::demo_connections(&mut self.data);
+                let terminal = &mut self.data.settings.tools.terminal;
+                terminal.enabled = true;
+                terminal.mode = torro_core::settings::TerminalMode::Dangerous;
+                terminal.always = vec![
+                    torro_core::settings::TerminalAlways::Pattern { key: "recursive delete".into() },
+                    torro_core::settings::TerminalAlways::Command {
+                        command: "cargo test --workspace".into(),
+                        folder: "/home/anna/Projects/torro".into(),
+                    },
+                ];
+                vec![Message::Select(Section::Connections), Message::Connections(connections::Message::Terminal)]
+            }
             // No server installed, the PDF tool as it starts, the assistant without it.
             Open::ConnectionsEmpty => {
                 launch::demo_connections_empty(&mut self.data);
@@ -3758,7 +3773,9 @@ mod tests {
             approvals::Message::Decide { id: id.clone(), allow: false },
             &demo.data,
         );
-        assert!(matches!(action, Action::Send(Request::DecideApproval { id: ref sent, allow: false }) if *sent == id));
+        assert!(
+            matches!(action, Action::Send(Request::DecideApproval { id: ref sent, allow: false, .. }) if *sent == id)
+        );
         assert_eq!(ui(Section::Approvals).perform(action).units(), 1, "outside the demo it is a request");
 
         let empty = started(&["--demo", "--open", "approvals-empty"]);
