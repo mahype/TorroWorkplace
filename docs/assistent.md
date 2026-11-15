@@ -864,6 +864,7 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
 | Anbieter | Läuft | Braucht | Stimmen |
 |---|---|---|---|
 | **Lokal: Pocket TTS** (empfohlen) | eingebaut, auf dem Prozessor, ohne Grafikkarte und Netz, Ton stückweise schon während des Rechnens (erster Ton nach wenigen Sekunden) | das Modell `pocket-de` (150 MB, Knopf „Download“) | Alba (empfohlen), Fantine, Marius von Kyutai und die Vorlagen des Assistenten „Warm woman“ und „Calm man“; jede Antwort wird aus der Aufnahme der Stimme geklont |
+| **Lokal: Qwen3-TTS (Grafikkarte)** (nur eigener Build, Issue #764) | eingebaut über Crane (Rust, candle), auf einer NVIDIA-Grafikkarte, ohne Python; Stück für Stück bis 200 Zeichen, erster Ton nach etwa einer Sekunde bei kurzen Sätzen | einen Build mit `qwen-cuda` ([install.md](install.md#qwen3-tts-selbst-bauen-nur-nvidia)), eine NVIDIA-Karte mit etwa 8 GB freiem Grafikspeicher und das Modell `qwen3-tts` (2,5 GB, Knopf „Download“) | die Vorlagen des Assistenten „Warm woman“ (empfohlen) und „Calm man“, mit ihrem Transkript geklont (`qwen_voice`) |
 | **Online: OpenAI** | `gpt-4o-mini-tts` über `POST /v1/audio/speech` | das OpenAI-Konto aus Einstellungen › KI (kein eigener Schlüssel) | die 13 Stimmen der Schnittstelle, empfohlen Marin und Cedar |
 
 - **Wer liest:** Ohne eigene Wahl Pocket TTS. OpenAI nur nach ausdrücklicher Wahl, weil der Text jeder Antwort
@@ -879,11 +880,17 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
   („Ja.“), endet dahinter; ein langer, geteilter Satz hat die Pause nur an seinem Ende. OpenAI: „Speaking style“ in eigenen
   Worten (`openai_style`, bis 500 Zeichen, geht als `instructions` an OpenAI); ein Tempo nimmt
   `gpt-4o-mini-tts` nicht an, „langsam“ im Sprechstil wirkt dort. Agenten dürfen alle drei setzen; der Stil geht
-  nur an OpenAI, wenn ein Mensch OpenAI gewählt hat.
-- **Qwen3-TTS und Piper** sind mit #762 entfallen: Qwen lief nur mit Python und Grafikkarte, Piper bringt eine
-  GPL-Lizenz mit. Wer eines davon gewählt hatte, liest danach mit Pocket TTS; `speech_provider` `"qwen"` oder
-  `"piper"` und die alten Schlüssel `qwen_voice`, `stt_model`, `voice` beantwortet der Dienst mit `unsupported`.
-  Qwen ohne Python ist #764.
+  nur an OpenAI, wenn ein Mensch OpenAI gewählt hat. Qwen3-TTS hat keine Regler: Es spricht in seinem eigenen Tempo.
+- **Piper** ist mit #762 entfallen, weil es eine GPL-Lizenz mitbringt; wer es gewählt hatte, liest mit Pocket
+  TTS. `speech_provider` `"piper"` und die alten Schlüssel `stt_model`, `voice` beantwortet der Dienst mit
+  `unsupported`.
+- **Qwen3-TTS** lief bis #762 nur mit Python; seit #764 ist es ohne Python eingebaut, aber nur in Builds mit der
+  Bau-Option `qwen-cuda`, weil es eine NVIDIA-Karte und CUDA braucht. Die Releases enthalten es nicht: Dort
+  fehlt es in der Auswahl und in der Modell-Liste, `speech_provider` `"qwen"` und `qwen_voice` beantwortet der
+  Dienst mit `unsupported`, und eine Einstellung mit Qwen liest mit Pocket TTS. In einem Build mit Qwen gilt sie
+  wieder samt der gewählten Stimme. Ohne NVIDIA-Karte sagt die Zeile unter „Provider“ „No NVIDIA graphics card
+  was found.“ Den Messbericht mit Crane und qwen3-tts.cpp, Proben und der Begründung der Wahl enthält
+  [messung-qwen3-tts.md](messung-qwen3-tts.md). Pocket TTS bleibt die empfohlene Stimme.
 - **Stimmen und Lizenzen:** Cosette und Jean fehlen, weil ihre Aufnahmen nur nichtgewerblich genutzt werden
   dürfen. Die Einstellungen nennen die Urheber: Kyutai (Pocket TTS, CC BY 4.0), Alba MacKenna (CC BY 4.0),
   VCTK (CC BY 4.0), Stimmspende (CC0).
@@ -895,8 +902,10 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
   Fenster die Unterhaltung, endet das Vorlesen.
 - **Technisch:** Der Dienst hält den Helfer `torroassistant --speak` am Laufen (JSON-Zeilen, ein Auftrag
   zugleich, nach zehn Minuten ohne Auftrag beendet er sich und gibt den Grafikspeicher frei; ein anderer Anbieter
-  beendet ihn sofort, eine andere Stimme nicht, sie geht mit dem nächsten Auftrag mit). Pocket TTS rechnet
-  im Helfer, der das Modell einmal lädt; der Ton geht über cpal an die Tonausgabe des Systems. Den Ton von
+  beendet ihn sofort, eine andere Stimme nicht, sie geht mit dem nächsten Auftrag mit). Pocket TTS und Qwen3-TTS
+  rechnen im Helfer, der das Modell einmal lädt, immer nur einer: Liest der andere, endet der Rechenfaden des
+  ersten, und Qwen gibt seinen Grafikspeicher frei. Qwen schneidet die Stille vor dem ersten Wort jedes Stücks
+  bis auf 50 ms ab und begrenzt die Länge eines Stücks, weil das Modell manchmal nicht von selbst endet; der Ton geht über cpal an die Tonausgabe des Systems. Den Ton von
   OpenAI holt der Dienst selbst, weil er den Schlüssel hält, in Stücken aus ganzen Sätzen (bis 500
   Zeichen), das nächste, während das vorige spielt. Vorgelesen werden höchstens 3000 Zeichen, ohne
   Markdown. Der Text kommt nicht ins Protokoll.
