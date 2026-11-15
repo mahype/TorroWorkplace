@@ -940,7 +940,7 @@ mod tests {
         };
         loaded(&mut state, &none);
         assert!(state.menus.is_open(&Choice::Recognizer) && overlay(&state, &none).is_some());
-        let _ = view(&state, &data);
+        let _ = view(&state, &data, VoiceTab::Conversation);
         let chosen = update(&mut state, Message::Recognizer(Recognizer::Whisper), &data);
         assert_eq!(sent(chosen), (SettingKey::SpeechRecognizer, serde_json::json!("whisper")));
         assert_eq!(state.menus.open(), None, "the choice closes it");
