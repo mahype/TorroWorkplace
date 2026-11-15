@@ -116,6 +116,10 @@ pub struct State {
     models: Option<Vec<VoiceModel>>,
     /// A request about the models is out; its answer comes to [`answered`].
     asking_models: bool,
+    /// "Download", "Cancel" or "Remove" is out. While it is, the preview and the test wait, and while
+    /// they run, these buttons wait: [`answered`] learns no more than the answer, so only one of them
+    /// may be out to know whose refusal it is (review of #762).
+    changing_models: bool,
     /// Why the last request about the models was refused (`busy`, `not-found`), from the core.
     models_failed: Option<String>,
     /// A download ended since the last load: the page loads again, so "Talk to the assistant" and the
@@ -250,7 +254,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             set(key, serde_json::Value::String(id))
         }
         Message::Preview => {
-            if state.previewing {
+            if state.previewing || state.changing_models {
                 return Action::None;
             }
             state.previewing = true;
@@ -260,13 +264,18 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         // The preview's own answer comes once it stopped ([`answered`]).
         Message::StopPreview => Action::send(Request::StopSpeaking),
         Message::TestVoice => {
-            if state.testing {
+            if state.testing || state.changing_models {
                 return Action::None;
             }
             state.testing = true;
             state.heard = None;
             // The answer is the point, so it comes back to this section ([`answered`]).
             Action::Ask(Request::TestVoice)
+        }
+        Message::Download(_) | Message::CancelDownload(_) | Message::Remove(_)
+            if state.previewing || state.testing || state.changing_models =>
+        {
+            Action::None
         }
         Message::Download(model) => ask_models(state, Request::DownloadVoiceModel { model }),
         Message::CancelDownload(model) => ask_models(state, Request::CancelVoiceDownload { model }),
@@ -292,6 +301,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
 /// A request about the models; its answer, the list, comes back to [`answered`].
 fn ask_models(state: &mut State, request: Request) -> Action {
     state.asking_models = true;
+    state.changing_models = true;
     state.models_failed = None;
     Action::Ask(request)
 }
@@ -303,6 +313,7 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) {
     match result {
         Ok(Response::VoiceModels { models }) => {
             state.asking_models = false;
+            state.changing_models = false;
             // A download that ran and stopped: the page loads again on the next tick.
             let before = state.models.as_deref().unwrap_or_default();
             let ended = before.iter().any(|old| {
@@ -320,16 +331,18 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) {
         }
         // The preview read to its end or was stopped (issue #745).
         Ok(Response::Ok) if state.previewing => state.previewing = false,
-        // A refusal goes to what waits for one the person sees: the preview and the test first. The
-        // list of models is asked again every second anyway, so it never waits for good (review of #762).
+        // A refusal of a change of the models: the preview and the test do not run meanwhile.
+        Err(message) if state.changing_models => {
+            state.asking_models = false;
+            state.changing_models = false;
+            state.models_failed = Some(message.clone());
+        }
+        // Otherwise it is the preview's or the test's: the list of models that may be out as well only
+        // fails when the core does not answer at all, and it is asked again a second later.
         Err(message) if state.previewing && !state.testing => {
             state.previewing = false;
             state.asking_models = false;
             state.preview_failed = Some(message.clone());
-        }
-        Err(message) if state.asking_models && !state.testing => {
-            state.asking_models = false;
-            state.models_failed = Some(message.clone());
         }
         Ok(Response::Transcript { text }) => {
             state.testing = false;
@@ -522,7 +535,12 @@ fn read_aloud_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message
         setting_row(None, tr("Provider"), detail, state.menus.button(Choice::Provider, label, Message::Menus));
     let preview = match state.previewing {
         true => widgets::text_button(None, tr("Stop"), style::button::secondary, Some(Message::StopPreview)),
-        false => widgets::text_button(None, tr("Preview"), style::button::secondary, Some(Message::Preview)),
+        false => widgets::text_button(
+            None,
+            tr("Preview"),
+            style::button::secondary,
+            (!state.changing_models).then_some(Message::Preview),
+        ),
     };
     let chosen = chosen_voice(data, current);
     let recommended = voices_of(data, current).iter().any(|(id, recommended)| *recommended && *id == chosen);
@@ -575,7 +593,7 @@ fn voice_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
             None,
             tr("Say something"),
             style::button::secondary,
-            can_listen.then_some(Message::TestVoice),
+            (can_listen && !state.changing_models).then_some(Message::TestVoice),
         ),
     };
     let test = setting_row(None, tr("Test the microphone"), Some(heard_text(state)), test_button);
@@ -626,7 +644,10 @@ fn models_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
             Some(tr("Add the assistant under Apps in Torro Workplace.").to_string()),
             again(),
         )],
-        _ => models_of(state, data).iter().map(model_row).collect(),
+        _ => {
+            let free = !(state.previewing || state.testing || state.changing_models);
+            models_of(state, data).iter().map(|model| model_row(model, free)).collect()
+        }
     };
     if let Some(message) = &state.models_failed {
         rows.push(setting_row(Some(widgets::status_dot(Status::Error)), message.clone(), None, again()));
@@ -642,9 +663,9 @@ fn models_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
 }
 
 /// One model: its name, what it does and its size, and by its state the progress or the reason it
-/// failed, with the one button that fits.
-fn model_row(model: &VoiceModel) -> Element<'_, Message> {
-    let button = |label, message| widgets::text_button(None, label, style::button::secondary, Some(message));
+/// failed, with the one button that fits; the button waits while `free` is false.
+fn model_row(model: &VoiceModel, free: bool) -> Element<'_, Message> {
+    let button = |label, message| widgets::text_button(None, label, style::button::secondary, free.then_some(message));
     let detail = Some(model_detail(model));
     let name = marked(model_name(model), model.recommended);
     match model.state {
@@ -1219,6 +1240,24 @@ mod tests {
         assert_eq!(state.preview_failed.as_deref(), Some("Download the voice first."));
         assert!(!state.previewing && state.models_failed.is_none(), "the preview took the refusal");
         assert_eq!(update(&mut state, Message::ModelTick, &running), Act::Ask(Request::ListVoiceModels));
+    }
+
+    /// Review of #762: a change of the models and the preview or test never run at once, so a refusal
+    /// always reaches the one that asked.
+    #[tokio::test]
+    async fn a_change_of_the_models_and_the_preview_wait_for_each_other() {
+        let data = Data { voice_models: vec![model("parakeet", VoiceModelState::Missing, 0)], ..data().await };
+        let mut state = State::default();
+        let _ = update(&mut state, Message::Download("parakeet".into()), &data);
+        assert!(matches!(update(&mut state, Message::Preview, &data), Act::None), "the preview waits");
+        assert!(matches!(update(&mut state, Message::TestVoice, &data), Act::None), "the test waits");
+        answered(&mut state, &Err("This model is downloading already.".into()));
+        assert_eq!(state.models_failed.as_deref(), Some("This model is downloading already."));
+        assert!(state.preview_failed.is_none() && state.heard.is_none());
+
+        let _ = update(&mut state, Message::Preview, &data);
+        assert!(matches!(update(&mut state, Message::Remove("parakeet".into()), &data), Act::None), "Remove waits");
+        views(&state, &data);
     }
 
     /// Issue #762: every state of a model builds, with its button; nothing asks to install or copy.
