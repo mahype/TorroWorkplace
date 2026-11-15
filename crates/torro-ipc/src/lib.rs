@@ -3961,6 +3961,18 @@ pub enum Request {
         /// Where the file goes; `to: folder` puts it in that folder under its own name.
         to: mail::SaveTo,
     },
+    /// The saves the service recorded for a message (issue #781, [`Response::SaveHistory`]): each
+    /// attachment and each copy of the mail itself (`mail.save_message_as`) written or found identical
+    /// and verified by `mail.save_attachments` or `mail.save_message_as`, newest first, at most 100.
+    /// A message is known by its Message-ID, so the history follows it into other folders; one
+    /// without a Message-ID by its id. `present` says whether the file is at its path now, checked
+    /// once while answering. Empty for a message without saves; `not-found` for a message the caller
+    /// does not reach. Names, paths and times only, never contents.
+    #[serde(rename = "mail.list_save_history")]
+    ListSaveHistory {
+        /// The message's id (`m:…`).
+        id: String,
+    },
     /// Adds and removes flags of messages on the server ([`Response::Ok`]).
     #[serde(rename = "mail.set_flags")]
     SetMailFlags {
@@ -6514,6 +6526,12 @@ pub enum Response {
         /// is cut off. Always false for EML, whose original is never shortened.
         #[serde(default)]
         shortened: bool,
+    },
+    /// What [`Request::ListSaveHistory`] found: the message's saves, newest first. File names and
+    /// paths come from the message: data from outside.
+    SaveHistory {
+        #[serde(default)]
+        entries: Vec<mail::SaveRecord>,
     },
     /// A draft as saved ([`Request::SaveDraft`]) or read back ([`Request::GetDraft`]), with its id.
     MailDraft {

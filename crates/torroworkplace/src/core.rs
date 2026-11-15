@@ -7424,7 +7424,8 @@ impl Core {
             | Request::UpdateSaveTarget { .. }
             | Request::RemoveSaveTarget { .. }
             | Request::SaveMailAttachments { .. }
-            | Request::SaveMailAs { .. }) => self.save_request(request, reach).await,
+            | Request::SaveMailAs { .. }
+            | Request::ListSaveHistory { .. }) => self.save_request(request, reach).await,
             // Running a mail filter (issue #339) also puts the category it set on the inbox entries
             // of those mails, as the category jobs do.
             request @ Request::ApplyMailFilter { .. } => self.apply_mail_filter(request, reach).await,

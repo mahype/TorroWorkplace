@@ -1386,6 +1386,7 @@ impl PimService {
             | Request::RemoveSaveTarget { .. }
             | Request::SaveMailAttachments { .. }
             | Request::SaveMailAs { .. }
+            | Request::ListSaveHistory { .. }
             | Request::ListMailFilters
             | Request::CreateMailFilter { .. }
             | Request::UpdateMailFilter { .. }
