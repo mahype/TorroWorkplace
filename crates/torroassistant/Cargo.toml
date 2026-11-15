@@ -45,6 +45,12 @@ rfd.workspace = true
 unicode-segmentation.workspace = true
 webbrowser.workspace = true
 
+# Linux speaks the PulseAudio protocol (issue #772): PipeWire serves it through `pipewire-pulse`, so the microphones come
+# with the names the volume control shows and a device another program uses can still be chosen. Pure Rust, no extra
+# system package; without the socket cpal falls back to ALSA.
+[target.'cfg(target_os = "linux")'.dependencies]
+cpal = { workspace = true, features = ["pulseaudio"] }
+
 [dev-dependencies]
 tempfile.workspace = true
 
