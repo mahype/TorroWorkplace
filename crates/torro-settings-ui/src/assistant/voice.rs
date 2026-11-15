@@ -12,9 +12,9 @@
 //! the provider – Pocket TTS on this computer or OpenAI – and its voice from a dropdown each with the
 //! recommended one marked, the credits of the voices, and "Preview", which reads a sentence
 //! ([`Message::Preview`], an [`crate::Action::Ask`] of `assistant.speak`). Below the voice how it
-//! speaks (issue #782): for Pocket TTS "Speed" and "Pause between sentences" as steps `− value +`
+//! speaks (issue #782): for Pocket TTS "Speed" and "Sentence pause" as steps `− value +`
 //! like the zoom of the suite (`pocket_speed`, `pocket_pause`), for OpenAI "Speaking style" in a
-//! person's words (`openai_style`), and "Reset" back to how it spoke before.
+//! person's words (`openai_style`), each row with a "Reset" back to how it spoke before.
 //!
 //! Since issue #763 each of the three groups is a tab of its own ([`VoiceTab`], the row drawn by
 //! [`super::page`]): Read aloud, Conversation, Models, so the page fits the window.
@@ -175,14 +175,14 @@ pub enum Message {
     SpeechVoice(SpeechProvider, String),
     /// "−" or "+" of "Speed" (issue #782): the speed of Pocket TTS in percent.
     PocketSpeed(u16),
-    /// "−" or "+" of "Pause between sentences": the extra pause of Pocket TTS in milliseconds.
+    /// "−" or "+" of "Sentence pause": the extra pause of Pocket TTS in milliseconds.
     PocketPause(u16),
     /// The field "Speaking style" of OpenAI was typed in.
     TypeStyle(String),
     /// Enter in "Speaking style" or its check: save what is typed, nothing for OpenAI's own way.
     SaveStyle,
-    /// "Reset": how the provider shown speaks goes back to its default.
-    ResetDelivery,
+    /// "Reset" of one of the rows: its setting goes back to its default.
+    Reset(SettingKey),
     /// "Preview": read a sentence with the provider and voice chosen.
     Preview,
     /// "Stop" while the preview reads.
@@ -287,15 +287,11 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             };
             set(SettingKey::OpenAiStyle, value)
         }
-        Message::ResetDelivery => {
-            state.style = None;
-            let keys: &[SettingKey] = match current_provider(data) {
-                SpeechProvider::Pocket => &[SettingKey::PocketSpeed, SettingKey::PocketPause],
-                SpeechProvider::OpenAi => &[SettingKey::OpenAiStyle],
-            };
-            Action::Send(
-                keys.iter().map(|key| Request::SetSetting { key: *key, value: serde_json::Value::Null }).collect(),
-            )
+        Message::Reset(key) => {
+            if key == SettingKey::OpenAiStyle {
+                state.style = None;
+            }
+            set(key, serde_json::Value::Null)
         }
         Message::Preview => {
             if state.previewing || state.changing_models {
@@ -610,13 +606,18 @@ fn read_aloud_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message
     widgets::group(tr("Read aloud"), rows, Some(footer))
 }
 
-/// How `provider` speaks (issue #782): for Pocket TTS "Speed" and "Pause between sentences", for
-/// OpenAI "Speaking style"; then "Reset", which can be pressed while one of them is chosen.
+/// How `provider` speaks (issue #782): for Pocket TTS "Speed" and "Sentence pause", for
+/// OpenAI "Speaking style". Each row ends with its own "Reset", like the zoom of the suite, which can
+/// be pressed while its value is chosen.
 fn delivery_rows<'a>(state: &'a State, data: &'a Data, provider: SpeechProvider) -> Vec<Element<'a, Message>> {
     let voice = &data.settings.voice;
-    let mut rows = Vec::new();
-    let chosen = match provider {
+    let reset = |key: SettingKey, chosen: bool| {
+        widgets::text_button(None, tr("Reset"), style::button::secondary, chosen.then_some(Message::Reset(key)))
+    };
+    match provider {
         SpeechProvider::Pocket => {
+            // One width for both values, so their buttons stand on one axis.
+            let width = widest(&[speed_label(POCKET_SPEEDS.1), pause_label(0), pause_label(POCKET_PAUSES.1)]);
             let speed = voice.pocket_speed_or_default();
             let speed = stepper(
                 speed,
@@ -624,9 +625,9 @@ fn delivery_rows<'a>(state: &'a State, data: &'a Data, provider: SpeechProvider)
                 speed_label(speed),
                 (tr("Slower"), tr("Faster")),
                 Message::PocketSpeed,
-                widest(&[speed_label(POCKET_SPEEDS.1)]),
+                width,
+                reset(SettingKey::PocketSpeed, voice.pocket_speed.is_some()),
             );
-            rows.push(setting_row(None, tr("Speed"), None, speed));
             let pause = voice.pocket_pause_or_default();
             let pause = stepper(
                 pause,
@@ -634,11 +635,11 @@ fn delivery_rows<'a>(state: &'a State, data: &'a Data, provider: SpeechProvider)
                 pause_label(pause),
                 (tr("Shorter pause"), tr("Longer pause")),
                 Message::PocketPause,
-                widest(&[pause_label(0), pause_label(POCKET_PAUSES.1)]),
+                width,
+                reset(SettingKey::PocketPause, voice.pocket_pause.is_some()),
             );
             let detail = Some(tr("Extra pause after each sentence").to_string());
-            rows.push(setting_row(None, tr("Pause between sentences"), detail, pause));
-            voice.pocket_speed.is_some() || voice.pocket_pause.is_some()
+            vec![setting_row(None, tr("Speed"), None, speed), setting_row(None, tr("Sentence pause"), detail, pause)]
         }
         SpeechProvider::OpenAi => {
             let stored = voice.openai_style_or_none();
@@ -649,20 +650,18 @@ fn delivery_rows<'a>(state: &'a State, data: &'a Data, provider: SpeechProvider)
             let typed = state.style.as_deref().map(str::trim);
             let save = typed.is_some_and(|typed| Some(typed).filter(|t| !t.is_empty()) != stored);
             let save = widgets::icon_button(Icon::Check, tr("Save speaking style"), save.then_some(Message::SaveStyle));
-            let control = row![input, save].spacing(space::s()).align_y(Alignment::Center);
+            let control = row![input, save, reset(SettingKey::OpenAiStyle, voice.openai_style.is_some())]
+                .spacing(space::s())
+                .align_y(Alignment::Center);
             let detail = Some(tr("How OpenAI speaks: tone, pace, mood").to_string());
-            rows.push(setting_row(None, tr("Speaking style"), detail, control));
-            voice.openai_style.is_some()
+            vec![setting_row(None, tr("Speaking style"), detail, control)]
         }
-    };
-    let reset =
-        widgets::text_button(None, tr("Reset"), style::button::secondary, chosen.then_some(Message::ResetDelivery));
-    rows.push(setting_row(None, "", None, reset));
-    rows
+    }
 }
 
-/// `− value +` for a value of `steps` (from, to, step), like the zoom of the suite: each button sends the
-/// next step with `message` and does nothing at its end; `width` keeps the value from moving.
+/// `− value +` and `reset` for a value of `steps` (from, to, step), like the zoom of the suite: each
+/// button sends the next step with `message` and does nothing at its end; `width` keeps the value
+/// from moving.
 fn stepper<'a>(
     value: u16,
     (from, to, step): (u16, u16, u16),
@@ -670,6 +669,7 @@ fn stepper<'a>(
     (less, more): (&'static str, &'static str),
     message: fn(u16) -> Message,
     width: f32,
+    reset: Element<'a, Message>,
 ) -> Element<'a, Message> {
     let down = (value > from).then(|| message(value.saturating_sub(step).max(from)));
     let up = (value < to).then(|| message((value + step).min(to)));
@@ -677,7 +677,8 @@ fn stepper<'a>(
     row![
         widgets::icon_button(Icon::Minus, less, down),
         container(shown).center_x(width),
-        widgets::icon_button(Icon::Plus, more, up)
+        widgets::icon_button(Icon::Plus, more, up),
+        reset,
     ]
     .spacing(space::xs())
     .align_y(Alignment::Center)
@@ -1492,7 +1493,7 @@ mod tests {
     }
 
     /// Issue #782: speed and pause send their steps, the speaking style what is typed (nothing as
-    /// `null`), and "Reset" the keys of the provider shown back to `null`.
+    /// `null`), and each "Reset" its key back to `null`.
     #[tokio::test]
     async fn how_the_voice_speaks_sends_its_settings() {
         let data = data().await;
@@ -1521,21 +1522,18 @@ mod tests {
             (SettingKey::OpenAiStyle, serde_json::Value::Null)
         );
 
-        let null = |key| Request::SetSetting { key, value: serde_json::Value::Null };
+        for key in [SettingKey::PocketSpeed, SettingKey::PocketPause, SettingKey::OpenAiStyle] {
+            assert_eq!(sent(update(&mut state, Message::Reset(key), &data)), (key, serde_json::Value::Null));
+        }
+        assert_eq!(state.style, None, "the typed style goes with its reset");
         let pocket =
             Data { speech: Some(SpeechStatus { current: SpeechProvider::Pocket, ..speech.clone() }), ..data.clone() };
-        assert_eq!(
-            update(&mut state, Message::ResetDelivery, &pocket),
-            Act::Send(vec![null(SettingKey::PocketSpeed), null(SettingKey::PocketPause)])
-        );
         let openai =
             Data { speech: Some(SpeechStatus { current: SpeechProvider::OpenAi, ..speech.clone() }), ..styled.clone() };
-        assert_eq!(update(&mut state, Message::ResetDelivery, &openai), Act::Send(vec![null(SettingKey::OpenAiStyle)]));
-        assert_eq!(state.style, None, "the typed style goes too");
 
-        // Each provider shows its own rows and "Reset"; the steps end at their edges.
-        assert_eq!(delivery_rows(&state, &pocket, SpeechProvider::Pocket).len(), 3);
-        assert_eq!(delivery_rows(&state, &openai, SpeechProvider::OpenAi).len(), 2);
+        // Each provider shows its own rows, each with its "Reset"; the steps end at their edges.
+        assert_eq!(delivery_rows(&state, &pocket, SpeechProvider::Pocket).len(), 2);
+        assert_eq!(delivery_rows(&state, &openai, SpeechProvider::OpenAi).len(), 1);
         assert_eq!((speed_label(130), pause_label(0)), (trf("{percent}%", &[("percent", &130)]), tr("Normal").into()));
         assert_eq!(pause_label(500), trf("+{n} ms", &[("n", &500)]));
         let mut edges = pocket.clone();

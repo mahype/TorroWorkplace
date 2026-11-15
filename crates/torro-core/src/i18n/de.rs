@@ -9374,7 +9374,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Speed", "Tempo"),
     ("Slower", "Langsamer"),
     ("Faster", "Schneller"),
-    ("Pause between sentences", "Pause zwischen Sätzen"),
+    ("Sentence pause", "Satzpause"),
     ("Extra pause after each sentence", "Zusätzliche Pause nach jedem Satz"),
     ("Shorter pause", "Kürzere Pause"),
     ("Longer pause", "Längere Pause"),

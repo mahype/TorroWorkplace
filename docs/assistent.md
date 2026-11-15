@@ -871,7 +871,7 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
   bekommt von jedem Client `forbidden`, [api.md](api.md), Punkt 6).
 - **Wie die Stimme spricht (Issue #782):** Unter „Voice“ stehen die Regler des gewählten Anbieters, „Reset“
   setzt sie auf den Standard zurück; sie gelten im Chatfenster, nach „Hey Torro“ und beim Vorhören. Pocket TTS:
-  „Speed“ von 70 bis 150 % in Zehnern (`pocket_speed`) und „Pause between sentences“, eine zusätzliche Stille
+  „Speed“ von 70 bis 150 % in Zehnern (`pocket_speed`) und „Sentence pause“, eine zusätzliche Stille
   nach jedem Satz bis 1 s in Viertelsekunden (`pocket_pause`). sherpa-onnx liest bei Pocket kein Tempo, und seine
   Pausen-Einstellung wirkt beim stückweisen Vorlesen nicht: Der Helfer streckt den Ton deshalb selbst, ohne die
   Tonhöhe zu ändern (WSOLA), und rechnet mit Pause jeden Satz einzeln. OpenAI: „Speaking style“ in eigenen
