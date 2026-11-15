@@ -9285,4 +9285,54 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("The assistant app is not installed.", "Die Assistenten-App ist nicht installiert."),
     ("Warm woman", "Frau, warm"),
     ("speaker|Voice", "Stimme"),
+    // Speech built into the assistant, models by button (issue #762).
+    ("Add the assistant under Apps in Torro Workplace.", "Füge den Assistenten in Torro Workplace unter Apps hinzu."),
+    (
+        "Connect a microphone or allow Torro to use it in the system settings.",
+        "Schließ ein Mikrofon an oder erlaube Torro in den Systemeinstellungen, es zu nutzen.",
+    ),
+    (
+        "Connect speakers or headphones to hear the answers.",
+        "Schließ Lautsprecher oder Kopfhörer an, um die Antworten zu hören.",
+    ),
+    (
+        "Download a speech recognition model below first",
+        "Lade zuerst unten ein Modell für die Spracherkennung herunter",
+    ),
+    ("Download the model below first.", "Lade zuerst unten das Modell herunter."),
+    ("Downloaded", "Heruntergeladen"),
+    (
+        "Downloads the models from Hugging Face. They stay on this computer.",
+        "Lädt die Modelle von Hugging Face. Sie bleiben auf diesem Rechner.",
+    ),
+    ("Faster, detects the language itself", "Schneller, erkennt die Sprache selbst"),
+    ("Local: Pocket TTS", "Lokal: Pocket TTS"),
+    (
+        "No connection to the internet. Check the network and try again.",
+        "Keine Verbindung zum Internet. Prüf das Netzwerk und versuch es noch einmal.",
+    ),
+    ("No microphone found", "Kein Mikrofon gefunden"),
+    ("No sound output found", "Keine Tonausgabe gefunden"),
+    ("No sound output was found.", "Es wurde keine Tonausgabe gefunden."),
+    ("Parakeet detects the language itself.", "Parakeet erkennt die Sprache selbst."),
+    ("Pocket TTS reads on this computer.", "Pocket TTS liest auf diesem Rechner vor."),
+    ("The download failed. Try again.", "Das Herunterladen hat nicht geklappt. Versuch es noch einmal."),
+    ("The listener stopped. Check the models below.", "Das Zuhören wurde beendet. Prüf die Modelle unten."),
+    ("The test failed. Check the models below.", "Der Test hat nicht geklappt. Prüf die Modelle unten."),
+    ("This computer could not be checked", "Dieser Rechner ließ sich nicht prüfen"),
+    ("Understands German well, you choose the language", "Versteht Deutsch gut, du wählst die Sprache"),
+    (
+        "Update Torro Workplace to read aloud on this computer.",
+        "Aktualisiere Torro Workplace, um auf diesem Rechner vorzulesen.",
+    ),
+    (
+        "Voices by Kyutai (Pocket TTS, CC BY 4.0), Alba MacKenna (CC BY 4.0), VCTK (CC BY 4.0), voice donation (CC0).",
+        "Stimmen von Kyutai (Pocket TTS, CC BY 4.0), Alba MacKenna (CC BY 4.0), VCTK (CC BY 4.0), Stimmspende (CC0).",
+    ),
+    (
+        "Whisper guesses; short sentences are often taken for another language",
+        "Whisper rät; kurze Sätze hält es oft für eine andere Sprache",
+    ),
+    ("With OpenAI the text of each answer goes to OpenAI.", "Mit OpenAI geht der Text jeder Antwort an OpenAI."),
+    ("{kind} · {size} · paused at {percent} %", "{kind} · {size} · angehalten bei {percent} %"),
 ];
