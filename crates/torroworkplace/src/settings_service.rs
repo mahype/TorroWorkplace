@@ -38,6 +38,23 @@ use torro_core::settings::{
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
 
+/// What `settings.set_setting terminal` takes (issue #754): the fields it names, nothing else.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TerminalChange {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    mode: Option<torro_core::settings::TerminalMode>,
+}
+
+/// What `settings.set_setting terminal_always` takes (issue #754): the entry to remove.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TerminalAlwaysChange {
+    remove: torro_core::settings::TerminalAlways,
+}
+
 /// Held while the settings file is read, changed and written. One lock for every store: in
 /// production there is only the one file, and serialising test stores costs nothing.
 static WRITING: Mutex<()> = Mutex::new(());
@@ -272,12 +289,26 @@ impl SettingsStore {
         if key == SettingKey::AllowedFolder {
             return Err("only a person manages the allowed folders".into());
         }
+        // Nor the terminal (point 15, issue #754): it runs commands on the person's computer.
+        if matches!(key, SettingKey::Terminal | SettingKey::TerminalAlways) {
+            return Err("only a person decides about the terminal".into());
+        }
         // Nor what loads from other providers (point 14, issue #672), in either direction.
         if matches!(key, SettingKey::PrivacyContent | SettingKey::PrivacyProvider) {
             return Err("only a person decides what loads from other providers".into());
         }
         let change = Change::parse(key, value)?;
         self.change(|settings| change.limited_for_clients(settings).apply(settings))
+    }
+
+    /// Keeps `entries` as allowed for the terminal for good (issue #754, "Always" on the approval card): only the
+    /// core calls it, after a person's decision; never a request.
+    pub fn allow_terminal_always(&self, entries: &[torro_core::settings::TerminalAlways]) -> Result<(), String> {
+        self.change(|settings| {
+            for entry in entries {
+                settings.tools.terminal.allow_always(entry.clone());
+            }
+        })
     }
 
     /// Looks for the kind of action `kind` in new mail or not (issue #603, `mail.set_action_kind`):
@@ -677,6 +708,11 @@ enum Change {
     /// One provider allowed, blocked or forgotten (issue #672), checked like [`Change::PrivacyContent`];
     /// the list's limit is checked after it is applied ([`torro_core::privacy::Privacy::check_providers`]).
     PrivacyProvider(ProviderChange),
+    /// The terminal's switch or mode (issue #754). Only a person's (`Request::kept_for_people`,
+    /// [`SettingsStore::set_by_client`]).
+    Terminal(TerminalChange),
+    /// One entry the terminal may do for good taken back (issue #754), checked like [`Change::Terminal`].
+    TerminalAlways(torro_core::settings::TerminalAlways),
 }
 
 impl Change {
@@ -789,6 +825,11 @@ impl Change {
                 Change::PdfTemplate(id, template)
             }
             SettingKey::AllowedFolder => Change::AllowedFolder(FolderChange::from_value(value)?),
+            SettingKey::Terminal => Change::Terminal(serde_json::from_value(value.clone()).map_err(invalid)?),
+            SettingKey::TerminalAlways => {
+                let change: TerminalAlwaysChange = serde_json::from_value(value.clone()).map_err(invalid)?;
+                Change::TerminalAlways(change.remove)
+            }
             SettingKey::WorkspaceShortcuts => {
                 Change::WorkspaceShortcuts(serde_json::from_value(value.clone()).map_err(invalid)?)
             }
@@ -883,6 +924,12 @@ impl Change {
             Change::PdfFolder(folder) => settings.tools.pdf.folder = folder,
             Change::PdfTemplate(id, template) => *settings.tools.pdf.template_mut(id) = template,
             Change::AllowedFolder(change) => settings.tools.change_folder(change),
+            Change::Terminal(change) => {
+                let terminal = &mut settings.tools.terminal;
+                terminal.enabled = change.enabled.unwrap_or(terminal.enabled);
+                terminal.mode = change.mode.unwrap_or(terminal.mode);
+            }
+            Change::TerminalAlways(gone) => settings.tools.terminal.always.retain(|entry| *entry != gone),
             Change::WorkspaceShortcuts(modifiers) => settings.workspaces.modifiers = modifiers,
             // Checked when parsed; an address only when it changes, so one edited into the file by
             // hand does not keep maps from being turned off.

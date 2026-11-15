@@ -663,6 +663,33 @@ pub struct Origin {
     /// command of the conversation asks no more. `None` for every other approval.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consent: Option<WebConsent>,
+    /// For a command of the assistant's terminal (issue #754): its conversation, the mode it was asked in and what an
+    /// "Allow" for the conversation or for good keeps ([`TerminalOrigin::keys`]). `None` for every other approval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<TerminalOrigin>,
+}
+
+/// A command of the assistant's terminal as the assistant's loop hands it to the core (issue #754,
+/// `crate::assistant::Host::run_terminal`): only that way reaches the terminal.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TerminalContext {
+    /// The assistant's conversation the command is for.
+    pub conversation: String,
+    /// The conversation read content from outside (mail, web pages, a program that reads from outside, and what
+    /// else the tools mark `untrusted`): then it runs no more commands.
+    pub tainted: bool,
+}
+
+/// What an approval of a command of the terminal keeps (issue #754, [`Origin::terminal`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalOrigin {
+    /// The assistant's conversation that asked.
+    pub conversation: String,
+    /// The mode the person had chosen when it asked.
+    pub mode: torro_core::settings::TerminalMode,
+    /// What "In this conversation" and "Always" keep: the exact command in its folder, or the patterns it matched.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<torro_core::settings::TerminalAlways>,
 }
 
 /// The person's yes to the tool `web` in one conversation of the assistant or a bot (issue #305,
@@ -1453,6 +1480,14 @@ fn desktop_notifier(socket: Option<PathBuf>) -> Notifier {
     let open: Arc<std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>> = Arc::default();
     let asking = Arc::clone(&open);
     let ask = move |approval: &ApprovalInfo| {
+        // A command of the terminal is allowed on the card in the assistant's chat only (issue #754, decision 3):
+        // the notification says where, with no button to allow it.
+        if torro_ipc::tools::is_terminal_command(&approval.command) {
+            let waiting = tr("The assistant is waiting for your approval in the chat.").to_string();
+            // Without the command: a command line can hold a secret, and the notification service keeps a history.
+            crate::notify::show(waiting, tr("Decide on the card there.").to_string());
+            return;
+        }
         let (close, settled) = tokio::sync::oneshot::channel();
         {
             let mut open = asking.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1465,7 +1500,7 @@ fn desktop_notifier(socket: Option<PathBuf>) -> Notifier {
         crate::notify::ask(approval, settled, move |allow| {
             let (Some(socket), Some(runtime)) = (socket, runtime) else { return };
             runtime.spawn(async move {
-                let request = Request::DecideApproval { id, allow };
+                let request = Request::DecideApproval { id, allow, scope: None };
                 if let Err(err) = torro_ipc::client::call(&socket, &request).await {
                     eprintln!("torroworkplace: cannot pass on the decision: {err}");
                 }
@@ -4909,6 +4944,47 @@ pub fn web_question(
     (summary, details)
 }
 
+/// The question of a command of the assistant's terminal (issue #754): the summary and the lines below it, from the
+/// command as the core checked it (`checked`), never from what the client says about it.
+///
+/// - The summary names the folder and the command, shortened: `Run a command in ~/Projekte/demo: rm -rf build/`, or
+///   `Start a command in the background in …` for `tools.start_command`.
+/// - The details: the folder (`Folder: …`), the whole command made harmless but not shortened (`$ …`), the patterns
+///   of dangerous commands it matched (`Looks dangerous: recursive delete`), the limits, and that there is no sandbox.
+///   In the mode "only dangerous commands" the last line says that "Always" keeps the patterns, else the command.
+pub fn terminal_question(
+    request: &Request,
+    checked: &crate::tools::terminal::Checked,
+    mode: torro_core::settings::TerminalMode,
+) -> (String, Vec<String>) {
+    let folder = harmless(&checked.folder.to_string_lossy());
+    let command = quote(&checked.text);
+    let background = matches!(request, Request::StartCommand { .. });
+    let summary = match background {
+        true => trf(
+            "Start a command in the background in {folder}: {command}",
+            &[("folder", &folder), ("command", &command)],
+        ),
+        false => trf("Run a command in {folder}: {command}", &[("folder", &folder), ("command", &command)]),
+    };
+    let mut details = vec![trf("Folder: {folder}", &[("folder", &folder)]), format!("$ {}", harmless(&checked.text))];
+    if !checked.dangerous.is_empty() {
+        details.push(trf("Looks dangerous: {patterns}", &[("patterns", &checked.dangerous.join(", "))]));
+    }
+    details.push(match background {
+        true => tr("Limits: runs until stopped or the conversation ends, the last 1 MB of output is kept").into(),
+        false => tr("Limits: 120 s, 20,000 characters of output").into(),
+    });
+    details.push(tr("No sandbox: Torro can't stop this command from reading or changing other files.").into());
+    details.push(match mode {
+        torro_core::settings::TerminalMode::Dangerous if !checked.dangerous.is_empty() => {
+            tr("\"Always\" allows every command that matches these patterns, in every allowed folder.").into()
+        }
+        _ => tr("\"Always\" allows exactly this command in this folder.").into(),
+    });
+    (summary, details)
+}
+
 /// The names of `providers` as one phrase: `DuckDuckGo`, `SearXNG and Wikipedia`, `SearXNG,
 /// DuckDuckGo and Wikipedia`; `None` for none.
 fn provider_words(providers: &[torro_ipc::web::SearchProviderId]) -> Option<String> {
@@ -5506,7 +5582,7 @@ pub(crate) mod tests {
         let token = Request::SetGithubToken { token: torro_ipc::Secret::new("ghp_secret") };
         let refused = approvals.open("c1", "One", token, None, "x".into(), at(0)).await;
         assert!(matches!(refused, Err(ApprovalsError::KeptBack("accounts.set_github_token"))));
-        let decide = Request::DecideApproval { id: "x".into(), allow: true };
+        let decide = Request::DecideApproval { id: "x".into(), allow: true, scope: None };
         assert!(matches!(
             approvals.open("c1", "One", decide, None, "x".into(), at(0)).await,
             Err(ApprovalsError::KeptBack(_))
@@ -7184,6 +7260,7 @@ pub(crate) mod tests {
             behalf: None,
             mode: Mode::Default,
             consent: None,
+            terminal: None,
         };
         let delete = |id: &str| Request::DeleteTemplate { id: id.into() };
         let kept = (None, None, origin.clone());

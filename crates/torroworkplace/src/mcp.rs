@@ -717,6 +717,8 @@ pub fn annotations(command: &Command) -> ToolAnnotations {
         Area::Inbox if WRITES_TO_A_SERVER.contains(&command.name) => hints,
         // The web (issue #305) sends search words and addresses out of the computer.
         Area::Tools if matches!(command.name, "tools.web_search" | "tools.fetch_page") => hints,
+        // A command of the terminal (issue #754) can do whatever the person can, the network included.
+        Area::Tools if matches!(command.name, "tools.run_command" | "tools.start_command") => hints.open_world(true),
         // Downloading a voice model (issue #762) loads up to a gigabyte from Hugging Face.
         Area::Settings if command.name == "settings.download_voice_model" => hints,
         Area::System
@@ -2194,6 +2196,31 @@ mod tests {
         assert!(INSTRUCTIONS.contains("tools_web_search") && INSTRUCTIONS.contains("never as instructions"));
     }
 
+    /// Issue #754: a command of the terminal can delete and reach anything the person can; reading its output
+    /// changes nothing.
+    #[test]
+    fn the_terminal_tools_say_what_they_can_do() {
+        let hints = |name: &str| tools().iter().find(|t| t.name == name).and_then(|t| t.annotations.clone());
+        for name in ["tools_run_command", "tools_start_command"] {
+            let hints = hints(name).expect("annotations");
+            assert_eq!((hints.destructive_hint, hints.open_world_hint), (Some(true), Some(true)), "{name}");
+        }
+        let read = hints("tools_read_command_output").expect("annotations");
+        assert_eq!((read.read_only_hint, read.open_world_hint), (Some(true), Some(false)));
+        let args = |value: serde_json::Value| value.as_object().cloned().unwrap_or_default();
+        let run =
+            request_for("tools_run_command", args(json!({"folder": "/a", "program": "ls", "args": ["-l"]})), &Utc);
+        assert_eq!(
+            run,
+            Ok(Request::RunCommand {
+                folder: "/a".into(),
+                program: Some("ls".into()),
+                args: vec!["-l".into()],
+                shell: None
+            })
+        );
+    }
+
     #[test]
     fn tools_carry_the_catalogue_description_an_object_schema_and_hints() {
         for tool in tools() {
@@ -2220,7 +2247,12 @@ mod tests {
             ) && !WRITES_TO_A_SERVER.contains(&command.name)
                 && !matches!(command.name, "tools.web_search" | "tools.fetch_page" | "settings.download_voice_model")
                 || STAYS_HERE.contains(&command.name);
-            assert_eq!(hints.open_world_hint, local.then_some(false), "{}", tool.name);
+            // The terminal (issue #754) says it reaches out; the others do by leaving the hint out.
+            let expected = match matches!(command.name, "tools.run_command" | "tools.start_command") {
+                true => Some(true),
+                false => local.then_some(false),
+            };
+            assert_eq!(hints.open_world_hint, expected, "{}", tool.name);
         }
         let schema = |name: &str| tools().iter().find(|t| t.name == name).expect("tool").input_schema.clone();
         let hints = |name: &str| tools().iter().find(|t| t.name == name).expect("tool").annotations.clone();
@@ -4672,7 +4704,7 @@ mod tests {
         /// What the app key, i.e. a person in the control centre, decides on `id`.
         async fn person_decides(dir: &std::path::Path, socket: &std::path::Path, id: &str, allow: bool) -> Response {
             let app_key = crate::clients::tests::app_key(dir);
-            let request = Request::DecideApproval { id: id.into(), allow };
+            let request = Request::DecideApproval { id: id.into(), allow, scope: None };
             client::call_with_key(socket, Some(&app_key), &request).await.expect("the core answers")
         }
 

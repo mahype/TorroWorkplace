@@ -697,6 +697,10 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::ReadFile { .. } | Request::SearchInFiles { .. } | Request::WriteFile { .. } | Request::EditFile { .. } => {
             Vec::new()
         }
+        // The terminal (issue #754): never a folder, a program, an argument or a shell line; the id of a command in
+        // the background is random, made by the core.
+        Request::RunCommand { .. } | Request::StartCommand { .. } => Vec::new(),
+        Request::ReadCommandOutput { id, .. } | Request::StopCommand { id } => vec![random("command", id)],
         // The web (issue #305): never the search words, the language asked for or the address of a page;
         // a key by its provider only, never the key.
         Request::WebSearch { .. } | Request::FetchPage { .. } | Request::ListSearchProviders => Vec::new(),
