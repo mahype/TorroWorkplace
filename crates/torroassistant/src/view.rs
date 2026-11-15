@@ -199,6 +199,26 @@ fn area_icon(area: Option<Area>) -> Icon {
     }
 }
 
+/// Whether `line` of a terminal approval's details is its warning ("Looks dangerous: …", issue #754), by the start of
+/// the line as the core writes it in the suite's language.
+fn looks_dangerous(line: &str) -> bool {
+    let prefix = tr("Looks dangerous: {patterns}").split("{patterns}").next().unwrap_or_default();
+    !prefix.is_empty() && line.starts_with(prefix)
+}
+
+/// Whether `line` of a terminal approval's details is small print: the limits, the sandbox and what "Always" keeps.
+fn card_small_print(line: &str) -> bool {
+    let starts = |english: &'static str| {
+        let prefix = tr(english).split('{').next().unwrap_or_default();
+        !prefix.is_empty() && line.starts_with(prefix)
+    };
+    starts("Limits: 120 s, 20,000 characters of output")
+        || starts("Limits: runs until stopped or the conversation ends, the last 1 MB of output is kept")
+        || starts("No sandbox: Torro can't stop this command from reading or changing other files.")
+        || starts("\"Always\" allows exactly this command in this folder.")
+        || starts("\"Always\" allows every command that matches {patterns}, in every allowed folder.")
+}
+
 /// How many characters of a command of the terminal the approval card shows before "Show all" (issue #754).
 const COMMAND_SHOWN: usize = 160;
 
@@ -1033,7 +1053,23 @@ impl App {
                 true => format!("{}…", line.chars().take(COMMAND_SHOWN).collect::<String>()),
                 false => line.clone(),
             };
-            card = card.push(typo::text(typo::meta(), shown).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
+            // The warning of a command of the terminal stands out: an icon in attention and text in `TEXT`; its limits
+            // and the missing sandbox are the small print (design review of #754).
+            let warning = terminal && looks_dangerous(line);
+            let small = terminal && !warning && !line.starts_with("$ ") && card_small_print(line);
+            let text = typo::text(typo::meta(), shown).wrapping(Wrapping::WordOrGlyph);
+            let text = match (warning, small) {
+                (true, _) => text.style(theme::text),
+                (false, true) => text.style(theme::text_3),
+                (false, false) => text.style(theme::text_2),
+            };
+            card = card.push(match warning {
+                true => row![tinted(Icon::TriangleAlert, icon::SIZE_SM, |p| p.attention_text), text]
+                    .spacing(space::s())
+                    .align_y(Alignment::Center)
+                    .into(),
+                false => Element::from(text),
+            });
             if long {
                 let (icon, label) = match whole {
                     true => (Icon::ChevronDown, tr("Show less")),

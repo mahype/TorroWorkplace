@@ -1123,7 +1123,9 @@ fn approval(now: DateTime<Utc>) -> ApprovalInfo {
 /// The approval of "Clean the build" (issue #754), made at `now`: a command of the terminal, with the lines the
 /// core writes for it (`approvals::terminal_question`).
 fn terminal_approval(now: DateTime<Utc>) -> ApprovalInfo {
-    let command = "rm -rf build/ && cargo build --release --target-dir build --features demo,shots,voice,terminal";
+    // Longer than the card shows at first (160 characters), so "Show all" is in the pictures.
+    let command = "rm -rf build/ && cargo build --release --target-dir build --features demo,shots,voice,terminal \
+                   --config profile.release.lto=true --config profile.release.codegen-units=1 --locked --offline";
     ApprovalInfo {
         id: TERMINAL_APPROVAL_ID.into(),
         client: "a55157a7".into(),
@@ -1136,10 +1138,13 @@ fn terminal_approval(now: DateTime<Utc>) -> ApprovalInfo {
         details: vec![
             trf("Folder: {folder}", &[("folder", &"~/Projects/demo")]),
             format!("$ {command}"),
-            trf("Looks dangerous: {patterns}", &[("patterns", &"recursive delete")]),
+            trf("Looks dangerous: {patterns}", &[("patterns", &tr("recursive delete"))]),
             tr("Limits: 120 s, 20,000 characters of output").into(),
             tr("No sandbox: Torro can't stop this command from reading or changing other files.").into(),
-            tr("\"Always\" allows every command that matches these patterns, in every allowed folder.").into(),
+            trf(
+                "\"Always\" allows every command that matches {patterns}, in every allowed folder.",
+                &[("patterns", &tr("recursive delete"))],
+            ),
         ],
         created: now - Duration::minutes(3),
         expires: now + Duration::minutes(7),

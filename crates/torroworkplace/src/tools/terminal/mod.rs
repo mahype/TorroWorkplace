@@ -135,7 +135,7 @@ impl Terminal {
             ));
         }
         if let Some(why) = patterns::hardline(&text, self.home.as_deref()) {
-            return Err(forbidden(trf("This command never runs here: {why}.", &[("why", &why)])));
+            return Err(forbidden(trf("This command never runs here: {why}.", &[("why", &tr(why))])));
         }
         let dangerous = patterns::dangerous(&text, self.home.as_deref());
         Ok(Checked { folder, run, outside: patterns::reads_outside(&text), dangerous, text })
@@ -201,7 +201,10 @@ impl Terminal {
     }
 
     fn status(&self, snapshot: process::Snapshot) -> Response {
-        let (output, cut, redacted) = self.answerable(&snapshot.output);
+        // Read in steps of whole lines up to the limit already: hidden, never cut again, so `next` stays where the
+        // text ends (review of #754).
+        let (output, redacted) = redact::redact(&snapshot.output);
+        let cut = false;
         Response::CommandStatus {
             running: snapshot.running,
             exit_code: snapshot.exit_code,

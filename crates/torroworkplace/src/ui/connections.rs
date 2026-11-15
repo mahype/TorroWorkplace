@@ -2029,12 +2029,15 @@ fn providers_row(data: &Data) -> Element<'_, Message> {
 /// "Terminal" among the built-in tools (issue #754): off, or when the assistant asks, and the page it is set on.
 fn terminal_row(data: &Data) -> Element<'_, Message> {
     let terminal = &data.settings.tools.terminal;
-    let detail = match (terminal.enabled, terminal.mode) {
-        (false, _) => tr("Off. The assistant runs no commands."),
+    // What it does, as the other tools' rows say, then how it stands (design review of #754).
+    let state = match (terminal.enabled, terminal.mode) {
+        (false, _) => tr("Off"),
         (true, TerminalMode::Every) => tr("On · Asks before every command"),
         (true, TerminalMode::Dangerous) => tr("On · Asks only before dangerous commands"),
     };
-    let row = setting_row(None, tr("Terminal"), Some(detail.to_string()), chevron());
+    let detail =
+        trf("Runs commands and scripts in the allowed folders for the assistant · {state}", &[("state", &state)]);
+    let row = setting_row(None, tr("Terminal"), Some(detail), chevron());
     pressable(row, Some(Message::Terminal))
 }
 
@@ -2076,16 +2079,20 @@ fn terminal_page(data: &Data, words: bool) -> Element<'_, Message> {
             tr("Runs ordinary commands right away and asks only before ones that look dangerous.")
         }
     };
+    // Off, the mode is drawn at 40 % and takes no click (design review of #754): it says nothing then.
+    let on = terminal.enabled;
+    let choice = move || -> Element<'_, Message> {
+        let active = ModeChoice::ALL.iter().position(|choice| choice.0 == terminal.mode).unwrap_or(usize::MAX);
+        let options =
+            ModeChoice::ALL.iter().map(|choice| (choice.to_string(), on.then_some(Message::TerminalMode(choice.0))));
+        widgets::segmented_maybe(options, active)
+    };
     let mode = stacking_row(
         tr("Ask"),
         Some(why.to_string()),
         segments_width(&ModeChoice::ALL),
-        move || {
-            let choice =
-                segments(&ModeChoice::ALL, ModeChoice(terminal.mode), |choice| Message::TerminalMode(choice.0));
-            setting_row(None, tr("Ask"), Some(why.to_string()), choice)
-        },
-        move || segments(&ModeChoice::ALL, ModeChoice(terminal.mode), |choice| Message::TerminalMode(choice.0)),
+        move || setting_row(None, tr("Ask"), Some(why.to_string()), choice()),
+        choice,
     );
     let footer = tr(
         "No sandbox: the checks of the command text and the hiding of secrets are rules of thumb, not a guarantee. After the assistant read mail or a web page, that chat runs no commands.",
@@ -2105,9 +2112,10 @@ fn terminal_page(data: &Data, words: bool) -> Element<'_, Message> {
 /// One entry under "Always allowed": a pattern by its name, or a command with its folder below, and its ×.
 fn always_row(entry: &TerminalAlways, words: bool) -> Element<'_, Message> {
     let (label, detail) = match entry {
-        TerminalAlways::Pattern { key } => {
-            (key.clone(), Some(tr("Every command that matches this pattern").to_string()))
-        }
+        TerminalAlways::Pattern { key } => (
+            crate::tools::terminal::patterns::label(key),
+            Some(tr("Every command that matches this pattern").to_string()),
+        ),
         TerminalAlways::Command { command, folder } => {
             (command.clone(), Some(trf("in {folder}", &[("folder", folder)])))
         }

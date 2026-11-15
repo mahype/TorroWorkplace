@@ -360,6 +360,13 @@ fn compiled(table: Vec<(String, &'static str, Look)>) -> Vec<Pattern> {
 static HARDLINE: LazyLock<Vec<Pattern>> = LazyLock::new(|| compiled(hardline_table()));
 static DANGEROUS: LazyLock<Vec<Pattern>> = LazyLock::new(|| compiled(dangerous_table()));
 
+/// The name of the pattern `key` (a key of either table, as "Always" keeps it) in the suite's language, for people;
+/// a key no table has any more as it is.
+pub fn label(key: &str) -> String {
+    let known = HARDLINE.iter().chain(DANGEROUS.iter()).find(|pattern| pattern.key == key);
+    known.map_or_else(|| key.to_string(), |pattern| torro_core::i18n::tr(pattern.key).to_string())
+}
+
 /// Programs that read from outside the computer (decision 4 of issue #754): after one of them the conversation counts
 /// as having read content from outside.
 static OUTSIDE: LazyLock<Option<Regex>> = LazyLock::new(|| {
