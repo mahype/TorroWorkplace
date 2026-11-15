@@ -2697,7 +2697,8 @@ mod tests {
         let all = vec![Level::NoAccess, Level::Read, Level::Write, Level::Full];
         assert_eq!(levels(Area::Calendar), all);
         assert_eq!(levels(Area::Workspaces), all);
-        assert_eq!(levels(Area::Settings), vec![Level::NoAccess, Level::Read], "its changes are admin commands");
+        // Write since #762 (cancelling a download of a voice model); its other changes are admin commands.
+        assert_eq!(levels(Area::Settings), vec![Level::NoAccess, Level::Read, Level::Write]);
         assert!(has_admin(Area::Accounts) && has_admin(Area::Settings));
         assert!(!has_admin(Area::Calendar));
         assert_eq!(active_level(&[Level::NoAccess, Level::Read], Level::Full), 1, "Full shows as the highest offered");

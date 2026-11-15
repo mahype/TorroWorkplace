@@ -4284,17 +4284,16 @@ static DOWNLOAD_VOICE_MODEL: Command = Command {
                   `busy` while it downloads already.",
 };
 
-// Admin, not Write like ai.cancel_pull: the area settings has no level between reading and admin, and a
-// level only for cancelling would mean nothing to people granting rights. What was loaded stays.
+// Write like ai.cancel_pull: it stops what was started and keeps what was loaded. The area settings gets a
+// level Write with it (decided in the review of PR #770).
 static CANCEL_VOICE_DOWNLOAD: Command = Command {
     name: "settings.cancel_voice_download",
     area: Area::Settings,
-    access: Access::Admin,
+    access: Access::Write,
     mcp: Mcp::Tool,
     description: "Cancels the running download of a model by its id from settings_list_voice_models; returns the \
                   list with it `cancelled`. What was loaded stays, and the next download goes on there. A model \
-                  that does not download stays as it is. Needs the person's approval. `not-found` for a model not on the \
-                  list.",
+                  that does not download stays as it is. `not-found` for a model not on the list.",
 };
 
 // Admin like apps.uninstall_app, so it always waits for the person: dictating or reading aloud with the
@@ -8154,14 +8153,15 @@ mod tests {
         assert_eq!(Request::SpeechStatus.operation().access, Access::Read);
     }
 
-    /// Issue #762, decision 8: listing the models is read; downloading, cancelling and removing are admin
-    /// and wait for the person like ai.pull_model and apps.uninstall_app; all are tools.
+    /// Issue #762, decision 8: listing the models is read, cancelling is write like ai.cancel_pull;
+    /// downloading and removing are admin and wait for the person like ai.pull_model and
+    /// apps.uninstall_app; all are tools.
     #[test]
     fn voice_models_are_tools_of_settings() {
         for (name, access) in [
             ("settings.list_voice_models", Access::Read),
             ("settings.download_voice_model", Access::Admin),
-            ("settings.cancel_voice_download", Access::Admin),
+            ("settings.cancel_voice_download", Access::Write),
             ("settings.remove_voice_model", Access::Admin),
         ] {
             let command = CATALOGUE.iter().find(|command| command.name == name).expect(name);
@@ -10437,8 +10437,9 @@ mod tests {
         assert!(shows_area(Area::Calendar, BOT_CLIENT) && !shows_area(Area::Bots, BOT_CLIENT));
         assert!(!shows_area(Area::Assistant, ASSISTANT_CLIENT) && shows_area(Area::Assistant, "codex"));
         assert!(!shows_area(Area::Clients, "codex"), "not grantable");
-        assert_eq!(levels(Area::Settings), [Level::NoAccess, Level::Read]);
-        assert_eq!(active_level(&levels(Area::Settings), Level::Full), 1);
+        // Write since #762: cancelling a download of a voice model.
+        assert_eq!(levels(Area::Settings), [Level::NoAccess, Level::Read, Level::Write]);
+        assert_eq!(active_level(&levels(Area::Settings), Level::Full), 2);
         assert!(has_command(Area::Calendar, Access::Delete) && !has_command(Area::Calendar, Access::Admin));
     }
 }

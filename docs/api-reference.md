@@ -4051,9 +4051,9 @@ Downloads a model of settings_list_voice_models from Hugging Face onto this comp
 
 ### `settings.cancel_voice_download`
 
-Zugriff `admin` · MCP-Tool `settings_cancel_voice_download`
+Zugriff `write` · MCP-Tool `settings_cancel_voice_download`
 
-Cancels the running download of a model by its id from settings_list_voice_models; returns the list with it `cancelled`. What was loaded stays, and the next download goes on there. A model that does not download stays as it is. Needs the person's approval. `not-found` for a model not on the list.
+Cancels the running download of a model by its id from settings_list_voice_models; returns the list with it `cancelled`. What was loaded stays, and the next download goes on there. A model that does not download stays as it is. `not-found` for a model not on the list.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|

@@ -832,7 +832,7 @@ höchstens ein Modell, und das lädt ein Knopf in Einstellungen › Assistent �
 | Diktieren ins Eingabefeld | Mikrofon im Eingabefeld | `assistant.dictate`, `assistant.stop_dictation` · Admin | **Never** (Punkt 6: das Mikrofon schaltet nur ein Mensch ein) |
 | Spracherkennung und ihre Sprache | Voice › Speech recognition, Language | `settings.set_setting` `speech_recognizer`, `speech_language` · Admin | `settings_set_setting` |
 | Modelle ansehen | Voice › Models | `settings.list_voice_models` · Read | `settings_list_voice_models` |
-| Modell laden, Laden abbrechen, Modell entfernen | Voice › Models („Download“, „Cancel“, „Remove“) | `settings.download_voice_model`, `settings.cancel_voice_download`, `settings.remove_voice_model` · Admin (fragt immer nach Freigabe, wie `ai.pull_model`) | `settings_download_voice_model`, `settings_cancel_voice_download`, `settings_remove_voice_model`; die Freigabe zeigt Name und Größe aus der Liste |
+| Modell laden, Laden abbrechen, Modell entfernen | Voice › Models („Download“, „Cancel“, „Remove“) | `settings.download_voice_model`, `settings.remove_voice_model` · Admin (fragt immer nach Freigabe, wie `ai.pull_model`); `settings.cancel_voice_download` · Write (wie `ai.cancel_pull`; der Bereich Einstellungen hat damit eine Stufe Write) | `settings_download_voice_model`, `settings_cancel_voice_download`, `settings_remove_voice_model`; die Freigabe zeigt Name und Größe aus der Liste |
 
 ### Vorlesen (Issue #745)
 
