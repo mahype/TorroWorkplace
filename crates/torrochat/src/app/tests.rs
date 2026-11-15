@@ -774,7 +774,7 @@ fn the_history_holds_at_most_its_limit_and_lets_the_longest_unseen_go() {
     let mut app = holding(HELD_PICTURES + 6);
     let held_before = count(&app, true);
     let messages = chat(&app).messages.clone();
-    app.chat.as_mut().expect("a chat window").files.thin_out(&messages);
+    assert!(app.chat.as_mut().expect("a chat window").files.thin_out(&messages), "some went");
     assert_eq!((count(&app, true), count(&app, false)), (HELD_PICTURES, held_before - HELD_PICTURES));
     for i in 0..6 {
         let away = chat(&app).files.pictures.get(&(format!("m{i}"), Some("f".into())));
@@ -789,7 +789,7 @@ fn pictures_in_view_stay_beyond_the_limit() {
     let messages = chat(&app).messages.clone();
     let files = &mut app.chat.as_mut().expect("a chat window").files;
     files.in_view.extend((0..HELD_PICTURES + 6).map(|i| format!("m{i}")));
-    files.thin_out(&messages);
+    assert!(!files.thin_out(&messages), "none went");
     assert!(count(&app, true) > HELD_PICTURES, "nothing in view goes");
     assert_eq!(count(&app, false), 0);
 }
@@ -820,4 +820,30 @@ fn a_picture_let_go_is_not_asked_for_while_out_of_view() {
     app.chat.as_mut().expect("a chat window").files.pictures.insert(key.clone(), Shown::Away);
     let _ = app.want_pictures();
     assert!(matches!(chat(&app).files.pictures.get(&key), Some(Shown::Away)), "stays let go");
+}
+
+#[test]
+fn a_tile_of_the_shared_media_asks_for_its_small_picture_when_the_history_lets_it_go() {
+    use crate::app::files::{FilesMsg, HELD_PICTURES, MediaPanel, Shown};
+    let mut app = holding(HELD_PICTURES);
+    let tile = torro_chat::SharedItem {
+        message: "m0".into(),
+        kind: torro_chat::SharedKind::Media,
+        file: Some("f".into()),
+        name: "Header.png".into(),
+        size: 1,
+        content_type: "image/png".into(),
+        author: "Ben".into(),
+        at: chrono::Utc::now(),
+        preview: true,
+    };
+    let key = ("m0".to_string(), Some("f".to_string()));
+    let files = &mut app.chat.as_mut().expect("a chat window").files;
+    files.media = Some(MediaPanel { items: vec![tile], ..MediaPanel::default() });
+    // One picture more, and a line goes out of view: m0, seen longest ago, goes.
+    files.pictures.insert(("new".into(), None), pixel());
+    files.last_seen.insert("new".into(), 100);
+    let _ = app.update(Message::Chat(Msg::Files(FilesMsg::OutOfView(vec!["x".into()]))));
+    assert!(matches!(chat(&app).files.pictures.get(&key), Some(Shown::Away)));
+    assert!(matches!(chat(&app).files.thumbs.get(&key), Some(Shown::Loading)), "the tile asks for its own");
 }
