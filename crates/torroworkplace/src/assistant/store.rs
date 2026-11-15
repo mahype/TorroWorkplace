@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use torro_core::ai::Effort;
-use torro_ipc::assistant::{ConversationSummary, Entry, EntryContent, HitKind, MailRef, SNIPPET_CHARS};
+use torro_ipc::assistant::{ConversationSummary, Entry, EntryContent, HitKind, MailRef, SNIPPET_CHARS, split_spoken};
 
 /// The extension of a conversation's file.
 const EXTENSION: &str = "jsonl";
@@ -276,9 +276,13 @@ impl Conversation {
         let mut after = BTreeSet::new();
         let mut found = Vec::new();
         for entry in &self.entries {
-            let (kind, text, sent) = match &entry.content {
-                EntryContent::Message { text, from, .. } => (HitKind::Message, text, from.is_some()),
-                EntryContent::Answer { text, .. } => (HitKind::Answer, text, false),
+            let (kind, text, sent): (_, std::borrow::Cow<'_, str>, _) = match &entry.content {
+                EntryContent::Message { text, from, .. } => (HitKind::Message, text.into(), from.is_some()),
+                // Searched as clients see it (issue #774): its spoken and shown part, without the mark.
+                EntryContent::Answer { text, .. } => match split_spoken(text, false) {
+                    (Some(spoken), shown) => (HitKind::Answer, format!("{spoken}\n\n{shown}").into(), false),
+                    (None, _) => (HitKind::Answer, text.into(), false),
+                },
                 EntryContent::Tool { name, error: None, .. } => {
                     outside |= super::tools::may_have_read_untrusted(name);
                     after.insert(name.clone());
@@ -286,7 +290,7 @@ impl Conversation {
                 }
                 _ => continue,
             };
-            if let Some(snippet) = snippet(text, words) {
+            if let Some(snippet) = snippet(&text, words) {
                 let untrusted = foreign || sent || outside;
                 found.push(Found { seq: Some(entry.seq), kind, snippet, untrusted, after: after.clone() });
             }
@@ -547,6 +551,18 @@ mod tests {
 
     fn answer(text: &str) -> EntryContent {
         EntryContent::Answer { text: text.into(), engine: "test".into(), model: None, spoken: None }
+    }
+
+    /// Issue #774: a hit in an answer in two parts never shows the mark between them.
+    #[test]
+    fn a_hit_in_an_answer_in_two_parts_leaves_the_mark_out() {
+        let mut conversation = Conversation::new("0123456789abcdef".into(), "Week", at(0));
+        let entry = conversation.next(answer("Nine events.\n---shown---\nMonday standup"), at(1));
+        conversation.apply(Line::Entry { entry });
+        let found = conversation.find(&words_of("events standup"));
+        assert_eq!(found.len(), 1);
+        assert!(!found[0].snippet.contains("---shown---"), "{}", found[0].snippet);
+        assert!(conversation.find(&words_of("shown")).is_empty(), "the mark is no word of the answer");
     }
 
     #[test]
