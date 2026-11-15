@@ -9317,7 +9317,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Warm woman", "Frau, warm"),
     ("speaker|Voice", "Stimme"),
     // Speech built into the assistant, models by button (issue #762).
-    ("Add the assistant under Apps in Torro Workplace.", "Füge den Assistenten in Torro Workplace unter Apps hinzu."),
+    (
+        "Add the assistant under Overview in the control centre.",
+        "Füge den Assistenten in der Steuerzentrale unter Übersicht hinzu.",
+    ),
     (
         "Connect a microphone or allow Torro to use it in the system settings.",
         "Schließ ein Mikrofon an oder erlaube Torro in den Systemeinstellungen, es zu nutzen.",

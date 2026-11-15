@@ -797,7 +797,7 @@ fn models_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         Some(status) if !status.installed => vec![setting_row(
             Some(widgets::status_dot(Status::Error)),
             tr("The assistant app is not installed"),
-            Some(tr("Add the assistant under Apps in Torro Workplace.").to_string()),
+            Some(tr("Add the assistant under Overview in the control centre.").to_string()),
             again(),
         )],
         _ => {
