@@ -13744,7 +13744,6 @@ impl Core {
                 Err(_) => Response::Ok,
             };
         }
-        let _speaking = Speaking::new(&self.speaking);
         let number = self.speech.claim().await;
         let (tell, done) = tokio::sync::watch::channel(None);
         *reading = Some(Reading { conversation: conversation.to_string(), after, number, done });
@@ -13761,12 +13760,11 @@ impl Core {
     /// Reads the answer after the entry `after` of `conversation` as the job `number` (issue #747): every
     /// [`READ_EVERY`] the answer as far as it is written, its complete sentences
     /// ([`crate::assistant::sentences`]) as one piece while the one before plays; an approval or a failure
-    /// as a sentence saying so. Ends once the answer is over and read, when stopped, or after [`READ_IDLE`]
-    /// without more text.
+    /// as a sentence saying so. Ends once the answer is over and read, or when stopped; however long the
+    /// answer pauses (a long tool), the rest is read. It counts as reading aloud only while a piece sounds.
     async fn read_answer(&self, number: u64, conversation: &str, after: u64) -> Response {
         use torro_ipc::assistant::EntryContent;
         let mut sentences = crate::assistant::sentences::Sentences::default();
-        let (mut written, mut idle) = (0, tokio::time::Instant::now());
         loop {
             if !self.speech.is_current(number) {
                 return Response::Ok;
@@ -13799,18 +13797,19 @@ impl Core {
                 pieces.extend(sentences.finish());
                 pieces.extend(last_word.map(str::to_string));
             }
-            if text.len() != written {
-                (written, idle) = (text.len(), tokio::time::Instant::now());
-            }
             if !pieces.is_empty() {
-                let read = self.speak_claimed(number, &pieces.join(" ")).await;
+                // Counted as reading only while it sounds: between two pieces – a tool that takes long –
+                // the microphone of a conversation by voice is not kept closed.
+                let read = {
+                    let _speaking = Speaking::new(&self.speaking);
+                    self.speak_claimed(number, &pieces.join(" ")).await
+                };
                 if read != Response::Ok || over {
                     return read;
                 }
-                idle = tokio::time::Instant::now();
                 continue;
             }
-            if over || idle.elapsed() >= READ_IDLE {
+            if over {
                 return Response::Ok;
             }
             tokio::time::sleep(READ_EVERY).await;
@@ -37260,7 +37259,3 @@ pub(crate) fn answer_start(entries: &[torro_ipc::assistant::Entry]) -> Option<u6
 
 /// How often `assistant.speak_answer` looks at the answer as it grows (issue #747).
 const READ_EVERY: std::time::Duration = std::time::Duration::from_millis(150);
-
-/// How long `assistant.speak_answer` waits for more of an answer that writes nothing (issue #747):
-/// then it ends, so the microphone of a conversation does not stay closed for good.
-const READ_IDLE: std::time::Duration = std::time::Duration::from_secs(120);

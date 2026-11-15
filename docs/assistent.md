@@ -846,6 +846,8 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
   einem einzelnen Buchstaben („z. B.“) oder einer bekannten Abkürzung („bzw.“, „Dr.“); Codeblöcke werden
   nicht vorgelesen. Wartet die Antwort auf eine Freigabe oder scheitert sie, sagt der Assistent das in einem
   Satz. Ein zweiter Aufruf für dieselbe Antwort wartet auf dasselbe Ende, jeder andere beendet das Vorlesen.
+  Pausiert die Antwort (ein langes Werkzeug), wartet das Vorlesen ohne Zeitgrenze auf den Rest; als
+  „liest vor“ zählt es nur, solange ein Stück klingt, das Mikrofon eines Gesprächs bleibt also nicht zu.
 
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
