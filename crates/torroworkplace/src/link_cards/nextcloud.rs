@@ -10,7 +10,7 @@ use super::{FileLink, LinkKind};
 use crate::chat::ChatService;
 use crate::chat::remote::FileError;
 use crate::pim::Reach;
-use torro_ipc::api::{Access, Area};
+use torro_ipc::Request;
 
 /// What `url` on the own server `own` names as a file ([`super::FileLink`]); `None` for any other address. `url` is
 /// on `own` already ([`super::classify`] checked). Each form also below `/index.php`:
@@ -96,16 +96,24 @@ pub async fn own_server(chat: &ChatService, link: &str) -> Option<OwnServer> {
 }
 
 /// Whether `reach` may see files of the own Nextcloud of the chat account `account`: the app key (the person)
-/// always; a client with read access to `chat` that reaches `account` (`chat_accounts`).
+/// always; a client when its rights let it read the chat of `account` – `chat.get_messages` allowed (read access to
+/// `chat`, the command not switched off) and the account reached
+/// ([`torro_ipc::api::Rights::reaches_chat_account`]), as [`super::chat::reads_conversation`] asks.
 ///
 /// The catalogue has no area for the files of the own Nextcloud (the tool `files` is the computer's own folders).
 /// The chat right stands in for it, decided in issue #784: the card is resolved through the same Nextcloud account
 /// the client may read the chat of, and a link on that server reaches it in a chat message anyway.
 pub fn reads_files(reach: Reach<'_>, account: &str) -> bool {
-    match reach {
-        Reach::Suite => true,
-        Reach::Client(rights) => rights.area(Area::Chat).allows(Access::Read) && rights.chat_accounts.contains(account),
-    }
+    let Reach::Client(rights) = reach else { return true };
+    // Any conversation of the account: the right is the account's, not one conversation's.
+    let read = Request::ChatGetMessages {
+        conversation: torro_chat::conversation_id(account, "files"),
+        before: None,
+        after: None,
+        around: None,
+        limit: Some(1),
+    };
+    rights.allows_request(&read) && rights.reaches_chat_account(account)
 }
 
 /// The card of the file `file`, linked as `link` on the server of the chat account `account`, for `reach`.

@@ -43,9 +43,8 @@ use crate::pim::Reach;
 /// The most link cards [`Shown`] holds; the oldest go first.
 pub const SHOWN_KEPT: usize = 2000;
 
-/// How long a page whose server could not be reached is not asked again, so a server that is offline does not slow
-/// every `assistant.get_cards` down.
-const RETRY_AFTER: Duration = Duration::from_secs(60);
+/// How long a server that could not be reached is not asked again ([`link_cards::RETRY_AFTER`]).
+const RETRY_AFTER: Duration = link_cards::RETRY_AFTER;
 
 /// What [`Shown`] holds for one link card.
 #[derive(Debug, Clone)]
@@ -56,6 +55,10 @@ enum Held {
     Resolved { account: String, resolved: Box<Resolved>, rights: Option<Box<Rights>> },
     /// The server could not be reached then.
     Failed(Instant),
+    /// A GitHub link without an item for `rights` (issue #784: no account, no right, none shows it), so GitHub is not
+    /// asked again while the rights stay the same and the link is the page it is; `failed` when GitHub could not be
+    /// asked then, asked again after [`RETRY_AFTER`].
+    NoItem { rights: Box<Rights>, failed: Option<Instant> },
 }
 
 /// The link cards of the assistant's conversations the core holds, by conversation and entry number: those a person
@@ -83,7 +86,7 @@ impl Shown {
     pub fn get(&self, conversation: &str, seq: u64) -> Option<LinkCard> {
         match self.held(conversation, seq)? {
             Held::Resolved { resolved, .. } => resolved.card,
-            Held::Failed(_) => None,
+            Held::Failed(_) | Held::NoItem { .. } => None,
         }
     }
 
@@ -102,7 +105,7 @@ impl Shown {
     pub fn picture(&self, conversation: &str, seq: u64) -> Option<(String, web::CardPicture)> {
         match self.held(conversation, seq)? {
             Held::Resolved { account, resolved, .. } => Some((account, resolved.picture?)),
-            Held::Failed(_) => None,
+            Held::Failed(_) | Held::NoItem { .. } => None,
         }
     }
 
@@ -150,19 +153,24 @@ pub fn after_answer(answer: &str, person: &[&str], read: &[&str]) -> Vec<EntryCo
 }
 
 /// What the link card of the entry `seq` for the address `url` shows now ([`Card::Link`]), for the conversation of
-/// `lookup` with the rights of its client ([`look_in`]).
+/// `lookup` with the rights of its client ([`look_in`]); a page is fetched only when the person asks
+/// ([`Lookup::asker`] the app key).
 pub async fn look(lookup: &Lookup<'_>, seq: u64, url: &str, from: LinkOrigin) -> Card {
-    let at = Place { chat: lookup.chat, github: lookup.github, rights: lookup.rights, shown: lookup.shown };
+    let person = matches!(lookup.asker, Reach::Suite);
+    let at = Place { chat: lookup.chat, github: lookup.github, rights: lookup.rights, shown: lookup.shown, person };
     look_in(&at, lookup.conversation, seq, url, from).await
 }
 
 /// What a look at a link card works with: the chat accounts (the own Nextcloud), the GitHub accounts, the rights of
-/// the conversation's client and the cards held.
+/// the conversation's client, the cards held, and whether the person asks.
 pub struct Place<'a> {
     pub chat: &'a Arc<ChatService>,
     pub github: &'a GithubAccounts,
     pub rights: &'a Rights,
     pub shown: &'a Shown,
+    /// The asker is the person (the app key, their window): only then is a page fetched or its provider asked about
+    /// (issue #784). A client's read gets a card held from before, else the plain link.
+    pub person: bool,
 }
 
 /// What the link card of the entry `seq` of `conversation` for `url` shows now, by its kind
@@ -179,14 +187,22 @@ pub struct Place<'a> {
 ///   from the person or read ([`LinkOrigin::Person`], [`LinkOrigin::Read`]) whose provider Settings › Privacy lets
 ///   load, fetched now through the first Nextcloud account and held; one whose provider is not asked about yet, and
 ///   every address [`LinkOrigin::Model`] wrote ("Always show" too), `ask` with the provider; any other page of the
-///   own server a link.
+///   own server a link. Fetching and asking only for the person ([`Place::person`]): a client gets the card held,
+///   else the plain link.
 ///
 /// A card of the own server or GitHub is held with the rights it was resolved with and resolved again once they
-/// differ. When a server cannot be reached the link stays a link, asked again after [`RETRY_AFTER`]. Without a
-/// Nextcloud account a link stays a link. Never fetches the page itself, logs no address.
+/// differ; so is a GitHub link no account shows for those rights ([`Held::NoItem`]), which is then the page it is.
+/// When a server cannot be reached the card says so (`offline`, S3 of issue #784) and the server is asked again
+/// after [`RETRY_AFTER`]. Without a Nextcloud account a link stays a link. Never fetches the page itself, logs no
+/// address.
 pub async fn look_in(at: &Place<'_>, conversation: &str, seq: u64, url: &str, from: LinkOrigin) -> Card {
-    let link = || Card::Link { url: url.to_owned(), card: None, ask: None };
-    let shown = |card: Option<LinkCard>| Card::Link { url: url.to_owned(), card: card.map(Box::new), ask: None };
+    let offline = || offline_link(url);
+    let shown = |card: Option<LinkCard>| Card::Link {
+        url: url.to_owned(),
+        card: card.map(Box::new),
+        ask: None,
+        offline: false,
+    };
     let own = nextcloud::own_server(at.chat, url).await;
     let kind = link_cards::classify(url, own.as_ref().map(|own| own.server.as_str()));
     let held = at.shown.held(conversation, seq);
@@ -204,30 +220,52 @@ pub async fn look_in(at: &Place<'_>, conversation: &str, seq: u64, url: &str, fr
         (LinkKind::NextcloudFile(file), Some(own)) => {
             let found = match mine {
                 Some(card) => Ok(card),
-                None if failed => return link(),
+                None if failed => return offline(),
                 None => nextcloud::resolve(at.chat, reach, &own.account, url, file).await,
             };
             match at.hold(conversation, seq, &own, &kind, found) {
                 Some(card) => shown(card),
-                None => link(),
+                None => offline(),
             }
         }
         (LinkKind::ChatMessage { token, message }, Some(own)) => {
             let found = match mine {
                 Some(card) => Ok(card),
-                None if failed => return link(),
+                None if failed => return offline(),
                 None => link_cards::chat::resolve(at.chat, reach, &own.account, url, token, *message).await,
             };
             match at.hold(conversation, seq, &own, &kind, found) {
                 Some(card) => link_cards::chat::assistant_card(url, card),
-                None => link(),
+                None => offline(),
             }
         }
         (LinkKind::Github { repo, number, .. }, _) => {
-            let found = match mine {
-                Some(card) => card,
-                None if matches!(held, Some(Held::Resolved { rights: None, .. })) => None,
-                None => link_cards::github::resolve(at.github, reach, url, repo, *number).await,
+            // What was held of GitHub with these rights: nothing to show (`None`), or a failure then (`Some`).
+            let no_item = match &held {
+                Some(Held::NoItem { rights, failed }) if **rights == *at.rights => Some(*failed),
+                _ => None,
+            };
+            let found = match (mine, no_item) {
+                (Some(card), _) => card,
+                (None, Some(Some(then))) if now.duration_since(then) < RETRY_AFTER => return offline(),
+                (None, Some(None)) => None,
+                (None, _) if failed => return offline(),
+                (None, _) if matches!(held, Some(Held::Resolved { rights: None, .. })) => None,
+                (None, _) => {
+                    let asked = link_cards::github::resolve(at.github, reach, url, repo, *number).await;
+                    let rights = Box::new(at.rights.clone());
+                    match asked {
+                        Ok(Some(card)) => Some(card),
+                        Ok(None) => {
+                            at.shown.put(conversation, seq, Held::NoItem { rights, failed: None });
+                            None
+                        }
+                        Err(_) => {
+                            at.shown.put(conversation, seq, Held::NoItem { rights, failed: Some(now) });
+                            return offline();
+                        }
+                    }
+                }
             };
             match found {
                 Some(card) => {
@@ -276,27 +314,33 @@ impl Place<'_> {
         }
     }
 
-    /// The card of `url` as the page it is ([`step`]), `own` when it lies on the own server.
+    /// The card of `url` as the page it is ([`step`]), `own` when it lies on the own server. Only the person's look
+    /// fetches it or asks about its provider ([`Place::person`]); a client's gets the card held, else the link.
     async fn page(&self, conversation: &str, seq: u64, url: &str, from: LinkOrigin, own: bool) -> Card {
-        let link = || Card::Link { url: url.to_owned(), card: None, ask: None };
+        let link = || Card::Link { url: url.to_owned(), card: None, ask: None, offline: false };
         let Some(account) = self.chat.accounts().await.into_iter().next() else { return link() };
         let Ok(remote) = self.chat.remote(&account).await else { return link() };
         let held = self.shown.held(conversation, seq);
         match step(&self.chat.privacy(), url, own, from, held.as_ref(), Instant::now()) {
             Step::Link => link(),
-            Step::Held => {
-                Card::Link { url: url.to_owned(), card: self.shown.get(conversation, seq).map(Box::new), ask: None }
-            }
-            Step::Ask(provider) => Card::Link { url: url.to_owned(), card: None, ask: Some(provider) },
+            Step::Held => Card::Link {
+                url: url.to_owned(),
+                card: self.shown.get(conversation, seq).map(Box::new),
+                ask: None,
+                offline: false,
+            },
+            Step::Offline | Step::Ask(_) | Step::Load if !self.person => link(),
+            Step::Offline => offline_link(url),
+            Step::Ask(provider) => Card::Link { url: url.to_owned(), card: None, ask: Some(provider), offline: false },
             Step::Load => match web::resolve(&remote, url).await {
                 Ok(resolved) => {
                     let card = resolved.card.clone();
                     self.shown.keep(conversation, seq, &account, resolved);
-                    Card::Link { url: url.to_owned(), card: card.map(Box::new), ask: None }
+                    Card::Link { url: url.to_owned(), card: card.map(Box::new), ask: None, offline: false }
                 }
                 Err(_) => {
                     self.shown.put(conversation, seq, Held::Failed(Instant::now()));
-                    link()
+                    offline_link(url)
                 }
             },
         }
@@ -348,6 +392,11 @@ pub async fn picture(
     }
 }
 
+/// The link card of `url` while the server that resolves it cannot be reached (S3 of issue #784).
+fn offline_link(url: &str) -> Card {
+    Card::Link { url: url.to_owned(), card: None, ask: None, offline: true }
+}
+
 /// The first Nextcloud account of `chat` and its server; `not-connected` without one.
 async fn nextcloud(chat: &Arc<ChatService>) -> Result<(String, crate::chat::remote::Remote), Response> {
     let account = chat.accounts().await.into_iter().next().ok_or_else(not_connected)?;
@@ -370,6 +419,8 @@ enum Step {
     Link,
     /// Shows the card held in [`Shown`] (none when the server knows none: a link).
     Held,
+    /// The server could not be reached a moment ago: the card says so, asked again after [`RETRY_AFTER`].
+    Offline,
     /// Asks whether the provider's content may load.
     Ask(torro_chat::ForeignProvider),
     /// Is fetched now through the own Nextcloud.
@@ -386,7 +437,7 @@ fn step(privacy: &Privacy, url: &str, own: bool, from: LinkOrigin, held: Option<
     }
     match held {
         Some(Held::Resolved { .. }) => return Step::Held,
-        Some(Held::Failed(at)) if now.duration_since(*at) < RETRY_AFTER => return Step::Link,
+        Some(Held::Failed(at)) if now.duration_since(*at) < RETRY_AFTER => return Step::Offline,
         _ => {}
     }
     // Any other page of the own server than a file or a message stays a link: its references could tell what the
@@ -458,7 +509,7 @@ mod tests {
         assert_eq!(step(&never, PAGE, false, LinkOrigin::Model, None, now), Step::Link);
         assert_eq!(step(&Privacy::default(), PAGE, false, LinkOrigin::Model, Some(&held), now), Step::Held);
         let failed = Held::Failed(now);
-        assert_eq!(step(&always(), PAGE, false, LinkOrigin::Person, Some(&failed), now), Step::Link);
+        assert_eq!(step(&always(), PAGE, false, LinkOrigin::Person, Some(&failed), now), Step::Offline);
         let later = now + RETRY_AFTER;
         assert_eq!(step(&always(), PAGE, false, LinkOrigin::Person, Some(&failed), later), Step::Load);
         let own = "https://cloud.example.org/apps/deck/card/4";
@@ -527,7 +578,7 @@ mod tests {
         server.state().card_pictures.insert("p".into(), drawn);
         let shown = Shown::default();
         let (github, rights) = (github(), rights());
-        let at = Place { chat: &chat, github: &github, rights: &rights, shown: &shown };
+        let at = Place { chat: &chat, github: &github, rights: &rights, shown: &shown, person: true };
         let title = |card: &Card| match card {
             Card::Link { card: Some(card), .. } => Some(card.title.clone()),
             _ => None,
@@ -557,9 +608,9 @@ mod tests {
         let none = Arc::new(ChatService::fixed(Vec::new()));
         let shown = Shown::default();
         let (github, rights) = (github(), rights());
-        let at = Place { chat: &none, github: &github, rights: &rights, shown: &shown };
+        let at = Place { chat: &none, github: &github, rights: &rights, shown: &shown, person: true };
         let card = look_in(&at, "c1", 1, PAGE, LinkOrigin::Person).await;
-        assert_eq!(card, Card::Link { url: PAGE.into(), card: None, ask: None });
+        assert_eq!(card, Card::Link { url: PAGE.into(), card: None, ask: None, offline: false });
         let code = |result: Result<(), Response>| match result {
             Err(Response::Error { code, .. }) => code,
             other => format!("{other:?}"),
@@ -570,6 +621,93 @@ mod tests {
         let (chat, server) = chat(blocked);
         assert_eq!(code(show_once(&chat, &shown, "c1", 1, PAGE).await), "unsupported");
         assert_eq!(server.count("resolve"), 0);
+    }
+
+    /// Issue #784: only the person's look fetches a page; a client's gets the card held, else the plain link, and is
+    /// never asked about a provider.
+    #[tokio::test]
+    async fn a_clients_look_fetches_no_page() {
+        let (chat, server) = chat(always());
+        let reference = torro_nextcloud::Reference { title: "A post".into(), description: None, image: None };
+        server.state().references.insert(PAGE.into(), reference);
+        let shown = Shown::default();
+        let (github, rights) = (github(), rights());
+        let client = Place { chat: &chat, github: &github, rights: &rights, shown: &shown, person: false };
+        assert_eq!(look_in(&client, "c1", 2, PAGE, LinkOrigin::Person).await, page_link());
+        assert_eq!(look_in(&client, "c1", 3, PAGE, LinkOrigin::Model).await, page_link(), "no question for a client");
+        assert_eq!(server.count("resolve"), 0, "nothing fetched for a client");
+        let person = Place { chat: &chat, github: &github, rights: &rights, shown: &shown, person: true };
+        look_in(&person, "c1", 2, PAGE, LinkOrigin::Person).await;
+        let held = look_in(&client, "c1", 2, PAGE, LinkOrigin::Person).await;
+        assert!(matches!(&held, Card::Link { card: Some(card), .. } if card.title == "A post"), "{held:?}");
+        assert_eq!(server.count("resolve"), 1);
+    }
+
+    /// S3 of issue #784: while the own server cannot be reached a card says so, and it is not asked again at once.
+    #[tokio::test]
+    async fn an_unreachable_server_gives_an_offline_card() {
+        let (chat, server) = chat(always());
+        let file = "https://cloud.example.org/f/12";
+        let shown = Shown::default();
+        let (github, mut rights) = (github(), rights());
+        rights.chat_accounts = torro_ipc::api::Selection::All;
+        let at = Place { chat: &chat, github: &github, rights: &rights, shown: &shown, person: true };
+        let offline = Card::Link { url: file.into(), card: None, ask: None, offline: true };
+        server.state().offline = true;
+        assert_eq!(look_in(&at, "c1", 1, file, LinkOrigin::Person).await, offline);
+        let asked = server.count("resolve");
+        server.state().offline = false;
+        assert_eq!(look_in(&at, "c1", 1, file, LinkOrigin::Person).await, offline, "within a minute");
+        assert_eq!(server.count("resolve"), asked, "not asked again at once");
+    }
+
+    fn page_link() -> Card {
+        Card::Link { url: PAGE.into(), card: None, ask: None, offline: false }
+    }
+
+    /// GitHub through a fake whose item answer is `item` (status and body), with one connected account.
+    async fn github_answering(
+        dir: &std::path::Path,
+        item: (u16, &'static str),
+    ) -> (GithubAccounts, Arc<std::sync::Mutex<Vec<crate::account::github::tests::Seen>>>) {
+        use crate::account::github::tests::{MemoryTokens, NO_CLI, fake_github, service, viewer};
+        let (url, record) = fake_github(move |seen| match seen.body.contains("viewer") {
+            true => (200, Some("repo"), viewer("anna-berg")),
+            false => (item.0, None, item.1.to_string()),
+        })
+        .await;
+        let accounts = service(dir, &MemoryTokens::default(), &url, NO_CLI);
+        accounts.connect_token(torro_core::account::Secret::new("ghp_testTOKEN")).await.expect("connected");
+        record.lock().expect("record").clear();
+        (accounts, record)
+    }
+
+    /// Issue #784: a GitHub link no account shows is held as such, so GitHub is not asked with every look; one GitHub
+    /// could not be asked for says so (S3), and is asked again only after a minute.
+    #[tokio::test]
+    async fn a_github_link_without_an_item_is_held() {
+        const ISSUE: &str = "https://github.com/torro/workplace/issues/9";
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (chat, _server) = chat(Privacy::default());
+        let shown = Shown::default();
+        let rights = rights();
+        let nothing = r#"{"data":{"i0":{"issueOrPullRequest":null}}}"#;
+        let (none, record) = github_answering(dir.path(), (200, nothing)).await;
+        let at = Place { chat: &chat, github: &none, rights: &rights, shown: &shown, person: true };
+        let first = look_in(&at, "c1", 1, ISSUE, LinkOrigin::Person).await;
+        assert!(matches!(&first, Card::Link { card: None, ask: Some(_), offline: false, .. }), "the page: {first:?}");
+        look_in(&at, "c1", 1, ISSUE, LinkOrigin::Person).await;
+        assert_eq!(record.lock().expect("record").len(), 1, "GitHub asked once");
+
+        let failing_dir = tempfile::tempdir().expect("temp dir");
+        let (failing, record) = github_answering(failing_dir.path(), (502, "{}")).await;
+        let at = Place { chat: &chat, github: &failing, rights: &rights, shown: &shown, person: true };
+        let offline = Card::Link { url: ISSUE.into(), card: None, ask: None, offline: true };
+        assert_eq!(look_in(&at, "c1", 2, ISSUE, LinkOrigin::Person).await, offline);
+        let asked = record.lock().expect("record").len();
+        assert!(asked >= 1, "asked at first");
+        assert_eq!(look_in(&at, "c1", 2, ISSUE, LinkOrigin::Person).await, offline);
+        assert_eq!(record.lock().expect("record").len(), asked, "not asked again within a minute");
     }
 
     /// Issue #790: a file of the own server reaches a client only with the chat right of its account
@@ -585,11 +723,11 @@ mod tests {
         let github = github();
         let mut rights = rights();
         rights.chat_accounts = torro_ipc::api::Selection::Only(Vec::new());
-        let at = Place { chat: &chat, github: &github, rights: &rights, shown: &shown };
+        let at = Place { chat: &chat, github: &github, rights: &rights, shown: &shown, person: true };
         let card = look_in(&at, "c1", 1, file, LinkOrigin::Person).await;
-        assert_eq!(card, Card::Link { url: file.into(), card: None, ask: None });
+        assert_eq!(card, Card::Link { url: file.into(), card: None, ask: None, offline: false });
         assert_eq!(server.count("resolve"), 0, "nothing asked, no page card");
-        let at = Place { chat: &chat, github: &github, rights: &rights, shown: &shown };
+        let at = Place { chat: &chat, github: &github, rights: &rights, shown: &shown, person: true };
         let quote = "https://cloud.example.org/call/ben4chat#message_5";
         assert_eq!(look_in(&at, "c1", 2, quote, LinkOrigin::Model).await, Card::Unavailable);
     }

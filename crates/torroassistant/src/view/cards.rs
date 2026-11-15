@@ -159,7 +159,7 @@ impl App {
     fn content_view<'a>(&'a self, seq: u64, card: &'a Card, room: f32) -> Option<Element<'a, Message>> {
         let now = Utc::now();
         Some(match card {
-            Card::Link { url, card, ask } => {
+            Card::Link { url, card, ask, .. } => {
                 let picture =
                     self.current.clone().and_then(|conversation| self.card_pictures.get(&(conversation, seq)));
                 return self.link_card(seq, url, card.as_deref(), ask.as_ref(), picture, room);
@@ -208,7 +208,7 @@ impl App {
     #[cfg(test)]
     fn actions_of(&self, seq: u64, card: &Card) -> Vec<Action<Message>> {
         match card {
-            Card::Link { url, card, ask } => self.link_actions(seq, url, card.as_deref(), ask.as_ref()),
+            Card::Link { url, card, ask, .. } => self.link_actions(seq, url, card.as_deref(), ask.as_ref()),
             Card::Mail { message, .. } => mail::actions(message),
             Card::Event { event, .. } => event::actions(event),
             Card::Todo { todo, .. } => todo::actions(todo),

@@ -95,6 +95,10 @@ pub struct Lookup<'a> {
     /// That client's rights as they are now, for a client that asks cut to its own ([`Rights::common`]): what
     /// every look checks before it reads ([`Lookup::reach`]). Never wider than the client's own.
     pub rights: &'a Rights,
+    /// Who asks for the cards (issue #784): [`Reach::Suite`] for the person's window (the app key), else the
+    /// client that asks. Only the person's look fetches a page through the own Nextcloud or asks about its provider
+    /// ([`link`]); a client's gets what is held. Rights come from [`Lookup::rights`], never from here.
+    pub asker: Reach<'a>,
     /// The conversation's id, for what the core keeps per card (a link shown once, [`link::Shown`]).
     pub conversation: &'a str,
     /// The mail accounts: mails ([`mail`]) and drafts ([`draft`]).

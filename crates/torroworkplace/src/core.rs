@@ -12144,16 +12144,19 @@ impl Core {
     }
 
     /// What a look at a content card (issue #784, [`crate::assistant::cards::look`]) gets of the core: the
-    /// conversation's `client` with `rights` (its own, cut to the asker's), the conversation and the services.
+    /// conversation's `client` with `rights` (its own, cut to the asker's), the conversation, who asks (`asker`:
+    /// only the person's look fetches a page) and the services.
     fn lookup<'a>(
         &'a self,
         client: &'a torro_ipc::ClientInfo,
         rights: &'a torro_ipc::api::Rights,
         conversation: &'a str,
+        asker: Reach<'a>,
     ) -> crate::assistant::cards::Lookup<'a> {
         crate::assistant::cards::Lookup {
             client,
             rights,
+            asker,
             conversation,
             mail: &self.mail,
             pim: &self.pim,
@@ -12217,7 +12220,7 @@ impl Core {
         });
         let held = self.held_suggestions(&entries, rights.as_ref()).await;
         let looked = match client.as_ref().zip(rights.as_ref()) {
-            Some((client, rights)) => self.looked(&entries, &self.lookup(client, rights, conversation)).await,
+            Some((client, rights)) => self.looked(&entries, &self.lookup(client, rights, conversation, reach)).await,
             None => crate::assistant::cards::Looked::new(),
         };
         let maker =
@@ -12283,7 +12286,7 @@ impl Core {
         }
         let card = match &client {
             Some(client) => {
-                let lookup = self.lookup(client, &client.rights, conversation);
+                let lookup = self.lookup(client, &client.rights, conversation, Reach::Suite);
                 crate::assistant::cards::link::look(&lookup, seq, &url, from).await
             }
             None => torro_ipc::assistant::Card::Unavailable,
@@ -12305,7 +12308,7 @@ impl Core {
             return refusal("not-connected", tr("Connect a Nextcloud account to show cards of links.").into());
         }
         let Some(client) = client else { return refusal("not-found", tr("This card has no picture.").into()) };
-        let lookup = self.lookup(&client, &client.rights, conversation);
+        let lookup = self.lookup(&client, &client.rights, conversation, Reach::Suite);
         match crate::assistant::cards::link::look(&lookup, seq, &url, from).await {
             torro_ipc::assistant::Card::Link { card: Some(card), .. } if card.image => {
                 crate::assistant::cards::link::picture(&self.chat, &self.shown_links, conversation, seq, size).await
@@ -14572,7 +14575,7 @@ impl crate::assistant::Host for Core {
     ) -> torro_core::ai::BoxFuture<'a, bool> {
         Box::pin(async move {
             let Some(client) = crate::assistant::Host::client_of(self, actor) else { return false };
-            let lookup = self.lookup(&client, &client.rights, "");
+            let lookup = self.lookup(&client, &client.rights, "", Reach::Client(&client.rights));
             crate::assistant::cards::look(&lookup, 0, card)
                 .await
                 .is_some_and(|card| crate::assistant::cards::found(&card))

@@ -33,7 +33,7 @@ pub fn parse(url: &Url, own: &str) -> Option<LinkKind> {
 /// Whether `reach` may read the conversation `token` of the chat account `account`: the app key (the person)
 /// always; a client when its rights let it call `chat.get_messages` on that conversation (read access to chat, the
 /// command not switched off) and reach the account ([`torro_ipc::api::Rights::reaches_chat_account`]).
-fn reads_conversation(reach: Reach<'_>, account: &str, token: &str) -> bool {
+pub fn reads_conversation(reach: Reach<'_>, account: &str, token: &str) -> bool {
     let Reach::Client(rights) = reach else { return true };
     let read = Request::ChatGetMessages {
         conversation: conversation_id(account, token),
@@ -120,7 +120,7 @@ pub async fn resolve(
 /// stays a link until the next look).
 pub fn assistant_card(url: &str, found: Option<LinkCard>) -> Card {
     match found {
-        Some(card) => Card::Link { url: url.to_owned(), card: Some(Box::new(card)), ask: None },
+        Some(card) => Card::Link { url: url.to_owned(), card: Some(Box::new(card)), ask: None, offline: false },
         None => Card::Unavailable,
     }
 }

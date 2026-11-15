@@ -635,6 +635,11 @@ pub enum Card {
         /// and "Never for …" in place of the card.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ask: Option<torro_chat::ForeignProvider>,
+        /// The server that resolves the card (the own Nextcloud, GitHub) could not be reached just now:
+        /// the window shows the card as failed with "Try again", which asks `assistant.get_cards` anew
+        /// (the core asks the server again a minute later at the earliest). Never with `card` or `ask`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        offline: bool,
     },
     /// A mail ([`CardRef::Mail`], issue #786) as the mail cache holds it now: sender, subject, date,
     /// the start of its text and its flags. Never a picture from the net.
@@ -1674,10 +1679,16 @@ mod tests {
             url: "https://example.org/a".into(),
             card: None,
             ask: Some(ForeignProvider { key: "example.org".into(), name: "example.org".into() }),
+            offline: false,
         };
         let json = serde_json::to_value(&link).expect("serializes");
         assert_eq!((&json["kind"], &json["ask"]["key"]), (&"link".into(), &"example.org".into()));
+        assert!(json.get("offline").is_none(), "left out while reachable");
         assert_eq!(serde_json::from_value::<Card>(json).expect("reads back"), link);
+        let offline = Card::Link { url: "https://example.org/a".into(), card: None, ask: None, offline: true };
+        let json = serde_json::to_value(&offline).expect("serializes");
+        assert_eq!(json["offline"], true);
+        assert_eq!(serde_json::from_value::<Card>(json).expect("reads back"), offline);
         let entry = CardEntry {
             seq: 3,
             card: Card::Group { items: vec![Card::Unavailable], area: crate::api::Area::Tasks, total: None },

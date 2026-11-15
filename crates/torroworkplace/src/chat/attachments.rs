@@ -31,7 +31,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -86,6 +86,12 @@ pub struct Held {
     /// ([`link_cards::links`]), `None` for a link not resolved (yet).
     cards: BTreeMap<String, Vec<Option<Resolved>>>,
     order: VecDeque<String>,
+    /// GitHub links no connected account showed an item for (issue #784), by link, the oldest first: `None` held
+    /// (asked again only once the messages are read anew after a restart), `Some(at)` when GitHub could not be asked
+    /// then (asked again after [`link_cards::RETRY_AFTER`]). So such a link is not asked with every read; it is the
+    /// page it is.
+    no_items: BTreeMap<String, Option<Instant>>,
+    no_item_order: VecDeque<String>,
     /// The connected GitHub accounts, for the cards of issues and pull requests (issue #790); `None` until the core
     /// hands them over ([`ChatService::set_github`]), and then such a link is the page it is.
     github: Option<Github>,
@@ -144,6 +150,28 @@ impl Held {
         }
     }
 
+    /// Whether GitHub is not to be asked about `link` at `now` ([`Held::no_items`]).
+    fn no_item(&self, link: &str, now: Instant) -> bool {
+        match self.no_items.get(link) {
+            Some(None) => true,
+            Some(Some(at)) => now.duration_since(*at) < link_cards::RETRY_AFTER,
+            None => false,
+        }
+    }
+
+    /// Keeps that no account showed an item for `link` (`failed` when GitHub could not be asked); the oldest go beyond
+    /// [`CARDS_KEPT`].
+    fn keep_no_item(&mut self, link: &str, failed: Option<Instant>) {
+        if self.no_items.insert(link.to_owned(), failed).is_none() {
+            self.no_item_order.push_back(link.to_owned());
+        }
+        while self.no_item_order.len() > CARDS_KEPT {
+            if let Some(oldest) = self.no_item_order.pop_front() {
+                self.no_items.remove(&oldest);
+            }
+        }
+    }
+
     /// Drops everything of `account`.
     pub fn forget_account(&mut self, account: &str) {
         self.previews.remove(account);
@@ -194,13 +222,33 @@ fn decided(privacy: &torro_core::privacy::Privacy, link: &str, server: Option<&s
     (link_cards::classify(link, server), web::decide(privacy, link, server))
 }
 
-/// Whether the card `card` may go to a reader who is no app (issue #790): a page, a video, and a file of the own
-/// server – a reader of the message reads the chat of its account, the right a file card asks for
-/// ([`crate::link_cards::nextcloud::reads_files`], decided in issue #784). A quoted message and a GitHub item were
-/// resolved with the person's rights, which a client's rights need not cover
-/// (`crate::link_cards::{chat,github}` check them only when they resolve).
-fn for_everyone(card: &torro_chat::LinkCard) -> bool {
-    matches!(card.kind, torro_chat::LinkCardKind::Web | torro_chat::LinkCardKind::NextcloudFile)
+/// Whether `reach` may get the card `card` the core holds for the link of kind `kind` (`decided` for a page) in a
+/// message of the chat account `account` (issue #784): cards are resolved with the person's rights, so a client gets
+/// one only with the right its kind asks for itself – a page (also a video, a GitHub link no account shows) while
+/// Settings › Privacy does not turn it off; a file of the own server with the right to its files
+/// ([`link_cards::nextcloud::reads_files`]); an issue or pull request with read access to its repository
+/// ([`link_cards::github::reads_repo`]); a quoted message with the right to read its conversation
+/// ([`link_cards::chat::reads_conversation`]). The app key passes every right; a page turned off is left out for it
+/// too. The same rule holds for the card's picture.
+fn reader_sees(
+    card: &torro_chat::LinkCard,
+    kind: &LinkKind,
+    decided: &Decided,
+    reach: Reach<'_>,
+    account: &str,
+) -> bool {
+    use torro_chat::LinkCardKind;
+    match card.kind {
+        LinkCardKind::Web => *decided != Decided::Other(Decision::Skip),
+        LinkCardKind::NextcloudFile => link_cards::nextcloud::reads_files(reach, account),
+        LinkCardKind::Github => {
+            card.github.as_ref().is_some_and(|item| link_cards::github::reads_repo(reach, &item.repo))
+        }
+        LinkCardKind::ChatMessage => match kind {
+            LinkKind::ChatMessage { token, .. } => link_cards::chat::reads_conversation(reach, account, token),
+            _ => false,
+        },
+    }
 }
 
 /// Which of `links` (a message's, [`link_cards::links`]) the message asks about (S2 of issue #785), `server` being
@@ -315,7 +363,7 @@ impl ChatService {
     /// `chat.get_preview` with `card`: the picture of the card of the link `index` (issue #785, 0 the first of
     /// the message's links, [`link_cards::links`]) of the message `id`, from the account's own server, `size` for
     /// the preview of a file (issue #790); `not-found` for a link without a card or picture the core holds, also one
-    /// Settings › Privacy turned off, and for a client the picture of a card it is not shown ([`for_everyone`]).
+    /// Settings › Privacy turned off, and for a client the picture of a card it is not shown ([`reader_sees`]).
     pub async fn card_preview(
         self: &Arc<Self>,
         id: &str,
@@ -339,11 +387,10 @@ impl ChatService {
         // No picture of a card Settings › Privacy turned off (issue #672): it is left out of the messages.
         let privacy = self.privacy();
         let server = remote.server();
-        let app = caller.is_app();
         let picture = self.held().card(id, usize::from(index)).and_then(|held| {
             let card = held.card.as_ref()?;
-            let shown = if for_everyone(card) { !web::turned_off(&privacy, &card.url, &server) } else { app };
-            if shown { held.picture.clone() } else { None }
+            let (kind, decided) = decided(&privacy, &card.url, Some(&server));
+            reader_sees(card, &kind, &decided, caller.reach, account).then(|| held.picture.clone()).flatten()
         });
         let Some(picture) = picture else { return error_response(&ChatError::NotFound) };
         self.card_picture_of(account, &remote, &picture, size).await
@@ -384,8 +431,9 @@ impl ChatService {
     /// sees it, for the chat with people (issue #785, #790): a file of the own server and a quoted message through
     /// `crate::link_cards::{nextcloud,chat}` (none when the server shows the person none: never a page card that
     /// would name it all the same); a GitHub item through the connected accounts, and when none shows it the page
-    /// it is; a page when `page` lets it load (Settings › Privacy decided, or a person's click). `None` when it is
-    /// not to load now or the server cannot be reached: asked again with the next read.
+    /// it is – that none does is held ([`Held::no_items`]), so GitHub is not asked with every read; a page when
+    /// `page` lets it load (Settings › Privacy decided, or a person's click). `None` when it is not to load now or
+    /// the server cannot be reached: asked again with the next read (GitHub a minute later at the earliest).
     async fn resolve_for_app(
         self: &Arc<Self>,
         account: &str,
@@ -402,10 +450,24 @@ impl ChatService {
                 link_cards::chat::resolve(self, Reach::Suite, account, link, token, *message).await.ok()?
             }
             LinkKind::Github { repo, number, .. } => {
-                let github = self.held().github.clone();
+                let now = Instant::now();
+                let github = {
+                    let held = self.held();
+                    if held.no_item(link, now) { None } else { held.github.clone() }
+                };
                 let card = match github {
                     Some(Github(github)) => {
-                        link_cards::github::resolve(&github, Reach::Suite, link, repo, *number).await
+                        match link_cards::github::resolve(&github, Reach::Suite, link, repo, *number).await {
+                            Ok(Some(card)) => Some(card),
+                            Ok(None) => {
+                                self.held().keep_no_item(link, None);
+                                None
+                            }
+                            Err(_) => {
+                                self.held().keep_no_item(link, Some(now));
+                                None
+                            }
+                        }
                     }
                     None => None,
                 };
@@ -641,7 +703,8 @@ impl ChatService {
     /// with the person's rights (issue #790), pages of the own server and of providers Settings › Privacy
     /// allows (issue #672); and the provider of the first link not asked about yet (`foreign`). A page's
     /// card of a provider it blocks is left out for everyone; the cards of the own server and GitHub go to
-    /// apps only ([`for_everyone`]). Without the right to picture content no `blurhash`.
+    /// a client only with the right their kind asks for ([`reader_sees`]). Without the right to picture
+    /// content no `blurhash`. A GitHub link no account shows is not asked again while its page may not load.
     pub(super) async fn decorate(
         self: &Arc<Self>,
         conversation: &str,
@@ -676,12 +739,19 @@ impl ChatService {
             // own rights.
             let open: Vec<(String, usize, String, LinkKind, bool)> = {
                 let held = self.held();
+                let now = Instant::now();
                 page.messages
                     .iter()
                     .filter_map(|message| Some((&message.id, links.get(&message.id)?)))
                     .flat_map(|(id, links)| links.iter().enumerate().map(move |(index, link)| (id, index, link)))
-                    .filter(|(id, index, (_, kind, decided))| {
-                        (decided.loads() || *kind != LinkKind::Web) && held.card(id, *index).is_none()
+                    .filter(|(id, index, (link, kind, decided))| {
+                        let github_held = matches!(kind, LinkKind::Github { .. }) && held.no_item(link, now);
+                        let worth = match kind {
+                            LinkKind::Web => decided.loads(),
+                            LinkKind::Github { .. } => decided.loads() || !github_held,
+                            _ => true,
+                        };
+                        worth && held.card(id, *index).is_none()
                     })
                     .map(|(id, index, (link, kind, decided))| {
                         (id.clone(), index, link.clone(), kind.clone(), decided.loads())
@@ -699,16 +769,15 @@ impl ChatService {
         let pictures = sees_pictures(caller);
         let app = matches!(caller.reach, Reach::Suite);
         let held = self.held();
+        let account = account.unwrap_or_default();
         for message in &mut page.messages {
             let links = links.get(&message.id).map(Vec::as_slice).unwrap_or_default();
             let mut cards = Vec::new();
             for (index, (_, kind, decided)) in links.iter().enumerate() {
                 match held.card(&message.id, index) {
                     Some(held) => {
-                        let shown = held.card.as_ref().filter(|card| match for_everyone(card) {
-                            true => *decided != Decided::Other(Decision::Skip),
-                            false => app,
-                        });
+                        let shown =
+                            held.card.as_ref().filter(|card| reader_sees(card, kind, decided, caller.reach, account));
                         cards.extend(shown.cloned());
                     }
                     // Asked about only where a person can answer, only while no card is there, only for
@@ -1089,6 +1158,107 @@ mod tests {
         let message = page_of.messages.iter().find(|message| message.number() == 9).expect("the message");
         let shown: Vec<(&str, u8)> = message.cards.iter().map(|card| (card.url.as_str(), card.index)).collect();
         assert_eq!(shown, [(page, 1)], "the second link's card, by its place in the text");
+    }
+
+    /// Issue #784: a card held for the person goes to a client only with the right its kind asks for: a file with the
+    /// account's chat, an issue with its repository, a quote with its conversation; a page while Settings › Privacy
+    /// does not turn it off.
+    #[test]
+    fn a_client_gets_a_held_card_only_with_the_right_of_its_kind() {
+        use torro_chat::{LinkCard, LinkCardKind, LinkGithub};
+        use torro_ipc::api::{Area, RightsTemplate, Selection};
+
+        const ACCOUNT: &str = "nextcloud:anna@cloud.example.org";
+        let load = Decided::Other(Decision::Load);
+        let skip = Decided::Other(Decision::Skip);
+        let page = LinkCard { url: "https://example.org/a".into(), ..LinkCard::default() };
+        let file = LinkCard { kind: LinkCardKind::NextcloudFile, ..LinkCard::default() };
+        let github = |repo: &str| LinkCard {
+            kind: LinkCardKind::Github,
+            github: Some(Box::new(LinkGithub {
+                repo: repo.into(),
+                number: 1,
+                is_pull: false,
+                state: torro_chat::GithubState::Open,
+            })),
+            ..LinkCard::default()
+        };
+        let quote = LinkCard { kind: LinkCardKind::ChatMessage, ..LinkCard::default() };
+        let quoted = LinkKind::ChatMessage { token: "ben4chat".into(), message: 5 };
+        let mut reading = RightsTemplate::ReadOnly.rights();
+        reading.chat_accounts = Selection::Only(vec![ACCOUNT.into()]);
+        reading.github_repos = Selection::All;
+        let sees = |card: &LinkCard, kind: &LinkKind, rights: &torro_ipc::api::Rights| {
+            reader_sees(card, kind, &Decided::Own, Reach::Client(rights), ACCOUNT)
+        };
+
+        assert!(reader_sees(&page, &LinkKind::Web, &load, Reach::Client(&reading), ACCOUNT));
+        assert!(!reader_sees(&page, &LinkKind::Web, &skip, Reach::Suite, ACCOUNT), "turned off for everyone");
+        assert!(sees(&file, &LinkKind::Web, &reading) && sees(&github("torro/workplace"), &LinkKind::Web, &reading));
+        assert!(sees(&quote, &quoted, &reading));
+        assert!(!sees(&quote, &LinkKind::Web, &reading), "a quote is only one of a chat message");
+
+        let mut other_account = reading.clone();
+        other_account.chat_accounts = Selection::Only(vec!["nextcloud:ben@cloud.example.org".into()]);
+        assert!(!sees(&file, &LinkKind::Web, &other_account) && !sees(&quote, &quoted, &other_account));
+        let mut switched_off = reading.clone();
+        switched_off.denied.insert("chat.get_messages".into());
+        assert!(!sees(&file, &LinkKind::Web, &switched_off), "a switched-off command counts");
+        assert!(!sees(&quote, &quoted, &switched_off));
+        let mut no_chat = reading.clone();
+        no_chat.areas.remove(&Area::Chat);
+        assert!(!sees(&file, &LinkKind::Web, &no_chat) && !sees(&quote, &quoted, &no_chat));
+
+        let mut other_repo = reading.clone();
+        other_repo.github_repos = Selection::Only(vec!["someone/else".into()]);
+        assert!(!sees(&github("torro/workplace"), &LinkKind::Web, &other_repo));
+        let mut no_github = reading.clone();
+        no_github.areas.remove(&Area::Github);
+        assert!(!sees(&github("torro/workplace"), &LinkKind::Web, &no_github));
+        for card in [&file, &github("torro/workplace"), &quote] {
+            assert!(reader_sees(card, &quoted, &Decided::Own, Reach::Suite, ACCOUNT), "the person sees every kind");
+        }
+    }
+
+    /// Issue #784: a GitHub link no account shows is held, so GitHub is not asked with every read of the messages.
+    #[tokio::test]
+    async fn a_github_link_without_an_item_is_not_asked_with_every_read() {
+        use crate::account::github::tests::{MemoryTokens, NO_CLI, fake_github, service, viewer};
+        use torro_chat::conversation_id;
+        use torro_ipc::Request;
+
+        const ACCOUNT: &str = "nextcloud:anna@cloud.example.org";
+        const APP: Caller<'static> = Caller { reach: Reach::Suite, client: None };
+        let server = Arc::new(super::super::fake::Server::default());
+        let chat = Arc::new(ChatService::fixed(vec![(ACCOUNT.into(), Arc::clone(&server))]));
+        let (url, record) = fake_github(|seen| match seen.body.contains("viewer") {
+            true => (200, Some("repo"), viewer("anna-berg")),
+            false => (200, None, r#"{"data":{"i0":{"issueOrPullRequest":null}}}"#.into()),
+        })
+        .await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let github = service(dir.path(), &MemoryTokens::default(), &url, NO_CLI);
+        github.connect_token(torro_core::account::Secret::new("ghp_testTOKEN")).await.expect("connected");
+        record.lock().expect("record").clear();
+        chat.set_github(Arc::new(github));
+        {
+            let mut state = server.state();
+            let list = state.messages.get_mut("ben4chat").expect("Ben");
+            list.push(super::super::remote::tests::message(9, "See https://github.com/torro/workplace/issues/9"));
+        }
+        let read = Request::ChatGetMessages {
+            conversation: conversation_id(ACCOUNT, "ben4chat"),
+            before: None,
+            after: None,
+            around: None,
+            limit: None,
+        };
+        for _ in 0..3 {
+            let Response::ChatMessages(page) = chat.handle(read.clone(), APP).await else { panic!("messages") };
+            let message = page.messages.iter().find(|message| message.number() == 9).expect("the message");
+            assert!(message.cards.is_empty() && message.foreign.is_some(), "the page asks: {message:?}");
+        }
+        assert_eq!(record.lock().expect("record").len(), 1, "GitHub asked once");
     }
 
     /// Issue #790: a link to a file of the own server gets its file card for the app, with the server's preview as

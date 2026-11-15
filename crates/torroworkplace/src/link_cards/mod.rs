@@ -19,6 +19,10 @@ pub(crate) mod web;
 /// message, the assistant up to three after an answer ([`torro_ipc::assistant::MAX_LINK_CARDS`]).
 pub const MAX_LINKS: usize = torro_ipc::assistant::MAX_LINK_CARDS;
 
+/// How long a server (the own Nextcloud, GitHub) that could not be reached for a card is not asked again (issue
+/// #784), so a server that is offline does not slow every read down; the card says it could not be reached.
+pub const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// What a web address is (issue #784), by its form alone: nothing is fetched to tell it. Whether a card can be made
 /// (an account, the rights, the server's answer) is decided when it is resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]

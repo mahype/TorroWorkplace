@@ -944,11 +944,13 @@ fn content_card(card: &CardRef, now: DateTime<Utc>) -> Option<Card> {
                 ..LinkCard::default()
             })),
             ask: None,
+            offline: false,
         },
         CardRef::Link { url, .. } => Card::Link {
             url: url.clone(),
             card: None,
             ask: Some(ForeignProvider { key: "news.example.com".into(), name: "news.example.com".into() }),
+            offline: false,
         },
         CardRef::Mail { id, .. } if id == "m:gone" => Card::Unavailable,
         CardRef::Mail { id, .. } => mail(id),

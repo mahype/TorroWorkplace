@@ -1,7 +1,7 @@
 //! Issues and pull requests on GitHub (issue #790, `docs/inhaltskarten.md` "GitHub Issue / PR"): their links
 //! ([`parse`]) and their cards ([`resolve`]) through a connected GitHub account (`torro_pim_github::api::Api`), only
-//! with read access to `github` and the repository for the reader. Without an account, or when GitHub fails, the
-//! link is a page ([`super::web`]).
+//! with read access to `github` and the repository for the reader. Without an account, or when no account shows it,
+//! the link is a page ([`super::web`]); when GitHub cannot be asked, the caller tries again a minute later.
 
 use torro_chat::{GithubState, LinkCard, LinkCardKind, LinkGithub};
 use torro_ipc::api::{Access, Area};
@@ -47,7 +47,8 @@ fn is_repo(name: &str) -> bool {
 
 /// Whether `reach` may see the issues and pull requests of `repo`: the app key (the person) always; a client with
 /// read access to `github` and the repository or its owner in its rights ([`torro_ipc::api::Rights::reaches_repo`]).
-fn reads_repo(reach: Reach<'_>, repo: &str) -> bool {
+/// The chat with people asks it before it hands a card held for the person to a client (issue #790).
+pub fn reads_repo(reach: Reach<'_>, repo: &str) -> bool {
     match reach {
         Reach::Suite => true,
         Reach::Client(rights) => rights.area(Area::Github).allows(Access::Read) && rights.reaches_repo(repo),
@@ -60,8 +61,11 @@ fn reads_repo(reach: Reach<'_>, repo: &str) -> bool {
 ///   of GitHub and the answer is `None`.
 /// - Then asks GitHub through each connected account in turn (`Api::items`) until one sees the item; a repository
 ///   GitHub reports under another name (renamed, moved) must be within the right as well.
-/// - `None`: no right, no connected account, no account sees it, or GitHub failed. The caller then treats the link
-///   as the page it is ([`LinkKind::Web`], with Settings › Privacy, [`super::web`]): no detail of the item.
+/// - `Ok(None)`: no right, no connected account, or no account sees it. The caller then treats the link as the page
+///   it is ([`LinkKind::Web`], with Settings › Privacy, [`super::web`]): no detail of the item. It holds that answer
+///   (issue #784), so GitHub is not asked again with every read.
+/// - `Err(Unreachable)`: no account saw it and at least one could not ask GitHub now (offline, refused token); the
+///   caller asks again a minute later at the earliest.
 ///
 /// Whether it is a pull request is what GitHub reports, not what the link says (GitHub sends `/pull/<n>` of an issue
 /// to the issue). Logs no address. Each call asks GitHub; holding the card is the caller's.
@@ -71,23 +75,31 @@ pub async fn resolve(
     link: &str,
     repo: &str,
     number: u64,
-) -> Option<LinkCard> {
+) -> Result<Option<LinkCard>, Unreachable> {
     if !reads_repo(reach, repo) {
-        return None;
+        return Ok(None);
     }
     let wanted = IssueRef { repo: repo.to_owned(), number };
+    let mut failed = false;
     for account in github.infos().await {
         let Some(api) = github.api(&account.id).await else { continue };
         // A failure of one account (offline, refused token) leaves the others to try.
-        let Ok(items) = api.items(std::slice::from_ref(&wanted)).await else { continue };
+        let Ok(items) = api.items(std::slice::from_ref(&wanted)).await else {
+            failed = true;
+            continue;
+        };
         let Some(item) = items.into_iter().find(|item| item.id.number == number) else { continue };
         if !reads_repo(reach, item.repo()) {
-            return None;
+            return Ok(None);
         }
-        return Some(card_of(link, item));
+        return Ok(Some(card_of(link, item)));
     }
-    None
+    if failed { Err(Unreachable) } else { Ok(None) }
 }
+
+/// GitHub could not be asked for an item now ([`resolve`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unreachable;
 
 /// The card of `item`. A closed issue counts as done ([`GithubState::Merged`], `CircleCheck` in `torro-design`):
 /// GitHub's answer does not say whether it was closed as not planned.
@@ -171,7 +183,8 @@ mod tests {
     #[tokio::test]
     async fn a_connected_account_gives_the_card_of_a_draft_pull_request() {
         let (accounts, _record) = connected().await;
-        let card = resolve(&accounts, Reach::Suite, LINK, "torro/workplace", 143).await.expect("a card");
+        let card =
+            resolve(&accounts, Reach::Suite, LINK, "torro/workplace", 143).await.expect("asked").expect("a card");
         assert_eq!(
             (card.kind, card.title.as_str(), card.domain.as_str()),
             (LinkCardKind::Github, "Fix the week view", "github.com")
@@ -187,7 +200,7 @@ mod tests {
     async fn without_an_account_or_when_github_fails_it_is_a_page() {
         let dir = tempfile::tempdir().expect("temp dir");
         let none = service(dir.path(), &MemoryTokens::default(), "http://127.0.0.1:9/graphql", NO_CLI);
-        assert_eq!(resolve(&none, Reach::Suite, LINK, "torro/workplace", 143).await, None);
+        assert_eq!(resolve(&none, Reach::Suite, LINK, "torro/workplace", 143).await, Ok(None), "no account: none");
 
         let (url, _record) = fake_github(|seen| match seen.body.contains("viewer") {
             true => (200, Some("repo"), viewer("anna-berg")),
@@ -196,7 +209,7 @@ mod tests {
         .await;
         let failing = service(dir.path(), &MemoryTokens::default(), &url, NO_CLI);
         failing.connect_token(Secret::new("ghp_testTOKEN")).await.expect("connected");
-        assert_eq!(resolve(&failing, Reach::Suite, LINK, "torro/workplace", 143).await, None);
+        assert_eq!(resolve(&failing, Reach::Suite, LINK, "torro/workplace", 143).await, Err(Unreachable));
     }
 
     /// A client without read access to `github`, or without the repository, gets no card, and GitHub is not asked.
@@ -205,15 +218,15 @@ mod tests {
         let (accounts, record) = connected().await;
         let mut rights = RightsTemplate::ReadOnly.rights();
         rights.areas.remove(&Area::Github);
-        assert_eq!(resolve(&accounts, Reach::Client(&rights), LINK, "torro/workplace", 143).await, None);
+        assert_eq!(resolve(&accounts, Reach::Client(&rights), LINK, "torro/workplace", 143).await, Ok(None));
 
         let mut rights = RightsTemplate::ReadOnly.rights();
         rights.github_repos = Selection::Only(vec!["someone/else".into()]);
-        assert_eq!(resolve(&accounts, Reach::Client(&rights), LINK, "torro/workplace", 143).await, None);
+        assert_eq!(resolve(&accounts, Reach::Client(&rights), LINK, "torro/workplace", 143).await, Ok(None));
         assert!(record.lock().expect("record").is_empty(), "nothing asked of GitHub before the right");
 
         rights.github_repos = Selection::Only(vec!["torro".into()]);
         let card = resolve(&accounts, Reach::Client(&rights), LINK, "torro/workplace", 143).await;
-        assert!(card.is_some(), "with the owner in the rights");
+        assert!(matches!(card, Ok(Some(_))), "with the owner in the rights");
     }
 }

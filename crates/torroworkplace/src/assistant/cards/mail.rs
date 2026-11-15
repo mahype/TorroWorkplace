@@ -91,6 +91,7 @@ pub(crate) mod tests {
             Lookup {
                 client,
                 rights,
+                asker: crate::pim::Reach::Client(rights),
                 conversation: "c1",
                 mail: &self.mail,
                 pim: &self.pim,
