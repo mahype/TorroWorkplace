@@ -167,11 +167,12 @@ impl Synth for Pocket {
         let text = text.replace('\0', " ");
         // As before without a choice; with a pause each sentence is a piece of its own, so the pause
         // falls between sentences. sherpa-onnx's own `silence_scale` does not reach streamed sound.
-        let pieces = match delivery.pause_ms == 0 {
-            true => pieces(&text, PIECE),
+        // Each piece with whether a sentence ends there, so a long one cut in pieces has no pause inside.
+        let pieces: Vec<(String, bool)> = match delivery.pause_ms == 0 {
+            true => pieces(&text, PIECE).into_iter().map(|piece| (piece, false)).collect(),
             false => sentence_pieces(&text, PIECE),
         };
-        for piece in pieces {
+        for (piece, ends) in pieces {
             // Each piece is stretched on its own, so its end comes out whole before the pause.
             let stretch = Rc::new(RefCell::new(Some(Stretch::new(rate, delivery.speed))));
             let heard = Rc::new(Cell::new(false));
@@ -209,9 +210,8 @@ impl Synth for Pocket {
                 rest.extend(stretch.finish());
             }
             // After each sentence, also the last of this text: an answer read as it grows comes in
-            // several texts, and the pause falls between them too. A long sentence cut in pieces has
-            // none inside.
-            if delivery.pause_ms > 0 && piece.trim_end().ends_with(['.', '!', '?', '…']) {
+            // several texts, and the pause falls between them too.
+            if delivery.pause_ms > 0 && ends {
                 rest.extend(std::iter::repeat_n(0.0, rate as usize * usize::from(delivery.pause_ms) / 1000));
             }
             if !rest.is_empty() && !(chunk.borrow_mut())(&rest) {

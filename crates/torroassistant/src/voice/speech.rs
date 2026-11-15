@@ -194,14 +194,24 @@ impl Output {
     }
 }
 
-/// The sentences of `text`, each with its sign at the end; the last may have none.
+/// What may close a quote or an aside after the sign of a sentence: `„Ja.“ Dann`, `(siehe oben.)`.
+const CLOSERS: [char; 12] = [')', ']', '}', '"', '\'', '“', '”', '’', '‘', '«', '»', '›'];
+
+/// The sentences of `text`, each with its sign at the end, and the quotes or brackets that close
+/// after it; the last may have none.
 fn sentences(text: &str) -> Vec<String> {
     let mut sentences = Vec::new();
     let mut sentence = String::new();
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
         sentence.push(c);
-        if matches!(c, '.' | '!' | '?' | '…') && chars.peek().is_none_or(|next| next.is_whitespace()) {
+        if !matches!(c, '.' | '!' | '?' | '…') {
+            continue;
+        }
+        while let Some(closer) = chars.next_if(|next| CLOSERS.contains(next)) {
+            sentence.push(closer);
+        }
+        if chars.peek().is_none_or(|next| next.is_whitespace()) {
             sentences.push(std::mem::take(&mut sentence));
         }
     }
@@ -209,10 +219,35 @@ fn sentences(text: &str) -> Vec<String> {
     sentences
 }
 
+/// Shortenings after which a sentence goes on, lower case and without their last point (issue #782).
+/// Ones that often end a sentence ("etc.", English "no.") are left out: a pause too many there is
+/// better than none where a sentence ends.
+const ABBREVIATIONS: [&str; 33] = [
+    "bzw", "ca", "ggf", "inkl", "exkl", "zzgl", "usw", "evtl", "vgl", "bspw", "sog", "mwst", "dr", "prof", "nr", "str",
+    "tel", "jan", "feb", "apr", "jun", "jul", "aug", "sep", "sept", "okt", "nov", "dez", "mr", "mrs", "ms", "vs",
+    "approx",
+];
+
+/// Whether `sentence` ends with a point that ends no sentence: after a single letter ("z. B."), a day or a
+/// place in a list ("3.", "12."), a shortening with a point inside ("z.B.", "e.g.") or one of
+/// [`ABBREVIATIONS`]. "Ja." and a year end a sentence.
+fn goes_on(sentence: &str) -> bool {
+    let Some(word) = sentence.trim_end().strip_suffix('.').and_then(|head| head.split_whitespace().last()) else {
+        return false;
+    };
+    let word = word.trim_start_matches(|c: char| !c.is_alphanumeric());
+    let digits = !word.is_empty() && word.chars().all(|c| c.is_ascii_digit());
+    (word.chars().count() == 1 && word.chars().all(char::is_alphabetic))
+        || (digits && word.len() <= 2)
+        || (word.contains('.') && !word.ends_with('.'))
+        || ABBREVIATIONS.contains(&word.to_lowercase().as_str())
+}
+
 /// `text` with each sentence a piece of its own (issue #782: a pause falls after each), a sentence
-/// longer than `most` characters cut as in [`pieces`]. A point after a number of one or two digits or a
-/// single letter ("3. Mai", "z. B.") ends no sentence, so no pause falls inside one.
-pub fn sentence_pieces(text: &str, most: usize) -> Vec<String> {
+/// longer than `most` characters cut as in [`pieces`], each piece with whether a sentence ends there:
+/// only the last piece of a sentence does, wherever a long one is cut. A point that ends no sentence
+/// ([`goes_on`]) keeps it open, so no pause falls inside one.
+pub fn sentence_pieces(text: &str, most: usize) -> Vec<(String, bool)> {
     let mut whole: Vec<String> = Vec::new();
     let mut open = false;
     for sentence in sentences(text) {
@@ -220,14 +255,16 @@ pub fn sentence_pieces(text: &str, most: usize) -> Vec<String> {
             Some(last) if open => last.push_str(&sentence),
             _ => whole.push(sentence.clone()),
         }
-        let word = sentence.trim_end().strip_suffix('.').and_then(|head| head.split_whitespace().last());
-        // One letter ("z. B.") or a day or place in a list ("3.", "12."); "Ja." and a year end a sentence.
-        open = word.is_some_and(|word| {
-            let digits = word.chars().all(|c| c.is_ascii_digit());
-            word.chars().count() == 1 && word.chars().all(char::is_alphabetic) || digits && word.len() <= 2
-        });
+        open = goes_on(&sentence);
     }
-    whole.iter().flat_map(|sentence| pieces(sentence, most)).collect()
+    whole
+        .iter()
+        .flat_map(|sentence| {
+            let cut = pieces(sentence, most);
+            let last = cut.len().saturating_sub(1);
+            cut.into_iter().enumerate().map(move |(number, piece)| (piece, number == last))
+        })
+        .collect()
 }
 
 /// `text` in pieces of whole sentences, each at most `most` characters; a longer sentence is cut
@@ -735,18 +772,49 @@ mod tests {
     /// Issue #782: with a pause every sentence is a piece of its own; a long one is still cut.
     #[test]
     fn sentence_pieces_are_one_sentence_each() {
-        assert_eq!(sentence_pieces("One. Two!  Three?", 500), ["One.", "Two!", "Three?"]);
+        let texts = |text: &str, most| -> Vec<String> {
+            sentence_pieces(text, most).into_iter().map(|(piece, _)| piece).collect()
+        };
+        assert_eq!(texts("One. Two!  Three?", 500), ["One.", "Two!", "Three?"]);
         assert!(sentence_pieces("", 500).is_empty());
+        assert!(sentence_pieces("One. Two!", 500).iter().all(|(_, ends)| *ends), "each ends a sentence");
         let long = format!("{}. Short.", "word ".repeat(40).trim());
         let cut = sentence_pieces(&long, 50);
-        assert!(cut.len() > 2 && cut.iter().all(|piece| piece.chars().count() <= 50), "{cut:?}");
-        assert_eq!(cut.last().map(String::as_str), Some("Short."));
+        assert!(cut.len() > 2 && cut.iter().all(|(piece, _)| piece.chars().count() <= 50), "{cut:?}");
+        assert_eq!(cut.last(), Some(&("Short.".to_string(), true)));
+        let ends: Vec<_> = cut.iter().filter(|(_, ends)| *ends).map(|(piece, _)| piece.as_str()).collect();
+        assert_eq!(ends.len(), 2, "only the end of each sentence, not where a long one is cut: {cut:?}");
         assert_eq!(
-            sentence_pieces("Am 3. Mai kommt z. B. Anna. Gut!", 500),
+            texts("Am 3. Mai kommt z. B. Anna. Gut!", 500),
             ["Am 3. Mai kommt z. B. Anna.", "Gut!"],
             "no sentence ends after a day or a single letter"
         );
-        assert_eq!(sentence_pieces("Ja. Das war 2024. Gut.", 500), ["Ja.", "Das war 2024.", "Gut."]);
+        assert_eq!(texts("Ja. Das war 2024. Gut.", 500), ["Ja.", "Das war 2024.", "Gut."]);
+    }
+
+    /// Issue #782 (review): shortenings keep a sentence open, also with a point inside; a sentence
+    /// closed by a quote or a bracket ends after it; a long sentence cut after "3." has its pause
+    /// only at its end.
+    #[test]
+    fn shortenings_quotes_and_cuts_keep_the_pause_at_the_end() {
+        let texts =
+            |text: &str| -> Vec<String> { sentence_pieces(text, 500).into_iter().map(|(piece, _)| piece).collect() };
+        assert_eq!(
+            texts("Das kostet ca. 5 € inkl. MwSt. pro Monat. Gut."),
+            ["Das kostet ca. 5 € inkl. MwSt. pro Monat.", "Gut."]
+        );
+        assert_eq!(
+            texts("Etwa z.B. morgen, bzw. am Okt. danach. Ja."),
+            ["Etwa z.B. morgen, bzw. am Okt. danach.", "Ja."]
+        );
+        assert_eq!(texts("Er sagte „Ja.“ Dann ging er."), ["Er sagte „Ja.“", "Dann ging er."]);
+        assert_eq!(texts("Siehe oben (wie gesagt.) Weiter!"), ["Siehe oben (wie gesagt.)", "Weiter!"]);
+        assert_eq!(pieces("Er sagte „Ja.“ Dann ging er.", 500), ["Er sagte „Ja.“ Dann ging er."]);
+        let long = format!("{} am 3. Mai {}.", "wort ".repeat(30).trim(), "wort ".repeat(30).trim());
+        let cut = sentence_pieces(&long, 160);
+        assert!(cut.len() > 1, "{cut:?}");
+        assert_eq!(cut.iter().filter(|(_, ends)| *ends).count(), 1, "{cut:?}");
+        assert!(cut.last().is_some_and(|(_, ends)| *ends));
     }
 
     /// What a fake sound output played.
