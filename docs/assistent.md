@@ -379,6 +379,8 @@ Stand: 2026-10-14. Findet oder ändert der Assistent einen Termin, eine Aufgabe 
 erscheint im Verlauf nicht nur ein Satz, sondern eine **Karte**: der Eintrag in seiner eigenen
 Gestalt (Kalenderblatt, Karteikarte, Mail-Vorschau), mit Knöpfen zum Weitermachen. Entwurf:
 [`docs/prototypes/assistant/cards.html`](prototypes/assistant/cards.html).
+Welche Inhaltsarten es gibt, wie sie in Assistent, Bots und Chat gleich aussehen und wann Treffer
+als Liste statt als Karten erscheinen, steht in [inhaltskarten.md](inhaltskarten.md).
 
 ### Grundsätze
 
@@ -464,7 +466,7 @@ Freigabe**:
   tasks“, und bei einer Mail als Quelle „Reply with link“ (legt einen Mail-Entwurf an, der als
   Entwurfs-Karte erscheint).
 
-Später, nach denselben Regeln: Tagesplan, Zeitvorschläge („Wann habe ich Zeit?“, braucht einen
+Später, nach denselben Regeln (die gepflegte Liste mit Stand und Reihenfolge: [inhaltskarten.md](inhaltskarten.md)): Tagesplan, Zeitvorschläge („Wann habe ich Zeit?“, braucht einen
 Freebusy-Befehl), gefundene Mail, Inbox-Eintrag, Workspace-Vorlage mit Skizze der Kacheln,
 GitHub-Issue/PR, Konto-Status, Bot-Vorschlag, „Gemerkt“, Änderung mit Rückgängig, Rückfrage mit
 Auswahl, Briefing, Person.

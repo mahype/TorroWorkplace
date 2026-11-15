@@ -572,7 +572,8 @@ Unterhaltung gemerkt werden können, siehe „Schweben“):
   - **Andere Datei** und jeder **Rückfall ohne Vorschau** (keine Vorschau, SVG, `hide-download`, Format ohne
     Decoder): Zeile mit Symbol der Art, Name, Größe und Art, Knöpfe „Open“, „Download“, „Open in Nextcloud“
     (`hide-download`: nur „Open in Nextcloud“).
-  - **Link-Karte** unter einer Nachricht mit Link: Bild vom eigenen Server, Titel, Domain; nur der erste Link einer
+  - **Link-Karte** (gemeinsame Gestalt mit dem Assistenten und die Liste aller Inhaltsarten:
+    [inhaltskarten.md](inhaltskarten.md)) unter einer Nachricht mit Link: Bild vom eigenen Server, Titel, Domain; nur der erste Link einer
     Nachricht, wie in Talk-Web. Links auf den eigenen Nextcloud-Server bekommen sie von selbst, andere nach Settings ›
     Privacy (Entscheidung 23, #672). Bei „Ask“ steht statt der Karte ein ruhiger Satz „This message shows content from
     <Anbieter>.“ mit den Knöpfen „Show once“, „Always allow <Anbieter>“ und „Never for <Anbieter>“; die Antwort gilt
