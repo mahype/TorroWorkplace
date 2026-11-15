@@ -304,10 +304,15 @@ pub trait ChatSource: Send + Sync {
     ) -> impl Future<Output = Result<SharedPage, ChatError>> + Send;
 
     /// `chat.show_card` ("Show once"): the card of the link `index` of the message `id` (issue #785: of
-    /// its first three links that may have a card, in the order of its text, from 0), fetched by the
-    /// account's server; `None` when there is none. Later pages of `chat.get_messages` carry it in
+    /// its first three links that may have a card, in the order of its text, from 0, as a card's `index`
+    /// names it), fetched by the account's server; `None` for `index`: the link the message asks about
+    /// (`foreign`). `Ok(None)` when there is no card. Later pages of `chat.get_messages` carry it in
     /// `cards`. [`ChatError::Unsupported`] for a provider Settings › Privacy blocks (issue #672).
-    fn show_card(&self, id: String, index: u8) -> impl Future<Output = Result<Option<LinkCard>, ChatError>> + Send;
+    fn show_card(
+        &self,
+        id: String,
+        index: Option<u8>,
+    ) -> impl Future<Output = Result<Option<LinkCard>, ChatError>> + Send;
 
     // -- Calls (stage 6b) ---------------------------------------------------------------------
 

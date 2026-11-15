@@ -928,7 +928,7 @@ impl ChatSource for DemoSource {
         let mut data = self.lock();
         let message = data.message_mut(&id)?;
         if let Some(index) = card {
-            if !message.cards.get(usize::from(index)).is_some_and(|card| card.image) {
+            if !message.cards.iter().any(|card| card.index == index && card.image) {
                 return Err(ChatError::NotFound);
             }
             let (w, h) = files::fitted(1200, 630, files::edge(size));
@@ -989,12 +989,12 @@ impl ChatSource for DemoSource {
         Ok(SharedPage { items: items.into_iter().take(limit).collect(), more })
     }
 
-    // The sample asks only about the first link of a message (one foreign link each); `index` picks
-    // among cards it holds already.
-    async fn show_card(&self, id: String, index: u8) -> Result<Option<LinkCard>, ChatError> {
+    // The sample asks only about the first link of a message (one foreign link each, `index` 0, the link
+    // `None` names); an `index` of a card it holds already gives that card.
+    async fn show_card(&self, id: String, index: Option<u8>) -> Result<Option<LinkCard>, ChatError> {
         let mut data = self.lock();
         let message = data.message_mut(&id)?;
-        if let Some(card) = message.cards.get(usize::from(index)) {
+        if let Some(card) = message.cards.iter().find(|card| Some(card.index) == index) {
             return Ok(Some(card.clone()));
         }
         let card = files::first_link(&message.text).and_then(files::foreign_card);
@@ -1522,10 +1522,12 @@ mod tests {
         );
         let four = message(&demo, DESIGN, 18);
         assert_eq!(four.cards.len(), 3, "at most three cards per message; the page stays a link");
+        let indexes: Vec<u8> = four.cards.iter().map(|card| card.index).collect();
+        assert_eq!(indexes, [0, 1, 2], "each card says where its link stands, as the core sets it");
         assert!(four.text.contains(files::FOUR_LINKS[3]));
         let foreign = message_id(DESIGN, 11);
         assert_eq!(message(&demo, DESIGN, 11).foreign.map(|provider| provider.key).as_deref(), Some("example.com"));
-        let card = run(demo.show_card(foreign.clone(), 0)).expect("a card").expect("example.com has one");
+        let card = run(demo.show_card(foreign.clone(), None)).expect("a card").expect("example.com has one");
         assert_eq!(card.domain, "example.com");
         assert_eq!(message(&demo, DESIGN, 11).cards.len(), 1, "later pages carry it");
         assert!(message(&demo, DESIGN, 11).foreign.is_none(), "and ask no more");

@@ -2084,8 +2084,8 @@ pub enum Request {
         /// The picture of the message's link card instead of a file.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         card: bool,
-        /// With `card`: which of the message's link cards (issue #785), in the order of its `cards`,
-        /// counted from 0; left out: the first.
+        /// With `card`: the card's `index` (issue #785): where its link stands among the first three
+        /// links of the message's text, counted from 0, as the card names it; left out: 0.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         index: Option<u8>,
         /// `small` (256 pixels, when left out), `medium` (1024) or `large` (1600).
@@ -2137,13 +2137,15 @@ pub enum Request {
     /// Fetches the card of a link of a message ("Show once", [`Response::ChatCard`]): the
     /// account's server asks the link's address for it, so its owner may learn when it was read. App
     /// key only: a person decides. `unsupported` for a provider Settings › Privacy blocks and while it
-    /// says "Never show" (issue #672); nothing is stored about the provider.
+    /// says "Never show" (issue #672); nothing is stored about the provider. The card carries its
+    /// `index`.
     #[serde(rename = "chat.show_card")]
     ChatShowCard {
         /// The message (`<conversation>/<number>`).
         id: String,
         /// Which of the message's links that may have a card (issue #785: up to three, in the order
-        /// they stand in its text), counted from 0; left out: the first.
+        /// they stand in its text), counted from 0, as a card's `index` names it; left out: the link the
+        /// message asks about (`foreign`, the one "Show once" stands under).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         index: Option<u8>,
     },

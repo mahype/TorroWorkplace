@@ -125,11 +125,12 @@ impl Held {
         self.cards.get(message)?.get(index)?.as_ref()
     }
 
-    /// Keeps `card` for the link `index` (below [`link_cards::MAX_LINKS`]) of `message`; the oldest messages go
-    /// beyond [`CARDS_KEPT`].
-    fn keep_card(&mut self, message: &str, index: usize, card: Resolved) {
-        if index >= link_cards::MAX_LINKS {
-            return;
+    /// Keeps `card` for the link `index` (below [`link_cards::MAX_LINKS`]) of `message`, its card carrying that
+    /// `index` (issue #785: the window takes it as it is); the oldest messages go beyond [`CARDS_KEPT`].
+    fn keep_card(&mut self, message: &str, index: usize, mut card: Resolved) {
+        let Some(at) = u8::try_from(index).ok().filter(|_| index < link_cards::MAX_LINKS) else { return };
+        if let Some(card) = card.card.as_mut() {
+            card.index = at;
         }
         if !self.cards.contains_key(message) {
             self.order.push_back(message.to_string());
@@ -200,6 +201,28 @@ fn decided(privacy: &torro_core::privacy::Privacy, link: &str, server: Option<&s
 /// (`crate::link_cards::{chat,github}` check them only when they resolve).
 fn for_everyone(card: &torro_chat::LinkCard) -> bool {
     matches!(card.kind, torro_chat::LinkCardKind::Web | torro_chat::LinkCardKind::NextcloudFile)
+}
+
+/// Which of `links` (a message's, [`link_cards::links`]) the message asks about (S2 of issue #785), `server` being
+/// the account's own: the first without a card (`held` tells which have one) that is a page or a GitHub item whose
+/// provider Settings › Privacy has not been asked about – the link `foreign` of `chat.get_messages` names
+/// ([`ChatService::decorate`]). The first link when none asks (the provider was decided meanwhile).
+fn asked_link(
+    privacy: &torro_core::privacy::Privacy,
+    links: &[String],
+    server: Option<&str>,
+    held: impl Fn(usize) -> bool,
+) -> usize {
+    links
+        .iter()
+        .enumerate()
+        .position(|(at, link)| {
+            let (kind, decided) = decided(privacy, link, server);
+            !held(at)
+                && matches!(kind, LinkKind::Web | LinkKind::Github { .. })
+                && matches!(decided, Decided::Other(Decision::Ask(_)))
+        })
+        .unwrap_or(0)
 }
 
 /// `bytes` as a picture answer with its size, when they are a PNG, JPEG, GIF or WebP.
@@ -714,21 +737,21 @@ impl ChatService {
         page
     }
 
-    /// `chat.show_card` for the first link of the message `id` ([`ChatService::show_card_at`] with
-    /// index 0); the tests' short way.
+    /// `chat.show_card` for the link the message `id` asks about ([`ChatService::show_card_at`] without
+    /// `index`); the tests' short way.
     #[cfg(test)]
     pub async fn show_card(self: &Arc<Self>, id: &str) -> Response {
-        self.show_card_at(id, 0).await
+        self.show_card_at(id, None).await
     }
 
     /// `chat.show_card`: the card of the link `index` (issue #785, 0 the first of the message's links,
-    /// [`link_cards::links`]) of the message `id`, whatever server it is on; `not-found` for a message
-    /// with fewer links, `unsupported` for a page whose provider Settings › Privacy blocks or while it
-    /// says "Never show" (issue #672), `offline` while the server cannot be asked. A file of the own
-    /// server, a quoted message and a GitHub item resolve as they do by themselves (issue #790), never as
-    /// a page that would name them. Settings › Privacy stays as it is; a page's card is held for every
-    /// reader.
-    pub async fn show_card_at(self: &Arc<Self>, id: &str, index: u8) -> Response {
+    /// [`link_cards::links`]) of the message `id`, whatever server it is on; without `index` the link the message
+    /// asks about (`foreign` of `chat.get_messages`, [`asked_link`]). `not-found` for a message with fewer links,
+    /// `unsupported` for a page whose provider Settings › Privacy blocks or while it says "Never show" (issue
+    /// #672), `offline` while the server cannot be asked. A file of the own server, a quoted message and a GitHub
+    /// item resolve as they do by themselves (issue #790), never as a page that would name them. Settings ›
+    /// Privacy stays as it is; a page's card is held for every reader, with its `index`.
+    pub async fn show_card_at(self: &Arc<Self>, id: &str, index: Option<u8>) -> Response {
         let (account, token, number) = match super::service::message_of(id) {
             Ok(found) => found,
             Err(err) => return error_response(&err),
@@ -744,11 +767,15 @@ impl ChatService {
             Ok(message) => message,
             Err(err) => return error_response(&err),
         };
-        let index = usize::from(index);
-        let Some(link) = link_cards::links(&message.text).into_iter().nth(index) else {
+        let server = remote.server();
+        let links = link_cards::links(&message.text);
+        let index = match index {
+            Some(index) => usize::from(index),
+            None => asked_link(&self.privacy(), &links, Some(&server), |at| self.held().card(id, at).is_some()),
+        };
+        let Some(link) = links.into_iter().nth(index) else {
             return error_response(&ChatError::NotFound);
         };
-        let server = remote.server();
         let (kind, decided) = decided(&self.privacy(), &link, Some(&server));
         let page = decided != Decided::Other(Decision::Skip);
         let card = match kind {
@@ -766,9 +793,9 @@ impl ChatService {
         let Some(card) = card else {
             return refused("unsupported", tr("Content from this provider is turned off in Settings › Privacy."));
         };
-        let shown = card.card.clone();
-        self.held().keep_card(id, index, card);
-        Response::ChatCard { card: shown }
+        let mut held = self.held();
+        held.keep_card(id, index, card);
+        Response::ChatCard { card: held.card(id, index).and_then(|held| held.card.clone()) }
     }
 
     /// `chat.get_messages` with `around`: the message `number` with up to half of `limit` messages
@@ -1004,6 +1031,8 @@ mod tests {
         let message = page.messages.iter().find(|message| message.number() == 9).expect("the message");
         let urls: Vec<&str> = message.cards.iter().map(|card| card.url.as_str()).collect();
         assert_eq!(urls, links);
+        let indexes: Vec<u8> = message.cards.iter().map(|card| card.index).collect();
+        assert_eq!(indexes, [0, 1, 2], "each card says where its link stands (S1)");
         assert_eq!(server.count("resolve"), 3, "the fourth is not resolved");
 
         let id = message_id(&ben, 9);
@@ -1014,9 +1043,52 @@ mod tests {
             other => format!("{other:?}"),
         };
         assert_eq!(code(chat.card_preview(&id, 3, small, APP).await), "not-found");
-        assert_eq!(code(chat.show_card_at(&id, 3).await), "not-found", "no card for the fourth");
-        let Response::ChatCard { card: Some(card) } = chat.show_card_at(&id, 1).await else { panic!("a card") };
-        assert_eq!(card.url, links[1]);
+        assert_eq!(code(chat.show_card_at(&id, Some(3)).await), "not-found", "no card for the fourth");
+        let Response::ChatCard { card: Some(card) } = chat.show_card_at(&id, Some(1)).await else { panic!("a card") };
+        assert_eq!((card.url.as_str(), card.index), (links[1], 1));
+    }
+
+    /// S1 and S2 of issue #785: a card carries where its link stands, also when a link before it has none; "Show
+    /// once" without `index` shows the link the message asks about, not the first.
+    #[tokio::test]
+    async fn show_once_without_index_takes_the_link_the_message_asks_about() {
+        use torro_chat::{conversation_id, message_id};
+        use torro_ipc::Request;
+
+        const ACCOUNT: &str = "nextcloud:anna@cloud.example.org";
+        const APP: Caller<'static> = Caller { reach: Reach::Suite, client: None };
+        let server = Arc::new(super::super::fake::Server::default());
+        let chat = Arc::new(ChatService::fixed(vec![(ACCOUNT.into(), Arc::clone(&server))]));
+        // The own server's page has no card; the other server's asks first (Settings › Privacy at "Ask").
+        let own = "https://cloud.example.org/apps/deck/board/4";
+        let page = "https://example.com/blog/post";
+        {
+            let mut state = server.state();
+            let reference = torro_nextcloud::Reference { title: "A post".into(), description: None, image: None };
+            state.references.insert(page.into(), reference);
+            let list = state.messages.get_mut("ben4chat").expect("Ben");
+            list.push(super::super::remote::tests::message(9, &format!("The board {own}, and {page}")));
+        }
+        let ben = conversation_id(ACCOUNT, "ben4chat");
+        let read = Request::ChatGetMessages {
+            conversation: ben.clone(),
+            before: None,
+            after: None,
+            around: None,
+            limit: None,
+        };
+        let Response::ChatMessages(page_of) = chat.handle(read.clone(), APP).await else { panic!("messages") };
+        let message = page_of.messages.iter().find(|message| message.number() == 9).expect("the message");
+        assert!(message.cards.is_empty() && message.foreign.is_some(), "{message:?}");
+        let id = message_id(&ben, 9);
+        let Response::ChatCard { card: Some(card) } = chat.show_card(&id).await else {
+            panic!("the asked link's card")
+        };
+        assert_eq!((card.url.as_str(), card.index), (page, 1));
+        let Response::ChatMessages(page_of) = chat.handle(read, APP).await else { panic!("messages") };
+        let message = page_of.messages.iter().find(|message| message.number() == 9).expect("the message");
+        let shown: Vec<(&str, u8)> = message.cards.iter().map(|card| (card.url.as_str(), card.index)).collect();
+        assert_eq!(shown, [(page, 1)], "the second link's card, by its place in the text");
     }
 
     /// Issue #790: a link to a file of the own server gets its file card for the app, with the server's preview as

@@ -12,12 +12,12 @@
 //!   [`UPLOAD_POLL`]) with ✕ (`chat.cancel_upload`). A sending that failed says why there.
 //! - **History:** previews come with `chat.get_preview` as soon as a page arrives, `medium` for
 //!   pictures and videos (sharp at the history's largest size, issue #674), `small` for link cards –
-//!   up to three per message, each by its `index` (issue #785, [`FilesState::card_picture`]);
+//!   up to three per message, each by the `index` the core gave it (issue #785, [`FilesState::card_picture`]);
 //!   until then a calm placeholder of the same size stands there. "Open" fetches the file
 //!   (`chat.get_attachment`) and opens it with the system's program, "Download" saves it to
 //!   Downloads (`chat.save_attachment`), "Save as…" asks the system's dialog first. Under a link to
 //!   another provider not asked about yet (issue #672), "Show once" asks for its card
-//!   (`chat.show_card` with the link's `index`, [`foreign_index`]), "Always allow …" and "Never for …" put the provider on the list of Settings ›
+//!   (`chat.show_card` without `index`: the core knows which link it asks about), "Always allow …" and "Never for …" put the provider on the list of Settings ›
 //!   Privacy (`settings.set_setting privacy_provider`).
 //! - **Shared media:** a column at the side (`chat.list_shared`) with the tabs Media, Files, Voice
 //!   and Links, its tiles from `small` previews ([`FilesState::thumb`]), or the history's picture
@@ -37,8 +37,8 @@ use iced::widget::operation::{self, RelativeOffset};
 use iced::widget::text_editor::{Action, Content, Edit};
 use iced::{Point, Size, Task};
 use torro_chat::{
-    ChatError, Fetched, LinkCard, Message as ChatMessage, MessagePage, Outgoing, Picture, PreparedFile, PreviewSize,
-    SaveTo, Sending, SharedItem, SharedKind, SharedPage, UploadProgress, UploadState,
+    ChatError, Fetched, LinkCard, MessagePage, Outgoing, Picture, PreparedFile, PreviewSize, SaveTo, Sending,
+    SharedItem, SharedKind, SharedPage, UploadProgress, UploadState,
 };
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
@@ -187,7 +187,7 @@ pub struct FilesState {
     next_key: u64,
     pub upload: Option<Upload>,
     pub pictures: HashMap<PictureKey, Shown>,
-    /// The pictures of link cards (issue #785), by message and the card's index in its `cards`.
+    /// The pictures of link cards (issue #785), by message and the card's `index` (where its link stands).
     pub card_pictures: HashMap<(String, u8), Shown>,
     /// The small previews of the shared media, apart from the history's larger ones.
     pub thumbs: HashMap<PictureKey, Shown>,
@@ -228,7 +228,8 @@ impl FilesState {
         self.pictures.get(key)
     }
 
-    /// The picture of the link card `index` of the message `message`, as far as it came.
+    /// The picture of the link card with the `index` `index` ([`LinkCard::index`]) of the message `message`, as
+    /// far as it came.
     pub fn card_picture(&self, message: &str, index: u8) -> Option<&Shown> {
         self.card_pictures.get(&(message.to_owned(), index))
     }
@@ -345,26 +346,15 @@ fn appearance_word(appearance: torro_gui::theme::Appearance) -> &'static str {
     }
 }
 
-/// Which of the links of `message` "Show once" asks for (`chat.show_card` with `index`, issue #785): the first
-/// of its [`timeline::card_links`] that is neither on the account's own server (those get their card by
-/// themselves, decision 23) nor shown as a card already; 0 when none is left – the first.
-pub fn foreign_index(message: &ChatMessage, account: &str) -> u8 {
-    let links = timeline::card_links(&message.text);
-    let shown = |link: &str| message.cards.iter().any(|card| card.url == link);
-    let at = links.iter().position(|link| !system::is_own_link(account, link) && !shown(link));
-    at.and_then(|at| u8::try_from(at).ok()).unwrap_or(0)
-}
-
-/// `card` among the `cards` of a message with `text`: in the place of a card of the same link, else in the order
-/// of the links in the text, at most [`torro_ipc::assistant::MAX_LINK_CARDS`].
-fn with_card(cards: &mut Vec<LinkCard>, card: LinkCard, text: &str) {
-    if let Some(same) = cards.iter_mut().find(|held| held.url == card.url) {
+/// `card` among the `cards` of a message: in the place of a card with the same `index` (the same link), else in
+/// the order of their `index`, at most [`torro_ipc::assistant::MAX_LINK_CARDS`].
+fn with_card(cards: &mut Vec<LinkCard>, card: LinkCard) {
+    if let Some(same) = cards.iter_mut().find(|held| held.index == card.index) {
         *same = card;
         return;
     }
     cards.push(card);
-    let links = timeline::card_links(text);
-    cards.sort_by_key(|held| links.iter().position(|link| *link == held.url).unwrap_or(links.len()));
+    cards.sort_by_key(|held| held.index);
     cards.truncate(torro_ipc::assistant::MAX_LINK_CARDS);
 }
 
@@ -653,22 +643,21 @@ impl App {
                 if files.cards.get(&message) == Some(&CardAsk::Asking) {
                     return Task::none();
                 }
-                let Some(index) = chat.message(&message).map(|held| foreign_index(held, &account)) else {
+                if chat.message(&message).is_none() {
                     return Task::none();
-                };
+                }
                 chat.files.cards.insert(message.clone(), CardAsk::Asking);
-                return Task::perform(backend.show_card(message.clone(), index), move |result| {
+                // Without `index`: the core shows the link the message asks about (S2 of issue #785).
+                return Task::perform(backend.show_card(message.clone(), None), move |result| {
                     wrap(FilesMsg::Card(message.clone(), result))
                 });
             }
             FilesMsg::Card(message, result) => match result {
                 Ok(Some(card)) => {
                     files.cards.remove(&message);
-                    // The indexes of the message's cards may move: their pictures are asked for anew.
-                    files.card_pictures.retain(|(id, _), _| *id != message);
                     let image = card.image;
                     if let Some(held) = chat.messages.iter_mut().find(|held| held.id == message) {
-                        with_card(&mut held.cards, card, &held.text);
+                        with_card(&mut held.cards, card);
                         held.foreign = None;
                     }
                     if image {
@@ -894,9 +883,9 @@ impl App {
         }
         let mut tasks: Vec<Task<Message>> = Vec::new();
         for message in &chat.messages {
-            let cards = message.cards.iter().take(torro_ipc::assistant::MAX_LINK_CARDS).enumerate();
-            for (index, _) in cards.filter(|(_, card)| card.image) {
-                let Ok(index) = u8::try_from(index) else { continue };
+            let cards = message.cards.iter().take(torro_ipc::assistant::MAX_LINK_CARDS);
+            // By the `index` the core gave each card (S1 of issue #785), not by its place among the cards.
+            for index in cards.filter(|card| card.image).map(|card| card.index) {
                 let key = (message.id.clone(), index);
                 if chat.files.card_pictures.contains_key(&key) {
                     continue;
@@ -1004,49 +993,21 @@ fn resize_by(size: Size, by: f32) -> Task<Message> {
 mod tests {
     use super::*;
 
-    const ACCOUNT: &str = "nextcloud:anna@cloud.example.org";
-
-    /// A message of someone else with `text` and the `cards` of these links.
-    fn message(text: &str, cards: &[&str]) -> ChatMessage {
-        let wire = serde_json::json!({
-            "id": "a/b/1",
-            "author": {"name": "Ben"},
-            "at": "2026-11-15T10:00:00Z",
-            "text": text,
-        });
-        let mut message: ChatMessage = serde_json::from_value(wire).expect("a message");
-        message.cards = cards.iter().map(|url| card(url)).collect();
-        message
+    fn card(url: &str, index: u8) -> LinkCard {
+        LinkCard { url: url.into(), index, domain: "example.org".into(), ..LinkCard::default() }
     }
 
-    fn card(url: &str) -> LinkCard {
-        LinkCard { url: url.into(), domain: "example.org".into(), ..LinkCard::default() }
-    }
-
-    /// Issue #785: "Show once" asks for the first of the message's three links that is neither the own server's
-    /// nor shown already, counted as the core counts them (own links too).
-    #[test]
-    fn show_once_asks_for_the_first_foreign_link_without_a_card() {
-        let own = "https://cloud.example.org/f/5120";
-        let issue = "https://github.com/a/b/issues/1";
-        let text = format!("The file {own}, see {issue} and https://example.com/x.");
-        assert_eq!(foreign_index(&message(&text, &[own]), ACCOUNT), 1);
-        assert_eq!(foreign_index(&message(&text, &[own, issue]), ACCOUNT), 2);
-        assert_eq!(foreign_index(&message("no links", &[]), ACCOUNT), 0, "none left: the first");
-    }
-
-    /// Issue #785: a card shown once takes its place in the order of the links, replaces one of the same link
-    /// and never makes more than three.
+    /// Issue #785: a card shown once takes its place by its `index`, replaces one of the same link and never makes
+    /// more than three.
     #[test]
     fn a_card_shown_once_stands_in_the_order_of_the_links() {
-        let text = "https://a.org/1 https://b.org/2 https://c.org/3 https://d.org/4";
-        let mut cards = vec![card("https://a.org/1"), card("https://c.org/3")];
-        with_card(&mut cards, card("https://b.org/2"), text);
+        let mut cards = vec![card("https://a.org/1", 0), card("https://c.org/3", 2)];
+        with_card(&mut cards, card("https://b.org/2", 1));
         let urls: Vec<&str> = cards.iter().map(|card| card.url.as_str()).collect();
         assert_eq!(urls, ["https://a.org/1", "https://b.org/2", "https://c.org/3"]);
-        with_card(&mut cards, LinkCard { title: "New".into(), ..card("https://b.org/2") }, text);
+        with_card(&mut cards, LinkCard { title: "New".into(), ..card("https://b.org/2", 1) });
         assert_eq!((cards.len(), cards[1].title.as_str()), (3, "New"));
-        with_card(&mut cards, card("https://d.org/4"), text);
+        with_card(&mut cards, card("https://d.org/4", 3));
         assert_eq!(cards.len(), 3, "at most three cards per message");
     }
 }

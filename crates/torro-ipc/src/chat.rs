@@ -400,8 +400,7 @@ impl ChatSource for ChatClient {
         }
     }
 
-    async fn show_card(&self, id: String, index: u8) -> Result<Option<LinkCard>, ChatError> {
-        let index = Some(index).filter(|index| *index > 0);
+    async fn show_card(&self, id: String, index: Option<u8>) -> Result<Option<LinkCard>, ChatError> {
         match self.ask(Request::ChatShowCard { id, index }).await? {
             Response::ChatCard { card } => Ok(card),
             other => Err(unexpected(other)),
@@ -663,7 +662,7 @@ mod tests {
                 })
             }
             Request::ChatShowCard { id, index } => {
-                demo.show_card(id, index.unwrap_or(0)).await.map(|card| Response::ChatCard { card })
+                demo.show_card(id, index).await.map(|card| Response::ChatCard { card })
             }
             Request::ChatGetCall { conversation } => demo.call(conversation).await.map(|call| Response::ChatCall {
                 call: ChatCall {
@@ -827,7 +826,7 @@ mod tests {
         assert!(matches!(hidden, Err(ChatError::Forbidden(_))));
         let saved = chat.save_attachment(torro_chat::message_id(design, 7), "5107".into(), SaveTo::Downloads).await;
         assert!(saved.expect("saved").ends_with("Icon guide.pdf"));
-        let card = chat.show_card(torro_chat::message_id(design, 11), 0).await.expect("asked");
+        let card = chat.show_card(torro_chat::message_id(design, 11), None).await.expect("asked");
         assert_eq!(card.map(|card| card.domain), Some("example.com".into()));
 
         let png = torro_chat::demo::picture(2, 12, 8);

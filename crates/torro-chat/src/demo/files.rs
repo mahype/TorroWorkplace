@@ -207,8 +207,9 @@ fn four_links(at: DateTime<chrono::Utc>) -> Message {
     let [issue, pull, file, page] = FOUR_LINKS;
     let words = format!("See {issue} and the fix {pull}, the file is {file}, background: {page}");
     let mut message = text(DESIGN, 18, "elif", "Elif Aydin", at, &words);
-    let github = |url: &str, number: u64, title: &str, is_pull: bool, state: GithubState| LinkCard {
+    let github = |url: &str, index: u8, number: u64, title: &str, is_pull: bool, state: GithubState| LinkCard {
         url: url.into(),
+        index,
         title: title.into(),
         domain: "github.com".into(),
         kind: LinkCardKind::Github,
@@ -216,10 +217,11 @@ fn four_links(at: DateTime<chrono::Utc>) -> Message {
         ..LinkCard::default()
     };
     message.cards = vec![
-        github(issue, 142, "Calendar shows the wrong week after midnight", false, GithubState::Open),
-        github(pull, 143, "Fix the week after midnight", true, GithubState::Merged),
+        github(issue, 0, 142, "Calendar shows the wrong week after midnight", false, GithubState::Open),
+        github(pull, 1, 143, "Fix the week after midnight", true, GithubState::Merged),
         LinkCard {
             url: file.into(),
+            index: 2,
             title: "Icon grid.pdf".into(),
             domain: "cloud.example.org".into(),
             image: true,

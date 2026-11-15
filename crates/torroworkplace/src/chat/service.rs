@@ -410,7 +410,7 @@ impl ChatService {
             Request::ChatReleaseFiles { account, ids } => return self.release(&account, &ids, &[], caller),
             Request::ChatGetUpload { id } => return self.upload_state(&id, caller),
             Request::ChatCancelUpload { id } => return self.cancel(&id, caller),
-            // `index` (issue #785) picks one of the message's up to three link cards, the first when left out.
+            // `index` (issue #785) is where the card's link stands among the message's first three, 0 when left out.
             Request::ChatGetPreview { id, card: true, index, size, .. } => {
                 return self.card_preview(&id, index.unwrap_or(0), size, caller).await;
             }
@@ -421,7 +421,7 @@ impl ChatService {
             Request::ChatListShared { conversation, kind, before, limit } => {
                 return self.list_shared(&conversation, kind, before.as_deref(), limit, caller).await;
             }
-            Request::ChatShowCard { id, index } => return self.show_card_at(&id, index.unwrap_or(0)).await,
+            Request::ChatShowCard { id, index } => return self.show_card_at(&id, index).await,
             Request::ChatGetCall { conversation } => self.get_call(&conversation, caller).await,
             Request::ChatDeclineCall { conversation } => self.decline_call(&conversation, caller).await,
             Request::ChatLeaveCall { conversation } => self.leave_call(&conversation).await,

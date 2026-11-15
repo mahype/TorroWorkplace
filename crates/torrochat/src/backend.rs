@@ -332,7 +332,8 @@ impl Backend {
         }
     }
 
-    /// `chat.get_preview` of the link card `index` of the message `id` (issue #785).
+    /// `chat.get_preview` of the link card with the `index` `index` ([`LinkCard::index`]) of the message `id`
+    /// (issue #785).
     pub async fn card_preview(self, id: String, index: u8, size: PreviewSize) -> Result<Picture, ChatError> {
         let (file, card) = (None, Some(index));
         match self {
@@ -370,8 +371,10 @@ impl Backend {
         }
     }
 
-    /// `chat.show_card` ("Show once") of the link `index` of the message `id` (issue #785).
-    pub async fn show_card(self, id: String, index: u8) -> Result<Option<LinkCard>, ChatError> {
+    /// `chat.show_card` ("Show once") of the link `index` of the message `id` (issue #785); `None`: the link the
+    /// message asks about (`foreign`), as "Show once" asks.
+    pub async fn show_card(self, id: String, index: impl Into<Option<u8>>) -> Result<Option<LinkCard>, ChatError> {
+        let index = index.into();
         match self {
             Backend::Core(core) => core.show_card(id, index).await,
             Backend::Demo(demo) => demo.show_card(id, index).await,
