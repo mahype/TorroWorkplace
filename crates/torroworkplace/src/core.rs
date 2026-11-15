@@ -19964,11 +19964,15 @@ done"#;
         ] {
             assert_eq!(code(&ask(&core, Some(&key), unknown).await), "not-found");
         }
-        for gone in [
-            Request::SetSetting { key: SettingKey::QwenVoice, value: serde_json::json!("calm_man") },
+        let mut gone = vec![
             Request::SetSetting { key: SettingKey::SttModel, value: serde_json::json!("/m/ggml-base.bin") },
             Request::SetSetting { key: SettingKey::SpeechProvider, value: serde_json::json!("piper") },
-        ] {
+        ];
+        // Only a build without Qwen3-TTS refuses its voice (issue #764); with it, it is a setting like any.
+        if !torro_core::settings::QWEN_BUILT {
+            gone.push(Request::SetSetting { key: SettingKey::QwenVoice, value: serde_json::json!("calm_man") });
+        }
+        for gone in gone {
             assert_eq!(code(&ask(&core, Some(&key), gone).await), "unsupported");
         }
         assert_eq!(
