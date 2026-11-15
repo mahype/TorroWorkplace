@@ -1500,8 +1500,8 @@ mod tests {
         }
     }
 
-    /// The mark as models really wrote it (issue #826, from answers of a GPT model, words masked): the
-    /// dashes as a Markdown rule on the line above the word.
+    /// The mark as a model really wrote it (issue #826, from stored answers of `glm-5.3-flash` via Ollama,
+    /// words masked): the dashes as a Markdown rule on the line above the word.
     #[test]
     fn a_mark_split_over_two_lines_splits() {
         let text = "Two dates today, have a look.\n\n---\nshown---\n\n**The dates**\n- Mon 9:00 Standup";
