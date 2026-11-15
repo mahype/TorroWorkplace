@@ -4157,13 +4157,15 @@ static SET_SETTING: Command = Command {
                   \"de\" or \"en\", or null for the language of the suite; Parakeet finds the language itself) or \
                   reading answers aloud (settings_speech_status lists providers and voices): `read_aloud` (true, \
                   false; the chat windows read answers aloud), `speech_provider` (\"pocket\" or null for the \
-                  core's choice, Pocket TTS on this computer; \"openai\" is forbidden: only a person sends answers \
-                  to OpenAI), `pocket_voice` (\"alba\", \"fantine\", \"marius\", \"warm_woman\", \"calm_man\" or \
-                  null), `openai_voice` (one of the OpenAI voices or null), `pocket_speed` (percent from 70 to \
+                  core's choice, Pocket TTS on this computer; \"qwen\", Qwen3-TTS on the graphics card, only in \
+                  builds with Qwen3-TTS; \"openai\" is forbidden: only a person sends answers to OpenAI), \
+                  `pocket_voice` (\"alba\", \"fantine\", \"marius\", \"warm_woman\", \"calm_man\" or null), \
+                  `qwen_voice` (\"warm_woman\", \"calm_man\" or null; only in builds with Qwen3-TTS), \
+                  `openai_voice` (one of the OpenAI voices or null), `pocket_speed` (percent from 70 to \
                   150 in tens, or null for 100), `pocket_pause` (extra milliseconds after each sentence from 0 to \
                   1000 in 250s, or null for none) or `openai_style` (how OpenAI speaks, one line of at most 500 \
-                  characters like \"calm, slow\", or null; it only reaches OpenAI once a person chose OpenAI); `stt_model`, `voice` and `qwen_voice` \
-                  are gone and refused or \
+                  characters like \"calm, slow\", or null; it only reaches OpenAI once a person chose OpenAI); \
+                  `stt_model` and `voice` are gone and refused or \
                   `assistant_default` (what a new chat of the assistant starts with: {\"engine\": \"<id from \
                   assistant_list_engines>\", \"model\": \"<model id>\", \"effort\": \"low\"|\"medium\"|\"high\"}, \
                   model and effort optional, or null for the one used last; it writes the slot `chat`, prefer \
@@ -4382,9 +4384,10 @@ static SPEECH_STATUS: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Says who can read the assistant's answers aloud here: the recommended and the current provider \
-                  (pocket, openai), and for each what is missing (`model`: download it with \
-                  settings_download_voice_model), its voices with the recommended ones and its model. Runs local \
-                  checks and may take a few seconds.",
+                  (pocket, qwen only in builds with Qwen3-TTS, openai), and for each what is missing (`model`: \
+                  download it with settings_download_voice_model; `gpu`: Qwen3-TTS finds no NVIDIA card), its \
+                  voices with the recommended ones and its model, and the graphics card where Qwen3-TTS is built. \
+                  Runs local checks and may take a few seconds.",
 };
 
 static LIST_VOICE_MODELS: Command = Command {
