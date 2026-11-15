@@ -105,6 +105,13 @@ fn group_with<'a>(group: Element<'a, Message>, more: Option<Element<'a, Message>
 }
 
 /// The composer's text area: two lines high at first, at most eight, then it scrolls.
+/// How high the empty composer is in all (issue #747): the editor's least height of its text, its
+/// padding, and the row of options under the text. The line of a conversation by voice takes as much.
+fn composer_height() -> f32 {
+    let row_room = size::control_sm() + space::xs();
+    editor_heights().0 + style::INPUT_PADDING.top + style::INPUT_PADDING.bottom + row_room
+}
+
 fn editor_heights() -> (f32, f32) {
     let line = typo::line_height(typo::body());
     let frame = style::INPUT_PADDING.top + style::INPUT_PADDING.bottom;
@@ -1134,8 +1141,8 @@ impl App {
             widgets::round_button(Icon::ArrowUp, tr("Send"), style::button::round_quiet, None)
         };
         let mut right = row![picker, self.speaker_button()].spacing(space::xs()).align_y(Alignment::Center);
-        if self.can_dictate() {
-            right = right.push(self.talk_button(roomy));
+        if self.offers_talk() {
+            right = right.push(self.talk_button(wide));
         }
         let right = right.push(self.mic_button()).push(send);
         let options = row![left, Space::new().width(Fill), right].spacing(space::s()).align_y(Alignment::Center);
@@ -1172,42 +1179,46 @@ impl App {
         widgets::with_tooltip(speaker, tip)
     }
 
-    /// "Talk" of the composer (issue #747): starts a conversation by voice, with its word where there
-    /// is room, else as an icon with the word as its tooltip. Off while an answer runs.
-    fn talk_button(&self, roomy: bool) -> Element<'_, Message> {
+    /// "Talk" of the composer (issue #747): starts a conversation by voice, with its word in a wide
+    /// window, else as an icon with the word as its tooltip, so "Send" always keeps its place. Off
+    /// while an answer runs; turning arrows until the core started it.
+    fn talk_button(&self, wide: bool) -> Element<'_, Message> {
+        if self.talk_starting {
+            return widgets::round_busy(tr("Starting…"));
+        }
         let press = self.can_talk().then_some(Message::Talk);
-        let talk = match roomy {
+        let talk = match wide {
             true => widgets::text_button(Some(Icon::AudioLines), trc("voice", "Talk"), style::button::ghost, press),
             false => widgets::icon_button(Icon::AudioLines, trc("voice", "Talk"), press),
         };
         widgets::with_tooltip(talk, tr("Talk to the assistant without the wake word"))
     }
 
-    /// The line in place of the composer during this window's conversation by voice (issue #747): a
-    /// dot and what the listener does in words – listening, recording, answering – and "End talk".
-    /// As high as the empty composer, in the same frame, so nothing moves.
+    /// The line in place of the composer during this window's conversation by voice (issue #747),
+    /// built like the empty composer so nothing moves: in its frame and as high, a dot and what the
+    /// listener does in words – listening, recording, answering – on the line of the placeholder, and
+    /// "End talk" (also Escape) where "Send" stands.
     fn talk_line(&self, talk: &torro_ipc::Talk) -> Element<'_, Message> {
         use torro_ipc::VoiceState;
         let (status, doing) = match talk.state {
             VoiceState::Recording => (widgets::Status::Attention, tr("Recording …")),
             VoiceState::Answering => (widgets::Status::Inactive, tr("Answering …")),
-            _ => (widgets::Status::Ok, tr("Listening …")),
+            _ => (widgets::Status::Ok, tr("Listening…")),
         };
-        let end =
-            widgets::text_button(Some(Icon::Square), tr("End talk"), style::button::secondary, Some(Message::EndTalk));
-        let line = row![
-            widgets::status_dot(status),
-            typo::text(typo::body(), doing).wrapping(Wrapping::None),
-            Space::new().width(Fill),
-            end
-        ]
-        .spacing(space::s())
-        .align_y(Alignment::Center);
+        let state = row![widgets::status_dot(status), typo::text(typo::body(), doing).wrapping(Wrapping::None)]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
+        let end = widgets::text_button(Some(Icon::X), tr("End talk"), style::button::secondary, Some(Message::EndTalk));
+        let end = widgets::with_tooltip(end, tr("End talk (Esc)"));
+        let line = column![
+            container(state).padding(Padding { left: style::INPUT_PADDING.left, ..Padding::ZERO }),
+            Space::new().height(Fill),
+            row![Space::new().width(Fill), end]
+        ];
         container(line)
-            .padding(style::INPUT_PADDING)
+            .padding(Padding { top: style::INPUT_PADDING.top, right: space::xs(), bottom: space::xs(), left: 0.0 })
             .width(Fill)
-            .height(editor_heights().0)
-            .align_y(Alignment::Center)
+            .height(composer_height())
             .style(style::container::composer)
             .into()
     }

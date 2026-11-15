@@ -285,7 +285,7 @@ impl Demo {
             // Reading aloud (issue #745): nothing sounds in the demo.
             Request::Speak { .. } | Request::StopSpeaking | Request::SpeakAnswer { .. } => Response::Ok,
             // A conversation by voice (issue #747): the demo has no microphone; the state `talk` shows one.
-            Request::TalkStatus => Response::Talk { talk: None, speaking: false },
+            Request::TalkStatus => Response::Talk { talk: None, speaking: false, readings: 0 },
             Request::EndTalk => Response::Ok,
             other => refused("unsupported", &format!("{} is not in the demo", other.operation().name())),
         }

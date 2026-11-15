@@ -64,6 +64,9 @@ pub struct TalkNow {
     pub talk: Option<Talk>,
     /// Anything is read aloud now, whoever asked for it.
     pub speaking: bool,
+    /// How many readings aloud began: one that began and ended while a sentence was recorded
+    /// changes it, though `speaking` is over by then.
+    pub readings: u64,
 }
 
 /// Where a spoken sentence went.
@@ -260,17 +263,26 @@ impl<A: Assistant> Listener<'_, A> {
         }
         self.floor = floor;
         // Heard while something was read aloud: it may be the reading's voice, not the person's.
-        if self.speaking() {
+        let Some(readings) = self.quiet_now() else {
             drop(stream);
             self.wake.reset();
             self.quiet();
             return Ok(Ended::Nothing);
-        }
+        };
         (self.report)(VoiceState::Recording);
         self.speaker.chime();
         let mut sentence = Vec::new();
         let mut end = Endpoint::new(floor, self.limits);
+        let mut frames = 0usize;
         while let Some(frame) = stream.frame()? {
+            frames += 1;
+            // A reading that begins meanwhile: what the microphone hears is not the person's alone.
+            if frames.is_multiple_of(self.check_every.max(1)) && self.speaking() {
+                drop(stream);
+                self.wake.reset();
+                self.quiet();
+                return Ok(Ended::Nothing);
+            }
             sentence.extend_from_slice(&frame);
             if end.push(&frame) {
                 break;
@@ -279,7 +291,7 @@ impl<A: Assistant> Listener<'_, A> {
         // The microphone closes before the answer: it is not recorded, and it cannot wake it.
         drop(stream);
         (self.report)(VoiceState::Answering);
-        let ended = self.answer(voice, &sentence, end.heard_speech(), None);
+        let ended = self.answer(voice, &sentence, end.heard_speech(), None, readings);
         self.wake.reset();
         Ok(ended)
     }
@@ -289,10 +301,17 @@ impl<A: Assistant> Listener<'_, A> {
     /// with a tone. Something read aloud meanwhile, or the conversation ended or moved elsewhere,
     /// closes the microphone, and what was heard is dropped.
     fn converse(&mut self, voice: &Voice, talk: Talk) -> Result<Ended, VoiceError> {
+        // The tone before the microphone opens: it is no sentence of the person's.
+        self.speaker.chime();
+        let Some(readings) = self.quiet_now() else {
+            self.quiet();
+            return Ok(Ended::Nothing);
+        };
         let mut stream = self.recorder.open()?;
         (self.report)(VoiceState::Conversing);
-        self.speaker.chime();
-        let limits = Limits { wait: TALK_WAIT_SECONDS * FRAMES_PER_SECOND, ..self.limits };
+        // The wait for the first word comes on top of the longest sentence.
+        let wait = TALK_WAIT_SECONDS * FRAMES_PER_SECOND;
+        let limits = Limits { wait, most: wait + self.limits.most, ..self.limits };
         let mut end = Endpoint::new(self.floor, limits);
         let (mut sentence, mut frames, mut recording) = (Vec::new(), 0usize, false);
         while let Some(frame) = stream.frame()? {
@@ -327,7 +346,7 @@ impl<A: Assistant> Listener<'_, A> {
             return Ok(Ended::Nothing);
         }
         (self.report)(VoiceState::Answering);
-        Ok(self.answer(voice, &sentence, true, Some(talk)))
+        Ok(self.answer(voice, &sentence, true, Some(talk), readings))
     }
 
     /// Looks at the settings and the conversation by voice: stop ([`Ended::VoiceOff`]) when voice is
@@ -365,6 +384,16 @@ impl<A: Assistant> Listener<'_, A> {
         self.assistant.talk().is_ok_and(|now| now.speaking)
     }
 
+    /// How many readings began, when nothing is read aloud now; `None` while something is. A core
+    /// that cannot be asked counts as quiet, with no reading.
+    fn quiet_now(&mut self) -> Option<u64> {
+        match self.assistant.talk() {
+            Ok(now) if now.speaking => None,
+            Ok(now) => Some(now.readings),
+            Err(_) => Some(0),
+        }
+    }
+
     /// Waits until nothing is read aloud any more, then a little longer, so the room is quiet before
     /// the microphone opens again.
     fn quiet(&mut self) {
@@ -374,19 +403,22 @@ impl<A: Assistant> Listener<'_, A> {
         std::thread::sleep(self.pause);
     }
 
-    /// Ends the conversation by voice, with the tone.
+    /// Ends the conversation by voice, with the tone first: with "Hey Torro" off the core ends the
+    /// listener with it.
     fn close_talk(&mut self) {
+        self.speaker.chime();
         if let Err(err) = self.assistant.end_talk() {
             eprintln!("torroassistant: {err}");
         }
-        self.speaker.chime();
     }
 
     /// Turns `sentence` into text and sends it: in the conversation by voice `talk`, else (after the
     /// wake word) to "Voice", where a conversation by voice then starts and the quick window shows it.
     /// The answer is read aloud if `voice` says so; one that waits for an approval ends the
-    /// conversation by voice (decision 5). A closing sentence ends it without sending.
-    fn answer(&mut self, voice: &Voice, sentence: &[i16], spoken: bool, talk: Option<Talk>) -> Ended {
+    /// conversation by voice (decision 5). A closing sentence ends it without sending. `readings` were
+    /// begun when the microphone opened: a reading that began since, even one already over, drops the
+    /// sentence.
+    fn answer(&mut self, voice: &Voice, sentence: &[i16], spoken: bool, talk: Option<Talk>, readings: u64) -> Ended {
         if !spoken {
             return Ended::Nothing;
         }
@@ -403,8 +435,8 @@ impl<A: Assistant> Listener<'_, A> {
             }
             return Ended::Nothing;
         }
-        // Read aloud while it was said: it may be the reading's voice, so it is dropped.
-        if self.speaking() {
+        // Read aloud while it was said, or still: it may be the reading's voice, so it is dropped.
+        if self.quiet_now() != Some(readings) {
             self.quiet();
             return Ended::Nothing;
         }
@@ -413,6 +445,10 @@ impl<A: Assistant> Listener<'_, A> {
             Ok(sent) => sent,
             Err(err) => {
                 eprintln!("torroassistant: {err}");
+                // Its conversation is gone (deleted, cleaned up): the conversation by voice ends.
+                if talk.is_some() && matches!(&err, VoiceError::Core(refusal) if refusal.code == "not-found") {
+                    self.close_talk();
+                }
                 return Ended::Nothing;
             }
         };
@@ -425,10 +461,12 @@ impl<A: Assistant> Listener<'_, A> {
         if talk.is_none() {
             self.assistant.open(&sent.conversation);
         }
-        if voice.speak_answers
-            && let Err(err) = self.assistant.speak_answer(&sent.conversation)
-        {
-            eprintln!("torroassistant: cannot speak the answer: {err}");
+        if voice.speak_answers {
+            if let Err(err) = self.assistant.speak_answer(&sent.conversation) {
+                eprintln!("torroassistant: cannot speak the answer: {err}");
+            }
+            // The room's echo of the answer fades before the microphone opens again.
+            std::thread::sleep(self.pause);
         }
         match self.assistant.follow(&sent) {
             Ok(reply) if reply.approval => {
@@ -586,7 +624,7 @@ where
 
     fn talk(&mut self) -> Result<TalkNow, VoiceError> {
         match self.request(Request::TalkStatus)? {
-            Response::Talk { talk, speaking } => Ok(TalkNow { talk, speaking }),
+            Response::Talk { talk, speaking, readings } => Ok(TalkNow { talk, speaking, readings }),
             other => Err(unexpected(&other)),
         }
     }
@@ -768,6 +806,9 @@ mod tests {
         talk: Option<Talk>,
         /// Whether something is read aloud, one per look at the conversation by voice; then nothing.
         speaking: VecDeque<bool>,
+        /// How many readings began, one per look; then the last one.
+        readings: VecDeque<u64>,
+        read: u64,
         sent: Vec<Request>,
     }
 
@@ -806,6 +847,8 @@ mod tests {
                 }],
                 talk: None,
                 speaking: VecDeque::new(),
+                readings: VecDeque::new(),
+                read: 0,
                 sent: Vec::new(),
             }
         }
@@ -819,11 +862,13 @@ mod tests {
                 }
                 Request::TalkStatus => {
                     let speaking = self.speaking.pop_front().unwrap_or(false);
-                    Ok(Response::Talk { talk: self.talk.clone(), speaking })
+                    let readings = self.readings.pop_front().unwrap_or(self.read);
+                    self.read = readings;
+                    Ok(Response::Talk { talk: self.talk.clone(), speaking, readings })
                 }
                 Request::StartTalk { conversation } => {
                     self.talk = Some(Talk { conversation, state: VoiceState::Conversing });
-                    Ok(Response::Talk { talk: self.talk.clone(), speaking: false })
+                    Ok(Response::Talk { talk: self.talk.clone(), speaking: false, readings: self.read })
                 }
                 Request::EndTalk => {
                     self.talk = None;
@@ -1079,8 +1124,15 @@ mod tests {
         assert!(listening >= 2 && run.states.contains(&VoiceState::Recording), "{:?}", run.states);
         assert_eq!(run.chimes, 1, "the wake word in the second round");
 
+        // A reading that began and ended while the person spoke after the wake word: the sentence is
+        // dropped, though nothing is read aloud by the time it is text (review of #747).
+        let core = Core { readings: [0, 0, 1].into(), ..Core::new(on()) };
+        let run = self::run(core, &["utterance.wav"], Some(2), &["Hey Torro, what is on today?"]);
+        assert!(messages(&run.sent).is_empty(), "{:?}", run.sent);
+
         // In a conversation by voice too: what was said while it read is not sent.
-        let core = Core { talk: talk_in(Some("a1")), speaking: [false, true].into(), ..Core::new(Voice::default()) };
+        let core =
+            Core { talk: talk_in(Some("a1")), speaking: [false, false, true].into(), ..Core::new(Voice::default()) };
         let run = self::run(core, &["utterance.wav", "silence.wav"], None, &["Read this aloud for me."]);
         assert!(messages(&run.sent).is_empty(), "{:?}", run.sent);
     }

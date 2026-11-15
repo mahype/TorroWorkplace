@@ -1898,6 +1898,10 @@ fn talk_starts_a_conversation_by_voice_in_the_window() {
     sent(&mut app);
     let _ = app.update(Message::Talk);
     assert_eq!(sent(&mut app), [Request::StartTalk { conversation: Some(TOOLS.into()) }]);
+    assert!(app.talk_starting, "turning arrows until the core answers");
+    let _ = app.view();
+    let _ = app.update(Message::Talk);
+    assert!(sent(&mut app).is_empty(), "no second start");
     let talk = Talk { conversation: Some(TOOLS.into()), state: VoiceState::Conversing };
     let _ = app.update(Message::TalkStarted(Ok(Some(talk.clone()))));
     assert_eq!(app.own_talk(), Some(&talk));
@@ -1916,6 +1920,16 @@ fn talk_starts_a_conversation_by_voice_in_the_window() {
     assert_eq!(app.own_talk(), None);
     let _ = app.update(Message::TalkStatus(Ok(None)));
     assert_eq!(app.talk, None);
+
+    // Escape ends it, as "End talk" does.
+    let _ = app.update(Message::TalkStatus(Ok(Some(talk.clone()))));
+    sent(&mut app);
+    let _ = app.update(Message::Escape);
+    assert!(sent(&mut app).contains(&Request::EndTalk));
+    assert_eq!(app.own_talk(), None);
+
+    // Not in a bot's chat: the listener talks to the assistant only.
+    assert!(!started(&["--bot", TRAVEL]).offers_talk());
 
     // Off while an answer runs.
     let mut busy = answering();
@@ -1941,6 +1955,18 @@ fn talk_in_a_new_chat_follows_into_the_new_conversation() {
     let _ = app.update(Message::TalkStatus(Ok(Some(moved.clone()))));
     assert_eq!(app.current.as_deref(), Some(TOOLS), "the window shows the new conversation");
     assert_eq!(app.own_talk(), Some(&moved));
+    // One begun in a conversation is not followed into it from a new chat.
+    let mut left = started(&["--chat", TOOLS]);
+    let _ = left.update(Message::TalkStarted(Ok(Some(Talk {
+        conversation: Some(TOOLS.into()),
+        state: VoiceState::Conversing,
+    }))));
+    let _ = left.update(Message::NewChat);
+    let _ = left.update(Message::TalkStatus(Ok(Some(Talk {
+        conversation: Some(TOOLS.into()),
+        state: VoiceState::Conversing,
+    }))));
+    assert_eq!(left.current, None, "the new chat stays");
     // One started elsewhere is not followed.
     let mut other = started(&[]);
     let _ = other.update(Message::TalkStatus(Ok(Some(moved))));

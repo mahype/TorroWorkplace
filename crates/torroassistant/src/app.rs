@@ -676,9 +676,11 @@ pub struct App {
     read_for: Option<(Option<String>, u64)>,
     /// The conversation by voice as the core last told (issue #747, `assistant.talk_status`).
     pub(crate) talk: Option<torro_ipc::Talk>,
-    /// This window started [`App::talk`]: a new chat follows it into the conversation its first
+    /// This window started [`App::talk`] in a new chat: it follows it into the conversation its first
     /// sentence starts.
     talk_started: bool,
+    /// "Talk" was pressed and the core has not answered yet: the button shows it is busy.
+    pub(crate) talk_starting: bool,
 
     pub(crate) menu: Option<Menu>,
     pub(crate) dialog: Option<Dialog>,
@@ -802,7 +804,8 @@ impl App {
                 conversation: Some(demo::TOOLS.to_string()),
                 state: torro_ipc::VoiceState::Conversing,
             }),
-            talk_started: open == Some(Open::Talk),
+            talk_started: false,
+            talk_starting: false,
             dictation: if open == Some(Open::Dictating) { Dictation::Recording } else { Dictation::Idle },
             menu: match open {
                 Some(Open::Picker | Open::Effort) => Some(Menu::Picker),
@@ -938,6 +941,7 @@ impl App {
             || self.drawer
             || self.notice.is_some()
             || self.settings.is_some()
+            || self.own_talk().is_some()
         {
             subscriptions.push(widgets::escape().map(|()| Message::Escape));
         }
@@ -1252,10 +1256,13 @@ impl App {
             }
             Message::Talk => return self.start_talk(),
             Message::TalkStarted(Ok(talk)) => {
+                self.talk_starting = false;
                 self.talk = talk;
-                self.talk_started = self.talk.is_some();
+                // Only one begun in a new chat is followed into the conversation its first sentence starts.
+                self.talk_started = self.talk.as_ref().is_some_and(|talk| talk.conversation.is_none());
             }
             Message::TalkStarted(Err(refusal)) => {
+                self.talk_starting = false;
                 self.note_failure(tr("Couldn't start the conversation."), &refusal);
             }
             Message::EndTalk => {
@@ -1467,6 +1474,9 @@ impl App {
                     // Through the host: its open section menu or a page's own menu closes first
                     // (review of #554), else the host answers `Outcome::Close`.
                     return self.update(Message::SettingsHost(torro_settings_ui::host::Message::Back));
+                } else if self.own_talk().is_some() {
+                    // The conversation by voice ends (issue #747), reading aloud with it.
+                    return self.update(Message::EndTalk);
                 } else if self.reading.is_some() {
                     // Reading aloud stops first (issue #745), the notice goes with the next Escape.
                     return self.stop_reading();
@@ -2119,6 +2129,8 @@ impl App {
     /// Leaves the open conversation for `current`: nothing of the old one stays.
     fn reset_chat(&mut self, current: Option<String>) {
         self.current = current;
+        // A conversation by voice begun in a new chat is followed only from that chat (issue #747).
+        self.talk_started = false;
         // Answer numbers count per conversation (issue #745); what reads stops in the callers
         // ([`App::leave_reading`]).
         self.to_read.clear();
@@ -2293,14 +2305,7 @@ impl App {
     /// the one being read: the core stops it.
     fn read_ready(&mut self) -> Task<Message> {
         let Some(seq) = self.ready_to_read.take() else { return Task::none() };
-        let message = self
-            .transcript
-            .entries
-            .iter()
-            .rev()
-            .find(|entry| matches!(entry.content, EntryContent::Message { .. }))
-            .map_or(0, |entry| entry.seq);
-        let asked = (self.current.clone(), message);
+        let asked = (self.current.clone(), answer_start(&self.transcript.entries).unwrap_or_default());
         if !self.read_aloud || self.is_glance() || self.own_talk().is_some() || self.read_for.as_ref() == Some(&asked) {
             return Task::none();
         }
@@ -2324,7 +2329,17 @@ impl App {
     /// Whether "Talk" can start a conversation by voice (issue #747): the microphone can record and
     /// turn speech into text, and no answer runs or is on its way.
     pub(crate) fn can_talk(&self) -> bool {
-        self.can_dictate() && !self.transcript.running() && !self.sending && self.dictation == Dictation::Idle
+        self.offers_talk()
+            && !self.transcript.running()
+            && !self.sending
+            && !self.talk_starting
+            && self.dictation == Dictation::Idle
+    }
+
+    /// Whether the composer has "Talk" (issue #747): the microphone can record and turn speech into
+    /// text, and the chat is the assistant's – the listener does not talk to a bot.
+    pub(crate) fn offers_talk(&self) -> bool {
+        self.can_dictate() && self.chat_bot().is_none()
     }
 
     /// "Talk" (issue #747): a conversation by voice in the open conversation, or in a new one the
@@ -2334,6 +2349,7 @@ impl App {
             return Task::none();
         }
         self.close_menus();
+        self.talk_starting = true;
         let start = Request::StartTalk { conversation: self.current.clone() };
         self.ask(start, |result| {
             Message::TalkStarted(result.and_then(|response| match response {
@@ -2977,3 +2993,17 @@ pub(crate) fn composer_binding(press: KeyPress) -> Option<Binding<Message>> {
 mod bots;
 #[cfg(test)]
 mod tests;
+
+/// Where the core starts to read an answer (issue #747, `assistant.speak_answer`): after the last
+/// message, or after an approval that was decided and answered on. A new start is a new reading, so
+/// what comes after an approval is read too.
+fn answer_start(entries: &[Entry]) -> Option<u64> {
+    let message = entries.iter().rposition(|entry| matches!(entry.content, EntryContent::Message { .. }))?;
+    let mut start = entries[message].seq;
+    for (at, entry) in entries.iter().enumerate().skip(message + 1) {
+        if matches!(entry.content, EntryContent::Approval { .. }) && at + 1 < entries.len() {
+            start = entry.seq;
+        }
+    }
+    Some(start)
+}
