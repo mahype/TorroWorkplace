@@ -177,6 +177,9 @@ eine Vorschau liefert:
    seiner App für die Arten ein, die er kann.
 2. **Freigegebene MCP-Server.** Ein Server, den ein Mensch angebunden und dessen Werkzeuge er freigegeben hat
    ([erweiterungen.md](erweiterungen.md)), kann sich für eine Art eintragen, etwa ArtCraft für seine Projektdateien.
+   Er gilt **nur für Dateien aus dem Ergebnis eines seiner freigegebenen Werkzeuge in dieser Unterhaltung**, nur in
+   Assistent und Bots: Der Kern fragt ihn nie von sich aus und nie für eine Datei, die von anderswo kommt (Regel aus
+   „MCP als Quelle“). Der Eintrag sagt also nur, *welche* Art der Server bebildern darf, nicht, dass er gefragt wird.
    Er liefert nur ein Bild nach den Regeln aus „MCP als Quelle“: PNG, JPEG oder WebP bis 1 MiB, **kein SVG**, und
    der Kopf der Karte trägt „From <Name> (external, untrusted)“. Ein eigener Renderer geht vor, ein Server
    überschreibt ihn nicht.
@@ -185,12 +188,13 @@ eine Vorschau liefert:
    erreichbar“).
 
 Die **erste PDF-Seite** ist damit ein Fall dieses Weges: Sie braucht einen Anbieter für `application/pdf`. Welcher
-Renderer das wird, bleibt offen (siehe „Offene Fragen“), Stand weiter `Idee`. Ein MCP-Server für PDF wäre möglich,
-liefert aber nur in Assistent und Bots (Abschnitt „MCP als Quelle“).
+Renderer das wird, bleibt offen (siehe „Offene Fragen“), Stand weiter `Idee`. Ein MCP-Server ersetzt diesen Renderer
+nicht: Er bebildert nur PDFs, die sein eigenes Werkzeug geliefert hat, und nur in Assistent und Bots.
 
 - **Eintragen und Reihenfolge ändert nur ein Mensch** (Settings › Extensions). Ein Agent sieht die Zuordnung, ändert
   sie aber nie: Sonst könnte er sich selbst zum Anbieter für fremde Dateien machen.
-- **Im Chat mit Leuten nur eigene Renderer:** Ein MCP-Server sähe sonst Dateien anderer Leute.
+- **Im Chat mit Leuten nur eigene Renderer:** Dort gibt es kein Werkzeug, das den Server gerufen hätte, und er
+  sähe sonst Dateien anderer Leute.
 - Ein Anbieter bekommt **nur die eine Datei**, die angezeigt wird, nie einen Ordner oder eine Liste.
 
 ## Datenschutz
