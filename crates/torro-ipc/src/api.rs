@@ -4293,7 +4293,8 @@ static CANCEL_VOICE_DOWNLOAD: Command = Command {
     mcp: Mcp::Tool,
     description: "Cancels the running download of a model by its id from settings_list_voice_models; returns the \
                   list with it `cancelled`. What was loaded stays, and the next download goes on there. A model \
-                  that does not download stays as it is. `not-found` for a model not on the list.",
+                  that does not download stays as it is. Needs the person's approval. `not-found` for a model not on the \
+                  list.",
 };
 
 // Admin like apps.uninstall_app, so it always waits for the person: dictating or reading aloud with the

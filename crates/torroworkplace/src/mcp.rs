@@ -709,6 +709,8 @@ pub fn annotations(command: &Command) -> ToolAnnotations {
         Area::Inbox if WRITES_TO_A_SERVER.contains(&command.name) => hints,
         // The web (issue #305) sends search words and addresses out of the computer.
         Area::Tools if matches!(command.name, "tools.web_search" | "tools.fetch_page") => hints,
+        // Downloading a voice model (issue #762) loads up to a gigabyte from Hugging Face.
+        Area::Settings if command.name == "settings.download_voice_model" => hints,
         Area::System
         | Area::Workspaces
         | Area::Settings
@@ -2199,7 +2201,7 @@ mod tests {
                     | Area::Tools
                     | Area::Extensions
             ) && !WRITES_TO_A_SERVER.contains(&command.name)
-                && !matches!(command.name, "tools.web_search" | "tools.fetch_page")
+                && !matches!(command.name, "tools.web_search" | "tools.fetch_page" | "settings.download_voice_model")
                 || STAYS_HERE.contains(&command.name);
             assert_eq!(hints.open_world_hint, local.then_some(false), "{}", tool.name);
         }
@@ -2769,7 +2771,10 @@ mod tests {
             ("settings_remove_voice_model", false),
         ] {
             let hints = tools().iter().find(|t| t.name == name).and_then(|t| t.annotations.clone());
-            assert_eq!(hints.and_then(|h| h.read_only_hint), Some(read_only), "{name}");
+            assert_eq!(hints.as_ref().and_then(|h| h.read_only_hint), Some(read_only), "{name}");
+            // Only downloading reaches out: up to a gigabyte from Hugging Face.
+            let stays = hints.and_then(|h| h.open_world_hint) == Some(false);
+            assert_eq!(stays, name != "settings_download_voice_model", "{name}");
         }
     }
 

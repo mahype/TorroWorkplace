@@ -265,9 +265,21 @@ fn http_client() -> Option<reqwest::Client> {
         .user_agent(crate::places::USER_AGENT)
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::limited(10))
+        .redirect(reqwest::redirect::Policy::custom(redirect))
         .build()
         .ok()
+}
+
+/// Where a download may be sent on: up to 10 times, and only over https, so a redirect never takes the
+/// request to a plain address. Loopback addresses are the tests' servers.
+fn redirect(attempt: reqwest::redirect::Attempt<'_>) -> reqwest::redirect::Action {
+    let url = attempt.url();
+    let loopback = matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"));
+    if attempt.previous().len() >= 10 || (url.scheme() != "https" && !loopback) {
+        attempt.stop()
+    } else {
+        attempt.follow()
+    }
 }
 
 /// The bytes of `model` in `folder`: of the files there with their name (at most their size) and of the
