@@ -803,13 +803,15 @@ pub const SPOKEN_MOST: usize = 600;
 /// Models do not always write the mark as asked (issue #826), so it is found the way they write it:
 /// the word `shown` with dashes around it (hyphens or long dashes, with blanks, bold or backticks),
 /// alone on its line, in the middle of a line or at its end, and split over two lines as a Markdown
-/// rule `---` above `shown---` or `**shown**`. With dashes on one side only it must end its line (or
-/// stand alone on it), so `as shown -- see` in a sentence does not split.
+/// rule `---` above `shown---` or `**shown**`. Dashes with blanks around the word mark only at the end
+/// of a line; dashes on the left only mark at the end of a line when they touch the word or stand
+/// above it, dashes on the right only when the mark is alone on its line. So `as shown -- see`,
+/// `the dates — shown — are fixed` and a list item `- true — shown` do not split.
 ///
 /// While the answer is still written (`running`), an end of the text that may become the mark is
 /// left out, so no piece of it flashes up in the chat or is read aloud.
 pub fn split_spoken(text: &str, running: bool) -> (Option<String>, String) {
-    if let Some((start, end)) = find_mark(text) {
+    if let Some((start, end)) = find_mark(text, running) {
         let spoken = text[..start].trim_end().to_owned();
         let shown = text[end..].trim().to_owned();
         // Nothing before the mark is no spoken part: the answer is read as one without it.
@@ -850,8 +852,8 @@ fn skip_back(text: &str, at: usize, keep: impl Fn(char) -> bool) -> usize {
 }
 
 /// The bytes of the first mark in `text` ([`split_spoken`]), from the blanks before it to the blanks
-/// after it on its line.
-fn find_mark(text: &str) -> Option<(usize, usize)> {
+/// after it on its line; `running` for an answer still written, whose end is no line end yet.
+fn find_mark(text: &str, running: bool) -> Option<(usize, usize)> {
     // ASCII lowercase keeps every byte where it is, so its positions hold in `text`.
     let lower = text.to_ascii_lowercase();
     let mut from = 0;
@@ -867,14 +869,27 @@ fn find_mark(text: &str) -> Option<(usize, usize)> {
         let inner = skip_back(text, word, |c| c.is_whitespace() || is_blank_or_wrap(c));
         let dashes = skip_back(text, inner, is_dash);
         let left = marks(&text[dashes..inner]);
+        // Tight: only wrap between dashes and word (`---shown`, `—**shown**`); broken: the dashes are a rule above.
+        let tight_left = !text[inner..word].contains(char::is_whitespace);
+        let broken_left = text[inner..word].contains('\n');
         let start = skip_back(text, if left { dashes } else { word }, is_blank_or_wrap);
         let inner = skip(text, after, is_blank_or_wrap);
         let dashes = skip(text, inner, is_dash);
         let right = marks(&text[inner..dashes]);
+        let tight_right = !text[after..inner].contains(char::is_whitespace);
         let end = skip(text, if right { dashes } else { after }, is_blank_or_wrap);
         let line_start = start == 0 || text[..start].ends_with('\n');
-        let line_end = end == text.len() || text[end..].starts_with(['\n', '\r']);
-        if (left && right) || (left && line_end) || (right && line_start && line_end) {
+        // While the answer runs, its end is no line end yet: `list — shown` may go on with ` below`.
+        let line_end = text[end..].starts_with(['\n', '\r']) || (end == text.len() && !running);
+        // Spaced dashes are prose in the middle of a line (`the dates — shown — are fixed`), so they mark only
+        // at a line's end, and dashes on one side only when tight, as a rule above or alone on the line.
+        let found = match (left, right) {
+            (true, true) => (tight_left && tight_right) || line_end,
+            (true, false) => line_end && (tight_left || broken_left || line_start),
+            (false, true) => line_start && line_end,
+            (false, false) => false,
+        };
+        if found {
             return Some((start, end));
         }
     }
@@ -1477,6 +1492,9 @@ mod tests {
             "A showroom --- open",
             "Shown: the list\n- one",
             "---\nShown are the dates.",
+            "Options:\n- `true` — shown\n- `false` — hidden",
+            "hidden -- shown\nvisible",
+            "The dates — shown — are fixed.",
         ] {
             assert_eq!(split_spoken(text, false), (None, text.to_owned()), "{text}");
         }
@@ -1526,8 +1544,11 @@ mod tests {
         ] {
             assert_eq!(split_spoken(text, true), (None, shown.into()), "{text}");
         }
-        // Once the word is written the answer splits, the rest of the mark may follow.
-        assert_eq!(split_spoken("Yes.\n\n---\nshown", true), (Some("Yes.".into()), String::new()));
+        // The word at the end waits for its line to end: it may go on as prose.
+        assert_eq!(split_spoken("Yes.\n\n---\nshown", true), (None, "Yes.\n\n".into()));
+        assert_eq!(split_spoken("Yes.\n\n---\nshown\n", true), (Some("Yes.".into()), String::new()));
+        assert_eq!(split_spoken("Yes. – shown –", true), (None, "Yes.".into()));
+        assert_eq!(split_spoken("Here is the list — shown", true).0, None);
         // What cannot become the mark stays.
         for text in ["A list:\n- one", "It is **bold**", "Text - more", "A well-known one", "Yes.\nShould"] {
             assert_eq!(split_spoken(text, true).1, text, "{text}");
