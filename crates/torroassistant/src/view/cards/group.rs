@@ -71,7 +71,7 @@ impl App {
         room: f32,
     ) -> Element<'a, Message> {
         let (full, line) = Self::group_look(area, items.len(), total);
-        let width = room.min(size::list());
+        let width = room;
         let mut parts: Column<'a, Message> = if full {
             column(items.iter().filter_map(|item| self.content_view(seq, item, room))).spacing(size::card_gap())
         } else {

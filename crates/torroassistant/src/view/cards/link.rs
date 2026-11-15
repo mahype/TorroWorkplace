@@ -97,7 +97,7 @@ impl App {
             return Some(content_card::link_card(card, picture.cloned(), press, room));
         }
         let provider = ask?;
-        Some(content_card::ask_card(provider, self.ask_press(seq, provider)?))
+        Some(content_card::ask_card_in(provider, self.ask_press(seq, provider)?, room))
     }
 
     /// The link card of `url` in one line: its kind's icon, its title or domain, and "Open"; `None` as

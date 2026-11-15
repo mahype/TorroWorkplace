@@ -610,7 +610,7 @@ fn link_card<'a>(
     };
     let play = (card.video.is_some() && system::plays_videos()).then(|| wrap(FilesMsg::PlayVideo(message.id.clone())));
     let press = LinkPress { open: wrap(FilesMsg::OpenLink(card.url.clone())), play };
-    content_card::link_card(card, picture, press, room)
+    content_card::link_card(card, picture, press, room.min(size::list()))
 }
 
 /// The question in place of the card of another provider's link (issue #672), as the assistant asks it

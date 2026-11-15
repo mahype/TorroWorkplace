@@ -176,7 +176,8 @@ pub fn page<'a>(only: Option<Part>) -> Element<'a, Msg> {
 /// The cards by section (`only` one of them), `width` the room of the page.
 fn cards<'a>(width: f32, only: Option<Part>) -> Element<'a, Msg> {
     let pad = layout::page_padding();
-    let room = (width - pad.left - pad.right).max(0.0);
+    // As wide as in the chat with people; the assistant lets them grow to its reading column.
+    let room = (width - pad.left - pad.right).clamp(0.0, size::list());
     let link = |card: LinkCard, picture: Option<&image::Handle>| {
         content_card::link_card(&card, picture.cloned(), press(), room)
     };

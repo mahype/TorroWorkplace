@@ -255,7 +255,9 @@ impl<M: Clone> ContentCard<M> {
         Self { on_press: Some(message), ..self }
     }
 
-    /// The full card, at most `room` wide (and never wider than `size::list()`).
+    /// The full card, `room` wide. The caller bounds it: the assistant by its reading column (the card grows with the
+    /// answer, its picture stays at most `size::card_picture_max()` high), the chat with people and the gallery by
+    /// `size::list()`.
     ///
     /// Ready: head, picture, title with its lines, buttons. Loading keeps the room of all of them (the picture, the
     /// title, each line – one at least – and the buttons as quiet bars), so the card does not jump when the content
@@ -265,7 +267,7 @@ impl<M: Clone> ContentCard<M> {
     where
         M: 'a,
     {
-        let width = room.min(size::list());
+        let width = room.max(0.0);
         let inner = (width - layout::panel_padding().left - layout::panel_padding().right).max(0.0);
         let mut parts: Vec<Element<'a, M>> = vec![head_line(&self.head)];
         let mut on_press = None;
@@ -518,7 +520,7 @@ pub struct LinkPress<M> {
 
 /// The card of the link `card` by its kind ([`LinkCardKind`]): a page with its picture (`picture`, fetched by the
 /// window through the core), a video with the play mark, a file of the own server, a quoted chat message, a GitHub
-/// issue or pull request. At most `room` wide. Every text on it is foreign: shown, never followed.
+/// issue or pull request. `room` wide ([`ContentCard::view`]). Every text on it is foreign: shown, never followed.
 ///
 /// Its buttons only open or play (nothing that writes, so the same card stands in the chat with people), and a
 /// click on the card does what its main button does:
@@ -644,6 +646,11 @@ pub struct AskPress<M> {
 /// after a shield, "Show once" (with the tooltip that the own Nextcloud fetches the page) and "Always allow …"
 /// `secondary`, "Never for …" `ghost`; the buttons wrap when the card is narrow. At most `size::list()` wide.
 pub fn ask_card<'a, M: Clone + 'a>(provider: &ForeignProvider, press: AskPress<M>) -> Element<'a, M> {
+    ask_card_in(provider, press, size::list())
+}
+
+/// [`ask_card`] at most `room` wide: in the assistant as wide as the content cards beside it (its reading column).
+pub fn ask_card_in<'a, M: Clone + 'a>(provider: &ForeignProvider, press: AskPress<M>, room: f32) -> Element<'a, M> {
     let name = provider.name.as_str();
     let what = trf("This message shows content from {provider}.", &[("provider", &name)]);
     let note = row![
@@ -669,7 +676,7 @@ pub fn ask_card<'a, M: Clone + 'a>(provider: &ForeignProvider, press: AskPress<M
     container(column![note, answers].spacing(size::card_gap()))
         .padding(layout::panel_padding())
         .width(Fill)
-        .max_width(size::list())
+        .max_width(room.max(0.0))
         .style(|t: &Theme| {
             let p = palette(t);
             container::Style {

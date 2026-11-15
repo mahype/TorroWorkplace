@@ -76,7 +76,8 @@ impl App {
         })
     }
 
-    /// How wide a content card may be: the history's reading column within the window.
+    /// How wide a content card is (issue #784): the history's reading column within the window, so a card grows with
+    /// the answer above it (its picture stays at most `size::card_picture_max()` high).
     fn card_room(&self) -> f32 {
         (self.size.width - 2.0 * space::l()).clamp(0.0, size::content_max())
     }
