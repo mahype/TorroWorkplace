@@ -837,17 +837,30 @@ impl App {
                     .style(style::container::group);
                 container(bubble).width(Fill).align_right(Fill).into()
             }
-            EntryContent::Answer { text, .. } => {
-                let answer: Element<'a, Message> = match self.answers.get(&entry.seq) {
+            EntryContent::Answer { text, spoken, .. } => {
+                let shown: Element<'a, Message> = match self.answers.get(&entry.seq) {
                     Some((_, items)) => markdown::view(items, colours).map(Message::OpenLink),
                     None => typo::text(typo::body(), text.as_str()).into(),
                 };
-                // Numbers count per conversation: the open one must be the one that reads.
-                match self.reading == Some(entry.seq) && self.reading_in == self.current {
-                    // Its own line above the answer, so the answer keeps its width.
-                    true => column![self.stop_reading_button(), answer].spacing(space::xs()).into(),
-                    false => answer,
+                let mut answer = column![].spacing(space::s());
+                // The spoken part as a lead above the shown one (issue #774), so nothing is missed
+                // without sound; the speaker says it is what was read.
+                if let Some(spoken) = spoken.as_deref().filter(|spoken| !spoken.trim().is_empty()) {
+                    answer = answer.push(
+                        row![
+                            tinted(Icon::Volume2, icon::SIZE_SM, |p| p.text_3),
+                            typo::text(typo::body(), spoken).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)
+                        ]
+                        .spacing(space::s()),
+                    );
                 }
+                if !text.trim().is_empty() {
+                    answer = answer.push(shown);
+                }
+                if let Some(controls) = self.speech_controls(entry.seq, spoken.is_some()) {
+                    answer = answer.push(controls);
+                }
+                answer.into()
             }
             EntryContent::Tool { name, input, summary, error, lack } => {
                 self.tool(entry.seq, name, input, summary, error.as_deref(), *lack)
@@ -1223,15 +1236,41 @@ impl App {
             .into()
     }
 
-    /// "Stop reading aloud" above the answer being read (issue #745): says that it reads, with the
-    /// speaker, and stops it at once.
-    fn stop_reading_button(&self) -> Element<'_, Message> {
-        widgets::text_button(
-            Some(Icon::Volume2),
-            tr("Stop reading aloud"),
+    /// "Repeat" and "Stop" under an answer (issue #774): "Repeat" under one with a spoken part reads it
+    /// again, "Stop" is active while the answer is read, by this window or, in its conversation by voice,
+    /// by the listener at its last answer. An answer without a spoken part has only "Stop", and only
+    /// while it is read. None in mini and strip, which read nothing themselves.
+    fn speech_controls(&self, seq: u64, spoken: bool) -> Option<Element<'_, Message>> {
+        if self.is_glance() {
+            return None;
+        }
+        // Numbers count per conversation: the open one must be the one that reads.
+        let read_here = self.reading == Some(seq) && self.reading_in == self.current;
+        let talking = self.own_talk().is_some()
+            && self.talk_speaking
+            && self.transcript.last_answer().is_some_and(|entry| entry.seq == seq);
+        let reading = read_here || talking;
+        if !spoken && !reading {
+            return None;
+        }
+        let mut controls = row![].spacing(space::xs()).align_y(Alignment::Center);
+        if spoken {
+            let repeat = widgets::text_button(
+                Some(Icon::RefreshCw),
+                trc("speech", "Repeat"),
+                style::button::ghost,
+                Some(Message::RepeatSpoken(seq)),
+            );
+            controls = controls.push(widgets::with_tooltip(repeat, tr("Read the spoken part again")));
+        }
+        let stop = widgets::text_button(
+            Some(Icon::Square),
+            tr("Stop"),
             style::button::ghost,
-            Some(Message::StopReading),
-        )
+            reading.then_some(Message::StopReading),
+        );
+        controls = controls.push(widgets::with_tooltip(stop, tr("Stop reading aloud")));
+        Some(controls.into())
     }
 
     /// The microphone of the composer (issue #699): pale while speech recognition is not set up (a
@@ -1613,7 +1652,10 @@ impl App {
                         return Space::new().into();
                     }
                     let line = match &entry.content {
-                        EntryContent::Answer { text, .. } => chat::answer_line(text),
+                        // The spoken part says it in short (issue #774).
+                        EntryContent::Answer { text, spoken, .. } => chat::answer_line(
+                            spoken.as_deref().filter(|spoken| !spoken.trim().is_empty()).unwrap_or(text),
+                        ),
                         _ => String::new(),
                     };
                     container(widgets::ellipsized(typo::body(), line, theme::text))

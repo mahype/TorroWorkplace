@@ -649,7 +649,12 @@ mod tests {
         let answer = |seq: u64| Entry {
             seq,
             time,
-            content: EntryContent::Answer { text: "Shall I ask it?".into(), engine: "test".into(), model: None },
+            content: EntryContent::Answer {
+                text: "Shall I ask it?".into(),
+                engine: "test".into(),
+                model: None,
+                spoken: None,
+            },
         };
         let asked = |seq: u64| Entry { seq, ..tool(ASK_BOT, serde_json::json!({"bot": "b1"}), None) };
         let refused = Entry { seq: 2, ..refused };

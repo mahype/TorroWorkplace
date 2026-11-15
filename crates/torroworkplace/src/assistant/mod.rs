@@ -97,7 +97,7 @@ use torro_ipc::api::{Access, Area};
 use torro_ipc::assistant::{
     ChatWindow, ConversationHit, ConversationSummary, DEFAULT_HITS, Engine, EngineKind, Entry, EntryContent,
     HITS_PER_CONVERSATION, MAX_HITS, MAX_NOTES, MAX_SKILL_CHARS, MAX_SKILL_DESCRIPTION_CHARS, MAX_SKILL_NAME_CHARS,
-    MAX_SKILLS, MailRef, Note, Profile, Skill, TEST_ENGINE,
+    MAX_SKILLS, MailRef, Note, Profile, Skill, TEST_ENGINE, split_spoken,
 };
 use torro_ipc::bots::Bot;
 use torro_ipc::{Request, Response};
@@ -202,6 +202,20 @@ pub(crate) struct Partial {
     pub started: Option<DateTime<Utc>>,
 }
 
+/// An answer entry with its spoken part split off (issue #774, [`split_spoken`]): the core keeps the
+/// model's text as it came, mark and all, so the model reads its own answers back unchanged, and every
+/// client gets the two parts apart. `running` for the growing answer. Other entries pass unchanged.
+fn split_answer(mut entry: Entry, running: bool) -> Entry {
+    if let EntryContent::Answer { text, spoken, .. } = &mut entry.content
+        && spoken.is_none()
+    {
+        let (said, shown) = split_spoken(text, running);
+        *spoken = said;
+        *text = shown;
+    }
+    entry
+}
+
 impl Run {
     /// The answer as far as the model wrote it, as the entry after `last` it will become; `None`
     /// while it wrote nothing.
@@ -214,6 +228,7 @@ impl Run {
             text: partial.text.clone(),
             engine: self.engine.clone(),
             model: partial.model.clone(),
+            spoken: None,
         };
         Some(Entry { seq: last + 1, time: partial.started.unwrap_or_else(Utc::now), content })
     }
@@ -450,11 +465,12 @@ impl Assistant {
         let state = self.state().await;
         let Some(conversation) = state.conversations.get(id) else { return unknown(id) };
         let run = state.running.get(id);
-        let mut entries = conversation.entries_after(after);
+        let mut entries: Vec<Entry> =
+            conversation.entries_after(after).into_iter().map(|entry| split_answer(entry, false)).collect();
         if let Some(growing) = run.and_then(|run| run.growing(conversation.last()))
             && growing.seq > after.unwrap_or(0)
         {
-            entries.push(growing);
+            entries.push(split_answer(growing, true));
         }
         Response::Conversation { conversation: with_bots(conversation.summary(run.is_some()), &bots), entries }
     }
@@ -830,7 +846,7 @@ impl Assistant {
             let text = tr(
                 "This is the test engine. It answers every message the same way, without a model and without tools.",
             );
-            let answer = EntryContent::Answer { text: text.to_string(), engine: by, model: None };
+            let answer = EntryContent::Answer { text: text.to_string(), engine: by, model: None, spoken: None };
             assistant.add_to_run(&conversation, run, answer, true, None).await;
         });
         let partial = Arc::default();
@@ -1692,7 +1708,7 @@ pub(crate) mod tests {
 
     /// Stores `text` as the answer of the run `run` of [`growing`] and ends it.
     pub(crate) async fn finish_growing(assistant: &Assistant, id: &str, run: u64, text: &str) {
-        let answer = EntryContent::Answer { text: text.into(), engine: TEST_ENGINE.into(), model: None };
+        let answer = EntryContent::Answer { text: text.into(), engine: TEST_ENGINE.into(), model: None, spoken: None };
         assert!(assistant.add_to_run(id, run, answer, true, None).await, "the run still runs");
     }
 
@@ -2115,7 +2131,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn said(text: &str) -> EntryContent {
-        EntryContent::Answer { text: text.into(), engine: TEST_ENGINE.into(), model: None }
+        EntryContent::Answer { text: text.into(), engine: TEST_ENGINE.into(), model: None, spoken: None }
     }
 
     pub(crate) fn tool(name: &str) -> EntryContent {
@@ -2133,6 +2149,39 @@ pub(crate) mod tests {
             Response::ConversationHits { hits } => hits,
             other => panic!("expected hits, got {other:?}"),
         }
+    }
+
+    /// Issue #774: `get_conversation` gives an answer written in two parts apart, the stored one and the
+    /// growing one, and nobody sees the mark; the core keeps the model's text as it came.
+    #[tokio::test]
+    async fn an_answer_comes_in_its_spoken_and_its_shown_part() {
+        const ID: &str = "0000000000000774";
+        let dir = tempfile::tempdir().expect("temp dir");
+        let raw = "Nine events, have a look.\n---shown---\n- Mon 9:00 Standup";
+        written(&dir.path().join("assistant"), ID, "Week", vec![message("What is on?"), said(raw)], &[], |_| {});
+        let assistant = assistant_in(dir.path(), Duration::ZERO);
+        let entries = |response: Response| match response {
+            Response::Conversation { entries, .. } => entries,
+            other => panic!("expected a conversation, got {other:?}"),
+        };
+        let stored = entries(assistant.get(ID, None).await);
+        let parts = |entry: &Entry| match &entry.content {
+            EntryContent::Answer { text, spoken, .. } => (spoken.clone(), text.clone()),
+            other => panic!("expected an answer, got {other:?}"),
+        };
+        assert_eq!(parts(&stored[1]), (Some("Nine events, have a look.".into()), "- Mon 9:00 Standup".into()));
+        let kept = assistant.state().await.conversations.get(ID).map(|conversation| conversation.entries_after(None));
+        assert!(kept.is_some_and(
+            |kept| matches!(&kept[1].content, EntryContent::Answer { text, spoken: None, .. } if text == raw)
+        ));
+
+        let (_, partial) = growing(&assistant, ID).await;
+        partial.lock().unwrap_or_else(PoisonError::into_inner).text = "Two more.\n---sh".into();
+        let running = entries(assistant.get(ID, Some(2)).await);
+        assert_eq!(parts(&running[0]), (None, "Two more.\n".into()), "the mark being written is left out");
+        partial.lock().unwrap_or_else(PoisonError::into_inner).text = "Two more.\n---shown---\nTue".into();
+        let running = entries(assistant.get(ID, Some(2)).await);
+        assert_eq!(parts(&running[0]), (Some("Two more.".into()), "Tue".into()));
     }
 
     fn search(query: &str) -> Request {

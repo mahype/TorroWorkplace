@@ -6,7 +6,8 @@
 //! ends at `.`, `!`, `?`, `…` or `:` before a space, and at the end of a line. A full stop after a
 //! number ("1. "), after a single letter ("z. ") or after a known abbreviation ("bzw.", "e.g.")
 //! ends none. Code blocks are left out: they are not read aloud. At most [`MOST`] characters are
-//! given in all, as much as `assistant.speak` reads.
+//! given in all, as much as `assistant.speak` reads, or fewer ([`Sentences::with_most`], issue #774).
+//! What is given ends at a sentence end within the limit; only a first sentence longer than it is cut.
 
 /// The most characters given in all, as `assistant.speak` reads at most (issue #745).
 pub const MOST: usize = 3000;
@@ -15,7 +16,7 @@ pub const MOST: usize = 3000;
 const ABBREVIATIONS: [&str; 10] = ["bzw", "ca", "nr", "dr", "z.b", "e.g", "i.e", "usw", "etc", "vgl"];
 
 /// The sentences of a growing text (see the module).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Sentences {
     /// The text taken so far: the start of every later text.
     taken: String,
@@ -27,9 +28,30 @@ pub struct Sentences {
     in_code: bool,
     /// How many characters were given.
     given: usize,
+    /// The most characters given in all.
+    most: usize,
+}
+
+impl Default for Sentences {
+    fn default() -> Self {
+        Self::with_most(MOST)
+    }
 }
 
 impl Sentences {
+    /// Sentences that give at most `most` characters in all (at most [`MOST`]).
+    pub fn with_most(most: usize) -> Self {
+        Self { taken: String::new(), open: String::new(), open_at: 0, in_code: false, given: 0, most: most.min(MOST) }
+    }
+
+    /// From now on up to [`MOST`] characters in all, as `assistant.speak` reads (issue #774: a spoken
+    /// part is read whole). Nothing changes once the lower limit was reached.
+    pub fn lift_limit(&mut self) {
+        if self.given < self.most {
+            self.most = MOST;
+        }
+    }
+
     /// The pieces of `text` – the whole answer written so far – that became complete since the last
     /// call, in order. A `text` that does not go on from the last one (the model's text was replaced)
     /// goes on where both agree.
@@ -87,16 +109,31 @@ impl Sentences {
         }
     }
 
-    /// Gives `piece` when it has something to say and the limit is not reached; cut at the limit.
+    /// Gives `piece` when it has something to say and the limit is not reached. A piece that does not fit
+    /// ends the giving: it is left out, so what was read ends at a sentence end, unless nothing was given
+    /// yet; then it is cut after its last sentence end within the limit, or at the limit when it has none.
     fn give(&mut self, piece: &str, pieces: &mut Vec<String>) {
         let piece = piece.trim();
-        if !piece.chars().any(char::is_alphanumeric) || self.given >= MOST {
+        if !piece.chars().any(char::is_alphanumeric) || self.given >= self.most {
             return;
         }
-        let left = MOST - self.given;
-        let piece: String = piece.chars().take(left).collect();
-        self.given += piece.chars().count();
-        pieces.push(piece);
+        let left = self.most - self.given;
+        if piece.chars().count() <= left {
+            self.given += piece.chars().count();
+            pieces.push(piece.to_string());
+            return;
+        }
+        let first = self.given == 0;
+        self.given = self.most;
+        if !first {
+            return;
+        }
+        let cut: String = piece.chars().take(left).collect();
+        let mut end = 0;
+        while let Some(found) = sentence_end(&cut[end..]) {
+            end += found;
+        }
+        pieces.push(if end > 0 { cut[..end].trim().to_string() } else { cut });
     }
 }
 
@@ -186,8 +223,33 @@ mod tests {
     #[test]
     fn at_most_the_limit_is_given() {
         let text = "Ein Satz hier. ".repeat(400);
-        let given: usize = pieces_of(&text, 50).iter().map(|piece| piece.chars().count()).sum();
-        assert_eq!(given, MOST);
+        let pieces = pieces_of(&text, 50);
+        let given: usize = pieces.iter().map(|piece| piece.chars().count()).sum();
+        assert!(given <= MOST && given > MOST - "Ein Satz hier.".len(), "{given}");
+        assert!(pieces.iter().all(|piece| piece == "Ein Satz hier."), "only whole sentences");
+    }
+
+    /// Issue #774: a lower limit ends at a sentence end within it; only a first sentence longer than it
+    /// is cut, after a sentence end in it when it has one.
+    #[test]
+    fn a_lower_limit_ends_at_a_sentence_end() {
+        let mut sentences = Sentences::with_most(30);
+        let text = "Neun Termine. Der Donnerstag ist voll. Am Freitag frei. ";
+        assert_eq!(sentences.push(text), ["Neun Termine."], "the second sentence does not fit");
+        assert!(sentences.finish().is_empty());
+        let mut long = Sentences::with_most(10);
+        assert_eq!(long.push("Ein sehr langer Satz ohne Ende"), Vec::<String>::new());
+        assert_eq!(long.finish(), ["Ein sehr l"], "a first sentence longer than the limit is cut");
+        let mut line = Sentences::with_most(20);
+        assert_eq!(line.push("Ja: das passt gut so, alles klar\n"), ["Ja:"], "cut after its own sentence end");
+        assert_eq!(Sentences::with_most(MOST + 1).most, MOST, "never more than speak reads");
+        let mut lifted = Sentences::with_most(10);
+        lifted.lift_limit();
+        assert_eq!(lifted.push("Ein sehr langer Satz. "), ["Ein sehr langer Satz."], "up to MOST once lifted");
+        let mut reached = Sentences::with_most(5);
+        assert_eq!(reached.push("Ein Satz. Noch einer. "), ["Ein S"]);
+        reached.lift_limit();
+        assert!(reached.push("Ein Satz. Noch einer. Und mehr. ").is_empty(), "reached stays reached");
     }
 
     #[test]

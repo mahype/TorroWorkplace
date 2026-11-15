@@ -26,8 +26,9 @@
 //! A chat about a mail (issue #605) ends with one more part ([`about_mail`]): which mail it is about, that the
 //! suite read it first, and that this chat only reads and suggests.
 //!
-//! A spoken message (issue #747, `assistant.send_message` with `spoken`) ends with one more part
-//! ([`spoken`]): the answer is read aloud, so it is short and has no tables or lists.
+//! An answer that is read aloud (issue #747, `assistant.send_message` with `spoken`) ends with one more
+//! part ([`spoken`]): the answer comes in two parts (issue #774), a short spoken one in plain sentences,
+//! then the line `---shown---`, then the shown one for the chat, which is not read aloud.
 //!
 //! A bot (task B.1) has a fourth part, between the skill and the conversation ([`bot_system`]):
 //! **its instructions and skills** ([`BotParts`]), written by the person, quoted like the
@@ -45,7 +46,7 @@ use chrono::{DateTime, Local};
 use torro_core::i18n::Lang;
 use torro_core::settings::ToolId;
 use torro_ipc::api::{Access, Area, Confirm, Level, Outbound, Rights, Selection};
-use torro_ipc::assistant::{MAX_NOTE_CHARS, MAX_SKILL_DESCRIPTION_CHARS, MailRef, Note, SkillSummary};
+use torro_ipc::assistant::{MAX_NOTE_CHARS, MAX_SKILL_DESCRIPTION_CHARS, MailRef, Note, SHOWN_MARK, SkillSummary};
 use torro_ipc::bots::{Bot, MAX_INSTRUCTIONS_CHARS, MAX_NAME_CHARS, MAX_SKILL_NAME_CHARS, Skill};
 
 use torro_core::ai::Place;
@@ -256,16 +257,25 @@ pub fn about_mail(mail: &MailRef) -> String {
 /// The heading of the part for a spoken message (issue #747).
 pub const SPOKEN_HEADING: &str = "## The person is talking to you";
 
-/// The last part of the prompt when the person spoke the message (issue #747, [`super::model::Job::spoken`]):
-/// the answer is read aloud as it is written, so it is short, in plain sentences, without tables, lists, code
-/// or links, and asks back in one sentence when it needs to.
+/// The last part of the prompt when the answer is read aloud (issue #747, [`super::model::Job::spoken`]):
+/// the answer comes in two parts (issue #774). First a short spoken part in plain sentences, the only part
+/// that is read aloud, as it is written; then the line [`SHOWN_MARK`] alone; then the shown part for the
+/// chat, as long as it needs to be, in Markdown. The core splits the two
+/// ([`torro_ipc::assistant::split_spoken`]).
 pub fn spoken() -> String {
     format!(
         "{SPOKEN_HEADING}\n\n\
-         - The person spoke this message, and your answer is read aloud sentence by sentence as you write it.\n\
-         - Answer briefly: one to three short sentences, the most important first. Use plain sentences only: no \
-         tables, lists, headings, code, links or emoji. Say numbers, times and dates as they are spoken.\n\
-         - If you need more from the person, ask one short question at the end."
+         - Your answer is read aloud sentence by sentence as you write it, and it is shown in the chat as well. \
+         Write it in two parts.\n\
+         - First the spoken part: one to three short sentences, the most important first, like a turn in a \
+         conversation. Use plain sentences only: no Markdown, tables, lists, headings, code, links or emoji. Say \
+         numbers, times and dates as they are spoken. It may point at what you show (\"Have a look at the list\", \
+         \"Mind the second point\"). If you need more from the person, ask one short question here.\n\
+         - Then a line with only {SHOWN_MARK} (no quotes or backticks), always, even when nothing follows it.\n\
+         - After it the shown part: what the person reads in the chat, as detailed as it needs to be, in \
+         Markdown (lists, tables, links). It is not read aloud, so do not repeat the spoken part. Leave it empty \
+         when the spoken part says it all.\n\
+         - When you use tools, write both parts in your answer after them."
     )
 }
 
@@ -742,6 +752,15 @@ mod tests {
             skills: &[],
             servers: &[],
         }
+    }
+
+    /// Issue #774: an answer read aloud is asked for in two parts, split by the line the core looks for.
+    #[test]
+    fn a_spoken_answer_is_asked_for_in_two_parts() {
+        let part = spoken();
+        assert!(part.starts_with(SPOKEN_HEADING));
+        assert!(part.contains(&format!("a line with only {SHOWN_MARK} ")), "{part}");
+        assert!(part.contains("spoken part") && part.contains("shown part"), "{part}");
     }
 
     /// Issue #134: the prompt says what the assistant may do in each area, as the person set it.

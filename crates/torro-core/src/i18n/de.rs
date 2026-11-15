@@ -9311,6 +9311,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Stop reading answers aloud", "Antworten nicht mehr vorlesen"),
     ("Reading aloud failed. Try again.", "Vorlesen hat nicht geklappt. Versuch es noch einmal."),
     ("Stop reading aloud", "Vorlesen stoppen"),
+    // An answer in a spoken and a shown part (issue #774)
+    ("speech|Repeat", "Wiederholen"),
+    ("Read the spoken part again", "Den gesprochenen Teil noch einmal vorlesen"),
     ("The assistant app is not installed.", "Die Assistenten-App ist nicht installiert."),
     ("Warm woman", "Frau, warm"),
     ("speaker|Voice", "Stimme"),

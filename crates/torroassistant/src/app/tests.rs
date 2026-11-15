@@ -1595,7 +1595,7 @@ fn answer_entry(seq: u64, text: &str) -> Entry {
     Entry {
         seq,
         time: chrono::Utc::now(),
-        content: EntryContent::Answer { text: text.into(), engine: OLLAMA.into(), model: None },
+        content: EntryContent::Answer { text: text.into(), engine: OLLAMA.into(), model: None, spoken: None },
     }
 }
 
@@ -1906,7 +1906,7 @@ fn talk_starts_a_conversation_by_voice_in_the_window() {
     let _ = app.update(Message::TalkStarted(Ok(Some(talk.clone()))));
     assert_eq!(app.own_talk(), Some(&talk));
     for state in [VoiceState::Recording, VoiceState::Answering, VoiceState::Conversing] {
-        let _ = app.update(Message::TalkStatus(Ok(Some(Talk { state, ..talk.clone() }))));
+        let _ = app.update(Message::TalkStatus(Ok((Some(Talk { state, ..talk.clone() }), false))));
         let _ = app.view();
     }
     let _ = app.update(Message::EndTalk);
@@ -1916,13 +1916,16 @@ fn talk_starts_a_conversation_by_voice_in_the_window() {
     assert_eq!(app.notice.as_ref().map(|notice| notice.text.as_str()), Some(tr("Couldn't start the conversation.")));
 
     // In another conversation: the composer stays, the tray shows it.
-    let _ = app.update(Message::TalkStatus(Ok(Some(Talk { conversation: Some("elsewhere".into()), ..talk.clone() }))));
+    let _ = app.update(Message::TalkStatus(Ok((
+        Some(Talk { conversation: Some("elsewhere".into()), ..talk.clone() }),
+        false,
+    ))));
     assert_eq!(app.own_talk(), None);
-    let _ = app.update(Message::TalkStatus(Ok(None)));
+    let _ = app.update(Message::TalkStatus(Ok((None, false))));
     assert_eq!(app.talk, None);
 
     // Escape ends it, as "End talk" does.
-    let _ = app.update(Message::TalkStatus(Ok(Some(talk.clone()))));
+    let _ = app.update(Message::TalkStatus(Ok((Some(talk.clone()), false))));
     sent(&mut app);
     let _ = app.update(Message::Escape);
     assert!(sent(&mut app).contains(&Request::EndTalk));
@@ -1952,7 +1955,7 @@ fn talk_in_a_new_chat_follows_into_the_new_conversation() {
     let _ = app.update(Message::TalkStarted(Ok(Some(Talk { conversation: None, state: VoiceState::Conversing }))));
     assert!(app.own_talk().is_some(), "the line while the first sentence is not said");
     let moved = Talk { conversation: Some(TOOLS.into()), state: VoiceState::Answering };
-    let _ = app.update(Message::TalkStatus(Ok(Some(moved.clone()))));
+    let _ = app.update(Message::TalkStatus(Ok((Some(moved.clone()), false))));
     assert_eq!(app.current.as_deref(), Some(TOOLS), "the window shows the new conversation");
     assert_eq!(app.own_talk(), Some(&moved));
     // One begun in a conversation is not followed into it from a new chat.
@@ -1962,14 +1965,14 @@ fn talk_in_a_new_chat_follows_into_the_new_conversation() {
         state: VoiceState::Conversing,
     }))));
     let _ = left.update(Message::NewChat);
-    let _ = left.update(Message::TalkStatus(Ok(Some(Talk {
-        conversation: Some(TOOLS.into()),
-        state: VoiceState::Conversing,
-    }))));
+    let _ = left.update(Message::TalkStatus(Ok((
+        Some(Talk { conversation: Some(TOOLS.into()), state: VoiceState::Conversing }),
+        false,
+    ))));
     assert_eq!(left.current, None, "the new chat stays");
     // One started elsewhere is not followed.
     let mut other = started(&[]);
-    let _ = other.update(Message::TalkStatus(Ok(Some(moved))));
+    let _ = other.update(Message::TalkStatus(Ok((Some(moved), false))));
     assert_eq!(other.current, None);
 }
 
@@ -2032,6 +2035,74 @@ fn the_speaker_switches_reading_aloud_and_stops_it() {
     let _ = app.update(Message::Read(app.current.clone(), 4, Err(Refusal::new("unsupported", message))));
     assert_eq!(app.reading, None);
     assert_eq!(app.notice.as_ref().map(|notice| notice.text.as_str()), Some(message), "the core's words");
+    for size in SIZES {
+        let _ = app.update(Message::Resized(size));
+        let _ = app.view();
+    }
+}
+
+/// Issue #774: with the speaker on a message asks for an answer in two parts, off it does not;
+/// "Repeat" reads the spoken part again (`assistant.speak`) and "Stop" stops it
+/// (`assistant.stop_speaking`); an answer without a spoken part has nothing to repeat.
+#[test]
+fn repeat_reads_the_spoken_part_again_and_stop_stops_it() {
+    let asked_spoken = |requests: &[Request]| {
+        requests.iter().find_map(|request| match request {
+            Request::SendMessage { spoken, .. } => Some(*spoken),
+            _ => None,
+        })
+    };
+    let hello = || Message::Edit(text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new("Hello".into()))));
+    for on in [true, false] {
+        let mut app = started(&[]);
+        app.read_aloud = on;
+        let _ = app.update(hello());
+        let _ = app.update(Message::Send);
+        assert_eq!(asked_spoken(&sent(&mut app)), Some(on), "two parts only with the speaker on");
+    }
+
+    let mut app = started(&["--open", "reading"]);
+    sent(&mut app);
+    let spoken = app.transcript.entries.iter().find_map(|entry| match &entry.content {
+        EntryContent::Answer { spoken: Some(spoken), .. } if entry.seq == demo::READ_ANSWER => Some(spoken.clone()),
+        _ => None,
+    });
+    let spoken = spoken.expect("the demo's answer has a spoken part");
+    // "Repeat" at the answer being read: the reading it replaces ends late and leaves "Stop" active.
+    assert_eq!(app.reading, Some(demo::READ_ANSWER));
+    let _ = app.update(Message::RepeatSpoken(demo::READ_ANSWER));
+    assert_eq!(sent(&mut app), [Request::Speak { text: spoken.clone() }]);
+    let _ = app.update(Message::Read(app.current.clone(), demo::READ_ANSWER, Ok(())));
+    assert_eq!(app.reading, Some(demo::READ_ANSWER), "\"Stop\" is active meanwhile");
+    // A second "Repeat": the first one's end does not take "Stop" away either; its own end does.
+    let _ = app.update(Message::RepeatSpoken(demo::READ_ANSWER));
+    sent(&mut app);
+    let _ = app.update(Message::Repeated(1, Ok(())));
+    assert_eq!(app.reading, Some(demo::READ_ANSWER));
+    let _ = app.update(Message::Repeated(2, Ok(())));
+    assert_eq!(app.reading, None, "read to its end");
+    let _ = app.update(Message::RepeatSpoken(demo::READ_ANSWER));
+    sent(&mut app);
+    let _ = app.update(Message::StopReading);
+    assert_eq!(sent(&mut app), [Request::StopSpeaking]);
+    assert_eq!(app.reading, None);
+
+    // An answer without a spoken part, another entry or an unknown number: nothing to read again.
+    let plain = app.transcript.entries.iter().map(|entry| entry.seq).max().unwrap_or_default() + 1;
+    app.transcript.entries.push(answer_entry(plain, "Just one part."));
+    let _ = app.update(Message::RepeatSpoken(plain));
+    let message = app.transcript.entries.iter().find(|entry| matches!(entry.content, EntryContent::Message { .. }));
+    let _ = app.update(Message::RepeatSpoken(message.map_or(0, |entry| entry.seq)));
+    let _ = app.update(Message::RepeatSpoken(999));
+    app.transcript.entries.retain(|entry| entry.seq != plain);
+    assert!(sent(&mut app).is_empty());
+
+    // In its own conversation by voice "Stop" follows what the listener reads.
+    app.talk = Some(torro_ipc::Talk { conversation: app.current.clone(), state: torro_ipc::VoiceState::Answering });
+    let _ = app.update(Message::TalkStatus(Ok((app.talk.clone(), true))));
+    assert!(app.talk_speaking);
+    let _ = app.update(Message::StopReading);
+    assert!(!app.talk_speaking && sent(&mut app).contains(&Request::StopSpeaking));
     for size in SIZES {
         let _ = app.update(Message::Resized(size));
         let _ = app.view();
