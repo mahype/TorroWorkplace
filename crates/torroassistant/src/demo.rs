@@ -658,7 +658,13 @@ fn samples(now: DateTime<Utc>) -> Vec<Conversation> {
                 None,
             ),
             tool("mail.search_messages", serde_json::json!({"query": "unread"}), tr("12 results"), None),
-            answer(tr(PLAN_ANSWER)),
+            // In two parts (issue #774), as with the speaker on: the state `reading` reads its spoken one.
+            EntryContent::Answer {
+                text: tr(PLAN_ANSWER).to_owned(),
+                engine: OLLAMA.into(),
+                model: Some("qwen3:14b".into()),
+                spoken: Some(tr(PLAN_SPOKEN).to_owned()),
+            },
         ],
     );
     plan.summary.pinned = true;
@@ -1067,6 +1073,9 @@ fn bot_clients(now: DateTime<Utc>) -> Vec<ClientInfo> {
 }
 
 /// The answer of "Plan for tomorrow", in Markdown.
+/// The spoken part of [`PLAN_ANSWER`] (issue #774): what the state `reading` reads aloud.
+const PLAN_SPOKEN: &str = "Four events tomorrow, have a look at the list. The review with Anna matters most.";
+
 const PLAN_ANSWER: &str = "Tomorrow you have **four events**:\n\n\
 - 09:30 Stand-up\n\
 - 11:00 Review API concept with Anna\n\
