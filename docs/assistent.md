@@ -888,8 +888,9 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
   Bau-Option `qwen-cuda`, weil es eine NVIDIA-Karte und CUDA braucht. Die Releases enthalten es nicht: Dort
   fehlt es in der Auswahl und in der Modell-Liste, `speech_provider` `"qwen"` und `qwen_voice` beantwortet der
   Dienst mit `unsupported`, und eine Einstellung mit Qwen liest mit Pocket TTS. In einem Build mit Qwen gilt sie
-  wieder samt der gewählten Stimme. Ohne NVIDIA-Karte sagt die Zeile unter „Provider“ „No NVIDIA graphics card
-  was found.“ Den Messbericht mit Crane und qwen3-tts.cpp, Proben und der Begründung der Wahl enthält
+  wieder samt der gewählten Stimme. Ist der NVIDIA-Treiber da, aber keine Karte antwortet, sagt die Zeile unter
+  „Provider“ „No NVIDIA graphics card was found.“; ohne Treiber startet ein solcher Build gar nicht
+  ([install.md](install.md#qwen3-tts-selbst-bauen-nur-nvidia)). Den Messbericht mit Crane und qwen3-tts.cpp, Proben und der Begründung der Wahl enthält
   [messung-qwen3-tts.md](messung-qwen3-tts.md). Pocket TTS bleibt die empfohlene Stimme.
 - **Stimmen und Lizenzen:** Cosette und Jean fehlen, weil ihre Aufnahmen nur nichtgewerblich genutzt werden
   dürfen. Die Einstellungen nennen die Urheber: Kyutai (Pocket TTS, CC BY 4.0), Alba MacKenna (CC BY 4.0),
