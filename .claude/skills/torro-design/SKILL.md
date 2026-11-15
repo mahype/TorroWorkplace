@@ -59,7 +59,7 @@ aus einem Guss wirkt:
   (`ui_state::save_right_column_task`); ohne rechte Spalte (mittel, schmal, Aufgaben, Assistent, Steuerzentrale) gibt
   es ihn nicht. Im Mail-Fenster schließt das Ausblenden die offene Mail; öffnet man im breiten Fenster eine Mail,
   kommt der Leser zurück (Cursor und Aktualisieren lassen die Spalte aus). **Kein App-Umschalter** (#530): Zwischen den Apps
-  wechselt man über das Tray-Menü, das Dock bzw. die Taskleiste und Steuerzentrale › Apps; im Fenster kommt dafür
+  wechselt man über das Tray-Menü, das Dock bzw. die Taskleiste und Steuerzentrale › Übersicht; im Fenster kommt dafür
   nichts dazu. Sprünge mit Bezug („Open in …“, „↗ andere App“) bleiben, ebenso der Kern-Befehl `OpenApp`. Daneben
   die **Kopfzeile der App** (`shell::header_bar`), ganz rechts die **Einstellungen** mit Schiebereglern
   (`shell::SETTINGS_ICON`, nie das Zahnrad; markiert, solange sie offen sind), `control_sm − space::s()` im Quadrat (28 im

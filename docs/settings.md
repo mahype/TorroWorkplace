@@ -322,7 +322,7 @@ Ordner- oder Ausführungsgrants.
   nur lesende Verbindung und wartet nicht auf Synchronisierung oder Indizierung. Die Statistik merkt er
   sich je Konto; `mail.account_stats` antwortet aus diesem Stand mit seinem Zeitpunkt (`as_of`, auf der
   Seite „As of …“) und rechnet im Hintergrund neu, wenn er älter als eine Minute ist.
-- „Open“ im Abschnitt Apps und an den Kontoseiten schickt `apps.open_app` mit der Fensterklasse (Mail:
+- „Open“ im App-Katalog (Übersicht, #803) und an den Kontoseiten schickt `apps.open_app` mit der Fensterklasse (Mail:
   `torro-inbox-mail`).
 - Der Schlüssel eines neuen Clients gelangt nie in einen App-Prozess. Bis #231 hieß das: Apps senden keine
   schreibenden `clients.*`. Seit #231 dürfen **nur** zwei Abschnitte schreibende `clients.*` senden: Access des
