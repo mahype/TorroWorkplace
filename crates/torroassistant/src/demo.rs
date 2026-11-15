@@ -589,7 +589,7 @@ fn entry(seq: u64, time: DateTime<Utc>, content: EntryContent) -> Entry {
 }
 
 fn answer(text: &str) -> EntryContent {
-    EntryContent::Answer { text: text.to_owned(), engine: OLLAMA.into(), model: Some("qwen3:14b".into()) }
+    EntryContent::Answer { text: text.to_owned(), engine: OLLAMA.into(), model: Some("qwen3:14b".into()), spoken: None }
 }
 
 fn message(text: &str) -> EntryContent {

@@ -214,6 +214,7 @@ impl Run {
             text: partial.text.clone(),
             engine: self.engine.clone(),
             model: partial.model.clone(),
+            spoken: None,
         };
         Some(Entry { seq: last + 1, time: partial.started.unwrap_or_else(Utc::now), content })
     }
@@ -830,7 +831,7 @@ impl Assistant {
             let text = tr(
                 "This is the test engine. It answers every message the same way, without a model and without tools.",
             );
-            let answer = EntryContent::Answer { text: text.to_string(), engine: by, model: None };
+            let answer = EntryContent::Answer { text: text.to_string(), engine: by, model: None, spoken: None };
             assistant.add_to_run(&conversation, run, answer, true, None).await;
         });
         let partial = Arc::default();
@@ -1692,7 +1693,7 @@ pub(crate) mod tests {
 
     /// Stores `text` as the answer of the run `run` of [`growing`] and ends it.
     pub(crate) async fn finish_growing(assistant: &Assistant, id: &str, run: u64, text: &str) {
-        let answer = EntryContent::Answer { text: text.into(), engine: TEST_ENGINE.into(), model: None };
+        let answer = EntryContent::Answer { text: text.into(), engine: TEST_ENGINE.into(), model: None, spoken: None };
         assert!(assistant.add_to_run(id, run, answer, true, None).await, "the run still runs");
     }
 
@@ -2115,7 +2116,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn said(text: &str) -> EntryContent {
-        EntryContent::Answer { text: text.into(), engine: TEST_ENGINE.into(), model: None }
+        EntryContent::Answer { text: text.into(), engine: TEST_ENGINE.into(), model: None, spoken: None }
     }
 
     pub(crate) fn tool(name: &str) -> EntryContent {

@@ -4289,7 +4289,7 @@ mod tests {
     }
 
     fn message(seq: u64, text: &str) -> Entry {
-        let content = EntryContent::Answer { text: text.into(), engine: "test".into(), model: None };
+        let content = EntryContent::Answer { text: text.into(), engine: "test".into(), model: None, spoken: None };
         Entry { seq, time: Utc::now(), content }
     }
 

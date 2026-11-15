@@ -546,7 +546,7 @@ mod tests {
     }
 
     fn answer(text: &str) -> EntryContent {
-        EntryContent::Answer { text: text.into(), engine: "test".into(), model: None }
+        EntryContent::Answer { text: text.into(), engine: "test".into(), model: None, spoken: None }
     }
 
     #[test]

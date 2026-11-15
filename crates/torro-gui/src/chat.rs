@@ -358,7 +358,11 @@ mod tests {
     }
 
     fn answer(seq: u64, text: &str) -> Entry {
-        Entry { seq, time: at(2), content: EntryContent::Answer { text: text.into(), engine: "e".into(), model: None } }
+        Entry {
+            seq,
+            time: at(2),
+            content: EntryContent::Answer { text: text.into(), engine: "e".into(), model: None, spoken: None },
+        }
     }
 
     fn message(seq: u64, text: &str) -> Entry {

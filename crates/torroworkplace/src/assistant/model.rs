@@ -954,6 +954,7 @@ impl Answering {
                     text: reply.text.clone(),
                     engine: self.job.engine.clone(),
                     model: Some(model.clone()),
+                    spoken: None,
                 };
                 if !self.add(text, done).await || done {
                     return Ok(());
@@ -2658,6 +2659,7 @@ pub(crate) mod tests {
                     text: "You have no calendars.".into(),
                     engine: ENGINE.into(),
                     model: Some("qwen3:8b".into()),
+                    spoken: None,
                 },
             ],
             "the default model is the first that calls tools"

@@ -354,10 +354,17 @@ pub enum EntryContent {
     /// several entries, between the tools it used. While the model writes, the entry after
     /// [`ConversationSummary::last`] grows (see the module's documentation).
     Answer {
+        /// What the chat shows. When `spoken` is set, only the shown part: the spoken part stands in
+        /// `spoken` and is not repeated here.
         text: String,
         engine: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+        /// The part to read aloud (issue #774), when the answer was written in two parts: a few short
+        /// sentences said before the shown part. The core splits it off the model's text at the line
+        /// [`SHOWN_MARK`] ([`split_spoken`]); it is left out for an answer in one part.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spoken: Option<String>,
     },
     /// A command the assistant ran as a tool, with its own client's rights.
     Tool {
@@ -776,6 +783,41 @@ pub fn profile_refusal(
         return Some(format!("your name is one line of at most {MAX_PERSON_NAME_CHARS} characters"));
     }
     None
+}
+
+/// The line between the spoken and the shown part of an answer that is read aloud (issue #774): the
+/// model writes the spoken part first, then this line alone, then what the chat shows. The core
+/// splits at it ([`split_spoken`]), so no client sees it.
+pub const SHOWN_MARK: &str = "---shown---";
+
+/// At most about this many characters of an answer are read aloud when it has no spoken part
+/// (issue #774): the reading ends at the last sentence end before them.
+pub const SPOKEN_MOST: usize = 600;
+
+/// Splits an answer's text into its spoken and its shown part (issue #774) at the first line that is,
+/// trimmed, [`SHOWN_MARK`]: what comes before is spoken (trimmed only at its end, so it stays a start
+/// of the text, which matters while it is read sentence by sentence), what comes after is shown
+/// (trimmed, it may be empty). Without such a line `(None, text)`. While the answer is still written
+/// (`running`), a last line that may become the mark (it starts with `-` and is a start of
+/// [`SHOWN_MARK`]) is left out of the text, so the mark never flashes up in the chat.
+pub fn split_spoken(text: &str, running: bool) -> (Option<String>, String) {
+    let mut at = 0;
+    for line in text.split_inclusive('\n') {
+        if line.trim() == SHOWN_MARK {
+            let spoken = text[..at].trim_end().to_owned();
+            let shown = text[at + line.len()..].trim().to_owned();
+            return (Some(spoken), shown);
+        }
+        at += line.len();
+    }
+    if running {
+        let last = text.rfind('\n').map_or(0, |end| end + 1);
+        let tail = text[last..].trim();
+        if tail.starts_with('-') && SHOWN_MARK.starts_with(tail) {
+            return (None, text[..last].to_owned());
+        }
+    }
+    (None, text.to_owned())
 }
 
 /// Where the reading aloud of an answer begins (issue #747, `assistant.speak_answer`): after the last
@@ -1314,5 +1356,37 @@ mod tests {
         assert_eq!(Request::GetCards { conversation: "c1".into() }.conversation(), Some("c1"));
         let long = Request::GetCards { conversation: "x".repeat(MAX_ID_BYTES + 1) };
         assert!(limit_refusal(&long).is_some(), "the id's limit holds");
+    }
+
+    #[test]
+    fn an_answer_splits_at_the_mark_line() {
+        let text = "Nine events, have a look.\n\n---shown---\n\n- Mon 9:00 Standup\n- Tue 10:00 Review\n";
+        let (spoken, shown) = split_spoken(text, false);
+        assert_eq!(spoken.as_deref(), Some("Nine events, have a look."));
+        assert_eq!(shown, "- Mon 9:00 Standup\n- Tue 10:00 Review");
+        assert!(text.starts_with(spoken.as_deref().unwrap_or_default()), "the spoken part is a start of the text");
+        // The mark with spaces around still counts, and nothing after it is an empty shown part.
+        assert_eq!(split_spoken("Yes.\n  ---shown---  ", false), (Some("Yes.".into()), String::new()));
+        // Only the first mark splits; a later one belongs to what is shown.
+        assert_eq!(split_spoken("A.\n---shown---\nB\n---shown---\nC", false).1, "B\n---shown---\nC");
+    }
+
+    #[test]
+    fn an_answer_without_the_mark_stays_whole() {
+        let text = "Just one part, - with a dash.\nAnd a list:\n- one";
+        assert_eq!(split_spoken(text, false), (None, text.to_owned()));
+        // The mark inside a line does not split.
+        assert_eq!(split_spoken("Say ---shown--- here", false).0, None);
+    }
+
+    #[test]
+    fn a_mark_being_written_is_left_out() {
+        assert_eq!(split_spoken("Nine events.\n---sh", true), (None, "Nine events.\n".into()));
+        assert_eq!(split_spoken("Nine events.\n-", true), (None, "Nine events.\n".into()));
+        // Done, the same text is shown as it is; a list item is no mark.
+        assert_eq!(split_spoken("Nine events.\n---sh", false).1, "Nine events.\n---sh");
+        assert_eq!(split_spoken("A list:\n- one", true).1, "A list:\n- one");
+        // A mark written in full splits while running as well.
+        assert_eq!(split_spoken("Hi.\n---shown---\nMo", true), (Some("Hi.".into()), "Mo".into()));
     }
 }

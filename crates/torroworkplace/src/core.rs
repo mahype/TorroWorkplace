@@ -20109,7 +20109,8 @@ done"#,
     fn an_answer_is_read_from_its_message_or_a_decided_approval() {
         use torro_ipc::assistant::{Entry, EntryContent};
         let entry = |seq, content| Entry { seq, time: Utc::now(), content };
-        let answer = |text: &str| EntryContent::Answer { text: text.into(), engine: "e".into(), model: None };
+        let answer =
+            |text: &str| EntryContent::Answer { text: text.into(), engine: "e".into(), model: None, spoken: None };
         let message = || EntryContent::Message {
             text: "Hi".into(),
             engine: "e".into(),

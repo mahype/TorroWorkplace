@@ -357,6 +357,7 @@ async fn the_stream_becomes_answers_and_tool_lines_and_the_key_stays_in_the_envi
         text: text.into(),
         engine: "claude-code".into(),
         model: Some("claude-sonnet-4-5".into()),
+        spoken: None,
     };
     assert_eq!(
         contents(&entries)[1..],

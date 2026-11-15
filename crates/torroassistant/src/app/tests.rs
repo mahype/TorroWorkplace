@@ -1595,7 +1595,7 @@ fn answer_entry(seq: u64, text: &str) -> Entry {
     Entry {
         seq,
         time: chrono::Utc::now(),
-        content: EntryContent::Answer { text: text.into(), engine: OLLAMA.into(), model: None },
+        content: EntryContent::Answer { text: text.into(), engine: OLLAMA.into(), model: None, spoken: None },
     }
 }
 

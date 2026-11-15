@@ -17,7 +17,7 @@ fn tool(name: &str, error: Option<&str>) -> EntryContent {
 }
 
 fn answer(text: &str) -> EntryContent {
-    EntryContent::Answer { text: text.into(), engine: "test".into(), model: None }
+    EntryContent::Answer { text: text.into(), engine: "test".into(), model: None, spoken: None }
 }
 
 /// The run of the bot's conversation `b0`: a message, then `contents`.
