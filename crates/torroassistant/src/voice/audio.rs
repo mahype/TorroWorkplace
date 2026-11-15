@@ -1,6 +1,7 @@
 //! Sound as the voice parts pass it on: 16 kHz, mono, 16-bit samples in frames of 80 ms, the voices of
 //! Pocket TTS read from WAV files ([`decode_wav`]), the tone of the wake word ([`chime`]) and when a
-//! spoken sentence ends ([`Endpoint`]).
+//! spoken sentence ends ([`Endpoint`]), and Pocket's sound made faster or slower without a higher
+//! or lower voice ([`Stretch`], issue #782).
 
 use super::VoiceError;
 
@@ -201,6 +202,161 @@ pub fn decode_wav(bytes: &[u8]) -> Result<Wave, VoiceError> {
 }
 
 /// `samples` as a WAV file: PCM, [`RATE`], mono, 16 bit. For the tests.
+/// Makes sound faster or slower without changing its pitch (issue #782): WSOLA, the overlap-add of
+/// short windowed frames, each taken where it best continues the one before, so the voice keeps its
+/// pitch and does not crackle. Pocket TTS hands its sound out piece by piece; so does this, a frame
+/// behind ([`Stretch::push`], then [`Stretch::finish`]).
+pub struct Stretch {
+    /// `None` at 100 %: the sound passes unchanged.
+    wsola: Option<Wsola>,
+}
+
+/// The state of [`Stretch`] between two pushes.
+struct Wsola {
+    /// The frame length: 40 ms.
+    frame: usize,
+    /// The step in the output: half a frame, so two Hann windows always add up to one.
+    hop: usize,
+    /// The step in the input: `hop` times the speed.
+    step: f64,
+    /// How far a frame may move from its place to fit the one before: 10 ms either way.
+    seek: usize,
+    window: Vec<f32>,
+    /// The input still needed; `input[0]` is the sample `base` of all pushed (with `hop` zeros ahead).
+    input: Vec<f32>,
+    base: usize,
+    /// Pushed samples, without the zeros ahead.
+    pushed: usize,
+    /// The next frame's number and where the last one started (`None` before the first).
+    next: usize,
+    last: Option<usize>,
+    /// The second half of the last windowed frame, added to the first half of the next.
+    tail: Vec<f32>,
+    /// Output given out, and whether the first half frame (only the zeros ahead) was skipped.
+    given: usize,
+    started: bool,
+}
+
+impl Stretch {
+    /// A stretch for sound at `rate` samples per second, played at `speed` percent (100 unchanged).
+    pub fn new(rate: u32, speed: u16) -> Stretch {
+        if speed == 100 || speed == 0 || rate == 0 {
+            return Stretch { wsola: None };
+        }
+        let frame = (rate as usize * 40 / 1000).max(4) & !1;
+        let hop = frame / 2;
+        let window =
+            (0..frame).map(|n| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * n as f32 / frame as f32).cos()).collect();
+        Stretch {
+            wsola: Some(Wsola {
+                frame,
+                hop,
+                step: hop as f64 * f64::from(speed) / 100.0,
+                seek: rate as usize / 100,
+                window,
+                // Zeros ahead, so the first frame fades in over them and the sound starts whole.
+                input: vec![0.0; hop],
+                base: 0,
+                pushed: 0,
+                next: 0,
+                last: None,
+                tail: vec![0.0; hop],
+                given: 0,
+                started: false,
+            }),
+        }
+    }
+
+    /// Takes `samples` and gives out the stretched sound computed so far, possibly none.
+    pub fn push(&mut self, samples: &[f32]) -> Vec<f32> {
+        match &mut self.wsola {
+            None => samples.to_vec(),
+            Some(wsola) => {
+                wsola.input.extend_from_slice(samples);
+                wsola.pushed += samples.len();
+                wsola.frames(usize::MAX)
+            }
+        }
+    }
+
+    /// The rest of the stretched sound, once nothing more is pushed: as long as the input at the speed.
+    pub fn finish(self) -> Vec<f32> {
+        let Some(mut wsola) = self.wsola else { return Vec::new() };
+        let length = (wsola.pushed as f64 * wsola.hop as f64 / wsola.step).round() as usize;
+        let mut rest = Vec::new();
+        while wsola.given + rest.len() < length {
+            // Zeros behind, so the last frames find their input.
+            let behind = wsola.frame + 2 * wsola.seek + wsola.step.ceil() as usize;
+            wsola.input.extend(std::iter::repeat_n(0.0, behind));
+            let wanted = length - wsola.given - rest.len();
+            let given_before = wsola.given;
+            rest.extend(wsola.frames(wanted));
+            if wsola.given == given_before {
+                break;
+            }
+        }
+        let left = length.saturating_sub(wsola.given - rest.len());
+        rest.truncate(left);
+        rest
+    }
+}
+
+impl Wsola {
+    /// Computes the frames whose input is there, giving out at most about `most` samples.
+    fn frames(&mut self, most: usize) -> Vec<f32> {
+        let mut out = Vec::new();
+        loop {
+            let nominal = (self.next as f64 * self.step).round() as usize;
+            let end = self.base + self.input.len();
+            let natural = self.last.map(|last| last + self.hop);
+            let needed = (nominal + self.seek + self.frame).max(natural.map_or(0, |at| at + self.frame));
+            if needed > end || out.len() >= most {
+                break;
+            }
+            let start = match natural {
+                None => nominal,
+                Some(natural) => self.best(nominal, natural),
+            };
+            let at = start - self.base;
+            let frame = &self.input[at..at + self.frame];
+            let head: Vec<f32> = (0..self.hop).map(|n| self.tail[n] + frame[n] * self.window[n]).collect();
+            self.tail = (self.hop..self.frame).map(|n| frame[n] * self.window[n]).collect();
+            if self.started {
+                self.given += head.len();
+                out.extend(head);
+            }
+            self.started = true;
+            self.last = Some(start);
+            self.next += 1;
+            // What no later frame reaches is dropped.
+            let next_nominal = (self.next as f64 * self.step).round() as usize;
+            let keep = start.min(next_nominal.saturating_sub(self.seek));
+            if keep > self.base {
+                self.input.drain(..keep - self.base);
+                self.base = keep;
+            }
+        }
+        out
+    }
+
+    /// Where near `nominal` a frame best continues the sound that follows the last frame at
+    /// `natural`: the start with the largest cross-correlation over the half frame they overlap.
+    fn best(&self, nominal: usize, natural: usize) -> usize {
+        let from = nominal.saturating_sub(self.seek).max(self.base);
+        let to = nominal + self.seek;
+        let target = &self.input[natural - self.base..natural - self.base + self.hop];
+        let mut best = (nominal.max(self.base), f32::MIN);
+        for start in from..=to {
+            let candidate = &self.input[start - self.base..start - self.base + self.hop];
+            let score: f32 = candidate.iter().zip(target).map(|(a, b)| a * b).sum();
+            if score > best.1 {
+                best = (start, score);
+            }
+        }
+        best.0
+    }
+}
+
 #[cfg(test)]
 pub fn wav_bytes(samples: &[i16]) -> Vec<u8> {
     let data = (samples.len() * 2) as u32;
@@ -338,5 +494,33 @@ pub mod tests {
 
         let mut long = Endpoint::new(floor, Limits { most: 3, ..Limits::default() });
         assert_eq!(frames("utterance.wav").iter().position(|frame| long.push(frame)), Some(2), "the longest");
+    }
+
+    /// Issue #782: a tone stretched to 150 % and 70 % lasts a third less or about 43 % more, keeps
+    /// its pitch (zero crossings per second) and never gets louder; at 100 % nothing changes.
+    #[test]
+    fn a_stretch_changes_the_length_but_not_the_pitch() {
+        let rate = 24_000u32;
+        let tone: Vec<f32> =
+            (0..rate).map(|n| (2.0 * std::f32::consts::PI * 220.0 * n as f32 / rate as f32).sin() * 0.8).collect();
+        let crossings = |sound: &[f32]| sound.windows(2).filter(|pair| (pair[0] < 0.0) != (pair[1] < 0.0)).count();
+        let per_second = |sound: &[f32]| crossings(sound) as f64 / (sound.len() as f64 / f64::from(rate));
+        let original = per_second(&tone);
+        for (speed, length) in [(150u16, 16_000.0), (70, 34_286.0)] {
+            let mut stretch = Stretch::new(rate, speed);
+            let mut out = Vec::new();
+            for piece in tone.chunks(1000) {
+                out.extend(stretch.push(piece));
+            }
+            out.extend(stretch.finish());
+            let off = (out.len() as f64 - length).abs() / length;
+            assert!(off < 0.05, "{speed}: {} samples", out.len());
+            let pitch = (per_second(&out) - original).abs() / original;
+            assert!(pitch < 0.05, "{speed}: {} instead of {original} crossings a second", per_second(&out));
+            assert!(out.iter().all(|sample| sample.abs() <= 1.0), "{speed}");
+        }
+        let mut same = Stretch::new(rate, 100);
+        assert_eq!(same.push(&tone[..10]), &tone[..10]);
+        assert!(same.finish().is_empty());
     }
 }
