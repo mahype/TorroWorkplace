@@ -29,7 +29,7 @@ Heute gibt es zwei getrennte Ansätze, die dieses Konzept zusammenführt:
 
 | Ansatz | Wo beschrieben | Gebaut | Entworfen |
 |---|---|---|---|
-| **Karten des Assistenten** (`EntryContent::Card` mit `CardRef`, aufgelöst von `assistant.get_cards`) | [assistent.md](assistent.md), „Karten im Chat“ | Datei (`CardRef::File`), Mail-Vorschlag (`CardRef::Suggestion`) | Termin, Aufgabe, Mail-Entwurf, Issue-Entwurf; `assistant.show_items` steht noch nicht im Befehlskatalog |
+| **Karten des Assistenten** (`EntryContent::Card` mit `CardRef`, aufgelöst von `assistant.get_cards`) | [assistent.md](assistent.md), „Karten im Chat“ | Datei (`CardRef::File`), Mail-Vorschlag (`CardRef::Suggestion`); mit #784 Link, Mail, Termin, Aufgabe, Mail-Entwurf, Kontakt und Gruppe (`assistant.show_items`) | Issue-Entwurf |
 | **Link-Karten und Videokarte im Chat mit Leuten** (Feld `cards` in `chat.get_messages`, Bild über `chat.get_preview`) | [chat.md](chat.md), „Fenster“, Entscheidungen 23 und 25 | Link-Karte (#636), Videokarte und Player für YouTube (#673) | |
 | **Teilen** (`ShareCard`: Titel, Kurztext, Datei, Felder) | [teilen.md](teilen.md) | Kontakte | weitere Arten später |
 
@@ -242,6 +242,11 @@ und kommt mit dem Issue der jeweiligen Karte in den Befehlskatalog (`torro-ipc`,
 | Nextcloud-Datei, GitHub Issue / PR, Zitat: Rechte des Lesenden | beide Chatfenster | Der Kern löst mit den Rechten der Person auf; ein Client bekommt die Karte und ihr Bild nur mit dem Recht, das ihre Art verlangt: Datei mit Lesen des Chats im Konto (`chat.get_messages`, abgeschaltete Befehle zählen), GitHub mit Lesen in `github` und dem Repository, Zitat mit Lesen der zitierten Unterhaltung (#784) | Read | vorhandene `chat_get_messages`, `chat_get_preview`, `assistant_get_cards` |
 | GitHub Issue / PR als Karte | beide Chatfenster | Link-Karte mit `kind: github`, aufgelöst über das GitHub-Konto des Kerns ([github.md](github.md)); ohne sichtbares Item gehalten (nach einem Fehler eine Minute), dann die Webseiten-Karte | Read | vorhandene `chat_get_messages`, `assistant_get_cards` |
 | Zitat einer Chat-Nachricht als Karte | beide Chatfenster | Link-Karte mit `kind: chat_message`, Inhalt über `chat.get_messages` (vorhanden), nur mit Leserecht des Empfängers | Read | vorhandene `chat_get_messages`, `assistant_get_cards` |
+| Termin öffnen („Open in calendar“) | Termin-Karte im Assistenten | `apps.open_app` mit Ziel `event:<uid>` (#797, startet `torrocalendar --event=<uid>`) | Write | `apps_open_app` |
+| Aufgabe öffnen und erledigen („Open in tasks“, „Done“) | Aufgaben-Karte im Assistenten | `apps.open_app` mit `task:<uid>`; `tasks.save_todo` mit `completed` | Write | `apps_open_app`, `tasks_save_todo` |
+| Kontakt öffnen | Kontakt-Karte im Assistenten | `apps.open_app` mit `contact:<id>` | Write | `apps_open_app` |
+| Alle Treffer zeigen („Show all“) | Gruppe im Assistenten (ab 11 Treffern) | `apps.open_app` ohne Ziel, die App des Bereichs | Write | `apps_open_app` |
+| Entwurf senden oder verwerfen („Send“, „Discard“) | Entwurfs-Karte im Assistenten | mit offener Freigabe `approvals.decide_approval` (Allow/Deny); ohne `mail.send_draft` mit dem App-Schlüssel | Admin bzw. Write | Freigaben entscheiden nur Menschen (`Never`); `mail_send_draft` wartet für Agenten auf die Freigabe |
 | Karte neu laden („Try again“) | alle Fenster | kein eigener Befehl: dieselbe Anfrage (`assistant.get_cards`, `chat.get_preview`) noch einmal; eine Link-Karte mit `offline` fragt den Server frühestens nach einer Minute wieder | Read | wie oben |
 
 Es entsteht **kein Befehl, mit dem ein Agent eine Karte frei hinstellt** (`chat.show_card` und
