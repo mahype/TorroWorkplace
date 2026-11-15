@@ -771,6 +771,8 @@ braucht eigene Regeln für Freigabe, Sandbox und Rechte. Das Konzept dazu steht 
 
 ## Sprache: per Weckwort mit dem Assistenten reden
 
+Wohin sich der Sprachchat entwickelt (Gespräch statt Frage und Antwort, Zeitbudget, Wellen), steht in [sprachchat.md](sprachchat.md).
+
 Ziel: Man sagt ein **Weckwort** (zum Start fest „Hey Torro“, später frei wählbar) und spricht einfach los: „Was steht heute
 noch an?“, „Such mir die Mail von Anna mit dem Angebot raus.“ Der Assistent antwortet gesprochen und
 zeigt das Ergebnis in einem kleinen Fenster (Schnellfenster mit Antwort und Treffern zum Anklicken).
