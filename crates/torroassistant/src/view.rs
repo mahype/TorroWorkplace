@@ -866,21 +866,39 @@ impl App {
                     None => typo::text(typo::body(), text.as_str()).into(),
                 };
                 let mut answer = column![].spacing(space::s());
-                // The spoken part as a lead above the shown one (issue #774), so nothing is missed
-                // without sound; the speaker says it is what was read.
-                if let Some(spoken) = spoken.as_deref().filter(|spoken| !spoken.trim().is_empty()) {
+                // The spoken part in a bubble of its own above the shown one (issues #774, #827), so one
+                // sees at a glance what was said and what is only shown; "Repeat" and "Stop" belong to it.
+                let spoken = spoken.as_deref().filter(|spoken| !spoken.trim().is_empty());
+                let mut controls = self.speech_controls(entry.seq, spoken.is_some());
+                if let Some(spoken) = spoken {
+                    let head = row![
+                        tinted(Icon::Volume2, icon::SIZE_SM, |p| p.text_3),
+                        typo::text(typo::caption(), tr("Spoken")).style(theme::text_3)
+                    ]
+                    .spacing(space::s())
+                    .align_y(Alignment::Center);
+                    let mut bubble = column![head, typo::text(typo::body(), spoken).wrapping(Wrapping::WordOrGlyph)]
+                        .spacing(space::xs());
+                    // The ghost buttons bring their own room: less padding below and to the right keeps
+                    // the bubble balanced and their words on the axis of its text.
+                    let mut padding = Padding::from([space::s(), space::m()]);
+                    if let Some(controls) = controls.take() {
+                        bubble = bubble.push(container(controls).width(Fill).align_right(Fill));
+                        padding = Padding { right: space::xs(), bottom: space::xs(), ..padding };
+                    }
                     answer = answer.push(
-                        row![
-                            tinted(Icon::Volume2, icon::SIZE_SM, |p| p.text_3),
-                            typo::text(typo::body(), spoken).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)
-                        ]
-                        .spacing(space::s()),
+                        container(bubble).padding(padding).max_width(size::form_max()).style(style::container::spoken),
                     );
+                    // A little more room between the bubble's edge and what is shown below it.
+                    if !text.trim().is_empty() {
+                        answer = answer.push(Space::new().height(space::xs()));
+                    }
                 }
                 if !text.trim().is_empty() {
                     answer = answer.push(shown);
                 }
-                if let Some(controls) = self.speech_controls(entry.seq, spoken.is_some()) {
+                // Without a spoken part, "Stop" stays under the answer while it is read.
+                if let Some(controls) = controls {
                     answer = answer.push(controls);
                 }
                 answer.into()
