@@ -11,7 +11,10 @@
 //! Above them "Read aloud" (issue #745, `settings.speech_status`): the switch of the chat windows,
 //! the provider – Pocket TTS on this computer or OpenAI – and its voice from a dropdown each with the
 //! recommended one marked, the credits of the voices, and "Preview", which reads a sentence
-//! ([`Message::Preview`], an [`crate::Action::Ask`] of `assistant.speak`).
+//! ([`Message::Preview`], an [`crate::Action::Ask`] of `assistant.speak`). Below the voice how it
+//! speaks (issue #782): for Pocket TTS "Speed" and "Pause between sentences" as steps `− value +`
+//! like the zoom of the suite (`pocket_speed`, `pocket_pause`), for OpenAI "Speaking style" in a
+//! person's words (`openai_style`), and "Reset" back to how it spoke before.
 //!
 //! Since issue #763 each of the three groups is a tab of its own ([`VoiceTab`], the row drawn by
 //! [`super::page`]): Read aloud, Conversation, Models, so the page fits the window.
@@ -44,11 +47,12 @@
 
 use std::time::Duration;
 
-use iced::widget::{row, svg, toggler};
+use iced::widget::text::Wrapping;
+use iced::widget::{container, row, svg, toggler};
 use iced::{Alignment, Element, Subscription};
 
 use torro_core::i18n::{tr, trc, trf};
-use torro_core::settings::{Recognizer, SpeechProvider};
+use torro_core::settings::{POCKET_PAUSES, POCKET_SPEEDS, Recognizer, SpeechProvider};
 use torro_core::voice_models::{VoiceModelKind, WHISPER_LANGUAGES};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme;
@@ -63,7 +67,7 @@ use torro_ipc::{
 
 use super::{Action, VoiceTab};
 use crate::Data;
-use crate::parts::setting_row;
+use crate::parts::{field, setting_row};
 
 /// How long between two asks while the listener has not followed what was switched.
 const VOICE_POLL: Duration = Duration::from_secs(2);
@@ -109,6 +113,8 @@ pub struct State {
     polls: u8,
     /// "Preview" reads its sentence (issue #745).
     previewing: bool,
+    /// The speaking style as typed, until it is saved or reset (issue #782); `None` shows the stored one.
+    style: Option<String>,
     /// Why the last preview could not read, from the core.
     preview_failed: Option<String>,
     /// The models as the last answer of this section named them, newer than [`Data::voice_models`]
@@ -167,6 +173,16 @@ pub enum Message {
     Provider(SpeechProvider),
     /// An entry of the dropdown "Voice": the voice's id for the provider.
     SpeechVoice(SpeechProvider, String),
+    /// "−" or "+" of "Speed" (issue #782): the speed of Pocket TTS in percent.
+    PocketSpeed(u16),
+    /// "−" or "+" of "Pause between sentences": the extra pause of Pocket TTS in milliseconds.
+    PocketPause(u16),
+    /// The field "Speaking style" of OpenAI was typed in.
+    TypeStyle(String),
+    /// Enter in "Speaking style" or its check: save what is typed, nothing for OpenAI's own way.
+    SaveStyle,
+    /// "Reset": how the provider shown speaks goes back to its default.
+    ResetDelivery,
     /// "Preview": read a sentence with the provider and voice chosen.
     Preview,
     /// "Stop" while the preview reads.
@@ -252,6 +268,34 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
                 SpeechProvider::OpenAi => SettingKey::OpenAiVoice,
             };
             set(key, serde_json::Value::String(id))
+        }
+        Message::PocketSpeed(speed) => set(SettingKey::PocketSpeed, serde_json::json!(speed)),
+        Message::PocketPause(pause) => set(SettingKey::PocketPause, serde_json::json!(pause)),
+        Message::TypeStyle(text) => {
+            state.style = Some(text);
+            Action::None
+        }
+        Message::SaveStyle => {
+            let Some(typed) = state.style.as_deref() else { return Action::None };
+            let typed = typed.trim();
+            if Some(typed).filter(|typed| !typed.is_empty()) == data.settings.voice.openai_style_or_none() {
+                return Action::None;
+            }
+            let value = match typed.is_empty() {
+                true => serde_json::Value::Null,
+                false => serde_json::Value::String(typed.to_string()),
+            };
+            set(SettingKey::OpenAiStyle, value)
+        }
+        Message::ResetDelivery => {
+            state.style = None;
+            let keys: &[SettingKey] = match current_provider(data) {
+                SpeechProvider::Pocket => &[SettingKey::PocketSpeed, SettingKey::PocketPause],
+                SpeechProvider::OpenAi => &[SettingKey::OpenAiStyle],
+            };
+            Action::Send(
+                keys.iter().map(|key| Request::SetSetting { key: *key, value: serde_json::Value::Null }).collect(),
+            )
         }
         Message::Preview => {
             if state.previewing || state.changing_models {
@@ -550,6 +594,8 @@ fn read_aloud_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message
     // A preview that failed says so with a dot, not only in words (#560).
     let dot = state.preview_failed.as_ref().map(|_| widgets::status_dot(Status::Error));
     let voice = setting_row(dot, trc("speaker", "Voice"), state.preview_failed.clone(), control);
+    let mut rows = vec![on, provider, voice];
+    rows.extend(delivery_rows(state, data, current));
     let footer = match current {
         // The licences of the voices ask for their names (decision 2 of #762).
         SpeechProvider::Pocket => format!(
@@ -561,7 +607,99 @@ fn read_aloud_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message
         ),
         SpeechProvider::OpenAi => tr("With OpenAI the text of each answer goes to OpenAI.").to_string(),
     };
-    widgets::group(tr("Read aloud"), vec![on, provider, voice], Some(footer))
+    widgets::group(tr("Read aloud"), rows, Some(footer))
+}
+
+/// How `provider` speaks (issue #782): for Pocket TTS "Speed" and "Pause between sentences", for
+/// OpenAI "Speaking style"; then "Reset", which can be pressed while one of them is chosen.
+fn delivery_rows<'a>(state: &'a State, data: &'a Data, provider: SpeechProvider) -> Vec<Element<'a, Message>> {
+    let voice = &data.settings.voice;
+    let mut rows = Vec::new();
+    let chosen = match provider {
+        SpeechProvider::Pocket => {
+            let speed = voice.pocket_speed_or_default();
+            let speed = stepper(
+                speed,
+                POCKET_SPEEDS,
+                speed_label(speed),
+                (tr("Slower"), tr("Faster")),
+                Message::PocketSpeed,
+                widest(&[speed_label(POCKET_SPEEDS.1)]),
+            );
+            rows.push(setting_row(None, tr("Speed"), None, speed));
+            let pause = voice.pocket_pause_or_default();
+            let pause = stepper(
+                pause,
+                POCKET_PAUSES,
+                pause_label(pause),
+                (tr("Shorter pause"), tr("Longer pause")),
+                Message::PocketPause,
+                widest(&[pause_label(0), pause_label(POCKET_PAUSES.1)]),
+            );
+            let detail = Some(tr("Extra pause after each sentence").to_string());
+            rows.push(setting_row(None, tr("Pause between sentences"), detail, pause));
+            voice.pocket_speed.is_some() || voice.pocket_pause.is_some()
+        }
+        SpeechProvider::OpenAi => {
+            let stored = voice.openai_style_or_none();
+            let value = state.style.as_deref().or(stored).unwrap_or_default();
+            let input = field(tr("e.g. calm, slow, friendly"), value)
+                .on_input(Message::TypeStyle)
+                .on_submit(Message::SaveStyle);
+            let typed = state.style.as_deref().map(str::trim);
+            let save = typed.is_some_and(|typed| Some(typed).filter(|t| !t.is_empty()) != stored);
+            let save = widgets::icon_button(Icon::Check, tr("Save speaking style"), save.then_some(Message::SaveStyle));
+            let control = row![input, save].spacing(space::s()).align_y(Alignment::Center);
+            let detail = Some(tr("How OpenAI speaks: tone, pace, mood").to_string());
+            rows.push(setting_row(None, tr("Speaking style"), detail, control));
+            voice.openai_style.is_some()
+        }
+    };
+    let reset =
+        widgets::text_button(None, tr("Reset"), style::button::secondary, chosen.then_some(Message::ResetDelivery));
+    rows.push(setting_row(None, "", None, reset));
+    rows
+}
+
+/// `− value +` for a value of `steps` (from, to, step), like the zoom of the suite: each button sends the
+/// next step with `message` and does nothing at its end; `width` keeps the value from moving.
+fn stepper<'a>(
+    value: u16,
+    (from, to, step): (u16, u16, u16),
+    label: String,
+    (less, more): (&'static str, &'static str),
+    message: fn(u16) -> Message,
+    width: f32,
+) -> Element<'a, Message> {
+    let down = (value > from).then(|| message(value.saturating_sub(step).max(from)));
+    let up = (value < to).then(|| message((value + step).min(to)));
+    let shown = typo::text(typo::body().tabular(), label).wrapping(Wrapping::None);
+    row![
+        widgets::icon_button(Icon::Minus, less, down),
+        container(shown).center_x(width),
+        widgets::icon_button(Icon::Plus, more, up)
+    ]
+    .spacing(space::xs())
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// The widest of `labels` in tabular body text, rounded up by [`space::xs()`] as the zoom's value (issue #291).
+fn widest(labels: &[String]) -> f32 {
+    labels.iter().map(|label| typo::text_width(label, typo::body().tabular())).fold(0.0, f32::max).ceil() + space::xs()
+}
+
+/// The speed of Pocket TTS as shown: "100%".
+fn speed_label(speed: u16) -> String {
+    trf("{percent}%", &[("percent", &speed)])
+}
+
+/// The extra pause as shown: "Normal" for none, else "+250 ms".
+fn pause_label(pause: u16) -> String {
+    match pause {
+        0 => tr("Normal").to_string(),
+        pause => trf("+{n} ms", &[("n", &pause)]),
+    }
 }
 
 /// "Voice": on or off with what the listener does, the wake word, "Speak answers", the speech
@@ -1351,6 +1489,60 @@ mod tests {
             }
             views(&state, &turned_off(&data));
         }
+    }
+
+    /// Issue #782: speed and pause send their steps, the speaking style what is typed (nothing as
+    /// `null`), and "Reset" the keys of the provider shown back to `null`.
+    #[tokio::test]
+    async fn how_the_voice_speaks_sends_its_settings() {
+        let data = data().await;
+        let speech = data.speech.clone().expect("the demo answers the status");
+        let mut state = State::default();
+        assert_eq!(
+            sent(update(&mut state, Message::PocketSpeed(110), &data)),
+            (SettingKey::PocketSpeed, serde_json::json!(110))
+        );
+        assert_eq!(
+            sent(update(&mut state, Message::PocketPause(250), &data)),
+            (SettingKey::PocketPause, serde_json::json!(250))
+        );
+        assert_eq!(update(&mut state, Message::SaveStyle, &data), Act::None, "nothing typed");
+        assert_eq!(update(&mut state, Message::TypeStyle(" whisper slowly ".into()), &data), Act::None);
+        assert_eq!(
+            sent(update(&mut state, Message::SaveStyle, &data)),
+            (SettingKey::OpenAiStyle, serde_json::json!("whisper slowly"))
+        );
+        let mut styled = data.clone();
+        styled.settings.voice.openai_style = Some("whisper slowly".into());
+        assert_eq!(update(&mut state, Message::SaveStyle, &styled), Act::None, "already stored");
+        let _ = update(&mut state, Message::TypeStyle("  ".into()), &styled);
+        assert_eq!(
+            sent(update(&mut state, Message::SaveStyle, &styled)),
+            (SettingKey::OpenAiStyle, serde_json::Value::Null)
+        );
+
+        let null = |key| Request::SetSetting { key, value: serde_json::Value::Null };
+        let pocket =
+            Data { speech: Some(SpeechStatus { current: SpeechProvider::Pocket, ..speech.clone() }), ..data.clone() };
+        assert_eq!(
+            update(&mut state, Message::ResetDelivery, &pocket),
+            Act::Send(vec![null(SettingKey::PocketSpeed), null(SettingKey::PocketPause)])
+        );
+        let openai =
+            Data { speech: Some(SpeechStatus { current: SpeechProvider::OpenAi, ..speech.clone() }), ..styled.clone() };
+        assert_eq!(update(&mut state, Message::ResetDelivery, &openai), Act::Send(vec![null(SettingKey::OpenAiStyle)]));
+        assert_eq!(state.style, None, "the typed style goes too");
+
+        // Each provider shows its own rows and "Reset"; the steps end at their edges.
+        assert_eq!(delivery_rows(&state, &pocket, SpeechProvider::Pocket).len(), 3);
+        assert_eq!(delivery_rows(&state, &openai, SpeechProvider::OpenAi).len(), 2);
+        assert_eq!((speed_label(130), pause_label(0)), (trf("{percent}%", &[("percent", &130)]), tr("Normal").into()));
+        assert_eq!(pause_label(500), trf("+{n} ms", &[("n", &500)]));
+        let mut edges = pocket.clone();
+        edges.settings.voice.pocket_speed = Some(150);
+        edges.settings.voice.pocket_pause = Some(1000);
+        views(&state, &edges);
+        views(&state, &openai);
     }
 
     /// Issue #745: the switch, provider and voice each send their setting; the recommended entry is
