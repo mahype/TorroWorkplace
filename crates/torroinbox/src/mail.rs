@@ -5045,11 +5045,18 @@ fn saved_badge<'a>(saves: &[&SaveRecord], compact: bool) -> Option<Element<'a, M
 /// "1 of 3 saved · 14 Nov 10:32": how many of `files` were saved, and when the newest save was;
 /// `None` when none was.
 fn files_saved(saves: &[SaveRecord], files: &[&AttachmentInfo], now: DateTime<Utc>) -> Option<String> {
-    let saved: Vec<&&AttachmentInfo> = files.iter().filter(|file| !saves_of(saves, file).is_empty()).collect();
-    let newest = saved.iter().filter_map(|file| saves_of(saves, file).first().map(|save| save.at)).max()?;
+    // Only files still there count: the head's check would say "saved" while the rows below say
+    // "File no longer there" (review of #811). The newest save of each file decides, as at its row.
+    let newest: Vec<DateTime<Utc>> = files
+        .iter()
+        .filter_map(|file| saves_of(saves, file).first().copied())
+        .filter(|save| save.present)
+        .map(|save| save.at)
+        .collect();
+    let when = newest.iter().max()?;
     Some(trf(
         "{n} of {total} saved · {when}",
-        &[("n", &saved.len()), ("total", &files.len()), ("when", &datetime::format_moment(newest, now))],
+        &[("n", &newest.len()), ("total", &files.len()), ("when", &datetime::format_moment(*when, now))],
     ))
 }
 
@@ -6823,6 +6830,13 @@ mod tests {
         let args: [(&str, &dyn std::fmt::Display); 3] = [("n", &1), ("total", &3), ("when", &when)];
         assert_eq!(files_saved(&saves, &files, now()), Some(trf("{n} of {total} saved · {when}", &args)));
         assert_eq!(files_saved(&[], &files, now()), None, "nothing saved: no note");
+        // A file that is gone is not counted; with none left the head has no note.
+        let gone = SaveRecord { present: false, ..invoices.clone() };
+        assert_eq!(files_saved(&[gone.clone(), downloads.clone()], &files, now()), None, "the newest save decides");
+        let still = SaveRecord { what: attachment("3"), ..downloads.clone() };
+        let args: [(&str, &dyn std::fmt::Display); 3] = [("n", &1), ("total", &3), ("when", &when)];
+        let counted = files_saved(&[gone, still], &files, now());
+        assert_eq!(counted, Some(trf("{n} of {total} saved · {when}", &args)), "only the file that is there");
         assert_eq!(saves_of(&saves, files[0]).len(), 2);
         assert!(saves_of(&saves, files[1]).is_empty());
         // Another mail with the same Message-ID but another file at that part shows none of its saves.
