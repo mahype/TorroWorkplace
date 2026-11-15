@@ -52,7 +52,11 @@ struct TerminalChange {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TerminalAlwaysChange {
-    remove: torro_core::settings::TerminalAlways,
+    #[serde(default)]
+    remove: Option<torro_core::settings::TerminalAlways>,
+    /// "Undo" after removing one (design review of #754): the entry back.
+    #[serde(default)]
+    add: Option<torro_core::settings::TerminalAlways>,
 }
 
 /// Held while the settings file is read, changed and written. One lock for every store: in
@@ -713,6 +717,8 @@ enum Change {
     Terminal(TerminalChange),
     /// One entry the terminal may do for good taken back (issue #754), checked like [`Change::Terminal`].
     TerminalAlways(torro_core::settings::TerminalAlways),
+    /// One entry put back ("Undo"), checked like [`Change::Terminal`].
+    TerminalAlwaysBack(torro_core::settings::TerminalAlways),
 }
 
 impl Change {
@@ -828,7 +834,11 @@ impl Change {
             SettingKey::Terminal => Change::Terminal(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::TerminalAlways => {
                 let change: TerminalAlwaysChange = serde_json::from_value(value.clone()).map_err(invalid)?;
-                Change::TerminalAlways(change.remove)
+                match (change.remove, change.add) {
+                    (Some(gone), None) => Change::TerminalAlways(gone),
+                    (None, Some(back)) => Change::TerminalAlwaysBack(back),
+                    _ => return Err(format!("{value} is not a value for {key:?}: name either remove or add")),
+                }
             }
             SettingKey::WorkspaceShortcuts => {
                 Change::WorkspaceShortcuts(serde_json::from_value(value.clone()).map_err(invalid)?)
@@ -930,6 +940,7 @@ impl Change {
                 terminal.mode = change.mode.unwrap_or(terminal.mode);
             }
             Change::TerminalAlways(gone) => settings.tools.terminal.always.retain(|entry| *entry != gone),
+            Change::TerminalAlwaysBack(back) => settings.tools.terminal.allow_always(back),
             Change::WorkspaceShortcuts(modifiers) => settings.workspaces.modifiers = modifiers,
             // Checked when parsed; an address only when it changes, so one edited into the file by
             // hand does not keep maps from being turned off.
@@ -2486,6 +2497,31 @@ mod tests {
     /// Issue #304: a person adds a folder, changes its access and removes it, one at a time; a value that
     /// does not fit, a 51st folder and a path twice are refused and change nothing. A client changes
     /// none of it, not one at a time and not with whole settings, where the stored ones stay.
+    /// Issue #754: the terminal's switch and mode change by the fields named; an entry for good is removed and put
+    /// back ("Undo"), once each; a value naming both or neither is refused; a client changes none of it.
+    #[test]
+    fn the_terminal_is_a_persons() {
+        use torro_core::settings::{TerminalAlways, TerminalMode};
+        let (_dir, store) = store();
+        store.set(SettingKey::Terminal, &json!({"enabled": true})).expect("on");
+        store.set(SettingKey::Terminal, &json!({"mode": "dangerous"})).expect("mode");
+        let terminal = store.current().tools.terminal;
+        assert_eq!((terminal.enabled, terminal.mode), (true, TerminalMode::Dangerous));
+        assert!(store.set(SettingKey::Terminal, &json!({"enabled": true, "why": "x"})).is_err());
+        let entry = json!({"kind": "pattern", "key": "recursive delete"});
+        store.set(SettingKey::TerminalAlways, &json!({"add": entry})).expect("put back");
+        store.set(SettingKey::TerminalAlways, &json!({"add": entry})).expect("once");
+        let kept = TerminalAlways::Pattern { key: "recursive delete".into() };
+        assert_eq!(store.current().tools.terminal.always, std::slice::from_ref(&kept));
+        assert!(store.set(SettingKey::TerminalAlways, &json!({"add": entry, "remove": entry})).is_err());
+        assert!(store.set(SettingKey::TerminalAlways, &json!({})).is_err());
+        assert!(store.set_by_client(SettingKey::TerminalAlways, &json!({"remove": entry})).is_err());
+        assert!(store.set_by_client(SettingKey::Terminal, &json!({"enabled": false})).is_err());
+        store.set(SettingKey::TerminalAlways, &json!({"remove": entry})).expect("removed");
+        assert!(store.current().tools.terminal.always.is_empty());
+        assert!(store.current().tools.terminal.enabled, "a client switched nothing off");
+    }
+
     #[test]
     fn allowed_folders_are_a_persons_one_at_a_time() {
         use torro_core::settings::{AllowedFolder, FolderAccess};

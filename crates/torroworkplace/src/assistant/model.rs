@@ -1312,7 +1312,11 @@ impl Answering {
         // marked `untrusted` (mail, a page, a program that reads from outside), an earlier tool that may have, or a
         // client's message. Then it runs no more commands.
         let terminal = torro_ipc::tools::is_terminal_command(request.operation().name()).then(|| {
-            crate::approvals::TerminalContext { conversation: main.clone(), tainted: self.untrusted || self.outside }
+            crate::approvals::TerminalContext {
+                conversation: main.clone(),
+                tainted: self.untrusted || self.outside,
+                since: Utc::now(),
+            }
         });
         // Asking a bot (task B.2) needs the conversation: the person must have asked for the bot here;
         // and so does the web (task WEB.5): the person says yes once per conversation. A chat about a mail

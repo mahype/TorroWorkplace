@@ -678,6 +678,9 @@ pub struct TerminalContext {
     /// The conversation read content from outside (mail, web pages, a program that reads from outside, and what
     /// else the tools mark `untrusted`): then it runs no more commands.
     pub tainted: bool,
+    /// When the answer called the tool: a stop of the answer or a deletion of the conversation after it means
+    /// nobody waits for the command any more, also when the call reaches the core only later (review of #754).
+    pub since: chrono::DateTime<chrono::Utc>,
 }
 
 /// What an approval of a command of the terminal keeps (issue #754, [`Origin::terminal`]).
@@ -4961,15 +4964,11 @@ pub fn terminal_question(
     mode: torro_core::settings::TerminalMode,
 ) -> (String, Vec<String>) {
     let folder = harmless(&checked.folder.to_string_lossy());
-    // Line breaks and gaps shown in the summary too (review of #754): it is read first.
-    let command = quote(&command_shown(&checked.text));
     let background = matches!(request, Request::StartCommand { .. });
+    // Short: folder and command stand whole right below it (design review of #754).
     let summary = match background {
-        true => trf(
-            "Start a command in the background in {folder}: {command}",
-            &[("folder", &folder), ("command", &command)],
-        ),
-        false => trf("Run a command in {folder}: {command}", &[("folder", &folder), ("command", &command)]),
+        true => tr("Start a command in the background").to_string(),
+        false => tr("Run a command").to_string(),
     };
     let mut details =
         vec![trf("Folder: {folder}", &[("folder", &folder)]), format!("$ {}", command_shown(&checked.text))];

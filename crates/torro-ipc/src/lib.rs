@@ -5709,7 +5709,8 @@ pub enum SettingKey {
     Terminal,
     /// Removes one entry a person allowed the terminal for good (issue #754): `{"remove": {"kind": "pattern", "key":
     /// "recursive delete"}}` or `{"remove": {"kind": "command", "command": "cargo test", "folder": "/abs"}}`; nothing
-    /// happens when it is not there. Only the app key, as [`SettingKey::Terminal`].
+    /// happens when it is not there; `{"add": …}` with an entry of the same form puts one back ("Undo"). Only the app
+    /// key, as [`SettingKey::Terminal`].
     TerminalAlways,
     /// One PDF template, replaced whole: `{"template": "letter" | "report" | "note", "paper": "a4" |
     /// "a5" | "letter", "marginsMm": [top, right, bottom, left] (5 to 50 each), "fontSizePt": 8 to

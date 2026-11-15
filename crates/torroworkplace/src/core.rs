@@ -5394,6 +5394,10 @@ impl Core {
         if let Some(refused) = terminal_refusal(&settings.tools.terminal, terminal) {
             return Some(Ok(refused));
         }
+        // The answer was stopped or the conversation deleted after it called the tool (review of #754).
+        if let Some(refused) = self.terminal_stopped(&owner, Some(terminal.since)) {
+            return Some(Ok(refused));
+        }
         let checked = match self.terminal_check(request) {
             Some(Ok(checked)) => checked,
             Some(Err(refused)) => return Some(Ok(refused)),
@@ -5413,11 +5417,11 @@ impl Core {
                 false => keys,
             };
             let conversation = terminal.conversation.clone();
-            let terminal = crate::approvals::TerminalOrigin { conversation, mode, keys, asked: Some(Utc::now()) };
+            let terminal = crate::approvals::TerminalOrigin { conversation, mode, keys, asked: Some(terminal.since) };
             let origin = crate::approvals::Origin { terminal: Some(terminal), ..via.origin.clone() };
             return Some(self.ask_approval(id, request.clone(), rights, &origin).await);
         }
-        Some(Ok(self.run_terminal(&owner, request, &checked).await))
+        Some(Ok(self.run_terminal(&owner, request, &checked, terminal.since).await))
     }
 
     /// `tools.run_command` or `tools.start_command` checked against the allowed folders and the protected paths as
@@ -5446,17 +5450,51 @@ impl Core {
         !keys.is_empty() && keys.iter().all(|key| always.contains(key) || own.is_some_and(|own| own.contains(key)))
     }
 
-    /// Runs a checked `tools.run_command` or starts a `tools.start_command` for `owner`.
+    /// Runs a checked `tools.run_command` or starts a `tools.start_command` for `owner`, asked for at `since`. A
+    /// command started while its answer was stopped (the stop came between the check and the start, review of #754)
+    /// is stopped again at once: nobody would read or end it.
     async fn run_terminal(
         &self,
         owner: &crate::tools::terminal::Owner,
         request: &Request,
         checked: &crate::tools::terminal::Checked,
+        since: chrono::DateTime<Utc>,
     ) -> Response {
         match request {
-            Request::StartCommand { .. } => self.tools.terminal().start(owner.clone(), checked),
+            Request::StartCommand { .. } => {
+                let started = self.tools.terminal().start(owner.clone(), checked);
+                if let (Response::CommandStarted { id }, Some(refused)) =
+                    (&started, self.terminal_stopped(owner, Some(since)))
+                {
+                    let _ = self.tools.terminal().stop(owner, id).await;
+                    return refused;
+                }
+                started
+            }
             _ => self.tools.terminal().run(checked).await,
         }
+    }
+
+    /// `conflict` when the answer of `owner`'s conversation was stopped or the conversation deleted at or after
+    /// `since` (the time the command was asked for; `None` counts as before), or `since` is before this core started:
+    /// nobody waits for the command any more. `None` when it may go on.
+    fn terminal_stopped(
+        &self,
+        owner: &crate::tools::terminal::Owner,
+        since: Option<chrono::DateTime<Utc>>,
+    ) -> Option<Response> {
+        let ended = self
+            .terminal_ended
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&(owner.client.clone(), owner.conversation.clone()))
+            .copied();
+        let before_start = since.is_none_or(|since| since < self.terminal_since);
+        let stopped = ended.is_some_and(|ended| since.is_none_or(|since| since <= ended));
+        (before_start || stopped).then(|| Response::Error {
+            code: "conflict".into(),
+            message: tr("The answer was stopped or its conversation deleted, so the command did not run.").into(),
+        })
     }
 
     /// An allowed command of the terminal (issue #754) as it runs after a person's decision: the terminal still on, the
@@ -5475,21 +5513,19 @@ impl Core {
         if client.kind != torro_ipc::api::ASSISTANT_CLIENT || origin.behalf.is_some() {
             return Refused::Forbidden { command }.response();
         }
-        let context = crate::approvals::TerminalContext { conversation: terminal.conversation.clone(), tainted: false };
+        let context = crate::approvals::TerminalContext {
+            conversation: terminal.conversation.clone(),
+            tainted: false,
+            since: terminal.asked.unwrap_or_default(),
+        };
         if let Some(refused) = terminal_refusal(&self.settings.current().tools.terminal, &context) {
             return refused;
         }
         // Its conversation was deleted or its answer stopped after it asked: nobody waits for the command any more.
-        let ended = self
-            .terminal_ended
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&(client.id.clone(), terminal.conversation.clone()))
-            .copied();
-        let before_start = terminal.asked.is_none_or(|asked| asked < self.terminal_since);
-        if before_start || ended.is_some_and(|ended| terminal.asked.is_none_or(|asked| asked <= ended)) {
-            let message = "the conversation was deleted or its answer stopped after the approval was asked for";
-            return Response::Error { code: "conflict".into(), message: message.into() };
+        let owner =
+            crate::tools::terminal::Owner { client: client.id.clone(), conversation: terminal.conversation.clone() };
+        if let Some(refused) = self.terminal_stopped(&owner, terminal.asked) {
+            return refused;
         }
         let checked = match self.terminal_check(&request) {
             Some(Ok(checked)) => checked,
@@ -5500,8 +5536,6 @@ impl Core {
             let message = "the command or its folder changed after the approval was asked for; nothing ran, ask again";
             return Response::Error { code: "conflict".into(), message: message.into() };
         }
-        let owner =
-            crate::tools::terminal::Owner { client: client.id.clone(), conversation: terminal.conversation.clone() };
         match scope {
             Some(torro_ipc::ApprovalScope::Conversation) => {
                 let mut allowed = self.terminal_allowed.lock().unwrap_or_else(PoisonError::into_inner);
@@ -5517,7 +5551,7 @@ impl Core {
             }
             Some(torro_ipc::ApprovalScope::Once) | None => {}
         }
-        self.run_terminal(&owner, &request, &checked).await
+        self.run_terminal(&owner, &request, &checked, terminal.asked.unwrap_or_default()).await
     }
 
     /// Stops every command of the terminal in the background (issue #754): the service ends.
@@ -38229,7 +38263,7 @@ done"#,
         }
 
         fn context(tainted: bool) -> TerminalContext {
-            TerminalContext { conversation: "c1".into(), tainted }
+            TerminalContext { conversation: "c1".into(), tainted, since: Utc::now() }
         }
 
         async fn run(core: &Core, actor: &Actor, request: Request, tainted: bool) -> Response {
@@ -38321,7 +38355,7 @@ done"#,
                 shell(&work, "echo c"),
                 "engine",
                 Mode::Default,
-                TerminalContext { conversation: "c2".into(), tainted: false },
+                TerminalContext { conversation: "c2".into(), tainted: false, since: Utc::now() },
             ));
             waits(elsewhere.await);
             // Deleting the conversation forgets it.
@@ -38426,6 +38460,113 @@ done"#,
             let stale = done(approval(core.handle(scoped(&asked.id, ApprovalScope::Once)).await));
             assert_eq!(code(&stale), "conflict");
             assert_eq!(output(&run(&core, &Actor::Assistant, shell(&work, "echo c"), false).await).0, "c\n");
+        }
+
+        /// Review of #754: a tool call that reaches the core after its answer was stopped runs nothing, also when it
+        /// was made before the stop; one made after it runs.
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn a_call_made_before_a_stop_runs_nothing() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (core, client, work) = terminal_core(dir.path(), TerminalMode::Dangerous).await;
+            let called = Utc::now();
+            core.end_terminal_conversation(&client, "c1", false).await;
+            let late = TerminalContext { conversation: "c1".into(), tainted: false, since: called };
+            let refused = Box::pin(Host::run_terminal(
+                &core,
+                &Actor::Assistant,
+                shell(&work, "echo x"),
+                "engine",
+                Mode::Default,
+                late,
+            ))
+            .await;
+            assert_eq!(code(&refused), "conflict");
+            assert_eq!(approvals_asked(&core).await, 0);
+            assert_eq!(output(&run(&core, &Actor::Assistant, shell(&work, "echo y"), false).await).0, "y\n");
+        }
+
+        /// Review of #754: its own command in the background stays readable after content from outside (the program
+        /// that read from outside is what made the conversation so); a new command does not run.
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn a_background_command_stays_readable_after_content_from_outside() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (core, _, work) = terminal_core(dir.path(), TerminalMode::Dangerous).await;
+            let start = Request::StartCommand {
+                folder: work.to_string_lossy().into_owned(),
+                program: None,
+                args: Vec::new(),
+                shell: Some("echo started; sleep 30".into()),
+            };
+            let Response::CommandStarted { id } = run(&core, &Actor::Assistant, start, false).await else {
+                panic!("started")
+            };
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let read = Request::ReadCommandOutput { id: id.clone(), from: None };
+            let status = run(&core, &Actor::Assistant, read, true).await;
+            assert!(
+                matches!(&status, Response::CommandStatus { output, running: true, .. } if output == "started\n"),
+                "{status:?}"
+            );
+            assert_eq!(code(&run(&core, &Actor::Assistant, shell(&work, "ls"), true).await), "forbidden");
+            let stop = run(&core, &Actor::Assistant, Request::StopCommand { id }, true).await;
+            assert!(matches!(stop, Response::CommandStatus { running: false, .. }), "{stop:?}");
+        }
+
+        /// Review of #754: deleting a conversation ends its commands in the background and forgets what was allowed
+        /// there; a deletion that fails leaves both as they are.
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn deleting_a_conversation_ends_its_commands_only_when_it_went() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+            let core = core(dir.path()).with_assistant(assistant);
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant()).await.expect("ok");
+            let work = dir.path().join("work");
+            std::fs::create_dir(&work).expect("folder");
+            let work = work.canonicalize().expect("resolved");
+            let folder = serde_json::json!({"path": work, "access": "read_write"});
+            assert_eq!(
+                core.handle(Request::SetSetting { key: SettingKey::AllowedFolder, value: folder }).await,
+                Response::Ok
+            );
+            let on = serde_json::json!({"enabled": true, "mode": "dangerous"});
+            assert_eq!(core.handle(Request::SetSetting { key: SettingKey::Terminal, value: on }).await, Response::Ok);
+            let conversation = test_message(&core).await;
+            let context = || TerminalContext { conversation: conversation.clone(), tainted: false, since: Utc::now() };
+            let start = || Request::StartCommand {
+                folder: work.to_string_lossy().into_owned(),
+                program: None,
+                args: Vec::new(),
+                shell: Some("sleep 30".into()),
+            };
+            let started =
+                Box::pin(Host::run_terminal(&core, &Actor::Assistant, start(), "engine", Mode::Default, context()))
+                    .await;
+            let Response::CommandStarted { id } = started else { panic!("started: {started:?}") };
+            let read = |id: &str| Request::ReadCommandOutput { id: id.into(), from: None };
+            let failed = core.handle(Request::DeleteConversation { id: "0123456789abcdef".into() }).await;
+            assert!(matches!(failed, Response::Error { .. }), "{failed:?}");
+            let still =
+                Box::pin(Host::run_terminal(&core, &Actor::Assistant, read(&id), "engine", Mode::Default, context()))
+                    .await;
+            assert!(matches!(still, Response::CommandStatus { .. }), "a failed deletion ends nothing: {still:?}");
+            // Wait until the answer is done, so the deletion is not refused as busy.
+            for _ in 0..100 {
+                if let Response::Conversation { conversation: summary, .. } =
+                    core.handle(Request::GetConversation { id: conversation.clone(), after: None }).await
+                    && !summary.running
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            assert_eq!(core.handle(Request::DeleteConversation { id: conversation.clone() }).await, Response::Ok);
+            let gone =
+                Box::pin(Host::run_terminal(&core, &Actor::Assistant, read(&id), "engine", Mode::Default, context()))
+                    .await;
+            assert_eq!(code(&gone), "not-found", "ended with its conversation");
         }
 
         /// An "Allow" with a reach is a command of the terminal's alone.
