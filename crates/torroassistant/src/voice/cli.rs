@@ -257,17 +257,23 @@ fn report(state: VoiceState) {
 /// Tells the core the listener's half of a timed round (issue #828) as `{"round": {…}}` on one line,
 /// durations only. Ends the listener like [`report`] when the core no longer reads.
 fn heard(round: Heard) {
-    let line = serde_json::json!({ "round": {
+    let line = round_line(&round);
+    let mut out = std::io::stdout();
+    if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
+        std::process::exit(0);
+    }
+}
+
+/// `round` as the line the core reads (`torroworkplace`, `apps::RoundLine`). A test here and one in
+/// the core pin the same line, so a renamed field shows in both.
+fn round_line(round: &Heard) -> String {
+    serde_json::json!({ "round": {
         "conversation": round.conversation,
         "after": round.after,
         "pause_ms": round.pause_ms,
         "recognize_ms": round.recognize_ms,
     }})
-    .to_string();
-    let mut out = std::io::stdout();
-    if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
-        std::process::exit(0);
-    }
+    .to_string()
 }
 
 /// The chat window that shows spoken conversations: one at a time, opened again when it was
@@ -298,6 +304,18 @@ mod tests {
 
     fn args(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| word.to_string()).collect()
+    }
+
+    /// Issue #828 (review): the line of a round is the one the core's test
+    /// `a_round_line_of_the_listener_is_read` reads; change both together.
+    #[test]
+    fn a_round_is_told_as_the_core_reads_it() {
+        let round = Heard { conversation: "c1".into(), after: 3, pause_ms: 1000, recognize_ms: 800 };
+        let told: serde_json::Value = serde_json::from_str(&round_line(&round)).expect("one JSON line");
+        let pinned: serde_json::Value =
+            serde_json::from_str(r#"{"round":{"conversation":"c1","after":3,"pause_ms":1000,"recognize_ms":800}}"#)
+                .expect("the pinned line");
+        assert_eq!(told, pinned);
     }
 
     #[test]

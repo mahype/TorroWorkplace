@@ -1471,6 +1471,17 @@ pub mod tests {
         listener.follow(false);
     }
 
+    /// Issue #828 (review): the line `torroassistant --listen` writes for a round, as its test
+    /// `a_round_is_told_as_the_core_reads_it` pins it; change both together.
+    #[test]
+    fn a_round_line_of_the_listener_is_read() {
+        let line: RoundLine =
+            serde_json::from_str(r#"{"round":{"conversation":"c1","after":3,"pause_ms":1000,"recognize_ms":800}}"#)
+                .expect("a round");
+        let expected = Heard { conversation: "c1".into(), after: 3, pause_ms: 1000, recognize_ms: 800 };
+        assert_eq!(line.round, expected);
+    }
+
     #[tokio::test]
     async fn without_the_app_nothing_starts_and_it_says_why() {
         let listener = Listener::none();
