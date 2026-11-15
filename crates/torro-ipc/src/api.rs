@@ -4157,13 +4157,15 @@ static SET_SETTING: Command = Command {
                   \"de\" or \"en\", or null for the language of the suite; Parakeet finds the language itself) or \
                   reading answers aloud (settings_speech_status lists providers and voices): `read_aloud` (true, \
                   false; the chat windows read answers aloud), `speech_provider` (\"pocket\" or null for the \
-                  core's choice, Pocket TTS on this computer; \"openai\" is forbidden: only a person sends answers \
-                  to OpenAI), `pocket_voice` (\"alba\", \"fantine\", \"marius\", \"warm_woman\", \"calm_man\" or \
-                  null), `openai_voice` (one of the OpenAI voices or null), `pocket_speed` (percent from 70 to \
+                  core's choice, Pocket TTS on this computer; \"qwen\", Qwen3-TTS on the graphics card, only in \
+                  builds with Qwen3-TTS; \"openai\" is forbidden: only a person sends answers to OpenAI), \
+                  `pocket_voice` (\"alba\", \"fantine\", \"marius\", \"warm_woman\", \"calm_man\" or null), \
+                  `qwen_voice` (\"warm_woman\", \"calm_man\" or null; only in builds with Qwen3-TTS), \
+                  `openai_voice` (one of the OpenAI voices or null), `pocket_speed` (percent from 70 to \
                   150 in tens, or null for 100), `pocket_pause` (extra milliseconds after each sentence from 0 to \
                   1000 in 250s, or null for none) or `openai_style` (how OpenAI speaks, one line of at most 500 \
-                  characters like \"calm, slow\", or null; it only reaches OpenAI once a person chose OpenAI); `stt_model`, `voice` and `qwen_voice` \
-                  are gone and refused or \
+                  characters like \"calm, slow\", or null; it only reaches OpenAI once a person chose OpenAI); \
+                  `stt_model` and `voice` are gone and refused or \
                   `assistant_default` (what a new chat of the assistant starts with: {\"engine\": \"<id from \
                   assistant_list_engines>\", \"model\": \"<model id>\", \"effort\": \"low\"|\"medium\"|\"high\"}, \
                   model and effort optional, or null for the one used last; it writes the slot `chat`, prefer \
@@ -4315,9 +4317,11 @@ static SPEAK: Command = Command {
     description: "Reads a text aloud on this computer with the provider and voice of the assistant's settings, \
                   Markdown without its marks, at most 3000 characters read (longer than 20000 is an error). \
                   Blocks until it was read or stopped, minutes for a long text; the first call with Pocket TTS \
-                  loads its model for a few seconds. A new call stops the one that reads. With the provider OpenAI \
-                  the text goes to OpenAI. `unsupported` says what is missing (the model, see \
-                  settings_list_voice_models, a sound output, the OpenAI account).",
+                  loads its model for a few seconds, with Qwen3-TTS (builds with it only) for longer, and it then \
+                  holds about 8 GB of graphics memory. A new call stops the one that reads. With the provider \
+                  OpenAI the text goes to OpenAI. `unsupported` says what is missing (the model, see \
+                  settings_list_voice_models, a sound output, the OpenAI account, Qwen3-TTS in this build); \
+                  without an NVIDIA card Qwen3-TTS fails with `error` (settings_speech_status says why).",
 };
 
 static STOP_SPEAKING: Command = Command {
@@ -4382,9 +4386,10 @@ static SPEECH_STATUS: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Says who can read the assistant's answers aloud here: the recommended and the current provider \
-                  (pocket, openai), and for each what is missing (`model`: download it with \
-                  settings_download_voice_model), its voices with the recommended ones and its model. Runs local \
-                  checks and may take a few seconds.",
+                  (pocket, qwen only in builds with Qwen3-TTS, openai), and for each what is missing (`model`: \
+                  download it with settings_download_voice_model; `gpu`: Qwen3-TTS finds no NVIDIA card), its \
+                  voices with the recommended ones and its model, and the graphics card where Qwen3-TTS is built. \
+                  Runs local checks and may take a few seconds.",
 };
 
 static LIST_VOICE_MODELS: Command = Command {
@@ -4395,10 +4400,11 @@ static LIST_VOICE_MODELS: Command = Command {
     description: "Lists the models the assistant listens and speaks with on this computer: id, name, kind \
                   (`recognition` or `speech`), size in bytes, whether recommended, and state (`missing`, \
                   `running`, `ready`, `failed` with `error`, `cancelled`) with the bytes loaded (`completed`). \
-                  The list is fixed. Ask about once a second while one downloads.",
+                  The list is fixed for each build: `qwen3-tts` only in builds with Qwen3-TTS. Ask about once a \
+                  second while one downloads.",
 };
 
-// Admin like ai.pull_model: it loads up to a gigabyte onto the person's computer. Only models of the fixed
+// Admin like ai.pull_model: it loads gigabytes onto the person's computer (Qwen3-TTS 2.5 GB). Only models of the fixed
 // list, from a fixed revision with a checked hash, so nothing else can be loaded.
 static DOWNLOAD_VOICE_MODEL: Command = Command {
     name: "settings.download_voice_model",

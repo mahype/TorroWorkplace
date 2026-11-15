@@ -10,7 +10,7 @@
 use std::path::Path;
 
 use torro_core::settings::{SpeechProvider, Voice};
-use torro_core::voice_models::{self, HEY_TORRO, POCKET_DE};
+use torro_core::voice_models::{self, HEY_TORRO, POCKET_DE, QWEN};
 use torro_ipc::{VoiceMissing, VoicePart, VoiceProgram, VoiceState, VoiceStatus};
 
 use super::recognize::{SharedTranscriber, SherpaTranscriber};
@@ -72,7 +72,8 @@ pub fn wake_word(folder: Option<&Path>, transcriber: SharedTranscriber) -> (Box<
 /// its built-in model and misses nothing (issue #765), speech to text works once the recogniser's model is
 /// downloaded (`program` names the model), the
 /// recorder once there is a microphone (`program` names the one in use: a stored name the system does
-/// not know gives the default), speech once there is a sound output and, for Pocket TTS, its model.
+/// not know gives the default), speech once there is a sound output and, for Pocket TTS and Qwen3-TTS
+/// (#764), its model.
 pub fn programs(voice: &Voice, folder: Option<&Path>, devices: &dyn Devices) -> Vec<VoiceProgram> {
     let part = |part, program: Option<String>, missing| VoiceProgram { part, program, missing };
     let recognizer = voice.recognizer.model();
@@ -86,20 +87,33 @@ pub fn programs(voice: &Voice, folder: Option<&Path>, devices: &dyn Devices) -> 
         Some(name) => part(VoicePart::Recorder, Some(name), None),
         None => part(VoicePart::Recorder, None, Some(VoiceMissing::Program)),
     };
-    let provider = voice.speech_provider.unwrap_or(SpeechProvider::Pocket);
+    let provider = voice.speech_provider_here().unwrap_or(SpeechProvider::Pocket);
     let program = match provider {
         SpeechProvider::Pocket => POCKET_DE,
+        SpeechProvider::Qwen => QWEN,
         SpeechProvider::OpenAi => provider.id(),
     };
     let speech_missing = if !devices.has_output() {
         Some(VoiceMissing::Player)
-    } else if provider == SpeechProvider::Pocket && !model_ready(POCKET_DE, folder) {
+    } else if provider == SpeechProvider::Qwen && !qwen_card() {
+        // Asked only when Qwen3-TTS reads (issue #764): finding the card takes a moment.
+        Some(VoiceMissing::Gpu)
+    } else if provider != SpeechProvider::OpenAi && !model_ready(program, folder) {
         Some(VoiceMissing::Model)
     } else {
         None
     };
     let speech = part(VoicePart::Speech, Some(program.to_string()), speech_missing);
     vec![wake, recorder, stt, speech]
+}
+
+/// Whether an NVIDIA card answers for Qwen3-TTS (issue #764); never in a build without it, where Qwen
+/// does not read at all.
+fn qwen_card() -> bool {
+    #[cfg(feature = "qwen-cuda")]
+    return super::qwen::graphics_card().is_some();
+    #[cfg(not(feature = "qwen-cuda"))]
+    false
 }
 
 /// What the listener would use with `voice` (`--voice-status`): its [`programs`], the microphones the

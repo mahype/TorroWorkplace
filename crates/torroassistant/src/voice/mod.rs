@@ -16,7 +16,8 @@
 //! - the wake word "Hey Torro" with a small model of its own, built in ([`wake::ModelWake`], issue #765);
 //!   only when it does not load, with the recogniser on short windows ([`wake::TranscriptWake`]),
 //! - the microphone and the sound output with cpal ([`sound`]),
-//! - reading aloud with Pocket TTS ([`pocket`], in the helper [`speech`]).
+//! - reading aloud with Pocket TTS ([`pocket`]) or, in builds with `qwen-cuda`, Qwen3-TTS on the graphics card
+//!   ([`qwen`], issue #764), in the helper [`speech`].
 //!
 //! The models are downloaded in the settings (`settings.download_voice_model`) into the voice folder
 //! (`torro_core::voice_models`); what is missing is a model or a sound device ([`parts`]).
@@ -33,6 +34,12 @@ pub mod cli;
 pub mod listen;
 pub mod parts;
 pub mod pocket;
+// Without the feature `qwen-cuda` only its tests use what is there (issue #764).
+#[cfg_attr(
+    all(not(feature = "qwen-cuda"), not(test)),
+    expect(dead_code, reason = "Qwen3-TTS reads only in builds with the feature qwen-cuda")
+)]
+pub mod qwen;
 pub mod recognize;
 pub mod sound;
 pub mod speech;

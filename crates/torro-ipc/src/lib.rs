@@ -5218,6 +5218,8 @@ pub enum VoiceMissing {
     Model,
     /// Speech only: no sound output.
     Player,
+    /// Speech with Qwen3-TTS only (issue #764): no NVIDIA graphics card answers.
+    Gpu,
 }
 
 /// One [`VoicePart`] as the listener would use it now.
@@ -5293,7 +5295,7 @@ pub struct TodoRef {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SpeechMissing {
-    /// No longer reported: the local voice needs no graphics card since issue #762.
+    /// Qwen3-TTS (issue #764): no NVIDIA graphics card answers. Pocket TTS needs none.
     Gpu,
     /// No longer reported since issue #762: everything is built in.
     Program,
@@ -5312,7 +5314,7 @@ pub enum SpeechMissing {
 /// One voice of a provider (`settings.speech_status`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SpeechVoice {
-    /// Its id for the settings `pocket_voice` and `openai_voice` (`alba`, `marin`).
+    /// Its id for the settings `pocket_voice`, `qwen_voice` and `openai_voice` (`alba`, `warm_woman`, `marin`).
     pub id: String,
     /// Marked "(recommended)" in the settings.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -5329,7 +5331,7 @@ pub struct SpeechOption {
     /// Its voices, in the order the settings offer them.
     #[serde(default)]
     pub voices: Vec<SpeechVoice>,
-    /// The model it speaks with (`pocket-de` from `settings.list_voice_models`, `gpt-4o-mini-tts`).
+    /// The model it speaks with (`pocket-de`, `qwen3-tts` from `settings.list_voice_models`, `gpt-4o-mini-tts`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// No longer set since issue #762: nothing is set up by hand; always `None`.
@@ -5347,10 +5349,11 @@ impl SpeechOption {
 /// Who can read aloud on this computer ([`Request::SpeechStatus`], issue #745).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SpeechStatus {
-    /// The graphics card as measured (`NVIDIA GeForce RTX 4090, 24 GB`); `None` when none is known.
+    /// The graphics card as measured (`NVIDIA GeForce RTX 4090, 24 GB`); `None` when none is known, and
+    /// always in builds without Qwen3-TTS, the only provider that needs one (issue #764).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu: Option<String>,
-    /// Always `true` since issue #762: the local voice runs on the processor.
+    /// Always `true` since issue #762: Pocket TTS runs on the processor.
     pub fast_enough: bool,
     /// The provider recommended: Pocket TTS, on this computer.
     pub recommended: SpeechProvider,
@@ -5512,14 +5515,16 @@ pub enum SettingKey {
     /// Read the assistant's answers aloud in its chat windows (issue #745): `true` or `false` (the
     /// default). "Hey Torro" follows [`SettingKey::SpeakAnswers`] instead.
     ReadAloud,
-    /// Who reads aloud (issues #745, #762): `"pocket"` (Pocket TTS on this computer) or `"openai"`
-    /// (OpenAI, with the OpenAI account of Settings › AI); `null` for the core's choice (Pocket TTS).
+    /// Who reads aloud (issues #745, #762, #764): `"pocket"` (Pocket TTS on this computer), `"qwen"`
+    /// (Qwen3-TTS on the graphics card, only in builds with it) or `"openai"` (OpenAI, with the OpenAI
+    /// account of Settings › AI); `null` for the core's choice (Pocket TTS).
     /// `"openai"` only with the app key: the text of each answer then goes to OpenAI, and only a person
     /// chooses where data goes (point 6 of "Was nie nach außen geht", `docs/api.md`); a client gets
-    /// `forbidden`. The `"qwen"` and `"piper"` of earlier versions are refused with `unsupported`. The
-    /// running speech helper ends.
+    /// `forbidden`. The `"piper"` of earlier versions is refused with `unsupported`, so is `"qwen"` in a
+    /// build without Qwen3-TTS. The running speech helper ends.
     SpeechProvider,
-    /// Gone with Qwen3-TTS (issue #762): always refused with `unsupported`; see `pocket_voice`.
+    /// The voice of Qwen3-TTS (issue #764): `"warm_woman"` or `"calm_man"`, `null` for the recommended one.
+    /// Only in builds with Qwen3-TTS; others refuse it with `unsupported`.
     QwenVoice,
     /// The voice of Pocket TTS (issue #762): `"alba"`, `"fantine"`, `"marius"`, `"warm_woman"` or
     /// `"calm_man"`, `null` for the recommended one (`settings.speech_status`).

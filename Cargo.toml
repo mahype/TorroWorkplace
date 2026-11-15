@@ -238,6 +238,11 @@ unicode-segmentation = "1.13.3"
 # reading aloud (Pocket TTS) on the processor, without Python or other programs. k2-fsa's bindings link ONNX Runtime
 # statically; the first build downloads its prebuilt libraries (about 23 MB) from GitHub. Apache-2.0.
 sherpa-onnx = "2.0.1"
+# Qwen3-TTS as a second local voice (torroassistant, issue #764, `docs/messung-qwen3-tts.md`): Crane runs it in Rust
+# on candle, with the native speech decoder and no second ONNX Runtime. Only built with `torroassistant/qwen-cuda`,
+# which needs the CUDA toolkit to build and its libraries to run. Cargo.lock resolves it in every build, so its tree
+# also sets shared versions there (zip 9.6, unicode-width 0.2.0 pinned by ratatui). MIT.
+crane-core = { version = "26.9.0", default-features = false }
 # The microphone and the sound output of each system (torroassistant, issues #762, #772): on Linux the PulseAudio
 # protocol (PipeWire serves it) for the microphone, else ALSA; Core Audio on macOS, WASAPI on Windows. Apache-2.0.
 cpal = "0.18.2"
