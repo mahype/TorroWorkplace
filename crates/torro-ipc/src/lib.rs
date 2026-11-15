@@ -2087,6 +2087,7 @@ pub enum Request {
         /// With `card`: the card's `index` (issue #785): where its link stands among the first three
         /// links of the message's text, counted from 0, as the card names it; left out: 0.
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(max = 2))]
         index: Option<u8>,
         /// `small` (256 pixels, when left out), `medium` (1024) or `large` (1600).
         #[serde(default)]
@@ -2147,6 +2148,7 @@ pub enum Request {
         /// they stand in its text), counted from 0, as a card's `index` names it; left out: the link the
         /// message asks about (`foreign`, the one "Show once" stands under).
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(max = 2))]
         index: Option<u8>,
     },
 
