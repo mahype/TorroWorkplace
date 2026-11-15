@@ -210,8 +210,8 @@ fn sentences(text: &str) -> Vec<String> {
 }
 
 /// `text` with each sentence a piece of its own (issue #782: a pause falls after each), a sentence
-/// longer than `most` characters cut as in [`pieces`]. A point after a number or a word of one or two
-/// letters ("3. Mai", "z. B.") ends no sentence, so no pause falls inside one.
+/// longer than `most` characters cut as in [`pieces`]. A point after a number of one or two digits or a
+/// single letter ("3. Mai", "z. B.") ends no sentence, so no pause falls inside one.
 pub fn sentence_pieces(text: &str, most: usize) -> Vec<String> {
     let mut whole: Vec<String> = Vec::new();
     let mut open = false;
@@ -221,7 +221,11 @@ pub fn sentence_pieces(text: &str, most: usize) -> Vec<String> {
             _ => whole.push(sentence.clone()),
         }
         let word = sentence.trim_end().strip_suffix('.').and_then(|head| head.split_whitespace().last());
-        open = word.is_some_and(|word| word.chars().count() <= 2 || word.chars().all(|c| c.is_ascii_digit()));
+        // One letter ("z. B.") or a day or place in a list ("3.", "12."); "Ja." and a year end a sentence.
+        open = word.is_some_and(|word| {
+            let digits = word.chars().all(|c| c.is_ascii_digit());
+            word.chars().count() == 1 && word.chars().all(char::is_alphabetic) || digits && word.len() <= 2
+        });
     }
     whole.iter().flat_map(|sentence| pieces(sentence, most)).collect()
 }
@@ -740,8 +744,9 @@ mod tests {
         assert_eq!(
             sentence_pieces("Am 3. Mai kommt z. B. Anna. Gut!", 500),
             ["Am 3. Mai kommt z. B. Anna.", "Gut!"],
-            "no sentence ends after a number or a short word"
+            "no sentence ends after a day or a single letter"
         );
+        assert_eq!(sentence_pieces("Ja. Das war 2024. Gut.", 500), ["Ja.", "Das war 2024.", "Gut."]);
     }
 
     /// What a fake sound output played.
