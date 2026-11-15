@@ -34,6 +34,11 @@ pub const CHAT_RING_CLASS: &str = "torro-chat-ring";
 /// `docs/chat.md`, decision 24). No app of its own, so not in [`AppId::ALL`]; it floats.
 pub const CHAT_VIEWER_CLASS: &str = "torro-chat-viewer";
 
+/// The window class of the player window of `torrochat` (issue #673, decision 25 of `docs/chat.md`,
+/// `torrochat --player=<message>`): a YouTube video of a chat, on macOS and Windows. No app of its own,
+/// so not in [`AppId::ALL`]; it floats.
+pub const CHAT_PLAYER_CLASS: &str = "torro-chat-player";
+
 /// A kind of window of the suite that floats over the tiled windows instead of being tiled (issue #667,
 /// decision 16 in `docs/chat.md`): `binary` started with `flag` opens it, and it carries `class`.
 ///
@@ -54,10 +59,11 @@ pub struct FloatingWindow {
 /// Every window of the suite that floats. A new floating window (a call or device window of the chat)
 /// is entered here and floats under every window manager without anything else to change: Hyprland
 /// gets a rule per class, AeroSpace and GlazeWM float the window when it appears.
-pub const FLOATING_WINDOWS: [FloatingWindow; 4] = [
+pub const FLOATING_WINDOWS: [FloatingWindow; 5] = [
     FloatingWindow { binary: "torrochat", flag: "--conversation", class: CHAT_CONVERSATION_CLASS },
     FloatingWindow { binary: "torrochat", flag: "--ring", class: CHAT_RING_CLASS },
     FloatingWindow { binary: "torrochat", flag: "--viewer", class: CHAT_VIEWER_CLASS },
+    FloatingWindow { binary: "torrochat", flag: "--player", class: CHAT_PLAYER_CLASS },
     FloatingWindow { binary: "torroworkplace", flag: "--template", class: WORKPLACE_DIALOG_CLASS },
 ];
 
@@ -240,7 +246,9 @@ mod tests {
 
     #[test]
     fn window_classes_are_unique() {
-        for class in [WORKPLACE_DIALOG_CLASS, CHAT_CONVERSATION_CLASS, CHAT_RING_CLASS, CHAT_VIEWER_CLASS] {
+        for class in
+            [WORKPLACE_DIALOG_CLASS, CHAT_CONVERSATION_CLASS, CHAT_RING_CLASS, CHAT_VIEWER_CLASS, CHAT_PLAYER_CLASS]
+        {
             assert!(AppId::ALL.iter().all(|app| app.window_class != class), "{class} is no app");
         }
         for (i, app) in AppId::ALL.iter().enumerate() {
@@ -259,7 +267,7 @@ mod tests {
         assert_eq!(AppId::find("torro-chat"), Some(AppId::CHAT));
         assert_eq!(AppId::CHAT.open_name(), "torrochat");
         assert_eq!(AppId::find(CHAT_CONVERSATION_CLASS), None, "a chat window is no app of its own");
-        for class in [CHAT_CONVERSATION_CLASS, CHAT_RING_CLASS, CHAT_VIEWER_CLASS] {
+        for class in [CHAT_CONVERSATION_CLASS, CHAT_RING_CLASS, CHAT_VIEWER_CLASS, CHAT_PLAYER_CLASS] {
             assert!(class.starts_with("torro-chat-"), "{class}");
         }
     }

@@ -9,7 +9,9 @@
 //! `--demo` the app talks to the core over its socket and starts the core when it is not running.
 //! A picture of a chat opens large in a window of its own, `torrochat --viewer=<message>/<file>`
 //! (class `torro-chat-viewer`, stage 4). An incoming call rings in a small window,
-//! `torrochat --ring=<conversation>` (class `torro-chat-ring`, stage 6b), which the core starts.
+//! `torrochat --ring=<conversation>` (class `torro-chat-ring`, stage 6b), which the core starts. A
+//! YouTube video of a chat plays in a player window, `torrochat --player=<message>` (class
+//! `torro-chat-player`, issue #673; macOS and Windows, [`player`]), no Iced window.
 //!
 //! `--demo` runs on the sample of `torro_chat::demo` and writes nothing; `--open <state>` starts in a
 //! state (`contacts`, `chat`, …, see [`launch::Open`]); `--demo --shots <dir>` writes the view at each
@@ -25,6 +27,7 @@ mod app;
 mod backend;
 mod launch;
 mod people;
+mod player;
 mod system;
 mod timeline;
 mod view;
@@ -61,6 +64,10 @@ fn main() -> ExitCode {
             return ExitCode::from(64);
         }
     };
+    // The player is a tao window, not an Iced one: it needs no design and claims its window itself.
+    if let Window::Player(message) = &launch.window {
+        return play(message.clone(), launch.demo);
+    }
     // Before the core is started: a second start only brings the open window to the front.
     if let Some(claim) = instance_of(&launch)
         && claim() == Claim::Shown
@@ -78,6 +85,20 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The player window of the video on the card of `message` (issue #673): macOS and Windows only.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn play(message: String, demo: bool) -> ExitCode {
+    player::window::run(message, demo)
+}
+
+/// Under Linux there is no player (WebKitGTK is not part of the suite): the chat window opens a video
+/// at YouTube in the browser instead, and a start with `--player` is refused like a wrong parameter.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn play(_message: String, _demo: bool) -> ExitCode {
+    eprintln!("{}: the player needs macOS or Windows", CONTACTS.binary);
+    ExitCode::from(64)
 }
 
 /// How this start claims its window ([`torro_gui::instance`], issue #279): the contact list by its
@@ -98,6 +119,8 @@ fn instance_of(launch: &Launch) -> Option<Box<dyn FnOnce() -> Claim>> {
             let name = format!("viewer:{message}/{file}");
             Box::new(move || torro_gui::instance::claim_named(CONTACTS, &name))
         }
+        // The player claims its window itself (`player::window`); `main` starts it before this.
+        Window::Player(_) => return None,
         // One ringing window per conversation, however often the core starts it.
         Window::Ring(id) => {
             let name = format!("ring:{id}");
@@ -114,7 +137,10 @@ fn run(backend: Backend, suite: Source, launch: Launch, shots: Option<&Shots>) -
         Window::Conversation(_) => {
             iced::window::Settings { size: CONVERSATION_SIZE, ..torro_gui::window(CONVERSATION) }
         }
-        Window::Viewer { .. } => iced::window::Settings { size: VIEWER_SIZE, ..torro_gui::window(VIEWER) },
+        // The player never comes here (`main` starts it as a tao window).
+        Window::Viewer { .. } | Window::Player(_) => {
+            iced::window::Settings { size: VIEWER_SIZE, ..torro_gui::window(VIEWER) }
+        }
         // In the middle, over the tiles (decision 24); without a tiling manager it floats by itself.
         Window::Ring(_) => iced::window::Settings {
             size: RING_SIZE,

@@ -273,6 +273,9 @@ pub enum FilesMsg {
     /// "Open in Nextcloud": the file's id.
     Nextcloud(String),
     OpenLink(String),
+    /// The video card of the message clicked (issue #673): the player window, under Linux YouTube in
+    /// the browser.
+    PlayVideo(String),
     /// "Show once" of the message's foreign link.
     ShowCard(String),
     Card(String, Result<Option<LinkCard>, ChatError>),
@@ -320,6 +323,15 @@ pub fn media_limits(total: f32) -> split::Limits {
 /// window.
 pub fn media_beside(width: f32) -> bool {
     width >= 2.0 * split::min_pane() + split::divider_width()
+}
+
+/// `appearance` as `--appearance` takes it, for a window this one starts.
+fn appearance_word(appearance: torro_gui::theme::Appearance) -> &'static str {
+    match appearance {
+        torro_gui::theme::Appearance::Light => "light",
+        torro_gui::theme::Appearance::Dark => "dark",
+        torro_gui::theme::Appearance::System => "system",
+    }
 }
 
 /// The file `(message, file)` of `chat`, with its message.
@@ -579,6 +591,23 @@ impl App {
                     self.file_note(why);
                 }
             }
+            FilesMsg::PlayVideo(message) => {
+                self.menu = None;
+                let link =
+                    chat.message(&message).and_then(|held| held.cards.first()).filter(|card| card.video.is_some());
+                let Some(link) = link.map(|card| card.url.clone()) else { return Task::none() };
+                let opened = if system::plays_videos() {
+                    let appearance = self.launch.appearance.map(appearance_word);
+                    self.backend
+                        .open_player(&message, appearance)
+                        .map_err(|_| tr("The video could not be opened.").to_owned())
+                } else {
+                    system::open_link(&link)
+                };
+                if let Err(why) = opened {
+                    self.file_note(why);
+                }
+            }
             FilesMsg::ShowCard(message) => {
                 if files.cards.get(&message) == Some(&CardAsk::Asking) {
                     return Task::none();
@@ -632,11 +661,7 @@ impl App {
             },
             FilesMsg::View(message, file) => {
                 self.menu = None;
-                let appearance = self.launch.appearance.map(|appearance| match appearance {
-                    torro_gui::theme::Appearance::Light => "light",
-                    torro_gui::theme::Appearance::Dark => "dark",
-                    torro_gui::theme::Appearance::System => "system",
-                });
+                let appearance = self.launch.appearance.map(appearance_word);
                 if self.backend.open_viewer(&message, &file, appearance).is_err() {
                     self.notify(tr("The picture could not be opened.").to_owned());
                 }
