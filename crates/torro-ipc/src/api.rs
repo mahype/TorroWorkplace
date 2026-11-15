@@ -2051,6 +2051,7 @@ impl Request {
             Request::DeleteBot { .. } => &DELETE_BOT,
             Request::AskBot { .. } => &ASK_BOT,
             Request::VoiceStatus => &VOICE_STATUS,
+            Request::VoiceTimings => &VOICE_TIMINGS,
             Request::TestVoice => &TEST_VOICE,
             Request::Dictate => &DICTATE,
             Request::StopDictation => &STOP_DICTATION,
@@ -2344,6 +2345,7 @@ pub static CATALOGUE: &[&Command] = &[
     &LIST_FONTS,
     &LIST_COLOR_SCHEMES,
     &VOICE_STATUS,
+    &VOICE_TIMINGS,
     &TEST_VOICE,
     &DICTATE,
     &STOP_DICTATION,
@@ -4288,6 +4290,18 @@ static VOICE_STATUS: Command = Command {
                   a model that is not downloaded or a missing sound device) and which microphones there are. It \
                   runs local checks and may take a few seconds. Switching voice on is for a person only; \
                   settings_set_setting with voice_enabled false switches it off.",
+};
+
+// Read access: only durations the core keeps in memory; no text, no sound, no microphone.
+static VOICE_TIMINGS: Command = Command {
+    name: "settings.voice_timings",
+    area: Area::Settings,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Lists how long the last spoken answers took, step by step, oldest first: the pause until the end \
+                  of speech was detected, speech recognition, the first word of the answer and its first sound, \
+                  in milliseconds. Only durations, never what was said; the core keeps the last 20 answers read \
+                  aloud in memory only, so the list is empty after a restart.",
 };
 
 // Kept from agents (point 6 of "Was nie nach außen geht"): it opens the microphone.
@@ -7518,6 +7532,7 @@ mod tests {
             Request::DeleteBot { id: "1a2b3c4d".into() },
             Request::AskBot { bot: "1a2b3c4d".into(), text: "Plan Lisbon".into(), conversation: None },
             Request::VoiceStatus,
+            Request::VoiceTimings,
             Request::TestVoice,
             Request::Dictate,
             Request::StopDictation,
@@ -8394,6 +8409,10 @@ mod tests {
         assert_eq!(Request::TestVoice.operation().command.mcp, Mcp::Never);
         assert_eq!(Request::Dictate.operation().command.mcp, Mcp::Never);
         assert_eq!(Request::VoiceStatus.operation().access, Access::Read);
+        // Issue #828: only durations, readable by agents.
+        let timings = Request::VoiceTimings.operation();
+        assert_eq!((timings.command.name, timings.access), ("settings.voice_timings", Access::Read));
+        assert_eq!(timings.command.mcp, Mcp::Tool);
     }
 
     /// Issue #745: reading aloud is a tool for agents, choosing OpenAI to read is a person's choice:

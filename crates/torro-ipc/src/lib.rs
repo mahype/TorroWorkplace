@@ -5110,6 +5110,12 @@ pub enum Request {
     /// settings themselves are `settings.get_settings` (`voice`).
     #[serde(rename = "settings.voice_status")]
     VoiceStatus,
+    /// How long the last spoken answers took, step by step (issue #828, [`Response::VoiceTimings`]):
+    /// the pause until the end of speech was detected, speech recognition, the first word of the
+    /// answer and its first sound. Only durations, never what was said or heard; kept in memory for
+    /// the last 20 answers read aloud, empty after a restart of the service.
+    #[serde(rename = "settings.voice_timings")]
+    VoiceTimings,
     /// Records one sentence from the microphone and turns it into text, for "Say something" in the
     /// assistant's settings ([`Response::Transcript`]): up to 15 seconds, ending at a pause. Nothing is
     /// sent to the assistant and nothing is kept. Only with the app key: it opens the microphone
@@ -5361,6 +5367,80 @@ impl VoiceStatus {
         [VoicePart::Recorder, VoicePart::SpeechToText]
             .into_iter()
             .all(|part| self.program(part).is_some_and(VoiceProgram::works))
+    }
+}
+
+/// One spoken round, timed step by step ([`Request::VoiceTimings`], issue #828). Only durations,
+/// never text or sound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct VoiceRound {
+    /// When the round was timed (its first sound).
+    pub at: DateTime<Utc>,
+    /// The quiet after the last word until the listener took the sentence as ended.
+    pub pause_ms: u32,
+    /// How long speech recognition took for the sentence.
+    pub recognize_ms: u32,
+    /// From the sent message to the first word of the answer (when its first piece came).
+    pub first_word_ms: u32,
+    /// From the first word of the answer to its first sound.
+    pub first_sound_ms: u32,
+}
+
+impl VoiceRound {
+    /// The whole wait, from the last word spoken to the first sound of the answer.
+    pub fn total_ms(&self) -> u32 {
+        self.pause_ms
+            .saturating_add(self.recognize_ms)
+            .saturating_add(self.first_word_ms)
+            .saturating_add(self.first_sound_ms)
+    }
+}
+
+/// The last spoken rounds, oldest first ([`Request::VoiceTimings`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct VoiceTimings {
+    /// At most the last 20 rounds whose answer was read aloud, oldest first.
+    #[serde(default)]
+    pub rounds: Vec<VoiceRound>,
+}
+
+/// The average of [`VoiceTimings::rounds`], step by step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoiceAverage {
+    /// Average of [`VoiceRound::pause_ms`].
+    pub pause_ms: u32,
+    /// Average of [`VoiceRound::recognize_ms`].
+    pub recognize_ms: u32,
+    /// Average of [`VoiceRound::first_word_ms`].
+    pub first_word_ms: u32,
+    /// Average of [`VoiceRound::first_sound_ms`].
+    pub first_sound_ms: u32,
+    /// Average of [`VoiceRound::total_ms`].
+    pub total_ms: u32,
+    /// How many rounds went into the average.
+    pub rounds: usize,
+}
+
+impl VoiceTimings {
+    /// The average of every round, `None` without rounds.
+    pub fn average(&self) -> Option<VoiceAverage> {
+        let n = self.rounds.len();
+        if n == 0 {
+            return None;
+        }
+        // Sums in u64 so that 20 rounds of even u32::MAX never overflow.
+        let mean = |pick: fn(&VoiceRound) -> u32| {
+            let sum: u64 = self.rounds.iter().map(|round| u64::from(pick(round))).sum();
+            u32::try_from(sum / n as u64).unwrap_or(u32::MAX)
+        };
+        Some(VoiceAverage {
+            pause_ms: mean(|round| round.pause_ms),
+            recognize_ms: mean(|round| round.recognize_ms),
+            first_word_ms: mean(|round| round.first_word_ms),
+            first_sound_ms: mean(|round| round.first_sound_ms),
+            total_ms: mean(VoiceRound::total_ms),
+            rounds: n,
+        })
     }
 }
 
@@ -6751,6 +6831,10 @@ pub enum Response {
     /// How talking by voice stands ([`Request::VoiceStatus`]).
     Voice {
         voice: VoiceStatus,
+    },
+    /// How long the last spoken answers took, step by step ([`Request::VoiceTimings`]).
+    VoiceTimings {
+        timings: VoiceTimings,
     },
     /// Who can read aloud on this computer ([`Request::SpeechStatus`], issue #745).
     Speech {
@@ -8298,6 +8382,25 @@ impl std::error::Error for IpcError {}
 
 #[cfg(test)]
 mod tests {
+    /// Issue #828: the average is taken step by step and the total sums the four steps.
+    #[test]
+    fn voice_timings_average_each_step() {
+        use super::{VoiceRound, VoiceTimings};
+        assert_eq!(VoiceTimings::default().average(), None);
+        let round = |pause_ms, recognize_ms| VoiceRound {
+            at: chrono::Utc::now(),
+            pause_ms,
+            recognize_ms,
+            first_word_ms: 1000,
+            first_sound_ms: 500,
+        };
+        let timings = VoiceTimings { rounds: vec![round(1000, 800), round(1200, 600)] };
+        let average = timings.average().expect("two rounds");
+        assert_eq!((average.pause_ms, average.recognize_ms, average.rounds), (1100, 700, 2));
+        assert_eq!((average.first_word_ms, average.first_sound_ms, average.total_ms), (1000, 500, 3300));
+        assert_eq!(round(1000, 800).total_ms(), 3300);
+    }
+
     #[test]
     fn local_ai_additions_are_wire_compatible_and_never_fall_back() {
         let old = serde_json::json!({"result":"ai-servers", "servers": []});
