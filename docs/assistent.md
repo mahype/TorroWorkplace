@@ -807,26 +807,6 @@ höchstens ein Modell, und das lädt ein Knopf in Einstellungen › Assistent �
   dort mit `+crt-static` (`.cargo/config.toml`). Auf dem Mac
   fragt das System beim ersten Diktieren nach dem Mikrofon (`NSMicrophoneUsageDescription`).
 
-**Weckwort-Modell trainieren (Issue #765):** Das Modell `crates/torroassistant/assets/wake/hey_torro.onnx`
-(7,4 MB) steckt im Assistenten; der Hörer schreibt es beim Start nach `wake/hey_torro.onnx` im Sprachordner, weil
-`livekit-wakeword` nur aus einer Datei lädt. Ein neues Modell kommt nur mit einer neuen Version zu den Nutzern.
-Trainiert wurde es einmal von Hand mit `livekit-wakeword` 2.1.2 (Python, mit GPU, etwa 30 Minuten), die Stimmen
-kommen von LiveKit Inference (Konto bei LiveKit Cloud, `lk cloud auth`, dann `lk app env -w`):
-
-```bash
-uv tool install --python 3.13 "livekit-wakeword[train]"
-livekit-wakeword setup --wakeword "hey torro" --pronounce "torro=T AO1 R OW0" --eval
-livekit-wakeword train --wakeword "hey torro" --type standard
-livekit-wakeword eval --wakeword "hey torro"
-```
-
-Ergebnis auf dem zurückgehaltenen Testsatz bei der Schwelle 0,5: 95 % der Weckwörter erkannt, 2,3 Fehlauslöser je
-Stunde Fremdgeräusch. Ins Training flossen nur: Stimmen von Cartesia, Rime, Inworld und xAI über LiveKit
-Inference; fremde Sprache aus LibriSpeech und Google FLEURS (CC BY 4.0) und Common Voice 17 (CC0); Rauschen aus
-MUSAN und der DNS Challenge (CC BY 4.0) und Raumhall aus MIT RIR; die Encoder von `livekit/livekit-wakeword`
-(Apache-2.0). Die Datensätze des Testsatzes (u. a. ESC-50, WHAM!) dienen nur der Bewertung und stecken nicht im
-Modell. Dass das Modell mit diesen Quellen eingebaut wird, ist in #765 entschieden.
-
 - **Standard aus.** Einschalten nur in den Einstellungen des Assistenten (Zahnrad › Voice), mit
   Wahl des Mikrofons und Test.
 - **Immer sichtbar:** Solange das Weckwort-Lauschen an ist, zeigt das Tray-Symbol das; während der
@@ -846,6 +826,26 @@ Modell. Dass das Modell mit diesen Quellen eingebaut wird, ist in #765 entschied
   schließt dessen Eingabe und beendet die Aufnahme), nie im Fenster selbst; der Text kommt nicht ins
   Protokoll. Ohne geladenes Modell der Spracherkennung ist das Mikrofon blass und öffnet Einstellungen ›
   Voice. Mini- und Leistenkachel haben kein Mikrofon.
+
+**Weckwort-Modell trainieren (Issue #765):** Das Modell `crates/torroassistant/assets/wake/hey_torro.onnx`
+(7,4 MB) steckt im Assistenten; der Hörer schreibt es beim Start nach `wake/hey_torro.onnx` im Sprachordner, weil
+`livekit-wakeword` nur aus einer Datei lädt. Ein neues Modell kommt nur mit einer neuen Version zu den Nutzern.
+Trainiert wurde es einmal von Hand mit `livekit-wakeword` 2.1.2 (Python, mit GPU, etwa 30 Minuten), die Stimmen
+kommen von LiveKit Inference (Konto bei LiveKit Cloud, `lk cloud auth`, dann `lk app env -w`):
+
+```bash
+uv tool install --python 3.13 "livekit-wakeword[train]"
+livekit-wakeword setup --wakeword "hey torro" --pronounce "torro=T AO1 R OW0" --eval
+livekit-wakeword train --wakeword "hey torro" --type standard
+livekit-wakeword eval --wakeword "hey torro"
+```
+
+Ergebnis auf dem zurückgehaltenen Testsatz bei der Schwelle 0,5: 95 % der Weckwörter erkannt, 2,3 Fehlauslöser je
+Stunde Fremdgeräusch. Ins Training flossen nur: Stimmen von Cartesia, Rime, Inworld und xAI über LiveKit
+Inference; fremde Sprache aus LibriSpeech und Google FLEURS (CC BY 4.0) und Common Voice 17 (CC0); Rauschen aus
+MUSAN und der DNS Challenge (CC BY 4.0) und Raumhall aus MIT RIR; die Encoder von `livekit/livekit-wakeword`
+(Apache-2.0). Die Datensätze des Testsatzes (u. a. ESC-50, WHAM!) dienen nur der Bewertung und stecken nicht im
+Modell. Dass das Modell mit diesen Quellen eingebaut wird, ist in #765 entschieden.
 
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
