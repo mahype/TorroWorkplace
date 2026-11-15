@@ -105,7 +105,7 @@ use torro_ipc::inbox::{
 use torro_ipc::mail::MailSort;
 use torro_ipc::mail::{
     AttachmentPlan, Delivery, ExportFormat, ExportPlan, MailHighlight, MailIndexProgress, MailOverview, MoveRole,
-    MoveTarget, PileFilter, PlannedPlace, SaveTo, SavedFile, UnsubscribeVia,
+    MoveTarget, PileFilter, PlannedPlace, SaveRecord, SaveTo, SavedFile, SavedVia, SavedWhat, UnsubscribeVia,
 };
 use torro_ipc::{EventSuggestion, Request, Response, StatsRange, TaskSuggestion};
 use torro_mail::{
@@ -463,6 +463,13 @@ pub trait MailSource: Send + Sync {
         async { Ok(None) }
     }
 
+    /// `mail.list_save_history` (issue #781): what was saved from the message `id`, when and where,
+    /// newest first ([`SaveRecord`]); empty without a source that keeps it.
+    fn save_history(&self, id: String) -> impl Future<Output = Result<Vec<SaveRecord>, InboxError>> + Send {
+        let _ = id;
+        async { Ok(Vec::new()) }
+    }
+
     /// `inbox.create_contact_from_item` (issue #727): the sender of the entry or mail `id` – or the
     /// vCard attached to it – as a contact in `book`, or the contact that holds it already.
     fn create_contact_from_item(
@@ -801,6 +808,10 @@ impl MailSource for InboxClient {
 
     async fn writable_book(&self) -> Result<Option<String>, InboxError> {
         crate::contact::core_writable_book(self).await
+    }
+
+    async fn save_history(&self, id: String) -> Result<Vec<SaveRecord>, InboxError> {
+        InboxClient::save_history(self, id).await
     }
 
     async fn create_contact_from_item(&self, id: String, book: String) -> Result<torro_contacts::FromItem, InboxError> {
@@ -1175,6 +1186,11 @@ impl MailSource for DemoSource {
     /// The demo's own book of `torro_contacts::demo`, as the compose window's demo writes to.
     async fn writable_book(&self) -> Result<Option<String>, InboxError> {
         Ok(Some(torro_contacts::demo::CONTACTS.to_owned()))
+    }
+
+    /// The demo keeps no history (issue #781): a mail with attachments shows what [`demo_history`] says.
+    async fn save_history(&self, id: String) -> Result<Vec<SaveRecord>, InboxError> {
+        Ok(demo_history(&DemoSource::get_mail(self, &id)?))
     }
 
     async fn create_contact_from_item(&self, id: String, book: String) -> Result<torro_contacts::FromItem, InboxError> {
@@ -3313,6 +3329,10 @@ pub struct Reading<'a> {
     pub contact_book: bool,
     /// A "Save as contact" is on its way: the item takes no click until the core answered.
     pub contact_busy: bool,
+    /// What was saved from the mail, newest first (issue #781, `mail.list_save_history`): the note in
+    /// the attachments' head and at each attachment, and a line under the sender for the mail itself.
+    /// `None` while it loads or when it could not be read: then nothing is shown.
+    pub saves: Option<&'a [SaveRecord]>,
 }
 
 /// How the mail's HTML shows in the panel or the reader (task M9.7): as HTML or its text, in light
@@ -3853,6 +3873,11 @@ fn head_in<'a>(
             }
             None => {}
         }
+    }
+    // Where the mail itself was saved as PDF, picture or EML (issue #781), quietly under its sender;
+    // its attachments say theirs in their own block.
+    if let Some(lines) = mail_save_lines(reading) {
+        head = head.push(lines);
     }
     // The pictures of other servers not loaded yet (issue #672), while the HTML shows.
     if let Some(question) = images_question(reading) {
@@ -4618,7 +4643,7 @@ pub fn attachment_line<'a>(
 ) -> Option<Element<'a, Message>> {
     let files = files_of(reading)?;
     let action = save_all_control(reading, &files, anchors, false);
-    let head = widgets::file_block_head(tr("Attachments"), files_meta(&files), action);
+    let head = widgets::file_block_head(tr("Attachments"), files_head_meta(reading, &files), action);
     let rows = files.iter().enumerate().map(|(at, file)| attachment_row(reading, at, file, anchors));
     let rows = container(bounded_scroll(column(rows))).max_height(rows_max_height(FOOT_ROWS));
     let block = container(widgets::file_block(head, rows)).max_width(room);
@@ -4866,6 +4891,8 @@ pub fn when(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
 fn attachment_rows<'a>(reading: &Reading<'_>, anchors: &detail::Anchors, rows: f32) -> Option<Element<'a, Message>> {
     let files = files_of(reading)?;
     let title = typo::text(typo::caption(), tr("Attachments")).style(theme::text_3).wrapping(Wrapping::None);
+    // The count of saved files stays in the reader's block (issue #781): in the panel's narrow footer it
+    // would push out "Attachments" and break "Save all"; the rows say it at each file.
     let meta = typo::text(typo::meta().tabular(), files_meta(&files)).style(theme::text_3).wrapping(Wrapping::None);
     let mut head = row![container(title).width(Fill).clip(true), meta].spacing(space::s()).align_y(Alignment::Center);
     if let Some(all) = save_all_control(reading, &files, anchors, true) {
@@ -4904,9 +4931,215 @@ fn attachment_row<'a>(
     // The triangle stands on the axis of "Save all ▾" above: that frame's hairline takes 1 from the edge
     // (measured in the design review of #491, the chevrons' centres then agree).
     let axis = Padding::new(0.0).right(size::HAIRLINE);
-    container(row![container(name).width(Fill), triangle].spacing(space::xs()).align_y(Alignment::Center))
-        .padding(axis)
+    // Where it was saved (issue #781) stands beside the name, outside its button: its tooltip names
+    // every save, the name's says what a click does.
+    let badge = reading.saves.and_then(|saves| saved_badge(&saves_of(saves, &file.part), reading.now));
+    container(
+        row![container(name).width(Fill)].push(badge).push(triangle).spacing(space::xs()).align_y(Alignment::Center),
+    )
+    .padding(axis)
+    .into()
+}
+
+// ----- the save history (issue #781, mockup `docs/prototypes/mail-ablage/`, variant 2) -----
+
+/// The saves of the attachment `part` among `saves`, newest first as the core answers them.
+pub fn saves_of<'r>(saves: &'r [SaveRecord], part: &str) -> Vec<&'r SaveRecord> {
+    saves
+        .iter()
+        .filter(|save| matches!(&save.what, SavedWhat::Attachment { part: saved, .. } if saved == part))
+        .collect()
+}
+
+/// The saves of the mail itself (as PDF, picture or EML), newest first.
+fn mail_saves(saves: &[SaveRecord]) -> Vec<&SaveRecord> {
+    saves.iter().filter(|save| matches!(save.what, SavedWhat::Mail { .. })).collect()
+}
+
+/// "Invoices › 11", "Downloads", "Rechnungen": where a save went, short – the target with the folder
+/// the file lies in, Downloads, else the name of that folder. Names are data from outside, on one line.
+pub fn saved_where(save: &SaveRecord) -> String {
+    let folder = Path::new(&save.path)
+        .parent()
+        .and_then(Path::file_name)
+        .map(|name| list::one_line(&name.to_string_lossy()))
+        .unwrap_or_default();
+    match (save.via, save.target_name.as_deref().map(list::one_line)) {
+        (SavedVia::Downloads, _) => tr("Downloads").to_owned(),
+        (SavedVia::Target, Some(name)) if !folder.is_empty() && folder != name => format!("{name} › {folder}"),
+        (SavedVia::Target, Some(name)) => name,
+        _ => folder,
+    }
+}
+
+/// "Saved to /home/anna/Invoices/2026/11/Rechnung.pdf · 14 Nov 10:32", one line per save, with
+/// "File no longer there" for one that is gone: the tooltip of an attachment's note.
+fn saves_tooltip(saves: &[&SaveRecord], now: DateTime<Utc>) -> String {
+    saves
+        .iter()
+        .map(|save| {
+            let line = trf(
+                "Saved to {path} · {when}",
+                &[("path", &save.path), ("when", &datetime::format_moment(save.at, now))],
+            );
+            if save.present { line } else { format!("{line} · {}", tr("File no longer there")) }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The icon of a save: a check in the colour of success while the file is there, a warning in the
+/// attention colour when it is gone – never the colour alone, the words beside it say it too.
+fn save_icon<'a>(present: bool) -> Element<'a, Message> {
+    let which = if present { Icon::CircleCheck } else { Icon::TriangleAlert };
+    icon::icon(which, icon::SIZE_SM)
+        .style(move |t: &Theme, _| {
+            let colours = palette(t);
+            svg::Style { color: Some(if present { colours.ok } else { colours.attention_text }) }
+        })
         .into()
+}
+
+/// The note at an attachment saved before (issue #781): the check and where the newest save went
+/// ([`saved_where`]), or "File no longer there" when that file is gone; every save in the tooltip.
+/// `None` for an attachment never saved, which looks as it always did.
+fn saved_badge<'a>(saves: &[&SaveRecord], now: DateTime<Utc>) -> Option<Element<'a, Message>> {
+    let newest = saves.first()?;
+    let (words, style): (String, fn(&Theme) -> iced::widget::text::Style) = if newest.present {
+        (saved_where(newest), theme::text_2)
+    } else {
+        (tr("File no longer there").to_owned(), theme::text_3)
+    };
+    let note = row![save_icon(newest.present), typo::text(typo::meta(), words).style(style).wrapping(Wrapping::None)]
+        .spacing(space::xs())
+        .align_y(Alignment::Center);
+    Some(widgets::with_tooltip(note, saves_tooltip(saves, now)))
+}
+
+/// "3 files · 452 KB", with "1 of 3 saved · 14 Nov 10:32" after it once any of them was saved
+/// (issue #781, variant 2: the note stands in the attachments' head, not under the mail's).
+fn files_head_meta(reading: &Reading<'_>, files: &[&AttachmentInfo]) -> String {
+    let meta = files_meta(files);
+    match reading.saves.and_then(|saves| files_saved(saves, files, reading.now)) {
+        Some(saved) => format!("{meta} · {saved}"),
+        None => meta,
+    }
+}
+
+/// "1 of 3 saved · 14 Nov 10:32": how many of `files` were saved, and when the newest save was;
+/// `None` when none was.
+fn files_saved(saves: &[SaveRecord], files: &[&AttachmentInfo], now: DateTime<Utc>) -> Option<String> {
+    let saved: Vec<&&AttachmentInfo> = files.iter().filter(|file| !saves_of(saves, &file.part).is_empty()).collect();
+    let newest = saved.iter().filter_map(|file| saves_of(saves, &file.part).first().map(|save| save.at)).max()?;
+    Some(trf(
+        "{n} of {total} saved · {when}",
+        &[("n", &saved.len()), ("total", &files.len()), ("when", &datetime::format_moment(newest, now))],
+    ))
+}
+
+/// "Saved as PDF · 12 Nov 08:05": the words of a save of the mail itself.
+fn mail_save_words(save: &SaveRecord, now: DateTime<Utc>) -> String {
+    let when = datetime::format_moment(save.at, now);
+    let args: [(&str, &dyn std::fmt::Display); 1] = [("when", &when)];
+    match save.what {
+        SavedWhat::Mail { format: ExportFormat::Pdf } => trf("Saved as PDF · {when}", &args),
+        SavedWhat::Mail { format: ExportFormat::Png } => trf("Saved as picture · {when}", &args),
+        SavedWhat::Mail { format: ExportFormat::Eml } => trf("Saved as EML · {when}", &args),
+        SavedWhat::Attachment { .. } => String::new(),
+    }
+}
+
+/// How many saves of the mail itself the head names; older ones are in the history all the same.
+const MAIL_SAVE_LINES: usize = 3;
+
+/// The saves of the mail itself under its sender (issue #781, variant 2): a quiet line each, newest
+/// first – "Saved as PDF · 12 Nov 08:05 · Downloads", or "File no longer there" – with the path in
+/// its tooltip. `None` when the mail itself was never saved.
+fn mail_save_lines<'a>(reading: &Reading<'_>) -> Option<Element<'a, Message>> {
+    let saves = mail_saves(reading.saves?);
+    if saves.is_empty() {
+        return None;
+    }
+    let lines = saves.iter().take(MAIL_SAVE_LINES).map(|save| {
+        let place = if save.present { saved_where(save) } else { tr("File no longer there").to_owned() };
+        let words = format!("{} · {place}", mail_save_words(save, reading.now));
+        let line = row![save_icon(save.present), typo::text(typo::meta(), words).style(theme::text_2)]
+            .spacing(space::xs())
+            .align_y(Alignment::Center);
+        widgets::with_tooltip(line, saves_tooltip(&[save], reading.now))
+    });
+    Some(column(lines).spacing(space::xs()).into())
+}
+
+/// The section "Saved" of an attachment's menu (issue #781): "Show in folder" while the newest file is
+/// there, then each save with its time and path, which opens the folder it went to. `None` for an
+/// attachment never saved.
+pub fn saved_menu_section<'a>(saves: &[&SaveRecord], now: DateTime<Utc>) -> Option<MenuSection<'a, Message>> {
+    let newest = saves.first()?;
+    let folder = |save: &SaveRecord| Path::new(&save.path).parent().map(Path::to_path_buf);
+    let mut items = Vec::new();
+    if newest.present
+        && let Some(dir) = folder(newest)
+    {
+        items.push(MenuItem::new(Icon::Folder, tr("Show in folder"), Message::ShowSavedFolder(dir)));
+    }
+    for save in saves {
+        let Some(dir) = folder(save) else { continue };
+        let when = datetime::format_moment(save.at, now);
+        let label = if save.present { when } else { format!("{when} · {}", tr("File no longer there")) };
+        let mark = if save.present { Icon::CircleCheck } else { Icon::TriangleAlert };
+        items.push(MenuItem::new(mark, label, Message::ShowSavedFolder(dir)).detail(save.path.clone()));
+    }
+    Some(MenuSection::titled(tr("Saved"), items))
+}
+
+/// What the demo says was saved of `mail` (issue #781): nothing for a mail without attachments; else
+/// its first attachment to Downloads, its second to the first save target – that file gone since –
+/// and the mail as PDF, each an hour after the mail came, so a look at the window shows every state.
+fn demo_history(mail: &Mail) -> Vec<SaveRecord> {
+    let files: Vec<&AttachmentInfo> = mail.attachments.iter().filter(|file| !file.inline).collect();
+    let Some(first) = files.first() else { return Vec::new() };
+    let at = mail.summary.date + chrono::TimeDelta::hours(1);
+    let downloads = torro_inbox::demo::DEMO_DOWNLOADS;
+    let name = |file: &AttachmentInfo| file.filename.clone().unwrap_or_else(|| tr("Attachment").to_owned());
+    let record = |what, via, target: Option<&torro_mail::SaveTarget>, path: String, present| SaveRecord {
+        at,
+        what,
+        via,
+        target: target.map(|target| target.id.clone()),
+        target_name: target.map(|target| target.spec.name.clone()),
+        path,
+        skipped: false,
+        present,
+    };
+    let mut saves = vec![record(
+        SavedWhat::Mail { format: ExportFormat::Pdf },
+        SavedVia::Downloads,
+        None,
+        format!("{downloads}/{}.pdf", subject(&mail.summary)),
+        true,
+    )];
+    if let Some(second) = files.get(1) {
+        let targets = torro_inbox::demo::save_targets();
+        if let Some(target) = targets.first() {
+            let path = format!("{}/{}/{}", target.spec.folder, mail.summary.date.format("%Y"), name(second));
+            saves.push(record(
+                SavedWhat::Attachment { part: second.part.clone(), name: name(second) },
+                SavedVia::Target,
+                Some(target),
+                path,
+                false,
+            ));
+        }
+    }
+    saves.push(record(
+        SavedWhat::Attachment { part: first.part.clone(), name: name(first) },
+        SavedVia::Downloads,
+        None,
+        format!("{downloads}/{}", name(first)),
+        true,
+    ));
+    saves
 }
 
 /// The text of `mail` as the window shows, selects and copies it (issue #119): plain, without
@@ -6517,6 +6750,105 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 10, 13, 10, 30, 0).single().expect("valid time")
     }
 
+    /// A save of issue #781's history, made at `now()`.
+    fn save(what: SavedWhat, via: SavedVia, target: Option<&str>, path: &str, present: bool) -> SaveRecord {
+        SaveRecord {
+            at: now(),
+            what,
+            via,
+            target: target.map(|_| "t1".to_owned()),
+            target_name: target.map(str::to_owned),
+            path: path.into(),
+            skipped: false,
+            present,
+        }
+    }
+
+    fn attachment(part: &str) -> SavedWhat {
+        SavedWhat::Attachment { part: part.into(), name: format!("{part}.pdf") }
+    }
+
+    /// Issue #781: where a save went in short words, the head's count of saved attachments with the
+    /// time of the newest, the words of a save of the mail itself, and the tooltip naming each file.
+    #[test]
+    fn the_save_note_says_what_was_saved_when_and_where() {
+        let invoices = save(attachment("2"), SavedVia::Target, Some("Invoices"), "/home/anna/Inv/2026/11/a.pdf", true);
+        let downloads = save(attachment("2"), SavedVia::Downloads, None, "/home/anna/Downloads/a.pdf", true);
+        let chosen = save(attachment("3"), SavedVia::Folder, None, "/home/anna/Ablage/b.pdf", false);
+        let flat = save(attachment("3"), SavedVia::Target, Some("Inv"), "/home/anna/Inv/b.pdf", true);
+        assert_eq!(saved_where(&invoices), "Invoices › 11");
+        assert_eq!(saved_where(&downloads), tr("Downloads"));
+        assert_eq!(saved_where(&chosen), "Ablage");
+        assert_eq!(saved_where(&flat), "Inv", "the target's own folder is not said twice");
+
+        let when = datetime::format_moment(now(), now());
+        let file = |part: &str| AttachmentInfo {
+            part: part.into(),
+            filename: None,
+            content_type: "application/pdf".into(),
+            size: 1,
+            inline: false,
+            content_id: None,
+        };
+        let files = [file("2"), file("3"), file("4")];
+        let files: Vec<&AttachmentInfo> = files.iter().collect();
+        let saves = vec![invoices.clone(), downloads.clone()];
+        let args: [(&str, &dyn std::fmt::Display); 3] = [("n", &1), ("total", &3), ("when", &when)];
+        assert_eq!(files_saved(&saves, &files, now()), Some(trf("{n} of {total} saved · {when}", &args)));
+        assert_eq!(files_saved(&[], &files, now()), None, "nothing saved: no note");
+        assert_eq!(saves_of(&saves, "2").len(), 2);
+        assert!(saves_of(&saves, "3").is_empty());
+
+        let pdf = save(SavedWhat::Mail { format: ExportFormat::Pdf }, SavedVia::Downloads, None, "/d/m.pdf", true);
+        assert_eq!(mail_save_words(&pdf, now()), trf("Saved as PDF · {when}", &[("when", &when)]));
+        let png = SaveRecord { what: SavedWhat::Mail { format: ExportFormat::Png }, ..pdf.clone() };
+        assert_eq!(mail_save_words(&png, now()), trf("Saved as picture · {when}", &[("when", &when)]));
+        let eml = SaveRecord { what: SavedWhat::Mail { format: ExportFormat::Eml }, ..pdf.clone() };
+        assert_eq!(mail_save_words(&eml, now()), trf("Saved as EML · {when}", &[("when", &when)]));
+        assert_eq!(mail_saves(&[pdf.clone(), invoices.clone()]), [&pdf]);
+
+        let tip = saves_tooltip(&[&invoices, &chosen], now());
+        let lines: Vec<&str> = tip.lines().collect();
+        let saved_to = |path: &str| trf("Saved to {path} · {when}", &[("path", &path), ("when", &when)]);
+        assert_eq!(lines[0], saved_to("/home/anna/Inv/2026/11/a.pdf"));
+        assert_eq!(lines[1], format!("{} · {}", saved_to("/home/anna/Ablage/b.pdf"), tr("File no longer there")));
+        assert!(saved_badge(&[], now()).is_none(), "an attachment never saved looks as before");
+        assert!(saved_badge(&[&chosen], now()).is_some());
+    }
+
+    /// Issue #781: an attachment's section "Saved" offers "Show in folder" only while its newest file
+    /// is there, and lists every save with its path, each opening its folder.
+    #[test]
+    fn the_saved_section_shows_the_folder_only_while_the_file_is_there() {
+        let there = save(attachment("2"), SavedVia::Downloads, None, "/home/anna/Downloads/a.pdf", true);
+        let gone = save(attachment("2"), SavedVia::Downloads, None, "/home/anna/Old/a.pdf", false);
+        let section = saved_menu_section(&[&there, &gone], now()).expect("saved");
+        assert_eq!(section.title.as_deref(), Some(tr("Saved")));
+        assert_eq!(section.items.len(), 3);
+        assert_eq!(section.items[0].label.as_ref(), tr("Show in folder"));
+        assert!(
+            matches!(&section.items[0].on_press, Message::ShowSavedFolder(dir) if dir == Path::new("/home/anna/Downloads"))
+        );
+        assert_eq!(section.items[2].detail.as_deref(), Some("/home/anna/Old/a.pdf"));
+        let section = saved_menu_section(&[&gone], now()).expect("saved");
+        assert_eq!(section.items.len(), 1, "no Show in folder for a file that is gone");
+        assert!(saved_menu_section(&[], now()).is_none());
+    }
+
+    /// Issue #781: the demo's invoice shows every state of the note – the mail as PDF, an attachment
+    /// there and one gone –, a mail without attachments none.
+    #[test]
+    fn the_demo_history_shows_every_state() {
+        let source = DemoSource::new(now());
+        let invoice = DemoSource::get_mail(&source, "m:p3").expect("the invoice");
+        let history = demo_history(&invoice);
+        assert_eq!(history.len(), 3);
+        assert!(matches!(history[0].what, SavedWhat::Mail { format: ExportFormat::Pdf }));
+        assert_eq!(history.iter().filter(|save| !save.present).count(), 1, "one file gone");
+        let plain = Mail { attachments: Vec::new(), ..invoice };
+        assert!(demo_history(&plain).is_empty());
+    }
+
     /// Issue #397: a main category's mark comes from the catalogue – one the person made in the icon
     /// and colour they chose –, the suite's without an entry (Unsorted: the fifth colour).
     #[test]
@@ -6811,6 +7143,7 @@ mod tests {
             kinds: None,
             contact_book: false,
             contact_busy: false,
+            saves: None,
         };
         check(&reading)
     }
@@ -8206,6 +8539,7 @@ mod tests {
                         kinds: None,
                         contact_book: false,
                         contact_busy: false,
+                        saves: None,
                     };
                     let anchors = detail::Anchors::default();
                     let _ = panel(&reading, Some(&folder), &anchors, Bars::Split, None);

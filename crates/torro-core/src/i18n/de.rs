@@ -9441,4 +9441,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Read the assistant's answer in an unknown conversation aloud",
         "Die Antwort des Assistenten in einer unbekannten Unterhaltung vorlesen",
     ),
+    // Issue #781: what was saved from a mail, when and where.
+    ("{n} of {total} saved · {when}", "{n} von {total} gespeichert · {when}"),
+    ("Saved as PDF · {when}", "Als PDF gespeichert · {when}"),
+    ("Saved as picture · {when}", "Als Bild gespeichert · {when}"),
+    ("Saved as EML · {when}", "Als EML gespeichert · {when}"),
+    ("Saved to {path} · {when}", "Gespeichert unter {path} · {when}"),
+    ("File no longer there", "Datei nicht mehr vorhanden"),
 ];
