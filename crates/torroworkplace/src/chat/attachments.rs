@@ -83,8 +83,9 @@ pub struct Held {
     /// Per account: the previews by key (`<file id>:<edge>`), the oldest first, and their bytes.
     previews: BTreeMap<String, (VecDeque<(String, Picture)>, u64)>,
     /// By message id, the oldest first: the cards of its links by their index among them
-    /// ([`link_cards::links`]), `None` for a link not resolved (yet).
-    cards: BTreeMap<String, Vec<Option<Resolved>>>,
+    /// ([`link_cards::links`]), each with the link it was resolved for, `None` for a link not resolved (yet). A
+    /// message edited since may have another link at that index; its card is then not held ([`Held::card`]).
+    cards: BTreeMap<String, Vec<Option<(String, Resolved)>>>,
     order: VecDeque<String>,
     /// GitHub links no connected account showed an item for (issue #784), by link, the oldest first, with when and
     /// whether GitHub could not be asked then: asked again after [`link_cards::NO_ITEM_AFTER`] (an account connected
@@ -126,14 +127,18 @@ impl Held {
         }
     }
 
-    /// The card held for the link `index` of `message`.
-    fn card(&self, message: &str, index: usize) -> Option<&Resolved> {
-        self.cards.get(message)?.get(index)?.as_ref()
+    /// The card held for the link `index` of `message` when that link is `link`: one resolved for another link (the
+    /// message was edited since, review of #839) is not held, so neither its card nor its picture shows under the
+    /// new link and the rights checked for it.
+    fn card(&self, message: &str, index: usize, link: &str) -> Option<&Resolved> {
+        let (held, card) = self.cards.get(message)?.get(index)?.as_ref()?;
+        (held == link).then_some(card)
     }
 
-    /// Keeps `card` for the link `index` (below [`link_cards::MAX_LINKS`]) of `message`, its card carrying that
-    /// `index` (issue #785: the window takes it as it is); the oldest messages go beyond [`CARDS_KEPT`].
-    fn keep_card(&mut self, message: &str, index: usize, mut card: Resolved) {
+    /// Keeps `card` for the link `index` (below [`link_cards::MAX_LINKS`]) of `message`, which is `link`, its card
+    /// carrying that `index` (issue #785: the window takes it as it is); the oldest messages go beyond
+    /// [`CARDS_KEPT`].
+    fn keep_card(&mut self, message: &str, index: usize, link: &str, mut card: Resolved) {
         let Some(at) = u8::try_from(index).ok().filter(|_| index < link_cards::MAX_LINKS) else { return };
         if let Some(card) = card.card.as_mut() {
             card.index = at;
@@ -142,7 +147,7 @@ impl Held {
             self.order.push_back(message.to_string());
         }
         let slots = self.cards.entry(message.to_string()).or_insert_with(|| vec![None; link_cards::MAX_LINKS]);
-        slots[index] = Some(card);
+        slots[index] = Some((link.to_owned(), card));
         while self.order.len() > CARDS_KEPT {
             if let Some(oldest) = self.order.pop_front() {
                 self.cards.remove(&oldest);
@@ -371,8 +376,12 @@ impl ChatService {
         size: PreviewSize,
         caller: Caller<'_>,
     ) -> Response {
-        let Ok((account, token, _)) = super::service::message_of(id) else {
+        let Ok((account, token, number)) = super::service::message_of(id) else {
             return error_response(&ChatError::NotFound);
+        };
+        let (remote, caps, _) = match self.ready(account).await {
+            Ok(ready) => ready,
+            Err(err) => return error_response(&err),
         };
         if let Err(err) = self.room(account, &token).await {
             return error_response(&err);
@@ -380,16 +389,20 @@ impl ChatService {
         if !sees_pictures(caller) {
             return no_picture_right();
         }
-        let remote = match self.remote(account).await {
-            Ok(remote) => remote,
+        // The link standing at `index` now: a card held for the link before an edit has no picture here.
+        let message = match self.message(account, &token, number, &remote, &caps).await {
+            Ok(message) => message,
             Err(err) => return error_response(&err),
+        };
+        let Some(link) = link_cards::links(&message.text).into_iter().nth(usize::from(index)) else {
+            return error_response(&ChatError::NotFound);
         };
         // No picture of a card Settings › Privacy turned off (issue #672): it is left out of the messages.
         let privacy = self.privacy();
         let server = remote.server();
-        let picture = self.held().card(id, usize::from(index)).and_then(|held| {
+        let picture = self.held().card(id, usize::from(index), &link).and_then(|held| {
             let card = held.card.as_ref()?;
-            let (kind, decided) = decided(&privacy, &card.url, Some(&server));
+            let (kind, decided) = decided(&privacy, &link, Some(&server));
             reader_sees(card, &kind, &decided, caller.reach, account).then(|| held.picture.clone()).flatten()
         });
         let Some(picture) = picture else { return error_response(&ChatError::NotFound) };
@@ -658,7 +671,7 @@ impl ChatService {
         let mut items: Vec<(u64, SharedItem)> = held
             .cards
             .iter()
-            .flat_map(|(id, cards)| cards.iter().flatten().map(move |card| (id, card)))
+            .flat_map(|(id, cards)| cards.iter().flatten().map(move |(_, card)| (id, card)))
             .filter_map(|(id, card)| {
                 let (of, number) = split_message(id)?;
                 let card = card.card.as_ref()?;
@@ -753,7 +766,7 @@ impl ChatService {
                             LinkKind::Github { .. } => decided.loads() || !github_held,
                             _ => true,
                         };
-                        worth && held.card(id, *index).is_none()
+                        worth && held.card(id, *index, link).is_none()
                     })
                     .map(|(id, index, (link, kind, decided))| {
                         (id.clone(), index, link.clone(), kind.clone(), decided.loads())
@@ -764,7 +777,7 @@ impl ChatService {
             for (id, index, link, kind, loads) in open {
                 // Not reachable now: asked again with the next read.
                 if let Some(card) = self.resolve_for_app(account, remote, &link, &kind, loads).await {
-                    self.held().keep_card(&id, index, card);
+                    self.held().keep_card(&id, index, &link, card);
                 }
             }
         }
@@ -775,8 +788,8 @@ impl ChatService {
         for message in &mut page.messages {
             let links = links.get(&message.id).map(Vec::as_slice).unwrap_or_default();
             let mut cards = Vec::new();
-            for (index, (_, kind, decided)) in links.iter().enumerate() {
-                match held.card(&message.id, index) {
+            for (index, (link, kind, decided)) in links.iter().enumerate() {
+                match held.card(&message.id, index, link) {
                     Some(held) => {
                         let shown =
                             held.card.as_ref().filter(|card| reader_sees(card, kind, decided, caller.reach, account));
@@ -842,7 +855,9 @@ impl ChatService {
         let links = link_cards::links(&message.text);
         let index = match index {
             Some(index) => usize::from(index),
-            None => asked_link(&self.privacy(), &links, Some(&server), |at| self.held().card(id, at).is_some()),
+            None => asked_link(&self.privacy(), &links, Some(&server), |at| {
+                links.get(at).is_some_and(|link| self.held().card(id, at, link).is_some())
+            }),
         };
         let Some(link) = links.into_iter().nth(index) else {
             return error_response(&ChatError::NotFound);
@@ -865,8 +880,8 @@ impl ChatService {
             return refused("unsupported", tr("Content from this provider is turned off in Settings › Privacy."));
         };
         let mut held = self.held();
-        held.keep_card(id, index, card);
-        Response::ChatCard { card: held.card(id, index).and_then(|held| held.card.clone()) }
+        held.keep_card(id, index, &link, card);
+        Response::ChatCard { card: held.card(id, index, &link).and_then(|held| held.card.clone()) }
     }
 
     /// `chat.get_messages` with `around`: the message `number` with up to half of `limit` messages
@@ -1048,7 +1063,7 @@ mod tests {
         held.keep_preview("a", "2".into(), picture(half));
         held.keep_preview("a", "3".into(), picture(10));
         assert!(held.preview("a", "1").is_none() && held.preview("a", "3").is_some());
-        held.keep_card("a/tok/1", 0, Resolved { card: None, picture: None });
+        held.keep_card("a/tok/1", 0, "https://example.org/", Resolved { card: None, picture: None });
         held.forget_account("a");
         assert!(held.preview("a", "3").is_none() && held.cards.is_empty());
     }
@@ -1220,6 +1235,60 @@ mod tests {
         for card in [&file, &github("torro/workplace"), &quote] {
             assert!(reader_sees(card, &quoted, &Decided::Own, Reach::Suite, ACCOUNT), "the person sees every kind");
         }
+    }
+
+    /// Review of #839: a message edited from a quote of one conversation (Team Alpha) to a link on another (Ben's)
+    /// keeps no card of the first under the new link. A client that reads the chat, checked for the new link, gets
+    /// no text of Team Alpha; the app's next read resolves the new link. (Rights reach a whole chat account, so the
+    /// client could read both; what matters is that the right checked and the card shown are of the same link.)
+    #[tokio::test]
+    async fn an_edited_link_shows_no_card_of_the_link_before() {
+        use torro_chat::{conversation_id, message_id};
+        use torro_ipc::Request;
+        use torro_ipc::api::{RightsTemplate, Selection};
+
+        const ACCOUNT: &str = "nextcloud:anna@cloud.example.org";
+        const APP: Caller<'static> = Caller { reach: Reach::Suite, client: None };
+        let server = Arc::new(super::super::fake::Server::default());
+        let chat = Arc::new(ChatService::fixed(vec![(ACCOUNT.into(), Arc::clone(&server))]));
+        let link = |token: &str, number: u64| format!("{}/call/{token}#message_{number}", super::super::fake::SERVER);
+        let (team, ben_three) = (link("team4alpha", 1), link("ben4chat", 3));
+        {
+            let mut state = server.state();
+            let mut own = super::super::remote::tests::message(9, &format!("see {team}"));
+            own.author = Some(super::super::fake::ME.into());
+            state.messages.get_mut("ben4chat").expect("Ben").push(own);
+        }
+        let ben = conversation_id(ACCOUNT, "ben4chat");
+        let read = Request::ChatGetMessages {
+            conversation: ben.clone(),
+            before: None,
+            after: None,
+            around: None,
+            limit: None,
+        };
+        let cards = |response: Response| match response {
+            Response::ChatMessages(page) => {
+                page.messages.into_iter().find(|message| message.number() == 9).map(|m| m.cards).unwrap_or_default()
+            }
+            other => panic!("messages: {other:?}"),
+        };
+        let quoted = |cards: &[torro_chat::LinkCard]| -> Vec<String> {
+            cards.iter().filter_map(|card| Some(card.quote.as_ref()?.text.clone())).collect()
+        };
+        assert_eq!(quoted(&cards(chat.handle(read.clone(), APP).await)), ["hello team"], "the quote of Team Alpha");
+
+        let edit = Request::ChatEditMessage { id: message_id(&ben, 9), text: format!("see {ben_three}") };
+        assert_eq!(chat.handle(edit, APP).await, Response::Ok);
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.chat_accounts = Selection::Only(vec![ACCOUNT.into()]);
+        let agent = Caller { reach: Reach::Client(&rights), client: Some("agent") };
+        let theirs = cards(chat.handle(read.clone(), agent).await);
+        assert!(theirs.iter().all(|card| card.url != team), "no card of the link before: {theirs:?}");
+        assert!(quoted(&theirs).is_empty(), "no text of Team Alpha: {theirs:?}");
+
+        assert_eq!(quoted(&cards(chat.handle(read.clone(), APP).await)), ["three"], "the new link resolved");
+        assert_eq!(quoted(&cards(chat.handle(read, agent).await)), ["three"], "and held for the client too");
     }
 
     /// Issue #784: a GitHub link no account shows is held, so GitHub is not asked with every read of the messages.
