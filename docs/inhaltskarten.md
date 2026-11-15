@@ -46,8 +46,8 @@ Stand je Zeile: `gebaut` (im Code und im Befehlskatalog), `geplant` (entschieden
 
 | Inhaltsart | Erkannt an | Zeigt | Zusatzinformation von | Gilt in | Stand |
 |---|---|---|---|---|---|
-| **Webseite** | `http(s)`-Link | Vorschaubild, Titel, Domain, etwas Text | im Chat: Nextcloud (`references/resolve`) oder, bei Privacy „Always“/„Show once“, die Seite selbst; im Assistenten: die Seite, nur mit Privacy | A B C | `gebaut` (Chat #636, Assistent/Bots #785) |
-| **YouTube** | `youtube.com/watch`, `youtu.be`, Shorts | Bild in 16:9, Abspielzeichen, Titel, „Open on YouTube“; Klick öffnet den Player | Link-Karte (`video`: Kennung, Start, Short) | A B C | Chat `gebaut` (#673), Assistent/Bots `geplant` |
+| **Webseite** | `http(s)`-Link | Vorschaubild, Titel, Domain, etwas Text | im Chat: Nextcloud (`references/resolve`) oder, bei Privacy „Always“/„Show once“, die Seite selbst; im Assistenten: über den eigenen Nextcloud (wie im Chat), nur mit Privacy | A B C | `gebaut` (Chat #636, Assistent/Bots #785) |
+| **YouTube** | `youtube.com/watch`, `youtu.be`, Shorts | Bild in 16:9, Abspielzeichen, Titel, „Open on YouTube“; Klick öffnet den Player | Link-Karte (`video`: Kennung, Start, Short) | A B C | Chat `gebaut` (#673), Assistent/Bots `gebaut` (#785: Videokarte, ein Klick öffnet YouTube; eigener Player `geplant`) |
 | **Andere Videos** (Vimeo, PeerTube, direkte Videodatei) | Link auf bekannten Anbieter | wie YouTube, ohne eigenen Player zuerst | Link-Karte | A B C | `Idee` |
 | **E-Mail**, gefunden oder referenziert | Treffer aus `mail.search` / `mail.get_message`; im Chat geteilte Mail-Karte | Absender, Betreff, Datum, Anfang des Textes, „Open in mail“; Kennzeichnung `untrusted` | der Kern aus dem Mail-Cache, nie aus dem Text des Modells | A B (C nur als geteilte Karte) | A B `gebaut` (#786), C geteilt `geplant` (#800) |
 | **Mail-Vorschlag** (Termin, Aufgabe aus einer Mail) | `mail.extract_action` | der Vorschlag mit „Accept“/„Dismiss“ | `mail.list_suggestions` | A B | `gebaut` (`CardRef::Suggestion`, #605) |
@@ -221,12 +221,12 @@ und kommt mit dem Issue der jeweiligen Karte in den Befehlskatalog (`torro-ipc`,
 |---|---|---|---|---|
 | Karten eines Assistenten-Verlaufs lesen | Chatfenster des Assistenten | `assistant.get_cards` (vorhanden) | Read | `assistant_get_cards` (vorhanden) |
 | Link-Karten einer Nachricht lesen | Chatfenster | Feld `cards` in `chat.get_messages` (vorhanden) | Read | `chat_get_messages` (vorhanden) |
-| Bild einer Karte holen | Chatfenster | `chat.get_preview { card: true, index? }` (bis drei Karten je Nachricht, #785) | Read | `chat_get_preview` (vorhanden) |
-| Bild einer Webseiten-Karte im Assistenten | Chatfenster des Assistenten | `assistant.get_card_picture { conversation, seq }` (#785) | Read | `Never`: nur das Fenster braucht die Bilddaten; Agenten lesen Titel und Text über `assistant_get_cards` |
-| Link-Karte einmal zeigen („Show once“) | Chatfenster | `chat.show_card { index? }` (vorhanden) | Write | `Never`: nur Menschen, [api.md](api.md) Punkt 14 |
+| Bild einer Karte holen | Chatfenster | `chat.get_preview { card: true, index? }` (bis drei Karten je Nachricht, #785; `index` ist das Feld `index` der Karte: die Stelle ihres Links unter den ersten drei des Texts) | Read **und** Recht „Bildinhalte“ | `chat_get_preview` (vorhanden) |
+| Bild einer Link-Karte im Assistenten | Chatfenster des Assistenten | `assistant.get_card_picture { conversation, seq }` (#785); für einen Client nur, wenn `assistant.get_cards` ihm die Karte mit Bild zeigt (#784) | Read **und** Recht „Bildinhalte“ | `assistant_get_card_picture`: holt nichts Neues, nur das Bild einer Karte, die der Kern hält |
+| Link-Karte einmal zeigen („Show once“) | Chatfenster | `chat.show_card { index? }` (vorhanden; ohne `index` der Link, nach dem die Nachricht fragt, ihr `foreign`) | Write | `Never`: nur Menschen, [api.md](api.md) Punkt 14 |
 | Webseiten-Karte im Assistenten einmal zeigen („Show once“) | Chatfenster des Assistenten | `assistant.show_card { conversation, seq }` (#785) | Write | `Never`: nur Menschen, [api.md](api.md) Punkt 14 |
 | Stufe und Anbieter ändern | Settings › Privacy | `settings.set_setting privacy_*` (vorhanden) | Admin, nur App-Schlüssel | im Katalog `Mcp::Tool`; Werte `privacy_*` bekommen von jedem Client `forbidden` (`kept_for_people`, [api.md](api.md) Punkt 14), Lesen über `settings_get_settings` |
-| Webseiten-Karte im Assistenten auflösen | Chatfenster des Assistenten | `assistant.get_cards` mit `CardRef::Link` (#785) | Read | vorhandenes `assistant_get_cards` |
+| Webseiten-Karte im Assistenten auflösen | Chatfenster des Assistenten | `assistant.get_cards` mit `CardRef::Link` (#785); nur das Fenster der Person lädt eine Seite oder fragt nach dem Anbieter, ein Client bekommt die gehaltene Karte oder den Link (#784); `offline`, solange der Server nicht erreichbar ist | Read | vorhandenes `assistant_get_cards` |
 | Gefundene Mail als Karte | Chatfenster des Assistenten | `assistant.get_cards` mit `CardRef::Mail` (#786) | Read | vorhandenes `assistant_get_cards` |
 | Treffer als Karten zeigen (bis 10, Kurzform ab 4, „Show all“ ab 11) | Chatfenster des Assistenten, vom Assistenten selbst | `assistant.show_items { conversation?, items }` (#786); nur Kennungen, die der Assistent in dieser Unterhaltung gelesen hat | Write | `assistant_show_items` |
 | Landkarte als Karte | beide Chatfenster | Vorschlag: `CardRef::Map`, Bild über `calendar.map_preview` (vorhanden); der Kern holt es beim Auflösen der Karte selbst, das Modell sieht es nie | Read | Bild nicht für Assistenten (`calendar_map_preview`, [termin-editor.md](termin-editor.md)) |
@@ -239,13 +239,17 @@ und kommt mit dem Issue der jeweiligen Karte in den Befehlskatalog (`torro-ipc`,
 | Notiz als Karte | beide Chatfenster | Vorschlag: `CardRef::Note`, Inhalt über `notes.get_note` ([notizen.md](notizen.md)) | Read | vorhandenes `assistant_get_cards` |
 | Kontakt als Karte | beide Chatfenster | `CardRef::Contact` (#789) über `contacts.get_contact` und `contacts.get_photo` (vorhanden); im Chat die geteilte Karte aus [teilen.md](teilen.md) | Read | vorhandenes `assistant_get_cards` |
 | Nextcloud-Datei als Karte | beide Chatfenster | Link-Karte mit `kind: nextcloud_file` im Feld `cards` von `chat.get_messages`, im Assistenten `CardRef::Link` | Read | vorhandene `chat_get_messages`, `assistant_get_cards` |
-| GitHub Issue / PR als Karte | beide Chatfenster | Link-Karte mit `kind: github`, aufgelöst über das GitHub-Konto des Kerns ([github.md](github.md)) | Read | vorhandene `chat_get_messages`, `assistant_get_cards` |
+| Nextcloud-Datei, GitHub Issue / PR, Zitat: Rechte des Lesenden | beide Chatfenster | Der Kern löst mit den Rechten der Person auf; ein Client bekommt die Karte und ihr Bild nur mit dem Recht, das ihre Art verlangt: Datei mit Lesen des Chats im Konto (`chat.get_messages`, abgeschaltete Befehle zählen), GitHub mit Lesen in `github` und dem Repository, Zitat mit Lesen der zitierten Unterhaltung (#784) | Read | vorhandene `chat_get_messages`, `chat_get_preview`, `assistant_get_cards` |
+| GitHub Issue / PR als Karte | beide Chatfenster | Link-Karte mit `kind: github`, aufgelöst über das GitHub-Konto des Kerns ([github.md](github.md)); ohne sichtbares Item gehalten (nach einem Fehler eine Minute), dann die Webseiten-Karte | Read | vorhandene `chat_get_messages`, `assistant_get_cards` |
 | Zitat einer Chat-Nachricht als Karte | beide Chatfenster | Link-Karte mit `kind: chat_message`, Inhalt über `chat.get_messages` (vorhanden), nur mit Leserecht des Empfängers | Read | vorhandene `chat_get_messages`, `assistant_get_cards` |
-| Karte neu laden („Try again“) | alle Fenster | kein eigener Befehl: dieselbe Anfrage (`assistant.get_cards`, `chat.get_preview`) noch einmal | Read | wie oben |
+| Karte neu laden („Try again“) | alle Fenster | kein eigener Befehl: dieselbe Anfrage (`assistant.get_cards`, `chat.get_preview`) noch einmal; eine Link-Karte mit `offline` fragt den Server frühestens nach einer Minute wieder | Read | wie oben |
 
 Es entsteht **kein Befehl, mit dem ein Agent eine Karte frei hinstellt** (`chat.show_card` und
 `assistant.show_card` sind bewusst `Never`): Eine Karte entsteht nur als Ergebnis eines Befehls oder Werkzeugs, das
-der Kern selbst ausführt. `assistant.show_items` wählt nur aus, was der Kern in dieser Unterhaltung schon gelesen hat.
+der Kern selbst ausführt. `assistant.show_items` wählt nur aus, was der Kern in dieser Unterhaltung schon gelesen hat,
+und mit einem geliehenen Schlüssel (Engine B) immer in der Unterhaltung, für die er geliehen ist. Eine Adresse gilt
+nur dann als gelesen, wenn sie in der Antwort eines lesenden Befehls (`Read` im Katalog) steht; was ein schreibender
+Befehl wie `mail.save_draft` zurückgibt, ist das Echo des Modells und fragt zuerst.
 
 ## Reihenfolge
 
