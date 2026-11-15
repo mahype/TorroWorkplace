@@ -545,7 +545,7 @@ impl Launch {
                 Some(id) if is_bot_id(id) => (Section::Overview, Some(ClientTarget::Bot(id.to_owned()))),
                 _ => {
                     let mut valid: Vec<&str> = Section::ALL.iter().map(|s| s.arg()).collect();
-                    valid.extend(["assistant", "bot:<id>", "agents", "inbox"]);
+                    valid.extend(["assistant", "bot:<id>", "agents", "apps", "inbox"]);
                     (Section::from_arg(word).ok_or_else(|| unknown("--section", word, valid))?, None)
                 }
             },
@@ -1803,7 +1803,7 @@ mod tests {
         let err = Launch::parse(&args(&["--section", "mail"])).expect_err("unknown section");
         assert!(
             err.to_string().ends_with(
-                "valid values: overview, accounts, ai, api, mcp, connections, approvals, workspaces, appearance, privacy, general, assistant, bot:<id>, agents, inbox"
+                "valid values: overview, accounts, ai, api, mcp, connections, approvals, workspaces, appearance, privacy, general, assistant, bot:<id>, agents, apps, inbox"
             ),
             "{err}"
         );

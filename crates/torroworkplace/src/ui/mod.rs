@@ -476,8 +476,8 @@ pub struct Ui {
     approvals: approvals::State,
     general: general::State,
     apps: apps::State,
-    /// When the app catalog last came ([`Message::AppCatalog`]): outside its section it is asked for
-    /// once a minute, for the sidebar's count of updates.
+    /// When the app catalog last came ([`Message::AppCatalog`]): asked for again after
+    /// [`CATALOG_ON_OVERVIEW`] while Overview shows it, else after [`CATALOG_EVERY`].
     catalog_at: Option<Instant>,
     /// The stored map data is to be asked for with the next reload (issue #355): when General opens and
     /// after "Clear", not with every tick, since the core counts the tiles on disk for it.
@@ -1275,11 +1275,14 @@ impl Ui {
         Task::batch([rest, self.reload_app_catalog()])
     }
 
-    /// The app catalog with every reload while a job runs, else once a minute: the core reads what is
-    /// installed for it each time (issue #411). Not with every reload while Overview is open (issue
-    /// #803): Overview is the page a control centre starts on and stays on.
+    /// The app catalog with every reload while a job runs or the last load failed, else every few
+    /// seconds while Overview shows it and once a minute elsewhere: the core reads what is installed
+    /// for it each time (issue #411, #803).
     fn reload_app_catalog(&self) -> Task<Message> {
-        let due = apps::job_runs(&self.data) || self.catalog_at.is_none_or(|at| at.elapsed() >= CATALOG_EVERY);
+        let every = if self.section == Section::Overview { CATALOG_ON_OVERVIEW } else { CATALOG_EVERY };
+        let due = apps::job_runs(&self.data)
+            || matches!(self.data.app_catalog.catalog, apps::Catalog::Failed(_))
+            || self.catalog_at.is_none_or(|at| at.elapsed() >= every);
         if self.launch.demo || !due {
             return Task::none();
         }
@@ -2719,9 +2722,14 @@ fn load(with_providers: bool, with_maps: bool, ai_cache: Option<MailDeciderCache
     )
 }
 
-/// How often the app catalog is asked for while its section is closed (issue #411), for the
+/// How often the app catalog is asked for while Overview does not show it (issue #411), for the
 /// sidebar's count of updates.
 const CATALOG_EVERY: Duration = Duration::from_secs(60);
+
+/// How often the app catalog is asked for while Overview shows it (issue #803): soon enough that a
+/// job this window did not start (an uninstall from its own window, one from MCP) shows on the cards,
+/// yet not with every tick of the page a control centre starts and stays on.
+const CATALOG_ON_OVERVIEW: Duration = Duration::from_secs(10);
 
 /// Loads the app catalog (`apps.list_catalog`, issue #411) and, while a job runs, how far it is
 /// (`apps.app_job`), apart from [`load`]: [`Ui::reload_app_catalog`] says when.
@@ -4239,10 +4247,25 @@ mod tests {
         // Without --demo the same action is a request.
         assert_eq!(ui(Section::Overview).perform(sync()).units(), 1);
         assert_eq!(ui(Section::Overview).update(Message::Tick).units(), 3, "the reload, the app catalog and the zoom");
-        // Once the catalog came, away from Overview it waits a minute (issue #411, #803).
-        let mut later = ui(Section::Accounts);
-        let _ = later.update(Message::AppCatalog(Box::default()));
-        assert_eq!(later.update(Message::Tick).units(), 2, "the reload and the zoom");
+        // Once the catalog came, the next tick waits: on Overview a few seconds, elsewhere a minute (issue
+        // #411, #803); a failed load is asked for again at once.
+        for section in [Section::Overview, Section::Accounts] {
+            let mut later = ui(section);
+            let _ = later.update(Message::AppCatalog(Box::new(apps::Loaded {
+                catalog: apps::Catalog::Listed(Box::new(apps::demo_catalog(chrono::Utc::now()))),
+                job: None,
+            })));
+            assert_eq!(later.update(Message::Tick).units(), 2, "{section:?}: the reload and the zoom");
+            later.catalog_at = Instant::now().checked_sub(CATALOG_ON_OVERVIEW);
+            let expected = if section == Section::Overview { 3 } else { 2 };
+            assert_eq!(later.update(Message::Tick).units(), expected, "{section:?}: after a few seconds");
+        }
+        let mut failed = ui(Section::Accounts);
+        let _ = failed.update(Message::AppCatalog(Box::new(apps::Loaded {
+            catalog: apps::Catalog::Failed("no answer".into()),
+            job: None,
+        })));
+        assert_eq!(failed.update(Message::Tick).units(), 3, "a failed catalog is asked for again");
     }
 
     #[test]
