@@ -7011,11 +7011,21 @@ impl Core {
             Request::DownloadVoiceModel { model } => voice_models_answer(self.voice_models.download(&model)),
             Request::CancelVoiceDownload { model } => voice_models_answer(self.voice_models.cancel(&model).await),
             Request::RemoveVoiceModel { model } => {
-                // The speech helper holds Pocket's files open while it runs, which Windows does not delete.
+                // The speech helper holds Pocket's files open while it runs, the listener those of its
+                // speech recognition, and Windows deletes no open file. The listener starts again after,
+                // when voice is on: without its model it says so.
                 if model == torro_core::voice_models::POCKET_DE {
                     self.speech.end().await;
                 }
-                voice_models_answer(self.voice_models.remove(&model).await)
+                let listening = self.settings.current().voice.recognizer.model() == model;
+                if listening {
+                    self.voice.end().await;
+                }
+                let answer = voice_models_answer(self.voice_models.remove(&model).await);
+                if listening {
+                    self.follow_voice();
+                }
+                answer
             }
             Request::MapsStatus => self.maps_status(reach),
             Request::ClearMapsCache => self.clear_maps_cache(reach),
