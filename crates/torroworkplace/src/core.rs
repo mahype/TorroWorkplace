@@ -33288,8 +33288,12 @@ done"#,
             says("I may not search."),
         ]);
         let (core, _host, engine, client) = web_core(dir.path(), &ollama, &pages, &mojeek, Arc::clone(&script)).await;
-        // Without skills (issue #703): a small model's slots go to the reading tools of mail and the web.
-        let bot = bot_with(&core, "Travel planner", &engine, web_reader()).await;
+        // Without skills (issue #703): a small model's slots go to the reading tools. The bot reads the web
+        // only, so the reading tools of mail – which grow with the catalogue (issue #781) – never push the
+        // web out of a small model's slots; past them it would be found with `find_tools`.
+        let mut web_only = reading(&[Area::Tools]);
+        web_only.tools = Selection::Only(vec!["web".into()]);
+        let bot = bot_with(&core, "Travel planner", &engine, web_only).await;
         let mut plain = save_bot(Some(&bot.id), "Travel planner");
         if let Request::SaveBot { engine: of_bot, skills, .. } = &mut plain {
             (*of_bot, *skills) = (engine.clone(), Vec::new());
