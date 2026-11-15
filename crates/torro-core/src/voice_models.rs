@@ -65,8 +65,79 @@ pub const POCKET_DE: &str = "pocket-de";
 /// [`MODELS`] and never downloaded; `settings.voice_status` names it for the wake word.
 pub const HEY_TORRO: &str = "hey-torro";
 
+/// Qwen3-TTS 0.6B Base for Crane (#764): the talker and its speech tokenizer as Qwen publishes them,
+/// read without conversion. Crane wants the tokenizer in a folder `speech_tokenizer/`; the catalogue
+/// keeps every file flat in the model's folder, so its two files carry the folder in their names and
+/// the assistant links them into place when it loads the model.
+pub const QWEN: &str = "qwen3-tts";
+
+/// Every model, in the order the settings show them: speech recognition first, the recommended one on
+/// top, Qwen3-TTS last and only in builds with it (`crate::settings::QWEN_BUILT`).
+#[cfg(feature = "qwen-tts")]
+pub const MODELS: [Model; 4] = [BUILT_IN[0], BUILT_IN[1], BUILT_IN[2], QWEN_MODEL];
+
 /// Every model, in the order the settings show them: speech recognition first, the recommended one on top.
-pub const MODELS: [Model; 3] = [
+#[cfg(not(feature = "qwen-tts"))]
+pub const MODELS: [Model; 3] = BUILT_IN;
+
+/// The model of Qwen3-TTS ([`QWEN`]), at the revision measured in `docs/messung-qwen3-tts.md`.
+#[cfg_attr(
+    not(any(feature = "qwen-tts", test)),
+    expect(dead_code, reason = "listed only in builds with Qwen3-TTS; tested in every build")
+)]
+const QWEN_MODEL: Model = Model {
+    id: QWEN,
+    name: "Qwen3-TTS 0.6B",
+    kind: VoiceModelKind::Speech,
+    recommended: false,
+    files: &[
+        ModelFile {
+            name: "config.json",
+            url: "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/resolve/5d83992436eae1d760afd27aff78a71d676296fc/config.json",
+            sha256: "2e714c787c8edb98b05432685cddb634add2de4d4e645f653d68251ef72ba011",
+            bytes: 4_494,
+        },
+        ModelFile {
+            name: "vocab.json",
+            url: "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/resolve/5d83992436eae1d760afd27aff78a71d676296fc/vocab.json",
+            sha256: "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+            bytes: 2_776_833,
+        },
+        ModelFile {
+            name: "merges.txt",
+            url: "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/resolve/5d83992436eae1d760afd27aff78a71d676296fc/merges.txt",
+            sha256: "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+            bytes: 1_671_839,
+        },
+        ModelFile {
+            name: "tokenizer_config.json",
+            url: "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/resolve/5d83992436eae1d760afd27aff78a71d676296fc/tokenizer_config.json",
+            sha256: "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670",
+            bytes: 7_344,
+        },
+        ModelFile {
+            name: "model.safetensors",
+            url: "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/resolve/5d83992436eae1d760afd27aff78a71d676296fc/model.safetensors",
+            sha256: "180b3b10eb1c9f1b4db7806d5475bae3071c0243c299d49926bab1da3b6946f6",
+            bytes: 1_829_344_272,
+        },
+        ModelFile {
+            name: "speech_tokenizer.config.json",
+            url: "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/resolve/5d83992436eae1d760afd27aff78a71d676296fc/speech_tokenizer/config.json",
+            sha256: "ee65bb901c876664ab8707c487157aa1a6ee57c65969b28fb5ec9dc211e68167",
+            bytes: 2_336,
+        },
+        ModelFile {
+            name: "speech_tokenizer.model.safetensors",
+            url: "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/resolve/5d83992436eae1d760afd27aff78a71d676296fc/speech_tokenizer/model.safetensors",
+            sha256: "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+            bytes: 682_293_092,
+        },
+    ],
+};
+
+/// The models every build has.
+const BUILT_IN: [Model; 3] = [
     Model {
         id: WHISPER_TURBO,
         name: "Whisper turbo",
@@ -371,6 +442,23 @@ mod tests {
         for (_, file) in POCKET_VOICE_FILES {
             assert!(pocket.files.iter().any(|known| known.name == file), "{file}");
         }
+    }
+
+    /// Issue #764: Qwen3-TTS is in the catalogue only where it is built, after Pocket TTS and not
+    /// recommended; its files come from one revision, each named after its path in the repository.
+    #[test]
+    fn qwen_is_listed_only_where_it_is_built() {
+        assert_eq!(model(QWEN).is_some(), crate::settings::QWEN_BUILT);
+        assert_eq!(MODELS.len(), 3 + usize::from(crate::settings::QWEN_BUILT));
+        assert_eq!(QWEN_MODEL.kind, VoiceModelKind::Speech);
+        const { assert!(!QWEN_MODEL.recommended, "Pocket TTS stays the recommended voice") };
+        let revision = "/resolve/5d83992436eae1d760afd27aff78a71d676296fc/";
+        assert!(QWEN_MODEL.files.iter().all(|file| file.url.contains(revision)));
+        for file in QWEN_MODEL.files {
+            let path = file.url.split(revision).nth(1).unwrap_or_default();
+            assert_eq!(path.replace('/', "."), file.name, "the name is its path with the folder in it");
+        }
+        assert!(QWEN_MODEL.bytes() > 2_000_000_000, "about 2.5 GB");
     }
 
     #[test]
