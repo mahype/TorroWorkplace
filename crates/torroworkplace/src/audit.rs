@@ -601,7 +601,8 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::DeleteConversation { id: conversation }
         | Request::PinConversation { id: conversation, .. }
         | Request::OpenChatWindow { window: ChatWindow::Conversation(conversation) }
-        | Request::ShowAssistantCard { conversation, .. } => {
+        | Request::ShowAssistantCard { conversation, .. }
+        | Request::GetCardPicture { conversation, .. } => {
             vec![random("conversation", conversation)]
         }
         // Issue #786: the conversation only; the items are ids of mails, events, tasks and contacts, which the

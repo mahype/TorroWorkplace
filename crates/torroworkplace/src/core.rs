@@ -7519,10 +7519,17 @@ impl Core {
             }
             // Content cards (issue #784): showing what an answer found (strand 2f, issue #786) and "Show once" of a
             // link card (strand 2b, issue #785) come with the strands; until then neither is there.
-            Request::ShowItems { .. } | Request::ShowAssistantCard { .. } => Response::Error {
+            // The picture of a link card (issue #785) – Must (strand 2b): only with the app key (the catalogue keeps
+            // it from clients), only for the card `seq` of `conversation` as `Core::looked` shows it now with the
+            // rights of the conversation's client (`crate::assistant::cards::link`, a card shown once from `Shown`),
+            // only when that card has `image`; the picture through the own Nextcloud exactly as `chat.get_preview`
+            // with `card` fetches it (no SVG, kinds sniffed, `Response::ChatPicture`); `not-found` otherwise.
+            Request::ShowItems { .. } | Request::ShowAssistantCard { .. } | Request::GetCardPicture { .. } => {
+                Response::Error {
                 code: "unsupported".into(),
                 message: tr("This version cannot show these cards yet.").into(),
-            },
+            }
+            }
             // Cards (issue #225): resolved with the rights of the conversation's client, not the caller's
             // alone.
             // A chat about a mail the caller may not read is not there for it (issue #605).

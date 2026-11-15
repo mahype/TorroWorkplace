@@ -410,6 +410,9 @@ pub enum Message {
     CardRequest(Box<Request>, &'static str),
     /// The core's answer to a [`Message::CardRequest`], with the text to say when it failed.
     CardAnswered(Result<(), Refusal>, &'static str),
+    /// The picture of the link card `seq` of the conversation (issue #785, `assistant.get_card_picture`), as the
+    /// core sent it.
+    CardPicture(String, u64, Result<torro_ipc::chat::ChatPicture, Refusal>),
     /// The core's answer to the decision.
     Decided(String, Result<ApprovalInfo, Refusal>),
     /// From the sidebar: show the conversation with this id.
@@ -635,6 +638,9 @@ pub struct App {
     /// The cards of the open conversation as the core resolved them last (`assistant.get_cards`,
     /// task WZ.8), by the number of their entry; a card not resolved yet is not drawn.
     pub(crate) cards: HashMap<u64, Card>,
+    /// The pictures of link cards (issue #785, `assistant.get_card_picture`), by conversation and the card's entry,
+    /// decoded to draw ([`App::fetch_card_picture`]). Strand 2g of issue #784 fills it.
+    pub(crate) card_pictures: HashMap<(String, u64), iced::widget::image::Handle>,
     /// The tool lines unfolded, by number.
     pub(crate) expanded: HashSet<u64>,
     /// The answers as Markdown blocks, by number, with the text they were made from: for the
@@ -798,6 +804,7 @@ impl App {
             approvals: HashMap::new(),
             deciding: None,
             cards: HashMap::new(),
+            card_pictures: HashMap::new(),
             expanded: HashSet::new(),
             answers: HashMap::new(),
             stream: None,
@@ -1204,6 +1211,12 @@ impl App {
             }
             Message::CardRequest(request, failed) => {
                 return self.ask(*request, move |result| Message::CardAnswered(result.map(|_| ()), failed));
+            }
+            // Must (strand 2g of issue #784): decode the picture (PNG, JPEG, GIF, WebP, as `torrochat::system::
+            // picture_handle` does) into `card_pictures` under `(conversation, seq)`, for the conversation still open;
+            // a refusal keeps the kind's icon and asks no more for that card until the cards change.
+            Message::CardPicture(conversation, seq, result) => {
+                let _ = (conversation, seq, result);
             }
             Message::CardAnswered(result, failed) => {
                 if let Err(refusal) = result {
@@ -2067,6 +2080,27 @@ impl App {
 
     /// The cards of the open conversation as they are now (`assistant.get_cards`, task WZ.8); nothing
     /// for a conversation without cards.
+    /// Asks for the picture of the link card `seq` of `conversation` (issue #785): `assistant.get_card_picture`
+    /// small, answered with [`Message::CardPicture`].
+    ///
+    /// Must (strand 2g of issue #784): call it after the cards came for each [`Card::Link`] whose card has `image`
+    /// and whose picture is not in `card_pictures` yet, once per card.
+    #[allow(dead_code, reason = "scaffold of issue #784: strand 2g calls it once the cards are drawn with pictures")]
+    pub(crate) fn fetch_card_picture(&mut self, conversation: String, seq: u64) -> Task<Message> {
+        let request = Request::GetCardPicture {
+            conversation: conversation.clone(),
+            seq,
+            size: torro_ipc::chat::PreviewSize::Small,
+        };
+        self.ask(request, move |result| {
+            let picture = result.and_then(|response| match response {
+                Response::ChatPicture { picture } => Ok(picture),
+                other => Err(Refusal::unexpected(&other)),
+            });
+            Message::CardPicture(conversation.clone(), seq, picture)
+        })
+    }
+
     fn fetch_cards(&mut self) -> Task<Message> {
         let Some(id) = self.current.clone().filter(|_| !self.transcript.cards().is_empty()) else {
             return Task::none();

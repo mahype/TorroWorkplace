@@ -4079,13 +4079,15 @@ mod tests {
         assert!(catalogue.iter().all(|name| name.starts_with("assistant_") && names.contains(name.as_str())));
         // But the person's yes to asking a bot (task B.2), which no agent may give, dictating (issue
         // #699) and a conversation by voice (issue #747): only a person switches the microphone on. "Show once" of a
-        // link card (issue #785): only a person lets a foreign page learn when it was read.
+        // link card (issue #785): only a person lets a foreign page learn when it was read; its picture is for the
+        // window only.
         let people_only = [
             "assistant.confirm_bot",
             "assistant.dictate",
             "assistant.stop_dictation",
             "assistant.start_talk",
             "assistant.show_card",
+            "assistant.get_card_picture",
         ];
         let assistant = CATALOGUE.iter().filter(|c| c.area == Area::Assistant && !people_only.contains(&c.name));
         assert!(assistant.clone().all(|c| c.mcp == Mcp::Tool));

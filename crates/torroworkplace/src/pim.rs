@@ -1432,6 +1432,7 @@ impl PimService {
             | Request::GetCards { .. }
             | Request::ShowItems { .. }
             | Request::ShowAssistantCard { .. }
+            | Request::GetCardPicture { .. }
             | Request::SendMessage { .. }
             | Request::CheckAbout { .. }
             | Request::CancelAnswer { .. }

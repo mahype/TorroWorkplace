@@ -2034,6 +2034,7 @@ impl Request {
             Request::GetCards { .. } => &GET_CARDS,
             Request::ShowItems { .. } => &SHOW_ITEMS,
             Request::ShowAssistantCard { .. } => &SHOW_ASSISTANT_CARD,
+            Request::GetCardPicture { .. } => &GET_CARD_PICTURE,
             Request::SendMessage { .. } => &SEND_MESSAGE,
             Request::CheckAbout { .. } => &CHECK_ABOUT,
             Request::CancelAnswer { .. } => &CANCEL,
@@ -2491,6 +2492,7 @@ pub static CATALOGUE: &[&Command] = &[
     &GET_CARDS,
     &SHOW_ITEMS,
     &SHOW_ASSISTANT_CARD,
+    &GET_CARD_PICTURE,
     &SEND_MESSAGE,
     &CHECK_ABOUT,
     &CANCEL,
@@ -6093,6 +6095,18 @@ static SHOW_ASSISTANT_CARD: Command = Command {
                   while it says \"Never show\".",
 };
 
+// Read and never a tool: picture data for the window (issue #785); an agent reads a card's title and text with
+// assistant.get_cards and needs no picture of a page.
+static GET_CARD_PICTURE: Command = Command {
+    name: "assistant.get_card_picture",
+    area: Area::Assistant,
+    access: Access::Read,
+    mcp: Mcp::Never,
+    description: "Returns the picture of a link card in a conversation of the assistant, drawn by the own Nextcloud \
+                  (`seq` the card's entry; `size` `small`, `medium` or `large`). Only for the person's window: \
+                  agents read the card's title and text with get_cards. `not-found` for a card without a picture.",
+};
+
 // Write: it starts a run of the assistant, which then works with the assistant's own rights (they
 // may be wider than the caller's in other areas; that is why the area is off by default). A chat with a
 // bot (`bot`, issue #698) works with what both the bot and the caller may, as bots.ask_bot.
@@ -7430,6 +7444,11 @@ mod tests {
                 ],
             },
             Request::ShowAssistantCard { conversation: "0123456789abcdef".into(), seq: 7 },
+            Request::GetCardPicture {
+                conversation: "0123456789abcdef".into(),
+                seq: 7,
+                size: crate::chat::PreviewSize::Small,
+            },
             Request::SendMessage {
                 conversation: Some("0123456789abcdef".into()),
                 engine: "ai:ollama@localhost:11434".into(),
@@ -8183,6 +8202,8 @@ mod tests {
                         | "chat.show_card"
                         // Point 14 as chat.show_card (issue #785): "Show once" in the assistant's chat.
                         | "assistant.show_card"
+                        // Point 14 as well (issue #785): the picture of a page's card is for the window only.
+                        | "assistant.get_card_picture"
                 );
             assert_eq!(command.mcp == Mcp::Never, kept_back, "{}", command.name);
             // Only the app key may manage clients, so all of their commands are admin commands.

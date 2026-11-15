@@ -1122,7 +1122,8 @@ impl Request {
             | Request::SpeakAnswer { conversation: id }
             | Request::OpenChatWindow { window: ChatWindow::Conversation(id) }
             | Request::ConfirmBot { conversation: id, .. }
-            | Request::ShowAssistantCard { conversation: id, .. } => Some(id),
+            | Request::ShowAssistantCard { conversation: id, .. }
+            | Request::GetCardPicture { conversation: id, .. } => Some(id),
             Request::SendMessage { conversation, .. }
             | Request::AskBot { conversation, .. }
             | Request::StartTalk { conversation }

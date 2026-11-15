@@ -1291,6 +1291,9 @@ fn describe(request: &Request) -> String {
         // Never what the items are (issue #786).
         Request::ShowItems { items, .. } => format!("show {} items as cards", items.len()),
         Request::ShowAssistantCard { conversation, seq } => format!("show card {seq} of conversation {conversation}"),
+        Request::GetCardPicture { conversation, seq, .. } => {
+            format!("picture of card {seq} of conversation {conversation}")
+        }
         Request::SendMessage { .. } => "message to the assistant".into(),
         Request::CheckAbout { .. } => "check a chat about a mail".into(),
         Request::CancelAnswer { conversation } => format!("stop the answer in conversation {conversation}"),

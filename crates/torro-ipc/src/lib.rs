@@ -4339,6 +4339,23 @@ pub enum Request {
         /// The number of the card's entry ([`assistant::Entry::seq`]).
         seq: u64,
     },
+    /// The picture of a link card in a conversation of the assistant (issue #785, [`Response::ChatPicture`]):
+    /// drawn by the own Nextcloud for the page, as `chat.get_preview` with `card` draws it for a chat message; never
+    /// an SVG, never fetched from the page itself. Only for a card that shows its card now (`image` set: loaded by
+    /// itself or shown once), with the rights of the conversation's client. App key only: picture data for the
+    /// window, which no agent needs to read a card (`docs/api.md`, "Was nie nach außen geht", point 14). Codes:
+    /// `not-found` for an unknown conversation, an entry that is no link card, or a card without a picture;
+    /// `not-connected` without a Nextcloud account.
+    #[serde(rename = "assistant.get_card_picture")]
+    GetCardPicture {
+        /// The conversation's id from `assistant.list_conversations`.
+        conversation: String,
+        /// The number of the card's entry ([`assistant::Entry::seq`]).
+        seq: u64,
+        /// `small` (256 pixels, when left out), `medium` (1024) or `large` (1600).
+        #[serde(default)]
+        size: chat::PreviewSize,
+    },
     /// Adds the person's message to the conversation `conversation`, or to a new one, and starts
     /// the answer in the background. Answered at once with [`Response::Conversation`]: the
     /// conversation and the entries the call added (the message; an answer that is quick may be

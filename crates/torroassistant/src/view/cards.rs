@@ -67,7 +67,9 @@ impl App {
     fn content_view<'a>(&'a self, seq: u64, card: &'a Card, room: f32) -> Option<Element<'a, Message>> {
         Some(match card {
             Card::Link { url, card, ask } => {
-                return self.link_card(seq, url, card.as_deref(), ask.as_ref(), None, room);
+                let picture =
+                    self.current.clone().and_then(|conversation| self.card_pictures.get(&(conversation, seq)));
+                return self.link_card(seq, url, card.as_deref(), ask.as_ref(), picture, room);
             }
             Card::Mail { message, .. } => mail::view(message, room),
             Card::Event { event, calendar, color, overlaps, more_overlaps } => {
