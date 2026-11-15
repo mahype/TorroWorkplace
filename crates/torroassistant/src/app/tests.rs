@@ -1130,7 +1130,8 @@ fn access_opens_the_bots_rights_and_a_window_is_asked_of_the_core() {
         sent(&mut app);
         let _ = app.update(Message::BotAccess(TRAVEL.into()));
         settings_loaded(&mut app);
-        assert_eq!(pane(&app).host.current().id, settings::access::ID);
+        // A bot's rights are a page below Bots since issue #763.
+        assert_eq!(pane(&app).host.current().id, settings::bots::BOTS);
         let bot = settings::access::open_bot(&pane(&app).sections.access, pane(&app).host.data());
         assert_eq!(bot.map(|summary| summary.id.as_str()), Some(TRAVEL));
         assert!(app.sections.is_empty() && sent(&mut app).is_empty(), "no request, no control centre");
@@ -1390,7 +1391,7 @@ fn the_sections_reach_the_editor_and_access() {
     settings_loaded(&mut app);
     sent(&mut app);
     let _ = app.update(Message::SettingsPage(settings::Message::Bots(section::Message::Access(TRAVEL.into()))));
-    assert_eq!(pane(&app).host.current().id, settings::access::ID);
+    assert_eq!(pane(&app).host.current().id, section::BOTS, "the bot's rights, below Bots (issue #763)");
     let bot = settings::access::open_bot(&pane(&app).sections.access, pane(&app).host.data());
     assert_eq!(bot.map(|summary| summary.id.as_str()), Some(TRAVEL));
     assert!(app.sections.is_empty(), "not the control centre");
@@ -1400,14 +1401,15 @@ fn the_sections_reach_the_editor_and_access() {
 }
 
 /// Issue #547: the demo states of the settings open their section and press on its page once the
-/// data is in – the profile editor, with a changed name its save bar, and the tabs of Access.
+/// data is in – the profile editor under General (issue #763), with a changed name its save bar, the
+/// tabs of Access and a bot's rights below Bots.
 #[test]
 fn the_settings_demo_states_open_their_page() {
     for (word, section) in [
-        ("profile-editor", "profile"),
-        ("profile-changed", "profile"),
+        ("profile-editor", "general"),
+        ("profile-changed", "general"),
         ("access-selections", "access"),
-        ("access-bots", "access"),
+        ("access-bots", "bots"),
     ] {
         let mut app = started(&["--open", word]);
         assert_eq!(pane(&app).host.current().id, section, "{word}");
@@ -1415,22 +1417,28 @@ fn the_settings_demo_states_open_their_page() {
         assert!(app.settings_steps.is_empty(), "{word}: pressed once the data is in");
         let pane = pane(&app);
         let page = settings::page(&pane.sections, pane.host.data(), section, SizeClass::Wide);
-        if section == "profile" {
+        if section == "general" {
             assert!(page.sub_page.is_some(), "{word}: the editor is open");
             assert_eq!(page.save_bar.is_some(), word == "profile-changed", "{word}");
+        }
+        if section == "bots" {
+            let name = pane.host.data().bots.iter().find(|bot| bot.id == TRAVEL).map(|bot| bot.name.clone());
+            assert_eq!(page.sub_page.map(|(name, _)| name), name, "{word}: the travel planner's rights");
         }
     }
 }
 
-/// `--bot <id> --settings access` opens Access at that bot in the bot's window (task S.34).
+/// `--bot <id> --settings access` opens that bot's rights in the bot's window (task S.34), below
+/// Bots since issue #763; the main window's `--settings access` the assistant's, under Access.
 #[test]
 fn settings_access_with_a_bot_starts_at_the_bot() {
     let mut app = started(&["--bot", TRAVEL, "--settings", "access"]);
-    assert_eq!(pane(&app).host.current().id, settings::access::ID);
+    assert_eq!(pane(&app).host.current().id, settings::bots::BOTS);
     settings_loaded(&mut app);
     let bot = settings::access::open_bot(&pane(&app).sections.access, pane(&app).host.data());
     assert_eq!(bot.map(|summary| summary.id.as_str()), Some(TRAVEL));
     let main = started(&["--settings", "access"]);
+    assert_eq!(pane(&main).host.current().id, settings::access::ID);
     assert!(settings::access::open_bot(&pane(&main).sections.access, pane(&main).host.data()).is_none());
 }
 

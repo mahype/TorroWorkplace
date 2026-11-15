@@ -837,13 +837,15 @@ impl App {
             tasks.push(operation::focus(EDITOR));
         }
         // `--settings <section>`: the window opens with the settings in its content area; Access in
-        // a bot's window (`--bot <id> --settings access`) at that bot.
+        // a bot's window (`--bot <id> --settings access`) at that bot's rights, below Bots since
+        // issue #763.
         if let Some(section) = app.launch.settings.clone() {
-            tasks.push(app.open_settings(Some(&section)));
-            if let (Some(pane), Window::Bot(bot)) = (app.settings.as_mut(), &app.launch.window)
-                && section == settings::access::ID
-            {
-                settings::show_access(&mut pane.sections, Some(bot.clone()));
+            match (&app.launch.window, section.as_str()) {
+                (Window::Bot(bot), settings::access::ID) => {
+                    let bot = bot.clone();
+                    tasks.push(app.open_access(Some(bot)));
+                }
+                _ => tasks.push(app.open_settings(Some(&section))),
             }
         }
         // A demo state of the settings (issue #547): their section, and what is pressed on its page
@@ -2494,9 +2496,10 @@ impl App {
         load.map(Message::SettingsHost)
     }
 
-    /// The settings at Access, at the bot with this id or at the assistant (`None`), task S.34: what
-    /// "Set up access", "Change access", "Access…" and "What the bot may use" open. Open settings
-    /// switch to it; closed ones open there, with their first load.
+    /// The rights of the bot with this id or of the assistant (`None`), task S.34: what "Set up
+    /// access", "Change access", "Access…" and "What the bot may use" open – a bot's on a page below
+    /// Bots, the assistant's under Access (issue #763). Open settings switch to it; closed ones open
+    /// there, with their first load.
     fn open_access(&mut self, bot: Option<String>) -> Task<Message> {
         self.close_menus();
         let load = match self.settings.is_some() {
@@ -2504,8 +2507,12 @@ impl App {
             false => self.open_settings(None),
         };
         if let Some(pane) = self.settings.as_mut() {
+            let section = match bot {
+                Some(_) => settings::bots::BOTS,
+                None => settings::access::ID,
+            };
             settings::show_access(&mut pane.sections, bot);
-            pane.host.open(settings::access::ID);
+            pane.host.open(section);
         }
         load
     }
@@ -2739,18 +2746,24 @@ impl App {
 }
 
 /// The settings section a demo state opens and what it then presses on the page (issue #547), so the
-/// profile editor, its save bar and the tabs of Access can be photographed; `None` for every other
-/// state.
+/// profile editor, its save bar, the tabs of Access and a bot's rights can be photographed; `None`
+/// for every other state.
 fn settings_state(open: Option<Open>) -> Option<(&'static str, Vec<settings::Message>)> {
-    use settings::{access, profile};
+    use settings::{access, bots, profile};
+    // The profile is the tab Profile of General since issue #763.
+    let profile_tab = settings::Message::GeneralTab(1);
     let open_profile = settings::Message::Profile(profile::Message::OpenProfile);
     match open? {
-        Open::ProfileEditor => Some(("profile", vec![open_profile])),
-        Open::ProfileChanged => {
-            Some(("profile", vec![open_profile, settings::Message::Profile(profile::Message::Name("Jarvis".into()))]))
-        }
+        Open::ProfileEditor => Some(("general", vec![profile_tab, open_profile])),
+        Open::ProfileChanged => Some((
+            "general",
+            vec![profile_tab, open_profile, settings::Message::Profile(profile::Message::Name("Jarvis".into()))],
+        )),
         Open::AccessSelections => Some((access::ID, vec![settings::Message::Access(access::Message::Tab(1))])),
-        Open::AccessBots => Some((access::ID, vec![settings::Message::Access(access::Message::Tab(2))])),
+        // The tab Bots of Access is gone (issue #763): a bot's rights, below Bots.
+        Open::AccessBots => {
+            Some((bots::BOTS, vec![settings::Message::Bots(bots::Message::Access(crate::demo::TRAVEL.into()))]))
+        }
         _ => None,
     }
 }

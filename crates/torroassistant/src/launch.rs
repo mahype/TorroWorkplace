@@ -10,8 +10,9 @@
 //!   starts it this way, and a workspace template brings the same bot back with its argument.
 //! - `--demo`: sample conversations in memory instead of the core ([`crate::demo`]).
 //! - `--settings <section>`: open the window with its settings in the content area, at this
-//!   section (`general`, `access`, `profile`, `bots`, `voice`, `history`; tasks S.18, S.34). In a
-//!   bot's window `--bot <id> --settings access` opens Access at that bot. A start parameter, so
+//!   section (`general`, `voice`, `skills`, `bots`, `access`; tasks S.18, S.34, issue #763), or at a
+//!   page of the suite (`ai`, `appearance`, …). In a bot's window `--bot <id> --settings access` opens
+//!   that bot's rights, below Bots. A start parameter, so
 //!   only a person starting the program opens the settings: no text of an answer can, and the
 //!   links of an answer stay on `http(s)` ([`crate::app`]).
 //! - `--open <state>`: start in a state ([`Open`]), for screenshots; needs `--demo`.
@@ -106,13 +107,14 @@ pub enum Open {
     BotGone,
     /// "Train or plane to Vienna?": the assistant proposes a bot; the card "Ask Travel planner?".
     BotProposal,
-    /// The settings at Profile, its editor open (issue #547).
+    /// The settings at General › Profile, its editor open (issue #547).
     ProfileEditor,
     /// The profile editor with the name changed: the save bar shows (issue #547).
     ProfileChanged,
     /// The settings at Access, its tab Selections (issue #547).
     AccessSelections,
-    /// The settings at Access, its tab Bots (issue #547).
+    /// The rights of the demo's travel planner, below Bots (issue #547; the tab Bots of Access it
+    /// showed is gone with issue #763).
     AccessBots,
     /// The sidebar's search through the history with a word of the demo, its first hit opened and marked
     /// (issue #704).
@@ -408,7 +410,8 @@ mod tests {
             let parsed = Launch::parse(&args(&["--demo", "--settings", suite])).expect("valid");
             assert_eq!(parsed.settings.as_deref(), Some(suite));
         }
-        for bad in ["rights", "", "Voice"] {
+        // Issue #763: the parts that became tabs or groups of a section are no section of their own.
+        for bad in ["rights", "", "Voice", "profile", "tools", "history"] {
             let refused = Launch::parse(&args(&["--settings", bad]));
             assert!(matches!(refused, Err(LaunchError::UnknownValue { flag: "--settings", .. })), "{bad:?}");
         }

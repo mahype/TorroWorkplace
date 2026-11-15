@@ -4,10 +4,12 @@
 //! Talking by voice on or off (`settings.set_setting voice_enabled`), the fixed wake word, "Speak
 //! answers", the speech recognition – Parakeet (recommended) or Whisper, a dropdown as well
 //! (`settings.set_setting speech_recognizer`, issue #749) –, the microphone when the recording
-//! program can list them – a Torro dropdown in the group "Voice" since issue #547, as the number of
-//! microphones is open ([`State::menus`], [`overlay`]) –,
-//! and below the four programs the listener needs with whether each was found
-//! (`settings.voice_status`).
+//! program can list them – a Torro dropdown in the group "Conversation" (until issue #763 "Voice")
+//! since issue #547, as the number of microphones is open ([`State::menus`], [`overlay`]) –, and the
+//! four programs the listener needs with whether each was found (`settings.voice_status`).
+//!
+//! Since issue #763 each of the three groups is a tab of its own ([`VoiceTab`], the row drawn by
+//! [`super::page`]): Read aloud, Conversation, Programs, so the page fits the window.
 //!
 //! Above them "Read aloud" (issue #745, `settings.speech_status`): the switch of the chat windows,
 //! the provider and its voice from a dropdown each with the recommended one marked, whether this
@@ -35,7 +37,7 @@
 
 use std::time::Duration;
 
-use iced::widget::{Space, column, toggler};
+use iced::widget::{Space, toggler};
 use iced::{Element, Subscription};
 
 use torro_core::i18n::{tr, trc, trf};
@@ -48,7 +50,7 @@ use torro_ipc::{
     VoiceStatus,
 };
 
-use super::Action;
+use super::{Action, VoiceTab};
 use crate::Data;
 use crate::parts::setting_row;
 
@@ -282,14 +284,18 @@ fn followed(on: bool, status: Option<&VoiceStatus>) -> bool {
 
 // ----- Views --------------------------------------------------------------------------------
 
-/// Voice, with the microphone where one can be named, and the programs on this computer.
-pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+/// The group of the tab on screen (issue #763): reading aloud, the conversation by voice with the
+/// microphone where one can be named, or the programs on this computer. While the assistant is off,
+/// the tab says so under its own name.
+pub fn view<'a>(state: &'a State, data: &'a Data, tab: VoiceTab) -> Element<'a, Message> {
     if !super::is_on(data) {
-        return super::off_group(tr("Voice"));
+        return super::off_group(tab.label());
     }
-    column![read_aloud_group(state, data), voice_group(state, data), programs_group(data)]
-        .spacing(layout::section_gap())
-        .into()
+    match tab {
+        VoiceTab::ReadAloud => read_aloud_group(state, data),
+        VoiceTab::Conversation => voice_group(state, data),
+        VoiceTab::Programs => programs_group(data),
+    }
 }
 
 /// The open dropdown under its button: the two speech recognitions, Parakeet recommended, or the
@@ -382,7 +388,7 @@ fn read_aloud_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message
     // The status came with the other voice data, or its check failed: then say so instead of
     // "Checking …" for ever.
     let detail = match (&data.speech, &data.voice) {
-        (None, Some(_)) => tr("This computer could not be checked. Use Check again below.").to_string(),
+        (None, Some(_)) => tr("This computer could not be checked. Use Check again under Programs.").to_string(),
         (speech, _) => provider_detail(speech.as_ref(), current),
     };
     let provider =
@@ -424,8 +430,9 @@ fn read_aloud_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message
     widgets::group(tr("Read aloud"), rows, Some(footer.to_string()))
 }
 
-/// "Voice": on or off with what the listener does, the wake word, "Speak answers", the speech
-/// recognition, the microphone and the test.
+/// "Conversation": on or off with what the listener does, the wake word, "Speak answers", the speech
+/// recognition, the microphone and the test. The page and this group were both "Voice" until issue
+/// #763.
 fn voice_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let settings = &data.settings.voice;
     let can_listen = data.voice.as_ref().is_none_or(VoiceStatus::can_listen);
@@ -444,7 +451,7 @@ fn voice_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let speak = setting_row(
         None,
         tr("Speak answers"),
-        Some(tr("After “Hey Torro”, with the voice chosen above").to_string()),
+        Some(tr("After “Hey Torro”, with the voice under Read aloud").to_string()),
         speak,
     );
     let test_button = match state.testing {
@@ -466,7 +473,7 @@ fn voice_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let mut rows = vec![on, wake, speak, recognizer];
     rows.extend(microphone_row(state, data));
     rows.push(test);
-    widgets::group(tr("Voice"), rows, Some(footer.to_string()))
+    widgets::group(tr("Conversation"), rows, Some(footer.to_string()))
 }
 
 /// "Microphone" with its dropdown (issue #547): the system's default or the chosen one. None when
@@ -933,7 +940,7 @@ mod tests {
         };
         loaded(&mut state, &none);
         assert!(state.menus.is_open(&Choice::Recognizer) && overlay(&state, &none).is_some());
-        let _ = view(&state, &data);
+        let _ = view(&state, &data, VoiceTab::Conversation);
         let chosen = update(&mut state, Message::Recognizer(Recognizer::Whisper), &data);
         assert_eq!(sent(chosen), (SettingKey::SpeechRecognizer, serde_json::json!("whisper")));
         assert_eq!(state.menus.open(), None, "the choice closes it");
@@ -976,7 +983,7 @@ mod tests {
         assert_eq!(open, Act::Focus(DROPDOWN_SEARCH));
         assert!(overlay(&state, &data).is_some());
         assert_eq!(escape(&state), Some(Message::Menus(DropdownEvent::Close)));
-        let _ = view(&state, &data);
+        let _ = view(&state, &data, VoiceTab::Conversation);
         let chosen = update(&mut state, Message::Microphone(Some("alsa_input.usb".into())), &data);
         assert_eq!(sent(chosen), (SettingKey::Microphone, serde_json::json!("alsa_input.usb")));
         assert_eq!((state.menus.open(), escape(&state)), (None, None), "the choice closes it");
@@ -1008,10 +1015,14 @@ mod tests {
                 Some(VoiceStatus { microphones: Vec::new(), ..status(VoiceState::Off, None) }),
                 None,
             ] {
-                let _ = view(&state, &Data { voice: voice.clone(), ..on.clone() });
-                let _ = view(&state, &Data { voice, ..data.clone() });
+                for tab in VoiceTab::ALL {
+                    let _ = view(&state, &Data { voice: voice.clone(), ..on.clone() }, tab);
+                    let _ = view(&state, &Data { voice: voice.clone(), ..data.clone() }, tab);
+                }
             }
-            let _ = view(&state, &turned_off(&data));
+            for tab in VoiceTab::ALL {
+                let _ = view(&state, &turned_off(&data), tab);
+            }
         }
     }
 
@@ -1057,7 +1068,7 @@ mod tests {
 
         // A status that could not be checked says so, not "Checking …" for ever.
         let failed = Data { speech: None, ..data.clone() };
-        let _ = view(&state, &failed);
+        let _ = view(&state, &failed, VoiceTab::ReadAloud);
         assert!(failed.voice.is_some());
 
         let providers = speech_items(Choice::Provider, &data);
@@ -1084,7 +1095,7 @@ mod tests {
         assert_eq!(voice_name("warm_woman"), tr("Warm woman"));
         assert_eq!(voice_name("marin"), "Marin");
         for data in [&data, &qwen, &openai] {
-            let _ = view(&state, data);
+            let _ = view(&state, data, VoiceTab::ReadAloud);
             for key in [Choice::Provider, Choice::SpeechVoice] {
                 state.menus = Dropdown::default();
                 let _ = update(&mut state, Message::Menus(DropdownEvent::Toggle(key)), data);
