@@ -13957,9 +13957,11 @@ impl Core {
     /// ([`crate::assistant::sentences`]) as one piece while the one before plays; an approval or a failure
     /// as a sentence saying so. Ends once the answer is over and read, or when stopped; however long the
     /// answer pauses (a long tool), the rest is read. It counts as reading aloud only while a piece sounds.
+    /// Of an answer in two parts only the spoken part is read, and nothing of the answer after it; one
+    /// without it is read up to a sentence end within [`torro_ipc::assistant::SPOKEN_MOST`] characters (issue #774).
     async fn read_answer(&self, number: u64, conversation: &str, after: u64) -> Response {
-        use torro_ipc::assistant::EntryContent;
-        let mut sentences = crate::assistant::sentences::Sentences::default();
+        use torro_ipc::assistant::{EntryContent, SPOKEN_MOST};
+        let mut sentences = crate::assistant::sentences::Sentences::with_most(SPOKEN_MOST);
         loop {
             if !self.speech.is_current(number) {
                 return Response::Ok;
@@ -13971,13 +13973,17 @@ impl Core {
             };
             let mut text = String::new();
             let mut last_word = None;
+            let mut said = false;
             for entry in &entries {
                 match &entry.content {
-                    EntryContent::Answer { text: answer, .. } => {
+                    EntryContent::Answer { .. } if said => {}
+                    EntryContent::Answer { text: answer, spoken, .. } => {
                         if !text.is_empty() {
                             text.push_str("\n\n");
                         }
-                        text.push_str(answer);
+                        // The spoken part says it all; the shown part and what follows are not read.
+                        said = spoken.is_some();
+                        text.push_str(spoken.as_deref().unwrap_or(answer));
                     }
                     EntryContent::Approval { .. } => {
                         last_word = Some(tr("The assistant needs your approval. Please look at the window."));
@@ -20101,6 +20107,69 @@ done"#,
         assert_eq!(log.lines().count(), 2, "{log}");
         assert!(log.lines().nth(1).is_some_and(|line| line.contains("The first is at nine.")), "{log}");
         assert_eq!(log.matches("Three events today.").count(), 1, "each sentence once: {log}");
+    }
+
+    /// Issue #774: of an answer in two parts only the spoken part is read, also while the mark is still
+    /// being written; one without the mark is read up to a sentence end within `SPOKEN_MOST` characters.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn only_the_spoken_part_is_read_and_one_part_is_cut() {
+        use crate::assistant::tests::{finish_growing, growing, message, written};
+        use torro_ipc::assistant::SPOKEN_MOST;
+        const ID: &str = "0000000000000774";
+        let dir = tempfile::tempdir().expect("temp dir");
+        let said = dir.path().join("said.log");
+        let body = format!(
+            r#"while read line; do
+  case "$line" in
+    *'"say"'*) printf '%s\n' "$line" >> '{}'; echo '"playing"'; echo '"done"' ;;
+  esac
+done"#,
+            said.display()
+        );
+        let speaker = dir.path().join("speaker");
+        crate::apps::tests::fake_at(&speaker, &body);
+        const ONE_PART: &str = "0000000000000775";
+        for id in [ID, ONE_PART] {
+            written(&dir.path().join("assistant"), id, "Week", vec![message("What is on?")], &[], |_| {});
+        }
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = Arc::new(
+            core(dir.path())
+                .with_assistant(assistant)
+                .with_speech(crate::apps::SpeechHelper::at(speaker))
+                .with_probe(Measured(large_pc())),
+        );
+        let (run, partial) = growing(&core.assistant, ID).await;
+        partial.lock().unwrap_or_else(PoisonError::into_inner).text = "Nine events. Have a look.\n---sh".into();
+        let reader = Arc::clone(&core);
+        let read = tokio::spawn(async move { reader.handle(Request::SpeakAnswer { conversation: ID.into() }).await });
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !std::fs::read_to_string(&said).is_ok_and(|log| !log.is_empty()) {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(first.is_ok(), "the spoken part is read while the rest is written");
+        let shown = "- Monday 9:00 Standup.\n- Tuesday 10:00 Review.";
+        finish_growing(&core.assistant, ID, run, &format!("Nine events. Have a look.\n---shown---\n{shown}")).await;
+        assert_eq!(read.await.expect("read"), Response::Ok);
+        let log = std::fs::read_to_string(&said).expect("read aloud");
+        assert!(log.contains("Nine events.") && log.contains("Have a look."), "{log}");
+        assert!(!log.contains("Standup") && !log.contains("shown"), "the shown part is not read: {log}");
+        assert_eq!(log.matches("Have a look.").count(), 1, "each sentence once: {log}");
+
+        // Without the mark the answer is cut at a sentence end.
+        std::fs::remove_file(&said).expect("cleared");
+        let (run, _) = growing(&core.assistant, ONE_PART).await;
+        let long = "This sentence is one of many in a long answer. ".repeat(40);
+        finish_growing(&core.assistant, ONE_PART, run, &long).await;
+        assert_eq!(core.handle(Request::SpeakAnswer { conversation: ONE_PART.into() }).await, Response::Ok);
+        let log = std::fs::read_to_string(&said).expect("read aloud");
+        let sentence = "This sentence is one of many in a long answer.";
+        let read = log.matches(sentence).count();
+        assert!(read > 0 && read * sentence.len() <= SPOKEN_MOST, "{read} sentences read: {log}");
+        assert!((read + 1) * (sentence.len() + 1) > SPOKEN_MOST, "as many as fit: {read}");
     }
 
     /// Issue #747 (review): an answer is read from after the last message, or after an approval that
