@@ -539,6 +539,26 @@ fn login_item_outdated(current: Option<&str>, wanted: &str) -> bool {
     current.is_some_and(|current| current != wanted)
 }
 
+/// Why `key` with `value` is refused with `unsupported` (issue #762): the keys `stt_model`, `voice` and
+/// `qwen_voice` and the speech providers `qwen` and `piper` are gone with whisper.cpp, Piper and Qwen3-TTS.
+/// `None` for everything else, which [`SettingsStore::set`] checks as before.
+pub fn gone(key: SettingKey, value: &serde_json::Value) -> Option<String> {
+    match key {
+        SettingKey::SttModel => {
+            Some("stt_model is gone: the speech models are downloaded with settings.download_voice_model".into())
+        }
+        SettingKey::Voice => Some("voice is gone with Piper: choose pocket_voice for Pocket TTS".into()),
+        SettingKey::QwenVoice => Some("qwen_voice is gone with Qwen3-TTS: choose pocket_voice for Pocket TTS".into()),
+        SettingKey::SpeechProvider => match value.as_str().map(str::trim) {
+            Some(provider @ ("qwen" | "piper")) => {
+                Some(format!("the speech provider {provider} is gone: send \"pocket\", \"openai\" or null"))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// One setting with its value, checked against its key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Change {
@@ -574,15 +594,16 @@ enum Change {
     WakeWord(String),
     Microphone(Option<String>),
     SpeakAnswers(bool),
-    /// The program that turns speech into text (issue #749).
+    /// The model that turns speech into text (issues #749, #762).
     SpeechRecognizer(Recognizer),
-    SttModel(Option<String>),
-    Voice(Option<String>),
+    /// The language Whisper listens for (issue #762); `None` for the suite's.
+    SpeechLanguage(Option<String>),
     /// Reading aloud in the chat windows (issue #745).
     ReadAloud(bool),
     /// Who reads aloud; who may choose OpenAI is the core's check (`Request::kept_for_people`).
     SpeechProvider(Option<torro_core::settings::SpeechProvider>),
-    QwenVoice(Option<String>),
+    /// The voice of Pocket TTS (issue #762).
+    PocketVoice(Option<String>),
     OpenAiVoice(Option<String>),
     /// What a new chat of the assistant starts with (issue #131): the slot Chat (issue #325), written
     /// without the checks of `ai.set_slot`; `None` for the one used last.
@@ -687,12 +708,16 @@ impl Change {
             SettingKey::SpeechRecognizer => {
                 Change::SpeechRecognizer(serde_json::from_value(value.clone()).map_err(invalid)?)
             }
-            SettingKey::SttModel => Change::SttModel(Voice::file_from(value, "bin")?),
-            SettingKey::Voice => Change::Voice(Voice::file_from(value, "onnx")?),
+            SettingKey::SpeechLanguage => Change::SpeechLanguage(Voice::speech_language_from(value)?),
+            // Gone with whisper.cpp, Piper and Qwen3-TTS (issue #762); `Core` answers them with `unsupported`
+            // through [`gone`] before they get here.
+            SettingKey::SttModel | SettingKey::Voice | SettingKey::QwenVoice => {
+                return Err(gone(key, value).unwrap_or_default());
+            }
             SettingKey::ReadAloud => Change::ReadAloud(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::SpeechProvider => Change::SpeechProvider(Voice::speech_provider_from(value)?),
-            SettingKey::QwenVoice => {
-                Change::QwenVoice(Voice::speech_voice_from(value, &torro_core::settings::QWEN_VOICES)?)
+            SettingKey::PocketVoice => {
+                Change::PocketVoice(Voice::speech_voice_from(value, &torro_core::settings::POCKET_VOICES)?)
             }
             SettingKey::OpenAiVoice => {
                 Change::OpenAiVoice(Voice::speech_voice_from(value, &torro_core::settings::OPENAI_VOICES)?)
@@ -804,11 +829,10 @@ impl Change {
             Change::Microphone(name) => settings.voice.microphone = name,
             Change::SpeakAnswers(speak) => settings.voice.speak_answers = speak,
             Change::SpeechRecognizer(recognizer) => settings.voice.recognizer = recognizer,
-            Change::SttModel(path) => settings.voice.stt_model = path,
-            Change::Voice(path) => settings.voice.voice = path,
+            Change::SpeechLanguage(language) => settings.voice.language = language,
             Change::ReadAloud(on) => settings.voice.read_aloud = on,
             Change::SpeechProvider(provider) => settings.voice.speech_provider = provider,
-            Change::QwenVoice(id) => settings.voice.qwen_voice = id,
+            Change::PocketVoice(id) => settings.voice.pocket_voice = id,
             Change::OpenAiVoice(id) => settings.voice.openai_voice = id,
             Change::AssistantDefault(default) => settings.ai_slots.chat = default,
             Change::Setup(state) => settings.setup = settings.setup.moved_to(state),
@@ -1983,34 +2007,34 @@ mod tests {
         assert_eq!(store.current().mail_attachments.click, AttachmentClick::Open);
     }
 
-    /// Issue #749: the recognizer takes both names and refuses anything else, without a change.
+    /// Issues #749, #762: the recognizer is Whisper unless Parakeet is chosen, takes both names and
+    /// refuses anything else, without a change.
     #[test]
     fn the_speech_recognizer_is_set_and_checked() {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = SettingsStore::at(dir.path().join("settings.json"));
-        assert_eq!(store.current().voice.recognizer, Recognizer::Parakeet);
-        store.set(SettingKey::SpeechRecognizer, &json!("whisper")).expect("whisper");
         assert_eq!(store.current().voice.recognizer, Recognizer::Whisper);
-        for refused in [json!("Parakeet"), json!("vosk"), json!(true), json!(null)] {
-            assert!(store.set(SettingKey::SpeechRecognizer, &refused).is_err(), "{refused}");
-        }
-        assert_eq!(store.current().voice.recognizer, Recognizer::Whisper, "unchanged");
         store.set(SettingKey::SpeechRecognizer, &json!("parakeet")).expect("parakeet");
         assert_eq!(store.current().voice.recognizer, Recognizer::Parakeet);
+        for refused in [json!("Whisper"), json!("vosk"), json!(true), json!(null)] {
+            assert!(store.set(SettingKey::SpeechRecognizer, &refused).is_err(), "{refused}");
+        }
+        assert_eq!(store.current().voice.recognizer, Recognizer::Parakeet, "unchanged");
+        store.set(SettingKey::SpeechRecognizer, &json!("whisper")).expect("whisper");
+        assert_eq!(store.current().voice.recognizer, Recognizer::Whisper);
     }
 
-    /// Task C.9: the voice settings are set one by one and checked; a client's whole settings
-    /// never switch the microphone on, but may switch it off.
+    /// Task C.9 and issue #762: the voice settings are set one by one and checked; a client's whole
+    /// settings never switch the microphone on, but may switch it off.
     #[test]
     fn voice_settings_are_set_and_a_client_never_switches_the_microphone_on() {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = SettingsStore::at(dir.path().join("settings.json"));
-        let model = if cfg!(windows) { r"C:\voice\ggml-base.bin" } else { "/voice/ggml-base.bin" };
         for (key, value) in [
             (SettingKey::WakeWord, json!("Hey Torro")),
             (SettingKey::Microphone, json!("alsa_input.usb")),
             (SettingKey::SpeakAnswers, json!(false)),
-            (SettingKey::SttModel, json!(model)),
+            (SettingKey::SpeechLanguage, json!("EN")),
         ] {
             store.set(key, &value).expect("a valid value");
         }
@@ -2020,21 +2044,23 @@ mod tests {
             Voice {
                 microphone: Some("alsa_input.usb".into()),
                 speak_answers: false,
-                stt_model: Some(model.into()),
+                language: Some("en".into()),
                 ..Voice::default()
             }
         );
         for (key, value) in [
             (SettingKey::WakeWord, json!("ok computer")),
             (SettingKey::Microphone, json!("--help")),
-            (SettingKey::SttModel, json!("ggml-base.bin")),
-            (SettingKey::Voice, json!("/voices/thorsten.bin")),
+            (SettingKey::SpeechLanguage, json!("english")),
+            (SettingKey::SttModel, json!("/voice/ggml-base.bin")),
+            (SettingKey::Voice, json!("/voices/thorsten.onnx")),
             (SettingKey::VoiceEnabled, json!("yes")),
         ] {
             assert!(store.set(key, &value).is_err(), "{key:?} {value}");
         }
         store.set(SettingKey::Microphone, &json!(null)).expect("back to the default");
-        assert_eq!(store.current().voice.microphone, None);
+        store.set(SettingKey::SpeechLanguage, &json!(null)).expect("back to the suite's");
+        assert_eq!((store.current().voice.microphone, store.current().voice.language), (None, None));
 
         // A client sends the settings with voice on: it stays off.
         let mut sent = store.current();
@@ -2050,7 +2076,7 @@ mod tests {
         assert!(!store.current().voice.enabled);
     }
 
-    /// Issue #745: reading aloud, its provider and voices are set one by one and checked; a client's
+    /// Issues #745, #762: reading aloud, its provider and voices are set one by one and checked; a client's
     /// whole settings never choose OpenAI, but keep it when a person chose it and may choose another.
     #[test]
     fn reading_aloud_is_set_and_a_client_never_chooses_openai() {
@@ -2059,21 +2085,24 @@ mod tests {
         let store = SettingsStore::at(dir.path().join("settings.json"));
         for (key, value) in [
             (SettingKey::ReadAloud, json!(true)),
-            (SettingKey::SpeechProvider, json!("qwen")),
-            (SettingKey::QwenVoice, json!("calm_man")),
+            (SettingKey::SpeechProvider, json!("pocket")),
+            (SettingKey::PocketVoice, json!("Marius")),
             (SettingKey::OpenAiVoice, json!("Cedar")),
         ] {
             store.set(key, &value).expect("a valid value");
         }
         let voice = store.current().voice;
         assert!(voice.read_aloud);
-        assert_eq!(voice.speech_provider, Some(SpeechProvider::Qwen));
-        assert_eq!((voice.qwen_voice.as_deref(), voice.openai_voice.as_deref()), (Some("calm_man"), Some("cedar")));
+        assert_eq!(voice.speech_provider, Some(SpeechProvider::Pocket));
+        assert_eq!((voice.pocket_voice.as_deref(), voice.openai_voice.as_deref()), (Some("marius"), Some("cedar")));
         for (key, value) in [
             (SettingKey::ReadAloud, json!("yes")),
             (SettingKey::SpeechProvider, json!("grok")),
-            (SettingKey::QwenVoice, json!("marin")),
-            (SettingKey::OpenAiVoice, json!("warm_woman")),
+            (SettingKey::SpeechProvider, json!("qwen")),
+            (SettingKey::PocketVoice, json!("marin")),
+            (SettingKey::PocketVoice, json!("cosette")),
+            (SettingKey::QwenVoice, json!("calm_man")),
+            (SettingKey::OpenAiVoice, json!("alba")),
         ] {
             assert!(store.set(key, &value).is_err(), "{key:?} {value}");
         }
@@ -2081,13 +2110,38 @@ mod tests {
         let mut sent = store.current();
         sent.voice.speech_provider = Some(SpeechProvider::OpenAi);
         store.update_keeping_hidden(sent.clone()).expect("written");
-        assert_eq!(store.current().voice.speech_provider, Some(SpeechProvider::Qwen), "never OpenAI from a client");
+        assert_eq!(store.current().voice.speech_provider, Some(SpeechProvider::Pocket), "never OpenAI from a client");
         store.set(SettingKey::SpeechProvider, &json!("openai")).expect("the person");
         store.update_keeping_hidden(sent.clone()).expect("written");
         assert_eq!(store.current().voice.speech_provider, Some(SpeechProvider::OpenAi), "kept as chosen");
-        sent.voice.speech_provider = Some(SpeechProvider::Piper);
+        sent.voice.speech_provider = Some(SpeechProvider::Pocket);
         store.update_keeping_hidden(sent).expect("written");
-        assert_eq!(store.current().voice.speech_provider, Some(SpeechProvider::Piper));
+        assert_eq!(store.current().voice.speech_provider, Some(SpeechProvider::Pocket));
+    }
+
+    /// Issue #762: the keys and providers of whisper.cpp, Piper and Qwen3-TTS are gone (`unsupported` in
+    /// the core); everything else is checked as before.
+    #[test]
+    fn the_voice_settings_of_earlier_versions_are_gone() {
+        for (key, value) in [
+            (SettingKey::SttModel, json!("/m/ggml-base.bin")),
+            (SettingKey::SttModel, json!(null)),
+            (SettingKey::Voice, json!("")),
+            (SettingKey::QwenVoice, json!("warm_woman")),
+            (SettingKey::SpeechProvider, json!("qwen")),
+            (SettingKey::SpeechProvider, json!(" piper ")),
+        ] {
+            assert!(gone(key, &value).is_some(), "{key:?} {value}");
+        }
+        for (key, value) in [
+            (SettingKey::SpeechProvider, json!("pocket")),
+            (SettingKey::SpeechProvider, json!("grok")),
+            (SettingKey::SpeechProvider, json!(null)),
+            (SettingKey::PocketVoice, json!("alba")),
+            (SettingKey::SpeechLanguage, json!("de")),
+        ] {
+            assert_eq!(gone(key, &value), None, "{key:?} {value}");
+        }
     }
 
     /// Issue #325 (task MW.2): a client's whole settings never change a slot – `ai.set_slot` checks

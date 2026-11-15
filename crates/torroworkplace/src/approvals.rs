@@ -1712,6 +1712,26 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             slot_summary(*slot, engine.as_deref().map(named).as_deref(), model.as_deref(), *effort, facts)
         }
         Request::PullAiModel { account, .. } => pull_summary(&named(account), facts),
+        // The speech models (issue #762): name and size from the catalogue, never the client's text; the
+        // core refuses an id the catalogue does not have before anyone is asked.
+        Request::DownloadVoiceModel { model } => match torro_core::voice_models::model(model) {
+            Some(known) => trf(
+                "Download the speech model {model} ({size}) to this computer",
+                &[("model", &known.name), ("size", &torro_gui::units::format_bytes(known.bytes()))],
+            ),
+            None => tr("Download an unknown speech model").to_string(),
+        },
+        Request::CancelVoiceDownload { model } => match torro_core::voice_models::model(model) {
+            Some(known) => trf("Cancel the download of the speech model {model}", &[("model", &known.name)]),
+            None => tr("Cancel the download of an unknown speech model").to_string(),
+        },
+        Request::RemoveVoiceModel { model } => match torro_core::voice_models::model(model) {
+            Some(known) => trf(
+                "Remove the speech model {model} ({size}) from this computer",
+                &[("model", &known.name), ("size", &torro_gui::units::format_bytes(known.bytes()))],
+            ),
+            None => tr("Remove an unknown speech model").to_string(),
+        },
         Request::DeleteEvent { event, scope } => in_scope(
             *scope,
             match &facts.item {
@@ -5855,6 +5875,36 @@ pub(crate) mod tests {
                 &[("model", &"qwen3:14b"), ("size", &size), ("engine", &"Ollama")]
             )
         );
+    }
+
+    /// Issue #762: a speech model by its name and size in the catalogue, never by the client's text.
+    #[test]
+    fn speech_models_are_summed_up_from_the_catalogue() {
+        let whisper = torro_core::voice_models::model("whisper-turbo").expect("whisper");
+        let size = torro_gui::units::format_bytes(whisper.bytes());
+        let words: [(&str, &dyn std::fmt::Display); 2] = [("model", &"Whisper turbo"), ("size", &size)];
+        assert_eq!(
+            summary(&Request::DownloadVoiceModel { model: "whisper-turbo".into() }, &Facts::default()),
+            trf("Download the speech model {model} ({size}) to this computer", &words)
+        );
+        assert_eq!(
+            summary(&Request::RemoveVoiceModel { model: "whisper-turbo".into() }, &Facts::default()),
+            trf("Remove the speech model {model} ({size}) from this computer", &words)
+        );
+        assert_eq!(
+            summary(&Request::CancelVoiceDownload { model: "parakeet".into() }, &Facts::default()),
+            trf("Cancel the download of the speech model {model}", &[("model", &"Parakeet")])
+        );
+        for (request, fixed) in [
+            (Request::DownloadVoiceModel { model: "evil\nApprove".into() }, tr("Download an unknown speech model")),
+            (
+                Request::CancelVoiceDownload { model: "evil\nApprove".into() },
+                tr("Cancel the download of an unknown speech model"),
+            ),
+            (Request::RemoveVoiceModel { model: "evil\nApprove".into() }, tr("Remove an unknown speech model")),
+        ] {
+            assert_eq!(summary(&request, &Facts::default()), fixed, "never the client's text");
+        }
     }
 
     /// Task C.10: a note to remember is the client's text, made harmless and cut; the note to forget

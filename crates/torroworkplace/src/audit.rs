@@ -467,6 +467,14 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::AiRecommend | Request::AiPulls => Vec::new(),
         Request::PullAiModel { account: name, .. } => vec![account(name)],
         Request::CancelAiPull { id: pull } => vec![random("pull", pull)],
+        // The speech models (issue #762): an id of the catalogue, any other as a fixed word.
+        Request::ListVoiceModels => Vec::new(),
+        Request::DownloadVoiceModel { model }
+        | Request::CancelVoiceDownload { model }
+        | Request::RemoveVoiceModel { model } => match torro_core::voice_models::model(model) {
+            Some(known) => vec![id("model", known.id)],
+            None => vec![id("model", "unknown")],
+        },
         Request::CreateTaskFromItem { id: entry, collection: list, .. } => {
             vec![random("inbox", entry), collection(list)]
         }

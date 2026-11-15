@@ -2653,66 +2653,16 @@ const SPEAK_READ: usize = 3000;
 /// How much of OpenAI's sound goes to the helper in one line, in bytes.
 const PCM_LINE: usize = 48_000;
 
-/// Qwen3-TTS's large model, for an NVIDIA card with at least [`QWEN_LARGE_BYTES`].
-const QWEN_LARGE: &str = "Qwen/Qwen3-TTS-12Hz-1.7B-Base";
-
-/// Qwen3-TTS's small model, for an NVIDIA card with at least [`QWEN_SMALL_BYTES`].
-const QWEN_SMALL: &str = "Qwen/Qwen3-TTS-12Hz-0.6B-Base";
-
-/// The graphics memory of the large model (4.7 GB measured, decided in the planning of #745).
-const QWEN_LARGE_BYTES: u64 = 8 << 30;
-
-/// The graphics memory below which local voices are not fast enough (the small model needs 2.8 GB).
-const QWEN_SMALL_BYTES: u64 = 4 << 30;
-
-/// The Qwen3-TTS model for `hardware` (issue #745): the large one from 8 GB on an NVIDIA card, the
-/// small one from 4 GB; `None` without such a card.
-fn qwen_model(hardware: &torro_core::ai::hardware::Hardware) -> Option<&'static str> {
-    let gpu = hardware.gpu.as_ref()?;
-    let nvidia = gpu.name.as_deref().is_some_and(|name| name.to_lowercase().contains("nvidia"));
-    match gpu.vram_bytes? {
-        _ if !nvidia => None,
-        bytes if bytes >= QWEN_LARGE_BYTES => Some(QWEN_LARGE),
-        bytes if bytes >= QWEN_SMALL_BYTES => Some(QWEN_SMALL),
-        _ => None,
-    }
-}
-
-/// The graphics card for people: `NVIDIA GeForce RTX 4090, 24 GB`.
-fn gpu_label(hardware: &torro_core::ai::hardware::Hardware) -> Option<String> {
-    let gpu = hardware.gpu.as_ref()?;
-    let name = gpu.name.clone()?;
-    Some(match gpu.vram_bytes {
-        Some(bytes) => format!("{name}, {} GB", (bytes + (1 << 29)) >> 30),
-        None => name,
-    })
-}
-
-/// The language Qwen3-TTS reads in: that of the suite.
-fn speech_language() -> &'static str {
-    match torro_core::i18n::lang() {
-        torro_core::i18n::Lang::De => "German",
-        torro_core::i18n::Lang::En => "English",
-    }
-}
-
-/// The settings the speech helper is started with: only the provider and Piper's voice file. The
-/// voices of Qwen and OpenAI go with each job, so choosing another voice does not start the helper
-/// anew and make Qwen load its model again; neither does switching the listener or the speaker.
+/// The settings the speech helper is started with: only the provider. The voices of Pocket TTS and
+/// OpenAI go with each job, so choosing another voice does not start the helper anew and make Pocket
+/// load its model again; neither does switching the listener or the speaker.
 fn speech_settings(voice: &torro_core::settings::Voice) -> torro_core::settings::Voice {
-    torro_core::settings::Voice {
-        speech_provider: voice.speech_provider,
-        voice: voice.voice.clone(),
-        ..torro_core::settings::Voice::default()
-    }
+    torro_core::settings::Voice { speech_provider: voice.speech_provider, ..torro_core::settings::Voice::default() }
 }
 
-/// What the speech helper is started with ([`speech_settings`]): another provider or Piper voice
-/// ends it.
-fn speech_choice(
-    voice: &torro_core::settings::Voice,
-) -> (Option<torro_core::settings::SpeechProvider>, Option<String>) {
-    (voice.speech_provider, voice.voice.clone())
+/// What the speech helper is started with ([`speech_settings`]): another provider ends it.
+fn speech_choice(voice: &torro_core::settings::Voice) -> Option<torro_core::settings::SpeechProvider> {
+    voice.speech_provider
 }
 
 /// The answer of `assistant.speak` when the helper failed: a sentence for people; what went wrong
@@ -2732,26 +2682,43 @@ fn speech_failure(err: &SpeechError) -> Response {
     }
 }
 
-/// What reads aloud here without the assistant app: nothing local.
+/// The speech model a command of `settings.*_voice_model` names (issue #762); `None` for every other.
+fn voice_model_of(request: &Request) -> Option<&str> {
+    match request {
+        Request::DownloadVoiceModel { model }
+        | Request::CancelVoiceDownload { model }
+        | Request::RemoveVoiceModel { model } => Some(model),
+        _ => None,
+    }
+}
+
+/// The answer of a command on the speech models (issue #762): the list, or the refusal with its code.
+fn voice_models_answer(answer: Result<Vec<torro_ipc::VoiceModel>, crate::voice_models::VoiceModelError>) -> Response {
+    match answer {
+        Ok(models) => Response::VoiceModels { models },
+        Err(err) => err.response(),
+    }
+}
+
+/// What reads aloud here without the assistant app: nothing local, Pocket TTS needs the app.
 fn speech_without_app() -> torro_ipc::SpeechStatus {
-    use torro_core::settings::{QWEN_RECOMMENDED, QWEN_VOICES, SpeechProvider};
-    let option = |provider, voices: Vec<torro_ipc::SpeechVoice>| torro_ipc::SpeechOption {
-        provider,
+    use torro_core::settings::{POCKET_RECOMMENDED, POCKET_VOICES, SpeechProvider};
+    let pocket = torro_ipc::SpeechOption {
+        provider: SpeechProvider::Pocket,
         missing: Some(torro_ipc::SpeechMissing::App),
-        voices,
-        model: None,
+        voices: POCKET_VOICES
+            .iter()
+            .map(|id| torro_ipc::SpeechVoice { id: (*id).to_string(), recommended: *id == POCKET_RECOMMENDED })
+            .collect(),
+        model: Some(torro_core::voice_models::POCKET_DE.to_string()),
         setup: None,
     };
-    let qwen = QWEN_VOICES
-        .iter()
-        .map(|id| torro_ipc::SpeechVoice { id: (*id).to_string(), recommended: *id == QWEN_RECOMMENDED })
-        .collect();
     torro_ipc::SpeechStatus {
         gpu: None,
-        fast_enough: false,
-        recommended: SpeechProvider::Piper,
-        current: SpeechProvider::Piper,
-        providers: vec![option(SpeechProvider::Qwen, qwen), option(SpeechProvider::Piper, Vec::new())],
+        fast_enough: true,
+        recommended: SpeechProvider::Pocket,
+        current: SpeechProvider::Pocket,
+        providers: vec![pocket],
     }
 }
 
@@ -3105,6 +3072,10 @@ pub struct Core {
     /// The downloads of models into Ollama on this computer since the core started (task MW.7,
     /// `ai.pull_model`, `ai.list_pulls`, `ai.cancel_pull`), in memory only.
     pulls: crate::account::pull::Pulls,
+    /// The speech models of the assistant and their downloads (issue #762, `settings.list_voice_models` and
+    /// the commands that download and remove them): the user's voice folder; tests have none unless they
+    /// bring one ([`Core::with_voice_models`]).
+    voice_models: crate::voice_models::VoiceDownloads,
     /// The contacts of the Nextcloud and CalDAV accounts (issue #351): the user's store
     /// ([`ContactsService::system`]); tests hold none unless they bring one ([`Core::with_contacts`]).
     contacts: Arc<ContactsService>,
@@ -3234,6 +3205,11 @@ impl Core {
             probe: if cfg!(test) { Box::new(Measured::default()) } else { Box::new(SystemProbe) },
             hardware: tokio::sync::Mutex::new(None),
             pulls: crate::account::pull::Pulls::default(),
+            voice_models: if cfg!(test) {
+                crate::voice_models::VoiceDownloads::new(None, &torro_core::voice_models::MODELS)
+            } else {
+                crate::voice_models::VoiceDownloads::system()
+            },
             contacts,
             chat,
             presence,
@@ -3636,6 +3612,13 @@ impl Core {
     #[cfg(all(test, unix))]
     pub(crate) fn with_speech(mut self, speech: SpeechHelper) -> Core {
         self.speech = speech;
+        self
+    }
+
+    /// The core with the speech models `models` instead of none in no folder, for tests.
+    #[cfg(test)]
+    pub(crate) fn with_voice_models(mut self, models: crate::voice_models::VoiceDownloads) -> Core {
+        self.voice_models = models;
         self
     }
 
@@ -4945,6 +4928,18 @@ impl Core {
             }
         {
             return Ok(refused);
+        }
+        // Nor a voice setting that is gone (issue #762), which the handler refuses with `unsupported`.
+        if let Request::SetSetting { key, value } = &request
+            && let Some(message) = crate::settings_service::gone(*key, value)
+        {
+            return Ok(Response::Error { code: "unsupported".into(), message });
+        }
+        // Nor a speech model the catalogue does not have (issue #762): the approval would name nothing.
+        if let Some(model) = voice_model_of(&request)
+            && !self.voice_models.knows(model)
+        {
+            return Ok(crate::voice_models::VoiceModelError::NotFound.response());
         }
         // Nor opening an address the contact does not have (issue #355).
         if let Request::OpenContactInMaps { id, address } = &request
@@ -6958,7 +6953,7 @@ impl Core {
                     false => self.settings.update(settings),
                 };
                 self.follow_components();
-                // Another provider or Piper voice ends the helper, as `set_setting` does (issue #745).
+                // Another provider ends the helper, as `set_setting` does (issue #745).
                 if speech_choice(&self.settings.current().voice) != speech_before {
                     self.speech.end().await;
                 }
@@ -6968,6 +6963,10 @@ impl Core {
                 }
             }
             Request::SetSetting { key, value } => {
+                // The keys of whisper.cpp, Piper and Qwen3-TTS, and those two providers, are gone (issue #762).
+                if let Some(message) = crate::settings_service::gone(key, &value) {
+                    return Response::Error { code: "unsupported".into(), message };
+                }
                 // A new SearXNG address answers in JSON before it is stored (issue #305).
                 if key == SettingKey::SearxngAddress
                     && let Some(refused) = self.searxng_refusal(&value).await
@@ -6982,9 +6981,10 @@ impl Core {
                     false => self.settings.set(key, &value),
                 };
                 self.follow_components();
-                // Another provider or Piper voice (issue #745): the helper ends, Qwen's graphics memory
-                // is free, and the next answer starts it with the new settings. Another voice of Qwen
-                // or OpenAI goes with the next job and keeps the model loaded; so does the same value.
+                // Another provider (issue #745): the helper ends, and the next answer starts it with the
+                // new settings. Another voice of Pocket or OpenAI goes with the next job and keeps the
+                // model loaded; so does the same value. The listener reads the voice settings itself and
+                // builds its parts anew when the recognizer or the language changes.
                 if set.is_ok() && speech_choice(&self.settings.current().voice) != speech_before {
                     self.speech.end().await;
                 }
@@ -7006,6 +7006,17 @@ impl Core {
                 Response::Ok
             }
             Request::SpeechStatus => self.speech_status().await,
+            // The speech models (issue #762): only those of the catalogue, downloaded in the background.
+            Request::ListVoiceModels => Response::VoiceModels { models: self.voice_models.list() },
+            Request::DownloadVoiceModel { model } => voice_models_answer(self.voice_models.download(&model)),
+            Request::CancelVoiceDownload { model } => voice_models_answer(self.voice_models.cancel(&model).await),
+            Request::RemoveVoiceModel { model } => {
+                // The speech helper holds Pocket's files open while it runs, which Windows does not delete.
+                if model == torro_core::voice_models::POCKET_DE {
+                    self.speech.end().await;
+                }
+                voice_models_answer(self.voice_models.remove(&model).await)
+            }
             Request::MapsStatus => self.maps_status(reach),
             Request::ClearMapsCache => self.clear_maps_cache(reach),
             Request::SetCollectionShown { collection, shown } => self.set_collection_shown(&collection, shown).await,
@@ -13460,23 +13471,16 @@ impl Core {
         }
     }
 
-    /// `settings.speech_status` (issue #745): what the app finds, with the graphics card, Qwen's
-    /// model, OpenAI's account and voices, the recommended provider and the one that reads now.
+    /// `settings.speech_status` (issues #745, #762): what the app finds, with OpenAI's account and voices
+    /// after Pocket TTS, the recommended provider (Pocket TTS: it runs on the processor, so no graphics
+    /// card is measured) and the one that reads now.
     async fn speech_status(&self) -> Response {
         use torro_core::settings::{OPENAI_RECOMMENDED, OPENAI_VOICES, SpeechProvider};
         let voice = self.settings.current().voice;
-        let hardware = self.measured_hardware().await;
-        let model = qwen_model(&hardware);
         let mut status = match self.local_speech(&voice).await {
             Ok(status) => status,
             Err(failed) => return failed,
         };
-        if let Some(qwen) = status.providers.iter_mut().find(|option| option.provider == SpeechProvider::Qwen) {
-            qwen.model = model.map(str::to_string);
-            if model.is_none() && qwen.missing != Some(torro_ipc::SpeechMissing::App) {
-                qwen.missing = Some(torro_ipc::SpeechMissing::Gpu);
-            }
-        }
         let openai = torro_ipc::SpeechOption {
             provider: SpeechProvider::OpenAi,
             missing: self.ai.speaker().await.is_none().then_some(torro_ipc::SpeechMissing::Account),
@@ -13490,24 +13494,22 @@ impl Core {
             model: Some(crate::account::ai::SPEECH_MODEL.to_string()),
             setup: None,
         };
+        status.providers.retain(|option| option.provider != SpeechProvider::OpenAi);
         let at =
-            status.providers.iter().position(|option| option.provider == SpeechProvider::Qwen).map_or(0, |at| at + 1);
+            status.providers.iter().position(|option| option.provider == SpeechProvider::Pocket).map_or(0, |at| at + 1);
         status.providers.insert(at, openai);
-        status.gpu = gpu_label(&hardware);
-        status.fast_enough = model.is_some();
-        status.recommended = if status.fast_enough { SpeechProvider::Qwen } else { SpeechProvider::OpenAi };
-        let qwen_works = status.option(SpeechProvider::Qwen).is_some_and(torro_ipc::SpeechOption::works);
-        status.current =
-            voice.speech_provider.unwrap_or(if qwen_works { SpeechProvider::Qwen } else { SpeechProvider::Piper });
+        status.gpu = None;
+        status.fast_enough = true;
+        status.recommended = SpeechProvider::Pocket;
+        status.current = voice.speech_provider.unwrap_or(SpeechProvider::Pocket);
         Response::Speech { speech: status }
     }
 
-    /// `assistant.speak` (issue #745): reads `text` with the provider of the settings, or the core's
-    /// choice, through the helper; the helper makes that choice (Qwen where it is set up and the card
-    /// is fast enough, else Piper), so no answer waits for a check of the programs. Answers once it
-    /// was read or stopped. OpenAI's sound is fetched here, where its key is, a piece ahead of what
-    /// plays. Its place among the jobs is taken first, so a stop that comes while it gets ready
-    /// counts for it.
+    /// `assistant.speak` (issues #745, #762): reads `text` with the provider of the settings, or the
+    /// core's choice (Pocket TTS), through the helper, so no answer waits for a check of the models.
+    /// Answers once it was read or stopped. OpenAI's sound is fetched here, where its key is, a piece
+    /// ahead of what plays. Its place among the jobs is taken first, so a stop that comes while it gets
+    /// ready counts for it.
     async fn speak(&self, text: &str) -> Response {
         use torro_core::settings::SpeechProvider;
         let refused = |code: &str, message: &str| Response::Error { code: code.into(), message: message.into() };
@@ -13519,7 +13521,6 @@ impl Core {
         }
         let number = self.speech.claim().await;
         let voice = self.settings.current().voice;
-        let model = qwen_model(&self.measured_hardware().await);
         let provider = voice.speech_provider;
         let speaker = match provider {
             Some(SpeechProvider::OpenAi) => match self.ai.speaker().await {
@@ -13531,18 +13532,13 @@ impl Core {
                     );
                 }
             },
-            Some(SpeechProvider::Qwen) if model.is_none() => {
-                return refused("unsupported", tr("Local voices need an NVIDIA graphics card with at least 4 GB."));
-            }
             _ => None,
         };
         let read: String = text.chars().take(SPEAK_READ * 2).collect();
         let say = serde_json::json!({"say": {
             "provider": provider,
             "text": read,
-            "voice": voice.qwen_voice_or_default(),
-            "model": model,
-            "language": speech_language(),
+            "voice": voice.pocket_voice_or_default(),
         }});
         let mut job = match self.speech.begin_claimed(number, &voice_args("--speak", &speech_settings(&voice))).await {
             Ok(job) => job,
@@ -19262,45 +19258,30 @@ mod tests {
         assert_eq!(core.voice.state(), VoiceState::Off, "stopped at once");
     }
 
-    /// Issue #745: the helper starts only with the provider and Piper's voice: another voice of Qwen
-    /// or OpenAI, the speaker or the listener keep it running with its model loaded.
+    /// Issues #745, #762: the helper starts only with the provider: another voice of Pocket or OpenAI, the
+    /// speaker, the recognizer or the language keep it running with its model loaded.
     #[test]
     fn the_speech_helper_keeps_running_for_another_voice() {
-        use torro_core::settings::{SpeechProvider, Voice};
-        let chosen = Voice { speech_provider: Some(SpeechProvider::Qwen), ..Voice::default() };
+        use torro_core::settings::{Recognizer, SpeechProvider, Voice};
+        let chosen = Voice { speech_provider: Some(SpeechProvider::Pocket), ..Voice::default() };
         let other = Voice {
-            qwen_voice: Some("calm_man".into()),
+            pocket_voice: Some("marius".into()),
             openai_voice: Some("cedar".into()),
             read_aloud: true,
             enabled: true,
+            recognizer: Recognizer::Parakeet,
+            language: Some("fr".into()),
             ..chosen.clone()
         };
         assert_eq!(voice_args("--speak", &speech_settings(&chosen)), voice_args("--speak", &speech_settings(&other)));
         assert_eq!(speech_choice(&chosen), speech_choice(&other));
-        let piper = Voice { speech_provider: Some(SpeechProvider::Piper), ..chosen.clone() };
-        assert_ne!(speech_choice(&chosen), speech_choice(&piper), "another provider ends it");
+        let openai = Voice { speech_provider: Some(SpeechProvider::OpenAi), ..chosen.clone() };
+        assert_ne!(speech_choice(&chosen), speech_choice(&openai), "another provider ends it");
     }
 
-    /// Issue #745: Qwen's model follows the graphics card; only an NVIDIA card with 4 GB is fast
-    /// enough, from 8 GB the large model.
-    #[test]
-    fn qwen_follows_the_graphics_card() {
-        use torro_core::ai::hardware::{Gpu, Hardware};
-        let card = |name: &str, gb: u64| Hardware {
-            gpu: Some(Gpu { name: Some(name.into()), vram_bytes: Some(gb << 30) }),
-            ..Hardware::default()
-        };
-        assert_eq!(qwen_model(&card("NVIDIA GeForce RTX 4090", 24)), Some(QWEN_LARGE));
-        assert_eq!(qwen_model(&card("NVIDIA GeForce RTX 4060", 8)), Some(QWEN_LARGE));
-        assert_eq!(qwen_model(&card("NVIDIA GeForce GTX 1650", 4)), Some(QWEN_SMALL));
-        assert_eq!(qwen_model(&card("NVIDIA GeForce GT 1030", 2)), None);
-        assert_eq!(qwen_model(&card("AMD Radeon RX 7900 XTX", 24)), None, "Qwen3-TTS needs CUDA");
-        assert_eq!(qwen_model(&Hardware::default()), None);
-        assert_eq!(gpu_label(&card("NVIDIA GeForce RTX 4090", 24)).as_deref(), Some("NVIDIA GeForce RTX 4090, 24 GB"));
-    }
-
-    /// Issue #745: the speech status adds the graphics card, Qwen's model and OpenAI to what the app
-    /// finds; without the app, nothing local reads. The core's choice is Qwen where it works.
+    /// Issues #745, #762: the speech status adds OpenAI after Pocket TTS to what the app finds; no
+    /// graphics card is asked for, Pocket TTS is recommended and the core's choice. Without the app,
+    /// Pocket TTS says the app is missing.
     #[cfg(unix)]
     #[tokio::test]
     async fn the_speech_status_says_who_can_read_aloud() {
@@ -19310,107 +19291,100 @@ mod tests {
         let Response::Speech { speech } = core(dir.path()).handle(Request::SpeechStatus).await else {
             panic!("a speech status")
         };
-        assert_eq!(speech.option(SpeechProvider::Qwen).and_then(|qwen| qwen.missing), Some(SpeechMissing::App));
+        let order: Vec<_> = speech.providers.iter().map(|option| option.provider).collect();
+        assert_eq!(order, [SpeechProvider::Pocket, SpeechProvider::OpenAi]);
+        let pocket = speech.option(SpeechProvider::Pocket).expect("pocket");
+        assert_eq!(pocket.missing, Some(SpeechMissing::App));
+        assert_eq!(pocket.voices.iter().filter(|voice| voice.recommended).count(), 1);
         assert_eq!(
             speech.option(SpeechProvider::OpenAi).and_then(|openai| openai.missing),
             Some(SpeechMissing::Account)
         );
         assert_eq!(
-            (speech.fast_enough, speech.recommended, speech.current),
-            (false, SpeechProvider::OpenAi, SpeechProvider::Piper)
+            (speech.gpu.as_deref(), speech.fast_enough, speech.recommended, speech.current),
+            (None, true, SpeechProvider::Pocket, SpeechProvider::Pocket)
         );
 
-        let mut found = torro_ipc::SpeechStatus {
-            gpu: None,
+        let found = torro_ipc::SpeechStatus {
+            gpu: Some("NVIDIA GeForce RTX 4060, 8 GB".into()),
             fast_enough: false,
-            recommended: SpeechProvider::Piper,
-            current: SpeechProvider::Piper,
-            providers: vec![
-                torro_ipc::SpeechOption {
-                    provider: SpeechProvider::Qwen,
-                    missing: None,
-                    voices: vec![torro_ipc::SpeechVoice { id: "warm_woman".into(), recommended: true }],
-                    model: None,
-                    setup: Some("python3 -m venv qwen/venv".into()),
-                },
-                torro_ipc::SpeechOption {
-                    provider: SpeechProvider::Piper,
-                    missing: Some(SpeechMissing::Program),
-                    voices: Vec::new(),
-                    model: None,
-                    setup: None,
-                },
-            ],
+            recommended: SpeechProvider::OpenAi,
+            current: SpeechProvider::OpenAi,
+            providers: vec![torro_ipc::SpeechOption {
+                provider: SpeechProvider::Pocket,
+                missing: Some(SpeechMissing::Model),
+                voices: vec![torro_ipc::SpeechVoice { id: "alba".into(), recommended: true }],
+                model: Some(torro_core::voice_models::POCKET_DE.into()),
+                setup: None,
+            }],
         };
-        let answer = serde_json::to_string(&Response::Speech { speech: found.clone() }).expect("json");
+        let answer = serde_json::to_string(&Response::Speech { speech: found }).expect("json");
         let program = crate::apps::tests::fake_program(dir.path(), &format!("echo '{answer}'"));
-        let core = core(dir.path()).with_listener(crate::apps::Listener::at(program)).with_probe(Measured(large_pc()));
+        let core = core(dir.path()).with_listener(crate::apps::Listener::at(program));
         let Response::Speech { speech } = core.handle(Request::SpeechStatus).await else { panic!("a speech status") };
         let order: Vec<_> = speech.providers.iter().map(|option| option.provider).collect();
-        assert_eq!(order, [SpeechProvider::Qwen, SpeechProvider::OpenAi, SpeechProvider::Piper]);
-        assert_eq!(speech.gpu.as_deref(), Some("NVIDIA GeForce RTX 4060, 8 GB"));
+        assert_eq!(order, [SpeechProvider::Pocket, SpeechProvider::OpenAi]);
         assert_eq!(
-            (speech.fast_enough, speech.recommended, speech.current),
-            (true, SpeechProvider::Qwen, SpeechProvider::Qwen)
+            (speech.gpu.as_deref(), speech.fast_enough, speech.recommended, speech.current),
+            (None, true, SpeechProvider::Pocket, SpeechProvider::Pocket),
+            "the core's words, not the app's"
         );
-        let qwen = speech.option(SpeechProvider::Qwen).expect("qwen");
-        assert_eq!((qwen.model.as_deref(), qwen.missing), (Some(QWEN_LARGE), None));
+        let pocket = speech.option(SpeechProvider::Pocket).expect("pocket");
+        assert_eq!((pocket.model.as_deref(), pocket.missing), (Some("pocket-de"), Some(SpeechMissing::Model)));
         let openai = speech.option(SpeechProvider::OpenAi).expect("openai");
         let recommended: Vec<_> =
             openai.voices.iter().filter(|voice| voice.recommended).map(|voice| voice.id.as_str()).collect();
         assert_eq!((openai.voices.len(), recommended), (13, vec!["cedar", "marin"]));
 
-        // Without Qwen set up the core reads with Piper; a chosen provider is the current one.
-        found.providers[0].missing = Some(SpeechMissing::Program);
-        let answer = serde_json::to_string(&Response::Speech { speech: found }).expect("json");
-        let program = crate::apps::tests::fake_program(dir.path(), &format!("echo '{answer}'"));
-        let core =
-            self::core(dir.path()).with_listener(crate::apps::Listener::at(program)).with_probe(Measured(large_pc()));
+        // A chosen provider is the current one; the providers of earlier versions are gone.
+        let set = |value| Request::SetSetting { key: torro_ipc::SettingKey::SpeechProvider, value };
+        assert_eq!(core.handle(set(serde_json::json!("openai"))).await, Response::Ok);
         let Response::Speech { speech } = core.handle(Request::SpeechStatus).await else { panic!("a speech status") };
-        assert_eq!((speech.recommended, speech.current), (SpeechProvider::Qwen, SpeechProvider::Piper));
-        let set = Request::SetSetting { key: torro_ipc::SettingKey::SpeechProvider, value: serde_json::json!("qwen") };
-        assert_eq!(core.handle(set).await, Response::Ok);
-        let Response::Speech { speech } = core.handle(Request::SpeechStatus).await else { panic!("a speech status") };
-        assert_eq!(speech.current, SpeechProvider::Qwen);
+        assert_eq!(speech.current, SpeechProvider::OpenAi);
+        for gone in ["qwen", "piper"] {
+            assert_eq!(code(&core.handle(set(serde_json::json!(gone))).await), "unsupported", "{gone}");
+        }
+        assert_eq!(code(&core.handle(set(serde_json::json!("grok"))).await), "error");
     }
 
-    /// Issue #745: reading aloud goes through the helper and answers when it is done; what cannot read
-    /// here says so for people, and a client may read aloud but never choose OpenAI.
+    /// Issues #745, #762: reading aloud goes through the helper with the provider and Pocket's voice, no
+    /// model and no language, and answers when it is done; what cannot read here says so for people, and
+    /// a client may read aloud but never choose OpenAI.
     #[cfg(unix)]
     #[tokio::test]
     async fn reading_aloud_goes_through_the_helper() {
         use torro_ipc::SettingKey;
         let dir = tempfile::tempdir().expect("temp dir");
-        // Like `--speak`: plays what it is told to say, and says what it was told.
+        // Like `--speak`: plays what it is told to say with the voices it knows.
         let body = r#"while read line; do
   case "$line" in
-    *'"provider":"qwen"'*) case "$line" in *'"model":"Qwen/Qwen3-TTS-12Hz-1.7B-Base"'*) echo '"playing"'; echo '"done"' ;; esac ;;
-    *'"say"'*) echo '{"failed": {"code": "unsupported", "message": "Piper is not installed or has no voice."}}' ;;
+    *'"model"'*|*'"language"'*) echo '{"failed": {"code": "error", "message": "a say of an earlier version"}}' ;;
+    *'"provider":null'*'"voice":"alba"'*|*'"provider":"pocket"'*'"voice":"marius"'*) echo '"playing"'; echo '"done"' ;;
+    *'"say"'*) echo '{"failed": {"code": "unsupported", "message": "The model of Pocket TTS is not downloaded."}}' ;;
   esac
 done"#;
         let program = crate::apps::tests::fake_program(dir.path(), body);
-        let core =
-            core(dir.path()).with_speech(crate::apps::SpeechHelper::at(program)).with_probe(Measured(large_pc()));
+        let core = core(dir.path()).with_speech(crate::apps::SpeechHelper::at(program));
         let speak = |text: &str| Request::Speak { text: text.into() };
         assert_eq!(code(&core.handle(speak(" ")).await), "error");
         assert_eq!(code(&core.handle(speak(&"a".repeat(MAX_SPEAK_CHARS + 1))).await), "error");
-        // The core's choice on a computer where Qwen is not found: Piper, which the fake does not have.
-        let Response::Error { code: failed, message } = core.handle(speak("Hello.")).await else { panic!("refused") };
-        assert_eq!((failed.as_str(), message.as_str()), ("unsupported", "Piper is not installed or has no voice."));
+        // The core's choice with the recommended voice.
+        assert_eq!(core.handle(speak("Hello.")).await, Response::Ok);
         let set = |key, value| Request::SetSetting { key, value };
-        assert_eq!(core.handle(set(SettingKey::SpeechProvider, serde_json::json!("qwen"))).await, Response::Ok);
+        assert_eq!(core.handle(set(SettingKey::PocketVoice, serde_json::json!("fantine"))).await, Response::Ok);
+        let Response::Error { code: failed, message } = core.handle(speak("Hello.")).await else { panic!("refused") };
+        assert_eq!((failed.as_str(), message.as_str()), ("unsupported", "The model of Pocket TTS is not downloaded."));
+        assert_eq!(core.handle(set(SettingKey::SpeechProvider, serde_json::json!("pocket"))).await, Response::Ok);
+        assert_eq!(core.handle(set(SettingKey::PocketVoice, serde_json::json!("marius"))).await, Response::Ok);
         assert_eq!(core.handle(speak("**Hello.**")).await, Response::Ok);
         assert_eq!(core.handle(Request::StopSpeaking).await, Response::Ok);
-        // OpenAI without an account, Qwen without a card: messages for people, nothing started.
+        // OpenAI without an account: a message for people, nothing started.
         assert_eq!(core.handle(set(SettingKey::SpeechProvider, serde_json::json!("openai"))).await, Response::Ok);
         let Response::Error { code: failed, message } = core.handle(speak("Hello.")).await else { panic!("refused") };
         assert_eq!(
             (failed.as_str(), message.as_str()),
             ("unsupported", tr("Connect an OpenAI account in Settings › AI to read aloud with OpenAI."))
         );
-        let small = core.with_probe(Measured(torro_core::ai::hardware::Hardware::default()));
-        assert_eq!(small.handle(set(SettingKey::SpeechProvider, serde_json::json!("qwen"))).await, Response::Ok);
-        assert_eq!(code(&small.handle(speak("Hello.")).await), "unsupported");
 
         // A client with the rights reads aloud, but never sends it to OpenAI.
         let mut rights = RightsTemplate::FullAccess.rights();
@@ -19418,9 +19392,71 @@ done"#;
             rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
         }
         rights.confirm = torro_ipc::api::Confirm::Never;
-        let (_, key) = client(&small, rights).await;
+        let (_, key) = client(&core, rights).await;
         let openai = set(SettingKey::SpeechProvider, serde_json::json!("openai"));
-        assert_eq!(code(&ask(&small, Some(&key), openai).await), "forbidden");
+        assert_eq!(code(&ask(&core, Some(&key), openai).await), "forbidden");
+    }
+
+    /// Issue #762: the speech models are listed from the catalogue and the voice folder; a command on a
+    /// model the catalogue does not have is `not-found` before anyone is asked, one on a known model waits
+    /// for the person; the voice settings that are gone are `unsupported` without an approval.
+    #[tokio::test]
+    async fn speech_models_are_listed_and_unknown_ones_refused_before_approval() {
+        use torro_ipc::{SettingKey, VoiceModelState};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let voice = dir.path().join("voice");
+        let models = crate::voice_models::VoiceDownloads::new(Some(voice.clone()), &torro_core::voice_models::MODELS);
+        let core = core(dir.path()).with_voice_models(models);
+        let Response::VoiceModels { models } = core.handle(Request::ListVoiceModels).await else { panic!("listed") };
+        assert_eq!(
+            models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(),
+            ["whisper-turbo", "parakeet", "pocket-de"]
+        );
+        assert!(models.iter().all(|model| model.state == VoiceModelState::Missing));
+        assert_eq!(code(&core.handle(Request::DownloadVoiceModel { model: "evil".into() }).await), "not-found");
+        let Response::VoiceModels { models } =
+            core.handle(Request::CancelVoiceDownload { model: "parakeet".into() }).await
+        else {
+            panic!("listed")
+        };
+        assert_eq!(models[1].state, VoiceModelState::Missing, "nothing to cancel");
+        let pocket = torro_core::voice_models::model("pocket-de").expect("pocket");
+        std::fs::create_dir_all(pocket.folder(&voice)).expect("folder");
+        std::fs::write(pocket.path(&voice, "vocab.json.part"), b"{}").expect("part");
+        let Response::VoiceModels { models } =
+            core.handle(Request::RemoveVoiceModel { model: "pocket-de".into() }).await
+        else {
+            panic!("removed")
+        };
+        assert_eq!(models[2].state, VoiceModelState::Missing);
+        assert!(!pocket.folder(&voice).exists());
+
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.areas.insert(Area::Settings, AreaRights { level: Level::Full, admin: true });
+        rights.confirm = torro_ipc::api::Confirm::Never;
+        let (_, key) = client(&core, rights).await;
+        assert!(matches!(ask(&core, Some(&key), Request::ListVoiceModels).await, Response::VoiceModels { .. }));
+        for unknown in [
+            Request::DownloadVoiceModel { model: "evil\nApprove".into() },
+            Request::CancelVoiceDownload { model: "../etc".into() },
+            Request::RemoveVoiceModel { model: String::new() },
+        ] {
+            assert_eq!(code(&ask(&core, Some(&key), unknown).await), "not-found");
+        }
+        for gone in [
+            Request::SetSetting { key: SettingKey::QwenVoice, value: serde_json::json!("calm_man") },
+            Request::SetSetting { key: SettingKey::SttModel, value: serde_json::json!("/m/ggml-base.bin") },
+            Request::SetSetting { key: SettingKey::SpeechProvider, value: serde_json::json!("piper") },
+        ] {
+            assert_eq!(code(&ask(&core, Some(&key), gone).await), "unsupported");
+        }
+        assert_eq!(
+            core.handle(Request::ListApprovals).await,
+            Response::Approvals { approvals: Vec::new() },
+            "nobody asked"
+        );
+        let known = ask(&core, Some(&key), Request::DownloadVoiceModel { model: "parakeet".into() }).await;
+        assert!(matches!(known, Response::Pending { .. }), "{known:?}");
     }
 
     /// Issue #745: with OpenAI the core fetches each piece the helper names, with the account's key,

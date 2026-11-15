@@ -2743,6 +2743,36 @@ mod tests {
         }
     }
 
+    /// Issue #762: listing, downloading, cancelling and removing the speech models are one tool each,
+    /// built from the catalogue; only the listing reads.
+    #[test]
+    fn speech_models_are_one_tool_each() {
+        let model = || args(json!({"model": "whisper-turbo"}));
+        assert_eq!(request_for("settings_list_voice_models", JsonObject::new(), &Utc), Ok(Request::ListVoiceModels));
+        assert_eq!(
+            request_for("settings_download_voice_model", model(), &Utc),
+            Ok(Request::DownloadVoiceModel { model: "whisper-turbo".into() })
+        );
+        assert_eq!(
+            request_for("settings_cancel_voice_download", model(), &Utc),
+            Ok(Request::CancelVoiceDownload { model: "whisper-turbo".into() })
+        );
+        assert_eq!(
+            request_for("settings_remove_voice_model", model(), &Utc),
+            Ok(Request::RemoveVoiceModel { model: "whisper-turbo".into() })
+        );
+        assert!(request_for("settings_download_voice_model", JsonObject::new(), &Utc).is_err(), "the model is needed");
+        for (name, read_only) in [
+            ("settings_list_voice_models", true),
+            ("settings_download_voice_model", false),
+            ("settings_cancel_voice_download", false),
+            ("settings_remove_voice_model", false),
+        ] {
+            let hints = tools().iter().find(|t| t.name == name).and_then(|t| t.annotations.clone());
+            assert_eq!(hints.and_then(|h| h.read_only_hint), Some(read_only), "{name}");
+        }
+    }
+
     #[test]
     fn the_zoom_is_set_with_a_number() {
         let zoom = request_for("settings_set_setting", args(json!({"key": "zoom", "value": 1.25})), &Utc);

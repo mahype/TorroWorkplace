@@ -1131,6 +1131,10 @@ impl PimService {
             | Request::PullAiModel { .. }
             | Request::AiPulls
             | Request::CancelAiPull { .. }
+            | Request::ListVoiceModels
+            | Request::DownloadVoiceModel { .. }
+            | Request::CancelVoiceDownload { .. }
+            | Request::RemoveVoiceModel { .. }
             | Request::MailBackupCreate { .. }
             | Request::MailBackupStatus { .. }
             | Request::MailBackupCancel { .. }
