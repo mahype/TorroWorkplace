@@ -364,6 +364,17 @@ mod tests {
         wake.reset();
     }
 
+    /// Issue #765: the built-in model hears "Hey Torro" in a clip of the trainer's held-out test set (a TTS
+    /// voice, not trained on), with the name of its score and the threshold of the app; it wakes once, then
+    /// starts afresh.
+    #[test]
+    fn the_built_in_model_hears_hey_torro() {
+        let voice = tempfile::tempdir().expect("voice folder");
+        let mut wake = ModelWake::load(voice.path()).expect("loads");
+        let woke = fixture("hey_torro.wav").chunks(FRAME).filter(|frame| wake.hears(frame).expect("hears")).count();
+        assert_eq!(woke, 1, "woken once");
+    }
+
     /// Issue #765: a model file cut off, or another model of the same size, is written anew.
     #[test]
     fn a_model_file_cut_off_or_changed_is_written_anew() {
