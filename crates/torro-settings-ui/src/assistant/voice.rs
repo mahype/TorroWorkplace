@@ -923,6 +923,13 @@ pub fn missing_devices(status: &VoiceStatus) -> Vec<(&'static str, &'static str)
     if lacks(VoicePart::Speech, VoiceMissing::Player) {
         rows.push((tr("No sound output found"), tr("Connect speakers or headphones to hear the answers.")));
     }
+    // Qwen3-TTS reads on an NVIDIA card (issue #764).
+    if lacks(VoicePart::Speech, VoiceMissing::Gpu) {
+        rows.push((
+            tr("No NVIDIA graphics card found"),
+            tr("Qwen3-TTS needs one. Choose Pocket TTS under Read aloud."),
+        ));
+    }
     rows
 }
 
@@ -1283,6 +1290,12 @@ mod tests {
         }
         let labels: Vec<&str> = missing_devices(&quiet).into_iter().map(|(label, _)| label).collect();
         assert_eq!(labels, [tr("No microphone found"), tr("No sound output found")]);
+        // Issue #764: Qwen3-TTS without an NVIDIA card.
+        for program in &mut quiet.programs {
+            program.missing = (program.part == VoicePart::Speech).then_some(VoiceMissing::Gpu);
+        }
+        let labels: Vec<&str> = missing_devices(&quiet).into_iter().map(|(label, _)| label).collect();
+        assert_eq!(labels, [tr("No NVIDIA graphics card found")]);
     }
 
     /// Issues #749, #762: "Speech recognition" is a dropdown of Whisper (recommended) and Parakeet; a

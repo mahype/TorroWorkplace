@@ -95,6 +95,9 @@ pub fn programs(voice: &Voice, folder: Option<&Path>, devices: &dyn Devices) -> 
     };
     let speech_missing = if !devices.has_output() {
         Some(VoiceMissing::Player)
+    } else if provider == SpeechProvider::Qwen && !qwen_card() {
+        // Asked only when Qwen3-TTS reads (issue #764): finding the card takes a moment.
+        Some(VoiceMissing::Gpu)
     } else if provider != SpeechProvider::OpenAi && !model_ready(program, folder) {
         Some(VoiceMissing::Model)
     } else {
@@ -102,6 +105,15 @@ pub fn programs(voice: &Voice, folder: Option<&Path>, devices: &dyn Devices) -> 
     };
     let speech = part(VoicePart::Speech, Some(program.to_string()), speech_missing);
     vec![wake, recorder, stt, speech]
+}
+
+/// Whether an NVIDIA card answers for Qwen3-TTS (issue #764); never in a build without it, where Qwen
+/// does not read at all.
+fn qwen_card() -> bool {
+    #[cfg(feature = "qwen-cuda")]
+    return super::qwen::graphics_card().is_some();
+    #[cfg(not(feature = "qwen-cuda"))]
+    false
 }
 
 /// What the listener would use with `voice` (`--voice-status`): its [`programs`], the microphones the

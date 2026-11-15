@@ -5218,6 +5218,8 @@ pub enum VoiceMissing {
     Model,
     /// Speech only: no sound output.
     Player,
+    /// Speech with Qwen3-TTS only (issue #764): no NVIDIA graphics card answers.
+    Gpu,
 }
 
 /// One [`VoicePart`] as the listener would use it now.

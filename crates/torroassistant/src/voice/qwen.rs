@@ -22,6 +22,8 @@ use super::pocket::TEMPLATES;
 use super::pocket::{Chunk, Delivery, Synth};
 #[cfg(feature = "qwen-cuda")]
 use super::speech::pieces;
+#[cfg(feature = "qwen-cuda")]
+use torro_ipc::{VoiceMissing, VoicePart};
 
 /// The name Qwen3-TTS goes by in messages.
 #[cfg(feature = "qwen-cuda")]
@@ -149,12 +151,14 @@ pub struct Qwen {
 impl Qwen {
     /// Loads the model from the voice folder `folder` onto the first NVIDIA card, speaking the language
     /// of the suite `code` ([`language`]). It must be downloaded (the reading helper looks first);
-    /// without a card it is a [`VoiceError::Program`], never a crash.
+    /// without a card it is [`VoiceError::Missing`] with [`VoiceMissing::Gpu`], never a crash.
     pub fn load(folder: &Path, code: &str) -> Result<Qwen, VoiceError> {
         use crane_core::models::{DType, Device};
         let home = place_tokenizer(folder)?;
-        let device =
-            Device::new_cuda(0).map_err(|err| VoiceError::program(NAME, format!("no graphics card: {err}")))?;
+        let device = Device::new_cuda(0).map_err(|err| {
+            eprintln!("torroassistant: {NAME}: no graphics card: {err}");
+            VoiceError::Missing(VoicePart::Speech, VoiceMissing::Gpu)
+        })?;
         let path = home.to_string_lossy();
         let model = crane_core::models::qwen3_tts::Model::new(&path, &device, &DType::BF16)
             .map_err(|err| VoiceError::program(NAME, format!("did not load: {err}")))?;
