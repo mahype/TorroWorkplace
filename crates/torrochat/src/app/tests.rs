@@ -757,7 +757,7 @@ fn holding(count: usize) -> App {
     let files = &mut app.chat.as_mut().expect("a chat window").files;
     for i in 0..count {
         files.pictures.insert((format!("m{i}"), Some("f".into())), pixel());
-        files.last_seen.insert(format!("m{i}"), i as u64 + 1);
+        files.last_seen.insert((format!("m{i}"), Some("f".into())), i as u64 + 1);
     }
     app
 }
@@ -788,7 +788,7 @@ fn pictures_in_view_stay_beyond_the_limit() {
     let mut app = holding(HELD_PICTURES + 6);
     let messages = chat(&app).messages.clone();
     let files = &mut app.chat.as_mut().expect("a chat window").files;
-    files.in_view.extend((0..HELD_PICTURES + 6).map(|i| format!("m{i}")));
+    files.in_view.extend((0..HELD_PICTURES + 6).map(|i| (format!("m{i}"), Some("f".into()))));
     assert!(!files.thin_out(&messages), "none went");
     assert!(count(&app, true) > HELD_PICTURES, "nothing in view goes");
     assert_eq!(count(&app, false), 0);
@@ -808,7 +808,7 @@ fn a_picture_let_go_comes_again_when_its_message_scrolls_into_view() {
     let mut app = loaded(start(&["--open", "files"]));
     let key = pictured_key(&app);
     app.chat.as_mut().expect("a chat window").files.pictures.insert(key.clone(), Shown::Away);
-    let _ = app.update(Message::Chat(Msg::Files(FilesMsg::InView(vec![key.0.clone()]))));
+    let _ = app.update(Message::Chat(Msg::Files(FilesMsg::InView(key.clone()))));
     assert!(matches!(chat(&app).files.pictures.get(&key), Some(Shown::Loading)), "asked for again");
     let failed = FilesMsg::Picture(key.clone(), Err(ChatError::Other("offline".into())));
     let _ = app.update(Message::Chat(Msg::Files(failed)));
@@ -845,8 +845,31 @@ fn a_tile_of_the_shared_media_asks_for_its_small_picture_when_the_history_lets_i
     files.media = Some(MediaPanel { items: vec![tile], ..MediaPanel::default() });
     // One picture more, and a line goes out of view: m0, seen longest ago, goes.
     files.pictures.insert(("new".into(), None), pixel());
-    files.last_seen.insert("new".into(), 100);
-    let _ = app.update(Message::Chat(Msg::Files(FilesMsg::OutOfView(vec!["x".into()]))));
+    files.last_seen.insert(("new".into(), None), 100);
+    let _ = app.update(Message::Chat(Msg::Files(FilesMsg::OutOfView(("x".into(), None)))));
     assert!(matches!(chat(&app).files.pictures.get(&key), Some(Shown::Away)));
     assert!(matches!(chat(&app).files.thumbs.get(&key), Some(Shown::Loading)), "the tile asks for its own");
+}
+
+/// A message taller than the window: one of its pictures goes out of view while another stands in
+/// it. Only the one out of view may go.
+#[test]
+fn a_tall_message_keeps_the_picture_in_view_when_another_of_it_goes() {
+    use crate::app::files::{FilesMsg, HELD_PICTURES, Shown};
+    let mut app = holding(HELD_PICTURES);
+    let top = ("tall".to_string(), Some("top".to_string()));
+    let middle = ("tall".to_string(), Some("middle".to_string()));
+    let files = &mut app.chat.as_mut().expect("a chat window").files;
+    files.pictures.insert(top.clone(), pixel());
+    files.pictures.insert(middle.clone(), pixel());
+    // The others stand in view too: only the tall message's pictures could go.
+    files.in_view.extend((0..HELD_PICTURES).map(|i| (format!("m{i}"), Some("f".into()))));
+    for key in [&top, &middle] {
+        let _ = app.update(Message::Chat(Msg::Files(FilesMsg::InView(key.clone()))));
+    }
+    let _ = app.update(Message::Chat(Msg::Files(FilesMsg::OutOfView(top.clone()))));
+    let pictures = &chat(&app).files.pictures;
+    assert!(matches!(pictures.get(&middle), Some(Shown::Ready(_))), "the picture in view stays");
+    assert!(matches!(pictures.get(&top), Some(Shown::Away)), "the one out of view went");
+    assert_eq!(count(&app, true), HELD_PICTURES + 1);
 }
