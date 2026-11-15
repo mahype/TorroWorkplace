@@ -91,6 +91,9 @@ struct Entry {
     /// A cancelled task until it has really stopped: abort only marks it, and it may still write the
     /// piece it holds; a new download waits for it with `busy` (review of #762).
     stopping: Option<tokio::task::AbortHandle>,
+    /// [`VoiceDownloads::remove`] deletes the model's folder: a download waits with `busy` until it is
+    /// gone, so the folder never takes the files of a new one with it (PR review of #762).
+    removing: bool,
     /// Which start this is, so a task that was cancelled and started again does not end the new one.
     run: u64,
 }
@@ -144,6 +147,7 @@ impl VoiceDownloads {
             let mut entries = self.entries();
             let busy = |entry: &Entry| {
                 entry.state == VoiceModelState::Running
+                    || entry.removing
                     || entry.stopping.as_ref().is_some_and(|task| !task.is_finished())
             };
             if entries.get(model.id).is_some_and(busy) {
@@ -158,8 +162,14 @@ impl VoiceDownloads {
                     let outcome = fetch_model(&http, &model.folder(&folder), model.files).await;
                     downloads.end(model.id, run, outcome);
                 });
-                let entry =
-                    Entry { state: VoiceModelState::Running, error: None, task: Some(task), stopping: None, run };
+                let entry = Entry {
+                    state: VoiceModelState::Running,
+                    error: None,
+                    task: Some(task),
+                    stopping: None,
+                    removing: false,
+                    run,
+                };
                 entries.insert(model.id, entry);
             }
         }
@@ -192,19 +202,37 @@ impl VoiceDownloads {
     /// [`VoiceModelError::Error`] when its folder cannot be deleted.
     pub async fn remove(&self, id: &str) -> Result<Vec<VoiceModel>, VoiceModelError> {
         let model = self.model(id).ok_or(VoiceModelError::NotFound)?;
-        let task = aborted(self.entries().remove(model.id).and_then(|entry| entry.task));
+        // The entry stays, marked, until the folder is gone: a download that comes meanwhile is `busy`.
+        let task = {
+            let mut entries = self.entries();
+            let run = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
+            let old = entries.remove(model.id);
+            let entry = Entry {
+                state: VoiceModelState::Cancelled,
+                error: None,
+                task: None,
+                stopping: None,
+                removing: true,
+                run,
+            };
+            entries.insert(model.id, entry);
+            aborted(old.and_then(|entry| entry.task))
+        };
         stopped(task).await;
-        if let Some(folder) = &self.folder {
-            match std::fs::remove_dir_all(model.folder(folder)) {
-                Ok(()) => {}
-                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        let deleted = match &self.folder {
+            Some(folder) => match std::fs::remove_dir_all(model.folder(folder)) {
+                Ok(()) => Ok(()),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
                 Err(err) => {
                     eprintln!("torroworkplace: the voice model {} was not removed ({:?})", model.id, err.kind());
-                    return Err(VoiceModelError::Error(tr("The model could not be removed. Try again.").into()));
+                    Err(VoiceModelError::Error(tr("The model could not be removed. Try again.").into()))
                 }
-            }
-        }
-        Ok(self.list())
+            },
+            None => Ok(()),
+        };
+        // Whatever happened, the mark goes: the disk tells how the model stands now.
+        self.entries().remove(model.id);
+        deleted.map(|()| self.list())
     }
 
     fn model(&self, id: &str) -> Option<&'static Model> {
@@ -765,6 +793,30 @@ mod tests {
         assert_eq!(downloads.remove("parakeet").await, Err(VoiceModelError::NotFound));
         assert_eq!(downloads.cancel("parakeet").await, Err(VoiceModelError::NotFound));
         assert_eq!(downloads.cancel("test").await.expect("nothing runs")[0].state, VoiceModelState::Missing);
+    }
+
+    /// PR review of #762: while a removal deletes the folder, a download of the same model waits with
+    /// `busy` instead of losing its files; afterwards it may start.
+    #[tokio::test]
+    async fn a_download_waits_while_the_model_is_removed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let models = catalogue("http://127.0.0.1:9", &[("tokens.txt", SMALL)]);
+        let downloads = VoiceDownloads::new(Some(dir.path().to_path_buf()), models);
+        let marked = Entry {
+            state: VoiceModelState::Cancelled,
+            error: None,
+            task: None,
+            stopping: None,
+            removing: true,
+            run: 1,
+        };
+        downloads.entries().insert("test", marked);
+        assert_eq!(downloads.download("test"), Err(VoiceModelError::Busy));
+        downloads.entries().clear();
+        downloads.remove("test").await.expect("removed");
+        assert!(downloads.entries().is_empty(), "the mark goes with the removal");
+        assert!(downloads.download("test").is_ok(), "afterwards it starts");
+        downloads.cancel("test").await.expect("cancelled");
     }
 
     #[tokio::test]
