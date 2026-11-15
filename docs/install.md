@@ -90,12 +90,16 @@ Die Releases lesen lokal mit Pocket TTS. Qwen3-TTS als zweite lokale Stimme (Iss
 (`nvcc`, unter Arch `cuda`) und zum Laufen dessen Bibliotheken (`libcudart`, `libcublas`, `libcurand`): ein
 so gebauter Assistent startet ohne sie gar nicht, auch nicht mit Pocket TTS. Kein Python, kein `cmake`.
 
-Dienst und Assistent in **einem** Aufruf bauen, damit die Option in beiden gilt (der Dienst bietet Qwen sonst
-nicht an):
+Dienst und Assistent in **zwei** Aufrufen bauen: Der Dienst bekommt nur die Option, Qwen anzubieten
+(`torro-core/qwen-tts`), der Assistent Crane dazu. In einem gemeinsamen Aufruf schaltete Crane in den gemeinsamen
+Abhängigkeiten des Dienstes Features um (`serde_json/preserve_order`) und änderte dort Verhalten.
 
 ```sh
-cargo build --release -p torroworkplace -p torroassistant --features torroassistant/qwen-cuda
+cargo build --release -p torroworkplace --features torro-core/qwen-tts
+cargo build --release -p torroassistant --features qwen-cuda
 ```
+
+Ohne die Option im Dienst bietet er Qwen nicht an, auch wenn der Assistent es kann.
 
 Danach in Einstellungen › Assistent › Voice unter „Models“ das Modell „Qwen3-TTS 0.6B“ laden (2,5 GB) und unter
 „Read aloud“ „Local: Qwen3-TTS (graphics card)“ wählen. macOS und Windows sind nicht erprobt

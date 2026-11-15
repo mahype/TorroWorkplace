@@ -60,8 +60,8 @@ tempfile.workspace = true
 
 [features]
 # Qwen3-TTS as a second local voice through Crane on an NVIDIA card (issue #764): builds it in and switches on
-# `torro-core/qwen-tts`, so the core of the same build (`cargo build -p torroworkplace -p torroassistant --features
-# torroassistant/qwen-cuda`) offers it too. Needs the CUDA toolkit to build and its libraries to run; the releases
+# `torro-core/qwen-tts`. The core is built apart with `-p torroworkplace --features torro-core/qwen-tts`, never
+# in the same call: Crane would switch on `serde_json/preserve_order` there too (docs/install.md). Needs the CUDA toolkit to build and its libraries to run; the releases
 # are built without it.
 qwen-cuda = ["dep:crane-core", "crane-core/cuda", "torro-core/qwen-tts"]
 

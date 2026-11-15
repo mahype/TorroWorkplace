@@ -823,9 +823,11 @@ mod tests {
     async fn the_list_reads_the_disk_and_without_a_folder_everything_is_missing() {
         let nowhere = VoiceDownloads::new(None, &MODELS);
         let listed = nowhere.list();
+        // Qwen3-TTS only in builds with it (issue #764).
+        let expected = ["whisper-turbo", "parakeet", "pocket-de", "qwen3-tts"];
         assert_eq!(
             listed.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(),
-            ["whisper-turbo", "parakeet", "pocket-de"]
+            expected[..3 + usize::from(torro_core::settings::QWEN_BUILT)]
         );
         assert!(listed.iter().all(|model| model.state == VoiceModelState::Missing && model.completed == 0));
         assert_eq!(listed[0].bytes, MODELS[0].bytes());
