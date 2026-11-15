@@ -9481,6 +9481,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Only a person can show this card.", "Nur ein Mensch kann diese Karte zeigen."),
     ("No such link card.", "Diese Link-Karte gibt es nicht."),
+    ("{count} found", "{count} gefunden"),
+    ("Items", "Einträge"),
     ("What came in today", "Was heute kam"),
     ("What came in today? Anything about the offer?", "Was kam heute? Etwas zum Angebot?"),
     ("12 mails", "12 Mails"),
