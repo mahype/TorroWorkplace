@@ -15,12 +15,14 @@
 //! - **Pictures only from the account's own server**, only in memory ([`PREVIEWS_PER_ACCOUNT`]);
 //!   never an SVG. Fetched files lie in the chat's own folder, `<cache>/chat-attachments/<account
 //!   hash>/` (0700, files 0600), and go after [`FETCHED_FOR`].
-//! - **Link cards** of links to the account's own server are resolved by themselves when an app
-//!   reads messages. Any other follows Settings › Privacy (issue #672), because the server fetches
-//!   the address and its owner might learn when the message was read: by itself for a provider
-//!   allowed or at "Always show"; for one not asked yet the message names it (`foreign`) and the card
-//!   comes with `chat.show_card`, a person's click ("Show once"); never for one blocked or at "Never
-//!   show", where a card held from before is left out too. A client's read resolves nothing.
+//! - **Link cards** (issue #785): each of the first three `https` links of a message
+//!   ([`crate::link_cards::links`]) may have one, by its `index` among them. Links to the account's own
+//!   server are resolved by themselves when an app reads messages. Any other follows Settings › Privacy
+//!   (issue #672, [`crate::link_cards::web`]), because the server fetches the address and its owner
+//!   might learn when the message was read: by itself for a provider allowed or at "Always show"; for
+//!   one not asked yet the message names it (`foreign`, the first such link) and the card comes with
+//!   `chat.show_card`, a person's click ("Show once"); never for one blocked or at "Never show", where a
+//!   card held from before is left out too. A client's read resolves nothing.
 //! - **YouTube videos** (issue #673): the card of a link to a video carries its id (`video`), also
 //!   when the server knows no card for it; so the chat window can play exactly what Settings ›
 //!   Privacy let load, and a person's "Show once" counts for playing that video too.
@@ -34,7 +36,7 @@ use std::time::{Duration, SystemTime};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use chrono::Local;
-use torro_chat::{ChatError, ForeignProvider, LinkCard, MessagePage, split_message};
+use torro_chat::{ChatError, ForeignProvider, MessagePage, split_message};
 use torro_core::i18n::{tr, trf};
 use torro_core::privacy::Decision;
 use torro_ipc::Response;
@@ -58,12 +60,14 @@ fn local_name(name: &str) -> String {
 }
 use super::remote::{Caps, DavPath, Picture, Remote, RemoteMessage, RemoteRoom};
 use super::service::{Caller, error_response};
+use crate::link_cards::web::{self, Decided, Resolved};
+use crate::link_cards::{self, LinkKind};
 use crate::pim::Reach;
 
 /// The most bytes of previews kept per account.
 pub const PREVIEWS_PER_ACCOUNT: u64 = 64 * 1024 * 1024;
 
-/// The most link cards kept.
+/// The most messages whose link cards are kept.
 pub const CARDS_KEPT: usize = 2000;
 
 /// The most cards resolved by one read of an app: links to the own server and to providers allowed.
@@ -72,21 +76,14 @@ const CARDS_PER_READ: usize = 5;
 /// How long a fetched file stays in the chat's folder.
 pub const FETCHED_FOR: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// A link card the core holds, and the id of its picture on the account's server.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Card {
-    /// `None`: asked, the server knows none (so it is not asked again).
-    card: Option<LinkCard>,
-    image: Option<String>,
-}
-
 /// Previews and link cards in memory.
 #[derive(Debug, Default)]
 pub struct Held {
     /// Per account: the previews by key (`<file id>:<edge>`), the oldest first, and their bytes.
     previews: BTreeMap<String, (VecDeque<(String, Picture)>, u64)>,
-    /// By message id, the oldest first.
-    cards: BTreeMap<String, Card>,
+    /// By message id, the oldest first: the cards of its links by their index among them
+    /// ([`link_cards::links`]), `None` for a link not resolved (yet).
+    cards: BTreeMap<String, Vec<Option<Resolved>>>,
     order: VecDeque<String>,
 }
 
@@ -109,10 +106,22 @@ impl Held {
         }
     }
 
-    fn keep_card(&mut self, message: &str, card: Card) {
-        if self.cards.insert(message.to_string(), card).is_none() {
+    /// The card held for the link `index` of `message`.
+    fn card(&self, message: &str, index: usize) -> Option<&Resolved> {
+        self.cards.get(message)?.get(index)?.as_ref()
+    }
+
+    /// Keeps `card` for the link `index` (below [`link_cards::MAX_LINKS`]) of `message`; the oldest messages go
+    /// beyond [`CARDS_KEPT`].
+    fn keep_card(&mut self, message: &str, index: usize, card: Resolved) {
+        if index >= link_cards::MAX_LINKS {
+            return;
+        }
+        if !self.cards.contains_key(message) {
             self.order.push_back(message.to_string());
         }
+        let slots = self.cards.entry(message.to_string()).or_insert_with(|| vec![None; link_cards::MAX_LINKS]);
+        slots[index] = Some(card);
         while self.order.len() > CARDS_KEPT {
             if let Some(oldest) = self.order.pop_front() {
                 self.cards.remove(&oldest);
@@ -163,78 +172,18 @@ fn no_picture_right() -> Response {
     refused("forbidden", tr("This key may not see pictures and videos."))
 }
 
-/// The first `https` link of `text`, without the punctuation after it.
-pub fn first_link(text: &str) -> Option<String> {
-    let start = text.find("https://")?;
-    let link: String = text[start..].chars().take_while(|c| !c.is_whitespace() && !c.is_control()).collect();
-    let link = link.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '}', '>', '"', '\'']);
-    let url = url::Url::parse(link).ok()?;
-    (url.scheme() == "https" && url.host_str().is_some()).then(|| link.to_string())
-}
-
-/// What a message's first link is (issue #672).
-enum Link {
-    /// To the account's own server: its card is resolved for an app by itself.
-    Own,
-    /// To another server: what Settings › Privacy decides for its provider.
-    Other(Decision),
-}
-
-impl Link {
-    /// Whether its card is resolved by itself when an app reads the message.
-    fn loads(&self) -> bool {
-        matches!(self, Link::Own | Link::Other(Decision::Load))
+/// What the link `link` of a message is for its card, `server` being the account's own server (`None` signed out):
+/// [`Decided::Own`] or what Settings › Privacy decides ([`web::decide`]).
+fn decided(privacy: &torro_core::privacy::Privacy, link: &str, server: Option<&str>) -> Decided {
+    match link_cards::classify(link, server) {
+        LinkKind::Web => web::decide(privacy, link, server),
+        // Must (strand 2c, issue #790): a file of the own server, a quoted chat message and a GitHub item get their
+        // own cards from `link_cards::{nextcloud,chat,github}`, which have no function to resolve one yet. Until
+        // they do, each loads as the page it is: on the own server by itself, else after Settings › Privacy.
+        LinkKind::NextcloudFile(_) | LinkKind::ChatMessage { .. } | LinkKind::Github { .. } => {
+            web::decide(privacy, link, server)
+        }
     }
-}
-
-/// Whether Settings › Privacy turned the card of `link` off (issue #672): a link to another server than
-/// `server` whose provider is blocked, or any such link at "Never show". An empty link (a card without
-/// one) counts as another server's.
-fn turned_off(privacy: &torro_core::privacy::Privacy, link: &str, server: &str) -> bool {
-    !torro_nextcloud::same_origin(link, server) && privacy.decide(&host_of(link)) == Decision::Skip
-}
-
-/// The host of `link` as the suite compares hosts ([`torro_core::privacy::normalize_host`]); empty when it
-/// has none.
-fn host_of(link: &str) -> String {
-    let host = url::Url::parse(link).ok().and_then(|url| url.host_str().map(str::to_string)).unwrap_or_default();
-    torro_core::privacy::normalize_host(&host)
-}
-
-/// The card of `link` from what the server resolved; a YouTube video carries its id (issue #673).
-fn card_of(link: &str, reference: torro_nextcloud::Reference) -> Card {
-    Card {
-        card: Some(LinkCard {
-            url: link.to_string(),
-            title: reference.title,
-            description: reference.description,
-            domain: domain_of(link),
-            image: reference.image.is_some(),
-            video: torro_chat::video_of(link),
-            ..LinkCard::default()
-        }),
-        image: reference.image,
-    }
-}
-
-/// The card of `link` when the server knows none: a video card without title or picture for a
-/// YouTube video (issue #673), so the video still plays; nothing for any other link.
-fn unresolved(link: &str) -> Card {
-    let card = torro_chat::video_of(link).map(|video| LinkCard {
-        url: link.to_string(),
-        title: String::new(),
-        description: None,
-        domain: domain_of(link),
-        image: false,
-        video: Some(video),
-        ..LinkCard::default()
-    });
-    Card { card, image: None }
-}
-
-/// The host of `link` as it stands there (`youtu.be`); empty when it has none.
-fn domain_of(link: &str) -> String {
-    url::Url::parse(link).ok().and_then(|url| url.host_str().map(str::to_string)).unwrap_or_default()
 }
 
 /// `bytes` as a picture answer with its size, when they are a PNG, JPEG, GIF or WebP.
@@ -287,7 +236,7 @@ impl ChatService {
         caller: Caller<'_>,
     ) -> Response {
         if card {
-            return self.card_preview(id, caller).await;
+            return self.card_preview(id, 0, caller).await;
         }
         let Some(file) = file else { return refused("error", tr("Name a file of the message, or `card`.")) };
         let located = match self.located(id, file).await {
@@ -318,8 +267,10 @@ impl ChatService {
         }
     }
 
-    /// The picture of the link card of the message `id`, from the account's own server.
-    async fn card_preview(self: &Arc<Self>, id: &str, caller: Caller<'_>) -> Response {
+    /// `chat.get_preview` with `card`: the picture of the card of the link `index` (issue #785, 0 the first of
+    /// the message's links, [`link_cards::links`]) of the message `id`, from the account's own server; `not-found`
+    /// for a link without a card or picture the core holds, also one Settings › Privacy turned off.
+    pub async fn card_preview(self: &Arc<Self>, id: &str, index: u8, caller: Caller<'_>) -> Response {
         let Ok((account, token, _)) = super::service::message_of(id) else {
             return error_response(&ChatError::NotFound);
         };
@@ -336,16 +287,24 @@ impl ChatService {
         // No picture of a card Settings › Privacy turned off (issue #672): it is left out of the messages.
         let privacy = self.privacy();
         let server = remote.server();
-        let image = self.held().cards.get(id).and_then(|card| {
+        let image = self.held().card(id, usize::from(index)).and_then(|card| {
             let link = card.card.as_ref().map(|card| card.url.as_str()).unwrap_or_default();
-            if turned_off(&privacy, link, &server) { None } else { card.image.clone() }
+            if web::turned_off(&privacy, link, &server) { None } else { card.image.clone() }
         });
         let Some(image) = image else { return error_response(&ChatError::NotFound) };
+        self.card_picture_of(account, &remote, &image).await
+    }
+
+    /// The picture `image` of a link card on the server of `account` (`remote`), held in memory with the
+    /// account's previews: for the chat (`chat.get_preview` with `card`) and the assistant
+    /// (`assistant.get_card_picture`, issue #785). Only a PNG, JPEG, GIF or WebP, never an SVG; whether the card
+    /// may show is the caller's to check first.
+    pub(crate) async fn card_picture_of(&self, account: &str, remote: &Remote, image: &str) -> Response {
         let key = format!("card:{image}");
         if let Some(picture) = self.held().preview(account, &key) {
             return picture_answer(picture);
         }
-        match remote.card_picture(&image).await {
+        match remote.card_picture(image).await {
             Ok(picture) => {
                 self.held().keep_preview(account, key, picture.clone());
                 picture_answer(picture)
@@ -527,10 +486,11 @@ impl ChatService {
         let mut items: Vec<(u64, SharedItem)> = held
             .cards
             .iter()
+            .flat_map(|(id, cards)| cards.iter().flatten().map(move |card| (id, card)))
             .filter_map(|(id, card)| {
                 let (of, number) = split_message(id)?;
                 let card = card.card.as_ref()?;
-                if turned_off(&privacy, &card.url, server) {
+                if web::turned_off(&privacy, &card.url, server) {
                     return None;
                 }
                 (of == conversation && before.is_none_or(|before| number < before)).then(|| {
@@ -567,11 +527,11 @@ impl ChatService {
         Response::ChatShared { items: items.into_iter().take(limit as usize).map(|(_, item)| item).collect(), more }
     }
 
-    /// `page` of `conversation` as `caller` gets it: the cards the core holds on its messages, and
-    /// for an app first the cards of links to the account's own server and to providers Settings ›
-    /// Privacy allows (issue #672), and the provider of a link not asked about yet (`foreign`); a card
-    /// of a provider it blocks is left out for everyone. Without the right to picture content no
-    /// `blurhash`.
+    /// `page` of `conversation` as `caller` gets it: the cards the core holds on its messages' links
+    /// (up to three each, issue #785), and for an app first the cards of links to the account's own
+    /// server and to providers Settings › Privacy allows (issue #672, at most [`CARDS_PER_READ`] per
+    /// read), and the provider of the first link not asked about yet (`foreign`); a card of a provider
+    /// it blocks is left out for everyone. Without the right to picture content no `blurhash`.
     pub(super) async fn decorate(
         self: &Arc<Self>,
         conversation: &str,
@@ -583,41 +543,40 @@ impl ChatService {
             Some((account, _)) => self.remote(account).await.ok().map(|remote| (remote.server(), remote)),
             None => None,
         };
-        // What each message's first link is, by message id: one to the own server, or the decision
-        // for its provider. Without the server (signed out) every link counts as another's.
-        let links: BTreeMap<String, (String, Link)> = page
+        // What each message's links are, by message id, in their order: one to the own server, or the
+        // decision for its provider. Without the server (signed out) every link counts as another's.
+        let own = server.as_ref().map(|(server, _)| server.as_str());
+        let links: BTreeMap<String, Vec<(String, Decided)>> = page
             .messages
             .iter()
-            .filter_map(|message| {
-                let link = first_link(&message.text)?;
-                let own = server.as_ref().is_some_and(|(server, _)| torro_nextcloud::same_origin(&link, server));
-                let kind = match own {
-                    true => Link::Own,
-                    false => Link::Other(privacy.decide(&host_of(&link))),
-                };
-                Some((message.id.clone(), (link, kind)))
+            .map(|message| {
+                let links = link_cards::links(&message.text);
+                (
+                    message.id.clone(),
+                    links.into_iter().map(|link| (link.clone(), decided(&privacy, &link, own))).collect(),
+                )
             })
             .collect();
         if matches!(caller.reach, Reach::Suite)
             && let Some((_, remote)) = &server
         {
-            // In the order of the page, as before the settings (the map is ordered by the ids' text).
-            let open: Vec<(String, String)> = {
+            // In the order of the page and of the links in each message, as before the settings (the
+            // map is ordered by the ids' text).
+            let open: Vec<(String, usize, String)> = {
                 let held = self.held();
                 page.messages
                     .iter()
                     .filter_map(|message| Some((&message.id, links.get(&message.id)?)))
-                    .filter(|(id, (_, kind))| kind.loads() && !held.cards.contains_key(*id))
-                    .map(|(id, (link, _))| (id.clone(), link.clone()))
+                    .flat_map(|(id, links)| links.iter().enumerate().map(move |(index, link)| (id, index, link)))
+                    .filter(|(id, index, (_, kind))| kind.loads() && held.card(id, *index).is_none())
+                    .map(|(id, index, (link, _))| (id.clone(), index, link.clone()))
                     .take(CARDS_PER_READ)
                     .collect()
             };
-            for (id, link) in open {
-                match remote.resolve(&link).await {
-                    Ok(Some(reference)) => self.held().keep_card(&id, card_of(&link, reference)),
-                    Ok(None) => self.held().keep_card(&id, unresolved(&link)),
-                    // Not reachable now: asked again with the next read.
-                    Err(_) => {}
+            for (id, index, link) in open {
+                // Not reachable now: asked again with the next read.
+                if let Ok(card) = web::resolve(remote, &link).await {
+                    self.held().keep_card(&id, index, card);
                 }
             }
         }
@@ -625,22 +584,25 @@ impl ChatService {
         let app = matches!(caller.reach, Reach::Suite);
         let held = self.held();
         for message in &mut page.messages {
-            let kind = links.get(&message.id).map(|(_, kind)| kind);
-            let blocked = matches!(kind, Some(Link::Other(Decision::Skip)));
-            match held.cards.get(&message.id) {
-                Some(card) if !blocked => {
-                    if let Some(card) = &card.card {
-                        message.cards = vec![card.clone()];
+            let links = links.get(&message.id).map(Vec::as_slice).unwrap_or_default();
+            let mut cards = Vec::new();
+            for (index, (_, kind)) in links.iter().enumerate() {
+                match held.card(&message.id, index) {
+                    Some(_) if *kind == Decided::Other(Decision::Skip) => {}
+                    Some(card) => cards.extend(card.card.clone()),
+                    // Asked about only where a person can answer, only while no card is there, and only
+                    // the first such link: the message names one provider.
+                    None if app && message.foreign.is_none() => {
+                        if let Decided::Other(Decision::Ask(provider)) = kind {
+                            message.foreign =
+                                Some(ForeignProvider { key: provider.key.clone(), name: provider.name.clone() });
+                        }
                     }
+                    None => {}
                 }
-                // Asked about only where a person can answer, and only while no card is there.
-                None if app => {
-                    if let Some(Link::Other(Decision::Ask(provider))) = kind {
-                        message.foreign =
-                            Some(ForeignProvider { key: provider.key.clone(), name: provider.name.clone() });
-                    }
-                }
-                _ => {}
+            }
+            if !cards.is_empty() {
+                message.cards = cards;
             }
             if !pictures {
                 message.files.iter_mut().for_each(|file| file.blurhash = None);
@@ -650,10 +612,17 @@ impl ChatService {
         page
     }
 
-    /// `chat.show_card`: the card of the first link of the message `id`, whatever server it is on;
-    /// `unsupported` for a provider Settings › Privacy blocks or while it says "Never show" (issue
-    /// #672).
+    /// `chat.show_card` for the first link of the message `id` ([`ChatService::show_card_at`] with
+    /// index 0).
     pub async fn show_card(self: &Arc<Self>, id: &str) -> Response {
+        self.show_card_at(id, 0).await
+    }
+
+    /// `chat.show_card`: the card of the link `index` (issue #785, 0 the first of the message's links,
+    /// [`link_cards::links`]) of the message `id`, whatever server it is on; `not-found` for a message
+    /// with fewer links, `unsupported` for a provider Settings › Privacy blocks or while it says "Never
+    /// show" (issue #672). Settings › Privacy stays as it is; the card is held for every reader.
+    pub async fn show_card_at(self: &Arc<Self>, id: &str, index: u8) -> Response {
         let (account, token, number) = match super::service::message_of(id) {
             Ok(found) => found,
             Err(err) => return error_response(&err),
@@ -669,18 +638,19 @@ impl ChatService {
             Ok(message) => message,
             Err(err) => return error_response(&err),
         };
-        let Some(link) = first_link(&message.text) else { return error_response(&ChatError::NotFound) };
-        let own = torro_nextcloud::same_origin(&link, &remote.server());
-        if !own && self.privacy().decide(&host_of(&link)) == Decision::Skip {
+        let index = usize::from(index);
+        let Some(link) = link_cards::links(&message.text).into_iter().nth(index) else {
+            return error_response(&ChatError::NotFound);
+        };
+        if web::turned_off(&self.privacy(), &link, &remote.server()) {
             return refused("unsupported", tr("Content from this provider is turned off in Settings › Privacy."));
         }
-        let card = match remote.resolve(&link).await {
-            Ok(Some(reference)) => card_of(&link, reference),
-            Ok(None) => unresolved(&link),
+        let card = match web::resolve(&remote, &link).await {
+            Ok(card) => card,
             Err(err) => return file_refusal(&err),
         };
         let shown = card.card.clone();
-        self.held().keep_card(id, card);
+        self.held().keep_card(id, index, card);
         Response::ChatCard { card: shown }
     }
 
@@ -855,14 +825,6 @@ mod tests {
     }
 
     #[test]
-    fn the_first_link_is_https_only_without_trailing_punctuation() {
-        assert_eq!(first_link("see https://example.org/a."), Some("https://example.org/a".into()));
-        assert_eq!(first_link("(https://example.org/a?x=1)"), Some("https://example.org/a?x=1".into()));
-        assert_eq!(first_link("http://example.org"), None);
-        assert_eq!(first_link("nothing here"), None);
-    }
-
-    #[test]
     fn previews_stay_within_their_budget() {
         let mut held = Held::default();
         let picture = |n: usize| Picture { bytes: vec![0; n], content_type: "image/png".into() };
@@ -871,9 +833,72 @@ mod tests {
         held.keep_preview("a", "2".into(), picture(half));
         held.keep_preview("a", "3".into(), picture(10));
         assert!(held.preview("a", "1").is_none() && held.preview("a", "3").is_some());
-        held.keep_card("a/tok/1", Card { card: None, image: None });
+        held.keep_card("a/tok/1", 0, Resolved { card: None, image: None });
         held.forget_account("a");
         assert!(held.preview("a", "3").is_none() && held.cards.is_empty());
+    }
+
+    /// Issue #785: the first three links of a message get a card each, by their index; the fourth gets none, and
+    /// `chat.show_card` and the picture take the index.
+    #[tokio::test]
+    async fn three_links_give_three_cards_and_the_fourth_none() {
+        use torro_chat::{conversation_id, message_id};
+        use torro_ipc::Request;
+
+        const ACCOUNT: &str = "nextcloud:anna@cloud.example.org";
+        const APP: Caller<'static> = Caller { reach: Reach::Suite, client: None };
+        let server = Arc::new(super::super::fake::Server::default());
+        let chat = Arc::new(ChatService::fixed(vec![(ACCOUNT.into(), Arc::clone(&server))]));
+        let always = torro_core::privacy::Privacy {
+            content: torro_core::privacy::ForeignContent::Always,
+            ..torro_core::privacy::Privacy::default()
+        };
+        chat.set_privacy(Arc::new(move || always.clone()));
+        let links = ["https://a.example.org/1", "https://b.example.org/2", "https://c.example.org/3"];
+        let fourth = "https://d.example.org/4";
+        {
+            let mut state = server.state();
+            for (n, link) in links.iter().chain([&fourth]).enumerate() {
+                let reference = torro_nextcloud::Reference {
+                    title: format!("Page {n}"),
+                    description: None,
+                    image: Some(format!("p{n}")),
+                };
+                state.references.insert((*link).into(), reference);
+            }
+            let mut png = Vec::new();
+            image::DynamicImage::new_rgb8(4, 3)
+                .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                .expect("a PNG");
+            state.card_pictures.insert("p2".into(), Picture { bytes: png, content_type: "image/png".into() });
+            let text = format!("{} {} and {}, then {fourth}", links[0], links[1], links[2]);
+            let list = state.messages.get_mut("ben4chat").expect("Ben");
+            list.push(super::super::remote::tests::message(9, &text));
+        }
+        let ben = conversation_id(ACCOUNT, "ben4chat");
+        let read = Request::ChatGetMessages {
+            conversation: ben.clone(),
+            before: None,
+            after: None,
+            around: None,
+            limit: None,
+        };
+        let Response::ChatMessages(page) = chat.handle(read, APP).await else { panic!("messages") };
+        let message = page.messages.iter().find(|message| message.number() == 9).expect("the message");
+        let urls: Vec<&str> = message.cards.iter().map(|card| card.url.as_str()).collect();
+        assert_eq!(urls, links);
+        assert_eq!(server.count("resolve"), 3, "the fourth is not resolved");
+
+        let id = message_id(&ben, 9);
+        assert!(matches!(chat.card_preview(&id, 2, APP).await, Response::ChatPicture { .. }), "the third's picture");
+        let code = |response: Response| match response {
+            Response::Error { code, .. } => code,
+            other => format!("{other:?}"),
+        };
+        assert_eq!(code(chat.card_preview(&id, 3, APP).await), "not-found");
+        assert_eq!(code(chat.show_card_at(&id, 3).await), "not-found", "no card for the fourth");
+        let Response::ChatCard { card: Some(card) } = chat.show_card_at(&id, 1).await else { panic!("a card") };
+        assert_eq!(card.url, links[1]);
     }
 
     #[test]
