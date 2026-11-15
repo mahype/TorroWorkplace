@@ -80,12 +80,8 @@ pub(crate) enum CardLook {
 }
 
 /// Whether the core could not reach the server of a link card (Nextcloud, GitHub) when it resolved it.
-///
-/// S3: Coder K adds `Card::Link::offline`; the coordination reads it here (`Card::Link { offline, .. } => *offline`).
-/// Until then no card is offline.
 fn offline(card: &Card) -> bool {
-    let _ = card;
-    false
+    matches!(card, Card::Link { offline: true, .. })
 }
 
 /// The head of a card known only by its reference `card` (not resolved yet, or gone): the kind's icon and word, a

@@ -440,8 +440,7 @@ impl App {
             .cards
             .iter()
             .take(MAX_LINK_CARDS)
-            .enumerate()
-            .filter_map(|(position, card)| Some(link_card(chat, message, card_index(position, card)?, card, room)))
+            .map(|card| link_card(chat, message, card.index, card, room))
             .collect();
         let asked = match chat.files.cards.get(&message.id) {
             Some(CardAsk::Asking) => Some(typo::text(typo::meta(), tr("Loading preview…")).style(theme::text_3).into()),
@@ -603,15 +602,6 @@ fn upload_row(upload: &Upload) -> Element<'_, Message> {
     .spacing(space::s())
     .align_y(Alignment::Center)
     .into()
-}
-
-/// The index of the card at `position` among the cards of a message, by which its picture is asked for and kept.
-///
-/// S1 of issue #784: Coder K adds `LinkCard::index` (the place of the link among the first three of the text); the
-/// coordination returns `Some(card.index)` here. Until then the card's position stands for it.
-fn card_index(position: usize, card: &LinkCard) -> Option<u8> {
-    let _ = card;
-    u8::try_from(position).ok()
 }
 
 /// What a click on the card `card` of `message` sends: "Open" opens the link; a video card plays in the player
