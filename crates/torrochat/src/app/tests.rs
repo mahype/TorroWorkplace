@@ -742,3 +742,82 @@ fn a_link_to_another_provider_asks_and_the_answer_is_kept() {
     let _ = app.update(Message::Chat(Msg::Files(FilesMsg::Card(grids.clone(), Ok(card)))));
     assert_eq!(message(&app, &grids).cards.first().map(|card| card.domain.as_str()), Some("example.com"));
 }
+
+// -- Thinning out the pictures of the history (issue #690) ---------------------------------------
+
+/// A picture of a single pixel, as the history holds it unpacked.
+fn pixel() -> crate::app::files::Shown {
+    crate::app::files::Shown::Ready(iced::widget::image::Handle::from_rgba(1, 1, vec![0, 0, 0, 255]))
+}
+
+/// The window's files, holding `count` pictures of the messages `m0`, `m1`, … ; `m<i>` was last
+/// seen at `i + 1`, so `m0` was seen longest ago.
+fn holding(count: usize) -> App {
+    let mut app = loaded(start(&["--open", "files"]));
+    let files = &mut app.chat.as_mut().expect("a chat window").files;
+    for i in 0..count {
+        files.pictures.insert((format!("m{i}"), Some("f".into())), pixel());
+        files.last_seen.insert(format!("m{i}"), i as u64 + 1);
+    }
+    app
+}
+
+fn count(app: &App, ready: bool) -> usize {
+    use crate::app::files::Shown;
+    let pictures = chat(app).files.pictures.values();
+    pictures.filter(|shown| if ready { matches!(shown, Shown::Ready(_)) } else { matches!(shown, Shown::Away) }).count()
+}
+
+#[test]
+fn the_history_holds_at_most_its_limit_and_lets_the_longest_unseen_go() {
+    use crate::app::files::{HELD_PICTURES, Shown};
+    let mut app = holding(HELD_PICTURES + 6);
+    let held_before = count(&app, true);
+    let messages = chat(&app).messages.clone();
+    app.chat.as_mut().expect("a chat window").files.thin_out(&messages);
+    assert_eq!((count(&app, true), count(&app, false)), (HELD_PICTURES, held_before - HELD_PICTURES));
+    for i in 0..6 {
+        let away = chat(&app).files.pictures.get(&(format!("m{i}"), Some("f".into())));
+        assert!(matches!(away, Some(Shown::Away)), "m{i} was seen longest ago");
+    }
+}
+
+#[test]
+fn pictures_in_view_stay_beyond_the_limit() {
+    use crate::app::files::HELD_PICTURES;
+    let mut app = holding(HELD_PICTURES + 6);
+    let messages = chat(&app).messages.clone();
+    let files = &mut app.chat.as_mut().expect("a chat window").files;
+    files.in_view.extend((0..HELD_PICTURES + 6).map(|i| format!("m{i}")));
+    files.thin_out(&messages);
+    assert!(count(&app, true) > HELD_PICTURES, "nothing in view goes");
+    assert_eq!(count(&app, false), 0);
+}
+
+/// A message of the demo with a picture in the history, and its key.
+fn pictured_key(app: &App) -> crate::app::files::PictureKey {
+    let message = chat(app).messages.iter().find(|message| message.files.iter().any(crate::view::has_preview));
+    let message = message.expect("the demo has a picture");
+    let file = message.files.iter().find(|file| crate::view::has_preview(file)).expect("its file");
+    (message.id.clone(), Some(file.id.clone()))
+}
+
+#[test]
+fn a_picture_let_go_comes_again_when_its_message_scrolls_into_view() {
+    use crate::app::files::{FilesMsg, Shown};
+    let mut app = loaded(start(&["--open", "files"]));
+    let key = pictured_key(&app);
+    app.chat.as_mut().expect("a chat window").files.pictures.insert(key.clone(), Shown::Away);
+    let _ = app.update(Message::Chat(Msg::Files(FilesMsg::InView(vec![key.0.clone()]))));
+    assert!(matches!(chat(&app).files.pictures.get(&key), Some(Shown::Loading)), "asked for again");
+}
+
+#[test]
+fn a_picture_let_go_is_not_asked_for_while_out_of_view() {
+    use crate::app::files::Shown;
+    let mut app = loaded(start(&["--open", "files"]));
+    let key = pictured_key(&app);
+    app.chat.as_mut().expect("a chat window").files.pictures.insert(key.clone(), Shown::Away);
+    let _ = app.want_pictures();
+    assert!(matches!(chat(&app).files.pictures.get(&key), Some(Shown::Away)), "stays let go");
+}
