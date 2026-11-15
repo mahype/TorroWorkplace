@@ -2311,7 +2311,8 @@ impl App {
     /// the one being read: the core stops it.
     fn read_ready(&mut self) -> Task<Message> {
         let Some(seq) = self.ready_to_read.take() else { return Task::none() };
-        let asked = (self.current.clone(), answer_start(&self.transcript.entries).unwrap_or_default());
+        let asked =
+            (self.current.clone(), torro_ipc::assistant::answer_start(&self.transcript.entries).unwrap_or_default());
         if !self.read_aloud || self.is_glance() || self.own_talk().is_some() || self.read_for.as_ref() == Some(&asked) {
             return Task::none();
         }
@@ -2999,17 +3000,3 @@ pub(crate) fn composer_binding(press: KeyPress) -> Option<Binding<Message>> {
 mod bots;
 #[cfg(test)]
 mod tests;
-
-/// Where the core starts to read an answer (issue #747, `assistant.speak_answer`): after the last
-/// message, or after an approval that was decided and answered on. A new start is a new reading, so
-/// what comes after an approval is read too.
-fn answer_start(entries: &[Entry]) -> Option<u64> {
-    let message = entries.iter().rposition(|entry| matches!(entry.content, EntryContent::Message { .. }))?;
-    let mut start = entries[message].seq;
-    for (at, entry) in entries.iter().enumerate().skip(message + 1) {
-        if matches!(entry.content, EntryContent::Approval { .. }) && at + 1 < entries.len() {
-            start = entry.seq;
-        }
-    }
-    Some(start)
-}

@@ -13718,7 +13718,7 @@ impl Core {
             other => return other,
         };
         let nothing = || Response::Error { code: "error".into(), message: tr("There is no answer to read.").into() };
-        let Some(after) = answer_start(&entries) else { return nothing() };
+        let Some(after) = torro_ipc::assistant::answer_start(&entries) else { return nothing() };
         let answered = entries.iter().any(|entry| {
             entry.seq > after
                 && matches!(
@@ -19885,6 +19885,7 @@ done"#,
             from: None,
         };
         let approval = || EntryContent::Approval { id: "a1".into() };
+        use torro_ipc::assistant::answer_start;
         assert_eq!(answer_start(&[entry(1, answer("x"))]), None, "no message, nothing to read");
         let waiting = [entry(1, message()), entry(2, answer("I'll add it.")), entry(3, approval())];
         assert_eq!(answer_start(&waiting), Some(1), "waiting: read from the message");
@@ -37293,20 +37294,6 @@ impl Drop for Speaking {
     fn drop(&mut self) {
         self.0.running.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
-}
-
-/// Where the answer to read begins (issue #747): after the last message, or after an approval that
-/// was decided and answered on, so what came before it is not read again. `None` without a message.
-pub(crate) fn answer_start(entries: &[torro_ipc::assistant::Entry]) -> Option<u64> {
-    use torro_ipc::assistant::EntryContent;
-    let message = entries.iter().rposition(|entry| matches!(entry.content, EntryContent::Message { .. }))?;
-    let mut start = entries[message].seq;
-    for (at, entry) in entries.iter().enumerate().skip(message + 1) {
-        if matches!(entry.content, EntryContent::Approval { .. }) && at + 1 < entries.len() {
-            start = entry.seq;
-        }
-    }
-    Some(start)
 }
 
 /// How often `assistant.speak_answer` looks at the answer as it grows (issue #747).
