@@ -1992,6 +1992,7 @@ impl Request {
             Request::RemoveSaveTarget { .. } => &REMOVE_SAVE_TARGET,
             Request::SaveMailAttachments { .. } => &SAVE_ATTACHMENTS,
             Request::SaveMailAs { .. } => &SAVE_MAIL_AS,
+            Request::ListSaveHistory { .. } => &LIST_SAVE_HISTORY,
             Request::ListMailFilters => &LIST_MAIL_FILTERS,
             Request::CreateMailFilter { .. } => &CREATE_MAIL_FILTER,
             Request::UpdateMailFilter { .. } => &UPDATE_MAIL_FILTER,
@@ -2454,6 +2455,7 @@ pub static CATALOGUE: &[&Command] = &[
     &REMOVE_SAVE_TARGET,
     &SAVE_ATTACHMENTS,
     &SAVE_MAIL_AS,
+    &LIST_SAVE_HISTORY,
     &LIST_MAIL_FILTERS,
     &CREATE_MAIL_FILTER,
     &UPDATE_MAIL_FILTER,
@@ -5693,6 +5695,21 @@ static SAVE_MAIL_AS: Command = Command {
                   error). Shortened exports remain incomplete. This is a point-in-time check, not a cloud-sync guarantee.",
 };
 
+// Issue #781: what was saved from a mail, when and where; the reader shows it at the mail.
+static LIST_SAVE_HISTORY: Command = Command {
+    name: "mail.list_save_history",
+    area: Area::Mail,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Lists what was saved from a message with mail_save_attachments or mail_save_message_as (also by the \
+                  person in the mail window), newest first, at most 100: when, which attachment (`part`, `name`) or \
+                  the mail itself (`format`), the save target or Downloads, the subfolders below the target \
+                  (`folders`) and the file's absolute path. `skipped` means the identical file was there already; \
+                  `present` whether the file is at that path now, checked once. Use it to tell whether an attachment \
+                  was filed already. Names, paths and times only, never contents. File and folder names come from the \
+                  message and are `untrusted`.",
+};
+
 // Mail filters (issue #339): a filter works lastingly on the person's mail, so every change and every
 // run waits for the person (decision 5 of #339), reading and the preview do not.
 static LIST_MAIL_FILTERS: Command = Command {
@@ -7324,6 +7341,7 @@ mod tests {
                 format: crate::mail::ExportFormat::Png,
                 to: crate::mail::SaveTo::Target("0a1b2c3d".into()),
             },
+            Request::ListSaveHistory { id: "m:1".into() },
             Request::SetMailFlags { ids: vec!["m:1".into()], add: vec![torro_mail::Flag::Seen], remove: Vec::new() },
             Request::MoveMail { ids: vec!["m:1".into()], to: MoveTarget::Role(MoveRole::Archive) },
             Request::DeleteMail { ids: vec!["m:1".into()], permanent: false },
@@ -9839,8 +9857,8 @@ mod tests {
         // overview, which only reads. Issue #422: the sync's state, which only reads. Issue #416:
         // unsubscribing, which sends. Issue #501: saving a mail as PDF or picture. Issue #453: a sender's
         // logo, which only reads. Issue #502: reading a draft back, which only reads. Issue #603: six for
-        // the suggestions of mail.
-        assert_eq!(mail.len(), 52);
+        // the suggestions of mail. Issue #781: the save history of a mail, which only reads.
+        assert_eq!(mail.len(), 53);
         assert_eq!((LIST_SUGGESTIONS.access, LIST_ACTION_KINDS.access), (Access::Read, Access::Read));
         assert_eq!((ACCEPT_SUGGESTION.access, DISMISS_SUGGESTION.access), (Access::Write, Access::Write));
         assert_eq!((EXTRACT_ACTION.access, SET_ACTION_KIND.access), (Access::Write, Access::Admin));
@@ -9866,6 +9884,7 @@ mod tests {
             (&REMOVE_SAVE_TARGET, Access::Admin),
             (&SAVE_ATTACHMENTS, Access::Write),
             (&SAVE_MAIL_AS, Access::Write),
+            (&LIST_SAVE_HISTORY, Access::Read),
             // Issue #339, decision 5: every change of a filter and every run waits for a person.
             (&LIST_MAIL_FILTERS, Access::Read),
             (&CREATE_MAIL_FILTER, Access::Admin),

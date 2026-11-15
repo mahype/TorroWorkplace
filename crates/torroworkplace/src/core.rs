@@ -7427,7 +7427,8 @@ impl Core {
             | Request::UpdateSaveTarget { .. }
             | Request::RemoveSaveTarget { .. }
             | Request::SaveMailAttachments { .. }
-            | Request::SaveMailAs { .. }) => self.save_request(request, reach).await,
+            | Request::SaveMailAs { .. }
+            | Request::ListSaveHistory { .. }) => self.save_request(request, reach).await,
             // Running a mail filter (issue #339) also puts the category it set on the inbox entries
             // of those mails, as the category jobs do.
             request @ Request::ApplyMailFilter { .. } => self.apply_mail_filter(request, reach).await,
@@ -18858,9 +18859,18 @@ mod tests {
         let before = core.approvals.list(None, Utc::now()).await.unwrap_or_default().len();
         let plan = Request::ListSaveTargets { id: Some(id.clone()), export_only: false };
         assert_eq!(code(&ask(&core, Some(&stranger), plan).await), "not-found");
-        let save = Request::SaveMailAttachments { id, parts: Vec::new(), to: SaveTo::Downloads };
+        let save = Request::SaveMailAttachments { id: id.clone(), parts: Vec::new(), to: SaveTo::Downloads };
         assert_eq!(code(&ask(&core, Some(&stranger), save).await), "not-found");
         assert_eq!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().len(), before, "nobody asked");
+
+        // Issue #781: the client reads what was saved without being asked; one without the account finds
+        // no such mail.
+        let history = Request::ListSaveHistory { id };
+        match ask(&core, Some(&key), history.clone()).await {
+            Response::SaveHistory { entries } => assert_eq!(entries.len(), 2, "the two allowed files"),
+            other => panic!("history: {other:?}"),
+        }
+        assert_eq!(code(&ask(&core, Some(&stranger), history).await), "not-found");
     }
 
     /// Issue #501: a client's "save as PDF" waits for a person as its rights say, the approval names
@@ -33341,8 +33351,12 @@ done"#,
             says("I may not search."),
         ]);
         let (core, _host, engine, client) = web_core(dir.path(), &ollama, &pages, &mojeek, Arc::clone(&script)).await;
-        // Without skills (issue #703): a small model's slots go to the reading tools of mail and the web.
-        let bot = bot_with(&core, "Travel planner", &engine, web_reader()).await;
+        // Without skills (issue #703): a small model's slots go to the reading tools. The bot reads the web
+        // only, so the reading tools of mail – which grow with the catalogue (issue #781) – never push the
+        // web out of a small model's slots; past them it would be found with `find_tools`.
+        let mut web_only = reading(&[Area::Tools]);
+        web_only.tools = Selection::Only(vec!["web".into()]);
+        let bot = bot_with(&core, "Travel planner", &engine, web_only).await;
         let mut plain = save_bot(Some(&bot.id), "Travel planner");
         if let Request::SaveBot { engine: of_bot, skills, .. } = &mut plain {
             (*of_bot, *skills) = (engine.clone(), Vec::new());

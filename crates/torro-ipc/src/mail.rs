@@ -507,6 +507,63 @@ pub struct FailedFile {
     pub message: String,
 }
 
+/// One save the service recorded for a mail (issue #781): an attachment or the mail itself, written
+/// or found identical at its final path and verified there, for `mail.list_save_history`. Names,
+/// paths and times only, never contents. Names come from the message: data from outside.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveRecord {
+    /// When it was saved.
+    pub at: DateTime<Utc>,
+    /// What was saved: an attachment or the mail as a file.
+    pub what: SavedWhat,
+    /// How the place was chosen.
+    pub via: SavedVia,
+    /// The save target's id (`via: target`), as `mail.list_save_targets` named it then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// The save target's name at the time of the save (`via: target`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_name: Option<String>,
+    /// The file's absolute path.
+    pub path: String,
+    /// The subfolders below the save target's folder the file lies in (`via: target`), as the target's
+    /// schemes made them: `["2026", "11"]`; empty for a file right in the target's folder and for the
+    /// other ways. Data from outside like the names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folders: Vec<String>,
+    /// Nothing was written: a file with the same content was there already; `path` is that file.
+    #[serde(default)]
+    pub skipped: bool,
+    /// The file is at `path` now: checked once when the history was read, not watched.
+    #[serde(default)]
+    pub present: bool,
+}
+
+/// What a [`SaveRecord`] saved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SavedWhat {
+    /// An attachment: its MIME part and its file name from the message (data from outside).
+    Attachment { part: String, name: String },
+    /// The mail itself as PDF, picture or EML (`mail.save_message_as`).
+    Mail { format: ExportFormat },
+}
+
+/// How the place of a [`SaveRecord`] was chosen, after [`SaveTo`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SavedVia {
+    /// The Downloads folder.
+    Downloads,
+    /// A save target a person set up.
+    Target,
+    /// A folder a person chose in the folder dialog.
+    Folder,
+    /// A file a person chose in the save dialog.
+    File,
+}
+
 /// Where the messages of a `mail.search_messages` page came from. Since issue #136 every search
 /// is answered from the core's own index, so pages say `cache`; `live` stays readable for answers
 /// of older cores.

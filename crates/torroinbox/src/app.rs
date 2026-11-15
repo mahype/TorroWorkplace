@@ -239,7 +239,7 @@ use torro_ipc::inbox::{
     SavedAttachments,
 };
 use torro_ipc::mail::{
-    Delivery, ExportFormat, MoveRole, MoveTarget, PileFilter, SaveTo, UnsubscribeTarget, UnsubscribeVia,
+    Delivery, ExportFormat, MoveRole, MoveTarget, PileFilter, SaveRecord, SaveTo, UnsubscribeTarget, UnsubscribeVia,
 };
 use torro_ipc::mail::{MailHighlight, MailSort};
 use torro_ipc::{EventSuggestion, TaskSuggestion};
@@ -1297,6 +1297,8 @@ pub enum Sent {
     Fetch,
     /// `mail.list_save_targets` for the message with this id (task M12.6).
     SaveTargets(String),
+    /// `mail.list_save_history` for the message with this id (issue #781).
+    SaveHistory(String),
     ExportTargets(String),
     /// `mail.save_attachments`: message, parts (none: all) and where to.
     Save(String, Vec<String>, SaveTo),
@@ -2772,6 +2774,9 @@ impl Failure {
 pub struct Letter {
     pub id: String,
     pub loaded: Option<Result<Mail, String>>,
+    /// What was saved from it (issue #781, `mail.list_save_history`): `None` while it loads and when
+    /// it could not be read – no note then, and no error line: the mail reads as before.
+    pub saves: Option<Vec<SaveRecord>>,
 }
 
 // ----- The settings in the content area (task S.20) -------------------------------------------
@@ -3978,6 +3983,10 @@ pub enum Message {
     MailSaved(u64, Result<torro_ipc::inbox::SavedMail, String>),
     /// "Show in folder" in the hint after saving (task M12.6).
     ShowInFolder,
+    /// What was saved from the mail with this id (issue #781, `mail.list_save_history`).
+    SaveHistory(String, Result<Vec<SaveRecord>, String>),
+    /// "Show in folder" or a save in an attachment's section "Saved" (issue #781): this folder.
+    ShowSavedFolder(std::path::PathBuf),
     /// The file manager was asked to show that folder.
     FolderShown(Result<(), String>),
     /// "Manage save targets…" in an attachment's menu: Settings › Attachments of the mail window.
@@ -6500,6 +6509,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     } else {
                         Task::none()
                     };
+                    // What was saved of it before (issue #781), also of a mail without attachments.
+                    let history = self.ask_save_history(&id);
                     let saving = if files { self.ask_save_targets(&id) } else { Task::none() };
                     let exports = if matches!(self.menu, Some(Menu::SaveMail(_))) {
                         self.ask_export_targets(&id)
@@ -6510,7 +6521,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                         self.ask_workflow(torro_ipc::Request::ListWorkflowRuns { workflow: None, mail: Some(id) });
                     // What Torro suggests to make of it (issue #603), once its account is known.
                     let suggestions = self.ask_suggestions();
-                    return Task::batch([side, read, saving, exports, documents, suggestions]);
+                    return Task::batch([side, read, saving, exports, documents, suggestions, history]);
                 }
             }
             Message::Mail(action, id) => return self.mail_action(action, id),
@@ -6774,13 +6785,33 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::AskSaveMailAs(id, format) => return self.ask_save_mail(&id, format),
             Message::SaveMail(id, format, act) => return self.save_mail_act(id, format, act),
             Message::SaveChosen(ticket, path) => return self.save_chosen(ticket, path),
-            Message::MailSaved(ticket, result) => self.mail_saved(ticket, result),
+            Message::MailSaved(ticket, result) => {
+                self.mail_saved(ticket, result);
+                return self.ask_held_save_history();
+            }
             Message::SaveAll(id) => {
                 let act = mail::all_act(&self.look.click, self.saving_of(&id));
                 return self.file_act(id, None, act);
             }
             Message::FileAct(id, part, act) => return self.file_act(id, part, act),
-            Message::AttachmentsSaved(ticket, result) => self.attachments_saved(ticket, result),
+            Message::AttachmentsSaved(ticket, result) => {
+                self.attachments_saved(ticket, result);
+                // The note at the mail and its attachments follows what was just saved (issue #781).
+                return self.ask_held_save_history();
+            }
+            Message::SaveHistory(id, result) => {
+                // Only for the mail held: a late answer must not put one mail's note on another. An error
+                // leaves no note and says nothing – the mail reads as before.
+                if let Some(letter) = self.letter.as_mut().filter(|letter| letter.id == id) {
+                    letter.saves = result.ok();
+                }
+            }
+            Message::ShowSavedFolder(folder) => {
+                self.close_menus();
+                #[cfg(test)]
+                self.sent.push(Sent::ShowFolder(folder.clone()));
+                return Task::perform(mail::show_folder(folder), Message::FolderShown);
+            }
             Message::ShowInFolder => {
                 if let Some(folder) = self.hint.as_ref().and_then(|hint| hint.folder.clone()) {
                     #[cfg(test)]
@@ -7392,6 +7423,29 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             },
             |(id, answer)| Message::SaveTargets(id, answer),
         )
+    }
+
+    /// Asks the core what was saved from the mail `id` (issue #781, `mail.list_save_history`), for the
+    /// note at the mail and its attachments.
+    fn ask_save_history(&mut self, id: &str) -> Task<Message> {
+        #[cfg(test)]
+        self.sent.push(Sent::SaveHistory(id.to_owned()));
+        let (inbox, id) = (self.inbox.clone(), id.to_owned());
+        Task::perform(
+            async move {
+                let answer = MailSource::save_history(inbox.as_ref(), id.clone()).await;
+                (id, answer.map_err(|err| err.to_string()))
+            },
+            |(id, answer)| Message::SaveHistory(id, answer),
+        )
+    }
+
+    /// [`App::ask_save_history`] for the mail held, after a save; nothing without one.
+    fn ask_held_save_history(&mut self) -> Task<Message> {
+        match self.letter.as_ref().map(|letter| letter.id.clone()) {
+            Some(id) => self.ask_save_history(&id),
+            None => Task::none(),
+        }
     }
 
     /// The attachment `part` of the mail `id`, while that mail is held and loaded.
@@ -8200,7 +8254,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             self.letter = None;
             return Task::none();
         };
-        self.letter = Some(Letter { id: id.clone(), loaded: None });
+        self.letter = Some(Letter { id: id.clone(), loaded: None, saves: None });
         #[cfg(test)]
         self.sent.push(Sent::Letter(id.clone()));
         let inbox = self.inbox.clone();
@@ -12737,10 +12791,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let invite = self.ask_invite_side(&id, mail.summary.invite.as_ref());
         // Where its attachments would go (task M12.6), as for a mail read from the list.
         let files = mail.attachments.iter().any(|file| !file.inline);
-        self.letter = Some(Letter { id: id.clone(), loaded: Some(Ok(mail)) });
+        self.letter = Some(Letter { id: id.clone(), loaded: Some(Ok(mail)), saves: None });
         let read = if unread { self.mail_edit(mail::edit_of(MailAction::Read(true), &id), None) } else { Task::none() };
+        // What was saved of it before (issue #781), with or without attachments: the mail itself too.
+        let history = self.ask_save_history(&id);
         let saving = if files { self.ask_save_targets(&id) } else { Task::none() };
-        Task::batch([self.load(), invite, read, saving])
+        Task::batch([self.load(), invite, read, saving, history])
     }
 
     /// Whether `source` is muted, as the source list says.
@@ -14493,6 +14549,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             kinds: self.action_kinds.as_deref(),
             contact_book: self.contact_book.is_some(),
             contact_busy: self.contact_saving.is_some(),
+            saves: letter.saves.as_deref(),
         })
     }
 
@@ -14558,6 +14615,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if let Some(at) = at {
             let name = files.get(at)?.filename.as_deref().map(list::one_line).filter(|name| !name.is_empty());
             sections.first_mut()?.title = Some(name.unwrap_or_else(|| tr("Attachment").to_owned()).into());
+            // Where it was saved before (issue #781), after the ways to open and save it.
+            if let Some(file) = files.get(at)
+                && let Some(saved) =
+                    reading.saves.and_then(|saves| mail::saved_menu_section(&mail::saves_of(saves, file)))
+            {
+                sections.insert(1.min(sections.len()), saved);
+            }
         }
         Some(sections)
     }
@@ -21348,6 +21412,36 @@ mod tests {
         assert!(app.file_menu_sections(None).expect("all files")[0].title.is_none());
         assert!(app.file_menu_sections(Some(usize::MAX)).is_none());
         draw_everywhere(&mut app);
+    }
+
+    /// Issue #781: opening a mail asks what was saved of it; the answer is kept for the mail held only,
+    /// an error leaves no note and no error line, the attachment saved gets the section "Saved" in its
+    /// menu, and a save asks again.
+    #[test]
+    fn the_save_history_of_the_mail_held_is_asked_and_shown() {
+        let mut app = invoice();
+        assert!(app.sent.contains(&Sent::SaveHistory("m:p3".into())), "asked when the mail opened");
+        assert!(app.reading().is_some_and(|reading| reading.saves.is_none()), "nothing until it is in");
+        let history = block_on(MailSource::save_history(app.inbox.as_ref(), "m:p3".into()));
+        let history = history.map_err(|err| err.to_string());
+        let _ = app.update(Message::SaveHistory("m:other".into(), history.clone()));
+        assert!(app.reading().is_some_and(|reading| reading.saves.is_none()), "not another mail's");
+        let _ = app.update(Message::SaveHistory("m:p3".into(), history));
+        assert_eq!(app.reading().and_then(|reading| reading.saves.map(<[SaveRecord]>::len)), Some(3));
+        let saved = app.file_menu_sections(Some(0)).expect("menu");
+        assert_eq!(saved[1].title.as_deref(), Some(tr("Saved")), "after the ways to open and save");
+        assert_eq!(saved[1].items[0].label.as_ref(), tr("Show in folder"), "its file is there");
+        let gone = app.file_menu_sections(Some(1)).expect("menu");
+        assert_eq!(gone[1].title.as_deref(), Some(tr("Saved")));
+        assert!(gone[1].items.iter().all(|item| item.label.as_ref() != tr("Show in folder")), "its file is gone");
+        draw_everywhere(&mut app);
+        let _ = app.update(Message::SaveHistory("m:p3".into(), Err("the core is busy".into())));
+        assert!(app.reading().is_some_and(|reading| reading.saves.is_none()), "no note after an error");
+        assert!(app.error.is_none(), "and no error line");
+        let asked = app.sent.iter().filter(|sent| **sent == Sent::SaveHistory("m:p3".into())).count();
+        let _ = app.update(Message::MailSaved(u64::MAX, Err("late".into())));
+        let again = app.sent.iter().filter(|sent| **sent == Sent::SaveHistory("m:p3".into())).count();
+        assert_eq!(again, asked + 1, "asked again after a save");
     }
 
     /// Task M12.6: the triangles open the menus at the mail held – an attachment's, "Save all" from the
