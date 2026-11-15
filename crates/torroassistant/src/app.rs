@@ -1255,6 +1255,12 @@ impl App {
                 return self.open_settings(Some(AI_PAGE));
             }
             Message::Talk => return self.start_talk(),
+            // No listener came up for it (it could not start): say so, the composer stays.
+            Message::TalkStarted(Ok(None)) => {
+                self.talk_starting = false;
+                self.talk = None;
+                self.note(tr("Couldn't start the conversation.").to_owned());
+            }
             Message::TalkStarted(Ok(talk)) => {
                 self.talk_starting = false;
                 self.talk = talk;

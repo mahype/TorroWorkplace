@@ -55,6 +55,9 @@ pub trait Assistant {
 
     /// Waits for the answer to what was `sent`, until it is over or waits for an approval.
     fn follow(&mut self, sent: &Sent) -> Result<Reply, VoiceError>;
+
+    /// Whether an answer runs in `conversation` now; a conversation gone runs none.
+    fn running(&mut self, conversation: &str) -> Result<bool, VoiceError>;
 }
 
 /// The conversation by voice as the core has it (`assistant.talk_status`).
@@ -301,6 +304,14 @@ impl<A: Assistant> Listener<'_, A> {
     /// with a tone. Something read aloud meanwhile, or the conversation ended or moved elsewhere,
     /// closes the microphone, and what was heard is dropped.
     fn converse(&mut self, voice: &Voice, talk: Talk) -> Result<Ended, VoiceError> {
+        // An answer still runs there (one longer than the listener waited, or a talk started while it
+        // ran): the conversation would refuse the sentence, so the microphone waits for it.
+        if let Some(id) = &talk.conversation
+            && self.assistant.running(id).unwrap_or(false)
+        {
+            std::thread::sleep(self.pause);
+            return Ok(Ended::Nothing);
+        }
         // The tone before the microphone opens: it is no sentence of the person's.
         self.speaker.chime();
         let Some(readings) = self.quiet_now() else {
@@ -691,6 +702,13 @@ where
         self.done(Request::SpeakAnswer { conversation: conversation.to_string() })
     }
 
+    fn running(&mut self, conversation: &str) -> Result<bool, VoiceError> {
+        match self.request(Request::GetConversation { id: conversation.to_string(), after: Some(u64::MAX) })? {
+            Response::Conversation { conversation, .. } => Ok(conversation.running),
+            _ => Ok(false),
+        }
+    }
+
     fn follow(&mut self, sent: &Sent) -> Result<Reply, VoiceError> {
         let mut after = sent.after;
         // Entries by number: a growing answer comes again under the same one.
@@ -809,6 +827,8 @@ mod tests {
         /// How many readings began, one per look; then the last one.
         readings: VecDeque<u64>,
         read: u64,
+        /// Whether an answer runs, one per look at a conversation without entries asked; then none.
+        running: VecDeque<bool>,
         sent: Vec<Request>,
     }
 
@@ -849,6 +869,7 @@ mod tests {
                 speaking: VecDeque::new(),
                 readings: VecDeque::new(),
                 read: 0,
+                running: VecDeque::new(),
                 sent: Vec::new(),
             }
         }
@@ -903,6 +924,13 @@ mod tests {
                     Ok(Response::Conversation { conversation, entries: vec![entry(1, message)] })
                 }
                 Request::RenameConversation { .. } => Ok(Response::Ok),
+                Request::GetConversation { id, after: Some(u64::MAX) } => {
+                    let running = self.running.pop_front().unwrap_or(false);
+                    Ok(Response::Conversation {
+                        conversation: summary(&id, "Voice", "ai:openrouter", 14, 1, running),
+                        entries: Vec::new(),
+                    })
+                }
                 Request::GetConversation { id, after } => {
                     let entries: Vec<Entry> = self
                         .answer
@@ -1096,6 +1124,17 @@ mod tests {
         assert_eq!(count(&run.sent, &Request::StartTalk { conversation: Some("c9".into()) }), 1);
         assert!(!run.sent.iter().any(|request| matches!(request, Request::RenameConversation { .. })));
         assert!(run.windows.is_empty());
+    }
+
+    /// Review of #747: an answer that still runs in the conversation keeps the microphone closed; the
+    /// sentence is said once it is over.
+    #[test]
+    fn a_conversation_waits_for_the_answer_that_runs() {
+        let mut core = Core { talk: talk_in(Some("b2")), ..Core::new(Voice::default()) };
+        core.running = [true, true].into();
+        let run = run(core, &["utterance.wav", "silence.wav"], None, &["What is on today?"]);
+        assert_eq!(run.opened, 2, "opened only once it was over");
+        assert_eq!(messages(&run.sent).len(), 1);
     }
 
     /// Issue #747, done 4: while anything is read aloud – also what an agent asked for – the microphone

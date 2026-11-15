@@ -104,7 +104,6 @@ fn group_with<'a>(group: Element<'a, Message>, more: Option<Element<'a, Message>
     }
 }
 
-/// The composer's text area: two lines high at first, at most eight, then it scrolls.
 /// How high the empty composer is in all (issue #747): the editor's least height of its text, its
 /// padding, and the row of options under the text. The line of a conversation by voice takes as much.
 fn composer_height() -> f32 {
@@ -112,6 +111,7 @@ fn composer_height() -> f32 {
     editor_heights().0 + style::INPUT_PADDING.top + style::INPUT_PADDING.bottom + row_room
 }
 
+/// The composer's text area: two lines high at first, at most eight, then it scrolls.
 fn editor_heights() -> (f32, f32) {
     let line = typo::line_height(typo::body());
     let frame = style::INPUT_PADDING.top + style::INPUT_PADDING.bottom;
