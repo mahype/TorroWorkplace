@@ -204,13 +204,12 @@ impl Terminal {
         // Read in steps of whole lines up to the limit already: hidden, never cut again, so `next` stays where the
         // text ends (review of #754).
         let (output, redacted) = redact::redact(&snapshot.output);
-        let cut = false;
         Response::CommandStatus {
             running: snapshot.running,
             exit_code: snapshot.exit_code,
             output,
             next: snapshot.next,
-            truncated: cut || snapshot.truncated,
+            truncated: snapshot.truncated,
             redacted,
             untrusted: snapshot.outside,
         }

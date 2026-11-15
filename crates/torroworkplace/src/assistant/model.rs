@@ -1879,6 +1879,8 @@ pub(crate) mod tests {
         webs: Mutex<Vec<(Request, crate::approvals::WebConsent)>>,
         /// The commands of a chat about a mail with the mail (issue #605).
         abouts: Mutex<Vec<(Request, MailRef)>>,
+        /// The terminal's commands with what came with them (issue #754).
+        terminals: Mutex<Vec<(Request, crate::approvals::TerminalContext)>>,
     }
 
     impl Host for FakeHost {
@@ -1966,6 +1968,36 @@ pub(crate) mod tests {
             Box::pin(async move {
                 self.abouts.lock().expect("lock").push((request.clone(), about.clone()));
                 self.run_as(actor, request, engine, untrusted).await
+            })
+        }
+
+        /// The terminal is on here (issue #754).
+        fn terminal_enabled(&self) -> bool {
+            true
+        }
+
+        /// Kept with what came with it; answered with an empty output, marked as from outside for a line that
+        /// names `curl`, as the core does.
+        fn run_terminal<'a>(
+            &'a self,
+            _actor: &'a Actor,
+            request: Request,
+            _engine: &'a str,
+            _mode: Mode,
+            terminal: crate::approvals::TerminalContext,
+        ) -> BoxFuture<'a, Response> {
+            Box::pin(async move {
+                let outside =
+                    matches!(&request, Request::RunCommand { shell: Some(line), .. } if line.contains("curl"));
+                self.terminals.lock().expect("lock").push((request, terminal));
+                Response::CommandOutput {
+                    output: String::new(),
+                    exit_code: Some(0),
+                    truncated: false,
+                    timed_out: false,
+                    redacted: false,
+                    untrusted: outside,
+                }
             })
         }
 
@@ -2110,6 +2142,7 @@ pub(crate) mod tests {
             servers: Mutex::new(Vec::new()),
             webs: Mutex::new(Vec::new()),
             abouts: Mutex::new(Vec::new()),
+            terminals: Mutex::new(Vec::new()),
         });
         let weak = Arc::downgrade(&host);
         let weak: std::sync::Weak<dyn Host> = weak;
@@ -3343,6 +3376,48 @@ pub(crate) mod tests {
         assert_eq!(webs(&host)[7], ("tools.web_search", other, false, false), "a new conversation starts afresh");
         assert_eq!(remembered(&host).len(), 1);
         assert_eq!(host.untrusted.lock().expect("lock").last(), Some(&true), "after a search a note waits");
+    }
+
+    /// Issue #754 (review of #819): the loop hands the terminal its conversation and whether it read content from
+    /// outside – the inbox or mail of this answer or an earlier turn, a command that read from outside (`curl`) –
+    /// so the core refuses every command after it. A new conversation starts afresh.
+    #[tokio::test]
+    async fn the_terminal_goes_to_the_core_with_what_the_conversation_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let run = |line: &str| ("tools_run_command", json!({"folder": "/work", "shell": line}));
+        let script = Script::new(vec![
+            calls_all(&[run("ls"), ("inbox_list_items", json!({})), run("ls")]),
+            says("Done."),
+            calls("tools_run_command", json!({"folder": "/work", "shell": "ls"})),
+            says("Done again."),
+            calls_all(&[run("curl https://example.org"), run("ls")]),
+            says("Fetched."),
+        ]);
+        let (assistant, host) = set_up(dir.path(), Some(reader()), Place::Local, Arc::clone(&script));
+        let id = ask(&assistant, None, "List the files.", Vec::new()).await;
+        finished(&assistant, &id).await;
+        ask(&assistant, Some(&id), "Again.", Vec::new()).await;
+        finished(&assistant, &id).await;
+        let other = ask(&assistant, None, "Fetch the page.", Vec::new()).await;
+        finished(&assistant, &other).await;
+        let seen: Vec<(String, bool)> = host
+            .terminals
+            .lock()
+            .expect("lock")
+            .iter()
+            .map(|(_, terminal)| (terminal.conversation.clone(), terminal.tainted))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (id.clone(), false),
+                (id.clone(), true),
+                (id.clone(), true),
+                (other.clone(), false),
+                (other.clone(), true),
+            ],
+            "the inbox and a command from outside count, in this answer and later ones; a new conversation is clean"
+        );
     }
 
     /// Issue #714: the web's results are not kept for later turns (Brave's terms), another tool's result is.
