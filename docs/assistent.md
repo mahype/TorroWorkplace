@@ -828,10 +828,11 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
   Python-Umgebung unter `<Sprachordner>/qwen/venv`. Torro findet sie danach von selbst; die Modelle lädt
   das erste Vorlesen (einige GB, ca. 10 s Laden).
 - **Chatfenster:** Der Lautsprecher links vom Mikrofon schaltet `voice.read_aloud` (anfangs aus). Eine neue
-  Antwort wird vorgelesen, sobald sie fertig ist; [■] an ihr und der Lautsprecher aus beenden das Vorlesen
-  sofort. „Speak answers“ bleibt der eigene Schalter für „Hey Torro“: Der Hörer spricht die Antworten seiner
-  Unterhaltung „Voice“ selbst über `assistant.speak`, das Chatfenster liest diese Unterhaltung deshalb nicht noch
-  einmal vor. Wechselt das Fenster die Unterhaltung, endet das Vorlesen.
+  Antwort wird Satz für Satz vorgelesen, der erste Satz, sobald er geschrieben ist (Issue #747,
+  `assistant.speak_answer`); [■] an ihr und der Lautsprecher aus beenden das Vorlesen sofort. „Speak answers“
+  bleibt der eigene Schalter für „Hey Torro“ und das Gespräch: Der Hörer lässt die Antworten, die er geschickt
+  hat, selbst vorlesen, das Chatfenster liest sie im eigenen Gespräch deshalb nicht noch einmal vor. Wechselt das
+  Fenster die Unterhaltung, endet das Vorlesen.
 - **Technisch:** Der Dienst hält den Helfer `torroassistant --speak` am Laufen (JSON-Zeilen, ein Auftrag
   zugleich, nach zehn Minuten ohne Auftrag beendet er sich und gibt den Grafikspeicher frei; ein anderer Anbieter
   beendet ihn sofort, eine andere Stimme nicht, sie geht mit dem nächsten Auftrag mit). Qwen rechnet
@@ -839,12 +840,47 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
   OpenAI holt der Dienst selbst, weil er den Schlüssel hält, in Stücken aus ganzen Sätzen (bis 500
   Zeichen), das nächste, während das vorige spielt. Vorgelesen werden höchstens 3000 Zeichen, ohne
   Markdown. Der Text kommt nicht ins Protokoll.
+- **Satz für Satz** (Issue #747): `assistant.speak_answer` schaut alle 150 ms auf die Antwort, die
+  entsteht, und gibt dem Helfer die fertigen Sätze als ein Stück, während das vorige spielt. Ein Satz endet
+  an `.`, `!`, `?`, `…` oder `:` vor einem Leerzeichen und am Zeilenende, nicht nach einer Zahl („3.“),
+  einem einzelnen Buchstaben („z. B.“) oder einer bekannten Abkürzung („bzw.“, „Dr.“); Codeblöcke werden
+  nicht vorgelesen. Wartet die Antwort auf eine Freigabe oder scheitert sie, sagt der Assistent das in einem
+  Satz. Ein zweiter Aufruf für dieselbe Antwort wartet auf dasselbe Ende, jeder andere beendet das Vorlesen.
 
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
 | Text vorlesen, Vorlesen stoppen | Chatfenster (Lautsprecher, [■]), „Preview“ in Voice | `assistant.speak`, `assistant.stop_speaking` · Write | `assistant_speak`, `assistant_stop_speaking` |
+| Antwort Satz für Satz vorlesen (Issue #747) | Chatfenster (Lautsprecher), Gespräch | `assistant.speak_answer` · Write | `assistant_speak_answer` |
 | Wer vorlesen kann | Voice › Read aloud | `settings.speech_status` · Read | `settings_speech_status` |
 | An/aus, Anbieter, Stimmen | Voice › Read aloud, Lautsprecher im Chatfenster | `settings.set_setting` `read_aloud`, `speech_provider`, `qwen_voice`, `openai_voice` · Admin | `settings_set_setting` (OpenAI als Anbieter nur Menschen) |
+
+### Gespräch (Issue #747)
+
+Nach „Hey Torro“ und der Antwort bleibt das Mikrofon **8 Sekunden** offen: Man redet einfach weiter, ohne
+Weckwort. Ein Ton zeigt, dass der Assistent zuhört, der Tray sagt „Listening …“, und jede Antwort wird Satz für
+Satz vorgelesen. Im Chatfenster beginnt ein Gespräch mit „Talk“ links vom Mikrofon, auch wenn „Hey Torro“ aus
+ist; das Mikrofon ist dann nur für dieses Gespräch offen. Statt des Eingabefelds steht dort, was der Hörer tut
+(„Listening …“, „Recording …“, „Answering …“), und „End talk“.
+
+- **Ende:** 8 Sekunden Schweigen (mit Ton), ein kurzer Satz mit einem Schlusswort („Danke“, „Stopp“,
+  „Tschüss“, „Ende“, „Das war's“, „Thanks“, „Stop“, „Bye“, „That's all“; höchstens drei Wörter, „Danke, und das
+  Wetter?“ geht weiter), „End talk“, „Hey Torro“ aus, die gelöschte Unterhaltung oder eine Antwort, die auf eine
+  Freigabe wartet: Der Assistent sagt das, und erteilt wird sie nur im Fenster.
+- **Kurz und zum Hören:** Gesprochene Nachrichten (`assistant.send_message` mit `spoken`) bekommen einen Teil
+  im Prompt, der knappe Antworten ohne Tabellen, Listen und Code verlangt.
+- **Kein Selbstgespräch:** Solange irgendetwas vorgelesen wird, egal wer es ausgelöst hat (auch ein Agent mit
+  `assistant.speak`), ist das Mikrofon zu, und was es währenddessen hörte, das Weckwort eingeschlossen, wird
+  verworfen; danach 300 ms Pause. So kommt keine Stimme aus dem Lautsprecher als Satz des Menschen an.
+- **Technisch:** Der Dienst hält das Gespräch (`assistant.start_talk`, Unterhaltung oder neue, die der erste
+  Satz anlegt) und startet dafür den Hörer, auch wenn „Hey Torro“ aus ist. Der Hörer fragt zweimal in der
+  Sekunde `assistant.talk_status` und meldet seinen Stand (`conversing`, `recording`, `answering`). Gesprochenes
+  kommt nicht ins Protokoll, weder beim Hörer noch im Dienst.
+
+| Funktion | Oberfläche | API · Zugriff | MCP |
+|---|---|---|---|
+| Gespräch beginnen | „Talk“ im Chatfenster, Weckwort | `assistant.start_talk` · Admin | **Never** (Punkt 6: das Mikrofon schaltet nur ein Mensch ein) |
+| Gespräch beenden | „End talk“, Schweigen, Schlusswort | `assistant.end_talk` · Write | `assistant_end_talk` |
+| Stand des Gesprächs | Zeile im Chatfenster, Tray | `assistant.talk_status` · Read | `assistant_talk_status` |
 
 ## Wo die Logik liegt
 
