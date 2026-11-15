@@ -268,8 +268,8 @@ impl FilesState {
     /// Lets pictures go while more than [`HELD_PICTURES`] are unpacked: of those out of view, the
     /// one seen longest ago goes first, among equals the oldest of `messages`. Pictures in view
     /// always stay, even beyond the limit, so a picture the person looks at never turns into a
-    /// placeholder.
-    pub fn thin_out(&mut self, messages: &[torro_chat::Message]) {
+    /// placeholder. Says whether it let any go.
+    pub fn thin_out(&mut self, messages: &[torro_chat::Message]) -> bool {
         let place = |id: &str| messages.iter().position(|message| message.id == id).unwrap_or(0);
         let mut ready: Vec<(u64, usize, PictureKey)> = self
             .pictures
@@ -280,9 +280,12 @@ impl FilesState {
         let held = self.pictures.values().filter(|shown| matches!(shown, Shown::Ready(_))).count();
         let over = held.saturating_sub(HELD_PICTURES);
         ready.sort();
+        let mut went = false;
         for (_, _, key) in ready.into_iter().take(over) {
             self.pictures.insert(key, Shown::Away);
+            went = true;
         }
+        went
     }
 }
 
@@ -590,7 +593,7 @@ impl App {
                     Err(_) => Shown::Missing,
                 };
                 files.pictures.insert(key, shown);
-                files.thin_out(&chat.messages);
+                return self.thinned();
             }
             FilesMsg::Thumb(key, result) => {
                 let shown = match result {
@@ -824,8 +827,18 @@ impl App {
             }
             FilesMsg::OutOfView(ids) => {
                 files.seen(ids, false);
-                files.thin_out(&chat.messages);
+                return self.thinned();
             }
+        }
+        Task::none()
+    }
+
+    /// [`FilesState::thin_out`] of the chat window. The shared media showed the history's picture
+    /// of a tile let go, so while they are open their small ones are asked for.
+    fn thinned(&mut self) -> Task<Message> {
+        let Some(chat) = self.chat.as_mut() else { return Task::none() };
+        if chat.files.thin_out(&chat.messages) && chat.files.media.is_some() {
+            return self.want_pictures();
         }
         Task::none()
     }
