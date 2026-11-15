@@ -184,8 +184,13 @@ pub const RENAME: &str = "assistant-rename";
 /// models turned on.
 pub const AI_PAGE: &str = settings::AI_SECTION;
 
-/// The most of an answer the window sends to be read aloud (issue #745): what `assistant.speak` takes.
-const SPEAK_MOST: usize = 20_000;
+/// How often the window asks how the conversation by voice stands (issue #747) while it has none of
+/// its own: a "Talk" started elsewhere, or "Hey Torro", shows in its conversation.
+const TALK_EVERY: Duration = Duration::from_secs(2);
+
+/// How often the window asks while its own conversation by voice runs: the line over the composer
+/// follows the listener (listening, recording, answering).
+const TALK_OWN_EVERY: Duration = Duration::from_millis(500);
 /// The section Voice of the window's settings, where speech recognition is set up (issue #699).
 pub const VOICE_PAGE: &str = "voice";
 
@@ -442,6 +447,18 @@ pub enum Message {
     ReadingStopped,
     /// The answer `seq` of the conversation was read to its end, stopped, or could not be read.
     Read(Option<String>, u64, Result<(), Refusal>),
+    /// "Talk" in the composer (issue #747): a conversation by voice in the open conversation.
+    Talk,
+    /// The core started the conversation by voice, or refused it.
+    TalkStarted(Result<Option<torro_ipc::Talk>, Refusal>),
+    /// "End talk" over the composer: the microphone closes, reading stops.
+    EndTalk,
+    /// The core ended the conversation by voice, or refused it.
+    TalkEnded(Result<(), Refusal>),
+    /// Time to ask how the conversation by voice stands ([`TALK_EVERY`], [`TALK_OWN_EVERY`]).
+    TalkTick,
+    /// How the conversation by voice stands (`assistant.talk_status`).
+    TalkStatus(Result<Option<torro_ipc::Talk>, Refusal>),
     /// "Manage models…" at the end of the picker and under "No model is turned on" (task S.26): the
     /// section AI of the settings ([`AI_PAGE`]), where the models of each AI account are turned on and off.
     ManageModels,
@@ -651,8 +668,17 @@ pub struct App {
     /// New answers that came while the window watches and are not complete yet: each is read once
     /// it is.
     to_read: HashSet<u64>,
-    /// A new answer that just became complete, to read aloud ([`App::read_ready`]).
-    ready_to_read: Option<(u64, String)>,
+    /// A new answer that just began, to read aloud from its first sentence ([`App::read_ready`], issue
+    /// #747): its number.
+    ready_to_read: Option<u64>,
+    /// The message whose answer was asked to be read (issue #747): its conversation and number, so
+    /// every answer is read once, also one in several parts.
+    read_for: Option<(Option<String>, u64)>,
+    /// The conversation by voice as the core last told (issue #747, `assistant.talk_status`).
+    pub(crate) talk: Option<torro_ipc::Talk>,
+    /// This window started [`App::talk`]: a new chat follows it into the conversation its first
+    /// sentence starts.
+    talk_started: bool,
 
     pub(crate) menu: Option<Menu>,
     pub(crate) dialog: Option<Dialog>,
@@ -771,6 +797,12 @@ impl App {
             read_aloud_switching: false,
             to_read: HashSet::new(),
             ready_to_read: None,
+            read_for: None,
+            talk: (open == Some(Open::Talk)).then(|| torro_ipc::Talk {
+                conversation: Some(demo::TOOLS.to_string()),
+                state: torro_ipc::VoiceState::Conversing,
+            }),
+            talk_started: open == Some(Open::Talk),
             dictation: if open == Some(Open::Dictating) { Dictation::Recording } else { Dictation::Idle },
             menu: match open {
                 Some(Open::Picker | Open::Effort) => Some(Menu::Picker),
@@ -924,6 +956,13 @@ impl App {
         if !self.waiting {
             subscriptions.push(iced::time::every(REFRESH).map(|_| Message::Tick));
         }
+        // How the conversation by voice stands (issue #747): often while it is this window's own,
+        // so the line over the composer follows the listener. Not in mini and strip, nor in the demo
+        // state `talk`, which keeps its own.
+        if !self.waiting && !self.is_glance() && self.launch.open != Some(Open::Talk) {
+            let every = if self.own_talk().is_some() { TALK_OWN_EVERY } else { TALK_EVERY };
+            subscriptions.push(iced::time::every(every).map(|_| Message::TalkTick));
+        }
         // A download under Settings › AI asks how far it is (issue #410).
         if let Some(pane) = &self.settings {
             subscriptions.push(pane.host.subscription().map(Message::SettingsHost));
@@ -1025,7 +1064,7 @@ impl App {
             Message::CoreReady => {
                 self.waiting = false;
                 // The chat window's conversation too: it waited with the rest (issue #206).
-                return Task::batch([self.load_all(), self.open_current(), self.load_voice()]);
+                return Task::batch([self.load_all(), self.open_current(), self.load_voice(), self.fetch_talk()]);
             }
             Message::Tick => {
                 let mut tasks = vec![self.load_all(), self.fetch_appearance(), self.zoom.fetch().map(Message::Zoom)];
@@ -1211,6 +1250,25 @@ impl App {
                 self.close_menus();
                 return self.open_settings(Some(AI_PAGE));
             }
+            Message::Talk => return self.start_talk(),
+            Message::TalkStarted(Ok(talk)) => {
+                self.talk = talk;
+                self.talk_started = self.talk.is_some();
+            }
+            Message::TalkStarted(Err(refusal)) => {
+                self.note_failure(tr("Couldn't start the conversation."), &refusal);
+            }
+            Message::EndTalk => {
+                self.talk = None;
+                self.talk_started = false;
+                return self.ask(Request::EndTalk, |result| Message::TalkEnded(result.map(drop)));
+            }
+            Message::TalkEnded(Ok(())) => {}
+            Message::TalkEnded(Err(refusal)) => self.note_failure(tr("Couldn't end the conversation."), &refusal),
+            Message::TalkTick => return self.fetch_talk(),
+            Message::TalkStatus(Ok(talk)) => return self.take_talk(talk),
+            // An old core or none: no conversation by voice to show.
+            Message::TalkStatus(Err(_)) => {}
             Message::AiAccounts(Ok(any)) => self.ai_accounts = any,
             // An old core or none: the window keeps what it said.
             Message::AiAccounts(Err(_)) => {}
@@ -1816,9 +1874,10 @@ impl App {
             }
         }
         self.to_read.retain(|seq| seen.contains(seq));
-        if !running && !self.to_read.is_empty() {
-            let last = answers.iter().rev().find(|(seq, _, complete)| *complete && self.to_read.contains(seq));
-            self.ready_to_read = last.map(|(seq, text, _)| (*seq, text.clone()));
+        // Read from its first sentence, as the core reads the answer after the last message while it
+        // grows (issue #747, decision 2), parts after a tool with it.
+        if let Some(first) = self.to_read.iter().min().copied() {
+            self.ready_to_read = Some(first);
             self.to_read.clear();
         }
         for (seq, text, complete) in answers {
@@ -2228,26 +2287,86 @@ impl App {
         self.ask(Request::StopSpeaking, |_| Message::ReadingStopped)
     }
 
-    /// Reads the answer that just became complete aloud, when reading aloud is on (issue #745). A
-    /// new one replaces the one being read: the core stops it.
+    /// Reads the answer that just began aloud, when reading aloud is on (issue #745): from its first
+    /// sentence, while the model still writes (issue #747, `assistant.speak_answer`), once per message.
+    /// Not in this window's conversation by voice: the listener reads its answers. A new one replaces
+    /// the one being read: the core stops it.
     fn read_ready(&mut self) -> Task<Message> {
-        let Some((seq, text)) = self.ready_to_read.take() else { return Task::none() };
-        // "Hey Torro" speaks the answers of its conversation itself, after "Speak answers": read
-        // here as well, the two would interrupt each other.
-        let spoken = self
+        let Some(seq) = self.ready_to_read.take() else { return Task::none() };
+        let message = self
             .transcript
-            .summary
-            .as_ref()
-            .is_some_and(|summary| summary.title == crate::voice::listen::voice_title());
-        if !self.read_aloud || self.is_glance() || spoken {
+            .entries
+            .iter()
+            .rev()
+            .find(|entry| matches!(entry.content, EntryContent::Message { .. }))
+            .map_or(0, |entry| entry.seq);
+        let asked = (self.current.clone(), message);
+        if !self.read_aloud || self.is_glance() || self.own_talk().is_some() || self.read_for.as_ref() == Some(&asked) {
             return Task::none();
         }
+        self.read_for = Some(asked);
         self.reading = Some(seq);
         self.reading_in = self.current.clone();
-        // At most what the core takes; it reads the first 3000 characters anyway.
-        let text: String = text.chars().take(SPEAK_MOST).collect();
-        let conversation = self.current.clone();
-        self.ask(Request::Speak { text }, move |result| Message::Read(conversation.clone(), seq, result.map(drop)))
+        let Some(conversation) = self.current.clone() else { return Task::none() };
+        let read = Request::SpeakAnswer { conversation: conversation.clone() };
+        self.ask(read, move |result| Message::Read(Some(conversation.clone()), seq, result.map(drop)))
+    }
+
+    /// The conversation by voice when it is this window's (issue #747): it runs in the open
+    /// conversation, or this window started it in a new chat whose first sentence is not said yet.
+    pub(crate) fn own_talk(&self) -> Option<&torro_ipc::Talk> {
+        self.talk.as_ref().filter(|talk| match &talk.conversation {
+            Some(id) => self.current.as_ref() == Some(id),
+            None => self.talk_started && self.current.is_none(),
+        })
+    }
+
+    /// Whether "Talk" can start a conversation by voice (issue #747): the microphone can record and
+    /// turn speech into text, and no answer runs or is on its way.
+    pub(crate) fn can_talk(&self) -> bool {
+        self.can_dictate() && !self.transcript.running() && !self.sending && self.dictation == Dictation::Idle
+    }
+
+    /// "Talk" (issue #747): a conversation by voice in the open conversation, or in a new one the
+    /// first sentence starts.
+    fn start_talk(&mut self) -> Task<Message> {
+        if !self.can_talk() {
+            return Task::none();
+        }
+        self.close_menus();
+        let start = Request::StartTalk { conversation: self.current.clone() };
+        self.ask(start, |result| {
+            Message::TalkStarted(result.and_then(|response| match response {
+                Response::Talk { talk, .. } => Ok(talk),
+                other => Err(Refusal::unexpected(&other)),
+            }))
+        })
+    }
+
+    /// Asks how the conversation by voice stands (issue #747); not in mini and strip.
+    fn fetch_talk(&mut self) -> Task<Message> {
+        if self.is_glance() || self.launch.open == Some(Open::Talk) {
+            return Task::none();
+        }
+        self.ask(Request::TalkStatus, |result| {
+            Message::TalkStatus(result.and_then(|response| match response {
+                Response::Talk { talk, .. } => Ok(talk),
+                other => Err(Refusal::unexpected(&other)),
+            }))
+        })
+    }
+
+    /// The conversation by voice as the core says (issue #747). One this window started in a new chat
+    /// has moved into the conversation its first sentence started: the window shows that one.
+    fn take_talk(&mut self, talk: Option<torro_ipc::Talk>) -> Task<Message> {
+        let followed = self.talk_started && self.current.is_none();
+        self.talk = talk;
+        match self.talk.as_ref().map(|talk| talk.conversation.clone()) {
+            None => self.talk_started = false,
+            Some(Some(id)) if followed => return self.select(id),
+            Some(_) => {}
+        }
+        Task::none()
     }
 
     /// What was dictated goes into the field where the caret stands, nothing is sent; a space in
@@ -2771,7 +2890,9 @@ fn settings_state(open: Option<Open>) -> Option<(&'static str, Vec<settings::Mes
 /// The conversation the main window starts on in a demo state; a new chat otherwise.
 fn start_conversation(open: Option<Open>) -> Option<String> {
     match open {
-        Some(Open::Tools | Open::Menu | Open::Rename | Open::Delete | Open::Reading) => Some(demo::TOOLS.into()),
+        Some(Open::Tools | Open::Menu | Open::Rename | Open::Delete | Open::Reading | Open::Talk) => {
+            Some(demo::TOOLS.into())
+        }
         Some(Open::Approval) => Some(demo::APPROVAL.into()),
         Some(Open::Streaming) => Some(demo::STREAMING.into()),
         Some(Open::Forbidden) => Some(demo::FORBIDDEN.into()),

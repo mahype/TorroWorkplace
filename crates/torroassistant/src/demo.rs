@@ -192,9 +192,18 @@ impl Demo {
             Request::SearchConversations { query, limit } => {
                 Response::ConversationHits { hits: state.search(&query, limit) }
             }
-            Request::SendMessage { conversation, engine, model, effort, text, without, mode, bot, about: _ } => {
-                state.send(conversation, (engine, model, effort), text, (without, mode), bot)
-            }
+            Request::SendMessage {
+                conversation,
+                engine,
+                model,
+                effort,
+                text,
+                without,
+                mode,
+                bot,
+                about: _,
+                spoken: _,
+            } => state.send(conversation, (engine, model, effort), text, (without, mode), bot),
             // No default for new chats in the demo: the one used last (issue #131).
             Request::Settings => Response::Settings { settings: torro_core::settings::Settings::default() },
             Request::CancelAnswer { conversation } => state.cancel(&conversation),
@@ -274,7 +283,10 @@ impl Demo {
             Request::Dictate => Response::Transcript { text: tr("Remind me to call Anna tomorrow.").to_owned() },
             Request::StopDictation => Response::Ok,
             // Reading aloud (issue #745): nothing sounds in the demo.
-            Request::Speak { .. } | Request::StopSpeaking => Response::Ok,
+            Request::Speak { .. } | Request::StopSpeaking | Request::SpeakAnswer { .. } => Response::Ok,
+            // A conversation by voice (issue #747): the demo has no microphone; the state `talk` shows one.
+            Request::TalkStatus => Response::Talk { talk: None, speaking: false },
+            Request::EndTalk => Response::Ok,
             other => refused("unsupported", &format!("{} is not in the demo", other.operation().name())),
         }
     }
@@ -1201,6 +1213,7 @@ mod tests {
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         };
         let (summary, entries) = conversation(demo.answer(send));
         assert_eq!((summary.last, summary.running, entries.len()), (1, true, 1));

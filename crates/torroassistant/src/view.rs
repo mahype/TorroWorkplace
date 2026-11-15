@@ -694,8 +694,12 @@ impl App {
                 .height(Fill)
                 .into()
         };
-        let composer: Element<'a, Message> =
-            if self.bot_gone() { self.gone_note() } else { self.composer(class, anchors) };
+        let composer: Element<'a, Message> = match self.own_talk() {
+            _ if self.bot_gone() => self.gone_note(),
+            // Issue #747: in a conversation by voice the line of the listener takes the composer's place.
+            Some(talk) => self.talk_line(talk),
+            None => self.composer(class, anchors),
+        };
         let composer = container(widgets::content(size::content_max(), composer)).width(Fill).padding(Padding {
             top: 0.0,
             right: side,
@@ -1129,9 +1133,11 @@ impl App {
         } else {
             widgets::round_button(Icon::ArrowUp, tr("Send"), style::button::round_quiet, None)
         };
-        let right = row![picker, self.speaker_button(), self.mic_button(), send]
-            .spacing(space::xs())
-            .align_y(Alignment::Center);
+        let mut right = row![picker, self.speaker_button()].spacing(space::xs()).align_y(Alignment::Center);
+        if self.can_dictate() {
+            right = right.push(self.talk_button(roomy));
+        }
+        let right = right.push(self.mic_button()).push(send);
         let options = row![left, Space::new().width(Fill), right].spacing(space::s()).align_y(Alignment::Center);
         let options = container(options).padding(Padding::new(space::xs()).top(0.0)).height(Fill).align_bottom(Fill);
         stack![editor, options].width(Fill).into()
@@ -1164,6 +1170,46 @@ impl App {
             .style(style::button::icon)
             .on_press(Message::ToggleReadAloud);
         widgets::with_tooltip(speaker, tip)
+    }
+
+    /// "Talk" of the composer (issue #747): starts a conversation by voice, with its word where there
+    /// is room, else as an icon with the word as its tooltip. Off while an answer runs.
+    fn talk_button(&self, roomy: bool) -> Element<'_, Message> {
+        let press = self.can_talk().then_some(Message::Talk);
+        let talk = match roomy {
+            true => widgets::text_button(Some(Icon::AudioLines), trc("voice", "Talk"), style::button::ghost, press),
+            false => widgets::icon_button(Icon::AudioLines, trc("voice", "Talk"), press),
+        };
+        widgets::with_tooltip(talk, tr("Talk to the assistant without the wake word"))
+    }
+
+    /// The line in place of the composer during this window's conversation by voice (issue #747): a
+    /// dot and what the listener does in words – listening, recording, answering – and "End talk".
+    /// As high as the empty composer, in the same frame, so nothing moves.
+    fn talk_line(&self, talk: &torro_ipc::Talk) -> Element<'_, Message> {
+        use torro_ipc::VoiceState;
+        let (status, doing) = match talk.state {
+            VoiceState::Recording => (widgets::Status::Attention, tr("Recording …")),
+            VoiceState::Answering => (widgets::Status::Inactive, tr("Answering …")),
+            _ => (widgets::Status::Ok, tr("Listening …")),
+        };
+        let end =
+            widgets::text_button(Some(Icon::Square), tr("End talk"), style::button::secondary, Some(Message::EndTalk));
+        let line = row![
+            widgets::status_dot(status),
+            typo::text(typo::body(), doing).wrapping(Wrapping::None),
+            Space::new().width(Fill),
+            end
+        ]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+        container(line)
+            .padding(style::INPUT_PADDING)
+            .width(Fill)
+            .height(editor_heights().0)
+            .align_y(Alignment::Center)
+            .style(style::container::composer)
+            .into()
     }
 
     /// "Stop reading aloud" above the answer being read (issue #745): says that it reads, with the

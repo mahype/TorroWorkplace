@@ -105,11 +105,9 @@ pub trait Transcriber {
     fn transcribe(&mut self, samples: &[i16]) -> Result<String, VoiceError>;
 }
 
-/// Speaks and signals.
+/// Signals: since issue #745 the core reads the answers aloud (`assistant.speak_answer`), the
+/// listener only plays its tone.
 pub trait Speaker {
-    /// Speaks `text` and returns when it is done.
-    fn say(&mut self, text: &str) -> Result<(), VoiceError>;
-
     /// The short tone when the wake word was heard, so the person knows recording starts. Returns
     /// once it was played; nothing when there is no way to play sound.
     fn chime(&mut self) {}

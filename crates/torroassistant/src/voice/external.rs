@@ -473,8 +473,9 @@ pub fn transcript_of(output: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Piper with a voice, played with a player; also the tone of the wake word. Without Piper or a
-/// voice [`Speaker::say`] fails with what is missing; without a player nothing sounds at all.
+/// Piper with a voice and a player: since issue #745 the core reads the answers aloud
+/// (`assistant.speak_answer`), so the listener plays only the tone of the wake word with it; without
+/// a player nothing sounds at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Piper {
     pub piper: Option<PathBuf>,
@@ -494,18 +495,6 @@ impl Piper {
 }
 
 impl Speaker for Piper {
-    fn say(&mut self, text: &str) -> Result<(), VoiceError> {
-        let piper = self.piper.as_ref().ok_or(VoiceError::Missing(VoicePart::Speech, VoiceMissing::Program))?;
-        let voice = self.voice.as_ref().ok_or(VoiceError::Missing(VoicePart::Speech, VoiceMissing::Model))?;
-        let file = TempWav::empty();
-        let path = |path: &Path| path.to_string_lossy().into_owned();
-        let command = [path(piper), "--model".into(), path(voice), "--output_file".into(), path(file.path())];
-        // Piper reads the text from its input, a line at a time.
-        let line = text.replace(['\n', '\r'], " ");
-        run(&command, Some(&format!("{line}\n")))?;
-        self.play(file.path())
-    }
-
     fn chime(&mut self) {
         let Ok(file) = TempWav::write(&chime()) else { return };
         if let Err(err) = self.play(file.path()) {
@@ -537,9 +526,8 @@ mod tests {
             Some(VoiceError::Missing(VoicePart::SpeechToText, VoiceMissing::Program))
         );
         assert!(Parts::build(&found, &Voice::default()).is_err());
-        let mut piper = Piper::of(&found);
-        assert_eq!(piper.say("Hi"), Err(VoiceError::Missing(VoicePart::Speech, VoiceMissing::Program)));
-        piper.chime();
+        // Without a player the tone is left out (issue #747: the core reads the answers aloud).
+        Piper::of(&found).chime();
     }
 
     /// Issue #749: the chosen speech to text is built, and what it misses is named.
@@ -626,19 +614,13 @@ mod tests {
         }
 
         #[test]
-        fn piper_speaks_through_the_player() {
+        fn the_tone_plays_through_the_player() {
             let dir = tempfile::tempdir().expect("temp dir");
             let played = dir.path().join("played");
-            // Piper writes its input as the "sound"; the player keeps what it played.
-            let piper = fake_program(dir.path(), "piper", "cat > \"$4\"");
+            // The player keeps what it played.
             let player = fake_program(dir.path(), "afplay", &format!("cp \"$1\" '{}'", played.display()));
-            let mut speaker = Piper {
-                piper: Some(piper),
-                voice: Some(dir.path().join("voice.onnx")),
-                player: Some(Player { program: player, powershell: false }),
-            };
-            speaker.say("Two events\ntoday.").expect("spoken");
-            assert_eq!(fs::read_to_string(&played).expect("played"), "Two events today.\n");
+            let mut speaker =
+                Piper { piper: None, voice: None, player: Some(Player { program: player, powershell: false }) };
             speaker.chime();
             assert_eq!(fs::read(&played).expect("the tone"), wav_bytes(&chime()));
         }
