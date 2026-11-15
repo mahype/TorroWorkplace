@@ -288,8 +288,12 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             set(SettingKey::OpenAiStyle, value)
         }
         Message::Reset(key) => {
+            // A style only typed is dropped; one stored goes back to OpenAI's own way.
             if key == SettingKey::OpenAiStyle {
                 state.style = None;
+                if data.settings.voice.openai_style.is_none() {
+                    return Action::None;
+                }
             }
             set(key, serde_json::Value::Null)
         }
@@ -650,9 +654,13 @@ fn delivery_rows<'a>(state: &'a State, data: &'a Data, provider: SpeechProvider)
             let typed = state.style.as_deref().map(str::trim);
             let save = typed.is_some_and(|typed| Some(typed).filter(|t| !t.is_empty()) != stored);
             let save = widgets::icon_button(Icon::Check, tr("Save speaking style"), save.then_some(Message::SaveStyle));
-            let control = row![input, save, reset(SettingKey::OpenAiStyle, voice.openai_style.is_some())]
-                .spacing(space::s())
-                .align_y(Alignment::Center);
+            let control = row![
+                input,
+                save,
+                reset(SettingKey::OpenAiStyle, voice.openai_style.is_some() || state.style.is_some())
+            ]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
             let detail = Some(tr("How OpenAI speaks: tone, pace, mood").to_string());
             vec![setting_row(None, tr("Speaking style"), detail, control)]
         }
@@ -1522,10 +1530,19 @@ mod tests {
             (SettingKey::OpenAiStyle, serde_json::Value::Null)
         );
 
-        for key in [SettingKey::PocketSpeed, SettingKey::PocketPause, SettingKey::OpenAiStyle] {
+        for key in [SettingKey::PocketSpeed, SettingKey::PocketPause] {
             assert_eq!(sent(update(&mut state, Message::Reset(key), &data)), (key, serde_json::Value::Null));
         }
+        let reset_style = Message::Reset(SettingKey::OpenAiStyle);
+        assert_eq!(
+            sent(update(&mut state, reset_style.clone(), &styled)),
+            (SettingKey::OpenAiStyle, serde_json::Value::Null)
+        );
         assert_eq!(state.style, None, "the typed style goes with its reset");
+        // Review of PR #806: a style only typed is dropped without a request.
+        let _ = update(&mut state, Message::TypeStyle("calm".into()), &data);
+        assert_eq!(update(&mut state, reset_style, &data), Act::None);
+        assert_eq!(state.style, None, "the draft is gone");
         let pocket =
             Data { speech: Some(SpeechStatus { current: SpeechProvider::Pocket, ..speech.clone() }), ..data.clone() };
         let openai =
