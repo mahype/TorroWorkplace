@@ -324,7 +324,7 @@ impl<A: Assistant> Listener<'_, A> {
         let wait = TALK_WAIT_SECONDS * FRAMES_PER_SECOND;
         let limits = Limits { wait, most: wait + self.limits.most, ..self.limits };
         let mut end = Endpoint::new(self.floor, limits);
-        let (mut sentence, mut frames, mut recording) = (Vec::new(), 0usize, false);
+        let (mut sentence, mut frames, mut recording, mut ended) = (Vec::new(), 0usize, false, false);
         while let Some(frame) = stream.frame()? {
             frames += 1;
             if frames.is_multiple_of(self.check_every.max(1)) {
@@ -342,16 +342,24 @@ impl<A: Assistant> Listener<'_, A> {
                 }
             }
             sentence.extend_from_slice(&frame);
-            let over = end.push(&frame);
+            ended = end.push(&frame);
             if !recording && end.heard_speech() {
                 recording = true;
                 (self.report)(VoiceState::Recording);
             }
-            if over {
+            if ended {
                 break;
             }
         }
         drop(stream);
+        // The recording program stopped before the sentence or the wait was over: no silence, a
+        // failure – the conversation by voice ends, and the listener says why.
+        if !ended {
+            if let Err(err) = self.assistant.end_talk() {
+                eprintln!("torroassistant: {err}");
+            }
+            return Ok(Ended::RecordingStopped);
+        }
         if !end.heard_speech() {
             self.close_talk();
             return Ok(Ended::Nothing);
@@ -752,6 +760,9 @@ mod tests {
     use super::super::audio::tests::fixture;
     use super::*;
 
+    /// The "file" of ten seconds of silence: a conversation by voice ends in it.
+    const PAUSE: &str = "pause";
+
     /// Plays sound files as the microphone and counts how often it was opened.
     struct Files {
         files: VecDeque<&'static str>,
@@ -770,6 +781,11 @@ mod tests {
         fn open(&mut self) -> Result<Box<dyn Stream>, VoiceError> {
             *self.opened.borrow_mut() += 1;
             let name = self.files.pop_front().unwrap_or("silence.wav");
+            // Longer than a conversation by voice waits: silence that ends it, not a stopped program.
+            if name == PAUSE {
+                let frames = (TALK_WAIT_SECONDS + 2) * super::super::audio::FRAMES_PER_SECOND;
+                return Ok(Box::new(Frames((0..frames).map(|_| vec![0; FRAME]).collect())));
+            }
             Ok(Box::new(Frames(fixture(name).chunks(FRAME).map(<[i16]>::to_vec).collect())))
         }
     }
@@ -1031,7 +1047,7 @@ mod tests {
     /// the conversation with a tone, and the wake word is needed again.
     #[test]
     fn the_wake_word_starts_a_conversation_by_voice() {
-        let run = run(Core::new(on()), &["utterance.wav", "silence.wav"], Some(2), &[" Hey Torro, what is on today?"]);
+        let run = run(Core::new(on()), &["utterance.wav", PAUSE], Some(2), &[" Hey Torro, what is on today?"]);
         assert_eq!(run.ended, Ok(Ended::RecordingStopped), "listening for the wake word again");
         let sent = messages(&run.sent);
         assert_eq!(sent.len(), 1);
@@ -1071,7 +1087,7 @@ mod tests {
     /// to the same conversation; the window opens once.
     #[test]
     fn the_second_sentence_needs_no_wake_word() {
-        let files = ["utterance.wav", "utterance.wav", "silence.wav"];
+        let files = ["utterance.wav", "utterance.wav", PAUSE];
         let run = run(Core::new(on()), &files, Some(2), &["Hey Torro, what is on today?", "And tomorrow?"]);
         let sent = messages(&run.sent);
         assert_eq!(sent.len(), 2);
@@ -1106,7 +1122,7 @@ mod tests {
     #[test]
     fn a_conversation_from_the_window_listens_without_the_wake_word() {
         let core = Core { talk: talk_in(Some("a1")), ..Core::new(Voice::default()) };
-        let run = run(core, &["utterance.wav", "silence.wav"], None, &["What is on today?"]);
+        let run = run(core, &["utterance.wav", PAUSE], None, &["What is on today?"]);
         assert_eq!(run.ended, Ok(Ended::VoiceOff), "\"Hey Torro\" is off: no wake word after it");
         let sent = messages(&run.sent);
         let Request::SendMessage { conversation, .. } = sent[0] else { unreachable!() };
@@ -1118,12 +1134,24 @@ mod tests {
 
         // In a new chat the first sentence starts the conversation, and the talk goes on there.
         let core = Core { talk: talk_in(None), ..Core::new(Voice::default()) };
-        let run = self::run(core, &["utterance.wav", "silence.wav"], None, &["What is on today?"]);
+        let run = self::run(core, &["utterance.wav", PAUSE], None, &["What is on today?"]);
         let Request::SendMessage { conversation, .. } = messages(&run.sent)[0] else { unreachable!() };
         assert_eq!(conversation, &None);
         assert_eq!(count(&run.sent, &Request::StartTalk { conversation: Some("c9".into()) }), 1);
         assert!(!run.sent.iter().any(|request| matches!(request, Request::RenameConversation { .. })));
         assert!(run.windows.is_empty());
+    }
+
+    /// Review of PR #768: the recording program that stops during a conversation by voice is no
+    /// silence: the conversation ends and the listener stops with why, without the closing tone.
+    #[test]
+    fn a_stopped_recording_ends_the_conversation_as_a_failure() {
+        let core = Core { talk: talk_in(Some("a1")), ..Core::new(on()) };
+        let run = run(core, &["silence.wav"], None, &[""]);
+        assert_eq!(run.ended, Ok(Ended::RecordingStopped));
+        assert_eq!(count(&run.sent, &Request::EndTalk), 1);
+        assert_eq!(run.talk, None);
+        assert_eq!(run.chimes, 1, "the open microphone only");
     }
 
     /// Review of #747: an answer that still runs in the conversation keeps the microphone closed; the
@@ -1132,7 +1160,7 @@ mod tests {
     fn a_conversation_waits_for_the_answer_that_runs() {
         let mut core = Core { talk: talk_in(Some("b2")), ..Core::new(Voice::default()) };
         core.running = [true, true].into();
-        let run = run(core, &["utterance.wav", "silence.wav"], None, &["What is on today?"]);
+        let run = run(core, &["utterance.wav", PAUSE], None, &["What is on today?"]);
         assert_eq!(run.opened, 2, "opened only once it was over");
         assert_eq!(messages(&run.sent).len(), 1);
     }
@@ -1172,7 +1200,7 @@ mod tests {
         // In a conversation by voice too: what was said while it read is not sent.
         let core =
             Core { talk: talk_in(Some("a1")), speaking: [false, false, true].into(), ..Core::new(Voice::default()) };
-        let run = self::run(core, &["utterance.wav", "silence.wav"], None, &["Read this aloud for me."]);
+        let run = self::run(core, &["utterance.wav", PAUSE], None, &["Read this aloud for me."]);
         assert!(messages(&run.sent).is_empty(), "{:?}", run.sent);
     }
 
@@ -1251,7 +1279,7 @@ mod tests {
         // "Hey Torro" switched off during a conversation by voice is no new microphone.
         core.borrow_mut().voice.enabled = false;
         core.borrow_mut().talk = talk_in(Some("a1"));
-        listener.recorder = Box::new(Files { files: VecDeque::new(), opened: Rc::clone(&opened) });
+        listener.recorder = Box::new(Files { files: [PAUSE].into(), opened: Rc::clone(&opened) });
         assert_eq!(listener.run(&Voice { microphone: Some("USB".into()), ..on() }), Ok(Ended::VoiceOff));
         assert_eq!(*opened.borrow(), 1, "it listened once, and silence ended the conversation");
     }
