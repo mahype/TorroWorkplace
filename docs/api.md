@@ -1465,6 +1465,15 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
     Mail hat es keinen Befehl, weil nur das Fenster lädt und nichts gespeichert wird. `mail.save_message_as` (PDF,
     Bild) lädt externe Bilder nur nach der gespeicherten Einstellung, „Show once“ zählt dort nicht, weil auch Agenten
     speichern dürfen.
+15. **Das Terminal des Assistenten einstellen** (Issue #754, [terminal.md](terminal.md)): den Schalter und den Modus
+    (`settings.set_setting terminal`) und die „Immer“-Liste (`settings.set_setting terminal_always`) ändert nur der
+    App-Schlüssel, also ein Mensch in der Steuerzentrale › MCP servers › Built-in › Terminal. Jeder Wert, auch das
+    Abschalten und das Entfernen eines Eintrags, bekommt von jedem Client `forbidden`, auch mit Admin-Rechten
+    (`Request::kept_for_people`, `SettingsStore::set_by_client`); `settings.update_settings` eines Clients lässt
+    `tools.terminal`, wie es ist, und `settings.get_settings` zeigt einem Client die „Immer“-Liste nicht (sie nennt
+    Befehle und Ordner der Person). Erlaubt wird ein Befehl nur auf der Karte im Chat des Assistenten. Grund: Ein
+    Befehl läuft mit den Rechten der Person auf ihrem Rechner, ohne Sandbox; kein Agent soll das einschalten, sich
+    einen Befehl für immer erlauben oder der Person eine Rückfrage abnehmen.
 
 Allgemein gilt: Jeder Befehl mit `Mcp::Never` ist nur mit dem App-Schlüssel erlaubt. `Rights::allows`
 setzt das durch (seit G.1), auch ein Script-Schlüssel mit Admin-Rechten bekommt `forbidden`.
@@ -1605,7 +1614,10 @@ freigeben. Das machen wir anders:
 vor Code, der schon als derselbe Nutzer läuft. Ein solches Programm könnte den App-Schlüssel neben
 dem Socket lesen; ebenso wird das D-Bus-Signal `ActionInvoked`, mit dem die Benachrichtigung
 „Allow“ meldet, nicht nach Absender gefiltert. Eine Sandbox gegen Programme desselben Nutzers ist
-nicht Ziel.
+nicht Ziel. Deshalb nimmt der Dienst für einen Befehl des Terminals (Issue #754) kein „Allow“ der Benachrichtigung an,
+und die Reichweite `scope` von `approvals.decide_approval` (`once`, `conversation`, `always`) ist nur eine Absprache
+zwischen Karte und Dienst: Wer den App-Schlüssel hat, kann sie setzen. Ein Befehl des Terminals selbst ist ein
+solches Programm ([terminal.md](terminal.md), „Ausgangslage“).
 
 Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](app-catalog.md).
 
