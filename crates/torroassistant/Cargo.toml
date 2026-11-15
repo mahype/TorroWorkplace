@@ -29,6 +29,9 @@ torro-settings-ui.workspace = true
 # The sample answers of the demo: inbox sources, calendars, accounts.
 torro-inbox.workspace = true
 torro-pim.workspace = true
+# The content cards (issue #784): the mail, draft and contact a card shows.
+torro-mail.workspace = true
+torro-contacts.workspace = true
 chrono.workspace = true
 iced.workspace = true
 serde_json.workspace = true

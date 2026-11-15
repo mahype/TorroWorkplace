@@ -130,11 +130,14 @@ pub enum Open {
     RecentMenu,
     /// The question before deleting every conversation under "Recent" (issue #697).
     DeleteAll,
+    /// "What came in today": a content card of every kind (issue #784) – a page, the question about a provider, a
+    /// mail, an event, a task, a draft, a contact, a group of short forms, a group with its total – and one gone.
+    Cards,
 }
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 39] = [
+    pub const ALL: [(&'static str, Open); 40] = [
         ("new", Open::New),
         ("tools", Open::Tools),
         ("approval", Open::Approval),
@@ -174,6 +177,7 @@ impl Open {
         ("row-menu", Open::RowMenu),
         ("recent-menu", Open::RecentMenu),
         ("delete-all", Open::DeleteAll),
+        ("cards", Open::Cards),
     ];
 }
 

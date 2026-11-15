@@ -20,6 +20,10 @@
 //! Cards (task WZ.8): "Release checklist" ([`CARDS`]) made two PDFs; the first is gone ("No longer
 //! available"), the second ([`PDF`]) shows with its buttons, which the demo answers without doing
 //! anything (`torroassistant --demo --chat d000000000000006`).
+//!
+//! Content cards (issue #784): "What came in today" ([`CONTENT`], `--open cards`) shows a card of every kind – a page,
+//! the question about a provider, a mail, an event, a task, a draft with its approval, a contact, a group of five
+//! mails as short forms, a group of three with "12 mails match", and a mail that is gone.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -83,6 +87,9 @@ pub const GONE: &str = "d000000000000009";
 pub const MAIL_CHAT: &str = "d00000000000000b";
 /// "Invoice for March": the newest of three archived conversations (issue #697).
 pub const ARCHIVED: &str = "d00000000000000c";
+
+/// "What came in today": a content card of every kind (issue #784, `--open cards`).
+pub const CONTENT: &str = "d00000000000000f";
 
 /// The bot "Travel planner".
 pub const TRAVEL: &str = "b0000001";
@@ -854,13 +861,164 @@ fn samples(now: DateTime<Utc>) -> Vec<Conversation> {
         conversation.summary.archived = true;
         conversation
     });
-    let mut all = vec![plan, block, draft, forbidden, trip, release, lisbon, porto, gone, vienna, review];
+    let content = sample(CONTENT, tr("What came in today"), now, Duration::days(2), content_entries());
+    let mut all = vec![plan, block, draft, forbidden, trip, release, lisbon, porto, gone, vienna, review, content];
     all.extend(archived);
     all
 }
 
+/// The mail account of the content cards' sample (issue #784).
+const CARD_ACCOUNT: &str = "mail:anna@work.example.org";
+
+/// The address of the page whose card loads in [`CONTENT`], and the one whose provider is asked about first.
+const PAGE: &str = "https://example.org/blog/offers-that-close";
+const ASKED_PAGE: &str = "https://news.example.com/2026/11/hamburg-rail";
+
+/// The entries of [`CONTENT`] (issue #784): what the person asked, the commands, the answer and a card of every kind.
+fn content_entries() -> Vec<EntryContent> {
+    use torro_ipc::assistant::{ItemRef, LinkOrigin};
+    let card = |card: CardRef| EntryContent::Card { card };
+    let mail = |n: u32| ItemRef::Mail { account: CARD_ACCOUNT.into(), id: format!("m:c{n}") };
+    vec![
+        message(tr("What came in today? Anything about the offer?")),
+        tool("mail.search_messages", serde_json::json!({"query": "offer"}), tr("12 mails"), None),
+        answer(tr("Anna wrote about the offer, and there is a meeting at 14:00 that overlaps a call.")),
+        card(CardRef::Link { url: PAGE.into(), from: LinkOrigin::Read }),
+        card(CardRef::Link { url: ASKED_PAGE.into(), from: LinkOrigin::Model }),
+        card(CardRef::Mail { account: CARD_ACCOUNT.into(), id: "m:c1".into() }),
+        card(CardRef::Event { uid: "demo-event".into(), recurrence_id: None }),
+        card(CardRef::Todo { uid: "demo-todo".into() }),
+        card(CardRef::Draft { id: "m:d1".into() }),
+        card(CardRef::Contact { id: "demo/anna".into() }),
+        card(CardRef::Group { items: (1..=5).map(mail).collect(), area: Area::Mail, total: None }),
+        card(CardRef::Group { items: (1..=3).map(mail).collect(), area: Area::Mail, total: Some(12) }),
+        card(CardRef::Mail { account: CARD_ACCOUNT.into(), id: "m:gone".into() }),
+    ]
+}
+
+/// A mail of the content cards' sample (issue #784): made-up text, so it stays untranslated like the demo's mail.
+fn card_mail(id: &str, n: u32, now: DateTime<Utc>) -> torro_mail::MessageSummary {
+    let senders = ["anna@work.example.org", "ben@example.com", "carla@example.net", "dev@example.org"];
+    let subjects = ["Offer Q4", "Re: Offer Q4", "Offer – the numbers", "Signed offer", "Offer for the new site"];
+    torro_mail::MessageSummary {
+        id: id.into(),
+        account: CARD_ACCOUNT.into(),
+        folder: "INBOX".into(),
+        thread_id: format!("t:{id}"),
+        from: Some(torro_mail::MailAddress { name: None, address: senders[n as usize % senders.len()].into() }),
+        to: Vec::new(),
+        subject: subjects[n as usize % subjects.len()].into(),
+        date: now - Duration::minutes(i64::from(n) * 47),
+        snippet: "Hello, attached is the offer for the fourth quarter with the prices we talked about.".into(),
+        flags: Vec::new(),
+        has_attachments: n == 1,
+        invite: None,
+        back: None,
+        category: None,
+        pile: None,
+        pile_since: None,
+        logo: None,
+        caught: false,
+        suggested: Vec::new(),
+        untrusted: true,
+    }
+}
+
+/// What a content card of [`CONTENT`] shows (issue #784), as the core would resolve it; `None` for the other kinds.
+fn content_card(card: &CardRef, now: DateTime<Utc>) -> Option<Card> {
+    use torro_ipc::assistant::{ForeignProvider, ItemRef, LinkCard, Overlap};
+    let mail = |id: &str| {
+        let n = id.trim_start_matches("m:c").parse::<u32>().unwrap_or(1);
+        Card::Mail { message: Box::new(card_mail(id, n, now)), untrusted: true }
+    };
+    let (_, events, todos) = torro_pim::demo::sample(now.date_naive());
+    Some(match card {
+        CardRef::Link { url, .. } if url == PAGE => Card::Link {
+            url: url.clone(),
+            card: Some(Box::new(LinkCard {
+                url: url.clone(),
+                title: "Offers that close: five things to check".into(),
+                description: Some("Prices, terms and the one page every offer needs.".into()),
+                domain: "example.org".into(),
+                image: true,
+                ..LinkCard::default()
+            })),
+            ask: None,
+        },
+        CardRef::Link { url, .. } => Card::Link {
+            url: url.clone(),
+            card: None,
+            ask: Some(ForeignProvider { key: "news.example.com".into(), name: "news.example.com".into() }),
+        },
+        CardRef::Mail { id, .. } if id == "m:gone" => Card::Unavailable,
+        CardRef::Mail { id, .. } => mail(id),
+        CardRef::Event { .. } => match events.into_iter().next() {
+            Some(event) => {
+                let overlaps = vec![Overlap { summary: "Call with Ben".into(), start: event.start, end: event.end }];
+                Card::Event {
+                    event: Box::new(event),
+                    calendar: "Work".into(),
+                    color: Some("#5B8CFF".into()),
+                    overlaps,
+                    more_overlaps: 0,
+                }
+            }
+            None => Card::Unavailable,
+        },
+        CardRef::Todo { .. } => match todos.into_iter().next() {
+            Some(todo) => Card::Todo { todo: Box::new(todo), list: "Work".into(), color: Some("#3FB984".into()) },
+            None => Card::Unavailable,
+        },
+        CardRef::Draft { id } => Card::Draft {
+            draft: Box::new(torro_mail::Draft {
+                id: Some(id.clone()),
+                account: CARD_ACCOUNT.into(),
+                to: vec![torro_mail::MailAddress {
+                    name: Some("Anna Berg".into()),
+                    address: "anna@example.org".into(),
+                }],
+                cc: Vec::new(),
+                bcc: Vec::new(),
+                subject: "Re: Offer Q4".into(),
+                body: "Thanks, Anna – the prices work for us. Shall we sign on Friday?".into(),
+                html: None,
+                in_reply_to: None,
+                attachments: Vec::new(),
+            }),
+            approval: Some(APPROVAL_ID.into()),
+        },
+        CardRef::Contact { id } => Card::Contact {
+            contact: Box::new(
+                torro_contacts::Contact {
+                    id: id.clone(),
+                    book: "demo".into(),
+                    uid: "anna".into(),
+                    display_name: "Anna Berg".into(),
+                    org: Some("Berg & Partner".into()),
+                    title: Some("Sales".into()),
+                    ..torro_contacts::Contact::default()
+                }
+                .summary(),
+            ),
+        },
+        CardRef::Group { items, area, total } => Card::Group {
+            items: items
+                .iter()
+                .map(|item| match item {
+                    ItemRef::Mail { id, .. } => mail(id),
+                    _ => Card::Unavailable,
+                })
+                .collect(),
+            area: *area,
+            total: *total,
+        },
+        CardRef::File { .. } | CardRef::Suggestion { .. } | CardRef::Unknown => return None,
+    })
+}
+
 /// The cards of `entries` as the core resolves them (task WZ.8): [`PDF`] as a file on the desktop,
-/// every other file gone; a suggestion of a mail (issue #605) as the event read out of it.
+/// every other file gone; a suggestion of a mail (issue #605) as the event read out of it; the content cards of
+/// [`CONTENT`] (issue #784) as [`content_card`] makes them.
 fn cards(entries: &[Entry], now: DateTime<Utc>) -> Vec<CardEntry> {
     entries
         .iter()
@@ -877,6 +1035,7 @@ fn cards(entries: &[Entry], now: DateTime<Utc>) -> Vec<CardEntry> {
                     suggestion: Box::new(design_review(now)),
                 },
             }),
+            EntryContent::Card { card } => Some(CardEntry { seq: entry.seq, card: content_card(card, now)? }),
             _ => None,
         })
         .collect()

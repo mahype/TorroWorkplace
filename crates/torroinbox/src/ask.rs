@@ -845,7 +845,7 @@ pub fn of_this_mail(card: &Card, about: &MailRef) -> bool {
 /// A card as the core resolved it: a suggestion of the chat's own mail ([`of_this_mail`]) as the card
 /// over the mail shows it (`mail::suggestion_card`), its "Accept" the panel's own (the suggestion is
 /// fetched again first); a suggestion of another mail, or one dismissed with its undo still running,
-/// is left out; anything gone a quiet line.
+/// is left out; anything gone a quiet line; a content card (issue #784) not at all.
 fn card_view<'a>(card: &'a Card, about: &MailRef, look: &Look<'a>) -> Option<Element<'a, Message>> {
     match card {
         Card::Suggestion { suggestion, .. } => {
@@ -865,7 +865,9 @@ fn card_view<'a>(card: &'a Card, about: &MailRef, look: &Look<'a>) -> Option<Ele
             }))
         }
         Card::File(file) => Some(quiet_line(Icon::Paperclip, file.name.clone())),
-        Card::Unavailable => Some(quiet_line(Icon::Sparkles, tr("No longer available").to_owned())),
+        Card::Unavailable | Card::Unknown => Some(quiet_line(Icon::Sparkles, tr("No longer available").to_owned())),
+        // The content cards (issue #784) are the assistant window's; the chat about a mail shows none of them yet.
+        _ => None,
     }
 }
 

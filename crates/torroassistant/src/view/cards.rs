@@ -12,6 +12,17 @@
 //!   tile, what was read out (or the kind's word) and "Accept it in Mail" – and one button, "Open in
 //!   Mail": accepting opens the filled dialog in the mail window, where the mail shows the whole card.
 //! - **Short form:** one line for mini and strip tiles, the tile small, the name and the size.
+//! - **Content cards** (issue #784, `docs/inhaltskarten.md`): a link, a mail, an event, a task, a draft, a contact and
+//!   a group, each in its module below (`cards/*.rs`) on the shared `torro_gui::content_card`; a kind the window does
+//!   not know shows as "No longer available".
+
+mod contact;
+mod draft;
+mod event;
+mod group;
+mod link;
+mod mail;
+mod todo;
 
 use iced::widget::text::Wrapping;
 use iced::widget::{Row, container, responsive, row};
@@ -37,10 +48,53 @@ impl App {
     /// The card of the entry `seq` as the core resolved it last; `None` while it is not resolved,
     /// so it takes no room (and no gap) until it can show something.
     pub(super) fn card(&self, seq: u64) -> Option<Element<'_, Message>> {
-        Some(match self.cards.get(&seq)? {
+        let card = self.cards.get(&seq)?;
+        Some(match card {
             Card::File(file) => file_card(file),
             Card::Suggestion { account, id, suggestion } => suggestion_card(account, id, suggestion),
-            Card::Unavailable => gone_card(),
+            Card::Unavailable | Card::Unknown => gone_card(),
+            content => self.content_view(seq, content, self.card_room())?,
+        })
+    }
+
+    /// How wide a content card may be: the history's reading column within the window.
+    fn card_room(&self) -> f32 {
+        (self.size.width - 2.0 * space::l()).clamp(0.0, size::content_max())
+    }
+
+    /// A content card (issue #784) of the entry `seq`, at most `room` wide, from its module; `None` for a link that
+    /// stays a link, and for the kinds [`App::card`] draws itself (a file, a suggestion, gone).
+    fn content_view<'a>(&'a self, seq: u64, card: &'a Card, room: f32) -> Option<Element<'a, Message>> {
+        Some(match card {
+            Card::Link { url, card, ask } => {
+                return self.link_card(seq, url, card.as_deref(), ask.as_ref(), None, room);
+            }
+            Card::Mail { message, .. } => mail::view(message, room),
+            Card::Event { event, calendar, color, overlaps, more_overlaps } => {
+                event::view(event, calendar, color.as_deref(), overlaps, *more_overlaps, room)
+            }
+            Card::Todo { todo, list, color } => todo::view(todo, list, color.as_deref(), room),
+            Card::Draft { draft, approval } => draft::view(draft, approval.as_deref(), room),
+            Card::Contact { contact } => contact::view(contact, room),
+            Card::Group { items, area, total } => self.group_card(seq, items, *area, *total, room),
+            Card::Unavailable | Card::Unknown => gone_card(),
+            Card::File(_) | Card::Suggestion { .. } => return None,
+        })
+    }
+
+    /// A content card (issue #784) in one line, from its module; `None` as [`App::content_view`]. A group in one line
+    /// is its first item's.
+    fn content_line<'a>(&'a self, card: &'a Card) -> Option<Element<'a, Message>> {
+        Some(match card {
+            Card::Link { card, .. } => return self.link_line(card.as_deref()),
+            Card::Mail { message, .. } => mail::line(message),
+            Card::Event { event, calendar, .. } => event::line(event, calendar),
+            Card::Todo { todo, list, .. } => todo::line(todo, list),
+            Card::Draft { draft, .. } => draft::line(draft),
+            Card::Contact { contact } => contact::line(contact),
+            Card::Group { items, .. } => return self.content_line(items.first()?),
+            Card::Unavailable | Card::Unknown => gone_line(),
+            Card::File(_) | Card::Suggestion { .. } => return None,
         })
     }
 
@@ -58,11 +112,12 @@ impl App {
                 widgets::ellipsized(typo::body(), suggestion_title(suggestion), theme::text),
                 None,
             ),
-            Card::Unavailable => (
+            Card::Unavailable | Card::Unknown => (
                 gone_tile(TileSize::Small),
                 widgets::ellipsized(typo::body(), tr("No longer available"), theme::text_3),
                 None,
             ),
+            content => return self.content_line(content),
         };
         let mut line = row![tile, container(name).width(Fill)].spacing(space::s()).align_y(Alignment::Center);
         if let Some(size) = size {
@@ -180,6 +235,12 @@ fn suggestion_card<'a>(account: &str, id: &str, suggestion: &Suggestion) -> Elem
     let button =
         widgets::text_button(Some(Icon::ArrowUpRight), tr("Open in Mail"), style::button::secondary, Some(open));
     widgets::card(vec![head, button], false, None)
+}
+
+/// A card whose item is gone or out of reach, in one line: the quiet mark and "No longer available".
+fn gone_line<'a>() -> Element<'a, Message> {
+    let words = widgets::ellipsized(typo::body(), tr("No longer available"), theme::text_3);
+    row![gone_tile(TileSize::Small), container(words).width(Fill)].spacing(space::s()).align_y(Alignment::Center).into()
 }
 
 /// A card whose item is gone or out of reach: said so, without buttons; why is not told (the core

@@ -206,6 +206,7 @@ mod tests {
             domain: "youtu.be".into(),
             image: false,
             video: Some(video("M7lc1UVf-VE", false)),
+            ..LinkCard::default()
         };
         assert_eq!(title(&card("  An\nintro  ")), "An intro");
         assert_eq!(title(&card(" ")), tr("YouTube video"));

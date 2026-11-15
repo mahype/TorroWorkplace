@@ -922,13 +922,13 @@ impl ChatSource for DemoSource {
         &self,
         id: String,
         file: Option<String>,
-        card: bool,
+        card: Option<u8>,
         size: PreviewSize,
     ) -> Result<Picture, ChatError> {
         let mut data = self.lock();
         let message = data.message_mut(&id)?;
-        if card {
-            if !message.cards.first().is_some_and(|card| card.image) {
+        if let Some(index) = card {
+            if !message.cards.get(usize::from(index)).is_some_and(|card| card.image) {
                 return Err(ChatError::NotFound);
             }
             let (w, h) = files::fitted(1200, 630, files::edge(size));
@@ -989,10 +989,12 @@ impl ChatSource for DemoSource {
         Ok(SharedPage { items: items.into_iter().take(limit).collect(), more })
     }
 
-    async fn show_card(&self, id: String) -> Result<Option<LinkCard>, ChatError> {
+    // The sample asks only about the first link of a message (one foreign link each); `index` picks
+    // among cards it holds already.
+    async fn show_card(&self, id: String, index: u8) -> Result<Option<LinkCard>, ChatError> {
         let mut data = self.lock();
         let message = data.message_mut(&id)?;
-        if let Some(card) = message.cards.first() {
+        if let Some(card) = message.cards.get(usize::from(index)) {
             return Ok(Some(card.clone()));
         }
         let card = files::first_link(&message.text).and_then(files::foreign_card);
@@ -1402,18 +1404,18 @@ mod tests {
         let demo = demo();
         let picture = message_id(DESIGN, 3);
         let small =
-            run(demo.preview(picture.clone(), Some("5103".into()), false, PreviewSize::Small)).expect("a preview");
+            run(demo.preview(picture.clone(), Some("5103".into()), None, PreviewSize::Small)).expect("a preview");
         assert_eq!((small.width, small.height), (Some(256), Some(160)));
         assert_eq!(files::kind_of_bytes(&small.bytes).0, "image/png");
         let medium =
-            run(demo.preview(picture.clone(), Some("5103".into()), false, PreviewSize::Medium)).expect("medium");
-        let large = run(demo.preview(picture.clone(), Some("5103".into()), false, PreviewSize::Large)).expect("large");
+            run(demo.preview(picture.clone(), Some("5103".into()), None, PreviewSize::Medium)).expect("medium");
+        let large = run(demo.preview(picture.clone(), Some("5103".into()), None, PreviewSize::Large)).expect("large");
         assert!(small.width < medium.width && medium.width < large.width);
-        let other = run(demo.preview(picture, Some("5104".into()), false, PreviewSize::Small));
+        let other = run(demo.preview(picture, Some("5104".into()), None, PreviewSize::Small));
         assert_eq!(other, Err(ChatError::NotFound), "a file of another message");
-        let svg = run(demo.preview(message_id(DESIGN, 12), Some("5112".into()), false, PreviewSize::Small));
+        let svg = run(demo.preview(message_id(DESIGN, 12), Some("5112".into()), None, PreviewSize::Small));
         assert_eq!(svg, Err(ChatError::NotFound));
-        run(demo.preview(message_id(DESIGN, 10), None, true, PreviewSize::Small)).expect("the card's picture");
+        run(demo.preview(message_id(DESIGN, 10), None, Some(0), PreviewSize::Small)).expect("the card's picture");
         let hidden = run(demo.attachment(message_id(DESIGN, 9), "5109".into()));
         assert!(matches!(hidden, Err(ChatError::Forbidden(_))), "downloads are off for it");
         let pdf = run(demo.attachment(message_id(DESIGN, 7), "5107".into())).expect("fetched");
@@ -1513,10 +1515,17 @@ mod tests {
         assert_eq!(media.items.len(), 9, "six pictures, two videos and the SVG");
         assert!(media.items.windows(2).all(|pair| pair[0].at >= pair[1].at), "the newest first");
         let links = run(demo.shared(DESIGN.into(), Some(SharedKind::Link), None, None)).expect("links");
-        assert_eq!(links.items.len(), 2, "only the links with a card: the own server's and the video");
+        assert_eq!(
+            links.items.len(),
+            5,
+            "only the links with a card: the own server's, the video and three of message 18 (issue #784)"
+        );
+        let four = message(&demo, DESIGN, 18);
+        assert_eq!(four.cards.len(), 3, "at most three cards per message; the page stays a link");
+        assert!(four.text.contains(files::FOUR_LINKS[3]));
         let foreign = message_id(DESIGN, 11);
         assert_eq!(message(&demo, DESIGN, 11).foreign.map(|provider| provider.key).as_deref(), Some("example.com"));
-        let card = run(demo.show_card(foreign.clone())).expect("a card").expect("example.com has one");
+        let card = run(demo.show_card(foreign.clone(), 0)).expect("a card").expect("example.com has one");
         assert_eq!(card.domain, "example.com");
         assert_eq!(message(&demo, DESIGN, 11).cards.len(), 1, "later pages carry it");
         assert!(message(&demo, DESIGN, 11).foreign.is_none(), "and ask no more");

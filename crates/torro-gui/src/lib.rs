@@ -14,6 +14,8 @@
 //!   conversation, what answers, the words of a tool line – shared by the assistant's windows and the
 //!   mini chat about a mail.
 //! - [`connect`]: the "connect your Nextcloud" screen every app shows without an account.
+//! - [`content_card`]: the content cards of the assistant, its bots and the chat (issue #784): head, picture, title,
+//!   lines, buttons, short form and the states loading, not available and gone.
 //! - [`datetime`]: German date and time parsing and formatting, week arithmetic.
 //! - [`dialog`]: the frame of a dialog: fixed head and foot, a body that scrolls in low windows.
 //! - [`split`]: the divider between two panes side by side that the pointer drags (list and reader).
@@ -42,6 +44,7 @@
 pub mod chat;
 pub mod components;
 pub mod connect;
+pub mod content_card;
 pub mod datetime;
 pub mod design;
 pub mod dialog;

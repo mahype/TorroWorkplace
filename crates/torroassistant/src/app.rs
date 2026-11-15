@@ -404,6 +404,12 @@ pub enum Message {
     /// The core's answer to a button of a card; `Ok` with what to say then, the text says what
     /// failed.
     FileDone(Result<Option<&'static str>, Refusal>, &'static str),
+    /// A button of a content card (issue #784): sends the request as the person's click; when it fails the window
+    /// says the text. Either way the cards are asked for again, so a card shows what the click changed (a link shown
+    /// once, a task done, a draft sent).
+    CardRequest(Box<Request>, &'static str),
+    /// The core's answer to a [`Message::CardRequest`], with the text to say when it failed.
+    CardAnswered(Result<(), Refusal>, &'static str),
     /// The core's answer to the decision.
     Decided(String, Result<ApprovalInfo, Refusal>),
     /// From the sidebar: show the conversation with this id.
@@ -1195,6 +1201,15 @@ impl App {
                 let failed = tr("Couldn't open the mail.");
                 let request = chat::open_mail_request(&account, &id);
                 return self.ask(request, move |result| Message::FileDone(result.map(|_| None), failed));
+            }
+            Message::CardRequest(request, failed) => {
+                return self.ask(*request, move |result| Message::CardAnswered(result.map(|_| ()), failed));
+            }
+            Message::CardAnswered(result, failed) => {
+                if let Err(refusal) = result {
+                    self.note_failure(failed, &refusal);
+                }
+                return self.fetch_cards();
             }
             Message::FileDone(Ok(said), _) => {
                 if let Some(text) = said {
@@ -2987,6 +3002,7 @@ fn start_conversation(open: Option<Open>) -> Option<String> {
         Some(Open::BotAsked) => Some(demo::ASKED.into()),
         Some(Open::BotGone) => Some(demo::GONE.into()),
         Some(Open::BotProposal) => Some(demo::PROPOSAL.into()),
+        Some(Open::Cards) => Some(demo::CONTENT.into()),
         _ => None,
     }
 }

@@ -326,7 +326,8 @@ impl Backend {
 
     /// `chat.get_preview` of a file (`file`) or of the message's link card (`file` `None`).
     pub async fn preview(self, id: String, file: Option<String>, size: PreviewSize) -> Result<Picture, ChatError> {
-        let card = file.is_none();
+        // The first card's picture; issue #785 adds the others (`index`).
+        let card = file.is_none().then_some(0);
         match self {
             Backend::Core(core) => core.preview(id, file, card, size).await,
             Backend::Demo(demo) => demo.preview(id, file, card, size).await,
@@ -365,8 +366,8 @@ impl Backend {
     /// `chat.show_card` ("Show once").
     pub async fn show_card(self, id: String) -> Result<Option<LinkCard>, ChatError> {
         match self {
-            Backend::Core(core) => core.show_card(id).await,
-            Backend::Demo(demo) => demo.show_card(id).await,
+            Backend::Core(core) => core.show_card(id, 0).await,
+            Backend::Demo(demo) => demo.show_card(id, 0).await,
         }
     }
 
