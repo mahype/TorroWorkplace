@@ -14367,7 +14367,8 @@ impl Core {
     /// nothing of the answer after it but an approval or a failure; one without it is read up to a sentence end within
     /// [`torro_ipc::assistant::SPOKEN_MOST`] characters (issue #774). `stamps` keeps when the first
     /// word came (the time of the first answer entry with text: when its first piece came) and when
-    /// the first sound played (issue #828).
+    /// the first sound played (issue #828). An answer stored in one go carries the time it was stored,
+    /// so its first word counts as late as that.
     async fn read_answer(
         &self,
         number: u64,

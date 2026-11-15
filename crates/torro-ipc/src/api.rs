@@ -4300,7 +4300,8 @@ static VOICE_TIMINGS: Command = Command {
     mcp: Mcp::Tool,
     description: "Lists how long the last spoken answers took, step by step, oldest first: the pause until the end \
                   of speech was detected, speech recognition, the first word of the answer and its first sound, \
-                  in milliseconds. Only durations, never what was said; the core keeps the last 20 answers read \
+                  in milliseconds, each round with the time its first sound played. Only durations, never what \
+                  was said; the core keeps the last 20 answers read \
                   aloud in memory only, so the list is empty after a restart.",
 };
 

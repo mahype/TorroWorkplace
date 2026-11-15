@@ -5380,14 +5380,18 @@ pub struct VoiceRound {
     pub pause_ms: u32,
     /// How long speech recognition took for the sentence.
     pub recognize_ms: u32,
-    /// From the sent message to the first word of the answer (when its first piece came).
+    /// From the sent message to the first word of the answer: when its first piece came while it grew;
+    /// for an answer stored in one go (an engine that does not stream) when it was stored, then an upper
+    /// bound, and [`VoiceRound::first_sound_ms`] is shorter by as much.
     pub first_word_ms: u32,
     /// From the first word of the answer to its first sound.
     pub first_sound_ms: u32,
 }
 
 impl VoiceRound {
-    /// The whole wait, from the last word spoken to the first sound of the answer.
+    /// The four steps together: about the wait from the last word spoken to the first sound of the
+    /// answer. The few requests between speech recognition and the stored message (finding where it
+    /// goes, sending it) are in no step and not counted.
     pub fn total_ms(&self) -> u32 {
         self.pause_ms
             .saturating_add(self.recognize_ms)
