@@ -421,8 +421,9 @@ impl App {
         buttons
     }
 
-    /// Under a message with links: their cards, up to three in the order of the links (issue #785, on
-    /// `content_card::link_card`, as the assistant draws them); for a link to another provider not asked
+    /// Under a message with links, free under its bubble: their cards, up to three in the order of the links (issue
+    /// #785, on `content_card::link_card`, as the assistant draws them), `size::card_gap()` apart, at most
+    /// `size::list()` wide; for a link to another provider not asked
     /// about yet (Settings › Privacy at "Ask", issue #672) the question "Show once", "Always allow …",
     /// "Never for …" below them (`content_card::ask_card`); else nothing more – a blocked provider, "Never
     /// show" and a link without a card keep only the link in the text. `None` without either.
@@ -440,7 +441,7 @@ impl App {
             .iter()
             .take(MAX_LINK_CARDS)
             .enumerate()
-            .filter_map(|(index, card)| Some(link_card(chat, message, u8::try_from(index).ok()?, card, room)))
+            .filter_map(|(position, card)| Some(link_card(chat, message, card_index(position, card)?, card, room)))
             .collect();
         let asked = match chat.files.cards.get(&message.id) {
             Some(CardAsk::Asking) => Some(typo::text(typo::meta(), tr("Loading preview…")).style(theme::text_3).into()),
@@ -450,7 +451,17 @@ impl App {
             None => message.foreign.as_ref().map(|provider| foreign_question(&message.id, provider)),
         };
         parts.extend(asked);
-        (!parts.is_empty()).then(|| column(parts).spacing(space::s()).into())
+        (!parts.is_empty()).then(|| column(parts).spacing(size::card_gap()).into())
+    }
+
+    /// The first card of `message` in one line (`content_card::link_short`), for the glance of a mini or strip tile;
+    /// `None` without a card.
+    pub(super) fn first_card_line<'a>(&'a self, message: &'a ChatMessage) -> Option<Element<'a, Message>> {
+        if message.kind == MessageKind::Deleted {
+            return None;
+        }
+        let card = message.cards.first()?;
+        Some(content_card::link_short(card, link_press(message, card)))
     }
 
     /// Above the composer: the files chosen for sending, or the sending under way. `None` when there
@@ -594,6 +605,22 @@ fn upload_row(upload: &Upload) -> Element<'_, Message> {
     .into()
 }
 
+/// The index of the card at `position` among the cards of a message, by which its picture is asked for and kept.
+///
+/// S1 of issue #784: Coder K adds `LinkCard::index` (the place of the link among the first three of the text); the
+/// coordination returns `Some(card.index)` here. Until then the card's position stands for it.
+fn card_index(position: usize, card: &LinkCard) -> Option<u8> {
+    let _ = card;
+    u8::try_from(position).ok()
+}
+
+/// What a click on the card `card` of `message` sends: "Open" opens the link; a video card plays in the player
+/// window where there is one (macOS, Windows), under Linux it opens at YouTube.
+fn link_press(message: &ChatMessage, card: &LinkCard) -> LinkPress<Message> {
+    let play = (card.video.is_some() && system::plays_videos()).then(|| wrap(FilesMsg::PlayVideo(message.id.clone())));
+    LinkPress { open: wrap(FilesMsg::OpenLink(card.url.clone())), play }
+}
+
 /// The card `index` of the links of `message`: its kind's look from `content_card::link_card`, its
 /// picture from the own server (by message and index). A click on "Open" opens the link; a video card
 /// plays in the player window where there is one (macOS, Windows), under Linux it opens at YouTube.
@@ -608,9 +635,7 @@ fn link_card<'a>(
         Some(Shown::Ready(handle)) if card.image => Some(handle.clone()),
         _ => None,
     };
-    let play = (card.video.is_some() && system::plays_videos()).then(|| wrap(FilesMsg::PlayVideo(message.id.clone())));
-    let press = LinkPress { open: wrap(FilesMsg::OpenLink(card.url.clone())), play };
-    content_card::link_card(card, picture, press, room.min(size::list()))
+    content_card::link_card(card, picture, link_press(message, card), room.min(size::list()))
 }
 
 /// The question in place of the card of another provider's link (issue #672), as the assistant asks it

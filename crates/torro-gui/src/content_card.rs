@@ -729,6 +729,13 @@ pub fn link_card<'a, M: Clone + 'a>(
     link_content(card, picture, press).view(room)
 }
 
+/// The card of the link `card` in one line ([`ContentCard::short`]): its kind's icon, its title (the domain without
+/// one) and its first line, the main button as an icon – for the glance of a mini or strip tile, where the card
+/// stands for the bare address.
+pub fn link_short<'a, M: Clone + 'a>(card: &LinkCard, press: LinkPress<M>) -> Element<'a, M> {
+    link_content(card, None, press).short()
+}
+
 /// The [`ContentCard`] [`link_card`] draws.
 fn link_content<M: Clone>(card: &LinkCard, picture: Option<image::Handle>, press: LinkPress<M>) -> ContentCard<M> {
     match card.kind {
