@@ -18849,9 +18849,18 @@ mod tests {
         let before = core.approvals.list(None, Utc::now()).await.unwrap_or_default().len();
         let plan = Request::ListSaveTargets { id: Some(id.clone()), export_only: false };
         assert_eq!(code(&ask(&core, Some(&stranger), plan).await), "not-found");
-        let save = Request::SaveMailAttachments { id, parts: Vec::new(), to: SaveTo::Downloads };
+        let save = Request::SaveMailAttachments { id: id.clone(), parts: Vec::new(), to: SaveTo::Downloads };
         assert_eq!(code(&ask(&core, Some(&stranger), save).await), "not-found");
         assert_eq!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().len(), before, "nobody asked");
+
+        // Issue #781: the client reads what was saved without being asked; one without the account finds
+        // no such mail.
+        let history = Request::ListSaveHistory { id };
+        match ask(&core, Some(&key), history.clone()).await {
+            Response::SaveHistory { entries } => assert_eq!(entries.len(), 2, "the two allowed files"),
+            other => panic!("history: {other:?}"),
+        }
+        assert_eq!(code(&ask(&core, Some(&stranger), history).await), "not-found");
     }
 
     /// Issue #501: a client's "save as PDF" waits for a person as its rights say, the approval names
