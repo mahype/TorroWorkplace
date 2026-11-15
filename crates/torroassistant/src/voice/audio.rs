@@ -1,18 +1,13 @@
-//! Sound as the voice parts pass it on: 16 kHz, mono, 16-bit samples in frames of 80 ms (the
-//! size openWakeWord takes), WAV files for whisper.cpp and the players, and when a spoken sentence
-//! ends ([`Endpoint`]).
-
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+//! Sound as the voice parts pass it on: 16 kHz, mono, 16-bit samples in frames of 80 ms, the voices of
+//! Pocket TTS read from WAV files ([`decode_wav`]), the tone of the wake word ([`chime`]) and when a
+//! spoken sentence ends ([`Endpoint`]).
 
 use super::VoiceError;
 
 /// Samples per second.
 pub const RATE: u32 = 16_000;
 
-/// Samples per frame: 80 ms, what openWakeWord takes at once.
+/// Samples per frame: 80 ms, the steps in which the listener hears the microphone.
 pub const FRAME: usize = 1280;
 
 /// Frames per second.
@@ -111,7 +106,102 @@ impl Endpoint {
     }
 }
 
-/// `samples` as a WAV file: PCM, [`RATE`], mono, 16 bit.
+/// `sample` (16 bit) as a float between -1 and 1, the form sherpa-onnx and the sound devices take.
+pub fn to_float(sample: i16) -> f32 {
+    f32::from(sample) / 32768.0
+}
+
+/// `sample` (between -1 and 1, louder is clipped) as 16 bit.
+pub fn to_i16(sample: f32) -> i16 {
+    // The cast saturates as well, so nothing beyond the range wraps around.
+    (sample.clamp(-1.0, 1.0) * 32767.0) as i16
+}
+
+/// Sound read from a WAV file ([`decode_wav`]): mono, between -1 and 1, at its own rate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Wave {
+    pub rate: u32,
+    pub samples: Vec<f32>,
+}
+
+/// The format of a WAV file as its `fmt ` chunk names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Format {
+    /// 1 for integers, 3 for floats; `WAVE_FORMAT_EXTENSIBLE` is read as its sub-format.
+    tag: u16,
+    channels: u16,
+    rate: u32,
+    bits: u16,
+}
+
+/// The format and the sound data of a WAV file; chunks other than `fmt ` and `data` are skipped.
+fn wav_parts(bytes: &[u8]) -> Result<(Format, &[u8]), VoiceError> {
+    let refused = |why: &str| VoiceError::Sound(format!("not a WAV file: {why}"));
+    if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return Err(refused("no RIFF/WAVE header"));
+    }
+    let mut at = 12;
+    let mut format = None;
+    while at + 8 <= bytes.len() {
+        let id = &bytes[at..at + 4];
+        let size = u32::from_le_bytes([bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]]) as usize;
+        let body = bytes.get(at + 8..at + 8 + size).ok_or_else(|| refused("a chunk is cut off"))?;
+        match id {
+            b"fmt " if body.len() >= 16 => {
+                let word = |i: usize| u16::from_le_bytes([body[i], body[i + 1]]);
+                let tag = match word(0) {
+                    0xFFFE if body.len() >= 26 => word(24),
+                    tag => tag,
+                };
+                let rate = u32::from_le_bytes([body[4], body[5], body[6], body[7]]);
+                format = Some(Format { tag, channels: word(2), rate, bits: word(14) });
+            }
+            b"data" => return format.map(|format| (format, body)).ok_or_else(|| refused("no format before the data")),
+            _ => {}
+        }
+        // Chunks are padded to an even length.
+        at += 8 + size + size % 2;
+    }
+    Err(refused("no data"))
+}
+
+/// One sample of `format` from its bytes, between -1 and 1; `None` for a form this app does not read.
+fn sample_of(format: Format, b: &[u8]) -> Option<f32> {
+    match (format.tag, format.bits, b) {
+        (1, 8, [b0, ..]) => Some((f32::from(*b0) - 128.0) / 128.0),
+        (1, 16, [b0, b1, ..]) => Some(f32::from(i16::from_le_bytes([*b0, *b1])) / 32768.0),
+        // The 24 bits go into the top of an i32, so the sign stays.
+        (1, 24, [b0, b1, b2, ..]) => Some(i32::from_le_bytes([0, *b0, *b1, *b2]) as f32 / 2_147_483_648.0),
+        (1, 32, [b0, b1, b2, b3, ..]) => Some(i32::from_le_bytes([*b0, *b1, *b2, *b3]) as f32 / 2_147_483_648.0),
+        (3, 32, [b0, b1, b2, b3, ..]) => Some(f32::from_le_bytes([*b0, *b1, *b2, *b3])),
+        (3, 64, [b0, b1, b2, b3, b4, b5, b6, b7, ..]) => {
+            Some(f64::from_le_bytes([*b0, *b1, *b2, *b3, *b4, *b5, *b6, *b7]) as f32)
+        }
+        _ => None,
+    }
+}
+
+/// The sound of a WAV file in any common form (8, 16, 24 or 32-bit integers, 32 or 64-bit floats, any number of
+/// channels), mixed down to mono: the voices Pocket TTS imitates come as their makers recorded them.
+pub fn decode_wav(bytes: &[u8]) -> Result<Wave, VoiceError> {
+    let (format, data) = wav_parts(bytes)?;
+    let channels = usize::from(format.channels);
+    let width = usize::from(format.bits / 8);
+    if channels == 0 || format.rate == 0 || width == 0 || sample_of(format, &vec![0; width]).is_none() {
+        return Err(VoiceError::Sound(format!(
+            "not a WAV file this app reads: format {}, {} channels, {} bits",
+            format.tag, format.channels, format.bits
+        )));
+    }
+    let samples = data
+        .chunks_exact(width * channels)
+        .map(|frame| frame.chunks_exact(width).filter_map(|b| sample_of(format, b)).sum::<f32>() / channels as f32)
+        .collect();
+    Ok(Wave { rate: format.rate, samples })
+}
+
+/// `samples` as a WAV file: PCM, [`RATE`], mono, 16 bit. For the tests.
+#[cfg(test)]
 pub fn wav_bytes(samples: &[i16]) -> Vec<u8> {
     let data = (samples.len() * 2) as u32;
     let mut bytes = Vec::with_capacity(44 + data as usize);
@@ -133,38 +223,15 @@ pub fn wav_bytes(samples: &[i16]) -> Vec<u8> {
     bytes
 }
 
-/// The samples of a WAV file in the form [`wav_bytes`] writes: PCM, [`RATE`], mono, 16 bit.
-/// Chunks other than `fmt ` and `data` are skipped. For the sound files of the tests.
+/// The samples of a WAV file in the form [`wav_bytes`] writes: PCM, [`RATE`], mono, 16 bit. For the sound files
+/// of the tests.
 #[cfg(test)]
 pub fn read_wav(bytes: &[u8]) -> Result<Vec<i16>, VoiceError> {
-    let refused = |why: &str| VoiceError::Sound(format!("not a 16 kHz mono 16-bit WAV file: {why}"));
-    if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-        return Err(refused("no RIFF/WAVE header"));
+    let (format, data) = wav_parts(bytes)?;
+    if format != (Format { tag: 1, channels: 1, rate: RATE, bits: 16 }) {
+        return Err(VoiceError::Sound("not a 16 kHz mono 16-bit WAV file".into()));
     }
-    let mut at = 12;
-    let mut format_ok = false;
-    while at + 8 <= bytes.len() {
-        let id = &bytes[at..at + 4];
-        let size = u32::from_le_bytes([bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]]) as usize;
-        let body = bytes.get(at + 8..at + 8 + size).ok_or_else(|| refused("a chunk is cut off"))?;
-        match id {
-            b"fmt " if body.len() >= 16 => {
-                let word = |i: usize| u16::from_le_bytes([body[i], body[i + 1]]);
-                let rate = u32::from_le_bytes([body[4], body[5], body[6], body[7]]);
-                format_ok = word(0) == 1 && word(2) == 1 && rate == RATE && word(14) == 16;
-                if !format_ok {
-                    return Err(refused("another format"));
-                }
-            }
-            b"data" if format_ok => {
-                return Ok(body.as_chunks::<2>().0.iter().map(|pair| i16::from_le_bytes(*pair)).collect());
-            }
-            _ => {}
-        }
-        // Chunks are padded to an even length.
-        at += 8 + size + size % 2;
-    }
-    Err(refused("no data"))
+    Ok(data.as_chunks::<2>().0.iter().map(|pair| i16::from_le_bytes(*pair)).collect())
 }
 
 /// The tone when the wake word was heard: two short notes going up, 180 ms, soft at both ends.
@@ -184,72 +251,16 @@ pub fn chime() -> Vec<i16> {
     samples
 }
 
-/// A WAV file in the temporary folder that only this user may read, removed when dropped: what
-/// whisper.cpp and the players read. Never kept: speech does not stay on disk.
-#[derive(Debug)]
-pub struct TempWav {
-    path: PathBuf,
-}
-
-impl TempWav {
-    /// Writes `samples` to a new file.
-    pub fn write(samples: &[i16]) -> Result<TempWav, VoiceError> {
-        TempWav::with_bytes(&wav_bytes(samples))
-    }
-
-    /// A new file with the WAV `bytes`.
-    pub fn with_bytes(bytes: &[u8]) -> Result<TempWav, VoiceError> {
-        let path = TempWav::new_path();
-        write_private(&path, bytes)
-            .map_err(|err| VoiceError::Sound(format!("cannot write {}: {err}", path.display())))?;
-        Ok(TempWav { path })
-    }
-
-    /// A name for an empty file that a program writes (Piper's output), removed when dropped.
-    pub fn empty() -> TempWav {
-        TempWav { path: TempWav::new_path() }
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// `torro-voice-<pid>-<n>.wav`: unique within the process and among processes.
-    fn new_path() -> PathBuf {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("torro-voice-{}-{n}.wav", std::process::id()))
-    }
-}
-
-impl Drop for TempWav {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
-
-/// Writes `bytes` to a new file `path` that only this user may read (0600 on Unix; the temporary
-/// folder of the user profile on Windows is the user's alone).
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path)?;
-    file.write_all(bytes)
-}
-
 #[cfg(test)]
 pub mod tests {
+    use std::path::Path;
+
     use super::*;
 
     /// The samples of `tests/fixtures/<name>`.
     pub fn fixture(name: &str) -> Vec<i16> {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
-        let bytes = fs::read(&path).expect("fixture");
+        let bytes = std::fs::read(&path).expect("fixture");
         read_wav(&bytes).expect("a 16 kHz mono WAV")
     }
 
@@ -263,6 +274,44 @@ pub mod tests {
         stereo[22] = 2;
         assert!(read_wav(&stereo).is_err(), "stereo");
         assert_eq!(fixture("silence.wav").len(), RATE as usize, "one second");
+    }
+
+    /// Issue #762: the voices come in other forms than the test sounds; each is mixed down to mono at its rate.
+    #[test]
+    fn wav_files_of_any_common_form_are_read_as_mono() {
+        let samples = [0, 16_384, -16_384, i16::MAX];
+        let mono = decode_wav(&wav_bytes(&samples)).expect("16 bit");
+        assert_eq!(mono.rate, RATE);
+        assert_eq!(mono.samples, samples.map(to_float));
+
+        // Stereo 16 bit at 24 kHz: the two channels are averaged.
+        let mut stereo = wav_bytes(&[16_384, 0, -16_384, -16_384]);
+        stereo[22] = 2;
+        stereo[24..28].copy_from_slice(&24_000u32.to_le_bytes());
+        assert_eq!(decode_wav(&stereo).expect("stereo"), Wave { rate: 24_000, samples: vec![0.25, -0.5] });
+
+        // 32-bit floats: the format tag 3, four bytes a sample.
+        let mut float = wav_bytes(&[0, 0, 0, 0]);
+        float[20..22].copy_from_slice(&3u16.to_le_bytes());
+        float[34..36].copy_from_slice(&32u16.to_le_bytes());
+        float[44..48].copy_from_slice(&0.5f32.to_le_bytes());
+        float[48..52].copy_from_slice(&(-1.0f32).to_le_bytes());
+        assert_eq!(decode_wav(&float).expect("float").samples, [0.5, -1.0]);
+
+        let mut odd = wav_bytes(&[0, 0]);
+        odd[34..36].copy_from_slice(&12u16.to_le_bytes());
+        assert!(decode_wav(&odd).is_err(), "12 bit");
+        assert!(decode_wav(b"not a wav").is_err());
+    }
+
+    #[test]
+    fn samples_turn_into_floats_and_back() {
+        assert_eq!(to_float(0), 0.0);
+        assert_eq!(to_float(i16::MIN), -1.0);
+        assert_eq!(to_i16(0.5), 16_383);
+        assert_eq!(to_i16(2.0), i16::MAX, "clipped");
+        assert_eq!(to_i16(-2.0), -i16::MAX);
+        assert_eq!(to_i16(f32::NAN), 0);
     }
 
     #[test]
@@ -289,21 +338,5 @@ pub mod tests {
 
         let mut long = Endpoint::new(floor, Limits { most: 3, ..Limits::default() });
         assert_eq!(frames("utterance.wav").iter().position(|frame| long.push(frame)), Some(2), "the longest");
-    }
-
-    #[test]
-    fn temporary_files_are_private_and_go_away() {
-        let file = TempWav::write(&chime()).expect("written");
-        let path = file.path().to_path_buf();
-        assert_eq!(read_wav(&fs::read(&path).expect("there")).map(|s| s.len()), Ok(chime().len()));
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(&path).expect("metadata").permissions().mode();
-            assert_eq!(mode & 0o777, 0o600);
-        }
-        drop(file);
-        assert!(!path.exists());
-        assert_ne!(TempWav::empty().path(), TempWav::empty().path(), "unique names");
     }
 }

@@ -25,13 +25,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use torro_core::settings::Voice;
-use torro_ipc::{Response, VoiceState, VoiceStatus};
+use torro_core::voice_models::voice_folder;
+use torro_ipc::{Response, VoiceState};
 
 use super::audio::{Endpoint, FRAMES_PER_SECOND, Limits, NoiseFloor};
-use super::external::{CommandRecorder, Parts, transcriber_of};
 use super::listen::{CoreAssistant, CoreSpeaker, Ended, Listener};
-use super::programs::{Finder, Found};
-use super::{Recorder, VoiceError};
+use super::parts::{Parts, voice_status};
+use super::recognize::{SherpaTranscriber, require};
+use super::sound::{CpalRecorder, SystemDevices};
+use super::{Recorder, Transcriber, VoiceError};
 use crate::backend::Backend;
 
 /// A voice mode from the start parameters.
@@ -73,18 +75,16 @@ impl Mode {
     pub fn run(self) -> ExitCode {
         match self {
             Mode::Listen => listen(),
-            Mode::Status(voice) => answer(&status(&voice)),
+            Mode::Status(voice) => {
+                answer(&Response::Voice { voice: voice_status(&voice, voice_folder().as_deref(), &SystemDevices) })
+            }
             Mode::Test(voice) => answer(&test(&voice, Limits::default(), &AtomicBool::new(false))),
             Mode::Dictate(voice) => answer(&test(&voice, dictation(), &stop_at_end_of_input())),
             Mode::Speak(voice) => {
                 super::speech::serve(voice);
                 ExitCode::SUCCESS
             }
-            Mode::SpeechStatus(voice) => {
-                let finder = Finder::system();
-                let found = Found::detect(&finder, &voice);
-                answer(&Response::Speech { speech: super::speech::status(&found, &finder) })
-            }
+            Mode::SpeechStatus(voice) => answer(&Response::Speech { speech: super::speech::system_status(&voice) }),
         }
     }
 }
@@ -100,22 +100,6 @@ fn answer(response: &Response) -> ExitCode {
             eprintln!("torroassistant: {err}");
             ExitCode::FAILURE
         }
-    }
-}
-
-/// What the listener would use with `voice` ([`Response::Voice`]).
-fn status(voice: &Voice) -> Response {
-    let finder = Finder::system();
-    let found = Found::detect(&finder, voice);
-    Response::Voice {
-        voice: VoiceStatus {
-            listener: VoiceState::Off,
-            installed: true,
-            problem: None,
-            programs: found.status(),
-            microphones: found.microphones(),
-            folder: finder.folder.map(|folder| folder.to_string_lossy().into_owned()),
-        },
     }
 }
 
@@ -141,16 +125,24 @@ fn stop_at_end_of_input() -> Arc<AtomicBool> {
 /// What is said into the microphone as text ([`Response::Transcript`]), recorded within `limits`
 /// or until `stop` goes up.
 fn test(voice: &Voice, limits: Limits, stop: &AtomicBool) -> Response {
-    let found = Found::detect(&Finder::system(), voice);
     let refused = |code: &str, err: VoiceError| Response::Error { code: code.into(), message: err.to_string() };
-    // The transcriber starts before the recording, so Parakeet loads its model while one speaks.
-    let parts = CommandRecorder::of(&found, voice.microphone.as_deref())
-        .and_then(|recorder| transcriber_of(&found).map(|transcriber| (recorder, transcriber)));
-    let (mut recorder, mut transcriber) = match parts {
-        Ok(parts) => parts,
-        Err(err) => return refused("unsupported", err),
+    let folder = voice_folder();
+    if let Err(err) = require(voice.recognizer, folder.as_deref()) {
+        return refused("unsupported", err);
+    }
+    // The model loads on a thread of its own while one speaks: loading takes seconds.
+    let loading = {
+        let (voice, folder) = (voice.clone(), folder.clone());
+        std::thread::spawn(move || SherpaTranscriber::load(&voice, folder.as_deref()))
     };
-    match record_sentence(&mut recorder, limits, stop).and_then(|sentence| transcriber.transcribe(&sentence)) {
+    let mut recorder = CpalRecorder { microphone: voice.microphone.clone() };
+    let sentence = match record_sentence(&mut recorder, limits, stop) {
+        Ok(sentence) => sentence,
+        Err(err @ VoiceError::Missing(..)) => return refused("unsupported", err),
+        Err(err) => return refused("error", err),
+    };
+    let loaded = loading.join().unwrap_or_else(|_| Err(VoiceError::program("speech to text", "stopped")));
+    match loaded.and_then(|mut transcriber| transcriber.transcribe(&sentence)) {
         Ok(text) => Response::Transcript { text },
         Err(err) => refused("error", err),
     }
@@ -203,8 +195,7 @@ fn listen() -> ExitCode {
                 return stopped(ExitCode::FAILURE);
             }
         };
-        let found = Found::detect(&Finder::system(), &voice);
-        let parts = match Parts::build(&found, &voice) {
+        let parts = match Parts::build(&voice, voice_folder().as_deref()) {
             Ok(parts) => parts,
             Err(err) => {
                 eprintln!("torroassistant: cannot listen: {err}");
@@ -224,7 +215,7 @@ fn listen() -> ExitCode {
         match listener.run(&voice) {
             Ok(Ended::Changed) => continue,
             Ok(Ended::RecordingStopped) => {
-                eprintln!("torroassistant: the recording program stopped");
+                eprintln!("torroassistant: the microphone stopped");
                 return stopped(ExitCode::FAILURE);
             }
             Ok(_) => return stopped(ExitCode::SUCCESS),
@@ -238,12 +229,12 @@ fn listen() -> ExitCode {
 
 /// Speaks the answers through the core (issue #745), with the provider and voice of the settings;
 /// `local` plays the tone of the wake word. On a connection of its own, so the speaker can live as
-/// long as the listener's parts; without a runtime `local` speaks as before.
+/// long as the listener's parts; without a runtime only the tone sounds.
 fn through_the_core(local: Box<dyn super::Speaker>) -> Box<dyn super::Speaker> {
     let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(runtime) => runtime,
         Err(err) => {
-            eprintln!("torroassistant: answers are spoken with Piper: {err}");
+            eprintln!("torroassistant: answers are not spoken: {err}");
             return local;
         }
     };

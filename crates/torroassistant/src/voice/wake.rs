@@ -1,7 +1,7 @@
-//! The wake word without openWakeWord: [`TranscriptWake`] turns the last two seconds into text
-//! once a second, while something louder than the room was heard, and looks for "Hey Torro"
-//! ([`is_wake_phrase`]). It costs more computing time than a wake word model, which is why
-//! openWakeWord comes first when it is installed ([`super::external::OpenWakeWord`]).
+//! The wake word: [`TranscriptWake`] turns the last two seconds into text once a second, while
+//! something louder than the room was heard, and looks for "Hey Torro" ([`is_wake_phrase`]). It uses
+//! the recogniser of the sentences (decision 5 of #762), so no model of its own has to be downloaded;
+//! silence costs nothing.
 //!
 //! [`strip_wake_phrase`] takes the wake word off the front of a sentence, for when it was recorded
 //! with it.

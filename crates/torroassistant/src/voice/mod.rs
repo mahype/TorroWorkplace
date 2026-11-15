@@ -9,31 +9,31 @@
 //! No word spoken ever decides an approval: the listener only sends messages and reads answers
 //! ([`listen::CoreAssistant`]), a video in the background must not be able to say "Allow".
 //!
-//! Every part runs on this computer as a program the person installed, found at runtime
-//! ([`programs`]), so the suite builds on Linux, macOS and Windows without audio libraries:
+//! Every part is built into the app (issue #762), so nothing has to be installed beside it:
 //!
-//! - wake word: openWakeWord (Python) with the model `hey_torro.onnx`; without it the wake word is
-//!   found with speech to text on short windows ([`wake::TranscriptWake`]),
-//! - recording: `parec`, `arecord`, SoX or `ffmpeg`, as raw 16 kHz mono sound on their output,
-//! - speech to text, as the setting `voice.recognizer` chooses: Parakeet (Python with `onnx-asr`,
-//!   the model folder `parakeet-tdt-0.6b-v3`), kept loaded in a process of its own
-//!   ([`external::ParakeetPython`]), or whisper.cpp (`whisper-cli`) with a `ggml-*.bin` model,
-//! - speech: Piper with a voice, played with `paplay`, `afplay` or the like.
+//! - speech to text with sherpa-onnx ([`recognize`]), as the setting `voice.recognizer` chooses:
+//!   Whisper turbo with the language of the setting `voice.language`, or Parakeet,
+//! - the wake word with the same recogniser on short windows ([`wake::TranscriptWake`]),
+//! - the microphone and the sound output with cpal ([`sound`]),
+//! - reading aloud with Pocket TTS ([`pocket`], in the helper [`speech`]).
+//!
+//! The models are downloaded in the settings (`settings.download_voice_model`) into the voice folder
+//! (`torro_core::voice_models`); what is missing is a model or a sound device ([`parts`]).
 //!
 //! The parts are small traits ([`Recorder`], [`WakeWord`], [`Transcriber`], [`Speaker`]), so the
 //! tests run the listener on sound files and fakes without a microphone or a model
 //! ([`listen`]).
 //!
 //! While it waits for the wake word, the listener keeps a few seconds in memory and nothing on
-//! disk. Parakeet gets the sound through a pipe. Only for whisper.cpp, which reads files, a sentence
-//! (or, without openWakeWord, a window of two seconds) goes to a private temporary file that is
-//! removed at once ([`audio::TempWav`]).
+//! disk; no sentence and no answer is ever written to a file.
 
 pub mod audio;
 pub mod cli;
-pub mod external;
 pub mod listen;
-pub mod programs;
+pub mod parts;
+pub mod pocket;
+pub mod recognize;
+pub mod sound;
 pub mod speech;
 pub mod wake;
 
@@ -46,9 +46,9 @@ use crate::backend::Refusal;
 /// Why a part of the listener failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VoiceError {
-    /// A part cannot work: its program, model or player is missing ([`programs::Found`]).
+    /// A part cannot work: its model or its sound device is missing ([`parts::programs`]).
     Missing(VoicePart, VoiceMissing),
-    /// A program did not start, failed or ended.
+    /// A part failed: a model did not load or made nothing (`program` names the part).
     Program { program: String, message: String },
     /// Sound could not be read or written.
     Sound(String),
@@ -57,7 +57,7 @@ pub enum VoiceError {
 }
 
 impl VoiceError {
-    /// A failed program `program`, with what went wrong.
+    /// The part `program` failed, with what went wrong.
     pub fn program(program: impl Into<String>, message: impl fmt::Display) -> VoiceError {
         VoiceError::Program { program: program.into(), message: message.to_string() }
     }
@@ -86,7 +86,7 @@ pub trait Recorder {
 /// An open microphone ([`Recorder::open`]).
 pub trait Stream {
     /// The next [`audio::FRAME`] samples, waiting for them; `None` when the recording ended (the
-    /// program stopped, the file is read to its end).
+    /// device went away, the file is read to its end).
     fn frame(&mut self) -> Result<Option<Vec<i16>>, VoiceError>;
 }
 

@@ -848,7 +848,7 @@ mod tests {
         assert_eq!(sent.borrow().as_slice(), [Request::Speak { text: "Good morning.".into() }]);
         assert_eq!(*chimes.borrow(), 1);
         let mut refused = CoreSpeaker::new(
-            |_| Err(Refusal::new("unsupported", "Piper is not installed or has no voice.")),
+            |_| Err(Refusal::new("unsupported", "Download the voice in Settings › Assistant › Voice first.")),
             Box::new(Mouth(Rc::default(), Rc::default())),
         );
         assert!(matches!(refused.say("Hi"), Err(VoiceError::Core(refusal)) if refusal.code == "unsupported"));
