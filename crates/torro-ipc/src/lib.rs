@@ -5196,7 +5196,8 @@ pub struct Talk {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum VoicePart {
-    /// Hears the wake word, with the speech recognition on short windows.
+    /// Hears the wake word with its built-in model `hey-torro` (issue #765); only when that does not load,
+    /// with the speech recognition on short windows.
     WakeWord,
     /// Takes the sound from the microphone the system offers.
     Recorder,
@@ -5223,8 +5224,8 @@ pub enum VoiceMissing {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct VoiceProgram {
     pub part: VoicePart,
-    /// The model or device it uses (`whisper-turbo`, `pocket-de`, a microphone); `None` when none
-    /// is there.
+    /// The model or device it uses (`hey-torro`, `whisper-turbo`, `pocket-de`, a microphone); `None` when
+    /// none is there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program: Option<String>,
     /// What keeps the part from working; `None` when it works.
@@ -5493,8 +5494,8 @@ pub enum SettingKey {
     Microphone,
     /// Speak the answers as well as showing them: `true` (the default) or `false`.
     SpeakAnswers,
-    /// The model that turns speech into text, for dictating, the wake word and the conversation
-    /// mode (issues #749, #762): `"whisper"` (the default and recommended: Whisper turbo) or
+    /// The model that turns speech into text, for dictating, the sentence after the wake word and the
+    /// conversation mode (issues #749, #762, #765): `"whisper"` (the default and recommended: Whisper turbo) or
     /// `"parakeet"` (Parakeet, faster, finds the language itself). Anything else is refused with
     /// `error` (`torro_core::settings::Recognizer`). Its model comes from
     /// `settings.download_voice_model`.
