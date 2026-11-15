@@ -820,7 +820,9 @@ fn own_background(doc: &BaseDocument) -> bool {
 
 /// The colour of a wrapper around the whole mail, painted over the whole view under the mail like a
 /// browser's canvas: the one element in `body` (besides `style` and white space), when it is as wide
-/// as the body and has a background colour of its own.
+/// as the body and has a background colour of its own. Elements at most one pixel high do not count
+/// as a second element: the hidden preview text (`display:none`), the empty filler row (`line-height:0`)
+/// and the tracking pixel that mail apps put beside the wrapper.
 ///
 /// Blitz already paints the background of `html`, else of `body`, over the whole view, as browsers
 /// do. But the core's cleaning drops `body` with its colour (`bgcolor`, `style`), and newsletters
@@ -840,6 +842,9 @@ fn wrapper_background(doc: &BaseDocument) -> Option<peniko::Color> {
             return None;
         }
         if !node.is_element() || node.data.is_element_with_tag_name(&local_name!("style")) {
+            continue;
+        }
+        if node.final_layout().size.height <= 1.0 {
             continue;
         }
         if wrapper.replace(node).is_some() {

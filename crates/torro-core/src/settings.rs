@@ -1331,12 +1331,18 @@ pub struct Voice {
     pub read_aloud: bool,
     /// Who reads aloud (issue #745); `None` until a person chooses: then Pocket TTS on this computer
     /// ([`SpeechProvider`], #762). OpenAI only when chosen, since the text leaves the computer. A
-    /// file with Qwen3-TTS or Piper, which are gone, reads as `None`.
+    /// file with Piper, which is gone, reads as `None`. Qwen3-TTS stays chosen in every build, so a
+    /// build without it that writes the file keeps it for one with it (#764); what reads is
+    /// [`Voice::speech_provider_here`].
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_provider")]
     pub speech_provider: Option<SpeechProvider>,
     /// The voice of Pocket TTS, one of [`POCKET_VOICES`]; `None` for [`POCKET_RECOMMENDED`] (#762).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pocket_voice: Option<String>,
+    /// The voice of Qwen3-TTS, one of [`QWEN_VOICES`]; `None` for [`QWEN_RECOMMENDED`] (#764). Kept by
+    /// builds without Qwen3-TTS too, so it is still there when a build with it reads the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qwen_voice: Option<String>,
     /// The voice of OpenAI, one of [`OPENAI_VOICES`]; `None` for the first of [`OPENAI_RECOMMENDED`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openai_voice: Option<String>,
@@ -1357,13 +1363,19 @@ pub struct Voice {
 
 /// Who reads the assistant's answers aloud (issue #745, `docs/assistent.md` "Vorlesen"). More may
 /// come later; a file with one this version does not know reads as `None` (the core's choice), so
-/// do the Qwen3-TTS and Piper of earlier versions (#762).
+/// does the Piper of earlier versions (#762). Qwen3-TTS is read in every build but reads only where it
+/// is built ([`QWEN_BUILT`], [`Voice::speech_provider_here`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum SpeechProvider {
     /// `pocket`: Pocket TTS by Kyutai, built into the assistant, on the processor and without a
     /// graphics card or network (#762); its model is downloaded in the settings.
     #[serde(rename = "pocket")]
     Pocket,
+    /// `qwen`: Qwen3-TTS (0.6B Base) built into the assistant through Crane, on an NVIDIA graphics
+    /// card, cloning the voice templates of the app (#764). Only in builds with [`QWEN_BUILT`]; its
+    /// model is downloaded in the settings like Pocket's.
+    #[serde(rename = "qwen")]
+    Qwen,
     /// `openai`: OpenAI's `gpt-4o-mini-tts` with the OpenAI account of Settings › AI. The text of each
     /// answer goes to OpenAI, so only a person chooses it (`torro_ipc::Request::kept_for_people`).
     #[serde(rename = "openai")]
@@ -1371,13 +1383,15 @@ pub enum SpeechProvider {
 }
 
 impl SpeechProvider {
-    /// Every provider, in the order the settings offer them.
-    pub const ALL: [SpeechProvider; 2] = [SpeechProvider::Pocket, SpeechProvider::OpenAi];
+    /// Every provider, in the order the settings offer them; Qwen3-TTS only where it is built
+    /// ([`SpeechProvider::built`]).
+    pub const ALL: [SpeechProvider; 3] = [SpeechProvider::Pocket, SpeechProvider::Qwen, SpeechProvider::OpenAi];
 
-    /// Its name in settings and requests: `pocket`, `openai`.
+    /// Its name in settings and requests: `pocket`, `qwen`, `openai`.
     pub fn id(self) -> &'static str {
         match self {
             SpeechProvider::Pocket => "pocket",
+            SpeechProvider::Qwen => "qwen",
             SpeechProvider::OpenAi => "openai",
         }
     }
@@ -1386,7 +1400,16 @@ impl SpeechProvider {
     pub fn online(self) -> bool {
         self == SpeechProvider::OpenAi
     }
+
+    /// Whether this build can read with it: all but Qwen3-TTS always, Qwen3-TTS with [`QWEN_BUILT`].
+    pub fn built(self) -> bool {
+        self != SpeechProvider::Qwen || QWEN_BUILT
+    }
 }
+
+/// Whether this build has Qwen3-TTS (#764): the feature `qwen-tts`, switched on by
+/// `torroassistant/qwen-cuda`. The releases are built without it.
+pub const QWEN_BUILT: bool = cfg!(feature = "qwen-tts");
 
 /// The voices of Pocket TTS (#762, decision 2): Alba, Fantine and Marius by Kyutai (their files come
 /// with the model [`crate::voice_models::POCKET_DE`]) and the templates of the assistant, "Warm
@@ -1395,6 +1418,13 @@ pub const POCKET_VOICES: [&str; 5] = ["alba", "fantine", "marius", "warm_woman",
 
 /// The Pocket voice used when none is chosen, marked "(recommended)".
 pub const POCKET_RECOMMENDED: &str = "alba";
+
+/// The voices of Qwen3-TTS (#764): the templates of the assistant, cloned for each piece, so every
+/// answer sounds alike. "Warm woman" first: it won the comparison of 14 November 2026 (#745).
+pub const QWEN_VOICES: [&str; 2] = ["warm_woman", "calm_man"];
+
+/// The Qwen voice used when none is chosen, marked "(recommended)".
+pub const QWEN_RECOMMENDED: &str = "warm_woman";
 
 /// The voices of OpenAI's speech endpoint (`POST /v1/audio/speech`, `gpt-4o-mini-tts`).
 pub const OPENAI_VOICES: [&str; 13] =
@@ -1431,7 +1461,9 @@ impl Recognizer {
 }
 
 /// A provider this version does not know (written by a newer one) reads as `None`, the core's choice,
-/// instead of making the voice settings unreadable.
+/// instead of making the voice settings unreadable. One this build lacks (Qwen3-TTS without
+/// [`QWEN_BUILT`]) is kept, so writing the file does not lose it, and reads with Pocket TTS
+/// ([`Voice::speech_provider_here`]).
 fn lenient_provider<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<SpeechProvider>, D::Error> {
     let value = Option::<serde_json::Value>::deserialize(deserializer)?;
     Ok(value.and_then(|value| serde_json::from_value(value).ok()))
@@ -1449,6 +1481,7 @@ impl Default for Voice {
             read_aloud: false,
             speech_provider: None,
             pocket_voice: None,
+            qwen_voice: None,
             openai_voice: None,
             pocket_speed: None,
             pocket_pause: None,
@@ -1571,6 +1604,26 @@ impl Voice {
         }
     }
 
+    /// The provider that reads in this build: the chosen one, unless this build lacks it (Qwen3-TTS
+    /// without [`QWEN_BUILT`], #764); `None` for the core's choice, Pocket TTS.
+    pub fn speech_provider_here(&self) -> Option<SpeechProvider> {
+        self.speech_provider.filter(|provider| provider.built())
+    }
+
+    /// The Qwen voice to speak with: the chosen one, or [`QWEN_RECOMMENDED`].
+    pub fn qwen_voice_or_default(&self) -> &str {
+        self.qwen_voice.as_deref().filter(|id| QWEN_VOICES.contains(id)).unwrap_or(QWEN_RECOMMENDED)
+    }
+
+    /// The voice the local provider `provider` reads with, as the core sends it to the helper: Qwen's
+    /// for Qwen3-TTS, else Pocket's.
+    pub fn local_voice_or_default(&self, provider: Option<SpeechProvider>) -> &str {
+        match provider {
+            Some(SpeechProvider::Qwen) => self.qwen_voice_or_default(),
+            _ => self.pocket_voice_or_default(),
+        }
+    }
+
     /// The OpenAI voice to speak with: the chosen one, or the first of [`OPENAI_RECOMMENDED`].
     pub fn openai_voice_or_default(&self) -> &str {
         self.openai_voice.as_deref().filter(|id| OPENAI_VOICES.contains(id)).unwrap_or(OPENAI_RECOMMENDED[0])
@@ -1623,23 +1676,33 @@ impl Voice {
         fits.then(|| Some(style.to_string())).ok_or_else(refused)
     }
 
-    /// The provider in `value`: `"pocket"` or `"openai"`, or `null` or `""` for the core's choice.
-    /// For `settings.set_setting`; the `"qwen"` and `"piper"` of earlier versions are refused.
+    /// The provider in `value`: `"pocket"`, `"qwen"` (only in a build with [`QWEN_BUILT`]) or
+    /// `"openai"`, or `null` or `""` for the core's choice. For `settings.set_setting`; the `"piper"`
+    /// of earlier versions is refused, and so is `"qwen"` in a build without it.
     pub fn speech_provider_from(value: &serde_json::Value) -> Result<Option<SpeechProvider>, String> {
+        let known = || {
+            let ids: Vec<String> = SpeechProvider::ALL
+                .into_iter()
+                .filter(|provider| provider.built())
+                .map(|provider| format!("\"{}\"", provider.id()))
+                .collect();
+            format!("{value} is not a speech provider: send {} or null", ids.join(", "))
+        };
         match value {
             serde_json::Value::Null => Ok(None),
             serde_json::Value::String(id) if id.trim().is_empty() => Ok(None),
-            serde_json::Value::String(id) => SpeechProvider::ALL
-                .into_iter()
-                .find(|provider| provider.id() == id.trim())
-                .map(Some)
-                .ok_or_else(|| format!("{value} is not a speech provider: send \"pocket\", \"openai\" or null")),
-            _ => Err(format!("{value} is not a speech provider: send \"pocket\", \"openai\" or null")),
+            serde_json::Value::String(id) if id.trim() == SpeechProvider::Qwen.id() && !QWEN_BUILT => {
+                Err("this build has no Qwen3-TTS".to_string())
+            }
+            serde_json::Value::String(id) => {
+                SpeechProvider::ALL.into_iter().find(|provider| provider.id() == id.trim()).map(Some).ok_or_else(known)
+            }
+            _ => Err(known()),
         }
     }
 
     /// The voice in `value`, one of `voices`, or `null` or `""` for the recommended one. For
-    /// `settings.set_setting` with `pocket_voice` and `openai_voice`.
+    /// `settings.set_setting` with `pocket_voice`, `qwen_voice` and `openai_voice`.
     pub fn speech_voice_from(value: &serde_json::Value, voices: &[&str]) -> Result<Option<String>, String> {
         let refused = || format!("{value} is not a voice: send one of {} or null", voices.join(", "));
         match value {
@@ -3074,12 +3137,37 @@ mod tests {
         assert_eq!(serde_json::to_value(SpeechProvider::OpenAi).expect("json"), json!("openai"));
 
         assert_eq!(Voice::speech_provider_from(&json!("pocket")), Ok(Some(SpeechProvider::Pocket)));
-        // Qwen3-TTS and Piper are gone (#762): a file with them reads as the core's choice.
-        for gone in ["qwen", "piper"] {
-            assert!(Voice::speech_provider_from(&json!(gone)).is_err(), "{gone}");
-            let old: Voice = serde_json::from_value(json!({"speechProvider": gone})).expect("json");
-            assert_eq!(old.speech_provider, None, "{gone}");
+        // Piper is gone (#762): a file with it reads as the core's choice.
+        assert!(Voice::speech_provider_from(&json!("piper")).is_err());
+        let old: Voice = serde_json::from_value(json!({"speechProvider": "piper"})).expect("json");
+        assert_eq!(old.speech_provider, None);
+        // Qwen3-TTS only where it is built (#764); elsewhere a file with it reads with Pocket TTS, but the
+        // choice and the voice stay in the file for a build with it.
+        let qwen: Voice =
+            serde_json::from_value(json!({"speechProvider": "qwen", "qwenVoice": "calm_man"})).expect("json");
+        assert_eq!(qwen.qwen_voice_or_default(), "calm_man", "the voice is kept in every build");
+        assert_eq!(qwen.speech_provider, Some(SpeechProvider::Qwen), "the choice is kept in every build");
+        let written = serde_json::to_value(&qwen).expect("json");
+        assert_eq!(
+            (written["speechProvider"].as_str(), written["qwenVoice"].as_str()),
+            (Some("qwen"), Some("calm_man"))
+        );
+        if QWEN_BUILT {
+            assert_eq!(Voice::speech_provider_from(&json!("qwen")), Ok(Some(SpeechProvider::Qwen)));
+            assert_eq!(qwen.speech_provider_here(), Some(SpeechProvider::Qwen));
+            assert_eq!(qwen.local_voice_or_default(qwen.speech_provider_here()), "calm_man");
+        } else {
+            assert_eq!(Voice::speech_provider_from(&json!("qwen")), Err("this build has no Qwen3-TTS".into()));
+            assert_eq!(qwen.speech_provider_here(), None);
+            assert_eq!(qwen.local_voice_or_default(qwen.speech_provider_here()), POCKET_RECOMMENDED);
         }
+        assert_eq!(
+            SpeechProvider::ALL.into_iter().filter(|provider| provider.built()).count(),
+            2 + usize::from(QWEN_BUILT)
+        );
+        assert_eq!(Voice::default().qwen_voice_or_default(), QWEN_RECOMMENDED);
+        assert_eq!(Voice::speech_voice_from(&json!("Calm_Man"), &QWEN_VOICES), Ok(Some("calm_man".into())));
+        assert!(Voice::speech_voice_from(&json!("alba"), &QWEN_VOICES).is_err(), "not a Qwen voice");
         assert_eq!(Voice::speech_provider_from(&json!(null)), Ok(None));
         assert_eq!(Voice::speech_provider_from(&json!("")), Ok(None));
         for refused in [json!("grok"), json!(1), json!({"provider": "pocket"})] {

@@ -2674,12 +2674,15 @@ const PCM_LINE: usize = 48_000;
 /// OpenAI go with each job, so choosing another voice does not start the helper anew and make Pocket
 /// load its model again; neither does switching the listener or the speaker.
 fn speech_settings(voice: &torro_core::settings::Voice) -> torro_core::settings::Voice {
-    torro_core::settings::Voice { speech_provider: voice.speech_provider, ..torro_core::settings::Voice::default() }
+    torro_core::settings::Voice {
+        speech_provider: voice.speech_provider_here(),
+        ..torro_core::settings::Voice::default()
+    }
 }
 
 /// What the speech helper is started with ([`speech_settings`]): another provider ends it.
 fn speech_choice(voice: &torro_core::settings::Voice) -> Option<torro_core::settings::SpeechProvider> {
-    voice.speech_provider
+    voice.speech_provider_here()
 }
 
 /// The answer of `assistant.speak` when the helper failed: a sentence for people; what went wrong
@@ -13792,9 +13795,10 @@ impl Core {
         }
     }
 
-    /// `settings.speech_status` (issues #745, #762): what the app finds, with OpenAI's account and voices
-    /// after Pocket TTS, the recommended provider (Pocket TTS: it runs on the processor, so no graphics
-    /// card is measured) and the one that reads now.
+    /// `settings.speech_status` (issues #745, #762, #764): what the app finds, with OpenAI's account and
+    /// voices after the local providers (Pocket TTS, and Qwen3-TTS with the graphics card the app measured
+    /// in builds with it), the recommended provider (Pocket TTS) and the one that reads now: the chosen one
+    /// if this computer lists it, else Pocket TTS.
     async fn speech_status(&self) -> Response {
         use torro_core::settings::{OPENAI_RECOMMENDED, OPENAI_VOICES, SpeechProvider};
         let voice = self.settings.current().voice;
@@ -13815,14 +13819,19 @@ impl Core {
             model: Some(crate::account::ai::SPEECH_MODEL.to_string()),
             setup: None,
         };
-        status.providers.retain(|option| option.provider != SpeechProvider::OpenAi);
-        let at =
-            status.providers.iter().position(|option| option.provider == SpeechProvider::Pocket).map_or(0, |at| at + 1);
-        status.providers.insert(at, openai);
-        status.gpu = None;
+        // OpenAI comes last, in the order of `SpeechProvider::ALL`; a provider this build lacks is not offered.
+        status.providers.retain(|option| option.provider != SpeechProvider::OpenAi && option.provider.built());
+        status.providers.push(openai);
+        // Only Qwen3-TTS needs the card; without it the app's answer has none to report.
+        if status.option(SpeechProvider::Qwen).is_none() {
+            status.gpu = None;
+        }
         status.fast_enough = true;
         status.recommended = SpeechProvider::Pocket;
-        status.current = voice.speech_provider.unwrap_or(SpeechProvider::Pocket);
+        status.current = voice
+            .speech_provider_here()
+            .filter(|provider| status.option(*provider).is_some())
+            .unwrap_or(SpeechProvider::Pocket);
         Response::Speech { speech: status }
     }
 
@@ -13852,7 +13861,8 @@ impl Core {
         use torro_core::settings::SpeechProvider;
         let refused = |code: &str, message: &str| Response::Error { code: code.into(), message: message.into() };
         let voice = self.settings.current().voice;
-        let provider = voice.speech_provider;
+        // Qwen3-TTS chosen in a build with it, read here by one without, reads with Pocket TTS (#764).
+        let provider = voice.speech_provider_here();
         let speaker = match provider {
             Some(SpeechProvider::OpenAi) => match self.ai.speaker().await {
                 Some(speaker) => Some(speaker),
@@ -13869,8 +13879,8 @@ impl Core {
         let say = serde_json::json!({"say": {
             "provider": provider,
             "text": read,
-            "voice": voice.pocket_voice_or_default(),
-            // How Pocket TTS speaks (issue #782); OpenAI's style stays here, with its key.
+            "voice": voice.local_voice_or_default(provider),
+            // How Pocket TTS speaks (issue #782; Qwen3-TTS keeps its own pace); OpenAI's style stays here, with its key.
             "speed": voice.pocket_speed_or_default(),
             "pause": voice.pocket_pause_or_default(),
         }});
@@ -19798,15 +19808,62 @@ mod tests {
             openai.voices.iter().filter(|voice| voice.recommended).map(|voice| voice.id.as_str()).collect();
         assert_eq!((openai.voices.len(), recommended), (13, vec!["cedar", "marin"]));
 
-        // A chosen provider is the current one; the providers of earlier versions are gone.
+        // A chosen provider is the current one; Piper is gone, Qwen3-TTS only in a build with it (#764).
         let set = |value| Request::SetSetting { key: torro_ipc::SettingKey::SpeechProvider, value };
         assert_eq!(core.handle(set(serde_json::json!("openai"))).await, Response::Ok);
         let Response::Speech { speech } = core.handle(Request::SpeechStatus).await else { panic!("a speech status") };
         assert_eq!(speech.current, SpeechProvider::OpenAi);
-        for gone in ["qwen", "piper"] {
-            assert_eq!(code(&core.handle(set(serde_json::json!(gone))).await), "unsupported", "{gone}");
+        assert_eq!(code(&core.handle(set(serde_json::json!("piper"))).await), "unsupported");
+        if !torro_core::settings::QWEN_BUILT {
+            assert_eq!(code(&core.handle(set(serde_json::json!("qwen"))).await), "unsupported");
         }
         assert_eq!(code(&core.handle(set(serde_json::json!("grok"))).await), "error");
+    }
+
+    /// Issue #764: Qwen3-TTS as the app finds it comes after Pocket TTS and before OpenAI, with the graphics
+    /// card the app measured, and reads now when chosen; a build without it offers neither, and a
+    /// provider this computer does not list is not the current one.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_speech_status_keeps_qwen_and_its_card() {
+        use torro_core::settings::{QWEN_BUILT, SpeechProvider};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let option = |provider, model: &str| torro_ipc::SpeechOption {
+            provider,
+            missing: None,
+            voices: Vec::new(),
+            model: Some(model.into()),
+            setup: None,
+        };
+        let found = torro_ipc::SpeechStatus {
+            gpu: Some("NVIDIA GeForce RTX 4090, 24 GB".into()),
+            fast_enough: true,
+            recommended: SpeechProvider::Pocket,
+            current: SpeechProvider::Pocket,
+            providers: vec![option(SpeechProvider::Pocket, "pocket-de"), option(SpeechProvider::Qwen, "qwen3-tts")],
+        };
+        let answer = serde_json::to_string(&Response::Speech { speech: found }).expect("json");
+        let program = crate::apps::tests::fake_program(dir.path(), &format!("echo '{answer}'"));
+        let core = core(dir.path()).with_listener(crate::apps::Listener::at(program));
+        let Response::Speech { speech } = core.handle(Request::SpeechStatus).await else { panic!("a speech status") };
+        let order: Vec<_> = speech.providers.iter().map(|option| option.provider).collect();
+        match QWEN_BUILT {
+            true => {
+                assert_eq!(order, [SpeechProvider::Pocket, SpeechProvider::Qwen, SpeechProvider::OpenAi]);
+                assert_eq!(speech.gpu.as_deref(), Some("NVIDIA GeForce RTX 4090, 24 GB"));
+                let set = Request::SetSetting {
+                    key: torro_ipc::SettingKey::SpeechProvider,
+                    value: serde_json::json!("qwen"),
+                };
+                assert_eq!(core.handle(set).await, Response::Ok);
+                let Response::Speech { speech } = core.handle(Request::SpeechStatus).await else { panic!("status") };
+                assert_eq!((speech.current, speech.recommended), (SpeechProvider::Qwen, SpeechProvider::Pocket));
+            }
+            false => {
+                assert_eq!(order, [SpeechProvider::Pocket, SpeechProvider::OpenAi]);
+                assert_eq!(speech.gpu, None, "no card without Qwen3-TTS");
+            }
+        }
     }
 
     /// Issues #745, #762: reading aloud goes through the helper with the provider and Pocket's voice, no
@@ -19870,9 +19927,11 @@ done"#;
         let models = crate::voice_models::VoiceDownloads::new(Some(voice.clone()), &torro_core::voice_models::MODELS);
         let core = core(dir.path()).with_voice_models(models);
         let Response::VoiceModels { models } = core.handle(Request::ListVoiceModels).await else { panic!("listed") };
+        // Qwen3-TTS only in builds with it (issue #764).
+        let expected = ["whisper-turbo", "parakeet", "pocket-de", "qwen3-tts"];
         assert_eq!(
             models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(),
-            ["whisper-turbo", "parakeet", "pocket-de"]
+            expected[..3 + usize::from(torro_core::settings::QWEN_BUILT)]
         );
         assert!(models.iter().all(|model| model.state == VoiceModelState::Missing));
         assert_eq!(code(&core.handle(Request::DownloadVoiceModel { model: "evil".into() }).await), "not-found");
@@ -19905,11 +19964,15 @@ done"#;
         ] {
             assert_eq!(code(&ask(&core, Some(&key), unknown).await), "not-found");
         }
-        for gone in [
-            Request::SetSetting { key: SettingKey::QwenVoice, value: serde_json::json!("calm_man") },
+        let mut gone = vec![
             Request::SetSetting { key: SettingKey::SttModel, value: serde_json::json!("/m/ggml-base.bin") },
             Request::SetSetting { key: SettingKey::SpeechProvider, value: serde_json::json!("piper") },
-        ] {
+        ];
+        // Only a build without Qwen3-TTS refuses its voice (issue #764); with it, it is a setting like any.
+        if !torro_core::settings::QWEN_BUILT {
+            gone.push(Request::SetSetting { key: SettingKey::QwenVoice, value: serde_json::json!("calm_man") });
+        }
+        for gone in gone {
             assert_eq!(code(&ask(&core, Some(&key), gone).await), "unsupported");
         }
         assert_eq!(

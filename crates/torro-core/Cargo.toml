@@ -28,3 +28,9 @@ psl.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[features]
+# Qwen3-TTS as a second local voice (issue #764): only in builds that switch it on
+# (`torroassistant/qwen-cuda`), since it needs an NVIDIA card and CUDA. Without it the provider
+# `qwen` is refused and a file with it reads as Pocket TTS, as before.
+qwen-tts = []
