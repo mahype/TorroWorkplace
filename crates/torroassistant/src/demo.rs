@@ -93,6 +93,10 @@ const GONE_BOT: &str = "b00000ff";
 
 /// The approval "Block the afternoon" waits for.
 pub const APPROVAL_ID: &str = "a000000000000001";
+/// "Clean the build": a command of the terminal waits for approval on its card (issue #754).
+pub const TERMINAL: &str = "d000000000000010";
+/// The approval "Clean the build" waits for.
+pub const TERMINAL_APPROVAL_ID: &str = "a000000000000002";
 
 /// The demo's local AI account.
 pub const OLLAMA: &str = "ai:ollama@localhost:11434";
@@ -159,7 +163,7 @@ impl Demo {
     /// The demo as it starts at `now`.
     pub fn new(now: DateTime<Utc>, setup: Setup) -> Demo {
         let conversations = if setup.conversations { samples(now) } else { Vec::new() };
-        let approvals = if setup.conversations { vec![approval(now)] } else { Vec::new() };
+        let approvals = if setup.conversations { vec![approval(now), terminal_approval(now)] } else { Vec::new() };
         let bots = if setup.conversations { sample_bots() } else { Vec::new() };
         let clients = if setup.conversations { bot_clients(now) } else { Vec::new() };
         Demo { state: Mutex::new(State { setup, now, conversations, approvals, bots, clients, next: 100 }) }
@@ -236,7 +240,7 @@ impl Demo {
                 Some(approval) => Response::Approval { approval: approval.clone() },
                 None => refused("not-found", "no such approval"),
             },
-            Request::DecideApproval { id, allow } => state.decide(&id, allow),
+            Request::DecideApproval { id, allow, .. } => state.decide(&id, allow),
             Request::OpenApp { .. } => Response::Ok,
             // The cards (task WZ.8): the one PDF that is still there; its buttons change nothing here.
             Request::GetCards { conversation } => {
@@ -854,7 +858,17 @@ fn samples(now: DateTime<Utc>) -> Vec<Conversation> {
         conversation.summary.archived = true;
         conversation
     });
-    let mut all = vec![plan, block, draft, forbidden, trip, release, lisbon, porto, gone, vienna, review];
+    let clean = sample(
+        TERMINAL,
+        tr("Clean the build"),
+        now,
+        Duration::minutes(3),
+        vec![
+            message(tr("Delete the build folder of the demo project and build it again.")),
+            EntryContent::Approval { id: TERMINAL_APPROVAL_ID.into() },
+        ],
+    );
+    let mut all = vec![plan, block, draft, forbidden, trip, release, lisbon, porto, gone, vienna, review, clean];
     all.extend(archived);
     all
 }
@@ -1106,6 +1120,36 @@ fn approval(now: DateTime<Utc>) -> ApprovalInfo {
     }
 }
 
+/// The approval of "Clean the build" (issue #754), made at `now`: a command of the terminal, with the lines the
+/// core writes for it (`approvals::terminal_question`).
+fn terminal_approval(now: DateTime<Utc>) -> ApprovalInfo {
+    // Longer than the card shows at first (160 characters), so "Show all" is in the pictures.
+    let command = "rm -rf build/ && cargo build --release --target-dir build --features demo,shots,voice,terminal \
+                   --config profile.release.lto=true --config profile.release.codegen-units=1 --locked --offline";
+    ApprovalInfo {
+        id: TERMINAL_APPROVAL_ID.into(),
+        client: "a55157a7".into(),
+        client_name: "Assistant".into(),
+        command: "tools.run_command".into(),
+        summary: tr("Run a command").into(),
+        details: vec![
+            trf("Folder: {folder}", &[("folder", &"~/Projects/demo")]),
+            format!("$ {command}"),
+            trf("Looks dangerous: {patterns}", &[("patterns", &tr("recursive delete"))]),
+            tr("Limits: 120 s, 20,000 characters of output").into(),
+            tr("No sandbox: Torro can't stop this command from reading or changing other files.").into(),
+            trf(
+                "\"Always\" allows every command that matches {patterns}, in every allowed folder.",
+                &[("patterns", &tr("recursive delete"))],
+            ),
+        ],
+        created: now - Duration::minutes(3),
+        expires: now + Duration::minutes(7),
+        decided: None,
+        state: ApprovalState::Pending,
+    }
+}
+
 /// The models of the demo's AI accounts; `None` for any other id. Which are on follows the rule of
 /// task S.24 with a person's switches on top: Ollama's models with tools, but `llama3.3:70b` turned
 /// off – the travel planner's, so its editor shows a model that is off (task S.26) –, and on
@@ -1251,11 +1295,11 @@ mod tests {
     #[test]
     fn deciding_the_approval_goes_on_once() {
         let demo = demo();
-        let decided = demo.answer(Request::DecideApproval { id: APPROVAL_ID.into(), allow: true });
+        let decided = demo.answer(Request::DecideApproval { id: APPROVAL_ID.into(), allow: true, scope: None });
         assert!(
             matches!(decided, Response::Approval { approval } if matches!(approval.state, ApprovalState::Done { .. }))
         );
-        let again = demo.answer(Request::DecideApproval { id: APPROVAL_ID.into(), allow: false });
+        let again = demo.answer(Request::DecideApproval { id: APPROVAL_ID.into(), allow: false, scope: None });
         assert!(matches!(again, Response::Error { code, .. } if code == "conflict"));
         let (_, entries) = conversation(demo.answer(Request::GetConversation { id: APPROVAL.into(), after: Some(3) }));
         assert!(

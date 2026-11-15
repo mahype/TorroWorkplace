@@ -3092,6 +3092,16 @@ pub struct Core {
     /// ([`crate::approvals::WebConsent::outside`]). In memory only: after a restart every
     /// conversation asks again ([`Core::web_consented`]).
     web_consents: std::sync::Mutex<HashMap<(String, String), bool>>,
+    /// What the person allowed the terminal in one conversation (issue #754, "In this conversation"), per client and
+    /// conversation: exact commands in their folder or patterns. In memory only, like [`Core::web_consents`].
+    terminal_allowed:
+        std::sync::Mutex<HashMap<(String, String), std::collections::HashSet<torro_core::settings::TerminalAlways>>>,
+    /// When a conversation of the assistant last ended for the terminal (deleted, or its answer stopped), per client
+    /// and conversation: an approval asked before then runs nothing (review of #754). In memory only.
+    terminal_ended: std::sync::Mutex<HashMap<(String, String), chrono::DateTime<Utc>>>,
+    /// When this core started: an approval of the terminal asked before runs nothing, as the answer that asked for it
+    /// is gone with the service that ran it (review of #754).
+    terminal_since: chrono::DateTime<Utc>,
     /// Measures this computer for `ai.recommend` (task MW.6): [`SystemProbe`] in the service, a
     /// computer measured beforehand in tests ([`Measured`], [`Core::with_probe`]) – no test reads
     /// the real hardware.
@@ -3238,6 +3248,9 @@ impl Core {
                 crate::extensions::Extensions::system()
             },
             web_consents: std::sync::Mutex::new(HashMap::new()),
+            terminal_allowed: std::sync::Mutex::new(HashMap::new()),
+            terminal_ended: std::sync::Mutex::new(HashMap::new()),
+            terminal_since: Utc::now(),
             // Tests never measure the computer they run on (`Core::with_probe`).
             probe: if cfg!(test) { Box::new(Measured::default()) } else { Box::new(SystemProbe) },
             hardware: tokio::sync::Mutex::new(None),
@@ -4550,8 +4563,9 @@ impl Core {
             behalf: None,
             mode,
             consent: None,
+            terminal: None,
         };
-        let mut via = Via { origin, untrusted: true, asking: None, web: None, about: None };
+        let mut via = Via { origin, untrusted: true, asking: None, web: None, about: None, terminal: None };
         let mut rights = rights;
         match scope {
             Some(LentFor::Conversation(conversation)) => {
@@ -4637,6 +4651,10 @@ impl Core {
         // access (issue #302): a `read` tool stays.
         if via.origin.mode.refuses(self.operation_about(&request, via.about.as_ref())) {
             return Err(Refused::Lacks { command: request.operation().name(), lack: torro_ipc::api::Lack::ReadOnly });
+        }
+        // The terminal (issue #754) stands outside the rights: only its gate lets a command through, asks or runs it.
+        if let Some(answer) = self.terminal_gate(&id, &rights, &request, via).await {
+            return answer;
         }
         // Mail limits and accounts first (task M2.1): nobody is asked to approve what is refused
         // anyway, and an account the client may not see looks like none.
@@ -5169,8 +5187,16 @@ impl Core {
     /// (task C.11); `untrusted`: the conversation read data from outside the suite, so
     /// `assistant.remember` waits for a person ([`Via::untrusted`]).
     async fn handle_as_assistant(&self, request: Request, engine: &str, untrusted: bool) -> Response {
-        self.handle_as(self.assistant_client(), request, engine, untrusted, Scope::Own, Mode::Default, (None, None))
-            .await
+        self.handle_as(
+            self.assistant_client(),
+            request,
+            engine,
+            untrusted,
+            Scope::Own,
+            Mode::Default,
+            (None, None, None),
+        )
+        .await
     }
 
     /// The client of the bot whose client id is `client` (kind `torro_ipc::api::BOT_CLIENT`) as
@@ -5217,7 +5243,11 @@ impl Core {
         untrusted: bool,
         scope: Scope<'_>,
         mode: Mode,
-        (web, about): (Option<crate::approvals::WebConsent>, Option<torro_ipc::assistant::MailRef>),
+        (web, about, terminal): (
+            Option<crate::approvals::WebConsent>,
+            Option<torro_ipc::assistant::MailRef>,
+            Option<crate::approvals::TerminalContext>,
+        ),
     ) -> Response {
         let reads_mail_too = matches!(request, Request::SuggestRecipients { contacts_only: false, .. });
         let (command, mut ids) = (request.operation().name(), crate::audit::ids(&request));
@@ -5229,6 +5259,7 @@ impl Core {
             behalf: None,
             mode: Mode::Default,
             consent: None,
+            terminal: None,
         };
         let mut asking = None;
         match scope {
@@ -5250,11 +5281,13 @@ impl Core {
         });
         let operation = self.operation_about(&request, about.as_ref());
         let answer = match &client {
+            // The terminal (issue #754) stands outside the rights: its gate decides (`Core::terminal_gate`).
             Some(info)
                 if (info.rights.allows(operation) && !request.kept_for_people())
-                    || torro_ipc::api::allowed_by_kind(&info.kind, request.operation()) =>
+                    || torro_ipc::api::allowed_by_kind(&info.kind, request.operation())
+                    || (terminal.is_some() && torro_ipc::tools::is_terminal_command(request.operation().name())) =>
             {
-                let via = Via { origin, untrusted, asking, web, about };
+                let via = Via { origin, untrusted, asking, web, about, terminal };
                 self.handle_client(info.id.clone(), info.rights.clone(), request, &via).await
             }
             // A server or tool of it the client may not know of is `not-found`, as in `handle_client`: what the
@@ -5308,6 +5341,236 @@ impl Core {
             }
             _ => false,
         }
+    }
+
+    /// The rule of the assistant's terminal for `request` of the client `id` (issue #754, `docs/terminal.md`); `None`
+    /// for every other request. In this order, each refusal `forbidden` without asking anyone:
+    ///
+    /// - only the assistant's own client, from its conversation ([`Via::terminal`], set only by
+    ///   [`crate::assistant::Host::run_terminal`]) and not for a bot; a bot, a lent key, an agent or a client over API
+    ///   and MCP never reaches it (the app key gets `unsupported` in `answer_within`);
+    /// - the terminal switched on by a person ([`torro_core::settings::TerminalSettings::enabled`]);
+    /// - a conversation that read content from outside runs no more commands ([`crate::approvals::TerminalContext::tainted`]);
+    /// - the checks of the command itself ([`crate::tools::terminal::Terminal::check`]): folder, protected paths,
+    ///   commands that never run.
+    ///
+    /// Then the person is asked – in the mode "every command" unless the exact command in its folder was allowed, in
+    /// the mode "only dangerous commands" when it matches a pattern not all of whose keys were allowed, and always in
+    /// the answer's mode [`Mode::Ask`] – also for a client that is never asked otherwise (`Confirm::Never`). Allowed
+    /// means for good ([`torro_core::settings::TerminalSettings::always`]) or in this conversation
+    /// ([`Core::terminal_allowed`]). Otherwise the command runs at once. Reading and stopping a command in the
+    /// background ask nobody.
+    async fn terminal_gate(
+        &self,
+        id: &str,
+        rights: &torro_ipc::api::Rights,
+        request: &Request,
+        via: &Via,
+    ) -> Option<Result<Response, Refused>> {
+        let command = request.operation().name();
+        if !torro_ipc::tools::is_terminal_command(command) {
+            return None;
+        }
+        let assistant = self.client_kind(id).as_deref() == Some(torro_ipc::api::ASSISTANT_CLIENT);
+        let Some(terminal) = via.terminal.as_ref().filter(|_| assistant && via.origin.behalf.is_none()) else {
+            return Some(Err(Refused::Forbidden { command }));
+        };
+        let settings = self.settings.current();
+        let owner =
+            crate::tools::terminal::Owner { client: id.to_string(), conversation: terminal.conversation.clone() };
+        // Stopping its own command always goes, also after content from outside: ending is never the danger.
+        if let Request::StopCommand { id: running } = request {
+            return Some(Ok(self.tools.terminal().stop(&owner, running).await));
+        }
+        // Reading on what its own command writes goes while the terminal is on, also after content from outside
+        // (review of #754): that command's output is what made the conversation so, and it starts nothing new.
+        if let Request::ReadCommandOutput { id: running, from } = request {
+            let on = crate::approvals::TerminalContext { tainted: false, ..terminal.clone() };
+            if let Some(refused) = terminal_refusal(&settings.tools.terminal, &on) {
+                return Some(Ok(refused));
+            }
+            return Some(Ok(self.tools.terminal().read(&owner, running, *from)));
+        }
+        if let Some(refused) = terminal_refusal(&settings.tools.terminal, terminal) {
+            return Some(Ok(refused));
+        }
+        // The answer was stopped or the conversation deleted after it called the tool (review of #754).
+        if let Some(refused) = self.terminal_stopped(&owner, Some(terminal.since)) {
+            return Some(Ok(refused));
+        }
+        let checked = match self.terminal_check(request) {
+            Some(Ok(checked)) => checked,
+            Some(Err(refused)) => return Some(Ok(refused)),
+            None => return Some(Err(Refused::Forbidden { command })),
+        };
+        let mode = settings.tools.terminal.mode;
+        let keys = checked.keys(mode);
+        let wants = match mode {
+            torro_core::settings::TerminalMode::Every => true,
+            torro_core::settings::TerminalMode::Dangerous => !keys.is_empty(),
+        };
+        let allowed = self.terminal_allows(&owner, &keys, &settings.tools.terminal.always);
+        if (wants && !allowed) || via.origin.mode == Mode::Ask {
+            // A command that matches no pattern asks only in the answer's mode "Ask": then "Always" keeps the command.
+            let keys = match keys.is_empty() {
+                true => checked.keys(torro_core::settings::TerminalMode::Every),
+                false => keys,
+            };
+            let conversation = terminal.conversation.clone();
+            let terminal = crate::approvals::TerminalOrigin { conversation, mode, keys, asked: Some(terminal.since) };
+            let origin = crate::approvals::Origin { terminal: Some(terminal), ..via.origin.clone() };
+            return Some(self.ask_approval(id, request.clone(), rights, &origin).await);
+        }
+        Some(Ok(self.run_terminal(&owner, request, &checked, terminal.since).await))
+    }
+
+    /// `tools.run_command` or `tools.start_command` checked against the allowed folders and the protected paths as
+    /// they are now ([`crate::tools::terminal::Terminal::check`]); `None` for every other request.
+    fn terminal_check(&self, request: &Request) -> Option<Result<crate::tools::terminal::Checked, Response>> {
+        let settings = self.settings.current();
+        let excluded = match self.tools.excluded_now() {
+            Ok(excluded) => excluded,
+            Err(_) => {
+                let message = tr("The files the suite protects cannot be read now, so no command runs.").into();
+                return Some(Err(Response::Error { code: "error".into(), message }));
+            }
+        };
+        self.tools.terminal().check(request, &settings.tools.folders, &excluded)
+    }
+
+    /// Whether every one of `keys` is allowed for `owner`'s conversation or for good (`always`); never for no keys.
+    fn terminal_allows(
+        &self,
+        owner: &crate::tools::terminal::Owner,
+        keys: &[torro_core::settings::TerminalAlways],
+        always: &[torro_core::settings::TerminalAlways],
+    ) -> bool {
+        let allowed = self.terminal_allowed.lock().unwrap_or_else(PoisonError::into_inner);
+        let own = allowed.get(&(owner.client.clone(), owner.conversation.clone()));
+        !keys.is_empty() && keys.iter().all(|key| always.contains(key) || own.is_some_and(|own| own.contains(key)))
+    }
+
+    /// Runs a checked `tools.run_command` or starts a `tools.start_command` for `owner`, asked for at `since`. A
+    /// command started while its answer was stopped (the stop came between the check and the start, review of #754)
+    /// is stopped again at once: nobody would read or end it.
+    async fn run_terminal(
+        &self,
+        owner: &crate::tools::terminal::Owner,
+        request: &Request,
+        checked: &crate::tools::terminal::Checked,
+        since: chrono::DateTime<Utc>,
+    ) -> Response {
+        match request {
+            Request::StartCommand { .. } => {
+                let started = self.tools.terminal().start(owner.clone(), checked);
+                if let (Response::CommandStarted { id }, Some(refused)) =
+                    (&started, self.terminal_stopped(owner, Some(since)))
+                {
+                    let _ = self.tools.terminal().stop(owner, id).await;
+                    return refused;
+                }
+                started
+            }
+            _ => self.tools.terminal().run(checked).await,
+        }
+    }
+
+    /// `conflict` when the answer of `owner`'s conversation was stopped or the conversation deleted at or after
+    /// `since` (the time the command was asked for; `None` counts as before), or `since` is before this core started:
+    /// nobody waits for the command any more. `None` when it may go on.
+    fn terminal_stopped(
+        &self,
+        owner: &crate::tools::terminal::Owner,
+        since: Option<chrono::DateTime<Utc>>,
+    ) -> Option<Response> {
+        let ended = self
+            .terminal_ended
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&(owner.client.clone(), owner.conversation.clone()))
+            .copied();
+        let before_start = since.is_none_or(|since| since < self.terminal_since);
+        let stopped = ended.is_some_and(|ended| since.is_none_or(|since| since <= ended));
+        (before_start || stopped).then(|| Response::Error {
+            code: "conflict".into(),
+            message: tr("The answer was stopped or its conversation deleted, so the command did not run.").into(),
+        })
+    }
+
+    /// An allowed command of the terminal (issue #754) as it runs after a person's decision: the terminal still on, the
+    /// assistant's client, the command checked again as it is now and the same as the person was shown (`conflict`
+    /// otherwise). What "In this conversation" or "Always" allowed is kept before it runs.
+    async fn run_approved_terminal(
+        &self,
+        client: &torro_ipc::ClientInfo,
+        request: Request,
+        fingerprint: Option<&str>,
+        origin: &crate::approvals::Origin,
+        scope: Option<torro_ipc::ApprovalScope>,
+    ) -> Response {
+        let command = request.operation().name();
+        let Some(terminal) = origin.terminal.as_ref() else { return Refused::Forbidden { command }.response() };
+        if client.kind != torro_ipc::api::ASSISTANT_CLIENT || origin.behalf.is_some() {
+            return Refused::Forbidden { command }.response();
+        }
+        let context = crate::approvals::TerminalContext {
+            conversation: terminal.conversation.clone(),
+            tainted: false,
+            since: terminal.asked.unwrap_or_default(),
+        };
+        if let Some(refused) = terminal_refusal(&self.settings.current().tools.terminal, &context) {
+            return refused;
+        }
+        // Its conversation was deleted or its answer stopped after it asked: nobody waits for the command any more.
+        let owner =
+            crate::tools::terminal::Owner { client: client.id.clone(), conversation: terminal.conversation.clone() };
+        if let Some(refused) = self.terminal_stopped(&owner, terminal.asked) {
+            return refused;
+        }
+        let checked = match self.terminal_check(&request) {
+            Some(Ok(checked)) => checked,
+            Some(Err(refused)) => return refused,
+            None => return Refused::Forbidden { command }.response(),
+        };
+        if Some(terminal_fingerprint(&checked).as_str()) != fingerprint {
+            let message = "the command or its folder changed after the approval was asked for; nothing ran, ask again";
+            return Response::Error { code: "conflict".into(), message: message.into() };
+        }
+        match scope {
+            Some(torro_ipc::ApprovalScope::Conversation) => {
+                let mut allowed = self.terminal_allowed.lock().unwrap_or_else(PoisonError::into_inner);
+                allowed
+                    .entry((owner.client.clone(), owner.conversation.clone()))
+                    .or_default()
+                    .extend(terminal.keys.clone());
+            }
+            Some(torro_ipc::ApprovalScope::Always) => {
+                if let Err(err) = self.settings.allow_terminal_always(&terminal.keys) {
+                    eprintln!("torroworkplace: what the terminal may do for good cannot be kept: {err}");
+                }
+            }
+            Some(torro_ipc::ApprovalScope::Once) | None => {}
+        }
+        self.run_terminal(&owner, &request, &checked, terminal.asked.unwrap_or_default()).await
+    }
+
+    /// Stops every command of the terminal in the background (issue #754): the service ends.
+    pub async fn stop_terminal(&self) {
+        self.tools.terminal().stop_all().await;
+    }
+
+    /// Forgets what the person allowed the terminal in `conversation` of `client` and stops its commands in the
+    /// background (issue #754): the conversation was deleted or its answer stopped.
+    ///
+    /// `deleted`: the conversation is gone, so what was allowed there goes too; a stopped answer keeps it, the
+    /// conversation goes on. Either way an approval asked before now runs nothing ([`Core::terminal_ended`]).
+    async fn end_terminal_conversation(&self, client: &str, conversation: &str, deleted: bool) {
+        let key = (client.to_string(), conversation.to_string());
+        if deleted {
+            self.terminal_allowed.lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
+        }
+        self.terminal_ended.lock().unwrap_or_else(PoisonError::into_inner).insert(key, Utc::now());
+        self.tools.terminal().end_conversation(client, conversation).await;
     }
 
     /// The rule of the tool `web` for `request` of the client `id`, admitted with `rights` (issue
@@ -5735,6 +5998,19 @@ impl Core {
                 let summary = crate::approvals::summary(&request, &facts);
                 (request, None, summary)
             }
+            // A command of the terminal (issue #754): checked again as it will run, shown whole with its folder, the
+            // patterns it matched and the limits, and the approval pinned to the command and its folder.
+            (Request::RunCommand { .. } | Request::StartCommand { .. }, _) => {
+                let checked = match self.terminal_check(&request) {
+                    Some(Ok(checked)) => checked,
+                    Some(Err(refused)) => return Ok(refused),
+                    None => return Err(Refused::Forbidden { command }),
+                };
+                let mode = origin.terminal.as_ref().map(|terminal| terminal.mode).unwrap_or_default();
+                let (summary, details) = crate::approvals::terminal_question(&request, &checked, mode);
+                fingerprint = Some((terminal_fingerprint(&checked), details));
+                (request, None, summary)
+            }
             // A bot's texts go into its prompt (task B.1): the person sees every one of them whole.
             (Request::SaveBot { .. }, _) => {
                 let facts = self.facts(&request).await;
@@ -6132,7 +6408,12 @@ impl Core {
 
     /// A person's decision (`approvals.decide_approval`, app key only). Allowed, the command runs
     /// now ([`Core::run_approved`]) and its answer is kept in the approval.
-    async fn decide_approval(&self, id: &str, allow: bool) -> Response {
+    async fn decide_approval(&self, id: &str, allow: bool, scope: Option<torro_ipc::ApprovalScope>) -> Response {
+        // A command of the terminal is allowed only on the card in the assistant's chat, which names how far the yes
+        // reaches (issue #754, decision 3); any other approval knows no reach but `once`.
+        if allow && let Some(refused) = self.scope_refusal(id, scope).await {
+            return refused;
+        }
         let decided = self.approvals.decide(id, allow, Utc::now()).await;
         if decided.is_ok() {
             crate::inbox::file_approvals(&self.inbox, &self.approvals, Utc::now()).await;
@@ -6161,7 +6442,15 @@ impl Core {
             (request.operation().name(), [decided_ids(&request, &origin), self.holder_ids(&request)].concat());
         // Boxed: the run goes through `handle_within` again, deep in the stack already, and the
         // checks of the tools (#225) and of the models' switches (#231) made this frame too big.
-        let response = Box::pin(self.run_approved(&client, request, pin, fingerprint.as_deref(), &origin)).await;
+        let response = match origin.terminal.is_some() {
+            true => match self.clients.list().into_iter().find(|info| info.id == client) {
+                Some(info) => {
+                    Box::pin(self.run_approved_terminal(&info, request, fingerprint.as_deref(), &origin, scope)).await
+                }
+                None => Refused::Forbidden { command }.response(),
+            },
+            false => Box::pin(self.run_approved(&client, request, pin, fingerprint.as_deref(), &origin)).await,
+        };
         // The run is the client's request, logged with the approval it ran with; the answer
         // itself stays out of the log (it holds titles).
         let mut ran = crate::audit::entry(Some(client), command, ids, &response, Utc::now());
@@ -6170,6 +6459,28 @@ impl Core {
         match self.approvals.finish(id, response, Utc::now()).await {
             Ok(approval) => Response::Approval { approval },
             Err(err) => err.response(),
+        }
+    }
+
+    /// Why an "Allow" of the approval `id` with `scope` is refused before it is decided (issue #754): a command of the
+    /// terminal without a reach (`forbidden`: it is allowed on the card in the chat), another approval with a reach
+    /// beyond `once` (`error`). `None` when it may be decided, and for an approval that is not open (the decision
+    /// answers that).
+    async fn scope_refusal(&self, id: &str, scope: Option<torro_ipc::ApprovalScope>) -> Option<Response> {
+        let approval = self.approvals.status(None, id, Utc::now()).await.ok()?;
+        let terminal = torro_ipc::tools::is_terminal_command(&approval.command);
+        match (terminal, scope) {
+            (true, None) => Some(Response::Error {
+                code: "forbidden".into(),
+                message: tr("Allow it on the card in the assistant's chat.").into(),
+            }),
+            (false, Some(torro_ipc::ApprovalScope::Conversation | torro_ipc::ApprovalScope::Always)) => {
+                Some(Response::Error {
+                    code: "error".into(),
+                    message: "only a command of the terminal can be allowed for a conversation or for good".into(),
+                })
+            }
+            _ => None,
         }
     }
 
@@ -6261,6 +6572,10 @@ impl Core {
         // assistant, out of what both may.
         if let Some(refused) = tool_unselected(rights, &request) {
             return refused.response();
+        }
+        // The terminal runs only as `Core::run_approved_terminal` runs it (issue #754).
+        if torro_ipc::tools::is_terminal_command(command) {
+            return Refused::Forbidden { command }.response();
         }
         // A tool of an MCP server (issue #302): the level for its server and the tool's switch as they are
         // now, for a bot that ran for the assistant of what both may; a server removed, switched off or a
@@ -7014,6 +7329,8 @@ impl Core {
                     if settings.mail_sender.as_deref().is_some_and(|id| !rights.reaches_mail_account(id)) {
                         settings.mail_sender = None;
                     }
+                    // Nor what a person allowed the terminal for good (issue #754): commands and folders of theirs.
+                    settings.tools.terminal.always.clear();
                 }
                 Response::Settings { settings }
             }
@@ -7059,6 +7376,10 @@ impl Core {
                 // "Mute microphone" closes it also for a conversation by voice (issue #747).
                 if set.is_ok() && key == SettingKey::VoiceEnabled && value == serde_json::Value::Bool(false) {
                     self.forget_talk();
+                }
+                // The terminal switched off (issue #754): its commands in the background end too.
+                if set.is_ok() && key == SettingKey::Terminal && !self.settings.current().tools.terminal.enabled {
+                    self.stop_terminal().await;
                 }
                 self.follow_components();
                 // Another provider (issue #745): the helper ends, and the next answer starts it with the
@@ -7215,7 +7536,7 @@ impl Core {
             // Boxed: deciding runs the approved request through this function a second time (see
             // `decide_approval`); with both frames on the stack a debug build overran the 2 MiB of
             // a test thread (an approved move into the trash).
-            Request::DecideApproval { id, allow } => Box::pin(self.decide_approval(&id, allow)).await,
+            Request::DecideApproval { id, allow, scope } => Box::pin(self.decide_approval(&id, allow, scope)).await,
             // A client's question always becomes an approval (`handle_client`) and is answered by
             // its state once a person decides (`run_approved`); the app key has nobody to ask.
             Request::AskPermission { .. } => Response::Error {
@@ -7507,7 +7828,26 @@ impl Core {
                     return refused;
                 }
                 let deletes = matches!(request, Request::DeleteConversation { .. } | Request::DeleteConversations { .. });
+                // The terminal's commands in the background end with their conversation, deleted or its answer
+                // stopped, and what it allowed there is forgotten (issue #754).
+                let ended: Vec<String> = match &request {
+                    Request::DeleteConversation { id } => vec![id.clone()],
+                    Request::DeleteConversations { ids } => ids.clone(),
+                    Request::CancelAnswer { conversation } => vec![conversation.clone()],
+                    _ => Vec::new(),
+                };
                 let answered = Box::pin(self.assistant_request(request, from)).await;
+                // Only once the deletion or the stop went through (review of #754); of several deleted, those that are
+                // gone, also when another could not be deleted.
+                let done = !matches!(answered, Response::Error { .. });
+                if let Some(assistant) = self.assistant_client().filter(|_| !ended.is_empty()) {
+                    for conversation in &ended {
+                        let gone = deletes && self.assistant.title(conversation).await.is_none();
+                        if done || gone {
+                            self.end_terminal_conversation(&assistant.id, conversation, deletes).await;
+                        }
+                    }
+                }
                 // A conversation by voice ends with its conversation (issue #747).
                 if deletes {
                     self.end_talk_if_gone().await;
@@ -7583,6 +7923,18 @@ impl Core {
                     Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
                 }
             }
+            // The terminal (issue #754) runs only from the assistant's conversation, through its own gate
+            // (`Core::terminal_gate`) and `Core::run_approved`; nothing reaches it this way, the app key included.
+            request @ (Request::RunCommand { .. }
+            | Request::StartCommand { .. }
+            | Request::ReadCommandOutput { .. }
+            | Request::StopCommand { .. }) => match reach {
+                Reach::Suite => Response::Error {
+                    code: "unsupported".into(),
+                    message: "the terminal runs commands only for the assistant's own conversation".into(),
+                },
+                Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
+            },
             // MCP servers (issue #302): the built-in catalog with what it needs on this computer (task
             // MA.2). Only a broken built-in catalog fails, which its tests rule out.
             Request::ListCatalog => match self.extensions.catalog() {
@@ -14408,7 +14760,7 @@ impl crate::assistant::Host for Core {
             crate::assistant::Actor::Delegated(delegation) => Scope::Delegated(delegation),
             _ => Scope::Own,
         };
-        Box::pin(self.handle_as(client, request, engine, untrusted, scope, mode, (None, None)))
+        Box::pin(self.handle_as(client, request, engine, untrusted, scope, mode, (None, None, None)))
     }
 
     /// A tool call of a chat about the mail `about` (issue #605): as [`Host::run_in`](crate::assistant::Host::run_in),
@@ -14427,7 +14779,7 @@ impl crate::assistant::Host for Core {
             crate::assistant::Actor::Delegated(delegation) => Scope::Delegated(delegation),
             _ => Scope::Own,
         };
-        Box::pin(self.handle_as(client, request, engine, untrusted, scope, mode, (None, Some(about.clone()))))
+        Box::pin(self.handle_as(client, request, engine, untrusted, scope, mode, (None, Some(about.clone()), None)))
     }
 
     /// A command of the tool `web` from an answer (issue #305, task WEB.5): [`Core::handle_as`] with
@@ -14446,7 +14798,29 @@ impl crate::assistant::Host for Core {
             crate::assistant::Actor::Delegated(delegation) => Scope::Delegated(delegation),
             _ => Scope::Own,
         };
-        Box::pin(self.handle_as(client, request, engine, true, scope, mode, (Some(web), None)))
+        Box::pin(self.handle_as(client, request, engine, true, scope, mode, (Some(web), None, None)))
+    }
+
+    /// A command of the terminal from the assistant's own answer (issue #754): [`Core::handle_as`] with the
+    /// conversation known, so [`Core::terminal_gate`] decides. Any other actor gets `forbidden`.
+    fn run_terminal<'a>(
+        &'a self,
+        actor: &'a crate::assistant::Actor,
+        request: Request,
+        engine: &'a str,
+        mode: Mode,
+        terminal: crate::approvals::TerminalContext,
+    ) -> torro_core::ai::BoxFuture<'a, Response> {
+        if !matches!(actor, crate::assistant::Actor::Assistant) {
+            return Box::pin(async move { Refused::Forbidden { command: request.operation().name() }.response() });
+        }
+        let client = self.assistant_client();
+        let untrusted = terminal.tainted;
+        Box::pin(self.handle_as(client, request, engine, untrusted, Scope::Own, mode, (None, None, Some(terminal))))
+    }
+
+    fn terminal_enabled(&self) -> bool {
+        self.settings.current().tools.terminal.enabled
     }
 
     fn approval<'a>(&'a self, id: &'a str) -> torro_core::ai::BoxFuture<'a, Response> {
@@ -14605,7 +14979,7 @@ impl crate::assistant::Host for Core {
             untrusted,
             scope,
             Mode::Default,
-            (None, None),
+            (None, None, None),
         ))
     }
 
@@ -14619,7 +14993,15 @@ impl crate::assistant::Host for Core {
         untrusted: bool,
     ) -> torro_core::ai::BoxFuture<'a, Response> {
         let scope = Scope::Asking { conversation: from.main, without: from.without };
-        Box::pin(self.handle_as(self.assistant_client(), request, engine, untrusted, scope, from.mode, (None, None)))
+        Box::pin(self.handle_as(
+            self.assistant_client(),
+            request,
+            engine,
+            untrusted,
+            scope,
+            from.mode,
+            (None, None, None),
+        ))
     }
 }
 
@@ -14684,6 +15066,7 @@ fn delegation_origin(engine: Option<&str>, delegation: &crate::assistant::Delega
         behalf: Some(delegation.caller.clone()),
         mode: delegation.mode,
         consent: None,
+        terminal: None,
     }
 }
 
@@ -14778,6 +15161,32 @@ struct Via {
     /// `mail.extract_action` for exactly this mail is checked as reading ([`about_read`]). `None` on every
     /// other way, so everywhere else it needs writing.
     about: Option<torro_ipc::assistant::MailRef>,
+    /// A command of the terminal from the assistant's own conversation (issue #754, [`Core::terminal_gate`],
+    /// [`crate::assistant::Host::run_terminal`]). `None` on every other way, which refuses the terminal.
+    terminal: Option<crate::approvals::TerminalContext>,
+}
+
+/// What the terminal answers before it looks at a command (issue #754): `forbidden` while it is off, and after the
+/// conversation read content from outside (decision of the issue: in both modes); `None` when it may go on.
+fn terminal_refusal(
+    settings: &torro_core::settings::TerminalSettings,
+    terminal: &crate::approvals::TerminalContext,
+) -> Option<Response> {
+    let message = if !settings.enabled {
+        tr(
+            "The terminal is off. A person can switch it on in the control centre under MCP servers › Built-in › Terminal.",
+        )
+    } else if terminal.tainted {
+        tr("This conversation has read content from outside. Start a new conversation to run commands.")
+    } else {
+        return None;
+    };
+    Some(Response::Error { code: "forbidden".into(), message: message.into() })
+}
+
+/// What an approval of a command of the terminal is pinned to (issue #754): the command's text and its folder.
+fn terminal_fingerprint(checked: &crate::tools::terminal::Checked) -> String {
+    crate::audit::hashed(&format!("{}\0{}", checked.folder.to_string_lossy(), checked.text))
 }
 
 /// Whether `request` is `mail.extract_action` for exactly the mail `about` (its account and id) of a chat about
@@ -16805,7 +17214,7 @@ mod tests {
     }
 
     fn decide(id: &str, allow: bool) -> Request {
-        Request::DecideApproval { id: id.into(), allow }
+        Request::DecideApproval { id: id.into(), allow, scope: None }
     }
 
     #[tokio::test]
@@ -17426,7 +17835,15 @@ mod tests {
         let (id, _) = client(&core, rights.clone()).await;
         let info = core.clients.list().into_iter().find(|info| info.id == id).expect("client");
         let run = |info: torro_ipc::ClientInfo, tool: &str| {
-            core.handle_as(Some(info), call_tool(tool), "claude-code", false, Scope::Own, Mode::ReadOnly, (None, None))
+            core.handle_as(
+                Some(info),
+                call_tool(tool),
+                "claude-code",
+                false,
+                Scope::Own,
+                Mode::ReadOnly,
+                (None, None, None),
+            )
         };
         for tool in ["echo", "nothing"] {
             assert_eq!(code(&run(info.clone(), tool).await), "not-found", "{tool}");
@@ -27204,7 +27621,7 @@ done"#,
         let approval = waits(ask(&core, Some(&asking), pile(vec![id.clone()])).await);
         assert!(approval.summary.contains("Quarterly offer"), "{}", approval.summary);
         assert!(piled().is_empty(), "not before it is allowed");
-        let decide = Request::DecideApproval { id: approval.id.clone(), allow: true };
+        let decide = Request::DecideApproval { id: approval.id.clone(), allow: true, scope: None };
         assert!(!matches!(core.handle(decide).await, Response::Error { .. }));
         crate::mail::service::tests::eventually("piled", || async { !piled().is_empty() }).await;
         assert_eq!(piled(), std::slice::from_ref(&id));
@@ -27310,7 +27727,7 @@ done"#,
         assert!(approval.summary.contains("Account limited"), "{}", approval.summary);
         assert!(approval.summary.contains("service@paypa1-secure.example"), "{}", approval.summary);
         assert!(!core.inbox.trusts("service@paypa1-secure.example"), "not before it is allowed");
-        let decide = Request::DecideApproval { id: approval.id.clone(), allow: true };
+        let decide = Request::DecideApproval { id: approval.id.clone(), allow: true, scope: None };
         assert!(!matches!(core.handle(decide).await, Response::Error { .. }));
         crate::mail::service::tests::eventually("released", || async {
             core.inbox.trusts("service@paypa1-secure.example")
@@ -29419,7 +29836,8 @@ done"#,
             local_only: false,
         };
         assert!(matches!(core.handle(change).await, Response::Memory { .. }));
-        let decided = approval(core.handle(Request::DecideApproval { id: asked.id.clone(), allow: true }).await);
+        let decided =
+            approval(core.handle(Request::DecideApproval { id: asked.id.clone(), allow: true, scope: None }).await);
         assert!(
             matches!(decided.state, torro_ipc::ApprovalState::Done { ref response } if code(response) == "conflict"),
             "{decided:?}"
@@ -29807,7 +30225,8 @@ done"#,
         assert!(details.contains("Suggest trains before flights. Never book anything yourself."), "{details}");
         assert!(details.contains("Pack light."), "{details}");
         assert_eq!(core.assistant.bots().list().await.len(), 1, "nothing before the approval");
-        let decided = approval(core.handle(Request::DecideApproval { id: proposed.id, allow: true }).await);
+        let decided =
+            approval(core.handle(Request::DecideApproval { id: proposed.id, allow: true, scope: None }).await);
         assert!(matches!(decided.state, torro_ipc::ApprovalState::Done { .. }), "{decided:?}");
         let made = core.assistant.bots().list().await;
         assert_eq!(made.iter().map(|bot| bot.name.as_str()).collect::<Vec<_>>(), ["Release helper", "Travel planner"]);
@@ -32744,9 +33163,10 @@ done"#,
         assert!(read_by_model(&script, "calendar_list_calendars").contains("collections"));
 
         // Never its own area, nor what only the person decides, whatever the model asks for.
-        for request in
-            [Request::ListConversations, Request::DecideApproval { id: "0123456789abcdef".into(), allow: true }]
-        {
+        for request in [
+            Request::ListConversations,
+            Request::DecideApproval { id: "0123456789abcdef".into(), allow: true, scope: None },
+        ] {
             assert_eq!(code(&Host::run(&*core, request, &engine, false).await), "forbidden");
         }
         let lines: Vec<_> = audit_lines(dir.path())
@@ -33743,10 +34163,11 @@ done"#,
         let denied = waits(ask(&core, Some(&key), Request::DeleteTemplate { id: "kept".into() }).await);
         // The run ends before the person decides.
         drop(lent);
-        let done = approval(core.handle(Request::DecideApproval { id: allowed.id.clone(), allow: true }).await);
+        let done =
+            approval(core.handle(Request::DecideApproval { id: allowed.id.clone(), allow: true, scope: None }).await);
         assert!(matches!(done.state, torro_ipc::ApprovalState::Done { ref response } if **response == Response::Ok));
         assert!(core.store.load("old").is_err(), "workspaces were not taken out: it ran");
-        let _ = core.handle(Request::DecideApproval { id: denied.id.clone(), allow: false }).await;
+        let _ = core.handle(Request::DecideApproval { id: denied.id.clone(), allow: false, scope: None }).await;
         assert!(core.store.load("kept").is_ok());
 
         let decided: Vec<_> = audit_lines(dir.path())
@@ -33767,13 +34188,15 @@ done"#,
             mode: torro_ipc::assistant::Mode::Default,
             behalf: None,
             consent: None,
+            terminal: None,
         };
         let request = Request::DeleteTemplate { id: "dev".into() };
         let kept = (None, None, origin);
         let shown = ("Delete the template dev".to_string(), Vec::new());
         let narrowed =
             core.approvals.open_from(&client.id, "Assistant", request, kept, shown, Utc::now()).await.expect("opened");
-        let done = approval(core.handle(Request::DecideApproval { id: narrowed.id.clone(), allow: true }).await);
+        let done =
+            approval(core.handle(Request::DecideApproval { id: narrowed.id.clone(), allow: true, scope: None }).await);
         let torro_ipc::ApprovalState::Done { response } = done.state else { panic!("expected done, got {done:?}") };
         assert_eq!(code(&response), "forbidden");
         assert!(core.store.load("dev").is_ok(), "nothing ran");
@@ -33845,7 +34268,8 @@ done"#,
         assert!(delete.details.iter().any(|line| line.contains("Be brief.")), "{:?}", delete.details);
         let changed = core.handle(save("Offers", "Be very brief.", Some("OFFERS"))).await;
         assert!(matches!(changed, Response::Skill { .. }), "{changed:?}");
-        let done = approval(core.handle(Request::DecideApproval { id: delete.id.clone(), allow: true }).await);
+        let done =
+            approval(core.handle(Request::DecideApproval { id: delete.id.clone(), allow: true, scope: None }).await);
         let torro_ipc::ApprovalState::Done { response } = done.state else { panic!("expected done, got {done:?}") };
         assert_eq!(code(&response), "conflict");
         let Response::Skill { skill } = core.handle(Request::GetSkill { name: "offers".into() }).await else {
@@ -33943,7 +34367,7 @@ done"#,
             assert!(tool_lines(&waiting).is_empty(), "nothing ran yet");
             assert!(core.store.load("old-plans").is_ok());
 
-            core.handle(Request::DecideApproval { id: approval, allow }).await;
+            core.handle(Request::DecideApproval { id: approval, allow, scope: None }).await;
             let entries = conversation_until(&core, &id, |running, _| !running).await;
             let error = if allow { None } else { Some("denied".to_string()) };
             assert_eq!(tool_lines(&entries), [("workspaces.delete_template".to_string(), error)], "allow: {allow}");
@@ -34898,12 +35322,14 @@ done"#,
         assert_eq!(first.client, bot.client);
 
         // Allowed while both may: it runs.
-        let done = approval(core.handle(Request::DecideApproval { id: first.id.clone(), allow: true }).await);
+        let done =
+            approval(core.handle(Request::DecideApproval { id: first.id.clone(), allow: true, scope: None }).await);
         assert!(matches!(done.state, torro_ipc::ApprovalState::Done { ref response } if **response == Response::Ok));
         assert!(core.store.load("old").is_err());
         // The person takes the assistant's right to delete away; the bot keeps its own.
         core.clients.update(&client.id, reading(&[Area::Workspaces])).await.expect("narrowed");
-        let done = approval(core.handle(Request::DecideApproval { id: second.id.clone(), allow: true }).await);
+        let done =
+            approval(core.handle(Request::DecideApproval { id: second.id.clone(), allow: true, scope: None }).await);
         let torro_ipc::ApprovalState::Done { response } = done.state else { panic!("expected done, got {done:?}") };
         assert_eq!(code(&response), "forbidden", "never more than the assistant may");
         assert!(core.store.load("older").is_ok(), "nothing ran");
@@ -36148,7 +36574,8 @@ done"#,
         );
         assert!(!asked.summary.contains("open_backups"), "{}", asked.summary);
         assert_eq!(core.ntfy.label_of(&account.id, "open_backups").await.as_deref(), Some("Backups"), "not yet");
-        let decided = approval(core.handle(Request::DecideApproval { id: asked.id.clone(), allow: true }).await);
+        let decided =
+            approval(core.handle(Request::DecideApproval { id: asked.id.clone(), allow: true, scope: None }).await);
         assert!(matches!(&decided.state, torro_ipc::ApprovalState::Done { response } if **response == Response::Ok));
         assert_eq!(core.ntfy.label_of(&account.id, "open_backups").await.as_deref(), Some("Nightly"));
 
@@ -37802,6 +38229,355 @@ done"#,
         );
         assert!(core.open_target("torrocontacts", "contact:nowhere/x", Reach::Suite, Maker::App).await.is_err());
         assert!(core.open_target("torrotasks", &target, Reach::Suite, Maker::App).await.is_err(), "another app");
+    }
+
+    /// The assistant's terminal (issue #754) through the core: who reaches it, when the person is asked and what
+    /// "Always" and "In this conversation" keep. Commands run in a temporary folder only.
+    mod terminal {
+        use torro_core::settings::{TerminalAlways, TerminalMode};
+        use torro_ipc::ApprovalScope;
+
+        use super::*;
+        use crate::approvals::TerminalContext;
+        use crate::assistant::{Actor, Host};
+
+        /// A core with the assistant's client, `dir/work` allowed to read and write, and the terminal on in `mode`.
+        async fn terminal_core(dir: &std::path::Path, mode: TerminalMode) -> (Core, String, std::path::PathBuf) {
+            let core = core(dir);
+            let (client, _) =
+                core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant()).await.expect("ok");
+            let work = dir.join("work");
+            std::fs::create_dir(&work).expect("folder");
+            let work = work.canonicalize().expect("resolved");
+            let folder = serde_json::json!({"path": work, "access": "read_write"});
+            assert_eq!(
+                core.handle(Request::SetSetting { key: SettingKey::AllowedFolder, value: folder }).await,
+                Response::Ok
+            );
+            let on = serde_json::json!({"enabled": true, "mode": mode});
+            assert_eq!(core.handle(Request::SetSetting { key: SettingKey::Terminal, value: on }).await, Response::Ok);
+            (core, client.id, work)
+        }
+
+        fn shell(work: &std::path::Path, line: &str) -> Request {
+            let folder = work.to_string_lossy().into_owned();
+            Request::RunCommand { folder, program: None, args: Vec::new(), shell: Some(line.into()) }
+        }
+
+        fn context(tainted: bool) -> TerminalContext {
+            TerminalContext { conversation: "c1".into(), tainted, since: Utc::now() }
+        }
+
+        async fn run(core: &Core, actor: &Actor, request: Request, tainted: bool) -> Response {
+            Box::pin(Host::run_terminal(core, actor, request, "engine", Mode::Default, context(tainted))).await
+        }
+
+        fn scoped(id: &str, scope: ApprovalScope) -> Request {
+            Request::DecideApproval { id: id.into(), allow: true, scope: Some(scope) }
+        }
+
+        /// What an allowed approval answered.
+        fn done(approval: torro_ipc::ApprovalInfo) -> Response {
+            match approval.state {
+                torro_ipc::ApprovalState::Done { response } => *response,
+                other => panic!("expected done, got {other:?}"),
+            }
+        }
+
+        fn output(response: &Response) -> (&str, Option<i32>, bool) {
+            match response {
+                Response::CommandOutput { output, exit_code, untrusted, .. } => (output, *exit_code, *untrusted),
+                other => panic!("expected output, got {other:?}"),
+            }
+        }
+
+        /// Erledigt points 1 and 2: in the mode "every command" a card first; allowed on it, the command runs in the
+        /// folder and answers its output and exit code. An "Allow" without a reach (the control centre, the
+        /// notification) is refused.
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn every_command_asks_and_runs_once_allowed_on_the_card() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (core, client, work) = terminal_core(dir.path(), TerminalMode::Every).await;
+            let asked = waits(run(&core, &Actor::Assistant, shell(&work, "ls; echo hi"), false).await);
+            assert_eq!((asked.client.as_str(), asked.command.as_str()), (client.as_str(), "tools.run_command"));
+            assert!(asked.details.iter().any(|line| line == "$ ls; echo hi"), "{:?}", asked.details);
+            let refused = core.handle(decide(&asked.id, true)).await;
+            assert_eq!(code(&refused), "forbidden", "allowed only on the card");
+            let ran = done(approval(core.handle(scoped(&asked.id, ApprovalScope::Once)).await));
+            assert_eq!(output(&ran), ("hi\n", Some(0), false));
+            // Once is once.
+            waits(run(&core, &Actor::Assistant, shell(&work, "ls; echo hi"), false).await);
+        }
+
+        /// Erledigt points 3 and 4 in the mode "only dangerous": `ls` runs at once, `rm -rf` asks; "Always" keeps
+        /// the pattern, so the next recursive delete runs without a card, until the person removes it.
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn only_dangerous_commands_ask_and_always_keeps_the_pattern() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (core, _, work) = terminal_core(dir.path(), TerminalMode::Dangerous).await;
+            std::fs::create_dir_all(work.join("build/x")).expect("build");
+            let listed = run(&core, &Actor::Assistant, shell(&work, "ls"), false).await;
+            assert_eq!(output(&listed), ("build\n", Some(0), false));
+            let asked = waits(run(&core, &Actor::Assistant, shell(&work, "rm -rf build"), false).await);
+            assert!(asked.details.iter().any(|line| line.contains(tr("recursive delete"))), "{:?}", asked.details);
+            let ran = done(approval(core.handle(scoped(&asked.id, ApprovalScope::Always)).await));
+            assert_eq!(output(&ran).1, Some(0));
+            assert!(!work.join("build").exists());
+            let kept = TerminalAlways::Pattern { key: "recursive delete".into() };
+            assert_eq!(settings(&core).await.tools.terminal.always, std::slice::from_ref(&kept));
+            std::fs::create_dir_all(work.join("dist")).expect("dist");
+            let again = run(&core, &Actor::Assistant, shell(&work, "rm -rf dist"), false).await;
+            assert_eq!(output(&again).1, Some(0), "no card for the same pattern");
+            let remove =
+                Request::SetSetting { key: SettingKey::TerminalAlways, value: serde_json::json!({"remove": kept}) };
+            assert_eq!(core.handle(remove).await, Response::Ok);
+            waits(run(&core, &Actor::Assistant, shell(&work, "rm -rf dist"), false).await);
+        }
+
+        /// Erledigt point 4 in the mode "every command": "Always" keeps the exact command in its folder, "In this
+        /// conversation" only there; another command still asks.
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn always_and_the_conversation_keep_the_exact_command() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (core, client, work) = terminal_core(dir.path(), TerminalMode::Every).await;
+            let asked = waits(run(&core, &Actor::Assistant, shell(&work, "echo a"), false).await);
+            done(approval(core.handle(scoped(&asked.id, ApprovalScope::Always)).await));
+            let again = run(&core, &Actor::Assistant, shell(&work, "echo a"), false).await;
+            assert_eq!(output(&again).0, "a\n");
+            waits(run(&core, &Actor::Assistant, shell(&work, "echo b"), false).await);
+            let asked = waits(run(&core, &Actor::Assistant, shell(&work, "echo c"), false).await);
+            done(approval(core.handle(scoped(&asked.id, ApprovalScope::Conversation)).await));
+            assert_eq!(output(&run(&core, &Actor::Assistant, shell(&work, "echo c"), false).await).0, "c\n");
+            let elsewhere = Box::pin(Host::run_terminal(
+                &core,
+                &Actor::Assistant,
+                shell(&work, "echo c"),
+                "engine",
+                Mode::Default,
+                TerminalContext { conversation: "c2".into(), tainted: false, since: Utc::now() },
+            ));
+            waits(elsewhere.await);
+            // Deleting the conversation forgets it.
+            core.end_terminal_conversation(&client, "c1", true).await;
+            waits(run(&core, &Actor::Assistant, shell(&work, "echo c"), false).await);
+        }
+
+        /// Erledigt point 5: after content from outside the conversation runs no command, with a message that says
+        /// why; a program that reads from outside marks its answer as such, which the loop counts.
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn content_from_outside_stops_the_terminal() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (core, _, work) = terminal_core(dir.path(), TerminalMode::Dangerous).await;
+            let refused = run(&core, &Actor::Assistant, shell(&work, "ls"), true).await;
+            let Response::Error { code, message } = &refused else { panic!("{refused:?}") };
+            assert_eq!(code, "forbidden");
+            assert_eq!(
+                message,
+                tr("This conversation has read content from outside. Start a new conversation to run commands.")
+            );
+            let outside = run(&core, &Actor::Assistant, shell(&work, "echo curl"), false).await;
+            assert!(output(&outside).2, "reads from outside: untrusted");
+            assert_eq!(approvals_asked(&core).await, 0);
+        }
+
+        /// Erledigt point 8: a bot, a bot for the assistant, the assistant's key over MCP, an agent, a client with
+        /// every right and the app key run no command; nobody is asked. The switch, the mode and the list are a
+        /// person's, and a client reads no list.
+        #[tokio::test]
+        async fn nobody_but_the_assistants_conversation_runs_a_command() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (core, client, work) = terminal_core(dir.path(), TerminalMode::Dangerous).await;
+            let request = || shell(&work, "ls");
+            let bot = Actor::Bot("b1".into());
+            assert_eq!(code(&run(&core, &bot, request(), false).await), "forbidden");
+            let delegated = Actor::Delegated(crate::assistant::Delegation {
+                bot: "b1".into(),
+                client: "x".into(),
+                caller: client.clone(),
+                without: Vec::new(),
+                mode: Mode::Default,
+                conversation: Some("c1".into()),
+            });
+            assert_eq!(code(&run(&core, &delegated, request(), false).await), "forbidden");
+            // The assistant's way without the conversation (`Host::run`, a lent key).
+            let plain = Box::pin(Host::run(&core, request(), "engine", false)).await;
+            assert_eq!(code(&plain), "forbidden");
+            let mut all = Rights::assistant();
+            for area in torro_ipc::api::Area::ALL {
+                all.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+            }
+            all.confirm = torro_ipc::api::Confirm::Never;
+            let (_, key) = core.clients.add("Script", "api", all).await.expect("client");
+            assert_eq!(code(&ask(&core, Some(&key), request()).await), "forbidden");
+            assert_eq!(code(&core.handle(request()).await), "unsupported", "the app key");
+            assert_eq!(approvals_asked(&core).await, 0, "nobody asked");
+            let off = serde_json::json!({"enabled": false});
+            let refused = ask(&core, Some(&key), Request::SetSetting { key: SettingKey::Terminal, value: off }).await;
+            assert_eq!(code(&refused), "forbidden");
+            let entry = serde_json::json!({"remove": {"kind": "pattern", "key": "recursive delete"}});
+            let refused =
+                ask(&core, Some(&key), Request::SetSetting { key: SettingKey::TerminalAlways, value: entry }).await;
+            assert_eq!(code(&refused), "forbidden");
+            assert!(core.settings.current().tools.terminal.enabled, "still on");
+            let Response::Settings { settings } = ask(&core, Some(&key), Request::Settings).await else { panic!() };
+            assert!(settings.tools.terminal.always.is_empty() && settings.tools.terminal.enabled);
+        }
+
+        /// The hard limits: a command that never runs and a protected path are refused without a card; switched
+        /// off, an approval waiting since is refused when allowed.
+        #[tokio::test]
+        async fn hard_limits_refuse_without_asking_and_switching_off_wins() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (core, _, work) = terminal_core(dir.path(), TerminalMode::Every).await;
+            assert_eq!(code(&run(&core, &Actor::Assistant, shell(&work, "rm -rf /"), false).await), "forbidden");
+            let outside =
+                Request::RunCommand { folder: "/".into(), program: Some("ls".into()), args: Vec::new(), shell: None };
+            assert_eq!(code(&run(&core, &Actor::Assistant, outside, false).await), "not-found");
+            assert_eq!(approvals_asked(&core).await, 0);
+            let asked = waits(run(&core, &Actor::Assistant, shell(&work, "echo x"), false).await);
+            let off = serde_json::json!({"enabled": false});
+            assert_eq!(core.handle(Request::SetSetting { key: SettingKey::Terminal, value: off }).await, Response::Ok);
+            let refused = done(approval(core.handle(scoped(&asked.id, ApprovalScope::Once)).await));
+            assert_eq!(code(&refused), "forbidden");
+            // Off, nothing gets that far.
+            assert_eq!(code(&run(&core, &Actor::Assistant, shell(&work, "echo x"), false).await), "forbidden");
+        }
+
+        /// Review of #754: an approval asked before its answer was stopped runs nothing; a stop keeps what was allowed
+        /// in the conversation; the card shows a second line of a shell command as such.
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn a_stopped_answer_runs_no_approval_it_asked_for() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (core, client, work) = terminal_core(dir.path(), TerminalMode::Every).await;
+            let asked = waits(run(&core, &Actor::Assistant, shell(&work, "echo ok\necho two"), false).await);
+            assert!(asked.details.iter().any(|line| line == "$ echo ok ↵ echo two"), "{:?}", asked.details);
+            let allowed = waits(run(&core, &Actor::Assistant, shell(&work, "echo c"), false).await);
+            done(approval(core.handle(scoped(&allowed.id, ApprovalScope::Conversation)).await));
+            core.end_terminal_conversation(&client, "c1", false).await;
+            let stale = done(approval(core.handle(scoped(&asked.id, ApprovalScope::Once)).await));
+            assert_eq!(code(&stale), "conflict");
+            assert_eq!(output(&run(&core, &Actor::Assistant, shell(&work, "echo c"), false).await).0, "c\n");
+        }
+
+        /// Review of #754: a tool call that reaches the core after its answer was stopped runs nothing, also when it
+        /// was made before the stop; one made after it runs.
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn a_call_made_before_a_stop_runs_nothing() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (core, client, work) = terminal_core(dir.path(), TerminalMode::Dangerous).await;
+            let called = Utc::now();
+            core.end_terminal_conversation(&client, "c1", false).await;
+            let late = TerminalContext { conversation: "c1".into(), tainted: false, since: called };
+            let refused = Box::pin(Host::run_terminal(
+                &core,
+                &Actor::Assistant,
+                shell(&work, "echo x"),
+                "engine",
+                Mode::Default,
+                late,
+            ))
+            .await;
+            assert_eq!(code(&refused), "conflict");
+            assert_eq!(approvals_asked(&core).await, 0);
+            assert_eq!(output(&run(&core, &Actor::Assistant, shell(&work, "echo y"), false).await).0, "y\n");
+        }
+
+        /// Review of #754: its own command in the background stays readable after content from outside (the program
+        /// that read from outside is what made the conversation so); a new command does not run.
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn a_background_command_stays_readable_after_content_from_outside() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (core, _, work) = terminal_core(dir.path(), TerminalMode::Dangerous).await;
+            let start = Request::StartCommand {
+                folder: work.to_string_lossy().into_owned(),
+                program: None,
+                args: Vec::new(),
+                shell: Some("echo started; sleep 30".into()),
+            };
+            let Response::CommandStarted { id } = run(&core, &Actor::Assistant, start, false).await else {
+                panic!("started")
+            };
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let read = Request::ReadCommandOutput { id: id.clone(), from: None };
+            let status = run(&core, &Actor::Assistant, read, true).await;
+            assert!(
+                matches!(&status, Response::CommandStatus { output, running: true, .. } if output == "started\n"),
+                "{status:?}"
+            );
+            assert_eq!(code(&run(&core, &Actor::Assistant, shell(&work, "ls"), true).await), "forbidden");
+            let stop = run(&core, &Actor::Assistant, Request::StopCommand { id }, true).await;
+            assert!(matches!(stop, Response::CommandStatus { running: false, .. }), "{stop:?}");
+        }
+
+        /// Review of #754: deleting a conversation ends its commands in the background and forgets what was allowed
+        /// there; a deletion that fails leaves both as they are.
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn deleting_a_conversation_ends_its_commands_only_when_it_went() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+            let core = core(dir.path()).with_assistant(assistant);
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant()).await.expect("ok");
+            let work = dir.path().join("work");
+            std::fs::create_dir(&work).expect("folder");
+            let work = work.canonicalize().expect("resolved");
+            let folder = serde_json::json!({"path": work, "access": "read_write"});
+            assert_eq!(
+                core.handle(Request::SetSetting { key: SettingKey::AllowedFolder, value: folder }).await,
+                Response::Ok
+            );
+            let on = serde_json::json!({"enabled": true, "mode": "dangerous"});
+            assert_eq!(core.handle(Request::SetSetting { key: SettingKey::Terminal, value: on }).await, Response::Ok);
+            let conversation = test_message(&core).await;
+            let context = || TerminalContext { conversation: conversation.clone(), tainted: false, since: Utc::now() };
+            let start = || Request::StartCommand {
+                folder: work.to_string_lossy().into_owned(),
+                program: None,
+                args: Vec::new(),
+                shell: Some("sleep 30".into()),
+            };
+            let started =
+                Box::pin(Host::run_terminal(&core, &Actor::Assistant, start(), "engine", Mode::Default, context()))
+                    .await;
+            let Response::CommandStarted { id } = started else { panic!("started: {started:?}") };
+            let read = |id: &str| Request::ReadCommandOutput { id: id.into(), from: None };
+            let failed = core.handle(Request::DeleteConversation { id: "0123456789abcdef".into() }).await;
+            assert!(matches!(failed, Response::Error { .. }), "{failed:?}");
+            let still =
+                Box::pin(Host::run_terminal(&core, &Actor::Assistant, read(&id), "engine", Mode::Default, context()))
+                    .await;
+            assert!(matches!(still, Response::CommandStatus { .. }), "a failed deletion ends nothing: {still:?}");
+            // Wait until the answer is done, so the deletion is not refused as busy.
+            for _ in 0..100 {
+                if let Response::Conversation { conversation: summary, .. } =
+                    core.handle(Request::GetConversation { id: conversation.clone(), after: None }).await
+                    && !summary.running
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            assert_eq!(core.handle(Request::DeleteConversation { id: conversation.clone() }).await, Response::Ok);
+            let gone =
+                Box::pin(Host::run_terminal(&core, &Actor::Assistant, read(&id), "engine", Mode::Default, context()))
+                    .await;
+            assert_eq!(code(&gone), "not-found", "ended with its conversation");
+        }
+
+        /// An "Allow" with a reach is a command of the terminal's alone.
+        #[tokio::test]
+        async fn a_reach_beyond_once_is_for_the_terminal_only() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let core = core(dir.path());
+            assert_eq!(code(&core.handle(scoped("0123456789abcdef", ApprovalScope::Always)).await), "not-found");
+        }
     }
 }
 

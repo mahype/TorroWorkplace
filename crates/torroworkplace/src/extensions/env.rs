@@ -241,7 +241,7 @@ fn same_name(a: &str, b: &str) -> bool {
 
 /// `dirs` as the value of `PATH`; folders that are not UTF-8 or hold the separator are left out, `None`
 /// when none is left.
-fn joined_path(dirs: &[PathBuf]) -> Option<String> {
+pub(crate) fn joined_path(dirs: &[PathBuf]) -> Option<String> {
     let usable: Vec<&PathBuf> =
         dirs.iter().filter(|dir| dir.to_str().is_some() && std::env::join_paths([dir]).is_ok()).collect();
     if usable.is_empty() {

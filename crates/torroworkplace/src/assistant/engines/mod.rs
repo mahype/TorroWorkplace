@@ -395,6 +395,8 @@ impl Running {
             memory: &memory,
             skills: &skills,
             servers: &servers,
+            // An agent (engine B) never gets the terminal (issue #754): its key is lent, not the conversation.
+            terminal: false,
         };
         let system = match &self.job.bot {
             Some(bot) => prompt::bot_system(Some(&persona), &prompt::BotParts::of(bot), &context),

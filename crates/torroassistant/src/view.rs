@@ -199,6 +199,29 @@ fn area_icon(area: Option<Area>) -> Icon {
     }
 }
 
+/// Whether `line` of a terminal approval's details is its warning ("Looks dangerous: …", issue #754), by the start of
+/// the line as the core writes it in the suite's language.
+fn looks_dangerous(line: &str) -> bool {
+    let prefix = tr("Looks dangerous: {patterns}").split("{patterns}").next().unwrap_or_default();
+    !prefix.is_empty() && line.starts_with(prefix)
+}
+
+/// Whether `line` of a terminal approval's details is small print: the limits, the sandbox and what "Always" keeps.
+fn card_small_print(line: &str) -> bool {
+    let starts = |english: &'static str| {
+        let prefix = tr(english).split('{').next().unwrap_or_default();
+        !prefix.is_empty() && line.starts_with(prefix)
+    };
+    starts("Limits: 120 s, 20,000 characters of output")
+        || starts("Limits: runs until stopped or the conversation ends, the last 1 MB of output is kept")
+        || starts("No sandbox: Torro can't stop this command from reading or changing other files.")
+        || starts("\"Always\" allows exactly this command in this folder.")
+        || starts("\"Always\" allows every command that matches {patterns}, in every allowed folder.")
+}
+
+/// How many characters of a command of the terminal the approval card shows before "Show all" (issue #754).
+const COMMAND_SHOWN: usize = 160;
+
 impl App {
     /// The window with the zoom badge and the notice over it; in mini and strip the glance.
     pub fn view(&self) -> Element<'_, Message> {
@@ -1020,18 +1043,97 @@ impl App {
             card = card.push(typo::text(typo::meta(), tr("Loading …")).style(theme::text_3));
             return container(card).width(Fill).padding(layout::panel_padding()).style(style::container::group).into();
         };
+        // A command of the terminal (issue #754): its line shortened until "Show all", and four answers.
+        let terminal = torro_ipc::tools::is_terminal_command(&approval.command);
         card = card.push(typo::text(typo::body(), approval.summary.as_str()).wrapping(Wrapping::WordOrGlyph));
         for line in &approval.details {
-            card =
-                card.push(typo::text(typo::meta(), line.as_str()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
+            let long = terminal && line.starts_with("$ ") && line.chars().count() > COMMAND_SHOWN;
+            let whole = self.whole_commands.contains(id);
+            let shown = match long && !whole {
+                true => format!("{}…", line.chars().take(COMMAND_SHOWN).collect::<String>()),
+                false => line.clone(),
+            };
+            // The warning of a command of the terminal stands out: an icon in attention and text in `TEXT`; its limits
+            // and the missing sandbox are the small print (design review of #754).
+            let warning = terminal && looks_dangerous(line);
+            let small = terminal && !warning && !line.starts_with("$ ") && card_small_print(line);
+            let text = typo::text(typo::meta(), shown).wrapping(Wrapping::WordOrGlyph);
+            let text = match (warning, small) {
+                (true, _) => text.style(theme::text),
+                (false, true) => text.style(theme::text_3),
+                (false, false) => text.style(theme::text_2),
+            };
+            card = card.push(match warning {
+                true => row![tinted(Icon::TriangleAlert, icon::SIZE_SM, |p| p.attention_text), text]
+                    .spacing(space::s())
+                    .align_y(Alignment::Center)
+                    .into(),
+                false => Element::from(text),
+            });
+            if long {
+                let (icon, label) = match whole {
+                    true => (Icon::ChevronDown, tr("Show less")),
+                    false => (Icon::ChevronRight, tr("Show all")),
+                };
+                let toggle = Some(Message::ToggleCommand(id.to_owned()));
+                card = card.push(widgets::text_button(Some(icon), label, style::button::ghost, toggle));
+            }
         }
         let footer: Element<'a, Message> = match &approval.state {
+            ApprovalState::Pending if terminal => {
+                let open = self.deciding.is_none();
+                let decide = |answer: chat::Answer| open.then(|| Message::Decide(id.to_owned(), answer));
+                let scoped = |scope| decide(chat::Answer::Scoped(scope));
+                // "Deny" first and on its own, the three that allow together behind it: in a narrow chat they wrap as
+                // a group, never "Deny" alone by chance (design review of #754).
+                let buttons: Vec<Element<'a, Message>> = vec![
+                    widgets::text_button(
+                        Some(Icon::X),
+                        tr("Deny"),
+                        style::button::secondary,
+                        decide(chat::Answer::Deny),
+                    ),
+                    widgets::text_button(
+                        Some(Icon::Check),
+                        tr("Allow once"),
+                        style::button::secondary,
+                        scoped(torro_ipc::ApprovalScope::Once),
+                    ),
+                    widgets::text_button(
+                        None,
+                        tr("In this conversation"),
+                        style::button::secondary,
+                        scoped(torro_ipc::ApprovalScope::Conversation),
+                    ),
+                    widgets::text_button(
+                        None,
+                        tr("Always"),
+                        style::button::secondary,
+                        scoped(torro_ipc::ApprovalScope::Always),
+                    ),
+                ];
+                // Four buttons do not fit a narrow chat in one row: "Deny" keeps its own, the others wrap together.
+                let mut buttons = buttons.into_iter();
+                let deny = buttons.next();
+                let allow = iced::widget::row(buttons).spacing(space::s()).wrap().vertical_spacing(space::s());
+                iced::widget::row(deny).push(allow).spacing(space::s()).wrap().vertical_spacing(space::s()).into()
+            }
             ApprovalState::Pending => {
                 let open = self.deciding.is_none();
-                let decide = |allow: bool| open.then(|| Message::Decide(id.to_owned(), allow));
+                let decide = |answer: chat::Answer| open.then(|| Message::Decide(id.to_owned(), answer));
                 row![
-                    widgets::text_button(Some(Icon::Check), tr("Allow"), style::button::secondary, decide(true)),
-                    widgets::text_button(Some(Icon::X), tr("Deny"), style::button::secondary, decide(false)),
+                    widgets::text_button(
+                        Some(Icon::Check),
+                        tr("Allow"),
+                        style::button::secondary,
+                        decide(chat::Answer::Allow)
+                    ),
+                    widgets::text_button(
+                        Some(Icon::X),
+                        tr("Deny"),
+                        style::button::secondary,
+                        decide(chat::Answer::Deny)
+                    ),
                 ]
                 .spacing(space::s())
                 .into()

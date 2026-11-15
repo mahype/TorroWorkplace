@@ -1514,6 +1514,10 @@ impl Inbox {
     /// Freigaben auf der Platte"), which otherwise stood in the inbox's file until the entry ages
     /// out.
     pub fn file_approvals(&self, open: &[ApprovalInfo], now: DateTime<Utc>) -> Result<(), String> {
+        // A command of the terminal is decided on the card in the assistant's chat only (issue #754, decision 3):
+        // it gets no entry, so nobody allows it from the inbox.
+        let open: Vec<ApprovalInfo> =
+            open.iter().filter(|info| !torro_ipc::tools::is_terminal_command(&info.command)).cloned().collect();
         let matters = open.iter().filter(|info| info.state.is_pending()).map(approval_matter).collect();
         let kept: BTreeMap<String, (String, Option<String>)> = open
             .iter()

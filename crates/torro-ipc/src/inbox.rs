@@ -1351,7 +1351,8 @@ impl InboxSource for InboxClient {
     /// approval as it stands now, which the app does not need: the entry is done either way, and
     /// the next list shows it. `conflict` (decided already or expired) is [`InboxError::Settled`].
     async fn decide_approval(&self, approval: String, allow: bool) -> Result<(), InboxError> {
-        let answer = crate::client::call(&self.socket, &Request::DecideApproval { id: approval, allow }).await;
+        let answer =
+            crate::client::call(&self.socket, &Request::DecideApproval { id: approval, allow, scope: None }).await;
         if let Ok(Response::Error { code, .. }) = &answer
             && code == "conflict"
         {
@@ -2318,7 +2319,7 @@ mod tests {
     async fn deciding_sends_the_decision_and_a_settled_approval_is_its_own_error() {
         let core = start(|request| async move {
             match request {
-                Request::DecideApproval { id, allow: true } if id == "a1" => Response::Approval {
+                Request::DecideApproval { id, allow: true, .. } if id == "a1" => Response::Approval {
                     approval: crate::ApprovalInfo {
                         id,
                         client: "c1".into(),
