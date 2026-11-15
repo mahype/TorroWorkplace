@@ -1441,6 +1441,7 @@ impl PimService {
             | Request::DeleteConversations { .. }
             | Request::OpenChatWindow { .. }
             | Request::VoiceStatus
+            | Request::VoiceTimings
             | Request::TestVoice
             | Request::Dictate
             | Request::StopDictation
