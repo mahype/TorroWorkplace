@@ -8,7 +8,8 @@
 //!   conversation (`without`), never the area `assistant` (no loop) but its memory
 //!   (`torro_ipc::api::own_memory`, task C.10: `assistant_remember` only when the person asks, as its
 //!   description says), its own access ([`MY_ACCESS`], issue #134, also for a bot), searching its
-//!   conversations ([`SEARCH`], issue #704, not for a bot), the suite's help
+//!   conversations ([`SEARCH`], issue #704, not for a bot), showing what it found as cards ([`SHOW_ITEMS`], issue
+//!   #786, also for a bot), the suite's help
 //!   ([`GET_HELP`], issue #702, also for a bot; the one tool of `system`) and
 //!   [`ASSISTANT_BOT_TOOLS`] (task B.2: asking a bot only on the person's word, which the core
 //!   checks), and never a command kept from agents ([`Mcp::Never`]). A command of one of the
@@ -90,6 +91,11 @@ pub const MY_ACCESS: &str = "assistant.my_access";
 /// bot: the core answers it the assistant's own conversations.
 pub const SEARCH: &str = "assistant.search_conversations";
 
+/// The command that shows mails, events, tasks and contacts a command of the conversation found as cards (issue
+/// #786), offered to the assistant and a bot: the core lets it into their own conversation only, with ids found
+/// there.
+pub const SHOW_ITEMS: &str = "assistant.show_items";
+
 /// The commands of the area `assistant` a bot's model is offered besides [`MY_ACCESS`] (issue #703):
 /// reading its own skills, which the core looks up by the bot. The assistant's model gets them with
 /// its memory (`torro_ipc::api::own_memory`), with writing them as well.
@@ -147,6 +153,11 @@ impl Tool {
     /// The command is [`SEARCH`] (issue #704).
     fn is_search(&self) -> bool {
         self.command.name == SEARCH
+    }
+
+    /// The command is [`SHOW_ITEMS`] (issue #786).
+    fn is_show_items(&self) -> bool {
+        self.command.name == SHOW_ITEMS
     }
 
     /// The command is one of [`BOT_SKILL_TOOLS`] (issue #703).
@@ -221,7 +232,7 @@ pub fn allowed(rights: Option<&Rights>, without: &[Area]) -> Vec<Arc<Tool>> {
 /// [`ASSISTANT_BOT_TOOLS`] (task B.2) and [`SEARCH`] (issue #704) besides its rights, a bot's
 /// ([`torro_ipc::api::BOT_CLIENT`],
 /// task B.1) its rights only and reading its skills ([`BOT_SKILL_TOOLS`], issue #703); both get
-/// [`MY_ACCESS`] (issue #134) and [`GET_HELP`] (issue #702). Neither is offered any other tool
+/// [`MY_ACCESS`] (issue #134), [`SHOW_ITEMS`] (issue #786) and [`GET_HELP`] (issue #702). Neither is offered any other tool
 /// of `assistant` or `bots`, and a bot no tool of `bots` (no chains; the core refuses it them).
 ///
 /// After them the tools of `servers` (issue #302, what [`super::Host::extension_tools`] answers for
@@ -241,7 +252,7 @@ pub fn allowed_for(kind: &str, rights: Option<&Rights>, without: &[Area], server
         let bot = kind == torro_ipc::api::BOT_CLIENT;
         let help = assistant_or_bot && tool.is_help();
         let by_kind = (own && (tool.is_memory() || tool.is_bots() || tool.is_search()))
-            || (assistant_or_bot && tool.is_my_access())
+            || (assistant_or_bot && (tool.is_my_access() || tool.is_show_items()))
             || (bot && tool.is_bot_skill())
             || help;
         let tool_reached = ToolId::of_command(tool.command.name).is_none_or(|own| rights.reaches_tool(own));
@@ -294,7 +305,8 @@ pub fn usable_tools(rights: &Rights, areas: &[Area]) -> Vec<ToolId> {
 }
 
 /// The tool named `name` if the model may call it at all: one of the catalogue in an area a person
-/// can grant (so never `system`, `clients` or `approvals`, but [`GET_HELP`]) other than `assistant`, and none of
+/// can grant (so never `system`, `clients` or `approvals`, but [`GET_HELP`]) other than `assistant` (but its memory,
+/// [`MY_ACCESS`], [`SEARCH`] and [`SHOW_ITEMS`]), and none of
 /// [`NOT_FOR_MODELS`] (`calendar_map_preview`: its picture does not fit a tool result). Whether its rights
 /// and the conversation allow it is checked after this: `without` by the loop, the rights by the
 /// core, which answers `forbidden`. `None` for every other name, also of a real command: the model
@@ -315,7 +327,7 @@ pub fn callable(name: &str) -> Option<Arc<Tool>> {
         .iter()
         .find(|tool| tool.spec.name == name)
         .filter(|tool| {
-            let own = tool.is_memory() || tool.is_my_access() || tool.is_search();
+            let own = tool.is_memory() || tool.is_my_access() || tool.is_search() || tool.is_show_items();
             (tool.command.area.grantable() && (tool.command.area != Area::Assistant || own)) || tool.is_help()
         })
         .cloned()
@@ -1000,10 +1012,12 @@ mod tests {
             [Area::System, Area::Calendar, Area::Tasks, Area::Inbox, Area::Assistant, Area::Bots, Area::Tools];
         assert_eq!(areas, BTreeSet::from(expected));
         assert!(
-            tools
-                .iter()
-                .all(|tool| tool.reads() || tool.is_memory() || tool.is_bots() || tool.command.area == Area::Tools),
-            "read rights, read tools, its memory, the bots and its own tools"
+            tools.iter().all(|tool| tool.reads()
+                || tool.is_memory()
+                || tool.is_bots()
+                || tool.is_show_items()
+                || tool.command.area == Area::Tools),
+            "read rights, read tools, its memory, the bots, showing what it found and its own tools"
         );
         // Task B.2: listing and asking bots, never making, changing or deleting one.
         let bots: Vec<&str> =
@@ -1016,8 +1030,12 @@ mod tests {
         let bot = allowed_for(torro_ipc::api::BOT_CLIENT, Some(&everything_for_a_bot), &[], &[]);
         let closed = |tool: &&Arc<Tool>| matches!(tool.command.area, Area::Assistant | Area::Bots);
         let names: Vec<&str> = bot.iter().filter(closed).map(|tool| tool.spec.name.as_str()).collect();
-        // Its own access (issue #134) and reading its own skills (issue #703), never writing them.
-        assert_eq!(names, ["assistant_my_access", "assistant_list_skills", "assistant_get_skill"]);
+        // Its own access (issue #134), reading its own skills (issue #703), never writing them, and showing what it
+        // found (issue #786).
+        assert_eq!(
+            names,
+            ["assistant_show_items", "assistant_my_access", "assistant_list_skills", "assistant_get_skill"]
+        );
         let own: Vec<&str> = tools
             .iter()
             .filter(|tool| tool.command.area == Area::Assistant)
@@ -1027,6 +1045,7 @@ mod tests {
             own,
             [
                 "assistant_search_conversations",
+                "assistant_show_items",
                 "assistant_list_memories",
                 "assistant_my_access",
                 "assistant_remember",
@@ -1036,7 +1055,7 @@ mod tests {
                 "assistant_save_skill",
                 "assistant_delete_skill"
             ],
-            "task C.10, issue #134, issue #703, issue #704"
+            "task C.10, issue #134, issue #703, issue #704, issue #786"
         );
         assert!(allowed(Some(&rights), &[Area::Calendar]).iter().all(|tool| tool.command.area != Area::Calendar));
         assert!(allowed(Some(&rights), &[Area::Assistant]).iter().all(|tool| !tool.is_memory()), "switched off");
@@ -1051,7 +1070,7 @@ mod tests {
             assert_eq!(command.mcp, Mcp::Tool, "{}", command.name);
             assert!(!matches!(command.area, Area::Clients | Area::Approvals), "{}", command.name);
             assert!(command.area != Area::System || tool.is_help(), "only the help of system (#702): {}", command.name);
-            let own = tool.is_memory() || tool.is_my_access() || tool.is_search();
+            let own = tool.is_memory() || tool.is_my_access() || tool.is_search() || tool.is_show_items();
             assert!(command.area != Area::Assistant || own, "{}", command.name);
             assert!(command.area != Area::Bots || tool.is_bots(), "{}", command.name);
         }
@@ -1068,6 +1087,8 @@ mod tests {
         assert!(callable("assistant_send_message").is_none() && callable("accounts_connect_ai").is_none());
         // Issue #704: the search is callable; the core answers a bot `forbidden` for it.
         assert!(callable("assistant_search_conversations").is_some());
+        // Issue #786: showing what it found, also for a small model that was not offered it.
+        assert!(callable("assistant_show_items").is_some() && callable("assistant_show_card").is_none());
         assert!(callable("assistant_update_profile").is_none(), "never its own profile");
         assert!(callable("assistant_remember").is_some() && callable("assistant_forget").is_some());
         // A map is a picture: neither offered nor callable, whatever the rights.

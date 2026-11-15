@@ -7521,12 +7521,27 @@ impl Core {
                 }
                 self.about_within(answered, reach)
             }
-            // Content cards (issue #784): showing what an answer found (strand 2f, issue #786) comes with its strand;
-            // until then it is not there.
-            Request::ShowItems { .. } => Response::Error {
-                code: "unsupported".into(),
-                message: tr("This version cannot show these cards yet.").into(),
-            },
+            // Showing what an answer found (issue #786): only in a conversation of the caller's own – the
+            // assistant's without a bot, a bot's with it, any one the person names – and only items a command of
+            // that conversation found (`crate::assistant::cards::group`). Rights and kind were checked before.
+            Request::ShowItems { conversation, items } => {
+                use crate::assistant::cards::group::Owner;
+                let bots = match (reach, caller) {
+                    (Reach::Client(_), Some(id)) if self.bot_client(id).is_some() => self.assistant.bots().list().await,
+                    _ => Vec::new(),
+                };
+                let owner = match (reach, caller) {
+                    (Reach::Suite, _) => Owner::Person,
+                    (Reach::Client(_), Some(id)) if self.assistant_client().is_some_and(|own| own.id == id) => {
+                        Owner::Assistant
+                    }
+                    (Reach::Client(_), Some(id)) => {
+                        bots.iter().find(|bot| bot.client == id).map_or(Owner::Other, |bot| Owner::Bot(&bot.id))
+                    }
+                    (Reach::Client(_), None) => Owner::Other,
+                };
+                self.assistant.show_items(owner, conversation.as_deref(), &items).await
+            }
             // "Show once" of a link card and its picture (issue #785): a person's only (`Mcp::Never`, which keeps them
             // from every client already; checked here again by reach).
             Request::ShowAssistantCard { conversation, seq } => match reach {
@@ -33218,6 +33233,63 @@ done"#,
         assert_eq!(code(&core.handle(picture).await), "not-found");
     }
 
+    /// Issue #786: `assistant.show_items` of the assistant's own client adds a card for an item a search of its
+    /// conversation found, whatever its rights in `assistant`; an id no command found is `forbidden`, and another
+    /// client – even with write access to `assistant` – finds no conversation of its own (`not-found`).
+    #[tokio::test]
+    async fn the_assistant_shows_only_what_its_conversation_found() {
+        use torro_ipc::assistant::ItemRef;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let folder = dir.path().join("assistant");
+        let own = "0123456789abcdef";
+        let contents =
+            vec![crate::assistant::tests::message("Mails?"), crate::assistant::tests::tool("mail.search_messages")];
+        crate::assistant::tests::written(&folder, own, "Mails", contents, &[], |_| {});
+        let mail = |n: usize| ItemRef::Mail { account: "mail:anna@example.org".into(), id: format!("m:{n}") };
+        // What the search found, as the store keeps it (`Line::Seen`).
+        let seen =
+            serde_json::json!({"line": "seen", "seq": 2, "refs": (0..3).map(mail).collect::<Vec<_>>(), "total": 3});
+        let mut file =
+            std::fs::OpenOptions::new().append(true).open(folder.join(format!("{own}.jsonl"))).expect("the file");
+        std::io::Write::write_all(&mut file, format!("{seen}\n").as_bytes()).expect("written");
+        let keys = MemoryTokens::default();
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = core_with_ai(dir.path(), &keys, Vec::new()).with_assistant(assistant);
+        let (_, assistant_key) = core
+            .clients
+            .add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant())
+            .await
+            .expect("the assistant");
+        let mut writing = RightsTemplate::ReadOnly.rights();
+        writing.areas.insert(Area::Assistant, AreaRights { level: Level::Write, admin: false });
+        let (_, agent_key) = core.clients.add("Agent", "claude-code", writing).await.expect("added");
+        let show = |items: Vec<ItemRef>| Request::ShowItems { conversation: Some(own.into()), items };
+
+        assert_eq!(ask(&core, Some(&assistant_key), show(vec![mail(1), mail(2)])).await, Response::Ok);
+        assert_eq!(code(&ask(&core, Some(&assistant_key), show(vec![mail(9)])).await), "forbidden", "not found here");
+        assert_eq!(
+            code(&ask(&core, Some(&agent_key), show(vec![mail(1)])).await),
+            "not-found",
+            "no conversation of its own"
+        );
+        assert_eq!(core.handle(show(vec![mail(0)])).await, Response::Ok, "the person names the conversation");
+        let Response::Conversation { entries, .. } =
+            core.handle(Request::GetConversation { id: own.into(), after: None }).await
+        else {
+            panic!("the conversation")
+        };
+        let cards: Vec<_> = entries
+            .iter()
+            .filter_map(|entry| match &entry.content {
+                torro_ipc::assistant::EntryContent::Card { card } => Some(card.clone()),
+                _ => None,
+            })
+            .collect();
+        let group =
+            torro_ipc::assistant::CardRef::Group { items: vec![mail(1), mail(2)], area: Area::Mail, total: None };
+        assert_eq!(cards, [group, mail(0).card()]);
+    }
+
     /// Issue #225, task WZ.5: in a conversation with a bot the card is the bot's: made with its
     /// client, resolved with its rights (the assistant's play no part), unavailable once the bot is
     /// deleted.
@@ -34310,10 +34382,14 @@ done"#,
         let bot_tools: Vec<&str> = asked[3].tools.iter().map(|tool| tool.name.as_str()).collect();
         assert!(bot_tools.contains(&"calendar_list_calendars"), "{bot_tools:?}");
         assert!(
-            // Its own access (issue #134) and reading its own skills (issue #703) only.
+            // Its own access (issue #134), reading its own skills (issue #703) and showing what it found (issue #786)
+            // only.
             bot_tools
                 .iter()
-                .filter(|tool| !["assistant_my_access", "assistant_list_skills", "assistant_get_skill"].contains(tool))
+                .filter(|tool| {
+                    !["assistant_my_access", "assistant_list_skills", "assistant_get_skill", "assistant_show_items"]
+                        .contains(tool)
+                })
                 .all(|tool| !["mail_", "workspaces_", "bots_", "assistant_"].iter().any(|p| tool.starts_with(p))),
             "{bot_tools:?}"
         );

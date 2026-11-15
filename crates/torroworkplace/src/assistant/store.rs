@@ -18,6 +18,11 @@
 //! leaves a note without content in its place ([`Line::Untrusted`], issue #724): the conversation keeps counting as
 //! untrusted for the memory, and nothing of what was read stays on the disk.
 //!
+//! What a command of the conversation found (issue #786, [`Line::Seen`]) is kept as the ids of the items only,
+//! never their content, beside its tool line: `assistant.show_items` shows only items found there, and the count of
+//! a larger search comes from it, never from a model. It is not a result, so dropping results leaves it
+//! ([`drop_results`]): a mail's result goes after a day, the ids the model may still show stay.
+//!
 //! Searching (issue #704, [`Conversation::find`]) reads what the core holds in memory, without an index of
 //! its own: titles, messages and answers, never a result, a tool line, an approval, an error or a card.
 //!
@@ -31,7 +36,9 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use torro_core::ai::Effort;
-use torro_ipc::assistant::{ConversationSummary, Entry, EntryContent, HitKind, MailRef, SNIPPET_CHARS, split_spoken};
+use torro_ipc::assistant::{
+    ConversationSummary, Entry, EntryContent, HitKind, ItemRef, MailRef, SNIPPET_CHARS, split_spoken,
+};
 
 /// The extension of a conversation's file.
 const EXTENSION: &str = "jsonl";
@@ -73,6 +80,23 @@ pub enum Line {
     /// The result of the tool call `seq` was marked `untrusted` and has been dropped (issue #724): only its number
     /// stays, so the conversation still counts as untrusted ([`Conversation::untrusted`]).
     Untrusted { seq: u64 },
+    /// What the command of the tool line `seq` found (issue #786, [`Seen`]): the ids of its items, in its order, and
+    /// how many it found in all. Ids only, so it stays when the result goes ([`drop_results`]).
+    Seen { seq: u64, refs: Vec<ItemRef>, total: u64 },
+}
+
+/// What one command of a conversation found (issue #786, [`Line::Seen`]): written by the core after
+/// `mail.search_messages`, `mail.get_message`, `calendar.list_events`, `tasks.list_todos`, `contacts.list_contacts`
+/// and `contacts.get_contact` (`super::cards::group::seen`), from the core's own answer or, for engine B, from the
+/// answer the agent hands back (made-up ids there do no harm: a card looks every item up with the rights of the
+/// conversation's client).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Seen {
+    /// The items as the command answered them, in its order; never empty.
+    pub refs: Vec<ItemRef>,
+    /// How many the command found in all: at least `refs.len()`, more for a search that counted beyond its page
+    /// (`total_estimate` of `mail.search_messages`).
+    pub total: u64,
 }
 
 /// One conversation as the core holds it in memory.
@@ -96,6 +120,8 @@ pub struct Conversation {
     /// Whether a result marked `untrusted` was dropped from it (issue #724, [`Line::Untrusted`]): the conversation
     /// has read what another's data said, though no result tells so any more.
     pub untrusted: bool,
+    /// What each command found, by the number of its tool line (issue #786, [`Line::Seen`]).
+    pub seen: BTreeMap<u64, Seen>,
 }
 
 impl Conversation {
@@ -112,6 +138,7 @@ impl Conversation {
             about: None,
             results: BTreeMap::new(),
             untrusted: false,
+            seen: BTreeMap::new(),
         }
     }
 
@@ -140,6 +167,7 @@ impl Conversation {
             about,
             results: BTreeMap::new(),
             untrusted: false,
+            seen: BTreeMap::new(),
         };
         for line in lines {
             conversation.apply(line);
@@ -164,6 +192,11 @@ impl Conversation {
             Line::Result { .. } => {}
             Line::Untrusted { seq } if self.is_tool(seq) => self.untrusted = true,
             Line::Untrusted { .. } => {}
+            // As a result: only for a tool line it has.
+            Line::Seen { seq, refs, total } if self.is_tool(seq) && !refs.is_empty() => {
+                self.seen.insert(seq, Seen { refs, total });
+            }
+            Line::Seen { .. } => {}
         }
     }
 
@@ -177,6 +210,14 @@ impl Conversation {
                 self.entries.binary_search_by_key(seq, |entry| entry.seq).is_ok_and(|at| self.entries[at].time < oldest)
             })
             .collect()
+    }
+
+    /// The number of the newest tool line of the command `name` (its catalogue name), `None` without one.
+    pub fn newest_tool(&self, name: &str) -> Option<u64> {
+        self.entries.iter().rev().find_map(|entry| match &entry.content {
+            EntryContent::Tool { name: of, .. } if of == name => Some(entry.seq),
+            _ => None,
+        })
     }
 
     /// Whether the entry `seq` is a tool line.
@@ -239,6 +280,31 @@ impl Conversation {
     pub fn entries_after(&self, after: Option<u64>) -> Vec<Entry> {
         let after = after.unwrap_or(0);
         self.entries.iter().filter(|entry| entry.seq > after).cloned().collect()
+    }
+}
+
+impl super::Assistant {
+    /// Keeps `seen`, what the command `name` (its catalogue name) found, with its tool line in conversation `id`
+    /// (issue #786, [`Line::Seen`]): the newest tool line of `name` there ([`Conversation::newest_tool`]), which
+    /// the run `run` added just before. Engine A calls it after its tool line (`super::model`), engine B after the
+    /// tool line of the agent's call (`super::engines`). `false` when the run was stopped or replaced meanwhile,
+    /// the conversation has no such tool line, or the line could not be stored: nothing counts as found then.
+    pub(super) async fn see(&self, id: &str, run: u64, name: &str, seen: Seen) -> bool {
+        let mut state = self.state().await;
+        if state.running.get(id).is_none_or(|running| running.id != run) {
+            return false;
+        }
+        let Some(seq) = state.conversations.get(id).and_then(|conversation| conversation.newest_tool(name)) else {
+            return false;
+        };
+        let line = Line::Seen { seq, refs: seen.refs, total: seen.total };
+        if self.write(id, vec![line.clone()]).await.is_err() {
+            return false;
+        }
+        if let Some(conversation) = state.conversations.get_mut(id) {
+            conversation.apply(line);
+        }
+        true
     }
 }
 
@@ -800,6 +866,52 @@ mod tests {
         plain.apply(Line::Entry { entry: message.clone() });
         plain.apply(Line::Untrusted { seq: message.seq });
         assert!(!plain.untrusted);
+    }
+
+    /// Issue #786: what a search found stays when its untrusted result is dropped: only ids, kept with its tool
+    /// line; one for an entry that is no tool line, or with nothing found, is of no use.
+    #[test]
+    fn what_a_search_found_outlasts_its_dropped_result() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let folder = dir.path().join("assistant");
+        let mut conversation = Conversation::new("0123456789abcdef".into(), "Mails from Anna", at(0));
+        let tool = EntryContent::Tool {
+            name: "mail.search_messages".into(),
+            input: serde_json::json!({"query": "from:anna"}),
+            summary: "2 mails".into(),
+            error: None,
+            lack: None,
+        };
+        let entry = conversation.next(tool, at(1));
+        let refs = vec![
+            ItemRef::Mail { account: "mail:anna@example.org".into(), id: "m:1".into() },
+            ItemRef::Mail { account: "mail:anna@example.org".into(), id: "m:2".into() },
+        ];
+        let lines = vec![
+            conversation.started(),
+            Line::Entry { entry: entry.clone() },
+            Line::Result { seq: entry.seq, text: "{\"untrusted\":true,\"data\":\"Offer Q4 from Anna\"}".into() },
+            Line::Seen { seq: entry.seq, refs: refs.clone(), total: 14 },
+        ];
+        for line in lines.iter().skip(1).cloned() {
+            conversation.apply(line);
+        }
+        assert_eq!(conversation.seen[&entry.seq], Seen { refs: refs.clone(), total: 14 });
+        append(&folder, &conversation.id, &lines).expect("written");
+        drop_results(&folder, &conversation.id, &conversation.expired_results(at(10))).expect("dropped");
+
+        let text = fs::read_to_string(file(&folder, &conversation.id)).expect("the file");
+        assert!(!text.contains("Offer Q4"), "{text}");
+        let read = load_all(&folder).expect("read");
+        assert!(read[0].results.is_empty() && read[0].untrusted, "the result went, its mark stayed");
+        assert_eq!(read[0].seen, BTreeMap::from([(entry.seq, Seen { refs: refs.clone(), total: 14 })]));
+
+        let mut plain = Conversation::new("fedcba9876543210".into(), "Hello", at(0));
+        let message = plain.next(answer("Hi"), at(1));
+        plain.apply(Line::Entry { entry: message.clone() });
+        plain.apply(Line::Seen { seq: message.seq, refs, total: 2 });
+        plain.apply(Line::Seen { seq: 9, refs: Vec::new(), total: 0 });
+        assert!(plain.seen.is_empty(), "only beside a tool line it has");
     }
 
     #[test]

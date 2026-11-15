@@ -1111,7 +1111,7 @@ impl Answering {
             return self.refused(&call.id, name, input, "forbidden", &lack.message(), Some(lack)).await;
         }
         let request = match tools::request_for(&call.name, &call.arguments) {
-            Ok(request) => self.without_mail_ranking(request),
+            Ok(request) => self.in_this_conversation(self.without_mail_ranking(request)),
             Err(message) => return self.refused(&call.id, name, input, "error", &message, None).await,
         };
         let area = request.operation().area();
@@ -1123,6 +1123,12 @@ impl Answering {
             // suggestion stays in the mail's own list and the tool line says what was read out.
             Outcome::Answered(response) => super::cards::after(&name, response)
                 .or_else(|| self.job.about.as_ref().and_then(|_| super::cards::suggestion_after(&request, response))),
+            Outcome::Denied | Outcome::Expired => None,
+        };
+        // What a search or a read found (issue #786), kept with its tool line: the items `assistant.show_items` may
+        // show here, from the core's own answer.
+        let seen = match &outcome {
+            Outcome::Answered(response) => super::cards::group::seen(&name, response),
             Outcome::Denied | Outcome::Expired => None,
         };
         // Mail switched off in this conversation (issue #460): suggestions keep only what the address
@@ -1199,8 +1205,13 @@ impl Answering {
             _ => None,
         };
         let summary = lack.map_or(summary, tools::lack_summary);
-        let line = EntryContent::Tool { name, input, summary, error, lack };
+        let line = EntryContent::Tool { name: name.clone(), input, summary, error, lack };
         let result = self.add_tool(&call.id, line, result).await?;
+        if let Some(seen) = seen
+            && !self.assistant.see(&self.job.conversation, self.job.run, &name, seen).await
+        {
+            return None;
+        }
         // The card follows its tool line, so the chat shows what was done, then what came of it.
         if let Some(card) = card
             && !self.add(card, false).await
@@ -1226,6 +1237,17 @@ impl Answering {
                 limit,
                 contacts_only: contacts_only || self.job.without.contains(&Area::Mail),
             },
+            other => other,
+        }
+    }
+
+    /// `request` with this answer's conversation when it is `assistant.show_items` (issue #786): the model shows what
+    /// it found here, never in another conversation, whatever it named. Every other request as it is.
+    fn in_this_conversation(&self, request: Request) -> Request {
+        match request {
+            Request::ShowItems { items, .. } => {
+                Request::ShowItems { conversation: Some(self.job.conversation.clone()), items }
+            }
             other => other,
         }
     }
@@ -2627,8 +2649,12 @@ pub(crate) mod tests {
         assert!(!system.contains("calm butler") && !system.contains("Anna"), "nothing of the assistant's: {system}");
         let offered: Vec<&str> = asked[0].tools.iter().map(|tool| tool.name.as_str()).collect();
         assert!(offered.contains(&"calendar_list_calendars"), "{offered:?}");
-        // Of `assistant` only its own access (issue #134) and reading its own skills (issue #703).
-        let own = |tool: &&str| ["assistant_my_access", "assistant_list_skills", "assistant_get_skill"].contains(tool);
+        // Of `assistant` only its own access (issue #134), reading its own skills (issue #703) and showing what it
+        // found (issue #786).
+        let own = |tool: &&str| {
+            ["assistant_my_access", "assistant_list_skills", "assistant_get_skill", "assistant_show_items"]
+                .contains(tool)
+        };
         assert!(
             offered
                 .iter()
@@ -4083,6 +4109,56 @@ pub(crate) mod tests {
         );
         assert!(
             host.ran.lock().expect("lock").iter().any(|(request, _)| matches!(request, Request::ExtractAction { .. }))
+        );
+    }
+
+    /// A search that found the mails `m:0` to `m:11` of Anna, twelve in all; `Ok` to every other request.
+    fn twelve_found(request: &Request) -> Response {
+        match request {
+            Request::SearchMail { .. } => {
+                let messages: Vec<Value> = (0..12)
+                    .map(|n| {
+                        json!({"id": format!("m:{n}"), "account": ACCOUNT, "folder": "f:1", "thread_id": "t:1",
+                               "date": "2026-11-13T09:00:00Z"})
+                    })
+                    .collect();
+                let answer = json!({"result": "mail-messages", "messages": messages, "source": "cache"});
+                serde_json::from_value(answer).expect("a search")
+            }
+            _ => Response::Ok,
+        }
+    }
+
+    /// Issue #786: what a search found is kept with its tool line, and `assistant.show_items` goes to the core for
+    /// this conversation, whatever conversation the model named.
+    #[tokio::test]
+    async fn what_a_search_found_is_kept_and_shown_here() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let show =
+            json!({"conversation": "0000000000000000", "items": [{"kind": "mail", "account": ACCOUNT, "id": "m:3"}]});
+        let script = Script::new(vec![
+            calls("mail_search_messages", json!({"query": "from:anna", "limit": 20})),
+            calls("assistant_show_items", show),
+            says("Here is the offer."),
+        ]);
+        let (assistant, host) =
+            set_up_with(dir.path(), Some(mail_of_anna()), Place::Local, Arc::clone(&script), twelve_found);
+        let id = ask(&assistant, None, "Anna's offer?", Vec::new()).await;
+        let entries = finished(&assistant, &id).await;
+        let search = entries
+            .iter()
+            .find(|entry| matches!(&entry.content, EntryContent::Tool { name, .. } if name == "mail.search_messages"))
+            .map(|entry| entry.seq)
+            .expect("the search's tool line");
+        let state = assistant.state().await;
+        let seen = &state.conversations[&id].seen;
+        assert_eq!(seen.keys().copied().collect::<Vec<_>>(), [search], "kept with its tool line");
+        assert_eq!((seen[&search].refs.len(), seen[&search].total), (12, 12));
+        let ran: Vec<Request> = host.ran.lock().expect("lock").iter().map(|(request, _)| request.clone()).collect();
+        assert!(
+            ran.iter()
+                .any(|request| matches!(request, Request::ShowItems { conversation: Some(here), .. } if *here == id)),
+            "{ran:?}"
         );
     }
 

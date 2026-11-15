@@ -21,8 +21,9 @@
 //!   `local_only`), writes the message to its input and closes it, and turns what it
 //!   writes into entries: text as a growing answer, then answer entries, a tool line per call
 //!   (name, input, result in a few words), a card after a command that made an item (issue #225,
-//!   only for a file the register keeps as the client's, `super::cards::of_agent`), an error entry
-//!   when it fails. The folder is removed
+//!   only for a file the register keeps as the client's, `super::cards::of_agent`), the ids of what a
+//!   search or a read found (issue #786, `super::cards::group::seen_in`, for `assistant_show_items`), an error
+//!   entry when it fails. The folder is removed
 //!   when the run ends, however it ends.
 //! - **The key** is lent for the run only ([`crate::clients::Clients::lend`] through
 //!   [`Host::lend`]): a key of the assistant's client made for this run, kept in the core's
@@ -509,7 +510,21 @@ impl Running {
                     }
                     _ => None,
                 };
+                // What a search or a read found (issue #786), from the agent's text: the items
+                // `assistant.show_items` may show here. A made-up id only lets a card look it up with the rights
+                // of this client, which find nothing.
+                let seen = match (&line, error) {
+                    (EntryContent::Tool { name, .. }, false) => {
+                        super::cards::group::seen_in(name, &text).map(|seen| (name.clone(), seen))
+                    }
+                    _ => None,
+                };
                 if !self.add(line, false).await {
+                    return Some(Ok(Ended::Stopped));
+                }
+                if let Some((name, seen)) = seen
+                    && !self.assistant.see(&self.job.conversation, self.job.run, &name, seen).await
+                {
                     return Some(Ok(Ended::Stopped));
                 }
                 if let Some(card) = card
