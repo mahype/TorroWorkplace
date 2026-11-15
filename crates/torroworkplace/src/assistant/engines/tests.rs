@@ -692,17 +692,20 @@ async fn the_model_and_the_effort_go_to_claude_code() {
 }
 
 /// Issue #785: as with engine A, the links of the agent's last answer become link cards after it, each with
-/// where it came from: what a tool answered, or the agent alone – a message a client sent (as here) is no person's,
-/// so its link counts as the agent's and asks first. The last card ends the run.
+/// where it came from: what a tool that reads answered, or the agent alone – a message a client sent (as here) is no
+/// person's, so its link counts as the agent's and asks first, and so does an address only a command that writes
+/// echoed (decision 1 of issue #784: `mail.save_draft` answers the draft the agent wrote). The last card ends the run.
 #[tokio::test]
 async fn the_links_of_an_answer_become_link_cards_after_it() {
     use torro_ipc::assistant::{CardRef, LinkOrigin};
-    let (client, read, own) = ("https://example.org/plan", "https://example.com/news", "https://example.net/made-up");
-    let answer = format!("See {client}, {read} and {own}.");
+    let (client, read, echo) = ("https://example.org/plan", "https://example.com/news", "https://example.net/echo");
+    let answer = format!("See {client}, {read} and {echo}.");
     let transcript = [
         init(),
         calls("t1", "calendar_list_calendars", json!({})),
         result_of("t1", &format!("found {read}"), false),
+        calls("t2", "mail_save_draft", json!({"body": echo})),
+        result_of("t2", &format!("saved {echo}"), false),
         says(&answer),
         done(&answer),
     ];
@@ -717,6 +720,6 @@ async fn the_links_of_an_answer_become_link_cards_after_it() {
         })
         .collect();
     let link = |url: &str, from| CardRef::Link { url: url.into(), from };
-    assert_eq!(cards, [link(client, LinkOrigin::Model), link(read, LinkOrigin::Read), link(own, LinkOrigin::Model)]);
+    assert_eq!(cards, [link(client, LinkOrigin::Model), link(read, LinkOrigin::Read), link(echo, LinkOrigin::Model)]);
     assert!(matches!(contents(&entries).last(), Some(EntryContent::Card { .. })), "the cards come after the answer");
 }

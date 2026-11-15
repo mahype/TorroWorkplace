@@ -127,11 +127,24 @@ impl Shown {
     }
 }
 
+/// Whether what the command `name` (its catalogue name, as a tool line keeps it) answered counts as read for
+/// [`after_answer`] (decision 1 of issue #784): only a command that reads ([`torro_ipc::api::Access::Read`] in the
+/// catalogue). What a command that writes answers echoes what the model sent it (`mail.save_draft` answers the
+/// draft the model wrote), so an address in it is the model's; so is one from a server's tool, which the catalogue
+/// does not know.
+pub fn reads(name: &str) -> bool {
+    torro_ipc::api::CATALOGUE
+        .iter()
+        .find(|command| command.name == name)
+        .is_some_and(|command| command.access == torro_ipc::api::Access::Read)
+}
+
 /// The link cards to add after the answer `answer` (issue #785): one [`CardRef::Link`] for each of its first
 /// [`MAX_LINK_CARDS`] `https` addresses ([`link_cards::links`]), in their order, with where the address came from:
 /// [`LinkOrigin::Person`] when it stands whole in one of `person` (the person's own messages of the conversation,
 /// never a client's), else [`LinkOrigin::Read`] when it stands whole in one of `read` (what commands of the
-/// conversation answered, as the model read it), else [`LinkOrigin::Model`] ([`link_cards::stands_in`]: a part or a
+/// conversation that read answered, as the model read it: the caller passes only answers of commands that
+/// [`reads`]), else [`LinkOrigin::Model`] ([`link_cards::stands_in`]: a part or a
 /// longer form of such an address is the model's). Empty for an answer without addresses.
 ///
 /// [`MAX_LINK_CARDS`]: torro_ipc::assistant::MAX_LINK_CARDS
@@ -514,6 +527,15 @@ mod tests {
         assert_eq!(step(&always(), PAGE, false, LinkOrigin::Person, Some(&failed), later), Step::Load);
         let own = "https://cloud.example.org/apps/deck/card/4";
         assert_eq!(step(&always(), own, true, LinkOrigin::Person, None, now), Step::Link);
+    }
+
+    /// Decision 1 of issue #784: only what a command that reads answered counts as read; an echo of a command that
+    /// writes is the model's.
+    #[test]
+    fn only_commands_that_read_count_as_read() {
+        assert!(reads("mail.search_messages") && reads("calendar.list_events") && reads("chat.get_messages"));
+        assert!(!reads("mail.save_draft") && !reads("calendar.save_event") && !reads("tasks.save_todo"));
+        assert!(!reads("ext__someserver__fetch"), "a server's tool");
     }
 
     /// Issue #785: three addresses give three cards, the fourth none; each says where it came from.

@@ -339,8 +339,9 @@ struct Running {
     rights: Option<torro_ipc::api::Rights>,
     /// The last answer entry's text: its links get cards when the run ends (issue #785).
     last_answer: String,
-    /// What the agent's tools answered in this run, as it read them: a link in it is one it read, not its own
-    /// (issue #785, [`super::cards::link::after_answer`]).
+    /// What the agent's tools that read answered in this run, as it read them: a link in it is one it read, not its
+    /// own (issue #785, [`super::cards::link::after_answer`]); a command that writes does not count
+    /// ([`super::cards::link::reads`]).
     read: Vec<String>,
 }
 
@@ -520,7 +521,9 @@ impl Running {
                 let (name, input) = self.calls.remove(&id).unwrap_or_else(|| (String::new(), Value::Null));
                 let lack = if error { self.lack(&name, &text) } else { None };
                 let line = tool_line(&name, input, &text, error, lack);
-                if !error {
+                // Only what a command that reads answered counts as read (decision 1 of issue #784): one that writes
+                // echoes the agent's own input.
+                if !error && matches!(&line, EntryContent::Tool { name, .. } if super::cards::link::reads(name)) {
                     self.read.push(text.clone());
                 }
                 // A card after a command that made an item (issue #225), only for a file the register keeps

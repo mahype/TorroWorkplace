@@ -1014,18 +1014,26 @@ impl Answering {
                 })
                 .collect(),
         };
-        let read: Vec<&str> = self
-            .job
-            .results
-            .values()
-            .map(String::as_str)
-            .chain(
-                messages
-                    .iter()
-                    .filter(|message| message.role == torro_core::ai::Role::Tool)
-                    .map(|message| message.content.as_str()),
-            )
+        // Only what a command that reads answered (decision 1 of issue #784): a command that writes echoes the
+        // model's own input, so an address in its answer is the model's ([`super::cards::link::reads`]).
+        let reads = |name: &str| super::cards::link::reads(name);
+        let earlier = self.job.results.iter().filter(|(seq, _)| {
+            self.job.history.iter().any(|entry| {
+                entry.seq == **seq && matches!(&entry.content, EntryContent::Tool { name, .. } if reads(name))
+            })
+        });
+        // This answer's calls by their id, as the model named them, for the results that answer them.
+        let called: BTreeMap<&str, String> = messages
+            .iter()
+            .flat_map(|message| &message.tool_calls)
+            .map(|call| (call.id.as_str(), command_name(&call.name)))
             .collect();
+        let now = messages.iter().filter(|message| {
+            message.role == torro_core::ai::Role::Tool
+                && message.tool_call_id.as_deref().and_then(|id| called.get(id)).is_some_and(|name| reads(name))
+        });
+        let read: Vec<&str> =
+            earlier.map(|(_, text)| text.as_str()).chain(now.map(|message| message.content.as_str())).collect();
         super::cards::link::after_answer(answer, &person, &read)
     }
 
@@ -2754,6 +2762,48 @@ pub(crate) mod tests {
             })
             .collect();
         assert_eq!(kinds, ["message", "answer", "card", "card", "card"]);
+    }
+
+    /// Decision 1 of issue #784: an address that only stands in what a command that writes answered (the echo of the
+    /// model's own input) is the model's; one a command read is read.
+    #[tokio::test]
+    async fn an_address_echoed_by_a_command_that_writes_is_the_models() {
+        use torro_ipc::assistant::{CardRef, LinkOrigin};
+        fn answer(request: &Request) -> Response {
+            match request {
+                Request::CreateContact { .. } => Response::ChatSaved { path: "https://echo.example.org/made".into() },
+                Request::CalendarCollections => Response::ChatSaved { path: "https://read.example.org/found".into() },
+                _ => Response::Ok,
+            }
+        }
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = Script::new(vec![
+            calls("contacts_create_contact", json!({"book": "b1", "fields": {"display_name": "Ben"}})),
+            calls("calendar_list_calendars", json!({})),
+            says("See https://echo.example.org/made and https://read.example.org/found."),
+        ]);
+        let (assistant, _host) = set_up_with(dir.path(), Some(reader()), Place::Local, Arc::clone(&script), answer);
+        let id = ask(&assistant, None, "Make a contact and list my calendars", Vec::new()).await;
+        let entries = finished(&assistant, &id).await;
+        let errors: Vec<&EntryContent> = content(&entries)
+            .into_iter()
+            .filter(|content| matches!(content, EntryContent::Tool { error: Some(_), .. }))
+            .collect();
+        assert!(errors.is_empty(), "both commands ran: {errors:?}");
+        let links: Vec<(&str, LinkOrigin)> = entries
+            .iter()
+            .filter_map(|entry| match &entry.content {
+                EntryContent::Card { card: CardRef::Link { url, from } } => Some((url.as_str(), *from)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            links,
+            [
+                ("https://echo.example.org/made", LinkOrigin::Model),
+                ("https://read.example.org/found", LinkOrigin::Read)
+            ]
+        );
     }
 
     #[tokio::test]
