@@ -3096,6 +3096,9 @@ pub struct Core {
     /// conversation: exact commands in their folder or patterns. In memory only, like [`Core::web_consents`].
     terminal_allowed:
         std::sync::Mutex<HashMap<(String, String), std::collections::HashSet<torro_core::settings::TerminalAlways>>>,
+    /// When a conversation of the assistant last ended for the terminal (deleted, or its answer stopped), per client
+    /// and conversation: an approval asked before then runs nothing (review of #754). In memory only.
+    terminal_ended: std::sync::Mutex<HashMap<(String, String), chrono::DateTime<Utc>>>,
     /// Measures this computer for `ai.recommend` (task MW.6): [`SystemProbe`] in the service, a
     /// computer measured beforehand in tests ([`Measured`], [`Core::with_probe`]) – no test reads
     /// the real hardware.
@@ -3243,6 +3246,7 @@ impl Core {
             },
             web_consents: std::sync::Mutex::new(HashMap::new()),
             terminal_allowed: std::sync::Mutex::new(HashMap::new()),
+            terminal_ended: std::sync::Mutex::new(HashMap::new()),
             // Tests never measure the computer they run on (`Core::with_probe`).
             probe: if cfg!(test) { Box::new(Measured::default()) } else { Box::new(SystemProbe) },
             hardware: tokio::sync::Mutex::new(None),
@@ -5374,11 +5378,17 @@ impl Core {
         if let Request::StopCommand { id: running } = request {
             return Some(Ok(self.tools.terminal().stop(&owner, running).await));
         }
+        // Reading on what its own command writes goes while the terminal is on, also after content from outside
+        // (review of #754): that command's output is what made the conversation so, and it starts nothing new.
+        if let Request::ReadCommandOutput { id: running, from } = request {
+            let on = crate::approvals::TerminalContext { tainted: false, ..terminal.clone() };
+            if let Some(refused) = terminal_refusal(&settings.tools.terminal, &on) {
+                return Some(Ok(refused));
+            }
+            return Some(Ok(self.tools.terminal().read(&owner, running, *from)));
+        }
         if let Some(refused) = terminal_refusal(&settings.tools.terminal, terminal) {
             return Some(Ok(refused));
-        }
-        if let Request::ReadCommandOutput { id: running, from } = request {
-            return Some(Ok(self.tools.terminal().read(&owner, running, *from)));
         }
         let checked = match self.terminal_check(request) {
             Some(Ok(checked)) => checked,
@@ -5398,7 +5408,8 @@ impl Core {
                 true => checked.keys(torro_core::settings::TerminalMode::Every),
                 false => keys,
             };
-            let terminal = crate::approvals::TerminalOrigin { conversation: terminal.conversation.clone(), mode, keys };
+            let conversation = terminal.conversation.clone();
+            let terminal = crate::approvals::TerminalOrigin { conversation, mode, keys, asked: Some(Utc::now()) };
             let origin = crate::approvals::Origin { terminal: Some(terminal), ..via.origin.clone() };
             return Some(self.ask_approval(id, request.clone(), rights, &origin).await);
         }
@@ -5464,6 +5475,17 @@ impl Core {
         if let Some(refused) = terminal_refusal(&self.settings.current().tools.terminal, &context) {
             return refused;
         }
+        // Its conversation was deleted or its answer stopped after it asked: nobody waits for the command any more.
+        let ended = self
+            .terminal_ended
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&(client.id.clone(), terminal.conversation.clone()))
+            .copied();
+        if ended.is_some_and(|ended| terminal.asked.is_none_or(|asked| asked <= ended)) {
+            let message = "the conversation was deleted or its answer stopped after the approval was asked for";
+            return Response::Error { code: "conflict".into(), message: message.into() };
+        }
         let checked = match self.terminal_check(&request) {
             Some(Ok(checked)) => checked,
             Some(Err(refused)) => return refused,
@@ -5500,11 +5522,15 @@ impl Core {
 
     /// Forgets what the person allowed the terminal in `conversation` of `client` and stops its commands in the
     /// background (issue #754): the conversation was deleted or its answer stopped.
-    async fn end_terminal_conversation(&self, client: &str, conversation: &str) {
-        self.terminal_allowed
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&(client.to_string(), conversation.to_string()));
+    ///
+    /// `deleted`: the conversation is gone, so what was allowed there goes too; a stopped answer keeps it, the
+    /// conversation goes on. Either way an approval asked before now runs nothing ([`Core::terminal_ended`]).
+    async fn end_terminal_conversation(&self, client: &str, conversation: &str, deleted: bool) {
+        let key = (client.to_string(), conversation.to_string());
+        if deleted {
+            self.terminal_allowed.lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
+        }
+        self.terminal_ended.lock().unwrap_or_else(PoisonError::into_inner).insert(key, Utc::now());
         self.tools.terminal().end_conversation(client, conversation).await;
     }
 
@@ -7772,9 +7798,11 @@ impl Core {
                     _ => Vec::new(),
                 };
                 let answered = Box::pin(self.assistant_request(request, from)).await;
-                if let Some(assistant) = self.assistant_client().filter(|_| !ended.is_empty()) {
+                // Only once the deletion or the stop went through (review of #754).
+                let done = !matches!(answered, Response::Error { .. });
+                if let Some(assistant) = self.assistant_client().filter(|_| done && !ended.is_empty()) {
                     for conversation in &ended {
-                        self.end_terminal_conversation(&assistant.id, conversation).await;
+                        self.end_terminal_conversation(&assistant.id, conversation, deletes).await;
                     }
                 }
                 // A conversation by voice ends with its conversation (issue #747).
@@ -38248,7 +38276,7 @@ done"#,
             let listed = run(&core, &Actor::Assistant, shell(&work, "ls"), false).await;
             assert_eq!(output(&listed), ("build\n", Some(0), false));
             let asked = waits(run(&core, &Actor::Assistant, shell(&work, "rm -rf build"), false).await);
-            assert!(asked.details.iter().any(|line| line.contains("recursive delete")), "{:?}", asked.details);
+            assert!(asked.details.iter().any(|line| line.contains(tr("recursive delete"))), "{:?}", asked.details);
             let ran = done(approval(core.handle(scoped(&asked.id, ApprovalScope::Always)).await));
             assert_eq!(output(&ran).1, Some(0));
             assert!(!work.join("build").exists());
@@ -38288,7 +38316,7 @@ done"#,
             ));
             waits(elsewhere.await);
             // Deleting the conversation forgets it.
-            core.end_terminal_conversation(&client, "c1").await;
+            core.end_terminal_conversation(&client, "c1", true).await;
             waits(run(&core, &Actor::Assistant, shell(&work, "echo c"), false).await);
         }
 
@@ -38372,6 +38400,23 @@ done"#,
             assert_eq!(code(&refused), "forbidden");
             // Off, nothing gets that far.
             assert_eq!(code(&run(&core, &Actor::Assistant, shell(&work, "echo x"), false).await), "forbidden");
+        }
+
+        /// Review of #754: an approval asked before its answer was stopped runs nothing; a stop keeps what was allowed
+        /// in the conversation; the card shows a second line of a shell command as such.
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn a_stopped_answer_runs_no_approval_it_asked_for() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (core, client, work) = terminal_core(dir.path(), TerminalMode::Every).await;
+            let asked = waits(run(&core, &Actor::Assistant, shell(&work, "echo ok\necho two"), false).await);
+            assert!(asked.details.iter().any(|line| line == "$ echo ok ↵ echo two"), "{:?}", asked.details);
+            let allowed = waits(run(&core, &Actor::Assistant, shell(&work, "echo c"), false).await);
+            done(approval(core.handle(scoped(&allowed.id, ApprovalScope::Conversation)).await));
+            core.end_terminal_conversation(&client, "c1", false).await;
+            let stale = done(approval(core.handle(scoped(&asked.id, ApprovalScope::Once)).await));
+            assert_eq!(code(&stale), "conflict");
+            assert_eq!(output(&run(&core, &Actor::Assistant, shell(&work, "echo c"), false).await).0, "c\n");
         }
 
         /// An "Allow" with a reach is a command of the terminal's alone.

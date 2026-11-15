@@ -284,6 +284,14 @@ impl Ring {
                 chars += 1;
             }
         }
+        // More follows: end at the last line break, so a secret on a line is never split between two reads and
+        // passes the patterns that hide it in neither half (review of #754).
+        if from + (used as u64) < end
+            && let Some(cut) = text.rfind('\n')
+        {
+            used = text[..=cut].len();
+            text.truncate(cut + 1);
+        }
         let next = from + used as u64;
         (text, next, gone || next < end)
     }
@@ -458,16 +466,13 @@ impl Background {
     /// Stops every command of `client` in `conversation` (it was deleted or its answer stopped).
     pub async fn end_conversation(&self, client: &str, conversation: &str) {
         let ended = self.take(|owner| owner.client == client && owner.conversation == conversation);
-        for entry in ended {
-            self.end(entry).await;
-        }
+        // All at once: each may take its grace (review of #754).
+        futures_util::future::join_all(ended.into_iter().map(|entry| self.end(entry))).await;
     }
 
     /// Stops every command (the service ends).
     pub async fn stop_all(&self) {
-        for entry in self.take(|_| true) {
-            self.end(entry).await;
-        }
+        futures_util::future::join_all(self.take(|_| true).into_iter().map(|entry| self.end(entry))).await;
     }
 
     /// Takes the entries whose owner `which` names out of the register.
@@ -526,6 +531,9 @@ mod tests {
         assert_eq!(ring.read(Some(0), 100), ("o world!".into(), 12, true), "what is gone is said");
         assert_eq!(ring.read(Some(6), 3), ("wor".into(), 9, true), "more follows");
         assert_eq!(ring.read(Some(12), 3), (String::new(), 12, false));
+        let mut ring = Ring { cap: 100, ..Ring::default() };
+        ring.push(b"one\ntoken=abcdefgh\n");
+        assert_eq!(ring.read(None, 10), ("one\n".into(), 4, true), "ends at a line break when more follows");
         let mut ring = Ring { cap: 100, ..Ring::default() };
         ring.push("äö".as_bytes());
         assert_eq!(ring.read(None, 1), ("ä".into(), 2, true), "characters, not bytes");

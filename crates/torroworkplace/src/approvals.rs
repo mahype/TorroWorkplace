@@ -690,6 +690,9 @@ pub struct TerminalOrigin {
     /// What "In this conversation" and "Always" keep: the exact command in its folder, or the patterns it matched.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keys: Vec<torro_core::settings::TerminalAlways>,
+    /// When it asked: an "Allow" after its conversation was deleted or its answer stopped runs nothing.
+    #[serde(default)]
+    pub asked: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// The person's yes to the tool `web` in one conversation of the assistant or a bot (issue #305,
@@ -4967,9 +4970,13 @@ pub fn terminal_question(
         ),
         false => trf("Run a command in {folder}: {command}", &[("folder", &folder), ("command", &command)]),
     };
-    let mut details = vec![trf("Folder: {folder}", &[("folder", &folder)]), format!("$ {}", harmless(&checked.text))];
+    let mut details =
+        vec![trf("Folder: {folder}", &[("folder", &folder)]), format!("$ {}", command_shown(&checked.text))];
+    // The patterns by their names in the suite's language (design review of #754).
+    let patterns: Vec<&str> = checked.dangerous.iter().map(|key| tr(key)).collect();
+    let patterns = patterns.join(", ");
     if !checked.dangerous.is_empty() {
-        details.push(trf("Looks dangerous: {patterns}", &[("patterns", &checked.dangerous.join(", "))]));
+        details.push(trf("Looks dangerous: {patterns}", &[("patterns", &patterns)]));
     }
     details.push(match background {
         true => tr("Limits: runs until stopped or the conversation ends, the last 1 MB of output is kept").into(),
@@ -4977,12 +4984,32 @@ pub fn terminal_question(
     });
     details.push(tr("No sandbox: Torro can't stop this command from reading or changing other files.").into());
     details.push(match mode {
-        torro_core::settings::TerminalMode::Dangerous if !checked.dangerous.is_empty() => {
-            tr("\"Always\" allows every command that matches these patterns, in every allowed folder.").into()
-        }
+        torro_core::settings::TerminalMode::Dangerous if !checked.dangerous.is_empty() => trf(
+            "\"Always\" allows every command that matches {patterns}, in every allowed folder.",
+            &[("patterns", &patterns)],
+        ),
         _ => tr("\"Always\" allows exactly this command in this folder.").into(),
     });
     (summary, details)
+}
+
+/// A command's text for its card (review of #754): every character as it runs, nothing made a space or left out –
+/// a line break `↵`, a carriage return `␍`, a tab `⇥`, any other control or invisible format character as
+/// `⟨U+XXXX⟩` – so `echo ok` and a second command on the next line never read as one `echo`.
+fn command_shown(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\n' => out.push_str(" ↵ "),
+            '\r' => out.push('␍'),
+            '\t' => out.push('⇥'),
+            c if c.is_control() || is_format(c) || is_blank(c) || (c.is_whitespace() && c != ' ') => {
+                out.push_str(&format!("⟨U+{:04X}⟩", u32::from(c)))
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// The names of `providers` as one phrase: `DuckDuckGo`, `SearXNG and Wikipedia`, `SearXNG,

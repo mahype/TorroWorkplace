@@ -48,7 +48,9 @@ Bereich `tools`, ohne eigenes `ToolId`: Das Terminal steht außerhalb der Rechte
   Hintergrundbefehle je Unterhaltung und 8 insgesamt (`busy`). Weder Zeit noch Ausgabe lassen sich vom Modell ändern.
 - **Hintergrundbefehle** gehören ihrer Unterhaltung: Eine fremde oder unbekannte Kennung ist `not-found`. Sie enden,
   wenn die Unterhaltung gelöscht oder ihre Antwort abgebrochen wird, wenn ein Mensch das Terminal ausschaltet, und mit
-  dem Dienst. Stoppen geht immer, auch nach fremden Inhalten. Jeder Befehl läuft als
+  dem Dienst. Stoppen geht immer, auch nach fremden Inhalten; die Ausgabe eines eigenen Hintergrundbefehls weiterlesen
+  auch, solange das Terminal an ist. Gelesen wird in ganzen Zeilen, damit kein Geheimnis zwischen zwei Lesevorgängen
+  geteilt wird. Jeder Befehl läuft als
   Prozessgruppe (unter Windows im Job-Objekt ohne Konsolenfenster) wie die MCP-Server, damit nichts übrig bleibt.
 - **Keine Eingabe** (Entscheidung 8): Die Standardeingabe ist leer, es gibt kein Terminal. Ein Programm, das fragt,
   bekommt nichts.
@@ -74,7 +76,7 @@ wird auch bei einem Client mit „Ask first: Never“.
   delete“), die Grenzen und „No sandbox: Torro can't stop this command from reading or changing other files.“. Die
   Zeilen baut der Kern aus dem geprüften Befehl, nie aus dem Text des Modells (`approvals::terminal_question`).
 - **Antworten:** „Allow once“, „In this conversation“, „Always“, „Deny“. „In this conversation“ gilt im Speicher, bis
-  die Unterhaltung endet oder der Dienst neu startet; „Always“ steht in den Einstellungen
+  die Unterhaltung gelöscht wird oder der Dienst neu startet (ein Stopp der Antwort behält es); „Always“ steht in den Einstellungen
   (`tools.terminal.always`, höchstens 200 Einträge).
 - **Woran „Immer“ hängt** (in der Planung entschieden, 15. November 2026): im Modus „Nur bei gefährlichen“ wie bei
   Hermes am erkannten Muster – ein „Always“ für „recursive delete“ lässt danach jeden rekursiven Löschbefehl ohne Karte
@@ -85,8 +87,10 @@ wird auch bei einem Client mit „Ask first: Never“.
   assistant's chat“ und nur „Deny“. Ablehnen geht überall.
 - **Freigaben nie per Stimme**, Befehle nie in geplanten Läufen: Dort gibt es keine Karte. In einer Unterhaltung per
   Stimme hat der Assistent das Terminal wie im Text; was nach dem Modus fragt, wartet auf die Karte im Chat.
-- **Nach dem Ja** prüft der Kern noch einmal: Terminal an, Client der Assistent, Befehl und Ordner wie gezeigt
-  (sonst `conflict`), Ordner und harte Grenzen wie jetzt.
+- **Nach dem Ja** prüft der Kern noch einmal: Terminal an, Client der Assistent, die Unterhaltung seit der Frage
+  weder gelöscht noch ihre Antwort gestoppt (sonst `conflict`), Befehl und Ordner wie gezeigt (sonst `conflict`),
+  Ordner und harte Grenzen wie jetzt. Auf der Karte steht jeder Zeilenumbruch als `↵`, andere Steuer- und
+  unsichtbare Zeichen als `⟨U+…⟩`.
 - **Protokoll:** `audit.jsonl` nennt den Befehlsnamen (`tools.run_command`) und bei Hintergrundbefehlen die Kennung,
   **nie den Befehlstext, den Ordner oder die Ausgabe**. Der Verlauf der Unterhaltung enthält den Befehl.
 
