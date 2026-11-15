@@ -51,14 +51,38 @@ pub fn turned_off(privacy: &Privacy, link: &str, server: &str) -> bool {
     decide(privacy, link, Some(server)) == Decided::Other(Decision::Skip)
 }
 
-/// The card of a link as the own server resolved it, and the id of its picture there (for `chat.get_preview` with
-/// `card`, `assistant.get_card_picture`).
+/// The card of a link as it was resolved, and where its picture comes from (for `chat.get_preview` with `card`,
+/// `assistant.get_card_picture`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolved {
-    /// `None`: asked, the server knows none (so it is not asked again).
+    /// `None`: asked, there is none (so it is not asked again).
     pub card: Option<LinkCard>,
-    /// The picture's id on the own server.
-    pub image: Option<String>,
+    /// The card's picture on the own server; `None` without one.
+    pub picture: Option<CardPicture>,
+}
+
+/// Where the picture of a link card comes from, always from the own server, never from the page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CardPicture {
+    /// The picture the server's references resolved, by its id there (`Remote::card_picture`).
+    Reference(String),
+    /// The server's preview of the file with this id (`Remote::preview`): a file of the own server (issue #790).
+    File(u64),
+}
+
+impl Resolved {
+    /// What a card of the kinds of the own server and GitHub ([`crate::link_cards::nextcloud`],
+    /// [`crate::link_cards::chat`], [`crate::link_cards::github`]) gives, linked as `kind`: a file linked by its id
+    /// has the server's preview as its picture; any other card has none, and says so (`image` off), since only the
+    /// file id names a picture the core can fetch.
+    pub fn found(card: Option<LinkCard>, kind: &super::LinkKind) -> Resolved {
+        let picture = match kind {
+            super::LinkKind::NextcloudFile(super::FileLink::Id(id)) => Some(CardPicture::File(*id)),
+            _ => None,
+        };
+        let card = card.map(|card| LinkCard { image: card.image && picture.is_some(), ..card });
+        Resolved { card, picture }
+    }
 }
 
 /// The card of `link` from what the server answered (`None`: it knows none). A YouTube video carries its id
@@ -72,7 +96,7 @@ pub fn resolved(link: &str, reference: Option<torro_nextcloud::Reference>) -> Re
             video: Some(video),
             ..LinkCard::default()
         });
-        return Resolved { card, image: None };
+        return Resolved { card, picture: None };
     };
     Resolved {
         card: Some(LinkCard {
@@ -84,7 +108,7 @@ pub fn resolved(link: &str, reference: Option<torro_nextcloud::Reference>) -> Re
             video: torro_chat::video_of(link),
             ..LinkCard::default()
         }),
-        image: reference.image,
+        picture: reference.image.map(CardPicture::Reference),
     }
 }
 
@@ -130,14 +154,28 @@ mod tests {
         assert!(turned_off(&privacy, "https://other.example.net/", SERVER));
     }
 
+    /// Issue #790: a file linked by its id has the server's preview as its picture; any other card has none.
+    #[test]
+    fn only_a_file_linked_by_its_id_has_a_picture() {
+        let card = LinkCard { url: "https://cloud.example.org/f/12".into(), image: true, ..LinkCard::default() };
+        let file = super::super::LinkKind::NextcloudFile(super::super::FileLink::Id(12));
+        let found = Resolved::found(Some(card.clone()), &file);
+        assert_eq!(found.picture, Some(CardPicture::File(12)));
+        assert!(found.card.is_some_and(|card| card.image));
+        let share = super::super::LinkKind::NextcloudFile(super::super::FileLink::Share("abc".into()));
+        let found = Resolved::found(Some(card), &share);
+        assert_eq!(found.picture, None);
+        assert!(found.card.is_some_and(|card| !card.image), "no picture it could fetch");
+    }
+
     #[test]
     fn a_link_the_server_knows_no_card_for_has_none_unless_it_is_a_video() {
-        assert_eq!(resolved("https://example.org/a", None), Resolved { card: None, image: None });
+        assert_eq!(resolved("https://example.org/a", None), Resolved { card: None, picture: None });
         let video = resolved("https://www.youtube.com/watch?v=dQw4w9WgXcQ", None).card.expect("a video card");
         assert!(video.video.is_some() && video.title.is_empty());
         let reference = torro_nextcloud::Reference { title: "A".into(), description: None, image: Some("p1".into()) };
         let page = resolved("https://example.org/a", Some(reference));
-        assert_eq!(page.image.as_deref(), Some("p1"));
+        assert_eq!(page.picture, Some(CardPicture::Reference("p1".into())));
         assert!(page.card.is_some_and(|card| card.image && card.domain == "example.org"));
     }
 }

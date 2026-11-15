@@ -3176,6 +3176,9 @@ impl Core {
         // Settings › Privacy (issue #672), read afresh for every page of messages.
         let privacy = settings.clone();
         chat.set_privacy(Arc::new(move || privacy.current().privacy));
+        // The cards of links to GitHub issues and pull requests in the chat (issue #790).
+        let github = Arc::new(GithubAccounts::system());
+        chat.set_github(Arc::clone(&github));
         let presence = Arc::new(presence_of(&chat, &contacts));
         let core = Core {
             backend,
@@ -3191,7 +3194,7 @@ impl Core {
             approvals: Arc::new(Approvals::system()),
             inbox: Arc::new(Inbox::system()),
             audit: Arc::new(Audit::system()),
-            github: Arc::new(GithubAccounts::system()),
+            github,
             ai: Arc::new(AiAccounts::system()),
             ntfy: Arc::new(NtfyAccounts::system()),
             mail,
@@ -3630,6 +3633,7 @@ impl Core {
     pub(crate) fn with_chat(mut self, chat: ChatService, dir: &Path) -> Core {
         let privacy = self.settings.clone();
         chat.set_privacy(Arc::new(move || privacy.current().privacy));
+        chat.set_github(Arc::clone(&self.github));
         self.chat = Arc::new(chat);
         self.presence = Arc::new(PresenceService::in_dir(Arc::clone(&self.chat), dir));
         self
@@ -7529,8 +7533,8 @@ impl Core {
                 Reach::Suite => self.show_link_card(&conversation, seq).await,
                 Reach::Client(_) => refusal("forbidden", tr("Only a person can show this card.").into()),
             },
-            Request::GetCardPicture { conversation, seq, size: _ } => match reach {
-                Reach::Suite => self.link_card_picture(&conversation, seq).await,
+            Request::GetCardPicture { conversation, seq, size } => match reach {
+                Reach::Suite => self.link_card_picture(&conversation, seq, size).await,
                 Reach::Client(_) => refusal("forbidden", tr("Only a person can show this card.").into()),
             },
             // Cards (issue #225): resolved with the rights of the conversation's client, not the caller's
@@ -12261,9 +12265,9 @@ impl Core {
     /// `assistant.get_card_picture` (issue #785) for the app key: the picture of the link card `seq` of
     /// `conversation`, only while that card shows its card with a picture as `assistant.get_cards` shows it now
     /// (with the rights of the conversation's client), through the own Nextcloud as `chat.get_preview` with `card`
-    /// ([`crate::assistant::cards::link::picture`]). `not-found` otherwise, `not-connected` without a Nextcloud
-    /// account.
-    async fn link_card_picture(&self, conversation: &str, seq: u64) -> Response {
+    /// ([`crate::assistant::cards::link::picture`], a file's preview at `size`). `not-found` otherwise,
+    /// `not-connected` without a Nextcloud account.
+    async fn link_card_picture(&self, conversation: &str, seq: u64, size: torro_ipc::chat::PreviewSize) -> Response {
         let (url, from, client) = match self.link_card_entry(conversation, seq).await {
             Ok(found) => found,
             Err(refused) => return refused,
@@ -12275,7 +12279,7 @@ impl Core {
         let lookup = self.lookup(&client, &client.rights, conversation);
         match crate::assistant::cards::link::look(&lookup, seq, &url, from).await {
             torro_ipc::assistant::Card::Link { card: Some(card), .. } if card.image => {
-                crate::assistant::cards::link::picture(&self.chat, &self.shown_links, conversation, seq).await
+                crate::assistant::cards::link::picture(&self.chat, &self.shown_links, conversation, seq, size).await
             }
             _ => refusal("not-found", tr("This card has no picture.").into()),
         }
