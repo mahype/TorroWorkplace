@@ -1388,6 +1388,7 @@ impl Backend for Demo {
                 }
             }
             Request::VoiceStatus => Response::Voice { voice: self.voice() },
+            Request::VoiceTimings => Response::VoiceTimings { timings: voice_timings() },
             Request::SpeechStatus => Response::Speech { speech: speech_status(self.settings.voice.speech_provider) },
             // Issue #762: the models follow the buttons, nothing is downloaded.
             Request::ListVoiceModels
@@ -1703,6 +1704,21 @@ pub fn demo_voice_models(models: &mut [torro_ipc::VoiceModel], request: &Request
             model.completed = 0;
         }
     }
+}
+
+/// Twelve spoken rounds (issue #828), a little apart from each other, as the timings show them.
+fn voice_timings() -> torro_ipc::VoiceTimings {
+    let start = Utc.with_ymd_and_hms(2026, 11, 15, 9, 0, 0).single().unwrap_or_default();
+    let rounds = (0..12u32)
+        .map(|n| torro_ipc::VoiceRound {
+            at: start + Duration::minutes(i64::from(n)),
+            pause_ms: 1000,
+            recognize_ms: 760 + n * 10,
+            first_word_ms: 1290 + n * 10,
+            first_sound_ms: 610 + n * 5,
+        })
+        .collect();
+    torro_ipc::VoiceTimings { rounds }
 }
 
 #[cfg(test)]
