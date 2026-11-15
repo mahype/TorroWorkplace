@@ -551,8 +551,10 @@ pub enum ItemRef {
     /// As [`CardRef::Contact`].
     Contact { id: String },
     /// Any other kind – a group, a file, a link – or one this build does not know: never shown,
-    /// refused by `assistant.show_items` ([`items_refusal`]).
+    /// refused by `assistant.show_items` ([`items_refusal`]). Left out of the schema, so an agent is
+    /// offered only the four kinds it may send.
     #[serde(other)]
+    #[schemars(skip)]
     Unknown,
 }
 

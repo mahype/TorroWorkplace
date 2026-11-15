@@ -4323,7 +4323,8 @@ pub enum Request {
         /// The conversation; left out: the one whose answer runs now.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         conversation: Option<String>,
-        /// The items in the order to show them: mails, events, tasks or contacts.
+        /// The items in the order to show them: one to ten mails, events, tasks or contacts.
+        #[schemars(length(min = 1, max = 10))]
         items: Vec<assistant::ItemRef>,
     },
     /// Fetches the card of the address of one link card in a conversation of the assistant once ("Show

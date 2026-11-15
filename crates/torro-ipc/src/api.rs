@@ -6077,9 +6077,12 @@ static SHOW_ITEMS: Command = Command {
                   `{\"kind\": \"todo\", \"uid\": …}` or `{\"kind\": \"contact\", \"id\": …}`, with the ids a command of this \
                   conversation answered (mail_search_messages, calendar_list_events, tasks_list_todos, \
                   contacts_list_contacts …). Pick the ones that answer the question, best first; one to three show \
-                  as cards, more as short lines, and the count of a larger search is added by itself. Any other id \
-                  is `forbidden`. Only for the assistant and its bots, in their own conversation (`conversation` \
-                  left out: the one answering now); every other client gets `not-found`.",
+                  as cards, more as short lines, and the count of a larger search is added by itself. An id no \
+                  command of this conversation answered, more than 10 items or another kind is `forbidden`. Only \
+                  for the assistant and its bots, in their own conversation (`conversation` left out: the one \
+                  answering now; with a key lent for a run always that run's), whatever their rights in this \
+                  area; another client without the right to write here gets `forbidden`, one with it `not-found`, \
+                  since it has no conversation of its own.",
 };
 
 // Write and never a tool: the own Nextcloud fetches a foreign page, whose owner may learn when it was
@@ -9292,6 +9295,20 @@ mod tests {
             let variant = variants.iter().find(|v| method_of(v) == Some(command.name)).expect("a branch");
             assert_eq!(command.input_schema(), input_of(variant.clone()), "{}", command.name);
         }
+    }
+
+    /// Issue #786: `assistant.show_items` takes one to ten items of the four kinds an agent may show; the schema
+    /// offers no other kind.
+    #[test]
+    fn show_items_offers_one_to_ten_items_of_four_kinds() {
+        let schema = SHOW_ITEMS.input_schema().expect("schema");
+        let items = schema.as_value().pointer("/properties/items").expect("items is a field");
+        assert_eq!((items.get("minItems"), items.get("maxItems")), (Some(&1.into()), Some(&10.into())), "{items}");
+        let text = schema.as_value().to_string();
+        for kind in ["mail", "event", "todo", "contact"] {
+            assert!(text.contains(&format!("\"{kind}\"")), "{kind}: {text}");
+        }
+        assert!(!text.contains("unknown"), "no other kind is offered: {text}");
     }
 
     #[test]
