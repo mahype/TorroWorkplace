@@ -1466,8 +1466,8 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
     Bild) lädt externe Bilder nur nach der gespeicherten Einstellung, „Show once“ zählt dort nicht, weil auch Agenten
     speichern dürfen.
 15. **Das Terminal des Assistenten einstellen** (Issue #754, [terminal.md](terminal.md)): den Schalter und den Modus
-    (`settings.set_setting terminal`) und die „Immer“-Liste (`settings.set_setting terminal_always`) ändert nur der
-    App-Schlüssel, also ein Mensch in der Steuerzentrale › MCP servers › Built-in › Terminal. Jeder Wert, auch das
+    (`settings.set_setting terminal`) und die „Immer“-Liste (`settings.set_setting terminal_always`, `remove` und für
+    „Undo“ auf der Seite `add`) ändert nur der App-Schlüssel, also ein Mensch in der Steuerzentrale › MCP servers › Built-in › Terminal. Jeder Wert, auch das
     Abschalten und das Entfernen eines Eintrags, bekommt von jedem Client `forbidden`, auch mit Admin-Rechten
     (`Request::kept_for_people`, `SettingsStore::set_by_client`); `settings.update_settings` eines Clients lässt
     `tools.terminal`, wie es ist, und `settings.get_settings` zeigt einem Client die „Immer“-Liste nicht (sie nennt
@@ -1616,7 +1616,8 @@ dem Socket lesen; ebenso wird das D-Bus-Signal `ActionInvoked`, mit dem die Bena
 „Allow“ meldet, nicht nach Absender gefiltert. Eine Sandbox gegen Programme desselben Nutzers ist
 nicht Ziel. Deshalb nimmt der Dienst für einen Befehl des Terminals (Issue #754) kein „Allow“ der Benachrichtigung an,
 und die Reichweite `scope` von `approvals.decide_approval` (`once`, `conversation`, `always`) ist nur eine Absprache
-zwischen Karte und Dienst: Wer den App-Schlüssel hat, kann sie setzen. Ein Befehl des Terminals selbst ist ein
+zwischen Karte und Dienst: Wer den App-Schlüssel hat, kann sie setzen, und ebenso mit `settings.set_setting
+terminal_always` und `add` (das „Undo“ der Seite Terminal) einen Eintrag ohne Karte dauerhaft erlauben. Ein Befehl des Terminals selbst ist ein
 solches Programm ([terminal.md](terminal.md), „Ausgangslage“).
 
 Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](app-catalog.md).
