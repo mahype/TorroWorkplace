@@ -1,8 +1,8 @@
 //! The listener's parts as they stand (issue #762): every part is built into the app, so what can be
 //! missing is a model not yet downloaded (Settings › Assistant › Voice, `settings.download_voice_model`)
 //! or a sound device. The wake word has a model of its own built in (issue #765, [`wake_word`]); only when
-//! it does not load is the wake word heard with speech recognition. [`voice_status`] answers `--voice-status` for `settings.voice_status`,
-//! [`Parts::build`] puts the parts together for the settings.
+//! it does not load is the wake word heard with speech recognition. [`voice_status`] answers `--voice-status`
+//! for `settings.voice_status`, [`Parts::build`] puts the parts together for the settings.
 //!
 //! Models are looked for only in the voice folder of the catalogue (`<data>/torroassistant/voice/models/<id>/`,
 //! [`torro_core::voice_models::voice_folder`]); nothing is looked for on `PATH`.
@@ -148,8 +148,8 @@ pub mod tests {
         programs.iter().map(|program| (program.part, program.program.as_deref(), program.missing)).collect()
     }
 
-    /// Issue #762: without models every part but the recorder and the built-in wake word (#765) misses its model; nothing is looked for on
-    /// `PATH`.
+    /// Issue #762: without models every part but the recorder and the built-in wake word (#765) misses its
+    /// model; nothing is looked for on `PATH`.
     #[test]
     fn without_models_the_models_are_missing() {
         let folder = tempfile::tempdir().expect("voice folder");

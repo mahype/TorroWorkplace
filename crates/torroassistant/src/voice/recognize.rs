@@ -129,8 +129,9 @@ pub fn transcript_of(output: &str) -> String {
 }
 
 /// One transcriber shared by the wake word heard with speech recognition ([`super::wake::TranscriptWake`],
-/// on a thread of its own, when the built-in model does not load) and the sentences, so one model is loaded. A sentence waits while a check of the wake word still
-/// runs: at most one check, about a second with Whisper turbo.
+/// on a thread of its own, when the built-in model does not load) and the sentences, so one model is loaded.
+/// A sentence waits while a check of the wake word still runs: at most one check, about a second with
+/// Whisper turbo.
 #[derive(Clone)]
 pub struct SharedTranscriber(Arc<Mutex<Box<dyn Transcriber + Send>>>);
 
