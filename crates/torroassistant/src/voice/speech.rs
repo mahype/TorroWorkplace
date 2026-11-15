@@ -947,14 +947,15 @@ mod tests {
             }))
         );
         assert_eq!(Input::parse(r#"{"say": {"provider": "piper", "text": "Hi"}}"#), None, "a provider that is gone");
-        // Qwen3-TTS reads again (#764); a build without it answers so when it is asked to read.
+        // Qwen3-TTS reads again (#764); a build without it reads it with Pocket TTS.
         let qwen = Input::parse(r#"{"say": {"provider": "qwen", "text": "Hi", "voice": "calm_man"}}"#);
         assert_eq!(
             qwen,
             Some(Input::Say(Say {
                 provider: Some(SpeechProvider::Qwen),
                 text: "Hi".into(),
-                voice: Some("calm_man".into())
+                voice: Some("calm_man".into()),
+                delivery: Delivery::default(),
             }))
         );
     }
@@ -1241,7 +1242,7 @@ mod tests {
         let plain = r#"{"say": {"provider": "pocket", "text": "Ja.", "voice": "alba"}}"#;
         for line in [line, plain] {
             helper.handle(Event::Input(Input::parse(line).expect("a say")), &sender);
-            pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Pocket { computed: true, .. }));
+            pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { computed: true, .. }));
         }
         assert!(said.borrow().contains(&Output::Playing));
         let delivered = delivered.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
@@ -1356,6 +1357,7 @@ mod tests {
                 provider: Some(SpeechProvider::Qwen),
                 text: "Hallo.".into(),
                 voice: Some("calm_man".into()),
+                delivery: Delivery::default(),
             })),
             &sender,
         );
@@ -1402,6 +1404,7 @@ mod tests {
                 provider: Some(SpeechProvider::Qwen),
                 text: "Gut.".into(),
                 voice: Some("warm_woman".into()),
+                delivery: Delivery::default(),
             })),
             &sender,
         );
@@ -1468,7 +1471,7 @@ mod tests {
             fn rate(&self) -> u32 {
                 24_000
             }
-            fn speak(&mut self, _text: &str, _voice: &str, mut chunk: Chunk) -> Result<(), VoiceError> {
+            fn speak(&mut self, _text: &str, _voice: &str, _: Delivery, mut chunk: Chunk) -> Result<(), VoiceError> {
                 // One piece that cannot be interrupted, as Qwen's.
                 std::thread::sleep(Duration::from_millis(300));
                 chunk(&[0.5]);

@@ -625,7 +625,7 @@ fn read_aloud_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message
 }
 
 /// How `provider` speaks (issue #782): for Pocket TTS "Speed" and "Sentence pause", for
-/// OpenAI "Speaking style". Each row ends with its own "Reset", like the zoom of the suite, which can
+/// OpenAI "Speaking style", for Qwen3-TTS nothing. Each row ends with its own "Reset", like the zoom of the suite, which can
 /// be pressed while its value is chosen.
 fn delivery_rows<'a>(state: &'a State, data: &'a Data, provider: SpeechProvider) -> Vec<Element<'a, Message>> {
     let voice = &data.settings.voice;
@@ -678,6 +678,8 @@ fn delivery_rows<'a>(state: &'a State, data: &'a Data, provider: SpeechProvider)
             let detail = Some(tr("How OpenAI speaks: tone, pace, mood").to_string());
             vec![setting_row(None, tr("Speaking style"), detail, control)]
         }
+        // Qwen3-TTS speaks at its own pace (issue #764): nothing to set.
+        SpeechProvider::Qwen => Vec::new(),
     }
 }
 
