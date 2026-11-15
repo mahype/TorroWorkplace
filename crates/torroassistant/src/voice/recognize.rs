@@ -7,9 +7,8 @@
 //! The wake word is heard with the same recogniser on short windows ([`super::wake::TranscriptWake`]),
 //! so one model is loaded once ([`SharedTranscriber`]). The sound never touches the disk.
 
-use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use sherpa_onnx::{
     OfflineModelConfig, OfflineRecognizer, OfflineRecognizerConfig, OfflineTransducerModelConfig,
@@ -128,22 +127,21 @@ pub fn transcript_of(output: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// One transcriber shared by the wake word ([`super::wake::TranscriptWake`]) and the sentences, so one
-/// model is loaded.
+/// One transcriber shared by the wake word ([`super::wake::TranscriptWake`], on a thread of its own)
+/// and the sentences, so one model is loaded. A sentence waits while a check of the wake word still
+/// runs: at most one check, about a second with Whisper turbo.
 #[derive(Clone)]
-pub struct SharedTranscriber(Rc<RefCell<Box<dyn Transcriber>>>);
+pub struct SharedTranscriber(Arc<Mutex<Box<dyn Transcriber + Send>>>);
 
 impl SharedTranscriber {
-    pub fn new(transcriber: Box<dyn Transcriber>) -> SharedTranscriber {
-        SharedTranscriber(Rc::new(RefCell::new(transcriber)))
+    pub fn new(transcriber: Box<dyn Transcriber + Send>) -> SharedTranscriber {
+        SharedTranscriber(Arc::new(Mutex::new(transcriber)))
     }
 }
 
 impl Transcriber for SharedTranscriber {
     fn transcribe(&mut self, samples: &[i16]) -> Result<String, VoiceError> {
-        // The listener runs one part at a time, so the transcriber is never in use twice.
-        let mut transcriber = self.0.try_borrow_mut().map_err(|_| VoiceError::program(NAME, "already transcribing"))?;
-        transcriber.transcribe(samples)
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).transcribe(samples)
     }
 }
 
@@ -233,22 +231,24 @@ mod tests {
     }
 
     /// Counts the sentences it was given.
-    struct Counts(Rc<RefCell<usize>>);
+    struct Counts(Arc<Mutex<usize>>);
 
     impl Transcriber for Counts {
         fn transcribe(&mut self, _: &[i16]) -> Result<String, VoiceError> {
-            *self.0.borrow_mut() += 1;
+            *self.0.lock().expect("count") += 1;
             Ok("heard".into())
         }
     }
 
     #[test]
     fn a_shared_transcriber_is_one() {
-        let count = Rc::new(RefCell::new(0));
-        let mut sentences = SharedTranscriber::new(Box::new(Counts(Rc::clone(&count))));
+        let count = Arc::new(Mutex::new(0));
+        let mut sentences = SharedTranscriber::new(Box::new(Counts(Arc::clone(&count))));
         let mut wake = sentences.clone();
-        assert_eq!(wake.transcribe(&[1]).expect("text"), "heard");
+        // The wake word asks from a thread of its own.
+        let asked = std::thread::spawn(move || wake.transcribe(&[1]).expect("text")).join().expect("thread");
+        assert_eq!(asked, "heard");
         assert_eq!(sentences.transcribe(&[1]).expect("text"), "heard");
-        assert_eq!(*count.borrow(), 2, "both went to the same transcriber");
+        assert_eq!(*count.lock().expect("count"), 2, "both went to the same transcriber");
     }
 }
