@@ -810,6 +810,9 @@ fn a_picture_let_go_comes_again_when_its_message_scrolls_into_view() {
     app.chat.as_mut().expect("a chat window").files.pictures.insert(key.clone(), Shown::Away);
     let _ = app.update(Message::Chat(Msg::Files(FilesMsg::InView(vec![key.0.clone()]))));
     assert!(matches!(chat(&app).files.pictures.get(&key), Some(Shown::Loading)), "asked for again");
+    let failed = FilesMsg::Picture(key.clone(), Err(ChatError::Other("offline".into())));
+    let _ = app.update(Message::Chat(Msg::Files(failed)));
+    assert!(matches!(chat(&app).files.pictures.get(&key), Some(Shown::Away)), "a failure keeps the placeholder");
 }
 
 #[test]

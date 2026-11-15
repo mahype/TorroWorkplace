@@ -217,6 +217,9 @@ pub struct FilesState {
     /// unseen pictures go first.
     pub last_seen: HashMap<String, u64>,
     seen_tick: u64,
+    /// Pictures let go and asked for again: one that fails then keeps its placeholder rather than
+    /// turning into a line, so the history does not jump.
+    again: HashSet<PictureKey>,
 }
 
 impl FilesState {
@@ -588,8 +591,10 @@ impl App {
             },
             FilesMsg::DismissUpload => files.upload = None,
             FilesMsg::Picture(key, result) => {
+                let again = files.again.remove(&key);
                 let shown = match result {
                     Ok(picture) => system::picture_handle(&picture.bytes).map_or(Shown::Missing, Shown::Ready),
+                    Err(_) if again => Shown::Away,
                     Err(_) => Shown::Missing,
                 };
                 files.pictures.insert(key, shown);
@@ -937,7 +942,9 @@ impl App {
         for (key, size) in wanted {
             match chat.files.pictures.get(&key) {
                 None => {}
-                Some(Shown::Away) if chat.files.in_view.contains(&key.0) => {}
+                Some(Shown::Away) if chat.files.in_view.contains(&key.0) => {
+                    chat.files.again.insert(key.clone());
+                }
                 Some(_) => continue,
             }
             chat.files.pictures.insert(key.clone(), Shown::Loading);
