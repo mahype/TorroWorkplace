@@ -25,7 +25,7 @@
 //!
 //! Every card and state is in the gallery: `cargo run -p torro-gui --example gallery -- --content-cards`.
 
-use chrono::Utc;
+use chrono::{Datelike, NaiveDate, Utc};
 use iced::widget::text::Wrapping;
 use iced::widget::{Row, Space, column, container, image, responsive, row, stack, svg};
 use iced::{Alignment, Background, Color, ContentFit, Element, Fill, FillPortion, Padding, Size, Theme, border};
@@ -60,17 +60,56 @@ pub struct Head {
     pub source: String,
     /// Text from outside the suite (a mail, a page, a server's tool): the head says so.
     pub untrusted: bool,
+    /// The colour of the task list the item is in: a ring before the source, as the tasks app marks its lists
+    /// (torro-design: the person's colours only as a mark, never as a surface). Set with [`Head::list_color`].
+    pub list: Option<Color>,
 }
 
 impl Head {
     /// A head with `mark` and `source`, not marked untrusted.
     pub fn new(mark: Icon, source: impl Into<String>) -> Self {
-        Self { mark, source: source.into(), untrusted: false }
+        Self { mark, source: source.into(), untrusted: false, list: None }
     }
 
     /// The same head, marked `untrusted`.
     pub fn untrusted(self) -> Self {
         Self { untrusted: true, ..self }
+    }
+
+    /// The same head with the ring of a task list in `color` before the source.
+    pub fn list_color(self, color: Color) -> Self {
+        Self { list: Some(color), ..self }
+    }
+}
+
+/// The calendar sheet of an event (prototype `docs/prototypes/inhaltskarten/`): the month, the day and the weekday of
+/// its start, beside the title. The calendar's colour only as the sheet's top edge and the tint of its month band,
+/// never as a surface of its own; today's day in the red circle, as everywhere in the suite.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sheet {
+    /// The month, short ("Oct").
+    pub month: String,
+    /// The day of the month.
+    pub day: u32,
+    /// The weekday, short ("Thu").
+    pub weekday: String,
+    /// The calendar's colour; `None` draws the band neutral, without the edge.
+    pub color: Option<Color>,
+    /// The day is today: the number in the red circle.
+    pub today: bool,
+}
+
+impl Sheet {
+    /// The sheet of `date` in the calendar colour `color`, `today` for the red circle; month and weekday in the
+    /// language of the suite (`datetime::month_name_short`, `datetime::weekday_name`).
+    pub fn of(date: NaiveDate, color: Option<Color>, today: NaiveDate) -> Self {
+        Self {
+            month: datetime::month_name_short(date.month()).to_owned(),
+            day: date.day(),
+            weekday: datetime::weekday_name(date, true).to_owned(),
+            color,
+            today: date == today,
+        }
     }
 }
 
@@ -179,6 +218,7 @@ struct Line {
 pub struct ContentCard<M> {
     head: Head,
     picture: Option<Picture>,
+    sheet: Option<Sheet>,
     title: String,
     lines: Vec<Line>,
     main: Option<Action<M>>,
@@ -193,6 +233,7 @@ impl<M: Clone> ContentCard<M> {
         Self {
             head,
             picture: None,
+            sheet: None,
             title: title.into(),
             lines: Vec::new(),
             main: None,
@@ -205,6 +246,11 @@ impl<M: Clone> ContentCard<M> {
     /// Its picture.
     pub fn picture(self, picture: Picture) -> Self {
         Self { picture: Some(picture), ..self }
+    }
+
+    /// The calendar sheet beside its title (an event).
+    pub fn sheet(self, sheet: Sheet) -> Self {
+        Self { sheet: Some(sheet), ..self }
     }
 
     /// One more line under the title, with `mark`; beyond [`MAX_LINES`] left out. An empty `text` is left out too.
@@ -278,7 +324,11 @@ impl<M: Clone> ContentCard<M> {
                 }
                 let mut text = vec![widgets::ellipsized(typo::body_strong(), self.title, theme::text)];
                 text.extend(self.lines.into_iter().map(detail_line));
-                parts.push(column(text).spacing(space::xs()).into());
+                let text = column(text).spacing(space::xs()).width(Fill);
+                parts.push(match self.sheet {
+                    Some(sheet) => row![sheet_view(sheet), text].spacing(space::m()).into(),
+                    None => text.into(),
+                });
                 let mut actions: Vec<Action<M>> = self.main.into_iter().collect();
                 actions.extend(self.more);
                 if !actions.is_empty() {
@@ -389,16 +439,103 @@ pub fn short_detail_width(detail: &str, room: f32) -> Option<f32> {
 
 /// The head: the kind's icon, the source in `text_3`, and the tag `untrusted` at the end when it is.
 fn head_line<'a, M: 'a>(head: &Head) -> Element<'a, M> {
-    let mut line = row![
-        mark(head.mark, icon::SIZE_SM, None),
-        container(widgets::ellipsized(typo::meta(), head.source.clone(), theme::text_3)).width(Fill)
-    ]
-    .spacing(space::s())
-    .align_y(Alignment::Center);
+    let mut line = row![mark(head.mark, icon::SIZE_SM, None)].spacing(space::s()).align_y(Alignment::Center);
+    if let Some(color) = head.list {
+        line = line.push(list_ring(color));
+    }
+    line = line.push(container(widgets::ellipsized(typo::meta(), head.source.clone(), theme::text_3)).width(Fill));
     if head.untrusted {
         line = line.push(untrusted_tag());
     }
     line.into()
+}
+
+/// The stroke of a list's ring and the edge of a calendar sheet (torro-design: rings 2 px, an event's bar 3 px).
+const RING_STROKE: f32 = 2.0;
+const SHEET_EDGE: f32 = 3.0;
+
+/// The ring of a task list in `color`, `space::m()` across, as the tasks app marks its lists.
+fn list_ring<'a, M: 'a>(color: Color) -> Element<'a, M> {
+    let edge = space::m();
+    container(Space::new())
+        .width(edge)
+        .height(edge)
+        .style(move |_: &Theme| container::Style {
+            border: border::rounded(edge / 2.0).color(color).width(RING_STROKE),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// The calendar sheet ([`Sheet`]): `size::avatar_lg()` and a step wide (56, the prototype's), on `panel` with a
+/// hairline; on top the calendar's colour as a 3-px edge over the month band tinted in it (`Palette::tinted`, neutral
+/// `selected` without a colour), the day in `TITLE` with tabular figures (today in the red circle), the weekday in
+/// `MICRO` and `text_3`.
+fn sheet_view<'a, M: 'a>(sheet: Sheet) -> Element<'a, M> {
+    let width = size::avatar_lg() + space::s();
+    let inner = radius::md() - HAIRLINE;
+    let top = border::Radius { top_left: inner, top_right: inner, bottom_right: 0.0, bottom_left: 0.0 };
+    let color = sheet.color;
+    let month = typo::text(typo::micro(), sheet.month).style(theme::text).wrapping(Wrapping::None);
+    let band = container(month).center_x(Fill).padding([space::xs() / 2.0, 0.0]).style(move |t: &Theme| {
+        let p = palette(t);
+        container::Style {
+            background: Some(Background::Color(color.map_or(p.selected, |color| p.tinted(color)))),
+            border: border::rounded(if color.is_some() { border::Radius::default() } else { top }),
+            ..container::Style::default()
+        }
+    });
+    let mut parts: Vec<Element<'a, M>> = Vec::new();
+    if let Some(color) = color {
+        parts.push(
+            container(Space::new())
+                .width(Fill)
+                .height(SHEET_EDGE)
+                .style(move |_: &Theme| container::Style {
+                    background: Some(Background::Color(color)),
+                    border: border::rounded(top),
+                    ..container::Style::default()
+                })
+                .into(),
+        );
+    }
+    parts.push(band.into());
+    let figure = typo::text(typo::title().tabular(), sheet.day.to_string()).wrapping(Wrapping::None);
+    let day: Element<'a, M> = if sheet.today {
+        let edge = typo::line_height(typo::title());
+        container(
+            typo::text(typo::body_strong().tabular(), sheet.day.to_string())
+                .style(|t: &Theme| iced::widget::text::Style { color: Some(palette(t).on_accent) }),
+        )
+        .center(edge)
+        .style(move |t: &Theme| container::Style {
+            background: Some(Background::Color(palette(t).accent)),
+            border: border::rounded(edge / 2.0),
+            ..container::Style::default()
+        })
+        .into()
+    } else {
+        figure.style(theme::text).into()
+    };
+    parts.push(container(day).center_x(Fill).padding(Padding::new(0.0).top(space::xs())).into());
+    parts.push(
+        container(typo::text(typo::micro(), sheet.weekday).style(theme::text_3).wrapping(Wrapping::None))
+            .center_x(Fill)
+            .padding(Padding::new(0.0).bottom(space::s()))
+            .into(),
+    );
+    container(column(parts))
+        .width(width)
+        .padding(HAIRLINE)
+        .style(|t: &Theme| {
+            let p = palette(t);
+            container::Style {
+                background: Some(Background::Color(p.panel)),
+                border: border::rounded(radius::md()).color(p.line_strong).width(HAIRLINE),
+                ..container::Style::default()
+            }
+        })
+        .into()
 }
 
 /// The tag `untrusted`: a quiet pill (fully round, hairline in `line_strong`) with the word in `CAPTION` and
@@ -766,6 +903,17 @@ mod tests {
         let long = "A long description that would take the whole line if it could";
         assert_eq!(short_detail_width(long, 600.0), Some(240.0), "at most two fifths");
         assert_eq!(short_detail_width("  ", 600.0), None);
+    }
+
+    #[test]
+    fn a_sheet_names_month_day_and_weekday_and_knows_today() {
+        let day = NaiveDate::from_ymd_opt(2026, 10, 15).expect("a date");
+        let sheet = Sheet::of(day, None, day);
+        assert_eq!(sheet.day, 15);
+        assert_eq!(sheet.month, datetime::month_name_short(10));
+        assert_eq!(sheet.weekday, datetime::weekday_name(day, true));
+        assert!(sheet.today);
+        assert!(!Sheet::of(day, None, day.succ_opt().expect("a day")).today);
     }
 
     #[test]

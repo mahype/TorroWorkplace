@@ -1,16 +1,16 @@
 //! The event card in the assistant's chat (issue #797): the calendar, title, time, place and what overlaps, with
 //! "Open in calendar" (`apps.open_app` with `event:<uid>`: the calendar's week with the event chosen).
 //!
-//! The calendar's colour is not drawn yet: `content_card` has no place for it (the calendar sheet of the prototype
-//! would be its picture); the head names the calendar instead.
+//! Beside the title the calendar sheet of its start (`content_card::Sheet`): the calendar's colour as its top edge and
+//! the tint of the month band, nowhere as a surface; the head names the calendar.
 
 use chrono::{DateTime, NaiveDate, Utc};
 use iced::Element;
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
-use torro_gui::content_card::{Action, ContentCard, Head};
-use torro_gui::datetime;
+use torro_gui::content_card::{Action, ContentCard, Head, Sheet};
 use torro_gui::icon::Icon;
+use torro_gui::{datetime, widgets};
 use torro_ipc::Request;
 use torro_ipc::assistant::Overlap;
 use torro_pim::{Event, EventTime};
@@ -67,6 +67,14 @@ pub(super) fn when(start: &EventTime, end: Option<&EventTime>, today: NaiveDate)
     }
 }
 
+/// The local day an event starts on.
+fn first_day(start: &EventTime) -> NaiveDate {
+    match start {
+        EventTime::Date(day) => *day,
+        EventTime::DateTime(at) => datetime::to_local(*at).date(),
+    }
+}
+
 /// The line about what overlaps: the first other event with its time, and how many more ("and 2 more"); `None`
 /// when nothing does.
 fn overlapping(overlaps: &[Overlap], more: u32, today: NaiveDate) -> Option<String> {
@@ -82,8 +90,9 @@ fn overlapping(overlaps: &[Overlap], more: u32, today: NaiveDate) -> Option<Stri
     })
 }
 
-/// The card of `event` in the calendar `calendar` (its colour `color`, not drawn yet), with `overlaps` and `more`
-/// more overlapping, `now` for the dates: time, place and what overlaps, the most important first.
+/// The card of `event` in the calendar `calendar` (its colour `color`, `#RRGGBB`, on the sheet), with `overlaps` and
+/// `more` more overlapping, `now` for the dates: the sheet of its first day, then time, place and what overlaps, the
+/// most important first.
 pub(super) fn content(
     event: &Event,
     calendar: &str,
@@ -92,13 +101,14 @@ pub(super) fn content(
     more: u32,
     now: DateTime<Utc>,
 ) -> ContentCard<Message> {
-    let _ = color;
     let today = datetime::to_local(now).date();
     let title = match event.summary.trim() {
         "" => tr("(untitled)").to_owned(),
         title => title.to_owned(),
     };
+    let color = color.and_then(widgets::color_from_hex);
     let mut card = ContentCard::new(Head::new(Icon::Calendar, calendar), title)
+        .sheet(Sheet::of(first_day(&event.start), color, today))
         .line(Icon::Clock, when(&event.start, event.end.as_ref(), today))
         .line(Icon::MapPin, event.location.clone().unwrap_or_default());
     if let Some(overlap) = overlapping(overlaps, more, today) {

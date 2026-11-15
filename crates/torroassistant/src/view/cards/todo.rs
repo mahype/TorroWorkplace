@@ -2,15 +2,16 @@
 //! (`apps.open_app` with `task:<uid>`) and "Done" (`tasks.save_todo` with `completed`, the task as the core resolved
 //! it, so its `etag` guards against a change meanwhile). A task done already has no "Done".
 //!
-//! The list's colour is not drawn yet: `content_card` has no place for it; the head names the list instead.
+//! The list's colour is the ring before the list's name in the head (`Head::list_color`), as the tasks app marks its
+//! lists; never a surface.
 
 use chrono::{DateTime, Utc};
 use iced::Element;
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_gui::content_card::{Action, ContentCard, Head};
-use torro_gui::datetime;
 use torro_gui::icon::Icon;
+use torro_gui::{datetime, widgets};
 use torro_ipc::Request;
 use torro_pim::{EventTime, Todo};
 
@@ -51,16 +52,20 @@ fn priority(priority: Option<u8>) -> Option<(usize, &'static str)> {
     }
 }
 
-/// The card of `todo` in the list `list` (its colour `color`, not drawn yet), `now` for the due date: when it is
+/// The card of `todo` in the list `list` (its colour `color`, `#RRGGBB`, the ring in the head), `now` for the due date: when it is
 /// due, its priority (its dot in the priority's colour, with the word), and whether it is done.
 pub(super) fn content(todo: &Todo, list: &str, color: Option<&str>, now: DateTime<Utc>) -> ContentCard<Message> {
-    let _ = color;
     let today = datetime::to_local(now).date();
     let title = match todo.summary.trim() {
         "" => tr("(untitled)").to_owned(),
         title => title.to_owned(),
     };
-    let mut card = ContentCard::new(Head::new(Icon::ListTodo, list), title);
+    let head = Head::new(Icon::ListTodo, list);
+    let head = match color.and_then(widgets::color_from_hex) {
+        Some(color) => head.list_color(color),
+        None => head,
+    };
+    let mut card = ContentCard::new(head, title);
     if todo.completed {
         card = card.line(Icon::CircleCheck, tr("Done"));
     }

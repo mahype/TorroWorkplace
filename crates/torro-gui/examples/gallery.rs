@@ -17,7 +17,7 @@
 //! `-- --detail` the blocks of a detail page in the settings (tasks DS.3, DS.4: head, tabs, open
 //! question, figures, shares with a legend, setting pairs, the save bar, the quiet branch), `-- --content-cards`
 //! every kind and state of `torro_gui::content_card` (issue #785: link cards, states, the question at "Ask", the
-//! short forms; mini and strip show only the short forms; `--open pages|server|github|states|question|short` shows
+//! short forms; mini and strip show only the short forms; `--open pages|server|github|items|states|question|short` shows
 //! one section alone), `-- --window` the example "Tasks" window (sample data from
 //! `docs/prototypes/linear/tasks.html`) in the layout that fits the window size – resize it to see
 //! wide, medium and narrow. `--open nav|drawer` opens that menu at start, `--open panel`

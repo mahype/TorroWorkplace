@@ -1,21 +1,22 @@
 //! The gallery's page `--content-cards` (issue #785): every kind and state of `torro_gui::content_card` – the link
-//! cards of a page, a video, a file of the own server, a quoted chat message and GitHub in each state, the states of
-//! a card (loading, not available, no longer available), the question of a provider at "Ask" and the short forms.
+//! cards of a page, a video, a file of the own server, a quoted chat message and GitHub in each state, an event with
+//! its calendar sheet and a task with its list's ring, the states of a card (loading, not available, no longer
+//! available), the question of a provider at "Ask" and the short forms, alone and as a group.
 //!
 //! Mini and strip show the short forms, as those tiles would; every other size the cards, as many side by side as
 //! fit. The pictures are drawn here, so the page needs no network. Clicks do nothing.
 
 use std::sync::LazyLock;
 
-use chrono::{Duration, Utc};
+use chrono::{Duration, Local, Utc};
 use iced::widget::{Column, column, container, image, responsive, row, rule, scrollable};
 use iced::{Element, Fill, Size};
 use torro_chat::{ForeignProvider, GithubState, LinkCard, LinkCardKind, LinkFile, LinkGithub, LinkQuote, Video};
-use torro_gui::content_card::{self, Action, AskPress, ContentCard, Head, LinkPress, Picture, Ratio, State};
+use torro_gui::content_card::{self, Action, AskPress, ContentCard, Head, LinkPress, Picture, Ratio, Sheet, State};
 use torro_gui::icon::Icon;
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{self, size, space};
-use torro_gui::{style, typo};
+use torro_gui::{style, typo, widgets};
 
 use super::Msg;
 
@@ -135,12 +136,42 @@ fn mail(state: State<Msg>) -> ContentCard<Msg> {
         .on_press(Msg::Noop)
 }
 
+/// An event in a calendar coloured `hex`, starting `days` from today: the sheet, time, place and an overlap.
+fn event(title: &str, hex: Option<&str>, days: i64, overlap: bool) -> ContentCard<Msg> {
+    let today = Local::now().date_naive();
+    let color = hex.and_then(widgets::color_from_hex);
+    let card = ContentCard::new(Head::new(Icon::Calendar, "Work"), title)
+        .sheet(Sheet::of(today + Duration::days(days), color, today))
+        .line(Icon::Clock, "14:00–15:00")
+        .line(Icon::MapPin, "Room 2.14 · Office Berlin");
+    let card = match overlap {
+        true => card.line_toned(Icon::TriangleAlert, "Overlaps with Call with Ben (14:30)", Some(|p| p.attention)),
+        false => card,
+    };
+    card.main(Action::new(Icon::ArrowUpRight, "Open in calendar", Msg::Noop))
+}
+
+/// A task in a list coloured `hex` with the priority `prio` (0 none … 4 urgent) and its word.
+fn task(title: &str, hex: &str, prio: usize, word: &str) -> ContentCard<Msg> {
+    let head = Head::new(Icon::ListTodo, "Work");
+    let head = match widgets::color_from_hex(hex) {
+        Some(color) => head.list_color(color),
+        None => head,
+    };
+    ContentCard::new(head, title)
+        .line(Icon::CalendarClock, "Due Wed, 11 Nov, 18:00")
+        .line_priority(prio, word)
+        .main(Action::new(Icon::ArrowUpRight, "Open in tasks", Msg::Noop))
+        .more(Action::new(Icon::Check, "Done", Msg::Noop).quiet())
+}
+
 /// A section of the page, to show alone with `--open <name>` (so a picture of a narrow window holds all of it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Part {
     Pages,
     Server,
     Github,
+    Items,
     States,
     Question,
     Short,
@@ -148,7 +179,7 @@ pub enum Part {
 
 impl Part {
     /// The names `--open` takes.
-    pub const NAMES: &str = "pages, server, github, states, question, short";
+    pub const NAMES: &str = "pages, server, github, items, states, question, short";
 
     /// The part `name` names.
     pub fn parse(name: &str) -> Option<Part> {
@@ -156,6 +187,7 @@ impl Part {
             "pages" => Some(Part::Pages),
             "server" => Some(Part::Server),
             "github" => Some(Part::Github),
+            "items" => Some(Part::Items),
             "states" => Some(Part::States),
             "question" => Some(Part::Question),
             "short" => Some(Part::Short),
@@ -216,6 +248,13 @@ fn cards<'a>(width: f32, only: Option<Part>) -> Element<'a, Msg> {
         link(github_card(140, "Move the settings", true, GithubState::Merged), None),
         link(github_card(139, "Try another renderer", true, GithubState::Closed), None),
     ];
+    let items = vec![
+        event("API review", Some("#3FB984"), 2, true).view(room),
+        event("Daily standup", Some("#5B8CFF"), 0, false).view(room),
+        event("Without a calendar colour", None, 9, false).view(room),
+        task("Sort tax documents", "#E8A33D", 4, "Urgent").view(room),
+        task("Water the plants", "#5B8CFF", 1, "Low").view(room),
+    ];
     let page_loading = ContentCard::new(Head::new(Icon::Globe, "example.org").untrusted(), "")
         .picture(Picture { handle: None, ratio: Ratio::Photo, play: false })
         .line(Icon::AlignLeft, "…")
@@ -235,6 +274,7 @@ fn cards<'a>(width: f32, only: Option<Part>) -> Element<'a, Msg> {
         (Part::Pages, section("Pages and videos", pages)),
         (Part::Server, section("Own server", own)),
         (Part::Github, section("GitHub", github)),
+        (Part::Items, section("Events and tasks", items)),
         (Part::States, section("States", states)),
         (Part::Question, section("Question (Settings › Privacy at Ask)", ask)),
         (Part::Short, column![heading("Short forms"), short_list(size::content_max())].spacing(space::s()).into()),
