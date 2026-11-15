@@ -3486,7 +3486,7 @@ Fetches the card of a link card in a conversation of the assistant once ("Show o
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `conversation` | string | ja | The conversation's id from `assistant.list_conversations`. |
-| `seq` | integer | ja | The number of the card's entry ([`assistant::Entry::seq`]). |
+| `seq` | integer | ja | The `seq` of the card's entry, as assistant.get_cards gives it. |
 
 ### `assistant.get_card_picture`
 
@@ -3497,7 +3497,7 @@ Returns the picture of a link card in a conversation of the assistant as the own
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `conversation` | string | ja | The conversation's id from `assistant.list_conversations`. |
-| `seq` | integer | ja | The number of the card's entry ([`assistant::Entry::seq`]). |
+| `seq` | integer | ja | The `seq` of the card's entry, as assistant.get_cards gives it. |
 | `size` | `"small"` \| `"medium"` \| `"large"` | nein, Standard `"small"` | `small` (256 pixels, when left out), `medium` (1024) or `large` (1600). |
 
 ### `assistant.send_message`

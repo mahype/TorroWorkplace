@@ -4357,7 +4357,7 @@ pub enum Request {
     ShowAssistantCard {
         /// The conversation's id from `assistant.list_conversations`.
         conversation: String,
-        /// The number of the card's entry ([`assistant::Entry::seq`]).
+        /// The `seq` of the card's entry, as assistant.get_cards gives it.
         seq: u64,
     },
     /// The picture of a link card in a conversation of the assistant (issue #785, [`Response::ChatPicture`]):
@@ -4372,7 +4372,7 @@ pub enum Request {
     GetCardPicture {
         /// The conversation's id from `assistant.list_conversations`.
         conversation: String,
-        /// The number of the card's entry ([`assistant::Entry::seq`]).
+        /// The `seq` of the card's entry, as assistant.get_cards gives it.
         seq: u64,
         /// `small` (256 pixels, when left out), `medium` (1024) or `large` (1600).
         #[serde(default)]
