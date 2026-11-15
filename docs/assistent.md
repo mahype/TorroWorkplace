@@ -858,7 +858,7 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
   VCTK (CC BY 4.0), Stimmspende (CC0).
 - **Chatfenster:** Der Lautsprecher links vom Mikrofon schaltet `voice.read_aloud` (anfangs aus). Eine neue
   Antwort wird Satz für Satz vorgelesen, der erste Satz, sobald er geschrieben ist (Issue #747,
-  `assistant.speak_answer`); [■] an ihr und der Lautsprecher aus beenden das Vorlesen sofort. „Speak answers“
+  `assistant.speak_answer`); „Stop“ unter ihr und der Lautsprecher aus beenden das Vorlesen sofort. „Speak answers“
   bleibt der eigene Schalter für „Hey Torro“ und das Gespräch: Der Hörer lässt die Antworten, die er geschickt
   hat, selbst vorlesen, das Chatfenster liest sie im eigenen Gespräch deshalb nicht noch einmal vor. Wechselt das
   Fenster die Unterhaltung, endet das Vorlesen.
@@ -877,10 +877,29 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
   Satz. Ein zweiter Aufruf für dieselbe Antwort wartet auf dasselbe Ende, jeder andere beendet das Vorlesen.
   Pausiert die Antwort (ein langes Werkzeug), wartet das Vorlesen ohne Zeitgrenze auf den Rest; als
   „liest vor“ zählt es nur, solange ein Stück klingt, das Mikrofon eines Gesprächs bleibt also nicht zu.
+- **Zweiteilige Antwort** (Issue #774): Wird eine Antwort vorgelesen (Chatfenster mit Lautsprecher an,
+  Gespräch nach „Hey Torro“; `assistant.send_message` mit `spoken`), schreibt das Modell zuerst einen
+  **gesprochenen Teil**, ein bis drei kurze Sätze ohne Markdown, die auf den Inhalt verweisen dürfen („Schau
+  mal in die Liste“), dann eine Zeile nur `---shown---`, dann den **dargestellten Teil** für die Chatbox, so
+  ausführlich wie nötig, in Markdown. Vorgelesen wird nur der gesprochene Teil. Die Trennzeile geht mit allen
+  Anbietern und beim Streamen: Der erste Satz klingt so früh wie vorher. Der Dienst speichert den Text, wie
+  das Modell ihn schrieb, und trennt ihn beim Lesen: `assistant.get_conversation` liefert den gesprochenen
+  Teil im Feld `spoken` der Antwort und in `text` nur den dargestellten, niemand sieht die Trennzeile (auch
+  nicht, während sie entsteht). Mit Lautsprecher aus bleibt die Antwort einteilig wie bisher.
+- **Ohne gesprochenen Teil** (das Modell vergisst die Trennzeile, ein Coding-Agent als Antwortgeber, eine
+  ältere Antwort) wird die ganze Antwort angezeigt und nur ihr Anfang vorgelesen: so viele ganze Sätze, wie in
+  600 Zeichen passen (`SPOKEN_MOST`), auch über `assistant.speak_answer`.
+- **Im Chatfenster** steht der gesprochene Teil als Einleitung mit Lautsprecher-Symbol über dem dargestellten,
+  in der zweiten Textfarbe, damit man ohne Ton nichts verpasst. Darunter stehen „Repeat“ (liest den
+  gesprochenen Teil noch einmal vor, `assistant.speak`) und „Stop“ (bricht das Vorlesen sofort ab,
+  `assistant.stop_speaking`; aktiv nur, solange die Antwort vorgelesen wird, im eigenen Gespräch auch, solange
+  der Hörer die letzte Antwort vorliest). Eine Antwort ohne gesprochenen Teil hat nur „Stop“, solange sie
+  vorgelesen wird. Mini-Kachel und Leiste zeigen keine Knöpfe; ihre Zeile zeigt den gesprochenen Teil.
 
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
-| Text vorlesen, Vorlesen stoppen | Chatfenster (Lautsprecher, [■]), „Preview“ in Voice | `assistant.speak`, `assistant.stop_speaking` · Write | `assistant_speak`, `assistant_stop_speaking` |
+| Text vorlesen, Vorlesen stoppen | Chatfenster (Lautsprecher, „Repeat“ und „Stop“ unter der Antwort), „Preview“ in Voice | `assistant.speak`, `assistant.stop_speaking` · Write | `assistant_speak`, `assistant_stop_speaking` |
+| Gesprochenen und dargestellten Teil lesen (Issue #774) | Chatfenster (Einleitung über der Antwort) | `assistant.get_conversation` (`spoken`, `text`) · Read | `assistant_get_conversation` |
 | Antwort Satz für Satz vorlesen (Issue #747) | Chatfenster (Lautsprecher), Gespräch | `assistant.speak_answer` · Write | `assistant_speak_answer` |
 | Wer vorlesen kann | Voice › Read aloud | `settings.speech_status` · Read | `settings_speech_status` |
 | An/aus, Anbieter, Stimmen | Voice › Read aloud, Lautsprecher im Chatfenster | `settings.set_setting` `read_aloud`, `speech_provider`, `pocket_voice`, `openai_voice` · Admin | `settings_set_setting` (OpenAI als Anbieter nur Menschen) |
