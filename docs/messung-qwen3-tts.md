@@ -83,9 +83,18 @@ bestätigt den Plan: Qwen3-TTS nur mit Grafikkarte, sonst Pocket TTS.
 
 ## Klang
 
-Beurteilt von einem Menschen beim Halt der Umsetzung (15. November 2026) durch Anhören der Proben und Vergleich
-mit den Vorlagen: Die Wahl fiel auf **Crane mit 0.6B** (Kommentar im Issue #764). Eine eigene Note je Laufzeit
-wurde nicht festgehalten; die messbaren Auffälligkeiten im Ton stehen oben. Proben (je Laufzeit, Modell, Stimme und Text
+Beurteilt von einem Menschen durch Anhören der Proben (kurzer und mittlerer Satz, beide Stimmen) und Vergleich mit
+den Vorlagen, 15. November 2026:
+
+| Laufzeit | Modell | Klang |
+|---|---|---|
+| Crane | 0.6B | trifft beide Stimmen der App („Warm woman“, „Calm man“) erkennbar |
+| Crane | 1.7B | kein hörbarer Gewinn gegenüber 0.6B |
+| qwen3-tts.cpp | 0.6B | etwa gleich wie Crane |
+| qwen3-tts.cpp | 1.7B | nicht eigens angehört |
+
+Da der Klang gleich ausfällt, entscheiden Tempo und Einbau: Die Wahl fiel auf **Crane mit 0.6B** (Kommentar im
+Issue #764). Die messbaren Auffälligkeiten im Ton stehen oben. Proben (je Laufzeit, Modell, Stimme und Text
 der erste Lauf; bei qwen3-tts.cpp je Stück eine Datei `-p0`, `-p1`):
 
 - Grafikkarte: `~/.cache/torro-qwen-messung/run/proben/` (28 Dateien)
