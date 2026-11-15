@@ -690,3 +690,33 @@ async fn the_model_and_the_effort_go_to_claude_code() {
     let (summary, _) = read(&setup.assistant, &conversation.id, None).await;
     assert_eq!((summary.model.as_deref(), summary.effort), (Some("opus"), Some(torro_core::ai::Effort::High)));
 }
+
+/// Issue #785: as with engine A, the links of the agent's last answer become link cards after it, each with
+/// where it came from: what a tool answered, or the agent alone – a message a client sent (as here) is no person's,
+/// so its link counts as the agent's and asks first. The last card ends the run.
+#[tokio::test]
+async fn the_links_of_an_answer_become_link_cards_after_it() {
+    use torro_ipc::assistant::{CardRef, LinkOrigin};
+    let (client, read, own) = ("https://example.org/plan", "https://example.com/news", "https://example.net/made-up");
+    let answer = format!("See {client}, {read} and {own}.");
+    let transcript = [
+        init(),
+        calls("t1", "calendar_list_calendars", json!({})),
+        result_of("t1", &format!("found {read}"), false),
+        says(&answer),
+        done(&answer),
+    ];
+    let setup = set_up(&transcript, "", Duration::from_secs(10), true).await;
+    let id = ask(&setup, None, &format!("What about {client}?"), Vec::new()).await;
+    let entries = finished(&setup.assistant, &id).await;
+    let cards: Vec<_> = contents(&entries)
+        .into_iter()
+        .filter_map(|content| match content {
+            EntryContent::Card { card } => Some(card),
+            _ => None,
+        })
+        .collect();
+    let link = |url: &str, from| CardRef::Link { url: url.into(), from };
+    assert_eq!(cards, [link(client, LinkOrigin::Model), link(read, LinkOrigin::Read), link(own, LinkOrigin::Model)]);
+    assert!(matches!(contents(&entries).last(), Some(EntryContent::Card { .. })), "the cards come after the answer");
+}
