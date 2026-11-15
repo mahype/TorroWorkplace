@@ -874,7 +874,9 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
   „Speed“ von 70 bis 150 % in Zehnern (`pocket_speed`) und „Sentence pause“, eine zusätzliche Stille
   nach jedem Satz bis 1 s in Viertelsekunden (`pocket_pause`). sherpa-onnx liest bei Pocket kein Tempo, und seine
   Pausen-Einstellung wirkt beim stückweisen Vorlesen nicht: Der Helfer streckt den Ton deshalb selbst, ohne die
-  Tonhöhe zu ändern (WSOLA), und rechnet mit Pause jeden Satz einzeln. OpenAI: „Speaking style“ in eigenen
+  Tonhöhe zu ändern (WSOLA), und rechnet mit Pause jeden Satz einzeln. Nach Abkürzungen („z. B.“, „bzw.“,
+  „inkl.“) und Tagen („3. Mai“) endet kein Satz; ein Satz, der mit Anführungszeichen oder Klammer schließt
+  („Ja.“), endet dahinter; ein langer, geteilter Satz hat die Pause nur an seinem Ende. OpenAI: „Speaking style“ in eigenen
   Worten (`openai_style`, bis 500 Zeichen, geht als `instructions` an OpenAI); ein Tempo nimmt
   `gpt-4o-mini-tts` nicht an, „langsam“ im Sprechstil wirkt dort. Agenten dürfen alle drei setzen; der Stil geht
   nur an OpenAI, wenn ein Mensch OpenAI gewählt hat.
