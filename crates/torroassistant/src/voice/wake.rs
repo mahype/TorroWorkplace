@@ -337,6 +337,11 @@ mod tests {
             woke |= wake.hears(frame).expect("hears");
         }
         assert!(started.elapsed() < std::time::Duration::from_millis(300), "the frames were not held up");
+        // The check runs on a thread of its own: under load it may not have begun yet (issue #764).
+        let begun = std::time::Instant::now();
+        while *calls.lock().expect("calls") == 0 && begun.elapsed() < std::time::Duration::from_secs(2) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         assert_eq!(*calls.lock().expect("calls"), 1, "one check at a time");
         let quiet = vec![0; FRAME];
         for _ in 0..100 {
