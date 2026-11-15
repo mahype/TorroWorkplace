@@ -141,20 +141,20 @@ pub enum VoiceTab {
     ReadAloud,
     /// Talking to the assistant: the wake word, speaking answers, the microphone and its test.
     Conversation,
-    /// The programs on this computer the listener needs.
-    Programs,
+    /// The models the assistant listens and speaks with (issue #762; "Programs" until then).
+    Models,
 }
 
 impl VoiceTab {
     /// Every tab, in the order of the row.
-    pub const ALL: [VoiceTab; 3] = [VoiceTab::ReadAloud, VoiceTab::Conversation, VoiceTab::Programs];
+    pub const ALL: [VoiceTab; 3] = [VoiceTab::ReadAloud, VoiceTab::Conversation, VoiceTab::Models];
 
     /// Its word, translated.
     pub fn label(self) -> &'static str {
         match self {
             VoiceTab::ReadAloud => tr("Read aloud"),
             VoiceTab::Conversation => tr("Conversation"),
-            VoiceTab::Programs => tr("Programs"),
+            VoiceTab::Models => tr("Models"),
         }
     }
 }

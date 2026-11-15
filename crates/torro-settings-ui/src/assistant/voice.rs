@@ -13,7 +13,10 @@
 //! recommended one marked, the credits of the voices, and "Preview", which reads a sentence
 //! ([`Message::Preview`], an [`crate::Action::Ask`] of `assistant.speak`).
 //!
-//! Below them "Models" (issue #762, `settings.list_voice_models`): every model with what it does, its
+//! Since issue #763 each of the three groups is a tab of its own ([`VoiceTab`], the row drawn by
+//! [`super::page`]): Read aloud, Conversation, Models, so the page fits the window.
+//!
+//! "Models" (issue #762, `settings.list_voice_models`): every model with what it does, its
 //! size and a button – "Download", "Cancel" with the progress while it loads, "Remove" once it is
 //! there, and the reason when a download failed. Everything is built into the assistant: nothing to
 //! install and no command to copy. While one downloads the section asks for the list every second
@@ -41,7 +44,7 @@
 
 use std::time::Duration;
 
-use iced::widget::{column, row, svg, toggler};
+use iced::widget::{row, svg, toggler};
 use iced::{Alignment, Element, Subscription};
 
 use torro_core::i18n::{tr, trc, trf};
@@ -58,7 +61,7 @@ use torro_ipc::{
     VoiceState, VoiceStatus,
 };
 
-use super::Action;
+use super::{Action, VoiceTab};
 use crate::Data;
 use crate::parts::setting_row;
 
@@ -376,14 +379,18 @@ pub fn models_of<'a>(state: &'a State, data: &'a Data) -> &'a [VoiceModel] {
 
 // ----- Views --------------------------------------------------------------------------------
 
-/// Read aloud, Voice and the models.
-pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+/// The group of the tab on screen (issue #763): reading aloud, the conversation by voice with the
+/// microphone where one can be named, or the models (issue #762). While the assistant is off, the tab
+/// says so under its own name.
+pub fn view<'a>(state: &'a State, data: &'a Data, tab: VoiceTab) -> Element<'a, Message> {
     if !super::is_on(data) {
-        return super::off_group(tr("Voice"));
+        return super::off_group(tab.label());
     }
-    column![read_aloud_group(state, data), voice_group(state, data), models_group(state, data)]
-        .spacing(layout::section_gap())
-        .into()
+    match tab {
+        VoiceTab::ReadAloud => read_aloud_group(state, data),
+        VoiceTab::Conversation => voice_group(state, data),
+        VoiceTab::Models => models_group(state, data),
+    }
 }
 
 /// The open dropdown under its button, the chosen entry marked: the two speech recognitions, the
@@ -502,7 +509,7 @@ fn read_aloud_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message
     // The status came with the other voice data, or its check failed: then say so instead of
     // "Checking …" for ever.
     let detail = match (&data.speech, &data.voice) {
-        (None, Some(_)) => Some(tr("This computer could not be checked. Use Check again below.").to_string()),
+        (None, Some(_)) => Some(tr("This computer could not be checked. Use Check again under Models.").to_string()),
         (speech, _) => provider_detail(speech.as_ref(), current),
     };
     let provider =
@@ -553,7 +560,7 @@ fn voice_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let speak = setting_row(
         None,
         tr("Speak answers"),
-        Some(tr("After “Hey Torro”, with the voice chosen above").to_string()),
+        Some(tr("After “Hey Torro”, with the voice under Read aloud").to_string()),
         speak,
     );
     let test_button = match state.testing {
@@ -575,7 +582,7 @@ fn voice_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let mut rows = vec![on, wake, speak, recognizer, language_row(state, data)];
     rows.extend(microphone_row(state, data));
     rows.push(test);
-    widgets::group(tr("Voice"), rows, Some(footer.to_string()))
+    widgets::group(tr("Conversation"), rows, Some(footer.to_string()))
 }
 
 /// "Language" (decision 4 of #762): Whisper's as a dropdown, with the language of the suite unless
@@ -731,7 +738,7 @@ pub fn heard_text(state: &State) -> String {
         None => tr("Shows what the assistant understands").to_string(),
         Some(Heard::Text(text)) => trf("Heard: “{text}”", &[("text", text)]),
         Some(Heard::Nothing) => tr("Nothing understood. Speak a little louder or closer.").to_string(),
-        Some(Heard::Failed(_)) => tr("The test failed. Check the models below.").to_string(),
+        Some(Heard::Failed(_)) => tr("The test failed. Check the models under Models.").to_string(),
     }
 }
 
@@ -814,7 +821,7 @@ pub fn provider_detail(speech: Option<&SpeechStatus>, current: SpeechProvider) -
 /// What keeps a provider from reading, for people.
 pub fn missing_text(missing: SpeechMissing) -> &'static str {
     match missing {
-        SpeechMissing::Model => tr("Download the model below first."),
+        SpeechMissing::Model => tr("Download the model under Models first."),
         SpeechMissing::Player => tr("No sound output was found."),
         SpeechMissing::Account => tr("Connect an OpenAI account in Settings › AI."),
         SpeechMissing::App => tr("The assistant app is not installed."),
@@ -835,14 +842,16 @@ pub fn voice_state(enabled: bool, status: Option<&VoiceStatus>) -> (Status, Stri
     }
     if !enabled {
         let detail =
-            if status.can_listen() { tr("Off") } else { tr("Download a speech recognition model below first") };
+            if status.can_listen() { tr("Off") } else { tr("Download a speech recognition model under Models first") };
         return (Status::Inactive, detail.to_string());
     }
     match (status.listener, &status.problem) {
         (VoiceState::Listening, _) => (Status::Ok, tr("Listening for “Hey Torro”").to_string()),
         (VoiceState::Recording, _) => (Status::Ok, tr("Recording …").to_string()),
         (VoiceState::Answering, _) => (Status::Ok, tr("Answering …").to_string()),
-        (VoiceState::Off, Some(_)) => (Status::Error, tr("The listener stopped. Check the models below.").to_string()),
+        (VoiceState::Off, Some(_)) => {
+            (Status::Error, tr("The listener stopped. Check the models under Models.").to_string())
+        }
         (VoiceState::Off, None) => (Status::Attention, tr("Starting …").to_string()),
     }
 }
@@ -891,6 +900,13 @@ mod tests {
             completed,
             error: (state == VoiceModelState::Failed)
                 .then(|| tr("No connection to the internet. Check the network and try again.").to_string()),
+        }
+    }
+
+    /// Builds every tab of the page with `state` and `data`.
+    fn views(state: &State, data: &Data) {
+        for tab in VoiceTab::ALL {
+            let _ = view(state, data, tab);
         }
     }
 
@@ -951,7 +967,7 @@ mod tests {
 
         let _ = update(&mut state, Message::TestVoice, &data);
         answered(&mut state, &Err("no microphone".into()));
-        assert_eq!(heard_text(&state), tr("The test failed. Check the models below."));
+        assert_eq!(heard_text(&state), tr("The test failed. Check the models under Models."));
 
         // An answer that is not this section's leaves it alone.
         let before = heard_text(&state);
@@ -1022,7 +1038,7 @@ mod tests {
         let mut state = State::default();
         assert!(matches!(update(&mut state, Message::Enabled(true), &data), Act::None));
         assert!(matches!(update(&mut state, Message::Enabled(false), &data), Act::Send(_)));
-        assert_eq!(voice_state(false, Some(&missing)).1, tr("Download a speech recognition model below first"));
+        assert_eq!(voice_state(false, Some(&missing)).1, tr("Download a speech recognition model under Models first"));
     }
 
     #[test]
@@ -1069,7 +1085,7 @@ mod tests {
         };
         loaded(&mut state, &none);
         assert!(state.menus.is_open(&Choice::Recognizer) && overlay(&state, &none).is_some());
-        let _ = view(&state, &data);
+        views(&state, &data);
         let chosen = update(&mut state, Message::Recognizer(Recognizer::Parakeet), &data);
         assert_eq!(sent(chosen), (SettingKey::SpeechRecognizer, serde_json::json!("parakeet")));
         assert_eq!(state.menus.open(), None, "the choice closes it");
@@ -1101,9 +1117,9 @@ mod tests {
                 torro_core::i18n::Lang::En => "en",
             })
         );
-        let _ = view(&state, &data);
+        views(&state, &data);
         data.settings.voice.recognizer = Recognizer::Parakeet;
-        let _ = view(&state, &data);
+        views(&state, &data);
     }
 
     /// Issue #547: the microphone is a dropdown in "Voice" – opening it asks for the focus, Escape
@@ -1118,7 +1134,7 @@ mod tests {
         assert_eq!(open, Act::Focus(DROPDOWN_SEARCH));
         assert!(overlay(&state, &data).is_some());
         assert_eq!(escape(&state), Some(Message::Menus(DropdownEvent::Close)));
-        let _ = view(&state, &data);
+        views(&state, &data);
         let chosen = update(&mut state, Message::Microphone(Some("USB microphone".into())), &data);
         assert_eq!(sent(chosen), (SettingKey::Microphone, serde_json::json!("USB microphone")));
         assert_eq!((state.menus.open(), escape(&state)), (None, None), "the choice closes it");
@@ -1171,7 +1187,7 @@ mod tests {
         );
         answered(&mut state, &Err("Another download is running.".into()));
         assert_eq!(state.models_failed.as_deref(), Some("Another download is running."));
-        let _ = view(&state, &data);
+        views(&state, &data);
     }
 
     /// Issue #762: every state of a model builds, with its button; nothing asks to install or copy.
@@ -1188,7 +1204,7 @@ mod tests {
         .into_iter()
         .map(|state| model("parakeet", state, 500))
         .collect();
-        let _ = view(&State::default(), &data);
+        views(&State::default(), &data);
         assert_eq!(percent(&model("x", VoiceModelState::Running, 620)), 62);
         assert_eq!(percent(&VoiceModel { bytes: 0, ..model("x", VoiceModelState::Running, 5) }), 0);
         let detail = model_detail(&model("x", VoiceModelState::Missing, 0));
@@ -1224,10 +1240,10 @@ mod tests {
                 Some(VoiceStatus { microphones: Vec::new(), ..status(VoiceState::Off, None) }),
                 None,
             ] {
-                let _ = view(&state, &Data { voice: voice.clone(), ..on.clone() });
-                let _ = view(&state, &Data { voice, ..data.clone() });
+                views(&state, &Data { voice: voice.clone(), ..on.clone() });
+                views(&state, &Data { voice, ..data.clone() });
             }
-            let _ = view(&state, &turned_off(&data));
+            views(&state, &turned_off(&data));
         }
     }
 
@@ -1267,7 +1283,7 @@ mod tests {
         assert_eq!(state.preview_failed.as_deref(), Some("No sound output was found."));
 
         let failed = Data { speech: None, ..data.clone() };
-        let _ = view(&state, &failed);
+        views(&state, &failed);
 
         assert_eq!(speech_items(Choice::Provider, &data).len(), 2);
         let pocket =
@@ -1279,7 +1295,7 @@ mod tests {
         assert_eq!(voice_name("warm_woman"), tr("Warm woman"));
         assert_eq!(voice_name("alba"), "Alba");
         for data in [&data, &pocket, &openai] {
-            let _ = view(&state, data);
+            views(&state, data);
             for key in [Choice::Provider, Choice::SpeechVoice] {
                 state.menus = Dropdown::default();
                 let _ = update(&mut state, Message::Menus(DropdownEvent::Toggle(key)), data);
@@ -1307,7 +1323,7 @@ mod tests {
         assert_eq!(provider_detail(Some(&status(None)), SpeechProvider::Pocket), None);
         assert_eq!(
             provider_detail(Some(&status(Some(SpeechMissing::Model))), SpeechProvider::Pocket).as_deref(),
-            Some(tr("Download the model below first."))
+            Some(tr("Download the model under Models first."))
         );
         assert_eq!(provider_detail(None, SpeechProvider::Pocket).as_deref(), Some(tr("Checking this computer…")));
         assert_eq!(missing_text(SpeechMissing::Account), tr("Connect an OpenAI account in Settings › AI."));

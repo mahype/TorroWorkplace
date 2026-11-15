@@ -9155,7 +9155,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Write the skill first.", "Schreib zuerst die Fähigkeit."),
     ("an unknown skill", "eine unbekannte Fähigkeit"),
     // Reading answers aloud (issue #745).
-    ("After “Hey Torro”, with the voice chosen above", "Nach „Hey Torro“, mit der oben gewählten Stimme"),
     ("Calm man", "Mann, ruhig"),
     ("Checking this computer…", "Dieser Rechner wird geprüft …"),
     ("Connect an OpenAI account in Settings › AI.", "Verbinde ein OpenAI-Konto unter Einstellungen › KI."),
@@ -9193,10 +9192,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Schließ Lautsprecher oder Kopfhörer an, um die Antworten zu hören.",
     ),
     (
-        "Download a speech recognition model below first",
-        "Lade zuerst unten ein Modell für die Spracherkennung herunter",
+        "Download a speech recognition model under Models first",
+        "Lade zuerst unter Modelle ein Modell für die Spracherkennung herunter",
     ),
-    ("Download the model below first.", "Lade zuerst unten das Modell herunter."),
+    ("Download the model under Models first.", "Lade zuerst unter Modelle das Modell herunter."),
     ("Downloaded", "Heruntergeladen"),
     (
         "Downloads the models from Hugging Face. They stay on this computer.",
@@ -9215,8 +9214,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Pocket TTS, German", "Pocket TTS, Deutsch"),
     ("Pocket TTS reads on this computer.", "Pocket TTS liest auf diesem Rechner vor."),
     ("The download failed. Try again.", "Das Herunterladen hat nicht geklappt. Versuch es noch einmal."),
-    ("The listener stopped. Check the models below.", "Das Zuhören wurde beendet. Prüf die Modelle unten."),
-    ("The test failed. Check the models below.", "Der Test hat nicht geklappt. Prüf die Modelle unten."),
+    (
+        "The listener stopped. Check the models under Models.",
+        "Das Zuhören wurde beendet. Prüf die Modelle unter Modelle.",
+    ),
+    ("The test failed. Check the models under Models.", "Der Test hat nicht geklappt. Prüf die Modelle unter Modelle."),
     ("This computer could not be checked", "Dieser Rechner ließ sich nicht prüfen"),
     ("Understands German well, you choose the language", "Versteht Deutsch gut, du wählst die Sprache"),
     (
@@ -9263,5 +9265,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     (
         "Download the voice in Settings › Assistant › Voice first.",
         "Lade zuerst die Stimme unter Einstellungen › Assistent › Sprache herunter.",
+    ),
+    // Issue #763: the tabs of the assistant's settings, as #762 left them.
+    ("Chats", "Chats"),
+    ("After “Hey Torro”, with the voice under Read aloud", "Nach „Hey Torro“, mit der Stimme unter Vorlesen"),
+    (
+        "This computer could not be checked. Use Check again under Models.",
+        "Dieser Rechner ließ sich nicht prüfen. Nutze „Erneut prüfen“ unter Modelle.",
     ),
 ];
