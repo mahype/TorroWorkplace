@@ -857,10 +857,10 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
 ### Gespräch (Issue #747)
 
 Nach „Hey Torro“ und der Antwort bleibt das Mikrofon **8 Sekunden** offen: Man redet einfach weiter, ohne
-Weckwort. Ein Ton zeigt, dass der Assistent zuhört, der Tray sagt „Listening …“, und jede Antwort wird Satz für
+Weckwort. Ein Ton zeigt, dass der Assistent zuhört, der Tray sagt „Listening…“, und jede Antwort wird Satz für
 Satz vorgelesen. Im Chatfenster beginnt ein Gespräch mit „Talk“ links vom Mikrofon, auch wenn „Hey Torro“ aus
 ist; das Mikrofon ist dann nur für dieses Gespräch offen. Statt des Eingabefelds steht dort, was der Hörer tut
-(„Listening …“, „Recording …“, „Answering …“), und „End talk“.
+(„Listening…“, „Recording …“, „Answering …“), und „End talk“.
 
 - **Ende:** 8 Sekunden Schweigen (mit Ton), ein kurzer Satz mit einem Schlusswort („Danke“, „Stopp“,
   „Tschüss“, „Ende“, „Das war's“, „Thanks“, „Stop“, „Bye“, „That's all“; höchstens drei Wörter, „Danke, und das
