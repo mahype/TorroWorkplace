@@ -16,10 +16,12 @@ geklonte Stimme nicht verlässlich bewerten.
 - **Modelle:** `Qwen/Qwen3-TTS-12Hz-0.6B-Base` (Revision `5d839924`) und `Qwen/Qwen3-TTS-12Hz-1.7B-Base`
   (Revision `fd4b2543`).
 - **Stimmen:** die Vorlagen der App, `crates/torroassistant/assets/voices/warm_woman.wav` und `calm_man.wav`,
-  geklont mit ihrem Transkript aus `TEMPLATES` (`voice/speech.rs`), also im ICL-Modus. Whisper war nicht nötig.
-- **Texte (Deutsch):** kurz (61 Zeichen), mittel (184 Zeichen), lang (711 Zeichen). Jeder Text wird wie im
-  Assistenten in Stücke von höchstens 500 Zeichen (`PIECE`) an Satzgrenzen geteilt; der lange Text ergibt
-  zwei Stücke.
+  geklont mit ihrem Transkript aus #745 (heute `TRANSCRIPTS` in `voice/qwen.rs`), also im ICL-Modus. Whisper war
+  nicht nötig.
+- **Texte (Deutsch):** kurz (61 Zeichen), mittel (184 Zeichen), lang (711 Zeichen). Jeder Text wird an
+  Satzgrenzen in Stücke von höchstens 500 Zeichen geteilt (das `PIECE` für OpenAI); der lange Text ergibt zwei
+  Stücke. Der Einbau teilt wie Pocket TTS in Stücke von höchstens 200 Zeichen, sein erster Ton bei langen Texten
+  liegt deshalb eher bei der Spalte „mittel“ als bei „lang“.
 - **Läufe:** je Laufzeit × Modell × Stimme × Text drei Läufe, dazu ein Lauf nur auf dem Prozessor (0.6B,
   kurz und mittel). Sampling wie in beiden Projekten voreingestellt (Temperatur 0,9, Wiederholungsstrafe 1,05).
 
@@ -81,7 +83,9 @@ bestätigt den Plan: Qwen3-TTS nur mit Grafikkarte, sonst Pocket TTS.
 
 ## Klang
 
-Offen, Beurteilung beim Halt der Umsetzung durch Anhören. Proben (je Laufzeit, Modell, Stimme und Text
+Beurteilt von einem Menschen beim Halt der Umsetzung (15. November 2026) durch Anhören der Proben und Vergleich
+mit den Vorlagen: Die Wahl fiel auf **Crane mit 0.6B** (Kommentar im Issue #764). Eine eigene Note je Laufzeit
+wurde nicht festgehalten; die messbaren Auffälligkeiten im Ton stehen oben. Proben (je Laufzeit, Modell, Stimme und Text
 der erste Lauf; bei qwen3-tts.cpp je Stück eine Datei `-p0`, `-p1`):
 
 - Grafikkarte: `~/.cache/torro-qwen-messung/run/proben/` (28 Dateien)
@@ -114,7 +118,7 @@ Berichts mit nicht getroffener Stimme.
 
 ## Empfehlung
 
-**Crane mit dem 0.6B-Modell**, sofern der Klang beim Anhören passt:
+**Crane mit dem 0.6B-Modell**, beim Anhören bestätigt und eingebaut (Issue #764):
 
 - Schnellster erster Ton (0,9 s für einen kurzen Satz), Echtzeitfaktor um 0,2.
 - Reines Rust über crates.io, ohne eigenes `unsafe`, ohne `cmake` und ohne Python, auch nicht für das
