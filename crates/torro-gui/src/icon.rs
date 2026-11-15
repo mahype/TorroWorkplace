@@ -276,6 +276,10 @@ pub enum Icon {
     Shield,
     /// "Send" of the assistant's composer, in its round button.
     ArrowUp,
+    /// "Never for <provider>" in the question of a content card (issue #785).
+    Ban,
+    /// An issue closed without being done ("not planned"), neutral (issue #785).
+    CircleSlash,
 }
 
 impl Icon {
@@ -428,6 +432,8 @@ impl Icon {
         Icon::AudioLines,
         Icon::Shield,
         Icon::ArrowUp,
+        Icon::Ban,
+        Icon::CircleSlash,
     ];
 
     /// The icon as an SVG handle with its stroke in `color` (opaque), for drawing it on a canvas,
@@ -590,6 +596,8 @@ impl Icon {
             Icon::AudioLines => include_bytes!("../assets/icons/audio-lines.svg"),
             Icon::Shield => include_bytes!("../assets/icons/shield.svg"),
             Icon::ArrowUp => include_bytes!("../assets/icons/arrow-up.svg"),
+            Icon::Ban => include_bytes!("../assets/icons/ban.svg"),
+            Icon::CircleSlash => include_bytes!("../assets/icons/circle-slash.svg"),
         }
     }
 }

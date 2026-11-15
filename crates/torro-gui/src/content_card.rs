@@ -19,25 +19,31 @@
 //!   source stay, "Try again"), no longer available (gone or out of reach, no button).
 //!
 //! [`link_card`] draws the card of a link ([`LinkCard`]) by its kind, [`ask_card`] the question whether a provider's
-//! content may load (Settings › Privacy at "Ask"). In the chat with people only buttons that write nothing.
+//! content may load (Settings › Privacy at "Ask"). In the chat with people only buttons that write nothing: a link
+//! card has only "Open" and "Play" ([`LinkPress`]).
 //!
-//! Strand 2a of issue #784 gives these their final look (the gallery's `--content-cards`); the API stays as it is.
+//! Every card and state is in the gallery: `cargo run -p torro-gui --example gallery -- --content-cards`.
 
+use chrono::Utc;
 use iced::widget::text::Wrapping;
-use iced::widget::{Row, column, container, image, row, stack, svg};
-use iced::{Alignment, Background, ContentFit, Element, Fill, Theme, border};
+use iced::widget::{Row, Space, column, container, image, row, stack, svg};
+use iced::{Alignment, Background, Color, ContentFit, Element, Fill, FillPortion, Padding, Theme, border};
 use torro_chat::{ForeignProvider, GithubState, LinkCard, LinkCardKind};
-use torro_core::i18n::{tr, trf};
+use torro_core::i18n::{tr, trc, trf};
 
 use crate::icon::{self, Icon, icon};
-use crate::theme::{self, palette, radius, size, space};
-use crate::{layout, style, typo, widgets};
+use crate::theme::{self, Palette, palette, radius, size, space};
+use crate::widgets::{TileFace, TileSize};
+use crate::{datetime, layout, style, typo, units, widgets};
 
 /// At most this many lines under the title ([`ContentCard::line`]); more are left out.
 pub const MAX_LINES: usize = 3;
 
 /// At most this many buttons besides the main one ([`ContentCard::more`]); more are left out.
 pub const MAX_MORE: usize = 3;
+
+/// A hairline: frames of the picture, the `untrusted` tag and the question (torro-design, section 2).
+const HAIRLINE: f32 = 1.0;
 
 /// The head of a card: what kind it is and where it comes from.
 #[derive(Debug, Clone, PartialEq)]
@@ -122,6 +128,18 @@ pub enum State<M> {
     Gone,
 }
 
+/// The colour of a line's icon, picked from the palette when drawn so it follows light and dark; `None` keeps it
+/// in `text_3` like every other mark.
+type Tone = Option<fn(&Palette) -> Color>;
+
+/// A line under the title.
+#[derive(Debug, Clone)]
+struct Line {
+    mark: Icon,
+    text: String,
+    tone: Tone,
+}
+
 /// One content card, built with its parts and drawn with [`ContentCard::view`] or [`ContentCard::short`].
 ///
 /// ```ignore
@@ -135,7 +153,7 @@ pub struct ContentCard<M> {
     head: Head,
     picture: Option<Picture>,
     title: String,
-    lines: Vec<(Icon, String)>,
+    lines: Vec<Line>,
     main: Option<Action<M>>,
     more: Vec<Action<M>>,
     state: State<M>,
@@ -163,10 +181,15 @@ impl<M: Clone> ContentCard<M> {
     }
 
     /// One more line under the title, with `mark`; beyond [`MAX_LINES`] left out. An empty `text` is left out too.
-    pub fn line(mut self, mark: Icon, text: impl Into<String>) -> Self {
+    pub fn line(self, mark: Icon, text: impl Into<String>) -> Self {
+        self.line_toned(mark, text, None)
+    }
+
+    /// [`ContentCard::line`] with the icon in the colour `tone` picks (a state: the GitHub state's colour).
+    fn line_toned(mut self, mark: Icon, text: impl Into<String>, tone: Tone) -> Self {
         let text = text.into();
         if self.lines.len() < MAX_LINES && !text.trim().is_empty() {
-            self.lines.push((mark, text));
+            self.lines.push(Line { mark, text, tone });
         }
         self
     }
@@ -195,6 +218,11 @@ impl<M: Clone> ContentCard<M> {
     }
 
     /// The full card, at most `room` wide (and never wider than `size::list()`).
+    ///
+    /// Ready: head, picture, title with its lines, buttons. Loading keeps the room of all of them (the picture, the
+    /// title, each line – one at least – and the buttons as quiet bars), so the card does not jump when the content
+    /// comes. Failed and gone keep the head with its source and say so in a line; only failed has a button. A card
+    /// that is not ready takes no click as a whole.
     pub fn view<'a>(self, room: f32) -> Element<'a, M>
     where
         M: 'a,
@@ -202,24 +230,42 @@ impl<M: Clone> ContentCard<M> {
         let width = room.min(size::list());
         let inner = (width - layout::panel_padding().left - layout::panel_padding().right).max(0.0);
         let mut parts: Vec<Element<'a, M>> = vec![head_line(&self.head)];
+        let mut on_press = None;
         match self.state {
             State::Ready => {
                 if let Some(picture) = self.picture {
                     parts.push(picture_frame(picture, self.head.mark, inner));
                 }
-                parts.push(widgets::ellipsized(typo::body_strong(), self.title, theme::text));
-                for (mark, text) in self.lines {
-                    parts.push(detail_line(mark, text));
-                }
+                let mut text = vec![widgets::ellipsized(typo::body_strong(), self.title, theme::text)];
+                text.extend(self.lines.into_iter().map(detail_line));
+                parts.push(column(text).spacing(space::xs()).into());
                 let mut actions: Vec<Action<M>> = self.main.into_iter().collect();
                 actions.extend(self.more);
                 if !actions.is_empty() {
                     parts.push(buttons(actions, inner));
                 }
+                on_press = self.on_press;
             }
-            State::Loading => parts.push(quiet(tr("Loading…"))),
+            State::Loading => {
+                if let Some(picture) = self.picture {
+                    parts.push(picture_frame(Picture { handle: None, ..picture }, self.head.mark, inner));
+                }
+                let mut text = vec![
+                    typo::text(typo::body_strong(), tr("Loading…"))
+                        .style(theme::text_3)
+                        .wrapping(Wrapping::None)
+                        .into(),
+                ];
+                text.extend((0..self.lines.len().max(1)).map(|_| bar_line()));
+                parts.push(column(text).spacing(space::xs()).into());
+                parts.push(bar_button());
+            }
             State::Failed { retry } => {
-                parts.push(quiet(tr("Not available right now")));
+                parts.push(detail_line(Line {
+                    mark: Icon::CircleAlert,
+                    text: tr("Not available right now").to_owned(),
+                    tone: None,
+                }));
                 if let Some(retry) = retry {
                     parts.push(widgets::text_button(
                         Some(Icon::RefreshCw),
@@ -229,109 +275,190 @@ impl<M: Clone> ContentCard<M> {
                     ));
                 }
             }
-            State::Gone => parts.push(quiet(tr("No longer available"))),
+            State::Gone => parts.push(detail_line(Line {
+                mark: Icon::CircleSlash,
+                text: tr("No longer available").to_owned(),
+                tone: None,
+            })),
         }
-        let card = widgets::card(parts, false, self.on_press);
+        let card = widgets::card(parts, false, on_press);
         container(card).width(width).into()
     }
 
     /// The card in one line ("Kurzform"), `size::control_lg()` high: the kind's icon, the title and its first line,
     /// and the main button as an icon with its word as tooltip. For mini and strip tiles and lists of four to ten.
+    ///
+    /// The title takes the larger part of the line, the first line (a date, a sender) the rest, set against the end
+    /// in `text_3`; each is cut with "…" rather than pushing the button out. Loading says so in place of the first
+    /// line, failed shows the source and "Not available right now" with "Try again" as an icon, gone says "No longer
+    /// available" without a button.
     pub fn short<'a>(self) -> Element<'a, M>
     where
         M: 'a,
     {
-        let (title, detail) = match self.state {
-            State::Ready => (self.title, self.lines.into_iter().next().map(|(_, text)| text)),
-            State::Loading => (self.title, Some(tr("Loading…").to_owned())),
-            State::Failed { .. } => (self.head.source.clone(), Some(tr("Not available right now").to_owned())),
-            State::Gone => (tr("No longer available").to_owned(), None),
+        let (title, detail, button) = match self.state {
+            State::Ready => (self.title, self.lines.into_iter().next().map(|line| line.text), self.main),
+            State::Loading => (self.title, Some(tr("Loading…").to_owned()), None),
+            State::Failed { retry } => (
+                self.head.source.clone(),
+                Some(tr("Not available right now").to_owned()),
+                retry.map(|retry| Action::new(Icon::RefreshCw, tr("Try again"), retry)),
+            ),
+            State::Gone => (tr("No longer available").to_owned(), None, None),
         };
         let mut line = row![
-            mark(self.head.mark, icon::SIZE),
-            container(widgets::ellipsized(typo::body(), title, theme::text)).width(Fill)
+            mark(self.head.mark, icon::SIZE_SM, None),
+            container(widgets::ellipsized(typo::body(), title, theme::text)).width(FillPortion(3))
         ]
         .spacing(space::s())
         .align_y(Alignment::Center);
         if let Some(detail) = detail {
-            // Title and detail share the line; each is cut with "…" rather than pushing the button out.
-            line = line.push(container(widgets::ellipsized(typo::meta(), detail, theme::text_3)).width(Fill));
+            line = line.push(
+                container(widgets::ellipsized_end(typo::meta().tabular(), detail, theme::text_3)).width(FillPortion(2)),
+            );
         }
-        if let Some(main) = self.main {
-            line = line.push(widgets::icon_button(main.icon, main.label, main.on_press));
-        }
-        container(line).height(size::control_lg()).center_y(size::control_lg()).width(Fill).into()
+        // Without a button its room stays empty, so the details of a list of short forms end on one edge.
+        line = line.push(match button {
+            Some(main) => widgets::icon_button(main.icon, main.label, main.on_press),
+            None => Space::new().width(size::control_sm()).into(),
+        });
+        container(line).center_y(size::control_lg()).width(Fill).into()
     }
 }
 
-/// The head: the kind's icon, the source, and `untrusted` when it is.
+/// The head: the kind's icon, the source in `text_3`, and the tag `untrusted` at the end when it is.
 fn head_line<'a, M: 'a>(head: &Head) -> Element<'a, M> {
     let mut line = row![
-        mark(head.mark, icon::SIZE_SM),
+        mark(head.mark, icon::SIZE_SM, None),
         container(widgets::ellipsized(typo::meta(), head.source.clone(), theme::text_3)).width(Fill)
     ]
     .spacing(space::s())
     .align_y(Alignment::Center);
     if head.untrusted {
-        line = line.push(typo::text(typo::meta(), tr("untrusted")).style(theme::text_3).wrapping(Wrapping::None));
+        line = line.push(untrusted_tag());
     }
     line.into()
 }
 
-/// A line under the title: its icon and its text, one line.
-fn detail_line<'a, M: 'a>(which: Icon, text: String) -> Element<'a, M> {
-    row![mark(which, icon::SIZE_SM), container(widgets::ellipsized(typo::meta(), text, theme::text_2)).width(Fill)]
-        .spacing(space::s())
-        .align_y(Alignment::Center)
+/// The tag `untrusted`: the word in `CAPTION` and `text_2` in a hairline frame, so it reads as a mark of its own
+/// next to the source. No colour: the word carries it (torro-design, section 1 – status never by colour alone,
+/// and the attention colour is too faint for small text in light mode).
+fn untrusted_tag<'a, M: 'a>() -> Element<'a, M> {
+    container(typo::text(typo::caption(), tr("untrusted")).style(theme::text_2).wrapping(Wrapping::None))
+        .padding(Padding::new(0.0).left(space::s()).right(space::s()))
+        .style(|t: &Theme| container::Style {
+            border: border::rounded(radius::xs()).color(palette(t).line_strong).width(HAIRLINE),
+            ..container::Style::default()
+        })
         .into()
 }
 
-/// A quiet sentence in place of the content (loading, not available, gone).
-fn quiet<'a, M: 'a>(text: &str) -> Element<'a, M> {
-    typo::text(typo::meta(), text.to_owned()).style(theme::text_3).into()
+/// A line under the title: its icon (in its tone) and its text in `text_2`, one line.
+fn detail_line<'a, M: 'a>(line: Line) -> Element<'a, M> {
+    row![
+        mark(line.mark, icon::SIZE_SM, line.tone),
+        container(widgets::ellipsized(typo::body(), line.text, theme::text_2)).width(Fill)
+    ]
+    .spacing(space::s())
+    .align_y(Alignment::Center)
+    .into()
 }
 
-/// An icon in `text_3`.
-fn mark<'a, M: 'a>(which: Icon, edge: f32) -> Element<'a, M> {
-    icon(which, edge).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) }).into()
+/// An icon in `tone`, `text_3` without one.
+fn mark<'a, M: 'a>(which: Icon, edge: f32, tone: Tone) -> Element<'a, M> {
+    icon(which, edge)
+        .style(move |t: &Theme, _| {
+            let p = palette(t);
+            svg::Style { color: Some(tone.map_or(p.text_3, |tone| tone(&p))) }
+        })
+        .into()
 }
 
-/// The picture `width` wide in its ratio; without its pixels the kind's icon on a quiet surface; a video with the
-/// play mark over it.
+/// A quiet bar of `width` in a slot `height` high: the stand-in of a text or a button while a card loads.
+fn bar<'a, M: 'a>(width: impl Into<iced::Length>, height: f32, edge: f32) -> Element<'a, M> {
+    let shape = container(Space::new()).width(width).height(edge).style(|t: &Theme| container::Style {
+        background: Some(Background::Color(palette(t).selected)),
+        border: border::rounded(radius::xs()),
+        ..container::Style::default()
+    });
+    container(shape).center_y(height).width(Fill).into()
+}
+
+/// The stand-in of a line while loading: as high as a line, a bar over three fifths of its width (a line is rarely
+/// full, and a bar to the edge would read as a rule).
+fn bar_line<'a, M: 'a>() -> Element<'a, M> {
+    let bar = container(bar(Fill, typo::line_height(typo::body()), space::s())).width(FillPortion(3));
+    row![bar, Space::new().width(FillPortion(2))].into()
+}
+
+/// The stand-in of the buttons while loading: one button's room.
+fn bar_button<'a, M: 'a>() -> Element<'a, M> {
+    let width = widgets::text_button_width(true, tr("Open"));
+    container(bar(width, size::control_sm(), size::control_sm())).width(width).into()
+}
+
+/// The picture `width` wide in its ratio; without its pixels the kind's icon in a neutral tile on the panel
+/// surface; a video with the play mark over it (alone, without the tile, so the two do not crowd the middle).
 fn picture_frame<'a, M: 'a>(picture: Picture, kind: Icon, width: f32) -> Element<'a, M> {
     let height = picture.ratio.height(width);
     let shown: Element<'a, M> = match picture.handle {
         Some(handle) => {
             image(handle).width(width).height(height).content_fit(ContentFit::Cover).border_radius(radius::sm()).into()
         }
-        None => container(mark(kind, icon::SIZE))
-            .center(Fill)
-            .width(width)
-            .height(height)
-            .style(|t: &Theme| container::Style {
-                background: Some(Background::Color(palette(t).selected)),
-                border: border::rounded(radius::sm()),
-                ..container::Style::default()
-            })
-            .into(),
+        None => {
+            let stand_in: Element<'a, M> = match picture.play {
+                true => Space::new().into(),
+                false => widgets::source_tile(TileFace::Icon(kind), TileSize::Large, None),
+            };
+            container(stand_in)
+                .center(Fill)
+                .width(width)
+                .height(height)
+                .style(|t: &Theme| {
+                    let p = palette(t);
+                    container::Style {
+                        background: Some(Background::Color(p.panel)),
+                        border: border::rounded(radius::sm()).color(p.line).width(HAIRLINE),
+                        ..container::Style::default()
+                    }
+                })
+                .into()
+        }
     };
     if !picture.play {
         return shown;
     }
-    stack![shown, container(mark(Icon::Play, icon::SIZE)).center(Fill)].width(width).height(height).into()
+    stack![shown, container(play_mark()).center(Fill)].width(width).height(height).into()
 }
 
-/// The buttons of a card in one row: the main one `secondary`, the others `ghost`; with words where they fit `room`,
-/// else icons with the word as tooltip (the main one keeps its word first, `widgets::bar_words`).
+/// The play mark: a round floating surface (`menu`, `line_strong` edge) with the play icon in `text`, readable over
+/// any picture in light and dark.
+fn play_mark<'a, M: 'a>() -> Element<'a, M> {
+    let edge = size::control_lg();
+    let play: Element<'a, M> =
+        icon(Icon::Play, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text) }).into();
+    container(play)
+        .center(edge)
+        .style(move |t: &Theme| {
+            let p = palette(t);
+            container::Style {
+                background: Some(Background::Color(p.menu)),
+                border: border::rounded(edge / 2.0).color(p.line_strong).width(HAIRLINE),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// The buttons of a card in one row, all `secondary` (torro-design, "Knopfleisten auf Karten": a card's visible
+/// buttons are secondary); with words where they fit `room`, else icons with the word as tooltip (the main one
+/// keeps its word first, `widgets::bar_words`).
 fn buttons<'a, M: Clone + 'a>(actions: Vec<Action<M>>, room: f32) -> Element<'a, M> {
     let labels: Vec<&str> = actions.iter().map(|action| action.label.as_str()).collect();
     let words = widgets::bar_words(&labels, true, 0, room);
-    let buttons = actions.into_iter().enumerate().map(|(i, action)| {
-        let style = if i == 0 { style::button::secondary } else { style::button::ghost };
-        match words.worded(i) {
-            true => widgets::text_button(Some(action.icon), action.label, style, action.on_press),
-            false => widgets::icon_button(action.icon, action.label, action.on_press),
-        }
+    let buttons = actions.into_iter().enumerate().map(|(i, action)| match words.worded(i) {
+        true => widgets::text_button(Some(action.icon), action.label, style::button::secondary, action.on_press),
+        false => widgets::icon_button(action.icon, action.label, action.on_press),
     });
     Row::with_children(buttons).spacing(space::s()).align_y(Alignment::Center).into()
 }
@@ -348,41 +475,49 @@ pub struct LinkPress<M> {
 /// window through the core), a video with the play mark, a file of the own server, a quoted chat message, a GitHub
 /// issue or pull request. At most `room` wide. Every text on it is foreign: shown, never followed.
 ///
-/// Strand 2a of issue #784 gives each kind its final parts (the GitHub state's icon and colour after `torro-design`,
-/// the file's size and folder); this draws them simply.
+/// Its buttons only open or play (nothing that writes, so the same card stands in the chat with people), and a
+/// click on the card does what its main button does:
+///
+/// - **Page**: head 🌐 domain · `untrusted`, the picture 3:2 when it has one, the title (the domain without one),
+///   the description; "Open".
+/// - **Video**: head with the video mark, the picture 16:9 with the play mark, the title; "Play video" where
+///   there is a player (`press.play`), then "Open on YouTube".
+/// - **File of the own server**: head ☁ server (not `untrusted`: the own server), its preview 3:2, the name, size
+///   and folder; "Open in Nextcloud".
+/// - **Chat message**: head 💬 conversation · `untrusted`, the author, the start of the message and when;
+///   "Open in chat". Without the quote (the reader may not read it) the card is gone.
+/// - **GitHub**: head with the GitHub mark and the repository · `untrusted`, "#142 Title", the state with its icon
+///   and colour (torro-design: open `CircleDot`/`GitPullRequest` in `ok`, draft neutral, merged `GitMerge` and a
+///   done issue `CircleCheck` in `merged`, a closed pull request `GitPullRequestClosed` in `error`, an issue
+///   closed as not planned `CircleSlash` neutral); "Open on GitHub".
 pub fn link_card<'a, M: Clone + 'a>(
     card: &LinkCard,
     picture: Option<image::Handle>,
     press: LinkPress<M>,
     room: f32,
 ) -> Element<'a, M> {
-    let built = match card.kind {
-        LinkCardKind::Web => {
-            let title = if card.title.trim().is_empty() { card.domain.clone() } else { card.title.clone() };
-            let mut built = ContentCard::new(Head::new(Icon::Globe, card.domain.clone()).untrusted(), title)
-                .line(Icon::AlignLeft, card.description.clone().unwrap_or_default());
-            if card.video.is_some() {
-                built = built.picture(Picture { handle: picture, ratio: Ratio::Video, play: true });
-                if let Some(play) = press.play {
-                    built = built.main(Action::new(Icon::Play, tr("Play video"), play));
-                }
-                built.more(Action::new(Icon::ExternalLink, tr("Open on YouTube"), press.open))
-            } else {
-                if card.image {
-                    built = built.picture(Picture { handle: picture, ratio: Ratio::Photo, play: false });
-                }
-                built.main(Action::new(Icon::ArrowUpRight, tr("Open"), press.open))
-            }
-        }
+    link_content(card, picture, press).view(room)
+}
+
+/// The [`ContentCard`] [`link_card`] draws.
+fn link_content<M: Clone>(card: &LinkCard, picture: Option<image::Handle>, press: LinkPress<M>) -> ContentCard<M> {
+    match card.kind {
+        LinkCardKind::Web => web_card(card, picture, press),
         LinkCardKind::NextcloudFile => {
             let name = card.file.as_ref().map_or_else(|| card.title.clone(), |file| file.name.clone());
-            let folder = card.file.as_ref().map(|file| file.folder.clone()).unwrap_or_default();
-            let mut built =
-                ContentCard::new(Head::new(Icon::Cloud, card.domain.clone()), name).line(Icon::Folder, folder);
+            let (bytes, folder) =
+                card.file.as_ref().map(|file| (file.size, file.folder.clone())).unwrap_or((0, String::new()));
+            let mut built = ContentCard::new(Head::new(Icon::Cloud, card.domain.clone()), name);
             if card.image {
                 built = built.picture(Picture { handle: picture, ratio: Ratio::Photo, play: false });
             }
-            built.main(Action::new(Icon::ArrowUpRight, tr("Open in Nextcloud"), press.open))
+            if bytes > 0 {
+                built = built.line(Icon::FileText, units::format_bytes(bytes));
+            }
+            built
+                .line(Icon::Folder, folder)
+                .main(Action::new(Icon::ArrowUpRight, tr("Open in Nextcloud"), press.open.clone()))
+                .on_press(press.open)
         }
         LinkCardKind::ChatMessage => match &card.quote {
             Some(quote) => ContentCard::new(
@@ -390,7 +525,9 @@ pub fn link_card<'a, M: Clone + 'a>(
                 quote.author.clone(),
             )
             .line(Icon::TextQuote, quote.text.clone())
-            .main(Action::new(Icon::ArrowUpRight, tr("Open in chat"), press.open)),
+            .line(Icon::Clock, datetime::format_moment(quote.at, Utc::now()))
+            .main(Action::new(Icon::ArrowUpRight, tr("Open in chat"), press.open.clone()))
+            .on_press(press.open),
             None => ContentCard::new(Head::new(Icon::MessageCircle, card.domain.clone()), "").state(State::Gone),
         },
         LinkCardKind::Github => {
@@ -398,29 +535,53 @@ pub fn link_card<'a, M: Clone + 'a>(
                 Some(github) => (github.repo.clone(), format!("#{} {}", github.number, card.title)),
                 None => (card.domain.clone(), card.title.clone()),
             };
-            let state = card.github.as_ref().map(|github| github_state(github.state, github.is_pull));
             let mut built = ContentCard::new(Head::new(Icon::Github, repo).untrusted(), title);
-            if let Some((mark, word)) = state {
-                built = built.line(mark, word);
+            if let Some(github) = &card.github {
+                let (mark, word, tone) = github_state(github.state, github.is_pull);
+                built = built.line_toned(mark, word, tone);
             }
-            built.main(Action::new(Icon::ExternalLink, tr("Open on GitHub"), press.open))
+            built.main(Action::new(Icon::ExternalLink, tr("Open on GitHub"), press.open.clone())).on_press(press.open)
         }
-    };
-    built.view(room)
+    }
 }
 
-/// The icon and word of a GitHub state ("Open", "Merged" …).
-fn github_state(state: GithubState, is_pull: bool) -> (Icon, String) {
-    let (mark, word) = match (state, is_pull) {
-        (GithubState::Open, false) => (Icon::CircleDot, tr("Open")),
-        (GithubState::Open, true) => (Icon::GitPullRequest, tr("Open")),
-        (GithubState::Draft, _) => (Icon::GitPullRequestDraft, tr("Draft")),
-        (GithubState::Merged, true) => (Icon::GitMerge, tr("Merged")),
-        (GithubState::Merged, false) => (Icon::CircleCheck, tr("Closed")),
-        (GithubState::Closed, true) => (Icon::GitPullRequestClosed, tr("Closed")),
-        (GithubState::Closed, false) => (Icon::CircleX, tr("Closed")),
+/// A page, or a video when the core found one in the link.
+fn web_card<M: Clone>(card: &LinkCard, picture: Option<image::Handle>, press: LinkPress<M>) -> ContentCard<M> {
+    let title = if card.title.trim().is_empty() { card.domain.clone() } else { card.title.clone() };
+    let mark = if card.video.is_some() { Icon::Video } else { Icon::Globe };
+    let built = ContentCard::new(Head::new(mark, card.domain.clone()).untrusted(), title)
+        .line(Icon::AlignLeft, card.description.clone().unwrap_or_default());
+    if card.video.is_none() {
+        let built = match card.image {
+            true => built.picture(Picture { handle: picture, ratio: Ratio::Photo, play: false }),
+            false => built,
+        };
+        return built.main(Action::new(Icon::ArrowUpRight, tr("Open"), press.open.clone())).on_press(press.open);
+    }
+    let built = built.picture(Picture { handle: picture, ratio: Ratio::Video, play: true });
+    let youtube = Action::new(Icon::ExternalLink, tr("Open on YouTube"), press.open.clone());
+    match press.play {
+        Some(play) => built.main(Action::new(Icon::Play, tr("Play video"), play.clone())).more(youtube).on_press(play),
+        None => built.main(youtube).on_press(press.open),
+    }
+}
+
+/// The icon, word and icon colour of a GitHub state (torro-design, section 5, "Icons … für GitHub").
+fn github_state(state: GithubState, is_pull: bool) -> (Icon, String, Tone) {
+    let ok: fn(&Palette) -> Color = |p| p.ok;
+    let merged: fn(&Palette) -> Color = |p| p.merged;
+    let error: fn(&Palette) -> Color = |p| p.error;
+    let (mark, word, tone) = match (state, is_pull) {
+        // An issue is never a draft; an unknown state reads as open.
+        (GithubState::Open | GithubState::Draft, false) => (Icon::CircleDot, trc("state", "Open"), Some(ok)),
+        (GithubState::Open, true) => (Icon::GitPullRequest, trc("state", "Open"), Some(ok)),
+        (GithubState::Draft, true) => (Icon::GitPullRequestDraft, tr("Draft"), None),
+        (GithubState::Merged, true) => (Icon::GitMerge, tr("Merged"), Some(merged)),
+        (GithubState::Merged, false) => (Icon::CircleCheck, tr("Closed"), Some(merged)),
+        (GithubState::Closed, true) => (Icon::GitPullRequestClosed, tr("Closed"), Some(error)),
+        (GithubState::Closed, false) => (Icon::CircleSlash, tr("Not planned"), None),
     };
-    (mark, word.to_owned())
+    (mark, word.to_owned(), tone)
 }
 
 /// What the three answers of an [`ask_card`] send: show this card once (`assistant.show_card`, `chat.show_card`),
@@ -434,29 +595,71 @@ pub struct AskPress<M> {
 
 /// The question in place of the card of a page of `provider` (Settings › Privacy at "Ask", or an address the model
 /// wrote): "This message shows content from <provider>." with "Show once", "Always allow <provider>" and "Never for
-/// <provider>". Quiet: the sentence in `text_2`, ghost buttons.
+/// <provider>". A card that waits for the person: `raised` with the `line_selected` edge, the sentence in `text_2`
+/// after a shield, "Show once" (with the tooltip that the own Nextcloud fetches the page) and "Always allow …"
+/// `secondary`, "Never for …" `ghost`; the buttons wrap when the card is narrow. At most `size::list()` wide.
 pub fn ask_card<'a, M: Clone + 'a>(provider: &ForeignProvider, press: AskPress<M>) -> Element<'a, M> {
     let name = provider.name.as_str();
     let what = trf("This message shows content from {provider}.", &[("provider", &name)]);
+    let note = row![
+        mark(Icon::Shield, icon::SIZE_SM, None),
+        container(typo::text(typo::body(), what).style(theme::text_2)).width(Fill)
+    ]
+    .spacing(space::s())
+    .align_y(Alignment::Center);
     let once = widgets::with_tooltip(
-        widgets::text_button(Some(Icon::Eye), tr("Show once"), style::button::ghost, Some(press.once)),
+        widgets::text_button(Some(Icon::Eye), tr("Show once"), style::button::secondary, Some(press.once)),
         tr("Your Nextcloud fetches the page, so the site may see when it is read."),
     );
     let always = trf("Always allow {provider}", &[("provider", &name)]);
     let never = trf("Never for {provider}", &[("provider", &name)]);
     let answers = row![
         once,
-        widgets::text_button(None, always, style::button::ghost, Some(press.always)),
-        widgets::text_button(None, never, style::button::ghost, Some(press.never)),
+        widgets::text_button(Some(Icon::Check), always, style::button::secondary, Some(press.always)),
+        widgets::text_button(Some(Icon::Ban), never, style::button::ghost, Some(press.never)),
     ]
-    .spacing(space::xs())
-    .wrap();
-    column![typo::text(typo::meta(), what).style(theme::text_2), answers].spacing(space::xs()).into()
+    .spacing(space::s())
+    .wrap()
+    .vertical_spacing(space::s());
+    container(column![note, answers].spacing(size::card_gap()))
+        .padding(layout::panel_padding())
+        .width(Fill)
+        .max_width(size::list())
+        .style(|t: &Theme| {
+            let p = palette(t);
+            container::Style {
+                background: Some(Background::Color(p.raised)),
+                text_color: Some(p.text),
+                border: border::rounded(radius::lg()).color(p.line_selected).width(HAIRLINE),
+                ..container::Style::default()
+            }
+        })
+        .into()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use torro_chat::{LinkFile, LinkGithub, LinkQuote, Video};
+
+    fn press() -> LinkPress<&'static str> {
+        LinkPress { open: "open", play: Some("play") }
+    }
+
+    fn page() -> LinkCard {
+        LinkCard {
+            url: "https://example.org/calm".into(),
+            title: "Designing calm software".into(),
+            description: Some("A long read.".into()),
+            domain: "example.org".into(),
+            image: true,
+            ..LinkCard::default()
+        }
+    }
+
+    fn labels<M>(card: &ContentCard<M>) -> Vec<String> {
+        card.main.iter().chain(card.more.iter()).map(|action| action.label.clone()).collect()
+    }
 
     #[test]
     fn a_card_keeps_at_most_three_lines_and_three_more_buttons() {
@@ -466,12 +669,128 @@ mod tests {
         }
         let card = card.line(Icon::Clock, "  ");
         assert_eq!((card.lines.len(), card.more.len()), (MAX_LINES, MAX_MORE));
-        assert_eq!(card.lines[0].1, "line 0", "the first ones stay");
+        assert_eq!(card.lines[0].text, "line 0", "the first ones stay");
     }
 
     #[test]
     fn pictures_keep_their_ratio() {
         assert_eq!(Ratio::Photo.height(300.0), 200.0);
         assert_eq!(Ratio::Video.height(320.0), 180.0);
+    }
+
+    #[test]
+    fn a_page_is_untrusted_has_its_picture_and_only_opens() {
+        let card = link_content(&page(), None, press());
+        assert!(card.head.untrusted);
+        assert_eq!(card.head.source, "example.org");
+        assert!(matches!(card.picture, Some(Picture { ratio: Ratio::Photo, play: false, .. })));
+        assert_eq!(labels(&card), vec![tr("Open").to_owned()]);
+        assert_eq!(card.on_press, Some("open"));
+    }
+
+    #[test]
+    fn a_page_without_a_title_shows_its_domain() {
+        let card = link_content(&LinkCard { title: " ".into(), image: false, ..page() }, None, press());
+        assert_eq!(card.title, "example.org");
+        assert!(card.picture.is_none());
+    }
+
+    #[test]
+    fn a_video_plays_where_there_is_a_player_and_else_opens_on_youtube() {
+        let video = LinkCard {
+            domain: "youtube.com".into(),
+            video: Some(Video { id: "dQw4w9WgXcQ".into(), start: None, short: false }),
+            ..page()
+        };
+        let card = link_content(&video, None, press());
+        assert!(matches!(card.picture, Some(Picture { ratio: Ratio::Video, play: true, .. })));
+        assert_eq!(labels(&card), vec![tr("Play video").to_owned(), tr("Open on YouTube").to_owned()]);
+        assert_eq!(card.on_press, Some("play"));
+        let card = link_content(&video, None, LinkPress { open: "open", play: None });
+        assert_eq!(labels(&card), vec![tr("Open on YouTube").to_owned()]);
+        assert_eq!(card.on_press, Some("open"));
+    }
+
+    #[test]
+    fn a_file_of_the_own_server_shows_size_and_folder_and_is_trusted() {
+        let file = LinkCard {
+            kind: LinkCardKind::NextcloudFile,
+            domain: "cloud.example.org".into(),
+            file: Some(Box::new(LinkFile {
+                name: "Offer.pdf".into(),
+                size: 2_200_000,
+                content_type: "application/pdf".into(),
+                folder: "Projects/Customer".into(),
+            })),
+            ..page()
+        };
+        let card = link_content(&file, None, press());
+        assert!(!card.head.untrusted, "the own server");
+        assert_eq!(card.title, "Offer.pdf");
+        let lines: Vec<&str> = card.lines.iter().map(|line| line.text.as_str()).collect();
+        assert_eq!(lines, vec![units::format_bytes(2_200_000).as_str(), "Projects/Customer"]);
+        assert_eq!(labels(&card), vec![tr("Open in Nextcloud").to_owned()]);
+    }
+
+    #[test]
+    fn a_quote_shows_author_and_text_and_is_gone_without_it() {
+        let quote = LinkCard {
+            kind: LinkCardKind::ChatMessage,
+            quote: Some(Box::new(LinkQuote {
+                message: "abc/12".into(),
+                author: "Ben".into(),
+                conversation: "Team".into(),
+                at: Utc::now(),
+                text: "See #142".into(),
+            })),
+            ..page()
+        };
+        let card = link_content(&quote, None, press());
+        assert_eq!((card.head.source.as_str(), card.title.as_str()), ("Team", "Ben"));
+        assert!(card.head.untrusted);
+        assert_eq!(card.lines[0].text, "See #142");
+        assert_eq!(labels(&card), vec![tr("Open in chat").to_owned()]);
+        let gone = link_content(&LinkCard { quote: None, ..quote }, None, press());
+        assert!(matches!(gone.state, State::Gone));
+        assert!(gone.main.is_none());
+    }
+
+    #[test]
+    fn github_shows_number_repository_and_state() {
+        let issue = LinkCard {
+            kind: LinkCardKind::Github,
+            title: "Calendar opens on the wrong day".into(),
+            github: Some(Box::new(LinkGithub {
+                repo: "torro/workplace".into(),
+                number: 142,
+                is_pull: false,
+                state: GithubState::Open,
+            })),
+            ..page()
+        };
+        let card = link_content(&issue, None, press());
+        assert_eq!(card.head.source, "torro/workplace");
+        assert_eq!(card.title, "#142 Calendar opens on the wrong day");
+        assert_eq!((card.lines[0].mark, card.lines[0].text.as_str()), (Icon::CircleDot, trc("state", "Open")));
+        assert_eq!(labels(&card), vec![tr("Open on GitHub").to_owned()]);
+    }
+
+    #[test]
+    fn github_states_follow_the_design() {
+        let dark = Palette::dark();
+        let cases = [
+            (GithubState::Open, false, Icon::CircleDot, trc("state", "Open"), Some(dark.ok)),
+            (GithubState::Open, true, Icon::GitPullRequest, trc("state", "Open"), Some(dark.ok)),
+            (GithubState::Draft, true, Icon::GitPullRequestDraft, tr("Draft"), None),
+            (GithubState::Merged, true, Icon::GitMerge, tr("Merged"), Some(dark.merged)),
+            (GithubState::Merged, false, Icon::CircleCheck, tr("Closed"), Some(dark.merged)),
+            (GithubState::Closed, true, Icon::GitPullRequestClosed, tr("Closed"), Some(dark.error)),
+            (GithubState::Closed, false, Icon::CircleSlash, tr("Not planned"), None),
+        ];
+        for (state, is_pull, icon, word, colour) in cases {
+            let (mark, said, tone) = github_state(state, is_pull);
+            assert_eq!((mark, said.as_str()), (icon, word), "{state:?} pull {is_pull}");
+            assert_eq!(tone.map(|tone| tone(&dark)), colour, "{state:?} pull {is_pull}");
+        }
     }
 }

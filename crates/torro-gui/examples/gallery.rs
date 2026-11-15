@@ -15,7 +15,10 @@
 //! E11.1: the styles `cell`, `pill` and the flat input in every state, the attachment chips; task M12.5:
 //! the split chips with their menu, the attachment block with "Save all", a menu with details and tags),
 //! `-- --detail` the blocks of a detail page in the settings (tasks DS.3, DS.4: head, tabs, open
-//! question, figures, shares with a legend, setting pairs, the save bar, the quiet branch), `-- --window` the example "Tasks" window (sample data from
+//! question, figures, shares with a legend, setting pairs, the save bar, the quiet branch), `-- --content-cards`
+//! every kind and state of `torro_gui::content_card` (issue #785: link cards, states, the question at "Ask", the
+//! short forms; mini and strip show only the short forms; `--open pages|server|github|states|question|short` shows
+//! one section alone), `-- --window` the example "Tasks" window (sample data from
 //! `docs/prototypes/linear/tasks.html`) in the layout that fits the window size – resize it to see
 //! wide, medium and narrow. `--open nav|drawer` opens that menu at start, `--open panel`
 //! shows the selected task in the side panel of `torro_gui::panel` instead of the detail: beside
@@ -29,6 +32,9 @@
 //!
 //! `--shot <file.bmp>` saves the window as a picture after three seconds and quits (task L.34): a
 //! visual check where no tool may capture other windows (macOS without screen recording rights).
+//! `--demo --shots <dir>` draws the page without a window at the six sizes of `torro_gui::shots` instead, as the
+//! apps do (`--shot-size WxH` for others); `--appearance light|dark` picks the mode there as `--light` does, and
+//! names the files (`gallery-content-cards-light-…`).
 //!
 //! States are forced through the style closure (`.style(move |theme, _| f(theme,
 //! Status::Hovered))`), so one screenshot shows hover, pressed, focus and disabled at once; the
@@ -52,9 +58,21 @@ use torro_gui::widgets::{
     self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Status, TileFace, TileSize, Trail,
 };
 
-fn main() -> iced::Result {
+// In a folder of its own, so cargo does not take it for an example of its own.
+#[path = "gallery/content_cards.rs"]
+mod content_cards;
+
+fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().collect();
     let start = Start::from_args(&args);
+    // `--demo --shots <dir>`: the page as pictures, without a window (issue #785).
+    let shots = match torro_gui::shots::Shots::from_args(start.page.name(), &args[1..]) {
+        Ok(shots) => shots,
+        Err(err) => {
+            eprintln!("gallery: {err}");
+            return std::process::ExitCode::from(64);
+        }
+    };
     // Before the settings load the fonts, so the first frame has the pack's. `--design`, `--font` and
     // `--color-scheme` each take an id of their own folder (task L.22).
     use torro_gui::design::{self, Forced, Part};
@@ -78,16 +96,23 @@ fn main() -> iced::Result {
         Page::Cards => iced::Size::new(1720.0, 1000.0),
         Page::Mailbar => iced::Size::new(2160.0, 1180.0),
         Page::Detail => iced::Size::new(1760.0, 1100.0),
+        Page::ContentCards => iced::Size::new(1600.0, 1000.0),
         _ => iced::Size::new(3700.0, 1060.0),
     };
     let shot = args.iter().position(|a| a == "--shot").and_then(|i| args.get(i + 1)).map(std::path::PathBuf::from);
-    iced::application(move || Gallery::new(start, shot.clone()), Gallery::step, Gallery::view)
+    let application = iced::application(move || Gallery::new(start, shot.clone()), Gallery::step, Gallery::view)
         .settings(torro_gui::settings())
         .title("Torro style gallery")
         .theme(Gallery::theme)
         .subscription(Gallery::subscription)
-        .window(window(size))
-        .run()
+        .window(window(size));
+    match torro_gui::shots::run(application, shots.as_ref()) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("gallery: {err}");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
 
 fn window(size: iced::Size) -> iced::window::Settings {
@@ -117,7 +142,19 @@ enum Page {
     Categories,
     /// The blocks of a detail page in the settings (tasks DS.3, DS.4).
     Detail,
+    /// Every kind and state of the content cards (issue #785).
+    ContentCards,
     Window,
+}
+
+impl Page {
+    /// The start of the pictures' file names with `--shots`.
+    fn name(self) -> &'static str {
+        match self {
+            Page::ContentCards => "gallery-content-cards",
+            _ => "gallery",
+        }
+    }
 }
 
 /// The menus of the example window.
@@ -134,6 +171,8 @@ struct Start {
     menu: Option<Menu>,
     drawer: bool,
     panel: bool,
+    /// `--content-cards --open <part>`: only that section of the content cards.
+    cards_part: Option<content_cards::Part>,
 }
 
 impl Start {
@@ -154,6 +193,8 @@ impl Start {
             Page::Categories
         } else if has("--detail") {
             Page::Detail
+        } else if has("--content-cards") {
+            Page::ContentCards
         } else {
             Page::Styles
         };
@@ -161,7 +202,19 @@ impl Start {
             Some("nav") => Some(Menu::Nav),
             _ => None,
         };
-        Self { light: has("--light"), page, menu, drawer: open == Some("drawer"), panel: open == Some("panel") }
+        let appearance = args.iter().position(|a| a == "--appearance").and_then(|i| args.get(i + 1));
+        let light = has("--light") || appearance.is_some_and(|a| a == "light");
+        let cards_part = match (page, open) {
+            (Page::ContentCards, Some(open)) => {
+                let part = content_cards::Part::parse(open);
+                if part.is_none() {
+                    eprintln!("gallery: no part {open:?} of the content cards; valid: {}", content_cards::Part::NAMES);
+                }
+                part
+            }
+            _ => None,
+        };
+        Self { light, page, menu, drawer: open == Some("drawer"), panel: open == Some("panel"), cards_part }
     }
 }
 
@@ -170,6 +223,8 @@ struct Gallery {
     shot: Option<std::path::PathBuf>,
     light: bool,
     page: Page,
+    /// The section of the content cards shown alone (`--open`), all without.
+    cards_part: Option<content_cards::Part>,
     section: usize,
     query: String,
     /// The words in the search field of the menu with search (issue #299).
@@ -255,6 +310,7 @@ impl Gallery {
             shot,
             light: start.light,
             page: start.page,
+            cards_part: start.cards_part,
             section: 0,
             query: String::new(),
             search: String::new(),
@@ -387,6 +443,13 @@ impl Gallery {
             Page::Mailbar => self.page_frame(mailbar()),
             Page::Categories => self.page_frame(categories()),
             Page::Detail => self.page_frame(self.detail()),
+            // On the panel surface alone, without the gallery's sidebar: the cards stand where the assistant's and
+            // the chat's conversation do, and a mini tile has no room for a sidebar.
+            Page::ContentCards => container(content_cards::page(self.cards_part))
+                .width(Fill)
+                .height(Fill)
+                .style(style::container::panel_flush)
+                .into(),
             Page::Styles => self.page_frame(self.styles()),
         }
     }
