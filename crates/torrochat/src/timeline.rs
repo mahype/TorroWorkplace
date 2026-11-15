@@ -13,6 +13,7 @@ use chrono::{DateTime, Duration, NaiveDate, Utc};
 use torro_chat::{FileRef, Mention, Message, MessageKind};
 use torro_core::i18n::tr;
 use torro_gui::datetime;
+use torro_ipc::assistant::MAX_LINK_CARDS;
 
 /// Messages of one author closer than this stand together, with one name above and one time below.
 pub const RUN_GAP: Duration = Duration::minutes(5);
@@ -183,12 +184,16 @@ fn has_caption(message: &Message, file: &FileRef) -> bool {
     !text.is_empty() && text != file.name
 }
 
-/// The first web link of `text` (`https://` or `http://` up to the next space): the one a link card
-/// stands for, as in Talk.
-pub fn first_link(text: &str) -> Option<&str> {
-    let start = text.find("https://").or_else(|| text.find("http://"))?;
-    let rest = &text[start..];
-    rest.split_whitespace().next()
+/// The links of `text` that may have a card (issue #785, `docs/inhaltskarten.md` "Grenzen"): the first
+/// [`MAX_LINK_CARDS`] `https://` links, each up to the next space and without the punctuation of the sentence
+/// after it ("…/pull/143," is `…/pull/143`), in the order they stand in it – as the core counts them for
+/// `chat.show_card` with `index`. Later links stay links in the text.
+pub fn card_links(text: &str) -> Vec<&str> {
+    text.split_whitespace()
+        .filter_map(|word| word.find("https://").map(|at| &word[at..]))
+        .map(|word| word.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '"', '\'']))
+        .take(MAX_LINK_CARDS)
+        .collect()
 }
 
 /// A message of the provider, shown small: a system message or a missed call.
@@ -528,6 +533,13 @@ mod tests {
         let mut gone = team[3].clone();
         apply_deleted(&mut gone);
         assert!(!is_reactable(&gone) && gone.text.is_empty() && gone.reactions.is_empty());
+    }
+
+    #[test]
+    fn at_most_three_https_links_may_have_cards_in_their_order() {
+        let text = "See https://a.org/1, and http://b.org/2, (https://c.org/3) https://d.org/4. https://e.org/5";
+        assert_eq!(card_links(text), ["https://a.org/1", "https://c.org/3", "https://d.org/4"]);
+        assert!(card_links("no link here").is_empty());
     }
 
     #[test]
