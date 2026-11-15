@@ -1340,6 +1340,19 @@ pub struct Voice {
     /// The voice of OpenAI, one of [`OPENAI_VOICES`]; `None` for the first of [`OPENAI_RECOMMENDED`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openai_voice: Option<String>,
+    /// How fast Pocket TTS speaks, in percent (issue #782); `None` for 100. The assistant stretches
+    /// the sound itself, since sherpa-onnx does not read a speed for Pocket
+    /// ([`Voice::pocket_speed_or_default`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pocket_speed: Option<u16>,
+    /// The extra silence after each sentence of Pocket TTS, in milliseconds (issue #782); `None` for
+    /// none, as before ([`Voice::pocket_pause_or_default`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pocket_pause: Option<u16>,
+    /// How OpenAI speaks, in a person's words (`instructions` of the speech API, issue #782); `None`
+    /// for OpenAI's own way. It only travels once a person chose OpenAI as [`Voice::speech_provider`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai_style: Option<String>,
 }
 
 /// Who reads the assistant's answers aloud (issue #745, `docs/assistent.md` "Vorlesen"). More may
@@ -1437,7 +1450,48 @@ impl Default for Voice {
             speech_provider: None,
             pocket_voice: None,
             openai_voice: None,
+            pocket_speed: None,
+            pocket_pause: None,
+            openai_style: None,
         }
+    }
+}
+
+/// The speeds of Pocket TTS a person can choose, in percent (issue #782): from, to and the step.
+pub const POCKET_SPEEDS: (u16, u16, u16) = (70, 150, 10);
+
+/// The extra pauses after a sentence of Pocket TTS, in milliseconds (issue #782): from, to and the step.
+pub const POCKET_PAUSES: (u16, u16, u16) = (0, 1000, 250);
+
+/// The longest speaking style `settings.set_setting` takes, in characters (issue #782).
+pub const MAX_STYLE_CHARS: usize = 500;
+
+/// `value` if it lies within `steps` (from, to, step) and on a step, else `None`.
+fn on_step(value: Option<u16>, (from, to, step): (u16, u16, u16)) -> Option<u16> {
+    value.filter(|value| (from..=to).contains(value) && (value - from) % step == 0)
+}
+
+/// The number in `value` within `steps` (from, to, step), rounded to the nearest step, or `null` for
+/// the default. `what` names the setting in the refusal.
+fn stepped_from(
+    value: &serde_json::Value,
+    (from, to, step): (u16, u16, u16),
+    what: &str,
+) -> Result<Option<u16>, String> {
+    let refused = || format!("{value} is not a {what}: send a number from {from} to {to} or null");
+    match value {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Number(number) => {
+            let number = number.as_f64().ok_or_else(refused)?;
+            if !(f64::from(from)..=f64::from(to)).contains(&number) {
+                return Err(refused());
+            }
+            let steps = ((number - f64::from(from)) / f64::from(step)).round();
+            // Within the range, so the rounded step fits in u16.
+            let rounded = u16::try_from(steps as i64).map_err(|_| refused())?;
+            Ok(Some(from + rounded * step))
+        }
+        _ => Err(refused()),
     }
 }
 
@@ -1520,6 +1574,53 @@ impl Voice {
     /// The OpenAI voice to speak with: the chosen one, or the first of [`OPENAI_RECOMMENDED`].
     pub fn openai_voice_or_default(&self) -> &str {
         self.openai_voice.as_deref().filter(|id| OPENAI_VOICES.contains(id)).unwrap_or(OPENAI_RECOMMENDED[0])
+    }
+
+    /// How fast Pocket TTS speaks, in percent: the chosen speed if it is one of [`POCKET_SPEEDS`],
+    /// else 100 (issue #782).
+    pub fn pocket_speed_or_default(&self) -> u16 {
+        on_step(self.pocket_speed, POCKET_SPEEDS).unwrap_or(100)
+    }
+
+    /// The extra pause after each sentence of Pocket TTS, in milliseconds: the chosen one if it is one
+    /// of [`POCKET_PAUSES`], else 0 (issue #782).
+    pub fn pocket_pause_or_default(&self) -> u16 {
+        on_step(self.pocket_pause, POCKET_PAUSES).unwrap_or(0)
+    }
+
+    /// The speaking style for OpenAI, or `None` for OpenAI's own way (issue #782).
+    pub fn openai_style_or_none(&self) -> Option<&str> {
+        self.openai_style.as_deref().map(str::trim).filter(|style| !style.is_empty())
+    }
+
+    /// The speed in `value`: a number from 70 to 150, rounded to tens, or `null` for 100. For
+    /// `settings.set_setting` with `pocket_speed`.
+    pub fn pocket_speed_from(value: &serde_json::Value) -> Result<Option<u16>, String> {
+        stepped_from(value, POCKET_SPEEDS, "speed in percent")
+    }
+
+    /// The pause in `value`: a number of milliseconds from 0 to 1000, rounded to 250, or `null` for
+    /// none. For `settings.set_setting` with `pocket_pause`.
+    pub fn pocket_pause_from(value: &serde_json::Value) -> Result<Option<u16>, String> {
+        stepped_from(value, POCKET_PAUSES, "pause in milliseconds")
+    }
+
+    /// The speaking style in `value`: one line of at most 500 characters without control characters,
+    /// trimmed; `null` or `""` for none. The refusal never repeats the text. For
+    /// `settings.set_setting` with `openai_style`.
+    pub fn openai_style_from(value: &serde_json::Value) -> Result<Option<String>, String> {
+        let refused =
+            || format!("this is not a speaking style: send one line of at most {MAX_STYLE_CHARS} characters or null");
+        let style = match value {
+            serde_json::Value::Null => return Ok(None),
+            serde_json::Value::String(style) => style.trim(),
+            _ => return Err(refused()),
+        };
+        if style.is_empty() {
+            return Ok(None);
+        }
+        let fits = style.chars().count() <= MAX_STYLE_CHARS && !style.chars().any(char::is_control);
+        fits.then(|| Some(style.to_string())).ok_or_else(refused)
     }
 
     /// The provider in `value`: `"pocket"` or `"openai"`, or `null` or `""` for the core's choice.
@@ -2893,6 +2994,43 @@ mod tests {
         assert_eq!(Voice::speech_language_from(&json!("")), Ok(None));
         for refused in [json!("english"), json!("xx"), json!(1), json!(["de"])] {
             assert!(Voice::speech_language_from(&refused).is_err(), "{refused}");
+        }
+    }
+
+    /// Issue #782: an old file speaks as before; speed and pause take numbers in their range,
+    /// rounded to the step; the speaking style is one short line and never repeated in a refusal.
+    #[test]
+    fn the_delivery_reads_with_defaults_and_is_checked() {
+        use serde_json::json;
+        let old: Voice = serde_json::from_str(r#"{"pocketVoice": "marius"}"#).expect("a file from before #782");
+        assert_eq!((old.pocket_speed_or_default(), old.pocket_pause_or_default()), (100, 0));
+        assert_eq!(old.openai_style_or_none(), None);
+        assert!(!serde_json::to_string(&Voice::default()).expect("json").contains("pocketSpeed"));
+        let odd = Voice { pocket_speed: Some(73), pocket_pause: Some(5000), ..Voice::default() };
+        assert_eq!((odd.pocket_speed_or_default(), odd.pocket_pause_or_default()), (100, 0), "off the steps");
+
+        assert_eq!(Voice::pocket_speed_from(&json!(70)), Ok(Some(70)));
+        assert_eq!(Voice::pocket_speed_from(&json!(150)), Ok(Some(150)));
+        assert_eq!(Voice::pocket_speed_from(&json!(124)), Ok(Some(120)));
+        assert_eq!(Voice::pocket_speed_from(&json!(125.5)), Ok(Some(130)));
+        assert_eq!(Voice::pocket_speed_from(&json!(null)), Ok(None));
+        for refused in [json!(69), json!(151), json!("100"), json!(-1)] {
+            assert!(Voice::pocket_speed_from(&refused).is_err(), "{refused}");
+        }
+        assert_eq!(Voice::pocket_pause_from(&json!(0)), Ok(Some(0)));
+        assert_eq!(Voice::pocket_pause_from(&json!(1000)), Ok(Some(1000)));
+        assert_eq!(Voice::pocket_pause_from(&json!(400)), Ok(Some(500)));
+        for refused in [json!(1001), json!(-250), json!(true)] {
+            assert!(Voice::pocket_pause_from(&refused).is_err(), "{refused}");
+        }
+
+        assert_eq!(Voice::openai_style_from(&json!("  calm, slow ")), Ok(Some("calm, slow".into())));
+        assert_eq!(Voice::openai_style_from(&json!("")), Ok(None));
+        assert_eq!(Voice::openai_style_from(&json!(null)), Ok(None));
+        let long = "a".repeat(MAX_STYLE_CHARS + 1);
+        for refused in [json!("secret\nline"), json!(long), json!(3)] {
+            let message = Voice::openai_style_from(&refused).expect_err("refused");
+            assert!(!message.contains("secret"), "the refusal never repeats the text: {message}");
         }
     }
 
