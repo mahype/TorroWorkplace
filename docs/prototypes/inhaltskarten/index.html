@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<!-- Entwurf: Inhaltskarten in Assistent und Chat nebeneinander, siehe docs/inhaltskarten.md. Dunkel ist
+     Standard; ?theme=light schaltet hell, ?size=s|m|l erzwingt eine Größenklasse. Tokens und Bausteine
+     aus ../linear/torro.css, Karten-Stile wie ../assistant/cards.html. Alle Bilder sind Platzhalter. -->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Content cards</title>
+<link rel="stylesheet" href="../linear/torro.css">
+<script src="../linear/size.js"></script>
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<style>
+:root{--attention:#E8A33D;--ok:#3FB984;--error:#F2555A;--line-selected:rgba(255,255,255,.28)}
+:root[data-theme="light"]{--attention:#B06F12;--ok:#1F9D68;--error:#C9302C;--line-selected:rgba(0,0,0,.32)}
+body{overflow:auto;height:auto}
+.page{display:flex;gap:24px;align-items:flex-start;padding:8px}
+html[data-size="s"] .page,html[data-size="m"] .page{flex-direction:column;padding:0;gap:0}
+
+/* Chatfenster: eingesetzte Fläche mit Kopfleiste, Verlauf auf Lesebreite, Eingabe unten. */
+.chat{flex:0 1 760px;min-width:0;background:var(--panel);border:1px solid var(--line);border-radius:8px;display:flex;flex-direction:column}
+html:not([data-size="l"]) .chat{flex:none;width:100%;border:0;border-radius:0}
+.access{display:flex;gap:2px;color:var(--text3)}
+.access svg{width:14px;height:14px}
+.log{padding:24px;display:flex;flex-direction:column;gap:16px;max-width:720px;width:100%;margin:0 auto}
+html[data-size="s"] .log{padding:16px 12px}
+.me{align-self:flex-end;max-width:80%;background:var(--raised);border:1px solid var(--line-strong);border-radius:10px;padding:8px 12px}
+.say{color:var(--text)}
+.toolline{display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;margin:-8px -8px;border-radius:6px;color:var(--text3);font-size:12px;font-weight:500}
+.toolline:hover{background:var(--hover);color:var(--text2)}
+.toolline svg{width:14px;height:14px}
+.toolline .chev{margin-left:auto}
+.composer{margin:0 24px 24px;max-width:672px;align-self:center;width:calc(100% - 48px);border:1px solid var(--line-strong);background:var(--raised);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px}
+html[data-size="s"] .composer{margin:0 12px 12px;width:calc(100% - 24px)}
+.composer .ph{color:var(--text3)}
+.composer .row{display:flex;align-items:center;gap:8px}
+
+/* Karte (widgets::card): RAISED, Rand LINE_STRONG, Radius 10, Innenrand 16, Teile 12 auseinander. */
+.card{background:var(--raised);border:1px solid var(--line-strong);border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:12px}
+.card.wait{border-color:var(--line-selected)}
+.head{display:flex;gap:12px;align-items:flex-start;min-width:0}
+.head .t{flex:1;min-width:0}
+.head .title{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.head .meta{font-size:12px;line-height:16px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.headline{font-size:16px;line-height:22px;font-weight:600}
+.actions{display:flex;flex-wrap:wrap;gap:8px}
+.actions .push{margin-left:auto}
+.btn.danger{border-color:transparent;background:none;color:var(--error)}
+.btn.danger:hover{background:var(--hover)}
+.btn kbd{margin-left:2px;border-color:rgba(255,255,255,.35);color:#fff}
+.btn:not(.primary) kbd{border-color:var(--line-strong);color:var(--text3)}
+.btn[disabled]{opacity:.4;pointer-events:none}
+html[data-size="s"] .actions .btn:not(.lead) .w{display:none}
+html[data-size="s"] .actions .btn:not(.lead){padding:0;width:28px;justify-content:center}
+html[data-size="s"] .actions .btn kbd,html[data-size="s"] .actions .btn:not(.lead) .chev{display:none}
+
+/* Kalenderblatt: Kalenderfarbe nur als 3-px-Kante und Tönung, Heute wäre der rote Kreis. */
+.sheet{--c:var(--c-work);width:56px;flex:none;border-radius:8px;overflow:hidden;background:var(--panel);border:1px solid var(--line-strong);text-align:center}
+.sheet .mo{height:20px;line-height:20px;font-size:11px;font-weight:500;color:var(--text);background:color-mix(in srgb,var(--c) var(--tint),var(--panel));border-top:3px solid var(--c);box-sizing:content-box}
+.sheet .day{font:600 22px/28px "Inter Tabular",Inter,sans-serif;margin-top:4px}
+.sheet .wd{font-size:11px;line-height:14px;color:var(--text3);margin-bottom:6px}
+.sheet.today .day span{display:inline-grid;place-items:center;width:28px;height:28px;font-size:16px;border-radius:50%;background:var(--accent);color:#fff}
+.sheet.sm{width:28px;border-radius:5px}
+.sheet.sm .mo{height:6px;font-size:0;border-top-width:2px}
+.sheet.sm .day{font-size:12px;line-height:16px;margin:2px 0 3px}
+
+/* Eigenschaftszeilen in Karten (prop_line, Bezeichnung als Icon). */
+.facts{display:flex;flex-direction:column}
+.fact{display:flex;align-items:center;gap:8px;min-height:28px;color:var(--text)}
+.fact svg{color:var(--text3)}
+.fact .faint{margin-left:auto}
+.fact a{color:var(--text);text-decoration:underline;text-decoration-color:var(--line-strong);text-underline-offset:3px}
+.avs{display:flex}
+.av{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:9px;font-weight:600;color:#fff;margin-left:-4px;border:2px solid var(--raised)}
+.av:first-child{margin-left:0}
+.pill{height:22px;display:inline-flex;align-items:center;gap:6px;padding:0 8px;border-radius:11px;border:1px solid var(--line-strong);background:var(--panel);font-size:12px;font-weight:500;color:var(--text);white-space:nowrap}
+.pill svg{width:14px;height:14px}
+.pill .dot{width:6px;height:6px}
+.c-att{color:var(--attention)} .c-ok{color:var(--ok)} .c-err{color:var(--error)}
+.note{display:flex;gap:8px;align-items:flex-start;font-size:12px;line-height:16px;color:var(--text2)}
+.note svg{width:14px;height:14px;margin-top:1px;color:var(--text3)}
+
+/* Aufgabe */
+.check{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--c,var(--text3));flex:none;margin-top:2px;display:grid;place-items:center}
+.check.done{background:var(--c);border-color:var(--c)}
+.check.done svg{width:11px;height:11px;color:#fff;stroke-width:3}
+.done-title{color:var(--text3);text-decoration:line-through}
+.prio{display:inline-flex;gap:1px;align-items:flex-end;height:12px}
+.prio i{width:3px;background:var(--text2);border-radius:1px}
+.prio i:nth-child(1){height:5px}.prio i:nth-child(2){height:8px}.prio i:nth-child(3){height:11px}
+.prio i.off{background:var(--line-strong)}
+.chips2{display:flex;flex-wrap:wrap;gap:6px}
+
+/* Mail-Entwurf: Kopfzeilen wie im Mail-Fenster, Lesetext 14/22. */
+.tile{width:36px;height:36px;border-radius:8px;flex:none;display:grid;place-items:center;background:var(--selected);border:1px solid var(--line-strong);color:var(--text)}
+.tile.sm{width:20px;height:20px;border-radius:4px}
+.tile.sm svg{width:12px;height:12px}
+.mail{background:var(--panel);border:1px solid var(--line);border-radius:8px}
+.mhead{padding:8px 12px;border-bottom:1px solid var(--line)}
+.mrow{display:flex;gap:8px;min-height:24px;align-items:center}
+.mrow .k{width:56px;flex:none;font-size:12px;color:var(--text3)}
+.mrow .v{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mrow .subj{font-weight:500}
+.mbody{padding:12px;font-size:14px;line-height:22px;color:var(--text)}
+.mbody p{margin:0 0 10px}
+.mbody p:last-child{margin:0}
+.att{display:flex;gap:8px;padding:0 12px 12px}
+.attach{display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 10px 0 4px;border-radius:6px;border:1px solid var(--line-strong);background:var(--raised)}
+.attach .tile{width:28px;height:28px;border-radius:6px}
+.attach .tile svg{width:14px;height:14px}
+.attach small{font-size:12px;color:var(--text3)}
+.waitband{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:500;color:var(--text2)}
+.waitband svg{width:14px;height:14px;color:var(--attention)}
+.waitband .faint{margin-left:auto;font-weight:400}
+
+/* Spalte mit Zuständen und Kurzformen */
+.side{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:24px;padding:16px 8px 24px}
+html:not([data-size="l"]) .side{padding:24px 12px}
+.side h2{margin:0;font-size:16px;line-height:22px;font-weight:600}
+.side h3{margin:0 0 8px;font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+.side .sub{color:var(--text2);margin:4px 0 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px;align-items:start}
+html[data-size="s"] .grid{grid-template-columns:1fr}
+.gone{display:flex;align-items:center;gap:12px;color:var(--text2)}
+.gone .tile{color:var(--text3)}
+
+/* Kurzform: eine Zeile, 40 hoch, für Mini-Kachel und Schnellfenster. */
+.minis{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.mini{display:flex;align-items:center;gap:8px;height:40px;padding:0 12px;border-bottom:1px solid var(--line)}
+.mini:last-child{border-bottom:0}
+.mini .grow{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mini .faint{font-size:12px;font-family:"Inter Tabular",Inter,sans-serif}
+.tilebox{width:240px;height:160px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px}
+.tilebox .big{font:600 28px/32px "Inter Tabular",Inter,sans-serif}
+/* Inhaltskarten: Bild oben, Kopf mit Quelle, höchstens drei Zusatzzeilen. */
+.cols{display:flex;gap:24px;align-items:flex-start;padding:8px}
+html[data-size="s"] .cols,html[data-size="m"] .cols{flex-direction:column;padding:0;gap:0}
+.cols .chat{flex:1 1 0}
+.cols h2{margin:0;padding:12px 16px;font-size:12px;font-weight:500;color:var(--text3);border-bottom:1px solid var(--line)}
+.src{display:flex;align-items:center;gap:6px;font-size:12px;line-height:16px;color:var(--text3)}
+.src svg{width:14px;height:14px}
+.src .tag{margin-left:auto;height:18px;padding:0 6px;border-radius:9px;border:1px solid var(--line-strong);color:var(--attention);font-weight:500;display:inline-flex;align-items:center}
+.pic{border-radius:8px;overflow:hidden;background:var(--panel);border:1px solid var(--line);display:grid;place-items:center;color:var(--text3);position:relative}
+.pic{max-height:150px}.pic.r169{aspect-ratio:16/9}.pic.r32{aspect-ratio:3/2}
+.pic svg{width:28px;height:28px}
+.pic .play{position:absolute;width:44px;height:44px;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;display:grid;place-items:center}
+.pic .play svg{width:20px;height:20px}
+.sec{padding:16px 16px 8px;display:flex;flex-direction:column;gap:16px}
+.lim{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;padding:16px}
+.lim .card{gap:8px}
+.lim .n{font:600 22px/28px "Inter Tabular",Inter,sans-serif}
+</style>
+</head>
+<body>
+<div class="cols" id="cols"></div>
+
+<section class="chat" style="margin:16px 8px;width:auto">
+  <h2>Limits: how many hits become cards</h2>
+  <div class="lim">
+    <article class="card"><div class="n">1–3</div><div>Full cards</div><div class="muted">Two mails are two cards.</div></article>
+    <article class="card"><div class="n">4–10</div><div>List of short forms</div><div class="muted">One line each, with “Open”.</div>
+      <div class="minis">
+        <div class="mini"><i data-lucide="mail" class="s14"></i><span class="grow">Anna Berg · API review notes</span><span class="faint">Thu</span></div>
+        <div class="mini"><i data-lucide="mail" class="s14"></i><span class="grow">Jonas Klein · Re: Offer</span><span class="faint">Wed</span></div>
+        <div class="mini"><i data-lucide="mail" class="s14"></i><span class="grow">Billing · Invoice 2026-114</span><span class="faint">Mon</span></div>
+      </div></article>
+    <article class="card"><div class="n">11+</div><div>One sentence</div><div class="muted">“312 mails match.”</div>
+      <div class="actions"><button class="btn lead"><i data-lucide="mail" class="s14"></i>Show all</button></div></article>
+  </div>
+</section>
+
+<section class="chat" style="margin:16px 8px;width:auto">
+  <h2>Privacy: a card from another provider (Settings › Privacy = Ask)</h2>
+  <div class="sec">
+    <article class="card wait">
+      <div class="note"><i data-lucide="shield"></i><span>This message shows content from <b style="font-weight:500;color:var(--text)">example.org</b>.</span></div>
+      <div class="actions">
+        <button class="btn lead"><i data-lucide="eye" class="s14"></i>Show once</button>
+        <button class="btn"><i data-lucide="check" class="s14"></i>Always allow example.org</button>
+        <button class="btn ghost"><i data-lucide="ban" class="s14"></i>Never for example.org</button>
+      </div>
+    </article>
+  </div>
+</section>
+
+<script>
+// One definition per content type, drawn twice: the same blocks (head, picture, title, up to three
+// lines, buttons) in the assistant and in the chat with people. In the chat only “Open” and
+// “Open in <app>” stay, and mail or an event appears only as a shared card.
+const cards = [
+  {icon:'globe', src:'example.org', pic:'image', ratio:'r32', title:'Designing calm software',
+   lines:[['text','A long read on interfaces that stay out of the way and what to leave out.']],
+   open:['Open','Open in browser']},
+  {icon:'youtube', src:'youtube.com', pic:'video', ratio:'r169', play:true, title:'Quiet interfaces in practice',
+   lines:[['clock','12:41 · Example Channel']], open:['Play','Open on YouTube']},
+  {icon:'mail', src:'Mail · anna@example.org', tag:'untrusted', title:'API review notes',
+   lines:[['user','Anna Berg · Thu, 16 Oct'],['text','Hi Sven, here are my notes for Thursday. The open points are …']],
+   open:['Open in mail'], mail:true},
+  {icon:'map-pin', src:'openstreetmap.org', pic:'map', ratio:'r32', title:'Office Berlin',
+   lines:[['map-pin','Example Street 1, 10115 Berlin']], open:['Open in maps']},
+  {icon:'file-text', src:'Files · cloud.example.org', pic:'file-text', ratio:'r32', title:'Offer 2026-114.pdf',
+   lines:[['files','12 pages · 1.4 MB']], open:['Open','Save as…']},
+  {icon:'image', src:'From ArtCraft (external, untrusted)', tag:'external', pic:'image', ratio:'r32', title:'Poster draft, v3',
+   lines:[['text','Generated from “calm interfaces”.']], open:['Open'], mcp:true},
+  {icon:'calendar', src:'Calendar · Work', title:'API review', event:true,
+   lines:[['clock','Thu, 16 Oct · 14:00–15:00'],['map-pin','Room 2.14 · Office Berlin']], open:['Open in calendar']},
+];
+function draw(c, chat){
+  const pic = c.pic ? `<div class="pic ${c.ratio}">${c.play?"":`<i data-lucide="${c.pic}"></i>`}${c.play?'<span class="play"><i data-lucide="play"></i></span>':''}</div>` : '';
+  const sheet = c.event ? `<div class="sheet"><div class="mo">Oct</div><div class="day">16</div><div class="wd">Thu</div></div>` : '';
+  const lines = c.lines.map(l => `<div class="fact"><i data-lucide="${l[0]==='text'?'align-left':l[0]}"></i>${l[1]}</div>`).join('');
+  const btns = (chat ? c.open.slice(0,2) : c.open).map((b,i) => `<button class="btn ${i?'':'lead'}">${b}</button>`).join('');
+  return `<article class="card"><div class="src"><i data-lucide="${c.icon}"></i>${c.src}${c.tag?`<span class="tag">${c.tag}</span>`:''}</div>
+    ${pic}<div class="head">${sheet}<div class="t"><div class="headline" style="font-size:14px;line-height:20px">${c.title}</div><div class="facts">${lines}</div></div></div>
+    <div class="actions">${btns}</div></article>`;
+}
+function column(name, sub, chat){
+  const list = cards.filter(c => !(chat && c.mcp));
+  return `<main class="chat"><div class="header"><div class="crumbs"><b>${name}</b><span class="faint">${sub}</span></div></div>
+    <div class="log">${list.map(c => draw(c, chat)).join('')}</div></main>`;
+}
+document.getElementById('cols').innerHTML =
+  column('Assistant', 'Qwen 3 14B · this computer', false) + column('Chat with Anna', 'Nextcloud Talk', true);
+lucide.createIcons();
+</script>
+</body>
+</html>
