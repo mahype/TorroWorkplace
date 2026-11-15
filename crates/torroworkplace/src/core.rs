@@ -15173,7 +15173,9 @@ fn terminal_refusal(
     terminal: &crate::approvals::TerminalContext,
 ) -> Option<Response> {
     let message = if !settings.enabled {
-        tr("The terminal is off. A person can switch it on in Torro Workplace under MCP servers › Built-in › Terminal.")
+        tr(
+            "The terminal is off. A person can switch it on in the control centre under MCP servers › Built-in › Terminal.",
+        )
     } else if terminal.tainted {
         tr("This conversation has read content from outside. Start a new conversation to run commands.")
     } else {

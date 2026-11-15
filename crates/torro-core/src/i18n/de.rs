@@ -9561,8 +9561,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Die Dateien, die die Suite schützt, lassen sich gerade nicht lesen, deshalb läuft kein Befehl.",
     ),
     (
-        "The terminal is off. A person can switch it on in Torro Workplace under MCP servers › Built-in › Terminal.",
-        "Das Terminal ist aus. Ein Mensch kann es in Torro Workplace unter MCP-Server › Eingebaut › Terminal einschalten.",
+        "The terminal is off. A person can switch it on in the control centre under MCP servers › Built-in › Terminal.",
+        "Das Terminal ist aus. Ein Mensch kann es in der Steuerzentrale unter MCP-Server › Eingebaut › Terminal einschalten.",
     ),
     (
         "This command names files the suite protects (its own folders, keys or passwords), so it doesn't run.",
