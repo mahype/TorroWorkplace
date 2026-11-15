@@ -2068,18 +2068,33 @@ fn repeat_reads_the_spoken_part_again_and_stop_stops_it() {
         _ => None,
     });
     let spoken = spoken.expect("the demo's answer has a spoken part");
-    app.reading = None;
+    // "Repeat" at the answer being read: the reading it replaces ends late and leaves "Stop" active.
+    assert_eq!(app.reading, Some(demo::READ_ANSWER));
     let _ = app.update(Message::RepeatSpoken(demo::READ_ANSWER));
-    assert_eq!(sent(&mut app), [Request::Speak { text: spoken }]);
+    assert_eq!(sent(&mut app), [Request::Speak { text: spoken.clone() }]);
+    let _ = app.update(Message::Read(app.current.clone(), demo::READ_ANSWER, Ok(())));
     assert_eq!(app.reading, Some(demo::READ_ANSWER), "\"Stop\" is active meanwhile");
+    // A second "Repeat": the first one's end does not take "Stop" away either; its own end does.
+    let _ = app.update(Message::RepeatSpoken(demo::READ_ANSWER));
+    sent(&mut app);
+    let _ = app.update(Message::Repeated(1, Ok(())));
+    assert_eq!(app.reading, Some(demo::READ_ANSWER));
+    let _ = app.update(Message::Repeated(2, Ok(())));
+    assert_eq!(app.reading, None, "read to its end");
+    let _ = app.update(Message::RepeatSpoken(demo::READ_ANSWER));
+    sent(&mut app);
     let _ = app.update(Message::StopReading);
     assert_eq!(sent(&mut app), [Request::StopSpeaking]);
     assert_eq!(app.reading, None);
 
-    // An answer without a spoken part, or an unknown number: nothing to read again.
-    let plain = app.transcript.entries.iter().find(|entry| !matches!(entry.content, EntryContent::Answer { .. }));
-    let _ = app.update(Message::RepeatSpoken(plain.map_or(0, |entry| entry.seq)));
+    // An answer without a spoken part, another entry or an unknown number: nothing to read again.
+    let plain = app.transcript.entries.iter().map(|entry| entry.seq).max().unwrap_or_default() + 1;
+    app.transcript.entries.push(answer_entry(plain, "Just one part."));
+    let _ = app.update(Message::RepeatSpoken(plain));
+    let message = app.transcript.entries.iter().find(|entry| matches!(entry.content, EntryContent::Message { .. }));
+    let _ = app.update(Message::RepeatSpoken(message.map_or(0, |entry| entry.seq)));
     let _ = app.update(Message::RepeatSpoken(999));
+    app.transcript.entries.retain(|entry| entry.seq != plain);
     assert!(sent(&mut app).is_empty());
 
     // In its own conversation by voice "Stop" follows what the listener reads.

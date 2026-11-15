@@ -446,6 +446,8 @@ pub enum Message {
     /// "Repeat" under an answer in two parts (issue #774): its spoken part, by the answer's number, is
     /// read aloud again (`assistant.speak`).
     RepeatSpoken(u64),
+    /// The repeat with this number ([`App::repeating`]) was read to its end, stopped, or failed.
+    Repeated(u64, Result<(), Refusal>),
     /// The core took "stop reading"; [`Message::Read`] follows for the answer.
     ReadingStopped,
     /// The answer `seq` of the conversation was read to its end, stopped, or could not be read.
@@ -680,6 +682,11 @@ pub struct App {
     read_for: Option<(Option<String>, u64)>,
     /// The conversation by voice as the core last told (issue #747, `assistant.talk_status`).
     pub(crate) talk: Option<torro_ipc::Talk>,
+    /// The "Repeat" that reads now, by a number of its own (issue #774): the reading it replaced ends
+    /// late, and must not take "Stop" away from it.
+    repeating: Option<u64>,
+    /// The number of the last "Repeat".
+    repeats: u64,
     /// Something was read aloud when the core last told how the conversation by voice stands (issue
     /// #774): "Stop" under its last answer is active.
     pub(crate) talk_speaking: bool,
@@ -812,6 +819,8 @@ impl App {
                 state: torro_ipc::VoiceState::Conversing,
             }),
             talk_speaking: open == Some(Open::Talk),
+            repeating: None,
+            repeats: 0,
             talk_started: false,
             talk_starting: false,
             dictation: if open == Some(Open::Dictating) { Dictation::Recording } else { Dictation::Idle },
@@ -1245,6 +1254,18 @@ impl App {
             Message::ReadAloudSet(_, Ok(())) => self.read_aloud_switching = false,
             Message::StopReading => return self.stop_reading(),
             Message::RepeatSpoken(seq) => return self.repeat_spoken(seq),
+            Message::Repeated(number, result) => {
+                if self.repeating == Some(number) {
+                    self.repeating = None;
+                    self.reading = None;
+                }
+                if let Err(refusal) = result {
+                    let message = refusal.message.clone();
+                    self.note_failure(&message, &refusal);
+                }
+            }
+            // What a "Repeat" replaced ends meanwhile: "Stop" stays with the repeat.
+            Message::Read(..) if self.repeating.is_some() => {}
             Message::ReadingStopped => {}
             // A reading stopped by a change of conversation answers late: only its own conversation's
             // answer is meant, and its failure is no longer worth a notice.
@@ -2325,6 +2346,7 @@ impl App {
     /// voice what the listener reads; the conversation goes on listening.
     fn stop_reading(&mut self) -> Task<Message> {
         self.reading = None;
+        self.repeating = None;
         self.talk_speaking = false;
         self.ask(Request::StopSpeaking, |_| Message::ReadingStopped)
     }
@@ -2340,8 +2362,10 @@ impl App {
         let Some(text) = spoken.filter(|spoken| !spoken.trim().is_empty()) else { return Task::none() };
         self.reading = Some(seq);
         self.reading_in = self.current.clone();
-        let conversation = self.current.clone();
-        self.ask(Request::Speak { text }, move |result| Message::Read(conversation.clone(), seq, result.map(drop)))
+        self.repeats += 1;
+        let number = self.repeats;
+        self.repeating = Some(number);
+        self.ask(Request::Speak { text }, move |result| Message::Repeated(number, result.map(drop)))
     }
 
     /// Reads the answer that just began aloud, when reading aloud is on (issue #745): from its first
@@ -2356,6 +2380,7 @@ impl App {
             return Task::none();
         }
         self.read_for = Some(asked);
+        self.repeating = None;
         self.reading = Some(seq);
         self.reading_in = self.current.clone();
         let Some(conversation) = self.current.clone() else { return Task::none() };
