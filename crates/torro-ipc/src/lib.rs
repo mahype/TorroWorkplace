@@ -4344,10 +4344,11 @@ pub enum Request {
     /// The picture of a link card in a conversation of the assistant (issue #785, [`Response::ChatPicture`]):
     /// drawn by the own Nextcloud for the page, as `chat.get_preview` with `card` draws it for a chat message; never
     /// an SVG, never fetched from the page itself. Only for a card that shows its card now (`image` set: loaded by
-    /// itself or shown once), with the rights of the conversation's client. App key only: picture data for the
-    /// window, which no agent needs to read a card (`docs/api.md`, "Was nie nach außen geht", point 14). Codes:
-    /// `not-found` for an unknown conversation, an entry that is no link card, or a card without a picture;
-    /// `not-connected` without a Nextcloud account.
+    /// itself or shown once), with the rights of the conversation's client – for a client cut to its own, so it gets
+    /// only the picture of a card `assistant.get_cards` shows it (S4 of issue #784). A client needs the right to see
+    /// picture content ([`api::Rights::image_content`]) as for `chat.get_preview`. Codes: `forbidden` without that
+    /// right; `not-found` for an unknown conversation, an entry that is no link card, or a card without a picture
+    /// (or one the client is not shown); `not-connected` without a Nextcloud account.
     #[serde(rename = "assistant.get_card_picture")]
     GetCardPicture {
         /// The conversation's id from `assistant.list_conversations`.

@@ -7542,15 +7542,22 @@ impl Core {
                 };
                 self.assistant.show_items(owner, conversation.as_deref(), &items).await
             }
-            // "Show once" of a link card and its picture (issue #785): a person's only (`Mcp::Never`, which keeps them
-            // from every client already; checked here again by reach).
+            // "Show once" of a link card (issue #785): a person's only (`Mcp::Never`, which keeps it from every client
+            // already; checked here again by reach).
             Request::ShowAssistantCard { conversation, seq } => match reach {
                 Reach::Suite => self.show_link_card(&conversation, seq).await,
                 Reach::Client(_) => refusal("forbidden", tr("Only a person can show this card.").into()),
             },
+            // The picture of a link card (S4 of issue #784): for a client only with the right to picture content and
+            // only of a card `assistant.get_cards` shows it; a chat about a mail it may not read is not there for it.
             Request::GetCardPicture { conversation, seq, size } => match reach {
-                Reach::Suite => self.link_card_picture(&conversation, seq, size).await,
-                Reach::Client(_) => refusal("forbidden", tr("Only a person can show this card.").into()),
+                Reach::Client(rights) if !rights.image_content => {
+                    refusal("forbidden", tr("This key may not see pictures and videos.").into())
+                }
+                _ => match self.hidden_conversation(&conversation, reach).await {
+                    Some(hidden) => hidden,
+                    None => self.link_card_picture(&conversation, seq, size, reach).await,
+                },
             },
             // Cards (issue #225): resolved with the rights of the conversation's client, not the caller's
             // alone.
@@ -12294,12 +12301,19 @@ impl Core {
         Response::Cards { cards: vec![torro_ipc::assistant::CardEntry { seq, card }] }
     }
 
-    /// `assistant.get_card_picture` (issue #785) for the app key: the picture of the link card `seq` of
-    /// `conversation`, only while that card shows its card with a picture as `assistant.get_cards` shows it now
-    /// (with the rights of the conversation's client), through the own Nextcloud as `chat.get_preview` with `card`
-    /// ([`crate::assistant::cards::link::picture`], a file's preview at `size`). `not-found` otherwise,
-    /// `not-connected` without a Nextcloud account.
-    async fn link_card_picture(&self, conversation: &str, seq: u64, size: torro_ipc::chat::PreviewSize) -> Response {
+    /// `assistant.get_card_picture` (issue #785) for `reach`: the picture of the link card `seq` of `conversation`,
+    /// only while that card shows its card with a picture as `assistant.get_cards` shows it to `reach` now (with the
+    /// rights of the conversation's client, for a client cut to its own, S4 of issue #784; a client's look fetches no
+    /// page), through the own Nextcloud as `chat.get_preview` with `card` ([`crate::assistant::cards::link::picture`],
+    /// a file's preview at `size`). `not-found` otherwise, `not-connected` without a Nextcloud account. The right to
+    /// picture content the caller checks first.
+    async fn link_card_picture(
+        &self,
+        conversation: &str,
+        seq: u64,
+        size: torro_ipc::chat::PreviewSize,
+        reach: Reach<'_>,
+    ) -> Response {
         let (url, from, client) = match self.link_card_entry(conversation, seq).await {
             Ok(found) => found,
             Err(refused) => return refused,
@@ -12308,7 +12322,11 @@ impl Core {
             return refusal("not-connected", tr("Connect a Nextcloud account to show cards of links.").into());
         }
         let Some(client) = client else { return refusal("not-found", tr("This card has no picture.").into()) };
-        let lookup = self.lookup(&client, &client.rights, conversation, Reach::Suite);
+        let rights = match reach {
+            Reach::Suite => client.rights.clone(),
+            Reach::Client(asker) => client.rights.common(asker),
+        };
+        let lookup = self.lookup(&client, &rights, conversation, reach);
         match crate::assistant::cards::link::look(&lookup, seq, &url, from).await {
             torro_ipc::assistant::Card::Link { card: Some(card), .. } if card.image => {
                 crate::assistant::cards::link::picture(&self.chat, &self.shown_links, conversation, seq, size).await
@@ -33219,8 +33237,8 @@ done"#,
         assert!(!log.contains("Müller") && !log.contains("Desktop"), "no title or path in the log: {log}");
     }
 
-    /// Issue #785: "Show once" of a link card and its picture are a person's only: a client with every right is
-    /// refused before anything is looked at, the app key gets `not-found` for a conversation that is not there.
+    /// Issue #785: "Show once" of a link card is a person's only: a client with every right is refused before
+    /// anything is looked at, the app key gets `not-found` for a conversation that is not there.
     #[tokio::test]
     async fn only_people_show_a_link_card_once() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -33231,9 +33249,72 @@ done"#,
         let show = Request::ShowAssistantCard { conversation: conversation.clone(), seq: 1 };
         let picture = Request::GetCardPicture { conversation, seq: 1, size: torro_ipc::chat::PreviewSize::Small };
         assert_eq!(code(&ask(&core, Some(&key), show.clone()).await), "forbidden");
-        assert_eq!(code(&ask(&core, Some(&key), picture.clone()).await), "forbidden");
         assert_eq!(code(&core.handle(show).await), "not-found");
         assert_eq!(code(&core.handle(picture).await), "not-found");
+    }
+
+    /// S4 of issue #784: a client gets the picture of a link card only with the right to picture content and only of
+    /// a card `assistant.get_cards` shows it; its own look fetches no page, so before the person's window loaded the
+    /// card there is none.
+    #[tokio::test]
+    async fn a_client_gets_the_picture_of_a_card_it_is_shown() {
+        use torro_ipc::assistant::{Card, CardRef, EntryContent, LinkOrigin};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, server) = chatting(dir.path());
+        let page = "https://blog.example.net/post";
+        {
+            let mut state = server.state();
+            let reference =
+                torro_nextcloud::Reference { title: "A post".into(), description: None, image: Some("p".into()) };
+            state.references.insert(page.into(), reference);
+            let mut png = Vec::new();
+            image::DynamicImage::new_rgb8(4, 3)
+                .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                .expect("a PNG");
+            state
+                .card_pictures
+                .insert("p".into(), crate::chat::remote::Picture { bytes: png, content_type: "image/png".into() });
+        }
+        let always = torro_core::privacy::Privacy {
+            content: torro_core::privacy::ForeignContent::Always,
+            ..torro_core::privacy::Privacy::default()
+        };
+        core.chat.set_privacy(Arc::new(move || always.clone()));
+        let folder = dir.path().join("assistant");
+        let own = "0123456789abcdef";
+        let card = EntryContent::Card { card: CardRef::Link { url: page.into(), from: LinkOrigin::Person } };
+        let contents = vec![crate::assistant::tests::message(&format!("Read {page}")), card];
+        crate::assistant::tests::written(&folder, own, "A post", contents, &[], |_| {});
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = core.with_assistant(assistant);
+        core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant()).await.expect("added");
+        let mut seeing = RightsTemplate::ReadOnly.rights();
+        seeing.areas.insert(Area::Assistant, AreaRights { level: Level::Read, admin: false });
+        seeing.image_content = true;
+        let (_, key) = core.clients.add("Agent", "claude-code", seeing.clone()).await.expect("added");
+        let mut blind = seeing;
+        blind.image_content = false;
+        let (_, blind_key) = core.clients.add("Blind", "claude-code", blind).await.expect("added");
+        let picture =
+            Request::GetCardPicture { conversation: own.into(), seq: 2, size: torro_ipc::chat::PreviewSize::Small };
+
+        assert_eq!(
+            code(&ask(&core, Some(&key), picture.clone()).await),
+            "not-found",
+            "not loaded: a client fetches none"
+        );
+        assert_eq!(server.count("resolve"), 0);
+        let cards = core.handle(Request::GetCards { conversation: own.into() }).await;
+        assert!(
+            matches!(&cards, Response::Cards { cards } if matches!(&cards[0].card, Card::Link { card: Some(_), .. })),
+            "{cards:?}"
+        );
+        assert!(
+            matches!(ask(&core, Some(&key), picture.clone()).await, Response::ChatPicture { .. }),
+            "shown to it now"
+        );
+        assert_eq!(code(&ask(&core, Some(&blind_key), picture.clone()).await), "forbidden", "no picture right");
+        assert!(matches!(core.handle(picture).await, Response::ChatPicture { .. }), "the person's window");
     }
 
     /// Issue #786: `assistant.show_items` of the assistant's own client adds a card for an item a search of its
