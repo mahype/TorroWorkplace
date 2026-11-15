@@ -1881,6 +1881,9 @@ pub(crate) mod tests {
         abouts: Mutex<Vec<(Request, MailRef)>>,
         /// The terminal's commands with what came with them (issue #754).
         terminals: Mutex<Vec<(Request, crate::approvals::TerminalContext)>>,
+        /// Whether the terminal is switched on (issue #754): off as in a new suite, so the other tests see
+        /// only the tools they grant; the terminal's own test switches it on.
+        terminal: std::sync::atomic::AtomicBool,
     }
 
     impl Host for FakeHost {
@@ -1971,9 +1974,9 @@ pub(crate) mod tests {
             })
         }
 
-        /// The terminal is on here (issue #754).
+        /// The terminal as the test switched it (issue #754).
         fn terminal_enabled(&self) -> bool {
-            true
+            self.terminal.load(std::sync::atomic::Ordering::SeqCst)
         }
 
         /// Kept with what came with it; answered with an empty output, marked as from outside for a line that
@@ -2143,6 +2146,7 @@ pub(crate) mod tests {
             webs: Mutex::new(Vec::new()),
             abouts: Mutex::new(Vec::new()),
             terminals: Mutex::new(Vec::new()),
+            terminal: std::sync::atomic::AtomicBool::new(false),
         });
         let weak = Arc::downgrade(&host);
         let weak: std::sync::Weak<dyn Host> = weak;
@@ -3394,6 +3398,7 @@ pub(crate) mod tests {
             says("Fetched."),
         ]);
         let (assistant, host) = set_up(dir.path(), Some(reader()), Place::Local, Arc::clone(&script));
+        host.terminal.store(true, std::sync::atomic::Ordering::SeqCst);
         let id = ask(&assistant, None, "List the files.", Vec::new()).await;
         finished(&assistant, &id).await;
         ask(&assistant, Some(&id), "Again.", Vec::new()).await;
