@@ -13958,7 +13958,7 @@ impl Core {
     /// as a sentence saying so. Ends once the answer is over and read, or when stopped; however long the
     /// answer pauses (a long tool), the rest is read. It counts as reading aloud only while a piece sounds.
     /// Of an answer in two parts only the spoken part is read, whole and as soon as it is complete, and
-    /// nothing of the answer after it; one without it is read up to a sentence end within
+    /// nothing of the answer after it but an approval or a failure; one without it is read up to a sentence end within
     /// [`torro_ipc::assistant::SPOKEN_MOST`] characters (issue #774).
     async fn read_answer(&self, number: u64, conversation: &str, after: u64) -> Response {
         use torro_ipc::assistant::{EntryContent, SPOKEN_MOST};
@@ -13995,14 +13995,17 @@ impl Core {
             }
             // A spoken part is read whole, as "Repeat" reads it (`assistant.speak`): only an answer
             // without one is cut. Once it is there it is complete, so its last sentence is read at once,
-            // not after the shown part is written.
+            // not after the shown part is written; the reading still waits for an approval or a failure
+            // to say it.
             if said {
                 sentences.lift_limit();
             }
             let mut pieces = sentences.push(&text);
-            let over = last_word.is_some() || !running || said;
-            if over {
+            let over = last_word.is_some() || !running;
+            if over || said {
                 pieces.extend(sentences.finish());
+            }
+            if over {
                 pieces.extend(last_word.map(str::to_string));
             }
             if !pieces.is_empty() {
@@ -20159,14 +20162,21 @@ done"#,
         })
         .await;
         assert!(first.is_ok(), "the spoken part is read while the rest is written");
-        // Once the mark is there the spoken part is complete: its last sentence is read and the reading
-        // ends while the shown part is still being written.
+        // Once the mark is there the spoken part is complete: its last sentence is read while the shown
+        // part is still being written.
         partial.lock().unwrap_or_else(PoisonError::into_inner).text =
             "Nine events. Have a look.\n---shown---\n- Monday 9:00".into();
-        let ended = tokio::time::timeout(std::time::Duration::from_secs(5), read).await;
-        assert_eq!(ended.expect("ends before the answer is written").expect("read"), Response::Ok);
+        let whole = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !std::fs::read_to_string(&said).is_ok_and(|log| log.contains("Have a look.")) {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(whole.is_ok(), "the last spoken sentence before the answer is written");
+        assert!(!read.is_finished(), "it still waits for an approval or a failure to say");
         let shown = "- Monday 9:00 Standup.\n- Tuesday 10:00 Review.";
         finish_growing(&core.assistant, ID, run, &format!("Nine events. Have a look.\n---shown---\n{shown}")).await;
+        assert_eq!(read.await.expect("read"), Response::Ok);
         let log = std::fs::read_to_string(&said).expect("read aloud");
         assert!(log.contains("Nine events.") && log.contains("Have a look."), "{log}");
         assert!(!log.contains("Standup") && !log.contains("shown"), "the shown part is not read: {log}");
