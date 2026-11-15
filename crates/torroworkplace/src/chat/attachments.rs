@@ -86,11 +86,11 @@ pub struct Held {
     /// ([`link_cards::links`]), `None` for a link not resolved (yet).
     cards: BTreeMap<String, Vec<Option<Resolved>>>,
     order: VecDeque<String>,
-    /// GitHub links no connected account showed an item for (issue #784), by link, the oldest first: `None` held
-    /// (asked again only once the messages are read anew after a restart), `Some(at)` when GitHub could not be asked
-    /// then (asked again after [`link_cards::RETRY_AFTER`]). So such a link is not asked with every read; it is the
-    /// page it is.
-    no_items: BTreeMap<String, Option<Instant>>,
+    /// GitHub links no connected account showed an item for (issue #784), by link, the oldest first, with when and
+    /// whether GitHub could not be asked then: asked again after [`link_cards::NO_ITEM_AFTER`] (an account connected
+    /// later, a token that reaches the repository now), after [`link_cards::RETRY_AFTER`] when it failed. So such a
+    /// link is not asked with every read; meanwhile it is the page it is.
+    no_items: BTreeMap<String, (Instant, bool)>,
     no_item_order: VecDeque<String>,
     /// The connected GitHub accounts, for the cards of issues and pull requests (issue #790); `None` until the core
     /// hands them over ([`ChatService::set_github`]), and then such a link is the page it is.
@@ -153,16 +153,16 @@ impl Held {
     /// Whether GitHub is not to be asked about `link` at `now` ([`Held::no_items`]).
     fn no_item(&self, link: &str, now: Instant) -> bool {
         match self.no_items.get(link) {
-            Some(None) => true,
-            Some(Some(at)) => now.duration_since(*at) < link_cards::RETRY_AFTER,
+            Some((at, true)) => now.duration_since(*at) < link_cards::RETRY_AFTER,
+            Some((at, false)) => now.duration_since(*at) < link_cards::NO_ITEM_AFTER,
             None => false,
         }
     }
 
-    /// Keeps that no account showed an item for `link` (`failed` when GitHub could not be asked); the oldest go beyond
-    /// [`CARDS_KEPT`].
-    fn keep_no_item(&mut self, link: &str, failed: Option<Instant>) {
-        if self.no_items.insert(link.to_owned(), failed).is_none() {
+    /// Keeps that no account showed an item for `link` at `at` (`failed` when GitHub could not be asked); the oldest
+    /// go beyond [`CARDS_KEPT`].
+    fn keep_no_item(&mut self, link: &str, at: Instant, failed: bool) {
+        if self.no_items.insert(link.to_owned(), (at, failed)).is_none() {
             self.no_item_order.push_back(link.to_owned());
         }
         while self.no_item_order.len() > CARDS_KEPT {
@@ -460,12 +460,14 @@ impl ChatService {
                         match link_cards::github::resolve(&github, Reach::Suite, link, repo, *number).await {
                             Ok(Some(card)) => Some(card),
                             Ok(None) => {
-                                self.held().keep_no_item(link, None);
+                                self.held().keep_no_item(link, now, false);
                                 None
                             }
+                            // Not reachable now: no card yet, neither the page's, which would be held for good; asked
+                            // again after `RETRY_AFTER`, as the assistant does.
                             Err(_) => {
-                                self.held().keep_no_item(link, Some(now));
-                                None
+                                self.held().keep_no_item(link, now, true);
+                                return None;
                             }
                         }
                     }

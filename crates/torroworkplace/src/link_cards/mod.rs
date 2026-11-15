@@ -23,6 +23,10 @@ pub const MAX_LINKS: usize = torro_ipc::assistant::MAX_LINK_CARDS;
 /// #784), so a server that is offline does not slow every read down; the card says it could not be reached.
 pub const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How long a GitHub link no connected account showed an item for is held as the page it is (issue #784): then
+/// GitHub is asked again, so an account connected later, or a token that reaches the repository now, brings its card.
+pub const NO_ITEM_AFTER: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// What a web address is (issue #784), by its form alone: nothing is fetched to tell it. Whether a card can be made
 /// (an account, the rights, the server's answer) is decided when it is resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
