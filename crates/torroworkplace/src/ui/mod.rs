@@ -2358,9 +2358,6 @@ impl Ui {
     /// back button and its name; the page's actions right.
     fn header(&self, class: SizeClass, nav: &Anchor) -> Element<'_, Message> {
         let Header { sub_page, actions } = self.page_header(class);
-        // How many apps are installed and wait for an update stands at the catalog's title on Overview
-        // (issue #803), not beside the page's title.
-        let note = None;
         let section = self.section;
         let menu = Message::ToggleMenu(Menu::Nav);
         let form = head_form(class, sub_page.is_some());
@@ -2384,7 +2381,9 @@ impl Ui {
                 let arrow = widgets::icon_button(Icon::ChevronLeft, tr("Back"), Some(back));
                 (vec![arrow], widgets::menu_button(nav, Some(section.icon()), widgets::path_menu_label(&name), menu))
             }
-            (HeadForm::Title, _) => (vec![], shell::header_title(Some(section.icon()), section.label(), note)),
+            // How many apps are installed and wait for an update stands at the catalog's title on Overview
+            // (issue #803), not beside the page's title.
+            (HeadForm::Title, _) => (vec![], shell::header_title(Some(section.icon()), section.label(), None)),
             (_, _) => (vec![], widgets::menu_button(nav, Some(section.icon()), section.label(), menu)),
         };
         shell::header_bar(leading, title, actions)
