@@ -63,7 +63,7 @@ als Beschreibung der MCP-Tools lesen.
 | [`workflows`](#workflows) | [`workflows.list_templates`](#workflowslist_templates), [`workflows.get_template`](#workflowsget_template), [`workflows.instantiate_template`](#workflowsinstantiate_template), [`workflows.list_workflows`](#workflowslist_workflows), [`workflows.get_workflow`](#workflowsget_workflow), [`workflows.propose_workflow`](#workflowspropose_workflow), [`workflows.create_draft`](#workflowscreate_draft), [`workflows.update_draft`](#workflowsupdate_draft), [`workflows.save_workflow`](#workflowssave_workflow), [`workflows.duplicate_workflow`](#workflowsduplicate_workflow), [`workflows.set_workflow_enabled`](#workflowsset_workflow_enabled), [`workflows.remove_workflow`](#workflowsremove_workflow), [`workflows.preview_run`](#workflowspreview_run), [`workflows.run`](#workflowsrun), [`workflows.list_runs`](#workflowslist_runs), [`workflows.get_run`](#workflowsget_run), [`workflows.cancel_run`](#workflowscancel_run), [`workflows.get_document`](#workflowsget_document), [`workflows.open_document`](#workflowsopen_document), [`workflows.show_document`](#workflowsshow_document), [`workflows.list_rules`](#workflowslist_rules), [`workflows.create_rule`](#workflowscreate_rule), [`workflows.update_rule`](#workflowsupdate_rule), [`workflows.duplicate_rule`](#workflowsduplicate_rule), [`workflows.set_rule_enabled`](#workflowsset_rule_enabled), [`workflows.remove_rule`](#workflowsremove_rule), [`workflows.preview_rule`](#workflowspreview_rule), [`workflows.authorize_workflow`](#workflowsauthorize_workflow), [`workflows.revoke_workflow_authorization`](#workflowsrevoke_workflow_authorization) |
 | [`accounts`](#accounts) | [`accounts.list_accounts`](#accountslist_accounts), [`accounts.sync`](#accountssync), [`accounts.connect_nextcloud`](#accountsconnect_nextcloud), [`accounts.connect_github`](#accountsconnect_github), [`accounts.set_github_token`](#accountsset_github_token), [`accounts.set_search_key`](#accountsset_search_key), [`accounts.discover_services`](#accountsdiscover_services), [`accounts.connect_caldav`](#accountsconnect_caldav), [`accounts.connect_mail`](#accountsconnect_mail), [`accounts.reconfigure_mail`](#accountsreconfigure_mail), [`accounts.update_mail_account`](#accountsupdate_mail_account), [`accounts.list_torromail_accounts`](#accountslist_torromail_accounts), [`accounts.import_torromail_account`](#accountsimport_torromail_account), [`accounts.connect_ai`](#accountsconnect_ai), [`accounts.connect_local_ai`](#accountsconnect_local_ai), [`accounts.connect_ntfy`](#accountsconnect_ntfy), [`accounts.set_ntfy_login`](#accountsset_ntfy_login), [`accounts.set_ntfy_topic`](#accountsset_ntfy_topic), [`accounts.remove_account`](#accountsremove_account) |
 | [`ai`](#ai) | [`ai.list_models`](#ailist_models), [`ai.set_model_enabled`](#aiset_model_enabled), [`ai.find_local_servers`](#aifind_local_servers), [`ai.list_assignments`](#ailist_assignments), [`ai.set_assignment`](#aiset_assignment), [`ai.set_slot`](#aiset_slot), [`ai.recommend`](#airecommend), [`ai.pull_model`](#aipull_model), [`ai.list_pulls`](#ailist_pulls), [`ai.cancel_pull`](#aicancel_pull) |
-| [`assistant`](#assistant) | [`assistant.dictate`](#assistantdictate), [`assistant.stop_dictation`](#assistantstop_dictation), [`assistant.speak`](#assistantspeak), [`assistant.stop_speaking`](#assistantstop_speaking), [`assistant.list_engines`](#assistantlist_engines), [`assistant.list_conversations`](#assistantlist_conversations), [`assistant.search_conversations`](#assistantsearch_conversations), [`assistant.get_conversation`](#assistantget_conversation), [`assistant.get_cards`](#assistantget_cards), [`assistant.send_message`](#assistantsend_message), [`assistant.check_about`](#assistantcheck_about), [`assistant.cancel`](#assistantcancel), [`assistant.rename_conversation`](#assistantrename_conversation), [`assistant.delete_conversation`](#assistantdelete_conversation), [`assistant.pin_conversation`](#assistantpin_conversation), [`assistant.archive_conversations`](#assistantarchive_conversations), [`assistant.delete_conversations`](#assistantdelete_conversations), [`assistant.open_window`](#assistantopen_window), [`assistant.get_profile`](#assistantget_profile), [`assistant.update_profile`](#assistantupdate_profile), [`assistant.list_memories`](#assistantlist_memories), [`assistant.my_access`](#assistantmy_access), [`assistant.remember`](#assistantremember), [`assistant.forget`](#assistantforget), [`assistant.list_skills`](#assistantlist_skills), [`assistant.get_skill`](#assistantget_skill), [`assistant.save_skill`](#assistantsave_skill), [`assistant.delete_skill`](#assistantdelete_skill), [`assistant.confirm_bot`](#assistantconfirm_bot) |
+| [`assistant`](#assistant) | [`assistant.dictate`](#assistantdictate), [`assistant.stop_dictation`](#assistantstop_dictation), [`assistant.speak`](#assistantspeak), [`assistant.stop_speaking`](#assistantstop_speaking), [`assistant.start_talk`](#assistantstart_talk), [`assistant.end_talk`](#assistantend_talk), [`assistant.talk_status`](#assistanttalk_status), [`assistant.speak_answer`](#assistantspeak_answer), [`assistant.list_engines`](#assistantlist_engines), [`assistant.list_conversations`](#assistantlist_conversations), [`assistant.search_conversations`](#assistantsearch_conversations), [`assistant.get_conversation`](#assistantget_conversation), [`assistant.get_cards`](#assistantget_cards), [`assistant.send_message`](#assistantsend_message), [`assistant.check_about`](#assistantcheck_about), [`assistant.cancel`](#assistantcancel), [`assistant.rename_conversation`](#assistantrename_conversation), [`assistant.delete_conversation`](#assistantdelete_conversation), [`assistant.pin_conversation`](#assistantpin_conversation), [`assistant.archive_conversations`](#assistantarchive_conversations), [`assistant.delete_conversations`](#assistantdelete_conversations), [`assistant.open_window`](#assistantopen_window), [`assistant.get_profile`](#assistantget_profile), [`assistant.update_profile`](#assistantupdate_profile), [`assistant.list_memories`](#assistantlist_memories), [`assistant.my_access`](#assistantmy_access), [`assistant.remember`](#assistantremember), [`assistant.forget`](#assistantforget), [`assistant.list_skills`](#assistantlist_skills), [`assistant.get_skill`](#assistantget_skill), [`assistant.save_skill`](#assistantsave_skill), [`assistant.delete_skill`](#assistantdelete_skill), [`assistant.confirm_bot`](#assistantconfirm_bot) |
 | [`bots`](#bots) | [`bots.list_bots`](#botslist_bots), [`bots.get_bot`](#botsget_bot), [`bots.save_bot`](#botssave_bot), [`bots.delete_bot`](#botsdelete_bot), [`bots.ask_bot`](#botsask_bot) |
 | [`tools`](#tools) | [`tools.list_tools`](#toolslist_tools), [`tools.create_pdf`](#toolscreate_pdf), [`tools.open_file`](#toolsopen_file), [`tools.save_file_as`](#toolssave_file_as), [`tools.web_search`](#toolsweb_search), [`tools.fetch_page`](#toolsfetch_page), [`tools.list_search_providers`](#toolslist_search_providers), [`tools.list_folder`](#toolslist_folder), [`tools.find_files`](#toolsfind_files), [`tools.create_folder`](#toolscreate_folder), [`tools.copy_file`](#toolscopy_file), [`tools.move_file`](#toolsmove_file), [`tools.trash_file`](#toolstrash_file), [`tools.read_file`](#toolsread_file), [`tools.search_in_files`](#toolssearch_in_files), [`tools.write_file`](#toolswrite_file), [`tools.edit_file`](#toolsedit_file) |
 | [`extensions`](#extensions) | [`extensions.list_extensions`](#extensionslist_extensions), [`extensions.get_extension`](#extensionsget_extension), [`extensions.list_catalog`](#extensionslist_catalog), [`extensions.list_tools`](#extensionslist_tools), [`extensions.call_tool`](#extensionscall_tool), [`extensions.set_enabled`](#extensionsset_enabled), [`extensions.install_extension`](#extensionsinstall_extension), [`extensions.confirm_tools`](#extensionsconfirm_tools), [`extensions.update_extension`](#extensionsupdate_extension), [`extensions.set_secret`](#extensionsset_secret), [`extensions.set_folder`](#extensionsset_folder), [`extensions.read_logs`](#extensionsread_logs), [`extensions.remove_extension`](#extensionsremove_extension) |
@@ -3302,6 +3302,42 @@ Stops reading aloud at once (assistant_speak). Does nothing when nothing is read
 
 Keine Felder.
 
+### `assistant.start_talk`
+
+Zugriff `admin` · kein MCP-Tool, nur App-Schlüssel
+
+Starts a conversation by voice in a conversation, or in a new one the first sentence starts: after each answer the microphone stays open for the next sentence without the wake word. Only for the app key: it opens the microphone.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `conversation` | string | nein | The conversation to talk in; left out, the first sentence starts a new one. |
+
+### `assistant.end_talk`
+
+Zugriff `write` · MCP-Tool `assistant_end_talk`
+
+Ends the conversation by voice at once: the microphone closes and what is read aloud stops. Does nothing when none runs.
+
+Keine Felder.
+
+### `assistant.talk_status`
+
+Zugriff `read` · MCP-Tool `assistant_talk_status`
+
+Says whether a conversation by voice runs, in which conversation and what the listener does (conversing, recording, answering), and whether anything is read aloud now.
+
+Keine Felder.
+
+### `assistant.speak_answer`
+
+Zugriff `write` · MCP-Tool `assistant_speak_answer`
+
+Reads the answer of a conversation aloud in the room on this computer, sentence by sentence while the model still writes it; without a running answer the one after the last message. Blocks until it was read or stopped, minutes for a long answer. It stops what else is read aloud. With the provider OpenAI the text goes to OpenAI.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `conversation` | string | ja | The conversation's id from `assistant.list_conversations`. |
+
 ### `assistant.list_engines`
 
 Zugriff `read` · MCP-Tool `assistant_list_engines`
@@ -3367,6 +3403,7 @@ Sends a message to the assistant of Torro Workplace and starts its answer, in `c
 | `engine` | string | ja | Who answers: an engine's id from `assistant.list_engines`. |
 | `mode` | `"default"` \| `"ask"` \| `"read_only"` | nein | The permission mode of this answer (issue #132): `read_only` (only commands that change nothing; the others are `forbidden`), `ask` (every change waits for the person's approval) or `default` (the rights as stored; also when left out). It only ever narrows the rights, never widens them, and an approval asked for keeps it. |
 | `model` | string | nein | The model of an AI account (an id from `ai.list_models`) or of an agent (one of its engine's `models` from `assistant.list_engines`, `opus`); left out, the engine picks one (an AI account an open-weights one that can call tools). |
+| `spoken` | boolean | nein | The message was spoken (issue #747): the assistant answers briefly, in sentences to be read aloud, without tables and lists. It changes only what the model is told; `false` when left out. |
 | `text` | string | ja | The message, at most 20,000 characters. |
 | `without` | array<`"calendar"` \| `"tasks"` \| `"system"` \| `"workspaces"` \| `"contacts"` \| `"github"` \| `"inbox"` \| `"mail"` \| `"chat"` \| `"presence"` \| `"workflows"` \| `"accounts"` \| `"ai"` \| `"assistant"` \| `"bots"` \| `"tools"` \| `"extensions"` \| `"settings"` \| `"apps"` \| `"clients"` \| `"approvals"`> | nein | Areas the assistant may not use for this answer (`mail`, `calendar` …), on top of what its rights leave out. |
 

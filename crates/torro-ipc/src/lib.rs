@@ -4261,6 +4261,11 @@ pub enum Request {
         /// (`forbidden` otherwise, nothing stored) and a caller that sees the account (`not-found`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         about: Option<assistant::MailRef>,
+        /// The message was spoken (issue #747): the assistant answers briefly, in sentences to be read
+        /// aloud, without tables and lists. It changes only what the model is told; `false` when left
+        /// out.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        spoken: bool,
     },
     /// Whether a new chat about the mail `about` with `engine` and `model` would be taken (issue #605): the checks
     /// of [`Request::SendMessage`] with `about` for a new conversation, without storing anything or asking a
@@ -4964,6 +4969,41 @@ pub enum Request {
     /// nothing is read.
     #[serde(rename = "assistant.stop_speaking")]
     StopSpeaking,
+    /// Starts a conversation by voice (issue #747, [`Response::Talk`]): the listener keeps the
+    /// microphone open after each answer, so the person goes on without the wake word, until a
+    /// pause of eight seconds, a closing word ("Danke", "Stopp") or [`Request::EndTalk`]. Works whether
+    /// "Hey Torro" is on or off; the microphone is open only for this conversation then. What is said
+    /// goes to `conversation`, or without one to a new conversation that the first sentence starts
+    /// and the conversation keeps. Replaces a conversation by voice that runs. Only with the app key:
+    /// it opens the microphone (point 6 of "Was nie nach außen geht" in `docs/api.md`). `not-found`
+    /// for an unknown conversation, `unsupported` when the assistant app is not installed or the
+    /// assistant is switched off.
+    #[serde(rename = "assistant.start_talk")]
+    StartTalk {
+        /// The conversation to talk in; left out, the first sentence starts a new one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation: Option<String>,
+    },
+    /// Ends the conversation by voice (issue #747, [`Response::Ok`]): the microphone closes, and
+    /// what is read aloud stops. `Ok` also when none runs.
+    #[serde(rename = "assistant.end_talk")]
+    EndTalk,
+    /// How the conversation by voice stands (issue #747, [`Response::Talk`]): which conversation it
+    /// runs in and what the listener does, and whether anything is read aloud now.
+    #[serde(rename = "assistant.talk_status")]
+    TalkStatus,
+    /// Reads the answer of `conversation` aloud sentence by sentence (issue #747, [`Response::Ok`]):
+    /// the answer that runs, as the model writes it, the first sentence as soon as it is written;
+    /// without one the answer after the last message. Answers once it was read to its end or stopped
+    /// ([`Request::StopSpeaking`]); a call for the answer that is read already waits for the same end,
+    /// any other one stops it. An answer that waits for an approval or fails is read as a sentence
+    /// saying so. Errors as [`Request::Speak`]; `not-found` for an unknown conversation, `error` when
+    /// there is no answer to read.
+    #[serde(rename = "assistant.speak_answer")]
+    SpeakAnswer {
+        /// The conversation's id from `assistant.list_conversations`.
+        conversation: String,
+    },
     /// Who can read aloud on this computer (issue #745, [`Response::Speech`]): the graphics card,
     /// whether it is fast enough for local voices, the recommended and the current provider, and for
     /// each provider what is missing, its voices and how to set it up. Runs local checks and may take a
@@ -5006,6 +5046,20 @@ pub enum VoiceState {
     Recording,
     /// The sentence is turned into text, sent, and the answer shown and spoken.
     Answering,
+    /// In a conversation by voice (issue #747): after an answer, the microphone is open for the
+    /// next sentence without the wake word.
+    Conversing,
+}
+
+/// A conversation by voice that runs (issue #747, `assistant.start_talk`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Talk {
+    /// The conversation it runs in; `None` until the first sentence starts a new one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<String>,
+    /// What the listener does now.
+    #[serde(default)]
+    pub state: VoiceState,
 }
 
 /// One part the listener needs, found or not (`settings.voice_status`).
@@ -6396,6 +6450,14 @@ pub enum Response {
     /// Who can read aloud on this computer ([`Request::SpeechStatus`], issue #745).
     Speech {
         speech: SpeechStatus,
+    },
+    /// How the conversation by voice stands ([`Request::StartTalk`], [`Request::TalkStatus`], issue
+    /// #747): `None` when none runs; `speaking` while anything is read aloud, whoever asked for it.
+    Talk {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        talk: Option<Talk>,
+        #[serde(default)]
+        speaking: bool,
     },
     /// Where an address of a contact is on the map ([`Request::LocateContact`]).
     ContactLocation {

@@ -487,6 +487,7 @@ pub fn send_request(
         mode: Mode::Default,
         bot: None,
         about: conversation.is_none().then(|| about.clone()),
+        spoken: false,
     })
 }
 

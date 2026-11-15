@@ -6044,6 +6044,7 @@ pub(crate) mod tests {
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         };
         let with_engine = Facts { engine: Some("Ollama".into()), ..held.clone() };
         let in_it = summary(&send(Some(id.clone())), &with_engine);

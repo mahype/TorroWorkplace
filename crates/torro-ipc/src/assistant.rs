@@ -853,6 +853,7 @@ mod tests {
             mode: Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         }
     }
 
@@ -967,6 +968,7 @@ mod tests {
             mode: Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         };
         assert_eq!(code(limit_refusal(&model)), Some("error".into()));
         let bot = Request::SendMessage {
@@ -979,6 +981,7 @@ mod tests {
             mode: Mode::Default,
             bot: Some(long),
             about: None,
+            spoken: false,
         };
         assert_eq!(code(limit_refusal(&bot)), Some("error".into()));
         // Issue #605: the mail a chat is about keeps the same limit.
@@ -992,6 +995,7 @@ mod tests {
             mode: Mode::Default,
             bot: None,
             about: Some(MailRef { account: account.into(), id: id.into() }),
+            spoken: false,
         };
         assert_eq!(code(limit_refusal(&about("mail:anna@example.org", "m:4"))), None);
         assert_eq!(
