@@ -796,25 +796,27 @@ pub const SHOWN_MARK: &str = "---shown---";
 pub const SPOKEN_MOST: usize = 600;
 
 /// Splits an answer's text into its spoken and its shown part (issue #774) at the first line that is,
-/// trimmed, [`SHOWN_MARK`]: what comes before is spoken (trimmed only at its end, so it stays a start
+/// trimmed (and without backticks around it, which models add at times), [`SHOWN_MARK`]: what comes before is spoken (trimmed only at its end, so it stays a start
 /// of the text, which matters while it is read sentence by sentence), what comes after is shown
-/// (trimmed, it may be empty). Without such a line `(None, text)`. While the answer is still written
+/// (trimmed, it may be empty). Without such a line `(None, text)`; with nothing but blanks before it
+/// `(None, shown)`. While the answer is still written
 /// (`running`), a last line that may become the mark (it starts with `-` and is a start of
 /// [`SHOWN_MARK`]) is left out of the text, so the mark never flashes up in the chat.
 pub fn split_spoken(text: &str, running: bool) -> (Option<String>, String) {
     let mut at = 0;
     for line in text.split_inclusive('\n') {
-        if line.trim() == SHOWN_MARK {
+        if line.trim().trim_matches('`').trim() == SHOWN_MARK {
             let spoken = text[..at].trim_end().to_owned();
             let shown = text[at + line.len()..].trim().to_owned();
-            return (Some(spoken), shown);
+            // Nothing before the mark is no spoken part: the answer is read as one without it.
+            return (Some(spoken).filter(|spoken| !spoken.trim().is_empty()), shown);
         }
         at += line.len();
     }
     if running {
         let last = text.rfind('\n').map_or(0, |end| end + 1);
-        let tail = text[last..].trim();
-        if tail.starts_with('-') && SHOWN_MARK.starts_with(tail) {
+        let tail = text[last..].trim().trim_start_matches('`');
+        if tail.starts_with('-') && SHOWN_MARK.starts_with(tail.trim_end_matches('`')) {
             return (None, text[..last].to_owned());
         }
     }
@@ -1368,6 +1370,10 @@ mod tests {
         assert!(text.starts_with(spoken.as_deref().unwrap_or_default()), "the spoken part is a start of the text");
         // The mark with spaces around still counts, and nothing after it is an empty shown part.
         assert_eq!(split_spoken("Yes.\n  ---shown---  ", false), (Some("Yes.".into()), String::new()));
+        // In backticks it counts as well; nothing before it is no spoken part.
+        assert_eq!(split_spoken("Yes.\n`---shown---`\nMo", false), (Some("Yes.".into()), "Mo".into()));
+        assert_eq!(split_spoken("\n---shown---\n- Mon", false), (None, "- Mon".into()));
+        assert_eq!(split_spoken("Yes.\n`---sh", true), (None, "Yes.\n".into()));
         // Only the first mark splits; a later one belongs to what is shown.
         assert_eq!(split_spoken("A.\n---shown---\nB\n---shown---\nC", false).1, "B\n---shown---\nC");
     }

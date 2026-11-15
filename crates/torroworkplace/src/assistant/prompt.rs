@@ -271,7 +271,7 @@ pub fn spoken() -> String {
          conversation. Use plain sentences only: no Markdown, tables, lists, headings, code, links or emoji. Say \
          numbers, times and dates as they are spoken. It may point at what you show (\"Have a look at the list\", \
          \"Mind the second point\"). If you need more from the person, ask one short question here.\n\
-         - Then a line with only `{SHOWN_MARK}`, always, even when nothing follows it.\n\
+         - Then a line with only {SHOWN_MARK} (no quotes or backticks), always, even when nothing follows it.\n\
          - After it the shown part: what the person reads in the chat, as detailed as it needs to be, in \
          Markdown (lists, tables, links). It is not read aloud, so do not repeat the spoken part. Leave it empty \
          when the spoken part says it all.\n\
@@ -759,7 +759,7 @@ mod tests {
     fn a_spoken_answer_is_asked_for_in_two_parts() {
         let part = spoken();
         assert!(part.starts_with(SPOKEN_HEADING));
-        assert!(part.contains(&format!("a line with only `{SHOWN_MARK}`")), "{part}");
+        assert!(part.contains(&format!("a line with only {SHOWN_MARK} ")), "{part}");
         assert!(part.contains("spoken part") && part.contains("shown part"), "{part}");
     }
 
