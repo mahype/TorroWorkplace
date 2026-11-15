@@ -5,7 +5,7 @@
 //!
 //! What waits for the person ([`Waiting`], task E3.3b) is **one** number: the open inbox entries
 //! "for me". Open approvals are such entries since E2.1, so the "Approvals (n)" of task A.8 went
-//! into it; the approvals page stays in the control centre ("Settings…"). The number stands only
+//! into it; the approvals page stays in the control centre ("Control centre"). The number stands only
 //! next to "Inbox" among the apps ("Inbox (3)"): single mails or notices never show in the menu,
 //! a tray that lists them gets in the way. What a front end must escape in a label (DBusMenu's
 //! `_`, muda's `&`) it does itself.
@@ -151,8 +151,11 @@ pub fn waiting_line(waiting: Waiting) -> String {
     }
 }
 
-/// The menu from docs/core.md for one snapshot: the apps first, then the workspace templates,
-/// then "Settings…" and "Quit". Which workspace is active and which Nextcloud is signed in are
+/// The menu from docs/core.md for one snapshot: the control centre first, then the apps, the
+/// workspace templates and "Quit". The control centre stands at the top, not at the foot as
+/// "Settings…" did (issue #803): Omarchy's bar draws tray menus at most 420 px high and scrolls
+/// inside them, so with the whole menu the last entries lie out of sight, and the way to the
+/// settings must always be seen. Which workspace is active and which Nextcloud is signed in are
 /// left out: they say nothing the person needs here. Only work in progress or a problem with the
 /// templates gets a line ([`status_line`]).
 ///
@@ -160,6 +163,7 @@ pub fn waiting_line(waiting: Waiting) -> String {
 /// text off with an ellipsis.
 pub fn build(snapshot: &Snapshot) -> Vec<Item> {
     let mut menu = voice_section(snapshot.voice, snapshot.voice_enabled);
+    menu.push(entry(tr("Control centre"), Request::OpenApp { app: AppId::WORKPLACE.binary.to_string(), target: None }));
     menu.extend(apps_section(Waiting::of(snapshot), &snapshot.components_off));
     menu.push(Item::Separator);
     // Without the calendar (task W.2) no reminders come, so there is nothing to pause.
@@ -178,7 +182,6 @@ pub fn build(snapshot: &Snapshot) -> Vec<Item> {
         menu.push(status);
     }
     menu.push(Item::Separator);
-    menu.push(entry(tr("Settings…"), Request::OpenApp { app: AppId::WORKPLACE.binary.to_string(), target: None }));
     menu.push(entry(tr("Quit"), Request::Quit));
     menu
 }
@@ -309,8 +312,8 @@ fn voice_section(state: VoiceState, enabled: bool) -> Vec<Item> {
     vec![info(line.into()), entry(tr("Mute microphone"), mute), Item::Separator]
 }
 
-/// One entry per app of the suite whose component is on (task W.2); the control centre is
-/// "Settings…". Only the Inbox carries a number, what waits for the person ("Inbox (3)").
+/// One entry per app of the suite whose component is on (task W.2); the control centre stands
+/// above them ([`build`]). Only the Inbox carries a number, what waits for the person ("Inbox (3)").
 fn apps_section(waiting: Waiting, off: &BTreeSet<Component>) -> Vec<Item> {
     let inbox = match waiting.total() {
         0 => tr("Notification Hub").to_string(),
@@ -421,8 +424,8 @@ mod tests {
     use crate::core::InboxLine;
     use torro_pim::AccountState;
 
-    /// Where the template entries start: after the seven apps and a separator.
-    const TEMPLATES: usize = 8;
+    /// Where the template entries start: after the control centre, the seven apps and a separator.
+    const TEMPLATES: usize = 9;
 
     /// The menu as text: `▸` marks a submenu, parentheses a greyed-out entry, `-` a separator.
     fn labels(menu: &[Item]) -> Vec<String> {
@@ -499,6 +502,7 @@ mod tests {
         assert_eq!(
             labels(&build(&snapshot())),
             [
+                tr("Control centre").to_string(),
                 tr("Notification Hub").to_string(),
                 tr("Mail").to_string(),
                 tr("App Feed").to_string(),
@@ -513,16 +517,15 @@ mod tests {
                 tr("Save workspace…").to_string(),
                 tr("Manage workspaces…").to_string(),
                 "-".to_string(),
-                tr("Settings…").to_string(),
                 tr("Quit").to_string(),
             ]
         );
     }
 
-    /// Stage 2 of `docs/chat.md`: "Status: Away" before "Settings…" once a status was read, its
+    /// Stage 2 of `docs/chat.md`: "Status: Away" before "Quit" once a status was read, its
     /// entries set it on that account, "Online" first, switching the heartbeat on when it is off.
     #[test]
-    fn the_own_status_stands_before_the_settings_and_online_turns_the_heartbeat_on() {
+    fn the_own_status_stands_before_quit_and_online_turns_the_heartbeat_on() {
         use torro_chat::Status;
         assert!(!labels(&build(&snapshot())).iter().any(|label| label.ends_with('▸') && label.contains(':')));
         let account = "nextcloud:anna@cloud.example.org".to_string();
@@ -632,7 +635,7 @@ mod tests {
         assert_eq!(action_of(&menu, tr("Assistant")), Some(Action::OpenApp(AppId::ASSISTANT)));
         assert_eq!(action_of(&menu, tr("Chat")), Some(Action::OpenApp(AppId::CHAT)));
         assert_eq!(
-            action_of(&menu, tr("Settings…")),
+            action_of(&menu, tr("Control centre")),
             Some(Action::Run(Box::new(Request::OpenApp { app: AppId::WORKPLACE.binary.to_string(), target: None })))
         );
         assert_eq!(action_of(&menu, tr("Quit")), Some(Action::Run(Box::new(Request::Quit))));
@@ -750,7 +753,7 @@ mod tests {
     /// voice off, there is nothing about it.
     #[test]
     fn the_menu_shows_listening_and_mutes_the_microphone() {
-        assert_eq!(labels(&build(&snapshot()))[0], tr("Notification Hub"), "off: nothing");
+        assert_eq!(labels(&build(&snapshot()))[0], tr("Control centre"), "off: nothing");
         for state in [VoiceState::Listening, VoiceState::Recording, VoiceState::Answering, VoiceState::Conversing] {
             let menu = build(&Snapshot { voice: state, ..snapshot() });
             assert_eq!(
