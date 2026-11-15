@@ -990,13 +990,12 @@ fn system_line<'a>(message: &'a torro_chat::Message) -> Element<'a, Message> {
 
 /// `line` of the history, with its pictures' messages `ids`, telling the window when it comes into
 /// view (a picture's height ahead) and goes out of it, so the window holds the pictures where the
-/// person reads (issue #690). Keyed by the first message: iced matches lines by place, and a page
-/// put before them would otherwise leave the sensor silent.
+/// person reads (issue #690). Keyed by all its messages: iced matches lines by place, and a page
+/// put before them, or a picture joining an album in view, would otherwise leave the sensor silent.
 fn watched<'a>(line: Element<'a, Message>, ids: Vec<String>) -> Element<'a, Message> {
-    let key = ids.first().cloned().unwrap_or_default();
     let shown = ids.clone();
     sensor(line)
-        .key(key)
+        .key(ids.clone())
         .anticipate(size::panel())
         .on_show(move |_| files::wrap(FilesMsg::InView(shown.clone())))
         .on_hide(files::wrap(FilesMsg::OutOfView(ids)))
