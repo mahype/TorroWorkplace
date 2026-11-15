@@ -561,6 +561,11 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::VoiceStatus | Request::TestVoice | Request::Dictate | Request::StopDictation => Vec::new(),
         // Reading aloud (issue #745): never the text read.
         Request::Speak { .. } | Request::StopSpeaking | Request::SpeechStatus => Vec::new(),
+        // A conversation by voice (issue #747): the conversation by the id the core made, never a
+        // sentence said or read.
+        Request::EndTalk | Request::TalkStatus => Vec::new(),
+        Request::StartTalk { conversation } => conversation.iter().map(|id| random("conversation", id)).collect(),
+        Request::SpeakAnswer { conversation } => vec![random("conversation", conversation)],
         // Map data (issue #355): no ids.
         Request::MapsStatus | Request::ClearMapsCache => Vec::new(),
         // A chat about a mail (issue #605): the account and the mail hashed as for its suggestions.
@@ -1016,6 +1021,7 @@ pub(crate) mod tests {
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         };
         assert_eq!(
             super::ids(&send),
@@ -1031,6 +1037,7 @@ pub(crate) mod tests {
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         };
         assert_eq!(super::ids(&new), vec!["engine:test".to_string()]);
         let odd = Request::SendMessage {
@@ -1043,6 +1050,7 @@ pub(crate) mod tests {
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         };
         assert_eq!(super::ids(&odd), vec![format!("engine:hash:{}", hashed("Anna's server"))]);
         // Issue #605: a chat about a mail names the account and the mail hashed, never the text.
@@ -1056,6 +1064,7 @@ pub(crate) mod tests {
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             about: Some(torro_ipc::assistant::MailRef { account: "mail:anna@example.org".into(), id: "m:4".into() }),
+            spoken: false,
         };
         let logged = super::ids(&about);
         assert_eq!(logged[0], "engine:test");

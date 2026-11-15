@@ -4052,14 +4052,15 @@ mod tests {
             .collect();
         assert_eq!(
             catalogue.len(),
-            26,
+            29,
             "nine of task C.1, five of C.10, one of issue #134, one of #225, one of #605, four of #703, one of #704, \
-             two of #697, two of #745: {catalogue:?}"
+             two of #697, two of #745, three of #747: {catalogue:?}"
         );
         assert!(catalogue.iter().all(|name| name.starts_with("assistant_") && names.contains(name.as_str())));
-        // But the person's yes to asking a bot (task B.2), which no agent may give, and dictating
-        // (issue #699): only a person switches the microphone on.
-        let people_only = ["assistant.confirm_bot", "assistant.dictate", "assistant.stop_dictation"];
+        // But the person's yes to asking a bot (task B.2), which no agent may give, dictating (issue
+        // #699) and a conversation by voice (issue #747): only a person switches the microphone on.
+        let people_only =
+            ["assistant.confirm_bot", "assistant.dictate", "assistant.stop_dictation", "assistant.start_talk"];
         let assistant = CATALOGUE.iter().filter(|c| c.area == Area::Assistant && !people_only.contains(&c.name));
         assert!(assistant.clone().all(|c| c.mcp == Mcp::Tool));
     }
@@ -4138,6 +4139,7 @@ mod tests {
                 mode: torro_ipc::assistant::Mode::Default,
                 bot: None,
                 about: None,
+                spoken: false,
             })
         );
         // Issue #132: the permission mode comes through as given.
@@ -4759,6 +4761,10 @@ mod tests {
                 // Reading aloud (issue #745) is a person's or another client's, not the assistant's own.
                 ("assistant_speak", json!({"text": "Hello."})),
                 ("assistant_stop_speaking", json!({})),
+                // A conversation by voice (issue #747): neither is the assistant's own.
+                ("assistant_end_talk", json!({})),
+                ("assistant_talk_status", json!({})),
+                ("assistant_speak_answer", json!({"conversation": CONVERSATION})),
             ];
             let own = [
                 "assistant_list_memories",

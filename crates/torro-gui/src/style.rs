@@ -587,6 +587,14 @@ pub mod container {
         Style { border: outline(palette(theme).line_strong, radius::lg()), ..menu(theme) }
     }
 
+    /// The frame of the assistant's composer when it holds no editor (issue #747: the line of a
+    /// conversation by voice in its place): `panel`, the border of [`super::text_editor_composer`]
+    /// (1-px `line_strong`), radius [`radius::lg()`], so nothing moves when one replaces the other.
+    pub fn composer(theme: &Theme) -> Style {
+        let p = palette(theme);
+        Style { text_color: Some(p.text), border: outline(p.line_strong, radius::lg()), ..surface(p.panel) }
+    }
+
     /// A field that holds more than an input (issue #460, a recipient field with its chips): no
     /// surface, 1-px `line_strong` border, radius [`radius::sm()`], like [`super::text_input`]; the input
     /// inside is a [`super::text_input_flat`], whose focus ring shows.

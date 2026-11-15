@@ -621,6 +621,9 @@ pub(super) struct Job {
     /// ends with [`prompt::about_mail`]. Only with the assistant and engine A; the assistant checked the rights
     /// before it stored the message. `None` for every other conversation.
     pub about: Option<MailRef>,
+    /// The person spoke the message (issue #747): the prompt ends with [`prompt::spoken`], so the answer is
+    /// short and can be read aloud.
+    pub spoken: bool,
 }
 
 /// The id of the call the loop makes itself to read the mail a chat is about (issue #605).
@@ -908,6 +911,9 @@ impl Answering {
             };
             if let Some(about) = &self.job.about {
                 system = format!("{system}\n\n{}", prompt::about_mail(about));
+            }
+            if self.job.spoken {
+                system = format!("{system}\n\n{}", prompt::spoken());
             }
             // A small model gets the reading tools first; a chat about a mail (issue #605) needs its one way to
             // suggest among them, not behind find_tools, and the tool of the call that read the mail: else, with
@@ -2087,6 +2093,7 @@ pub(crate) mod tests {
             on_behalf: None,
             // The person writes (task WEB.5: only their message is their word).
             from: None,
+            spoken: false,
         };
         match assistant.send(message, EngineKind::Ai, Utc::now()).await {
             Response::Conversation { conversation, .. } => conversation.id,
@@ -2305,6 +2312,7 @@ pub(crate) mod tests {
             bot: None,
             on_behalf: None,
             from: Some(crate::assistant::TEST_CLIENT.into()),
+            spoken: false,
         };
         let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
         else {
@@ -2542,6 +2550,7 @@ pub(crate) mod tests {
             bot: Some(bot),
             on_behalf: None,
             from: Some(crate::assistant::TEST_CLIENT.into()),
+            spoken: false,
         };
         let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
         else {
@@ -3145,6 +3154,7 @@ pub(crate) mod tests {
                 bot: Some(bot.clone()),
                 on_behalf: None,
                 from: None,
+                spoken: false,
             };
             let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
             else {
@@ -3184,6 +3194,7 @@ pub(crate) mod tests {
             bot: None,
             on_behalf: None,
             from: None,
+            spoken: false,
         };
         let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
         else {
@@ -3362,6 +3373,7 @@ pub(crate) mod tests {
             // As the assistant sends it (`Assistant::delegate`).
             from: Some(delegation.caller.clone()),
             on_behalf: Some(delegation),
+            spoken: false,
         };
         let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
         else {
@@ -3398,6 +3410,7 @@ pub(crate) mod tests {
             bot: None,
             on_behalf: None,
             from: Some(crate::assistant::TEST_CLIENT.into()),
+            spoken: false,
         };
         assert!(matches!(assistant.send(from_client, EngineKind::Ai, Utc::now()).await, Response::Conversation { .. }));
         finished(&assistant, &main).await;
@@ -3432,6 +3445,7 @@ pub(crate) mod tests {
             bot: Some(bot),
             from: Some(delegation.caller.clone()),
             on_behalf: Some(delegation),
+            spoken: false,
         };
         let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
         else {
@@ -3461,6 +3475,7 @@ pub(crate) mod tests {
             bot: None,
             on_behalf: None,
             from: Some(crate::assistant::TEST_CLIENT.into()),
+            spoken: false,
         };
         let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
         else {
@@ -3498,6 +3513,7 @@ pub(crate) mod tests {
             bot: None,
             on_behalf: None,
             from: Some(crate::assistant::TEST_CLIENT.into()),
+            spoken: false,
         };
         let Response::Conversation { conversation, entries } =
             assistant.send(message, EngineKind::Ai, Utc::now()).await
@@ -3609,6 +3625,7 @@ pub(crate) mod tests {
             bot: None,
             on_behalf: None,
             from: None,
+            spoken: false,
         }
     }
 

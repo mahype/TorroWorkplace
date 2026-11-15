@@ -372,21 +372,22 @@ impl App {
     pub fn new(backend: Backend, suite: Source, launch: Launch) -> (App, Task<Message>) {
         let chat = match &launch.window {
             Window::Conversation(id) => Some(ChatState::new(id.clone(), launch.open)),
-            Window::Contacts | Window::Viewer { .. } | Window::Ring(_) => None,
+            Window::Contacts | Window::Viewer { .. } | Window::Ring(_) | Window::Player(_) => None,
         };
         let viewer = match &launch.window {
             Window::Viewer { message, file } => ViewerState::new(message, file),
-            Window::Contacts | Window::Conversation(_) | Window::Ring(_) => None,
+            Window::Contacts | Window::Conversation(_) | Window::Ring(_) | Window::Player(_) => None,
         };
         let ring = match &launch.window {
             Window::Ring(conversation) => Some(RingState::new(conversation.clone())),
-            Window::Contacts | Window::Conversation(_) | Window::Viewer { .. } => None,
+            Window::Contacts | Window::Conversation(_) | Window::Viewer { .. } | Window::Player(_) => None,
         };
         let open = launch.open;
         let size = match &launch.window {
             Window::Contacts => CONTACTS_SIZE,
             Window::Conversation(_) => CONVERSATION_SIZE,
-            Window::Viewer { .. } => VIEWER_SIZE,
+            // The player is no Iced window (`main` starts it before); as "Picture large", never shown.
+            Window::Viewer { .. } | Window::Player(_) => VIEWER_SIZE,
             Window::Ring(_) => RING_SIZE,
         };
         let mut app = App {

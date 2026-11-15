@@ -147,6 +147,7 @@ pub fn send_request(
         mode,
         bot: bot.map(str::to_owned),
         about: None,
+        spoken: false,
     })
 }
 
@@ -437,6 +438,7 @@ mod tests {
                 mode: Mode::Ask,
                 bot: None,
                 about: None,
+                spoken: false,
             })
         );
         let none: (&[Area], Mode) = (&[], Mode::Default);

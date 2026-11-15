@@ -428,15 +428,11 @@ pub fn play(rate: u32, samples: &[f32], most: Duration) -> Result<(), VoiceError
     Ok(())
 }
 
-/// The listener's own speaker: it only plays the tone of the wake word. Answers are read aloud through
-/// the core (`assistant.speak`, [`super::listen::CoreSpeaker`]).
+/// The listener's own speaker: it only plays the tone of the wake word. Answers are read aloud by the
+/// core (`assistant.speak_answer`, issue #747).
 pub struct ChimeSpeaker;
 
 impl Speaker for ChimeSpeaker {
-    fn say(&mut self, _text: &str) -> Result<(), VoiceError> {
-        Err(VoiceError::Sound("answers are read aloud through the core".into()))
-    }
-
     fn chime(&mut self) {
         let samples: Vec<f32> = chime().into_iter().map(to_float).collect();
         if let Err(err) = play(RATE, &samples, Duration::from_secs(2)) {
@@ -545,10 +541,5 @@ pub mod tests {
         assert!(!queue.ended(), "one buffer of silence");
         fill(&mut out, 2, &mut queue);
         assert!(queue.ended());
-    }
-
-    #[test]
-    fn the_listener_speaks_only_through_the_core() {
-        assert!(ChimeSpeaker.say("Hello").is_err());
     }
 }

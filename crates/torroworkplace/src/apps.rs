@@ -615,6 +615,17 @@ impl Listener {
         self.changes.subscribe()
     }
 
+    /// Wakes [`Listener::changes`] without a new state: a conversation by voice began or ended
+    /// (issue #747), which the tray and the windows show.
+    pub fn notify(&self) {
+        self.changes.send_replace(());
+    }
+
+    /// Whether the listener's process runs (issue #747): a conversation by voice ends with it.
+    pub fn running(&self) -> bool {
+        self.lock().child.is_some()
+    }
+
     /// Starts the listener when `enabled` and it does not run, stops it when not `enabled`. Must
     /// be called on the core's runtime: its output is read on a task. Without the app nothing
     /// starts, and [`Listener::problem`] says so.
@@ -923,6 +934,12 @@ impl SpeechHelper {
         self.input.lock().await.take();
         // `kill_on_drop` ends the process.
         running.take();
+    }
+
+    /// Whether no stop and no other job came since the claim of `number` ([`SpeechHelper::claim`]):
+    /// a reading of several pieces (issue #747, `assistant.speak_answer`) goes on with the next one.
+    pub fn is_current(&self, number: u64) -> bool {
+        self.jobs.load(Ordering::SeqCst) == number
     }
 
     /// Takes the next job's place: stops the one that reads. A stop or another job after this

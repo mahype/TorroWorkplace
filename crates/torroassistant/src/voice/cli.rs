@@ -1,10 +1,11 @@
 //! The voice modes of `torroassistant`, each without a window:
 //!
 //! - `--listen`: the listener ([`super::listen::Listener`]) for as long as the setting
-//!   `voice.enabled` stays on. The core starts it when voice is switched on and stops it when it
-//!   is switched off. Each change of state goes to standard output as one JSON string per line
-//!   (`"listening"`, `"recording"`, `"answering"`, `"off"`: [`VoiceState`]), which the core reads
-//!   to show it in the tray. It exits 0 when voice went off, 1 when it could not listen.
+//!   `voice.enabled` stays on or a conversation by voice runs (issue #747). The core starts it when
+//!   voice is switched on or a conversation by voice starts, and stops it when both are over. Each
+//!   change of state goes to standard output as one JSON string per line (`"listening"`,
+//!   `"recording"`, `"answering"`, `"conversing"`, `"off"`: [`VoiceState`]), which the core reads to
+//!   show it in the tray. It exits 0 when voice went off, 1 when it could not listen.
 //! - `--voice-status --voice <settings>`: what the listener would use, as one line of JSON (a
 //!   [`Response::Voice`]), for `settings.voice_status`. The settings are `Settings::voice` as
 //!   JSON, handed over by the core.
@@ -29,7 +30,7 @@ use torro_core::voice_models::voice_folder;
 use torro_ipc::{Response, VoiceState};
 
 use super::audio::{Endpoint, FRAMES_PER_SECOND, Limits, NoiseFloor};
-use super::listen::{CoreAssistant, CoreSpeaker, Ended, Listener};
+use super::listen::{Assistant, CoreAssistant, Ended, Listener};
 use super::parts::{Parts, voice_status};
 use super::recognize::{SherpaTranscriber, require};
 use super::sound::{CpalRecorder, SystemDevices};
@@ -169,6 +170,10 @@ const POLL: Duration = Duration::from_millis(500);
 /// How long to follow an answer at most; the window shows the rest.
 const ANSWER_WAIT: Duration = Duration::from_secs(120);
 
+/// How long to wait between two looks while something is read aloud, and after it, so its echo
+/// fades before the microphone opens again (issue #747).
+const QUIET: Duration = Duration::from_millis(300);
+
 /// The listener for as long as voice is on (see the module).
 fn listen() -> ExitCode {
     let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
@@ -187,8 +192,9 @@ fn listen() -> ExitCode {
         ANSWER_WAIT,
     );
     loop {
-        let voice = match super::listen::Assistant::settings(&mut core) {
-            Ok(voice) if voice.enabled => voice,
+        let talking = core.talk().is_ok_and(|now| now.talk.is_some());
+        let voice = match core.settings() {
+            Ok(voice) if voice.enabled || talking => voice,
             Ok(_) => return stopped(ExitCode::SUCCESS),
             Err(err) => {
                 eprintln!("torroassistant: {err}");
@@ -206,11 +212,14 @@ fn listen() -> ExitCode {
             recorder: parts.recorder,
             wake: parts.wake,
             transcriber: parts.transcriber,
-            speaker: through_the_core(parts.speaker),
+            speaker: parts.speaker,
             assistant: &mut core,
             report: Box::new(report),
             limits: Limits::default(),
-            check_every: 2 * super::audio::FRAMES_PER_SECOND,
+            // Issue #747: twice a second, so the microphone closes soon when something is read aloud.
+            check_every: FRAMES_PER_SECOND / 2,
+            pause: QUIET,
+            floor: NoiseFloor::default(),
         };
         match listener.run(&voice) {
             Ok(Ended::Changed) => continue,
@@ -225,21 +234,6 @@ fn listen() -> ExitCode {
             }
         }
     }
-}
-
-/// Speaks the answers through the core (issue #745), with the provider and voice of the settings;
-/// `local` plays the tone of the wake word. On a connection of its own, so the speaker can live as
-/// long as the listener's parts; without a runtime only the tone sounds.
-fn through_the_core(local: Box<dyn super::Speaker>) -> Box<dyn super::Speaker> {
-    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-        Ok(runtime) => runtime,
-        Err(err) => {
-            eprintln!("torroassistant: answers are not spoken: {err}");
-            return local;
-        }
-    };
-    let backend = Backend::core();
-    Box::new(CoreSpeaker::new(move |request| runtime.block_on(backend.ask(request)), local))
 }
 
 /// Reports "off" and ends with `code`.

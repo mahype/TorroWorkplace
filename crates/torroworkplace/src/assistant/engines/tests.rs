@@ -141,6 +141,7 @@ async fn ask(setup: &Setup, conversation: Option<&str>, text: &str, without: Vec
         bot: None,
         on_behalf: None,
         from: Some(crate::assistant::TEST_CLIENT.into()),
+        spoken: false,
     };
     match setup.assistant.send(message, EngineKind::Agent, chrono::Utc::now()).await {
         Response::Conversation { conversation, .. } => conversation.id,
@@ -286,6 +287,7 @@ fn send_to_claude() -> Request {
         mode: torro_ipc::assistant::Mode::Default,
         bot: None,
         about: None,
+        spoken: false,
     }
 }
 
@@ -673,6 +675,7 @@ async fn the_model_and_the_effort_go_to_claude_code() {
         bot: None,
         on_behalf: None,
         from: Some(crate::assistant::TEST_CLIENT.into()),
+        spoken: false,
     };
     let Response::Conversation { conversation, .. } =
         setup.assistant.send(message, EngineKind::Agent, chrono::Utc::now()).await

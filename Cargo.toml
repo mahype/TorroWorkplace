@@ -221,6 +221,13 @@ futures-util = { version = "0.3.34", default-features = false, features = ["sink
 # the one iced already brings along.
 tray-icon = { version = "0.26.1", default-features = false }
 winit = { version = "0.30.13", default-features = false }
+# The player window of a chat video (torrochat, issue #673, decision 25 in docs/chat.md), macOS and Windows only: a
+# tao window with the system's web view (wry: WKWebView, WebView2) for YouTube's embedded player, which Iced cannot
+# draw. Without default features: no GTK web view and no X11, Linux has no player. muda: the player's menu on macOS
+# (Close window, Quit), where key equivalents only come through the menu bar; the version tray-icon already brings.
+tao = { version = "0.37.1", default-features = false, features = ["rwh_06"] }
+wry = { version = "0.57.0", default-features = false }
+muda = { version = "0.21.2", default-features = false }
 # The template keys on macOS and Windows (issue #243, WS.4), registered on the tray's event loop. 0.8: the same
 # objc2, objc2-app-kit, windows-sys and keyboard-types as tray-icon, muda and torro-ipc already bring.
 global-hotkey = { version = "0.8.0", default-features = false }

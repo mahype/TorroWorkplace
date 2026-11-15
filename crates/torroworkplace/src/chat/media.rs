@@ -1792,6 +1792,83 @@ mod flow {
         assert_eq!(server.count("resolve"), 3);
     }
 
+    /// Issue #673: the card of a YouTube link carries the video, also when the server knows no card for
+    /// it, and only where Settings › Privacy lets YouTube's content load: Ask names the provider and
+    /// holds nothing to play until "Show once", Never leaves the held card out again, and a client sees
+    /// the video only on a card the core holds and makes none come.
+    #[tokio::test]
+    async fn a_youtube_link_carries_its_video_only_where_its_content_may_load() {
+        use torro_core::privacy::{ForeignContent, Privacy, ProviderChoice};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (chat, server) = service(dir.path());
+        let setting = Arc::new(std::sync::Mutex::new(Privacy::default()));
+        let read_setting = Arc::clone(&setting);
+        chat.set_privacy(Arc::new(move || read_setting.lock().expect("setting").clone()));
+        let set = |change: &dyn Fn(&mut Privacy)| change(&mut setting.lock().expect("setting"));
+        {
+            let mut state = server.state();
+            let known = "https://www.youtube.com/watch?v=M7lc1UVf-VE&t=90";
+            let reference = torro_nextcloud::Reference { title: "Intro".into(), description: None, image: None };
+            state.references.insert(known.into(), reference);
+            let list = state.messages.get_mut("ben4chat").expect("Ben");
+            list.push(super::super::remote::tests::message(6, &format!("watch {known}")));
+            // The server knows no card for this one.
+            list.push(super::super::remote::tests::message(7, "short https://youtu.be/abcDEF_12-3"));
+            list.push(super::super::remote::tests::message(8, "and https://m.youtube.com/shorts/xyzXYZ_98-7"));
+        }
+        let read =
+            Request::ChatGetMessages { conversation: ben(), before: None, after: None, around: None, limit: None };
+        let page = |response: Response| match response {
+            Response::ChatMessages(page) => page,
+            other => panic!("messages: {other:?}"),
+        };
+        let of = |page: &torro_chat::MessagePage, n: u64| {
+            let message = page.messages.iter().find(|m| m.number() == n).expect("the message").clone();
+            let card = message.cards.first().cloned();
+            (card.and_then(|card| card.video), message.foreign.map(|provider| provider.key))
+        };
+        let seeing = rights(true);
+        let agent = Caller { reach: Reach::Client(&seeing), client: Some("agent") };
+
+        // Ask: YouTube is named, nothing to play, nothing resolved; a client makes none come.
+        let asked = page(chat.handle(read.clone(), APP).await);
+        assert_eq!(of(&asked, 6), (None, Some("youtube".into())));
+        assert_eq!(
+            page(chat.handle(read.clone(), agent).await).messages.iter().filter(|m| !m.cards.is_empty()).count(),
+            0
+        );
+        assert_eq!(server.count("resolve"), 0);
+
+        // "Show once": the card with its video, also without a card of the server.
+        let Response::ChatCard { card: Some(shown) } = chat.show_card(&message_id(&ben(), 6)).await else {
+            panic!("a card")
+        };
+        assert_eq!(shown.title, "Intro");
+        assert_eq!(shown.video, torro_chat::video_of("https://youtu.be/M7lc1UVf-VE?t=90"));
+        let Response::ChatCard { card: Some(unknown) } = chat.show_card(&message_id(&ben(), 7)).await else {
+            panic!("a video card without the server's")
+        };
+        assert_eq!((unknown.title.as_str(), unknown.domain.as_str(), unknown.image), ("", "youtu.be", false));
+        assert_eq!(unknown.video.map(|video| (video.id, video.short)), Some(("abcDEF_12-3".into(), false)));
+        let theirs = page(chat.handle(read.clone(), agent).await);
+        assert!(of(&theirs, 6).0.is_some() && of(&theirs, 7).0.is_some(), "a client sees the held cards");
+
+        // Never: the held video cards are left out for everyone.
+        set(&|privacy| privacy.content = ForeignContent::Never);
+        assert_eq!(of(&page(chat.handle(read.clone(), APP).await), 6), (None, None));
+        assert_eq!(of(&page(chat.handle(read.clone(), agent).await), 7), (None, None));
+
+        // Allowed: comes by itself, the video with it.
+        set(&|privacy| {
+            privacy.content = ForeignContent::Ask;
+            privacy.providers.insert("youtube".into(), ProviderChoice::Allowed);
+        });
+        let allowed = page(chat.handle(read, APP).await);
+        assert_eq!(of(&allowed, 6).0.map(|video| (video.id, video.start)), Some(("M7lc1UVf-VE".into(), Some(90))));
+        assert_eq!(of(&allowed, 8).0.map(|video| (video.id, video.short)), Some(("xyzXYZ_98-7".into(), true)));
+        assert_eq!(server.count("resolve"), 3, "only the one not held yet");
+    }
+
     #[tokio::test]
     async fn what_a_conversation_shared_is_listed_and_messages_around_one_are_read() {
         let dir = tempfile::tempdir().expect("temp dir");

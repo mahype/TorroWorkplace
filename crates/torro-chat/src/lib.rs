@@ -16,6 +16,7 @@ pub mod demo;
 pub mod files;
 pub mod model;
 pub mod source;
+pub mod video;
 
 pub use calls::Call;
 pub use files::{
@@ -28,3 +29,4 @@ pub use model::{
     person_id, split_conversation, split_message, split_person,
 };
 pub use source::{ChatError, ChatSource, Outgoing, StatusChange};
+pub use video::{Video, embed_url, video_of};

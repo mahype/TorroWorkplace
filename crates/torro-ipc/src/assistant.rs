@@ -778,6 +778,21 @@ pub fn profile_refusal(
     None
 }
 
+/// Where the reading aloud of an answer begins (issue #747, `assistant.speak_answer`): after the last
+/// message of `entries`, or after an approval that was decided and answered on, so what came before it
+/// is not read again and what follows it is. `None` without a message. The core and the chat window
+/// both use it, so they agree which answer was read.
+pub fn answer_start(entries: &[Entry]) -> Option<u64> {
+    let message = entries.iter().rposition(|entry| matches!(entry.content, EntryContent::Message { .. }))?;
+    let mut start = entries[message].seq;
+    for (at, entry) in entries.iter().enumerate().skip(message + 1) {
+        if matches!(entry.content, EntryContent::Approval { .. }) && at + 1 < entries.len() {
+            start = entry.seq;
+        }
+    }
+    Some(start)
+}
+
 impl Request {
     /// The conversation an `assistant.*` request or `bots.ask_bot` names, for the core's checks and
     /// its audit log: `id`, `conversation` (also of `confirm_bot` and `get_cards`), or the conversation
@@ -791,9 +806,12 @@ impl Request {
             | Request::DeleteConversation { id }
             | Request::PinConversation { id, .. }
             | Request::CancelAnswer { conversation: id }
+            | Request::SpeakAnswer { conversation: id }
             | Request::OpenChatWindow { window: ChatWindow::Conversation(id) }
             | Request::ConfirmBot { conversation: id, .. } => Some(id),
-            Request::SendMessage { conversation, .. } | Request::AskBot { conversation, .. } => conversation.as_deref(),
+            Request::SendMessage { conversation, .. }
+            | Request::AskBot { conversation, .. }
+            | Request::StartTalk { conversation } => conversation.as_deref(),
             _ => None,
         }
     }
@@ -853,6 +871,7 @@ mod tests {
             mode: Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         }
     }
 
@@ -967,6 +986,7 @@ mod tests {
             mode: Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         };
         assert_eq!(code(limit_refusal(&model)), Some("error".into()));
         let bot = Request::SendMessage {
@@ -979,6 +999,7 @@ mod tests {
             mode: Mode::Default,
             bot: Some(long),
             about: None,
+            spoken: false,
         };
         assert_eq!(code(limit_refusal(&bot)), Some("error".into()));
         // Issue #605: the mail a chat is about keeps the same limit.
@@ -992,6 +1013,7 @@ mod tests {
             mode: Mode::Default,
             bot: None,
             about: Some(MailRef { account: account.into(), id: id.into() }),
+            spoken: false,
         };
         assert_eq!(code(limit_refusal(&about("mail:anna@example.org", "m:4"))), None);
         assert_eq!(
