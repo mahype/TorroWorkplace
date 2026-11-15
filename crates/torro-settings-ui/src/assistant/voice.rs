@@ -945,7 +945,7 @@ pub fn current_provider(data: &Data) -> SpeechProvider {
     data.speech
         .as_ref()
         .map(|speech| speech.current)
-        .or(data.settings.voice.speech_provider)
+        .or(data.settings.voice.speech_provider_here())
         .unwrap_or(SpeechProvider::Pocket)
 }
 

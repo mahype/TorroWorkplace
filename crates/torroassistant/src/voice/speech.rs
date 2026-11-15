@@ -376,7 +376,7 @@ pub fn status(voice: &Voice, folder: Option<&Path>, devices: &dyn Devices) -> Sp
         gpu: None,
         fast_enough: true,
         recommended: SpeechProvider::Pocket,
-        current: voice.speech_provider.unwrap_or(SpeechProvider::Pocket),
+        current: voice.speech_provider_here().unwrap_or(SpeechProvider::Pocket),
         providers: vec![pocket],
     }
 }

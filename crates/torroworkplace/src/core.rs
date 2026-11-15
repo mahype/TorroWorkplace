@@ -2674,12 +2674,15 @@ const PCM_LINE: usize = 48_000;
 /// OpenAI go with each job, so choosing another voice does not start the helper anew and make Pocket
 /// load its model again; neither does switching the listener or the speaker.
 fn speech_settings(voice: &torro_core::settings::Voice) -> torro_core::settings::Voice {
-    torro_core::settings::Voice { speech_provider: voice.speech_provider, ..torro_core::settings::Voice::default() }
+    torro_core::settings::Voice {
+        speech_provider: voice.speech_provider_here(),
+        ..torro_core::settings::Voice::default()
+    }
 }
 
 /// What the speech helper is started with ([`speech_settings`]): another provider ends it.
 fn speech_choice(voice: &torro_core::settings::Voice) -> Option<torro_core::settings::SpeechProvider> {
-    voice.speech_provider
+    voice.speech_provider_here()
 }
 
 /// The answer of `assistant.speak` when the helper failed: a sentence for people; what went wrong
@@ -13826,7 +13829,7 @@ impl Core {
         status.fast_enough = true;
         status.recommended = SpeechProvider::Pocket;
         status.current = voice
-            .speech_provider
+            .speech_provider_here()
             .filter(|provider| status.option(*provider).is_some())
             .unwrap_or(SpeechProvider::Pocket);
         Response::Speech { speech: status }
@@ -13858,7 +13861,8 @@ impl Core {
         use torro_core::settings::SpeechProvider;
         let refused = |code: &str, message: &str| Response::Error { code: code.into(), message: message.into() };
         let voice = self.settings.current().voice;
-        let provider = voice.speech_provider;
+        // Qwen3-TTS chosen in a build with it, read here by one without, reads with Pocket TTS (#764).
+        let provider = voice.speech_provider_here();
         let speaker = match provider {
             Some(SpeechProvider::OpenAi) => match self.ai.speaker().await {
                 Some(speaker) => Some(speaker),
@@ -19923,9 +19927,11 @@ done"#;
         let models = crate::voice_models::VoiceDownloads::new(Some(voice.clone()), &torro_core::voice_models::MODELS);
         let core = core(dir.path()).with_voice_models(models);
         let Response::VoiceModels { models } = core.handle(Request::ListVoiceModels).await else { panic!("listed") };
+        // Qwen3-TTS only in builds with it (issue #764).
+        let expected = ["whisper-turbo", "parakeet", "pocket-de", "qwen3-tts"];
         assert_eq!(
             models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(),
-            ["whisper-turbo", "parakeet", "pocket-de"]
+            expected[..3 + usize::from(torro_core::settings::QWEN_BUILT)]
         );
         assert!(models.iter().all(|model| model.state == VoiceModelState::Missing));
         assert_eq!(code(&core.handle(Request::DownloadVoiceModel { model: "evil".into() }).await), "not-found");

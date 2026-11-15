@@ -87,7 +87,7 @@ pub fn programs(voice: &Voice, folder: Option<&Path>, devices: &dyn Devices) -> 
         Some(name) => part(VoicePart::Recorder, Some(name), None),
         None => part(VoicePart::Recorder, None, Some(VoiceMissing::Program)),
     };
-    let provider = voice.speech_provider.unwrap_or(SpeechProvider::Pocket);
+    let provider = voice.speech_provider_here().unwrap_or(SpeechProvider::Pocket);
     let program = match provider {
         SpeechProvider::Pocket => POCKET_DE,
         SpeechProvider::Qwen => QWEN,
