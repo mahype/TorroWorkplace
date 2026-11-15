@@ -289,7 +289,7 @@ pub fn voice_line(state: VoiceState) -> &'static str {
         VoiceState::Recording => tr("Recording …"),
         VoiceState::Answering => tr("Answering …"),
         // Issue #747: the microphone waits for the next sentence of a conversation.
-        VoiceState::Conversing => tr("Listening …"),
+        VoiceState::Conversing => tr("Listening…"),
     }
 }
 

@@ -3064,7 +3064,7 @@ pub struct Core {
     voice_was_on: std::sync::atomic::AtomicBool,
     /// How many readings aloud run (`assistant.speak`, `assistant.speak_answer`), whoever asked for
     /// them: the listener keeps the microphone closed meanwhile (issue #747).
-    speaking: Arc<std::sync::atomic::AtomicUsize>,
+    speaking: Arc<Readings>,
     /// The answer `assistant.speak_answer` reads now (issue #747): another call for it waits for the
     /// same end.
     reading: Mutex<Option<Reading>>,
@@ -6997,6 +6997,10 @@ impl Core {
                     true => self.settings.set_by_client(key, &value),
                     false => self.settings.set(key, &value),
                 };
+                // "Mute microphone" closes it also for a conversation by voice (issue #747).
+                if set.is_ok() && key == SettingKey::VoiceEnabled && value == serde_json::Value::Bool(false) {
+                    self.forget_talk();
+                }
                 self.follow_components();
                 // Another provider or Piper voice (issue #745): the helper ends, Qwen's graphics memory
                 // is free, and the next answer starts it with the new settings. Another voice of Qwen
@@ -7027,7 +7031,7 @@ impl Core {
                 self.end_talk().await;
                 Response::Ok
             }
-            Request::TalkStatus => self.talk_status(),
+            Request::TalkStatus => self.talk_status(reach).await,
             Request::SpeakAnswer { conversation } => self.speak_answer(&conversation, reach).await,
             Request::MapsStatus => self.maps_status(reach),
             Request::ClearMapsCache => self.clear_maps_cache(reach),
@@ -7419,16 +7423,11 @@ impl Core {
                 if let Err(refused) = self.about_reach(&request, reach).await {
                     return refused;
                 }
-                let deleted = match &request {
-                    Request::DeleteConversation { id } => Some(id.clone()),
-                    _ => None,
-                };
+                let deletes = matches!(request, Request::DeleteConversation { .. } | Request::DeleteConversations { .. });
                 let answered = Box::pin(self.assistant_request(request, from)).await;
                 // A conversation by voice ends with its conversation (issue #747).
-                if let Some(id) = deleted
-                    && answered == Response::Ok
-                {
-                    self.end_talk_in(&id).await;
+                if deletes {
+                    self.end_talk_if_gone().await;
                 }
                 self.about_within(answered, reach)
             }
@@ -12996,20 +12995,25 @@ impl Core {
             return refused("unsupported", tr("The assistant app is not installed."));
         }
         if !self.settings.current().component_on(torro_core::settings::Component::Assistant) {
-            return refused("unsupported", "the assistant is switched off");
+            return refused("unsupported", tr("The assistant is switched off."));
         }
         if let Some(id) = &conversation {
             if let Some(hidden) = self.hidden_conversation(id, reach).await {
                 return hidden;
             }
-            if self.assistant.title(id).await.is_none() {
-                return refused("not-found", &format!("no conversation {id:?}"));
+            match self.assistant.get(id, Some(u64::MAX)).await {
+                // The listener talks to the assistant only: a bot answers what is written to it.
+                Response::Conversation { conversation, .. } if conversation.bot.is_some() => {
+                    return refused("unsupported", "a conversation by voice is with the assistant, not with a bot");
+                }
+                Response::Conversation { .. } => {}
+                _ => return refused("not-found", &format!("no conversation {id:?}")),
             }
         }
         *self.lock_talk() = Some(TalkSlot { conversation });
         self.follow_voice();
         self.voice.notify();
-        self.talk_status()
+        self.talk_status(reach).await
     }
 
     /// `assistant.end_talk` (issue #747): the microphone closes unless "Hey Torro" is on, and what is
@@ -13020,26 +13024,32 @@ impl Core {
         self.speech.stop().await;
     }
 
-    /// Ends the conversation by voice when it runs in `conversation` (issue #747): it was deleted.
-    async fn end_talk_in(&self, conversation: &str) {
-        let in_it = self.lock_talk().as_ref().is_some_and(|talk| talk.conversation.as_deref() == Some(conversation));
-        if in_it {
+    /// Ends the conversation by voice when its conversation is gone (issue #747): deleted, one or several.
+    async fn end_talk_if_gone(&self) {
+        let conversation = self.lock_talk().as_ref().and_then(|talk| talk.conversation.clone());
+        if let Some(id) = conversation
+            && self.assistant.title(&id).await.is_none()
+        {
             self.end_talk().await;
         }
     }
 
     /// `assistant.talk_status` (issue #747): the conversation by voice and what the listener does,
-    /// and whether anything is read aloud. A listener that ended took the conversation with it.
-    fn talk_status(&self) -> Response {
-        use std::sync::atomic::Ordering;
+    /// whether anything is read aloud and how many readings began. A listener that ended took the
+    /// conversation with it: [`Listener::follow`] starts the process before it returns, so this never
+    /// forgets one that is just starting. A conversation the caller may not see is not named.
+    async fn talk_status(&self, reach: Reach<'_>) -> Response {
         if !self.voice.running() {
             self.forget_talk();
         }
-        let talk = self
-            .lock_talk()
-            .as_ref()
-            .map(|talk| torro_ipc::Talk { conversation: talk.conversation.clone(), state: self.voice.state() });
-        Response::Talk { talk, speaking: self.speaking.load(Ordering::SeqCst) > 0 }
+        let slot = self.lock_talk().clone();
+        let talk = match slot {
+            Some(TalkSlot { conversation: Some(id) }) if self.hidden_conversation(&id, reach).await.is_some() => None,
+            Some(slot) => Some(torro_ipc::Talk { conversation: slot.conversation, state: self.voice.state() }),
+            None => None,
+        };
+        let (speaking, readings) = self.speaking.now();
+        Response::Talk { talk, speaking, readings }
     }
 
     /// Wakes whenever what the voice listener does may have changed, for the tray.
@@ -13704,12 +13714,8 @@ impl Core {
             Response::Conversation { conversation, entries } => (conversation.running, entries),
             other => return other,
         };
-        let nothing = || Response::Error { code: "error".into(), message: "there is no answer to read".into() };
-        let Some(after) =
-            entries.iter().rev().find(|entry| matches!(entry.content, EntryContent::Message { .. })).map(|e| e.seq)
-        else {
-            return nothing();
-        };
+        let nothing = || Response::Error { code: "error".into(), message: tr("There is no answer to read.").into() };
+        let Some(after) = answer_start(&entries) else { return nothing() };
         let answered = entries.iter().any(|entry| {
             entry.seq > after
                 && matches!(
@@ -13721,6 +13727,10 @@ impl Core {
             return nothing();
         }
         let mut reading = self.reading.lock().await;
+        // A first call given up meanwhile (its caller went) left its end behind: that one reads no more.
+        if reading.as_ref().is_some_and(|reading| reading.done.has_changed().is_err()) {
+            *reading = None;
+        }
         if let Some(same) =
             reading.as_ref().filter(|reading| reading.conversation == conversation && reading.after == after)
         {
@@ -19725,7 +19735,7 @@ done"#;
 
     /// The conversation by voice as `assistant.talk_status` says.
     async fn talk_of(core: &Core) -> (Option<torro_ipc::Talk>, bool) {
-        let Response::Talk { talk, speaking } = core.handle(Request::TalkStatus).await else { panic!("a talk") };
+        let Response::Talk { talk, speaking, .. } = core.handle(Request::TalkStatus).await else { panic!("a talk") };
         (talk, speaking)
     }
 
@@ -19776,6 +19786,12 @@ done"#;
         ));
         assert_eq!(core.handle(Request::DeleteConversation { id }).await, Response::Ok);
         assert_eq!(talk_of(&core).await.0, None, "gone with its conversation");
+        // Deleted among several, too.
+        let other = test_message(&core).await;
+        let start = Request::StartTalk { conversation: Some(other.clone()) };
+        assert!(matches!(core.handle(start).await, Response::Talk { .. }));
+        let _ = core.handle(Request::DeleteConversations { ids: vec![other] }).await;
+        assert_eq!(talk_of(&core).await.0, None, "gone among several");
 
         // "Hey Torro" switched off ends it; the listener's end too.
         let voice = |on: bool| Request::SetSetting { key: SettingKey::VoiceEnabled, value: serde_json::json!(on) };
@@ -19784,9 +19800,39 @@ done"#;
         assert_eq!(core.handle(voice(false)).await, Response::Ok);
         assert_eq!(talk_of(&core).await.0, None, "switched off with \"Hey Torro\"");
         assert!(!core.voice.running());
+        // "Mute microphone" while "Hey Torro" was off already closes the microphone of a conversation too.
+        assert!(matches!(core.handle(Request::StartTalk { conversation: None }).await, Response::Talk { .. }));
+        assert_eq!(core.handle(voice(false)).await, Response::Ok);
+        assert_eq!(talk_of(&core).await.0, None, "muted");
+        assert!(!core.voice.running());
         assert!(matches!(core.handle(Request::StartTalk { conversation: None }).await, Response::Talk { .. }));
         core.voice.follow(false);
         assert_eq!(talk_of(&core).await.0, None, "the listener ended");
+    }
+
+    /// Issue #747 (review): an answer is read from after the last message, or after an approval that
+    /// was answered on, so what follows the approval is read and nothing twice.
+    #[test]
+    fn an_answer_is_read_from_its_message_or_a_decided_approval() {
+        use torro_ipc::assistant::{Entry, EntryContent};
+        let entry = |seq, content| Entry { seq, time: Utc::now(), content };
+        let answer = |text: &str| EntryContent::Answer { text: text.into(), engine: "e".into(), model: None };
+        let message = || EntryContent::Message {
+            text: "Hi".into(),
+            engine: "e".into(),
+            model: None,
+            effort: None,
+            without: Vec::new(),
+            mode: Mode::Default,
+            from: None,
+        };
+        let approval = || EntryContent::Approval { id: "a1".into() };
+        assert_eq!(answer_start(&[entry(1, answer("x"))]), None, "no message, nothing to read");
+        let waiting = [entry(1, message()), entry(2, answer("I'll add it.")), entry(3, approval())];
+        assert_eq!(answer_start(&waiting), Some(1), "waiting: read from the message");
+        let mut decided = waiting.to_vec();
+        decided.push(entry(4, answer("Done.")));
+        assert_eq!(answer_start(&decided), Some(3), "decided: what came after it");
     }
 
     /// Issue #747: `speak_answer` reads the answer that runs once it is written, says `speaking`
@@ -19814,6 +19860,7 @@ done"#,
                 .with_probe(Measured(large_pc())),
         );
         assert_eq!(code(&core.handle(Request::SpeakAnswer { conversation: "nope".into() }).await), "not-found");
+        let Response::Talk { readings: before, .. } = core.handle(Request::TalkStatus).await else { panic!("a talk") };
         let id = test_message(&core).await;
         let read = |core: Arc<Core>, id: String| {
             tokio::spawn(async move { core.handle(Request::SpeakAnswer { conversation: id }).await })
@@ -19828,6 +19875,8 @@ done"#,
         assert_eq!(second.await.expect("read"), Response::Ok, "the same end");
         assert!(seen_speaking, "the listener knows it reads");
         assert!(!talk_of(&core).await.1);
+        let Response::Talk { readings, .. } = core.handle(Request::TalkStatus).await else { panic!("a talk") };
+        assert_eq!(readings, before + 1, "one reading began; the second call waited for it");
         let log = std::fs::read_to_string(&said).expect("read aloud");
         assert_eq!(log.lines().count(), 1, "read once: {log}");
         let answer =
@@ -37149,20 +37198,51 @@ struct Reading {
     done: tokio::sync::watch::Receiver<Option<Response>>,
 }
 
+/// The readings aloud (issue #747, `Core::speaking`): how many run now and how many began.
+#[derive(Debug, Default)]
+struct Readings {
+    running: std::sync::atomic::AtomicUsize,
+    begun: std::sync::atomic::AtomicU64,
+}
+
+impl Readings {
+    /// Whether one runs, and how many began.
+    fn now(&self) -> (bool, u64) {
+        use std::sync::atomic::Ordering;
+        (self.running.load(Ordering::SeqCst) > 0, self.begun.load(Ordering::SeqCst))
+    }
+}
+
 /// Counts a reading aloud while it lives (issue #747, `Core::speaking`).
-struct Speaking(Arc<std::sync::atomic::AtomicUsize>);
+struct Speaking(Arc<Readings>);
 
 impl Speaking {
-    fn new(count: &Arc<std::sync::atomic::AtomicUsize>) -> Speaking {
-        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Speaking(Arc::clone(count))
+    fn new(readings: &Arc<Readings>) -> Speaking {
+        use std::sync::atomic::Ordering;
+        readings.begun.fetch_add(1, Ordering::SeqCst);
+        readings.running.fetch_add(1, Ordering::SeqCst);
+        Speaking(Arc::clone(readings))
     }
 }
 
 impl Drop for Speaking {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.0.running.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
+}
+
+/// Where the answer to read begins (issue #747): after the last message, or after an approval that
+/// was decided and answered on, so what came before it is not read again. `None` without a message.
+pub(crate) fn answer_start(entries: &[torro_ipc::assistant::Entry]) -> Option<u64> {
+    use torro_ipc::assistant::EntryContent;
+    let message = entries.iter().rposition(|entry| matches!(entry.content, EntryContent::Message { .. }))?;
+    let mut start = entries[message].seq;
+    for (at, entry) in entries.iter().enumerate().skip(message + 1) {
+        if matches!(entry.content, EntryContent::Approval { .. }) && at + 1 < entries.len() {
+            start = entry.seq;
+        }
+    }
+    Some(start)
 }
 
 /// How often `assistant.speak_answer` looks at the answer as it grows (issue #747).

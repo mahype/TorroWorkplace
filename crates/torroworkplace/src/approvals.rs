@@ -2117,6 +2117,7 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         },
         request @ (Request::SendMessage { .. }
         | Request::CancelAnswer { .. }
+        | Request::SpeakAnswer { .. }
         | Request::RenameConversation { .. }
         | Request::DeleteConversation { .. }
         | Request::PinConversation { .. }
@@ -3134,6 +3135,13 @@ fn assistant_summary(request: &Request, facts: &Facts) -> String {
         }
         (Request::CancelAnswer { .. }, None) => {
             tr("Stop the assistant's answer in an unknown conversation").to_string()
+        }
+        // Issue #747: what is read comes from the core, never from the caller.
+        (Request::SpeakAnswer { .. }, Some(title)) => {
+            trf("Read the assistant's answer in \"{title}\" aloud", &[("title", &title)])
+        }
+        (Request::SpeakAnswer { .. }, None) => {
+            tr("Read the assistant's answer in an unknown conversation aloud").to_string()
         }
         (Request::RenameConversation { title: new, .. }, Some(title)) => trf(
             "Rename the assistant conversation \"{title}\" to \"{new}\"",
