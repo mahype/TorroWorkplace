@@ -1247,7 +1247,9 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    false` ist eine gewöhnliche Admin-Änderung mit Freigabe. Den Mikrofontest („Say something“ im
    Abschnitt Voice des Assistenten, `settings.test_voice`) gibt es nur mit dem App-Schlüssel
    (`Mcp::Never`), ebenso das Diktieren ins Eingabefeld (`assistant.dictate`,
-   `assistant.stop_dictation`, Issue #699). Dass die Einstellung im App-Fenster statt in der Steuerzentrale steht, ändert
+   `assistant.stop_dictation`, Issue #699) und das Gespräch (`assistant.start_talk`, Issue #747), das das
+   Mikrofon nach jeder Antwort offen hält, auch wenn „Hey Torro“ aus ist. Beenden (`assistant.end_talk`)
+   darf jeder mit Schreibrecht im Assistenten. Dass die Einstellung im App-Fenster statt in der Steuerzentrale steht, ändert
    die Zusage nicht: Jedes Fenster der Suite hält den App-Schlüssel, und ein Mensch drückt den
    Schalter.
 

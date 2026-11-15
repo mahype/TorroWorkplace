@@ -270,6 +270,8 @@ pub enum Icon {
     Volume2,
     /// Reading answers aloud is off.
     VolumeX,
+    /// "Talk" of the assistant's composer: a conversation by voice (issue #747).
+    AudioLines,
     /// The permission mode of the assistant's composer, in the mode's colour.
     Shield,
     /// "Send" of the assistant's composer, in its round button.
@@ -423,6 +425,7 @@ impl Icon {
         Icon::Mic,
         Icon::Volume2,
         Icon::VolumeX,
+        Icon::AudioLines,
         Icon::Shield,
         Icon::ArrowUp,
     ];
@@ -584,6 +587,7 @@ impl Icon {
             Icon::Mic => include_bytes!("../assets/icons/mic.svg"),
             Icon::Volume2 => include_bytes!("../assets/icons/volume-2.svg"),
             Icon::VolumeX => include_bytes!("../assets/icons/volume-x.svg"),
+            Icon::AudioLines => include_bytes!("../assets/icons/audio-lines.svg"),
             Icon::Shield => include_bytes!("../assets/icons/shield.svg"),
             Icon::ArrowUp => include_bytes!("../assets/icons/arrow-up.svg"),
         }

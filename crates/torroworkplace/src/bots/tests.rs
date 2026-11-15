@@ -165,6 +165,7 @@ async fn deleting_a_bot_removes_its_client_and_folder_and_keeps_its_conversation
         mode: torro_ipc::assistant::Mode::Default,
         bot: Some(bot.id.clone()),
         about: None,
+        spoken: false,
     };
     let Response::Conversation { conversation, .. } = crate::assistant::answer(&assistant, &ai, send).await else {
         panic!("a conversation with the bot")
@@ -196,6 +197,7 @@ async fn deleting_a_bot_removes_its_client_and_folder_and_keeps_its_conversation
         mode: torro_ipc::assistant::Mode::Default,
         bot: Some(bot.id.clone()),
         about: None,
+        spoken: false,
     };
     assert_eq!(code(&crate::assistant::answer(&assistant, &ai, more).await), "not-found");
     let read =
@@ -302,6 +304,7 @@ async fn asking_a_bot_starts_its_conversation() {
         mode: torro_ipc::assistant::Mode::Default,
         bot: None,
         about: None,
+        spoken: false,
     };
     assert_eq!(code(&crate::assistant::answer(&assistant, &ai, to_assistant).await), "error");
     let again = Request::AskBot { bot: bot.id.clone(), text: "And Porto?".into(), conversation: Some(id.clone()) };

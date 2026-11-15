@@ -1321,6 +1321,11 @@ fn describe(request: &Request) -> String {
         Request::Speak { .. } => "read aloud".into(),
         Request::StopSpeaking => "stop reading aloud".into(),
         Request::SpeechStatus => "speech status".into(),
+        // Issue #747: never what is said or read.
+        Request::StartTalk { .. } => "start a conversation by voice".into(),
+        Request::EndTalk => "end the conversation by voice".into(),
+        Request::TalkStatus => "conversation by voice".into(),
+        Request::SpeakAnswer { conversation } => format!("read the answer of conversation {conversation} aloud"),
         Request::MapsStatus => "map data".into(),
         Request::ClearMapsCache => "clear map data".into(),
         // Ids only, never a title, the content or a path (issue #225).

@@ -62,7 +62,8 @@ impl Mark {
         match state {
             VoiceState::Off => Mark::None,
             VoiceState::Listening | VoiceState::Answering => Mark::Listening,
-            VoiceState::Recording => Mark::Recording,
+            // The microphone is open for the next sentence (issue #747), as while it records.
+            VoiceState::Recording | VoiceState::Conversing => Mark::Recording,
         }
     }
 

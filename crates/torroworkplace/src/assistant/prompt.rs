@@ -26,6 +26,9 @@
 //! A chat about a mail (issue #605) ends with one more part ([`about_mail`]): which mail it is about, that the
 //! suite read it first, and that this chat only reads and suggests.
 //!
+//! A spoken message (issue #747, `assistant.send_message` with `spoken`) ends with one more part
+//! ([`spoken`]): the answer is read aloud, so it is short and has no tables or lists.
+//!
 //! A bot (task B.1) has a fourth part, between the skill and the conversation ([`bot_system`]):
 //! **its instructions and skills** ([`BotParts`]), written by the person, quoted like the
 //! personality under a heading that says the rules above win; its skills one line each, as the
@@ -247,6 +250,22 @@ pub fn about_mail(mail: &MailRef) -> String {
          mail_extract_action with this account and id, the kind (`event` or `task`) and `focus` set to the person's \
          own words for what they mean; the suggestion appears as a card the person accepts or dismisses. Never create, \
          send, change or delete anything yourself, and say so if the person asks for it."
+    )
+}
+
+/// The heading of the part for a spoken message (issue #747).
+pub const SPOKEN_HEADING: &str = "## The person is talking to you";
+
+/// The last part of the prompt when the person spoke the message (issue #747, [`super::model::Job::spoken`]):
+/// the answer is read aloud as it is written, so it is short, in plain sentences, without tables, lists, code
+/// or links, and asks back in one sentence when it needs to.
+pub fn spoken() -> String {
+    format!(
+        "{SPOKEN_HEADING}\n\n\
+         - The person spoke this message, and your answer is read aloud sentence by sentence as you write it.\n\
+         - Answer briefly: one to three short sentences, the most important first. Use plain sentences only: no \
+         tables, lists, headings, code, links or emoji. Say numbers, times and dates as they are spoken.\n\
+         - If you need more from the person, ask one short question at the end."
     )
 }
 

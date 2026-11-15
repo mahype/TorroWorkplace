@@ -517,6 +517,7 @@ fn sending_starts_a_conversation_and_the_growing_answer_replaces_itself() {
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
             about: None,
+            spoken: false,
         }]
     );
     let result = block_on(app.backend.ask(requests[0].clone()));
@@ -1829,71 +1830,158 @@ fn a_bots_chat_has_no_areas_and_no_mode() {
     }
 }
 
-/// Issue #745: with the speaker on, a new answer is read aloud once it is complete, once; an answer
-/// that was there on opening is not, and off reads nothing.
+/// Issues #745 and #747 (decision 2): with the speaker on, a new answer is read aloud from its first
+/// sentence by the core, once per message, also one in parts; an answer that was there on opening is
+/// not, off reads nothing, and neither does the window's own conversation by voice.
 #[test]
-fn a_new_answer_is_read_aloud_once_it_is_complete() {
-    let mut app = answering();
+fn a_new_answer_is_read_aloud_from_its_first_sentence() {
+    let reads = |requests: Vec<Request>| -> Vec<Request> {
+        requests
+            .into_iter()
+            .filter(|request| matches!(request, Request::SpeakAnswer { .. } | Request::Speak { .. }))
+            .collect()
+    };
+    let hello = || Message::Edit(text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new("Hello".into()))));
+    let mut app = started(&[]);
     app.read_aloud = true;
-    sent(&mut app);
-    let entries = vec![answer_entry(2, "Let me look.")];
-    let _ = app.update(Message::Followed(id_of(&app), Ok((head(&app, 1, true), entries))));
-    assert!(!sent(&mut app).iter().any(|request| matches!(request, Request::Speak { .. })), "not complete yet");
-    let entries = vec![answer_entry(2, "Let me look. Found it.")];
-    let _ = app.update(Message::Followed(id_of(&app), Ok((head(&app, 2, false), entries))));
-    let speak: Vec<_> = sent(&mut app).into_iter().filter(|request| matches!(request, Request::Speak { .. })).collect();
-    assert_eq!(speak, [Request::Speak { text: "Let me look. Found it.".into() }]);
-    assert_eq!(app.reading, Some(2), "[■] shows at it");
-    let _ = app.update(Message::Followed(
-        id_of(&app),
-        Ok((head(&app, 2, false), vec![answer_entry(2, "Let me look. Found it.")])),
-    ));
-    assert!(!sent(&mut app).iter().any(|request| matches!(request, Request::Speak { .. })), "read once");
+    let _ = app.update(hello());
+    let _ = app.update(Message::Send);
+    // The demo's answer comes at once: it is read as it begins, by the core.
+    assert_eq!(reads(settled(&mut app, |_| None)), [Request::SpeakAnswer { conversation: id_of(&app) }]);
+    // The answer as it goes on, and a second part after a tool.
+    let last = app.transcript.entries.iter().map(|entry| entry.seq).max().unwrap_or_default();
+    let entries = vec![answer_entry(last, "Let me look. Found it."), answer_entry(last + 1, "Three events.")];
+    let _ = app.update(Message::Followed(id_of(&app), Ok((head(&app, last + 1, false), entries))));
+    assert!(reads(sent(&mut app)).is_empty(), "read once, its parts with it");
+    app.reading = Some(last);
     let conversation = app.current.clone();
-    let _ = app.update(Message::Read(conversation, 2, Ok(())));
+    let _ = app.update(Message::Read(conversation, last, Ok(())));
     assert_eq!(app.reading, None);
 
-    // Answer, tool, answer: nothing is read while the run goes on, then only the last answer.
-    let mut parts = answering();
-    parts.read_aloud = true;
-    sent(&mut parts);
-    let entries = vec![answer_entry(2, "I'll look at your calendar."), answer_entry(3, "Three events.")];
-    let _ = parts.update(Message::Followed(id_of(&parts), Ok((head(&parts, 3, true), entries.clone()))));
-    assert!(!sent(&mut parts).iter().any(|request| matches!(request, Request::Speak { .. })), "the run goes on");
-    let _ = parts.update(Message::Followed(id_of(&parts), Ok((head(&parts, 3, false), entries))));
-    let speak: Vec<_> =
-        sent(&mut parts).into_iter().filter(|request| matches!(request, Request::Speak { .. })).collect();
-    assert_eq!(speak, [Request::Speak { text: "Three events.".into() }]);
-
     // A new chat stops what the old conversation reads, and [■] never stands at another's answer.
-    assert_eq!(parts.reading, Some(3));
-    let _ = parts.update(Message::NewChat);
-    assert!(sent(&mut parts).contains(&Request::StopSpeaking));
-    assert_eq!(parts.reading, None);
+    app.reading = Some(last);
+    let _ = app.update(Message::NewChat);
+    assert!(sent(&mut app).contains(&Request::StopSpeaking));
+    assert_eq!(app.reading, None);
 
-    // The conversation of "Hey Torro": the listener speaks its answers, the window does not.
-    let mut spoken = answering();
-    spoken.read_aloud = true;
-    if let Some(summary) = spoken.transcript.summary.as_mut() {
-        summary.title = crate::voice::listen::voice_title().to_string();
-    }
-    sent(&mut spoken);
-    let mut summary = head(&spoken, 2, false);
-    summary.title = crate::voice::listen::voice_title().to_string();
-    let _ = spoken.update(Message::Followed(id_of(&spoken), Ok((summary, vec![answer_entry(2, "Hi.")]))));
-    assert!(!sent(&mut spoken).iter().any(|request| matches!(request, Request::Speak { .. })));
+    // The window's own conversation by voice: the listener has its answers read, the window does not.
+    let mut talking = started(&["--chat", TOOLS]);
+    talking.read_aloud = true;
+    talking.talk = Some(torro_ipc::Talk { conversation: Some(TOOLS.into()), state: torro_ipc::VoiceState::Answering });
+    sent(&mut talking);
+    let next = talking.transcript.last() + 1;
+    let summary = head(&talking, next, false);
+    let _ = talking.update(Message::Followed(TOOLS.into(), Ok((summary, vec![answer_entry(next, "Hi.")]))));
+    assert!(reads(sent(&mut talking)).is_empty());
 
     // Off: a new answer is only shown.
-    let mut quiet = answering();
-    sent(&mut quiet);
-    let _ = quiet.update(Message::Followed(id_of(&quiet), Ok((head(&quiet, 2, false), vec![answer_entry(2, "Hi.")]))));
-    assert!(!sent(&mut quiet).iter().any(|request| matches!(request, Request::Speak { .. })));
+    let mut quiet = started(&[]);
+    let _ = quiet.update(hello());
+    let _ = quiet.update(Message::Send);
+    assert!(reads(settled(&mut quiet, |_| None)).is_empty());
     // Opening a conversation reads nothing of what is there.
     let mut opened = started(&["--chat", TOOLS]);
     opened.read_aloud = true;
     let _ = opened.update(Message::Select(TOOLS.into()));
-    settle(&mut opened);
+    assert!(reads(settled(&mut opened, |_| None)).is_empty());
     assert_eq!(opened.reading, None);
+}
+
+/// Issue #747, done 5: "Talk" starts a conversation by voice in the open conversation; the line of
+/// the listener takes the composer's place while it is the window's own, and "End talk" ends it. A
+/// conversation by voice elsewhere leaves the composer as it is; "Talk" is off while an answer runs.
+#[test]
+fn talk_starts_a_conversation_by_voice_in_the_window() {
+    use torro_ipc::{Talk, VoiceState};
+    let mut app = started(&["--chat", TOOLS]);
+    assert!(app.can_talk(), "the demo's microphone can record");
+    sent(&mut app);
+    let _ = app.update(Message::Talk);
+    assert_eq!(sent(&mut app), [Request::StartTalk { conversation: Some(TOOLS.into()) }]);
+    assert!(app.talk_starting, "turning arrows until the core answers");
+    let _ = app.view();
+    let _ = app.update(Message::Talk);
+    assert!(sent(&mut app).is_empty(), "no second start");
+    let talk = Talk { conversation: Some(TOOLS.into()), state: VoiceState::Conversing };
+    let _ = app.update(Message::TalkStarted(Ok(Some(talk.clone()))));
+    assert_eq!(app.own_talk(), Some(&talk));
+    for state in [VoiceState::Recording, VoiceState::Answering, VoiceState::Conversing] {
+        let _ = app.update(Message::TalkStatus(Ok(Some(Talk { state, ..talk.clone() }))));
+        let _ = app.view();
+    }
+    let _ = app.update(Message::EndTalk);
+    assert_eq!(sent(&mut app), [Request::EndTalk]);
+    assert_eq!(app.own_talk(), None);
+    let _ = app.update(Message::TalkStarted(Err(Refusal::new("unsupported", "the assistant is switched off"))));
+    assert_eq!(app.notice.as_ref().map(|notice| notice.text.as_str()), Some(tr("Couldn't start the conversation.")));
+
+    // In another conversation: the composer stays, the tray shows it.
+    let _ = app.update(Message::TalkStatus(Ok(Some(Talk { conversation: Some("elsewhere".into()), ..talk.clone() }))));
+    assert_eq!(app.own_talk(), None);
+    let _ = app.update(Message::TalkStatus(Ok(None)));
+    assert_eq!(app.talk, None);
+
+    // Escape ends it, as "End talk" does.
+    let _ = app.update(Message::TalkStatus(Ok(Some(talk.clone()))));
+    sent(&mut app);
+    let _ = app.update(Message::Escape);
+    assert!(sent(&mut app).contains(&Request::EndTalk));
+    assert_eq!(app.own_talk(), None);
+
+    // Not in a bot's chat: the listener talks to the assistant only.
+    assert!(!started(&["--bot", TRAVEL]).offers_talk());
+
+    // Off while an answer runs.
+    let mut busy = answering();
+    assert!(!busy.can_talk());
+    sent(&mut busy);
+    let _ = busy.update(Message::Talk);
+    assert!(sent(&mut busy).is_empty());
+}
+
+/// Issue #747: "Talk" in a new chat waits for the first sentence; once it started a conversation, the
+/// window shows that one, and the conversation by voice goes on there.
+#[test]
+fn talk_in_a_new_chat_follows_into_the_new_conversation() {
+    use torro_ipc::{Talk, VoiceState};
+    let mut app = started(&[]);
+    assert_eq!(app.current, None);
+    sent(&mut app);
+    let _ = app.update(Message::Talk);
+    assert_eq!(sent(&mut app), [Request::StartTalk { conversation: None }]);
+    let _ = app.update(Message::TalkStarted(Ok(Some(Talk { conversation: None, state: VoiceState::Conversing }))));
+    assert!(app.own_talk().is_some(), "the line while the first sentence is not said");
+    let moved = Talk { conversation: Some(TOOLS.into()), state: VoiceState::Answering };
+    let _ = app.update(Message::TalkStatus(Ok(Some(moved.clone()))));
+    assert_eq!(app.current.as_deref(), Some(TOOLS), "the window shows the new conversation");
+    assert_eq!(app.own_talk(), Some(&moved));
+    // One begun in a conversation is not followed into it from a new chat.
+    let mut left = started(&["--chat", TOOLS]);
+    let _ = left.update(Message::TalkStarted(Ok(Some(Talk {
+        conversation: Some(TOOLS.into()),
+        state: VoiceState::Conversing,
+    }))));
+    let _ = left.update(Message::NewChat);
+    let _ = left.update(Message::TalkStatus(Ok(Some(Talk {
+        conversation: Some(TOOLS.into()),
+        state: VoiceState::Conversing,
+    }))));
+    assert_eq!(left.current, None, "the new chat stays");
+    // One started elsewhere is not followed.
+    let mut other = started(&[]);
+    let _ = other.update(Message::TalkStatus(Ok(Some(moved))));
+    assert_eq!(other.current, None);
+}
+
+/// Issue #747: the demo state `talk` shows the line of a conversation by voice in every size.
+#[test]
+fn the_line_of_a_conversation_by_voice_builds_in_every_size() {
+    let mut app = started(&["--open", "talk"]);
+    assert!(app.own_talk().is_some());
+    for size in SIZES {
+        let _ = app.update(Message::Resized(size));
+        let _ = app.view();
+    }
 }
 
 /// Issue #745: the speaker switches the setting and back when the core refuses; switching it off

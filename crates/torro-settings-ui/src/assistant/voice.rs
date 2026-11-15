@@ -657,6 +657,10 @@ pub fn voice_state(enabled: bool, status: Option<&VoiceStatus>) -> (Status, Stri
     if !status.installed {
         return (Status::Error, tr("The assistant app is not installed").to_string());
     }
+    // A conversation by voice listens also while "Hey Torro" is off (issue #747).
+    if status.listener == VoiceState::Conversing {
+        return (Status::Ok, tr("In a conversation").to_string());
+    }
     if !enabled {
         let detail = if status.can_listen() { tr("Off") } else { tr("Install the programs below first") };
         return (Status::Inactive, detail.to_string());
@@ -665,6 +669,7 @@ pub fn voice_state(enabled: bool, status: Option<&VoiceStatus>) -> (Status, Stri
         (VoiceState::Listening, _) => (Status::Ok, tr("Listening for “Hey Torro”").to_string()),
         (VoiceState::Recording, _) => (Status::Ok, tr("Recording …").to_string()),
         (VoiceState::Answering, _) => (Status::Ok, tr("Answering …").to_string()),
+        (VoiceState::Conversing, _) => (Status::Ok, tr("In a conversation").to_string()),
         (VoiceState::Off, Some(_)) => {
             (Status::Error, tr("The listener stopped. Check the programs below.").to_string())
         }
@@ -905,6 +910,13 @@ mod tests {
         let listening = status(VoiceState::Listening, None);
         assert_eq!(voice_state(true, Some(&listening)), (Status::Ok, tr("Listening for “Hey Torro”").to_string()));
         assert_eq!(voice_state(true, Some(&status(VoiceState::Recording, None))).1, tr("Recording …"));
+        // Issue #747: a conversation by voice, also with "Hey Torro" off.
+        for enabled in [true, false] {
+            assert_eq!(
+                voice_state(enabled, Some(&status(VoiceState::Conversing, None))),
+                (Status::Ok, tr("In a conversation").to_string())
+            );
+        }
         assert_eq!(voice_state(true, Some(&status(VoiceState::Off, None))).0, Status::Attention);
         let stopped = VoiceStatus { problem: Some("the listener stopped".into()), ..status(VoiceState::Off, None) };
         assert_eq!(voice_state(true, Some(&stopped)).0, Status::Error);

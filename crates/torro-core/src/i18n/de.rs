@@ -9299,4 +9299,19 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("The assistant app is not installed.", "Die Assistenten-App ist nicht installiert."),
     ("Warm woman", "Frau, warm"),
     ("speaker|Voice", "Stimme"),
+    // A conversation by voice (issue #747)
+    ("voice|Talk", "Gespräch"),
+    ("Talk to the assistant without the wake word", "Mit dem Assistenten sprechen, ohne Weckwort"),
+    ("End talk", "Gespräch beenden"),
+    ("End talk (Esc)", "Gespräch beenden (Esc)"),
+    ("In a conversation", "Im Gespräch"),
+    ("Couldn't start the conversation.", "Das Gespräch konnte nicht beginnen."),
+    ("Couldn't end the conversation.", "Das Gespräch konnte nicht beendet werden."),
+    ("The assistant is switched off.", "Der Assistent ist ausgeschaltet."),
+    ("There is no answer to read.", "Es gibt keine Antwort zum Vorlesen."),
+    ("Read the assistant's answer in \"{title}\" aloud", "Die Antwort des Assistenten in „{title}“ vorlesen"),
+    (
+        "Read the assistant's answer in an unknown conversation aloud",
+        "Die Antwort des Assistenten in einer unbekannten Unterhaltung vorlesen",
+    ),
 ];
