@@ -9316,6 +9316,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // An answer in a spoken and a shown part (issue #774)
     ("speech|Repeat", "Wiederholen"),
     ("Read the spoken part again", "Den gesprochenen Teil noch einmal vorlesen"),
+    // The bubble of the spoken part (issue #827)
+    ("Spoken", "Gesprochen"),
     ("The assistant app is not installed.", "Die Assistenten-App ist nicht installiert."),
     ("Warm woman", "Frau, warm"),
     ("speaker|Voice", "Stimme"),
