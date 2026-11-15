@@ -801,7 +801,8 @@ höchstens ein Modell, und das lädt ein Knopf in Einstellungen › Assistent �
 - **Sprache der Erkennung:** Whisper hört auf die gewählte Sprache, ohne Wahl die der Suite; „Automatic“ lässt
   Whisper raten, was bei kurzen Sätzen und beim Weckwort oft danebengeht. Parakeet erkennt die Sprache selbst.
 - **Bauen:** sherpa-onnx lädt beim ersten Bau fertige Bibliotheken (ca. 23 MB je Ziel) von GitHub, ohne Netz
-  über `SHERPA_ONNX_ARCHIVE_DIR`; unter Linux braucht der Bau `libasound2-dev` (bzw. `alsa-lib`). Auf dem Mac
+  über `SHERPA_ONNX_ARCHIVE_DIR`; unter Linux braucht der Bau `libasound2-dev` (bzw. `alsa-lib`). Unter Windows gibt es sherpa-onnx nur gegen die statische C-Laufzeit gebaut, deshalb linkt die Suite
+  dort mit `+crt-static` (`.cargo/config.toml`). Auf dem Mac
   fragt das System beim ersten Diktieren nach dem Mikrofon (`NSMicrophoneUsageDescription`).
 
 - **Standard aus.** Einschalten nur in den Einstellungen des Assistenten (Zahnrad › Voice), mit
