@@ -42,8 +42,9 @@ pub struct ModelWake {
 
 impl ModelWake {
     /// Loads the built-in model. `livekit-wakeword` only loads from a file, so the model is written to
-    /// `<voice>/wake/hey_torro.onnx` first, when the file is missing or has another size (a copy cut off, an
-    /// older model); it goes to a `.part` file first, so a crash never leaves half a model behind. Fails
+    /// `<voice>/wake/hey_torro.onnx` first, when the file is missing or holds anything else (a copy cut off
+    /// or damaged, the model of an older version); it goes to a `.part` file of this process first, so a crash
+    /// never leaves half a model behind and two listeners starting at once never write into one file. Fails
     /// when the folder cannot be written or the model does not load.
     pub fn load(voice: &Path) -> Result<ModelWake, VoiceError> {
         let path = write_model(voice).map_err(|err| VoiceError::program("wake word", err))?;
@@ -52,15 +53,18 @@ impl ModelWake {
     }
 }
 
-/// Writes [`MODEL`] into `<voice>/wake/` unless it is there with its size; where it lies.
+/// Writes [`MODEL`] into `<voice>/wake/` unless it is there byte for byte; where it lies. The whole file is
+/// compared, not its size: a newer model of the same architecture has the same size.
 fn write_model(voice: &Path) -> std::io::Result<PathBuf> {
     let folder = voice.join("wake");
     let path = folder.join(MODEL_FILE);
-    if std::fs::metadata(&path).is_ok_and(|meta| meta.is_file() && meta.len() == MODEL.len() as u64) {
+    let same = std::fs::metadata(&path).is_ok_and(|meta| meta.is_file() && meta.len() == MODEL.len() as u64)
+        && std::fs::read(&path).is_ok_and(|bytes| bytes == MODEL);
+    if same {
         return Ok(path);
     }
     std::fs::create_dir_all(&folder)?;
-    let part = folder.join(format!("{MODEL_FILE}.part"));
+    let part = folder.join(format!("{MODEL_FILE}.{}.part", std::process::id()));
     std::fs::write(&part, MODEL)?;
     std::fs::rename(&part, &path)?;
     Ok(path)
@@ -348,16 +352,24 @@ mod tests {
         wake.reset();
     }
 
-    /// Issue #765: a model file cut off is written anew.
+    /// Issue #765: a model file cut off, or another model of the same size, is written anew.
     #[test]
-    fn a_model_file_cut_off_is_written_anew() {
+    fn a_model_file_cut_off_or_changed_is_written_anew() {
         let voice = tempfile::tempdir().expect("voice folder");
         let folder = voice.path().join("wake");
         std::fs::create_dir_all(&folder).expect("folder");
         std::fs::write(folder.join(MODEL_FILE), &MODEL[..1024]).expect("cut off");
         ModelWake::load(voice.path()).expect("loads");
-        assert_eq!(std::fs::read(folder.join(MODEL_FILE)).expect("model").len(), MODEL.len());
-        assert!(!folder.join(format!("{MODEL_FILE}.part")).exists(), "no part left");
+        assert!(std::fs::read(folder.join(MODEL_FILE)).expect("model") == MODEL);
+        let mut older = MODEL.to_vec();
+        if let Some(last) = older.last_mut() {
+            *last ^= 0xff;
+        }
+        std::fs::write(folder.join(MODEL_FILE), &older).expect("same size");
+        ModelWake::load(voice.path()).expect("loads");
+        assert!(std::fs::read(folder.join(MODEL_FILE)).expect("model") == MODEL, "the built-in model");
+        let left: Vec<_> = std::fs::read_dir(&folder).expect("folder").collect();
+        assert_eq!(left.len(), 1, "no part left");
     }
 
     /// Issue #765: a voice folder that is a file gives an error, no panic.
