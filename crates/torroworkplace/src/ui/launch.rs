@@ -451,6 +451,9 @@ pub struct Launch {
     pub saved: bool,
     /// `--app-job=<target>`: the window of an app job ([`super::app_job::Target`]).
     pub app_job: Option<String>,
+    /// `--section apps`: the app catalog was asked for by its word. It stands on Overview since issue
+    /// #803, yet the start opens a window of its own as the section Apps did ([`super::instance_of`]).
+    pub catalog: bool,
 }
 
 impl Default for Launch {
@@ -469,6 +472,7 @@ impl Default for Launch {
             template: None,
             saved: false,
             app_job: None,
+            catalog: false,
         }
     }
 }
@@ -624,6 +628,7 @@ impl Launch {
             template,
             saved,
             app_job,
+            catalog: flag_value(args, "--section")? == Some("apps"),
         })
     }
 }
@@ -1695,6 +1700,7 @@ mod tests {
         // Issue #411: the word leads to the catalog, on Overview since issue #803.
         let apps = Launch::parse(&args(&["--section", "apps"])).expect("apps");
         assert_eq!((apps.section, apps.client), (Section::Overview, None), "the catalog is on Overview (issue #803)");
+        assert!(apps.catalog && !Launch::parse(&args(&["--section", "overview"])).expect("overview").catalog);
         let agents = Launch::parse(&args(&["--section", "agents"])).expect("the old word");
         assert_eq!((agents.section, agents.client), (Section::Mcp, None));
     }

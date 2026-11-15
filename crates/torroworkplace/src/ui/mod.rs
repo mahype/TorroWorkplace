@@ -615,9 +615,11 @@ pub fn run(launch: Launch, shots: Option<&Shots>) -> Result<(), RunError> {
 /// would stay on its page: a page (`--section accounts`, also `assistant` and `bot:<id>`), the setup
 /// (`--setup`, `--setup-if-open`, `--step`), the template dialog (`--template`); and for the demo, which
 /// the visual checks start next to the real window. `--section overview` asks for the page a plain
-/// start shows and counts as plain.
+/// start shows and counts as plain; `--section apps` opens a window of its own on Overview, as the
+/// section Apps did before issue #803.
 fn instance_of(launch: &Launch) -> Option<AppId> {
     let target = launch.section != Section::Overview
+        || launch.catalog
         || launch.client.is_some()
         || launch.setup.is_some()
         || launch.setup_if_open
@@ -2203,7 +2205,8 @@ impl Ui {
             Section::Mcp => api::listed(&self.data, api::Home::Mcp).count(),
             Section::Connections => connections::count(&self.data),
             Section::Approvals => approvals::pending(&self.data.approvals).count(),
-            Section::Overview => apps::updates(&self.data),
+            // Overview has only its dot for waiting updates (issue #803): a count there would read as its
+            // problems; "Update all (n)" counts them.
             _ => 0,
         };
         if count > 0 { Trail::Count(count) } else { Trail::None }
@@ -2355,12 +2358,9 @@ impl Ui {
     /// back button and its name; the page's actions right.
     fn header(&self, class: SizeClass, nav: &Anchor) -> Element<'_, Message> {
         let Header { sub_page, actions } = self.page_header(class);
-        // A quiet word beside the title, where the wide layout has room (design skill, section 0): how
-        // many apps are installed and wait for an update (issue #411).
-        let note = match self.section {
-            Section::Overview => apps::note(&self.data),
-            _ => None,
-        };
+        // How many apps are installed and wait for an update stands at the catalog's title on Overview
+        // (issue #803), not beside the page's title.
+        let note = None;
         let section = self.section;
         let menu = Message::ToggleMenu(Menu::Nav);
         let form = head_form(class, sub_page.is_some());
@@ -2436,7 +2436,7 @@ impl Ui {
                 let margin = page_margin(class);
                 let room = self.content_room() - margin.left - margin.right;
                 let catalog = column![
-                    widgets::section_title(tr("Apps")),
+                    apps::title(&self.apps, &self.data, class).map(Message::Apps),
                     apps::view(&self.apps, &self.data, class, room).map(Message::Apps),
                 ]
                 .spacing(layout::item_gap());
@@ -3020,6 +3020,8 @@ mod tests {
         for exception in [
             &["--section", "accounts"][..],
             &["--section", "workspaces"],
+            // The catalog's word opens a window of its own on Overview, as the section Apps did (issue #803).
+            &["--section", "apps"],
             &["--section", "assistant"],
             &["--setup"],
             &["--setup", "--step", "calendar"],
@@ -4050,7 +4052,7 @@ mod tests {
         let _switching = switching();
         let mut ui = started(&["--demo", "--open", "apps"]);
         assert_eq!(ui.section, Section::Overview);
-        assert_eq!(ui.trail(Section::Overview), Trail::Count(2));
+        assert_eq!(ui.trail(Section::Overview), Trail::None, "only the dot (issue #803)");
         let palette = palette(&ui.theme());
         assert!(matches!(ui.mark(Section::Overview, &palette), widgets::Mark::Badged(Icon::LayoutGrid, _)));
         let menu = started(&["--demo", "--open", "apps-menu"]);

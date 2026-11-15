@@ -23,8 +23,9 @@
 //! column too wide), else one column; narrow ones one column. One column comes only where two cards
 //! do not fit (or the catalog has a single app, which the suite's catalog of all its apps never has),
 //! so it is never wider than two cards and needs no cap of its own (issue #548). The
-//! narrow header keeps "Check for updates" and "Update all" as icons; below wide the search moves over
-//! the cards (issue #803: beside "Overview ▾" a medium header has no room for it).
+//! catalog stands on Overview since issue #803: the page's header holds only "Update all" (an icon in
+//! narrow windows); "Check for updates", the counts and the search stand at the catalog's title
+//! ([`title`]), narrow windows have the search over the cards.
 
 use chrono::{DateTime, Utc};
 use iced::widget::text::Wrapping;
@@ -272,13 +273,6 @@ pub fn updatable(catalog: &AppCatalog) -> Vec<String> {
     catalog.apps.iter().filter(|app| app.state == CatalogState::Update).map(|app| app.window_class.clone()).collect()
 }
 
-/// How many updates "Update all" takes, for the sidebar's count: the same number as the button, so
-/// the two never disagree. The main application's update is not counted; its question card says
-/// it, and the sidebar's dot ([`waiting`]).
-pub fn updates(data: &Data) -> usize {
-    data.app_catalog.catalog.listed().map_or(0, |catalog| updatable(catalog).len())
-}
-
 /// Whether any update waits, the main application's too: the dot on the section's icon.
 pub fn waiting(data: &Data) -> bool {
     data.app_catalog
@@ -458,19 +452,12 @@ fn needed_by(app: &CatalogApp, catalog: &AppCatalog) -> Vec<String> {
         .collect()
 }
 
-/// Overview's header (issue #803): how many apps are installed and wait for an update, and at the right "Check
-/// for updates", the search (only in wide windows; elsewhere it stands over the cards, since beside
-/// "Overview ▾" the header has no room left for it, issue #803) and "Update all
-/// (2)" as the window's one primary button while there are updates.
-pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<'a, Message> {
+/// Overview's header (issue #803): only "Update all (2)", the window's one primary button while there
+/// are updates; narrow as an icon. What else the catalog offers stands at its title ([`title`]).
+pub fn header<'a>(_state: &'a State, data: &'a Data, class: SizeClass) -> Header<'a, Message> {
     let catalog = data.app_catalog.catalog.listed();
     let narrow = !matches!(class, SizeClass::Wide | SizeClass::Medium);
-    let check = (!state.checking).then_some(Message::Check);
-    let mut actions: Vec<Element<'a, Message>> =
-        vec![widgets::icon_button(Icon::RefreshCw, tr("Check for updates"), check)];
-    if class == SizeClass::Wide {
-        actions.push(search(state, Length::Fixed(size::sidebar())));
-    }
+    let mut actions: Vec<Element<'a, Message>> = Vec::new();
     let count = catalog.map(updatable).map_or(0, |apps| apps.len());
     if count > 0 {
         let label = trf("Update all ({n})", &[("n", &count)]);
@@ -482,12 +469,24 @@ pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<
     Header { sub_page: None, actions }
 }
 
-/// The quiet words beside the title of a wide header: "5 installed · 2 updates".
-pub fn note(data: &Data) -> Option<String> {
-    data.app_catalog.catalog.listed().map(summary)
+/// The catalog's title on Overview (issue #803), where it belongs instead of the page's header: "Apps"
+/// with "5 installed · 2 updates" beside it, and at its right "Check for updates" and – wide and medium,
+/// once the catalog is listed – the search; narrow windows have the search over the cards ([`view`]).
+pub fn title<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
+    let catalog = data.app_catalog.catalog.listed();
+    let name = match catalog {
+        Some(catalog) => format!("{} · {}", tr("Apps"), summary(catalog)),
+        None => tr("Apps").to_string(),
+    };
+    let check = (!state.checking).then_some(Message::Check);
+    let mut buttons = vec![widgets::icon_button(Icon::RefreshCw, tr("Check for updates"), check)];
+    if catalog.is_some() && matches!(class, SizeClass::Wide | SizeClass::Medium) {
+        buttons.push(search(state, Length::Fixed(size::sidebar())));
+    }
+    widgets::group_title(name, buttons)
 }
 
-/// "5 installed · 2 updates", quietly beside the title.
+/// "5 installed · 2 updates", quietly beside the catalog's title ([`title`]).
 fn summary(catalog: &AppCatalog) -> String {
     let installed = catalog.apps.iter().filter(|app| is_installed(app)).count()
         + usize::from(catalog.main.state == CatalogState::Managed && is_installed(&catalog.main));
@@ -514,19 +513,29 @@ fn search(state: &State, width: Length) -> Element<'_, Message> {
 }
 
 /// The page: the main application's update when there is one, the installed apps, the missing ones
-/// and the footer with when the catalog was checked; loading and failing as every page.
+/// and the footer with when the catalog was checked; loading and failing as a row in a group, since
+/// the catalog stands under Overview's parts (issue #803).
 ///
 /// `width` is the room of the page inside its margin: the cards stand in as many columns as fit
 /// ([`columns_for`]). A failed check of GitHub says so at the top, over the cards, with "Retry".
 pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass, width: f32) -> Element<'a, Message> {
     let catalog = match &data.app_catalog.catalog {
-        Catalog::Loading => return widgets::loading(),
-        Catalog::Failed(_) => return widgets::error_state(tr("Couldn't load the apps."), Message::Check),
+        // Under Overview's parts a quiet row in a group, not a state that fills the page (issue #803).
+        Catalog::Loading => {
+            let line = super::setting_row(None, tr("Loading …"), None, Space::new());
+            return widgets::group_with(None, vec![line], None);
+        }
+        Catalog::Failed(_) => {
+            let retry = widgets::text_button(None, tr("Retry"), style::button::secondary, Some(Message::Check));
+            let dot = Some(widgets::status_dot(Status::Error));
+            let line = super::setting_row(dot, tr("Couldn't load the apps."), None, retry);
+            return widgets::group_with(None, vec![line], None);
+        }
         Catalog::Listed(catalog) => catalog.as_ref(),
     };
     let job = data.app_catalog.job.as_ref();
     let mut page = column![].spacing(layout::section_gap()).width(Fill);
-    if class != SizeClass::Wide {
+    if !matches!(class, SizeClass::Wide | SizeClass::Medium) {
         page = page.push(search(state, Fill));
     }
     if let Some(code) = catalog.error.as_deref() {
@@ -1271,6 +1280,9 @@ mod tests {
     /// sidebar counts the main application's update too.
     #[test]
     fn the_header_and_the_sidebar_count_the_updates() {
+        // How many updates "Update all" takes; the main application's has its question card and the
+        // dot on Overview ([`waiting`]).
+        let updates = |data: &Data| data.app_catalog.catalog.listed().map_or(0, |catalog| updatable(catalog).len());
         let mut catalog = catalog();
         assert_eq!(
             summary(&catalog),
@@ -1287,10 +1299,11 @@ mod tests {
         assert!(waiting(&data_with(only_main)), "the dot alone");
         let data = data_with(catalog.clone());
         let state = State::default();
-        assert_eq!(header(&state, &data, SizeClass::Wide).actions.len(), 3, "check, search, update all");
-        assert_eq!(header(&state, &data, SizeClass::Narrow).actions.len(), 2, "the search moves over the cards");
+        // Issue #803: the header has only "Update all"; check and search stand at the catalog's title.
+        assert_eq!(header(&state, &data, SizeClass::Wide).actions.len(), 1, "update all");
+        assert_eq!(header(&state, &data, SizeClass::Narrow).actions.len(), 1, "update all as an icon");
         catalog.apps.iter_mut().for_each(|app| app.state = CatalogState::Installed);
-        assert_eq!(header(&state, &data_with(catalog), SizeClass::Wide).actions.len(), 2, "no updates, no button");
+        assert!(header(&state, &data_with(catalog), SizeClass::Wide).actions.is_empty(), "no updates, no button");
         assert_eq!(updates(&Data::default()), 0);
     }
 
@@ -1370,6 +1383,7 @@ mod tests {
         for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
             drop(view(&state, &data, class, 700.0));
             drop(header(&state, &data, class));
+            drop(title(&state, &data, class));
         }
         let checking = State { checking: true, ..State::default() };
         drop(view(&checking, &data, SizeClass::Wide, 1200.0));
