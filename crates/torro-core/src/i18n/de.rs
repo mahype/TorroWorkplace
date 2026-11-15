@@ -802,6 +802,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Ergänze diesen Eintrag in der Konfiguration deines Clients und führe dann system_ping aus.",
     ),
     // Control centre (torroworkplace ui)
+    ("Control centre", "Steuerzentrale"),
     ("1 needs attention", "1 braucht Aufmerksamkeit"),
     ("1 problem", "1 Problem"),
     ("{n} need attention", "{n} brauchen Aufmerksamkeit"),
@@ -1210,7 +1211,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Quit", "Beenden"),
     ("Replace windows", "Fenster ersetzen"),
     ("Save workspace", "Workspace speichern"),
-    ("Settings…", "Einstellungen…"),
     ("Signing in to Nextcloud …", "Anmeldung bei Nextcloud läuft …"),
     ("Update", "Aktualisieren"),
     ("Workspace {workspace} · {backend}", "Workspace {workspace} · {backend}"),
@@ -1307,7 +1307,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Search", "Suchen"),
     ("Show sidebar", "Seitenleiste zeigen"),
     ("Hide sidebar", "Seitenleiste ausblenden"),
-    ("Workplace", "Workplace"),
     // Calendar
     ("Add location", "Ort hinzufügen"),
     ("Delete event", "Termin löschen"),
