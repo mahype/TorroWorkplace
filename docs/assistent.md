@@ -777,9 +777,32 @@ Open First gilt auch hier, und das Mikrofon verlässt den Rechner nie, solange n
 
 | Baustein | Lokal (Standard) | Hinweis |
 |---|---|---|
-| **Weckwort** | openWakeWord (offen, eigenes Wort trainierbar) | läuft dauerhaft, nur auf dem Rechner, kleiner Speicher (wenige Sekunden Ringpuffer, nie auf Platte) |
-| **Sprache → Text** | Parakeet über onnx-asr (empfohlen, etwa dreimal so schnell) oder whisper.cpp, wählbar in Einstellungen › Voice (#749) | optional über ein KI-Konto, wenn die Person es erlaubt |
-| **Text → Sprache** | Qwen3-TTS oder Piper, auf Wunsch OpenAI (siehe „Vorlesen“) | abschaltbar, dann nur Fenster |
+| **Weckwort** | die eingebaute Spracherkennung auf kurzen Abschnitten (#762, Entscheidung 5; ein eigenes Weckwort-Modell ist #765) | läuft dauerhaft, nur auf dem Rechner, kleiner Speicher (wenige Sekunden Ringpuffer, nie auf Platte); kostet etwas Rechenzeit, solange es an ist |
+| **Sprache → Text** | Whisper turbo (empfohlen, Vorgabe) oder Parakeet, beide eingebaut (sherpa-onnx), wählbar in Einstellungen › Voice (#749, #762) | optional über ein KI-Konto, wenn die Person es erlaubt |
+| **Text → Sprache** | Pocket TTS, eingebaut, auf Wunsch OpenAI (siehe „Vorlesen“) | abschaltbar, dann nur Fenster |
+
+**Alles eingebaut (Issue #762):** Erkennung, Vorlesen, Weckwort, Aufnahme und Wiedergabe laufen im Assistenten
+selbst, ohne fremde Programme, ohne Python und ohne Befehle im Terminal. Rechnen: sherpa-onnx (ONNX Runtime,
+fest eingebunden); Ton: cpal (unter Linux ALSA, auf dem Mac Core Audio, unter Windows WASAPI). Was fehlt, ist
+höchstens ein Modell, und das lädt ein Knopf in Einstellungen › Assistent › Voice › Models:
+
+| Modell | Wofür | Größe | Quelle |
+|---|---|---|---|
+| Whisper turbo (`whisper-turbo`, empfohlen) | Sprache → Text, mit wählbarer Sprache | 1,0 GB | `csukuangfj/sherpa-onnx-whisper-turbo` auf Hugging Face |
+| Parakeet (`parakeet`) | Sprache → Text, schneller, erkennt die Sprache selbst | 670 MB | `csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8` |
+| Pocket TTS, Deutsch (`pocket-de`, empfohlen) | Vorlesen, mit den Stimmen von Kyutai | 150 MB | `haex-space/pocket-tts-sherpa-onnx` und `kyutai/tts-voices` |
+
+- **Feste Liste:** Jede Datei steht mit fester Fassung (Revision), Größe und SHA-256 im Programm
+  (`torro_core::voice_models`); geladen wird nur diese Liste, nichts sonst, ohne Token. Die Dateien liegen im
+  Sprachordner unter `models/<id>/`.
+- **Laden:** Der Dienst lädt jede Datei als `.part`, prüft Größe und Prüfsumme und benennt sie erst dann um.
+  „Cancel“ behält das schon Geladene, der nächste „Download“ setzt dort fort (HTTP `Range`). „Remove“ löscht das
+  Modell samt Resten. Ohne Netz sagt die Zeile „No connection to the internet. Check the network and try again.“
+- **Sprache der Erkennung:** Whisper hört auf die gewählte Sprache, ohne Wahl die der Suite; „Automatic“ lässt
+  Whisper raten, was bei kurzen Sätzen und beim Weckwort oft danebengeht. Parakeet erkennt die Sprache selbst.
+- **Bauen:** sherpa-onnx lädt beim ersten Bau fertige Bibliotheken (ca. 23 MB je Ziel) von GitHub, ohne Netz
+  über `SHERPA_ONNX_ARCHIVE_DIR`; unter Linux braucht der Bau `libasound2-dev` (bzw. `alsa-lib`). Auf dem Mac
+  fragt das System beim ersten Diktieren nach dem Mikrofon (`NSMicrophoneUsageDescription`).
 
 - **Standard aus.** Einschalten nur in den Einstellungen des Assistenten (Zahnrad › Voice), mit
   Wahl des Mikrofons und Test.
@@ -798,7 +821,7 @@ Open First gilt auch hier, und das Mikrofon verlässt den Rechner nie, solange n
   senden. Es braucht kein Weckwort und geht auch, wenn „Hey Torro“ aus ist. Aufgenommen wird über
   den Dienst (`assistant.dictate`, der `torroassistant --dictate` startet; `assistant.stop_dictation`
   schließt dessen Eingabe und beendet die Aufnahme), nie im Fenster selbst; der Text kommt nicht ins
-  Protokoll. Ohne eingerichtete Spracherkennung ist das Mikrofon blass und öffnet Einstellungen ›
+  Protokoll. Ohne geladenes Modell der Spracherkennung ist das Mikrofon blass und öffnet Einstellungen ›
   Voice. Mini- und Leistenkachel haben kein Mikrofon.
 
 | Funktion | Oberfläche | API · Zugriff | MCP |
@@ -806,6 +829,9 @@ Open First gilt auch hier, und das Mikrofon verlässt den Rechner nie, solange n
 | Sprache an/aus, Weckwort, Mikrofon, Stimme | Assistent › Einstellungen › Voice, Tray | `settings.set_setting` · Admin | **Never** für das Einschalten des Mikrofons (Punkt 6); Stimme und Weckwort über `settings_set_setting` |
 | Gesprochene Nachricht | Schnellfenster | `assistant.send_message` (gibt es dann) | ebenso |
 | Diktieren ins Eingabefeld | Mikrofon im Eingabefeld | `assistant.dictate`, `assistant.stop_dictation` · Admin | **Never** (Punkt 6: das Mikrofon schaltet nur ein Mensch ein) |
+| Spracherkennung und ihre Sprache | Voice › Speech recognition, Language | `settings.set_setting` `speech_recognizer`, `speech_language` · Admin | `settings_set_setting` |
+| Modelle ansehen | Voice › Models | `settings.list_voice_models` · Read | `settings_list_voice_models` |
+| Modell laden, Laden abbrechen, Modell entfernen | Voice › Models („Download“, „Cancel“, „Remove“) | `settings.download_voice_model`, `settings.cancel_voice_download`, `settings.remove_voice_model` · Admin (fragt immer nach Freigabe, wie `ai.pull_model`) | `settings_download_voice_model`, `settings_cancel_voice_download`, `settings_remove_voice_model`; die Freigabe zeigt Name und Größe aus der Liste |
 
 ### Vorlesen (Issue #745)
 
@@ -814,19 +840,19 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
 
 | Anbieter | Läuft | Braucht | Stimmen |
 |---|---|---|---|
-| **Lokal: Qwen3-TTS** | auf dem Rechner, Ton stückweise schon während des Rechnens (erster Ton nach ca. 0,2 s) | NVIDIA-Grafikkarte ab 4 GB (ab 8 GB das Modell 1.7B, sonst 0.6B), Python-Paket `faster-qwen3-tts` 0.5.4 mit `transformers` 5.15.1 | „Warm woman“ (empfohlen), „Calm man“: Vorlagen, die mit dem Assistenten kommen und für jede Antwort geklont werden, damit jede Antwort gleich klingt |
+| **Lokal: Pocket TTS** (empfohlen) | eingebaut, auf dem Prozessor, ohne Grafikkarte und Netz, Ton stückweise schon während des Rechnens (erster Ton nach wenigen Sekunden) | das Modell `pocket-de` (150 MB, Knopf „Download“) | Alba (empfohlen), Fantine, Marius von Kyutai und die Vorlagen des Assistenten „Warm woman“ und „Calm man“; jede Antwort wird aus der Aufnahme der Stimme geklont |
 | **Online: OpenAI** | `gpt-4o-mini-tts` über `POST /v1/audio/speech` | das OpenAI-Konto aus Einstellungen › KI (kein eigener Schlüssel) | die 13 Stimmen der Schnittstelle, empfohlen Marin und Cedar |
-| **Lokal: Piper** | auf dem Rechner, auch ohne Grafikkarte und Netz | Piper und eine Stimme im Sprachordner | die gefundene Stimme |
 
-- **Wer liest:** Ohne eigene Wahl Qwen3-TTS, wenn der Rechner schnell genug und Qwen eingerichtet ist, sonst
-  Piper. OpenAI nur nach ausdrücklicher Wahl, weil der Text jeder Antwort dann an OpenAI geht; diese Wahl
-  trifft nur ein Mensch (`settings.set_setting speech_provider "openai"` bekommt von jedem Client
-  `forbidden`, [api.md](api.md), Punkt 6).
-- **Empfehlung:** Die Einstellungen sagen, ob der Rechner für lokale Stimmen schnell genug ist (Grafikkarte
-  aus der Messung des Rechners), und empfehlen danach Qwen3-TTS oder OpenAI.
-- **Einrichten von Qwen:** Die Person führt den Befehl aus, den die Einstellungen zeigen („Copy“): eine eigene
-  Python-Umgebung unter `<Sprachordner>/qwen/venv`. Torro findet sie danach von selbst; die Modelle lädt
-  das erste Vorlesen (einige GB, ca. 10 s Laden).
+- **Wer liest:** Ohne eigene Wahl Pocket TTS. OpenAI nur nach ausdrücklicher Wahl, weil der Text jeder Antwort
+  dann an OpenAI geht; diese Wahl trifft nur ein Mensch (`settings.set_setting speech_provider "openai"`
+  bekommt von jedem Client `forbidden`, [api.md](api.md), Punkt 6).
+- **Qwen3-TTS und Piper** sind mit #762 entfallen: Qwen lief nur mit Python und Grafikkarte, Piper bringt eine
+  GPL-Lizenz mit. Wer eines davon gewählt hatte, liest danach mit Pocket TTS; `speech_provider` `"qwen"` oder
+  `"piper"` und die alten Schlüssel `qwen_voice`, `stt_model`, `voice` beantwortet der Dienst mit `unsupported`.
+  Qwen ohne Python ist #764.
+- **Stimmen und Lizenzen:** Cosette und Jean fehlen, weil ihre Aufnahmen nur nichtgewerblich genutzt werden
+  dürfen. Die Einstellungen nennen die Urheber: Kyutai (Pocket TTS, CC BY 4.0), Alba MacKenna (CC BY 4.0),
+  VCTK (CC BY 4.0), Stimmspende (CC0).
 - **Chatfenster:** Der Lautsprecher links vom Mikrofon schaltet `voice.read_aloud` (anfangs aus). Eine neue
   Antwort wird vorgelesen, sobald sie fertig ist; [■] an ihr und der Lautsprecher aus beenden das Vorlesen
   sofort. „Speak answers“ bleibt der eigene Schalter für „Hey Torro“: Der Hörer spricht die Antworten seiner
@@ -834,8 +860,8 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
   einmal vor. Wechselt das Fenster die Unterhaltung, endet das Vorlesen.
 - **Technisch:** Der Dienst hält den Helfer `torroassistant --speak` am Laufen (JSON-Zeilen, ein Auftrag
   zugleich, nach zehn Minuten ohne Auftrag beendet er sich und gibt den Grafikspeicher frei; ein anderer Anbieter
-  beendet ihn sofort, eine andere Stimme nicht, sie geht mit dem nächsten Auftrag mit). Qwen rechnet
-  im Helfer in Python, der Ton geht roh an `paplay`, `pw-play`, `aplay`, `play` oder `ffplay`. Den Ton von
+  beendet ihn sofort, eine andere Stimme nicht, sie geht mit dem nächsten Auftrag mit). Pocket TTS rechnet
+  im Helfer, der das Modell einmal lädt; der Ton geht über cpal an die Tonausgabe des Systems. Den Ton von
   OpenAI holt der Dienst selbst, weil er den Schlüssel hält, in Stücken aus ganzen Sätzen (bis 500
   Zeichen), das nächste, während das vorige spielt. Vorgelesen werden höchstens 3000 Zeichen, ohne
   Markdown. Der Text kommt nicht ins Protokoll.
@@ -844,7 +870,7 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
 |---|---|---|---|
 | Text vorlesen, Vorlesen stoppen | Chatfenster (Lautsprecher, [■]), „Preview“ in Voice | `assistant.speak`, `assistant.stop_speaking` · Write | `assistant_speak`, `assistant_stop_speaking` |
 | Wer vorlesen kann | Voice › Read aloud | `settings.speech_status` · Read | `settings_speech_status` |
-| An/aus, Anbieter, Stimmen | Voice › Read aloud, Lautsprecher im Chatfenster | `settings.set_setting` `read_aloud`, `speech_provider`, `qwen_voice`, `openai_voice` · Admin | `settings_set_setting` (OpenAI als Anbieter nur Menschen) |
+| An/aus, Anbieter, Stimmen | Voice › Read aloud, Lautsprecher im Chatfenster | `settings.set_setting` `read_aloud`, `speech_provider`, `pocket_voice`, `openai_voice` · Admin | `settings_set_setting` (OpenAI als Anbieter nur Menschen) |
 
 ## Wo die Logik liegt
 
