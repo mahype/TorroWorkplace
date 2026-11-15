@@ -82,6 +82,30 @@ Abhängigkeiten. `torro-workplace` entfernt nur die Steuerzentrale, nicht den Di
 werden durch diese Pakete nicht gelöscht. Vor Entfernen des letzten Dienstpakets Apps/Dienst beenden
 und eine selbst aktivierte Nutzereinheit mit `systemctl --user disable --now torroworkplace` stoppen.
 
+## Qwen3-TTS selbst bauen (nur NVIDIA)
+
+Die Releases lesen lokal mit Pocket TTS. Qwen3-TTS als zweite lokale Stimme (Issue #764,
+[assistent.md](assistent.md), Abschnitt „Vorlesen“) gibt es nur in einem eigenen Build mit der Bau-Option
+`qwen-cuda`. Er braucht eine NVIDIA-Grafikkarte mit etwa 8 GB freiem Speicher, zum Bauen das CUDA-Toolkit
+(`nvcc`, unter Arch `cuda`) und zum Laufen den NVIDIA-Treiber (`libcuda`) und die Bibliotheken des Toolkits
+(`libcublas`, `libcublasLt`, `libcurand`, `libnvrtc`): Ein so gebauter Assistent startet ohne sie gar nicht, auch
+nicht zum Zuhören, für den Chat oder mit Pocket TTS. Kein Python, kein `cmake`.
+
+Dienst und Assistent in **zwei** Aufrufen bauen: Der Dienst bekommt nur die Option, Qwen anzubieten
+(`torro-core/qwen-tts`), der Assistent Crane dazu. In einem gemeinsamen Aufruf schaltete Crane in den gemeinsamen
+Abhängigkeiten des Dienstes Features um (`serde_json/preserve_order`) und änderte dort Verhalten.
+
+```sh
+cargo build --release -p torroworkplace --features torro-core/qwen-tts
+cargo build --release -p torroassistant --features qwen-cuda
+```
+
+Ohne die Option im Dienst bietet er Qwen nicht an, auch wenn der Assistent es kann.
+
+Danach in Einstellungen › Assistent › Voice unter „Models“ das Modell „Qwen3-TTS 0.6B“ laden (2,5 GB) und unter
+„Read aloud“ „Local: Qwen3-TTS (graphics card)“ wählen. macOS und Windows sind nicht erprobt
+([messung-qwen3-tts.md](messung-qwen3-tts.md)).
+
 ## Prüfsummen und App-Katalog
 
 Zu jedem Installer liegt `<datei>.sha256`. Linux: `sha256sum -c <datei>.sha256`; macOS:

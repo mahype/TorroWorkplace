@@ -265,6 +265,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.menus.close();
             let key = match provider {
                 SpeechProvider::Pocket => SettingKey::PocketVoice,
+                SpeechProvider::Qwen => SettingKey::QwenVoice,
                 SpeechProvider::OpenAi => SettingKey::OpenAiVoice,
             };
             set(key, serde_json::Value::String(id))
@@ -532,13 +533,19 @@ fn language_items(data: &Data) -> Vec<MenuItem<'_, Message>> {
         .collect()
 }
 
-/// The entries of the dropdown `key` of reading aloud: the providers, or the voices of the one that
-/// reads, the recommended ones marked.
+/// The entries of the dropdown `key` of reading aloud: the providers this computer's status lists (without
+/// one, those of this build: Qwen3-TTS only where it is built, #764), or the voices of the one that reads,
+/// the recommended ones marked.
 fn speech_items(key: Choice, data: &Data) -> Vec<MenuItem<'_, Message>> {
     let current = current_provider(data);
+    let offered = |provider: SpeechProvider| match &data.speech {
+        Some(speech) => speech.option(provider).is_some(),
+        None => provider.built(),
+    };
     match key {
         Choice::Provider => SpeechProvider::ALL
             .iter()
+            .filter(|&&provider| offered(provider))
             .map(|&provider| {
                 let recommended = data.speech.as_ref().is_some_and(|speech| speech.recommended == provider);
                 MenuItem::plain(marked(provider_name(provider), recommended), Message::Provider(provider))
@@ -605,13 +612,20 @@ fn read_aloud_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message
             ),
             tr("Pocket TTS reads on this computer.")
         ),
+        SpeechProvider::Qwen => format!(
+            "{} {}",
+            tr(
+                "Qwen3-TTS reads on this computer’s NVIDIA graphics card and keeps about 8 GB of its memory while it reads."
+            ),
+            tr("It imitates the voices of the assistant.")
+        ),
         SpeechProvider::OpenAi => tr("With OpenAI the text of each answer goes to OpenAI.").to_string(),
     };
     widgets::group(tr("Read aloud"), rows, Some(footer))
 }
 
 /// How `provider` speaks (issue #782): for Pocket TTS "Speed" and "Sentence pause", for
-/// OpenAI "Speaking style". Each row ends with its own "Reset", like the zoom of the suite, which can
+/// OpenAI "Speaking style", for Qwen3-TTS nothing. Each row ends with its own "Reset", like the zoom of the suite, which can
 /// be pressed while its value is chosen.
 fn delivery_rows<'a>(state: &'a State, data: &'a Data, provider: SpeechProvider) -> Vec<Element<'a, Message>> {
     let voice = &data.settings.voice;
@@ -664,6 +678,8 @@ fn delivery_rows<'a>(state: &'a State, data: &'a Data, provider: SpeechProvider)
             let detail = Some(tr("How OpenAI speaks: tone, pace, mood").to_string());
             vec![setting_row(None, tr("Speaking style"), detail, control)]
         }
+        // Qwen3-TTS speaks at its own pace (issue #764): nothing to set.
+        SpeechProvider::Qwen => Vec::new(),
     }
 }
 
@@ -909,6 +925,13 @@ pub fn missing_devices(status: &VoiceStatus) -> Vec<(&'static str, &'static str)
     if lacks(VoicePart::Speech, VoiceMissing::Player) {
         rows.push((tr("No sound output found"), tr("Connect speakers or headphones to hear the answers.")));
     }
+    // Qwen3-TTS reads on an NVIDIA card (issue #764).
+    if lacks(VoicePart::Speech, VoiceMissing::Gpu) {
+        rows.push((
+            tr("No NVIDIA graphics card found"),
+            tr("Qwen3-TTS needs one. Choose Pocket TTS under Read aloud."),
+        ));
+    }
     rows
 }
 
@@ -931,7 +954,7 @@ pub fn current_provider(data: &Data) -> SpeechProvider {
     data.speech
         .as_ref()
         .map(|speech| speech.current)
-        .or(data.settings.voice.speech_provider)
+        .or(data.settings.voice.speech_provider_here())
         .unwrap_or(SpeechProvider::Pocket)
 }
 
@@ -939,6 +962,7 @@ pub fn current_provider(data: &Data) -> SpeechProvider {
 pub fn provider_name(provider: SpeechProvider) -> &'static str {
     match provider {
         SpeechProvider::Pocket => tr("Local: Pocket TTS"),
+        SpeechProvider::Qwen => tr("Local: Qwen3-TTS (graphics card)"),
         SpeechProvider::OpenAi => tr("Online: OpenAI"),
     }
 }
@@ -974,12 +998,15 @@ pub fn language_name(code: &str) -> String {
 /// The voices of `provider` with whether each is recommended; without a status those of the
 /// settings' lists.
 fn voices_of(data: &Data, provider: SpeechProvider) -> Vec<(String, bool)> {
-    use torro_core::settings::{OPENAI_RECOMMENDED, OPENAI_VOICES, POCKET_RECOMMENDED, POCKET_VOICES};
+    use torro_core::settings::{
+        OPENAI_RECOMMENDED, OPENAI_VOICES, POCKET_RECOMMENDED, POCKET_VOICES, QWEN_RECOMMENDED, QWEN_VOICES,
+    };
     if let Some(option) = data.speech.as_ref().and_then(|speech| speech.option(provider)) {
         return option.voices.iter().map(|voice| (voice.id.clone(), voice.recommended)).collect();
     }
     match provider {
         SpeechProvider::Pocket => POCKET_VOICES.iter().map(|id| (id.to_string(), *id == POCKET_RECOMMENDED)).collect(),
+        SpeechProvider::Qwen => QWEN_VOICES.iter().map(|id| (id.to_string(), *id == QWEN_RECOMMENDED)).collect(),
         SpeechProvider::OpenAi => {
             OPENAI_VOICES.iter().map(|id| (id.to_string(), OPENAI_RECOMMENDED.contains(id))).collect()
         }
@@ -991,6 +1018,7 @@ fn chosen_voice(data: &Data, provider: SpeechProvider) -> String {
     let voice = &data.settings.voice;
     match provider {
         SpeechProvider::Pocket => voice.pocket_voice_or_default().to_string(),
+        SpeechProvider::Qwen => voice.qwen_voice_or_default().to_string(),
         SpeechProvider::OpenAi => voice.openai_voice_or_default().to_string(),
     }
 }
@@ -1008,10 +1036,10 @@ pub fn missing_text(missing: SpeechMissing) -> &'static str {
         SpeechMissing::Player => tr("No sound output was found."),
         SpeechMissing::Account => tr("Connect an OpenAI account in Settings › AI."),
         SpeechMissing::App => tr("The assistant app is not installed."),
+        // Qwen3-TTS (#764): its libraries are there, but no NVIDIA card answers.
+        SpeechMissing::Gpu => tr("No NVIDIA graphics card was found."),
         // Not reported since #762; a core of an earlier version may still send them.
-        SpeechMissing::Gpu | SpeechMissing::Program | SpeechMissing::Voice => {
-            tr("Update Torro Workplace to read aloud on this computer.")
-        }
+        SpeechMissing::Program | SpeechMissing::Voice => tr("Update Torro Workplace to read aloud on this computer."),
     }
 }
 
@@ -1264,6 +1292,12 @@ mod tests {
         }
         let labels: Vec<&str> = missing_devices(&quiet).into_iter().map(|(label, _)| label).collect();
         assert_eq!(labels, [tr("No microphone found"), tr("No sound output found")]);
+        // Issue #764: Qwen3-TTS without an NVIDIA card.
+        for program in &mut quiet.programs {
+            program.missing = (program.part == VoicePart::Speech).then_some(VoiceMissing::Gpu);
+        }
+        let labels: Vec<&str> = missing_devices(&quiet).into_iter().map(|(label, _)| label).collect();
+        assert_eq!(labels, [tr("No NVIDIA graphics card found")]);
     }
 
     /// Issues #749, #762: "Speech recognition" is a dropdown of Whisper (recommended) and Parakeet; a
@@ -1640,5 +1674,45 @@ mod tests {
         );
         assert_eq!(provider_detail(None, SpeechProvider::Pocket).as_deref(), Some(tr("Checking this computer…")));
         assert_eq!(missing_text(SpeechMissing::Account), tr("Connect an OpenAI account in Settings › AI."));
+        assert_eq!(missing_text(SpeechMissing::Gpu), tr("No NVIDIA graphics card was found."));
+    }
+
+    /// Issue #764: Qwen3-TTS is offered only where this computer's status lists it, with its own voices and
+    /// the key `qwen_voice`.
+    #[test]
+    fn qwen_is_offered_where_it_is_listed() {
+        let option = |provider| torro_ipc::SpeechOption {
+            provider,
+            missing: None,
+            voices: Vec::new(),
+            model: None,
+            setup: None,
+        };
+        let status = |providers: Vec<SpeechProvider>| SpeechStatus {
+            gpu: Some("NVIDIA GeForce RTX 4090, 24 GB".into()),
+            fast_enough: true,
+            recommended: SpeechProvider::Pocket,
+            current: SpeechProvider::Qwen,
+            providers: providers.into_iter().map(option).collect(),
+        };
+        let data = |speech| Data { speech, ..Data::default() };
+        let with = data(Some(status(vec![SpeechProvider::Pocket, SpeechProvider::Qwen, SpeechProvider::OpenAi])));
+        let without = data(Some(status(vec![SpeechProvider::Pocket, SpeechProvider::OpenAi])));
+        assert_eq!(speech_items(Choice::Provider, &with).len(), 3);
+        assert_eq!(speech_items(Choice::Provider, &without).len(), 2);
+        assert_eq!(
+            speech_items(Choice::Provider, &data(None)).len(),
+            2 + usize::from(torro_core::settings::QWEN_BUILT)
+        );
+        // Without a status the voices of the settings, "Warm woman" recommended.
+        let listed = [("warm_woman".to_string(), true), ("calm_man".to_string(), false)];
+        assert_eq!(voices_of(&data(None), SpeechProvider::Qwen), listed);
+        assert_eq!(chosen_voice(&with, SpeechProvider::Qwen), "warm_woman");
+        assert_eq!(provider_name(SpeechProvider::Qwen), tr("Local: Qwen3-TTS (graphics card)"));
+        let mut state = State::default();
+        assert_eq!(
+            sent(update(&mut state, Message::SpeechVoice(SpeechProvider::Qwen, "calm_man".into()), &with)),
+            (SettingKey::QwenVoice, serde_json::json!("calm_man"))
+        );
     }
 }
