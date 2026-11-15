@@ -299,8 +299,12 @@ fn fill_data(data: &mut cpal::Data, channels: usize, queue: &mut Queue) {
         SampleFormat::U8 => fill_typed::<u8>(data, channels, queue),
         SampleFormat::U16 => fill_typed::<u16>(data, channels, queue),
         SampleFormat::U32 => fill_typed::<u32>(data, channels, queue),
-        // A format this app does not write: the device keeps its silence, and the sound counts as played.
-        _ => queue.drained = u8::MAX,
+        // A format this app does not write: the device keeps its silence, and the sound counts as played –
+        // its samples are dropped, so the queue ends and nothing waits for it (review of #762).
+        _ => {
+            queue.samples.clear();
+            queue.drained = u8::MAX;
+        }
     }
 }
 

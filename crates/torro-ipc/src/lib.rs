@@ -5238,7 +5238,7 @@ pub struct VoiceModel {
     pub error: Option<String>,
 }
 
-/// Where a model stands ([`VoiceModel::state`]). Clients must accept states they do not know.
+/// Where a model stands ([`VoiceModel::state`]). A new state would be a new version of the API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum VoiceModelState {
