@@ -347,14 +347,16 @@ fn head_line<'a, M: 'a>(head: &Head) -> Element<'a, M> {
     line.into()
 }
 
-/// The tag `untrusted`: the word in `CAPTION` and `text_2` in a hairline frame, so it reads as a mark of its own
-/// next to the source. No colour: the word carries it (torro-design, section 1 – status never by colour alone,
-/// and the attention colour is too faint for small text in light mode).
+/// The tag `untrusted`: a quiet pill (fully round, hairline in `line_strong`) with the word in `CAPTION` and
+/// `text_3`, as in the prototype – a note beside the source, not a warning that outshouts the card. No colour:
+/// the word carries it (torro-design, section 1 – status never by colour alone, and the attention colour is too
+/// faint for small text in light mode).
 fn untrusted_tag<'a, M: 'a>() -> Element<'a, M> {
-    container(typo::text(typo::caption(), tr("untrusted")).style(theme::text_2).wrapping(Wrapping::None))
+    let high = typo::line_height(typo::caption());
+    container(typo::text(typo::caption(), tr("untrusted")).style(theme::text_3).wrapping(Wrapping::None))
         .padding(Padding::new(0.0).left(space::s()).right(space::s()))
-        .style(|t: &Theme| container::Style {
-            border: border::rounded(radius::xs()).color(palette(t).line_strong).width(HAIRLINE),
+        .style(move |t: &Theme| container::Style {
+            border: border::rounded(high / 2.0 + HAIRLINE).color(palette(t).line_strong).width(HAIRLINE),
             ..container::Style::default()
         })
         .into()
