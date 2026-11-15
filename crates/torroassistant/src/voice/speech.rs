@@ -228,19 +228,60 @@ const ABBREVIATIONS: [&str; 33] = [
     "approx",
 ];
 
-/// Whether `sentence` ends with a point that ends no sentence: after a single letter ("z. B."), a day or a
-/// place in a list ("3.", "12."), a shortening with a point inside ("z.B.", "e.g.") or one of
-/// [`ABBREVIATIONS`]. "Ja." and a year end a sentence.
-fn goes_on(sentence: &str) -> bool {
+/// Months, lower case, after which "3." is a day and not the end of a sentence (issue #782).
+const MONTHS: [&str; 24] = [
+    "januar",
+    "februar",
+    "märz",
+    "april",
+    "mai",
+    "juni",
+    "juli",
+    "august",
+    "september",
+    "oktober",
+    "november",
+    "dezember",
+    "january",
+    "february",
+    "march",
+    "may",
+    "june",
+    "july",
+    "october",
+    "december",
+    "jan",
+    "feb",
+    "apr",
+    "okt",
+];
+
+/// Whether `sentence` ends with a point that ends no sentence, `next` being the sentence after it: a
+/// shortening with a point inside ("z.B.", "e.g.") or one of [`ABBREVIATIONS`] always; a single letter
+/// or a number of one or two digits only when what follows shows it goes on – a small letter ("u. a."),
+/// another single letter ("z. B.") or a month ("3. Mai"); the second letter of such a shortening
+/// (`continued`: the sentence before was kept open) always. So "Plan A. Dann" and "Es sind 12. Danach"
+/// end a sentence, and so do "Ja." and a year.
+fn goes_on(sentence: &str, next: Option<&str>, continued: bool) -> bool {
     let Some(word) = sentence.trim_end().strip_suffix('.').and_then(|head| head.split_whitespace().last()) else {
         return false;
     };
     let word = word.trim_start_matches(|c: char| !c.is_alphanumeric());
+    if (word.contains('.') && !word.ends_with('.')) || ABBREVIATIONS.contains(&word.to_lowercase().as_str()) {
+        return true;
+    }
     let digits = !word.is_empty() && word.chars().all(|c| c.is_ascii_digit());
-    (word.chars().count() == 1 && word.chars().all(char::is_alphabetic))
-        || (digits && word.len() <= 2)
-        || (word.contains('.') && !word.ends_with('.'))
-        || ABBREVIATIONS.contains(&word.to_lowercase().as_str())
+    let letter = word.chars().count() == 1 && word.chars().all(char::is_alphabetic);
+    if letter && continued {
+        return true;
+    }
+    let short = letter || (digits && word.len() <= 2);
+    let Some(following) = next.and_then(|next| next.split_whitespace().next()) else { return false };
+    let bare = following.trim_end_matches(|c: char| !c.is_alphanumeric());
+    short
+        && (following.chars().next().is_some_and(|c| c.is_lowercase() || c.is_ascii_digit())
+            || (bare.chars().count() == 1 && following.ends_with('.'))
+            || MONTHS.contains(&bare.to_lowercase().as_str()))
 }
 
 /// `text` with each sentence a piece of its own (issue #782: a pause falls after each), a sentence
@@ -250,12 +291,13 @@ fn goes_on(sentence: &str) -> bool {
 pub fn sentence_pieces(text: &str, most: usize) -> Vec<(String, bool)> {
     let mut whole: Vec<String> = Vec::new();
     let mut open = false;
-    for sentence in sentences(text) {
+    let split = sentences(text);
+    for (number, sentence) in split.iter().enumerate() {
         match whole.last_mut() {
-            Some(last) if open => last.push_str(&sentence),
+            Some(last) if open => last.push_str(sentence),
             _ => whole.push(sentence.clone()),
         }
-        open = goes_on(&sentence);
+        open = goes_on(sentence, split.get(number + 1).map(String::as_str), open);
     }
     whole
         .iter()
@@ -790,6 +832,13 @@ mod tests {
             "no sentence ends after a day or a single letter"
         );
         assert_eq!(texts("Ja. Das war 2024. Gut.", 500), ["Ja.", "Das war 2024.", "Gut."]);
+        // Review of PR #806: a short word or number at the end of a sentence ends it when a sentence follows.
+        assert_eq!(
+            texts("Es sind 12. Danach kommt Plan A. Dann Ende.", 500),
+            ["Es sind 12.", "Danach kommt Plan A.", "Dann Ende."]
+        );
+        assert_eq!(texts("Er kam u. a. am 12. Oktober. Ja.", 500), ["Er kam u. a. am 12. Oktober.", "Ja."]);
+        assert_eq!(texts("Wir sind 3. Und fertig.", 500), ["Wir sind 3.", "Und fertig."]);
     }
 
     /// Issue #782 (review): shortenings keep a sentence open, also with a point inside; a sentence
