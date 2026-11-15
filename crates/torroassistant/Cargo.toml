@@ -16,6 +16,10 @@ workspace = true
 [package.metadata.dist.dependencies.homebrew]
 "mahype/torro/torroworkplace" = { stage = ["run"] }
 
+# The built-in sound (cpal, issue #762) needs ALSA's headers to build on Linux; the release runner installs them.
+[package.metadata.dist.dependencies.apt]
+libasound2-dev = "*"
+
 [dependencies]
 torro-core.workspace = true
 torro-gui.workspace = true
