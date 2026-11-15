@@ -1283,7 +1283,9 @@ impl Ui {
     fn reload_app_catalog(&self) -> Task<Message> {
         let every = if self.section == Section::Overview { CATALOG_ON_OVERVIEW } else { CATALOG_EVERY };
         let due = apps::job_runs(&self.data)
-            || matches!(self.data.app_catalog.catalog, apps::Catalog::Failed(_))
+            // A failed catalog is asked for again with every tick only where it is shown, so an offline
+            // core is not asked every three seconds on every page.
+            || (self.section == Section::Overview && matches!(self.data.app_catalog.catalog, apps::Catalog::Failed(_)))
             || self.catalog_at.is_none_or(|at| at.elapsed() >= every);
         if self.launch.demo || !due {
             return Task::none();
@@ -4249,7 +4251,7 @@ mod tests {
         assert_eq!(ui(Section::Overview).perform(sync()).units(), 1);
         assert_eq!(ui(Section::Overview).update(Message::Tick).units(), 3, "the reload, the app catalog and the zoom");
         // Once the catalog came, the next tick waits: on Overview a few seconds, elsewhere a minute (issue
-        // #411, #803); a failed load is asked for again at once.
+        // #411, #803).
         for section in [Section::Overview, Section::Accounts] {
             let mut later = ui(section);
             let _ = later.update(Message::AppCatalog(Box::new(apps::Loaded {
@@ -4261,12 +4263,16 @@ mod tests {
             let expected = if section == Section::Overview { 3 } else { 2 };
             assert_eq!(later.update(Message::Tick).units(), expected, "{section:?}: after a few seconds");
         }
-        let mut failed = ui(Section::Accounts);
-        let _ = failed.update(Message::AppCatalog(Box::new(apps::Loaded {
-            catalog: apps::Catalog::Failed("no answer".into()),
-            job: None,
-        })));
-        assert_eq!(failed.update(Message::Tick).units(), 3, "a failed catalog is asked for again");
+        // A failed load is asked for again with the next tick on Overview, where it shows, and
+        // elsewhere only after a minute, so an offline core is not asked every few seconds.
+        for (section, expected) in [(Section::Overview, 3), (Section::Accounts, 2)] {
+            let mut failed = ui(section);
+            let _ = failed.update(Message::AppCatalog(Box::new(apps::Loaded {
+                catalog: apps::Catalog::Failed("no answer".into()),
+                job: None,
+            })));
+            assert_eq!(failed.update(Message::Tick).units(), expected, "{section:?}: a failed catalog");
+        }
     }
 
     #[test]
