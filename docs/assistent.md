@@ -869,6 +869,15 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
 - **Wer liest:** Ohne eigene Wahl Pocket TTS. OpenAI nur nach ausdrücklicher Wahl, weil der Text jeder Antwort
   dann an OpenAI geht; diese Wahl trifft nur ein Mensch (`settings.set_setting speech_provider "openai"`
   bekommt von jedem Client `forbidden`, [api.md](api.md), Punkt 6).
+- **Wie die Stimme spricht (Issue #782):** Unter „Voice“ stehen die Regler des gewählten Anbieters, „Reset“
+  setzt sie auf den Standard zurück; sie gelten im Chatfenster, nach „Hey Torro“ und beim Vorhören. Pocket TTS:
+  „Speed“ von 70 bis 150 % in Zehnern (`pocket_speed`) und „Pause between sentences“, eine zusätzliche Stille
+  nach jedem Satz bis 1 s in Viertelsekunden (`pocket_pause`). sherpa-onnx liest bei Pocket kein Tempo, und seine
+  Pausen-Einstellung wirkt beim stückweisen Vorlesen nicht: Der Helfer streckt den Ton deshalb selbst, ohne die
+  Tonhöhe zu ändern (WSOLA), und rechnet mit Pause jeden Satz einzeln. OpenAI: „Speaking style“ in eigenen
+  Worten (`openai_style`, bis 500 Zeichen, geht als `instructions` an OpenAI); ein Tempo nimmt
+  `gpt-4o-mini-tts` nicht an, „langsam“ im Sprechstil wirkt dort. Agenten dürfen alle drei setzen; der Stil geht
+  nur an OpenAI, wenn ein Mensch OpenAI gewählt hat.
 - **Qwen3-TTS und Piper** sind mit #762 entfallen: Qwen lief nur mit Python und Grafikkarte, Piper bringt eine
   GPL-Lizenz mit. Wer eines davon gewählt hatte, liest danach mit Pocket TTS; `speech_provider` `"qwen"` oder
   `"piper"` und die alten Schlüssel `qwen_voice`, `stt_model`, `voice` beantwortet der Dienst mit `unsupported`.
@@ -923,7 +932,7 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
 | Gesprochenen und dargestellten Teil lesen (Issue #774) | Chatfenster (Einleitung über der Antwort) | `assistant.get_conversation` (`spoken`, `text`) · Read | `assistant_get_conversation` |
 | Antwort Satz für Satz vorlesen (Issue #747) | Chatfenster (Lautsprecher), Gespräch | `assistant.speak_answer` · Write | `assistant_speak_answer` |
 | Wer vorlesen kann | Voice › Read aloud | `settings.speech_status` · Read | `settings_speech_status` |
-| An/aus, Anbieter, Stimmen | Voice › Read aloud, Lautsprecher im Chatfenster | `settings.set_setting` `read_aloud`, `speech_provider`, `pocket_voice`, `openai_voice` · Admin | `settings_set_setting` (OpenAI als Anbieter nur Menschen) |
+| An/aus, Anbieter, Stimmen, wie die Stimme spricht | Voice › Read aloud, Lautsprecher im Chatfenster | `settings.set_setting` `read_aloud`, `speech_provider`, `pocket_voice`, `openai_voice`, `pocket_speed`, `pocket_pause`, `openai_style` · Admin | `settings_set_setting` (OpenAI als Anbieter nur Menschen) |
 
 ### Gespräch (Issue #747)
 
