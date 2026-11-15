@@ -92,7 +92,7 @@ Bausteine sind gemeinsam.
 | **Bild** | Vorschaubild, Kalenderblatt, Kartenbild, Abspielzeichen | höchstens eines; 16:9 für Video, sonst 3:2; fehlt es, steht das Symbol der Art |
 | **Titel** | eine Zeile, abgeschnitten | im Chat ohne Titel die Domain |
 | **Zusatzzeilen** | höchstens drei Zeilen mit Symbol (Ort, Zeit, Absender, Seiten …) | die wichtigsten zuerst, der Rest in „Open“ |
-| **Knöpfe** | ein Haupt-Knopf („Open …“) und höchstens drei weitere | im Chat mit Leuten nur „Open“ und „Open in <App>“ |
+| **Knöpfe** | ein Haupt-Knopf („Open …“) und höchstens drei weitere | im Chat mit Leuten nur Knöpfe, die nichts schreiben („Open“, „Play“, „Open in <App>“, „Save as…“) |
 | **Kurzform** | Symbol, Titel, eine Zusatzangabe in 40 Pixel Höhe | für Mini-Kachel, Schnellfenster und Listen |
 
 Abweichungen sind nur dort erlaubt, wo eine Art es braucht (Kalenderblatt statt Bild beim Termin, Player-Fenster
@@ -178,10 +178,10 @@ und kommt mit dem Issue der jeweiligen Karte in den Befehlskatalog (`torro-ipc`,
 | Link-Karten einer Nachricht lesen | Chatfenster | Feld `cards` in `chat.get_messages` (vorhanden) | Read | `chat_get_messages` (vorhanden) |
 | Bild einer Karte holen | Chatfenster | `chat.get_preview { card: true }` (vorhanden) | Read | `chat_get_preview` (vorhanden) |
 | Link-Karte einmal zeigen („Show once“) | Chatfenster | `chat.show_card` (vorhanden) | Write | `Never`: nur Menschen, [api.md](api.md) Punkt 14 |
-| Stufe und Anbieter ändern | Settings › Privacy | `settings.set_setting privacy_*` (vorhanden) | Admin, nur App-Schlüssel | `Never` für Schreiben, Lesen über `settings_get_settings` |
+| Stufe und Anbieter ändern | Settings › Privacy | `settings.set_setting privacy_*` (vorhanden) | Admin, nur App-Schlüssel | im Katalog `Mcp::Tool`; Werte `privacy_*` bekommen von jedem Client `forbidden` (`kept_for_people`, [api.md](api.md) Punkt 14), Lesen über `settings_get_settings` |
 | Webseiten-Karte im Assistenten auflösen | Chatfenster des Assistenten | Vorschlag: `assistant.get_cards` mit `CardRef::Link` | Read | vorhandenes `assistant_get_cards` |
 | Gefundene Mail als Karte | Chatfenster des Assistenten | Vorschlag: `assistant.get_cards` mit `CardRef::Mail` | Read | vorhandenes `assistant_get_cards` |
-| Landkarte als Karte | beide Chatfenster | Vorschlag: `CardRef::Map`, Bild über `calendar.map_preview` (vorhanden) | Read | Bild nicht für Assistenten (`calendar_map_preview`, [termin-editor.md](termin-editor.md)) |
+| Landkarte als Karte | beide Chatfenster | Vorschlag: `CardRef::Map`, Bild über `calendar.map_preview` (vorhanden); der Kern holt es beim Auflösen der Karte selbst, das Modell sieht es nie | Read | Bild nicht für Assistenten (`calendar_map_preview`, [termin-editor.md](termin-editor.md)) |
 | Karte eines MCP-Servers | Chatfenster des Assistenten | Vorschlag: `CardRef::External` aus dem Werkzeugergebnis | Read | über das Werkzeug des Servers; kein eigenes Tool |
 | Karte zusammenführen (Kurzform) | alle Fenster | Teil derselben Antworten | Read | wie oben |
 

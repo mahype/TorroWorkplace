@@ -210,7 +210,7 @@ function draw(c, chat){
   const sheet = c.event ? `<div class="sheet"><div class="mo">Oct</div><div class="day">16</div><div class="wd">Thu</div></div>` : '';
   const lines = c.lines.map(l => `<div class="fact"><i data-lucide="${l[0]==='text'?'align-left':l[0]}"></i>${l[1]}</div>`).join('');
   const btns = (chat ? c.open.slice(0,2) : c.open).map((b,i) => `<button class="btn ${i?'':'lead'}">${b}</button>`).join('');
-  return `<article class="card"><div class="src"><i data-lucide="${c.icon}"></i>${c.src}${c.tag?`<span class="tag">${c.tag}</span>`:''}</div>
+  return `<article class="card"><div class="src"><i data-lucide="${c.icon}"></i>${c.src}${c.tag?`<span class="tag">${c.tag}</span>`:(chat&&(c.mail||c.event)?'<span class="tag" style="color:var(--text3)">shared card</span>':'')}</div>
     ${pic}<div class="head">${sheet}<div class="t"><div class="headline" style="font-size:14px;line-height:20px">${c.title}</div><div class="facts">${lines}</div></div></div>
     <div class="actions">${btns}</div></article>`;
 }
