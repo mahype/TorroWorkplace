@@ -1088,7 +1088,7 @@ pub fn voice_state(enabled: bool, status: Option<&VoiceStatus>) -> (Status, Stri
     }
     match (status.listener, &status.problem) {
         (VoiceState::Listening, _) => (Status::Ok, tr("Listening for “Hey Torro”").to_string()),
-        (VoiceState::Recording, _) => (Status::Ok, tr("Recording …").to_string()),
+        (VoiceState::Recording, _) => (Status::Ok, tr("Recording…").to_string()),
         // The settings show the listener's own state; what it does while it answers is for the chat (issue #830).
         (
             VoiceState::Answering
@@ -1097,7 +1097,7 @@ pub fn voice_state(enabled: bool, status: Option<&VoiceStatus>) -> (Status, Stri
             | VoiceState::UsingTool
             | VoiceState::Speaking,
             _,
-        ) => (Status::Ok, tr("Answering …").to_string()),
+        ) => (Status::Ok, tr("Answering…").to_string()),
         (VoiceState::Conversing, _) => (Status::Ok, tr("In a conversation").to_string()),
         (VoiceState::Off, Some(_)) => {
             (Status::Error, tr("The listener stopped. Check the models under Models.").to_string())
@@ -1295,7 +1295,7 @@ mod tests {
     fn voice_states_read_as_words() {
         let listening = status(VoiceState::Listening, None);
         assert_eq!(voice_state(true, Some(&listening)), (Status::Ok, tr("Listening for “Hey Torro”").to_string()));
-        assert_eq!(voice_state(true, Some(&status(VoiceState::Recording, None))).1, tr("Recording …"));
+        assert_eq!(voice_state(true, Some(&status(VoiceState::Recording, None))).1, tr("Recording…"));
         // Issue #747: a conversation by voice, also with "Hey Torro" off.
         for enabled in [true, false] {
             assert_eq!(

@@ -15,7 +15,7 @@
 //! what the voice chat does while it answers the daemon looks at twice a second (issue #830).
 //!
 //! While voice is on (task C.9, [`voice_section`]) the menu says what the voice chat does ("Listening
-//! for “Hey Torro”", "Recording …", "Looking at the calendar …" (issue #830), or "Not listening" when it
+//! for “Hey Torro”", "Recording…", "Looking at the calendar…" (issue #830), or "Not listening" when it
 //! stopped) and offers "Mute
 //! microphone", which switches voice off – also when the listener crashed (task C.11), so the way
 //! out never depends on it. Switching it on is in the control centre, where the microphone is
@@ -772,12 +772,12 @@ mod tests {
                 })))
             );
         }
-        assert_eq!(voice_line(VoiceState::Recording, None), tr("Recording …"));
+        assert_eq!(voice_line(VoiceState::Recording, None), tr("Recording…"));
         assert_eq!(voice_line(VoiceState::Off, None), "");
         // Issue #830: the tool the answer uses, by its kind, as in the window.
         let looking =
             Snapshot { voice: VoiceState::UsingTool, voice_tool: Some("calendar.list_events".into()), ..snapshot() };
-        assert_eq!(labels(&build(&looking))[0], format!("({})", tr("Looking at the calendar …")));
+        assert_eq!(labels(&build(&looking))[0], format!("({})", tr("Looking at the calendar…")));
     }
 
     /// Task C.11: voice on but the listener gone (crashed, or it could not start) still offers
