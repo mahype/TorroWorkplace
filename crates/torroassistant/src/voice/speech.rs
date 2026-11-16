@@ -798,6 +798,10 @@ impl<W: FnMut(Output)> Helper<W> {
 
     /// `text` as it is read, within what the job may still read ([`MOST_READ`] for all its texts).
     fn take_text(&mut self, text: &str) -> String {
+        // All of it is read: nothing more, not even the "…" of a text cut at nothing.
+        if self.left == 0 {
+            return String::new();
+        }
         let text = speakable_up_to(text, self.left);
         // The space that joins it to the next text counts too.
         self.left = self.left.saturating_sub(text.chars().count() + 1);
@@ -1483,6 +1487,10 @@ mod tests {
         let read: usize = pieces.iter().map(|piece| piece.chars().count()).sum();
         // Cut without a sentence end, the text ends in "…".
         assert_eq!(read, MOST_READ - "Eins. Zwei. ".len() + 1, "the job's budget, not a new one");
+        let count = said.borrow().len();
+        helper.handle(Event::Input(Input::Add("Drei.".into())), &sender);
+        assert_eq!(said.borrow().len(), count + 1, "still an answer to the add");
+        assert_eq!(said.borrow().last(), Some(&Output::Pieces(Vec::new())), "but nothing more to read");
         helper.handle(Event::Input(Input::End), &sender);
         assert_eq!(said.borrow().last(), Some(&Output::Done), "no sound came: done at once");
     }
