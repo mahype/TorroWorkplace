@@ -418,6 +418,8 @@ impl<Message> canvas::Program<Message> for TileMap<'_, Message> {
             canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
                 let at = cursor.position_in(bounds)?;
                 let steps = match delta {
+                    // Sideways scrolling (a tilting wheel) says nothing about zoom.
+                    ScrollDelta::Lines { y, .. } if *y == 0.0 => 0,
                     ScrollDelta::Lines { y, .. } => y.signum() as i32,
                     ScrollDelta::Pixels { y, .. } => {
                         state.wheel += y;
