@@ -618,26 +618,40 @@ where
 
     /// The conversation "Voice" if there is one (or `conversation` when given), and the engine and
     /// model used last there, else in any conversation. Of several "Voice" the newest counts; after a
-    /// pause it is left for a new one ([`CoreAssistant::rested`]).
-    fn target(&mut self, conversation: Option<&str>) -> Result<(Option<String>, String, Option<String>), VoiceError> {
+    /// pause it is left for a new one ([`CoreAssistant::rested`]), and the last value is the renaming of
+    /// the old one, to send once the new one stands.
+    #[allow(clippy::type_complexity)]
+    fn target(
+        &mut self,
+        conversation: Option<&str>,
+    ) -> Result<(Option<String>, String, Option<String>, Option<Request>), VoiceError> {
         let conversations = match self.request(Request::ListConversations)? {
             Response::Conversations { conversations } => conversations,
             other => return Err(unexpected(&other)),
         };
+        let mut retire = None;
         let found = match conversation {
             Some(id) => conversations.iter().find(|summary| summary.id == id),
-            None => conversations
-                .iter()
-                .filter(|summary| summary.title == voice_title())
-                .max_by_key(|summary| summary.updated)
-                .filter(|summary| !self.rested(summary)),
+            None => {
+                let voice = conversations
+                    .iter()
+                    .filter(|summary| summary.title == voice_title())
+                    .max_by_key(|summary| summary.updated);
+                match voice.filter(|voice| self.rested(voice)) {
+                    Some(old) => {
+                        retire = Some(retired(old));
+                        None
+                    }
+                    None => voice,
+                }
+            }
         };
         let id = found.map(|summary| summary.id.clone());
         if let Some(summary) = found.filter(|_| conversation.is_some()) {
-            return Ok((id, summary.engine.clone(), summary.model.clone()));
+            return Ok((id, summary.engine.clone(), summary.model.clone(), retire));
         }
         if let Some((engine, model)) = last_engine(&conversations) {
-            return Ok((id, engine, model));
+            return Ok((id, engine, model, retire));
         }
         let engines = match self.request(Request::ListEngines)? {
             Response::Engines { engines } => engines,
@@ -646,7 +660,7 @@ where
         let engine = first_engine(&engines).ok_or_else(|| {
             VoiceError::Core(Refusal::new("not-found", "no engine: add an AI account in Torro Workplace"))
         })?;
-        Ok((id, engine, None))
+        Ok((id, engine, None, retire))
     }
 }
 
@@ -656,9 +670,7 @@ where
     O: FnMut(&str),
 {
     /// Whether "Hey Torro" leaves the conversation "Voice" `voice` for a new one (issue #831): after the
-    /// pause of [`Voice::new_after_or_default`] without an entry, and no answer running. The old one keeps
-    /// its date and time in its title ("Voice · 2026-11-15 09:12"), so only the new one is "Voice"; should
-    /// renaming fail, a new one starts anyway, and the newest "Voice" counts next time.
+    /// pause of [`Voice::new_after_or_default`] without an entry, and no answer running.
     fn rested(&mut self, voice: &ConversationSummary) -> bool {
         let minutes = match self.settings() {
             Ok(settings) => settings.new_after_or_default(),
@@ -667,16 +679,17 @@ where
                 torro_core::settings::VOICE_NEW_AFTER_DEFAULT
             }
         };
-        if minutes == 0 || voice.running || Utc::now() - voice.updated < TimeDelta::minutes(i64::from(minutes)) {
-            return false;
-        }
-        let date = voice.created.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string();
-        let title = trf("{title} · {date}", &[("title", &voice_title()), ("date", &date)]);
-        if let Err(err) = self.request(Request::RenameConversation { id: voice.id.clone(), title }) {
-            eprintln!("torroassistant: cannot keep the old conversation by its date: {err}");
-        }
-        true
+        minutes > 0 && !voice.running && Utc::now() - voice.updated >= TimeDelta::minutes(i64::from(minutes))
     }
+}
+
+/// The renaming of the old "Voice" `old` (issue #831): it keeps its date and time in its title ("Voice ·
+/// 2026-11-15 09:12"), so only the new one is "Voice". Sent only once the new one stands, so a failed send
+/// leaves the old one as it was.
+fn retired(old: &ConversationSummary) -> Request {
+    let date = old.created.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string();
+    let title = trf("{title} · {date}", &[("title", &voice_title()), ("date", &date)]);
+    Request::RenameConversation { id: old.id.clone(), title }
 }
 
 /// The core answered with something else than asked, named by its kind only: a conversation's
@@ -739,11 +752,11 @@ where
     }
 
     fn send(&mut self, text: &str, to: Option<Option<String>>) -> Result<Sent, VoiceError> {
-        let (conversation, engine, model) = match &to {
+        let (conversation, engine, model, retire) = match &to {
             // A new conversation for a conversation by voice in a new chat: the engine used last.
             Some(None) => {
-                let (_, engine, model) = self.target(Some(""))?;
-                (None, engine, model)
+                let (_, engine, model, _) = self.target(Some(""))?;
+                (None, engine, model, None)
             }
             Some(Some(id)) => self.target(Some(id))?,
             None => self.target(None)?,
@@ -771,6 +784,13 @@ where
             Response::Conversation { conversation, .. } => (conversation.id, conversation.last),
             other => return Err(unexpected(&other)),
         };
+        // The old "Voice" keeps its date only now the new one stands (issue #831); should that fail, the newest
+        // "Voice" still counts next time.
+        if let Some(rename) = retire
+            && let Err(err) = self.request(rename)
+        {
+            eprintln!("torroassistant: cannot keep the old conversation by its date: {err}");
+        }
         // Only "Voice" gets its name; a new chat of "Talk" is named by its first sentence.
         if new && to.is_none() {
             let rename = Request::RenameConversation { id: id.clone(), title: voice_title().to_string() };
@@ -1467,7 +1487,7 @@ mod tests {
     }
 
     /// Issue #831: after the pause "Hey Torro" leaves "Voice" with its date in the title and starts a new
-    /// "Voice"; the old one stays.
+    /// "Voice"; the old one stays. A send that fails renames nothing.
     #[test]
     fn after_a_pause_the_wake_word_starts_a_new_voice_conversation() {
         let (core, mut assistant) = with_voices(&[("v1", 45, false)], None);
@@ -1489,6 +1509,24 @@ mod tests {
         assert!(core.conversations.iter().any(|summary| summary.id == "v1"), "the old one stays");
     }
 
+    /// Issue #831: a send that fails after the pause leaves the old "Voice" as it was.
+    #[test]
+    fn a_failed_send_keeps_the_old_voice_as_it_was() {
+        let (core, _) = with_voices(&[("v1", 45, false)], None);
+        let ask = Rc::clone(&core);
+        let mut assistant = CoreAssistant::new(
+            move |request| match request {
+                Request::SendMessage { .. } => Err(Refusal::new("offline", "the core is away")),
+                other => ask.borrow_mut().answer(other),
+            },
+            |_: &str| {},
+            Duration::ZERO,
+            Duration::ZERO,
+        );
+        assert!(assistant.send("What is on today?", None).is_err());
+        assert!(renamed(&core.borrow().sent).is_empty(), "{:?}", core.borrow().sent);
+    }
+
     /// Issue #831: within the pause, with the pause off (0), or while an answer runs, "Voice" goes on; of two
     /// "Voice" the newest counts.
     #[test]
@@ -1501,9 +1539,10 @@ mod tests {
             (vec![("v1", 20, false)], Some(15), ""),
         ] {
             let (core, mut assistant) = with_voices(&voices, new_after);
-            let (id, _, _) = assistant.target(None).expect("a target");
+            let (id, _, _, retire) = assistant.target(None).expect("a target");
+            assert_eq!(retire.is_some(), expected.is_empty(), "{voices:?}");
             assert_eq!(id.unwrap_or_default(), expected, "{voices:?} {new_after:?}");
-            assert_eq!(renamed(&core.borrow().sent).is_empty(), !expected.is_empty(), "{voices:?}");
+            assert!(renamed(&core.borrow().sent).is_empty(), "nothing is renamed before the new one stands");
         }
     }
 
