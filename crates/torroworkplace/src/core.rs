@@ -20965,7 +20965,7 @@ done"#;
     async fn the_voice_chat_says_what_the_answer_does() {
         use torro_ipc::VoiceState;
         let dir = tempfile::tempdir().expect("temp dir");
-        let step = std::time::Duration::from_millis(1500);
+        let step = std::time::Duration::from_millis(2500);
         let program = crate::apps::tests::fake_program(dir.path(), r#"echo '"answering"'; sleep 30"#);
         let assistant = crate::assistant::tests::assistant_in(dir.path(), step);
         let answering = core(dir.path()).with_assistant(assistant).with_listener(crate::apps::Listener::at(program));
