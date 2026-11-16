@@ -5,8 +5,9 @@
 //! for the person's words or wakes it.
 //!
 //! A conversation by voice (issue #747, `assistant.start_talk`): after "Hey Torro" and its answer, or
-//! with "Talk" in the chat window, the microphone stays open for eight seconds after each answer, and
-//! the person goes on without the wake word ([`Listener::converse`]). It ends with silence, a short
+//! with "Talk" in the chat window, the microphone stays open after each answer, and
+//! the person goes on without the wake word ([`Listener::converse`]), however long they think. It ends
+//! with a long silence ([`TALK_WAIT_SECONDS`], a guard only), a short
 //! closing sentence ("Danke", "Stopp", [`is_closing`]), "End talk" in the window, or an answer that
 //! waits for an approval – that is given in the window only.
 //!
@@ -141,9 +142,10 @@ pub fn speakable_up_to(markdown: &str, most: usize) -> String {
     }
 }
 
-/// How long the microphone stays open for the next sentence of a conversation by voice (issue #747,
-/// decision 3), in seconds.
-const TALK_WAIT_SECONDS: usize = 8;
+/// How long a conversation by voice waits in silence for the next sentence before it ends (issue
+/// #849), in seconds. Long, so thinking aloud or a pause does not end it; the limit only guards a
+/// microphone left open and forgotten.
+const TALK_WAIT_SECONDS: usize = 300;
 
 /// Words that end a conversation by voice (issue #747, decision 4), German and English, lower case.
 pub const CLOSING: [&str; 14] = [
@@ -188,6 +190,9 @@ pub enum Ended {
     Answered,
     /// The wake word, but nothing understood, or the round gave way: listen again.
     Nothing,
+    /// In a conversation by voice, noise that came to no text (issue #849): it goes on, and the
+    /// microphone opens again without a tone.
+    Unheard,
     /// The recording program stopped.
     RecordingStopped,
 }
@@ -230,9 +235,12 @@ impl<A: Assistant> Listener<'_, A> {
     /// Nothing is recorded when voice is off and no conversation by voice runs. Fails when the
     /// microphone cannot be opened.
     pub fn run(&mut self, voice: &Voice) -> Result<Ended, VoiceError> {
+        let mut chime = true;
         loop {
-            match self.listen_once(voice)? {
-                Ended::Answered | Ended::Nothing => {}
+            let ended = self.listen_once(voice, chime)?;
+            chime = ended != Ended::Unheard;
+            match ended {
+                Ended::Answered | Ended::Nothing | Ended::Unheard => {}
                 ended => {
                     (self.report)(VoiceState::Off);
                     return Ok(ended);
@@ -245,7 +253,10 @@ impl<A: Assistant> Listener<'_, A> {
     /// for the wake word, then records, sends and answers one sentence. While anything is read aloud
     /// the microphone stays closed. Failures of speech to text or of the core are written to the log
     /// and end the round with [`Ended::Nothing`]; only the microphone's fail it.
-    pub fn listen_once(&mut self, voice: &Voice) -> Result<Ended, VoiceError> {
+    ///
+    /// `chime` says whether a conversation by voice opens its microphone with the tone (not after
+    /// noise that was dropped: the person did not stop talking).
+    fn listen_once(&mut self, voice: &Voice, chime: bool) -> Result<Ended, VoiceError> {
         let now = match self.check(voice) {
             Look::Stop(ended) => return Ok(ended),
             Look::Go(now) => now,
@@ -255,7 +266,7 @@ impl<A: Assistant> Listener<'_, A> {
             return Ok(Ended::Nothing);
         }
         if let Some(talk) = now.talk {
-            return self.converse(voice, talk);
+            return self.converse(voice, talk, chime);
         }
         let mut stream = self.recorder.open()?;
         (self.report)(VoiceState::Listening);
@@ -318,10 +329,10 @@ impl<A: Assistant> Listener<'_, A> {
     }
 
     /// The next sentence of the conversation by voice `talk` (issue #747): the tone, then up to
-    /// [`TALK_WAIT_SECONDS`] for the person to speak, until a pause. Silence ends the conversation
-    /// with a tone. Something read aloud meanwhile, or the conversation ended or moved elsewhere,
+    /// [`TALK_WAIT_SECONDS`] for the person to speak, until a pause. Only a long silence ends the
+    /// conversation, with a tone. Something read aloud meanwhile, or the conversation ended or moved elsewhere,
     /// closes the microphone, and what was heard is dropped.
-    fn converse(&mut self, voice: &Voice, talk: Talk) -> Result<Ended, VoiceError> {
+    fn converse(&mut self, voice: &Voice, talk: Talk, chime: bool) -> Result<Ended, VoiceError> {
         // An answer still runs there (one longer than the listener waited, or a talk started while it
         // ran): the conversation would refuse the sentence, so the microphone waits for it.
         if let Some(id) = &talk.conversation
@@ -331,7 +342,9 @@ impl<A: Assistant> Listener<'_, A> {
             return Ok(Ended::Nothing);
         }
         // The tone before the microphone opens: it is no sentence of the person's.
-        self.speaker.chime();
+        if chime {
+            self.speaker.chime();
+        }
         let Some(readings) = self.quiet_now() else {
             self.quiet();
             return Ok(Ended::Nothing);
@@ -478,7 +491,11 @@ impl<A: Assistant> Listener<'_, A> {
                 return Ended::Nothing;
             }
         };
-        if text.is_empty() || is_closing(&text) {
+        // Noise in a pause comes to no text: it is dropped and the conversation by voice goes on.
+        if text.is_empty() {
+            return if talk.is_some() { Ended::Unheard } else { Ended::Nothing };
+        }
+        if is_closing(&text) {
             if talk.is_some() {
                 self.close_talk();
             }
@@ -800,6 +817,9 @@ mod tests {
     /// The "file" of ten seconds of silence: a conversation by voice ends in it.
     const PAUSE: &str = "pause";
 
+    /// The "file" of a minute of silence, then a sentence.
+    const THINKING: &str = "thinking";
+
     /// Plays sound files as the microphone and counts how often it was opened.
     struct Files {
         files: VecDeque<&'static str>,
@@ -822,6 +842,12 @@ mod tests {
             if name == PAUSE {
                 let frames = (TALK_WAIT_SECONDS + 2) * super::super::audio::FRAMES_PER_SECOND;
                 return Ok(Box::new(Frames((0..frames).map(|_| vec![0; FRAME]).collect())));
+            }
+            // A minute of thinking before the sentence: far longer than the old eight seconds (#849).
+            if name == THINKING {
+                let quiet = (0..60 * super::super::audio::FRAMES_PER_SECOND).map(|_| vec![0; FRAME]);
+                let said = fixture("utterance.wav").chunks(FRAME).map(<[i16]>::to_vec).collect::<Vec<_>>();
+                return Ok(Box::new(Frames(quiet.chain(said).collect())));
             }
             Ok(Box::new(Frames(fixture(name).chunks(FRAME).map(<[i16]>::to_vec).collect())))
         }
@@ -1101,7 +1127,7 @@ mod tests {
     }
 
     /// Issue #747: after the wake word the sentence goes to "Voice" as spoken, a conversation by voice
-    /// starts there, the window shows it and the core reads the answer; eight seconds of silence end
+    /// starts there, the window shows it and the core reads the answer; a long silence ends
     /// the conversation with a tone, and the wake word is needed again.
     #[test]
     fn the_wake_word_starts_a_conversation_by_voice() {
@@ -1155,6 +1181,33 @@ mod tests {
         assert_eq!(run.sent.iter().filter(|r| matches!(r, Request::StartTalk { .. })).count(), 1);
         assert_eq!(run.windows, ["c9"]);
         assert_eq!(count(&run.sent, &Request::EndTalk), 1);
+    }
+
+    /// Issue #849: a minute of silence does not end the conversation by voice; the next sentence still
+    /// goes to the same conversation.
+    #[test]
+    fn a_long_pause_does_not_end_the_conversation() {
+        let files = ["utterance.wav", THINKING, PAUSE];
+        let run = run(Core::new(on()), &files, Some(2), &["Hey Torro, what is on today?", "And tomorrow?"]);
+        let sent = messages(&run.sent);
+        assert_eq!(sent.len(), 2, "the sentence after the pause is sent");
+        let Request::SendMessage { conversation, .. } = sent[1] else { unreachable!() };
+        assert_eq!(conversation.as_deref(), Some("c9"));
+        assert_eq!(count(&run.sent, &Request::EndTalk), 1, "only the long silence at the end");
+    }
+
+    /// Issue #849: noise in a pause comes to no text; nothing is sent, the conversation goes on without
+    /// a new tone, and the next sentence is answered.
+    #[test]
+    fn noise_in_a_pause_sends_nothing() {
+        let files = ["utterance.wav", "utterance.wav", "utterance.wav", PAUSE];
+        let run = run(Core::new(on()), &files, Some(2), &["Hey Torro, what is on today?", "", "And tomorrow?"]);
+        let sent = messages(&run.sent);
+        assert_eq!(sent.len(), 2, "the empty text is dropped");
+        let Request::SendMessage { text, .. } = sent[1] else { unreachable!() };
+        assert_eq!(text, "And tomorrow?");
+        assert_eq!(count(&run.sent, &Request::EndTalk), 1, "the noise did not end it");
+        assert_eq!(run.chimes, 4, "the wake word, two open microphones (none after the noise), the end");
     }
 
     /// Issue #747, done 2 and decision 4: a short closing sentence ends the conversation by voice
