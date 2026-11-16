@@ -297,17 +297,18 @@ Bereich `contacts`:
 | KO3, #726 | `contacts.dismiss_duplicates { ids }` (nur lokal) | Write | `contacts_dismiss_duplicates` |
 | KO3, #727 | `inbox.create_contact_from_item { id, book }` (Absender, vCard-Anhang; `id` auch `m:…`) | Write (`inbox`) + Write in `contacts` | `inbox_create_contact_from_item` |
 | KO3, #727 | `apps.open_app` mit `target: "contact:<id>"` („Open contact“) | Write (`apps`) + Read in `contacts` | `apps_open_app` |
-| KO4 | `contacts.list_locations { book?, group?, bbox? }` (Pins: Kennung, Name, Koordinaten) | Read | `contacts_list_locations` |
-| KO4 | `contacts.set_location { id, etag, address: usize, lat, lon, replace }` (Pin von Hand, schreibt `GEO`) | Write, mit `replace` **Delete** | `contacts_set_location` |
+| KO4, #357 | `contacts.list_locations { book?, group?, favorites?, query? }` (dieselbe Auswahl wie die Liste, ohne Seiten und ohne `bbox`: Pins mit Kennung, Name, Adresse, Koordinaten und Herkunft, dazu der Stand der Suche mit den noch offenen Adressen; nur, was das Gerät kennt, höchstens 5 000) | Read | `contacts_list_locations` |
+| KO4, #854 | `contacts.set_location { id, etag, address: usize, lat, lon, replace }` (Pin von Hand, schreibt `GEO`) | Write, mit `replace` **Delete** | `contacts_set_location` |
 
 Karten (seit #355 auf der Technik des Kalenders, ohne eigenen Bereich `maps`):
 
 | Stufe | Befehl | Zugriff | MCP |
 |---|---|---|---|
 | TE.5 | `calendar.map_preview { geo, width, height, dark }` (das Kartenbild, auch für Kontakte) | Read | `calendar_map_preview` |
+| KO4, #357 | `calendar.map_tile { z, x, y, dark }` (eine Kachel 256 × 256 aus derselben Kachelablage, für die Karte aller Kontakte; Zoom 0–19, höchstens zwei Abrufe gleichzeitig beim Kachelserver) | Read | `calendar_map_tile` |
 | KO2, #355 | `settings.maps_status` (Bytes der Kacheln, Zahl der gemerkten Orte; für Clients nur ihrer Bücher) | Read | `settings_maps_status` |
 | KO2, #355 | `settings.clear_maps_cache` (Kacheln und Orte; für Clients nur Orte ihrer Bücher) | Admin | `settings_clear_maps_cache` |
-| KO4 | `maps.get_offline_tile { z, x, y }` (aus den mitgelieferten PMTiles) | Read | `maps_get_offline_tile` |
+| KO4, #855 | `maps.get_offline_tile { z, x, y }` (aus den mitgelieferten PMTiles; bis dahin kommt auch die Übersicht online über `calendar.map_tile`) | Read | `maps_get_offline_tile` |
 
 Einstellungen über das vorhandene `settings.set_setting` (Admin, für Agenten also mit Freigabe):
 `maps` mit `contactLookup` (aus/an; „an“ nur für Menschen) neben den Feldern des Kalenders,
@@ -324,8 +325,11 @@ Erläuterungen:
   der Kern mit `conflict`.
 - **`locate_contact` ist `Read`:** Für Clients liest es nur `GEO` und den Cache. Nominatim fragt nur
   der Kern selbst, im Hintergrund oder für die App, und nur mit Zustimmung.
-- **Kein `locate_all`:** Mit Zustimmung sucht der Hintergrund alle Adressen von selbst (#357). Ausschalten
-  hält ihn an.
+- **Kein `locate_all`:** Die Adressen ohne Ort sucht die Kontakte-App nach und nach, solange ein Mensch die Ansicht
+  „Map“ offen hat (#357, Entscheidung 2): Sie fragt `contacts.locate_contact` für jede offene Adresse aus
+  `contacts.list_locations`, eine nach der anderen, der Kern hält sich an eine pro Sekunde. Karte verlassen, Fenster
+  schließen oder „Look up contact addresses“ ausschalten hält die Suche an. Einen Lauf ganz im Hintergrund gibt es
+  nicht, weil die Zustimmung nur „Kontakte, die ich öffne oder auf der Karte zeige“ abdeckt.
 - **`open_in_maps` ist `Write`** wie `apps.open_app`: Es öffnet etwas auf dem Bildschirm des Menschen und schickt
   die Adresse an Google, Apple oder OpenStreetMap; für Clients wartet es darum immer auf eine Freigabe (#355).
 
