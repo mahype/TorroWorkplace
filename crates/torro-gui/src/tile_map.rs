@@ -276,21 +276,57 @@ pub enum MapEvent {
 pub fn tile_map<'a, Message: 'a>(
     camera: Camera,
     tiles: &'a HashMap<TileKey, Handle>,
-    pins: &'a [MapPin],
-    selected: Option<&'a str>,
+    pins: Vec<MapPin>,
+    selected: Option<String>,
     on_event: impl Fn(MapEvent) -> Message + 'a,
 ) -> Element<'a, Message> {
-    Canvas::new(TileMap { camera, tiles, pins, selected, on_event: Box::new(on_event) })
+    // Two layers: within one, pictures are drawn over shapes, so the pins would hide under the tiles.
+    let ground = Canvas::new(Tiles { camera, tiles }).width(Length::Fill).height(Length::Fill);
+    let marks = Canvas::new(TileMap { camera, pins, selected, on_event: Box::new(on_event) })
         .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+        .height(Length::Fill);
+    iced::widget::stack![ground, marks].width(Length::Fill).height(Length::Fill).into()
+}
+
+/// The tiles under the pins.
+struct Tiles<'a> {
+    camera: Camera,
+    tiles: &'a HashMap<TileKey, Handle>,
+}
+
+impl<Message> canvas::Program<Message> for Tiles<'_> {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &iced::Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: Cursor,
+    ) -> Vec<Geometry> {
+        let p = palette(theme);
+        let size = bounds.size();
+        let mut frame = Frame::new(renderer, size);
+        frame.fill_rectangle(Point::ORIGIN, size, p.raised);
+        let edge = TILE as f32;
+        for (key, at) in visible_tiles(self.camera, size) {
+            match self.tiles.get(&key) {
+                Some(handle) => frame.draw_image(Rectangle::new(at, Size::new(edge, edge)), handle),
+                None => frame.stroke(
+                    &Path::rectangle(at, Size::new(edge, edge)),
+                    Stroke::default().with_color(p.line).with_width(1.0),
+                ),
+            }
+        }
+        vec![frame.into_geometry()]
+    }
 }
 
 struct TileMap<'a, Message> {
     camera: Camera,
-    tiles: &'a HashMap<TileKey, Handle>,
-    pins: &'a [MapPin],
-    selected: Option<&'a str>,
+    pins: Vec<MapPin>,
+    selected: Option<String>,
     on_event: Box<dyn Fn(MapEvent) -> Message + 'a>,
 }
 
@@ -410,22 +446,11 @@ impl<Message> canvas::Program<Message> for TileMap<'_, Message> {
         let p = palette(theme);
         let size = bounds.size();
         let mut frame = Frame::new(renderer, size);
-        frame.fill_rectangle(Point::ORIGIN, size, p.raised);
-        let edge = TILE as f32;
-        for (key, at) in visible_tiles(self.camera, size) {
-            match self.tiles.get(&key) {
-                Some(handle) => frame.draw_image(Rectangle::new(at, Size::new(edge, edge)), handle),
-                None => frame.stroke(
-                    &Path::rectangle(at, Size::new(edge, edge)),
-                    Stroke::default().with_color(p.line).with_width(1.0),
-                ),
-            }
-        }
         for cluster in clusters(&self.points(), self.camera, size) {
             match cluster.members.as_slice() {
                 [one] => {
                     let pin = &self.pins[*one];
-                    let selected = self.selected == Some(pin.id.as_str());
+                    let selected = self.selected.as_deref() == Some(pin.id.as_str());
                     if selected {
                         frame.fill(&Path::circle(cluster.at, PIN_RADIUS + 4.0), p.focus_ring);
                     }
@@ -434,17 +459,23 @@ impl<Message> canvas::Program<Message> for TileMap<'_, Message> {
                     frame.fill_text(label(&pin.initials, cluster.at, Color::WHITE, 11.0));
                 }
                 members => {
-                    let halo = Color { a: 0.25, ..p.accent };
+                    // Neutral, never the accent: red is the brand's, not a mark of the map.
+                    let halo = Color { a: 0.18, ..p.text };
                     frame.fill(&Path::circle(cluster.at, CLUSTER_RADIUS + 5.0), halo);
-                    frame.fill(&Path::circle(cluster.at, CLUSTER_RADIUS), p.accent);
-                    let ringed = self.selected.is_some_and(|id| members.iter().any(|&i| self.pins[i].id == id));
+                    frame.fill(&Path::circle(cluster.at, CLUSTER_RADIUS), p.menu);
+                    frame.stroke(
+                        &Path::circle(cluster.at, CLUSTER_RADIUS),
+                        Stroke::default().with_color(p.line_selected).with_width(1.0),
+                    );
+                    let ringed =
+                        self.selected.as_deref().is_some_and(|id| members.iter().any(|&i| self.pins[i].id == id));
                     if ringed {
                         frame.stroke(
                             &Path::circle(cluster.at, CLUSTER_RADIUS + 3.0),
                             Stroke::default().with_color(p.focus_ring).with_width(2.0),
                         );
                     }
-                    frame.fill_text(label(&members.len().to_string(), cluster.at, p.on_accent, 12.0));
+                    frame.fill_text(label(&members.len().to_string(), cluster.at, p.text, 12.0));
                 }
             }
         }
@@ -461,6 +492,22 @@ impl<Message> canvas::Program<Message> for TileMap<'_, Message> {
             None => mouse::Interaction::default(),
         }
     }
+}
+
+/// The tile `--demo` shows instead of asking the tile service: land with a street across and down,
+/// in the colours of `theme`, the same for every tile.
+pub fn demo_tile(theme: &Theme) -> Handle {
+    let p = palette(theme);
+    let edge = TILE as u32;
+    let (land, road) = (p.hover.into_rgba8(), p.raised.into_rgba8());
+    let mut pixels = Vec::with_capacity((edge * edge * 4) as usize);
+    for y in 0..edge {
+        for x in 0..edge {
+            let street = (120..132).contains(&y) || (60..68).contains(&x) || (190..196).contains(&x);
+            pixels.extend_from_slice(if street { &road } else { &land });
+        }
+    }
+    Handle::from_rgba(edge, edge, pixels)
 }
 
 /// A short text centred on `at`: a pin's initials, a cluster's count.
