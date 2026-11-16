@@ -919,6 +919,32 @@ impl Assistant {
     /// nothing more). `result` is what the model read of a tool line (issue #701): written with the entry, so a
     /// later turn sends it again ([`store::Line::Result`]).
     async fn add_to_run(&self, id: &str, run: u64, content: EntryContent, last: bool, result: Option<String>) -> bool {
+        self.add_lines_to_run(id, run, content, last, result, None).await
+    }
+
+    /// [`Assistant::add_to_run`] for an answer of a model the core drives, with how full the context is at its end
+    /// (issue #831, [`store::Line::Context`]) when it is the final one: both lines in one write, so a stop between
+    /// them cannot keep a fill without its answer.
+    pub(crate) async fn add_answer(
+        &self,
+        id: &str,
+        run: u64,
+        content: EntryContent,
+        last: bool,
+        fill: Option<torro_ipc::assistant::ContextFill>,
+    ) -> bool {
+        self.add_lines_to_run(id, run, content, last, None, fill).await
+    }
+
+    async fn add_lines_to_run(
+        &self,
+        id: &str,
+        run: u64,
+        content: EntryContent,
+        last: bool,
+        result: Option<String>,
+        fill: Option<torro_ipc::assistant::ContextFill>,
+    ) -> bool {
         let mut state = self.state().await;
         if state.running.get(id).is_none_or(|running| running.id != run) {
             return false;
@@ -930,6 +956,9 @@ impl Assistant {
         let mut lines = vec![Line::Entry { entry: entry.clone() }];
         if let Some(text) = result {
             lines.push(Line::Result { seq: entry.seq, text });
+        }
+        if let Some(fill) = fill {
+            lines.push(Line::Context { fill });
         }
         if self.write(id, lines.clone()).await.is_err() {
             state.running.remove(id);
@@ -987,24 +1016,6 @@ impl Assistant {
     /// `assistant.rename_conversation`; the title trimmed (the limits are checked before).
     pub async fn rename(&self, id: &str, title: &str) -> Response {
         self.change(id, Line::Renamed { title: title.trim().to_string() }).await
-    }
-
-    /// Keeps how full the context of conversation `id` was at the end of the answer of run `run` (issue #831,
-    /// [`store::Line::Context`]). Nothing when the run was stopped or replaced meanwhile: its answer does not
-    /// stay. A failure to write is only logged: the answer stands without it.
-    pub(crate) async fn record_context(&self, id: &str, run: u64, fill: torro_ipc::assistant::ContextFill) {
-        let mut state = self.state().await;
-        if state.running.get(id).is_none_or(|running| running.id != run) {
-            return;
-        }
-        let line = Line::Context { fill };
-        if let Err(message) = self.write(id, vec![line.clone()]).await {
-            eprintln!("torroworkplace: cannot keep how full the context of conversation {id} is: {message}");
-            return;
-        }
-        if let Some(conversation) = state.conversations.get_mut(id) {
-            conversation.apply(line);
-        }
     }
 
     /// `assistant.pin_conversation`.

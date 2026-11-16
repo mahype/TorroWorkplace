@@ -823,6 +823,14 @@ struct Answering {
     repeated: BTreeMap<(String, String), usize>,
 }
 
+/// Adds what `message` takes to `unshortened`, the size of the conversation unshortened (issue #831), once the
+/// first step measured it.
+fn grow(unshortened: &mut Option<u64>, message: &ChatMessage) {
+    if let Some(size) = unshortened {
+        *size = size.saturating_add(compact::estimate(std::slice::from_ref(message), &[]));
+    }
+}
+
 /// The last fallback, when neither the account nor the provider's table knows the window ([`ModelAccess::context`],
 /// issue #701): small enough for the default window of a local server.
 const CONTEXT: u64 = 32_000;
@@ -882,9 +890,10 @@ impl Answering {
         let budget = window / 2;
         // Whether older parts were shortened in this answer, for how full its context is (issue #831).
         let mut shortened = false;
-        // The largest step unshortened so far: once a step was shortened, the messages of the next ones are
-        // shortened already, and only this keeps how big the conversation really is (review of #831).
-        let mut peak: u64 = 0;
+        // How big the conversation is unshortened (issue #831): the first step as it came, before anything was
+        // shortened, and what each step added since. Shortening changes `messages` in place, so later steps alone
+        // would tell only what is left after it (review of #831).
+        let mut unshortened: Option<u64> = None;
         lock(&self.job.partial).model = Some(model.clone());
         let mut messages = vec![ChatMessage::system(String::new())];
         // Only what the client may still read goes back to the model (issue #713).
@@ -979,8 +988,7 @@ impl Answering {
             // block is bound to the messages before it.
             // How big this step would be unshortened (issue #831): measured against the budget it shows how close
             // the conversation is to being shortened, and past it by how much.
-            let raw = compact::estimate(&messages, &tools);
-            peak = peak.max(raw);
+            unshortened.get_or_insert_with(|| compact::estimate(&messages, &tools));
             let room = budget.saturating_sub(compact::estimate(&[], &tools));
             if compact::compact(&mut messages, &self.summaries, room) {
                 shortened = true;
@@ -998,14 +1006,14 @@ impl Answering {
             if done && reply.text.trim().is_empty() {
                 return Err(Ended::Empty);
             }
-            if done {
-                // Stored, not worked out on request (decision 1 of issue #831): the next step carries the answer
-                // too. Before the answer's line, so the window that sees the answer reads the new value with it.
+            // Stored, not worked out on request (decision 1 of issue #831): the next step carries the answer too.
+            // Written with the answer's line, in one go: the window that sees the answer reads the new value with
+            // it, and a stop before the answer keeps none.
+            let fill = done.then(|| {
                 let answer = compact::estimate(&[ChatMessage::assistant(reply.text.clone(), Vec::new())], &[]);
-                let used = peak.max(raw.saturating_add(answer));
-                let fill = ContextFill { used, limit: budget, window, shortened };
-                self.assistant.record_context(&self.job.conversation, self.job.run, fill).await;
-            }
+                let used = unshortened.unwrap_or_default().saturating_add(answer);
+                ContextFill { used, limit: budget, window, shortened }
+            });
             if !reply.text.trim().is_empty() {
                 // Up to three link cards follow the final answer (issue #785), the last of them ends the run.
                 let cards = if done { self.link_cards(&reply.text, &messages) } else { Vec::new() };
@@ -1015,7 +1023,8 @@ impl Answering {
                     model: Some(model.clone()),
                     spoken: None,
                 };
-                if !self.add(text, done && cards.is_empty()).await {
+                let (conversation, run) = (&self.job.conversation, self.job.run);
+                if !self.assistant.add_answer(conversation, run, text, done && cards.is_empty(), fill).await {
                     return Ok(());
                 }
                 let count = cards.len();
@@ -1031,13 +1040,17 @@ impl Answering {
             // With its thinking blocks unchanged (task KI.1e): Anthropic refuses an assistant
             // message of a tool round whose blocks were dropped or rebuilt, and the other protocol
             // sends none.
-            messages.push(ChatMessage::assistant(reply.text, reply.tool_calls.clone()).with_thinking(reply.thinking));
+            let turn = ChatMessage::assistant(reply.text, reply.tool_calls.clone()).with_thinking(reply.thinking);
+            grow(&mut unshortened, &turn);
+            messages.push(turn);
             for call in &reply.tool_calls {
                 if self.repeats(call) {
                     return Err(Ended::Repeating(command_name(&call.name)));
                 }
                 let Some(result) = self.call(call).await else { return Ok(()) };
-                messages.push(ChatMessage::tool(call.id.clone(), result));
+                let result = ChatMessage::tool(call.id.clone(), result);
+                grow(&mut unshortened, &result);
+                messages.push(result);
             }
         }
         Err(Ended::TooManySteps(steps))
