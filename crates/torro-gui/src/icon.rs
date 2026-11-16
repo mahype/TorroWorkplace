@@ -83,6 +83,8 @@ pub enum Icon {
     Clock,
     /// A search made before (issue #136).
     History,
+    /// Back to the default (issue #831): "Reset" of a value where the word does not fit.
+    RotateCcw,
     ChartGantt,
     Radar,
     List,
@@ -332,6 +334,7 @@ impl Icon {
         Icon::SquarePen,
         Icon::Clock,
         Icon::History,
+        Icon::RotateCcw,
         Icon::ChartGantt,
         Icon::Radar,
         Icon::List,
@@ -496,6 +499,7 @@ impl Icon {
             Icon::SquarePen => include_bytes!("../assets/icons/square-pen.svg"),
             Icon::Clock => include_bytes!("../assets/icons/clock.svg"),
             Icon::History => include_bytes!("../assets/icons/history.svg"),
+            Icon::RotateCcw => include_bytes!("../assets/icons/rotate-ccw.svg"),
             Icon::ChartGantt => include_bytes!("../assets/icons/chart-gantt.svg"),
             Icon::Radar => include_bytes!("../assets/icons/radar.svg"),
             Icon::List => include_bytes!("../assets/icons/list.svg"),
