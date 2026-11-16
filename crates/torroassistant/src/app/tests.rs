@@ -622,6 +622,14 @@ fn a_model_picked_in_a_conversation_goes_to_the_core_at_once() {
     follow_once(&mut app);
     let summary = app.transcript.summary.as_ref().expect("the open conversation");
     assert_eq!((summary.engine.as_str(), summary.model.as_deref()), (OLLAMA, Some("qwen3:8b")));
+    // The answer to an earlier pick that comes after a newer one changes nothing.
+    let older = Choice { engine: OPENROUTER.into(), model: Some("older".into()) };
+    let _ = app.update(Message::Pick(older.clone()));
+    let _ = app.update(Message::Pick(Choice { engine: OLLAMA.into(), model: Some("qwen3:8b".into()) }));
+    let _ = app.update(Message::ChoseModel(TOOLS.into(), older, None, Ok(())));
+    let summary = app.transcript.summary.as_ref().expect("the open conversation");
+    assert_eq!(summary.model.as_deref(), Some("qwen3:8b"), "the header keeps the newest pick");
+    sent(&mut app);
     // A refusal says so.
     let _ = app.update(Message::Pick(pick.clone()));
     let _ = app.update(Message::ChoseModel(TOOLS.into(), pick.clone(), None, Err(Refusal::new("not-found", "gone"))));

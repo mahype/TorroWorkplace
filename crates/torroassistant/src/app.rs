@@ -2687,6 +2687,8 @@ impl App {
         result: Result<(), Refusal>,
     ) -> Task<Message> {
         match result {
+            // Only the newest pick: the answer to an earlier one may come after it.
+            Ok(()) if self.choice.as_ref() != Some(&choice) => {}
             Ok(()) => {
                 if let Some(summary) = self.transcript.summary.as_mut().filter(|summary| summary.id == id) {
                     summary.engine = choice.engine;
@@ -2694,10 +2696,11 @@ impl App {
                     summary.effort = effort;
                 }
             }
-            // The window goes back to who answers there, so typing and the voice chat agree.
+            // The window goes back to who answers there, so typing and the voice chat agree; a refusal of an
+            // earlier pick leaves a newer one alone.
             Err(refusal) => {
                 self.note_failure(tr("Couldn't change the model."), &refusal);
-                if self.current.as_ref() == Some(&id) {
+                if self.current.as_ref() == Some(&id) && self.choice.as_ref() == Some(&choice) {
                     self.chosen = Chosen::Default;
                     self.choose_default();
                 }
