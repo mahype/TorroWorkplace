@@ -656,7 +656,7 @@ pub(super) struct Job {
     pub about: Option<MailRef>,
     /// The answer is read aloud (issue #747): the person spoke the message, or the chat window reads its
     /// answers aloud (issue #774). The prompt ends with [`prompt::spoken`], so the answer comes in a short
-    /// spoken part and a shown part, and for the assistant with [`prompt::voice`] (issue #832).
+    /// spoken part and a shown part, and for the assistant with [`prompt::voice`] (issue #832, [`prompt::spoken_parts`]).
     pub spoken: bool,
 }
 
@@ -951,12 +951,7 @@ impl Answering {
                 system = format!("{system}\n\n{}", prompt::about_mail(about));
             }
             if self.job.spoken {
-                system = format!("{system}\n\n{}", prompt::spoken());
-                // The built-in skill for talking (issue #832), whole: it holds for every sentence. A bot's
-                // prompt stays as it was.
-                if self.job.bot.is_none() {
-                    system = format!("{system}\n\n{}", prompt::voice());
-                }
+                system = format!("{system}\n\n{}", prompt::spoken_parts(self.job.bot.is_some()));
             }
             // A small model gets the reading tools first; a chat about a mail (issue #605) needs its one way to
             // suggest among them, not behind find_tools, and the tool of the call that read the mail: else, with

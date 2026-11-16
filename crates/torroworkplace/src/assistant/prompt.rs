@@ -308,6 +308,12 @@ pub fn voice() -> String {
     format!("{VOICE_HEADING}\n\n{text}")
 }
 
+/// The parts of the prompt when the answer is read aloud: [`spoken`], and for the assistant also [`voice`]
+/// (issue #832). A bot's prompt stays as it was, so `bot` leaves the voice skill out.
+pub fn spoken_parts(bot: bool) -> String {
+    if bot { spoken() } else { format!("{}\n\n{}", spoken(), voice()) }
+}
+
 /// What a bot brings to its prompt besides its personality (task B.1): its name, and the
 /// instructions and skills the person wrote for it.
 #[derive(Debug, Clone, Copy)]
@@ -1290,6 +1296,9 @@ mod tests {
             built_in.iter().find(|skill| skill.is_named(super::super::skills::VOICE)).expect("voice").text.clone();
         assert!(!text.is_empty() && voice.ends_with(&text), "{voice}");
         assert!(!voice.contains(SHOWN_MARK), "the split stays in spoken(): {voice}");
+        // A spoken answer of the assistant gets the voice skill, a bot's does not.
+        assert_eq!(spoken_parts(false), format!("{}\n\n{voice}", spoken()));
+        assert_eq!(spoken_parts(true), spoken());
     }
 
     fn note(id: &str, text: &str, local_only: bool) -> Note {
