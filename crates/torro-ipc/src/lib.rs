@@ -5386,6 +5386,10 @@ pub struct MapsStatus {
 
 /// Whether the voice listener (`torroassistant --listen`) runs and what it does (task C.9). The
 /// tray shows it; clients must accept states they do not know.
+///
+/// The listener reports `Off` to `Conversing`, `Recognizing` and `Answering` (`settings.voice_status`).
+/// While it answers, the core says more precisely what happens (issue #830, `assistant.talk_status`):
+/// `Thinking`, `UsingTool` or `Speaking`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum VoiceState {
@@ -5396,11 +5400,19 @@ pub enum VoiceState {
     Listening,
     /// The wake word was heard: what is said now is recorded, until a pause.
     Recording,
-    /// The sentence is turned into text, sent, and the answer shown and spoken.
+    /// The sentence is sent and the answer shown and spoken; the core knows nothing more precise yet.
     Answering,
     /// In a conversation by voice (issue #747): after an answer, the microphone is open for the
     /// next sentence without the wake word.
     Conversing,
+    /// What was recorded is turned into text (issue #830). Reported by the listener.
+    Recognizing,
+    /// The model works on the answer (issue #830). Reported by the core, never by the listener.
+    Thinking,
+    /// The model uses a tool, named in [`Talk::tool`] (issue #830). Reported by the core.
+    UsingTool,
+    /// The answer is read aloud (issue #830). Reported by the core.
+    Speaking,
 }
 
 /// A conversation by voice that runs (issue #747, `assistant.start_talk`).
@@ -5409,9 +5421,13 @@ pub struct Talk {
     /// The conversation it runs in; `None` until the first sentence starts a new one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
-    /// What the listener does now.
+    /// What the listener does now, made more precise by the core while it answers.
     #[serde(default)]
     pub state: VoiceState,
+    /// With [`VoiceState::UsingTool`] only: the catalogue name of the command the model uses
+    /// (`calendar.list_events`), never what it reads or finds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
 }
 
 /// One part the listener needs, found or not (`settings.voice_status`). Every part is built into the
