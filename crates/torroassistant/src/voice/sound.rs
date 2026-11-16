@@ -301,6 +301,10 @@ pub trait Sound {
     fn ended(&self) -> bool;
 }
 
+/// How long a sound output that just opened plays silence before the first sound (issue #829): a device
+/// that only starts swallows the beginning of what it gets, and with it the first syllable.
+const LEAD_IN_MS: usize = 150;
+
 /// The sound waiting for the device, and whether it has played out.
 #[derive(Debug, Default)]
 struct Queue {
@@ -313,6 +317,12 @@ struct Queue {
 }
 
 impl Queue {
+    /// The queue of an output at `rate` that just opened: [`LEAD_IN_MS`] of silence before what comes.
+    fn opened(rate: u32) -> Queue {
+        let lead_in = usize::try_from(rate).unwrap_or(0).saturating_mul(LEAD_IN_MS) / 1000;
+        Queue { samples: std::iter::repeat_n(0.0, lead_in).collect(), ..Queue::default() }
+    }
+
     fn ended(&self) -> bool {
         self.finished && self.samples.is_empty() && self.drained >= 2
     }
@@ -381,7 +391,7 @@ impl Player {
             .ok_or(VoiceError::Missing(VoicePart::Speech, VoiceMissing::Player))?;
         let config = device.default_output_config().map_err(sound)?;
         let channels = usize::from(config.channels());
-        let queue = Arc::new(Mutex::new(Queue::default()));
+        let queue = Arc::new(Mutex::new(Queue::opened(config.sample_rate())));
         let shared = Arc::clone(&queue);
         let stream = device
             .build_output_stream_raw(
@@ -575,5 +585,20 @@ pub mod tests {
         assert!(!queue.ended(), "one buffer of silence");
         fill(&mut out, 2, &mut queue);
         assert!(queue.ended());
+    }
+
+    /// Issue #829: an output that just opened plays a short silence first, so the device's start does
+    /// not swallow the first syllable.
+    #[test]
+    fn an_opened_output_begins_with_silence() {
+        let mut queue = Queue::opened(48_000);
+        assert_eq!(queue.samples.len(), 7_200, "150 ms at 48 kHz");
+        queue.samples.push_back(0.5);
+        let mut lead_in = vec![1.0f32; 7_200];
+        fill(&mut lead_in, 1, &mut queue);
+        assert!(lead_in.iter().all(|sample| *sample == 0.0));
+        let mut sound = [0.0f32; 1];
+        fill(&mut sound, 1, &mut queue);
+        assert_eq!(sound, [0.5], "the sound follows the silence");
     }
 }
