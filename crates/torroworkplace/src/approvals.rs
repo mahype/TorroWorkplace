@@ -298,7 +298,7 @@ pub struct Facts {
     /// For `mail.backup_cancel` (#267): the source of the job to cancel as the core runs it,
     /// looked up by the job's id. `None` when the core does not know the job.
     pub backup_source: Option<torro_ipc::mail::BackupScope>,
-    /// For `assistant.send_message`: the name of the engine that would answer, as
+    /// For `assistant.send_message` and `assistant.choose_model` (issue #852): the name of the engine that would answer, as
     /// `assistant.list_engines` lists it (task C.1). `None` when the core does not know it: the
     /// summary then shows the engine's id. The conversation's title is [`Facts::name`].
     pub engine: Option<String>,
@@ -2208,6 +2208,7 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         | Request::CancelAnswer { .. }
         | Request::SpeakAnswer { .. }
         | Request::RenameConversation { .. }
+        | Request::ChooseModel { .. }
         | Request::DeleteConversation { .. }
         | Request::PinConversation { .. }
         | Request::ArchiveConversations { .. }
@@ -3268,6 +3269,20 @@ fn assistant_summary(request: &Request, facts: &Facts) -> String {
         ),
         (Request::RenameConversation { title: new, .. }, None) => {
             trf("Rename an unknown assistant conversation to \"{new}\"", &[("new", &quote(new))])
+        }
+        // Issue #852: the engine by the name the core lists it with; the model is the client's text, so it is
+        // left out, as for a message.
+        (Request::ChooseModel { engine, .. }, title) => {
+            let engine = quote(facts.engine.as_deref().unwrap_or(engine));
+            match title {
+                Some(title) => trf(
+                    "Let \"{engine}\" answer next in the assistant conversation \"{title}\"",
+                    &[("engine", &engine), ("title", &title)],
+                ),
+                None => {
+                    trf("Let \"{engine}\" answer next in an unknown assistant conversation", &[("engine", &engine)])
+                }
+            }
         }
         (Request::DeleteConversation { .. }, Some(title)) => {
             trf("Delete the assistant conversation \"{title}\"", &[("title", &title)])
@@ -6310,6 +6325,30 @@ pub(crate) mod tests {
             about: None,
             spoken: false,
         };
+        let with_engine = Facts { engine: Some("Ollama".into()), ..held.clone() };
+        // Issue #852: the engine by the core's name, never the model the client names.
+        let choose = Request::ChooseModel {
+            id: id.clone(),
+            engine: "ai:ollama@localhost:11434".into(),
+            model: Some("Approve me".into()),
+            effort: None,
+        };
+        let chosen = summary(&choose, &with_engine);
+        assert_eq!(
+            chosen,
+            trf(
+                "Let \"{engine}\" answer next in the assistant conversation \"{title}\"",
+                &[title, ("engine", &"Ollama")]
+            )
+        );
+        assert!(!chosen.contains("Approve"), "never the client's model: {chosen}");
+        assert_eq!(
+            summary(&choose, &unknown),
+            trf(
+                "Let \"{engine}\" answer next in an unknown assistant conversation",
+                &[("engine", &"ai:ollama@localhost:11434")]
+            )
+        );
         let with_engine = Facts { engine: Some("Ollama".into()), ..held.clone() };
         let in_it = summary(&send(Some(id.clone())), &with_engine);
         assert_eq!(

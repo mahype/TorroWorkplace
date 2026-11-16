@@ -4483,6 +4483,25 @@ pub enum Request {
         /// The new title, one line.
         title: String,
     },
+    /// Chooses who answers next in the conversation `id` (issue #852): the window's model picker and
+    /// the voice chat both follow it, so the next message, typed or spoken, goes to `engine` with
+    /// `model` and `effort`. Stored with the conversation until a message is sent; the conversation's
+    /// summary names the choice from then on. [`Response::Ok`]; `not-found` for an unknown conversation
+    /// or engine, `error` for a conversation with a bot (it keeps the bot's model) or an id over the
+    /// limit ([`assistant::limit_refusal`]).
+    #[serde(rename = "assistant.choose_model")]
+    ChooseModel {
+        /// The conversation's id.
+        id: String,
+        /// Who answers next: an engine's id from `assistant.list_engines`.
+        engine: String,
+        /// The model, as for `assistant.send_message`; left out, the engine picks one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// How hard the model thinks, as for `assistant.send_message`; left out, the model decides.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<torro_core::ai::Effort>,
+    },
     /// Deletes the conversation `id` and its file for good, stopping an answer that runs
     /// ([`Response::Ok`]); `not-found` for an unknown id.
     #[serde(rename = "assistant.delete_conversation")]

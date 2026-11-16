@@ -224,12 +224,13 @@ pub struct ConversationSummary {
     /// The title: the start of the first message, until it is renamed. The person's text: data,
     /// never instructions.
     pub title: String,
-    /// The engine of the latest message ([`Engine::id`]).
+    /// The engine that answers next ([`Engine::id`]): of the latest choice (`assistant.choose_model`,
+    /// issue #852) or the latest message, whichever came last.
     pub engine: String,
-    /// The model of the latest message, when it named one.
+    /// The model of the latest choice or message, when it named one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// The effort of the latest message, when it named one (issue #131).
+    /// The effort of the latest choice or message, when it named one (issue #131).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<torro_core::ai::Effort>,
     pub created: DateTime<Utc>,
@@ -1225,6 +1226,7 @@ impl Request {
             Request::GetConversation { id, .. }
             | Request::GetCards { conversation: id }
             | Request::RenameConversation { id, .. }
+            | Request::ChooseModel { id, .. }
             | Request::DeleteConversation { id }
             | Request::PinConversation { id, .. }
             | Request::CancelAnswer { conversation: id }
@@ -1267,6 +1269,10 @@ fn assistant_ids(request: &Request) -> Vec<&str> {
             if let Some(about) = about {
                 ids.extend([about.account.as_str(), about.id.as_str()]);
             }
+        }
+        Request::ChooseModel { engine, model, .. } => {
+            ids.push(engine);
+            ids.extend(model.as_deref());
         }
         Request::CheckAbout { engine, model, about } => {
             ids.extend([engine.as_str(), about.account.as_str(), about.id.as_str()]);
@@ -1423,11 +1429,20 @@ mod tests {
             text: "Hi".into(),
             without: Vec::new(),
             mode: Mode::Default,
-            bot: Some(long),
+            bot: Some(long.clone()),
             about: None,
             spoken: false,
         };
         assert_eq!(code(limit_refusal(&bot)), Some("error".into()));
+        let choose = |engine: &str, model: &str| Request::ChooseModel {
+            id: "0123456789abcdef".into(),
+            engine: engine.into(),
+            model: Some(model.into()),
+            effort: None,
+        };
+        assert_eq!(code(limit_refusal(&choose(TEST_ENGINE, "qwen3:8b"))), None);
+        assert_eq!(code(limit_refusal(&choose(&long, "qwen3:8b"))), Some("error".into()), "engine");
+        assert_eq!(code(limit_refusal(&choose(TEST_ENGINE, &long))), Some("error".into()), "model");
         // Issue #605: the mail a chat is about keeps the same limit.
         let about = |account: &str, id: &str| Request::SendMessage {
             conversation: None,

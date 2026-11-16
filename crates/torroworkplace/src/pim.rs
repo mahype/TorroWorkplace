@@ -1455,6 +1455,7 @@ impl PimService {
             | Request::CheckAbout { .. }
             | Request::CancelAnswer { .. }
             | Request::RenameConversation { .. }
+            | Request::ChooseModel { .. }
             | Request::DeleteConversation { .. }
             | Request::PinConversation { .. }
             | Request::ArchiveConversations { .. }
