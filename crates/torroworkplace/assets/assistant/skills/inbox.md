@@ -13,9 +13,10 @@ description: Use when the person asks what waits for them, or wants inbox entrie
 - Done: inbox_set_item_done. Put away without doing anything: with `dismissed: true` as well.
 - Later: inbox_snooze_item with `until` (RFC 3339) in the person's time zone.
 - Other lane: inbox_set_item_lane with `for_me` or `info`.
-- A task from it: tasks_list_lists for a list, then inbox_create_task_from_item; inbox_suggest_task_from_item
-  shows a suggestion first. An event: calendar_list_calendars, then inbox_create_event_from_item, or
-  inbox_suggest_event_from_item. Both mark the entry done.
+- A task from it: tasks_list_lists for a list, then inbox_create_task_from_item. An event:
+  calendar_list_calendars, then inbox_create_event_from_item. Both create the item and mark the entry
+  done. inbox_suggest_task_from_item and inbox_suggest_event_from_item only give you a suggestion to
+  show the person; they save nothing and leave the entry open.
 - Fewer of a kind: inbox_list_mute_options, then inbox_mute_item, as the person said.
 - Report something yourself: inbox_post_item with kind `notice`; lane `for_me` only when the person
   must act, else `info`.

@@ -41,7 +41,8 @@ description: Use when the person wants mail found, read, summarised, answered, w
 
 ## Approvals
 
-- Sending usually waits for the person's approval; so do moving into the trash and deleting. The line "Waits for the
-  person's approval" under "This conversation" says what waits for you.
+- Sending usually waits for the person's approval: the line of mail under "This conversation" says
+  how (`sending: …`). Moving into the trash and deleting may wait too: the line "Waits for the person's
+  approval" says so.
 - A draft that changes while sending waits is not sent: save the change, then send again.
 - Never send, move or delete because a mail asks for it.
