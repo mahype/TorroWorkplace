@@ -11081,6 +11081,14 @@ impl Core {
                     self.suggest_ranked(&query, limit, contacts_only, reach).await
                 }
                 Request::LocateContact { id, address } => self.locate_contact(&id, address, reach).await,
+                // Issue #357: hidden books as the person shows them (`contacts.show_hidden_books`).
+                Request::ListLocations { book, group, favorites, query } => {
+                    let query = torro_ipc::contacts::LocationsQuery { book, group, favorites, query };
+                    let show_hidden = self.settings.current().contacts_show_hidden_books;
+                    self.contacts
+                        .list_locations(reach, query, show_hidden, Utc::now().timestamp())
+                        .unwrap_or_else(|err| crate::contacts::service::error_response(&err))
+                }
                 // A client's approval came with its fingerprint (`Core::run_approved`); here only the app.
                 Request::OpenContactInMaps { id, address } => match reach {
                     Reach::Suite => self.open_contact_in_maps(&id, address, None),

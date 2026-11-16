@@ -41,7 +41,8 @@
 //! event, its uid) gets lost or overwritten.
 //!
 //! `calendar_search_places` and `calendar_delete_event` take their request's fields (`query`, `near`
-//! as `{lat, lon}`; `event`, `scope`); the map of `calendar_map_preview` comes back as an MCP image
+//! as `{lat, lon}`; `event`, `scope`); the map of `calendar_map_preview` and the tile of
+//! `calendar_map_tile` (issue #357) come back as an MCP image
 //! ([`result_of`]).
 //!
 //! Errors of the core come back as tool errors (`isError: true`) with its `code` and `message`,
@@ -948,7 +949,7 @@ fn refuse_unknown_arguments(tool: &str, arguments: &JsonObject) -> Result<(), To
 /// error as a tool error with `code` and `message`, `unauthorized` for a missing or unknown key
 /// with how to get one. An `unauthorized` that says why a known key was refused (a script's key,
 /// #231) keeps its own words: a new key would not help. A picture (the map of
-/// `calendar_map_preview`, task TE.6) is an MCP image (`type: image`, `mimeType: image/png`), so the
+/// `calendar_map_preview`, task TE.6, or a tile of `calendar_map_tile`, issue #357) is an MCP image (`type: image`, `mimeType: image/png`), so the
 /// agent sees it; the Base64 goes out once, not also as text. A server tool's answer (issue #302) is
 /// [`server_result`]: its text and pictures behind a note that they are data. What the core shows of
 /// servers (`extensions.list_extensions`, `get_extension`, `set_enabled`, `list_tools`) carries the server's

@@ -452,10 +452,6 @@ impl ContactsService {
                 let query = torro_contacts::ContactQuery { book, group, favorites, recent, query, limit, cursor };
                 self.list_contacts(reach, query).map(Response::Contacts)
             }
-            Request::ListLocations { book, group, favorites, query } => {
-                let query = torro_ipc::contacts::LocationsQuery { book, group, favorites, query };
-                self.list_locations(reach, query, Utc::now().timestamp())
-            }
             Request::GetContact { id } => self.get_contact(&id),
             Request::GetContactPhoto { id, size } => self.get_photo(&id, size),
             Request::ListContactGroups { book } => self.list_groups(reach, book.as_deref()),
@@ -1136,8 +1132,14 @@ impl ContactsService {
     pub fn address_spot(&self, id: &str, index: usize) -> Result<AddressSpot, ContactsError> {
         let found = self.find(id)?;
         let contact = vcard::read(&found.card.vcard).map_err(|_| ContactsError::NotFound)?;
-        let address =
-            contact.addresses.get(index).map(|labeled| labeled.value.clone()).ok_or(ContactsError::NotFound)?;
+        // A contact with `GEO` but no address is on the map as its address 0 (issue #357): the point
+        // stands for an empty address.
+        let geo_only = contact.addresses.is_empty() && contact.geo.is_some() && index == 0;
+        let address = match contact.addresses.get(index) {
+            Some(labeled) => labeled.value.clone(),
+            None if geo_only => torro_contacts::PostalAddress::default(),
+            None => return Err(ContactsError::NotFound),
+        };
         Ok(AddressSpot {
             card: found.card.id,
             account: found.book.account,
@@ -1205,17 +1207,26 @@ impl ContactsService {
     ///
     /// At most [`MAX_PINS`] pins and as many pending addresses, then `truncated`. An unknown book is
     /// `not-found`; without books the answer is empty.
+    ///
+    /// Without a `book` the person's map leaves out the hidden books (Nextcloud's system address book
+    /// with every user of the instance, "Recently contacted") unless `show_hidden` (setting
+    /// `contacts.show_hidden_books`), as the list does: their addresses would otherwise be looked up
+    /// on the place search service unseen. A client sees a hidden book only when its rights name it.
     pub fn list_locations(
         &self,
         reach: Reach<'_>,
         query: torro_ipc::contacts::LocationsQuery,
+        show_hidden: bool,
         now: i64,
     ) -> Result<Response, ContactsError> {
         use torro_ipc::contacts::{AddressRef, ContactPin, LOOKUP_RETRY_DAYS, LocationSource, LocationsStatus};
         let books: Vec<BookRow> = self
             .books_within(reach, None)?
             .into_iter()
-            .filter(|book| query.book.as_ref().is_none_or(|wanted| *wanted == book.id))
+            .filter(|book| match &query.book {
+                Some(wanted) => *wanted == book.id,
+                None => !(matches!(reach, Reach::Suite) && book.hidden && !show_hidden),
+            })
             .collect();
         if query.book.is_some() && books.is_empty() {
             return Err(ContactsError::NotFound);
@@ -1879,7 +1890,7 @@ mod tests {
         keep("anna", 1, Some((53.5458, 9.9672)), now - 100);
         keep("ben", 0, None, now - 100);
         keep("dora", 0, None, now - (LOOKUP_RETRY_DAYS + 1) * 24 * 60 * 60);
-        let located = |reach: Reach<'_>, query: LocationsQuery| match service.list_locations(reach, query, now) {
+        let located = |reach: Reach<'_>, query: LocationsQuery| match service.list_locations(reach, query, false, now) {
             Ok(Response::ContactLocations { pins, status }) => (pins, status),
             other => panic!("locations, got {other:?}"),
         };
@@ -1898,6 +1909,10 @@ mod tests {
         );
         assert_eq!(pins[1].geo, torro_pim::model::Geo { lat: 53.5458, lon: 9.9672 });
         assert!(pins.iter().all(|pin| pin.untrusted));
+        // A pin of `GEO` without an address is its address 0 for locating and opening.
+        let fritz = service.address_spot(&id("contacts", "fritz"), 0).expect("the point stands for an address");
+        assert_eq!(fritz.geo.map(|geo| geo.lat), Some(48.1));
+        assert!(service.address_spot(&id("contacts", "fritz"), 1).is_err());
         assert_eq!(status.located, 3);
         assert_eq!(status.not_found, 1, "ben, asked lately");
         assert_eq!(status.without_address, 1, "emil; gerd's empty address is left out");
@@ -1920,14 +1935,29 @@ mod tests {
         let private_book = format!("{ACCOUNT}/privat");
         let foreign = LocationsQuery { book: Some(private_book.clone()), ..LocationsQuery::default() };
         assert!(matches!(
-            service.list_locations(Reach::Client(&rights), foreign.clone(), now),
+            service.list_locations(Reach::Client(&rights), foreign.clone(), false, now),
             Err(ContactsError::NotFound)
         ));
         let request =
             Request::ListLocations { book: Some(private_book.clone()), group: None, favorites: false, query: None };
         assert_eq!(service.out_of_reach(Reach::Client(&rights), &request), Some(private_book));
         let unknown = LocationsQuery { book: Some("nowhere".into()), ..LocationsQuery::default() };
-        assert!(matches!(service.list_locations(Reach::Suite, unknown, now), Err(ContactsError::NotFound)));
+        assert!(matches!(service.list_locations(Reach::Suite, unknown, false, now), Err(ContactsError::NotFound)));
+
+        // The system book (every user of the instance) only when the person shows hidden books, or names it.
+        let system = server.add_book("z-server-generated--system", false, true);
+        server.put_card(&system, "colleague", &vcard("colleague", "ADR;TYPE=HOME:;;Office 1;Berlin;;;\r\n"));
+        service.sync_all().await;
+        let pending = |show_hidden: bool, book: Option<String>| {
+            let query = LocationsQuery { book, ..LocationsQuery::default() };
+            match service.list_locations(Reach::Suite, query, show_hidden, now) {
+                Ok(Response::ContactLocations { status, .. }) => status.pending.len(),
+                other => panic!("locations, got {other:?}"),
+            }
+        };
+        assert_eq!(pending(false, None), 3, "the system book is left out");
+        assert_eq!(pending(true, None), 4, "shown with hidden books");
+        assert_eq!(pending(false, Some(format!("{ACCOUNT}/z-server-generated--system"))), 1, "or when named");
     }
 
     #[tokio::test]

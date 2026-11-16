@@ -426,8 +426,19 @@ impl Places {
     /// The PNG of [`Places::tile_png`].
     async fn single_tile(&self, maps: &Maps, tile: TileAt, dark: bool, asker: Asker) -> Result<Vec<u8>, Failure> {
         let url = tile_url(&maps.tiles, &tile)?;
-        self.wait_turn(Service::Map, asker).await?;
-        let bytes = self.tile(url).await?;
+        // A map that is moved asks for many tiles: a fresh copy asks no service and counts against no
+        // throttle, and while the service is paused or busy an older copy stands in.
+        let bytes = match self.tiles.read(url.as_str(), SystemTime::now()) {
+            Kept::Fresh(bytes) => bytes,
+            Kept::Stale { bytes, .. } => match self.wait_turn(Service::Map, asker).await {
+                Ok(()) => self.tile(url).await?,
+                Err(_) => bytes,
+            },
+            Kept::Missing => {
+                self.wait_turn(Service::Map, asker).await?;
+                self.tile(url).await?
+            }
+        };
         let mut picture = image::load_from_memory(&bytes).map_err(|_| Failure::Broken)?.to_rgba8();
         if picture.dimensions() != (TILE_SIZE, TILE_SIZE) {
             picture = image::imageops::resize(&picture, TILE_SIZE, TILE_SIZE, image::imageops::FilterType::Triangle);
@@ -1348,6 +1359,11 @@ mod tests {
         let dark = picture(&places.tile_png(&maps, 10, 550, 335, true, Asker::Person).await);
         assert_eq!(dark.get_pixel(10, 10).0, [22, 19, 13, 255]);
         assert_eq!(tiles.calls_async().await, 1, "the second comes from the cache");
+
+        // A service that asked to wait: kept tiles still come, a new one is `busy`.
+        places.maps.lock().expect("throttle").pause(Instant::now());
+        assert!(matches!(places.tile_png(&maps, 10, 550, 335, false, Asker::Person).await, Response::Image { .. }));
+        assert_eq!(failed(&places.tile_png(&maps, 10, 551, 335, false, Asker::Person).await).0, "busy");
     }
 
     /// Issue #357: however many tiles are asked for at once, at most two go to the service together.
