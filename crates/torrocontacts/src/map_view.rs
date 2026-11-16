@@ -98,6 +98,8 @@ pub struct Lookup {
     pub paused: bool,
     /// `busy` answers in a row: a service that asked to wait answers so for an hour.
     pub busy: u32,
+    /// Waiting [`BUSY_WAIT`] after `busy`: nothing is asked until [`MapMsg::Retry`].
+    pub waiting: bool,
     /// Answers of an older generation (the map was left meanwhile) are dropped.
     pub generation: u64,
 }
@@ -185,6 +187,7 @@ impl MapState {
         self.lookup.queue.clear();
         self.lookup.paused = false;
         self.lookup.busy = 0;
+        self.lookup.waiting = false;
     }
 
     fn pin(&self, key: &str) -> Option<&ContactPin> {
@@ -364,7 +367,13 @@ impl App {
     fn next_lookup(&mut self) -> Task<Message> {
         let glance = matches!(self.class(), SizeClass::Mini | SizeClass::Strip);
         let lookup = &mut self.map.lookup;
-        if self.map.look != Look::Map || glance || self.map.frozen || lookup.paused || lookup.running.is_some() {
+        if self.map.look != Look::Map
+            || glance
+            || self.map.frozen
+            || lookup.paused
+            || lookup.waiting
+            || lookup.running.is_some()
+        {
             return Task::none();
         }
         let Some(next) = lookup.queue.pop_front() else { return Task::none() };
@@ -463,7 +472,10 @@ impl App {
             }
             MapMsg::LookedUp(generation, _, _) if generation != self.map.lookup.generation => {}
             MapMsg::LookedUp(_, address, result) => return self.looked_up(address, result),
-            MapMsg::Retry(generation) if generation == self.map.lookup.generation => return self.next_lookup(),
+            MapMsg::Retry(generation) if generation == self.map.lookup.generation => {
+                self.map.lookup.waiting = false;
+                return self.next_lookup();
+            }
             MapMsg::Retry(_) => {}
             MapMsg::Card(id, Ok(contact)) => {
                 if self.map.selected.as_deref().is_some_and(|key| key.starts_with(&format!("{id}#"))) {
@@ -542,6 +554,7 @@ impl App {
             }
             Err(code) if code == "busy" => {
                 self.map.lookup.busy += 1;
+                self.map.lookup.waiting = true;
                 self.map.lookup.queue.push_front(address);
                 let generation = self.map.lookup.generation;
                 return Task::perform(tokio::time::sleep(BUSY_WAIT), move |()| Message::Map(MapMsg::Retry(generation)));

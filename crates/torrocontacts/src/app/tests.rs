@@ -940,4 +940,16 @@ async fn another_selection_stops_the_lookup_and_a_pin_comes_once() {
     let _ = app.update(Message::Show(View::Book(torro_contacts::demo::TEAM.into())));
     assert_ne!(app.map.lookup.generation, generation);
     assert!(app.map.lookup.running.is_none() && app.map.lookup.queue.is_empty());
+    // `busy` waits a second: no other message asks again before the retry.
+    let _ = app.update(Message::Show(View::All));
+    let answer = app.backend.locations(app.locations_query()).await;
+    let asked = app.map.asked;
+    let _ = app.update(Message::Map(MapMsg::Locations(asked, answer)));
+    let busy = app.map.lookup.running.clone().expect("the new selection looks up");
+    let generation = app.map.lookup.generation;
+    let _ = app.update(Message::Map(MapMsg::LookedUp(generation, busy, Err("busy".into()))));
+    let _ = app.update(Message::Map(MapMsg::Zoom(1)));
+    assert!(app.map.lookup.running.is_none() && app.map.lookup.waiting, "waiting, not asking");
+    let _ = app.update(Message::Map(MapMsg::Retry(generation)));
+    assert!(app.map.lookup.running.is_some() && !app.map.lookup.waiting);
 }
