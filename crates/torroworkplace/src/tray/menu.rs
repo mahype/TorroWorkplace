@@ -14,8 +14,9 @@
 //! is written to the inbox or an approval changes, so the tray never asks the socket itself and
 //! nothing polls.
 //!
-//! While voice is on (task C.9, [`voice_section`]) the menu says what the listener does ("Listening
-//! for “Hey Torro”", "Recording …", or "Not listening" when it stopped) and offers "Mute
+//! While voice is on (task C.9, [`voice_section`]) the menu says what the voice chat does ("Listening
+//! for “Hey Torro”", "Recording …", "Looking at the calendar …" (issue #830), or "Not listening" when it
+//! stopped) and offers "Mute
 //! microphone", which switches voice off – also when the listener crashed (task C.11), so the way
 //! out never depends on it. Switching it on is in the control centre, where the microphone is
 //! chosen and tested.
@@ -162,7 +163,7 @@ pub fn waiting_line(waiting: Waiting) -> String {
 /// Labels stay short: Omarchy's bar draws tray menus about 232 px wide and cuts longer
 /// text off with an ellipsis.
 pub fn build(snapshot: &Snapshot) -> Vec<Item> {
-    let mut menu = voice_section(snapshot.voice, snapshot.voice_enabled);
+    let mut menu = voice_section(snapshot.voice, snapshot.voice_tool.as_deref(), snapshot.voice_enabled);
     menu.push(entry(tr("Control centre"), Request::OpenApp { app: AppId::WORKPLACE.binary.to_string(), target: None }));
     menu.extend(apps_section(Waiting::of(snapshot), &snapshot.components_off));
     menu.push(Item::Separator);
@@ -284,32 +285,26 @@ fn template_items(id: &str) -> Vec<Item> {
     ]
 }
 
-/// What the voice listener does, for the tooltip and the menu; empty while voice is off.
-pub fn voice_line(state: VoiceState) -> &'static str {
-    match state {
-        VoiceState::Off => "",
-        VoiceState::Listening => tr("Listening for “Hey Torro”"),
-        VoiceState::Recording => tr("Recording …"),
-        VoiceState::Answering => tr("Answering …"),
-        // Issue #747: the microphone waits for the next sentence of a conversation.
-        VoiceState::Conversing => tr("Listening…"),
-    }
+/// What the voice chat does, for the tooltip and the menu, in the words of the window's speaking line
+/// (issue #830, [`torro_gui::chat::voice_doing`]); empty while voice is off.
+pub fn voice_line(state: VoiceState, tool: Option<&str>) -> String {
+    torro_gui::chat::voice_doing(state, tool)
 }
 
 /// While voice is on (`enabled`, the setting) or the listener still runs: what it does – "Not
 /// listening" when it does not run although voice is on – and "Mute microphone", which switches
 /// voice off (`settings.set_setting voice_enabled false`), then a separator. Empty while voice is
 /// off and the listener stopped.
-fn voice_section(state: VoiceState, enabled: bool) -> Vec<Item> {
+fn voice_section(state: VoiceState, tool: Option<&str>, enabled: bool) -> Vec<Item> {
     if state == VoiceState::Off && !enabled {
         return Vec::new();
     }
     let line = match state {
-        VoiceState::Off => tr("Not listening"),
-        state => voice_line(state),
+        VoiceState::Off => tr("Not listening").to_string(),
+        state => voice_line(state, tool),
     };
     let mute = Request::SetSetting { key: SettingKey::VoiceEnabled, value: serde_json::Value::Bool(false) };
-    vec![info(line.into()), entry(tr("Mute microphone"), mute), Item::Separator]
+    vec![info(line), entry(tr("Mute microphone"), mute), Item::Separator]
 }
 
 /// One entry per app of the suite whose component is on (task W.2); the control centre stands
@@ -754,11 +749,19 @@ mod tests {
     #[test]
     fn the_menu_shows_listening_and_mutes_the_microphone() {
         assert_eq!(labels(&build(&snapshot()))[0], tr("Control centre"), "off: nothing");
-        for state in [VoiceState::Listening, VoiceState::Recording, VoiceState::Answering, VoiceState::Conversing] {
+        for state in [
+            VoiceState::Listening,
+            VoiceState::Recording,
+            VoiceState::Recognizing,
+            VoiceState::Answering,
+            VoiceState::Thinking,
+            VoiceState::Speaking,
+            VoiceState::Conversing,
+        ] {
             let menu = build(&Snapshot { voice: state, ..snapshot() });
             assert_eq!(
                 labels(&menu)[..3],
-                [format!("({})", voice_line(state)), tr("Mute microphone").to_string(), "-".to_string()],
+                [format!("({})", voice_line(state, None)), tr("Mute microphone").to_string(), "-".to_string()],
                 "{state:?}"
             );
             assert_eq!(
@@ -769,8 +772,12 @@ mod tests {
                 })))
             );
         }
-        assert_eq!(voice_line(VoiceState::Recording), tr("Recording …"));
-        assert_eq!(voice_line(VoiceState::Off), "");
+        assert_eq!(voice_line(VoiceState::Recording, None), tr("Recording …"));
+        assert_eq!(voice_line(VoiceState::Off, None), "");
+        // Issue #830: the tool the answer uses, by its kind, as in the window.
+        let looking =
+            Snapshot { voice: VoiceState::UsingTool, voice_tool: Some("calendar.list_events".into()), ..snapshot() };
+        assert_eq!(labels(&build(&looking))[0], format!("({})", tr("Looking at the calendar …")));
     }
 
     /// Task C.11: voice on but the listener gone (crashed, or it could not start) still offers
