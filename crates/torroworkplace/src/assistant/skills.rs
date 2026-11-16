@@ -318,6 +318,20 @@ mod tests {
         }
         assert!(is_built_in("torro  mail") && is_built_in("VOICE CONVERSATION") && !is_built_in("Mail"));
         assert_eq!(built_in_named("torro inbox").map(|skill| skill.name), Some("Torro Inbox".to_string()));
+        // The tool for reading a skill names every built-in one, so an agent knows what to ask for: a new or
+        // renamed skill needs it there too.
+        let get_skill = torro_ipc::api::CATALOGUE
+            .iter()
+            .find(|command| command.name == "assistant.get_skill")
+            .expect("assistant.get_skill in the catalogue");
+        for skill in &skills {
+            assert!(
+                get_skill.description.contains(&skill.name),
+                "{} missing in: {}",
+                skill.name,
+                get_skill.description
+            );
+        }
     }
 
     #[test]
