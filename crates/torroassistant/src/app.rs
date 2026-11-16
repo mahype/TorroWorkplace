@@ -2688,7 +2688,7 @@ impl App {
     ) -> Task<Message> {
         match result {
             // Only the newest pick: the answer to an earlier one may come after it.
-            Ok(()) if self.choice.as_ref() != Some(&choice) => {}
+            Ok(()) if self.choice.as_ref() != Some(&choice) || self.offered_effort() != effort => {}
             Ok(()) => {
                 if let Some(summary) = self.transcript.summary.as_mut().filter(|summary| summary.id == id) {
                     summary.engine = choice.engine;
@@ -2700,7 +2700,10 @@ impl App {
             // earlier pick leaves a newer one alone.
             Err(refusal) => {
                 self.note_failure(tr("Couldn't change the model."), &refusal);
-                if self.current.as_ref() == Some(&id) && self.choice.as_ref() == Some(&choice) {
+                if self.current.as_ref() == Some(&id)
+                    && self.choice.as_ref() == Some(&choice)
+                    && self.offered_effort() == effort
+                {
                     self.chosen = Chosen::Default;
                     self.choose_default();
                 }
