@@ -989,6 +989,14 @@ impl Assistant {
         self.change(id, Line::Renamed { title: title.trim().to_string() }).await
     }
 
+    /// Keeps how full the context of conversation `id` was at the end of an answer (issue #831,
+    /// [`store::Line::Context`]). A failure is only logged: the answer stands without it.
+    pub(crate) async fn record_context(&self, id: &str, fill: torro_ipc::assistant::ContextFill) {
+        if let Response::Error { message, .. } = self.change(id, Line::Context { fill }).await {
+            eprintln!("torroworkplace: cannot keep how full the context of conversation {id} is: {message}");
+        }
+    }
+
     /// `assistant.pin_conversation`.
     pub async fn pin(&self, id: &str, pinned: bool) -> Response {
         self.change(id, Line::Pinned { pinned }).await
