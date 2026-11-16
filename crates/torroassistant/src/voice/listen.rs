@@ -161,8 +161,9 @@ pub const BEFORE: usize = FRAMES_PER_SECOND;
 enum Said {
     /// Nothing louder than the room.
     Nothing,
-    /// Speech.
-    Speech,
+    /// Speech, after `before` samples kept from before the wake word was heard (none in a
+    /// conversation by voice).
+    Speech { before: usize },
     /// Perhaps a short command said in one breath with the wake word: it counts only if the wake
     /// word is in it, else it is the wake word alone or a piece of it.
     WithWake,
@@ -348,6 +349,7 @@ impl<A: Assistant> Listener<'_, A> {
         // What was said before the wake word was heard is part of the sentence, but the end of the
         // sentence is decided by what follows: "Hey Torro" alone is no sentence.
         let mut sentence: Vec<i16> = before.into_iter().flatten().collect();
+        let kept = sentence.len();
         // Where the tone and its echo end in the sentence.
         let mut with_tone = sentence.len();
         let mut end = Endpoint::new(floor, self.limits);
@@ -375,7 +377,7 @@ impl<A: Assistant> Listener<'_, A> {
         // command said in one breath fits into the tone. What came up to the tone's end is
         // understood; "Hey Torro" alone comes to no text and sends nothing.
         let (said, recorded) = match (end.heard_speech(), still_speaking) {
-            (true, _) => (Said::Speech, &sentence[..]),
+            (true, _) => (Said::Speech { before: kept }, &sentence[..]),
             (false, true) => (Said::WithWake, &sentence[..with_tone]),
             (false, false) => (Said::Nothing, &sentence[..]),
         };
@@ -465,7 +467,7 @@ impl<A: Assistant> Listener<'_, A> {
             return Ok(Ended::Nothing);
         }
         (self.report)(VoiceState::Answering);
-        Ok(self.answer(voice, &sentence, Said::Speech, end.trailing_quiet(), Some(talk), readings))
+        Ok(self.answer(voice, &sentence, Said::Speech { before: 0 }, end.trailing_quiet(), Some(talk), readings))
     }
 
     /// Looks at the settings and the conversation by voice: stop ([`Ended::VoiceOff`]) when voice is
@@ -551,17 +553,25 @@ impl<A: Assistant> Listener<'_, A> {
             return Ended::Nothing;
         }
         let recognizing = Instant::now();
-        let transcribed = self.transcriber.transcribe(sentence);
-        let recognize_ms = u32::try_from(recognizing.elapsed().as_millis()).unwrap_or(u32::MAX);
-        let text = match transcribed {
+        let transcribed = match self.transcriber.transcribe(sentence) {
             // After the wake word the sentence begins a second before it (issue #829): what follows
             // it; a short command needs it, else what was heard is the wake word alone.
-            Ok(text) if talk.is_none() => match after_wake_phrase(&text) {
-                Some(rest) => rest,
-                None if said == Said::WithWake => String::new(),
-                None => strip_wake_phrase(&text),
+            Ok(text) if talk.is_none() => match (after_wake_phrase(&text), said) {
+                (Some(rest), _) => Ok(rest),
+                (None, Said::WithWake) => Ok(String::new()),
+                // The wake word not found in the text: what came before it may be another voice (a
+                // television), so only what was said after it is understood.
+                (None, Said::Speech { before }) if before > 0 && before < sentence.len() => {
+                    self.transcriber.transcribe(&sentence[before..]).map(|text| strip_wake_phrase(&text))
+                }
+                (None, _) => Ok(strip_wake_phrase(&text)),
             },
-            Ok(text) => strip_wake_phrase(&text),
+            Ok(text) => Ok(strip_wake_phrase(&text)),
+            Err(err) => Err(err),
+        };
+        let recognize_ms = u32::try_from(recognizing.elapsed().as_millis()).unwrap_or(u32::MAX);
+        let text = match transcribed {
+            Ok(text) => text,
             Err(err) => {
                 eprintln!("torroassistant: {err}");
                 return Ended::Nothing;
@@ -1299,6 +1309,33 @@ mod tests {
             let run = run_with(Core::new(on()), &["utterance.wav"], Some(6), Box::new(keeps), tone);
             assert!(messages(&run.sent).is_empty(), "the wake word alone or a piece of it: {alone}");
         }
+    }
+
+    /// Review of PR #868: without the wake word in the text, what came before it may be another voice;
+    /// only what was said after the wake word is understood and sent.
+    #[test]
+    fn without_the_wake_word_in_the_text_only_what_followed_is_sent() {
+        let given = Rc::new(RefCell::new(Vec::new()));
+        let file = fixture("utterance.wav");
+        // The first hearing misses the wake word (a television before it); the second hears the rest.
+        struct Twice(Rc<RefCell<Vec<Vec<i16>>>>);
+        impl Transcriber for Twice {
+            fn transcribe(&mut self, samples: &[i16]) -> Result<String, VoiceError> {
+                self.0.borrow_mut().push(samples.to_vec());
+                let first = self.0.borrow().len() == 1;
+                Ok(if first { "and the news at ten. Hello Toro what is on?" } else { "what is on?" }.into())
+            }
+        }
+        let run =
+            run_with(Core::new(on()), &["utterance.wav"], Some(6), Box::new(Twice(Rc::clone(&given))), Duration::ZERO);
+        let Request::SendMessage { text, .. } = messages(&run.sent)[0] else { unreachable!() };
+        assert_eq!(text, "what is on?");
+        let given = given.borrow();
+        assert_eq!(given.len(), 2, "understood twice");
+        assert!(
+            given[1][..] == file[6 * FRAME..6 * FRAME + given[1].len()],
+            "the second time from after the wake word"
+        );
     }
 
     /// Issue #829: in a conversation by voice the microphone opens before the tone; the tone and its echo
