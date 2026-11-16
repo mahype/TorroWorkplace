@@ -6165,7 +6165,15 @@ impl Core {
                     && let Ok(spot) = self.contacts.address_spot(id, *address)
                 {
                     let app = torro_core::maps::on_this_system(self.settings.current().maps.open_with);
-                    fingerprint = Some((spot.pin(app), crate::approvals::maps_details(&spot.address, app)));
+                    let mut details = crate::approvals::maps_details(&spot.address, app);
+                    // A contact with `GEO` but no address (issue #357): the point is what opens.
+                    if let (Some(geo), Some(first)) = (spot.geo, details.first_mut())
+                        && spot.address.one_line().trim().is_empty()
+                    {
+                        let point = format!("{:.5}, {:.5}", geo.lat, geo.lon);
+                        *first = trf("The contact's point: {point}", &[("point", &point)]);
+                    }
+                    fingerprint = Some((spot.pin(app), details));
                 }
                 // What a target shows (task E8.7a): the subject or title the core holds, looked up
                 // as the client may see it – for a file of the tools (task WZ.8) the register's title.

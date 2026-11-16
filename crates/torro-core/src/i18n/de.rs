@@ -4949,6 +4949,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("One address a second while the map is open.", "Eine Adresse pro Sekunde, solange die Karte offen ist."),
     ("Addresses not found: {n}", "Nicht gefundene Adressen: {n}"),
     ("Contacts without an address: {n}", "Kontakte ohne Adresse: {n}"),
+    ("The contact's point: {point}", "Der Punkt des Kontakts: {point}"),
     ("Stored map data", "Gespeicherte Kartendaten"),
     ("{size} of map tiles · {places} contact places", "{size} Kartenkacheln · {places} Kontakt-Orte"),
     ("Finding address…", "Adresse wird gesucht…"),
