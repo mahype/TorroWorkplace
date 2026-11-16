@@ -21,7 +21,7 @@ use torro_ipc::{VoiceMissing, VoicePart};
 use super::VoiceError;
 use super::audio::{Stretch, Wave, decode_wav};
 use super::recognize::threads;
-use super::speech::{pieces, sentence_pieces};
+use super::speech::sentence_pieces;
 
 /// The voice templates that ship with the assistant (step 4 of the plan of issue #745): made once from a
 /// description, 24 kHz mono, about nine seconds.
@@ -201,14 +201,11 @@ impl Synth for Pocket {
         let stopped = Rc::new(Cell::new(false));
         // A NUL would end the text early for sherpa-onnx's C side (and its binding refuses it).
         let text = text.replace('\0', " ");
-        // As before without a choice; with a pause each sentence is a piece of its own, so the pause
-        // falls between sentences. sherpa-onnx's own `silence_scale` does not reach streamed sound.
-        // Each piece with whether a sentence ends there, so a long one cut in pieces has no pause inside.
-        let pieces: Vec<(String, bool)> = match delivery.pause_ms == 0 {
-            true => pieces(&text, PIECE).into_iter().map(|piece| (piece, false)).collect(),
-            false => sentence_pieces(&text, PIECE),
-        };
-        for (piece, ends) in pieces {
+        // Each sentence is a piece of its own (issue #850): the first sounds once it is computed, not after
+        // the next ones, and a pause falls between sentences. sherpa-onnx's own `silence_scale` does not
+        // reach streamed sound. Each piece with whether a sentence ends there, so a long one cut in pieces
+        // has no pause inside.
+        for (piece, ends) in sentence_pieces(&text, PIECE) {
             // Each piece is stretched on its own, so its end comes out whole before the pause.
             let stretch = Rc::new(RefCell::new(Some(Stretch::new(rate, delivery.speed))));
             let heard = Rc::new(Cell::new(false));
