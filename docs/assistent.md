@@ -304,7 +304,7 @@ Skills im selben Format und mit denselben Befehlen (entschieden), je bis zu 30, 
   Die Namen tragen „Torro“, weil die Person schon einen eigenen Skill „Mail“ haben kann (entschieden). Sie zählen
   zu den Regeln: Im Prompt steht nach „Torro Workplace“ ein Abschnitt „Built-in skills“ mit einer Zeile je Skill
   (nicht zitiert, es ist Text der Suite), vor den Skills der Person; den Text liest das Modell mit
-  `assistant_get_skill`, der Prompt wird also nicht größer. Ein eigener Skill kann keinen mitgelieferten still
+  `assistant_get_skill`, im Prompt stehen nur die Zeilen mit Name und Beschreibung, keine Texte. Ein eigener Skill kann keinen mitgelieferten still
   ersetzen: `assistant.save_skill` lehnt deren Namen mit `conflict` ab, `assistant_get_skill` liefert zuerst den
   mitgelieferten, und ein älterer eigener Skill gleichen Namens fehlt im Prompt (entschieden). Der Skill „Voice
   conversation“ (kurze Sätze, das Wichtigste zuerst, Rückfragen statt Vorträge, Zahlen und Zeiten wie gesprochen)
