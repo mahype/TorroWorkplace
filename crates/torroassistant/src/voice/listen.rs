@@ -11,6 +11,11 @@
 //! closing sentence ("Danke", "Stopp", [`is_closing`]), "End talk" in the window, or an answer that
 //! waits for an approval – that is given in the window only.
 //!
+//! The start of a sentence is never cut off (issue #829): while it waits for the wake word the
+//! listener keeps the last half second ([`BEFORE`]), so "Hey Torro, do X" in one breath arrives whole,
+//! and the microphone is open while the tone plays; the tone and its echo are recorded, but are no
+//! speech ([`Listener::chime`]).
+//!
 //! [`CoreAssistant`] is the way to the core: it sends the sentence as `assistant.send_message`
 //! (`spoken`, so the answer is short) to the conversation of the conversation by voice with the model
 //! chosen there (issue #852), else to "Voice" with the chat model of the settings, the one used last
@@ -19,6 +24,7 @@
 //! nothing else: no request it builds can decide an approval, so no word spoken ever allows anything
 //! ([`CoreAssistant::REQUESTS`]).
 
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use torro_core::ai::Effort;
@@ -143,6 +149,14 @@ pub fn speakable_up_to(markdown: &str, most: usize) -> String {
         None => format!("{cut}…"),
     }
 }
+
+/// How many frames before the wake word was heard begin the sentence (issue #829), about half a
+/// second: the wake word is heard a little after it was said, and whoever goes on in one breath has
+/// begun the sentence by then.
+pub const BEFORE: usize = FRAMES_PER_SECOND / 2;
+
+/// How many frames of echo follow the tone, which count as no speech either.
+const ECHO: usize = 1;
 
 /// How long a conversation by voice waits in silence for the next sentence before it ends (issue
 /// #849), in seconds. Long, so thinking aloud or a pause does not end it; the limit only guards a
@@ -273,6 +287,8 @@ impl<A: Assistant> Listener<'_, A> {
         let mut stream = self.recorder.open()?;
         (self.report)(VoiceState::Listening);
         let mut floor = NoiseFloor::default();
+        // The last frames, the one with the wake word among them: the sentence begins with them.
+        let mut before: VecDeque<Vec<i16>> = VecDeque::with_capacity(BEFORE + 1);
         let mut frames = 0usize;
         loop {
             let Some(frame) = stream.frame()? else { return Ok(Ended::RecordingStopped) };
@@ -290,10 +306,17 @@ impl<A: Assistant> Listener<'_, A> {
                     Look::Go(_) => {}
                 }
             }
-            if self.wake.hears(&frame)? {
+            let heard = self.wake.hears(&frame)?;
+            if !heard {
+                floor.follow(rms(&frame));
+            }
+            before.push_back(frame);
+            if before.len() > BEFORE {
+                before.pop_front();
+            }
+            if heard {
                 break;
             }
-            floor.follow(rms(&frame));
         }
         self.floor = floor;
         // Heard while something was read aloud: it may be the reading's voice, not the person's.
@@ -304,8 +327,10 @@ impl<A: Assistant> Listener<'_, A> {
             return Ok(Ended::Nothing);
         };
         (self.report)(VoiceState::Recording);
-        self.speaker.chime();
-        let mut sentence = Vec::new();
+        let tone = self.chime();
+        // What was said before the wake word was heard is part of the sentence, but the end of the
+        // sentence is decided by what follows: "Hey Torro" alone is no sentence.
+        let mut sentence: Vec<i16> = before.into_iter().flatten().collect();
         let mut end = Endpoint::new(floor, self.limits);
         let mut frames = 0usize;
         while let Some(frame) = stream.frame()? {
@@ -318,7 +343,7 @@ impl<A: Assistant> Listener<'_, A> {
                 return Ok(Ended::Nothing);
             }
             sentence.extend_from_slice(&frame);
-            if end.push(&frame) {
+            if frames > tone && end.push(&frame) {
                 break;
             }
         }
@@ -328,6 +353,16 @@ impl<A: Assistant> Listener<'_, A> {
         let ended = self.answer(voice, &sentence, end.heard_speech(), end.trailing_quiet(), None, readings);
         self.wake.reset();
         Ok(ended)
+    }
+
+    /// Plays the tone with the microphone open (issue #829): the frames that come meanwhile are
+    /// recorded, so words said with the tone are kept. Answers how many frames the tone took, with
+    /// its echo: they count as no speech, so the tone alone never makes a sentence.
+    fn chime(&mut self) -> usize {
+        let started = Instant::now();
+        self.speaker.chime();
+        let played = usize::try_from(started.elapsed().as_millis()).unwrap_or(usize::MAX);
+        played.saturating_mul(FRAMES_PER_SECOND).div_ceil(1000) + ECHO
     }
 
     /// The next sentence of the conversation by voice `talk` (issue #747): the tone, then up to
@@ -343,15 +378,15 @@ impl<A: Assistant> Listener<'_, A> {
             std::thread::sleep(self.pause);
             return Ok(Ended::Nothing);
         }
-        // The tone before the microphone opens: it is no sentence of the person's.
-        if chime {
-            self.speaker.chime();
-        }
+        // The microphone opens before the tone (issue #829): whoever speaks at once loses no word, and
+        // the tone itself is no sentence of the person's.
+        let mut stream = self.recorder.open()?;
+        let tone = if chime { self.chime() } else { 0 };
         let Some(readings) = self.quiet_now() else {
+            drop(stream);
             self.quiet();
             return Ok(Ended::Nothing);
         };
-        let mut stream = self.recorder.open()?;
         (self.report)(VoiceState::Conversing);
         // The wait for the first word comes on top of the longest sentence.
         let wait = TALK_WAIT_SECONDS * FRAMES_PER_SECOND;
@@ -375,6 +410,9 @@ impl<A: Assistant> Listener<'_, A> {
                 }
             }
             sentence.extend_from_slice(&frame);
+            if frames <= tone {
+                continue;
+            }
             ended = end.push(&frame);
             if !recording && end.heard_speech() {
                 recording = true;
@@ -836,6 +874,9 @@ mod tests {
     /// The "file" of a minute of silence, then a sentence.
     const THINKING: &str = "thinking";
 
+    /// The "file" of the tone as the microphone hears it, then the silence of [`PAUSE`] (issue #829).
+    const CHIME: &str = "chime";
+
     /// Plays sound files as the microphone and counts how often it was opened.
     struct Files {
         files: VecDeque<&'static str>,
@@ -855,9 +896,15 @@ mod tests {
             *self.opened.borrow_mut() += 1;
             let name = self.files.pop_front().unwrap_or("silence.wav");
             // Longer than a conversation by voice waits: silence that ends it, not a stopped program.
+            let frames = (TALK_WAIT_SECONDS + 2) * super::super::audio::FRAMES_PER_SECOND;
+            let silence = (0..frames).map(|_| vec![0; FRAME]);
             if name == PAUSE {
-                let frames = (TALK_WAIT_SECONDS + 2) * super::super::audio::FRAMES_PER_SECOND;
-                return Ok(Box::new(Frames((0..frames).map(|_| vec![0; FRAME]).collect())));
+                return Ok(Box::new(Frames(silence.collect())));
+            }
+            if name == CHIME {
+                let mut tone = super::super::audio::chime();
+                tone.resize(tone.len().next_multiple_of(FRAME), 0);
+                return Ok(Box::new(Frames(tone.chunks(FRAME).map(<[i16]>::to_vec).chain(silence).collect())));
             }
             // A minute of thinking before the sentence: far longer than the old eight seconds (#849).
             if name == THINKING {
@@ -901,12 +948,31 @@ mod tests {
         }
     }
 
-    /// Counts its tones.
-    struct Tone(Rc<RefCell<usize>>);
+    /// Notes for each tone how often the microphone had been opened by then, and takes `lasts` to play.
+    #[derive(Default)]
+    struct Tone {
+        opened_at: Rc<RefCell<Vec<usize>>>,
+        opened: Rc<RefCell<usize>>,
+        lasts: Duration,
+    }
 
     impl Speaker for Tone {
         fn chime(&mut self) {
-            *self.0.borrow_mut() += 1;
+            self.opened_at.borrow_mut().push(*self.opened.borrow());
+            std::thread::sleep(self.lasts);
+        }
+    }
+
+    /// Understands `text` every time and keeps what it was given.
+    struct Keeps {
+        text: &'static str,
+        given: Rc<RefCell<Vec<Vec<i16>>>>,
+    }
+
+    impl Transcriber for Keeps {
+        fn transcribe(&mut self, samples: &[i16]) -> Result<String, VoiceError> {
+            self.given.borrow_mut().push(samples.to_vec());
+            Ok(self.text.to_string())
         }
     }
 
@@ -1063,6 +1129,8 @@ mod tests {
         sent: Vec<Request>,
         opened: usize,
         chimes: usize,
+        /// How often the microphone had been opened at each tone.
+        tones: Vec<usize>,
         windows: Vec<String>,
         states: Vec<VoiceState>,
         talk: Option<Talk>,
@@ -1072,6 +1140,17 @@ mod tests {
 
     /// The listener on `files`, waking at frame `wake`, hearing `heard` in order, with the core `core`.
     fn run(core: Core, files: &[&'static str], wake: Option<usize>, heard: &[&'static str]) -> Run {
+        run_with(core, files, wake, Box::new(Says(heard.iter().copied().collect())), Duration::ZERO)
+    }
+
+    /// [`run`] with the transcriber `transcriber` and a tone that takes `tone` to play.
+    fn run_with(
+        core: Core,
+        files: &[&'static str],
+        wake: Option<usize>,
+        transcriber: Box<dyn Transcriber>,
+        tone: Duration,
+    ) -> Run {
         let core = Rc::new(RefCell::new(core));
         let windows = Rc::new(RefCell::new(Vec::new()));
         let (ask_core, shown) = (Rc::clone(&core), Rc::clone(&windows));
@@ -1081,7 +1160,7 @@ mod tests {
             Duration::ZERO,
             Duration::from_secs(5),
         );
-        let (chimes, opened) = (Rc::new(RefCell::new(0)), Rc::new(RefCell::new(0)));
+        let (chimes, opened) = (Rc::new(RefCell::new(Vec::new())), Rc::new(RefCell::new(0)));
         let states = Rc::new(RefCell::new(Vec::new()));
         let voice = core.borrow().voice.clone();
         let reported = Rc::clone(&states);
@@ -1090,8 +1169,8 @@ mod tests {
         let mut listener = Listener {
             recorder: Box::new(Files { files: files.iter().copied().collect(), opened: Rc::clone(&opened) }),
             wake: Box::new(WakeAt { at: wake, seen: 0 }),
-            transcriber: Box::new(Says(heard.iter().copied().collect())),
-            speaker: Box::new(Tone(Rc::clone(&chimes))),
+            transcriber,
+            speaker: Box::new(Tone { opened_at: Rc::clone(&chimes), opened: Rc::clone(&opened), lasts: tone }),
             assistant: &mut assistant,
             report: Box::new(move |state| reported.borrow_mut().push(state)),
             heard: Box::new(move |round| rounds.borrow_mut().push(round)),
@@ -1107,7 +1186,8 @@ mod tests {
         Run {
             sent: core.sent.clone(),
             opened: *opened.borrow(),
-            chimes: *chimes.borrow(),
+            chimes: chimes.borrow().len(),
+            tones: chimes.borrow().clone(),
             windows: windows.borrow().clone(),
             states: states.borrow().clone(),
             talk: core.talk.clone(),
@@ -1145,6 +1225,39 @@ mod tests {
         let quiet = Voice { speak_answers: false, ..on() };
         let silent = run(Core::new(quiet), &["utterance.wav", PAUSE], Some(2), &[" Hey Torro, what is on today?"]);
         assert!(messages(&silent.sent).len() == 1 && silent.heard.is_empty(), "sent, but not timed");
+    }
+
+    /// Issue #829: "Hey Torro, what is on today?" in one breath arrives whole: the sentence begins half a
+    /// second before the wake word was heard, and the microphone stays open through the tone.
+    #[test]
+    fn the_sentence_begins_before_the_wake_word_was_heard() {
+        let given = Rc::new(RefCell::new(Vec::new()));
+        let keeps = Keeps { text: " Hey Torro, what is on today?", given: Rc::clone(&given) };
+        // The fixture speaks in frames 4 to 10; the wake word is heard in the middle of it.
+        let run = run_with(Core::new(on()), &["utterance.wav"], Some(6), Box::new(keeps), Duration::ZERO);
+        let Request::SendMessage { text, .. } = messages(&run.sent)[0] else { unreachable!() };
+        assert_eq!(text, "what is on today?");
+        assert_eq!(run.tones[0], 1, "the microphone was open with the tone");
+        let file = fixture("utterance.wav");
+        let sentence = &given.borrow()[0];
+        let from = (6 - BEFORE) * FRAME;
+        assert!(sentence.len() > BEFORE * FRAME, "the sentence goes on after the wake word");
+        assert!(sentence[..] == file[from..from + sentence.len()], "the file from half a second before the wake word");
+    }
+
+    /// Issue #829: in a conversation by voice the microphone opens before the tone; the tone and its echo
+    /// are recorded but are no speech, so a tone into silence ends the conversation without a sentence.
+    #[test]
+    fn the_tone_is_heard_but_is_no_speech() {
+        let given = Rc::new(RefCell::new(Vec::new()));
+        let keeps = Keeps { text: "", given: Rc::clone(&given) };
+        let core = Core { talk: talk_in(Some("a1")), ..Core::new(Voice::default()) };
+        let run = run_with(core, &[CHIME], None, Box::new(keeps), Duration::from_millis(200));
+        assert_eq!(run.tones, [1, 1], "the microphone was open with the tone, then the closing tone");
+        assert!(given.borrow().is_empty(), "nothing to understand");
+        assert!(!run.states.contains(&VoiceState::Recording), "{:?}", run.states);
+        assert_eq!(count(&run.sent, &Request::EndTalk), 1, "silence ended it");
+        assert!(messages(&run.sent).is_empty());
     }
 
     #[test]
@@ -1407,7 +1520,7 @@ mod tests {
             recorder: Box::new(Files { files: VecDeque::new(), opened: Rc::clone(&opened) }),
             wake: Box::new(WakeAt { at: None, seen: 0 }),
             transcriber: Box::new(Says(VecDeque::new())),
-            speaker: Box::new(Tone(Rc::default())),
+            speaker: Box::new(Tone::default()),
             assistant: &mut assistant,
             report: Box::new(|_| {}),
             heard: Box::new(|_| {}),
