@@ -44,6 +44,10 @@ pub const MAX_TILES: usize = 256;
 /// How long the lookup waits after `busy` before it asks again.
 pub const BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// How long a tile that could not be had waits before the next view asks for it again: the tile
+/// service may be back, but a view moved while it is away should not ask in a loop.
+pub const TILE_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// How many `busy` in a row the lookup takes before it pauses (about a minute).
 pub const BUSY_LIMIT: u32 = 60;
 
@@ -129,9 +133,9 @@ pub struct MapState {
     pub loaded: bool,
     pub tiles: HashMap<TileKey, Handle>,
     order: VecDeque<TileKey>,
-    /// Tiles asked for and not back yet, and those that could not be had (until the next answer).
+    /// Tiles asked for and not back yet, and those that could not be had, with when.
     wanted: HashSet<TileKey>,
-    failed: HashSet<TileKey>,
+    failed: HashMap<TileKey, std::time::Instant>,
     /// Whether `tiles` are the dark ones.
     dark: bool,
     /// The selected pin ([`pin_key`]).
@@ -163,7 +167,7 @@ impl Default for MapState {
             tiles: HashMap::new(),
             order: VecDeque::new(),
             wanted: HashSet::new(),
-            failed: HashSet::new(),
+            failed: HashMap::new(),
             dark: false,
             selected: None,
             card: None,
@@ -194,6 +198,13 @@ impl MapState {
         self.pins.iter().find(|pin| pin_key(&pin.id, pin.address) == key)
     }
 
+    /// Marks `key` as failed at `at` (for tests of [`TILE_RETRY`]).
+    #[cfg(test)]
+    pub fn failed_at(&mut self, key: TileKey, at: std::time::Instant) {
+        self.wanted.remove(&key);
+        self.failed.insert(key, at);
+    }
+
     /// Keeps `handle` for `key`.
     fn keep_tile(&mut self, key: TileKey, handle: Handle) {
         if self.tiles.insert(key, handle).is_none() {
@@ -216,12 +227,13 @@ impl MapState {
         self.order = kept;
     }
 
-    /// The tiles of the view that are neither here nor asked for nor failed.
+    /// The tiles of the view that are neither here nor asked for nor failed within [`TILE_RETRY`].
     pub fn missing_tiles(&self, size: Size) -> Vec<TileKey> {
         tile_map::visible_tiles(self.camera, size)
             .into_iter()
             .map(|(key, _)| key)
-            .filter(|key| !self.tiles.contains_key(key) && !self.wanted.contains(key) && !self.failed.contains(key))
+            .filter(|key| !self.tiles.contains_key(key) && !self.wanted.contains(key))
+            .filter(|key| self.failed.get(key).is_none_or(|at| at.elapsed() >= TILE_RETRY))
             .collect()
     }
 
@@ -465,7 +477,7 @@ impl App {
                     match picture {
                         Some(handle) => self.map.keep_tile(key, handle),
                         None => {
-                            self.map.failed.insert(key);
+                            self.map.failed.insert(key, std::time::Instant::now());
                         }
                     }
                 }

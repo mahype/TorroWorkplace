@@ -877,6 +877,20 @@ async fn only_missing_tiles_are_asked_for() {
     assert!(app.map.tiles.len() <= crate::map_view::MAX_TILES);
 }
 
+/// Review of #860: a tile that could not be had is asked again after a while, not only at the next load.
+#[tokio::test]
+async fn a_failed_tile_is_asked_again_after_a_while() {
+    let mut app = on_map().await;
+    let size = app.map_size();
+    let (key, _) = torro_gui::tile_map::visible_tiles(app.map.camera, size)[0];
+    let now = std::time::Instant::now();
+    app.map.failed_at(key, now);
+    assert!(!app.map.missing_tiles(size).contains(&key), "not at once");
+    let Some(earlier) = now.checked_sub(crate::map_view::TILE_RETRY) else { return };
+    app.map.failed_at(key, earlier);
+    assert!(app.map.missing_tiles(size).contains(&key), "again after the wait");
+}
+
 #[tokio::test]
 async fn a_pin_selects_its_row_and_opens_its_card() {
     let mut app = on_map().await;
