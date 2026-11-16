@@ -2219,9 +2219,9 @@ impl App {
         self.reset_chat(Some(id));
         // What the old conversation reads stops at once, not only once the new one loaded.
         let stopped = self.leave_reading();
-        if self.chosen != Chosen::Person {
-            self.chosen = Chosen::Default;
-        }
+        // A pick of the picker belongs to the conversation it was made in (the core keeps it there, issue
+        // #852): another conversation answers with its own model, typed and spoken alike.
+        self.chosen = Chosen::Default;
         self.choose_default();
         Task::batch([self.open_current(), stopped])
     }

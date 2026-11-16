@@ -643,8 +643,14 @@ fn a_model_picked_in_a_conversation_goes_to_the_core_at_once() {
     let _ = app.update(Message::PickEffort(Some(torro_core::ai::Effort::High)));
     assert!(sent(&mut app).is_empty(), "a new chat keeps the choice until its first message");
 
+    // Another conversation answers with its own model, not with a pick made elsewhere.
+    let _ = app.update(Message::Select(TOOLS.into()));
+    settle(&mut app);
+    let _ = app.update(Message::Pick(pick.clone()));
+    settle(&mut app);
     let _ = app.update(Message::Select(BOT_CHAT.into()));
     settle(&mut app);
+    assert_ne!(app.choice.as_ref(), Some(&pick), "the pick stays with its conversation");
     let _ = app.update(Message::Pick(pick));
     assert!(
         !sent(&mut app).iter().any(|request| matches!(request, Request::ChooseModel { .. })),
