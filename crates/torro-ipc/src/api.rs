@@ -2043,6 +2043,7 @@ impl Request {
             Request::CheckAbout { .. } => &CHECK_ABOUT,
             Request::CancelAnswer { .. } => &CANCEL,
             Request::RenameConversation { .. } => &RENAME_CONVERSATION,
+            Request::ChooseModel { .. } => &CHOOSE_MODEL,
             Request::DeleteConversation { .. } => &DELETE_CONVERSATION,
             Request::PinConversation { .. } => &PIN_CONVERSATION,
             Request::ArchiveConversations { .. } => &ARCHIVE_CONVERSATIONS,
@@ -2508,6 +2509,7 @@ pub static CATALOGUE: &[&Command] = &[
     &CHECK_ABOUT,
     &CANCEL,
     &RENAME_CONVERSATION,
+    &CHOOSE_MODEL,
     &DELETE_CONVERSATION,
     &PIN_CONVERSATION,
     &ARCHIVE_CONVERSATIONS,
@@ -6221,6 +6223,16 @@ static RENAME_CONVERSATION: Command = Command {
     description: "Gives a conversation of the assistant a new title: one line, at most 200 characters.",
 };
 
+static CHOOSE_MODEL: Command = Command {
+    name: "assistant.choose_model",
+    area: Area::Assistant,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Chooses the engine, model and effort that answer the next message in a conversation of the \
+                  assistant, typed or spoken; the conversation's summary names it from then on. Not for a \
+                  conversation with a bot, which keeps the bot's model.",
+};
+
 static DELETE_CONVERSATION: Command = Command {
     name: "assistant.delete_conversation",
     area: Area::Assistant,
@@ -7569,6 +7581,12 @@ mod tests {
             },
             Request::CancelAnswer { conversation: "0123456789abcdef".into() },
             Request::RenameConversation { id: "0123456789abcdef".into(), title: "Tomorrow".into() },
+            Request::ChooseModel {
+                id: "0123456789abcdef".into(),
+                engine: "ai:ollama@localhost:11434".into(),
+                model: Some("qwen3:8b".into()),
+                effort: None,
+            },
             Request::DeleteConversation { id: "0123456789abcdef".into() },
             Request::PinConversation { id: "0123456789abcdef".into(), pinned: true },
             Request::ArchiveConversations { ids: vec!["0123456789abcdef".into()], archived: true },
