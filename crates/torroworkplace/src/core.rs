@@ -14815,8 +14815,11 @@ impl Core {
         let mut sentences = crate::assistant::sentences::Sentences::with_most(SPOKEN_MOST);
         let mut reader: Option<Reader<'_>> = None;
         let mut over = false;
+        // When the answer is looked at next: every READ_EVERY, however many lines and how much sound come between.
+        let mut look = tokio::time::Instant::now();
         loop {
-            if !over {
+            if !over && tokio::time::Instant::now() >= look {
+                look = tokio::time::Instant::now() + READ_EVERY;
                 let (pieces, ends) = match self.speech.is_current(number) {
                     // Stopped: nothing more is given; a job that runs reads on to its `done`.
                     false => (Vec::new(), true),
@@ -14849,11 +14852,11 @@ impl Core {
                 }
             }
             let Some(open) = reader.as_mut() else {
-                tokio::time::sleep(READ_EVERY).await;
+                tokio::time::sleep_until(look).await;
                 continue;
             };
             let event = tokio::select! {
-                () = tokio::time::sleep(READ_EVERY), if !over => None,
+                () = tokio::time::sleep_until(look), if !over => None,
                 event = open.wait() => Some(event),
             };
             if let Some(event) = event
