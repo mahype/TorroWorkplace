@@ -41,7 +41,9 @@
 //!   nothing else of its area (`torro_ipc::api::own_memory`).
 //! - **Skills** (issue #703, [`skills`]): `<config>/assistant/skills/<8 hex>/SKILL.md`, changed under
 //!   the same lock. The prompt names each in one line; the text comes with `assistant.get_skill`. A
-//!   bot's client reads its bot's own skills ([`skills::read_answer`], answered by the core).
+//!   bot's client reads its bot's own skills ([`skills::read_answer`], answered by the core). The
+//!   built-in skills (issue #832, [`skills::built_in`]) are read the same way and come first; no skill of
+//!   the person may take one of their names.
 //!
 //! - **Bots** (task B.1, [`crate::bots`]): a conversation may be with a bot (`bots.ask_bot`, or
 //!   `assistant.send_message` with `bot`). It keeps the bot's id ([`ConversationSummary::bot`]), runs
@@ -1342,16 +1344,21 @@ impl Assistant {
 
     /// What `assistant.get_skill`, `save_skill` or `delete_skill` would be refused with anyway,
     /// checked before anyone is asked to approve it and again by the handlers: a skill that is not
-    /// there (`not-found`), a name that belongs to another skill (`conflict`), a new skill beyond
+    /// there (`not-found`; one to read may also be built in, issue #832), a name that belongs to another
+    /// skill or to a built-in one (`conflict`: the person's skills never replace those), a new skill beyond
     /// [`MAX_SKILLS`] (`error`). `None` for every other request.
     pub async fn skill_refusal(&self, request: &Request) -> Option<Response> {
         let (name, replaces) = match request {
+            Request::GetSkill { name } if skills::is_built_in(name) => return None,
             Request::GetSkill { name } | Request::DeleteSkill { name } => {
                 return self.skill(name).await.is_none().then(|| no_skill(name));
             }
             Request::SaveSkill { name, replaces, .. } => (name, replaces.as_deref()),
             _ => return None,
         };
+        if skills::is_built_in(name) {
+            return Some(built_in_taken(name));
+        }
         let skills = self.skills().await;
         let named = |wanted: &str| skills.iter().any(|stored| stored.skill.is_named(wanted));
         match replaces {
@@ -1459,6 +1466,11 @@ pub async fn answer_own(assistant: &Assistant, request: Request, sees_local: boo
             assistant.remember(&text, replaces.as_deref(), local_only, sees_local).await
         }
         Request::Forget { id } => assistant.forget(&id, sees_local).await,
+        // A built-in skill first (issue #832): one of the person's of the same name never stands in for it.
+        Request::GetSkill { name } if skills::is_built_in(&name) => match skills::built_in_named(&name) {
+            Some(skill) => Response::Skill { skill },
+            None => no_skill(&name),
+        },
         request @ (Request::ListSkills | Request::GetSkill { .. }) => {
             let skills: Vec<Skill> = assistant.skills().await.into_iter().map(|stored| stored.skill).collect();
             skills::read_answer(&skills, &request).unwrap_or_else(|| failure("no skill to read"))
@@ -1487,6 +1499,11 @@ fn no_skill(name: &str) -> Response {
 /// The `conflict` answer for a skill whose name another skill has.
 fn taken(name: &str) -> Response {
     Response::Error { code: "conflict".into(), message: format!("another skill is called {:?}", name.trim()) }
+}
+
+/// The `conflict` answer for a skill of the person named like a built-in one (issue #832).
+fn built_in_taken(name: &str) -> Response {
+    Response::Error { code: "conflict".into(), message: format!("a built-in skill is called {:?}", name.trim()) }
 }
 
 /// The `error` answer for a new skill beyond [`MAX_SKILLS`].

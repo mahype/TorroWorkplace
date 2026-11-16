@@ -34935,6 +34935,49 @@ done"#,
         }
     }
 
+    /// Issue #832: the built-in skills are read like the assistant's own, with the app key and by its client,
+    /// never by a bot; no skill of the person takes one of their names.
+    #[tokio::test]
+    async fn the_built_in_skills_are_read_and_never_replaced() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant()).await.expect("client");
+        let Response::Skill { skill } = core.handle(Request::GetSkill { name: "torro inbox".into() }).await else {
+            panic!("the built-in skill")
+        };
+        assert_eq!(skill.name, "Torro Inbox");
+        assert!(skill.text.contains("inbox_list_items"), "{}", skill.text);
+        let ran = Host::run(&core, Request::GetSkill { name: "Torro Inbox".into() }, "test", false).await;
+        assert!(matches!(ran, Response::Skill { .. }), "by the assistant's client: {ran:?}");
+
+        let save = |name: &str| Request::SaveSkill {
+            name: name.into(),
+            description: String::new(),
+            text: "Mine.".into(),
+            replaces: None,
+        };
+        assert_eq!(code(&core.handle(save("Torro Mail")).await), "conflict");
+        assert_eq!(code(&core.handle(save(" voice  CONVERSATION ")).await), "conflict");
+        assert!(matches!(core.handle(save("Offers")).await, Response::Skill { .. }));
+        let rename = Request::SaveSkill {
+            name: "Torro Tasks".into(),
+            description: String::new(),
+            text: "Mine.".into(),
+            replaces: Some("Offers".into()),
+        };
+        assert_eq!(code(&core.handle(rename).await), "conflict", "not by renaming either");
+        // The list stays the person's own (decision 3 of the plan).
+        let Response::Skills { skills } = core.handle(Request::ListSkills).await else { panic!("the skills") };
+        assert_eq!(skills.iter().map(|skill| skill.name.as_str()).collect::<Vec<_>>(), ["Offers"]);
+        assert_eq!(code(&core.handle(Request::DeleteSkill { name: "Torro Mail".into() }).await), "not-found");
+
+        // A bot reads its own skills only (issue #703), the built-in ones are not among them.
+        let bot = bot_of(core.handle(new_bot("Travel planner")).await);
+        let (_, key) = core.clients.new_key(&bot.client).await.expect("a key to try it with");
+        assert_eq!(code(&ask(&core, Some(&key), Request::GetSkill { name: "Torro Mail".into() }).await), "not-found");
+    }
+
     /// Task C.2: a command that waits for a person shows as an approval in the conversation; the
     /// answer goes on once they allow it (the command ran) or deny it (the model hears so).
     #[tokio::test]
