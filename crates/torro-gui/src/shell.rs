@@ -889,6 +889,18 @@ pub fn head_inset(class: SizeClass, choice: SidebarMode, zoom: f32) -> f32 {
     }
 }
 
+/// What the panel button takes in the compact lead, with its gap: a window without it (the assistant's chat
+/// window) has this much more room after [`head_inset`].
+pub fn panel_button_room() -> f32 {
+    size::control_sm() + SIDEBAR_GAP
+}
+
+/// What the settings button takes at the top row's right end, with the gap to the window's edge, at the zoom
+/// factor `zoom`: for a header that measures its own room, as a narrow title does.
+pub fn settings_room(zoom: f32) -> f32 {
+    settings_edge() + settings_gap(zoom)
+}
+
 /// The room the lights take at the left of the top row, in layout units: [`LIGHTS_ROOM`] points on
 /// macOS, the gap of the row's edge elsewhere.
 fn lights_room(zoom: f32) -> f32 {

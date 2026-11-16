@@ -657,9 +657,12 @@ impl App {
     fn narrow_title<'a>(&self, title: String, buttons: usize, words: f32) -> Element<'a, Message> {
         let class = SizeClass::Narrow;
         let button = size::control_sm() + space::s();
-        let fixed = shell::head_inset(class, self.sidebar, self.zoom.factor())
+        // A chat window's top row has no panel button (issue #831).
+        let lead = shell::head_inset(class, self.sidebar, self.zoom.factor())
+            - if self.chat_only { shell::panel_button_room() } else { 0.0 };
+        let fixed = lead
             + 2.0 * space::s()
-            + button
+            + shell::settings_room(self.zoom.factor())
             + header_avatar()
             + space::s()
             + space::s();
