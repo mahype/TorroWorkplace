@@ -107,7 +107,12 @@ Was offene Modelle brauchen, damit das gut geht:
   das ganze Fenster: 100 % heißt „ab hier kürzt der Kern“. Das Chatfenster zeigt sie im Kopf, ab mittlerer Breite
   mit Balken, schmal nur als Zahl, nach dem Kürzen „Shortened“; der Tooltip nennt Tokens, Grenze und Fenster. Ohne
   Messung (neuer Chat, Agent als Engine, vor der ersten Antwort, ältere Unterhaltungen) fehlt das Feld und die
-  Anzeige. Eine getippte Nachricht zählt erst mit der nächsten Antwort.
+  Anzeige. Eine getippte Nachricht zählt erst mit der nächsten Antwort. Der Wert gehört zu Engine und Modell der
+  Antwort, die ihn gemessen hat: Wechselt die Unterhaltung auf ein anderes Modell oder einen Agenten, fehlt er bis zur
+  nächsten Antwort. Ändert sich das Standardmodell eines Kontos oder sein Kontextfenster, ohne dass die Nachrichten
+  ein Modell nennen, oder kommt die Unterhaltung über einen Agenten zum selben Modell zurück, zeigt er bis zur
+  nächsten Antwort noch den alten Stand. Füllstand und Antwort werden zusammen gespeichert; eine gestoppte Antwort
+  hinterlässt keinen.
 - **Ehrlich bei Grenzen:** Kann ein lokales Modell keine Werkzeuge, sagt die Auswahl das, statt es
   still schlecht zu machen.
 
@@ -833,7 +838,8 @@ höchstens ein Modell, und das lädt ein Knopf in Einstellungen › Assistent �
   Einstellung „New conversation after a pause“ (Assistant › Voice › Conversation, `voice_new_after`, 0 bis 240
   Minuten in Viertelstunden, ohne Wahl 30, „Never“ = 0), beginnt „Hey Torro“ ein neues „Voice“. Das alte bleibt in der
   Liste und heißt danach „Voice · 2026-11-15 09:12“ (Datum und Uhrzeit seines Beginns); gibt es mehrere „Voice“,
-  zählt das neueste. Läuft dort noch eine Antwort, geht es weiter wie bisher; ein Gespräch, das die Person selbst
+  zählt das neueste. Umbenannt wird das alte erst, wenn das neue angelegt ist; scheitert das Senden, bleibt es, wie
+  es war. Läuft dort noch eine Antwort, geht es weiter wie bisher; ein Gespräch, das die Person selbst
   umbenannt hat, heißt nicht mehr „Voice“ und bleibt unberührt.
 - **Technisch:** Das Lauschen läuft als eigener Prozess `torroassistant --listen` (Mikrofon und
   Modelle getrennt vom Dienst), erkannter Text geht als `assistant.send_message` an den Kern.

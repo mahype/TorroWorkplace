@@ -9397,7 +9397,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Ältere Teile wurden gekürzt: etwa {used} Tokens, mehr als die {limit}, die passen · Kontextfenster {window}",
     ),
     ("{title} · {date}", "{title} · {date}"),
-    ("New conversation after a pause", "Neues Gespräch nach einer Pause"),
+    ("New conversation after a pause", "Neues Gespräch nach Pause"),
     (
         "“Hey Torro” starts a new Voice conversation after this long without a word",
         "„Hey Torro“ beginnt nach so langer Stille ein neues Sprachgespräch",
