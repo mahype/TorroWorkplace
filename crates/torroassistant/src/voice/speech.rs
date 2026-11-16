@@ -802,10 +802,16 @@ impl<W: FnMut(Output)> Helper<W> {
         if self.left == 0 {
             return String::new();
         }
-        let text = speakable_up_to(text, self.left);
+        let whole = speakable_up_to(text, usize::MAX);
+        if whole.chars().count() > self.left {
+            // Cut here, the job has read its most: a later short sentence would skip what was cut.
+            let cut = speakable_up_to(text, self.left);
+            self.left = 0;
+            return cut;
+        }
         // The space that joins it to the next text counts too.
-        self.left = self.left.saturating_sub(text.chars().count() + 1);
-        text
+        self.left = self.left.saturating_sub(whole.chars().count() + 1);
+        whole
     }
 
     /// Reads on with `text` in the open job (issue #850); nothing without one.
@@ -1491,6 +1497,7 @@ mod tests {
         helper.handle(Event::Input(Input::Add("Drei.".into())), &sender);
         assert_eq!(said.borrow().len(), count + 1, "still an answer to the add");
         assert_eq!(said.borrow().last(), Some(&Output::Pieces(Vec::new())), "but nothing more to read");
+        assert_eq!(helper.left, 0, "a cut text uses up the job");
         helper.handle(Event::Input(Input::End), &sender);
         assert_eq!(said.borrow().last(), Some(&Output::Done), "no sound came: done at once");
     }
