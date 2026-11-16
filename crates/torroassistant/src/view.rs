@@ -1333,15 +1333,18 @@ impl App {
 
     /// The line in place of the composer during this window's conversation by voice (issue #747),
     /// built like the empty composer so nothing moves: in its frame and as high, a dot and what the
-    /// listener does in words – listening, recording, answering – on the line of the placeholder, and
-    /// "End talk" (also Escape) where "Send" stands.
+    /// voice chat does in words – listening, recording, recognizing, thinking, looking at the calendar,
+    /// speaking (issue #830) – on the line of the placeholder, and "End talk" (also Escape) where "Send"
+    /// stands. It is the only place the window shows the state, so it is not said twice.
     fn talk_line(&self, talk: &torro_ipc::Talk) -> Element<'_, Message> {
         use torro_ipc::VoiceState;
-        let (status, doing) = match talk.state {
-            VoiceState::Recording => (widgets::Status::Attention, tr("Recording …")),
-            VoiceState::Answering => (widgets::Status::Inactive, tr("Answering …")),
-            _ => (widgets::Status::Ok, tr("Listening…")),
+        // The dot is about the microphone: red while it records, green while it waits for the person.
+        let status = match talk.state {
+            VoiceState::Recording => widgets::Status::Attention,
+            VoiceState::Listening | VoiceState::Conversing => widgets::Status::Ok,
+            _ => widgets::Status::Inactive,
         };
+        let doing = torro_gui::chat::voice_doing(talk.state, talk.tool.as_deref());
         let state = row![widgets::status_dot(status), typo::text(typo::body(), doing).wrapping(Wrapping::None)]
             .spacing(space::s())
             .align_y(Alignment::Center);
