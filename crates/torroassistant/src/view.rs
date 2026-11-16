@@ -34,7 +34,7 @@ use torro_gui::theme::{self, Palette, palette, size, space};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, RowAction, Trail};
 use torro_gui::{layout, markdown, style, typo};
 use torro_ipc::api::Area;
-use torro_ipc::assistant::{ConversationHit, ConversationSummary, EngineKind, Entry, EntryContent};
+use torro_ipc::assistant::{ContextFill, ConversationHit, ConversationSummary, EngineKind, Entry, EntryContent};
 use torro_ipc::{ApprovalInfo, ApprovalState};
 use torro_settings_ui::Frame;
 use torro_settings_ui::assistant as settings;
@@ -618,7 +618,14 @@ impl App {
             (false, _, _) => self.engine_note().map(|engine| format!("{name} · {engine}")),
         };
         let mut trailing = Vec::new();
-        if narrow_main {
+        // How full the conversation's context is (issue #831), only where the core measured it.
+        let fill = self.context_fill();
+        if let Some(fill) = fill {
+            trailing.push(context_fill(fill, class));
+        }
+        // A chat window has no sidebar with "New" either (issue #831); a bot's has "Edit bot" with the same
+        // pen instead.
+        if narrow_main || (self.chat_only && self.chat_bot().is_none()) {
             trailing.push(widgets::icon_button(Icon::SquarePen, tr("New chat"), Some(Message::NewChat)));
         }
         if let Some(id) = self.chat_bot().filter(|_| !self.bot_gone()) {
@@ -631,7 +638,13 @@ impl App {
             trailing.push(widgets::anchored(&anchors.header, more));
         }
         let title = match class {
-            SizeClass::Narrow => self.narrow_title(self.conversation_title(), trailing.len()),
+            SizeClass::Narrow => {
+                // The fill is words, not a button: its own width, so the title keeps what is left (design review).
+                let words = fill
+                    .map_or(0.0, |fill| typo::text_width(&context_label(fill), typo::meta().tabular()) + space::s());
+                let buttons = trailing.len() - usize::from(fill.is_some());
+                self.narrow_title(self.conversation_title(), buttons, words)
+            }
             _ => shell::header_title(None, self.conversation_title(), note),
         };
         shell::header_bar(leading, title, trailing)
@@ -639,8 +652,9 @@ impl App {
 
     /// The title of a narrow header, cut with "…" to the room it has (issue #459) and then shown whole
     /// as tooltip: the window less the top row's lead and settings, the header's padding, the picture
-    /// before the title and `buttons` icon buttons after it.
-    fn narrow_title<'a>(&self, title: String, buttons: usize) -> Element<'a, Message> {
+    /// before the title, `buttons` icon buttons after it and `words` of other things there (the context's fill,
+    /// issue #831).
+    fn narrow_title<'a>(&self, title: String, buttons: usize, words: f32) -> Element<'a, Message> {
         let class = SizeClass::Narrow;
         let button = size::control_sm() + space::s();
         let fixed = shell::head_inset(class, self.sidebar, self.zoom.factor())
@@ -649,12 +663,19 @@ impl App {
             + header_avatar()
             + space::s()
             + space::s();
-        let room = (self.size.width - fixed - buttons as f32 * button).max(0.0);
+        let room = (self.size.width - fixed - buttons as f32 * button - words).max(0.0);
         let shown = typo::ellipsize(&title, typo::body_strong(), room);
         if shown == title {
             return shell::header_title(None, title, None);
         }
         widgets::with_tooltip(shell::header_title(None, shown, None), title)
+    }
+
+    /// How full the open conversation's context was at its latest answer (issue #831): `None` for a new chat, an
+    /// agent's conversation and one before its first answer.
+    pub(crate) fn context_fill(&self) -> Option<ContextFill> {
+        self.current.as_ref()?;
+        self.transcript.summary.as_ref()?.context
     }
 
     /// "Ollama · qwen3:14b": who answered the open conversation last.
@@ -1873,6 +1894,56 @@ fn outcome<'a>(mark: Element<'a, Message>, word: &'a str) -> Element<'a, Message
 /// A quiet line in the sidebar ("No conversations yet").
 fn sidebar_note<'a>(text: &'a str) -> Element<'a, Message> {
     container(typo::text(typo::meta(), text).style(theme::text_3)).padding(style::ITEM_PADDING.top(space::m())).into()
+}
+
+/// How full a conversation's context is, in percent of the limit from which older parts are shortened (issue
+/// #831): 100 once shortened, never more.
+pub(crate) fn context_percent(fill: ContextFill) -> u32 {
+    if fill.shortened {
+        return 100;
+    }
+    let percent = fill.used.saturating_mul(100) / fill.limit.max(1);
+    u32::try_from(percent.min(100)).unwrap_or(100)
+}
+
+/// The words beside the bar: "64%", or "Shortened" once older parts were left out.
+pub(crate) fn context_label(fill: ContextFill) -> String {
+    match fill.shortened {
+        true => tr("Shortened").to_string(),
+        false => trf("{percent}%", &[("percent", &context_percent(fill))]),
+    }
+}
+
+/// The tooltip of the fill: the numbers behind it, "about" since the core counts characters by three.
+pub(crate) fn context_tip(fill: ContextFill) -> String {
+    let numbers: [(&str, &dyn std::fmt::Display); 3] = [
+        ("used", &torro_gui::units::format_count(fill.used)),
+        ("limit", &torro_gui::units::format_count(fill.limit)),
+        ("window", &torro_gui::units::format_count(fill.window)),
+    ];
+    match fill.shortened {
+        true => trf(
+            "Older parts were shortened: about {used} tokens, more than the {limit} that fit · context window {window}",
+            &numbers,
+        ),
+        false => {
+            trf("About {used} of {limit} tokens before older parts are shortened · context window {window}", &numbers)
+        }
+    }
+}
+
+/// The fill in the header (issue #831): a neutral bar with the share from Medium up, in Narrow the words alone;
+/// the numbers in the tooltip.
+fn context_fill<'a>(fill: ContextFill, class: SizeClass) -> Element<'a, Message> {
+    let words = typo::text(typo::meta().tabular(), context_label(fill)).style(theme::text_3).wrapping(Wrapping::None);
+    let shown: Element<'a, Message> = match class {
+        SizeClass::Narrow => words.into(),
+        _ => row![widgets::share_bar(context_percent(fill), 100), words]
+            .spacing(space::s())
+            .align_y(Alignment::Center)
+            .into(),
+    };
+    widgets::with_tooltip(shown, context_tip(fill))
 }
 
 /// The assistant's picture in the header: smaller than a control, so the title keeps its line.
