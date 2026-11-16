@@ -576,6 +576,7 @@ mod tests {
             bot: bot.map(str::to_owned),
             bot_deleted: false,
             about: None,
+            context: None,
         }
     }
 
