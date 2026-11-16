@@ -1070,32 +1070,134 @@ pub const SHOWN_MARK: &str = "---shown---";
 /// as `assistant.speak` reads it.
 pub const SPOKEN_MOST: usize = 600;
 
-/// Splits an answer's text into its spoken and its shown part (issue #774) at the first line that is,
-/// trimmed (and without backticks around it, which models add at times), [`SHOWN_MARK`]: what comes
-/// before is spoken (trimmed only at its end, so it stays a start of the text, which matters while it
-/// is read sentence by sentence), what comes after is shown (trimmed, it may be empty). Without such a
-/// line `(None, text)`; with nothing but blanks before it `(None, shown)`. While the answer is still
-/// written (`running`), a last line that may become the mark (it starts with `-` and is a start of
-/// [`SHOWN_MARK`]) is left out of the text, so the mark never flashes up in the chat.
+/// Splits an answer's text into its spoken and its shown part (issue #774) at the first
+/// [`SHOWN_MARK`]: what comes before is spoken (trimmed only at its end, so it stays a start of the
+/// text, which matters while it is read sentence by sentence), what comes after is shown (trimmed, it
+/// may be empty). Without a mark `(None, text)`; with nothing but blanks before it `(None, shown)`.
+///
+/// Models do not always write the mark as asked (issue #826), so it is found the way they write it:
+/// the word `shown` with dashes around it (hyphens or long dashes, with blanks, bold or backticks),
+/// alone on its line, in the middle of a line or at its end, and split over two lines as a Markdown
+/// rule `---` above `shown---` or `**shown**`. Dashes with blanks around the word mark only at the end
+/// of a line; dashes on the left only mark at the end of a line when they touch the word or stand
+/// above it, dashes on the right only when the mark is alone on its line. So `as shown -- see`,
+/// `the dates — shown — are fixed` and a list item `- true — shown` do not split.
+///
+/// While the answer is still written (`running`), an end of the text that may become the mark is
+/// left out, so no piece of it flashes up in the chat or is read aloud.
 pub fn split_spoken(text: &str, running: bool) -> (Option<String>, String) {
-    let mut at = 0;
-    for line in text.split_inclusive('\n') {
-        if line.trim().trim_matches('`').trim() == SHOWN_MARK {
-            let spoken = text[..at].trim_end().to_owned();
-            let shown = text[at + line.len()..].trim().to_owned();
-            // Nothing before the mark is no spoken part: the answer is read as one without it.
-            return (Some(spoken).filter(|spoken| !spoken.trim().is_empty()), shown);
-        }
-        at += line.len();
+    if let Some((start, end)) = find_mark(text, running) {
+        let spoken = text[..start].trim_end().to_owned();
+        let shown = text[end..].trim().to_owned();
+        // Nothing before the mark is no spoken part: the answer is read as one without it.
+        return (Some(spoken).filter(|spoken| !spoken.trim().is_empty()), shown);
     }
-    if running {
-        let last = text.rfind('\n').map_or(0, |end| end + 1);
-        let tail = text[last..].trim().trim_start_matches('`');
-        if tail.starts_with('-') && SHOWN_MARK.starts_with(tail.trim_end_matches('`')) {
-            return (None, text[..last].to_owned());
-        }
+    if running && let Some(start) = mark_begun(text) {
+        return (None, text[..start].to_owned());
     }
     (None, text.to_owned())
+}
+
+/// The word of [`SHOWN_MARK`], found in any case.
+const MARK_WORD: &str = "shown";
+
+/// A dash as models write it around the mark: a hyphen, or a long or minus dash.
+fn is_dash(c: char) -> bool {
+    matches!(c, '-' | '‐' | '‑' | '‒' | '–' | '—' | '―' | '−')
+}
+
+/// A blank on the mark's line, or the Markdown models wrap it in (bold, italics, code).
+fn is_blank_or_wrap(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '*' | '_' | '`')
+}
+
+/// Dashes that mark: two hyphens or more, or one long dash; a lone hyphen is a list item or a word.
+fn marks(dashes: &str) -> bool {
+    dashes.chars().count() >= 2 || dashes.chars().any(|c| c != '-')
+}
+
+/// Where the chars from `at` on that `keep` holds end.
+fn skip(text: &str, at: usize, keep: impl Fn(char) -> bool) -> usize {
+    text[at..].char_indices().find(|(_, c)| !keep(*c)).map_or(text.len(), |(len, _)| at + len)
+}
+
+/// Where the chars before `at` that `keep` holds begin.
+fn skip_back(text: &str, at: usize, keep: impl Fn(char) -> bool) -> usize {
+    text[..at].char_indices().rev().take_while(|(_, c)| keep(*c)).last().map_or(at, |(start, _)| start)
+}
+
+/// The bytes of the first mark in `text` ([`split_spoken`]), from the blanks before it to the blanks
+/// after it on its line; `running` for an answer still written, whose end is no line end yet.
+fn find_mark(text: &str, running: bool) -> Option<(usize, usize)> {
+    // ASCII lowercase keeps every byte where it is, so its positions hold in `text`.
+    let lower = text.to_ascii_lowercase();
+    let mut from = 0;
+    while let Some(found) = lower[from..].find(MARK_WORD) {
+        let word = from + found;
+        let after = word + MARK_WORD.len();
+        from = after;
+        let alnum = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
+        if alnum(text[..word].chars().next_back()) || alnum(text[after..].chars().next()) {
+            continue;
+        }
+        // Before the word the dashes may stand on the line above: a Markdown rule `---`.
+        let inner = skip_back(text, word, |c| c.is_whitespace() || is_blank_or_wrap(c));
+        let dashes = skip_back(text, inner, is_dash);
+        let left = marks(&text[dashes..inner]);
+        // Tight: only wrap between dashes and word (`---shown`, `—**shown**`); broken: the dashes are a rule above.
+        let tight_left = !text[inner..word].contains(char::is_whitespace);
+        let broken_left = text[inner..word].contains('\n');
+        let start = skip_back(text, if left { dashes } else { word }, is_blank_or_wrap);
+        let inner = skip(text, after, is_blank_or_wrap);
+        let dashes = skip(text, inner, is_dash);
+        let right = marks(&text[inner..dashes]);
+        let tight_right = !text[after..inner].contains(char::is_whitespace);
+        let end = skip(text, if right { dashes } else { after }, is_blank_or_wrap);
+        let line_start = start == 0 || text[..start].ends_with('\n');
+        // While the answer runs, its end is no line end yet: `list — shown` may go on with ` below`.
+        let line_end = text[end..].starts_with(['\n', '\r']) || (end == text.len() && !running);
+        // Spaced dashes are prose in the middle of a line (`the dates — shown — are fixed`), so they mark only
+        // at a line's end, and dashes on one side only when tight, as a rule above or alone on the line.
+        let found = match (left, right) {
+            (true, true) => (tight_left && tight_right) || line_end,
+            (true, false) => line_end && (tight_left || broken_left || line_start),
+            (false, true) => line_start && line_end,
+            (false, false) => false,
+        };
+        if found {
+            return Some((start, end));
+        }
+    }
+    None
+}
+
+/// Where an end of `text` begins that may still become a mark (dashes, then a start of the word, or
+/// a start of the word alone at a line's start), for a running answer ([`split_spoken`]).
+fn mark_begun(text: &str) -> Option<usize> {
+    // A mark is short; only the last chars can be one in the making.
+    let from = text.char_indices().rev().nth(24).map_or(0, |(at, _)| at);
+    text.char_indices()
+        .skip_while(|(at, _)| *at < from)
+        .map(|(at, _)| at)
+        .find(|at| begins_mark(&text[*at..], *at == 0 || text[..*at].ends_with('\n')))
+}
+
+/// Whether `tail` may grow into a mark: blanks or wrap, dashes, blanks (also a line break), the word
+/// as far as it came, then blanks, wrap or dashes. Without dashes the word must start the line.
+fn begins_mark(tail: &str, line_start: bool) -> bool {
+    let rest = tail.trim_start_matches(is_blank_or_wrap);
+    let after_dashes = rest.trim_start_matches(is_dash);
+    let dashed = after_dashes.len() < rest.len();
+    if !dashed && !line_start {
+        return false;
+    }
+    let word = after_dashes.trim_start_matches(|c: char| c.is_whitespace() || is_blank_or_wrap(c));
+    let len = word.find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(word.len());
+    let (start, end) = word.split_at(len);
+    let written = MARK_WORD.get(..start.len()).is_some_and(|part| part.eq_ignore_ascii_case(start));
+    let closed = end.chars().all(|c| is_dash(c) || is_blank_or_wrap(c)) && (end.is_empty() || len == MARK_WORD.len());
+    // Something must be there besides blanks: dashes or a piece of the word.
+    (dashed || !start.is_empty()) && written && closed
 }
 
 /// Where the reading aloud of an answer begins (issue #747, `assistant.speak_answer`): after the last
@@ -1748,8 +1850,75 @@ mod tests {
     fn an_answer_without_the_mark_stays_whole() {
         let text = "Just one part, - with a dash.\nAnd a list:\n- one";
         assert_eq!(split_spoken(text, false), (None, text.to_owned()));
-        // The mark inside a line does not split.
-        assert_eq!(split_spoken("Say ---shown--- here", false).0, None);
+        // The word in a sentence is no mark, not even with dashes on one side of it.
+        for text in [
+            "As shown -- see the list.",
+            "The dates — shown in the list — are fixed.",
+            "Here is the list — shown below.",
+            "A showroom --- open",
+            "Shown: the list\n- one",
+            "---\nShown are the dates.",
+            "Options:\n- `true` — shown\n- `false` — hidden",
+            "hidden -- shown\nvisible",
+            "The dates — shown — are fixed.",
+        ] {
+            assert_eq!(split_spoken(text, false), (None, text.to_owned()), "{text}");
+        }
+    }
+
+    /// The mark as a model really wrote it (issue #826, from stored answers of `glm-5.3-flash` via Ollama,
+    /// words masked): the dashes as a Markdown rule on the line above the word.
+    #[test]
+    fn a_mark_split_over_two_lines_splits() {
+        let text = "Two dates today, have a look.\n\n---\nshown---\n\n**The dates**\n- Mon 9:00 Standup";
+        assert_eq!(
+            split_spoken(text, false),
+            (Some("Two dates today, have a look.".into()), "**The dates**\n- Mon 9:00 Standup".into())
+        );
+        assert_eq!(split_spoken("All done?\n\n---\nshown---", false), (Some("All done?".into()), String::new()));
+        let text = "Here it is.\n\n---\n**shown**\n\n- one\n- two";
+        assert_eq!(split_spoken(text, false), (Some("Here it is.".into()), "- one\n- two".into()));
+    }
+
+    #[test]
+    fn a_mark_written_loosely_splits() {
+        for text in [
+            "Yes. ---shown---\nMo",
+            "Yes.\n--- shown ---\nMo",
+            "Yes.\n—shown—\nMo",
+            "Yes. – shown –\nMo",
+            "Yes.\n**---shown---**\nMo",
+            "Yes.\n---SHOWN---\nMo",
+            "Yes.\n`--- shown ---`\nMo",
+            "Yes.\nshown---\nMo",
+            "Yes. ---shown\nMo",
+            "Yes. ---shown--- Mo",
+        ] {
+            assert_eq!(split_spoken(text, false), (Some("Yes.".into()), "Mo".into()), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_loose_mark_being_written_is_left_out() {
+        for (text, shown) in [
+            ("Yes. ---sh", "Yes."),
+            ("Yes. —", "Yes."),
+            ("Yes.\n\n---\n", "Yes.\n\n"),
+            ("Yes.\n\n---\nsho", "Yes.\n\n"),
+            ("Yes.\n\n---\n**sh", "Yes.\n\n"),
+            ("Yes.\nsho", "Yes.\n"),
+        ] {
+            assert_eq!(split_spoken(text, true), (None, shown.into()), "{text}");
+        }
+        // The word at the end waits for its line to end: it may go on as prose.
+        assert_eq!(split_spoken("Yes.\n\n---\nshown", true), (None, "Yes.\n\n".into()));
+        assert_eq!(split_spoken("Yes.\n\n---\nshown\n", true), (Some("Yes.".into()), String::new()));
+        assert_eq!(split_spoken("Yes. – shown –", true), (None, "Yes.".into()));
+        assert_eq!(split_spoken("Here is the list — shown", true).0, None);
+        // What cannot become the mark stays.
+        for text in ["A list:\n- one", "It is **bold**", "Text - more", "A well-known one", "Yes.\nShould"] {
+            assert_eq!(split_spoken(text, true).1, text, "{text}");
+        }
     }
 
     #[test]

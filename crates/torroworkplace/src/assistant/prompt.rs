@@ -273,7 +273,9 @@ pub fn spoken() -> String {
          conversation. Use plain sentences only: no Markdown, tables, lists, headings, code, links or emoji. Say \
          numbers, times and dates as they are spoken. It may point at what you show (\"Have a look at the list\", \
          \"Mind the second point\"). If you need more from the person, ask one short question here.\n\
-         - Then a line with only {SHOWN_MARK} (no quotes or backticks), always, even when nothing follows it.\n\
+         - Then a line with only {SHOWN_MARK} (no quotes or backticks), always, even when nothing follows it. Write it \
+         exactly so, with three hyphens on each side, on one line of its own: not bold, not after a sentence, no \
+         rule (---) above it.\n\
          - After it the shown part: what the person reads in the chat, as detailed as it needs to be, in \
          Markdown (lists, tables, links). It is not read aloud, so do not repeat the spoken part. Leave it empty \
          when the spoken part says it all.\n\
@@ -791,6 +793,8 @@ mod tests {
         let part = spoken();
         assert!(part.starts_with(SPOKEN_HEADING));
         assert!(part.contains(&format!("a line with only {SHOWN_MARK} ")), "{part}");
+        // Issue #826: models wrote it bold, after a sentence or below a rule, so the prompt rules those out.
+        assert!(part.contains("on one line of its own: not bold, not after a sentence, no rule"), "{part}");
         assert!(part.contains("spoken part") && part.contains("shown part"), "{part}");
     }
 
