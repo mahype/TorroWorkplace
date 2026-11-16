@@ -6346,7 +6346,7 @@ impl Core {
                     None => None,
                 };
                 let engine = match request {
-                    Request::SendMessage { engine, .. } => {
+                    Request::SendMessage { engine, .. } | Request::ChooseModel { engine, .. } => {
                         let engines = self.assistant.engines(&self.ai).await;
                         engines.into_iter().find(|known| known.id == *engine).map(|known| known.name)
                     }
@@ -7858,6 +7858,7 @@ impl Core {
             | Request::CheckAbout { .. }
             | Request::CancelAnswer { .. }
             | Request::RenameConversation { .. }
+            | Request::ChooseModel { .. }
             | Request::DeleteConversation { .. }
             | Request::PinConversation { .. }
             | Request::ArchiveConversations { .. }
@@ -14046,13 +14047,15 @@ impl Core {
         Some(Response::Error { code: "unsupported".into(), message })
     }
 
-    /// `unsupported` for `assistant.send_message`, `assistant.check_about` and `bots.ask_bot` (by the
+    /// `unsupported` for `assistant.send_message`, `assistant.check_about`, `assistant.choose_model` (issue #852) and `bots.ask_bot` (by the
     /// bot's engine) with an AI account that has no model on (task S.24): the module never answers with another account
     /// instead. `None` for every other request, an engine that is no AI account, and an unknown bot
     /// (the assistant refuses those itself).
     async fn models_off_refusal(&self, request: &Request) -> Option<Response> {
         let engine = match request {
-            Request::SendMessage { engine, .. } | Request::CheckAbout { engine, .. } => engine.clone(),
+            Request::SendMessage { engine, .. }
+            | Request::CheckAbout { engine, .. }
+            | Request::ChooseModel { engine, .. } => engine.clone(),
             Request::AskBot { bot, .. } => self.assistant.bots().get(bot).await?.engine,
             _ => return None,
         };

@@ -1303,6 +1303,7 @@ fn describe(request: &Request) -> String {
         Request::CheckAbout { .. } => "check a chat about a mail".into(),
         Request::CancelAnswer { conversation } => format!("stop the answer in conversation {conversation}"),
         Request::RenameConversation { id, .. } => format!("rename conversation {id}"),
+        Request::ChooseModel { id, .. } => format!("choose the model of conversation {id}"),
         Request::DeleteConversation { id } => format!("delete conversation {id}"),
         Request::PinConversation { id, pinned } => {
             format!("{} conversation {id}", if *pinned { "pin" } else { "unpin" })

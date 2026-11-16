@@ -588,6 +588,8 @@ pub fn ids(request: &Request) -> Vec<String> {
             .chain([engine_id(engine)])
             .chain(about.iter().flat_map(|about| [account(&about.account), format!("message:{}", hashed(&about.id))]))
             .collect(),
+        // Issue #852: the conversation and the engine chosen, as for a message; never the model's name.
+        Request::ChooseModel { id, engine, .. } => vec![random("conversation", id), engine_id(engine)],
         // The check before such a chat: the same, without a conversation.
         Request::CheckAbout { engine, about, .. } => {
             vec![engine_id(engine), account(&about.account), format!("message:{}", hashed(&about.id))]

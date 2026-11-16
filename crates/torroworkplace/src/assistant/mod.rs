@@ -487,7 +487,8 @@ impl Assistant {
     /// message about a mail what [`Assistant::about_for`] refuses (issue #605), the same for
     /// `assistant.check_about` ([`Assistant::check_about_refusal`]), a conversation that still answers
     /// (`busy`), a bot that is not there (`not-found`) or a conversation of another bot or of none
-    /// ([`Assistant::bot_refusal`]), the window of a bot that is not there (`not-found`). `None` when it may run.
+    /// ([`Assistant::bot_refusal`]), the window of a bot that is not there (`not-found`), a choice of the model
+    /// that [`Assistant::choose_refusal`] refuses (issue #852). `None` when it may run.
     pub async fn refusal(&self, ai: &AiAccounts, request: &Request) -> Option<Response> {
         if let Some(refused) =
             torro_ipc::assistant::limit_refusal(request).or_else(|| torro_ipc::bots::limit_refusal(request))
@@ -535,6 +536,7 @@ impl Assistant {
                 self.check_about_refusal(ai, engine, model.clone(), about.clone()).await
             }
             (Request::AskBot { .. }, Some(bot)) => self.engine(ai, &bot.engine, &actor).await.err(),
+            (Request::ChooseModel { id, engine, .. }, _) => self.choose_refusal(ai, id, engine).await,
             (Request::OpenChatWindow { window: ChatWindow::Bot(id) }, _) if self.bots.get(id).await.is_none() => {
                 Some(crate::bots::no_bot(id))
             }
@@ -987,6 +989,37 @@ impl Assistant {
     /// `assistant.rename_conversation`; the title trimmed (the limits are checked before).
     pub async fn rename(&self, id: &str, title: &str) -> Response {
         self.change(id, Line::Renamed { title: title.trim().to_string() }).await
+    }
+
+    /// `assistant.choose_model` (issue #852): who answers the next message of conversation `id`. `not-found` for
+    /// an unknown conversation, `error` for one with a bot (it keeps the bot's model), and an engine that does
+    /// not answer the assistant as [`Assistant::engine`] refuses it.
+    pub async fn choose(
+        &self,
+        ai: &AiAccounts,
+        id: &str,
+        engine: String,
+        model: Option<String>,
+        effort: Option<Effort>,
+    ) -> Response {
+        if let Some(refused) = self.choose_refusal(ai, id, &engine).await {
+            return refused;
+        }
+        self.change(id, Line::Chosen { engine, model, effort }).await
+    }
+
+    /// Why `assistant.choose_model` for conversation `id` and `engine` would be refused (issue #852): `not-found`
+    /// for an unknown conversation, `error` for one with a bot, else what [`Assistant::engine`] says of `engine`
+    /// for the assistant. `None` when the choice may be stored.
+    async fn choose_refusal(&self, ai: &AiAccounts, id: &str, engine: &str) -> Option<Response> {
+        match self.state().await.conversations.get(id) {
+            None => return Some(unknown(id)),
+            Some(conversation) if conversation.bot.is_some() => {
+                return Some(refusal("error", "a conversation with a bot keeps the bot's model"));
+            }
+            Some(_) => {}
+        }
+        self.engine(ai, engine, &Actor::of(None)).await.err()
     }
 
     /// `assistant.pin_conversation`.
@@ -1619,6 +1652,7 @@ pub async fn answer_from(
         }
         Request::CancelAnswer { conversation } => assistant.cancel(&conversation, Utc::now()).await,
         Request::RenameConversation { id, title } => assistant.rename(&id, &title).await,
+        Request::ChooseModel { id, engine, model, effort } => assistant.choose(ai, &id, engine, model, effort).await,
         Request::DeleteConversation { id } => assistant.delete(&id).await,
         Request::PinConversation { id, pinned } => assistant.pin(&id, pinned).await,
         Request::ArchiveConversations { ids, archived } => assistant.archive(&ids, archived).await,
@@ -1832,6 +1866,7 @@ pub(crate) mod tests {
             Request::GetConversation { id: unknown.into(), after: None },
             Request::CancelAnswer { conversation: unknown.into() },
             Request::RenameConversation { id: unknown.into(), title: "T".into() },
+            Request::ChooseModel { id: unknown.into(), engine: TEST_ENGINE.into(), model: None, effort: None },
             Request::DeleteConversation { id: unknown.into() },
             Request::PinConversation { id: unknown.into(), pinned: true },
             Request::OpenChatWindow { window: ChatWindow::Conversation(unknown.into()) },
@@ -1945,6 +1980,43 @@ pub(crate) mod tests {
         );
         let (_, added) = opened(answer(&assistant, &ai, send(Some(&started.id), "Again")).await);
         assert_eq!(added.iter().map(|entry| entry.seq).collect::<Vec<_>>(), [3]);
+    }
+
+    /// Issue #852: a choice of the model is the conversation's until its next message, also for a core that
+    /// reads the file again; an engine that does not answer and a bot's conversation are refused before anyone
+    /// is asked to approve it.
+    #[tokio::test]
+    async fn a_chosen_model_answers_next() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (assistant, ai) = (Arc::new(assistant_in(dir.path(), Duration::ZERO)), no_ai(dir.path()));
+        let (started, _) = opened(answer(&assistant, &ai, send(None, "First")).await);
+        finished(&assistant, &ai, &started.id).await;
+
+        let choose = |engine: &str| Request::ChooseModel {
+            id: started.id.clone(),
+            engine: engine.into(),
+            model: Some("small".into()),
+            effort: Some(Effort::Low),
+        };
+        assert_eq!(answer(&assistant, &ai, choose(TEST_ENGINE)).await, Response::Ok);
+        let summary = |response: Response| match response {
+            Response::Conversations { conversations } => conversations.into_iter().next().expect("one"),
+            other => panic!("expected the list, got {other:?}"),
+        };
+        let listed = summary(answer(&assistant, &ai, Request::ListConversations).await);
+        assert_eq!((listed.model.as_deref(), listed.effort), (Some("small"), Some(Effort::Low)));
+        let again = Arc::new(assistant_in(dir.path(), Duration::ZERO));
+        assert_eq!(summary(answer(&again, &ai, Request::ListConversations).await), listed, "read again");
+
+        let unknown = choose("ai:ollama@localhost:11434");
+        assert_eq!(code(&answer(&assistant, &ai, unknown.clone()).await), "not-found", "no such engine");
+        assert_eq!(assistant.refusal(&ai, &unknown).await.as_ref().map(code), Some("not-found"));
+
+        if let Some(conversation) = assistant.state().await.conversations.get_mut(&started.id) {
+            conversation.bot = Some("1a2b3c4d".into());
+        }
+        assert_eq!(code(&answer(&assistant, &ai, choose(TEST_ENGINE)).await), "error", "a bot keeps its model");
+        assert_eq!(assistant.refusal(&ai, &choose(TEST_ENGINE)).await.as_ref().map(code), Some("error"));
     }
 
     #[tokio::test]
