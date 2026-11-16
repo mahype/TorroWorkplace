@@ -882,6 +882,9 @@ impl Answering {
         let budget = window / 2;
         // Whether older parts were shortened in this answer, for how full its context is (issue #831).
         let mut shortened = false;
+        // The largest step unshortened so far: once a step was shortened, the messages of the next ones are
+        // shortened already, and only this keeps how big the conversation really is (review of #831).
+        let mut peak: u64 = 0;
         lock(&self.job.partial).model = Some(model.clone());
         let mut messages = vec![ChatMessage::system(String::new())];
         // Only what the client may still read goes back to the model (issue #713).
@@ -977,6 +980,7 @@ impl Answering {
             // How big this step would be unshortened (issue #831): measured against the budget it shows how close
             // the conversation is to being shortened, and past it by how much.
             let raw = compact::estimate(&messages, &tools);
+            peak = peak.max(raw);
             let room = budget.saturating_sub(compact::estimate(&[], &tools));
             if compact::compact(&mut messages, &self.summaries, room) {
                 shortened = true;
@@ -998,8 +1002,9 @@ impl Answering {
                 // Stored, not worked out on request (decision 1 of issue #831): the next step carries the answer
                 // too. Before the answer's line, so the window that sees the answer reads the new value with it.
                 let answer = compact::estimate(&[ChatMessage::assistant(reply.text.clone(), Vec::new())], &[]);
-                let fill = ContextFill { used: raw.saturating_add(answer), limit: budget, window, shortened };
-                self.assistant.record_context(&self.job.conversation, fill).await;
+                let used = peak.max(raw.saturating_add(answer));
+                let fill = ContextFill { used, limit: budget, window, shortened };
+                self.assistant.record_context(&self.job.conversation, self.job.run, fill).await;
             }
             if !reply.text.trim().is_empty() {
                 // Up to three link cards follow the final answer (issue #785), the last of them ends the run.

@@ -989,11 +989,21 @@ impl Assistant {
         self.change(id, Line::Renamed { title: title.trim().to_string() }).await
     }
 
-    /// Keeps how full the context of conversation `id` was at the end of an answer (issue #831,
-    /// [`store::Line::Context`]). A failure is only logged: the answer stands without it.
-    pub(crate) async fn record_context(&self, id: &str, fill: torro_ipc::assistant::ContextFill) {
-        if let Response::Error { message, .. } = self.change(id, Line::Context { fill }).await {
+    /// Keeps how full the context of conversation `id` was at the end of the answer of run `run` (issue #831,
+    /// [`store::Line::Context`]). Nothing when the run was stopped or replaced meanwhile: its answer does not
+    /// stay. A failure to write is only logged: the answer stands without it.
+    pub(crate) async fn record_context(&self, id: &str, run: u64, fill: torro_ipc::assistant::ContextFill) {
+        let mut state = self.state().await;
+        if state.running.get(id).is_none_or(|running| running.id != run) {
+            return;
+        }
+        let line = Line::Context { fill };
+        if let Err(message) = self.write(id, vec![line.clone()]).await {
             eprintln!("torroworkplace: cannot keep how full the context of conversation {id} is: {message}");
+            return;
+        }
+        if let Some(conversation) = state.conversations.get_mut(id) {
+            conversation.apply(line);
         }
     }
 

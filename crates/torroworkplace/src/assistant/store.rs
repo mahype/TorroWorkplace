@@ -126,8 +126,8 @@ pub struct Conversation {
     /// What each command found, by the number of its tool line (issue #786, [`Line::Seen`]).
     pub seen: BTreeMap<u64, Seen>,
     /// How full the context was at the latest answer of a model the core drives (issue #831, [`Line::Context`]),
-    /// with the engine of the newest message then; `None` before it.
-    pub context: Option<(ContextFill, String)>,
+    /// with the engine and model of the newest message then; `None` before it.
+    pub context: Option<(ContextFill, (String, Option<String>))>,
 }
 
 impl Conversation {
@@ -206,7 +206,10 @@ impl Conversation {
             }
             Line::Seen { .. } => {}
             // Its engine is the newest message's: the one that answered (`Answering` writes the line at its end).
-            Line::Context { fill } => self.context = Some((fill, self.engine().0)),
+            Line::Context { fill } => {
+                let (engine, model, _) = self.engine();
+                self.context = Some((fill, (engine, model)));
+            }
         }
     }
 
@@ -268,9 +271,10 @@ impl Conversation {
     /// set ([`ConversationSummary::bot_deleted`]), it knows which bots there are.
     pub fn summary(&self, running: bool) -> ConversationSummary {
         let (engine, model, effort) = self.engine();
-        // Only while the conversation goes on with the engine measured: an agent engine since keeps its own
-        // context, which the core does not know.
-        let context = self.context.as_ref().filter(|(_, of)| *of == engine).map(|(fill, _)| *fill);
+        // Only while the conversation goes on with the engine and model measured: an agent engine since keeps its
+        // own context, which the core does not know, and another model has another window.
+        let context =
+            self.context.as_ref().filter(|(_, (of, with))| *of == engine && *with == model).map(|(fill, _)| *fill);
         ConversationSummary {
             id: self.id.clone(),
             title: self.title.clone(),
@@ -629,12 +633,12 @@ mod tests {
         assert!(snippet("ΟΔΟΣ", &words_of("ΟΔΟΣ")).is_some(), "the same small letters for words and text");
     }
 
-    /// A message of the person to `engine`.
-    fn message_with(engine: &str) -> EntryContent {
+    /// A message of the person to `engine` and its `model`.
+    fn message_with(engine: &str, model: Option<&str>) -> EntryContent {
         EntryContent::Message {
             text: "Go on".into(),
             engine: engine.into(),
-            model: None,
+            model: model.map(str::to_string),
             effort: None,
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
@@ -745,8 +749,15 @@ mod tests {
         assert_eq!(conversation.updated(), at(0), "measuring is no entry");
         assert_eq!(load_all(&folder).expect("read"), vec![conversation.clone()]);
 
+        // Another model of the same engine: its window differs, so none shows until it answered.
+        let other = message_with("", Some("bigger"));
+        let mut switched = conversation.clone();
+        let entry = switched.next(other, at(2));
+        switched.apply(Line::Entry { entry });
+        assert_eq!(switched.summary(false).context, None);
+
         // Going on with an agent engine: the core does not know that context, so none shows.
-        let to_agent = conversation.next(message_with("agent:claude-code"), at(2));
+        let to_agent = conversation.next(message_with("agent:claude-code", None), at(2));
         conversation.apply(Line::Entry { entry: to_agent });
         assert_eq!(conversation.summary(false).context, None);
     }
