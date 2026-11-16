@@ -12,7 +12,7 @@
 //! waits for an approval – that is given in the window only.
 //!
 //! The start of a sentence is never cut off (issue #829): while it waits for the wake word the
-//! listener keeps the last half second ([`BEFORE`]), so "Hey Torro, do X" in one breath arrives whole,
+//! listener keeps the last second ([`BEFORE`]), so "Hey Torro, do X" in one breath arrives whole,
 //! and the microphone is open while the tone plays; the tone and its echo are recorded, but are no
 //! speech ([`Listener::chime`]).
 //!
@@ -33,7 +33,7 @@ use torro_ipc::assistant::{ConversationSummary, Engine, Entry, EntryContent};
 use torro_ipc::{Request, Response, Talk, VoiceState};
 
 use super::audio::{Endpoint, FRAMES_PER_SECOND, Limits, NoiseFloor, rms};
-use super::wake::strip_wake_phrase;
+use super::wake::{after_wake_phrase, strip_wake_phrase};
 use super::{Recorder, Speaker, Transcriber, VoiceError, WakeWord};
 use crate::backend::Refusal;
 
@@ -150,10 +150,23 @@ pub fn speakable_up_to(markdown: &str, most: usize) -> String {
     }
 }
 
-/// How many frames before the wake word was heard begin the sentence (issue #829), about half a
-/// second: the wake word is heard a little after it was said, and whoever goes on in one breath has
-/// begun the sentence by then.
-pub const BEFORE: usize = FRAMES_PER_SECOND / 2;
+/// How many frames before the wake word was heard begin the sentence (issue #829), about a second:
+/// the wake word is heard at its end, whoever goes on in one breath has begun the sentence by then,
+/// and the whole "Hey Torro" fits, so no piece of it stays in front of the sentence
+/// ([`after_wake_phrase`]).
+pub const BEFORE: usize = FRAMES_PER_SECOND;
+
+/// What a recording holds, for [`Listener::answer`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Said {
+    /// Nothing louder than the room.
+    Nothing,
+    /// Speech.
+    Speech,
+    /// Perhaps a short command said in one breath with the wake word: it counts only if the wake
+    /// word is in it, else it is the wake word alone or a piece of it.
+    WithWake,
+}
 
 /// How many frames of echo follow the tone, which count as no speech either.
 const ECHO: usize = 1;
@@ -361,11 +374,12 @@ impl<A: Assistant> Listener<'_, A> {
         // Nothing said after the tone, but the person went on speaking past the wake word: a short
         // command said in one breath fits into the tone. What came up to the tone's end is
         // understood; "Hey Torro" alone comes to no text and sends nothing.
-        let (spoken, said) = match end.heard_speech() {
-            true => (true, &sentence[..]),
-            false => (still_speaking, &sentence[..with_tone]),
+        let (said, recorded) = match (end.heard_speech(), still_speaking) {
+            (true, _) => (Said::Speech, &sentence[..]),
+            (false, true) => (Said::WithWake, &sentence[..with_tone]),
+            (false, false) => (Said::Nothing, &sentence[..]),
         };
-        let ended = self.answer(voice, said, spoken, end.trailing_quiet(), None, readings);
+        let ended = self.answer(voice, recorded, said, end.trailing_quiet(), None, readings);
         self.wake.reset();
         Ok(ended)
     }
@@ -451,7 +465,7 @@ impl<A: Assistant> Listener<'_, A> {
             return Ok(Ended::Nothing);
         }
         (self.report)(VoiceState::Answering);
-        Ok(self.answer(voice, &sentence, true, end.trailing_quiet(), Some(talk), readings))
+        Ok(self.answer(voice, &sentence, Said::Speech, end.trailing_quiet(), Some(talk), readings))
     }
 
     /// Looks at the settings and the conversation by voice: stop ([`Ended::VoiceOff`]) when voice is
@@ -528,18 +542,25 @@ impl<A: Assistant> Listener<'_, A> {
         &mut self,
         voice: &Voice,
         sentence: &[i16],
-        spoken: bool,
+        said: Said,
         quiet: usize,
         talk: Option<Talk>,
         readings: u64,
     ) -> Ended {
-        if !spoken {
+        if said == Said::Nothing {
             return Ended::Nothing;
         }
         let recognizing = Instant::now();
         let transcribed = self.transcriber.transcribe(sentence);
         let recognize_ms = u32::try_from(recognizing.elapsed().as_millis()).unwrap_or(u32::MAX);
         let text = match transcribed {
+            // After the wake word the sentence begins a second before it (issue #829): what follows
+            // it; a short command needs it, else what was heard is the wake word alone.
+            Ok(text) if talk.is_none() => match after_wake_phrase(&text) {
+                Some(rest) => rest,
+                None if said == Said::WithWake => String::new(),
+                None => strip_wake_phrase(&text),
+            },
             Ok(text) => strip_wake_phrase(&text),
             Err(err) => {
                 eprintln!("torroassistant: {err}");
@@ -1242,8 +1263,8 @@ mod tests {
         assert!(messages(&silent.sent).len() == 1 && silent.heard.is_empty(), "sent, but not timed");
     }
 
-    /// Issue #829: "Hey Torro, what is on today?" in one breath arrives whole: the sentence begins half a
-    /// second before the wake word was heard, and the microphone stays open through the tone.
+    /// Issue #829: "Hey Torro, what is on today?" in one breath arrives whole: the sentence begins a second
+    /// before the wake word was heard, and the microphone stays open through the tone.
     #[test]
     fn the_sentence_begins_before_the_wake_word_was_heard() {
         let given = Rc::new(RefCell::new(Vec::new()));
@@ -1255,9 +1276,8 @@ mod tests {
         assert_eq!(run.tones[0], 1, "the microphone was open with the tone");
         let file = fixture("utterance.wav");
         let sentence = &given.borrow()[0];
-        let from = (6 - BEFORE) * FRAME;
-        assert!(sentence.len() > BEFORE * FRAME, "the sentence goes on after the wake word");
-        assert!(sentence[..] == file[from..from + sentence.len()], "the file from half a second before the wake word");
+        assert!(sentence.len() > 6 * FRAME, "the sentence goes on after the wake word");
+        assert!(BEFORE >= 6 && sentence[..] == file[..sentence.len()], "the file from before the wake word");
     }
 
     /// Issue #829, review: "Hey Torro, light on" in one breath, the command over before the tone is: what
@@ -1272,11 +1292,13 @@ mod tests {
         let Request::SendMessage { text, .. } = messages(&run.sent)[0] else { unreachable!() };
         assert_eq!(text, "light on.");
         let sentence = given.borrow()[0].len();
-        assert!(sentence >= (BEFORE + 4) * FRAME && sentence < 25 * FRAME, "up to the tone's end: {sentence}");
+        assert!(sentence >= 10 * FRAME, "up to the tone's end at least: {sentence}");
 
-        let keeps = Keeps { text: "Hey Torro.", given: Rc::default() };
-        let run = run_with(Core::new(on()), &["utterance.wav"], Some(6), Box::new(keeps), tone);
-        assert!(messages(&run.sent).is_empty(), "the wake word alone");
+        for alone in ["Hey Torro.", "Ro.", "Thank you for watching."] {
+            let keeps = Keeps { text: alone, given: Rc::default() };
+            let run = run_with(Core::new(on()), &["utterance.wav"], Some(6), Box::new(keeps), tone);
+            assert!(messages(&run.sent).is_empty(), "the wake word alone or a piece of it: {alone}");
+        }
     }
 
     /// Issue #829: in a conversation by voice the microphone opens before the tone; the tone and its echo
