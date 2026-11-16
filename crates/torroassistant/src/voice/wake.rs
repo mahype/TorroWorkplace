@@ -12,7 +12,8 @@
 //!   missed.
 //!
 //! [`strip_wake_phrase`] takes the wake word off the front of a sentence, for when it was recorded
-//! with it.
+//! with it – also its second half alone, since the sentence begins half a second before the wake
+//! word was heard (issue #829) and that may cut "Hey" off.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -136,7 +137,10 @@ pub fn strip_wake_phrase(text: &str) -> String {
             break;
         }
     }
-    if rest.len() == trimmed.len() || !is_wake_phrase(&trimmed[..trimmed.len() - rest.len()]) {
+    let head = &trimmed[..trimmed.len() - rest.len()];
+    // "Torro" alone: the front of the wake word was cut off (issue #829).
+    let clipped = matches!(words(head).as_slice(), [torro] if TORRO.contains(&torro.as_str()));
+    if rest.len() == trimmed.len() || !(is_wake_phrase(head) || clipped) {
         return trimmed.to_string();
     }
     rest.trim_start_matches(|c: char| c.is_whitespace() || c.is_ascii_punctuation()).trim().to_string()
@@ -436,5 +440,8 @@ mod tests {
         assert_eq!(strip_wake_phrase("What is on today?"), "What is on today?");
         assert_eq!(strip_wake_phrase("A tomato salad recipe"), "A tomato salad recipe", "not the wake word");
         assert_eq!(strip_wake_phrase("Hey Torro"), "");
+        // Issue #829: the front of the wake word was cut off; "Hey" alone stays.
+        assert_eq!(strip_wake_phrase("Torro, was steht heute an?"), "was steht heute an?");
+        assert_eq!(strip_wake_phrase("Hey, what is on?"), "Hey, what is on?");
     }
 }
