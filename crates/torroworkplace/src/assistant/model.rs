@@ -823,8 +823,8 @@ struct Answering {
     repeated: BTreeMap<(String, String), usize>,
 }
 
-/// Adds what `message` takes to `unshortened`, the size of the conversation unshortened (issue #831), once the
-/// first step measured it.
+/// Adds what `message` takes to `unshortened`, the size of the conversation's messages unshortened (issue #831), once
+/// the first step measured them.
 fn grow(unshortened: &mut Option<u64>, message: &ChatMessage) {
     if let Some(size) = unshortened {
         *size = size.saturating_add(compact::estimate(std::slice::from_ref(message), &[]));
@@ -890,10 +890,13 @@ impl Answering {
         let budget = window / 2;
         // Whether older parts were shortened in this answer, for how full its context is (issue #831).
         let mut shortened = false;
-        // How big the conversation is unshortened (issue #831): the first step as it came, before anything was
-        // shortened, and what each step added since. Shortening changes `messages` in place, so later steps alone
-        // would tell only what is left after it (review of #831).
+        // How big the conversation's messages are unshortened (issue #831), without the system prompt: the first
+        // step's as they came, before anything was shortened, and what each step added since. Shortening changes
+        // `messages` in place, so later steps alone would tell only what is left after it (review of #831).
         let mut unshortened: Option<u64> = None;
+        // The biggest step unshortened: the messages with that step's system prompt and tools, which change between
+        // steps as rights change and `find_tools` loads more (review of #831).
+        let mut peak: u64 = 0;
         lock(&self.job.partial).model = Some(model.clone());
         let mut messages = vec![ChatMessage::system(String::new())];
         // Only what the client may still read goes back to the model (issue #713).
@@ -988,7 +991,8 @@ impl Answering {
             // block is bound to the messages before it.
             // How big this step would be unshortened (issue #831): measured against the budget it shows how close
             // the conversation is to being shortened, and past it by how much.
-            unshortened.get_or_insert_with(|| compact::estimate(&messages, &tools));
+            let history = *unshortened.get_or_insert_with(|| compact::estimate(&messages[1..], &[]));
+            peak = peak.max(history.saturating_add(compact::estimate(&messages[..1], &tools)));
             let room = budget.saturating_sub(compact::estimate(&[], &tools));
             if compact::compact(&mut messages, &self.summaries, room) {
                 shortened = true;
@@ -1011,7 +1015,7 @@ impl Answering {
             // it, and a stop before the answer keeps none.
             let fill = done.then(|| {
                 let answer = compact::estimate(&[ChatMessage::assistant(reply.text.clone(), Vec::new())], &[]);
-                let used = unshortened.unwrap_or_default().saturating_add(answer);
+                let used = peak.saturating_add(answer);
                 ContextFill { used, limit: budget, window, shortened }
             });
             if !reply.text.trim().is_empty() {
