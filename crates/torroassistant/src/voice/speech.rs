@@ -14,10 +14,17 @@
 //!   only answers the pieces to fetch (`{"pieces": [...]}`, whole sentences of at most [`PIECE`]
 //!   characters): the key stays in the core, which fetches the sound and sends it as
 //!   `{"pcm": {"rate": 24000, "data": "<base64>"}}`, then `"end"`.
+//! - `"more": true` in a `say` keeps the job open for more text (issue #850): an answer is read in one
+//!   job as it is written. Each `{"add": {"text": …}}` reads on after what came before, Pocket and Qwen
+//!   with the same voice, OpenAI with an answer of its own `{"pieces": [...]}`; [`MOST_READ`] holds for
+//!   the whole job. `"end"` closes it: the job is done once its sound has played. Without `more` a job
+//!   ends with its text as before, and an `add` without such a job is ignored.
 //! - `"stop"` ends what is read at once.
 //! - The helper answers `"playing"` when the first sound plays, `"done"` when it was read to its
 //!   end or stopped, `{"failed": {"code": …, "message": …}}` when it cannot read, with a message
-//!   for people.
+//!   for people. A job with `more` whose sound ran out for [`WAITING_AFTER`] says `"waiting"` (once),
+//!   and `"playing"` again when its sound goes on: the core keeps the microphone closed only while
+//!   something sounds.
 //!
 //! Pocket TTS and Qwen3-TTS compute on a thread of their own ([`Synth`], [`super::pocket::Pocket`],
 //! [`super::qwen`]), one at a time: when the other reads, the thread of the first ends, so Qwen's
@@ -66,11 +73,17 @@ pub const IDLE: Duration = Duration::from_secs(10 * 60);
 /// How often a job looks whether its sound has ended.
 const POLL: Duration = Duration::from_millis(50);
 
+/// How long the sound of an open job may run out before the helper says `"waiting"` (issue #850): a
+/// short breath between two sentences is no wait.
+const WAITING_AFTER: Duration = Duration::from_millis(500);
+
 /// A line from the core.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
     /// Read a text.
     Say(Say),
+    /// Read on with this text in the open job (issue #850).
+    Add(String),
     /// Sound fetched by the core (OpenAI): signed 16-bit mono at `rate`.
     Pcm { rate: u32, data: Vec<u8> },
     /// No more sound comes for this text.
@@ -89,6 +102,8 @@ pub struct Say {
     pub voice: Option<String>,
     /// How Pocket speaks (issue #782); the default when the core sends none.
     pub delivery: Delivery,
+    /// More text may follow with [`Input::Add`] until [`Input::End`] (issue #850).
+    pub more: bool,
 }
 
 impl Input {
@@ -121,7 +136,11 @@ impl Input {
                     speed: number("speed", standard.speed).clamp(POCKET_SPEEDS.0, POCKET_SPEEDS.1),
                     pause_ms: number("pause", standard.pause_ms).clamp(POCKET_PAUSES.0, POCKET_PAUSES.1),
                 },
+                more: say.get("more").and_then(Value::as_bool).unwrap_or(false),
             }));
+        }
+        if let Some(add) = value.get("add") {
+            return Some(Input::Add(text(add, "text").unwrap_or_default()));
         }
         let pcm = value.get("pcm")?;
         let rate = u32::try_from(pcm.get("rate")?.as_u64()?).ok().filter(|rate| *rate > 0)?;
@@ -140,8 +159,10 @@ impl Input {
                 "voice": say.voice,
                 "speed": say.delivery.speed,
                 "pause": say.delivery.pause_ms,
+                "more": say.more,
             }})
             .to_string(),
+            Input::Add(text) => json!({"add": {"text": text}}).to_string(),
             Input::Pcm { rate, data } => {
                 json!({"pcm": {"rate": rate, "data": base64::engine::general_purpose::STANDARD.encode(data)}})
                     .to_string()
@@ -157,8 +178,10 @@ impl Input {
 pub enum Output {
     /// The pieces the core fetches from OpenAI, in order; none when there is nothing to read.
     Pieces(Vec<String>),
-    /// The first sound plays.
+    /// The first sound plays, or sound again after [`Output::Waiting`].
     Playing,
+    /// The sound of an open job ran out; more is to come (issue #850).
+    Waiting,
     /// Read to its end, or stopped.
     Done,
     /// It cannot read: `code` as the core answers (`unsupported`, `error`), `message` for people.
@@ -175,6 +198,7 @@ impl Output {
         match self {
             Output::Pieces(pieces) => json!({"pieces": pieces}),
             Output::Playing => json!("playing"),
+            Output::Waiting => json!("waiting"),
             Output::Done => json!("done"),
             Output::Failed { code, message } => json!({"failed": {"code": code, "message": message}}),
         }
@@ -188,6 +212,7 @@ impl Output {
         let value: Value = serde_json::from_str(line.trim()).ok()?;
         match value.as_str() {
             Some("playing") => return Some(Output::Playing),
+            Some("waiting") => return Some(Output::Waiting),
             Some("done") => return Some(Output::Done),
             Some(_) => return None,
             None => {}
@@ -483,6 +508,13 @@ fn start_worker(make: Arc<MakeSynth>, events: Sender<Event>, current: Arc<Atomic
             if current.load(Ordering::SeqCst) != job.id {
                 continue;
             }
+            // An open job may begin without text (issue #850): there is nothing to compute.
+            if job.text.trim().is_empty() {
+                if events.send(Event::Computed { id: job.id }).is_err() {
+                    return;
+                }
+                continue;
+            }
             let (to, now, id) = (events.clone(), Arc::clone(&current), job.id);
             let chunk = Box::new(move |samples: &[f32]| {
                 now.load(Ordering::SeqCst) == id
@@ -507,17 +539,30 @@ fn start_worker(make: Arc<MakeSynth>, events: Sender<Event>, current: Arc<Atomic
 /// The job that reads now.
 enum Job {
     Idle,
-    /// A local provider (Pocket TTS, Qwen3-TTS) computes the job `id` and plays it.
+    /// A local provider (Pocket TTS, Qwen3-TTS) computes the job `id` and plays it: `pending` texts are
+    /// still to compute, `closed` once no more come, `more` when it began open (issue #850), with what
+    /// reads them.
     Local {
         id: u64,
         sound: Option<Box<dyn Sound>>,
-        computed: bool,
+        pending: usize,
+        closed: bool,
+        more: bool,
+        reads: Reads,
     },
-    /// The core sends OpenAI's sound.
+    /// The core sends OpenAI's sound; `more` while texts may follow (issue #850).
     Stream {
         sound: Option<Box<dyn Sound>>,
         ended: bool,
+        more: bool,
     },
+}
+
+/// How the texts of a local job are read (issue #850): an `add` reads like its `say`.
+struct Reads {
+    provider: SpeechProvider,
+    voice: String,
+    delivery: Delivery,
 }
 
 /// The helper's state: where the models are, the thread of the local provider and the job.
@@ -537,9 +582,9 @@ pub struct Helper<W: FnMut(Output)> {
     /// The number of the thread of Qwen3-TTS that gave way to Pocket TTS, until it has ended: a new one
     /// waits for it, so its model is never twice on the graphics card (issue #764).
     retired: Option<u64>,
-    /// The Qwen job held back until [`Helper::retired`] has ended, with what makes Qwen. The helper goes
-    /// on meanwhile: a stop or a new job drops it at once.
-    waiting: Option<(Spoken, Arc<MakeSynth>)>,
+    /// The Qwen texts of a job held back until [`Helper::retired`] has ended, with what makes Qwen. The
+    /// helper goes on meanwhile: a stop or a new job drops them at once.
+    waiting: Option<(Vec<Spoken>, Arc<MakeSynth>)>,
     /// Counts the threads started, so the end of one replaced meanwhile fails no job of the next.
     workers: u64,
     /// The local job that may compute; 0 for none. The thread looks at it between two pieces of sound.
@@ -550,6 +595,10 @@ pub struct Helper<W: FnMut(Output)> {
     /// Since when the job's sound has run out while more may come (issue #850): the gap is logged when
     /// sound comes again.
     quiet: Option<Instant>,
+    /// The job said `"waiting"`; its next sound says `"playing"` again (issue #850).
+    waited: bool,
+    /// How many characters the job may still read ([`MOST_READ`] for all its texts).
+    left: usize,
     write: W,
 }
 
@@ -578,6 +627,8 @@ impl<W: FnMut(Output)> Helper<W> {
             next: 0,
             job: Job::Idle,
             quiet: None,
+            waited: false,
+            left: 0,
             write,
         }
     }
@@ -623,6 +674,7 @@ impl<W: FnMut(Output)> Helper<W> {
                 }
                 self.say(say, sender);
             }
+            Event::Input(Input::Add(text)) => self.add(&text, sender),
             Event::Input(Input::Pcm { rate, data }) => {
                 let samples: Vec<f32> =
                     data.as_chunks::<2>().0.iter().map(|pair| to_float(i16::from_le_bytes(*pair))).collect();
@@ -630,30 +682,31 @@ impl<W: FnMut(Output)> Helper<W> {
                     self.play(rate, &samples);
                 }
             }
-            Event::Input(Input::End) => {
-                if let Job::Stream { sound, ended } = &mut self.job {
+            Event::Input(Input::End) => match &mut self.job {
+                Job::Stream { sound, ended, .. } => {
                     *ended = true;
                     match sound {
                         Some(sound) => sound.finish(),
                         None => self.finished(),
                     }
                 }
-            }
+                Job::Local { closed, .. } => {
+                    *closed = true;
+                    self.finish_local();
+                }
+                Job::Idle => {}
+            },
             Event::Chunk { id, rate, samples } => {
                 if matches!(self.job, Job::Local { id: now, .. } if now == id) {
                     self.play(rate, &samples);
                 }
             }
             Event::Computed { id } => {
-                if let Job::Local { id: now, sound, computed } = &mut self.job
+                if let Job::Local { id: now, pending, .. } = &mut self.job
                     && *now == id
                 {
-                    *computed = true;
-                    match sound {
-                        Some(sound) => sound.finish(),
-                        // Nothing to hear in the text (only signs): it is read.
-                        None => self.finished(),
-                    }
+                    *pending = pending.saturating_sub(1);
+                    self.finish_local();
                 }
             }
             Event::Failed { id } => {
@@ -673,11 +726,16 @@ impl<W: FnMut(Output)> Helper<W> {
             Event::WorkerGone(number) if self.retired == Some(number) => {
                 self.retired = None;
                 // The Qwen job that waited starts now, unless it was stopped or replaced meanwhile.
-                if let Some((job, make)) = self.waiting.take()
-                    && self.current.load(Ordering::SeqCst) == job.id
-                    && let Err(failed) = self.send_job(SpeechProvider::Qwen, &make, job, sender)
-                {
-                    self.fail(failed);
+                if let Some((jobs, make)) = self.waiting.take() {
+                    for job in jobs {
+                        if self.current.load(Ordering::SeqCst) != job.id {
+                            break;
+                        }
+                        if let Err(failed) = self.send_job(SpeechProvider::Qwen, &make, job, sender) {
+                            self.fail(failed);
+                            break;
+                        }
+                    }
                 }
             }
             Event::WorkerGone(number) => {
@@ -705,6 +763,8 @@ impl<W: FnMut(Output)> Helper<W> {
                 Err(err) => return self.fail(failed_to_play(&err)),
             }
             (self.write)(Output::Playing);
+        } else if std::mem::take(&mut self.waited) {
+            (self.write)(Output::Playing);
         }
         if let Some(sound) = sound {
             sound.push(rate, samples);
@@ -713,23 +773,78 @@ impl<W: FnMut(Output)> Helper<W> {
 
     /// Starts reading `say`.
     fn say(&mut self, say: Say, sender: &Sender<Event>) {
-        let text = speakable_up_to(&say.text, MOST_READ);
+        self.left = MOST_READ;
+        let text = self.take_text(&say.text);
         match say.provider.unwrap_or(SpeechProvider::Pocket) {
             SpeechProvider::OpenAi => {
                 (self.write)(Output::Pieces(pieces(&text, PIECE)));
-                self.job = Job::Stream { sound: None, ended: false };
+                self.job = Job::Stream { sound: None, ended: false, more: say.more };
             }
-            _ if text.is_empty() => (self.write)(Output::Done),
+            _ if text.is_empty() && !say.more => (self.write)(Output::Done),
             local => {
                 let voice = say.voice.unwrap_or_else(|| match local {
                     SpeechProvider::Qwen => self.qwen_voice.clone(),
                     _ => self.voice.clone(),
                 });
                 match self.ask_local(local, text, voice, say.delivery, sender) {
-                    Ok(id) => self.job = Job::Local { id, sound: None, computed: false },
+                    Ok((id, reads)) => {
+                        self.job = Job::Local { id, sound: None, pending: 1, closed: !say.more, more: say.more, reads };
+                    }
                     Err(failed) => (self.write)(failed),
                 }
             }
+        }
+    }
+
+    /// `text` as it is read, within what the job may still read ([`MOST_READ`] for all its texts).
+    fn take_text(&mut self, text: &str) -> String {
+        let text = speakable_up_to(text, self.left);
+        // The space that joins it to the next text counts too.
+        self.left = self.left.saturating_sub(text.chars().count() + 1);
+        text
+    }
+
+    /// Reads on with `text` in the open job (issue #850); nothing without one.
+    fn add(&mut self, text: &str, sender: &Sender<Event>) {
+        let open = match &self.job {
+            Job::Local { closed, .. } => !closed,
+            Job::Stream { ended, more, .. } => *more && !ended,
+            Job::Idle => false,
+        };
+        if !open {
+            return;
+        }
+        let text = self.take_text(text);
+        let Job::Local { id, pending, reads, .. } = &mut self.job else {
+            // OpenAI: the core fetches the pieces, and waits for an answer to each text.
+            return (self.write)(Output::Pieces(pieces(&text, PIECE)));
+        };
+        if text.is_empty() {
+            return;
+        }
+        *pending += 1;
+        let job = Spoken { id: *id, text, voice: reads.voice.clone(), delivery: reads.delivery };
+        let provider = reads.provider;
+        if let Some((waiting, _)) = &mut self.waiting {
+            waiting.push(job);
+            return;
+        }
+        let make = match (provider, &self.make_qwen) {
+            (SpeechProvider::Qwen, Some(make)) => Arc::clone(make),
+            _ => Arc::clone(&self.make_synth),
+        };
+        if let Err(failed) = self.send_job(provider, &make, job, sender) {
+            self.fail(failed);
+        }
+    }
+
+    /// A local job whose texts are all computed and that takes no more is done once its sound has played.
+    fn finish_local(&mut self) {
+        let Job::Local { sound, pending: 0, closed: true, .. } = &mut self.job else { return };
+        match sound {
+            Some(sound) => sound.finish(),
+            // Nothing to hear in the texts (only signs): it is read.
+            None => self.finished(),
         }
     }
 
@@ -742,7 +857,7 @@ impl<W: FnMut(Output)> Helper<W> {
         voice: String,
         delivery: Delivery,
         sender: &Sender<Event>,
-    ) -> Result<u64, Output> {
+    ) -> Result<(u64, Reads), Output> {
         // A build without Qwen3-TTS reads with Pocket TTS what a core with it asks of Qwen (issue #764), in
         // the same voice where Pocket has it: the two templates are voices of both.
         let (provider, voice) = match provider {
@@ -771,13 +886,14 @@ impl<W: FnMut(Output)> Helper<W> {
         self.next += 1;
         let id = self.next;
         self.current.store(id, Ordering::SeqCst);
+        let reads = Reads { provider, voice: voice.clone(), delivery };
         let job = Spoken { id, text, voice, delivery };
         if provider == SpeechProvider::Qwen && self.retired.is_some() {
             // The model of the Qwen thread that gave way must leave the card first; its end starts this one.
-            self.waiting = Some((job, make));
-            return Ok(id);
+            self.waiting = Some((vec![job], make));
+            return Ok((id, reads));
         }
-        self.send_job(provider, &make, job, sender).map(|()| id)
+        self.send_job(provider, &make, job, sender).map(|()| (id, reads))
     }
 
     /// Gives `job` to the thread of `provider`, made by `make` and started first.
@@ -812,6 +928,7 @@ impl<W: FnMut(Output)> Helper<W> {
         self.current.store(0, Ordering::SeqCst);
         self.waiting = None;
         self.quiet = None;
+        self.waited = false;
         // Dropping the sound stops it.
         self.job = Job::Idle;
     }
@@ -835,10 +952,19 @@ impl<W: FnMut(Output)> Helper<W> {
         if ran_out && self.quiet.is_none() {
             self.quiet = Some(Instant::now());
         }
+        // Issue #850: an open job whose sound ran out waits for more; the core opens the microphone meanwhile.
+        let open = match &self.job {
+            Job::Local { more, pending, closed, .. } => *more && !(*closed && *pending == 0),
+            Job::Stream { ended, more, .. } => *more && !ended,
+            Job::Idle => false,
+        };
+        if open && !self.waited && self.quiet.is_some_and(|quiet| quiet.elapsed() >= WAITING_AFTER) {
+            self.waited = true;
+            (self.write)(Output::Waiting);
+        }
         let done = match &self.job {
-            Job::Local { sound: Some(sound), computed: true, .. } | Job::Stream { sound: Some(sound), ended: true } => {
-                sound.ended()
-            }
+            Job::Local { sound: Some(sound), pending: 0, closed: true, .. }
+            | Job::Stream { sound: Some(sound), ended: true, .. } => sound.ended(),
             _ => false,
         };
         if done {
@@ -946,8 +1072,23 @@ mod tests {
             text: "Hello.".into(),
             voice: Some("marius".into()),
             delivery: Delivery { speed: 130, pause_ms: 500 },
+            more: false,
         });
-        for input in [say, Input::Pcm { rate: 24_000, data: vec![1, 2, 3, 4] }, Input::End, Input::Stop] {
+        let open = Input::Say(Say {
+            provider: None,
+            text: "One.".into(),
+            voice: None,
+            delivery: Delivery::default(),
+            more: true,
+        });
+        for input in [
+            say,
+            open,
+            Input::Add("Two.".into()),
+            Input::Pcm { rate: 24_000, data: vec![1, 2, 3, 4] },
+            Input::End,
+            Input::Stop,
+        ] {
             assert_eq!(Input::parse(&input.line()), Some(input.clone()), "{}", input.line());
         }
         assert_eq!(Input::parse(r#"{"pcm": {"rate": 0, "data": ""}}"#), None, "no rate");
@@ -956,6 +1097,7 @@ mod tests {
         for output in [
             Output::Pieces(vec!["One.".into(), "Two.".into()]),
             Output::Playing,
+            Output::Waiting,
             Output::Done,
             Output::failed("unsupported", "No player"),
         ] {
@@ -975,6 +1117,7 @@ mod tests {
                 text: "Hi".into(),
                 voice: Some("alba".into()),
                 delivery: Delivery::default(),
+                more: false,
             }))
         );
         assert_eq!(Input::parse(r#"{"say": {"provider": "piper", "text": "Hi"}}"#), None, "a provider that is gone");
@@ -987,6 +1130,7 @@ mod tests {
                 text: "Hi".into(),
                 voice: Some("calm_man".into()),
                 delivery: Delivery::default(),
+                more: false,
             }))
         );
     }
@@ -1164,7 +1308,14 @@ mod tests {
             text: text.into(),
             voice: None,
             delivery: Delivery::default(),
+            more: false,
         }))
+    }
+
+    /// A local job of Pocket TTS with the id `id` that computes one text, as `say` starts it.
+    fn local(id: u64) -> Job {
+        let reads = Reads { provider: SpeechProvider::Pocket, voice: "alba".into(), delivery: Delivery::default() };
+        Job::Local { id, sound: None, pending: 1, closed: true, more: false, reads }
     }
 
     /// Feeds what Pocket TTS sends to the helper until `until` holds, ten seconds at most.
@@ -1233,6 +1384,109 @@ mod tests {
         assert_eq!(said.borrow().last(), Some(&Output::Done), "played to its end");
     }
 
+    /// A `say` that keeps its job open for more text (issue #850).
+    fn open_say(provider: SpeechProvider, text: &str) -> Event {
+        Event::Input(Input::Say(Say {
+            provider: Some(provider),
+            text: text.into(),
+            voice: None,
+            delivery: Delivery::default(),
+            more: true,
+        }))
+    }
+
+    /// Issue #850: the lines of an open job are read as the core writes them; a `say` without `more` stays
+    /// as before.
+    #[test]
+    fn more_and_add_are_read() {
+        let say = r#"{"say": {"provider": "pocket", "text": "One.", "more": true}}"#;
+        assert!(matches!(Input::parse(say), Some(Input::Say(Say { more: true, .. }))));
+        assert!(matches!(Input::parse(r#"{"say": {"text": "One."}}"#), Some(Input::Say(Say { more: false, .. }))));
+        assert_eq!(Input::parse(r#"{"add": {"text": "Two."}}"#), Some(Input::Add("Two.".into())));
+        assert_eq!(Output::parse("\"waiting\""), Some(Output::Waiting));
+    }
+
+    /// Issue #850: Pocket reads two texts of one job one after the other in one sound, and the job is done
+    /// only after `end`, once all of it has played; an `add` without an open job is not read.
+    #[test]
+    fn pocket_reads_an_open_job_until_its_end() {
+        let (sender, events) = mpsc::channel();
+        let folder = tempfile::tempdir().expect("voice folder");
+        download(folder.path(), POCKET_DE);
+        let (mut helper, said, played) = helper(Some(folder.path()), true, Duration::ZERO);
+        helper.handle(Event::Input(Input::Add("Nobody asked.".into())), &sender);
+        assert!(matches!(helper.job, Job::Idle), "no job, nothing read");
+        helper.handle(open_say(SpeechProvider::Pocket, "Eins."), &sender);
+        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { pending: 0, .. }));
+        helper.handle(Event::Input(Input::Add("Zwei.".into())), &sender);
+        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { pending: 0, .. }));
+        assert_eq!(played.borrow().samples.len(), "Eins.".len() + "Zwei.".len(), "both texts");
+        assert_eq!(played.borrow().opened, 1, "in one sound");
+        played.borrow_mut().drained = true;
+        helper.look_at_the_end();
+        assert!(!said.borrow().contains(&Output::Done), "more may come: {:?}", said.borrow());
+        assert!(!played.borrow().finished);
+        helper.handle(Event::Input(Input::End), &sender);
+        assert!(played.borrow().finished, "all of it is computed");
+        helper.look_at_the_end();
+        assert_eq!(said.borrow().last(), Some(&Output::Done));
+        helper.handle(Event::Input(Input::Add("Drei.".into())), &sender);
+        assert!(matches!(helper.job, Job::Idle), "the job is over");
+    }
+
+    /// Issue #850: an open job whose sound ran out says `waiting` once, and `playing` again with its next
+    /// sound; a job without `more` never waits.
+    #[test]
+    fn an_open_job_says_when_it_waits() {
+        let (sender, _events) = mpsc::channel();
+        let (mut helper, said, played) = helper(None, true, Duration::ZERO);
+        let pcm = || Event::Input(Input::Pcm { rate: 24_000, data: vec![0; 4] });
+        helper.handle(open_say(SpeechProvider::OpenAi, "Eins."), &sender);
+        helper.handle(pcm(), &sender);
+        played.borrow_mut().drained = true;
+        helper.look_at_the_end();
+        assert_eq!(said.borrow().last(), Some(&Output::Playing), "a breath is no wait");
+        helper.quiet = Instant::now().checked_sub(WAITING_AFTER);
+        helper.look_at_the_end();
+        helper.look_at_the_end();
+        let waits = said.borrow().iter().filter(|output| **output == Output::Waiting).count();
+        assert_eq!(waits, 1, "{:?}", said.borrow());
+        played.borrow_mut().drained = false;
+        helper.handle(pcm(), &sender);
+        assert_eq!(said.borrow().last(), Some(&Output::Playing), "sound again");
+        assert!(helper.quiet.is_none());
+
+        let (mut closed, said, played) = super::tests::helper(None, true, Duration::ZERO);
+        closed.handle(say(SpeechProvider::OpenAi, "Eins."), &sender);
+        closed.handle(pcm(), &sender);
+        played.borrow_mut().drained = true;
+        closed.look_at_the_end();
+        closed.quiet = Instant::now().checked_sub(WAITING_AFTER);
+        closed.look_at_the_end();
+        assert!(!said.borrow().contains(&Output::Waiting), "{:?}", said.borrow());
+    }
+
+    /// Issue #850: with OpenAI each `add` of an open job gets its own pieces, within what the job may read.
+    #[test]
+    fn openai_gets_pieces_for_each_add() {
+        let (sender, _events) = mpsc::channel();
+        let (mut helper, said, _) = helper(None, true, Duration::ZERO);
+        helper.handle(open_say(SpeechProvider::OpenAi, "Eins."), &sender);
+        helper.handle(Event::Input(Input::Add("**Zwei.**".into())), &sender);
+        assert_eq!(
+            said.borrow().as_slice(),
+            [Output::Pieces(vec!["Eins.".into()]), Output::Pieces(vec!["Zwei.".into()])]
+        );
+        helper.handle(Event::Input(Input::Add("x".repeat(MOST_READ))), &sender);
+        let last = said.borrow().last().cloned();
+        let Some(Output::Pieces(pieces)) = last else { panic!("pieces") };
+        let read: usize = pieces.iter().map(|piece| piece.chars().count()).sum();
+        // Cut without a sentence end, the text ends in "…".
+        assert_eq!(read, MOST_READ - "Eins. Zwei. ".len() + 1, "the job's budget, not a new one");
+        helper.handle(Event::Input(Input::End), &sender);
+        assert_eq!(said.borrow().last(), Some(&Output::Done), "no sound came: done at once");
+    }
+
     /// Issue #762: sound without an output fails with a message, and stopping afterwards says nothing more.
     #[test]
     fn no_sound_output_is_said_for_people() {
@@ -1255,7 +1509,7 @@ mod tests {
         download(folder.path(), POCKET_DE);
         let (mut helper, said, played) = helper(Some(folder.path()), true, Duration::ZERO);
         helper.handle(say(SpeechProvider::Pocket, "Hallo."), &sender);
-        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { computed: true, .. }));
+        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { pending: 0, .. }));
         assert_eq!(said.borrow().as_slice(), [Output::Playing]);
         assert_eq!(played.borrow().samples.len(), "Hallo.".len(), "every piece");
         assert!(played.borrow().samples.iter().all(|(rate, _)| *rate == 24_000));
@@ -1277,7 +1531,7 @@ mod tests {
         let plain = r#"{"say": {"provider": "pocket", "text": "Ja.", "voice": "alba"}}"#;
         for line in [line, plain] {
             helper.handle(Event::Input(Input::parse(line).expect("a say")), &sender);
-            pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { computed: true, .. }));
+            pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { pending: 0, .. }));
         }
         assert!(said.borrow().contains(&Output::Playing));
         let delivered = delivered.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
@@ -1301,7 +1555,7 @@ mod tests {
         let heard = played.borrow().samples.len();
 
         helper.handle(say(SpeechProvider::Pocket, "Ja."), &sender);
-        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { computed: true, .. }));
+        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { pending: 0, .. }));
         assert_eq!(played.borrow().samples.len(), heard + "Ja.".len(), "only the new job's sound");
         assert_eq!(played.borrow().opened, 2, "a sound output each");
         assert_eq!(said.borrow().as_slice(), [Output::Playing, Output::Done, Output::Playing]);
@@ -1321,6 +1575,7 @@ mod tests {
                 text: "Hi.".into(),
                 voice: Some("broken".into()),
                 delivery: Delivery::default(),
+                more: false,
             })),
             &sender,
         );
@@ -1342,7 +1597,7 @@ mod tests {
         let (mut helper, said, _) = helper(None, true, Duration::ZERO);
         let (jobs, _inbox) = mpsc::channel();
         helper.worker = Some((2, SpeechProvider::Pocket, jobs));
-        helper.job = Job::Local { id: 1, sound: None, computed: false };
+        helper.job = local(1);
         helper.handle(Event::WorkerGone(1), &sender);
         assert!(said.borrow().is_empty());
         assert!(matches!(helper.job, Job::Local { .. }) && helper.worker.is_some(), "the job still reads");
@@ -1393,10 +1648,11 @@ mod tests {
                 text: "Hallo.".into(),
                 voice: Some("calm_man".into()),
                 delivery: Delivery::default(),
+                more: false,
             })),
             &sender,
         );
-        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { computed: true, .. }));
+        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { pending: 0, .. }));
         assert_eq!(said.borrow().as_slice(), [Output::Playing], "read with Pocket TTS");
         assert_eq!(played.borrow().samples.len(), "Hallo.".len());
         assert!(matches!(helper.worker, Some((_, SpeechProvider::Pocket, _))));
@@ -1422,7 +1678,7 @@ mod tests {
         download(folder.path(), QWEN);
         let (helper, said, played) = helper(Some(folder.path()), true, Duration::ZERO);
         let (mut helper, made, voices) = with_fake_qwen(helper);
-        let computed = |helper: &Helper<_>| matches!(helper.job, Job::Local { computed: true, .. });
+        let computed = |helper: &Helper<_>| matches!(helper.job, Job::Local { pending: 0, .. });
 
         helper.handle(say(SpeechProvider::Qwen, "Hallo."), &sender);
         pump(&mut helper, &events, &sender, computed);
@@ -1440,6 +1696,7 @@ mod tests {
                 text: "Gut.".into(),
                 voice: Some("warm_woman".into()),
                 delivery: Delivery::default(),
+                more: false,
             })),
             &sender,
         );
@@ -1479,7 +1736,7 @@ mod tests {
         let gpu = VoiceError::Missing(torro_ipc::VoicePart::Speech, VoiceMissing::Gpu);
         let (jobs, _inbox) = mpsc::channel();
         helper.worker = Some((3, SpeechProvider::Qwen, jobs));
-        helper.job = Job::Local { id: 1, sound: None, computed: false };
+        helper.job = local(1);
         helper.handle(Event::LoadFailed(2, gpu.clone()), &sender);
         assert!(said.borrow().is_empty(), "another thread's");
         helper.handle(Event::LoadFailed(3, gpu), &sender);
@@ -1503,13 +1760,13 @@ mod tests {
 
         helper.retired = Some(7);
         helper.current.store(1, Ordering::SeqCst);
-        helper.job = Job::Local { id: 1, sound: None, computed: false };
-        helper.waiting = Some((spoken(1), Arc::clone(&make)));
+        helper.job = local(1);
+        helper.waiting = Some((vec![spoken(1)], Arc::clone(&make)));
         helper.handle(Event::WorkerGone(6), &sender);
         assert_eq!(made.load(Ordering::SeqCst), 0, "another thread's end starts nothing");
         helper.handle(Event::WorkerGone(7), &sender);
         assert!(matches!(helper.worker, Some((_, SpeechProvider::Qwen, _))), "started with the old one's end");
-        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { computed: true, .. }));
+        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { pending: 0, .. }));
         assert_eq!(played.borrow().samples, [(24_000, 0.25)]);
         assert_eq!(said.borrow().as_slice(), [Output::Playing]);
 
@@ -1517,8 +1774,8 @@ mod tests {
         helper.worker = None;
         helper.retired = Some(9);
         helper.current.store(2, Ordering::SeqCst);
-        helper.job = Job::Local { id: 2, sound: None, computed: false };
-        helper.waiting = Some((spoken(2), make));
+        helper.job = local(2);
+        helper.waiting = Some((vec![spoken(2)], make));
         helper.handle(Event::Input(Input::Stop), &sender);
         assert_eq!(said.borrow().last(), Some(&Output::Done), "the stop acts at once");
         assert!(helper.waiting.is_none());
@@ -1567,7 +1824,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         helper.handle(say(SpeechProvider::Pocket, "Zwei."), &sender);
         helper.handle(say(SpeechProvider::Qwen, "Drei."), &sender);
-        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { computed: true, .. }));
+        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { pending: 0, .. }));
         assert_eq!(most.load(Ordering::SeqCst), 1, "one Qwen model at a time");
     }
 

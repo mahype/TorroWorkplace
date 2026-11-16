@@ -864,8 +864,10 @@ fn keep_heard(running: &mut Running, heard: Heard) {
 pub enum SpeechLine {
     /// The pieces to fetch from OpenAI and send as sound.
     Pieces(Vec<String>),
-    /// The first sound plays.
+    /// The first sound plays, or sound again after [`SpeechLine::Waiting`].
     Playing,
+    /// The sound of a job open for more text ran out (issue #850): nothing sounds until more comes.
+    Waiting,
     /// Read to its end, or stopped.
     Done,
     /// It cannot read, with the core's code and a message for people.
@@ -878,6 +880,7 @@ impl SpeechLine {
         let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
         match value.as_str() {
             Some("playing") => return Some(SpeechLine::Playing),
+            Some("waiting") => return Some(SpeechLine::Waiting),
             Some("done") => return Some(SpeechLine::Done),
             Some(_) => return None,
             None => {}
@@ -1593,6 +1596,7 @@ done"#;
     #[test]
     fn speech_lines_are_read() {
         assert_eq!(SpeechLine::parse("\"playing\""), Some(SpeechLine::Playing));
+        assert_eq!(SpeechLine::parse("\"waiting\""), Some(SpeechLine::Waiting));
         assert_eq!(
             SpeechLine::parse(r#"{"pieces": ["One.", "Two."]}"#),
             Some(SpeechLine::Pieces(vec!["One.".into(), "Two.".into()]))
