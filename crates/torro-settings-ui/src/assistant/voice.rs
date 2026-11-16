@@ -1089,7 +1089,15 @@ pub fn voice_state(enabled: bool, status: Option<&VoiceStatus>) -> (Status, Stri
     match (status.listener, &status.problem) {
         (VoiceState::Listening, _) => (Status::Ok, tr("Listening for “Hey Torro”").to_string()),
         (VoiceState::Recording, _) => (Status::Ok, tr("Recording …").to_string()),
-        (VoiceState::Answering, _) => (Status::Ok, tr("Answering …").to_string()),
+        // The settings show the listener's own state; what it does while it answers is for the chat (issue #830).
+        (
+            VoiceState::Answering
+            | VoiceState::Recognizing
+            | VoiceState::Thinking
+            | VoiceState::UsingTool
+            | VoiceState::Speaking,
+            _,
+        ) => (Status::Ok, tr("Answering …").to_string()),
         (VoiceState::Conversing, _) => (Status::Ok, tr("In a conversation").to_string()),
         (VoiceState::Off, Some(_)) => {
             (Status::Error, tr("The listener stopped. Check the models under Models.").to_string())
