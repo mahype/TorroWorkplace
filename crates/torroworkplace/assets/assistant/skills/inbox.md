@@ -6,8 +6,9 @@ description: Use when the person asks what waits for them, or wants inbox entrie
 
 ## Steps
 
-- What waits: inbox_list_items without arguments (open entries for the person, urgent first). Name the
-  `for_me` entries first; mention `info` only briefly or when asked.
+- What waits: inbox_list_items with `state: open` (a field left out selects all, done and snoozed
+  too), urgent first. Name the `for_me` entries first (`lane: for_me`); mention `info` only briefly or
+  when asked.
 - One entry: inbox_get_item for its full text and link.
 - Done: inbox_set_item_done. Put away without doing anything: with `dismissed: true` as well.
 - Later: inbox_snooze_item with `until` (RFC 3339) in the person's time zone.
@@ -37,5 +38,5 @@ description: Use when the person asks what waits for them, or wants inbox entrie
 
 - A lasting rule (`remember: true` on a lane, a mute rule for every source of a kind) needs admin rights
   and the person's approval.
-- inbox_post_item may wait for approval (`pending`). The line of the inbox under "This conversation"
-  says what waits for you.
+- inbox_post_item may wait for approval (`pending`). The line "Waits for the
+  person's approval" under "This conversation" says what waits for you.

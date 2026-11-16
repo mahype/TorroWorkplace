@@ -17,7 +17,8 @@ description: Use when the person looks for someone's address or number, or wants
 - Replace fields: contacts_update_contact with only the fields that change and the `etag` of
   contacts_get_contact.
 - Duplicates: contacts_find_duplicates, show the groups, then contacts_merge_contacts with the contact
-  the person wants to keep as `keep`, the others' ids and their `etags` in the same order.
+  the person wants to keep as `keep`, and in `ids` all of them, `keep` among them, with their `etags`
+  in the same order.
 - Delete: contacts_delete_contact with the `etag`.
 
 ## Data
@@ -37,5 +38,6 @@ description: Use when the person looks for someone's address or number, or wants
 ## Approvals
 
 - Replacing fields, merging and deleting overwrite for good: they need full access and usually wait for
-  the person's approval. The line of contacts under "This conversation" says what waits for you.
+  the person's approval. The line "Waits for the
+  person's approval" under "This conversation" says what waits for you.
 - Say which contacts you will merge or delete, by name, before you do it.

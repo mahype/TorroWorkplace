@@ -34,5 +34,6 @@ description: Use when the person asks about their schedule or wants an event cre
 ## Approvals
 
 - Deleting events, and changes that drop events of a series, need full access and may wait for the
-  person's approval. The line of calendars under "This conversation" says what waits for you.
+  person's approval. The line "Waits for the
+  person's approval" under "This conversation" says what waits for you.
 - Before you delete or move many events, say what you will do and ask.

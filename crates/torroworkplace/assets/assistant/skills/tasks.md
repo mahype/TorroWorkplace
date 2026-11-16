@@ -34,6 +34,6 @@ description: Use when the person asks about their tasks or wants one created, do
 
 ## Approvals
 
-- Deleting a task may wait for the person's approval. The line of tasks under "This conversation" says
-  what waits for you.
+- Deleting a task may wait for the person's approval. The line "Waits for the
+  person's approval" under "This conversation" says what waits for you.
 - Before you change or delete many tasks, say what you will do and ask.

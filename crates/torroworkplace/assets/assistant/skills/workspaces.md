@@ -28,12 +28,12 @@ description: Use when the person wants a workspace template saved, loaded, updat
 - `workspace-not-empty` with mode `empty`: windows are open there. Ask whether to add (`add`), close them
   (`replace`) or switch to an empty workspace first.
 - `busy`: another template is being saved or loaded; try again in a moment.
-- `unsupported` or `not-connected`: the window manager is not one the suite supports, or not running
-  (see "This computer").
+- `unsupported`: the window manager is not one the suite supports (see "This computer"). `error`: it
+  may not be running; say what failed.
 
 ## Approvals
 
 - `replace` closes windows and needs delete access; update and delete lose the old template for good.
-  They may wait for the person's approval. The line of workspaces under "This conversation" says what
-  waits for you.
+  They may wait for the person's approval. The line "Waits for the
+  person's approval" under "This conversation" says what waits for you.
 - Before you close windows or overwrite a template, say so and ask, even when you may do it.
