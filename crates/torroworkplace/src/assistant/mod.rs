@@ -1010,16 +1010,23 @@ impl Assistant {
 
     /// Why `assistant.choose_model` for conversation `id` and `engine` would be refused (issue #852): `not-found`
     /// for an unknown conversation, `error` for one with a bot, else what [`Assistant::engine`] says of `engine`
-    /// for the assistant. `None` when the choice may be stored.
+    /// for the assistant, and `unsupported` for a coding agent in a chat about a mail, as its next message would
+    /// be ([`Assistant::about_for`]). `None` when the choice may be stored.
     async fn choose_refusal(&self, ai: &AiAccounts, id: &str, engine: &str) -> Option<Response> {
-        match self.state().await.conversations.get(id) {
+        let about = match self.state().await.conversations.get(id) {
             None => return Some(unknown(id)),
             Some(conversation) if conversation.bot.is_some() => {
                 return Some(refusal("error", "a conversation with a bot keeps the bot's model"));
             }
-            Some(_) => {}
+            Some(conversation) => conversation.about.is_some(),
+        };
+        match self.engine(ai, engine, &Actor::of(None)).await {
+            Err(refused) => Some(refused),
+            Ok(EngineKind::Agent) if about => {
+                Some(refusal("unsupported", "a chat about a mail needs an AI account; agents are not given mail"))
+            }
+            Ok(_) => None,
         }
-        self.engine(ai, engine, &Actor::of(None)).await.err()
     }
 
     /// `assistant.pin_conversation`.
