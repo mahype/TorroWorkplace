@@ -268,7 +268,15 @@ impl App {
             shell::header_title(Some(self.view_icon(&self.view)), self.view_name(&self.view), Some(count.to_string()))
         };
         let mut trailing: Vec<Element<'a, Message>> = Vec::new();
-        if !matches!(self.view, View::Recent | View::Birthdays | View::Duplicates) && !self.contacts.is_empty() {
+        // The map of all contacts (issue #357): only with maps and the lookup of contact addresses on.
+        if self.map_offered() && !self.contacts.is_empty() {
+            trailing.push(self.look_switch(narrow));
+        }
+        let grouped = !self.on_map();
+        if grouped
+            && !matches!(self.view, View::Recent | View::Birthdays | View::Duplicates)
+            && !self.contacts.is_empty()
+        {
             let toggle = Message::ToggleMenu(Menu::GroupBy);
             // Narrow, the grouping moves into the navigation menu, so the navigation and "+" keep their room.
             if !narrow {
@@ -348,6 +356,8 @@ impl App {
                 )
             });
             calm(Some(Icon::Users), tr("No contacts yet."), tr("Contacts of your address books show up here."), new)
+        } else if self.on_map() {
+            self.map_view()
         } else {
             let rows = self.rows_view(anchors);
             if rows.is_empty() {

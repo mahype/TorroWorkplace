@@ -90,6 +90,11 @@ const TILE_ZOOM: u8 = MAP_ZOOM + 1;
 /// The edge of a map tile in pixels.
 const TILE_SIZE: u32 = 256;
 
+/// How many tiles are fetched from the tile service at once, by everyone together (issue #357): a
+/// map that is moved asks for many tiles, and the OpenStreetMap rules ask for at most two
+/// connections.
+pub const TILE_FETCHES: usize = 2;
+
 /// The colour where no tile is (beyond the edge of the world): OpenStreetMap's land.
 const BACKGROUND: Rgba<u8> = Rgba([242, 239, 233, 255]);
 
@@ -237,6 +242,8 @@ pub struct Places {
     tiles: TileCache,
     searches: Mutex<Throttle>,
     maps: Mutex<Throttle>,
+    /// Places for fetches at the tile service ([`TILE_FETCHES`]).
+    fetches: tokio::sync::Semaphore,
     /// Search answers by [`answer_key`], with when they came.
     answers: Mutex<HashMap<String, (Instant, Vec<Place>)>>,
 }
@@ -259,6 +266,7 @@ impl Places {
             searches: Mutex::new(Throttle::new(SEARCH_GAP)),
             // Maps ask several tiles at once; only the clients' budget and the pause hold them back.
             maps: Mutex::new(Throttle::new(Duration::ZERO)),
+            fetches: tokio::sync::Semaphore::new(TILE_FETCHES),
             answers: Mutex::new(HashMap::new()),
         }
     }
@@ -404,6 +412,48 @@ impl Places {
         Ok(png.into_inner())
     }
 
+    /// `calendar.map_tile` with maps on (issue #357; the core checked the limits and the switch): the
+    /// tile `x`/`y` at zoom `z` of `maps` as a PNG of [`TILE_SIZE`] pixels, scaled like the tiles of
+    /// [`Places::map`] and darkened for `dark`, answered as [`Response::Image`]. From the cache like
+    /// those, an older copy when the service cannot give it; otherwise it fails (see [`Failure`]).
+    pub async fn tile_png(&self, maps: &Maps, z: u8, x: u32, y: u32, dark: bool, asker: Asker) -> Response {
+        match self.single_tile(maps, TileAt { z, x, y, left: 0, top: 0 }, dark, asker).await {
+            Ok(png) => Response::Image { png: base64::engine::general_purpose::STANDARD.encode(png) },
+            Err(failure) => failure.response(Service::Map),
+        }
+    }
+
+    /// The PNG of [`Places::tile_png`].
+    async fn single_tile(&self, maps: &Maps, tile: TileAt, dark: bool, asker: Asker) -> Result<Vec<u8>, Failure> {
+        let url = tile_url(&maps.tiles, &tile)?;
+        // A map that is moved asks for many tiles: a fresh copy asks no service and counts against no
+        // throttle, and while the service is paused or busy an older copy stands in.
+        let bytes = match self.tiles.read(url.as_str(), SystemTime::now()) {
+            Kept::Fresh(bytes) => bytes,
+            Kept::Stale { bytes, .. } => match self.wait_turn(Service::Map, asker).await {
+                Ok(()) => self.tile(url).await?,
+                Err(_) => bytes,
+            },
+            Kept::Missing => {
+                self.wait_turn(Service::Map, asker).await?;
+                self.tile(url).await?
+            }
+        };
+        let mut picture = image::load_from_memory(&bytes).map_err(|_| Failure::Broken)?.to_rgba8();
+        if picture.dimensions() != (TILE_SIZE, TILE_SIZE) {
+            picture = image::imageops::resize(&picture, TILE_SIZE, TILE_SIZE, image::imageops::FilterType::Triangle);
+        }
+        if dark {
+            darken(&mut picture);
+        }
+        let mut png = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(picture)
+            .to_rgb8()
+            .write_to(&mut png, ImageFormat::Png)
+            .map_err(|_| Failure::Broken)?;
+        Ok(png.into_inner())
+    }
+
     /// The tile at `url`: from the cache while fresh, else from the service (with the cached
     /// `ETag`), else the older copy.
     async fn tile(&self, url: reqwest::Url) -> Result<Vec<u8>, Failure> {
@@ -414,6 +464,8 @@ impl Places {
             Kept::Missing => None,
         };
         let etag = stale.as_ref().and_then(|(_, etag)| etag.clone());
+        // The semaphore is never closed; were it, the tile would just be fetched without waiting.
+        let _place = self.fetches.acquire().await.ok();
         match self.get(Service::Map, url.clone(), etag.as_deref()).await {
             Ok(Fetched::Body { bytes, etag }) => {
                 self.tiles.write(url.as_str(), &bytes, etag.as_deref());
@@ -1279,6 +1331,60 @@ mod tests {
         let (code, message) = failed(&map);
         assert_eq!(code, "offline");
         assert!(!message.contains("52.52") && !message.contains("17/"), "{message}");
+    }
+
+    /// Issue #357: one tile for a map that is moved, kept like the tiles of a map and darkened.
+    #[tokio::test]
+    async fn a_single_tile_is_kept_scaled_and_darkened() {
+        let server = MockServer::start_async().await;
+        let big = {
+            let tile = image::RgbImage::from_pixel(512, 512, image::Rgb([242, 239, 233]));
+            let mut png = Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgb8(tile).write_to(&mut png, ImageFormat::Png).expect("encoded");
+            png.into_inner()
+        };
+        let tiles = server
+            .mock_async(|when, then| {
+                when.method(GET).path("/tiles/10/550/335.png").header("user-agent", USER_AGENT);
+                then.status(200).header("ETag", "\"v1\"").body(big);
+            })
+            .await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let places = Places::new(Some(dir.path().join("tiles")));
+        let maps = maps_at(&server, GeocoderKind::Photon);
+
+        let light = picture(&places.tile_png(&maps, 10, 550, 335, false, Asker::Person).await);
+        assert_eq!(light.dimensions(), (TILE_SIZE, TILE_SIZE), "scaled to 256");
+        assert_eq!(light.get_pixel(10, 10).0, [242, 239, 233, 255]);
+        let dark = picture(&places.tile_png(&maps, 10, 550, 335, true, Asker::Person).await);
+        assert_eq!(dark.get_pixel(10, 10).0, [22, 19, 13, 255]);
+        assert_eq!(tiles.calls_async().await, 1, "the second comes from the cache");
+
+        // A service that asked to wait: kept tiles still come, a new one is `busy`.
+        places.maps.lock().expect("throttle").pause(Instant::now());
+        assert!(matches!(places.tile_png(&maps, 10, 550, 335, false, Asker::Person).await, Response::Image { .. }));
+        assert_eq!(failed(&places.tile_png(&maps, 10, 551, 335, false, Asker::Person).await).0, "busy");
+    }
+
+    /// Issue #357: however many tiles are asked for at once, at most two go to the service together.
+    #[tokio::test]
+    async fn at_most_two_tiles_are_fetched_at_once() {
+        let server = MockServer::start_async().await;
+        let delay = Duration::from_millis(300);
+        let tiles = server
+            .mock_async(|when, then| {
+                when.method(GET).path_includes("/tiles/5/");
+                then.status(200).delay(delay).body(tile_png([1, 2, 3]));
+            })
+            .await;
+        let places = Places::new(None);
+        let maps = maps_at(&server, GeocoderKind::Photon);
+        let started = Instant::now();
+        let answers =
+            futures_util::future::join_all((0..6).map(|x| places.tile_png(&maps, 5, x, 7, false, Asker::Person))).await;
+        assert!(answers.iter().all(|answer| matches!(answer, Response::Image { .. })), "{answers:?}");
+        assert_eq!(tiles.calls_async().await, 6);
+        assert!(started.elapsed() >= delay * 3 - Duration::from_millis(50), "{:?}", started.elapsed());
     }
 
     #[tokio::test]

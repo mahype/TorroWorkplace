@@ -34,7 +34,9 @@ use torro_contacts::{
 };
 use torro_core::i18n::{Lang, lang, tr, trf};
 use torro_ipc::api::Rights;
-use torro_ipc::contacts::{BIRTHDAY_DAYS, MAX_BIRTHDAY_DAYS, MAX_IMPORT_BYTES, MAX_IMPORT_CARDS, MERGE_MAX, MERGE_MIN};
+use torro_ipc::contacts::{
+    BIRTHDAY_DAYS, MAX_BIRTHDAY_DAYS, MAX_IMPORT_BYTES, MAX_IMPORT_CARDS, MAX_PINS, MERGE_MAX, MERGE_MIN,
+};
 use torro_ipc::{Request, Response};
 
 use super::store::{BookRow, CardRow, Op, PlaceRow, Query, Queued, Store};
@@ -45,6 +47,10 @@ use crate::pim::Reach;
 /// The most contacts, groups and members of one group `contacts.suggest_recipients` looks at (issue
 /// #460): a search of one or two letters matches many, and the answer holds at most 20 anyway.
 pub const SUGGEST_CANDIDATES: usize = 200;
+
+/// The most contacts `contacts.list_locations` reads of one selection (issue #357); with more the
+/// answer says `truncated`.
+const MAX_LOCATION_CARDS: usize = 50_000;
 
 /// The name of Nextcloud's system address book (every user of the instance), hidden by default.
 const SYSTEM_BOOK: &str = "z-server-generated--system";
@@ -328,9 +334,9 @@ impl ContactsService {
             _ => Some(id.to_string()),
         };
         match request {
-            Request::ListContacts { book: Some(book), .. } | Request::ListContactGroups { book: Some(book) } => {
-                book_outside(book)
-            }
+            Request::ListContacts { book: Some(book), .. }
+            | Request::ListLocations { book: Some(book), .. }
+            | Request::ListContactGroups { book: Some(book) } => book_outside(book),
             Request::CreateContact { book, .. } => book_outside(book),
             Request::GetContact { id }
             | Request::GetContactPhoto { id, .. }
@@ -1126,8 +1132,14 @@ impl ContactsService {
     pub fn address_spot(&self, id: &str, index: usize) -> Result<AddressSpot, ContactsError> {
         let found = self.find(id)?;
         let contact = vcard::read(&found.card.vcard).map_err(|_| ContactsError::NotFound)?;
-        let address =
-            contact.addresses.get(index).map(|labeled| labeled.value.clone()).ok_or(ContactsError::NotFound)?;
+        // A contact with `GEO` but no address is on the map as its address 0 (issue #357): the point
+        // stands for an empty address.
+        let geo_only = contact.addresses.is_empty() && contact.geo.is_some() && index == 0;
+        let address = match contact.addresses.get(index) {
+            Some(labeled) => labeled.value.clone(),
+            None if geo_only => torro_contacts::PostalAddress::default(),
+            None => return Err(ContactsError::NotFound),
+        };
         Ok(AddressSpot {
             card: found.card.id,
             account: found.book.account,
@@ -1180,6 +1192,119 @@ impl ContactsService {
     pub fn clear_places(&self, reach: Reach<'_>) -> Result<(), ContactsError> {
         let books = self.place_books(reach)?;
         with(self.store()?, |s| s.clear_places(books.as_deref()))
+    }
+
+    /// `contacts.list_locations` (issue #357): the contacts of the selection of `query` in the books of
+    /// `reach` (filtered before reading, as [`ContactsService::list_contacts`]), each address as a pin,
+    /// counted or named as pending, in the order of the list:
+    ///
+    /// - the first address with the vCard's `GEO` is a pin `vcard`;
+    /// - an address with a point kept on this device ([`super::store::line_key`]) is a pin `lookup`;
+    /// - an address kept as not found less than `LOOKUP_RETRY_DAYS` days before `now` counts as not
+    ///   found; an empty one is left out;
+    /// - every other address is pending;
+    /// - a contact without an address and without `GEO` counts as without address.
+    ///
+    /// At most [`MAX_PINS`] pins and as many pending addresses, then `truncated`. An unknown book is
+    /// `not-found`; without books the answer is empty.
+    ///
+    /// Without a `book` the person's map leaves out the hidden books (Nextcloud's system address book
+    /// with every user of the instance, "Recently contacted") unless `show_hidden` (setting
+    /// `contacts.show_hidden_books`), as the list does: their addresses would otherwise be looked up
+    /// on the place search service unseen. A client sees a hidden book only when its rights name it.
+    pub fn list_locations(
+        &self,
+        reach: Reach<'_>,
+        query: torro_ipc::contacts::LocationsQuery,
+        show_hidden: bool,
+        now: i64,
+    ) -> Result<Response, ContactsError> {
+        use torro_ipc::contacts::{AddressRef, ContactPin, LOOKUP_RETRY_DAYS, LocationSource, LocationsStatus};
+        let books: Vec<BookRow> = self
+            .books_within(reach, None)?
+            .into_iter()
+            .filter(|book| match &query.book {
+                Some(wanted) => *wanted == book.id,
+                None => !(matches!(reach, Reach::Suite) && book.hidden && !show_hidden),
+            })
+            .collect();
+        if query.book.is_some() && books.is_empty() {
+            return Err(ContactsError::NotFound);
+        }
+        let mut pins = Vec::new();
+        let mut status = LocationsStatus::default();
+        if books.is_empty() {
+            return Ok(Response::ContactLocations { pins, status });
+        }
+        let store_query = Query {
+            books: books.iter().map(|b| b.id.clone()).collect(),
+            group: query.group,
+            favorites: query.favorites,
+            recent: false,
+            text: query.query,
+            offset: 0,
+            limit: MAX_LOCATION_CARDS,
+        };
+        with(self.store()?, |s| {
+            let (rows, more) = s.query(&store_query)?;
+            status.truncated = more;
+            for row in &rows {
+                let Ok(contact) = vcard::read(&row.vcard) else { continue };
+                let pin = |address: usize, geo: torro_pim::model::Geo, source| ContactPin {
+                    id: row.id.clone(),
+                    name: contact.shown_name(),
+                    address,
+                    geo,
+                    source,
+                    untrusted: true,
+                };
+                if contact.addresses.is_empty() {
+                    match contact.geo {
+                        Some(geo) if pins.len() < MAX_PINS => pins.push(pin(
+                            0,
+                            torro_pim::model::Geo { lat: geo.lat, lon: geo.lon },
+                            LocationSource::Vcard,
+                        )),
+                        Some(_) => status.truncated = true,
+                        None => status.without_address += 1,
+                    }
+                    continue;
+                }
+                for (index, labeled) in contact.addresses.iter().enumerate() {
+                    let address = &labeled.value;
+                    let located = match contact.geo.filter(|_| index == 0) {
+                        Some(geo) => Some((geo.lat, geo.lon, LocationSource::Vcard)),
+                        None => {
+                            if address.one_line().trim().is_empty() {
+                                continue;
+                            }
+                            match s.place(&row.id, &super::store::line_key(address))? {
+                                Some(PlaceRow { point: Some((lat, lon)), .. }) => {
+                                    Some((lat, lon, LocationSource::Lookup))
+                                }
+                                Some(PlaceRow { point: None, at }) if now - at < LOOKUP_RETRY_DAYS * 24 * 60 * 60 => {
+                                    status.not_found += 1;
+                                    continue;
+                                }
+                                _ => None,
+                            }
+                        }
+                    };
+                    match located {
+                        Some((lat, lon, source)) if pins.len() < MAX_PINS => {
+                            pins.push(pin(index, torro_pim::model::Geo { lat, lon }, source))
+                        }
+                        None if status.pending.len() < MAX_PINS => {
+                            status.pending.push(AddressRef { id: row.id.clone(), address: index })
+                        }
+                        _ => status.truncated = true,
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        status.located = u32::try_from(pins.len()).unwrap_or(u32::MAX);
+        Ok(Response::ContactLocations { pins, status })
     }
 
     /// The books in reach that are not hidden: where people "already in the address books" are
@@ -1726,6 +1851,113 @@ mod tests {
         assert_eq!(groups[0].name, "Jour fixe");
         assert_eq!(members, ["Jonas Berger", "Mira Schulte"], "a group brings its members");
         assert!(service.suggest_candidates(Reach::Suite, "  ", true).expect("blank").0.is_empty());
+    }
+
+    /// Issue #357: every address of a selection is a pin, counted or pending, in the books in reach.
+    #[tokio::test]
+    async fn locations_are_pins_counts_and_pending_addresses() {
+        use torro_ipc::contacts::{AddressRef, LOOKUP_RETRY_DAYS, LocationSource, LocationsQuery};
+        let dir = tempfile::tempdir().expect("dir");
+        let server = Arc::new(Server::default());
+        let work = server.add_book("contacts", true, false);
+        let private = server.add_book("privat", true, false);
+        let vcard = |uid: &str, lines: &str| {
+            format!("BEGIN:VCARD\r\nVERSION:3.0\r\nUID:{uid}\r\nFN:{uid}\r\nN:{uid};;;;\r\n{lines}END:VCARD\r\n")
+        };
+        server.put_card(
+            &work,
+            "anna",
+            &vcard(
+                "anna",
+                "GEO:geo:52.52,13.40\r\nADR;TYPE=HOME:;;Example Street 1;Berlin;;10115;\r\n\
+                 ADR;TYPE=WORK:;;Hafenstraße 4;Hamburg;;20359;\r\n",
+            ),
+        );
+        server.put_card(&work, "ben", &vcard("ben", "ADR;TYPE=HOME:;;Nowhere 1;Atlantis;;;\r\n"));
+        server.put_card(&work, "carl", &vcard("carl", "ADR;TYPE=HOME:;;Lindenweg 3;Bonn;;;\r\n"));
+        server.put_card(&work, "dora", &vcard("dora", "ADR;TYPE=HOME:;;Old Road 2;Köln;;;\r\n"));
+        server.put_card(&work, "emil", &vcard("emil", "TEL:+49 30 1234\r\n"));
+        server.put_card(&work, "fritz", &vcard("fritz", "GEO:geo:48.1,11.6\r\n"));
+        server.put_card(&work, "gerd", &vcard("gerd", "ADR;TYPE=HOME:;;;;;;\r\n"));
+        server.put_card(&private, "secret", &vcard("secret", "ADR;TYPE=HOME:;;Hidden 1;Berlin;;;\r\n"));
+        let service = ContactsService::in_dir(dir.path(), vec![(ACCOUNT.into(), Arc::clone(&server))]);
+        service.sync_all().await;
+        let now = 2_000_000_000;
+        let keep = |uid: &str, address: usize, point: Option<(f64, f64)>, at: i64| {
+            let spot = service.address_spot(&id("contacts", uid), address).expect("spot");
+            service.keep_place(&spot, point, at).expect("kept");
+        };
+        keep("anna", 1, Some((53.5458, 9.9672)), now - 100);
+        keep("ben", 0, None, now - 100);
+        keep("dora", 0, None, now - (LOOKUP_RETRY_DAYS + 1) * 24 * 60 * 60);
+        let located = |reach: Reach<'_>, query: LocationsQuery| match service.list_locations(reach, query, false, now) {
+            Ok(Response::ContactLocations { pins, status }) => (pins, status),
+            other => panic!("locations, got {other:?}"),
+        };
+
+        let rights = only_work();
+        let (pins, status) = located(Reach::Client(&rights), LocationsQuery::default());
+        let shown: Vec<(&str, usize, LocationSource)> =
+            pins.iter().map(|pin| (pin.name.as_str(), pin.address, pin.source)).collect();
+        assert_eq!(
+            shown,
+            [
+                ("anna", 0, LocationSource::Vcard),
+                ("anna", 1, LocationSource::Lookup),
+                ("fritz", 0, LocationSource::Vcard)
+            ]
+        );
+        assert_eq!(pins[1].geo, torro_pim::model::Geo { lat: 53.5458, lon: 9.9672 });
+        assert!(pins.iter().all(|pin| pin.untrusted));
+        // A pin of `GEO` without an address is its address 0 for locating and opening.
+        let fritz = service.address_spot(&id("contacts", "fritz"), 0).expect("the point stands for an address");
+        assert_eq!(fritz.geo.map(|geo| geo.lat), Some(48.1));
+        assert!(service.address_spot(&id("contacts", "fritz"), 1).is_err());
+        assert_eq!(status.located, 3);
+        assert_eq!(status.not_found, 1, "ben, asked lately");
+        assert_eq!(status.without_address, 1, "emil; gerd's empty address is left out");
+        assert_eq!(
+            status.pending,
+            [
+                AddressRef { id: id("contacts", "carl"), address: 0 },
+                AddressRef { id: id("contacts", "dora"), address: 0 }
+            ],
+            "dora's not-found is old: asked again"
+        );
+        assert!(!status.truncated);
+
+        // The selection of the list; the person sees every book.
+        let (pins, _) =
+            located(Reach::Suite, LocationsQuery { query: Some("fritz".into()), ..LocationsQuery::default() });
+        assert_eq!(pins.len(), 1);
+        let (_, status) = located(Reach::Suite, LocationsQuery::default());
+        assert_eq!(status.pending.len(), 3, "the private book too");
+        let private_book = format!("{ACCOUNT}/privat");
+        let foreign = LocationsQuery { book: Some(private_book.clone()), ..LocationsQuery::default() };
+        assert!(matches!(
+            service.list_locations(Reach::Client(&rights), foreign.clone(), false, now),
+            Err(ContactsError::NotFound)
+        ));
+        let request =
+            Request::ListLocations { book: Some(private_book.clone()), group: None, favorites: false, query: None };
+        assert_eq!(service.out_of_reach(Reach::Client(&rights), &request), Some(private_book));
+        let unknown = LocationsQuery { book: Some("nowhere".into()), ..LocationsQuery::default() };
+        assert!(matches!(service.list_locations(Reach::Suite, unknown, false, now), Err(ContactsError::NotFound)));
+
+        // The system book (every user of the instance) only when the person shows hidden books, or names it.
+        let system = server.add_book("z-server-generated--system", false, true);
+        server.put_card(&system, "colleague", &vcard("colleague", "ADR;TYPE=HOME:;;Office 1;Berlin;;;\r\n"));
+        service.sync_all().await;
+        let pending = |show_hidden: bool, book: Option<String>| {
+            let query = LocationsQuery { book, ..LocationsQuery::default() };
+            match service.list_locations(Reach::Suite, query, show_hidden, now) {
+                Ok(Response::ContactLocations { status, .. }) => status.pending.len(),
+                other => panic!("locations, got {other:?}"),
+            }
+        };
+        assert_eq!(pending(false, None), 3, "the system book is left out");
+        assert_eq!(pending(true, None), 4, "shown with hidden books");
+        assert_eq!(pending(false, Some(format!("{ACCOUNT}/z-server-generated--system"))), 1, "or when named");
     }
 
     #[tokio::test]

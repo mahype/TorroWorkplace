@@ -33,11 +33,17 @@ pub const MAX_MAP_WIDTH: u16 = 800;
 /// The highest map `calendar.map_preview` draws, in logical pixels.
 pub const MAX_MAP_HEIGHT: u16 = 400;
 
-/// Why `request` is outside the limits of `calendar.search_places` or `calendar.map_preview`, as
+/// The deepest zoom `calendar.map_tile` gives (issue #357): single houses, as deep as OpenStreetMap
+/// draws.
+pub const MAX_TILE_ZOOM: u8 = 19;
+
+/// Why `request` is outside the limits of `calendar.search_places`, `calendar.map_preview` or
+/// `calendar.map_tile`, as
 /// the answer the core gives (`error`), or `None` when it is inside them or another request:
 ///
 /// - `query` holds 1 to [`MAX_PLACE_QUERY_CHARS`] characters and not only spaces;
 /// - `width` is 1 to [`MAX_MAP_WIDTH`], `height` 1 to [`MAX_MAP_HEIGHT`];
+/// - a tile's `z` is 0 to [`MAX_TILE_ZOOM`], its `x` and `y` below 2^`z`;
 /// - `geo` and `near` lie on a map ([`torro_pim::model::Geo::on_map`]: latitude within ±85.0511,
 ///   longitude within ±180).
 ///
@@ -62,6 +68,13 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
             }
             if off_map(geo) {
                 return refuse(NOT_ON_A_MAP.into());
+            }
+            None
+        }
+        Request::MapTile { z, x, y, .. } => {
+            let count = 1u32 << (*z).min(MAX_TILE_ZOOM);
+            if *z > MAX_TILE_ZOOM || *x >= count || *y >= count {
+                return refuse(format!("a tile has a zoom of 0 to {MAX_TILE_ZOOM} and x and y below 2 to the zoom"));
             }
             None
         }
@@ -784,8 +797,11 @@ mod tests {
             height,
             dark: false,
         };
+        let tile = |z: u8, x: u32, y: u32| Request::MapTile { z, x, y, dark: false };
         let berlin = Some(Geo { lat: 52.52, lon: 13.405 });
         assert_eq!(limit_refusal(&search("Alexanderplatz", berlin)), None);
+        assert_eq!(limit_refusal(&tile(0, 0, 0)), None);
+        assert_eq!(limit_refusal(&tile(MAX_TILE_ZOOM, (1 << MAX_TILE_ZOOM) - 1, 3)), None);
         assert_eq!(limit_refusal(&search(&"ä".repeat(MAX_PLACE_QUERY_CHARS), None)), None, "characters, not bytes");
         assert_eq!(limit_refusal(&map(52.52, 13.405, MAX_MAP_WIDTH, MAX_MAP_HEIGHT)), None);
         assert_eq!(limit_refusal(&map(-85.05, -180.0, 1, 1)), None);
@@ -800,6 +816,10 @@ mod tests {
             map(52.52, 13.405, 336, 0),
             map(85.06, 13.405, 336, 104),
             map(52.52, 180.5, 336, 104),
+            tile(MAX_TILE_ZOOM + 1, 0, 0),
+            tile(2, 4, 0),
+            tile(2, 0, 4),
+            tile(0, 1, 0),
         ] {
             let Some(Response::Error { code, message }) = limit_refusal(&refused) else {
                 panic!("refused: {refused:?}");

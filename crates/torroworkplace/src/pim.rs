@@ -1182,7 +1182,7 @@ impl PimService {
             | Request::RemoveSortRule { .. } => return None,
             // A place search or a map reads no calendar (task TE.1); recent places are filtered
             // by the reach where they are read (task TE.5).
-            Request::SearchPlaces { .. } | Request::MapPreview { .. } => return None,
+            Request::SearchPlaces { .. } | Request::MapPreview { .. } | Request::MapTile { .. } => return None,
             // A split of a series (task TE.4) makes its new object in the collection that holds
             // `href`, never under an href of the request: checked here with the href. Only a whole
             // series may move, so with `occurrence` or `following` that is `collection` itself.
@@ -1537,6 +1537,7 @@ impl PimService {
             | Request::DeleteContact { .. }
             | Request::ResolveContactConflict { .. }
             | Request::LocateContact { .. }
+            | Request::ListLocations { .. }
             | Request::OpenContactInMaps { .. }
             | Request::ImportVCards { .. }
             | Request::ExportVCards { .. }

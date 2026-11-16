@@ -1103,6 +1103,7 @@ fn describe(request: &Request) -> String {
         // Never the query or the point (task TE.1).
         Request::SearchPlaces { .. } => "search places".into(),
         Request::MapPreview { .. } => "map preview".into(),
+        Request::MapTile { .. } => "map tile".into(),
         Request::ListReminders { .. } => "reminders".into(),
         Request::SnoozeReminder { .. } => "snooze reminder".into(),
         Request::DismissReminder { .. } => "dismiss reminder".into(),
@@ -1414,6 +1415,7 @@ fn describe(request: &Request) -> String {
         Request::MarkContactUsed { .. } => "note a contact as used".into(),
         // Never the address or the point (issue #355).
         Request::LocateContact { .. } => "find a contact's address on the map".into(),
+        Request::ListLocations { .. } => "list contacts on the map".into(),
         Request::OpenContactInMaps { .. } => "open a contact's address in maps".into(),
         Request::SetContactPhoto { .. } => "change a contact's picture".into(),
         Request::MoveContact { .. } => "move a contact".into(),
