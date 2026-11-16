@@ -654,6 +654,8 @@ enum Change {
     PocketSpeed(Option<u16>),
     /// The extra pause after each sentence of Pocket TTS, in milliseconds (issue #782).
     PocketPause(Option<u16>),
+    /// After how many minutes "Hey Torro" starts a new conversation "Voice" (issue #831); `None` for 30.
+    VoiceNewAfter(Option<u16>),
     /// How OpenAI speaks (issue #782); never logged or repeated in a refusal.
     OpenAiStyle(Option<String>),
     /// What a new chat of the assistant starts with (issue #131): the slot Chat (issue #325), written
@@ -787,6 +789,7 @@ impl Change {
             }
             SettingKey::PocketSpeed => Change::PocketSpeed(Voice::pocket_speed_from(value)?),
             SettingKey::PocketPause => Change::PocketPause(Voice::pocket_pause_from(value)?),
+            SettingKey::VoiceNewAfter => Change::VoiceNewAfter(Voice::new_after_from(value)?),
             SettingKey::OpenAiStyle => Change::OpenAiStyle(Voice::openai_style_from(value)?),
             SettingKey::AssistantDefault => Change::AssistantDefault(AssistantDefault::from_value(value)?),
             SettingKey::Setup => Change::Setup(serde_json::from_value(value.clone()).map_err(invalid)?),
@@ -912,6 +915,7 @@ impl Change {
             Change::OpenAiVoice(id) => settings.voice.openai_voice = id,
             Change::PocketSpeed(speed) => settings.voice.pocket_speed = speed,
             Change::PocketPause(pause) => settings.voice.pocket_pause = pause,
+            Change::VoiceNewAfter(minutes) => settings.voice.new_after = minutes,
             Change::OpenAiStyle(style) => settings.voice.openai_style = style,
             Change::AssistantDefault(default) => settings.ai_slots.chat = default,
             Change::Setup(state) => settings.setup = settings.setup.moved_to(state),
@@ -2251,6 +2255,20 @@ mod tests {
         }
         let voice = store.current().voice;
         assert_eq!((voice.pocket_speed, voice.pocket_pause, voice.openai_style), (None, None, None));
+    }
+
+    /// Issue #831: the pause before a new conversation "Voice" is stored rounded, refused outside its
+    /// range and cleared with `null`.
+    #[test]
+    fn the_pause_before_a_new_voice_conversation_is_set() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SettingsStore::at(dir.path().join("settings.json"));
+        store.set(SettingKey::VoiceNewAfter, &json!(50)).expect("a valid value");
+        assert_eq!(store.current().voice.new_after, Some(45));
+        assert!(store.set(SettingKey::VoiceNewAfter, &json!(300)).is_err());
+        assert_eq!(store.current().voice.new_after, Some(45), "a refusal changes nothing");
+        store.set(SettingKey::VoiceNewAfter, &json!(null)).expect("back to the default");
+        assert_eq!(store.current().voice.new_after_or_default(), 30);
     }
 
     /// Issue #762: the keys and providers of whisper.cpp and Piper are gone (`unsupported` in the core), and
