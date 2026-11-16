@@ -1039,6 +1039,7 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | Vorab prüfen, ob ein Chat zu einer Mail ginge | Mail › „Ask AI…“ (Hinweis beim Öffnen) | `assistant.check_about` · Read | `assistant_check_about` |
 | Antwort abbrechen | „Stop“ | `assistant.cancel` · Write | `assistant_cancel` |
 | Unterhaltung umbenennen | Kontextmenü | `assistant.rename_conversation` · Write | `assistant_rename_conversation` |
+| Modell einer Unterhaltung wechseln (gilt sofort, auch für den Sprachchat; nicht in Bot-Unterhaltungen; Issue #852) | Auswahl im Eingabefeld bei offener Unterhaltung | `assistant.choose_model` · Write | `assistant_choose_model` |
 | Unterhaltung als eigenes Fenster öffnen | „Open in new window“, „Ask about this“ | `assistant.open_window { conversation \| new \| bot }` · Write (startet `torroassistant --chat …`) | `assistant_open_window` |
 | Unterhaltung anheften (bleibt über die Aufbewahrung hinaus) | Kontextmenü | `assistant.pin_conversation` · Write | `assistant_pin_conversation` |
 | Unterhaltung löschen | Mülltonne an der Zeile, „…“ bzw. Kontextmenü | `assistant.delete_conversation` · Delete | `assistant_delete_conversation` |

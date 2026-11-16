@@ -72,6 +72,15 @@ pub enum Line {
     Renamed { title: String },
     /// `assistant.pin_conversation`.
     Pinned { pinned: bool },
+    /// `assistant.choose_model` (issue #852): who answers next, until the next message names its own.
+    /// An older core skips the line and goes on with the engine of the newest message.
+    Chosen {
+        engine: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<Effort>,
+    },
     /// `assistant.archive_conversations` (issue #697), and a message sent in an archived one.
     Archived { archived: bool },
     /// What the model read of the tool call whose line is the entry `seq` (issue #701): kept for later turns
@@ -128,6 +137,9 @@ pub struct Conversation {
     /// How full the context was at the latest answer of a model the core drives (issue #831, [`Line::Context`]),
     /// with the engine and model of the newest message then; `None` before it.
     pub context: Option<(ContextFill, (String, Option<String>))>,
+    /// The engine, model and effort chosen since the newest message (issue #852, [`Line::Chosen`]); `None` when
+    /// none was chosen since, and then the newest message tells who answers next.
+    pub chosen: Option<(String, Option<String>, Option<Effort>)>,
 }
 
 impl Conversation {
@@ -146,6 +158,7 @@ impl Conversation {
             untrusted: false,
             seen: BTreeMap::new(),
             context: None,
+            chosen: None,
         }
     }
 
@@ -176,6 +189,7 @@ impl Conversation {
             untrusted: false,
             seen: BTreeMap::new(),
             context: None,
+            chosen: None,
         };
         for line in lines {
             conversation.apply(line);
@@ -188,10 +202,17 @@ impl Conversation {
     pub fn apply(&mut self, line: Line) {
         match line {
             Line::Started { .. } => {}
-            Line::Entry { entry } if entry.seq > self.last() => self.entries.push(entry),
+            Line::Entry { entry } if entry.seq > self.last() => {
+                // A message names who answered it, so a choice before it has been used (issue #852).
+                if matches!(entry.content, EntryContent::Message { .. }) {
+                    self.chosen = None;
+                }
+                self.entries.push(entry)
+            }
             Line::Entry { .. } => {}
             Line::Renamed { title } => self.title = title,
             Line::Pinned { pinned } => self.pinned = pinned,
+            Line::Chosen { engine, model, effort } => self.chosen = Some((engine, model, effort)),
             Line::Archived { archived } => self.archived = archived,
             // Only for a tool line it has, so a damaged file adds no result to an answer or a message.
             Line::Result { seq, text } if self.is_tool(seq) => {
@@ -206,8 +227,9 @@ impl Conversation {
             }
             Line::Seen { .. } => {}
             // Its engine is the newest message's: the one that answered (`Answering` writes the line at its end).
+            // Not a choice made since (issue #852): that one has not answered yet.
             Line::Context { fill } => {
-                let (engine, model, _) = self.engine();
+                let (engine, model, _) = self.answered();
                 self.context = Some((fill, (engine, model)));
             }
         }
@@ -255,8 +277,17 @@ impl Conversation {
         self.entries.last().map_or(self.created, |entry| entry.time)
     }
 
-    /// The engine, model and effort of the newest message; empty without one.
+    /// Who answers next: the engine, model and effort chosen since the newest message (issue #852), else those of
+    /// the newest message; empty without either.
     fn engine(&self) -> (String, Option<String>, Option<Effort>) {
+        match &self.chosen {
+            Some(chosen) => chosen.clone(),
+            None => self.answered(),
+        }
+    }
+
+    /// The engine, model and effort of the newest message; empty without one.
+    fn answered(&self) -> (String, Option<String>, Option<Effort>) {
         self.entries
             .iter()
             .rev()
@@ -660,6 +691,52 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert!(!found[0].snippet.contains("---shown---"), "{}", found[0].snippet);
         assert!(conversation.find(&words_of("shown")).is_empty(), "the mark is no word of the answer");
+    }
+
+    fn message(engine: &str, model: &str) -> EntryContent {
+        EntryContent::Message {
+            text: "Hi".into(),
+            engine: engine.into(),
+            model: Some(model.into()),
+            effort: None,
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            from: None,
+        }
+    }
+
+    /// Issue #852: a choice after the newest message names who answers next, until the next message
+    /// names its own; it is kept in the file like every other change.
+    #[test]
+    fn a_choice_names_who_answers_next_until_the_next_message() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let folder = dir.path().join("assistant");
+        let mut conversation = Conversation::new("0123456789abcdef".into(), "Hello", at(0));
+        let first = conversation.next(message("ai:ollama", "glm"), at(1));
+        conversation.apply(Line::Entry { entry: first.clone() });
+        let chosen = Line::Chosen { engine: "ai:openai".into(), model: Some("gpt".into()), effort: Some(Effort::High) };
+        append(&folder, &conversation.id, &[conversation.started(), Line::Entry { entry: first }, chosen.clone()])
+            .expect("written");
+        conversation.apply(chosen);
+        let summary = conversation.summary(false);
+        assert_eq!(
+            (summary.engine.as_str(), summary.model.as_deref(), summary.effort),
+            ("ai:openai", Some("gpt"), Some(Effort::High)),
+            "the choice wins over the message before it"
+        );
+        assert_eq!(load_all(&folder).expect("read"), vec![conversation.clone()], "read again, the choice stays");
+
+        let next = conversation.next(message("ai:mistral", "small"), at(2));
+        conversation.apply(Line::Entry { entry: next });
+        let summary = conversation.summary(false);
+        assert_eq!((summary.engine.as_str(), summary.model.as_deref()), ("ai:mistral", Some("small")));
+        assert_eq!(conversation.chosen, None, "a message uses the choice up");
+
+        let mut quiet = Conversation::new("fedcba9876543210".into(), "Hello", at(0));
+        quiet.apply(Line::Chosen { engine: "ai:openai".into(), model: None, effort: None });
+        let reply = quiet.next(answer("Hi"), at(1));
+        quiet.apply(Line::Entry { entry: reply });
+        assert_eq!(quiet.summary(false).engine, "ai:openai", "an answer is no message: the choice stays");
     }
 
     #[test]

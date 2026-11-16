@@ -4023,6 +4023,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Open the assistant conversation \"{title}\" in a window",
         "Die Unterhaltung „{title}“ des Assistenten in einem Fenster öffnen",
     ),
+    (
+        "Let \"{engine}\" answer next in an unknown assistant conversation",
+        "In einer unbekannten Unterhaltung des Assistenten als Nächstes „{engine}“ antworten lassen",
+    ),
+    (
+        "Let \"{engine}\" answer next in the assistant conversation \"{title}\"",
+        "In der Unterhaltung „{title}“ des Assistenten als Nächstes „{engine}“ antworten lassen",
+    ),
     ("Pin an unknown assistant conversation", "Eine unbekannte Unterhaltung des Assistenten anheften"),
     ("Pin the assistant conversation \"{title}\"", "Die Unterhaltung „{title}“ des Assistenten anheften"),
     (
@@ -4239,6 +4247,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("What could I give Tom for his birthday?", "Was könnte ich Tom zum Geburtstag schenken?"),
     ("When was the flat viewing in Altona?", "Wann war die Wohnungsbesichtigung in Altona?"),
     ("Conversation deleted", "Unterhaltung gelöscht"),
+    ("Couldn't change the model.", "Das Modell konnte nicht gewechselt werden."),
     ("Couldn't decide the approval.", "Die Freigabe konnte nicht entschieden werden."),
     ("Couldn't delete the conversation.", "Die Unterhaltung konnte nicht gelöscht werden."),
     ("Couldn't load the conversation.", "Die Unterhaltung konnte nicht geladen werden."),
@@ -4937,9 +4946,19 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // The map of a contact (#355): General › Maps, the contacts app, the core and its approvals.
     ("Look up contact addresses", "Kontakt-Adressen suchen"),
     (
-        "Sends the address of a contact you open to {service} to place it on the map. Results stay on this device.",
-        "Schickt die Adresse eines Kontakts, den du öffnest, an {service}, um sie auf die Karte zu setzen. Die Ergebnisse bleiben auf diesem Gerät.",
+        "Sends the addresses of contacts you open or show on the map to {service} to place them on the map. Results stay on this device.",
+        "Schickt die Adressen von Kontakten, die du öffnest oder auf der Karte zeigst, an {service}, um sie auf die Karte zu setzen. Die Ergebnisse bleiben auf diesem Gerät.",
     ),
+    // The map of all contacts (#357): the contacts app.
+    ("Map", "Karte"),
+    ("In view", "Im Ausschnitt"),
+    ("No contact here. Move or zoom out.", "Hier ist kein Kontakt. Verschiebe die Karte oder zoome heraus."),
+    ("The contacts could not be placed on the map.", "Die Kontakte konnten nicht auf die Karte gesetzt werden."),
+    ("Lookup paused. The place search cannot be reached.", "Suche angehalten. Die Ortssuche ist nicht erreichbar."),
+    ("One address a second while the map is open.", "Eine Adresse pro Sekunde, solange die Karte offen ist."),
+    ("Addresses not found: {n}", "Nicht gefundene Adressen: {n}"),
+    ("Contacts without an address: {n}", "Kontakte ohne Adresse: {n}"),
+    ("The contact's point: {point}", "Der Punkt des Kontakts: {point}"),
     ("Stored map data", "Gespeicherte Kartendaten"),
     ("{size} of map tiles · {places} contact places", "{size} Kartenkacheln · {places} Kontakt-Orte"),
     ("Finding address…", "Adresse wird gesucht…"),

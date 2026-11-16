@@ -1177,6 +1177,27 @@ pub enum Request {
         #[serde(default)]
         dark: bool,
     },
+    /// One map tile for a map that is moved and zoomed (issue #357, the map of all contacts): the tile
+    /// `x`/`y` at zoom `z` of the tile service set in the settings (`maps`, OpenStreetMap unless
+    /// changed), as a PNG of 256 × 256 pixels ([`Response::Image`]); `dark` darkens it for the dark
+    /// appearance as [`Request::MapPreview`] does. Sends the tile's numbers (so which area is looked
+    /// at) to that service; a tile asked before comes from the core's copy for at least a week, and an
+    /// older copy stands in while the service cannot be reached.
+    ///
+    /// Limits: `z` 0 to [`pim::MAX_TILE_ZOOM`], `x` and `y` below 2^`z`, else `error`. Error codes
+    /// as for `calendar.map_preview`; the tile's numbers are never logged.
+    #[serde(rename = "calendar.map_tile")]
+    MapTile {
+        /// The zoom: 0 shows the whole world on one tile, each step doubles the scale.
+        z: u8,
+        /// The column, 0 at 180° west.
+        x: u32,
+        /// The row, 0 at 85.0511° north.
+        y: u32,
+        /// Darkened for the dark appearance.
+        #[serde(default)]
+        dark: bool,
+    },
     /// The reminders of events (task ER1.2, `docs/erinnerungen.md`), soonest first: with
     /// `due_only` those that fire now (due, or their snooze is over), else also those of the next
     /// 36 hours, snoozed and dismissed ones included. Only reminders of calendars the client may
@@ -1728,6 +1749,33 @@ pub enum Request {
         id: String,
         /// Which of its addresses, 0 for the first, as `contacts.get_contact` lists them.
         address: usize,
+    },
+    /// Every contact of a selection on the map at once (issue #357, the map of all contacts,
+    /// [`Response::ContactLocations`]): the same selection as [`Request::ListContacts`] (one book, a
+    /// group, favourites, a search) without pages. Each address with a point is a pin
+    /// ([`contacts::ContactPin`]): the first one at the vCard's `GEO`, the others at the point looked
+    /// up earlier on this device. The status ([`contacts::LocationsStatus`]) counts the addresses the
+    /// place search did not find, the contacts without any address, and names the addresses nobody
+    /// looked up yet (`pending`), which the contacts app then looks up one by one with
+    /// `contacts.locate_contact` while the person has the map open. Reads only what this device keeps;
+    /// nothing is sent. At most [`contacts::MAX_PINS`] pins and as many pending addresses, then
+    /// `truncated`.
+    ///
+    /// Codes: `not-found` for a book the client does not reach.
+    #[serde(rename = "contacts.list_locations")]
+    ListLocations {
+        /// Only this address book.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        book: Option<String>,
+        /// Only contacts in this group.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group: Option<String>,
+        /// Only favourites.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        favorites: bool,
+        /// Search text, as for `contacts.list_contacts`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
     },
     /// Opens the address number `address` of a contact in the maps app the settings name (`maps`,
     /// `openWith`; [`Response::Ok`]): at the point of `GEO` or the one kept on this device, else the
@@ -4483,6 +4531,25 @@ pub enum Request {
         /// The new title, one line.
         title: String,
     },
+    /// Chooses who answers next in the conversation `id` (issue #852): the window's model picker and
+    /// the voice chat both follow it, so the next message, typed or spoken, goes to `engine` with
+    /// `model` and `effort`. Stored with the conversation until a message is sent; the conversation's
+    /// summary names the choice from then on. [`Response::Ok`]; `not-found` for an unknown conversation
+    /// or engine, `error` for a conversation with a bot (it keeps the bot's model) or an id over the
+    /// limit ([`assistant::limit_refusal`]).
+    #[serde(rename = "assistant.choose_model")]
+    ChooseModel {
+        /// The conversation's id.
+        id: String,
+        /// Who answers next: an engine's id from `assistant.list_engines`.
+        engine: String,
+        /// The model, as for `assistant.send_message`; left out, the engine picks one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// How hard the model thinks, as for `assistant.send_message`; left out, the model decides.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<torro_core::ai::Effort>,
+    },
     /// Deletes the conversation `id` and its file for good, stopping an answer that runs
     /// ([`Response::Ok`]); `not-found` for an unknown id.
     #[serde(rename = "assistant.delete_conversation")]
@@ -6116,7 +6183,7 @@ pub enum Response {
     Places {
         places: Vec<Place>,
     },
-    /// A picture: the map of [`Request::MapPreview`], a contact's picture of `contacts.get_photo`
+    /// A picture: the map of [`Request::MapPreview`], a tile of [`Request::MapTile`], a contact's picture of `contacts.get_photo`
     /// ([`Request::GetContactPhoto`]), a sender's logo of `mail.get_sender_logo`
     /// ([`Request::GetSenderLogo`]).
     Image {
@@ -6936,6 +7003,11 @@ pub enum Response {
     /// Where an address of a contact is on the map ([`Request::LocateContact`]).
     ContactLocation {
         location: contacts::ContactLocation,
+    },
+    /// The contacts of a selection on the map ([`Request::ListLocations`]).
+    ContactLocations {
+        pins: Vec<contacts::ContactPin>,
+        status: contacts::LocationsStatus,
     },
     /// How much map data this device keeps ([`Request::MapsStatus`]).
     MapsStatus {

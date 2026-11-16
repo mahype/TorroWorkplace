@@ -12,8 +12,8 @@ use torro_ipc::assistant::TEST_ENGINE;
 
 use super::*;
 use crate::demo::{
-    APPROVAL, APPROVAL_ID, ASKED, BOT_CHAT, CARDS, FORBIDDEN, GONE, MAIL_CHAT, OLLAMA, PDF, PROPOSAL, RELEASE,
-    STREAMING, TOOLS, TRAVEL,
+    APPROVAL, APPROVAL_ID, ASKED, BOT_CHAT, CARDS, FORBIDDEN, GONE, MAIL_CHAT, OLLAMA, OPENROUTER, PDF, PROPOSAL,
+    RELEASE, STREAMING, TOOLS, TRAVEL,
 };
 
 const WIDE: Size = Size::new(1600.0, 1000.0);
@@ -99,6 +99,12 @@ fn answer_of(request: &Request, result: Result<Response, Refusal>) -> Message {
         Request::RenameConversation { .. } | Request::PinConversation { .. } => {
             Message::Changed(result.map(|_| ()), "failed")
         }
+        Request::ChooseModel { id, engine, model, effort } => Message::ChoseModel(
+            id.clone(),
+            Choice { engine: engine.clone(), model: model.clone() },
+            *effort,
+            result.map(|_| ()),
+        ),
         Request::DeleteConversation { id } => Message::Deleted(id.clone(), result.map(|_| ())),
         Request::ArchiveConversations { .. } => Message::Changed(result.map(|_| ()), "failed"),
         Request::DeleteConversations { ids } => Message::DeletedMany(ids.clone(), result.map(|_| ())),
@@ -589,6 +595,67 @@ fn the_picker_offers_only_models_that_can_call_tools() {
     let _ = app.update(Message::Tick);
     settle(&mut app);
     assert_eq!(app.choice, Some(pick));
+}
+
+/// Issue #852: a model picked in an open conversation is the core's at once, so the voice chat answers
+/// with it too and the header names it; a new chat keeps it until its first message, a bot's chat its bot's.
+#[test]
+fn a_model_picked_in_a_conversation_goes_to_the_core_at_once() {
+    let mut app = started(&["--chat", TOOLS]);
+    sent(&mut app);
+    let pick = Choice { engine: OPENROUTER.into(), model: Some("gpt".into()) };
+    let _ = app.update(Message::Pick(pick.clone()));
+    let requests = sent(&mut app);
+    assert!(
+        matches!(&requests[..], [Request::ChooseModel { id, engine, model, .. }]
+            if id == TOOLS && engine == OPENROUTER && model.as_deref() == Some("gpt")),
+        "{requests:?}"
+    );
+    // The core's answer: the header names the model chosen.
+    let _ = app.update(Message::ChoseModel(TOOLS.into(), pick.clone(), None, Ok(())));
+    let summary = app.transcript.summary.as_ref().expect("the open conversation");
+    assert_eq!((summary.engine.as_str(), summary.model.as_deref()), (OPENROUTER, Some("gpt")));
+    // So does the next look at the conversation, as the demo keeps the choice like the core.
+    settle(&mut app);
+    let _ = app.update(Message::Pick(Choice { engine: OLLAMA.into(), model: Some("qwen3:8b".into()) }));
+    settle(&mut app);
+    follow_once(&mut app);
+    let summary = app.transcript.summary.as_ref().expect("the open conversation");
+    assert_eq!((summary.engine.as_str(), summary.model.as_deref()), (OLLAMA, Some("qwen3:8b")));
+    // The answer to an earlier pick that comes after a newer one changes nothing.
+    let older = Choice { engine: OPENROUTER.into(), model: Some("older".into()) };
+    let _ = app.update(Message::Pick(older.clone()));
+    let _ = app.update(Message::Pick(Choice { engine: OLLAMA.into(), model: Some("qwen3:8b".into()) }));
+    let _ = app.update(Message::ChoseModel(TOOLS.into(), older, None, Ok(())));
+    let summary = app.transcript.summary.as_ref().expect("the open conversation");
+    assert_eq!(summary.model.as_deref(), Some("qwen3:8b"), "the header keeps the newest pick");
+    sent(&mut app);
+    // A refusal says so.
+    let _ = app.update(Message::Pick(pick.clone()));
+    let _ = app.update(Message::ChoseModel(TOOLS.into(), pick.clone(), None, Err(Refusal::new("not-found", "gone"))));
+    assert!(app.notice.is_some());
+    let back = Choice { engine: OLLAMA.into(), model: Some("qwen3:8b".into()) };
+    assert_eq!(app.choice, Some(back), "the window goes back to who answers there");
+
+    let _ = app.update(Message::NewChat);
+    sent(&mut app);
+    let _ = app.update(Message::Pick(pick.clone()));
+    let _ = app.update(Message::PickEffort(Some(torro_core::ai::Effort::High)));
+    assert!(sent(&mut app).is_empty(), "a new chat keeps the choice until its first message");
+
+    // Another conversation answers with its own model, not with a pick made elsewhere.
+    let _ = app.update(Message::Select(TOOLS.into()));
+    settle(&mut app);
+    let _ = app.update(Message::Pick(pick.clone()));
+    settle(&mut app);
+    let _ = app.update(Message::Select(BOT_CHAT.into()));
+    settle(&mut app);
+    assert_ne!(app.choice.as_ref(), Some(&pick), "the pick stays with its conversation");
+    let _ = app.update(Message::Pick(pick));
+    assert!(
+        !sent(&mut app).iter().any(|request| matches!(request, Request::ChooseModel { .. })),
+        "a bot's model stays"
+    );
 }
 
 /// Issue #131: Claude Code's own models and an effort only where the model takes one. Task S.26:
@@ -2372,4 +2439,19 @@ fn repeat_reads_the_spoken_part_again_and_stop_stops_it() {
         let _ = app.update(Message::Resized(size));
         let _ = app.view();
     }
+}
+
+#[test]
+fn the_history_follows_growth_but_not_a_person_who_scrolled_up() {
+    // At the bottom, nothing seen yet: follows, jumps only when it was not following.
+    assert_eq!(history_follow(true, None, 1000.0, 600.0, 600.0, 24.0), (true, false));
+    assert_eq!(history_follow(false, None, 1000.0, 600.0, 600.0, 24.0), (true, true));
+    // Content grew, the offset stayed (far from the new bottom): follows and jumps.
+    assert_eq!(history_follow(true, Some((1000.0, 600.0)), 1400.0, 600.0, 1000.0, 24.0), (true, true));
+    // The person scrolled up: stops following, no jump.
+    assert_eq!(history_follow(true, Some((1000.0, 600.0)), 1000.0, 300.0, 600.0, 24.0), (false, false));
+    // Scrolled up, then content grows with the offset unchanged: stays put.
+    assert_eq!(history_follow(false, Some((1000.0, 300.0)), 1400.0, 300.0, 1000.0, 24.0), (false, false));
+    // Scrolled back down to the bottom: follows again, jumps.
+    assert_eq!(history_follow(false, Some((1000.0, 300.0)), 1000.0, 590.0, 600.0, 24.0), (true, true));
 }

@@ -77,11 +77,19 @@ pub enum Open {
     HeaderMenu,
     /// Anna Berg open, the "…" of the contact open.
     ContactMenu,
+    /// The map of all contacts (issue #357), its addresses looked up.
+    Map,
+    /// The map with Anna Berg's pin selected and its card.
+    MapPin,
+    /// The map closer to Germany, where pins crowd into clusters.
+    MapCluster,
+    /// The map while addresses wait to be looked up.
+    MapLookup,
 }
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 28] = [
+    pub const ALL: [(&'static str, Open); 32] = [
         ("list", Open::List),
         ("by-city", Open::ByCity),
         ("by-book", Open::ByBook),
@@ -110,6 +118,10 @@ impl Open {
         ("merge", Open::Merge),
         ("header-menu", Open::HeaderMenu),
         ("contact-menu", Open::ContactMenu),
+        ("map", Open::Map),
+        ("map-pin", Open::MapPin),
+        ("map-cluster", Open::MapCluster),
+        ("map-lookup", Open::MapLookup),
     ];
 
     /// The uid of the demo contact this state opens in the side panel, if it opens one.
@@ -263,7 +275,7 @@ mod tests {
     fn open_needs_the_demo_and_a_known_state() {
         assert_eq!(Launch::parse(&args(&["--open", "list"])), Err(LaunchError::NeedsDemo("--open")));
         assert!(matches!(
-            Launch::parse(&args(&["--demo", "--open", "map"])),
+            Launch::parse(&args(&["--demo", "--open", "atlas"])),
             Err(LaunchError::UnknownValue { flag: "--open", .. })
         ));
         for (word, open) in Open::ALL {

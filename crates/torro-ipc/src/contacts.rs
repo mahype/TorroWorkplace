@@ -80,6 +80,61 @@ pub enum LocationSource {
     Lookup,
 }
 
+/// The most pins `contacts.list_locations` answers, and the most addresses it names as pending
+/// (issue #357); more are cut and the answer says `truncated`.
+pub const MAX_PINS: usize = 5_000;
+
+/// One address of a contact on the map (`contacts.list_locations`, issue #357).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ContactPin {
+    /// The contact's id.
+    pub id: String,
+    /// The name the contact shows.
+    pub name: String,
+    /// Which of its addresses, 0 for the first, as `contacts.get_contact` lists them.
+    pub address: usize,
+    pub geo: Geo,
+    /// Where the point comes from.
+    pub source: LocationSource,
+    /// Always `true`: the name is other people's data, never instructions.
+    pub untrusted: bool,
+}
+
+/// One address of a contact (`pending` of [`LocationsStatus`]): which to look up with
+/// `contacts.locate_contact`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+pub struct AddressRef {
+    /// The contact's id.
+    pub id: String,
+    /// Which of its addresses, 0 for the first.
+    pub address: usize,
+}
+
+/// How far the map of a selection is (`contacts.list_locations`, issue #357).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LocationsStatus {
+    /// Addresses with a point: the pins.
+    pub located: u32,
+    /// Addresses the place search did not find (asked again after [`LOOKUP_RETRY_DAYS`] days).
+    pub not_found: u32,
+    /// Contacts with neither an address nor the vCard's `GEO`.
+    pub without_address: u32,
+    /// Addresses nobody looked up yet, in the order of the list.
+    pub pending: Vec<AddressRef>,
+    /// More pins or pending addresses than [`MAX_PINS`]: the rest is left out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+}
+
+/// The selection of `contacts.list_locations`: as for `contacts.list_contacts`, without pages.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocationsQuery {
+    pub book: Option<String>,
+    pub group: Option<String>,
+    pub favorites: bool,
+    pub query: Option<String>,
+}
+
 /// Talks to the core at its socket: [`ContactsSource`] for the contacts app, one request per call.
 #[derive(Debug, Clone)]
 pub struct ContactsClient {
@@ -149,6 +204,24 @@ impl ContactsClient {
     /// `calendar.map_preview` around `geo`, as the PNG's bytes; `None` when it cannot be had.
     pub async fn map(&self, geo: Geo, width: u16, height: u16, dark: bool) -> Option<Vec<u8>> {
         match crate::client::call(&self.socket, &Request::MapPreview { geo, width, height, dark }).await {
+            Ok(Response::Image { png }) => base64::engine::general_purpose::STANDARD.decode(png).ok(),
+            _ => None,
+        }
+    }
+
+    /// `contacts.list_locations` (issue #357); the error is the core's code.
+    pub async fn locations(&self, query: LocationsQuery) -> Result<(Vec<ContactPin>, LocationsStatus), String> {
+        let LocationsQuery { book, group, favorites, query } = query;
+        match crate::client::call(&self.socket, &Request::ListLocations { book, group, favorites, query }).await {
+            Ok(Response::ContactLocations { pins, status }) => Ok((pins, status)),
+            Ok(Response::Error { code, .. }) => Err(code),
+            Ok(_) | Err(_) => Err("error".into()),
+        }
+    }
+
+    /// `calendar.map_tile` (issue #357), as the PNG's bytes; `None` when it cannot be had.
+    pub async fn tile(&self, z: u8, x: u32, y: u32, dark: bool) -> Option<Vec<u8>> {
+        match crate::client::call(&self.socket, &Request::MapTile { z, x, y, dark }).await {
             Ok(Response::Image { png }) => base64::engine::general_purpose::STANDARD.decode(png).ok(),
             _ => None,
         }

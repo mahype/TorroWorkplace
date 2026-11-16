@@ -681,7 +681,8 @@ impl App {
         self.transcript.summary.as_ref()?.context
     }
 
-    /// "Ollama · qwen3:14b": who answered the open conversation last.
+    /// "Ollama · qwen3:14b": who answers next in the open conversation, the model chosen in the window (issue
+    /// #852) or else the one that answered last, as the core keeps it in the summary.
     fn engine_note(&self) -> Option<String> {
         let summary = self.transcript.summary.as_ref()?;
         Some(self.choice_label(&Choice { engine: summary.engine.clone(), model: summary.model.clone() }))
