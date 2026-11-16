@@ -3430,7 +3430,7 @@ Keine Felder.
 
 Zugriff `read` · MCP-Tool `assistant_talk_status`
 
-Says whether a conversation by voice runs (`talk` is left out when none does), in which conversation and what it does now: `listening`, `conversing`, `recording`, `recognizing` (speech to text), `answering` (sent, nothing more precise known), `thinking`, `using_tool` with `tool`, the catalogue name of the command the model uses (never its input or result), or `speaking` (the answer is read aloud). The field `speaking` says whether anything is read aloud now, whoever asked for it.
+Says whether a conversation by voice runs (`talk` is left out when none does), in which conversation and what it does now: `listening`, `conversing`, `recording`, `recognizing` (speech to text), `answering` (sent, nothing more precise known), `thinking`, `using_tool` with `tool`, the catalogue name of the command the model uses (`ext_<server>_<tool>` for a tool of an extension server; never its input or result), or `speaking` (something is read aloud, usually the answer). The field `speaking` says whether anything is read aloud now, whoever asked for it.
 
 Keine Felder.
 

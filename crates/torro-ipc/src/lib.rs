@@ -5411,7 +5411,7 @@ pub enum VoiceState {
     Thinking,
     /// The model uses a tool, named in [`Talk::tool`] (issue #830). Reported by the core.
     UsingTool,
-    /// The answer is read aloud (issue #830). Reported by the core.
+    /// Something is read aloud, usually the answer (issue #830). Reported by the core.
     Speaking,
 }
 
@@ -5425,7 +5425,8 @@ pub struct Talk {
     #[serde(default)]
     pub state: VoiceState,
     /// With [`VoiceState::UsingTool`] only: the catalogue name of the command the model uses
-    /// (`calendar.list_events`), never what it reads or finds.
+    /// (`calendar.list_events`), for a tool of an extension server its tool name (`ext_<server>_<tool>`);
+    /// never what it reads or finds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
 }
