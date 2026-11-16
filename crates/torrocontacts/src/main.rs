@@ -27,6 +27,7 @@ mod edit;
 mod glance;
 mod launch;
 mod list;
+mod map_view;
 mod transfer;
 mod view;
 

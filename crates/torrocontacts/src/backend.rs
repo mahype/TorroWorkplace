@@ -18,9 +18,19 @@ use torro_contacts::{
     AddressBook, Birthday, Contact, ContactFields, ContactPage, ContactQuery, ContactSummary, ContactsError,
     ContactsSource, DuplicateGroup, Group, Imported, Keep, Merged, Moved, PhotoSize,
 };
+use torro_gui::tile_map::TileKey;
 use torro_ipc::Request;
 use torro_ipc::Response;
-use torro_ipc::contacts::{ContactLocation, ContactsClient, Geo, LocationSource, MAX_BIRTHDAY_DAYS};
+use torro_ipc::contacts::{
+    AddressRef, ContactLocation, ContactPin, ContactsClient, Geo, LocationSource, LocationsQuery, LocationsStatus,
+    MAX_BIRTHDAY_DAYS,
+};
+
+/// The demo contacts the map of all contacts finds without a point, to be looked up (issue #357).
+pub const DEMO_PENDING: [&str; 2] = ["demo-08", "demo-12"];
+
+/// The demo contact the map of all contacts counts as without an address (issue #357).
+pub const DEMO_WITHOUT_ADDRESS: &str = "demo-20";
 
 /// How many contacts one page of `contacts.list_contacts` asks for: the most the core gives.
 pub const PAGE: u32 = 500;
@@ -50,11 +60,15 @@ impl Backend {
     /// What the window reads of the settings ([`Shown`]); `None` from a core that does not answer.
     /// The demo shows no hidden books and has maps on.
     pub async fn settings(&self) -> Option<Shown> {
-        let Backend::Core(client) = self else { return Some(Shown { hidden_books: false, maps: true }) };
+        let Backend::Core(client) = self else {
+            return Some(Shown { hidden_books: false, maps: true, contact_lookup: true });
+        };
         match torro_ipc::client::call(&client.socket, &Request::Settings).await {
-            Ok(Response::Settings { settings }) => {
-                Some(Shown { hidden_books: settings.contacts_show_hidden_books, maps: settings.maps.enabled })
-            }
+            Ok(Response::Settings { settings }) => Some(Shown {
+                hidden_books: settings.contacts_show_hidden_books,
+                maps: settings.maps.enabled,
+                contact_lookup: settings.maps.contact_lookup,
+            }),
             _ => None,
         }
     }
@@ -86,6 +100,52 @@ impl Backend {
         client.map(geo, torro_gui::map::MAP_WIDTH, torro_gui::map::MAP_HEIGHT, dark).await
     }
 
+    /// Every contact of a selection on the map (`contacts.list_locations`, issue #357); the error is the
+    /// core's code. The demo puts each contact at its `GEO`, but leaves [`DEMO_PENDING`] to be looked
+    /// up and gives [`DEMO_WITHOUT_ADDRESS`] no address.
+    pub async fn locations(&self, query: LocationsQuery) -> Result<(Vec<ContactPin>, LocationsStatus), String> {
+        let demo = match self {
+            Backend::Core(client) => return client.locations(query).await,
+            Backend::Demo(demo) => demo,
+        };
+        let LocationsQuery { book, group, favorites, query } = query;
+        let selection = ContactQuery { book, group, favorites, query, ..ContactQuery::default() };
+        let found = all_pages(self, selection).await.map_err(|_| "error".to_string())?;
+        let mut pins = Vec::new();
+        let mut status = LocationsStatus::default();
+        for summary in found {
+            let uid = summary.id.rsplit('/').next().unwrap_or_default();
+            if uid == DEMO_WITHOUT_ADDRESS {
+                status.without_address += 1;
+                continue;
+            }
+            if DEMO_PENDING.contains(&uid) {
+                status.pending.push(AddressRef { id: summary.id.clone(), address: 0 });
+                continue;
+            }
+            let Ok(contact) = demo.get_contact(summary.id.clone()).await else { continue };
+            if let Some(geo) = contact.geo {
+                pins.push(ContactPin {
+                    id: contact.id.clone(),
+                    name: contact.shown_name(),
+                    address: 0,
+                    geo: Geo { lat: geo.lat, lon: geo.lon },
+                    source: LocationSource::Vcard,
+                    untrusted: true,
+                });
+            }
+        }
+        status.located = pins.len() as u32;
+        Ok((pins, status))
+    }
+
+    /// One map tile as PNG (`calendar.map_tile`, issue #357); `None` when it cannot be had, and always
+    /// in the demo, which draws its sketch instead ([`torro_gui::tile_map::demo_tile`]).
+    pub async fn tile(&self, key: TileKey, dark: bool) -> Option<Vec<u8>> {
+        let Backend::Core(client) = self else { return None };
+        client.tile(key.z, key.x, key.y, dark).await
+    }
+
     /// Opens the address number `address` of the contact `id` in the maps app of the settings
     /// (`contacts.open_in_maps`); the error is the core's message. The demo opens nothing.
     pub async fn open_in_maps(&self, id: String, address: usize) -> Result<(), String> {
@@ -105,6 +165,9 @@ pub struct Shown {
     /// Maps and place search are on (`maps.enabled`). Whether the lookup of contact addresses is on
     /// the core answers itself (`no_consent`, issue #355).
     pub maps: bool,
+    /// The person allowed looking up contact addresses (`maps.contactLookup`): only then the window
+    /// offers the map of all contacts (issue #357).
+    pub contact_lookup: bool,
 }
 
 /// Every call goes to the side the backend stands for.
@@ -306,6 +369,9 @@ pub struct Loaded {
     /// The contacts that look like one person (`contacts.find_duplicates`, issue #726), of the books
     /// shown only; groups with fewer than two of them left out.
     pub duplicates: Vec<DuplicateGroup>,
+    /// What the settings said (`None` from a core that did not answer): whether the map of all
+    /// contacts is offered (issue #357).
+    pub shown: Option<Shown>,
 }
 
 /// Every page of `query` (the core gives at most [`PAGE`] at once).
@@ -327,7 +393,8 @@ pub async fn all_pages(backend: &Backend, mut query: ContactQuery) -> Result<Vec
 /// ([`AddressBook::hidden_by_default`]) come along, with their contacts, only when the settings say so.
 /// Birthdays, the recent list and the duplicates are extras: when they fail, the list still shows.
 pub async fn load(backend: Backend) -> Result<Loaded, ContactsError> {
-    let show_hidden = backend.settings().await.is_some_and(|shown| shown.hidden_books);
+    let settings = backend.settings().await;
+    let show_hidden = settings.is_some_and(|shown| shown.hidden_books);
     let mut books = backend.address_books(None).await?;
     books.retain(|book| show_hidden || !book.hidden_by_default);
     let shown = |book: &str| books.iter().any(|known| known.id == book);
@@ -345,7 +412,7 @@ pub async fn load(backend: Backend) -> Result<Loaded, ContactsError> {
         group.contacts.retain(|contact| shown(&contact.book));
     }
     duplicates.retain(|group| group.contacts.len() >= 2);
-    Ok(Loaded { books, contacts, birthdays, recent, duplicates })
+    Ok(Loaded { books, contacts, birthdays, recent, duplicates, shown: settings })
 }
 
 /// The ids of the contacts matching `query` (`contacts.list_contacts` with `query`): the core searches
@@ -390,7 +457,8 @@ mod tests {
 
     #[tokio::test]
     async fn the_demo_shows_no_hidden_books_and_has_maps() {
-        assert_eq!(demo_backend().settings().await, Some(Shown { hidden_books: false, maps: true }));
+        let shown = Shown { hidden_books: false, maps: true, contact_lookup: true };
+        assert_eq!(demo_backend().settings().await, Some(shown));
     }
 
     /// Issue #355: the demo places the first address at the contact's `GEO`, opens nothing and has no
@@ -405,5 +473,20 @@ mod tests {
         assert_eq!(backend.locate("nowhere".into(), 0).await, Err("not-found".to_string()));
         assert_eq!(backend.map(Geo { lat: 1.0, lon: 2.0 }, false).await, None);
         assert_eq!(backend.open_in_maps(first, 0).await, Ok(()));
+    }
+
+    /// Issue #357: the demo's map of all contacts has pins, two addresses to look up and one contact
+    /// without an address; no tile of its own.
+    #[tokio::test]
+    async fn the_demo_map_has_pins_pending_and_one_without_address() {
+        let backend = demo_backend();
+        let (pins, status) = backend.locations(LocationsQuery::default()).await.expect("locations");
+        assert_eq!(pins.len(), 38);
+        assert_eq!(status.located, 38);
+        assert_eq!(status.pending.len(), 2);
+        assert_eq!(status.without_address, 1);
+        let favorites = LocationsQuery { favorites: true, ..LocationsQuery::default() };
+        assert!(backend.locations(favorites).await.expect("favourites").0.len() <= 5);
+        assert_eq!(backend.tile(TileKey { z: 2, x: 1, y: 1 }, false).await, None);
     }
 }

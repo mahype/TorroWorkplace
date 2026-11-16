@@ -43,6 +43,7 @@ use crate::duplicates::{self, Merge};
 use crate::edit::{self, Draft, List};
 use crate::launch::{Launch, Open};
 use crate::list::{GroupBy, Key};
+use crate::map_view::{Look, MapMsg, MapState, pin_key};
 use crate::transfer::{self, Import, Scope};
 
 /// The window's identity: class `torro-contacts`, binary `torrocontacts`, state in `torrocontacts/`.
@@ -333,6 +334,9 @@ pub enum Message {
     AskMerge(String),
     Merge,
     MergedContacts(Result<Merged, ContactsError>),
+
+    // The map of all contacts (issue #357, [`crate::map_view`]).
+    Map(MapMsg),
 }
 
 pub struct App {
@@ -409,6 +413,8 @@ pub struct App {
     photos_busy: bool,
     /// The large picture of the open contact: id, version, picture.
     pub(crate) large: Option<(String, String, Handle)>,
+    /// The map of all contacts (issue #357).
+    pub(crate) map: MapState,
 }
 
 /// The message of a failed load or change, for people.
@@ -488,6 +494,7 @@ impl App {
             photos: HashMap::new(),
             photos_busy: false,
             large: None,
+            map: MapState::default(),
             launch,
         };
         let suite = app.suite.clone();
@@ -562,7 +569,12 @@ impl App {
         ];
         let glance = matches!(self.class(), SizeClass::Mini | SizeClass::Strip);
         if !glance {
-            if self.menu.is_some() || self.dialog.is_some() || self.detail.is_some() || self.drawer {
+            if self.menu.is_some()
+                || self.dialog.is_some()
+                || self.detail.is_some()
+                || self.drawer
+                || self.map.selected.is_some()
+            {
                 subscriptions.push(widgets::escape().map(|()| Message::Escape));
             }
             if self.dialog.is_none() {
@@ -598,7 +610,7 @@ impl App {
         Task::perform(backend::load(self.backend.clone()), move |result| Message::Loaded(asked, result))
     }
 
-    fn notify(&mut self, text: impl Into<String>) {
+    pub(crate) fn notify(&mut self, text: impl Into<String>) {
         self.notice = Some(Notice { text: text.into(), shown: Instant::now() });
     }
 
@@ -741,7 +753,7 @@ impl App {
     /// opened, fetched or changed asks for them, whichever message brought it.
     pub fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.handle(message);
-        Task::batch([task, self.start_maps()])
+        Task::batch([task, self.start_maps(), self.follow_map()])
     }
 
     fn handle(&mut self, message: Message) -> Task<Message> {
@@ -839,7 +851,15 @@ impl App {
 
             // An answer to an older load than the last one asked for is dropped: the newer one comes.
             Message::Loaded(asked, _) if asked < self.load_asked => {}
-            Message::Loaded(_, result) => return self.loaded(result),
+            Message::Loaded(_, result) => {
+                // The map follows every load (a contact changed, the switches in the settings).
+                if let Ok(Some(shown)) = result.as_ref().map(|loaded| loaded.shown) {
+                    self.map.shown = shown;
+                }
+                self.map.of = None;
+                return self.loaded(result);
+            }
+            Message::Map(message) => return self.map_update(message),
             Message::Photos(batch) => {
                 self.photos_busy = false;
                 for (id, version, bytes) in batch {
@@ -1557,6 +1577,9 @@ impl App {
         } else if self.detail.is_some() {
             self.detail = None;
             self.large = None;
+        } else if self.map.selected.is_some() {
+            self.map.selected = None;
+            self.map.card = None;
         }
         Task::none()
     }
@@ -2203,6 +2226,28 @@ impl App {
                 }
             }
             Open::List | Open::ByCity | Open::ByBook => {}
+            // The map of all contacts (issue #357).
+            Open::Map | Open::MapPin | Open::MapCluster | Open::MapLookup => {
+                self.map.look = Look::Map;
+                self.map.frozen = open == Open::MapLookup;
+                if open == Open::MapCluster {
+                    // Germany and its neighbours, where the demo's pins crowd.
+                    self.map.camera = torro_gui::tile_map::Camera::new(50.5, 10.5, 5);
+                    self.map.moved = true;
+                }
+                let anna = self.contacts.iter().find(|c| c.id.ends_with("/demo-01")).map(|c| c.id.clone());
+                if let (Open::MapPin, Some(id)) = (open, anna) {
+                    self.map.selected = Some(pin_key(&id, 0));
+                    let backend = self.backend.clone();
+                    tasks.push(Task::perform(
+                        async move { backend.get_contact(id.clone()).await.map(|contact| (id, contact)) },
+                        |result| match result {
+                            Ok((id, contact)) => Message::Map(MapMsg::Card(id, Ok(Box::new(contact)))),
+                            Err(err) => Message::Map(MapMsg::Card(String::new(), Err(err))),
+                        },
+                    ));
+                }
+            }
             Open::Contact
             | Open::Edit
             | Open::Conflict

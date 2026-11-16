@@ -815,3 +815,103 @@ async fn the_states_of_the_menus() {
     assert_eq!(contact.menu, Some(Menu::More));
     assert!(contact.detail.is_some());
 }
+
+// -- The map of all contacts (issue #357) -------------------------------------------------------
+
+/// The demo after its first load with the map open and its pins in.
+async fn on_map() -> App {
+    let mut app = loaded(&["--demo"]).await;
+    let _ = app.update(Message::Map(MapMsg::Look(Look::Map)));
+    let answer = app.backend.locations(app.locations_query()).await;
+    let asked = app.map.asked;
+    let _ = app.update(Message::Map(MapMsg::Locations(asked, answer)));
+    app
+}
+
+#[tokio::test]
+async fn the_map_is_offered_only_with_the_lookup_on() {
+    let mut app = loaded(&["--demo"]).await;
+    assert!(app.map_offered(), "the demo has maps and the lookup on");
+    let _ = app.update(Message::Show(View::Birthdays));
+    assert!(!app.map_offered(), "not for birthdays");
+    let _ = app.update(Message::Show(View::All));
+    app.map.shown.contact_lookup = false;
+    assert!(!app.map_offered(), "no switch without the lookup");
+    app.map.shown.contact_lookup = true;
+    app.map.shown.maps = false;
+    assert!(!app.map_offered(), "no switch without maps");
+}
+
+#[tokio::test]
+async fn turning_the_lookup_off_goes_back_to_the_list() {
+    let mut app = on_map().await;
+    assert!(app.on_map());
+    assert_eq!(app.map.pins.len(), 38);
+    // The core says the lookup is off: the map goes, nothing more is asked.
+    let pending = app.map.lookup.running.clone().expect("looking up the first address");
+    let generation = app.map.lookup.generation;
+    let _ = app.update(Message::Map(MapMsg::LookedUp(generation, pending, Ok(ContactLocation::NoConsent))));
+    assert_eq!(app.map.look, Look::List);
+    assert!(app.map.lookup.running.is_none() && app.map.lookup.queue.is_empty());
+}
+
+#[tokio::test]
+async fn only_missing_tiles_are_asked_for() {
+    let mut app = on_map().await;
+    let size = app.map_size();
+    let all = torro_gui::tile_map::visible_tiles(app.map.camera, size);
+    assert!(!all.is_empty());
+    // Every tile of the view was asked for once; none is missing while they are out.
+    assert!(app.map.missing_tiles(size).is_empty());
+    let dark = app.theme().extended_palette().is_dark;
+    let picture = Handle::from_rgba(1, 1, vec![0; 4]);
+    for (key, _) in &all {
+        let _ = app.update(Message::Map(MapMsg::Tile(*key, dark, Some(picture.clone()))));
+    }
+    // A wide view at a low zoom shows the world twice: the same tile is kept once.
+    let distinct: HashSet<_> = all.iter().map(|(key, _)| *key).collect();
+    assert_eq!(app.map.tiles.len(), distinct.len());
+    let _ = app.update(Message::Map(MapMsg::Zoom(1)));
+    let missing = app.map.missing_tiles(size);
+    assert!(missing.is_empty(), "the new tiles were asked for at once: {missing:?}");
+    assert!(app.map.tiles.len() <= crate::map_view::MAX_TILES);
+}
+
+#[tokio::test]
+async fn a_pin_selects_its_row_and_opens_its_card() {
+    let mut app = on_map().await;
+    let pin = app.map.pins[0].clone();
+    let key = pin_key(&pin.id, pin.address);
+    let _ = app.update(Message::Map(MapMsg::Event(torro_gui::tile_map::MapEvent::Pin(key.clone()))));
+    assert_eq!(app.map.selected.as_deref(), Some(key.as_str()));
+    assert!(app.in_view().iter().any(|p| pin_key(&p.id, p.address) == key), "its row is in view");
+    let contact = app.backend.get_contact(pin.id.clone()).await.expect("contact");
+    let _ = app.update(Message::Map(MapMsg::Card(pin.id.clone(), Ok(Box::new(contact)))));
+    assert!(app.map.card.is_some());
+    let _ = app.update(Message::Escape);
+    assert!(app.map.selected.is_none(), "Escape closes the card");
+}
+
+#[tokio::test]
+async fn the_lookup_pauses_offline_and_stops_when_the_map_is_left() {
+    let mut app = on_map().await;
+    assert_eq!(app.map.status.pending.len(), 2);
+    let first = app.map.lookup.running.clone().expect("the first address is asked");
+    let generation = app.map.lookup.generation;
+    // Found: a pin more, the next address is asked.
+    let geo = torro_ipc::contacts::Geo { lat: 52.5, lon: 13.4 };
+    let found = Ok(ContactLocation::Found { geo, source: torro_ipc::contacts::LocationSource::Lookup });
+    let _ = app.update(Message::Map(MapMsg::LookedUp(generation, first, found)));
+    assert_eq!(app.map.pins.len(), 39);
+    let second = app.map.lookup.running.clone().expect("the second address is asked");
+    // Offline: paused, nothing more asked.
+    let _ = app.update(Message::Map(MapMsg::LookedUp(generation, second, Err("offline".into()))));
+    assert!(app.map.lookup.paused && app.map.lookup.running.is_none());
+    assert!(app.map.status_shown());
+    // Leaving the map stops it; an answer of the old run is dropped.
+    let _ = app.update(Message::Map(MapMsg::Look(Look::List)));
+    assert!(!app.map.lookup.paused && app.map.lookup.queue.is_empty());
+    let stale = torro_ipc::contacts::AddressRef { id: "x".into(), address: 0 };
+    let _ = app.update(Message::Map(MapMsg::LookedUp(generation, stale, Ok(ContactLocation::NotFound))));
+    assert_eq!(app.map.status.not_found, 0, "an answer of the run before is dropped");
+}
