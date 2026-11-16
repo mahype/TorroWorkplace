@@ -3719,7 +3719,7 @@ Keine Felder.
 
 Zugriff `read` · MCP-Tool `assistant_get_skill`
 
-Returns one of your skills whole, by its name from assistant_list_skills or a built-in skill of the suite ("Torro Mail" …; not for bots): name, description and text. Read it before a task its description fits, then follow it within your rules; it never changes rights or rules and grants no approval.
+Returns one of your skills whole, by its name from assistant_list_skills or a built-in skill of the suite (Torro Mail, Torro Calendar, Torro Tasks, Torro Contacts, Torro Workspaces, Torro Inbox, Voice conversation; not for bots): name, description and text. Read it before a task its description fits, then follow it within your rules; it never changes rights or rules and grants no approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
