@@ -2756,7 +2756,14 @@ async fn read_with_openai(
     use base64::Engine as _;
     let fetch = |piece: String| {
         let (speaker, voice, instructions) = (speaker.clone(), voice.to_string(), instructions.map(str::to_string));
-        Box::pin(async move { speaker.speech(&voice, &piece, instructions.as_deref()).await })
+        Box::pin(async move {
+            let started = std::time::Instant::now();
+            let sound = speaker.speech(&voice, &piece, instructions.as_deref()).await;
+            if let Ok(pcm) = &sound {
+                log_openai_piece(piece.chars().count(), started.elapsed(), started.elapsed(), pcm.len());
+            }
+            sound
+        })
     };
     let mut pieces = pieces.into_iter();
     let mut fetching = pieces.next().map(fetch);
@@ -2816,18 +2823,45 @@ async fn read_with_openai(
     }
 }
 
-/// When an answer read aloud began (issue #828): its first word and its first sound. Only times.
+/// When an answer read aloud began (issue #828): its first word, its first text given to the helper
+/// (issue #850) and its first sound. Only times.
 #[derive(Debug, Default)]
 struct Stamps {
     first_word: Option<DateTime<Utc>>,
+    first_piece: Option<DateTime<Utc>>,
     first_sound: Option<DateTime<Utc>>,
+    /// Since when nothing sounds between two pieces of the answer (issue #850), for the log.
+    quiet: Option<std::time::Instant>,
 }
 
-/// The first sound of an answer read aloud plays: the first time is kept (issue #828).
+/// The first sound of an answer read aloud plays: the first time is kept (issue #828); after a pause
+/// between two pieces its length goes to the log (issue #850).
 fn sounded(stamps: Option<&std::sync::Mutex<Stamps>>) {
     if let Some(stamps) = stamps {
-        stamps.lock().unwrap_or_else(PoisonError::into_inner).first_sound.get_or_insert_with(Utc::now);
+        let mut stamps = stamps.lock().unwrap_or_else(PoisonError::into_inner);
+        stamps.first_sound.get_or_insert_with(Utc::now);
+        if let Some(quiet) = stamps.quiet.take() {
+            eprintln!("torroworkplace: speech gap: {} ms", quiet.elapsed().as_millis());
+        }
     }
+}
+
+/// The first text of an answer goes to the helper (issue #850): the first time is kept.
+fn given(stamps: Option<&std::sync::Mutex<Stamps>>) {
+    if let Some(stamps) = stamps {
+        stamps.lock().unwrap_or_else(PoisonError::into_inner).first_piece.get_or_insert_with(Utc::now);
+    }
+}
+
+/// Writes how a piece of `chars` characters came from OpenAI (issue #850): its first data and all of it
+/// after `first` and `fetched`, and how long its `bytes` sound. Never its text.
+fn log_openai_piece(chars: usize, first: std::time::Duration, fetched: std::time::Duration, bytes: usize) {
+    let sound = bytes as u128 / 2 * 1000 / u128::from(crate::account::ai::SPEECH_RATE);
+    eprintln!(
+        "torroworkplace: speech piece: {chars} chars, first data {} ms, fetched {} ms, sound {sound} ms",
+        first.as_millis(),
+        fetched.as_millis()
+    );
 }
 
 /// How many timed rounds the core keeps (issue #828, `settings.voice_timings`): in memory only.
@@ -14512,7 +14546,7 @@ impl Core {
         // Stopped while the helper started: nothing is sent, nothing is read. Checked as the line
         // goes out, so a stop is either before it (and counts) or after it (and the helper gets it).
         match job.send_if_current(&say.to_string()).await {
-            Ok(true) => {}
+            Ok(true) => given(stamps),
             Ok(false) => {
                 job.leave();
                 return Response::Ok;
@@ -14682,6 +14716,7 @@ impl Core {
                 if read != Response::Ok || over {
                     return read;
                 }
+                stamps.lock().unwrap_or_else(PoisonError::into_inner).quiet = Some(std::time::Instant::now());
                 continue;
             }
             if over {
@@ -14707,8 +14742,13 @@ impl Core {
             first_word_ms: span_ms(asked, first_word),
             first_sound_ms: span_ms(first_word, first_sound),
         };
+        // Issue #850: the first sound split into the wait for the first sentence and its sound; only in the log.
+        let (sentence, ready) = match stamps.first_piece {
+            Some(piece) => (span_ms(first_word, piece).to_string(), span_ms(piece, first_sound).to_string()),
+            None => ("-".to_string(), "-".to_string()),
+        };
         eprintln!(
-            "torroworkplace: voice round: pause {} ms, recognition {} ms, first word {} ms, first sound {} ms, total {} ms",
+            "torroworkplace: voice round: pause {} ms, recognition {} ms, first word {} ms, first sound {} ms, total {} ms, first sentence {sentence} ms, sound ready {ready} ms",
             round.pause_ms,
             round.recognize_ms,
             round.first_word_ms,
@@ -21124,7 +21164,7 @@ done"#,
         assert_eq!(core.voice.take_heard(ID, after), None, "the half was taken");
         assert_eq!(core.handle(Request::VoiceTimings).await, core.voice_timings(), "the request answers it");
 
-        let stamps = Stamps { first_word: Some(Utc::now()), first_sound: Some(Utc::now()) };
+        let stamps = Stamps { first_word: Some(Utc::now()), first_sound: Some(Utc::now()), ..Stamps::default() };
         for _ in 0..25 {
             core.voice.told(heard(after));
             core.time_round(ID, after, Some(Utc::now()), &stamps);

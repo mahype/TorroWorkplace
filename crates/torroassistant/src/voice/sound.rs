@@ -299,6 +299,10 @@ pub trait Sound {
 
     /// Whether everything has played after [`Sound::finish`].
     fn ended(&self) -> bool;
+
+    /// Whether everything pushed so far has played and the device has played silence since (issue #850):
+    /// the sound waits for more, unlike [`Sound::ended`] also before [`Sound::finish`].
+    fn drained(&self) -> bool;
 }
 
 /// The sound waiting for the device, and whether it has played out.
@@ -310,11 +314,24 @@ struct Queue {
     /// Whole buffers of silence given to the device since the queue ran empty after the end: the last
     /// sound has left the device's own buffer once there were two.
     drained: u8,
+    /// Whole buffers of silence given to the device since the last push (issue #850), finished or not:
+    /// two mean the sound has run out and waits for more.
+    idle: u8,
 }
 
 impl Queue {
     fn ended(&self) -> bool {
         self.finished && self.samples.is_empty() && self.drained >= 2
+    }
+
+    /// `samples` play after what is queued; the silence before them no longer counts.
+    fn push(&mut self, samples: impl IntoIterator<Item = f32>) {
+        self.samples.extend(samples);
+        self.idle = 0;
+    }
+
+    fn drained(&self) -> bool {
+        self.samples.is_empty() && self.idle >= 2
     }
 }
 
@@ -329,8 +346,11 @@ where
         let sample = queue.samples.pop_front().unwrap_or(0.0);
         frame.fill(T::from_sample(sample));
     }
-    if queue.finished && !had_sound {
-        queue.drained = queue.drained.saturating_add(1);
+    if !had_sound {
+        queue.idle = queue.idle.saturating_add(1);
+        if queue.finished {
+            queue.drained = queue.drained.saturating_add(1);
+        }
     }
 }
 
@@ -350,6 +370,7 @@ fn fill_data(data: &mut cpal::Data, channels: usize, queue: &mut Queue) {
         _ => {
             queue.samples.clear();
             queue.drained = u8::MAX;
+            queue.idle = u8::MAX;
         }
     }
 }
@@ -407,7 +428,7 @@ impl Player {
 impl Sound for Player {
     fn push(&mut self, rate: u32, samples: &[f32]) {
         if rate == self.rate {
-            self.queue().samples.extend(samples);
+            self.queue().push(samples.iter().copied());
             return;
         }
         if self.resampler.as_ref().is_none_or(|(from, _)| *from != rate) {
@@ -418,7 +439,7 @@ impl Sound for Player {
             return;
         };
         let resampled = resampler.resample(samples, false);
-        self.queue().samples.extend(resampled);
+        self.queue().push(resampled);
     }
 
     fn finish(&mut self) {
@@ -430,6 +451,10 @@ impl Sound for Player {
 
     fn ended(&self) -> bool {
         self.queue().ended()
+    }
+
+    fn drained(&self) -> bool {
+        self.queue().drained()
     }
 }
 
@@ -575,5 +600,22 @@ pub mod tests {
         assert!(!queue.ended(), "one buffer of silence");
         fill(&mut out, 2, &mut queue);
         assert!(queue.ended());
+    }
+
+    /// Issue #850: the sound has run out once two buffers of silence went out since the last push, before
+    /// its end too; a push makes it wait again.
+    #[test]
+    fn the_output_says_when_it_ran_out() {
+        let mut queue = Queue::default();
+        queue.push([0.5, 0.5]);
+        let mut out = [0i16; 2];
+        fill(&mut out, 1, &mut queue);
+        assert!(!queue.drained(), "it just played");
+        fill(&mut out, 1, &mut queue);
+        assert!(!queue.drained(), "one buffer of silence");
+        fill(&mut out, 1, &mut queue);
+        assert!(queue.drained() && !queue.ended(), "ran out, but more may come");
+        queue.push([0.25]);
+        assert!(!queue.drained(), "more came");
     }
 }

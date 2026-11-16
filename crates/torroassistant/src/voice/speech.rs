@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use serde_json::{Value, json};
@@ -547,6 +547,9 @@ pub struct Helper<W: FnMut(Output)> {
     /// The id of the last local job.
     next: u64,
     job: Job,
+    /// Since when the job's sound has run out while more may come (issue #850): the gap is logged when
+    /// sound comes again.
+    quiet: Option<Instant>,
     write: W,
 }
 
@@ -574,6 +577,7 @@ impl<W: FnMut(Output)> Helper<W> {
             current: Arc::new(AtomicU64::new(0)),
             next: 0,
             job: Job::Idle,
+            quiet: None,
             write,
         }
     }
@@ -692,6 +696,9 @@ impl<W: FnMut(Output)> Helper<W> {
     /// Plays `samples` at `rate` in the job's sound, opened with the first of them.
     fn play(&mut self, rate: u32, samples: &[f32]) {
         let (Job::Local { sound, .. } | Job::Stream { sound, .. }) = &mut self.job else { return };
+        if let Some(quiet) = self.quiet.take() {
+            eprintln!("torroassistant: speech gap: {} ms", quiet.elapsed().as_millis());
+        }
         if sound.is_none() {
             match (self.open_sound)() {
                 Ok(opened) => *sound = Some(opened),
@@ -804,6 +811,7 @@ impl<W: FnMut(Output)> Helper<W> {
     fn stop(&mut self) {
         self.current.store(0, Ordering::SeqCst);
         self.waiting = None;
+        self.quiet = None;
         // Dropping the sound stops it.
         self.job = Job::Idle;
     }
@@ -818,8 +826,15 @@ impl<W: FnMut(Output)> Helper<W> {
         (self.write)(Output::Done);
     }
 
-    /// A job whose sound is all there and has played is done.
+    /// A job whose sound is all there and has played is done; one whose sound ran out waits for more.
     fn look_at_the_end(&mut self) {
+        let ran_out = match &self.job {
+            Job::Local { sound: Some(sound), .. } | Job::Stream { sound: Some(sound), .. } => sound.drained(),
+            _ => false,
+        };
+        if ran_out && self.quiet.is_none() {
+            self.quiet = Some(Instant::now());
+        }
         let done = match &self.job {
             Job::Local { sound: Some(sound), computed: true, .. } | Job::Stream { sound: Some(sound), ended: true } => {
                 sound.ended()
@@ -918,7 +933,6 @@ pub fn system_status(voice: &Voice) -> SpeechStatus {
 mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
-    use std::time::Instant;
 
     use super::super::parts::tests::download;
     use super::super::pocket::Chunk;
@@ -1069,6 +1083,10 @@ mod tests {
         fn ended(&self) -> bool {
             let played = self.0.borrow();
             played.finished && played.drained
+        }
+
+        fn drained(&self) -> bool {
+            self.0.borrow().drained
         }
     }
 
