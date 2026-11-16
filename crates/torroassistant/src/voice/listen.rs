@@ -324,7 +324,7 @@ impl<A: Assistant> Listener<'_, A> {
         }
         // The microphone closes before the answer: it is not recorded, and it cannot wake it.
         drop(stream);
-        (self.report)(VoiceState::Answering);
+        (self.report)(VoiceState::Recognizing);
         let ended = self.answer(voice, &sentence, end.heard_speech(), end.trailing_quiet(), None, readings);
         self.wake.reset();
         Ok(ended)
@@ -397,7 +397,7 @@ impl<A: Assistant> Listener<'_, A> {
             self.close_talk();
             return Ok(Ended::Nothing);
         }
-        (self.report)(VoiceState::Answering);
+        (self.report)(VoiceState::Recognizing);
         Ok(self.answer(voice, &sentence, true, end.trailing_quiet(), Some(talk), readings))
     }
 
@@ -508,6 +508,8 @@ impl<A: Assistant> Listener<'_, A> {
             self.quiet();
             return Ended::Nothing;
         }
+        // Recognized and worth sending (issue #830): the core says more precisely what happens from here.
+        (self.report)(VoiceState::Answering);
         let to = talk.as_ref().map(|talk| talk.conversation.clone());
         let sent = match self.assistant.send(&text, to) {
             Ok(sent) => sent,
@@ -989,7 +991,7 @@ mod tests {
                     Ok(Response::Talk { talk: self.talk.clone(), speaking, readings })
                 }
                 Request::StartTalk { conversation } => {
-                    self.talk = Some(Talk { conversation, state: VoiceState::Conversing });
+                    self.talk = Some(Talk { conversation, state: VoiceState::Conversing, tool: None });
                     Ok(Response::Talk { talk: self.talk.clone(), speaking: false, readings: self.read })
                 }
                 Request::EndTalk => {
@@ -1129,7 +1131,7 @@ mod tests {
     }
 
     fn talk_in(conversation: Option<&str>) -> Option<Talk> {
-        Some(Talk { conversation: conversation.map(str::to_string), state: VoiceState::Conversing })
+        Some(Talk { conversation: conversation.map(str::to_string), state: VoiceState::Conversing, tool: None })
     }
 
     /// Issue #828: a sentence whose answer is read aloud tells its half of the round once, for the
@@ -1145,6 +1147,17 @@ mod tests {
         let quiet = Voice { speak_answers: false, ..on() };
         let silent = run(Core::new(quiet), &["utterance.wav", PAUSE], Some(2), &[" Hey Torro, what is on today?"]);
         assert!(messages(&silent.sent).len() == 1 && silent.heard.is_empty(), "sent, but not timed");
+    }
+
+    /// Issue #830: a sentence that comes to no text is recognized, but nothing is sent, so the listener never
+    /// says it answers.
+    #[test]
+    fn a_sentence_without_text_is_recognized_but_not_answered() {
+        let run = run(Core::new(on()), &["utterance.wav", PAUSE], Some(2), &[""]);
+        assert!(messages(&run.sent).is_empty());
+        let recognizing = run.states.iter().position(|state| *state == VoiceState::Recognizing);
+        assert_eq!(recognizing, Some(2), "{:?}", run.states);
+        assert!(!run.states.contains(&VoiceState::Answering), "{:?}", run.states);
     }
 
     #[test]
@@ -1184,10 +1197,11 @@ mod tests {
         assert_eq!(count(&run.sent, &Request::EndTalk), 1, "silence ends it");
         assert_eq!(run.chimes, 3, "the wake word, the open microphone, the end");
         assert_eq!(
-            run.states[..5],
+            run.states[..6],
             [
                 VoiceState::Listening,
                 VoiceState::Recording,
+                VoiceState::Recognizing,
                 VoiceState::Answering,
                 VoiceState::Conversing,
                 VoiceState::Listening
