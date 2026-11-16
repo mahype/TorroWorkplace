@@ -1487,7 +1487,7 @@ mod tests {
     }
 
     /// Issue #831: after the pause "Hey Torro" leaves "Voice" with its date in the title and starts a new
-    /// "Voice"; the old one stays. A send that fails renames nothing.
+    /// "Voice"; the old one stays (a failed send: [`a_failed_send_keeps_the_old_voice_as_it_was`]).
     #[test]
     fn after_a_pause_the_wake_word_starts_a_new_voice_conversation() {
         let (core, mut assistant) = with_voices(&[("v1", 45, false)], None);
