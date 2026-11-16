@@ -105,6 +105,12 @@ impl Endpoint {
     pub fn heard_speech(&self) -> bool {
         self.spoken > 0
     }
+
+    /// The quiet frames at the end, the pause that ended the sentence (issue #828, its time is the
+    /// first step of a spoken round).
+    pub fn trailing_quiet(&self) -> usize {
+        self.quiet
+    }
 }
 
 /// `sample` (16 bit) as a float between -1 and 1, the form sherpa-onnx and the sound devices take.
@@ -486,6 +492,7 @@ pub mod tests {
         // 0.25 s noise, 0.5 s sound, then a pause of a second: over after about 1.75 s.
         let ended = ended.expect("the pause ends it");
         assert!((18..=23).contains(&ended), "ended at frame {ended}");
+        assert_eq!(sentence.trailing_quiet(), FRAMES_PER_SECOND, "the pause of a second ended it");
 
         let short = Limits { wait: 5, ..Limits::default() };
         let mut quiet = Endpoint::new(floor, short);

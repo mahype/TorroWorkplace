@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, OnceLock, PoisonError};
 
-use chrono::{Local, Utc};
+use chrono::{DateTime, Local, Utc};
 use tokio::sync::Mutex;
 use torro_core::AppId;
 use torro_core::account::AccountKind;
@@ -2751,6 +2751,7 @@ async fn read_with_openai(
     voice: &str,
     instructions: Option<&str>,
     pieces: Vec<String>,
+    stamps: Option<&std::sync::Mutex<Stamps>>,
 ) -> Response {
     use base64::Engine as _;
     let fetch = |piece: String| {
@@ -2807,11 +2808,34 @@ async fn read_with_openai(
             line = job.next() => match line {
                 Ok(SpeechLine::Done) => return failed.unwrap_or(Response::Ok),
                 Ok(SpeechLine::Failed { code, message }) => return Response::Error { code, message },
-                Ok(SpeechLine::Playing | SpeechLine::Pieces(_)) => {}
+                Ok(SpeechLine::Playing) => sounded(stamps),
+                Ok(SpeechLine::Pieces(_)) => {}
                 Err(err) => return speech_failure(&err),
             },
         }
     }
+}
+
+/// When an answer read aloud began (issue #828): its first word and its first sound. Only times.
+#[derive(Debug, Default)]
+struct Stamps {
+    first_word: Option<DateTime<Utc>>,
+    first_sound: Option<DateTime<Utc>>,
+}
+
+/// The first sound of an answer read aloud plays: the first time is kept (issue #828).
+fn sounded(stamps: Option<&std::sync::Mutex<Stamps>>) {
+    if let Some(stamps) = stamps {
+        stamps.lock().unwrap_or_else(PoisonError::into_inner).first_sound.get_or_insert_with(Utc::now);
+    }
+}
+
+/// How many timed rounds the core keeps (issue #828, `settings.voice_timings`): in memory only.
+const VOICE_ROUNDS_KEPT: usize = 20;
+
+/// Milliseconds from `from` to `to`, a negative span as 0.
+fn span_ms(from: DateTime<Utc>, to: DateTime<Utc>) -> u32 {
+    u32::try_from((to - from).num_milliseconds().max(0)).unwrap_or(u32::MAX)
 }
 
 /// The `error` answer of a voice helper that failed.
@@ -3056,6 +3080,9 @@ pub struct Core {
     /// The answer `assistant.speak_answer` reads now (issue #747): another call for it waits for the
     /// same end.
     reading: Mutex<Option<Reading>>,
+    /// The last timed spoken rounds, oldest first (issue #828, `settings.voice_timings`): in memory
+    /// only, durations only.
+    voice_rounds: std::sync::Mutex<std::collections::VecDeque<torro_ipc::VoiceRound>>,
     /// What the keys lent for runs of engine B are for (task B.2, [`LentScope`]): the assistant's
     /// conversation, or a bot's run for the assistant. In memory only, as the leases are.
     lent_scopes: std::sync::Mutex<Vec<LentScope>>,
@@ -3229,6 +3256,7 @@ impl Core {
             voice_was_on: std::sync::atomic::AtomicBool::new(false),
             speaking: Arc::default(),
             reading: Mutex::new(None),
+            voice_rounds: std::sync::Mutex::default(),
             lent_scopes: std::sync::Mutex::new(Vec::new()),
             accounts_read: tokio::sync::watch::Sender::new(true),
             reminders: Arc::new(Reminders::system()),
@@ -7395,6 +7423,7 @@ impl Core {
                 }
             }
             Request::VoiceStatus => self.voice_status().await,
+            Request::VoiceTimings => self.voice_timings(),
             Request::TestVoice => self.test_voice().await,
             Request::Dictate => self.dictate().await,
             Request::StopDictation => {
@@ -14205,12 +14234,13 @@ impl Core {
         let number = self.speech.claim().await;
         // Another call for the answer that is read takes the place: this one is no reading of it.
         *self.reading.lock().await = None;
-        self.speak_claimed(number, text).await
+        self.speak_claimed(number, text, None).await
     }
 
     /// Reads `text` as the job `number` of the helper ([`SpeechHelper::claim`]): one piece of
     /// `assistant.speak` or `assistant.speak_answer` (issue #747). Answers once it was read or stopped.
-    async fn speak_claimed(&self, number: u64, text: &str) -> Response {
+    /// `stamps` keeps when the first sound played, for a timed round (issue #828).
+    async fn speak_claimed(&self, number: u64, text: &str, stamps: Option<&std::sync::Mutex<Stamps>>) -> Response {
         use torro_core::settings::SpeechProvider;
         let refused = |code: &str, message: &str| Response::Error { code: code.into(), message: message.into() };
         let voice = self.settings.current().voice;
@@ -14253,13 +14283,13 @@ impl Core {
         }
         loop {
             match job.next().await {
-                Ok(SpeechLine::Playing) => {}
+                Ok(SpeechLine::Playing) => sounded(stamps),
                 Ok(SpeechLine::Done) => return Response::Ok,
                 Ok(SpeechLine::Failed { code, message }) => return Response::Error { code, message },
                 Ok(SpeechLine::Pieces(pieces)) => match &speaker {
                     Some(speaker) => {
                         let (openai_voice, style) = (voice.openai_voice_or_default(), voice.openai_style_or_none());
-                        return read_with_openai(job, speaker, openai_voice, style, pieces).await;
+                        return read_with_openai(job, speaker, openai_voice, style, pieces, stamps).await;
                     }
                     None => return refused("error", tr("Reading aloud failed. Try again.")),
                 },
@@ -14282,6 +14312,8 @@ impl Core {
         };
         let nothing = || Response::Error { code: "error".into(), message: tr("There is no answer to read.").into() };
         let Some(after) = torro_ipc::assistant::answer_start(&entries) else { return nothing() };
+        // When the message was sent: the start of the answer's wait (issue #828).
+        let asked = entries.iter().find(|entry| entry.seq == after).map(|entry| entry.time);
         let answered = entries.iter().any(|entry| {
             entry.seq > after
                 && matches!(
@@ -14311,8 +14343,14 @@ impl Core {
         let (tell, done) = tokio::sync::watch::channel(None);
         *reading = Some(Reading { conversation: conversation.to_string(), after, number, done });
         drop(reading);
-        let end = self.read_answer(number, conversation, after).await;
+        let stamps = std::sync::Mutex::new(Stamps::default());
+        let end = self.read_answer(number, conversation, after, &stamps).await;
         tell.send_replace(Some(end.clone()));
+        // The listener's half may come after the first sound (another process): taken only now.
+        if end == Response::Ok {
+            let stamps = stamps.into_inner().unwrap_or_else(PoisonError::into_inner);
+            self.time_round(conversation, after, asked, &stamps);
+        }
         let mut reading = self.reading.lock().await;
         if reading.as_ref().is_some_and(|reading| reading.number == number) {
             *reading = None;
@@ -14327,8 +14365,17 @@ impl Core {
     /// answer pauses (a long tool), the rest is read. It counts as reading aloud only while a piece sounds.
     /// Of an answer in two parts only the spoken part is read, whole and as soon as it is complete, and
     /// nothing of the answer after it but an approval or a failure; one without it is read up to a sentence end within
-    /// [`torro_ipc::assistant::SPOKEN_MOST`] characters (issue #774).
-    async fn read_answer(&self, number: u64, conversation: &str, after: u64) -> Response {
+    /// [`torro_ipc::assistant::SPOKEN_MOST`] characters (issue #774). `stamps` keeps when the first
+    /// word came (the time of the first answer entry with text: when its first piece came) and when
+    /// the first sound played (issue #828). An answer stored in one go carries the time it was stored,
+    /// so its first word counts as late as that.
+    async fn read_answer(
+        &self,
+        number: u64,
+        conversation: &str,
+        after: u64,
+        stamps: &std::sync::Mutex<Stamps>,
+    ) -> Response {
         use torro_ipc::assistant::{EntryContent, SPOKEN_MOST};
         let mut sentences = crate::assistant::sentences::Sentences::with_most(SPOKEN_MOST);
         loop {
@@ -14340,6 +14387,17 @@ impl Core {
                 // Deleted meanwhile: there is nothing more to read.
                 _ => return Response::Ok,
             };
+            let first_word = entries.iter().find_map(|entry| match &entry.content {
+                EntryContent::Answer { text, spoken, .. }
+                    if !text.trim().is_empty() || spoken.as_deref().is_some_and(|said| !said.trim().is_empty()) =>
+                {
+                    Some(entry.time)
+                }
+                _ => None,
+            });
+            if let Some(time) = first_word {
+                stamps.lock().unwrap_or_else(PoisonError::into_inner).first_word.get_or_insert(time);
+            }
             let mut text = String::new();
             let mut last_word = None;
             let mut said = false;
@@ -14381,7 +14439,7 @@ impl Core {
                 // the microphone of a conversation by voice is not kept closed.
                 let read = {
                     let _speaking = Speaking::new(&self.speaking);
-                    self.speak_claimed(number, &pieces.join(" ")).await
+                    self.speak_claimed(number, &pieces.join(" "), Some(stamps)).await
                 };
                 if read != Response::Ok || over {
                     return read;
@@ -14393,6 +14451,43 @@ impl Core {
             }
             tokio::time::sleep(READ_EVERY).await;
         }
+    }
+
+    /// Times the round of the message `after` in `conversation` (issue #828): with the listener's half
+    /// (pause, speech recognition), the time the message was `asked` and both `stamps`, it keeps the
+    /// round (the last [`VOICE_ROUNDS_KEPT`], in memory only) and writes its durations to the log,
+    /// never its conversation, text or sound. Without any of them nothing is kept or written.
+    fn time_round(&self, conversation: &str, after: u64, asked: Option<DateTime<Utc>>, stamps: &Stamps) {
+        let (Some(asked), Some(first_word), Some(first_sound)) = (asked, stamps.first_word, stamps.first_sound) else {
+            return;
+        };
+        let Some((pause_ms, recognize_ms)) = self.voice.take_heard(conversation, after) else { return };
+        let round = torro_ipc::VoiceRound {
+            at: first_sound,
+            pause_ms,
+            recognize_ms,
+            first_word_ms: span_ms(asked, first_word),
+            first_sound_ms: span_ms(first_word, first_sound),
+        };
+        eprintln!(
+            "torroworkplace: voice round: pause {} ms, recognition {} ms, first word {} ms, first sound {} ms, total {} ms",
+            round.pause_ms,
+            round.recognize_ms,
+            round.first_word_ms,
+            round.first_sound_ms,
+            round.total_ms()
+        );
+        let mut rounds = self.voice_rounds.lock().unwrap_or_else(PoisonError::into_inner);
+        rounds.push_back(round);
+        while rounds.len() > VOICE_ROUNDS_KEPT {
+            rounds.pop_front();
+        }
+    }
+
+    /// `settings.voice_timings` (issue #828): the rounds timed since the start, oldest first.
+    fn voice_timings(&self) -> Response {
+        let rounds = self.voice_rounds.lock().unwrap_or_else(PoisonError::into_inner).iter().copied().collect();
+        Response::VoiceTimings { timings: torro_ipc::VoiceTimings { rounds } }
     }
 
     /// `settings.test_voice` (task C.9, app key only): one sentence from the microphone as text,
@@ -20725,6 +20820,56 @@ done"#,
         let read = log.matches(sentence).count();
         assert!(read > 0 && read * sentence.len() <= SPOKEN_MOST, "{read} sentences read: {log}");
         assert!((read + 1) * (sentence.len() + 1) > SPOKEN_MOST, "as many as fit: {read}");
+    }
+
+    /// Issue #828: an answer read aloud whose listener's half came is one timed round; one without it
+    /// is none; at most 20 rounds are kept, the oldest fall out.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_spoken_answer_read_aloud_is_one_timed_round() {
+        use crate::apps::Heard;
+        use crate::assistant::tests::{finish_growing, growing, message, written};
+        const ID: &str = "0000000000000828";
+        let dir = tempfile::tempdir().expect("temp dir");
+        let speaker = dir.path().join("speaker");
+        crate::apps::tests::fake_at(&speaker, r#"while read line; do echo '"playing"'; echo '"done"'; done"#);
+        written(&dir.path().join("assistant"), ID, "Voice", vec![message("What is on today?")], &[], |_| {});
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = core(dir.path())
+            .with_assistant(assistant)
+            .with_speech(crate::apps::SpeechHelper::at(speaker))
+            .with_probe(Measured(large_pc()));
+        let (run, _) = growing(&core.assistant, ID).await;
+        finish_growing(&core.assistant, ID, run, "Two events today.").await;
+        let Response::Conversation { entries, .. } = core.assistant.get(ID, None).await else { panic!("conversation") };
+        let after = torro_ipc::assistant::answer_start(&entries).expect("a message");
+        let timings = |core: &Core| match core.voice_timings() {
+            Response::VoiceTimings { timings } => timings,
+            other => panic!("{other:?}"),
+        };
+
+        // Without the listener's half: read, but not timed.
+        assert_eq!(core.handle(Request::SpeakAnswer { conversation: ID.into() }).await, Response::Ok);
+        assert!(timings(&core).rounds.is_empty());
+
+        let heard = |after| Heard { conversation: ID.into(), after, pause_ms: 1000, recognize_ms: 800 };
+        core.voice.told(heard(after));
+        assert_eq!(core.handle(Request::SpeakAnswer { conversation: ID.into() }).await, Response::Ok);
+        let rounds = timings(&core).rounds;
+        assert_eq!(rounds.len(), 1, "{rounds:?}");
+        assert_eq!((rounds[0].pause_ms, rounds[0].recognize_ms), (1000, 800));
+        assert_eq!(core.voice.take_heard(ID, after), None, "the half was taken");
+        assert_eq!(core.handle(Request::VoiceTimings).await, core.voice_timings(), "the request answers it");
+
+        let stamps = Stamps { first_word: Some(Utc::now()), first_sound: Some(Utc::now()) };
+        for _ in 0..25 {
+            core.voice.told(heard(after));
+            core.time_round(ID, after, Some(Utc::now()), &stamps);
+        }
+        assert_eq!(timings(&core).rounds.len(), VOICE_ROUNDS_KEPT);
+        core.voice.told(heard(after));
+        core.time_round(ID, after, Some(Utc::now()), &Stamps { first_sound: None, ..stamps });
+        assert!(core.voice.take_heard(ID, after).is_some(), "without a first sound nothing is timed");
     }
 
     /// Issue #747 (review): an answer is read from after the last message, or after an approval that

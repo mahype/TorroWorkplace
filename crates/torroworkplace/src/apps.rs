@@ -32,6 +32,7 @@
 //! `assistant.speak`): one job at a time, talked to in JSON lines ([`SpeechLine`]); a new job or
 //! `assistant.stop_speaking` stops the one that reads.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -523,6 +524,30 @@ struct Running {
     state: VoiceState,
     /// Why it is not running although it should, for people.
     problem: Option<String>,
+    /// The listener's halves of timed rounds (issue #828), newest last, at most [`HEARD_KEPT`]: the
+    /// core takes each once the answer was read ([`Listener::take_heard`]).
+    heard: VecDeque<Heard>,
+}
+
+/// How many halves of rounds wait for their answer at most: a round whose answer never got read
+/// leaves its half behind, the oldest fall out.
+const HEARD_KEPT: usize = 8;
+
+/// The listener's half of a timed round (issue #828), as `torroassistant --listen` writes it in
+/// `{"round": {…}}`: the pause that ended the sentence and speech recognition, for the message
+/// `after` in `conversation`. Durations only.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct Heard {
+    pub conversation: String,
+    pub after: u64,
+    pub pause_ms: u32,
+    pub recognize_ms: u32,
+}
+
+/// A line of the listener that is no state: `{"round": {…}}`.
+#[derive(serde::Deserialize)]
+struct RoundLine {
+    round: Heard,
 }
 
 /// The voice listener `torroassistant --listen` (task C.9): started and stopped by the core
@@ -674,13 +699,22 @@ impl Listener {
         tokio::spawn(async move {
             let mut lines = BufReader::new(output).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                let Ok(state) = serde_json::from_str::<VoiceState>(line.trim()) else { continue };
+                let line = line.trim();
+                let state = serde_json::from_str::<VoiceState>(line);
+                let round = || serde_json::from_str::<RoundLine>(line).map(|line| line.round);
                 let mut running = shared.lock().unwrap_or_else(PoisonError::into_inner);
                 if running.generation != generation {
                     return;
                 }
-                running.state = state;
-                changes.send_replace(());
+                match (state, round()) {
+                    (Ok(state), _) => {
+                        running.state = state;
+                        changes.send_replace(());
+                    }
+                    (_, Ok(heard)) => keep_heard(&mut running, heard),
+                    // A line it does not know: skipped.
+                    _ => {}
+                }
             }
             // The output closed: the listener ended (voice went off, or it could not listen).
             let mut running = shared.lock().unwrap_or_else(PoisonError::into_inner);
@@ -793,6 +827,20 @@ impl Listener {
         }
     }
 
+    /// The listener's half of the round of the message `after` in `conversation` (issue #828),
+    /// taken out: `(pause_ms, recognize_ms)`; `None` when it did not tell one.
+    pub fn take_heard(&self, conversation: &str, after: u64) -> Option<(u32, u32)> {
+        let mut running = self.lock();
+        let at = running.heard.iter().position(|heard| heard.conversation == conversation && heard.after == after)?;
+        running.heard.remove(at).map(|heard| (heard.pause_ms, heard.recognize_ms))
+    }
+
+    /// Keeps `heard` as if the listener had told it, for the core's tests.
+    #[cfg(test)]
+    pub fn told(&self, heard: Heard) {
+        keep_heard(&mut self.lock(), heard);
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Running> {
         self.running.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -800,6 +848,14 @@ impl Listener {
     fn set(&self, running: &mut Running, state: VoiceState) {
         running.state = state;
         self.changes.send_replace(());
+    }
+}
+
+/// Keeps `heard` with the halves that wait, at most [`HEARD_KEPT`]: the oldest fall out.
+fn keep_heard(running: &mut Running, heard: Heard) {
+    running.heard.push_back(heard);
+    while running.heard.len() > HEARD_KEPT {
+        running.heard.pop_front();
     }
 }
 
@@ -1387,6 +1443,43 @@ pub mod tests {
         .await;
         assert!(stopped.is_ok(), "it reports the stop");
         assert_eq!(listener.state(), VoiceState::Off);
+    }
+
+    /// Issue #828: the listener's halves of rounds come between its states and are taken once; at
+    /// most eight wait, the oldest fall out.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_listener_tells_halves_of_rounds_between_states() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let round = |after: u64| {
+            format!(
+                r#"echo '{{"round":{{"conversation":"c1","after":{after},"pause_ms":1000,"recognize_ms":800}}}}'; "#
+            )
+        };
+        let mut script: String = (1..=10).map(round).collect();
+        script.push_str(r#"echo 'noise'; echo '"recording"'; sleep 30"#);
+        let listener = Listener::at(fake_program(dir.path(), &script));
+        let mut changes = listener.changes();
+        listener.follow(true);
+        until(&listener, &mut changes, VoiceState::Recording).await;
+        assert_eq!(listener.take_heard("c1", 1), None, "fell out: only eight wait");
+        assert_eq!(listener.take_heard("c1", 2), None);
+        assert_eq!(listener.take_heard("c1", 3), Some((1000, 800)));
+        assert_eq!(listener.take_heard("c1", 3), None, "taken once");
+        assert_eq!(listener.take_heard("c2", 10), None, "another conversation");
+        assert_eq!(listener.take_heard("c1", 10), Some((1000, 800)));
+        listener.follow(false);
+    }
+
+    /// Issue #828 (review): the line `torroassistant --listen` writes for a round, as its test
+    /// `a_round_is_told_as_the_core_reads_it` pins it; change both together.
+    #[test]
+    fn a_round_line_of_the_listener_is_read() {
+        let line: RoundLine =
+            serde_json::from_str(r#"{"round":{"conversation":"c1","after":3,"pause_ms":1000,"recognize_ms":800}}"#)
+                .expect("a round");
+        let expected = Heard { conversation: "c1".into(), after: 3, pause_ms: 1000, recognize_ms: 800 };
+        assert_eq!(line.round, expected);
     }
 
     #[tokio::test]

@@ -157,6 +157,9 @@ pub struct Data {
     pub default_models: Vec<AiModel>,
     /// How talking by voice stands (`settings.voice_status`); `None` until an answer came.
     pub voice: Option<VoiceStatus>,
+    /// How long the last spoken answers took, step by step (`settings.voice_timings`, issue #828);
+    /// `None` until an answer came.
+    pub voice_timings: Option<torro_ipc::VoiceTimings>,
     /// Who can read aloud here (`settings.speech_status`, issue #745); `None` until an answer came.
     pub speech: Option<SpeechStatus>,
     /// The models the assistant listens and speaks with (`settings.list_voice_models`, issue #762).
@@ -330,6 +333,7 @@ impl Data {
             }
             Response::SortRules { rules } => self.sort_rules = rules,
             Response::Voice { voice } => self.voice = Some(voice),
+            Response::VoiceTimings { timings } => self.voice_timings = Some(timings),
             Response::Speech { speech } => self.speech = Some(speech),
             Response::VoiceModels { models } => self.voice_models = models,
             Response::Accounts { accounts } => self.accounts = accounts,

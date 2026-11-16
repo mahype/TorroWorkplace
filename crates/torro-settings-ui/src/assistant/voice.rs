@@ -450,7 +450,9 @@ pub fn view<'a>(state: &'a State, data: &'a Data, tab: VoiceTab) -> Element<'a, 
     }
     match tab {
         VoiceTab::ReadAloud => read_aloud_group(state, data),
-        VoiceTab::Conversation => voice_group(state, data),
+        VoiceTab::Conversation => {
+            iced::widget::column![voice_group(state, data), timings_group(data)].spacing(layout::section_gap()).into()
+        }
         VoiceTab::Models => models_group(state, data),
     }
 }
@@ -770,6 +772,30 @@ fn voice_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     rows.extend(microphone_row(state, data));
     rows.push(test);
     widgets::group(tr("Conversation"), rows, Some(footer.to_string()))
+}
+
+/// "Response times" (issue #828, `settings.voice_timings`): the average of the last spoken answers, step
+/// by step, and the whole wait until the answer is heard. Only durations, never what was said. Without
+/// a timed answer one line says so.
+fn timings_group<'a>(data: &'a Data) -> Element<'a, Message> {
+    let Some(average) = data.voice_timings.as_ref().and_then(torro_ipc::VoiceTimings::average) else {
+        let none = setting_row(None, tr("No spoken answer measured yet."), None, iced::widget::Space::new());
+        return widgets::group(tr("Response times"), vec![none], None);
+    };
+    let line = |label: &'static str, ms: u32| {
+        let value = typo::text(typo::body().tabular(), trf("{n} ms", &[("n", &ms)])).style(theme::text_2);
+        setting_row(None, label, None, value)
+    };
+    let rows = vec![
+        line(tr("End of speech detected"), average.pause_ms),
+        line(tr("Speech recognized"), average.recognize_ms),
+        line(tr("First word of the answer"), average.first_word_ms),
+        line(tr("First sound"), average.first_sound_ms),
+        line(tr("Until you hear the answer"), average.total_ms),
+    ];
+    let footer =
+        trf("Average of the last {n} spoken answers. Only times, never what was said.", &[("n", &average.rounds)]);
+    widgets::group(tr("Response times"), rows, Some(footer))
 }
 
 /// "Language" (decision 4 of #762): Whisper's as a dropdown, with the language of the suite unless
