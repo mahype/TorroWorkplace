@@ -2348,3 +2348,18 @@ fn repeat_reads_the_spoken_part_again_and_stop_stops_it() {
         let _ = app.view();
     }
 }
+
+#[test]
+fn the_history_follows_growth_but_not_a_person_who_scrolled_up() {
+    // At the bottom, nothing seen yet: follows, jumps only when it was not following.
+    assert_eq!(history_follow(true, None, 1000.0, 600.0, 600.0, 24.0), (true, false));
+    assert_eq!(history_follow(false, None, 1000.0, 600.0, 600.0, 24.0), (true, true));
+    // Content grew, the offset stayed (far from the new bottom): follows and jumps.
+    assert_eq!(history_follow(true, Some((1000.0, 600.0)), 1400.0, 600.0, 1000.0, 24.0), (true, true));
+    // The person scrolled up: stops following, no jump.
+    assert_eq!(history_follow(true, Some((1000.0, 600.0)), 1000.0, 300.0, 600.0, 24.0), (false, false));
+    // Scrolled up, then content grows with the offset unchanged: stays put.
+    assert_eq!(history_follow(false, Some((1000.0, 300.0)), 1400.0, 300.0, 1000.0, 24.0), (false, false));
+    // Scrolled back down to the bottom: follows again, jumps.
+    assert_eq!(history_follow(false, Some((1000.0, 300.0)), 1000.0, 590.0, 600.0, 24.0), (true, true));
+}

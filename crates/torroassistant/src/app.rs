@@ -661,6 +661,8 @@ pub struct App {
     pub(crate) stream: Option<Stream>,
     /// The history is scrolled to the bottom and follows the newest entry; scrolled up, it stays.
     pub(crate) follow_bottom: bool,
+    /// The history as the last scroll event saw it, as (content height, offset): tells growth from scrolling.
+    history_seen: Option<(f32, f32)>,
 
     /// The composer's text.
     pub(crate) editor: Content,
@@ -822,6 +824,7 @@ impl App {
             answers: HashMap::new(),
             stream: None,
             follow_bottom: true,
+            history_seen: None,
             editor: Content::new(),
             mini: String::new(),
             choice: None,
@@ -1907,12 +1910,20 @@ impl App {
             Ok((summary, entries)) => {
                 let known: HashSet<String> = self.transcript.approvals().into_iter().map(str::to_owned).collect();
                 let cards = self.transcript.cards();
+                let last = self.transcript.last();
                 if self.transcript.merge(summary, entries) {
                     self.after_change(true);
                 }
                 let read = self.read_ready();
                 // A hit that waited for its entry (issue #704).
-                let hit = self.scroll_to_hit(&id).unwrap_or_else(Task::none);
+                let hit = self.scroll_to_hit(&id).unwrap_or_else(|| {
+                    // New entries below a history that was at the bottom: it stays there.
+                    if self.follow_bottom && self.transcript.last() > last {
+                        self.scroll_to_newest()
+                    } else {
+                        Task::none()
+                    }
+                });
                 // A new card (after `tools.create_pdf`) is resolved at once, not on the next tick.
                 let cards = if self.transcript.cards() == cards { Task::none() } else { self.fetch_cards() };
                 let new: Vec<String> = self
@@ -2071,12 +2082,15 @@ impl App {
     /// The history scrolled or grew: it follows the newest entry while it is at the bottom, and
     /// stays where the person scrolled to otherwise.
     fn history_scrolled(&mut self, viewport: scrollable::Viewport) -> Task<Message> {
-        let hidden = (viewport.content_bounds().height - viewport.bounds().height).max(0.0);
-        let at_bottom = hidden - viewport.absolute_offset().y <= theme::space::l();
-        let back = at_bottom && !self.follow_bottom;
-        self.follow_bottom = at_bottom;
-        // Back at the bottom: from now on the history keeps to it as it grows.
-        if back { self.scroll_to_newest() } else { Task::none() }
+        let content = viewport.content_bounds().height;
+        let hidden = (content - viewport.bounds().height).max(0.0);
+        let offset = viewport.absolute_offset().y;
+        let (follow, jump) =
+            history_follow(self.follow_bottom, self.history_seen, content, offset, hidden, theme::space::l());
+        self.history_seen = Some((content, offset));
+        self.follow_bottom = follow;
+        // Back at the bottom, or grown below it: the history keeps to the newest entry from now on.
+        if jump { self.scroll_to_newest() } else { Task::none() }
     }
 
     /// The history at its newest entry, following it as it grows (a relative offset of 1 stays at
@@ -3177,6 +3191,25 @@ fn card_picture(picture: &torro_ipc::chat::ChatPicture) -> Option<iced::widget::
     let pixels = image::load_from_memory(&bytes).ok()?.into_rgba8();
     let (width, height) = pixels.dimensions();
     Some(iced::widget::image::Handle::from_rgba(width, height, pixels.into_raw()))
+}
+
+/// Whether the history follows its newest entry after a scroll event, and whether it jumps to the end now:
+/// `(follow, jump)`. It follows when it is at the bottom (within `near`), and when its content grew
+/// while the offset stayed (an answer streaming in, a card loading): that is no scrolling by the person.
+/// A person who scrolled up (the offset changed, away from the bottom) stops it; back at the bottom
+/// starts it again.
+fn history_follow(
+    following: bool,
+    seen: Option<(f32, f32)>,
+    content: f32,
+    offset: f32,
+    hidden: f32,
+    near: f32,
+) -> (bool, bool) {
+    let at_bottom = hidden - offset <= near;
+    let grew = following && seen.is_some_and(|(before, at)| content > before && (offset - at).abs() < 0.5);
+    let follow = at_bottom || grew;
+    (follow, follow && (!following || grew))
 }
 
 mod bots;
