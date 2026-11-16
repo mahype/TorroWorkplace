@@ -344,7 +344,7 @@ impl ChatSource for ChatClient {
         &self,
         id: String,
         file: Option<String>,
-        card: bool,
+        card: Option<u8>,
         size: WindowSize,
     ) -> Result<Picture, ChatError> {
         let size = match size {
@@ -352,7 +352,8 @@ impl ChatSource for ChatClient {
             WindowSize::Medium => PreviewSize::Medium,
             WindowSize::Large => PreviewSize::Large,
         };
-        match self.ask(Request::ChatGetPreview { id, file, card, size }).await? {
+        let index = card.filter(|index| *index > 0);
+        match self.ask(Request::ChatGetPreview { id, file, card: card.is_some(), index, size }).await? {
             Response::ChatPicture { picture } => window_picture(picture),
             other => Err(unexpected(other)),
         }
@@ -399,8 +400,8 @@ impl ChatSource for ChatClient {
         }
     }
 
-    async fn show_card(&self, id: String) -> Result<Option<LinkCard>, ChatError> {
-        match self.ask(Request::ChatShowCard { id }).await? {
+    async fn show_card(&self, id: String, index: Option<u8>) -> Result<Option<LinkCard>, ChatError> {
+        match self.ask(Request::ChatShowCard { id, index }).await? {
             Response::ChatCard { card } => Ok(card),
             other => Err(unexpected(other)),
         }
@@ -595,7 +596,8 @@ mod tests {
                 },
             }),
             Request::ChatCancelUpload { id } => done(demo.cancel_upload(id).await),
-            Request::ChatGetPreview { id, file, card, size } => {
+            Request::ChatGetPreview { id, file, card, index, size } => {
+                let card = card.then(|| index.unwrap_or(0));
                 let size = match size {
                     PreviewSize::Small => WindowSize::Small,
                     PreviewSize::Medium => WindowSize::Medium,
@@ -659,7 +661,9 @@ mod tests {
                     more: page.more,
                 })
             }
-            Request::ChatShowCard { id } => demo.show_card(id).await.map(|card| Response::ChatCard { card }),
+            Request::ChatShowCard { id, index } => {
+                demo.show_card(id, index).await.map(|card| Response::ChatCard { card })
+            }
             Request::ChatGetCall { conversation } => demo.call(conversation).await.map(|call| Response::ChatCall {
                 call: ChatCall {
                     conversation: call.conversation,
@@ -812,8 +816,7 @@ mod tests {
         let (chat, serving, _dir) = core().await;
         let design = torro_chat::demo::DESIGN;
         let picture = torro_chat::message_id(design, 3);
-        let preview =
-            chat.preview(picture.clone(), Some("5103".into()), false, WindowSize::Small).await.expect("small");
+        let preview = chat.preview(picture.clone(), Some("5103".into()), None, WindowSize::Small).await.expect("small");
         assert!(preview.bytes.starts_with(&[0x89, b'P', b'N', b'G']), "the bytes themselves, not Base64");
         let shared = chat.shared(design.into(), Some(WindowKind::Media), None, None).await.expect("shared");
         assert!(shared.items.iter().any(|item| item.message == picture));
@@ -823,7 +826,7 @@ mod tests {
         assert!(matches!(hidden, Err(ChatError::Forbidden(_))));
         let saved = chat.save_attachment(torro_chat::message_id(design, 7), "5107".into(), SaveTo::Downloads).await;
         assert!(saved.expect("saved").ends_with("Icon guide.pdf"));
-        let card = chat.show_card(torro_chat::message_id(design, 11)).await.expect("asked");
+        let card = chat.show_card(torro_chat::message_id(design, 11), None).await.expect("asked");
         assert_eq!(card.map(|card| card.domain), Some("example.com".into()));
 
         let png = torro_chat::demo::picture(2, 12, 8);

@@ -738,7 +738,7 @@ fn a_link_to_another_provider_asks_and_the_answer_is_kept() {
     decided(&mut app, ProviderChoice::Allowed, Ok(()));
     assert!(message(&app, &grids).foreign.is_none());
     assert_eq!(chat(&app).files.cards.get(&grids), Some(&crate::app::files::CardAsk::Asking), "the card comes");
-    let card = block_on(app.backend.clone().show_card(grids.clone())).expect("a card");
+    let card = block_on(app.backend.clone().show_card(grids.clone(), 0)).expect("a card");
     let _ = app.update(Message::Chat(Msg::Files(FilesMsg::Card(grids.clone(), Ok(card)))));
     assert_eq!(message(&app, &grids).cards.first().map(|card| card.domain.as_str()), Some("example.com"));
 }

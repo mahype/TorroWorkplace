@@ -266,13 +266,14 @@ pub trait ChatSource: Send + Sync {
     fn cancel_upload(&self, id: String) -> impl Future<Output = Result<(), ChatError>> + Send;
 
     /// `chat.get_preview`: a preview of the file `file` of the message `id`, or with `card` the
-    /// picture of the message's link card (then `file` is `None`). [`ChatError::NotFound`] for a
-    /// file that is no file of the message or has no preview.
+    /// picture of the message's link card of that index in its `cards` (issue #785, then `file` is
+    /// `None`). [`ChatError::NotFound`] for a file that is no file of the message or has no preview, and
+    /// for a card that is not there or has no picture.
     fn preview(
         &self,
         id: String,
         file: Option<String>,
-        card: bool,
+        card: Option<u8>,
         size: PreviewSize,
     ) -> impl Future<Output = Result<Picture, ChatError>> + Send;
 
@@ -302,10 +303,16 @@ pub trait ChatSource: Send + Sync {
         limit: Option<u32>,
     ) -> impl Future<Output = Result<SharedPage, ChatError>> + Send;
 
-    /// `chat.show_card` ("Show once"): the card of the first link of the message `id`, fetched by
-    /// the account's server; `None` when there is none. Later pages of `chat.get_messages` carry it
-    /// in `cards`. [`ChatError::Unsupported`] for a provider Settings › Privacy blocks (issue #672).
-    fn show_card(&self, id: String) -> impl Future<Output = Result<Option<LinkCard>, ChatError>> + Send;
+    /// `chat.show_card` ("Show once"): the card of the link `index` of the message `id` (issue #785: of
+    /// its first three links that may have a card, in the order of its text, from 0, as a card's `index`
+    /// names it), fetched by the account's server; `None` for `index`: the link the message asks about
+    /// (`foreign`). `Ok(None)` when there is no card. Later pages of `chat.get_messages` carry it in
+    /// `cards`. [`ChatError::Unsupported`] for a provider Settings › Privacy blocks (issue #672).
+    fn show_card(
+        &self,
+        id: String,
+        index: Option<u8>,
+    ) -> impl Future<Output = Result<Option<LinkCard>, ChatError>> + Send;
 
     // -- Calls (stage 6b) ---------------------------------------------------------------------
 

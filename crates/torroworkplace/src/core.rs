@@ -1104,7 +1104,7 @@ const TARGET_MAX: usize = 1000;
 
 /// A caller that may read the mail account `account`: the suite, or a client with read access to
 /// `mail` and the account in its `mail_accounts`.
-fn reads_mail(reach: Reach<'_>, account: &str) -> bool {
+pub(crate) fn reads_mail(reach: Reach<'_>, account: &str) -> bool {
     match reach {
         Reach::Suite => true,
         Reach::Client(rights) => rights.area(Area::Mail).allows(Access::Read) && rights.reaches_mail_account(account),
@@ -3165,6 +3165,9 @@ pub struct Core {
     /// The mails whose suggestions wait to be read out (issue #603, [`Core::read_suggestions`]):
     /// filled by the sorting of new mail, worked through one at a time.
     readings: crate::actions::Readings,
+    /// The link cards a person had shown once in the assistant's conversations (issue #785, `assistant.show_card`),
+    /// in memory only ([`crate::assistant::cards::link::Shown`]).
+    shown_links: crate::assistant::cards::link::Shown,
 }
 
 /// How long a measurement without shared memory counts ([`Core::hardware`]): long enough that the
@@ -3210,6 +3213,9 @@ impl Core {
         // Settings › Privacy (issue #672), read afresh for every page of messages.
         let privacy = settings.clone();
         chat.set_privacy(Arc::new(move || privacy.current().privacy));
+        // The cards of links to GitHub issues and pull requests in the chat (issue #790).
+        let github = Arc::new(GithubAccounts::system());
+        chat.set_github(Arc::clone(&github));
         let presence = Arc::new(presence_of(&chat, &contacts));
         let core = Core {
             backend,
@@ -3225,7 +3231,7 @@ impl Core {
             approvals: Arc::new(Approvals::system()),
             inbox: Arc::new(Inbox::system()),
             audit: Arc::new(Audit::system()),
-            github: Arc::new(GithubAccounts::system()),
+            github,
             ai: Arc::new(AiAccounts::system()),
             ntfy: Arc::new(NtfyAccounts::system()),
             mail,
@@ -3294,6 +3300,7 @@ impl Core {
             catalog: if cfg!(test) { crate::catalog::Catalog::none() } else { crate::catalog::Catalog::system() },
             announcements: crate::announcements::Announcements::system(),
             readings: crate::actions::Readings::default(),
+            shown_links: crate::assistant::cards::link::Shown::default(),
         };
         let allowed = core.allowed_folders();
         Core {
@@ -3667,6 +3674,7 @@ impl Core {
     pub(crate) fn with_chat(mut self, chat: ChatService, dir: &Path) -> Core {
         let privacy = self.settings.clone();
         chat.set_privacy(Arc::new(move || privacy.current().privacy));
+        chat.set_github(Arc::clone(&self.github));
         self.chat = Arc::new(chat);
         self.presence = Arc::new(PresenceService::in_dir(Arc::clone(&self.chat), dir));
         self
@@ -4560,6 +4568,12 @@ impl Core {
         request: Request,
         scope: Option<LentFor>,
     ) -> Result<Response, Refused> {
+        // What an answer found shows in the conversation the key is lent for (issue #786), whatever the agent named,
+        // as engine A does; a key whose run the core forgot names none (the owner's answering conversation then).
+        let request = match request {
+            Request::ShowItems { items, .. } => Request::ShowItems { conversation: self.lent_conversation(key), items },
+            other => other,
+        };
         match &request {
             Request::ListApprovals => {
                 return Ok(match self.list_approvals(Some(&id)).await {
@@ -5349,12 +5363,21 @@ impl Core {
         scopes.iter().find(|scope| scope.hash == hash).map(|scope| scope.lent_for.clone())
     }
 
-    /// Remembers what `lent` is for (task B.2), and forgets what was lent longer ago than any run
-    /// lasts ([`LENT_SCOPE_KEPT`]): those keys were taken back.
-    fn remember_lent(&self, lent: &crate::clients::LentKey, lent_for: LentFor) {
+    /// The conversation whose run the key `key` was lent for (issue #786), while the core remembers it.
+    fn lent_conversation(&self, key: &Key) -> Option<String> {
+        let hash = key_hash(key);
+        let scopes = self.lent_scopes.lock().unwrap_or_else(PoisonError::into_inner);
+        scopes.iter().find(|scope| scope.hash == hash).map(|scope| scope.conversation.clone())
+    }
+
+    /// Remembers what `lent` is for (task B.2) and the conversation of its run, and forgets what was lent longer ago
+    /// than any run lasts ([`LENT_SCOPE_KEPT`]): those keys were taken back.
+    fn remember_lent(&self, lent: &crate::clients::LentKey, lent_for: LentFor, conversation: &str) {
         let mut scopes = self.lent_scopes.lock().unwrap_or_else(PoisonError::into_inner);
         scopes.retain(|scope| scope.made.elapsed() < LENT_SCOPE_KEPT);
-        scopes.push(LentScope { hash: key_hash(lent.key()), made: std::time::Instant::now(), lent_for });
+        let made = std::time::Instant::now();
+        let conversation = conversation.to_owned();
+        scopes.push(LentScope { hash: key_hash(lent.key()), made, lent_for, conversation });
     }
 
     /// Whether `request` of the client `client` is `inbox.open_item` on an entry that opens a web
@@ -7883,6 +7906,44 @@ impl Core {
                 }
                 self.about_within(answered, reach)
             }
+            // Showing what an answer found (issue #786): only in a conversation of the caller's own – the
+            // assistant's without a bot, a bot's with it, any one the person names – and only items a command of
+            // that conversation found (`crate::assistant::cards::group`). Rights and kind were checked before.
+            Request::ShowItems { conversation, items } => {
+                use crate::assistant::cards::group::Owner;
+                let bots = match (reach, caller) {
+                    (Reach::Client(_), Some(id)) if self.bot_client(id).is_some() => self.assistant.bots().list().await,
+                    _ => Vec::new(),
+                };
+                let owner = match (reach, caller) {
+                    (Reach::Suite, _) => Owner::Person,
+                    (Reach::Client(_), Some(id)) if self.assistant_client().is_some_and(|own| own.id == id) => {
+                        Owner::Assistant
+                    }
+                    (Reach::Client(_), Some(id)) => {
+                        bots.iter().find(|bot| bot.client == id).map_or(Owner::Other, |bot| Owner::Bot(&bot.id))
+                    }
+                    (Reach::Client(_), None) => Owner::Other,
+                };
+                self.assistant.show_items(owner, conversation.as_deref(), &items).await
+            }
+            // "Show once" of a link card (issue #785): a person's only (`Mcp::Never`, which keeps it from every client
+            // already; checked here again by reach).
+            Request::ShowAssistantCard { conversation, seq } => match reach {
+                Reach::Suite => self.show_link_card(&conversation, seq).await,
+                Reach::Client(_) => refusal("forbidden", tr("Only a person can show this card.").into()),
+            },
+            // The picture of a link card (S4 of issue #784): for a client only with the right to picture content and
+            // only of a card `assistant.get_cards` shows it; a chat about a mail it may not read is not there for it.
+            Request::GetCardPicture { conversation, seq, size } => match reach {
+                Reach::Client(rights) if !rights.image_content => {
+                    refusal("forbidden", tr("This key may not see pictures and videos.").into())
+                }
+                _ => match self.hidden_conversation(&conversation, reach).await {
+                    Some(hidden) => hidden,
+                    None => self.link_card_picture(&conversation, seq, size, reach).await,
+                },
+            },
             // Cards (issue #225): resolved with the rights of the conversation's client, not the caller's
             // alone.
             // A chat about a mail the caller may not read is not there for it (issue #605).
@@ -11761,6 +11822,20 @@ impl Core {
                 let task = task.ok_or_else(|| Box::new(refusal("not-found", "no such task".into())))?;
                 Ok((crate::apps::Opened::Task { uid: task.uid }, task.summary))
             }
+            // An event (issue #797, "Open in calendar" on an event card): one of a calendar the caller reaches, by the
+            // uid the cache holds; a client without read access to `calendar` finds none.
+            crate::apps::Target::Event { uid } => {
+                let reads = match reach {
+                    Reach::Suite => true,
+                    Reach::Client(rights) => rights.area(Area::Calendar).allows(Access::Read),
+                };
+                let event = match reads {
+                    true => self.pim.cached_events_within(reach).await.into_iter().find(|event| event.uid == uid),
+                    false => None,
+                };
+                let event = event.ok_or_else(|| Box::new(refusal("not-found", "no such event".into())))?;
+                Ok((crate::apps::Opened::Event { uid: event.uid }, event.summary))
+            }
             crate::apps::Target::File { id } => {
                 let reaches = match (reach, maker) {
                     (Reach::Suite, _) => true,
@@ -12472,6 +12547,50 @@ impl Core {
         held
     }
 
+    /// What a look at a content card (issue #784, [`crate::assistant::cards::look`]) gets of the core: the
+    /// conversation's `client` with `rights` (its own, cut to the asker's), the conversation, who asks (`asker`:
+    /// only the person's look fetches a page) and the services.
+    fn lookup<'a>(
+        &'a self,
+        client: &'a torro_ipc::ClientInfo,
+        rights: &'a torro_ipc::api::Rights,
+        conversation: &'a str,
+        asker: Reach<'a>,
+    ) -> crate::assistant::cards::Lookup<'a> {
+        crate::assistant::cards::Lookup {
+            client,
+            rights,
+            asker,
+            conversation,
+            mail: &self.mail,
+            pim: &self.pim,
+            contacts: &self.contacts,
+            chat: &self.chat,
+            github: &self.github,
+            approvals: &self.approvals,
+            shown: &self.shown_links,
+        }
+    }
+
+    /// What the content cards among `entries` show now (issue #784), by their entry's number: each looked up with
+    /// `lookup` ([`crate::assistant::cards::look`]), one after the other; files and suggestions are left to
+    /// [`crate::assistant::cards::resolve`].
+    async fn looked(
+        &self,
+        entries: &[torro_ipc::assistant::Entry],
+        lookup: &crate::assistant::cards::Lookup<'_>,
+    ) -> crate::assistant::cards::Looked {
+        let mut looked = crate::assistant::cards::Looked::new();
+        for entry in entries {
+            if let torro_ipc::assistant::EntryContent::Card { card } = &entry.content
+                && let Some(shown) = crate::assistant::cards::look(lookup, entry.seq, card).await
+            {
+                looked.insert(entry.seq, shown);
+            }
+        }
+        looked
+    }
+
     /// `assistant.get_cards` (issue #225, task WZ.5) for `reach`: the cards of the conversation
     /// `conversation` as they are now ([`crate::assistant::cards::resolve`]). Resolved with the rights
     /// of the conversation's client – the assistant's own, or the bot's for a conversation with a bot
@@ -12504,15 +12623,112 @@ impl Core {
             Reach::Client(asker) => client.rights.common(asker),
         });
         let held = self.held_suggestions(&entries, rights.as_ref()).await;
+        let looked = match client.as_ref().zip(rights.as_ref()) {
+            Some((client, rights)) => self.looked(&entries, &self.lookup(client, rights, conversation, reach)).await,
+            None => crate::assistant::cards::Looked::new(),
+        };
         let maker =
             client.zip(rights).filter(|(_, rights)| crate::tools::reaches_files(rights)).map(|(client, _)| client.id);
         let register = self.tools.register().clone();
         let resolved = tokio::task::spawn_blocking(move || {
-            crate::assistant::cards::resolve(&entries, &register, maker.as_deref(), &held)
+            crate::assistant::cards::resolve(&entries, &register, maker.as_deref(), &held, &looked)
         });
         match resolved.await {
             Ok(cards) => Response::Cards { cards },
             Err(err) => Response::Error { code: "error".into(), message: format!("cannot read the cards: {err}") },
+        }
+    }
+
+    /// The link card of the entry `seq` of the conversation `conversation` (issue #785): its address, where it came
+    /// from and the conversation's client (the assistant's, or the bot's; `None` without one), for
+    /// `assistant.show_card` and `assistant.get_card_picture`. `Err` with the answer: `not-found` for an unknown
+    /// conversation or an entry that is no link card, `error` for an id beyond its limit.
+    async fn link_card_entry(
+        &self,
+        conversation: &str,
+        seq: u64,
+    ) -> Result<(String, torro_ipc::assistant::LinkOrigin, Option<torro_ipc::ClientInfo>), Response> {
+        let request = Request::ShowAssistantCard { conversation: conversation.to_string(), seq };
+        if let Some(refused) = torro_ipc::assistant::limit_refusal(&request) {
+            return Err(refused);
+        }
+        let (summary, entries) = match self.assistant.get(conversation, None).await {
+            Response::Conversation { conversation, entries } => (conversation, entries),
+            other => return Err(other),
+        };
+        let link = entries.into_iter().find(|entry| entry.seq == seq).and_then(|entry| match entry.content {
+            torro_ipc::assistant::EntryContent::Card { card: torro_ipc::assistant::CardRef::Link { url, from } } => {
+                Some((url, from))
+            }
+            _ => None,
+        });
+        let Some((url, from)) = link else {
+            return Err(refusal("not-found", tr("No such link card.").into()));
+        };
+        let client = match &summary.bot {
+            None => self.assistant_client(),
+            Some(bot) => match self.assistant.bots().get(bot).await {
+                Some(bot) => self.bot_client(&bot.client),
+                None => None,
+            },
+        };
+        Ok((url, from, client))
+    }
+
+    /// `assistant.show_card` (issue #785) for the app key: the card of the link card `seq` of `conversation` fetched
+    /// once ([`crate::assistant::cards::link::show_once`]), whatever the address's origin; Settings › Privacy stays
+    /// as it is. Answers [`Response::Cards`] with that card as `assistant.get_cards` shows it now, with the rights of
+    /// the conversation's client.
+    async fn show_link_card(&self, conversation: &str, seq: u64) -> Response {
+        let (url, from, client) = match self.link_card_entry(conversation, seq).await {
+            Ok(found) => found,
+            Err(refused) => return refused,
+        };
+        let shown = crate::assistant::cards::link::show_once(&self.chat, &self.shown_links, conversation, seq, &url);
+        if let Err(refused) = shown.await {
+            return refused;
+        }
+        let card = match &client {
+            Some(client) => {
+                let lookup = self.lookup(client, &client.rights, conversation, Reach::Suite);
+                crate::assistant::cards::link::look(&lookup, seq, &url, from).await
+            }
+            None => torro_ipc::assistant::Card::Unavailable,
+        };
+        Response::Cards { cards: vec![torro_ipc::assistant::CardEntry { seq, card }] }
+    }
+
+    /// `assistant.get_card_picture` (issue #785) for `reach`: the picture of the link card `seq` of `conversation`,
+    /// only while that card shows its card with a picture as `assistant.get_cards` shows it to `reach` now (with the
+    /// rights of the conversation's client, for a client cut to its own, S4 of issue #784; a client's look fetches no
+    /// page), through the own Nextcloud as `chat.get_preview` with `card` ([`crate::assistant::cards::link::picture`],
+    /// a file's preview at `size`). `not-found` otherwise, `not-connected` without a Nextcloud account. The right to
+    /// picture content the caller checks first.
+    async fn link_card_picture(
+        &self,
+        conversation: &str,
+        seq: u64,
+        size: torro_ipc::chat::PreviewSize,
+        reach: Reach<'_>,
+    ) -> Response {
+        let (url, from, client) = match self.link_card_entry(conversation, seq).await {
+            Ok(found) => found,
+            Err(refused) => return refused,
+        };
+        if self.chat.accounts().await.is_empty() {
+            return refusal("not-connected", tr("Connect a Nextcloud account to show cards of links.").into());
+        }
+        let Some(client) = client else { return refusal("not-found", tr("This card has no picture.").into()) };
+        let rights = match reach {
+            Reach::Suite => client.rights.clone(),
+            Reach::Client(asker) => client.rights.common(asker),
+        };
+        let lookup = self.lookup(&client, &rights, conversation, reach);
+        match crate::assistant::cards::link::look(&lookup, seq, &url, from).await {
+            torro_ipc::assistant::Card::Link { card: Some(card), .. } if card.image => {
+                crate::assistant::cards::link::picture(&self.chat, &self.shown_links, conversation, seq, size).await
+            }
+            _ => refusal("not-found", tr("This card has no picture.").into()),
         }
     }
 
@@ -14831,6 +15047,22 @@ impl crate::assistant::Host for Core {
         })
     }
 
+    /// Issue #784: a look with the rights of `actor`'s client as they are now; the conversation does not matter for
+    /// the cards engine B takes (events, tasks, drafts), so it is left empty.
+    fn looks_up<'a>(
+        &'a self,
+        actor: &'a crate::assistant::Actor,
+        card: &'a torro_ipc::assistant::CardRef,
+    ) -> torro_core::ai::BoxFuture<'a, bool> {
+        Box::pin(async move {
+            let Some(client) = crate::assistant::Host::client_of(self, actor) else { return false };
+            let lookup = self.lookup(&client, &client.rights, "", Reach::Client(&client.rights));
+            crate::assistant::cards::look(&lookup, 0, card)
+                .await
+                .is_some_and(|card| crate::assistant::cards::found(&card))
+        })
+    }
+
     fn run<'a>(
         &'a self,
         request: Request,
@@ -15040,19 +15272,19 @@ impl crate::assistant::Host for Core {
                 }
                 delegation.mode = delegation.mode.stricter(mode);
                 let lent = lend(&delegation.client, &delegation.without, delegation.mode)?;
-                self.remember_lent(&lent, LentFor::Delegated(delegation));
+                self.remember_lent(&lent, LentFor::Delegated(delegation), conversation);
                 Some(lent)
             }
             crate::assistant::Actor::Assistant => {
                 let client = self.assistant_client()?;
                 let lent = lend(&client.id, without, mode)?;
-                self.remember_lent(&lent, LentFor::Conversation(conversation.to_string()));
+                self.remember_lent(&lent, LentFor::Conversation(conversation.to_string()), conversation);
                 Some(lent)
             }
             crate::assistant::Actor::Bot(_) => {
                 let client = crate::assistant::Host::client_of(self, actor)?;
                 let lent = lend(&client.id, without, mode)?;
-                self.remember_lent(&lent, LentFor::Own);
+                self.remember_lent(&lent, LentFor::Own, conversation);
                 Some(lent)
             }
         }
@@ -15140,6 +15372,8 @@ struct LentScope {
     hash: [u8; 32],
     made: std::time::Instant,
     lent_for: LentFor,
+    /// The conversation whose run it was lent for: where `assistant.show_items` adds its card (issue #786).
+    conversation: String,
 }
 
 /// How long [`LentScope`]s are kept: longer than any run of engine B lasts (20 minutes), after
@@ -24496,6 +24730,29 @@ done"#,
         assert!(matches!(entry(&core, dir.path(), &id).await.state, torro_inbox::State::Done { .. }));
     }
 
+    /// Issue #797: `event:<uid>` opens the calendar on an event of a calendar the caller reaches, by the uid the cache
+    /// holds; out of reach or gone it is `not-found`.
+    #[tokio::test]
+    async fn an_event_target_opens_the_calendar_on_an_event_in_reach() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, fake) = core_with_tasks(dir.path()).await;
+        let sync = torro_pim::Event {
+            summary: "Weekly sync".into(),
+            ..event_in(&fake.work, Some("https://cloud.example.org/cal/work/sync.ics"))
+        };
+        core.pim.cache_events_as_synced(vec![sync.clone()]).await;
+        let target = format!("event:{}", sync.uid);
+        let opened = core.open_target("torrocalendar", &target, Reach::Suite, Maker::App).await.expect("the event");
+        assert_eq!(opened, (crate::apps::Opened::Event { uid: sync.uid.clone() }, "Weekly sync".to_string()));
+        let reader = Rights::assistant();
+        assert!(core.open_target("torrocalendar", &target, Reach::Client(&reader), Maker::App).await.is_ok());
+        let blind = Rights { calendars: Selection::Only(Vec::new()), ..Rights::assistant() };
+        let refused = core.open_target("torrocalendar", &target, Reach::Client(&blind), Maker::App).await;
+        assert_eq!(refused.err().map(|refused| code(&refused).to_string()).as_deref(), Some("not-found"));
+        let gone = core.open_target("torrocalendar", "event:gone", Reach::Suite, Maker::App).await;
+        assert_eq!(gone.err().map(|refused| code(&refused).to_string()).as_deref(), Some("not-found"));
+    }
+
     #[tokio::test]
     async fn reminders_are_listed_and_handled_only_within_reach() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -33572,6 +33829,186 @@ done"#,
         assert!(!log.contains("Müller") && !log.contains("Desktop"), "no title or path in the log: {log}");
     }
 
+    /// Issue #785: "Show once" of a link card is a person's only: a client with every right is refused before
+    /// anything is looked at, the app key gets `not-found` for a conversation that is not there.
+    #[tokio::test]
+    async fn only_people_show_a_link_card_once() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let (_, key) =
+            core.clients.add("Agent", "claude-code", RightsTemplate::FullAccess.rights()).await.expect("added");
+        let conversation = "0123456789abcdef".to_string();
+        let show = Request::ShowAssistantCard { conversation: conversation.clone(), seq: 1 };
+        let picture = Request::GetCardPicture { conversation, seq: 1, size: torro_ipc::chat::PreviewSize::Small };
+        assert_eq!(code(&ask(&core, Some(&key), show.clone()).await), "forbidden");
+        assert_eq!(code(&core.handle(show).await), "not-found");
+        assert_eq!(code(&core.handle(picture).await), "not-found");
+    }
+
+    /// S4 of issue #784: a client gets the picture of a link card only with the right to picture content and only of
+    /// a card `assistant.get_cards` shows it; its own look fetches no page, so before the person's window loaded the
+    /// card there is none.
+    #[tokio::test]
+    async fn a_client_gets_the_picture_of_a_card_it_is_shown() {
+        use torro_ipc::assistant::{Card, CardRef, EntryContent, LinkOrigin};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, server) = chatting(dir.path());
+        let page = "https://blog.example.net/post";
+        {
+            let mut state = server.state();
+            let reference =
+                torro_nextcloud::Reference { title: "A post".into(), description: None, image: Some("p".into()) };
+            state.references.insert(page.into(), reference);
+            let mut png = Vec::new();
+            image::DynamicImage::new_rgb8(4, 3)
+                .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                .expect("a PNG");
+            state
+                .card_pictures
+                .insert("p".into(), crate::chat::remote::Picture { bytes: png, content_type: "image/png".into() });
+        }
+        let always = torro_core::privacy::Privacy {
+            content: torro_core::privacy::ForeignContent::Always,
+            ..torro_core::privacy::Privacy::default()
+        };
+        core.chat.set_privacy(Arc::new(move || always.clone()));
+        let folder = dir.path().join("assistant");
+        let own = "0123456789abcdef";
+        let card = EntryContent::Card { card: CardRef::Link { url: page.into(), from: LinkOrigin::Person } };
+        let contents = vec![crate::assistant::tests::message(&format!("Read {page}")), card];
+        crate::assistant::tests::written(&folder, own, "A post", contents, &[], |_| {});
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = core.with_assistant(assistant);
+        core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant()).await.expect("added");
+        let mut seeing = RightsTemplate::ReadOnly.rights();
+        seeing.areas.insert(Area::Assistant, AreaRights { level: Level::Read, admin: false });
+        seeing.image_content = true;
+        let (_, key) = core.clients.add("Agent", "claude-code", seeing.clone()).await.expect("added");
+        let mut blind = seeing;
+        blind.image_content = false;
+        let (_, blind_key) = core.clients.add("Blind", "claude-code", blind).await.expect("added");
+        let picture =
+            Request::GetCardPicture { conversation: own.into(), seq: 2, size: torro_ipc::chat::PreviewSize::Small };
+
+        assert_eq!(
+            code(&ask(&core, Some(&key), picture.clone()).await),
+            "not-found",
+            "not loaded: a client fetches none"
+        );
+        assert_eq!(server.count("resolve"), 0);
+        let cards = core.handle(Request::GetCards { conversation: own.into() }).await;
+        assert!(
+            matches!(&cards, Response::Cards { cards } if matches!(&cards[0].card, Card::Link { card: Some(_), .. })),
+            "{cards:?}"
+        );
+        assert!(
+            matches!(ask(&core, Some(&key), picture.clone()).await, Response::ChatPicture { .. }),
+            "shown to it now"
+        );
+        assert_eq!(code(&ask(&core, Some(&blind_key), picture.clone()).await), "forbidden", "no picture right");
+        assert!(matches!(core.handle(picture).await, Response::ChatPicture { .. }), "the person's window");
+    }
+
+    /// Issue #786: with a key lent for a run of engine B, `assistant.show_items` adds its card to the conversation the
+    /// key was lent for, whatever conversation the agent names – as engine A does.
+    #[tokio::test]
+    async fn a_lent_key_shows_items_in_the_conversation_it_was_lent_for() {
+        use torro_ipc::assistant::{CardRef, EntryContent, ItemRef};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let folder = dir.path().join("assistant");
+        let (own, other) = ("0123456789abcdef", "fedcba9876543210");
+        let mail = |n: usize| ItemRef::Mail { account: "mail:anna@example.org".into(), id: format!("m:{n}") };
+        for id in [own, other] {
+            let contents =
+                vec![crate::assistant::tests::message("Mails?"), crate::assistant::tests::tool("mail.search_messages")];
+            crate::assistant::tests::written(&folder, id, "Mails", contents, &[], |_| {});
+            let seen =
+                serde_json::json!({"line": "seen", "seq": 2, "refs": (0..3).map(mail).collect::<Vec<_>>(), "total": 3});
+            let mut file =
+                std::fs::OpenOptions::new().append(true).open(folder.join(format!("{id}.jsonl"))).expect("the file");
+            std::io::Write::write_all(&mut file, format!("{seen}\n").as_bytes()).expect("written");
+        }
+        let keys = MemoryTokens::default();
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = core_with_ai(dir.path(), &keys, Vec::new()).with_assistant(assistant);
+        core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant()).await.expect("added");
+        let lent = crate::assistant::Host::lend_in(&core, &crate::assistant::Actor::Assistant, own, "claude-code", &[])
+            .expect("lent");
+        let show = Request::ShowItems { conversation: Some(other.into()), items: vec![mail(1)] };
+        assert_eq!(ask(&core, Some(lent.key()), show).await, Response::Ok);
+        let cards = |id: &str| {
+            let core = &core;
+            let id = id.to_owned();
+            async move {
+                match core.handle(Request::GetConversation { id, after: None }).await {
+                    Response::Conversation { entries, .. } => entries
+                        .into_iter()
+                        .filter(|entry| matches!(entry.content, EntryContent::Card { card: CardRef::Mail { .. } }))
+                        .count(),
+                    other => panic!("a conversation: {other:?}"),
+                }
+            }
+        };
+        assert_eq!((cards(own).await, cards(other).await), (1, 0), "in the conversation it was lent for");
+    }
+
+    /// Issue #786: `assistant.show_items` of the assistant's own client adds a card for an item a search of its
+    /// conversation found, whatever its rights in `assistant`; an id no command found is `forbidden`, and another
+    /// client – even with write access to `assistant` – finds no conversation of its own (`not-found`).
+    #[tokio::test]
+    async fn the_assistant_shows_only_what_its_conversation_found() {
+        use torro_ipc::assistant::ItemRef;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let folder = dir.path().join("assistant");
+        let own = "0123456789abcdef";
+        let contents =
+            vec![crate::assistant::tests::message("Mails?"), crate::assistant::tests::tool("mail.search_messages")];
+        crate::assistant::tests::written(&folder, own, "Mails", contents, &[], |_| {});
+        let mail = |n: usize| ItemRef::Mail { account: "mail:anna@example.org".into(), id: format!("m:{n}") };
+        // What the search found, as the store keeps it (`Line::Seen`).
+        let seen =
+            serde_json::json!({"line": "seen", "seq": 2, "refs": (0..3).map(mail).collect::<Vec<_>>(), "total": 3});
+        let mut file =
+            std::fs::OpenOptions::new().append(true).open(folder.join(format!("{own}.jsonl"))).expect("the file");
+        std::io::Write::write_all(&mut file, format!("{seen}\n").as_bytes()).expect("written");
+        let keys = MemoryTokens::default();
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = core_with_ai(dir.path(), &keys, Vec::new()).with_assistant(assistant);
+        let (_, assistant_key) = core
+            .clients
+            .add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant())
+            .await
+            .expect("the assistant");
+        let mut writing = RightsTemplate::ReadOnly.rights();
+        writing.areas.insert(Area::Assistant, AreaRights { level: Level::Write, admin: false });
+        let (_, agent_key) = core.clients.add("Agent", "claude-code", writing).await.expect("added");
+        let show = |items: Vec<ItemRef>| Request::ShowItems { conversation: Some(own.into()), items };
+
+        assert_eq!(ask(&core, Some(&assistant_key), show(vec![mail(1), mail(2)])).await, Response::Ok);
+        assert_eq!(code(&ask(&core, Some(&assistant_key), show(vec![mail(9)])).await), "forbidden", "not found here");
+        assert_eq!(
+            code(&ask(&core, Some(&agent_key), show(vec![mail(1)])).await),
+            "not-found",
+            "no conversation of its own"
+        );
+        assert_eq!(core.handle(show(vec![mail(0)])).await, Response::Ok, "the person names the conversation");
+        let Response::Conversation { entries, .. } =
+            core.handle(Request::GetConversation { id: own.into(), after: None }).await
+        else {
+            panic!("the conversation")
+        };
+        let cards: Vec<_> = entries
+            .iter()
+            .filter_map(|entry| match &entry.content {
+                torro_ipc::assistant::EntryContent::Card { card } => Some(card.clone()),
+                _ => None,
+            })
+            .collect();
+        let group =
+            torro_ipc::assistant::CardRef::Group { items: vec![mail(1), mail(2)], area: Area::Mail, total: None };
+        assert_eq!(cards, [group, mail(0).card()]);
+    }
+
     /// Issue #225, task WZ.5: in a conversation with a bot the card is the bot's: made with its
     /// client, resolved with its rights (the assistant's play no part), unavailable once the bot is
     /// deleted.
@@ -34672,10 +35109,14 @@ done"#,
         let bot_tools: Vec<&str> = asked[3].tools.iter().map(|tool| tool.name.as_str()).collect();
         assert!(bot_tools.contains(&"calendar_list_calendars"), "{bot_tools:?}");
         assert!(
-            // Its own access (issue #134) and reading its own skills (issue #703) only.
+            // Its own access (issue #134), reading its own skills (issue #703) and showing what it found (issue #786)
+            // only.
             bot_tools
                 .iter()
-                .filter(|tool| !["assistant_my_access", "assistant_list_skills", "assistant_get_skill"].contains(tool))
+                .filter(|tool| {
+                    !["assistant_my_access", "assistant_list_skills", "assistant_get_skill", "assistant_show_items"]
+                        .contains(tool)
+                })
                 .all(|tool| !["mail_", "workspaces_", "bots_", "assistant_"].iter().any(|p| tool.starts_with(p))),
             "{bot_tools:?}"
         );

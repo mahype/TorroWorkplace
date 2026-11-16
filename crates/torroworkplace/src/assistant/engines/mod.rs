@@ -21,8 +21,9 @@
 //!   `local_only`), writes the message to its input and closes it, and turns what it
 //!   writes into entries: text as a growing answer, then answer entries, a tool line per call
 //!   (name, input, result in a few words), a card after a command that made an item (issue #225,
-//!   only for a file the register keeps as the client's, `super::cards::of_agent`), an error entry
-//!   when it fails. The folder is removed
+//!   only for a file the register keeps as the client's, `super::cards::of_agent`), the ids of what a
+//!   search or a read found (issue #786, `super::cards::group::seen_in`, for `assistant_show_items`), an error
+//!   entry when it fails. The folder is removed
 //!   when the run ends, however it ends.
 //! - **The key** is lent for the run only ([`crate::clients::Clients::lend`] through
 //!   [`Host::lend`]): a key of the assistant's client made for this run, kept in the core's
@@ -82,7 +83,7 @@ use torro_ipc::api::Area;
 use torro_ipc::assistant::{Engine, EngineKind, EntryContent, Mode};
 use torro_ipc::{Key, Response};
 
-use super::model::{Host, Job, command_name, history};
+use super::model::{Actor, Host, Job, command_name, history};
 use super::{Assistant, Partial, prompt, store, tools};
 use crate::client_setup::{Env, Method, TOKEN_VARIABLE, Target};
 use torro_core::ai::Place;
@@ -234,15 +235,27 @@ pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: 
         calls: HashMap::new(),
         answered: false,
         rights: None,
+        last_answer: String::new(),
+        read: Vec::new(),
     };
     let ended = run.go(host.as_ref()).await;
     match ended {
         Ok(Ended::Stopped) => {}
-        Ok(Ended::Done(_)) if run.answered => run.assistant.end_run(&run.job.conversation, run.job.run).await,
+        Ok(Ended::Done(_)) if run.answered => {
+            let cards = run.link_cards(&run.last_answer);
+            if cards.is_empty() {
+                run.assistant.end_run(&run.job.conversation, run.job.run).await;
+            } else {
+                run.add_all(cards).await;
+            }
+        }
         Ok(Ended::Done(text)) if !text.trim().is_empty() => {
+            let cards = run.link_cards(&text);
             let answer =
                 EntryContent::Answer { text, engine: run.job.engine.clone(), model: run.model.clone(), spoken: None };
-            run.add(answer, true).await;
+            if run.add(answer, cards.is_empty()).await {
+                run.add_all(cards).await;
+            }
         }
         Ok(Ended::Done(_)) => run.error("error", tr("The agent gave no answer. Try again.")).await,
         Err(failed) => run.error(failed.code(), &failed.message(agent)).await,
@@ -324,6 +337,12 @@ struct Running {
     /// The rights of the client the run uses, as stored when it started: why a tool was
     /// `forbidden` is told from them (issue #133).
     rights: Option<torro_ipc::api::Rights>,
+    /// The last answer entry's text: its links get cards when the run ends (issue #785).
+    last_answer: String,
+    /// What the agent's tools that read answered in this run, as it read them: a link in it is one it read, not its
+    /// own (issue #785, [`super::cards::link::after_answer`]); a command that writes does not count
+    /// ([`super::cards::link::reads`]).
+    read: Vec<String>,
 }
 
 impl Running {
@@ -484,6 +503,7 @@ impl Running {
             }
             claude::Event::Text(text) if text.trim().is_empty() => {}
             claude::Event::Text(text) => {
+                self.last_answer.clone_from(&text);
                 let answer = EntryContent::Answer {
                     text,
                     engine: self.job.engine.clone(),
@@ -503,6 +523,11 @@ impl Running {
                 let (name, input) = self.calls.remove(&id).unwrap_or_else(|| (String::new(), Value::Null));
                 let lack = if error { self.lack(&name, &text) } else { None };
                 let line = tool_line(&name, input, &text, error, lack);
+                // Only what a command that reads answered counts as read (decision 1 of issue #784): one that writes
+                // echoes the agent's own input.
+                if !error && matches!(&line, EntryContent::Tool { name, .. } if super::cards::link::reads(name)) {
+                    self.read.push(text.clone());
+                }
                 // A card after a command that made an item (issue #225), only for a file the register keeps
                 // as this client's: the result is the agent's text.
                 let card = match (&line, error) {
@@ -511,7 +536,21 @@ impl Running {
                     }
                     _ => None,
                 };
+                // What a search or a read found (issue #786), from the agent's text: the items
+                // `assistant.show_items` may show here. A made-up id only lets a card look it up with the rights
+                // of this client, which find nothing.
+                let seen = match (&line, error) {
+                    (EntryContent::Tool { name, .. }, false) => {
+                        super::cards::group::seen_in(name, &text).map(|seen| (name.clone(), seen))
+                    }
+                    _ => None,
+                };
                 if !self.add(line, false).await {
+                    return Some(Ok(Ended::Stopped));
+                }
+                if let Some((name, seen)) = seen
+                    && !self.assistant.see(&self.job.conversation, self.job.run, &name, seen).await
+                {
                     return Some(Ok(Ended::Stopped));
                 }
                 if let Some(card) = card
@@ -545,6 +584,36 @@ impl Running {
         match (lack, torro_core::settings::ToolId::of_command(operation.command.name), rights) {
             (None, Some(tool), Some(rights)) if !rights.reaches_tool(tool) => Some(Lack::Tool { tool }),
             (lack, ..) => lack,
+        }
+    }
+
+    /// The link cards after the answer `answer` (issue #785), as engine A adds them: an address the person wrote in
+    /// this conversation loads by Settings › Privacy, one the agent read too, any other asks first. The person's
+    /// messages count only for the assistant and a bot, not for a delegated run, whose messages a model wrote.
+    fn link_cards(&self, answer: &str) -> Vec<EntryContent> {
+        let person: Vec<&str> = match &self.job.actor {
+            Actor::Delegated(_) => Vec::new(),
+            Actor::Assistant | Actor::Bot(_) => self
+                .job
+                .history
+                .iter()
+                .filter_map(|entry| match &entry.content {
+                    EntryContent::Message { text, from: None, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect(),
+        };
+        let read: Vec<&str> = self.read.iter().map(String::as_str).collect();
+        super::cards::link::after_answer(answer, &person, &read)
+    }
+
+    /// Adds `contents` in order, the last ending the run.
+    async fn add_all(&self, contents: Vec<EntryContent>) {
+        let count = contents.len();
+        for (at, content) in contents.into_iter().enumerate() {
+            if !self.add(content, at + 1 == count).await {
+                return;
+            }
         }
     }
 

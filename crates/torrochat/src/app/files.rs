@@ -11,7 +11,8 @@
 //!   `files`). The place of the files then shows the progress (`chat.get_upload` every
 //!   [`UPLOAD_POLL`]) with ✕ (`chat.cancel_upload`). A sending that failed says why there.
 //! - **History:** previews come with `chat.get_preview` as soon as a page arrives, `medium` for
-//!   pictures and videos (sharp at the history's largest size, issue #674), `small` for link cards;
+//!   pictures and videos (sharp at the history's largest size, issue #674), `small` for link cards –
+//!   up to three per message, each by the `index` the core gave it (issue #785, [`FilesState::card_picture`]);
 //!   until then a calm placeholder of the same size stands there. The window holds at most
 //!   [`HELD_PICTURES`] of them unpacked (issue #690): beyond that the ones farthest from where the
 //!   person reads go back to the placeholder ([`Shown::Away`]) and come again from the core when
@@ -20,7 +21,7 @@
 //!   (`chat.get_attachment`) and opens it with the system's program, "Download" saves it to
 //!   Downloads (`chat.save_attachment`), "Save as…" asks the system's dialog first. Under a link to
 //!   another provider not asked about yet (issue #672), "Show once" asks for its card
-//!   (`chat.show_card`), "Always allow …" and "Never for …" put the provider on the list of Settings ›
+//!   (`chat.show_card` without `index`: the core knows which link it asks about), "Always allow …" and "Never for …" put the provider on the list of Settings ›
 //!   Privacy (`settings.set_setting privacy_provider`).
 //! - **Shared media:** a column at the side (`chat.list_shared`) with the tabs Media, Files, Voice
 //!   and Links, its tiles from `small` previews ([`FilesState::thumb`]), or the history's picture
@@ -69,7 +70,8 @@ pub const PASTED_NAME: &str = "Pasted image.png";
 /// test can check it.
 pub const HELD_PICTURES: usize = 24;
 
-/// A picture of the history: the message and its file, or `None` for the picture of its link card.
+/// A picture of the history: the message and its file. (`None` was the picture of its one link card before
+/// issue #785; link cards keep theirs by `(message, index)` in [`FilesState::card_pictures`].)
 pub type PictureKey = (String, Option<String>);
 
 /// Where a picture stands.
@@ -197,6 +199,11 @@ pub struct FilesState {
     next_key: u64,
     pub upload: Option<Upload>,
     pub pictures: HashMap<PictureKey, Shown>,
+    /// The pictures of link cards (issue #785), by message and the card's `index` (where its link stands).
+    pub card_pictures: HashMap<(String, u8), Shown>,
+    /// The link each of [`FilesState::card_pictures`] was asked for: a card at the same index with another link (an
+    /// edited message, a new page, a card shown once) drops the picture and asks again ([`App::want_pictures`]).
+    card_picture_urls: HashMap<(String, u8), String>,
     /// The small previews of the shared media, apart from the history's larger ones.
     pub thumbs: HashMap<PictureKey, Shown>,
     /// File actions under way: (message, file).
@@ -245,6 +252,27 @@ impl FilesState {
     /// The picture of `key`, as far as it came.
     pub fn picture(&self, key: &PictureKey) -> Option<&Shown> {
         self.pictures.get(key)
+    }
+
+    /// The picture of the link card with the `index` `index` ([`LinkCard::index`]) of the message `message`, as
+    /// far as it came.
+    pub fn card_picture(&self, message: &str, index: u8) -> Option<&Shown> {
+        self.card_pictures.get(&(message.to_owned(), index))
+    }
+
+    /// Whether the picture of the link card `card` of the message `message` is to be asked for, marked as coming
+    /// ([`Shown::Loading`]) when it is: not while one for the same link is there or coming. A picture held for
+    /// another link at that `index` (the message was edited, a new page or "Show once" put another card there) is
+    /// dropped, so the card never shows the picture of the link before.
+    pub fn wants_card_picture(&mut self, message: &str, card: &LinkCard) -> bool {
+        let key = (message.to_owned(), card.index);
+        let same = self.card_picture_urls.get(&key).is_some_and(|url| *url == card.url);
+        if same && self.card_pictures.contains_key(&key) {
+            return false;
+        }
+        self.card_picture_urls.insert(key.clone(), card.url.clone());
+        self.card_pictures.insert(key, Shown::Loading);
+        true
     }
 
     /// The picture of `key` for the shared media: the history's once it is there, else the small one
@@ -318,6 +346,8 @@ pub enum FilesMsg {
     Picture(PictureKey, Result<Picture, ChatError>),
     /// A small preview of the shared media came.
     Thumb(PictureKey, Result<Picture, ChatError>),
+    /// The picture of the link card `index` of a message came (issue #785).
+    CardPicture(String, u8, Result<Picture, ChatError>),
     /// "Open" (and "Play"): the file `(message, file)`.
     Open(String, String),
     Fetched(String, String, Result<Fetched, ChatError>),
@@ -393,6 +423,18 @@ fn appearance_word(appearance: torro_gui::theme::Appearance) -> &'static str {
         torro_gui::theme::Appearance::Dark => "dark",
         torro_gui::theme::Appearance::System => "system",
     }
+}
+
+/// `card` among the `cards` of a message: in the place of a card with the same `index` (the same link), else in
+/// the order of their `index`, at most [`torro_ipc::assistant::MAX_LINK_CARDS`].
+fn with_card(cards: &mut Vec<LinkCard>, card: LinkCard) {
+    if let Some(same) = cards.iter_mut().find(|held| held.index == card.index) {
+        *same = card;
+        return;
+    }
+    cards.push(card);
+    cards.sort_by_key(|held| held.index);
+    cards.truncate(torro_ipc::assistant::MAX_LINK_CARDS);
 }
 
 /// The file `(message, file)` of `chat`, with its message.
@@ -602,6 +644,13 @@ impl App {
                 };
                 files.thumbs.insert(key, shown);
             }
+            FilesMsg::CardPicture(message, index, result) => {
+                let shown = match result {
+                    Ok(picture) => system::picture_handle(&picture.bytes).map_or(Shown::Missing, Shown::Ready),
+                    Err(_) => Shown::Missing,
+                };
+                files.card_pictures.insert((message, index), shown);
+            }
             FilesMsg::Open(message, file) => {
                 if files.busy.contains_key(&(message.clone(), file.clone())) {
                     return Task::none();
@@ -657,8 +706,8 @@ impl App {
             }
             FilesMsg::PlayVideo(message) => {
                 self.menu = None;
-                let link =
-                    chat.message(&message).and_then(|held| held.cards.first()).filter(|card| card.video.is_some());
+                // The video of the message's cards (up to three, issue #785), as the player finds it.
+                let link = chat.message(&message).and_then(|held| held.cards.iter().find(|card| card.video.is_some()));
                 let Some(link) = link.map(|card| card.url.clone()) else { return Task::none() };
                 let opened = if system::plays_videos() {
                     let appearance = self.launch.appearance.map(appearance_word);
@@ -676,8 +725,12 @@ impl App {
                 if files.cards.get(&message) == Some(&CardAsk::Asking) {
                     return Task::none();
                 }
-                files.cards.insert(message.clone(), CardAsk::Asking);
-                return Task::perform(backend.show_card(message.clone()), move |result| {
+                if chat.message(&message).is_none() {
+                    return Task::none();
+                }
+                chat.files.cards.insert(message.clone(), CardAsk::Asking);
+                // Without `index`: the core shows the link the message asks about (S2 of issue #785).
+                return Task::perform(backend.show_card(message.clone(), None), move |result| {
                     wrap(FilesMsg::Card(message.clone(), result))
                 });
             }
@@ -686,7 +739,7 @@ impl App {
                     files.cards.remove(&message);
                     let image = card.image;
                     if let Some(held) = chat.messages.iter_mut().find(|held| held.id == message) {
-                        held.cards = vec![card];
+                        with_card(&mut held.cards, card);
                         held.foreign = None;
                     }
                     if image {
@@ -915,10 +968,10 @@ impl App {
     }
 
     /// Asks for the previews the history and the shared media show and do not have yet: pictures
-    /// and videos of the history `medium`, pictures of link cards `small`, the shared media `small`
-    /// (unless the history's picture is there already). A picture let go ([`Shown::Away`]) is asked
-    /// for again only while it is in view; a new page asks for all it lacks at once, so
-    /// windows without sensors (`--shots`) show them too.
+    /// and videos of the history `medium`, pictures of link cards `small` (each of up to three by its
+    /// index, issue #785), the shared media `small` (unless the history's picture is there already). A picture let
+    /// go ([`Shown::Away`]) is asked for again only while it is in view; a new page asks for all it lacks at once,
+    /// so windows without sensors (`--shots`) show them too.
     pub(crate) fn want_pictures(&mut self) -> Task<Message> {
         let backend = self.backend.clone();
         let Some(chat) = self.chat.as_mut() else { return Task::none() };
@@ -929,11 +982,21 @@ impl App {
                     wanted.push(((message.id.clone(), Some(file.id.clone())), PreviewSize::Medium));
                 }
             }
-            if message.cards.first().is_some_and(|card| card.image) {
-                wanted.push(((message.id.clone(), None), PreviewSize::Small));
-            }
         }
         let mut tasks: Vec<Task<Message>> = Vec::new();
+        for message in &chat.messages {
+            let cards = message.cards.iter().take(torro_ipc::assistant::MAX_LINK_CARDS);
+            // By the `index` the core gave each card (S1 of issue #785), not by its place among the cards.
+            for card in cards.filter(|card| card.image) {
+                if !chat.files.wants_card_picture(&message.id, card) {
+                    continue;
+                }
+                let (index, key) = (card.index, (message.id.clone(), card.index));
+                let task = backend.clone().card_preview(key.0.clone(), index, PreviewSize::Small);
+                tasks
+                    .push(Task::perform(task, move |result| wrap(FilesMsg::CardPicture(key.0.clone(), key.1, result))));
+            }
+        }
         for (key, size) in wanted {
             match chat.files.pictures.get(&key) {
                 None => {}
@@ -1029,4 +1092,43 @@ fn snap_to_share(at: usize, count: usize) -> Task<Message> {
 fn resize_by(size: Size, by: f32) -> Task<Message> {
     let target = Size::new((size.width + by).max(size::props()), size.height);
     iced::window::latest().and_then(move |id| iced::window::resize(id, target))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn card(url: &str, index: u8) -> LinkCard {
+        LinkCard { url: url.into(), index, domain: "example.org".into(), ..LinkCard::default() }
+    }
+
+    /// Issue #785: a card shown once takes its place by its `index`, replaces one of the same link and never makes
+    /// more than three.
+    #[test]
+    fn a_card_shown_once_stands_in_the_order_of_the_links() {
+        let mut cards = vec![card("https://a.org/1", 0), card("https://c.org/3", 2)];
+        with_card(&mut cards, card("https://b.org/2", 1));
+        let urls: Vec<&str> = cards.iter().map(|card| card.url.as_str()).collect();
+        assert_eq!(urls, ["https://a.org/1", "https://b.org/2", "https://c.org/3"]);
+        with_card(&mut cards, LinkCard { title: "New".into(), ..card("https://b.org/2", 1) });
+        assert_eq!((cards.len(), cards[1].title.as_str()), (3, "New"));
+        with_card(&mut cards, card("https://d.org/4", 3));
+        assert_eq!(cards.len(), 3, "at most three cards per message");
+    }
+
+    /// Review of #839: a card at the same index with another link (an edited message) does not keep the picture of
+    /// the link before; the same link asks only once.
+    #[test]
+    fn another_link_at_an_index_asks_for_its_own_picture() {
+        let mut files = FilesState::default();
+        let before = LinkCard { image: true, ..card("https://a.org/1", 0) };
+        assert!(files.wants_card_picture("m1", &before), "asked for");
+        assert!(!files.wants_card_picture("m1", &before), "coming already");
+        files.card_pictures.insert(("m1".into(), 0), Shown::Missing);
+        assert!(!files.wants_card_picture("m1", &before), "there for this link");
+        let edited = LinkCard { image: true, ..card("https://b.org/2", 0) };
+        assert!(files.wants_card_picture("m1", &edited), "the new link's own picture");
+        assert!(matches!(files.card_picture("m1", 0), Some(Shown::Loading)), "the old one is gone");
+        assert!(files.wants_card_picture("m2", &edited), "another message's card is its own");
+    }
 }

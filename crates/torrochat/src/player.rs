@@ -45,7 +45,8 @@ pub enum PlayerError {
 /// The card and the video of the message `id` on `page`, as the core gave them.
 pub fn playable(page: &MessagePage, id: &str) -> Result<(LinkCard, Video), PlayerError> {
     let message = page.messages.iter().find(|message| message.id == id).ok_or(PlayerError::NotFound)?;
-    let card = message.cards.first().ok_or(PlayerError::NotAllowed)?;
+    // A message may have up to three cards (issue #785): the video is the first card that has one.
+    let card = message.cards.iter().find(|card| card.video.is_some()).ok_or(PlayerError::NotAllowed)?;
     let video = card.video.clone().ok_or(PlayerError::NotAllowed)?;
     Ok((card.clone(), video))
 }
@@ -206,6 +207,7 @@ mod tests {
             domain: "youtu.be".into(),
             image: false,
             video: Some(video("M7lc1UVf-VE", false)),
+            ..LinkCard::default()
         };
         assert_eq!(title(&card("  An\nintro  ")), "An intro");
         assert_eq!(title(&card(" ")), tr("YouTube video"));

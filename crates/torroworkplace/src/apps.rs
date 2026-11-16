@@ -18,7 +18,7 @@
 //! starts their windows with them when they are there ([`program_for`]), else with `torroinbox` as
 //! before, and either one makes the entry installed. `apps.list_apps` still names `torroinbox`.
 //!
-//! `apps.open_app` with a `target` (task E8.7a) opens a mail or a task, (task WZ.8) a new mail
+//! `apps.open_app` with a `target` (task E8.7a) opens a mail or a task, (issue #797) an event, (task WZ.8) a new mail
 //! with a file of the tools' register attached, and (issue #243) the core's dialog to edit a
 //! workspace template: [`Target`] reads what the request names, the core
 //! looks it up, and [`target_command`] builds the command line from what it found ([`Opened`]),
@@ -1133,6 +1133,9 @@ pub enum Target<'a> {
     Message { account: &'a str, id: &'a str },
     /// `task:<uid>`: a task by its iCalendar UID.
     Task { uid: &'a str },
+    /// `event:<uid>`: an event by its iCalendar UID (issue #797, "Open in calendar" on an event card), in the
+    /// calendar on its week.
+    Event { uid: &'a str },
     /// `file:<id>`: a file of the tools' register (issue #225), by its id of 8 hex digits, to go
     /// along with a new mail.
     File { id: &'a str },
@@ -1156,6 +1159,9 @@ const CHAT_TARGET: &str = "chat:";
 /// The start of a task target.
 const TASK_TARGET: &str = "task:";
 
+/// The start of an event target (issue #797).
+const EVENT_TARGET: &str = "event:";
+
 /// The start of a target naming a mail by its account and the store's id (issue #605).
 const MESSAGE_TARGET: &str = "message:";
 
@@ -1176,8 +1182,8 @@ impl<'a> Target<'a> {
     /// is empty or holds control characters, for a file id that is not 8 hex digits, and for a
     /// template id with other characters than `a`–`z`, `0`–`9` and `-` (the form of a template's id).
     pub fn parse(text: &'a str) -> Result<Target<'a>, &'static str> {
-        const FORMS: &str = "a target is mail:<address>:<Message-ID>, message:mail:<address>:m:<id>, task:<uid>, file:<id>, \
-             template:<id>, chat:<conversation> or contact:<id>";
+        const FORMS: &str = "a target is mail:<address>:<Message-ID>, message:mail:<address>:m:<id>, task:<uid>, \
+             event:<uid>, file:<id>, template:<id>, chat:<conversation> or contact:<id>";
         if let Some(id) = text.strip_prefix(CONTACT_TARGET) {
             return match id.is_empty() || id.chars().any(char::is_control) {
                 true => Err(FORMS),
@@ -1215,6 +1221,12 @@ impl<'a> Target<'a> {
                 false => Ok(Target::Task { uid }),
             };
         }
+        if let Some(uid) = text.strip_prefix(EVENT_TARGET) {
+            return match uid.is_empty() || uid.chars().any(char::is_control) {
+                true => Err(FORMS),
+                false => Ok(Target::Event { uid }),
+            };
+        }
         // Only the prefix decides; the parts are borrowed from `text`, not from a temporary link.
         let link = torro_pim::model::Link::new(text);
         let (account, message_id) = link.mail_ref().ok_or(FORMS)?;
@@ -1223,11 +1235,12 @@ impl<'a> Target<'a> {
     }
 
     /// The entry of the suite this target opens in: the inbox's mail window (its compose window for
-    /// a file), the tasks app, or the core (its dialog for a template).
+    /// a file), the tasks app, the calendar, or the core (its dialog for a template).
     pub fn app(self) -> AppId {
         match self {
             Target::Mail { .. } | Target::Message { .. } | Target::File { .. } => AppId::INBOX_MAIL,
             Target::Task { .. } => AppId::TASKS,
+            Target::Event { .. } => AppId::CALENDAR,
             Target::Template { .. } => AppId::WORKPLACE,
             Target::Chat { .. } => AppId::CHAT,
             Target::Contact { .. } => AppId::CONTACTS,
@@ -1249,6 +1262,10 @@ pub enum Opened {
         message: String,
     },
     Task {
+        uid: String,
+    },
+    /// An event by the uid the core's cache holds (issue #797).
+    Event {
         uid: String,
     },
     /// A file of the register, to attach to a new mail; never a path from the request.
@@ -1282,6 +1299,7 @@ impl Opened {
         match self {
             Opened::Mail { .. } | Opened::File { .. } => AppId::INBOX_MAIL,
             Opened::Task { .. } => AppId::TASKS,
+            Opened::Event { .. } => AppId::CALENDAR,
             Opened::Template { .. } => AppId::WORKPLACE,
             Opened::Chat { .. } | Opened::Ring { .. } => AppId::CHAT,
             Opened::Contact { .. } => AppId::CONTACTS,
@@ -1292,7 +1310,7 @@ impl Opened {
 /// The command line that starts a window of `program` (the path [`target_program`] found: for a mail
 /// `torro-inbox-mail` or `torroinbox`, else [`Opened::app`]'s binary) showing `opened`:
 /// `torroinbox --view mail --message=m:…` (or `torro-inbox-mail --view mail --message=m:…`),
-/// `torrotasks --task=<uid>`, `torrocontacts --contact=<id>`, `torroinbox --compose --attach=<path>` or
+/// `torrotasks --task=<uid>`, `torrocalendar --event=<uid>`, `torrocontacts --contact=<id>`, `torroinbox --compose --attach=<path>` or
 /// `torroworkplace ui --template=<id>`
 /// (the dialog in its mode "Edit"; the mode "Save", `--saved`, is never built here). One argument each,
 /// with `=`, so a value that starts with `-` stays a value; started without a shell.
@@ -1300,6 +1318,7 @@ pub fn target_command(program: String, opened: &Opened) -> Vec<String> {
     let (mut command, argument) = match opened {
         Opened::Mail { message } => (opened.app().command(program), format!("--message={message}")),
         Opened::Task { uid } => (opened.app().command(program), format!("--task={uid}")),
+        Opened::Event { uid } => (opened.app().command(program), format!("--event={uid}")),
         Opened::Template { id } => (opened.app().command(program), format!("--template={id}")),
         // The contact list is the app's own window: it comes forward when it runs (`torro_gui::instance`).
         Opened::Chat { conversation: None } => return opened.app().command(program),
@@ -1673,6 +1692,21 @@ done"#;
         );
         let opened = Opened::Task { uid: "--version".into() };
         assert_eq!(target_command("torrotasks".into(), &opened), ["torrotasks", "--task=--version"]);
+    }
+
+    /// Issue #797: `event:<uid>` opens in the calendar as `torrocalendar --event=<uid>`, one argument, also for a uid
+    /// that looks like a flag.
+    #[test]
+    fn an_event_target_opens_the_calendar_on_the_event() {
+        let event = Target::parse("event:7d1e-5b2a@cloud").expect("event");
+        assert_eq!(event, Target::Event { uid: "7d1e-5b2a@cloud" });
+        assert!(event.opens_in(AppId::CALENDAR) && !event.opens_in(AppId::TASKS));
+        for bad in ["event:", "event:a\nb"] {
+            assert!(Target::parse(bad).is_err(), "{bad:?}");
+        }
+        let opened = Opened::Event { uid: "--version".into() };
+        assert_eq!(opened.app(), AppId::CALENDAR);
+        assert_eq!(target_command("/bin/torrocalendar".into(), &opened), ["/bin/torrocalendar", "--event=--version"]);
     }
 
     /// Issue #605: `message:<account>:<id>` names a mail by the store's id; it opens in the inbox and

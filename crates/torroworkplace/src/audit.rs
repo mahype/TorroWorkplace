@@ -368,7 +368,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::ChatGetPreview { id: message, .. }
         | Request::ChatGetAttachment { id: message, .. }
         | Request::ChatSaveAttachment { id: message, .. }
-        | Request::ChatShowCard { id: message } => {
+        | Request::ChatShowCard { id: message, .. } => {
             let conversation = torro_chat::split_message(message).map(|(conversation, _)| conversation);
             let mut ids: Vec<String> = conversation.map(chat_conversation).into_iter().collect();
             ids.push(format!("item:{}", hashed(message)));
@@ -600,8 +600,15 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::RenameConversation { id: conversation, .. }
         | Request::DeleteConversation { id: conversation }
         | Request::PinConversation { id: conversation, .. }
-        | Request::OpenChatWindow { window: ChatWindow::Conversation(conversation) } => {
+        | Request::OpenChatWindow { window: ChatWindow::Conversation(conversation) }
+        | Request::ShowAssistantCard { conversation, .. }
+        | Request::GetCardPicture { conversation, .. } => {
             vec![random("conversation", conversation)]
+        }
+        // Issue #786: the conversation only; the items are ids of mails, events, tasks and contacts, which the
+        // commands that found them logged already.
+        Request::ShowItems { conversation, .. } => {
+            conversation.iter().map(|conversation| random("conversation", conversation)).collect()
         }
         // Several conversations at once (issue #697): each by the id the core made.
         Request::ArchiveConversations { ids, .. } | Request::DeleteConversations { ids } => {

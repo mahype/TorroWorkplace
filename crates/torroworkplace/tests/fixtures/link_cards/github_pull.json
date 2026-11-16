@@ -1,0 +1,21 @@
+{
+  "data": {
+    "i0": {
+      "issueOrPullRequest": {
+        "__typename": "PullRequest",
+        "number": 143,
+        "title": "Fix the week view",
+        "body": "",
+        "url": "https://github.com/torro/workplace/pull/143",
+        "state": "OPEN",
+        "isDraft": true,
+        "updatedAt": "2026-11-01T09:00:00Z",
+        "repository": { "nameWithOwner": "torro/workplace" },
+        "labels": { "nodes": [] },
+        "assignees": { "nodes": [] },
+        "milestone": null,
+        "parent": null
+      }
+    }
+  }
+}

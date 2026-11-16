@@ -47,6 +47,8 @@ use crate::bots;
 use crate::chat::{self, Choice};
 
 mod cards;
+#[cfg(test)]
+pub(crate) use cards::CardLook;
 mod editor;
 
 /// The fewest lines of an answer worth scrolling in a glance with a file card under it; with less
@@ -812,8 +814,9 @@ impl App {
             if appearing.is_some_and(|seq| entry.seq > seq) {
                 break;
             }
-            let unresolved = matches!(entry.content, EntryContent::Card { .. }) && !self.cards.contains_key(&entry.seq);
-            if !self.answer_shows(entry.seq) || unresolved {
+            // A card the core has not resolved yet stands as a placeholder in its size (S3 of issue #784), so the
+            // answer does not jump when it comes.
+            if !self.answer_shows(entry.seq) {
                 continue;
             }
             let tool = matches!(entry.content, EntryContent::Tool { .. });
@@ -921,8 +924,8 @@ impl App {
             .spacing(space::s())
             .align_y(Alignment::Center)
             .into(),
-            // What the core resolved for it (`assistant.get_cards`); [`App::entries`] leaves out a
-            // card that is not resolved yet.
+            // What the core resolved for it (`assistant.get_cards`), a placeholder while it is not resolved
+            // yet; nothing for a link that stays a link.
             EntryContent::Card { .. } => self.card(entry.seq).unwrap_or_else(|| Space::new().into()),
         }
     }

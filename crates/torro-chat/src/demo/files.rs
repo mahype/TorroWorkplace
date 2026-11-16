@@ -2,7 +2,8 @@
 //! pictures, a video with a preview and one without, a PDF, a voice message, a file that may not be
 //! downloaded, an SVG without a preview, a link to the account's own server with its card, a
 //! foreign link whose card comes only with "Show once" (issue #672) and a YouTube video with its video
-//! card (issue #673) – and what the demo does with files:
+//! card (issue #673), and a message of four links (issue #784): a GitHub issue, a pull request and a file of the own
+//! server with their cards, the fourth, a page, only as text – and what the demo does with files:
 //! prepared files and uploads in memory, sendings that advance a quarter with each look
 //! ([`Files::progress`]), pictures drawn on the spot ([`picture`]).
 //!
@@ -14,7 +15,9 @@ use chrono::{DateTime, Duration};
 
 use super::{ME, text};
 use crate::files::{PreparedFile, PreviewSize, SharedItem, SharedKind, UploadProgress, UploadState};
-use crate::model::{FileRef, ForeignProvider, LinkCard, Message, MessageKind};
+use crate::model::{
+    FileRef, ForeignProvider, GithubState, LinkCard, LinkCardKind, LinkFile, LinkGithub, Message, MessageKind,
+};
 use crate::source::ChatError;
 
 /// The group "Design sync": the conversation of the sample's files and media.
@@ -45,10 +48,12 @@ fn file(id: &str, name: &str, size: u64, content_type: &str, preview: bool, edge
     }
 }
 
-/// The messages 3 to 17 of [`DESIGN`], four hours to a little over three before `now`: older than
+/// The messages 3 to 18 of [`DESIGN`], four hours to a little over three before `now`: older than
 /// the sample's other recent messages, so the order of the conversations stays as it was. Gesa's
-/// four pictures sent at once (13 to 16) the chat window shows as one grid; her last message is a
-/// YouTube video with its video card, as YouTube allowed in Settings › Privacy gives it (17).
+/// four pictures sent at once (13 to 16) the chat window shows as one grid; her next message is a
+/// YouTube video with its video card, as YouTube allowed in Settings › Privacy gives it (17). Elif's
+/// last (18, issue #784) names an issue, a pull request, a file of the own server and a page: three cards, the
+/// page only as a link in the text.
 pub(super) fn design_media(now: DateTime<chrono::Utc>) -> Vec<Message> {
     let ago = |minutes: i64| now - Duration::minutes(minutes);
     let shared = |number: u64, user: &str, name: &str, minutes: i64, caption: &str, file: FileRef| {
@@ -85,6 +90,7 @@ pub(super) fn design_media(now: DateTime<chrono::Utc>) -> Vec<Message> {
         domain: "cloud.example.org".into(),
         image: true,
         video: None,
+        ..LinkCard::default()
     }];
     let mut grids =
         text(DESIGN, 11, "gesa", gesa, ago(198), "A good read on icon grids: https://example.com/blog/icon-grids");
@@ -100,7 +106,9 @@ pub(super) fn design_media(now: DateTime<chrono::Utc>) -> Vec<Message> {
         domain: "youtu.be".into(),
         image: true,
         video: crate::video::video_of(intro_link),
+        ..LinkCard::default()
     }];
+    let links = four_links(now - Duration::minutes(186));
     vec![
         shared(
             3,
@@ -180,7 +188,54 @@ pub(super) fn design_media(now: DateTime<chrono::Utc>) -> Vec<Message> {
             file("5116", "Header D.png", 1_102_448, "image/png", true, Some((1600, 1000))),
         ),
         intro,
+        links,
     ]
+}
+
+/// The links of message 18 of [`DESIGN`] (issue #784), in the order they stand in its text.
+pub(super) const FOUR_LINKS: [&str; 4] = [
+    "https://github.com/torro/workplace/issues/142",
+    "https://github.com/torro/workplace/pull/143",
+    "https://cloud.example.org/f/5120",
+    "https://example.com/blog/icon-grids",
+];
+
+/// Message 18 of [`DESIGN`] at `at` (issue #784): four links, the first three with their cards – the issue and the
+/// pull request as the connected GitHub account sees them, the file as the own server names it; at most three cards
+/// per message, so the page stays a link.
+fn four_links(at: DateTime<chrono::Utc>) -> Message {
+    let [issue, pull, file, page] = FOUR_LINKS;
+    let words = format!("See {issue} and the fix {pull}, the file is {file}, background: {page}");
+    let mut message = text(DESIGN, 18, "elif", "Elif Aydin", at, &words);
+    let github = |url: &str, index: u8, number: u64, title: &str, is_pull: bool, state: GithubState| LinkCard {
+        url: url.into(),
+        index,
+        title: title.into(),
+        domain: "github.com".into(),
+        kind: LinkCardKind::Github,
+        github: Some(Box::new(LinkGithub { repo: "torro/workplace".into(), number, is_pull, state })),
+        ..LinkCard::default()
+    };
+    message.cards = vec![
+        github(issue, 0, 142, "Calendar shows the wrong week after midnight", false, GithubState::Open),
+        github(pull, 1, 143, "Fix the week after midnight", true, GithubState::Merged),
+        LinkCard {
+            url: file.into(),
+            index: 2,
+            title: "Icon grid.pdf".into(),
+            domain: "cloud.example.org".into(),
+            image: true,
+            kind: LinkCardKind::NextcloudFile,
+            file: Some(Box::new(LinkFile {
+                name: "Icon grid.pdf".into(),
+                size: 2_202_009,
+                content_type: "application/pdf".into(),
+                folder: "Projects/Icons".into(),
+            })),
+            ..LinkCard::default()
+        },
+    ];
+    message
 }
 
 /// The card "Show once" brings for a foreign link of the sample (`chat.show_card`).
@@ -192,6 +247,7 @@ pub(super) fn foreign_card(url: &str) -> Option<LinkCard> {
         domain: "example.com".into(),
         image: false,
         video: None,
+        ..LinkCard::default()
     })
 }
 

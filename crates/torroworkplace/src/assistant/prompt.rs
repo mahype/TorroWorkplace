@@ -429,6 +429,7 @@ fn generated(context: &Context<'_>) -> String {
         (areas, _) => format!("- Areas you may use: {}.", names(areas)),
     });
     lines.extend(access(context));
+    lines.extend(shown_items(context.areas));
     lines.extend(own_tools(context));
     if context.terminal {
         lines.push(TERMINAL.to_string());
@@ -456,6 +457,21 @@ fn generated(context: &Context<'_>) -> String {
     });
     lines.extend(memory(context.memory));
     lines.join("\n")
+}
+
+/// The line that sends the model to `assistant_show_items` (issue #786, decision 5 of the plan of issue #784) when
+/// one of `areas` has items it shows (mail, calendar, tasks, contacts): it picks what answers the question, at most
+/// [`torro_ipc::assistant::MAX_SHOWN_ITEMS`], by the ids its tools answered. Nothing otherwise.
+fn shown_items(areas: &[Area]) -> Option<String> {
+    let shows = [Area::Mail, Area::Calendar, Area::Tasks, Area::Contacts];
+    areas.iter().any(|area| shows.contains(area)).then(|| {
+        format!(
+            "- When mails, events, tasks or contacts you found answer the question, show them to the person with \
+             assistant_show_items: pick at most {} yourself, best first, by the ids your tools answered. They appear \
+             as cards, so your text need not repeat their details.",
+            torro_ipc::assistant::MAX_SHOWN_ITEMS
+        )
+    })
 }
 
 /// What the answering client may do (issue #134), from [`Context::rights`]: one line per area it

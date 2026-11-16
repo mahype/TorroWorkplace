@@ -2,7 +2,7 @@
 //! `docs/prototypes/chat/`): a picture as its preview, a video as its preview with a play mark, a
 //! voice message with its play button, every other file – and every fallback without a preview –
 //! as a line with its kind, name, size and the buttons "Open", "Download" and "Open in Nextcloud";
-//! link cards under a message, a YouTube video as its video card (issue #673); the files chosen for sending and the progress above the composer;
+//! up to three link cards under a message on `content_card` (issue #785), a YouTube video as its video card (issue #673); the files chosen for sending and the progress above the composer;
 //! the drop zone over the window.
 //!
 //! A preview stands in the size of the picture from the first frame on (a calm placeholder until it
@@ -11,21 +11,22 @@
 //! grid ([`album_tiles`]), each tile filled with its picture.
 
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, button, column, container, image, mouse_area, row, sensor, stack};
-use iced::{Alignment, Background, Color, ContentFit, Element, Fill, Padding, Rectangle, Theme, border, mouse};
+use iced::widget::{Space, column, container, image, mouse_area, row, sensor, stack};
+use iced::{Alignment, Background, Color, ContentFit, Element, Fill, Rectangle, Theme, border, mouse};
 use torro_chat::{FileRef, ForeignProvider, LinkCard, Message as ChatMessage, MessageKind};
 use torro_core::i18n::{tr, trf};
 use torro_core::privacy::ProviderChoice;
+use torro_gui::content_card::{self, AskPress, LinkPress};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, palette, radius, size, space};
 use torro_gui::widgets::{self, TileFace, TileSize};
-use torro_gui::{style, typo, units};
+use torro_gui::{typo, units};
+use torro_ipc::assistant::MAX_LINK_CARDS;
 
 use super::{HAIRLINE, tinted};
 use crate::app::files::{Attached, Busy, CardAsk, FilesMsg, PictureKey, Shown, Upload, wrap};
 use crate::app::{App, ChatState, Message};
 use crate::system;
-use crate::timeline;
 
 /// How a file of a message shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,22 +260,6 @@ pub(super) fn clickable<'a>(content: Element<'a, Message>, on_press: Message, ti
     widgets::with_tooltip(mouse_area(content).on_press(on_press).interaction(mouse::Interaction::Pointer), tip)
 }
 
-/// A card that is one button (the video card): `panel` with a hairline in `line_strong`, its edge in
-/// `line_selected` while hovered or pressed.
-fn card_button(t: &Theme, status: button::Status) -> button::Style {
-    let p = palette(t);
-    let edge = match status {
-        button::Status::Hovered | button::Status::Pressed => p.line_selected,
-        button::Status::Active | button::Status::Disabled => p.line_strong,
-    };
-    button::Style {
-        background: Some(Background::Color(p.panel)),
-        text_color: p.text,
-        border: border::rounded(radius::sm()).color(edge).width(HAIRLINE),
-        ..button::Style::default()
-    }
-}
-
 /// "1.2 MB · PDF", with "no preview" and "view only" where they hold.
 fn file_meta(file: &FileRef, no_preview: bool) -> String {
     let mut parts = vec![units::format_bytes(file.size), kind_word(&file.content_type).to_owned()];
@@ -450,10 +435,12 @@ impl App {
         buttons
     }
 
-    /// Under a message with a link: its card; for a link to another provider not asked about yet
-    /// (Settings › Privacy at "Ask", issue #672) the question "Show once", "Always allow …", "Never for
-    /// …"; else nothing – a blocked provider, "Never show" and a link without a card keep only the link
-    /// in the text.
+    /// Under a message with links, free under its bubble: their cards, up to three in the order of the links (issue
+    /// #785, on `content_card::link_card`, as the assistant draws them), `size::card_gap()` apart, at most
+    /// `size::list()` wide; for a link to another provider not asked
+    /// about yet (Settings › Privacy at "Ask", issue #672) the question "Show once", "Always allow …",
+    /// "Never for …" below them (`content_card::ask_card`); else nothing more – a blocked provider, "Never
+    /// show" and a link without a card keep only the link in the text. `None` without either.
     pub(super) fn link_part<'a>(
         &'a self,
         chat: &'a ChatState,
@@ -463,108 +450,31 @@ impl App {
         if message.kind == MessageKind::Deleted {
             return None;
         }
-        if let Some(card) = message.cards.first() {
-            return Some(self.card(chat, message, card, room));
-        }
-        let link = timeline::first_link(&message.text)?;
-        let account = torro_chat::split_conversation(&chat.id).map(|(account, _)| account)?;
-        // Links to the own server get their card by themselves (decision 23).
-        if system::is_own_link(account, link) {
+        let mut parts: Vec<Element<'a, Message>> = message
+            .cards
+            .iter()
+            .take(MAX_LINK_CARDS)
+            .map(|card| link_card(chat, message, card.index, card, room))
+            .collect();
+        let asked = match chat.files.cards.get(&message.id) {
+            Some(CardAsk::Asking) => Some(typo::text(typo::meta(), tr("Loading preview…")).style(theme::text_3).into()),
+            Some(CardAsk::None) => {
+                Some(typo::text(typo::meta(), tr("No preview for this link")).style(theme::text_3).into())
+            }
+            None => message.foreign.as_ref().map(|provider| foreign_question(&message.id, provider)),
+        };
+        parts.extend(asked);
+        (!parts.is_empty()).then(|| column(parts).spacing(size::card_gap()).into())
+    }
+
+    /// The first card of `message` in one line (`content_card::link_short`), for the glance of a mini or strip tile;
+    /// `None` without a card.
+    pub(super) fn first_card_line<'a>(&'a self, message: &'a ChatMessage) -> Option<Element<'a, Message>> {
+        if message.kind == MessageKind::Deleted {
             return None;
         }
-        Some(match chat.files.cards.get(&message.id) {
-            Some(CardAsk::Asking) => typo::text(typo::meta(), tr("Loading preview…")).style(theme::text_3).into(),
-            Some(CardAsk::None) => typo::text(typo::meta(), tr("No preview for this link")).style(theme::text_3).into(),
-            None => foreign_question(&message.id, message.foreign.as_ref()?),
-        })
-    }
-
-    /// A link card: its picture from the own server, title, description and domain; a click opens
-    /// the link in the browser.
-    fn card<'a>(
-        &'a self,
-        chat: &'a ChatState,
-        message: &'a ChatMessage,
-        card: &'a LinkCard,
-        room: f32,
-    ) -> Element<'a, Message> {
-        if card.video.is_some() {
-            return self.video_card(chat, message, card, room);
-        }
-        let width = room.min(size::props());
-        let mut parts: Vec<Element<'a, Message>> = Vec::new();
-        if card.image {
-            let key: PictureKey = (message.id.clone(), None);
-            parts.push(picture(&key, chat.files.picture(&key), Icon::Image, width, width / 2.0, radius::sm().into()));
-        }
-        let mut words = column![widgets::ellipsized(typo::body_strong(), card.title.as_str(), theme::text)];
-        if let Some(description) = card.description.as_deref().filter(|text| !text.trim().is_empty()) {
-            words = words.push(widgets::ellipsized(typo::meta(), description, theme::text_2));
-        }
-        words = words.push(
-            row![
-                tinted(Icon::Link, icon::SIZE_SM, |p| p.text_3),
-                widgets::ellipsized(typo::meta(), card.domain.as_str(), theme::text_3)
-            ]
-            .spacing(space::xs())
-            .align_y(Alignment::Center),
-        );
-        parts.push(container(words).padding([space::s(), space::m()]).width(Fill).into());
-        let content = container(column(parts)).width(width).clip(true).style(|t: &Theme| {
-            let p = palette(t);
-            container::Style {
-                background: Some(Background::Color(p.panel)),
-                border: border::rounded(radius::sm()).color(p.line_strong).width(HAIRLINE),
-                ..container::Style::default()
-            }
-        });
-        clickable(content.into(), wrap(FilesMsg::OpenLink(card.url.clone())), card.url.clone())
-    }
-
-    /// The card of a YouTube video (issue #673, decision 25): its picture in 16:9 with the play mark
-    /// (a calm placeholder without one), the title or "YouTube video", the domain and "Open on YouTube"
-    /// (always the browser), as wide as a picture of the history. A click on the card plays the video in
-    /// the player window (macOS, Windows) or opens it at YouTube (Linux); hovering it marks its edge.
-    fn video_card<'a>(
-        &'a self,
-        chat: &'a ChatState,
-        message: &'a ChatMessage,
-        card: &'a LinkCard,
-        room: f32,
-    ) -> Element<'a, Message> {
-        let width = room.min(size::list());
-        let height = width * 9.0 / 16.0;
-        let key: PictureKey = (message.id.clone(), None);
-        let shown = if card.image { chat.files.picture(&key) } else { None };
-        let corners = border::Radius { bottom_left: 0.0, bottom_right: 0.0, ..radius::sm().into() };
-        let frame =
-            stack![picture(&key, shown, Icon::Video, width, height, corners), container(play_mark()).center(Fill)]
-                .width(width)
-                .height(height);
-        let title = if card.title.trim().is_empty() { tr("YouTube video") } else { card.title.as_str() };
-        let open = widgets::text_button(
-            Some(Icon::ExternalLink),
-            tr("Open on YouTube"),
-            style::button::ghost,
-            Some(wrap(FilesMsg::OpenLink(card.url.clone()))),
-        );
-        let domain = row![
-            tinted(Icon::Link, icon::SIZE_SM, |p| p.text_3),
-            container(widgets::ellipsized(typo::meta(), card.domain.as_str(), theme::text_3)).width(Fill).clip(true),
-            open,
-        ]
-        .spacing(space::xs())
-        .align_y(Alignment::Center);
-        let words = column![widgets::ellipsized(typo::body_strong(), title, theme::text), domain];
-        let content = column![frame, container(words).padding([space::s(), space::m()]).width(Fill)];
-        let play = button(content)
-            .width(width)
-            .padding(Padding::ZERO)
-            .clip(true)
-            .style(card_button)
-            .on_press(wrap(FilesMsg::PlayVideo(message.id.clone())));
-        let tip = if system::plays_videos() { tr("Play video") } else { tr("Open on YouTube") };
-        widgets::with_tooltip(play, tip)
+        let card = message.cards.first()?;
+        Some(content_card::link_short(card, link_press(message, card)))
     }
 
     /// Above the composer: the files chosen for sending, or the sending under way. `None` when there
@@ -708,38 +618,40 @@ fn upload_row(upload: &Upload) -> Element<'_, Message> {
     .into()
 }
 
-/// The question in place of the card of another provider's link (issue #672): what the message would
-/// load, and the three answers. "Show once" fetches only this card and keeps nothing; the other two put
-/// the provider on the list of Settings › Privacy. Quiet: words in `text_2`, ghost buttons that wrap in
-/// a narrow window.
-fn foreign_question<'a>(message: &str, provider: &ForeignProvider) -> Element<'a, Message> {
-    let name = provider.name.as_str();
-    let what = trf("This message shows content from {provider}.", &[("provider", &name)]);
-    let once = widgets::with_tooltip(
-        widgets::text_button(
-            Some(Icon::Eye),
-            tr("Show once"),
-            style::button::ghost,
-            Some(wrap(FilesMsg::ShowCard(message.to_owned()))),
-        ),
-        tr("Your Nextcloud fetches the page, so the site may see when it is read."),
-    );
-    let decide = |label: String, choice: ProviderChoice| {
-        widgets::text_button(
-            None,
-            label,
-            style::button::ghost,
-            Some(wrap(FilesMsg::Decide(provider.key.clone(), choice))),
-        )
+/// What a click on the card `card` of `message` sends: "Open" opens the link; a video card plays in the player
+/// window where there is one (macOS, Windows), under Linux it opens at YouTube.
+fn link_press(message: &ChatMessage, card: &LinkCard) -> LinkPress<Message> {
+    let play = (card.video.is_some() && system::plays_videos()).then(|| wrap(FilesMsg::PlayVideo(message.id.clone())));
+    LinkPress { open: wrap(FilesMsg::OpenLink(card.url.clone())), play }
+}
+
+/// The card `index` of the links of `message`: its kind's look from `content_card::link_card`, its
+/// picture from the own server (by message and index). A click on "Open" opens the link; a video card
+/// plays in the player window where there is one (macOS, Windows), under Linux it opens at YouTube.
+fn link_card<'a>(
+    chat: &'a ChatState,
+    message: &'a ChatMessage,
+    index: u8,
+    card: &'a LinkCard,
+    room: f32,
+) -> Element<'a, Message> {
+    let picture = match chat.files.card_picture(&message.id, index) {
+        Some(Shown::Ready(handle)) if card.image => Some(handle.clone()),
+        _ => None,
     };
-    let allow = decide(trf("Always allow {provider}", &[("provider", &name)]), ProviderChoice::Allowed);
-    let block = decide(trf("Never for {provider}", &[("provider", &name)]), ProviderChoice::Blocked);
-    column![
-        typo::text(typo::meta(), what).style(theme::text_2).wrapping(Wrapping::WordOrGlyph),
-        row![once, allow, block].spacing(space::xs()).wrap(),
-    ]
-    .spacing(space::xs())
-    .into()
+    content_card::link_card(card, picture, link_press(message, card), room.min(size::list()))
+}
+
+/// The question in place of the card of another provider's link (issue #672), as the assistant asks it
+/// (`content_card::ask_card`): "Show once" fetches only this card and keeps nothing; the other two put the
+/// provider on the list of Settings › Privacy.
+fn foreign_question<'a>(message: &str, provider: &'a ForeignProvider) -> Element<'a, Message> {
+    let press = AskPress {
+        once: wrap(FilesMsg::ShowCard(message.to_owned())),
+        always: wrap(FilesMsg::Decide(provider.key.clone(), ProviderChoice::Allowed)),
+        never: wrap(FilesMsg::Decide(provider.key.clone(), ProviderChoice::Blocked)),
+    };
+    content_card::ask_card(provider, press)
 }
 
 #[cfg(test)]

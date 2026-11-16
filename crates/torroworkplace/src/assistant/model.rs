@@ -137,6 +137,16 @@ pub trait Host: Send + Sync {
         Box::pin(async { false })
     }
 
+    /// Whether a look at the content card `card` (issue #784, an event, a task or a draft that engine B's agent
+    /// handed over as text) finds it for `actor`'s client now ([`super::cards::look`] with the core's
+    /// [`super::cards::Lookup`] for that client, [`super::cards::found`]). Engine B asks before it adds such a card
+    /// ([`super::cards::of_agent`]), as it asks [`Host::knows_file`] for a file. The default finds none, so a host
+    /// without the services adds no card.
+    fn looks_up<'a>(&'a self, actor: &'a Actor, card: &'a torro_ipc::assistant::CardRef) -> BoxFuture<'a, bool> {
+        let _ = (actor, card);
+        Box::pin(async { false })
+    }
+
     /// Runs `request` as the assistant's own client, exactly as a request with its key would run
     /// (`Core::handle_from`): its rights of now (`forbidden` when they do not cover it, and always
     /// for the area `assistant` but its memory, `torro_ipc::api::own_memory`), its collections
@@ -903,6 +913,9 @@ impl Answering {
             let areas: BTreeSet<Area> = allowed
                 .iter()
                 .filter(|tool| !tool.is_server())
+                // The terminal (issue #754) is switched on by a person, not granted with an area; the prompt names it
+                // on a line of its own.
+                .filter(|tool| !torro_ipc::tools::is_terminal_command(tool.command.name))
                 .map(|tool| tool.command.area)
                 // The help (issue #702) is the one tool of `system`, no area the person granted.
                 .filter(|area| !matches!(area, Area::Assistant | Area::Bots | Area::System))
@@ -975,13 +988,24 @@ impl Answering {
                 return Err(Ended::Empty);
             }
             if !reply.text.trim().is_empty() {
+                // Up to three link cards follow the final answer (issue #785), the last of them ends the run.
+                let cards = if done { self.link_cards(&reply.text, &messages) } else { Vec::new() };
                 let text = EntryContent::Answer {
                     text: reply.text.clone(),
                     engine: self.job.engine.clone(),
                     model: Some(model.clone()),
                     spoken: None,
                 };
-                if !self.add(text, done).await || done {
+                if !self.add(text, done && cards.is_empty()).await {
+                    return Ok(());
+                }
+                let count = cards.len();
+                for (n, card) in cards.into_iter().enumerate() {
+                    if !self.add(card, n + 1 == count).await {
+                        return Ok(());
+                    }
+                }
+                if done {
                     return Ok(());
                 }
             }
@@ -998,6 +1022,46 @@ impl Answering {
             }
         }
         Err(Ended::TooManySteps(steps))
+    }
+
+    /// The link cards after the final answer `answer` (issue #785, [`super::cards::link::after_answer`]): an address
+    /// is the person's when it stands in one of their own messages of this conversation (none for a bot's run for
+    /// the assistant, whose messages the assistant's model wrote), read when it stands in what a command answered,
+    /// of an earlier turn (`Job::results`) or of this answer as `messages` hold it; else the model's, which asks.
+    fn link_cards(&self, answer: &str, messages: &[ChatMessage]) -> Vec<EntryContent> {
+        let person: Vec<&str> = match &self.job.actor {
+            Actor::Delegated(_) => Vec::new(),
+            Actor::Assistant | Actor::Bot(_) => self
+                .job
+                .history
+                .iter()
+                .filter_map(|entry| match &entry.content {
+                    EntryContent::Message { text, from: None, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect(),
+        };
+        // Only what a command that reads answered (decision 1 of issue #784): a command that writes echoes the
+        // model's own input, so an address in its answer is the model's ([`super::cards::link::reads`]).
+        let reads = |name: &str| super::cards::link::reads(name);
+        let earlier = self.job.results.iter().filter(|(seq, _)| {
+            self.job.history.iter().any(|entry| {
+                entry.seq == **seq && matches!(&entry.content, EntryContent::Tool { name, .. } if reads(name))
+            })
+        });
+        // This answer's calls by their id, as the model named them, for the results that answer them.
+        let called: BTreeMap<&str, String> = messages
+            .iter()
+            .flat_map(|message| &message.tool_calls)
+            .map(|call| (call.id.as_str(), command_name(&call.name)))
+            .collect();
+        let now = messages.iter().filter(|message| {
+            message.role == torro_core::ai::Role::Tool
+                && message.tool_call_id.as_deref().and_then(|id| called.get(id)).is_some_and(|name| reads(name))
+        });
+        let read: Vec<&str> =
+            earlier.map(|(_, text)| text.as_str()).chain(now.map(|message| message.content.as_str())).collect();
+        super::cards::link::after_answer(answer, &person, &read)
     }
 
     /// Counts `call` for this answer (issue #701): `true` when the model called the same tool with the same input
@@ -1082,7 +1146,7 @@ impl Answering {
             return self.refused(&call.id, name, input, "forbidden", &lack.message(), Some(lack)).await;
         }
         let request = match tools::request_for(&call.name, &call.arguments) {
-            Ok(request) => self.without_mail_ranking(request),
+            Ok(request) => self.in_this_conversation(self.without_mail_ranking(request)),
             Err(message) => return self.refused(&call.id, name, input, "error", &message, None).await,
         };
         let area = request.operation().area();
@@ -1094,6 +1158,12 @@ impl Answering {
             // suggestion stays in the mail's own list and the tool line says what was read out.
             Outcome::Answered(response) => super::cards::after(&name, response)
                 .or_else(|| self.job.about.as_ref().and_then(|_| super::cards::suggestion_after(&request, response))),
+            Outcome::Denied | Outcome::Expired => None,
+        };
+        // What a search or a read found (issue #786), kept with its tool line: the items `assistant.show_items` may
+        // show here, from the core's own answer.
+        let seen = match &outcome {
+            Outcome::Answered(response) => super::cards::group::seen(&name, response),
             Outcome::Denied | Outcome::Expired => None,
         };
         // Mail switched off in this conversation (issue #460): suggestions keep only what the address
@@ -1170,8 +1240,13 @@ impl Answering {
             _ => None,
         };
         let summary = lack.map_or(summary, tools::lack_summary);
-        let line = EntryContent::Tool { name, input, summary, error, lack };
+        let line = EntryContent::Tool { name: name.clone(), input, summary, error, lack };
         let result = self.add_tool(&call.id, line, result).await?;
+        if let Some(seen) = seen
+            && !self.assistant.see(&self.job.conversation, self.job.run, &name, seen).await
+        {
+            return None;
+        }
         // The card follows its tool line, so the chat shows what was done, then what came of it.
         if let Some(card) = card
             && !self.add(card, false).await
@@ -1197,6 +1272,17 @@ impl Answering {
                 limit,
                 contacts_only: contacts_only || self.job.without.contains(&Area::Mail),
             },
+            other => other,
+        }
+    }
+
+    /// `request` with this answer's conversation when it is `assistant.show_items` (issue #786): the model shows what
+    /// it found here, never in another conversation, whatever it named. Every other request as it is.
+    fn in_this_conversation(&self, request: Request) -> Request {
+        match request {
+            Request::ShowItems { items, .. } => {
+                Request::ShowItems { conversation: Some(self.job.conversation.clone()), items }
+            }
             other => other,
         }
     }
@@ -1260,11 +1346,12 @@ impl Answering {
             None => !self.skills.is_empty(),
         };
         let allowed = tools::with_skills(allowed, any_skill);
-        // The terminal (issue #754) for the assistant's own answers only, while a person switched it on.
+        // The terminal (issue #754) for the assistant's own answers only, while a person switched it on, and never
+        // without a client: then the model gets no tools at all.
         let allowed = tools::with_terminal(
             allowed,
             self.job.actor.kind(),
-            self.host.terminal_enabled(),
+            rights.is_some() && self.host.terminal_enabled(),
             &self.job.without,
             self.job.mode,
         );
@@ -2657,8 +2744,12 @@ pub(crate) mod tests {
         assert!(!system.contains("calm butler") && !system.contains("Anna"), "nothing of the assistant's: {system}");
         let offered: Vec<&str> = asked[0].tools.iter().map(|tool| tool.name.as_str()).collect();
         assert!(offered.contains(&"calendar_list_calendars"), "{offered:?}");
-        // Of `assistant` only its own access (issue #134) and reading its own skills (issue #703).
-        let own = |tool: &&str| ["assistant_my_access", "assistant_list_skills", "assistant_get_skill"].contains(tool);
+        // Of `assistant` only its own access (issue #134), reading its own skills (issue #703) and showing what it
+        // found (issue #786).
+        let own = |tool: &&str| {
+            ["assistant_my_access", "assistant_list_skills", "assistant_get_skill", "assistant_show_items"]
+                .contains(tool)
+        };
         assert!(
             offered
                 .iter()
@@ -2718,6 +2809,87 @@ pub(crate) mod tests {
         );
         assert!(
             tool_result(&script, "calendar_list_calendars").contains("switched off calendar for this conversation")
+        );
+    }
+
+    /// Issue #785: the final answer brings link cards for its first three addresses, each saying where the address
+    /// came from (the person's message, else the model); the last card ends the run.
+    #[tokio::test]
+    async fn an_answer_with_links_brings_up_to_three_link_cards() {
+        use torro_ipc::assistant::{CardRef, LinkOrigin};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = Script::new(vec![says(
+            "See https://a.example.org/x, https://b.example.org/y, https://c.example.org/z and https://d.example.org/w.",
+        )]);
+        let (assistant, _host) = set_up(dir.path(), Some(reader()), Place::Local, Arc::clone(&script));
+        let id = ask(&assistant, None, "Compare https://a.example.org/x with the others", Vec::new()).await;
+        let entries = finished(&assistant, &id).await;
+        let links: Vec<(&str, LinkOrigin)> = entries
+            .iter()
+            .filter_map(|entry| match &entry.content {
+                EntryContent::Card { card: CardRef::Link { url, from } } => Some((url.as_str(), *from)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            links,
+            [
+                ("https://a.example.org/x", LinkOrigin::Person),
+                ("https://b.example.org/y", LinkOrigin::Model),
+                ("https://c.example.org/z", LinkOrigin::Model),
+            ]
+        );
+        let kinds: Vec<&str> = content(&entries)
+            .into_iter()
+            .map(|content| match content {
+                EntryContent::Message { .. } => "message",
+                EntryContent::Answer { .. } => "answer",
+                EntryContent::Card { .. } => "card",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["message", "answer", "card", "card", "card"]);
+    }
+
+    /// Decision 1 of issue #784: an address that only stands in what a command that writes answered (the echo of the
+    /// model's own input) is the model's; one a command read is read.
+    #[tokio::test]
+    async fn an_address_echoed_by_a_command_that_writes_is_the_models() {
+        use torro_ipc::assistant::{CardRef, LinkOrigin};
+        fn answer(request: &Request) -> Response {
+            match request {
+                Request::CreateContact { .. } => Response::ChatSaved { path: "https://echo.example.org/made".into() },
+                Request::CalendarCollections => Response::ChatSaved { path: "https://read.example.org/found".into() },
+                _ => Response::Ok,
+            }
+        }
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = Script::new(vec![
+            calls("contacts_create_contact", json!({"book": "b1", "fields": {"display_name": "Ben"}})),
+            calls("calendar_list_calendars", json!({})),
+            says("See https://echo.example.org/made and https://read.example.org/found."),
+        ]);
+        let (assistant, _host) = set_up_with(dir.path(), Some(reader()), Place::Local, Arc::clone(&script), answer);
+        let id = ask(&assistant, None, "Make a contact and list my calendars", Vec::new()).await;
+        let entries = finished(&assistant, &id).await;
+        let errors: Vec<&EntryContent> = content(&entries)
+            .into_iter()
+            .filter(|content| matches!(content, EntryContent::Tool { error: Some(_), .. }))
+            .collect();
+        assert!(errors.is_empty(), "both commands ran: {errors:?}");
+        let links: Vec<(&str, LinkOrigin)> = entries
+            .iter()
+            .filter_map(|entry| match &entry.content {
+                EntryContent::Card { card: CardRef::Link { url, from } } => Some((url.as_str(), *from)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            links,
+            [
+                ("https://echo.example.org/made", LinkOrigin::Model),
+                ("https://read.example.org/found", LinkOrigin::Read)
+            ]
         );
     }
 
@@ -4117,6 +4289,56 @@ pub(crate) mod tests {
         );
         assert!(
             host.ran.lock().expect("lock").iter().any(|(request, _)| matches!(request, Request::ExtractAction { .. }))
+        );
+    }
+
+    /// A search that found the mails `m:0` to `m:11` of Anna, twelve in all; `Ok` to every other request.
+    fn twelve_found(request: &Request) -> Response {
+        match request {
+            Request::SearchMail { .. } => {
+                let messages: Vec<Value> = (0..12)
+                    .map(|n| {
+                        json!({"id": format!("m:{n}"), "account": ACCOUNT, "folder": "f:1", "thread_id": "t:1",
+                               "date": "2026-11-13T09:00:00Z"})
+                    })
+                    .collect();
+                let answer = json!({"result": "mail-messages", "messages": messages, "source": "cache"});
+                serde_json::from_value(answer).expect("a search")
+            }
+            _ => Response::Ok,
+        }
+    }
+
+    /// Issue #786: what a search found is kept with its tool line, and `assistant.show_items` goes to the core for
+    /// this conversation, whatever conversation the model named.
+    #[tokio::test]
+    async fn what_a_search_found_is_kept_and_shown_here() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let show =
+            json!({"conversation": "0000000000000000", "items": [{"kind": "mail", "account": ACCOUNT, "id": "m:3"}]});
+        let script = Script::new(vec![
+            calls("mail_search_messages", json!({"query": "from:anna", "limit": 20})),
+            calls("assistant_show_items", show),
+            says("Here is the offer."),
+        ]);
+        let (assistant, host) =
+            set_up_with(dir.path(), Some(mail_of_anna()), Place::Local, Arc::clone(&script), twelve_found);
+        let id = ask(&assistant, None, "Anna's offer?", Vec::new()).await;
+        let entries = finished(&assistant, &id).await;
+        let search = entries
+            .iter()
+            .find(|entry| matches!(&entry.content, EntryContent::Tool { name, .. } if name == "mail.search_messages"))
+            .map(|entry| entry.seq)
+            .expect("the search's tool line");
+        let state = assistant.state().await;
+        let seen = &state.conversations[&id].seen;
+        assert_eq!(seen.keys().copied().collect::<Vec<_>>(), [search], "kept with its tool line");
+        assert_eq!((seen[&search].refs.len(), seen[&search].total), (12, 12));
+        let ran: Vec<Request> = host.ran.lock().expect("lock").iter().map(|(request, _)| request.clone()).collect();
+        assert!(
+            ran.iter()
+                .any(|request| matches!(request, Request::ShowItems { conversation: Some(here), .. } if *here == id)),
+            "{ran:?}"
         );
     }
 

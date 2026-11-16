@@ -54,7 +54,7 @@ use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Maps, Night, Quarter, WorkingHours};
 use torro_core::timing;
 use torro_gui::connect::{self, Connect};
-use torro_gui::datetime::{format_long_date, month_name, to_utc, week_start};
+use torro_gui::datetime::{format_long_date, month_name, to_local, to_utc, week_start};
 use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
@@ -73,7 +73,7 @@ use torro_gui::{style, typo};
 use torro_pim::account::account_of;
 use torro_pim::demo::DemoSource;
 use torro_pim::model::{Geo, SeriesScope};
-use torro_pim::{AccountState, Collection, Event, PimAccount, PimSource};
+use torro_pim::{AccountState, Collection, Event, EventTime, PimAccount, PimSource};
 use torro_settings_ui::accounts::Group;
 use torro_settings_ui::calendar::End;
 use torro_settings_ui::{Backend as SettingsBackend, Host, Outcome, Page, Section, calendar, collections};
@@ -412,6 +412,8 @@ impl Open {
 ///   can be made again; needs `--demo`.
 /// - `--settings <section>`: open the window with its settings in the content area, at this
 ///   section (task S.19); works without `--demo` too.
+/// - `--event=<uid>`: start on the week of this event with it open in the side panel (issue #797), as the core
+///   passes it for `apps.open_app` with an `event:` target; works without `--demo` too.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Launch {
     pub open: Option<Open>,
@@ -424,7 +426,19 @@ pub struct Launch {
     /// needs `--demo`.
     pub color_scheme: Option<String>,
     pub settings: Option<String>,
+    /// `--event=<uid>` (issue #797): the iCalendar UID of the event to start on. The first load looks for it in the
+    /// days the core caches ([`SEEK_BACK_DAYS`], [`SEEK_AHEAD_DAYS`]); found, the week of its next occurrence opens
+    /// with it chosen, otherwise the window starts as without it. Taken once.
+    pub event: Option<String>,
 }
+
+/// The longest uid `--event` takes, as `torrotasks --task`.
+const EVENT_MAX: usize = 1000;
+
+/// How far back and ahead of today the first load looks for the event of `--event`: the days the core caches
+/// (`pim.rs` of `torroworkplace`), so the core answers from its cache.
+const SEEK_BACK_DAYS: i64 = 90;
+const SEEK_AHEAD_DAYS: i64 = 365;
 
 /// Why the start parameters were refused; `main` prints it and exits with 64, as `ctl` does.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -437,6 +451,8 @@ pub enum LaunchError {
     NeedsDemo(&'static str),
     /// `--now` is not a date and time like `2026-10-12T10:30`.
     BadNow(String),
+    /// `--event` with an empty uid, one with control characters or longer than [`EVENT_MAX`] bytes.
+    BadEvent(String),
 }
 
 impl fmt::Display for LaunchError {
@@ -450,6 +466,7 @@ impl fmt::Display for LaunchError {
             LaunchError::BadNow(value) => {
                 write!(f, "--now expects YYYY-MM-DDTHH:MM, e.g. 2026-10-12T10:30; got {value:?}")
             }
+            LaunchError::BadEvent(value) => write!(f, "--event takes an event's uid, not {value:?}"),
         }
     }
 }
@@ -538,7 +555,14 @@ impl Launch {
                 return Err(unknown("--settings", word, sections.iter().map(|section| section.id).collect()));
             }
         };
-        Ok(Launch { open, appearance, now, design, font, color_scheme, settings })
+        let event = match flag_value(args, "--event")? {
+            None => None,
+            Some(uid) if uid.is_empty() || uid.len() > EVENT_MAX || uid.chars().any(char::is_control) => {
+                return Err(LaunchError::BadEvent(uid.into()));
+            }
+            Some(uid) => Some(uid.to_owned()),
+        };
+        Ok(Launch { open, appearance, now, design, font, color_scheme, settings, event })
     }
 
     /// The data source: demo data around the fixed day with `--now`, else what
@@ -1127,6 +1151,9 @@ impl App {
                         self.loaded = true;
                         self.error = None;
                         self.open_launched();
+                        if let Some(sought) = self.open_sought_event() {
+                            return sought;
+                        }
                         if !self.scrolled {
                             self.scrolled = true;
                             return self.scroll_to_morning();
@@ -2297,6 +2324,11 @@ impl App {
     /// for the dots of the week strip; for mini and strip today and the [`AGENDA_DAYS`] after it,
     /// so the glance finds the next event when today is done.
     fn load_range(&self) -> (NaiveDate, NaiveDate) {
+        // `--event` looks for its event first, in every day the core caches.
+        if self.launch.event.is_some() {
+            let today = self.now.date();
+            return (today - Days::days(SEEK_BACK_DAYS), today + Days::days(SEEK_AHEAD_DAYS));
+        }
         match self.class() {
             SizeClass::Mini | SizeClass::Strip => {
                 let today = self.now.date();
@@ -2571,6 +2603,19 @@ impl App {
         Task::perform(async move { source.accounts().await.map_err(|e| e.to_string()) }, Message::AccountLoaded)
     }
 
+    /// The event of `--event` (issue #797), once the first events are in: the week of its next occurrence from now
+    /// (its last one, when all are past) with it open in the side panel, loaded anew for that week. An event the load
+    /// did not bring (gone, out of the core's reach, outside its cached days) leaves the window as it starts, loaded
+    /// anew for today. `None` without `--event`, and after its first answer.
+    fn open_sought_event(&mut self) -> Option<Task<Message>> {
+        let uid = self.launch.event.take()?;
+        let Some(index) = next_occurrence(&self.events, &uid, self.now) else { return Some(self.load()) };
+        let day = local_start(&self.events[index]).date();
+        self.view = CalView::Week;
+        let open = self.update(Message::OpenEvent(index));
+        Some(Task::batch([open, self.go_to(day)]))
+    }
+
     /// The editor states of `--open`, once the first events are in: an event needs data to open.
     fn open_launched(&mut self) {
         if std::mem::replace(&mut self.opened, true) {
@@ -2704,6 +2749,30 @@ fn save_failed(code: &str, message: &str) -> String {
 
 /// Whether `a` and `b` are the same event: the same uid in the same calendar, and for the
 /// occurrences of a series (which share their uid) the same key, else the same start.
+/// The index in `events` of the occurrence of the event `uid` that `--event` opens: the first that has not ended by
+/// `now` (one running now counts), else the last that has; `None` when `events` hold none with that uid.
+fn next_occurrence(events: &[Event], uid: &str, now: NaiveDateTime) -> Option<usize> {
+    let mut found: Vec<usize> = (0..events.len()).filter(|&index| events[index].uid == uid).collect();
+    found.sort_by_key(|&index| local_start(&events[index]));
+    let ends = |index: usize| {
+        let event = &events[index];
+        event.end.as_ref().map_or_else(|| local_start(event), local_time)
+    };
+    found.iter().copied().find(|&index| ends(index) > now).or(found.last().copied())
+}
+
+/// When `event` starts on this computer's clock; an all-day event at the start of its day.
+fn local_start(event: &Event) -> NaiveDateTime {
+    local_time(&event.start)
+}
+
+fn local_time(time: &EventTime) -> NaiveDateTime {
+    match time {
+        EventTime::Date(day) => day.and_time(NaiveTime::MIN),
+        EventTime::DateTime(at) => to_local(*at),
+    }
+}
+
 fn same_event(a: &Event, b: &Event) -> bool {
     // An occurrence is known by its key, which stays when it is moved (task TE.7).
     let same_occurrence = match (a.recurrence_id, b.recurrence_id) {
@@ -3357,6 +3426,96 @@ mod tests {
             let _ = edit.update(Message::Resized(size));
             assert_eq!(edit.cover(), cover, "{size:?}: the editor's panel lies above the drawer");
         }
+    }
+
+    /// Issue #797: `--event=<uid>` is read without `--demo` as well, also a uid that looks like a flag; an empty one,
+    /// one with control characters or one too long is refused.
+    #[test]
+    fn the_start_event_is_a_uid() {
+        let event = |words: &[&str]| Launch::parse(&args(words)).map(|launch| launch.event);
+        assert_eq!(event(&["--event=7d1e-5b2a"]), Ok(Some("7d1e-5b2a".into())));
+        assert_eq!(event(&["--event=--demo"]), Ok(Some("--demo".into())));
+        assert_eq!(event(&["--event", "7d1e"]), Ok(Some("7d1e".into())));
+        assert_eq!(event(&["--demo", "--events"]), Ok(None));
+        let long = format!("--event={}", "a".repeat(EVENT_MAX + 1));
+        for bad in [&["--event="][..], &["--event=a\nb"], &[long.as_str()]] {
+            assert!(matches!(event(bad), Err(LaunchError::BadEvent(_))), "{bad:?}");
+        }
+        assert_eq!(event(&["--event"]), Err(LaunchError::MissingValue("--event")));
+    }
+
+    /// `event` as an occurrence of a series `uid` from `start` for an hour.
+    fn occurrence(event: &Event, uid: &str, start: NaiveDateTime) -> Event {
+        let at = to_utc(start);
+        let start = EventTime::DateTime(at);
+        Event {
+            uid: uid.into(),
+            start,
+            end: Some(EventTime::DateTime(at + Days::hours(1))),
+            recurring: true,
+            recurrence_id: Some(start),
+            ..event.clone()
+        }
+    }
+
+    /// Issue #797: `--event=<uid>` looks for the event in every day the core caches, then opens the week of its next
+    /// occurrence with it chosen, and loads that week; an unknown uid leaves the window as it starts.
+    #[test]
+    fn the_start_event_opens_its_week_with_it_chosen() {
+        let start = |uid: &str| {
+            let words = ["--demo", "--now", "2026-10-07T14:20", &format!("--event={uid}")].map(str::to_string);
+            let launch = Launch::parse(&words).expect("valid parameters");
+            let (app, _) = App::new(launch.source(&words), launch);
+            app
+        };
+        let mut app = start("sought");
+        let today = app.now.date();
+        let wide = (today - Days::days(SEEK_BACK_DAYS), today + Days::days(SEEK_AHEAD_DAYS));
+        assert_eq!(app.load_range(), wide, "the first load looks in every cached day");
+        let (collections, mut events, _) = torro_pim::demo::sample(today);
+        let base = events.iter().find(|event| !event.recurring).cloned().expect("the demo has single events");
+        let (past, next) = (today - Days::days(14), today + Days::days(10));
+        let at_nine = |day: NaiveDate| day.and_time(NaiveTime::from_hms_opt(9, 0, 0).unwrap_or(NaiveTime::MIN));
+        events.push(occurrence(&base, "sought", at_nine(next)));
+        events.push(occurrence(&base, "sought", at_nine(past)));
+        let _ = app.update(Message::AccountLoaded(Ok(two_accounts())));
+        let _ = app.update(Message::Loaded(Ok((collections.clone(), events.clone()))));
+        assert_eq!((app.view, app.anchor), (CalView::Week, next), "the week of the next occurrence");
+        let open = app.editor.as_ref().and_then(Editor::event).expect("the event is open");
+        assert_eq!((open.uid.as_str(), local_start(open)), ("sought", at_nine(next)));
+        assert!(app.launch.event.is_none(), "taken once");
+        assert_ne!(app.load_range(), wide, "then the week is loaded");
+        // The reload of the week finds it again, chosen.
+        let _ = app.update(Message::Loaded(Ok((collections.clone(), events.clone()))));
+        let chosen = app.view_data().selected.expect("chosen in the week");
+        assert_eq!(local_start(&app.events[chosen]), at_nine(next));
+
+        let mut unknown = start("gone");
+        let _ = unknown.update(Message::AccountLoaded(Ok(two_accounts())));
+        let _ = unknown.update(Message::Loaded(Ok((collections, events))));
+        assert!(unknown.editor.is_none(), "nothing open");
+        assert_eq!(unknown.anchor, today, "the window as it starts");
+        assert!(unknown.launch.event.is_none());
+        assert_ne!(unknown.load_range(), wide, "loaded again for today");
+    }
+
+    /// The occurrence `--event` opens: the first not ended by now, a running one included; all past, the last.
+    #[test]
+    fn the_next_occurrence_is_the_first_not_ended() {
+        let now = NaiveDate::from_ymd_opt(2026, 10, 7).and_then(|day| day.and_hms_opt(14, 20, 0)).expect("a time");
+        let (_, events, _) = torro_pim::demo::sample(now.date());
+        let base = events.iter().find(|event| !event.recurring).cloned().expect("a single event");
+        let hours = |hours: i64| now + Days::hours(hours);
+        let series = vec![
+            occurrence(&base, "s", hours(48)),
+            occurrence(&base, "s", hours(-48)),
+            occurrence(&base, "s", now - Days::minutes(30)),
+            occurrence(&base, "other", hours(1)),
+        ];
+        assert_eq!(next_occurrence(&series, "s", now), Some(2), "the one running now");
+        assert_eq!(next_occurrence(&series, "s", hours(2)), Some(0), "the next one");
+        assert_eq!(next_occurrence(&series, "s", hours(72)), Some(0), "all past: the last");
+        assert_eq!(next_occurrence(&series, "gone", now), None);
     }
 
     #[test]

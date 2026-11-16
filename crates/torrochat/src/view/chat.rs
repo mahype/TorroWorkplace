@@ -15,6 +15,8 @@
 //! - **A message's menu** (right click, or the "…" beside it under the pointer): the quick
 //!   reactions in a row at the top, "Reply", "Copy text", for the person's own "Edit" and
 //!   "Delete…" (which asks in the menu), "Mark as unread".
+//! - **Link cards** (issue #785) stand free under the bubble, not in it: on the bubble's edge (left for others, right
+//!   for the person's own), `size::card_gap()` below it and between each other, at most `size::list()` wide.
 //! - **Reactions** stand under the bubble as chips with their count; the person's own is chosen
 //!   (`selected` with the stronger edge), a click gives or takes it back.
 //! - **Stage 7 states:** the message being edited fills the composer with "Edit message" above it,
@@ -361,7 +363,7 @@ impl App {
         // "Show in chat" marks the message it went to.
         let marked = chat.files.highlight.as_deref() == Some(message.id.as_str());
         if let Some((file, width, height)) = flush_preview(chat, message, room) {
-            let below = self.caption_parts(chat, message, width - 2.0 * space::m());
+            let below = caption_parts(message);
             let edge = bubble_edge(own, marked);
             let round = theme::radius::md() - edge;
             let corners = border::Radius {
@@ -388,7 +390,7 @@ impl App {
         } else {
             // Files first, the text under them as their caption (stage 4), as Talk shows it.
             parts.extend(message.files.iter().map(|file| self.file_part(chat, message, file, inside)));
-            parts.extend(self.caption_parts(chat, message, inside));
+            parts.extend(caption_parts(message));
         }
         let content = column(parts).spacing(space::xs()).into();
         let bubble = bubble(content, own, marked, Padding::from([space::s(), space::m()]), room.bubble);
@@ -420,7 +422,7 @@ impl App {
         let own = newest.author.own;
         let marked = members.iter().any(|member| chat.files.highlight.as_deref() == Some(member.id.as_str()));
         let width = room.picture;
-        let below = self.caption_parts(chat, newest, width - 2.0 * space::m());
+        let below = caption_parts(newest);
         let (rects, high) = super::files::album_tiles(tiles.len(), width, ALBUM_GAP, size::panel());
         let edge = bubble_edge(own, marked);
         let more = tiles.len().checked_sub(rects.len()).filter(|more| *more > 0);
@@ -453,29 +455,10 @@ impl App {
         self.message_frame(chat, &members, bubble, first, last, group, room, anchors)
     }
 
-    /// What stands under a message's files: its text (unless it only names its one file, or it is a
-    /// voice message) and its link card, at most `room` wide.
-    fn caption_parts<'a>(
-        &'a self,
-        chat: &'a ChatState,
-        message: &'a torro_chat::Message,
-        room: f32,
-    ) -> Vec<Element<'a, Message>> {
-        let mut parts: Vec<Element<'a, Message>> = Vec::new();
-        if message.kind == MessageKind::Deleted {
-            return parts;
-        }
-        let caption_is_name = message.files.len() == 1 && message.text == message.files[0].name;
-        if !message.text.trim().is_empty() && !caption_is_name && message.kind != MessageKind::Voice {
-            parts.push(message_text(&message.text, &message.mentions));
-        }
-        parts.extend(self.link_part(chat, message, room));
-        parts
-    }
-
     /// Around a bubble of `members` (one message, or the messages of a grid, the oldest first): the
     /// author's name above the first of a run (in groups, not the person's own), "Reply" and "…"
-    /// beside the bubble under the pointer, the reactions, and the time below the last of a run.
+    /// beside the bubble under the pointer, the link cards of the last member free under the bubble (on its edge,
+    /// `size::card_gap()` below it), the reactions, and the time below the last of a run.
     /// Right-clicked it opens the menu of the last member. Reactions of a grid count together; a
     /// click goes to the member with the person's own reaction, else to the last.
     #[allow(clippy::too_many_arguments)]
@@ -525,6 +508,11 @@ impl App {
             column = column.push(typo::text(typo::caption(), message.author.name.as_str()).style(theme::text_3));
         }
         column = column.push(line);
+        if let Some(cards) = self.link_part(chat, message, room.bubble) {
+            // The column keeps `space::xs()` between its parts; the cards stand a card's gap off the bubble.
+            let gap = (size::card_gap() - space::xs()).max(0.0);
+            column = column.push(container(cards).padding(Padding::ZERO.top(gap)));
+        }
         let reactions = reactions_of(members);
         if !reactions.is_empty() {
             let chips = reactions
@@ -786,11 +774,30 @@ impl App {
         vec![MenuSection::new(first), MenuSection::titled(tr("Notifications"), levels)]
     }
 
-    /// The glance of a chat window in a mini or strip tile: the name and the newest message.
+    /// The glance of a chat window in a mini or strip tile: the name and the newest message; when that message has
+    /// a link card, the card in one line (`content_card::link_short`) instead of the bare address, its other words
+    /// above it (issue #784).
     pub(crate) fn chat_glance(&self, class: SizeClass) -> Element<'_, Message> {
         let Some(chat) = &self.chat else { return Space::new().into() };
         let name = widgets::ellipsized(typo::body_strong(), self.chat_name(chat), theme::text);
         let newest = chat.messages.iter().rev().find(|message| !timeline::is_system(message));
+        let card = newest.and_then(|message| self.first_card_line(message));
+        let pad = if class == SizeClass::Strip { [space::s(), space::m()] } else { [space::m(), space::m()] };
+        if let (Some(card), Some(message)) = (card, newest) {
+            let mut parts = vec![name];
+            let words = without_links(&message.text);
+            if !words.is_empty() {
+                let line = format!("{}: {}", people::first_name(&message.author.name), words);
+                parts.push(widgets::ellipsized(typo::meta(), line, theme::text_2));
+            }
+            parts.push(card);
+            return container(column(parts).spacing(space::xs()))
+                .width(Fill)
+                .height(Fill)
+                .padding(pad)
+                .center_y(Fill)
+                .into();
+        }
         let line = match newest {
             Some(message) => format!("{}: {}", people::first_name(&message.author.name), message.text),
             // A first page that failed is not loading: the glance says why.
@@ -801,9 +808,35 @@ impl App {
             },
         };
         let line = widgets::ellipsized(typo::meta(), line, theme::text_2);
-        let pad = if class == SizeClass::Strip { [space::s(), space::m()] } else { [space::m(), space::m()] };
         container(column![name, line].spacing(space::xs())).width(Fill).height(Fill).padding(pad).center_y(Fill).into()
     }
+}
+
+/// What a message says before its links, for the glance above its card ("Our intro" of "Our intro: https://…"):
+/// the words before the first address, when only addresses follow them. Empty when words stand between or after
+/// the addresses – cut out of a sentence, they would no longer say anything.
+fn without_links(text: &str) -> String {
+    let is_link = |word: &&str| word.starts_with("https://") || word.starts_with("http://");
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let first = words.iter().position(is_link).unwrap_or(words.len());
+    if !words[first..].iter().all(is_link) {
+        return String::new();
+    }
+    words[..first].join(" ").trim_end_matches(':').trim().to_owned()
+}
+
+/// What stands under a message's files: its text (unless it only names its one file, or it is a voice message). Its
+/// link cards stand outside the bubble (`App::message_frame`).
+fn caption_parts(message: &torro_chat::Message) -> Vec<Element<'_, Message>> {
+    let mut parts: Vec<Element<'_, Message>> = Vec::new();
+    if message.kind == MessageKind::Deleted {
+        return parts;
+    }
+    let caption_is_name = message.files.len() == 1 && message.text == message.files[0].name;
+    if !message.text.trim().is_empty() && !caption_is_name && message.kind != MessageKind::Voice {
+        parts.push(message_text(&message.text, &message.mentions));
+    }
+    parts
 }
 
 /// Around the composer: the history's side margin, so field and bubbles share an axis, and a step
@@ -993,4 +1026,17 @@ fn new_divider<'a>() -> Element<'a, Message> {
 /// `content` in the middle of the history.
 fn centred<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     container(content).width(Fill).center_x(Fill).padding([space::s(), 0.0]).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_glance_keeps_the_words_around_a_link_its_card_stands_for() {
+        assert_eq!(without_links("https://youtu.be/M7lc1UVf-VE"), "");
+        assert_eq!(without_links("Our intro: https://youtu.be/M7lc1UVf-VE"), "Our intro");
+        assert_eq!(without_links("See http://a.example/x and  https://b.example"), "", "a cut sentence says nothing");
+        assert_eq!(without_links("Two:  https://a.example https://b.example"), "Two");
+    }
 }

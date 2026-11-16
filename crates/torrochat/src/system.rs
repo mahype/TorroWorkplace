@@ -97,20 +97,6 @@ pub fn nextcloud_file(account: &str, file: &str) -> Option<String> {
         .then(|| format!("https://{}/f/{file}", server.trim_end_matches('/')))
 }
 
-/// The host of `link` (`https://example.com/a` → `example.com`), lower case.
-pub fn link_host(link: &str) -> Option<String> {
-    let rest = link.strip_prefix("https://").or_else(|| link.strip_prefix("http://"))?;
-    let host = rest.split(['/', '?', '#']).next()?.rsplit('@').next()?.split(':').next()?;
-    (!host.is_empty()).then(|| host.to_ascii_lowercase())
-}
-
-/// Whether `link` goes to the account's own server: those links get their card from the core by
-/// themselves, every other one as Settings › Privacy says (decision 23, issue #672).
-pub fn is_own_link(account: &str, link: &str) -> bool {
-    let own = account_server(account).and_then(|server| server.split('/').next()).map(str::to_ascii_lowercase);
-    own.is_some_and(|own| link_host(link).as_deref() == Some(own.as_str()))
-}
-
 /// The files a person picks in the system's dialog ("Attach file"); empty when cancelled.
 pub async fn choose_files() -> Vec<PathBuf> {
     let chosen = rfd::AsyncFileDialog::new().set_title(tr("Attach files")).pick_files().await;
@@ -179,16 +165,6 @@ mod tests {
         assert_eq!(nextcloud_file(sub, "7").as_deref(), Some("https://example.org/cloud/f/7"));
         assert_eq!(nextcloud_file(account, "../x"), None, "an id is no path");
         assert_eq!(nextcloud_file("mail:anna@x", "7"), None);
-    }
-
-    #[test]
-    fn own_links_are_told_from_foreign_ones() {
-        let account = "nextcloud:anna@cloud.example.org";
-        assert!(is_own_link(account, "https://cloud.example.org/s/abc"));
-        assert!(is_own_link(account, "https://CLOUD.example.org:443/x"));
-        assert!(!is_own_link(account, "https://example.com/blog"));
-        assert!(!is_own_link(account, "https://cloud.example.org.evil.net/x"));
-        assert_eq!(link_host("https://user@host.org/a?b").as_deref(), Some("host.org"));
     }
 
     #[test]

@@ -20,9 +20,13 @@
 //! `update` or `view` that takes a frame or longer ([`torro_core::timing`], issue #206), measured by
 //! the hulls [`update`] and [`view`] here.
 //!
+//! `torrocalendar --event=<uid>` starts on the week of that event with it open (issue #797): the core passes it when
+//! `apps.open_app` opens an event (`event:<uid>`); an empty uid is refused (exit 64), an unknown one gives the window
+//! as it starts.
+//!
 //! One calendar window per person (issue #279, [`torro_gui::instance`]): a second plain start brings
 //! the running window to the front and ends; starts for a helper or a view of their own (the
-//! reminder, `--settings`, `--demo`) open their window as before ([`instance_of`]).
+//! reminder, `--settings`, `--event`, `--demo`) open their window as before ([`instance_of`]).
 //!
 //! On Windows the app is a GUI program without a console window; a failed start is written to
 //! [`START_ERROR_FILE`] in the state directory instead (see [`report_start_error`]).
@@ -123,10 +127,11 @@ fn main() -> ExitCode {
 
 /// The kind of window whose single instance this start is ([`torro_gui::instance::claim`], issue
 /// #279): the calendar's for a plain start, `None` for the reminder (`--reminders`), the settings
-/// (`--settings`) and the demo, which the visual checks start next to the real window.
+/// (`--settings`), an event (`--event`, since a running window cannot be told to show it yet) and the demo, which
+/// the visual checks start next to the real window.
 fn instance_of(args: &[String], launch: &app::Launch) -> Option<AppId> {
     let own_window = args.iter().any(|arg| arg == "--demo") || reminder::Launch::wanted(args);
-    (!own_window && launch.settings.is_none()).then_some(APP)
+    (!own_window && launch.settings.is_none() && launch.event.is_none()).then_some(APP)
 }
 
 /// The start asks for pictures (`--shots <dir>` or `--shots=<dir>`, issue #492), which the reminder has none of.
@@ -224,7 +229,13 @@ mod tests {
         };
         assert_eq!(of(&[]), Some(AppId::CALENDAR));
         assert_eq!(of(&["--appearance", "dark"]), Some(AppId::CALENDAR));
-        for exception in [&["--demo"][..], &["--demo", "--open", "week"], &["--settings", "night"], &["--reminders"]] {
+        for exception in [
+            &["--demo"][..],
+            &["--demo", "--open", "week"],
+            &["--settings", "night"],
+            &["--reminders"],
+            &["--event=7d1e"],
+        ] {
             assert_eq!(of(exception), None, "{exception:?}");
         }
     }

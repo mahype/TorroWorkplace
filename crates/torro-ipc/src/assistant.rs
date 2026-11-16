@@ -26,6 +26,10 @@ use serde::{Deserialize, Serialize};
 use crate::api::{Access, Area, Confirm, Level, Operation, Outbound, Rights, Selection};
 use crate::{Request, Response};
 
+/// The link card and the provider to ask about of a [`Card::Link`] (issue #785), as the chat with people
+/// has them: one shape in every window.
+pub use torro_chat::{ForeignProvider, LinkCard};
+
 /// At most this many characters in a message to the assistant (`assistant.send_message`).
 pub const MAX_TEXT_CHARS: usize = 20_000;
 
@@ -402,7 +406,13 @@ pub enum EntryContent {
 }
 
 /// What a card ([`EntryContent::Card`]) points at, told apart by `kind`. Clients must accept kinds
-/// they do not know (show nothing, or "No longer available").
+/// they do not know (show nothing, or "No longer available"); an older client reads a kind of a newer
+/// core as [`CardRef::Unknown`].
+///
+/// A card points at an item, it never copies it (`docs/inhaltskarten.md`, "Grundsätze"): what it shows
+/// the core looks up anew for every `assistant.get_cards` ([`Card`]), with the rights of the
+/// conversation's client. Ids in it are what the core read itself, never what a model wrote: a made-up
+/// id resolves to [`Card::Unavailable`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CardRef {
@@ -423,10 +433,176 @@ pub enum CardRef {
         /// The kind of action (`mail.list_action_kinds`): `event`, `task`.
         action: String,
     },
+    /// A web address in an answer (issue #785): `{"kind": "link", "url": "https://example.org/a"}`.
+    /// The core adds at most [`MAX_LINK_CARDS`] after an answer, in the order they stand in it. Whether
+    /// the page's card loads by itself depends on where the address came from (`from`) and on Settings ›
+    /// Privacy; an address the model wrote itself only ever gives the question ([`Card::Link::ask`]).
+    Link {
+        /// The address as it stands in the answer: `https` only.
+        url: String,
+        /// Where the address came from, as the core saw it when it added the card; left out:
+        /// [`LinkOrigin::Model`], which always asks.
+        #[serde(default, skip_serializing_if = "LinkOrigin::is_model")]
+        from: LinkOrigin,
+    },
+    /// A mail the assistant found or read (issue #786): `{"kind": "mail", "account": "mail:…", "id": "m:…"}`.
+    Mail {
+        /// The mail account: `mail:<address>`.
+        account: String,
+        /// The mail's id (`m:…`).
+        id: String,
+    },
+    /// An event (issue #797), added after `calendar.save_event` or shown from a list:
+    /// `{"kind": "event", "uid": "…"}`, for one occurrence of a series with its `recurrence_id`.
+    Event {
+        /// The event's iCalendar UID.
+        uid: String,
+        /// Which occurrence of a series ([`torro_pim::Event::recurrence_id`]); left out for an event
+        /// that is not part of one, and for a whole series (the next occurrence shows).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recurrence_id: Option<torro_pim::EventTime>,
+    },
+    /// A task (issue #797), added after `tasks.save_todo` or shown from a list: `{"kind": "todo", "uid": "…"}`.
+    Todo {
+        /// The task's iCalendar UID.
+        uid: String,
+    },
+    /// A draft of a mail (issue #797), added after `mail.save_draft`: `{"kind": "draft", "id": "m:…"}`.
+    Draft {
+        /// The draft's id (`m:…`), as `mail.save_draft` answered it.
+        id: String,
+    },
+    /// A contact (issue #789), shown from `contacts.list_contacts` or `contacts.get_contact`:
+    /// `{"kind": "contact", "id": "…"}`.
+    Contact {
+        /// The contact's id, as `contacts.get_contact` takes it.
+        id: String,
+    },
+    /// Several items found together (issue #786, `assistant.show_items`), shown by their number
+    /// (`docs/inhaltskarten.md`, "Grenzen"): one to three as full cards, four to ten as short forms, and
+    /// with `total` the line "{total} … match" with "Show all". Its items are [`ItemRef`]s, so it never
+    /// holds a group: a group given as an item reads as [`ItemRef::Unknown`], which `assistant.show_items`
+    /// refuses with `forbidden` ([`items_refusal`]).
+    Group {
+        /// The items, at most [`MAX_SHOWN_ITEMS`], in the order to show them.
+        items: Vec<ItemRef>,
+        /// The area the items are of (`mail`, `calendar`, `tasks`, `contacts`): which app "Show all"
+        /// opens and what the line of the total names.
+        area: crate::api::Area,
+        /// How many the search found in all, when that was more than [`MAX_SHOWN_ITEMS`]. Set by the
+        /// core from what it read itself, never from a model's input.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total: Option<u64>,
+    },
+    /// A kind this build does not know (a newer core wrote it): shown as "No longer available".
+    #[serde(other)]
+    Unknown,
+}
+
+/// Where the address of a [`CardRef::Link`] came from (issue #785, decision 1 of the plan): set by the
+/// core when it adds the card, from what it saw itself, never from a model. Only an address the person
+/// wrote or one that stood in a command's answer of the conversation may load by itself, as Settings ›
+/// Privacy says; one the model wrote could carry what an injected instruction wants to send out, so it
+/// always asks first, also at "Always show".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkOrigin {
+    /// In a message of the person in this conversation.
+    Person,
+    /// In the answer of a command this conversation ran (a mail it read, a page of the web tool).
+    Read,
+    /// Anywhere else: the model wrote it. Last, so it takes every value this build does not know.
+    #[default]
+    #[serde(other)]
+    Model,
+}
+
+impl LinkOrigin {
+    /// Whether it is [`LinkOrigin::Model`], which the wire leaves out.
+    pub fn is_model(&self) -> bool {
+        *self == LinkOrigin::Model
+    }
+}
+
+/// At most this many items in one [`CardRef::Group`] (`assistant.show_items`, "Grenzen" in
+/// `docs/inhaltskarten.md`).
+pub const MAX_SHOWN_ITEMS: usize = 10;
+
+/// At most this many [`CardRef::Link`] cards after one answer (issue #785), as at most three cards per
+/// message in the chat with people.
+pub const MAX_LINK_CARDS: usize = 3;
+
+/// One item of a [`CardRef::Group`] and of `assistant.show_items` (issue #786): what a command of the
+/// conversation found – a mail, an event, a task or a contact – with the same fields as its
+/// [`CardRef`]. Never a group, so a group holds no group.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ItemRef {
+    /// As [`CardRef::Mail`].
+    Mail { account: String, id: String },
+    /// As [`CardRef::Event`].
+    Event {
+        uid: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recurrence_id: Option<torro_pim::EventTime>,
+    },
+    /// As [`CardRef::Todo`].
+    Todo { uid: String },
+    /// As [`CardRef::Contact`].
+    Contact { id: String },
+    /// Any other kind – a group, a file, a link – or one this build does not know: never shown,
+    /// refused by `assistant.show_items` ([`items_refusal`]). Left out of the schema, so an agent is
+    /// offered only the four kinds it may send.
+    #[serde(other)]
+    #[schemars(skip)]
+    Unknown,
+}
+
+impl ItemRef {
+    /// The card of the item alone ([`CardRef::Unknown`] for [`ItemRef::Unknown`]): what
+    /// `assistant.show_items` adds for one item, and what each item of a group resolves as.
+    pub fn card(&self) -> CardRef {
+        match self.clone() {
+            ItemRef::Mail { account, id } => CardRef::Mail { account, id },
+            ItemRef::Event { uid, recurrence_id } => CardRef::Event { uid, recurrence_id },
+            ItemRef::Todo { uid } => CardRef::Todo { uid },
+            ItemRef::Contact { id } => CardRef::Contact { id },
+            ItemRef::Unknown => CardRef::Unknown,
+        }
+    }
+
+    /// Every id the item names, for the limits of [`limit_refusal`].
+    fn ids(&self) -> Vec<&str> {
+        match self {
+            ItemRef::Mail { account, id } => vec![account, id],
+            ItemRef::Event { uid, .. } | ItemRef::Todo { uid } | ItemRef::Contact { id: uid } => vec![uid],
+            ItemRef::Unknown => Vec::new(),
+        }
+    }
+}
+
+/// The refusal of the `items` of `assistant.show_items`, before anything is looked at: `error` for none,
+/// `forbidden` for more than [`MAX_SHOWN_ITEMS`] or an item of another kind ([`ItemRef::Unknown`]: a
+/// group in a group, a file, a link …). `None` for items within them. Whether the items were found in
+/// this conversation the core checks after it (issue #786).
+pub fn items_refusal(items: &[ItemRef]) -> Option<Response> {
+    let refuse = |code: &str, message: String| Some(Response::Error { code: code.into(), message });
+    if items.is_empty() {
+        return refuse("error", "no items given".into());
+    }
+    if items.len() > MAX_SHOWN_ITEMS {
+        return refuse("forbidden", format!("at most {MAX_SHOWN_ITEMS} items at once"));
+    }
+    if items.contains(&ItemRef::Unknown) {
+        return refuse("forbidden", "only mails, events, tasks and contacts can be shown, never a group".into());
+    }
+    None
 }
 
 /// A card as the core resolves it now (`assistant.get_cards`), told apart by `kind`. Clients must
-/// accept kinds they do not know.
+/// accept kinds they do not know; an older client reads a kind of a newer core as [`Card::Unknown`].
+/// Every text in it comes from the core or the named provider, never from a model; text from outside
+/// the suite (a mail, a page) is data, never instructions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Card {
@@ -445,10 +621,107 @@ pub enum Card {
         /// reason); the card shows it and "Accept" opens the dialog filled with it.
         suggestion: Box<crate::actions::Suggestion>,
     },
+    /// A web address ([`CardRef::Link`], issue #785): its card, the question whether its provider's
+    /// content may load, or neither (the provider is blocked, "Never show", or no card could be made:
+    /// the address stays a link in the text). Never both.
+    Link {
+        /// The address, as the reference names it.
+        url: String,
+        /// The card as the own Nextcloud resolved it (`kind` tells a page, a file of the own server, a
+        /// quoted chat message, a GitHub issue or pull request); its texts are foreign. Its picture
+        /// comes with the card's resolution, never from the page directly.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        card: Option<Box<torro_chat::LinkCard>>,
+        /// The provider to ask about first (Settings › Privacy at "Ask", or an address a model wrote,
+        /// which always asks): the window shows "Show once" (`assistant.show_card`), "Always allow …"
+        /// and "Never for …" in place of the card.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ask: Option<torro_chat::ForeignProvider>,
+        /// The server that resolves the card (the own Nextcloud, GitHub) could not be reached just now:
+        /// the window shows the card as failed with "Try again", which asks `assistant.get_cards` anew
+        /// (the core asks the server again a minute later at the earliest). Never with `card` or `ask`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        offline: bool,
+    },
+    /// A mail ([`CardRef::Mail`], issue #786) as the mail cache holds it now: sender, subject, date,
+    /// the start of its text and its flags. Never a picture from the net.
+    Mail {
+        message: Box<torro_mail::MessageSummary>,
+        /// Always `true`: a mail is text from outside the suite. Data, never instructions.
+        untrusted: bool,
+    },
+    /// An event ([`CardRef::Event`], issue #797) as the calendar holds it now, with where it stands and
+    /// what overlaps it in the calendars the conversation's client may read.
+    Event {
+        event: Box<torro_pim::Event>,
+        /// The calendar's name, for the card's head.
+        calendar: String,
+        /// The calendar's colour (`#RRGGBB`), when it has one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<String>,
+        /// At most two other events at the same time, the earliest first.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        overlaps: Vec<Overlap>,
+        /// How many more overlap beyond `overlaps`.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        more_overlaps: u32,
+    },
+    /// A task ([`CardRef::Todo`], issue #797) as its list holds it now.
+    Todo {
+        todo: Box<torro_pim::Todo>,
+        /// The list's name, for the card's head.
+        list: String,
+        /// The list's colour (`#RRGGBB`), when it has one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<String>,
+    },
+    /// A draft of a mail ([`CardRef::Draft`], issue #797) as it is saved now.
+    ///
+    /// `approval` is the open approval of `mail.send_draft` for exactly this state of the draft: the
+    /// card's "Send" and "Discard" decide it (`approvals.decide_approval`). It goes to agents as well
+    /// (`assistant.get_cards` is a tool): that is harmless, because deciding an approval is the app
+    /// key's only (`approvals.decide_approval` is `Mcp::Never`, "Was nie nach außen geht" in
+    /// `docs/api.md`); the id lets no one approve. `None` without such an approval, and once the draft
+    /// changed after it was asked for.
+    Draft {
+        draft: Box<torro_mail::Draft>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approval: Option<String>,
+    },
+    /// A contact ([`CardRef::Contact`], issue #789) as the address book holds it now. Its picture comes
+    /// through `contacts.get_photo`.
+    Contact { contact: Box<torro_contacts::ContactSummary> },
+    /// Several items found together ([`CardRef::Group`], issue #786), each resolved as it would be
+    /// alone (an item out of reach is [`Card::Unavailable`]). Never holds a group.
+    Group {
+        items: Vec<Card>,
+        /// The area of the items, as [`CardRef::Group::area`].
+        area: crate::api::Area,
+        /// How many the search found in all, when that was more than shown.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total: Option<u64>,
+    },
     /// Gone or out of reach: deleted, changed, moved, made by another client, or no longer within
     /// the rights (the tool switched off, the area or the tool taken away). Shown as "No longer
     /// available"; why is not told.
     Unavailable,
+    /// A kind this build does not know (a newer core sent it): shown as "No longer available".
+    #[serde(other)]
+    Unknown,
+}
+
+/// Another event at the time of an [`Card::Event`]: its title and time, nothing else.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Overlap {
+    /// Its title: the calendar's text, data.
+    pub summary: String,
+    pub start: torro_pim::EventTime,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<torro_pim::EventTime>,
+}
+
+fn is_zero(count: &u32) -> bool {
+    *count == 0
 }
 
 /// One card of a conversation with its place in it (`assistant.get_cards`).
@@ -691,7 +964,8 @@ pub enum ChatWindow {
 /// at: a message that is blank or over [`MAX_TEXT_CHARS`], a title that is blank, longer than
 /// [`MAX_TITLE_CHARS`] or more than one line, any id over [`MAX_ID_BYTES`], a note that is blank or
 /// over [`MAX_NOTE_CHARS`], a search that is blank or over [`MAX_QUERY_CHARS`] (issue #704), a skill beyond
-/// its limits ([`skill_refusal`]), and a change of the profile that changes nothing or breaks its limits
+/// its limits ([`skill_refusal`]), items of `assistant.show_items` beyond theirs ([`items_refusal`], which
+/// answers `forbidden` for too many and for a group in a group), and a change of the profile that changes nothing or breaks its limits
 /// ([`profile_refusal`]). `None` for every request within them and for every other request. The
 /// core calls it before rights, approvals and handlers, so nobody is asked to approve what would be
 /// refused anyway.
@@ -726,6 +1000,7 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
         Request::SearchConversations { query, .. } if query.chars().count() > MAX_QUERY_CHARS => {
             refuse(format!("a query may hold at most {MAX_QUERY_CHARS} characters"))
         }
+        Request::ShowItems { items, .. } => items_refusal(items),
         Request::SaveSkill { name, description, text, .. } => skill_refusal(name, description, text, true)
             .map(|message| Response::Error { code: "error".into(), message }),
         Request::UpdateProfile { name, description, avatar, personality, person_name } => profile_refusal(
@@ -853,10 +1128,13 @@ impl Request {
             | Request::CancelAnswer { conversation: id }
             | Request::SpeakAnswer { conversation: id }
             | Request::OpenChatWindow { window: ChatWindow::Conversation(id) }
-            | Request::ConfirmBot { conversation: id, .. } => Some(id),
+            | Request::ConfirmBot { conversation: id, .. }
+            | Request::ShowAssistantCard { conversation: id, .. }
+            | Request::GetCardPicture { conversation: id, .. } => Some(id),
             Request::SendMessage { conversation, .. }
             | Request::AskBot { conversation, .. }
-            | Request::StartTalk { conversation } => conversation.as_deref(),
+            | Request::StartTalk { conversation }
+            | Request::ShowItems { conversation, .. } => conversation.as_deref(),
             _ => None,
         }
     }
@@ -896,6 +1174,7 @@ fn assistant_ids(request: &Request) -> Vec<&str> {
         Request::Forget { id } | Request::Remember { replaces: Some(id), .. } => ids.push(id),
         Request::GetSkill { name } | Request::DeleteSkill { name } => ids.push(name),
         Request::SaveSkill { replaces: Some(name), .. } => ids.push(name),
+        Request::ShowItems { items, .. } => ids.extend(items.iter().flat_map(ItemRef::ids)),
         _ => {}
     }
     ids
@@ -1359,6 +1638,93 @@ mod tests {
         assert_eq!(Request::GetCards { conversation: "c1".into() }.conversation(), Some("c1"));
         let long = Request::GetCards { conversation: "x".repeat(MAX_ID_BYTES + 1) };
         assert!(limit_refusal(&long).is_some(), "the id's limit holds");
+    }
+
+    /// Issue #784: the new kinds of cards read as `docs/inhaltskarten.md` names them, and a kind a newer core
+    /// writes reads as unknown instead of failing the whole conversation.
+    #[test]
+    fn content_cards_read_as_documented_and_unknown_kinds_survive() {
+        let read = |json: serde_json::Value| serde_json::from_value::<CardRef>(json).expect("a card reference");
+        assert_eq!(
+            read(serde_json::json!({"kind": "link", "url": "https://example.org/a"})),
+            CardRef::Link { url: "https://example.org/a".into(), from: LinkOrigin::Model },
+            "an address of unknown origin asks first"
+        );
+        assert_eq!(
+            read(serde_json::json!({"kind": "link", "url": "https://example.org/a", "from": "person"})),
+            CardRef::Link { url: "https://example.org/a".into(), from: LinkOrigin::Person }
+        );
+        assert_eq!(
+            read(serde_json::json!({"kind": "mail", "account": "mail:anna@example.org", "id": "m:4"})),
+            CardRef::Mail { account: "mail:anna@example.org".into(), id: "m:4".into() }
+        );
+        assert_eq!(
+            read(serde_json::json!({"kind": "event", "uid": "e1"})),
+            CardRef::Event { uid: "e1".into(), recurrence_id: None }
+        );
+        assert_eq!(read(serde_json::json!({"kind": "todo", "uid": "t1"})), CardRef::Todo { uid: "t1".into() });
+        assert_eq!(read(serde_json::json!({"kind": "draft", "id": "m:9"})), CardRef::Draft { id: "m:9".into() });
+        assert_eq!(read(serde_json::json!({"kind": "contact", "id": "c1"})), CardRef::Contact { id: "c1".into() });
+        let group = read(serde_json::json!({
+            "kind": "group", "area": "mail", "total": 12,
+            "items": [{"kind": "mail", "account": "mail:anna@example.org", "id": "m:4"}, {"kind": "group"}]
+        }));
+        let CardRef::Group { items, area, total } = &group else { panic!("a group: {group:?}") };
+        assert_eq!((area, total), (&crate::api::Area::Mail, &Some(12)));
+        assert_eq!(items[1], ItemRef::Unknown, "a group in a group reads as unknown");
+        assert_eq!(items[0].card(), CardRef::Mail { account: "mail:anna@example.org".into(), id: "m:4".into() });
+        assert_eq!(read(serde_json::json!({"kind": "map", "lat": 1.0})), CardRef::Unknown, "a newer kind");
+
+        let shown: Card = serde_json::from_value(serde_json::json!({"kind": "photo", "id": "p1"})).expect("reads");
+        assert_eq!(shown, Card::Unknown);
+        let link = Card::Link {
+            url: "https://example.org/a".into(),
+            card: None,
+            ask: Some(ForeignProvider { key: "example.org".into(), name: "example.org".into() }),
+            offline: false,
+        };
+        let json = serde_json::to_value(&link).expect("serializes");
+        assert_eq!((&json["kind"], &json["ask"]["key"]), (&"link".into(), &"example.org".into()));
+        assert!(json.get("offline").is_none(), "left out while reachable");
+        assert_eq!(serde_json::from_value::<Card>(json).expect("reads back"), link);
+        let offline = Card::Link { url: "https://example.org/a".into(), card: None, ask: None, offline: true };
+        let json = serde_json::to_value(&offline).expect("serializes");
+        assert_eq!(json["offline"], true);
+        assert_eq!(serde_json::from_value::<Card>(json).expect("reads back"), offline);
+        let entry = CardEntry {
+            seq: 3,
+            card: Card::Group { items: vec![Card::Unavailable], area: crate::api::Area::Tasks, total: None },
+        };
+        let json = serde_json::to_value(&entry).expect("serializes");
+        assert_eq!(
+            json["card"],
+            serde_json::json!({"kind": "group", "items": [{"kind": "unavailable"}], "area": "tasks"})
+        );
+    }
+
+    /// Issue #786: `assistant.show_items` takes one to ten mails, events, tasks or contacts; a group in a group,
+    /// any other kind and more than ten are `forbidden` before anything is looked at.
+    #[test]
+    fn shown_items_keep_their_limits_and_never_hold_a_group() {
+        let mail = |n: usize| ItemRef::Mail { account: "mail:anna@example.org".into(), id: format!("m:{n}") };
+        let show = |items: Vec<ItemRef>| Request::ShowItems { conversation: None, items };
+        assert_eq!(code(limit_refusal(&show(vec![mail(1)]))), None);
+        assert_eq!(code(limit_refusal(&show((0..MAX_SHOWN_ITEMS).map(mail).collect()))), None);
+        assert_eq!(code(limit_refusal(&show(Vec::new()))), Some("error".into()), "no items");
+        assert_eq!(code(limit_refusal(&show((0..=MAX_SHOWN_ITEMS).map(mail).collect()))), Some("forbidden".into()));
+        let nested: Request = serde_json::from_value(serde_json::json!({
+            "method": "assistant.show_items",
+            "items": [{"kind": "group", "area": "mail", "items": [{"kind": "mail", "account": "a", "id": "m:1"}]}]
+        }))
+        .expect("a group as an item still parses");
+        assert_eq!(code(limit_refusal(&nested)), Some("forbidden".into()), "no group in a group");
+        let file = show(vec![mail(1), ItemRef::Unknown]);
+        assert_eq!(code(limit_refusal(&file)), Some("forbidden".into()), "another kind");
+        let long = show(vec![ItemRef::Contact { id: "c".repeat(MAX_ID_BYTES + 1) }]);
+        assert_eq!(code(limit_refusal(&long)), Some("error".into()), "an id beyond its limit");
+        let card = Request::ShowAssistantCard { conversation: "c1".into(), seq: 4 };
+        assert_eq!(card.conversation(), Some("c1"));
+        assert_eq!(show(vec![mail(1)]).conversation(), None, "the conversation that answers now");
     }
 
     #[test]

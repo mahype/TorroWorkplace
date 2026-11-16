@@ -155,7 +155,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `contacts` ²⁸ | `list_address_books`, `list_contacts`, `get_contact`, `get_photo`, `list_groups`, `upcoming_birthdays`, `export_vcards`, `find_duplicates`, `import_vcards` mit `dry_run` | `create_contact`, `add_to_contact`, `set_favorite`, `add_to_group`, `mark_used`, `move_contact`, `resolve_conflict` mit `both`, `import_vcards`, `dismiss_duplicates` | `update_contact`, `remove_from_group`, `set_photo`, `delete_contact`, `resolve_conflict` mit `mine`/`theirs`, `merge_contacts` | |
 | `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_pile` ²⁶, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `create_contact_from_item` ²⁸, `mute_item` mit `conversation`, `hide` (nicht für Mail ¹⁰)/`info`, ohne `until` ¹¹ | | `mute_source`, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ², `move_category` ²⁹ |
 | `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `overview` ⁷, `sync_status`, `get_message`, `get_thread`, `get_attachment`, `get_draft`, `prepare_paste`, `list_save_history`, `list_filters` ²⁷, `preview_filter` ²⁷ | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `prepare_image`, `upload_image`, `respond_to_invitation` ⁷ ¹⁶, `unsubscribe` ⁷ | `delete_messages`, `release_images` | `create_filter`, `update_filter`, `remove_filter`, `apply_filter` ²⁷ |
-| `chat` ³⁰ | `list_conversations`, `get_messages`, `suggest_mentions`, `find_people`, `search_messages`, `get_upload`, `get_preview`, `get_attachment`, `list_shared`, `get_call` | `send_message` (nach außen, auch mit `files` und `items`), `mark_read`, `mark_unread`, `create_conversation` (nach außen), `react` (nach außen), `set_favorite`, `set_notification_level`, `prepare_file` (`source: path` **nur App-Schlüssel**, Punkt 10 unten), `upload_file`, `cancel_upload`, `save_attachment` (`to: file`/`folder` **nur App-Schlüssel**), `show_card` (**nur App-Schlüssel**, Punkt 10), `decline_call`, `leave_call` | `edit_message`, `delete_message` (beide nach außen), `release_files` | |
+| `chat` ³⁰ | `list_conversations`, `get_messages`, `suggest_mentions`, `find_people`, `search_messages`, `get_upload`, `get_preview`, `get_attachment`, `list_shared`, `get_call` | `send_message` (nach außen, auch mit `files` und `items`), `mark_read`, `mark_unread`, `create_conversation` (nach außen), `react` (nach außen), `set_favorite`, `set_notification_level`, `prepare_file` (`source: path` **nur App-Schlüssel**, Punkt 10 unten), `upload_file`, `cancel_upload`, `save_attachment` (`to: file`/`folder` **nur App-Schlüssel**), `show_card` (**nur App-Schlüssel**, Punkt 14), `decline_call`, `leave_call` | `edit_message`, `delete_message` (beide nach außen), `release_files` | |
 | `presence` ³⁰ | `list_people`, `find_people`, `get_own_status` | `add_person`, `remove_person`, `set_own_status` (nach außen) | | |
 | `workflows` (#556) | Vorlagen, Abläufe, Regeln, Läufe, Dokumentstücke und lokale Vorschau (siehe unten) | Entwürfe, getestete Abläufe, Start/Abbruch, Öffnen/Zeigen | Ablauf/Regel entfernen | Regeln verwalten; Dauergrant erteilen/widerrufen **nur App-Schlüssel** |
 | `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav`, `connect_mail` und `reconfigure_mail` (die letzten fünf **nur App-Schlüssel**, Punkt 5 unten), `set_search_key` (**nur App-Schlüssel**, Punkt 5, #305) |
@@ -166,6 +166,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `extensions` ²⁵ | `list_extensions`, `get_extension`, `list_catalog`, `list_tools`, `read_logs` (**nur App-Schlüssel**, Punkt 10 unten) | `set_enabled` (einschalten **nur App-Schlüssel**) | `call_tool` (Zugriff des Werkzeugs, ²⁵) | `remove_extension`, `install_extension`, `confirm_tools`, `update_extension`, `set_secret`, `set_folder` (die letzten fünf **nur App-Schlüssel**) |
 | `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity` (**nur App-Schlüssel**, siehe unten) |
 | `approvals` | `list_approvals`, `approval_status` | `ask_permission` ⁵ | | `decide_approval` (**nur App-Schlüssel**) |
+| `assistant` (Karten, #784) | `get_cards`, `get_card_picture` (Bild einer Link-Karte wie `chat.get_preview`: mit dem Recht „Bildinhalte“, nur für Karten, die `get_cards` dem Client zeigt; holt nichts Neues) | `show_items` (Treffer als Karten; nur Kennungen, die der Assistent in dieser Unterhaltung gelesen hat, höchstens 10, auch für Bots), `show_card` (**nur App-Schlüssel**, Punkt 14) | | |
 
 ¹ `load_template` braucht `Write`, mit `mode: replace` aber `Delete`, weil es offene Fenster
 schließt. Die Stufe hängt also vom Request ab, nicht nur vom Namen (`Request::operation()`).
@@ -671,7 +672,10 @@ Namen der Vorlage aus dem Speicher. `chat:<unterhaltung>` (Issue #643, [chat.md]
 der Unterhaltung (`torrochat --conversation=<id>`), `chat:contacts` die Kontaktliste; ein Client braucht Leserecht
 in `chat` mit dem Konto (sonst `not-found`). Auf die Befehlszeile kommen nur das Konto, wie der Kern es kennt, und ein
 geprüftes Token; die Freigabe nennt den Namen der Unterhaltung vom Server. `contact:<id>` (Issue #727) öffnet einen
-Kontakt in einem eigenen Fenster der Kontakte-App (`torrocontacts --contact=<id>`, siehe Fußnote ²⁸).
+Kontakt in einem eigenen Fenster der Kontakte-App (`torrocontacts --contact=<id>`, siehe Fußnote ²⁸). `event:<uid>`
+(Issue #797, „Open in Calendar“ einer Terminkarte) öffnet den Kalender in der Woche des Termins
+(`torrocalendar --event=<uid>`); ein Client braucht Leserecht in `calendar` und einen Kalender, in dem der Termin
+liegt (sonst `not-found`), `app` muss `torrocalendar` sein. Die Freigabe nennt den Titel des Termins aus dem Cache.
 
 ¹⁴ Statistik des Eingangs (E8.8a, Konzept [eingang.md](eingang.md#insights)). `get_stats { range: week
 | month | quarter, until? }` (`Read`) zählt über die letzten 7, 30 bzw. 90 Tage bis `until` (ein lokaler
@@ -1461,7 +1465,8 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
     MCP-Servers in Punkt 10). Ein Client, der die ganzen Einstellungen schreibt, behält das gespeicherte `privacy`.
     Grund: Was geladen wird, verrät Dritten, dass und wann die Person liest; darüber entscheidet sie selbst, und
     kein Agent soll ihr eine Rückfrage abnehmen oder aufzwingen. Lesen dürfen Agenten den Stand
-    (`settings.get_settings`, Feld `privacy`). „Show once“ im Chat ist `chat.show_card` (ohnehin `Mcp::Never`); in der
+    (`settings.get_settings`, Feld `privacy`). „Show once“ im Chat ist `chat.show_card`, im Assistenten
+    `assistant.show_card` (Issue #784; beide `Mcp::Never`, Privacy bleibt dabei unverändert); in der
     Mail hat es keinen Befehl, weil nur das Fenster lädt und nichts gespeichert wird. `mail.save_message_as` (PDF,
     Bild) lädt externe Bilder nur nach der gespeicherten Einstellung, „Show once“ zählt dort nicht, weil auch Agenten
     speichern dürfen.

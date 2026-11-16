@@ -1561,6 +1561,7 @@ mod flow {
             id: message.clone(),
             file: Some(file.into()),
             card: false,
+            index: None,
             size: PreviewSize::Small,
         };
         let Response::ChatPicture { picture } = chat.handle(preview(&file_id.to_string()), APP).await else {
@@ -1683,8 +1684,13 @@ mod flow {
         assert_eq!(shown.title, "Somewhere");
         let Response::ChatMessages(page) = chat.handle(read, agent).await else { panic!("messages") };
         assert!(card(&page, 7).is_some(), "held for every reader now");
-        let picture =
-            Request::ChatGetPreview { id: message_id(&ben(), 7), file: None, card: true, size: PreviewSize::Small };
+        let picture = Request::ChatGetPreview {
+            id: message_id(&ben(), 7),
+            file: None,
+            card: true,
+            index: None,
+            size: PreviewSize::Small,
+        };
         assert!(matches!(chat.handle(picture.clone(), agent).await, Response::ChatPicture { .. }));
         let blind = rights(false);
         let blind = Caller { reach: Reach::Client(&blind), client: Some("agent") };
@@ -1762,8 +1768,13 @@ mod flow {
         assert_eq!(of(&decided, 8), (None, None));
         assert_eq!(server.count("resolve"), 2, "the blocked one is not resolved");
         assert_eq!(code(&chat.show_card(&message_id(&ben(), 8)).await), "unsupported");
-        let picture =
-            Request::ChatGetPreview { id: message_id(&ben(), 7), file: None, card: true, size: PreviewSize::Small };
+        let picture = Request::ChatGetPreview {
+            id: message_id(&ben(), 7),
+            file: None,
+            card: true,
+            index: None,
+            size: PreviewSize::Small,
+        };
         assert!(
             matches!(chat.handle(picture.clone(), APP).await, Response::ChatPicture { .. }),
             "allowed: its picture"

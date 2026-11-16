@@ -690,3 +690,75 @@ async fn the_model_and_the_effort_go_to_claude_code() {
     let (summary, _) = read(&setup.assistant, &conversation.id, None).await;
     assert_eq!((summary.model.as_deref(), summary.effort), (Some("opus"), Some(torro_core::ai::Effort::High)));
 }
+
+/// Issue #785: as with engine A, the links of the agent's last answer become link cards after it, each with
+/// where it came from: what a tool that reads answered, or the agent alone – a message a client sent (as here) is no
+/// person's, so its link counts as the agent's and asks first, and so does an address only a command that writes
+/// echoed (decision 1 of issue #784: `mail.save_draft` answers the draft the agent wrote). The last card ends the run.
+#[tokio::test]
+async fn the_links_of_an_answer_become_link_cards_after_it() {
+    use torro_ipc::assistant::{CardRef, LinkOrigin};
+    let (client, read, echo) = ("https://example.org/plan", "https://example.com/news", "https://example.net/echo");
+    let answer = format!("See {client}, {read} and {echo}.");
+    let transcript = [
+        init(),
+        calls("t1", "calendar_list_calendars", json!({})),
+        result_of("t1", &format!("found {read}"), false),
+        calls("t2", "mail_save_draft", json!({"body": echo})),
+        result_of("t2", &format!("saved {echo}"), false),
+        says(&answer),
+        done(&answer),
+    ];
+    let setup = set_up(&transcript, "", Duration::from_secs(10), true).await;
+    let id = ask(&setup, None, &format!("What about {client}?"), Vec::new()).await;
+    let entries = finished(&setup.assistant, &id).await;
+    let cards: Vec<_> = contents(&entries)
+        .into_iter()
+        .filter_map(|content| match content {
+            EntryContent::Card { card } => Some(card),
+            _ => None,
+        })
+        .collect();
+    let link = |url: &str, from| CardRef::Link { url: url.into(), from };
+    assert_eq!(cards, [link(client, LinkOrigin::Model), link(read, LinkOrigin::Read), link(echo, LinkOrigin::Model)]);
+    assert!(matches!(contents(&entries).last(), Some(EntryContent::Card { .. })), "the cards come after the answer");
+}
+
+/// Issue #786: after the agent's `mail_search_messages`, engine B keeps what the answer named ([`store::Line::Seen`],
+/// read from the agent's text as [`crate::assistant::cards::group::seen_in`] reads it), so `assistant.show_items`
+/// shows those mails in this conversation; a mail no command found stays `forbidden`.
+#[tokio::test]
+async fn a_search_of_the_agent_lets_show_items_show_what_it_found() {
+    use crate::assistant::cards::group::Owner;
+    use torro_ipc::assistant::ItemRef;
+
+    const ANNA: &str = "mail:anna@example.org";
+    let mail = |n: usize| ItemRef::Mail { account: ANNA.into(), id: format!("m:{n}") };
+    let messages: Vec<Value> = (0..2)
+        .map(|n| {
+            json!({"id": format!("m:{n}"), "account": ANNA, "folder": "f:1", "thread_id": format!("t:{n}"),
+                   "date": "2026-11-13T09:00:00Z"})
+        })
+        .collect();
+    let answer = json!({"result": "mail-messages", "messages": messages, "source": "cache", "total_estimate": 2});
+    let transcript = [
+        init(),
+        calls("t1", "mail_search_messages", json!({"query": "offer"})),
+        result_of("t1", &answer.to_string(), false),
+        says("Two mails."),
+        done("Two mails."),
+    ];
+    let setup = set_up(&transcript, "", Duration::from_secs(10), true).await;
+    let id = ask(&setup, None, "Mails about the offer?", Vec::new()).await;
+    finished(&setup.assistant, &id).await;
+
+    let stored = store::load_all(&setup.path("assistant")).expect("read");
+    let conversation = stored.iter().find(|conversation| conversation.id == id).expect("stored");
+    let found: Vec<&ItemRef> = conversation.seen.values().flat_map(|seen| &seen.refs).collect();
+    assert_eq!(found, [&mail(0), &mail(1)], "a Seen line with the search's ids");
+
+    let shown = setup.assistant.show_items(Owner::Assistant, Some(&id), &[mail(1), mail(0)]).await;
+    assert_eq!(shown, Response::Ok);
+    let foreign = setup.assistant.show_items(Owner::Assistant, Some(&id), &[mail(0), mail(9)]).await;
+    assert!(matches!(&foreign, Response::Error { code, .. } if code == "forbidden"), "{foreign:?}");
+}

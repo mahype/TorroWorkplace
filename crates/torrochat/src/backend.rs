@@ -324,9 +324,18 @@ impl Backend {
         }
     }
 
-    /// `chat.get_preview` of a file (`file`) or of the message's link card (`file` `None`).
+    /// `chat.get_preview` of a file (`file`) of the message `id`; link cards go through [`Self::card_preview`].
     pub async fn preview(self, id: String, file: Option<String>, size: PreviewSize) -> Result<Picture, ChatError> {
-        let card = file.is_none();
+        match self {
+            Backend::Core(core) => core.preview(id, file, None, size).await,
+            Backend::Demo(demo) => demo.preview(id, file, None, size).await,
+        }
+    }
+
+    /// `chat.get_preview` of the link card with the `index` `index` ([`LinkCard::index`]) of the message `id`
+    /// (issue #785).
+    pub async fn card_preview(self, id: String, index: u8, size: PreviewSize) -> Result<Picture, ChatError> {
+        let (file, card) = (None, Some(index));
         match self {
             Backend::Core(core) => core.preview(id, file, card, size).await,
             Backend::Demo(demo) => demo.preview(id, file, card, size).await,
@@ -362,11 +371,13 @@ impl Backend {
         }
     }
 
-    /// `chat.show_card` ("Show once").
-    pub async fn show_card(self, id: String) -> Result<Option<LinkCard>, ChatError> {
+    /// `chat.show_card` ("Show once") of the link `index` of the message `id` (issue #785); `None`: the link the
+    /// message asks about (`foreign`), as "Show once" asks.
+    pub async fn show_card(self, id: String, index: impl Into<Option<u8>>) -> Result<Option<LinkCard>, ChatError> {
+        let index = index.into();
         match self {
-            Backend::Core(core) => core.show_card(id).await,
-            Backend::Demo(demo) => demo.show_card(id).await,
+            Backend::Core(core) => core.show_card(id, index).await,
+            Backend::Demo(demo) => demo.show_card(id, index).await,
         }
     }
 

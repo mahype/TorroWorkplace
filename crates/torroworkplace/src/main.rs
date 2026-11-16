@@ -57,6 +57,7 @@ mod help;
 mod hook;
 mod inbox;
 mod inbox_notify;
+mod link_cards;
 mod mail;
 mod mcp;
 mod notify;
