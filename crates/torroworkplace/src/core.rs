@@ -13883,7 +13883,8 @@ impl Core {
                 None
             }
             Some(slot) => {
-                let (state, tool) = self.voice_now().await;
+                // The conversation just checked, not one the slot may hold meanwhile.
+                let (state, tool) = self.voice_in(slot.conversation.as_deref()).await;
                 Some(torro_ipc::Talk { conversation: slot.conversation, state, tool })
             }
             None => None,
@@ -13893,11 +13894,17 @@ impl Core {
     }
 
     /// What the voice chat does now (issue #830): the listener's state, made more precise while it
-    /// answers – the answer is read aloud (`Speaking`), the answer in the conversation by voice uses a
+    /// answers – something is read aloud, usually the answer (`Speaking`), the answer in the conversation by voice uses a
     /// tool (`UsingTool` with its catalogue name) or the model thinks and writes (`Thinking`). Reading aloud
     /// comes first, because the person hears it now even while the model still works. Without a
     /// running answer and nothing read it stays `Answering`.
     pub async fn voice_now(&self) -> (torro_ipc::VoiceState, Option<String>) {
+        let conversation = self.lock_talk().as_ref().and_then(|talk| talk.conversation.clone());
+        self.voice_in(conversation.as_deref()).await
+    }
+
+    /// [`Core::voice_now`] with the answer in `conversation`, the conversation by voice as the caller read it.
+    async fn voice_in(&self, conversation: Option<&str>) -> (torro_ipc::VoiceState, Option<String>) {
         use torro_ipc::VoiceState;
         let state = self.voice.state();
         if state != VoiceState::Answering {
@@ -13906,11 +13913,10 @@ impl Core {
         if self.speaking.now().0 {
             return (VoiceState::Speaking, None);
         }
-        let conversation = self.lock_talk().as_ref().and_then(|talk| talk.conversation.clone());
         let Some(id) = conversation else {
             return (VoiceState::Answering, None);
         };
-        match self.assistant.activity(&id).await {
+        match self.assistant.activity(id).await {
             Some(Some(tool)) => (VoiceState::UsingTool, Some(tool)),
             Some(None) => (VoiceState::Thinking, None),
             None => (VoiceState::Answering, None),
@@ -20959,14 +20965,18 @@ done"#;
     async fn the_voice_chat_says_what_the_answer_does() {
         use torro_ipc::VoiceState;
         let dir = tempfile::tempdir().expect("temp dir");
-        let step = std::time::Duration::from_millis(600);
+        let step = std::time::Duration::from_millis(1500);
         let program = crate::apps::tests::fake_program(dir.path(), r#"echo '"answering"'; sleep 30"#);
         let assistant = crate::assistant::tests::assistant_in(dir.path(), step);
         let answering = core(dir.path()).with_assistant(assistant).with_listener(crate::apps::Listener::at(program));
-        let id = test_message(&answering).await;
-        assert!(matches!(answering.handle(Request::StartTalk { conversation: Some(id) }).await, Response::Talk { .. }));
+        // The listener first, the answer then: its first step must not be over before the listener answers.
+        assert!(matches!(answering.handle(Request::StartTalk { conversation: None }).await, Response::Talk { .. }));
         let mut changes = answering.voice_changes();
         crate::apps::tests::until(&answering.voice, &mut changes, VoiceState::Answering).await;
+        let id = test_message(&answering).await;
+        if let Some(talk) = answering.lock_talk().as_mut() {
+            talk.conversation = Some(id);
+        }
         let state = |talk: Option<torro_ipc::Talk>| talk.map(|talk| (talk.state, talk.tool));
         assert_eq!(
             state(talk_of(&answering).await.0),

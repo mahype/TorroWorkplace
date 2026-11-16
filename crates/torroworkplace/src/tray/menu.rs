@@ -11,8 +11,8 @@
 //! `_`, muda's `&`) it does itself.
 //!
 //! The counts are part of the [`Snapshot`]; the daemon hands over a new one whenever something
-//! is written to the inbox or an approval changes, so the tray never asks the socket itself and
-//! nothing polls.
+//! is written to the inbox or an approval changes, so the tray never asks the socket itself. Only
+//! what the voice chat does while it answers the daemon looks at twice a second (issue #830).
 //!
 //! While voice is on (task C.9, [`voice_section`]) the menu says what the voice chat does ("Listening
 //! for “Hey Torro”", "Recording …", "Looking at the calendar …" (issue #830), or "Not listening" when it
