@@ -1341,10 +1341,15 @@ impl App {
         // The dot is about the microphone: red while it records, green while it waits for the person.
         let status = match talk.state {
             VoiceState::Recording => widgets::Status::Attention,
-            VoiceState::Listening | VoiceState::Conversing => widgets::Status::Ok,
+            VoiceState::Off | VoiceState::Listening | VoiceState::Conversing => widgets::Status::Ok,
             _ => widgets::Status::Inactive,
         };
-        let doing = torro_gui::chat::voice_doing(talk.state, talk.tool.as_deref());
+        // A talk needs no wake word: while the listener starts (`Off`) or still waits for it, the line
+        // says it listens, as before issue #830.
+        let doing = match talk.state {
+            VoiceState::Off | VoiceState::Listening => tr("Listening…").to_string(),
+            state => torro_gui::chat::voice_doing(state, talk.tool.as_deref()),
+        };
         // "Looking at the Notification Hub …" may not fit a narrow window: cut with "…", whole as tooltip.
         let doing = container(widgets::ellipsized(typo::body(), doing, theme::text)).width(Fill);
         let state = row![widgets::status_dot(status), doing].spacing(space::s()).align_y(Alignment::Center);
