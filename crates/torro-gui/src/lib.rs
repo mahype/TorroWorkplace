@@ -28,6 +28,7 @@
 //! - [`links`]: web and mail addresses in plain text (`links::pieces`, `links::openable`,
 //!   `links::meeting`), to make them clickable.
 //! - [`map`]: the small map of a place with its pin, "Open in Maps" and the attribution (issue #355).
+//! - [`tile_map`]: the map of single tiles that is moved and zoomed, with pins and clusters (issue #357).
 //! - [`markdown`]: Markdown to read (GitHub texts) in the Torro look.
 //! - [`selectable`]: text to read that can be selected and copied but not changed, with the
 //!   "Links" of its addresses below it.
@@ -66,6 +67,7 @@ pub mod split;
 pub mod style;
 pub mod theme;
 pub mod themed;
+pub mod tile_map;
 pub mod typo;
 pub mod ui_state;
 pub mod units;
