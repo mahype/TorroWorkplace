@@ -289,6 +289,7 @@ impl<A: Assistant> Listener<'_, A> {
         let mut floor = NoiseFloor::default();
         // The last frames, the one with the wake word among them: the sentence begins with them.
         let mut before: VecDeque<Vec<i16>> = VecDeque::with_capacity(BEFORE + 1);
+        let mut still_speaking = false;
         let mut frames = 0usize;
         loop {
             let Some(frame) = stream.frame()? else { return Ok(Ended::RecordingStopped) };
@@ -307,7 +308,10 @@ impl<A: Assistant> Listener<'_, A> {
                 }
             }
             let heard = self.wake.hears(&frame)?;
-            if !heard {
+            if heard {
+                // Still speaking when the wake word was heard: "Hey Torro, light on" in one breath.
+                still_speaking = rms(&frame) >= floor.speech();
+            } else {
                 floor.follow(rms(&frame));
             }
             before.push_back(frame);
@@ -331,6 +335,8 @@ impl<A: Assistant> Listener<'_, A> {
         // What was said before the wake word was heard is part of the sentence, but the end of the
         // sentence is decided by what follows: "Hey Torro" alone is no sentence.
         let mut sentence: Vec<i16> = before.into_iter().flatten().collect();
+        // Where the tone and its echo end in the sentence.
+        let mut with_tone = sentence.len();
         let mut end = Endpoint::new(floor, self.limits);
         let mut frames = 0usize;
         while let Some(frame) = stream.frame()? {
@@ -343,14 +349,23 @@ impl<A: Assistant> Listener<'_, A> {
                 return Ok(Ended::Nothing);
             }
             sentence.extend_from_slice(&frame);
-            if frames > tone && end.push(&frame) {
+            if frames <= tone {
+                with_tone = sentence.len();
+            } else if end.push(&frame) {
                 break;
             }
         }
         // The microphone closes before the answer: it is not recorded, and it cannot wake it.
         drop(stream);
         (self.report)(VoiceState::Answering);
-        let ended = self.answer(voice, &sentence, end.heard_speech(), end.trailing_quiet(), None, readings);
+        // Nothing said after the tone, but the person went on speaking past the wake word: a short
+        // command said in one breath fits into the tone. What came up to the tone's end is
+        // understood; "Hey Torro" alone comes to no text and sends nothing.
+        let (spoken, said) = match end.heard_speech() {
+            true => (true, &sentence[..]),
+            false => (still_speaking, &sentence[..with_tone]),
+        };
+        let ended = self.answer(voice, said, spoken, end.trailing_quiet(), None, readings);
         self.wake.reset();
         Ok(ended)
     }
@@ -378,8 +393,8 @@ impl<A: Assistant> Listener<'_, A> {
             std::thread::sleep(self.pause);
             return Ok(Ended::Nothing);
         }
-        // The microphone opens before the tone (issue #829): whoever speaks at once loses no word, and
-        // the tone itself is no sentence of the person's.
+        // The microphone opens before the tone (issue #829): whoever speaks with it loses no word once
+        // the sentence goes on after it, and the tone itself is no sentence of the person's.
         let mut stream = self.recorder.open()?;
         let tone = if chime { self.chime() } else { 0 };
         let Some(readings) = self.quiet_now() else {
@@ -1243,6 +1258,25 @@ mod tests {
         let from = (6 - BEFORE) * FRAME;
         assert!(sentence.len() > BEFORE * FRAME, "the sentence goes on after the wake word");
         assert!(sentence[..] == file[from..from + sentence.len()], "the file from half a second before the wake word");
+    }
+
+    /// Issue #829, review: "Hey Torro, light on" in one breath, the command over before the tone is: what
+    /// came up to the tone's end is understood and sent; "Hey Torro" alone sends nothing.
+    #[test]
+    fn a_short_command_within_the_tone_is_sent() {
+        // The fixture speaks in frames 4 to 10; the wake word at frame 6, a tone of 400 ms covers the rest.
+        let tone = Duration::from_millis(400);
+        let given = Rc::new(RefCell::new(Vec::new()));
+        let keeps = Keeps { text: " Hey Torro, light on.", given: Rc::clone(&given) };
+        let run = run_with(Core::new(on()), &["utterance.wav"], Some(6), Box::new(keeps), tone);
+        let Request::SendMessage { text, .. } = messages(&run.sent)[0] else { unreachable!() };
+        assert_eq!(text, "light on.");
+        let sentence = given.borrow()[0].len();
+        assert!(sentence >= (BEFORE + 4) * FRAME && sentence < 25 * FRAME, "up to the tone's end: {sentence}");
+
+        let keeps = Keeps { text: "Hey Torro.", given: Rc::default() };
+        let run = run_with(Core::new(on()), &["utterance.wav"], Some(6), Box::new(keeps), tone);
+        assert!(messages(&run.sent).is_empty(), "the wake word alone");
     }
 
     /// Issue #829: in a conversation by voice the microphone opens before the tone; the tone and its echo
