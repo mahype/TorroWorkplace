@@ -397,7 +397,7 @@ fn maps<'a>(state: &'a State, maps: &'a Maps, status: Option<torro_ipc::MapsStat
         lookup = lookup.on_toggle(Message::ContactLookup);
     }
     let mut lookup_line = trf(
-        "Sends the address of a contact you open to {service} to place it on the map. Results stay on this device.",
+        "Sends the addresses of contacts you open or show on the map to {service} to place them on the map. Results stay on this device.",
         &[("service", &service_host(&maps.geocoder))],
     );
     if !maps.enabled {

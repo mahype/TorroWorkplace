@@ -4937,9 +4937,18 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // The map of a contact (#355): General › Maps, the contacts app, the core and its approvals.
     ("Look up contact addresses", "Kontakt-Adressen suchen"),
     (
-        "Sends the address of a contact you open to {service} to place it on the map. Results stay on this device.",
-        "Schickt die Adresse eines Kontakts, den du öffnest, an {service}, um sie auf die Karte zu setzen. Die Ergebnisse bleiben auf diesem Gerät.",
+        "Sends the addresses of contacts you open or show on the map to {service} to place them on the map. Results stay on this device.",
+        "Schickt die Adressen von Kontakten, die du öffnest oder auf der Karte zeigst, an {service}, um sie auf die Karte zu setzen. Die Ergebnisse bleiben auf diesem Gerät.",
     ),
+    // The map of all contacts (#357): the contacts app.
+    ("Map", "Karte"),
+    ("In view", "Im Ausschnitt"),
+    ("No contact here. Move or zoom out.", "Hier ist kein Kontakt. Verschiebe die Karte oder zoome heraus."),
+    ("The contacts could not be placed on the map.", "Die Kontakte konnten nicht auf die Karte gesetzt werden."),
+    ("Lookup paused. The place search cannot be reached.", "Suche angehalten. Die Ortssuche ist nicht erreichbar."),
+    ("One address a second while the map is open.", "Eine Adresse pro Sekunde, solange die Karte offen ist."),
+    ("Addresses not found: {n}", "Nicht gefundene Adressen: {n}"),
+    ("Contacts without an address: {n}", "Kontakte ohne Adresse: {n}"),
     ("Stored map data", "Gespeicherte Kartendaten"),
     ("{size} of map tiles · {places} contact places", "{size} Kartenkacheln · {places} Kontakt-Orte"),
     ("Finding address…", "Adresse wird gesucht…"),
