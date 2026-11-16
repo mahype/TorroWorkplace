@@ -656,7 +656,7 @@ pub(super) struct Job {
     pub about: Option<MailRef>,
     /// The answer is read aloud (issue #747): the person spoke the message, or the chat window reads its
     /// answers aloud (issue #774). The prompt ends with [`prompt::spoken`], so the answer comes in a short
-    /// spoken part and a shown part.
+    /// spoken part and a shown part, and for the assistant with [`prompt::voice`] (issue #832).
     pub spoken: bool,
 }
 
@@ -952,6 +952,11 @@ impl Answering {
             }
             if self.job.spoken {
                 system = format!("{system}\n\n{}", prompt::spoken());
+                // The built-in skill for talking (issue #832), whole: it holds for every sentence. A bot's
+                // prompt stays as it was.
+                if self.job.bot.is_none() {
+                    system = format!("{system}\n\n{}", prompt::voice());
+                }
             }
             // A small model gets the reading tools first; a chat about a mail (issue #605) needs its one way to
             // suggest among them, not behind find_tools, and the tool of the call that read the mail: else, with
@@ -1340,10 +1345,11 @@ impl Answering {
     fn allowed(&self, rights: Option<&Rights>) -> Vec<Arc<tools::Tool>> {
         let servers = rights.map(|rights| self.host.extension_tools(rights)).unwrap_or_default();
         let allowed = tools::allowed_with(self.job.actor.kind(), rights, &self.job.without, self.job.mode, &servers);
-        // Issue #703: the tools of skills only with a skill to read, as the prompt names them.
+        // Issue #703: the tools of skills only with a skill to read, as the prompt names them. The assistant
+        // always has the built-in ones (issue #832).
         let any_skill = match &self.job.bot {
             Some(bot) => bot.skills.iter().any(|skill| !skill.text.trim().is_empty()),
-            None => !self.skills.is_empty(),
+            None => true,
         };
         let allowed = tools::with_skills(allowed, any_skill);
         // The terminal (issue #754) for the assistant's own answers only, while a person switched it on, and never
