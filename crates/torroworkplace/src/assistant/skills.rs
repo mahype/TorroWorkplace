@@ -17,6 +17,11 @@
 //! A folder of its own per skill leaves room for files beside the text later, as other assistants
 //! keep them. The folder's name is no part of the skill: the name in its head is what requests
 //! take. A head without a name is no skill and is left alone (named on stderr).
+//!
+//! Besides the person's skills the assistant has **built-in skills** (issue #832, [`built_in`]): one
+//! per app of the suite and "Voice conversation", written in English in
+//! `assets/assistant/skills/` and kept like code, in the same format. They count as rules: no skill
+//! of the person can take one of their names ([`is_built_in`]).
 
 use std::fs;
 use std::io;
@@ -135,6 +140,39 @@ pub fn replace_all(dir: &Path, skills: &[Skill]) -> io::Result<()> {
     Ok(())
 }
 
+/// The built-in skill for talking (issue #832): [`super::prompt::voice`] puts its text whole into a spoken
+/// answer's prompt instead of naming it.
+pub const VOICE: &str = "Voice conversation";
+
+/// The `SKILL.md` texts of the built-in skills, in the order the prompt names them: one per app, then
+/// [`VOICE`].
+const BUILT_IN: [&str; 7] = [
+    include_str!("../../assets/assistant/skills/mail.md"),
+    include_str!("../../assets/assistant/skills/calendar.md"),
+    include_str!("../../assets/assistant/skills/tasks.md"),
+    include_str!("../../assets/assistant/skills/contacts.md"),
+    include_str!("../../assets/assistant/skills/workspaces.md"),
+    include_str!("../../assets/assistant/skills/inbox.md"),
+    include_str!("../../assets/assistant/skills/voice.md"),
+];
+
+/// The built-in skills (issue #832), in the order of [`BUILT_IN`]; one whose file does not read is left
+/// out (a test makes sure none is).
+pub fn built_in() -> Vec<Skill> {
+    BUILT_IN.iter().filter_map(|contents| parse(contents)).collect()
+}
+
+/// Whether `name` is the name of a built-in skill, as [`torro_ipc::assistant::same_skill_name`] compares
+/// names.
+pub fn is_built_in(name: &str) -> bool {
+    built_in().iter().any(|skill| torro_ipc::assistant::same_skill_name(&skill.name, name))
+}
+
+/// The built-in skill `name`, as [`is_built_in`] compares names.
+pub fn built_in_named(name: &str) -> Option<Skill> {
+    built_in().into_iter().find(|skill| torro_ipc::assistant::same_skill_name(&skill.name, name))
+}
+
 /// The answer of `assistant.list_skills` (by name, ignoring case) or `assistant.get_skill`
 /// (`not-found` for an unknown name) from `skills`: the assistant's or a bot's. `None` for every
 /// other request.
@@ -243,6 +281,43 @@ mod tests {
         {
             assert_eq!(parse(broken), None, "{broken:?}");
         }
+    }
+
+    /// Issue #832: seven built-in skills, each read whole, with names of their own and within the limits of
+    /// a skill; every tool they name is one of the catalogue's.
+    #[test]
+    fn the_built_in_skills_read_and_keep_their_limits() {
+        use torro_ipc::assistant::{MAX_SKILL_CHARS, MAX_SKILL_DESCRIPTION_CHARS, MAX_SKILL_NAME_CHARS};
+        let skills = built_in();
+        assert_eq!(skills.len(), BUILT_IN.len(), "every file reads");
+        let names: Vec<&str> = skills.iter().map(|skill| skill.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Torro Mail", "Torro Calendar", "Torro Tasks", "Torro Contacts", "Torro Workspaces", "Torro Inbox", VOICE]
+        );
+        for skill in &skills {
+            assert!(skill.name.chars().count() <= MAX_SKILL_NAME_CHARS, "{}", skill.name);
+            let description = skill.description.chars().count();
+            assert!(description > 0 && description <= MAX_SKILL_DESCRIPTION_CHARS, "{}", skill.name);
+            assert!(skill.description.starts_with("Use when "), "{}", skill.description);
+            let text = skill.text.chars().count();
+            assert!(text > 0 && text < 4_000 && text <= MAX_SKILL_CHARS, "{}: {text}", skill.name);
+            assert_eq!(skills.iter().filter(|other| other.is_named(&skill.name)).count(), 1, "{}", skill.name);
+            // A tool of the suite as the model sees it (`mail_search_messages`) is in the catalogue.
+            let areas = ["mail_", "calendar_", "tasks_", "contacts_", "workspaces_", "inbox_"];
+            for word in skill.text.split(|c: char| !(c.is_ascii_lowercase() || c == '_')) {
+                if areas.iter().any(|area| word.starts_with(area)) {
+                    let command = word.replacen('_', ".", 1);
+                    assert!(
+                        torro_ipc::api::CATALOGUE.iter().any(|known| known.name == command),
+                        "{}: no command {command}",
+                        skill.name
+                    );
+                }
+            }
+        }
+        assert!(is_built_in("torro  mail") && is_built_in("VOICE CONVERSATION") && !is_built_in("Mail"));
+        assert_eq!(built_in_named("torro inbox").map(|skill| skill.name), Some("Torro Inbox".to_string()));
     }
 
     #[test]
