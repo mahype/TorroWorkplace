@@ -1345,9 +1345,9 @@ impl App {
             _ => widgets::Status::Inactive,
         };
         let doing = torro_gui::chat::voice_doing(talk.state, talk.tool.as_deref());
-        let state = row![widgets::status_dot(status), typo::text(typo::body(), doing).wrapping(Wrapping::None)]
-            .spacing(space::s())
-            .align_y(Alignment::Center);
+        // "Looking at the Notification Hub …" may not fit a narrow window: cut with "…", whole as tooltip.
+        let doing = container(widgets::ellipsized(typo::body(), doing, theme::text)).width(Fill);
+        let state = row![widgets::status_dot(status), doing].spacing(space::s()).align_y(Alignment::Center);
         let end = widgets::text_button(Some(Icon::X), tr("End talk"), style::button::secondary, Some(Message::EndTalk));
         let end = widgets::with_tooltip(end, tr("End talk (Esc)"));
         let line = column![
