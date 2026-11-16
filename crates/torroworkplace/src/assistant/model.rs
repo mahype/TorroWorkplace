@@ -1432,6 +1432,8 @@ impl Answering {
         .await;
         let response = ran.unwrap_or_else(|err| failed(&format!("the command did not finish: {err}")));
         let Response::Pending { approval } = response else { return Some(Outcome::Answered(Box::new(response))) };
+        // It waits for a person now, not for the tool (issue #830): the voice chat no longer names it.
+        lock(&self.job.partial).tool = None;
         if !self.add(EntryContent::Approval { id: approval.id.clone() }, false).await {
             return None;
         }
