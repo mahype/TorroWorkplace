@@ -219,6 +219,10 @@ impl Demo {
             Request::Settings => Response::Settings { settings: torro_core::settings::Settings::default() },
             Request::CancelAnswer { conversation } => state.cancel(&conversation),
             Request::RenameConversation { id, title } => state.change(&id, |c| c.summary.title = title),
+            // Issue #852: as the core keeps it, the summary names the choice until the next message.
+            Request::ChooseModel { id, engine, model, effort } => state.change(&id, |c| {
+                (c.summary.engine, c.summary.model, c.summary.effort) = (engine, model, effort);
+            }),
             Request::PinConversation { id, pinned } => state.change(&id, |c| c.summary.pinned = pinned),
             Request::DeleteConversation { id } => {
                 let before = state.conversations.len();

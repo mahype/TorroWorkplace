@@ -520,6 +520,9 @@ pub enum Message {
     DeletedMany(Vec<String>, Result<(), Refusal>),
     /// The core's answer to a rename or pin; the text says what failed.
     Changed(Result<(), Refusal>, &'static str),
+    /// The core's answer to `assistant.choose_model` (issue #852) for the conversation, engine, model and
+    /// effort chosen.
+    ChoseModel(String, Choice, Option<Effort>, Result<(), Refusal>),
     /// The conversation with this id was deleted (or not).
     Deleted(String, Result<(), Refusal>),
     /// Close the dialog.
@@ -1276,12 +1279,15 @@ impl App {
                 self.choice = Some(choice);
                 self.chosen = Chosen::Person;
                 self.menu = None;
+                return self.choose_model();
             }
             Message::PickEffort(effort) => {
                 self.effort = effort;
                 self.chosen = Chosen::Person;
                 self.menu = None;
+                return self.choose_model();
             }
+            Message::ChoseModel(id, choice, effort, result) => return self.chose_model(id, choice, effort, result),
             Message::PickMode(mode) => {
                 self.mode = mode;
                 self.menu = None;
@@ -2654,6 +2660,50 @@ impl App {
                 self.fetch_approval(id)
             }
         }
+    }
+
+    /// Tells the core who answers next in the open conversation (issue #852), so the voice chat, which asks
+    /// the core, uses the model chosen here too. Nothing for a new chat that is not stored yet (it keeps the
+    /// choice until its first message) and for a chat with a bot, which keeps the bot's model.
+    fn choose_model(&mut self) -> Task<Message> {
+        let Some(id) = self.current.clone() else { return Task::none() };
+        if self.chat_bot().is_some() {
+            return Task::none();
+        }
+        let Some(choice) = self.choice.clone() else { return Task::none() };
+        let effort = self.offered_effort();
+        let request =
+            Request::ChooseModel { id: id.clone(), engine: choice.engine.clone(), model: choice.model.clone(), effort };
+        self.ask(request, move |result| Message::ChoseModel(id.clone(), choice.clone(), effort, result.map(|_| ())))
+    }
+
+    /// The core took (or refused) the choice of [`App::choose_model`]: the header names the model that answers
+    /// next from now on, as the list does once it is loaded again.
+    fn chose_model(
+        &mut self,
+        id: String,
+        choice: Choice,
+        effort: Option<Effort>,
+        result: Result<(), Refusal>,
+    ) -> Task<Message> {
+        match result {
+            Ok(()) => {
+                if let Some(summary) = self.transcript.summary.as_mut().filter(|summary| summary.id == id) {
+                    summary.engine = choice.engine;
+                    summary.model = choice.model;
+                    summary.effort = effort;
+                }
+            }
+            // The window goes back to who answers there, so typing and the voice chat agree.
+            Err(refusal) => {
+                self.note_failure(tr("Couldn't change the model."), &refusal);
+                if self.current.as_ref() == Some(&id) {
+                    self.chosen = Chosen::Default;
+                    self.choose_default();
+                }
+            }
+        }
+        self.load_list()
     }
 
     fn rename(&mut self) -> Task<Message> {
