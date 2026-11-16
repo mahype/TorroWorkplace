@@ -9386,6 +9386,22 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Shorter pause", "Kürzere Pause"),
     ("Longer pause", "Längere Pause"),
     ("+{n} ms", "+{n} ms"),
+    // How full a conversation's context is, and new conversations by voice after a pause (issue #831).
+    ("Shortened", "Gekürzt"),
+    (
+        "About {used} of {limit} tokens before older parts are shortened · context window {window}",
+        "Etwa {used} von {limit} Tokens, bevor ältere Teile gekürzt werden · Kontextfenster {window}",
+    ),
+    (
+        "Older parts were shortened: about {used} tokens, more than the {limit} that fit · context window {window}",
+        "Ältere Teile wurden gekürzt: etwa {used} Tokens, mehr als die {limit}, die passen · Kontextfenster {window}",
+    ),
+    ("{title} · {date}", "{title} · {date}"),
+    ("New conversation after a pause", "Neues Gespräch nach einer Pause"),
+    (
+        "“Hey Torro” starts a new Voice conversation after this long without a word",
+        "„Hey Torro“ beginnt nach so langer Stille ein neues Sprachgespräch",
+    ),
     // Response times of spoken answers (#828).
     ("Response times", "Antwortzeiten"),
     ("End of speech detected", "Satzende erkannt"),

@@ -98,6 +98,16 @@ Was offene Modelle brauchen, damit das gut geht:
   markiert ist; das Web fragt erneut nach den Werkzeugzeilen. Ruft das Modell dasselbe Werkzeug in einer Antwort zum dritten
   Mal mit derselben Eingabe auf, läuft der Aufruf nicht, und die Antwort endet mit einer Meldung,
   damit es sich nicht im Kreis dreht.
+  **Füllstand (Issue #831):** Am Ende jeder Antwort eines Modells, das der Kern führt, misst er, wie groß der
+  nächste Schritt ungekürzt wäre (Verlauf samt Antwort, geschätzt wie oben: Zeichen durch drei), und speichert es
+  als Zeile `context` in der Unterhaltung. Der Kopf der Unterhaltung (`assistant.get_conversation`,
+  `assistant.list_conversations`, MCP `assistant_get_conversation`) trägt es als `context`: `used` (geschätzte
+  Tokens), `limit` (die Kürzungsgrenze, die Hälfte des Kontextfensters), `window` (das Kontextfenster) und
+  `shortened` (in der letzten Antwort wurde gekürzt). Die Prozent beziehen sich auf die Kürzungsgrenze, nicht auf
+  das ganze Fenster: 100 % heißt „ab hier kürzt der Kern“. Das Chatfenster zeigt sie im Kopf, ab mittlerer Breite
+  mit Balken, schmal nur als Zahl, nach dem Kürzen „Shortened“; der Tooltip nennt Tokens, Grenze und Fenster. Ohne
+  Messung (neuer Chat, Agent als Engine, vor der ersten Antwort, ältere Unterhaltungen) fehlt das Feld und die
+  Anzeige. Eine getippte Nachricht zählt erst mit der nächsten Antwort.
 - **Ehrlich bei Grenzen:** Kann ein lokales Modell keine Werkzeuge, sagt die Auswahl das, statt es
   still schlecht zu machen.
 
@@ -819,6 +829,12 @@ höchstens ein Modell, und das lädt ein Knopf in Einstellungen › Assistent �
 - **Gleiche Rechte, gleiche Bremsen:** Gesprochenes landet als normale Nachricht in einer
   Unterhaltung („Voice“), mit denselben Rechten und Freigaben; eine Freigabe lässt sich per Stimme
   nicht erteilen, nur per Klick (sonst könnte ein Video im Hintergrund „Allow“ sagen).
+- **Neues Gespräch nach einer Pause (Issue #831):** Liegt der letzte Eintrag in „Voice“ länger zurück als die
+  Einstellung „New conversation after a pause“ (Assistant › Voice › Conversation, `voice_new_after`, 0 bis 240
+  Minuten in Viertelstunden, ohne Wahl 30, „Never“ = 0), beginnt „Hey Torro“ ein neues „Voice“. Das alte bleibt in der
+  Liste und heißt danach „Voice · 2026-11-15 09:12“ (Datum und Uhrzeit seines Beginns); gibt es mehrere „Voice“,
+  zählt das neueste. Läuft dort noch eine Antwort, geht es weiter wie bisher; ein Gespräch, das die Person selbst
+  umbenannt hat, heißt nicht mehr „Voice“ und bleibt unberührt.
 - **Technisch:** Das Lauschen läuft als eigener Prozess `torroassistant --listen` (Mikrofon und
   Modelle getrennt vom Dienst), erkannter Text geht als `assistant.send_message` an den Kern.
 - **Diktieren** (Issue #699): Das Mikrofon im Eingabefeld nimmt auf, bis man zwei Sekunden schweigt,
@@ -950,6 +966,8 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
 | Antwort Satz für Satz vorlesen (Issue #747) | Chatfenster (Lautsprecher), Gespräch | `assistant.speak_answer` · Write | `assistant_speak_answer` |
 | Wer vorlesen kann | Voice › Read aloud | `settings.speech_status` · Read | `settings_speech_status` |
 | An/aus, Anbieter, Stimmen, wie die Stimme spricht | Voice › Read aloud, Lautsprecher im Chatfenster | `settings.set_setting` `read_aloud`, `speech_provider`, `pocket_voice`, `openai_voice`, `pocket_speed`, `pocket_pause`, `openai_style` · Admin | `settings_set_setting` (OpenAI als Anbieter nur Menschen) |
+| Pause bis zum neuen Gespräch „Voice“ (Issue #831) | Voice › Conversation › New conversation after a pause | `settings.set_setting` `voice_new_after` · Admin | `settings_set_setting` |
+| Füllstand des Kontexts (Issue #831) | Kopf des Chatfensters | `assistant.get_conversation`, `assistant.list_conversations` (`context`) · Read | `assistant_get_conversation`, `assistant_list_conversations` |
 
 ### Gespräch (Issue #747)
 
