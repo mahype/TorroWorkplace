@@ -915,3 +915,29 @@ async fn the_lookup_pauses_offline_and_stops_when_the_map_is_left() {
     let _ = app.update(Message::Map(MapMsg::LookedUp(generation, stale, Ok(ContactLocation::NotFound))));
     assert_eq!(app.map.status.not_found, 0, "an answer of the run before is dropped");
 }
+
+#[tokio::test]
+async fn another_selection_stops_the_lookup_and_a_pin_comes_once() {
+    let mut app = on_map().await;
+    let first = app.map.lookup.running.clone().expect("looking up");
+    let generation = app.map.lookup.generation;
+    // A load read the place the core just kept: the answer adds no second pin.
+    let pins = app.map.pins.len();
+    let geo = torro_ipc::contacts::Geo { lat: 52.5, lon: 13.4 };
+    app.map.pins.push(torro_ipc::contacts::ContactPin {
+        id: first.id.clone(),
+        name: "X".into(),
+        address: first.address,
+        geo,
+        source: torro_ipc::contacts::LocationSource::Lookup,
+        untrusted: true,
+    });
+    let found = Ok(ContactLocation::Found { geo, source: torro_ipc::contacts::LocationSource::Lookup });
+    let _ = app.update(Message::Map(MapMsg::LookedUp(generation, first, found)));
+    assert_eq!(app.map.pins.len(), pins + 1, "once");
+    // Another book: the lookup of the old selection is dropped.
+    let generation = app.map.lookup.generation;
+    let _ = app.update(Message::Show(View::Book(torro_contacts::demo::TEAM.into())));
+    assert_ne!(app.map.lookup.generation, generation);
+    assert!(app.map.lookup.running.is_none() && app.map.lookup.queue.is_empty());
+}

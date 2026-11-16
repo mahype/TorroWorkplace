@@ -856,7 +856,7 @@ impl App {
                 if let Ok(Some(shown)) = result.as_ref().map(|loaded| loaded.shown) {
                     self.map.shown = shown;
                 }
-                self.map.of = None;
+                self.map.stale = true;
                 return self.loaded(result);
             }
             Message::Map(message) => return self.map_update(message),

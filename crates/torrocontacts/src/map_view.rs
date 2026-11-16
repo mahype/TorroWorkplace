@@ -44,6 +44,9 @@ pub const MAX_TILES: usize = 256;
 /// How long the lookup waits after `busy` before it asks again.
 pub const BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// How many `busy` in a row the lookup takes before it pauses (about a minute).
+pub const BUSY_LIMIT: u32 = 60;
+
 /// The width of "In view" beside the map (wide).
 pub fn in_view_width() -> f32 {
     size::panel() - 7.0 * space::s()
@@ -93,6 +96,8 @@ pub struct Lookup {
     pub running: Option<AddressRef>,
     /// The place search could not be reached: nothing more is asked until the map opens again.
     pub paused: bool,
+    /// `busy` answers in a row: a service that asked to wait answers so for an hour.
+    pub busy: u32,
     /// Answers of an older generation (the map was left meanwhile) are dropped.
     pub generation: u64,
 }
@@ -114,6 +119,10 @@ pub struct MapState {
     pub asked: u64,
     /// The selection the pins are of ([`App::selection_key`]); `None`: ask again.
     pub of: Option<String>,
+    /// A load came (a contact changed): the pins are asked again, the lookup goes on.
+    pub stale: bool,
+    /// The failure of the last answer was told; it is not told again until one comes through.
+    told: bool,
     /// The first answer came.
     pub loaded: bool,
     pub tiles: HashMap<TileKey, Handle>,
@@ -146,6 +155,8 @@ impl Default for MapState {
             status: LocationsStatus::default(),
             asked: 0,
             of: None,
+            stale: false,
+            told: false,
             loaded: false,
             tiles: HashMap::new(),
             order: VecDeque::new(),
@@ -173,22 +184,33 @@ impl MapState {
         self.lookup.running = None;
         self.lookup.queue.clear();
         self.lookup.paused = false;
+        self.lookup.busy = 0;
     }
 
     fn pin(&self, key: &str) -> Option<&ContactPin> {
         self.pins.iter().find(|pin| pin_key(&pin.id, pin.address) == key)
     }
 
-    /// Keeps `handle` for `key`; past [`MAX_TILES`] the oldest goes.
+    /// Keeps `handle` for `key`.
     fn keep_tile(&mut self, key: TileKey, handle: Handle) {
         if self.tiles.insert(key, handle).is_none() {
             self.order.push_back(key);
         }
-        while self.order.len() > MAX_TILES {
-            if let Some(old) = self.order.pop_front() {
+    }
+
+    /// Past [`MAX_TILES`] the oldest tiles go, never one of `visible`: a large view keeps what it shows.
+    fn evict(&mut self, visible: &HashSet<TileKey>) {
+        let mut kept = VecDeque::new();
+        while self.order.len() + kept.len() > MAX_TILES {
+            let Some(old) = self.order.pop_front() else { break };
+            if visible.contains(&old) {
+                kept.push_back(old);
+            } else {
                 self.tiles.remove(&old);
             }
         }
+        kept.extend(self.order.drain(..));
+        self.order = kept;
     }
 
     /// The tiles of the view that are neither here nor asked for nor failed.
@@ -266,12 +288,22 @@ impl App {
         if self.map.look != Look::Map {
             return Task::none();
         }
+        // In the glance the map is not seen: nothing is looked up and no tile asked for until it is.
+        if matches!(self.class(), SizeClass::Mini | SizeClass::Strip) {
+            return Task::none();
+        }
         let key = self.selection_key();
         let pins = if self.map.of.as_deref() != Some(key.as_str()) {
+            // Another selection: what is looked up for the old one is dropped.
+            self.map.stop_lookup();
             self.map.of = Some(key);
+            self.map.stale = false;
+            self.ask_locations()
+        } else if self.map.stale {
+            self.map.stale = false;
             self.ask_locations()
         } else {
-            Task::none()
+            self.next_lookup()
         };
         Task::batch([pins, self.want_tiles()])
     }
@@ -299,7 +331,11 @@ impl App {
             self.map.wanted.clear();
             self.map.failed.clear();
         }
-        let missing = self.map.missing_tiles(self.map_size());
+        let size = self.map_size();
+        let visible: HashSet<TileKey> =
+            tile_map::visible_tiles(self.map.camera, size).into_iter().map(|(key, _)| key).collect();
+        self.map.evict(&visible);
+        let missing = self.map.missing_tiles(size);
         let mut tasks = Vec::new();
         for key in missing {
             self.map.wanted.insert(key);
@@ -326,8 +362,9 @@ impl App {
 
     /// The next address to look up, while the map is open and nothing is asked.
     fn next_lookup(&mut self) -> Task<Message> {
+        let glance = matches!(self.class(), SizeClass::Mini | SizeClass::Strip);
         let lookup = &mut self.map.lookup;
-        if self.map.look != Look::Map || self.map.frozen || lookup.paused || lookup.running.is_some() {
+        if self.map.look != Look::Map || glance || self.map.frozen || lookup.paused || lookup.running.is_some() {
             return Task::none();
         }
         let Some(next) = lookup.queue.pop_front() else { return Task::none() };
@@ -358,6 +395,7 @@ impl App {
             MapMsg::Locations(asked, _) if asked != self.map.asked => {}
             MapMsg::Locations(_, Ok((pins, status))) => {
                 self.map.loaded = true;
+                self.map.told = false;
                 self.map.failed.clear();
                 self.map.pins = pins;
                 if self.map.selected.as_deref().is_some_and(|key| self.map.pin(key).is_none()) {
@@ -373,7 +411,10 @@ impl App {
             }
             MapMsg::Locations(_, Err(_)) => {
                 self.map.loaded = true;
-                self.notify(tr("The contacts could not be placed on the map."));
+                if !self.map.told {
+                    self.map.told = true;
+                    self.notify(tr("The contacts could not be placed on the map."));
+                }
             }
             MapMsg::Event(MapEvent::Viewport(camera, size)) => {
                 let resized = self.map.size != Some(size);
@@ -409,8 +450,9 @@ impl App {
                 self.map.only = None;
             }
             MapMsg::Tile(key, dark, picture) => {
-                self.map.wanted.remove(&key);
+                // A tile of the other darkness leaves the request of this one alone.
                 if dark == self.map.dark {
+                    self.map.wanted.remove(&key);
                     match picture {
                         Some(handle) => self.map.keep_tile(key, handle),
                         None => {
@@ -462,8 +504,14 @@ impl App {
     /// turned off (back to the list); then the next address.
     fn looked_up(&mut self, address: AddressRef, result: Result<ContactLocation, String>) -> Task<Message> {
         self.map.lookup.running = None;
+        if !matches!(&result, Err(code) if code == "busy") {
+            self.map.lookup.busy = 0;
+        }
         let done = |status: &mut LocationsStatus| status.pending.retain(|pending| *pending != address);
+        let known = self.map.pins.iter().any(|pin| pin.id == address.id && pin.address == address.address);
         match result {
+            // Already a pin (a load read the place the core just kept): nothing twice.
+            Ok(ContactLocation::Found { .. }) if known => done(&mut self.map.status),
             Ok(ContactLocation::Found { geo, source }) => {
                 done(&mut self.map.status);
                 let name = self.summary(&address.id).map(|c| c.display_name.clone()).unwrap_or_default();
@@ -486,7 +534,14 @@ impl App {
                 self.map.shown.contact_lookup = false;
                 return Task::none();
             }
+            // A service that asked to wait says `busy` for an hour: after a minute of it the lookup pauses.
+            Err(code) if code == "busy" && self.map.lookup.busy >= BUSY_LIMIT => {
+                self.map.lookup.queue.push_front(address);
+                self.map.lookup.paused = true;
+                return Task::none();
+            }
             Err(code) if code == "busy" => {
+                self.map.lookup.busy += 1;
                 self.map.lookup.queue.push_front(address);
                 let generation = self.map.lookup.generation;
                 return Task::perform(tokio::time::sleep(BUSY_WAIT), move |()| Message::Map(MapMsg::Retry(generation)));
@@ -603,13 +658,17 @@ impl App {
         .spacing(space::s())
         .align_y(iced::Alignment::Center);
         let colours = palette(&self.theme());
+        // Looked up once per contact, not once per pin through the whole list.
+        let summaries: HashMap<&str, &torro_contacts::ContactSummary> =
+            self.contacts.iter().map(|c| (c.id.as_str(), c)).collect();
         let rows: Vec<Element<'_, Message>> = pins
             .iter()
             .map(|pin| {
                 let key = pin_key(&pin.id, pin.address);
                 let selected = self.map.selected.as_deref() == Some(key.as_str());
-                let town = self.summary(&pin.id).and_then(|c| c.locality.clone()).unwrap_or_default();
-                let picture = self.summary(&pin.id).and_then(|c| {
+                let summary = summaries.get(pin.id.as_str()).copied();
+                let town = summary.and_then(|c| c.locality.clone()).unwrap_or_default();
+                let picture = summary.and_then(|c| {
                     let (version, picture) = self.photos.get(&c.id)?;
                     (c.photo.as_ref().map(|p| &p.version) == Some(version)).then_some(picture.as_ref()).flatten()
                 });
