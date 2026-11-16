@@ -206,6 +206,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         // Never the place searched for or the point of a map (task TE.1): where a person goes.
         | Request::SearchPlaces { .. }
         | Request::MapPreview { .. }
+        | Request::MapTile { .. }
         | Request::ConnectCalDav { .. }
         | Request::Sync
         | Request::CalendarCollections
@@ -291,7 +292,9 @@ pub fn ids(request: &Request) -> Vec<String> {
         // Contacts (`docs/kontakte.md`): books like collections, contacts hashed; never a group, a
         // search or a field (a contact's id holds its book and uid only, hashed all the same).
         Request::ListAddressBooks { account: name } => name.iter().map(|name| account(name)).collect(),
-        Request::ListContacts { book, .. } | Request::ListContactGroups { book } => {
+        Request::ListContacts { book, .. }
+        | Request::ListLocations { book, .. }
+        | Request::ListContactGroups { book } => {
             book.iter().map(|book| collection(book)).collect()
         }
         // Never what was typed (issue #460); the mail accounts read are added by the core

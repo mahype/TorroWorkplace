@@ -750,6 +750,8 @@ const STAYS_HERE: &[&str] = &[
     // A client only reads the places kept on this device; only the contacts app makes the core look up
     // (issue #355), and the map data is counted here.
     "contacts.locate_contact",
+    // The map of all contacts reads only the places kept on this device (issue #357).
+    "contacts.list_locations",
     "settings.maps_status",
     // Export and duplicates read the cards kept on this device; pairs said to be different people
     // are kept here only (issues #725, #726). An import and a merge write to the server.

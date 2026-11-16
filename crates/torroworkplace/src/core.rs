@@ -7336,7 +7336,7 @@ impl Core {
             Request::SetActionKind { kind, enabled } => self.set_action_kind(&kind, enabled),
             // The place search and the map of the event editor (tasks TE.1, TE.5); boxed, as their
             // answer waits for other services.
-            request @ (Request::SearchPlaces { .. } | Request::MapPreview { .. }) => {
+            request @ (Request::SearchPlaces { .. } | Request::MapPreview { .. } | Request::MapTile { .. }) => {
                 Box::pin(self.places(request, reach)).await
             }
             // Boxed: inlined, the calendar's series rules make every answer's future large enough to
@@ -8053,6 +8053,8 @@ impl Core {
             // The place of an address (issue #355): with the settings and the place search of the core.
             | Request::LocateContact { .. }
             | Request::OpenContactInMaps { .. }
+            // The map of all contacts (issue #357): only what this device keeps.
+            | Request::ListLocations { .. }
             // Import, export and duplicates (issues #725, #726).
             | Request::ImportVCards { .. }
             | Request::ExportVCards { .. }
@@ -14234,6 +14236,7 @@ impl Core {
             Request::MapPreview { geo, width, height, dark } => {
                 self.places.map(&maps, geo, width, height, dark, asker).await
             }
+            Request::MapTile { z, x, y, dark } => self.places.tile_png(&maps, z, x, y, dark, asker).await,
             _ => Response::Error { code: "error".into(), message: "not a place request".into() },
         }
     }
@@ -20345,10 +20348,15 @@ mod tests {
         let search = |query: &str| Request::SearchPlaces { query: query.into(), near: None };
         let map =
             |lat: f64, width: u16| Request::MapPreview { geo: Geo { lat, lon: 13.4 }, width, height: 104, dark: false };
+        // Issue #357: a single tile of the map of all contacts, beside the map and with its rules.
+        let tile = |z: u8, x: u32| Request::MapTile { z, x, y: 0, dark: false };
         let long = "Alexanderplatz ".repeat(20);
         for (request, wanted) in [
             (search("Alexanderplatz"), "unsupported"),
             (map(52.5, 336), "unsupported"),
+            (tile(17, 70_000), "unsupported"),
+            (tile(20, 0), "error"),
+            (tile(2, 4), "error"),
             (search(&long), "error"),
             (search(" "), "error"),
             (map(52.5, 801), "error"),
@@ -20375,6 +20383,8 @@ mod tests {
         let Response::Image { png } = core.handle(map(52.5, 336)).await else { panic!("a map") };
         assert!(!png.is_empty() && tiles.calls_async().await > 0);
         assert_eq!(code(&core.handle(map(85.1, 336)).await), "error", "limits first, with maps on too");
+        let Response::Image { png } = core.handle(tile(17, 70_000)).await else { panic!("a tile") };
+        assert!(!png.is_empty());
     }
 
     /// A map tile of one colour, as PNG, for the fake tile service (task TE.5).
