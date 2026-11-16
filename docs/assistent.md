@@ -98,8 +98,9 @@ Was offene Modelle brauchen, damit das gut geht:
   markiert ist; das Web fragt erneut nach den Werkzeugzeilen. Ruft das Modell dasselbe Werkzeug in einer Antwort zum dritten
   Mal mit derselben Eingabe auf, läuft der Aufruf nicht, und die Antwort endet mit einer Meldung,
   damit es sich nicht im Kreis dreht.
-  **Füllstand (Issue #831):** Am Ende jeder Antwort eines Modells, das der Kern führt, misst er, wie groß der
-  nächste Schritt ungekürzt wäre (Verlauf samt Antwort, geschätzt wie oben: Zeichen durch drei), und speichert es
+  **Füllstand (Issue #831):** Am Ende jeder Antwort eines Modells, das der Kern führt, misst er, wie groß ihr
+  größter Schritt ungekürzt war, mit Systemprompt und Werkzeugen dieses Schritts, und zählt die Antwort dazu
+  (geschätzt wie oben: Zeichen durch drei; knapp an der Grenze nur ungefähr), und speichert es
   als Zeile `context` in der Unterhaltung. Der Kopf der Unterhaltung (`assistant.get_conversation`,
   `assistant.list_conversations`, MCP `assistant_get_conversation`) trägt es als `context`: `used` (geschätzte
   Tokens), `limit` (die Kürzungsgrenze, die Hälfte des Kontextfensters), `window` (das Kontextfenster) und
