@@ -4023,6 +4023,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Open the assistant conversation \"{title}\" in a window",
         "Die Unterhaltung „{title}“ des Assistenten in einem Fenster öffnen",
     ),
+    (
+        "Let \"{engine}\" answer next in an unknown assistant conversation",
+        "In einer unbekannten Unterhaltung des Assistenten als Nächstes „{engine}“ antworten lassen",
+    ),
+    (
+        "Let \"{engine}\" answer next in the assistant conversation \"{title}\"",
+        "In der Unterhaltung „{title}“ des Assistenten als Nächstes „{engine}“ antworten lassen",
+    ),
     ("Pin an unknown assistant conversation", "Eine unbekannte Unterhaltung des Assistenten anheften"),
     ("Pin the assistant conversation \"{title}\"", "Die Unterhaltung „{title}“ des Assistenten anheften"),
     (
@@ -4239,6 +4247,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("What could I give Tom for his birthday?", "Was könnte ich Tom zum Geburtstag schenken?"),
     ("When was the flat viewing in Altona?", "Wann war die Wohnungsbesichtigung in Altona?"),
     ("Conversation deleted", "Unterhaltung gelöscht"),
+    ("Couldn't change the model.", "Das Modell konnte nicht gewechselt werden."),
     ("Couldn't decide the approval.", "Die Freigabe konnte nicht entschieden werden."),
     ("Couldn't delete the conversation.", "Die Unterhaltung konnte nicht gelöscht werden."),
     ("Couldn't load the conversation.", "Die Unterhaltung konnte nicht geladen werden."),

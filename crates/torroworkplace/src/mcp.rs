@@ -4111,9 +4111,9 @@ mod tests {
             .collect();
         assert_eq!(
             catalogue.len(),
-            31,
+            32,
             "nine of task C.1, five of C.10, one of issue #134, one of #225, one of #605, four of #703, one of #704, \
-             two of #697, two of #745, three of #747, one of #786, one of #784: {catalogue:?}"
+             two of #697, two of #745, three of #747, one of #786, one of #784, one of #852: {catalogue:?}"
         );
         assert!(catalogue.iter().all(|name| name.starts_with("assistant_") && names.contains(name.as_str())));
         // But the person's yes to asking a bot (task B.2), which no agent may give, dictating (issue
@@ -4818,6 +4818,7 @@ mod tests {
                 ),
                 ("assistant_cancel", json!({"conversation": CONVERSATION})),
                 ("assistant_rename_conversation", json!({"id": CONVERSATION, "title": "Renamed"})),
+                ("assistant_choose_model", json!({"id": CONVERSATION, "engine": "test"})),
                 ("assistant_delete_conversation", json!({"id": CONVERSATION})),
                 ("assistant_pin_conversation", json!({"id": CONVERSATION, "pinned": true})),
                 ("assistant_archive_conversations", json!({"ids": [CONVERSATION], "archived": true})),

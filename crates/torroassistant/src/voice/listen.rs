@@ -12,14 +12,16 @@
 //! waits for an approval – that is given in the window only.
 //!
 //! [`CoreAssistant`] is the way to the core: it sends the sentence as `assistant.send_message`
-//! (`spoken`, so the answer is short) to the conversation of the conversation by voice, else to
-//! "Voice" with the engine used last, opens the quick window, has the answer read aloud sentence by
+//! (`spoken`, so the answer is short) to the conversation of the conversation by voice with the model
+//! chosen there (issue #852), else to "Voice" with the chat model of the settings, the one used last
+//! or the first engine ([`CoreAssistant::target`]), opens the quick window, has the answer read aloud sentence by
 //! sentence (`assistant.speak_answer`) and follows it with `assistant.get_conversation`. It sends
 //! nothing else: no request it builds can decide an approval, so no word spoken ever allows anything
 //! ([`CoreAssistant::REQUESTS`]).
 
 use std::time::{Duration, Instant};
 
+use torro_core::ai::Effort;
 use torro_core::settings::Voice;
 use torro_ipc::assistant::{ConversationSummary, Engine, Entry, EntryContent};
 use torro_ipc::{Request, Response, Talk, VoiceState};
@@ -614,9 +616,12 @@ where
         }
     }
 
-    /// The conversation "Voice" if there is one (or `conversation` when given), and the engine and
-    /// model used last there, else in any conversation.
-    fn target(&mut self, conversation: Option<&str>) -> Result<(Option<String>, String, Option<String>), VoiceError> {
+    /// The conversation "Voice" if there is one (or `conversation` when given), and who answers: in a
+    /// conversation given, the engine, model and effort it names (chosen in the window or used last, issue
+    /// #852); else the chat model of the settings while its engine is offered, else the one used last in any
+    /// conversation, else the first engine. The settings come before "used last": they are the person's
+    /// own choice.
+    fn target(&mut self, conversation: Option<&str>) -> Result<Target, VoiceError> {
         let conversations = match self.request(Request::ListConversations)? {
             Response::Conversations { conversations } => conversations,
             other => return Err(unexpected(&other)),
@@ -627,19 +632,26 @@ where
         };
         let id = found.map(|summary| summary.id.clone());
         if let Some(summary) = found.filter(|_| conversation.is_some()) {
-            return Ok((id, summary.engine.clone(), summary.model.clone()));
+            return Ok((id, summary.engine.clone(), summary.model.clone(), summary.effort));
         }
-        if let Some((engine, model)) = last_engine(&conversations) {
-            return Ok((id, engine, model));
-        }
+        let slot = match self.request(Request::Settings)? {
+            Response::Settings { settings } => settings.ai_slots.chat,
+            other => return Err(unexpected(&other)),
+        };
         let engines = match self.request(Request::ListEngines)? {
             Response::Engines { engines } => engines,
             other => return Err(unexpected(&other)),
         };
+        if let Some(slot) = slot.filter(|slot| engines.iter().any(|engine| engine.id == slot.engine)) {
+            return Ok((id, slot.engine, slot.model, slot.effort));
+        }
+        if let Some((engine, model, effort)) = last_engine(&conversations) {
+            return Ok((id, engine, model, effort));
+        }
         let engine = first_engine(&engines).ok_or_else(|| {
             VoiceError::Core(Refusal::new("not-found", "no engine: add an AI account in Torro Workplace"))
         })?;
-        Ok((id, engine, None))
+        Ok((id, engine, None, None))
     }
 }
 
@@ -653,10 +665,14 @@ fn unexpected(response: &Response) -> VoiceError {
     VoiceError::Core(Refusal::new("error", format!("unexpected answer {kind:?}")))
 }
 
-/// The engine and model of the conversation used last.
-fn last_engine(conversations: &[ConversationSummary]) -> Option<(String, Option<String>)> {
+/// Where [`CoreAssistant::target`] sends a sentence: the conversation (`None` for a new one), the engine,
+/// the model and the effort.
+type Target = (Option<String>, String, Option<String>, Option<Effort>);
+
+/// The engine, model and effort of the conversation used last.
+fn last_engine(conversations: &[ConversationSummary]) -> Option<(String, Option<String>, Option<Effort>)> {
     let last = conversations.iter().max_by_key(|conversation| conversation.updated)?;
-    Some((last.engine.clone(), last.model.clone()))
+    Some((last.engine.clone(), last.model.clone(), last.effort))
 }
 
 /// The first engine with nothing known against it, else the first.
@@ -703,11 +719,11 @@ where
     }
 
     fn send(&mut self, text: &str, to: Option<Option<String>>) -> Result<Sent, VoiceError> {
-        let (conversation, engine, model) = match &to {
-            // A new conversation for a conversation by voice in a new chat: the engine used last.
+        let (conversation, engine, model, effort) = match &to {
+            // A new conversation for a conversation by voice in a new chat: as for "Voice".
             Some(None) => {
-                let (_, engine, model) = self.target(Some(""))?;
-                (None, engine, model)
+                let (_, engine, model, effort) = self.target(Some(""))?;
+                (None, engine, model, effort)
             }
             Some(Some(id)) => self.target(Some(id))?,
             None => self.target(None)?,
@@ -723,7 +739,7 @@ where
             conversation,
             engine,
             model,
-            effort: None,
+            effort,
             text: text.to_string(),
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
@@ -909,6 +925,8 @@ mod tests {
         /// Whether an answer runs, one per look at a conversation without entries asked; then none.
         running: VecDeque<bool>,
         sent: Vec<Request>,
+        /// The chat model of the settings (`ai_slots.chat`, issue #852).
+        chat: Option<torro_core::ai::SlotModel>,
     }
 
     fn summary(id: &str, title: &str, engine: &str, day: u32, last: u64, running: bool) -> ConversationSummary {
@@ -951,6 +969,7 @@ mod tests {
                 read: 0,
                 running: VecDeque::new(),
                 sent: Vec::new(),
+                chat: None,
             }
         }
 
@@ -959,7 +978,9 @@ mod tests {
             let entry = |seq, content| Entry { seq, time: Utc::now(), content };
             match request {
                 Request::Settings => {
-                    Ok(Response::Settings { settings: Settings { voice: self.voice.clone(), ..Settings::default() } })
+                    let mut settings = Settings { voice: self.voice.clone(), ..Settings::default() };
+                    settings.ai_slots.chat = self.chat.clone();
+                    Ok(Response::Settings { settings })
                 }
                 Request::TalkStatus => {
                     let speaking = self.speaking.pop_front().unwrap_or(false);
@@ -978,13 +999,22 @@ mod tests {
                 Request::SpeakAnswer { .. } => Ok(Response::Ok),
                 Request::ListConversations => Ok(Response::Conversations { conversations: self.conversations.clone() }),
                 Request::ListEngines => Ok(Response::Engines {
-                    engines: vec![Engine {
-                        id: "test".into(),
-                        kind: EngineKind::Test,
-                        name: "Test".into(),
-                        problem: None,
-                        models: Vec::new(),
-                    }],
+                    engines: vec![
+                        Engine {
+                            id: "test".into(),
+                            kind: EngineKind::Test,
+                            name: "Test".into(),
+                            problem: None,
+                            models: Vec::new(),
+                        },
+                        Engine {
+                            id: "ai:openai".into(),
+                            kind: EngineKind::Ai,
+                            name: "ChatGPT".into(),
+                            problem: None,
+                            models: Vec::new(),
+                        },
+                    ],
                 }),
                 Request::SendMessage { conversation, engine, text, model, .. } => {
                     let id = conversation.unwrap_or_else(|| "c9".into());
@@ -1394,6 +1424,58 @@ mod tests {
         listener.recorder = Box::new(Files { files: [PAUSE].into(), opened: Rc::clone(&opened) });
         assert_eq!(listener.run(&Voice { microphone: Some("USB".into()), ..on() }), Ok(Ended::VoiceOff));
         assert_eq!(*opened.borrow(), 1, "it listened once, and silence ended the conversation");
+    }
+
+    /// What [`CoreAssistant::send`] sends for `to` with the core `core`: engine, model and effort.
+    fn sent_with(core: Core, to: Option<Option<String>>) -> (String, Option<String>, Option<Effort>) {
+        let core = Rc::new(RefCell::new(core));
+        let ask = Rc::clone(&core);
+        let mut assistant = CoreAssistant::new(
+            move |request| ask.borrow_mut().answer(request),
+            |_: &str| {},
+            Duration::ZERO,
+            Duration::from_secs(5),
+        );
+        assistant.send("What is on today?", to).expect("sent");
+        let sent = core.borrow().sent.clone();
+        let Some(Request::SendMessage { engine, model, effort, .. }) =
+            sent.into_iter().find(|request| matches!(request, Request::SendMessage { .. }))
+        else {
+            unreachable!("a message was sent")
+        };
+        (engine, model, effort)
+    }
+
+    /// Issue #852, decision 2: without an open conversation the chat model of the settings answers before
+    /// the one used last, while its engine is offered; an open conversation answers with its own choice.
+    #[test]
+    fn the_settings_come_before_the_model_used_last_and_a_conversation_keeps_its_own() {
+        let gpt = || torro_core::ai::SlotModel {
+            engine: "ai:openai".into(),
+            model: Some("gpt".into()),
+            effort: Some(Effort::High),
+        };
+        let with = |chat| Core { chat, ..Core::new(Voice::default()) };
+        let settings = ("ai:openai".to_string(), Some("gpt".to_string()), Some(Effort::High));
+        assert_eq!(sent_with(with(Some(gpt())), None), settings, "\"Hey Torro\" into \"Voice\"");
+        assert_eq!(sent_with(with(Some(gpt())), Some(None)), settings, "\"Talk\" in a new chat");
+
+        let gone = torro_core::ai::SlotModel { engine: "ai:removed".into(), ..gpt() };
+        let last = ("ai:openrouter".to_string(), Some("ai:openrouter-model".to_string()), None);
+        assert_eq!(sent_with(with(Some(gone)), None), last, "an engine no longer offered");
+        assert_eq!(sent_with(with(None), None), last, "no chat model set");
+
+        let mut core = with(Some(gpt()));
+        core.conversations[0].effort = Some(Effort::Low);
+        assert_eq!(
+            sent_with(core, Some(Some("a1".into()))),
+            (
+                "ai:ollama@localhost:11434".to_string(),
+                Some("ai:ollama@localhost:11434-model".to_string()),
+                Some(Effort::Low)
+            ),
+            "the open conversation's choice, as the window stored it"
+        );
     }
 
     #[test]
