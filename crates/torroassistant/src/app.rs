@@ -3072,6 +3072,8 @@ fn settings_state(open: Option<Open>) -> Option<(&'static str, Vec<settings::Mes
             vec![profile_tab, open_profile, settings::Message::Profile(profile::Message::Name("Jarvis".into()))],
         )),
         Open::AccessSelections => Some((access::ID, vec![settings::Message::Access(access::Message::Tab(1))])),
+        // The tab Conversation of Voice (issue #831), by its place in `VoiceTab::ALL`.
+        Open::VoiceConversation => Some((VOICE_PAGE, vec![settings::Message::VoiceTab(1)])),
         // The tab Bots of Access is gone (issue #763): a bot's rights, below Bots.
         Open::AccessBots => {
             Some((bots::BOTS, vec![settings::Message::Bots(bots::Message::Access(crate::demo::TRAVEL.into()))]))

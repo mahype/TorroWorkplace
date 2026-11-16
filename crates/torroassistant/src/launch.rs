@@ -119,6 +119,9 @@ pub enum Open {
     ProfileChanged,
     /// The settings at Access, its tab Selections (issue #547).
     AccessSelections,
+    /// The settings at Voice, its tab Conversation (issue #831): "Hey Torro", the pause before a new
+    /// conversation, speech recognition and the microphone.
+    VoiceConversation,
     /// The rights of the demo's travel planner, below Bots (issue #547; the tab Bots of Access it
     /// showed is gone with issue #763).
     AccessBots,
@@ -140,7 +143,7 @@ pub enum Open {
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 41] = [
+    pub const ALL: [(&'static str, Open); 42] = [
         ("new", Open::New),
         ("tools", Open::Tools),
         ("approval", Open::Approval),
@@ -175,6 +178,7 @@ impl Open {
         ("profile-editor", Open::ProfileEditor),
         ("profile-changed", Open::ProfileChanged),
         ("access-selections", Open::AccessSelections),
+        ("voice-conversation", Open::VoiceConversation),
         ("access-bots", Open::AccessBots),
         ("search", Open::Search),
         ("archive", Open::Archive),

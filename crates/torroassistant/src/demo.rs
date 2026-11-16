@@ -733,7 +733,7 @@ fn samples(now: DateTime<Utc>) -> Vec<Conversation> {
         ],
     );
 
-    let trip = sample(
+    let mut trip = sample(
         "d000000000000005",
         tr("Trip to Lisbon"),
         now,
@@ -750,6 +750,9 @@ fn samples(now: DateTime<Utc>) -> Vec<Conversation> {
             EntryContent::Stopped,
         ],
     );
+    // Past the limit (issue #831): the core cut older parts, so the header says "Shortened".
+    trip.summary.context =
+        Some(torro_ipc::assistant::ContextFill { used: 21_300, limit: 16_000, window: 32_000, shortened: true });
 
     let mut release = sample(
         CARDS,
