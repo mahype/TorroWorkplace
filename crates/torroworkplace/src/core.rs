@@ -2792,7 +2792,9 @@ struct Reader<'a> {
     readings: Option<&'a Arc<Readings>>,
     speaking: Option<Speaking>,
     /// Only the note of the voice chat was given so far (issue #837): its sound is not the answer's, so
-    /// `stamps` wait for the answer's first text ([`Reader::add`]).
+    /// `stamps` wait for the answer's first text ([`Reader::add`]). The helper does not say when the note
+    /// ends, so the answer's first sound counts from when its text waits behind a note that sounds: from
+    /// its first text while the note sounds, else from the note's `playing`. Never before its first text.
     announcing: bool,
 }
 
@@ -2947,7 +2949,8 @@ impl Reader<'_> {
             self.asked += 1;
         }
         // The answer's first text after the note (issue #837): its time starts now, and while the note
-        // still sounds the helper plays on without a new `playing`, so its sound counts from here too.
+        // still sounds the helper plays on without a new `playing`, so its sound counts from here too;
+        // a note not sounding yet stamps it with its `playing`, which comes after this.
         if std::mem::take(&mut self.announcing) {
             given(self.stamps);
             if self.speaking.is_some() {
@@ -14971,8 +14974,10 @@ impl Core {
         };
         let turn = self.announced.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let note = crate::assistant::announce::announcement(tool.as_deref(), turn);
-        match self.begin_reading(number, note, true, Some(stamps), Some(&self.speaking)).await {
+        // Without `stamps`: the note's text is not the answer's first (issue #828); they follow it.
+        match self.begin_reading(number, note, true, None, Some(&self.speaking)).await {
             Ok(Some(mut begun)) => {
+                begun.stamps = Some(stamps);
                 begun.announcing = true;
                 Announced::Begun(Box::new(begun))
             }
@@ -21520,6 +21525,42 @@ done"#,
         };
         let stored = serde_json::to_string(&entries).expect("entries");
         assert!(stored.contains("Three events today.") && !stored.contains(note), "only spoken: {stored}");
+    }
+
+    /// Issue #837, review: the times of the answer (issue #828) begin with its own first text, not with the
+    /// note's: its first text after the note, its first sound not before that.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_note_is_not_timed_as_the_answer() {
+        use crate::assistant::tests::finish_growing;
+        const ID: &str = "0000000000000840";
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, run, partial) = announcing_core(dir.path(), ID, true).await;
+        partial.lock().unwrap_or_else(PoisonError::into_inner).tool = Some("calendar.list_events".into());
+        let Response::Conversation { entries, .. } =
+            core.handle(Request::GetConversation { id: ID.into(), after: None }).await
+        else {
+            panic!("the conversation")
+        };
+        let after = torro_ipc::assistant::answer_start(&entries).expect("a message");
+        let reader = Arc::clone(&core);
+        let read = tokio::spawn(async move {
+            let stamps = std::sync::Mutex::new(Stamps::default());
+            let number = reader.speech.claim().await;
+            let end = reader.read_answer(number, ID, after, &stamps).await;
+            (end, stamps.into_inner().unwrap_or_else(PoisonError::into_inner))
+        });
+        until_true("the note", || !said_lines(dir.path()).is_empty()).await;
+        let noted = Utc::now();
+        tokio::time::sleep(READ_EVERY * 2).await;
+        partial.lock().unwrap_or_else(PoisonError::into_inner).tool = None;
+        finish_growing(&core.assistant, ID, run, "Three events today.").await;
+        let (end, stamps) = read.await.expect("read");
+        assert_eq!(end, Response::Ok);
+        let piece = stamps.first_piece.expect("the answer's first text");
+        let sound = stamps.first_sound.expect("the answer's first sound");
+        assert!(piece > noted, "the answer's text, not the note's: {piece} after {noted}");
+        assert!(sound >= piece, "its sound not before its text: {sound} {piece}");
     }
 
     /// Issue #837, decision 2: without a tool the chat says it thinks once the first sentence takes
