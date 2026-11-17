@@ -21283,6 +21283,130 @@ done"#,
         assert_eq!(log.matches("Three events today.").count(), 1, "each sentence once: {log}");
     }
 
+    /// Waits up to five seconds for `ready`.
+    async fn until_true(what: &str, mut ready: impl FnMut() -> bool) {
+        let waited = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !ready() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(waited.is_ok(), "{what}");
+    }
+
+    /// Issue #850: the microphone is closed only while something sounds: `waiting` lets it go while an
+    /// open job has nothing to play, the next `playing` takes it again.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_microphone_is_closed_only_while_something_sounds() {
+        use crate::assistant::tests::{finish_growing, growing, message, written};
+        const ID: &str = "0000000000000850";
+        let dir = tempfile::tempdir().expect("temp dir");
+        let go = dir.path().join("go");
+        let body = format!(
+            r#"while read line; do
+  case "$line" in
+    *'"say"'*) echo '"playing"' ;;
+    *'"add"'*) echo '"waiting"'; while [ ! -e '{}' ]; do sleep 0.05; done; echo '"playing"' ;;
+    '"end"') echo '"done"' ;;
+  esac
+done"#,
+            go.display()
+        );
+        let speaker = dir.path().join("speaker");
+        crate::apps::tests::fake_at(&speaker, &body);
+        written(&dir.path().join("assistant"), ID, "Today", vec![message("What is on today?")], &[], |_| {});
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = Arc::new(
+            core(dir.path())
+                .with_assistant(assistant)
+                .with_speech(crate::apps::SpeechHelper::at(speaker))
+                .with_probe(Measured(large_pc())),
+        );
+        let (run, partial) = growing(&core.assistant, ID).await;
+        partial.lock().unwrap_or_else(PoisonError::into_inner).text = "Three events today. The first".into();
+        let reader = Arc::clone(&core);
+        let read = tokio::spawn(async move { reader.handle(Request::SpeakAnswer { conversation: ID.into() }).await });
+        until_true("closed while the first sentence sounds", || core.speaking.now() == (true, 1)).await;
+        finish_growing(&core.assistant, ID, run, "Three events today. The first is at nine.").await;
+        until_true("open while the job waits for sound", || core.speaking.now() == (false, 1)).await;
+        assert!(!read.is_finished(), "still reading");
+        std::fs::write(&go, "").expect("go");
+        until_true("closed again with the next sound", || core.speaking.now().1 == 2).await;
+        assert_eq!(read.await.expect("read"), Response::Ok);
+        assert_eq!(core.speaking.now(), (false, 2), "open once read");
+    }
+
+    /// Issue #850: with OpenAI each text added to the open job gets its own pieces, fetched in turn; an
+    /// error of OpenAI while reading stops what plays, and the answer is OpenAI's error.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn openai_reads_added_text_and_stops_on_its_error() {
+        use crate::assistant::tests::{finish_growing, growing, message, written};
+        use torro_core::account::Secret;
+        use torro_core::ai::AiProvider;
+        const ID: &str = "0000000000000851";
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = httpmock::MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(200).json_body(serde_json::json!({"data": [{"id": "gpt-5"}]}));
+            })
+            .await;
+        let piece = |input: &'static str, status: u16| {
+            server.mock_async(move |when, then| {
+                when.method("POST")
+                    .path("/v1/audio/speech")
+                    .json_body_includes(serde_json::json!({"input": input}).to_string());
+                then.status(status).body([0u8, 1, 2, 3]);
+            })
+        };
+        let (one, two) = (piece("Three events today.", 200).await, piece("The first is at nine.", 500).await);
+        let said = dir.path().join("said.log");
+        let body = format!(
+            r#"while read line; do
+  case "$line" in
+    *'"say"'*) echo '{{"pieces": ["Three events today."]}}' ;;
+    *'"add"'*) echo '{{"pieces": ["The first is at nine."]}}' ;;
+    *'"pcm"'*) printf 'pcm\n' >> '{0}'; echo '"playing"' ;;
+    '"stop"') printf 'stop\n' >> '{0}'; echo '"done"' ;;
+    '"end"') printf 'end\n' >> '{0}'; echo '"done"' ;;
+  esac
+done"#,
+            said.display()
+        );
+        let speaker = dir.path().join("speaker");
+        crate::apps::tests::fake_at(&speaker, &body);
+        written(&dir.path().join("assistant"), ID, "Today", vec![message("What is on today?")], &[], |_| {});
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = Arc::new(
+            core_with_ai(dir.path(), &MemoryTokens::default(), Vec::new())
+                .with_assistant(assistant)
+                .with_speech(crate::apps::SpeechHelper::at(speaker))
+                .with_probe(Measured(large_pc())),
+        );
+        core.ai
+            .connect(AiProvider::OpenAi, Some(&server.url("/v1")), Secret::new(crate::account::ai::tests::KEY))
+            .await
+            .expect("connected");
+        let provider =
+            Request::SetSetting { key: torro_ipc::SettingKey::SpeechProvider, value: serde_json::json!("openai") };
+        assert_eq!(core.handle(provider).await, Response::Ok);
+        let (run, partial) = growing(&core.assistant, ID).await;
+        partial.lock().unwrap_or_else(PoisonError::into_inner).text = "Three events today. The first".into();
+        let reader = Arc::clone(&core);
+        let read = tokio::spawn(async move { reader.handle(Request::SpeakAnswer { conversation: ID.into() }).await });
+        until_true("the first sentence sounds", || std::fs::read_to_string(&said).is_ok_and(|log| log.contains("pcm")))
+            .await;
+        finish_growing(&core.assistant, ID, run, "Three events today. The first is at nine.").await;
+        let answer = read.await.expect("read");
+        assert!(matches!(answer, Response::Error { .. }), "OpenAI's error: {answer:?}");
+        assert_eq!((one.calls_async().await, two.calls_async().await), (1, 1), "each piece fetched once");
+        let log = std::fs::read_to_string(&said).expect("said");
+        assert!(log.ends_with("stop\n") && !log.contains("end"), "what plays stops: {log}");
+    }
+
     /// Issue #774 (and its review): of an answer in two parts only the spoken part is read, also while the
     /// mark is still being written, and its last sentence as soon as the mark is there; one without the
     /// mark is read up to a sentence end within `SPOKEN_MOST` characters.
