@@ -1446,7 +1446,8 @@ mod tests {
         assert_eq!(
             contact.note.as_deref(),
             Some(
-                "Rückruf bitte nachmittags, nicht vor 14 Uhr; Assistenz: Herr Klein. Diese Notiz ist absichtlich lang genug, damit sie gefaltet wird."
+                "Rückruf bitte nachmittags, nicht vor 14 Uhr; Assistenz: Herr Klein. Diese Notiz ist absichtlich \
+                 lang genug, damit sie gefaltet wird."
             )
         );
         assert_eq!(photo(&raw).map(|p| p.mime), Some("image/png".into()));

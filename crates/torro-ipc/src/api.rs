@@ -3742,8 +3742,8 @@ static LIST_ACCOUNTS: Command = Command {
                   and tokens are never part of the answer. Which apps use an account follows from its kind, among \
                   the apps apps.list_apps lists as installed: nextcloud Calendar, Tasks, Contacts, Notification Hub \
                   and App Feed; mail Mail, with calendars (`mail.calendars`) also Calendar and Tasks; caldav \
-                  Calendar, Tasks and Contacts; github Tasks, Notification Hub and App Feed; ntfy Notification Hub and App Feed; ai Mail \
-                  and Assistant.",
+                  Calendar, Tasks and Contacts; github Tasks, Notification Hub and App Feed; ntfy Notification \
+                  Hub and App Feed; ai Mail and Assistant.",
 };
 
 static SYNC: Command = Command {

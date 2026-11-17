@@ -453,7 +453,8 @@ fn needed_by(app: &CatalogApp, catalog: &AppCatalog) -> Vec<String> {
 }
 
 /// Overview's header (issue #803): only "Update all (2)", the window's one primary button while there
-/// are updates; narrow as an icon; disabled while an app's job runs. What else the catalog offers stands at its title ([`title`]).
+/// are updates; narrow as an icon; disabled while an app's job runs. What else the catalog offers stands at
+/// its title ([`title`]).
 pub fn header<'a>(_state: &'a State, data: &'a Data, class: SizeClass) -> Header<'a, Message> {
     let catalog = data.app_catalog.catalog.listed();
     let narrow = !matches!(class, SizeClass::Wide | SizeClass::Medium);
