@@ -1,28 +1,28 @@
 # Release-Pipeline
 
-Stand: 2026-11-13, #589. **Noch kein veröffentlichter Installer-Nachweis.** Der Code bereitet die
+Stand: 2026-11-17, #589, Kontakte #354. **Noch kein veröffentlichter Installer-Nachweis.** Der Code bereitet die
 Downloads vor; erst ein Maintainer-Release mit Plattformprüfungen belegt die vollständige Auslieferung.
 Anleitung für Nutzer: [install.md](install.md). Maintainer-Ablauf: [release-0.1.0.md](release-0.1.0.md).
 
 ## Artefakte und Begleitpakete
 
-`packaging/apps.json` nennt die acht stabilen App-IDs, Programme, Startargumente und Abhängigkeiten:
-Workplace, Notification Hub, Workplace Mail, App Feed, Calendar, Tasks, Assistant und Chat. Bundle-ID bleibt
+`packaging/apps.json` nennt die neun stabilen App-IDs, Programme, Startargumente und Abhängigkeiten:
+Workplace, Notification Hub, Workplace Mail, App Feed, Calendar, Tasks, Assistant, Chat und Contacts. Bundle-ID bleibt
 `io.github.mahype.<app-id>`, die des Dienstes `io.github.mahype.torro-workplace-service`.
 
 | Plattform | Installierbarer Download | Inhalt |
 |---|---|---|
 | macOS arm64 / Intel | `<bin>-<version>-<target>.dmg` | signierte, notarisierte, geheftete App; Mail/App Feed zusätzlich Hub, Calendar zusätzlich Reminder; jede App mit eingebettetem Dienst |
 | Windows x64 | `<bin>-<version>-x86_64-pc-windows-msvc-setup.exe` | unsignierter Inno-Setup-Installer für alle Benutzer, App, Dienst, bei Mail/App Feed Hub |
-| Linux amd64 / arm64 | native nFPM-Namen, `.deb`, `.rpm`, `.pkg.tar.zst` | neun Pakete je Ziel und Format: Dienst, Workplace-Starter und sieben Apps |
+| Linux amd64 / arm64 | native nFPM-Namen, `.deb`, `.rpm`, `.pkg.tar.zst` | zehn Pakete je Ziel und Format: Dienst, Workplace-Starter und acht Apps |
 
 Linux besitzt `torroworkplace-bin` allein das Programm `/usr/bin/torroworkplace` und
-`/usr/lib/systemd/user/torroworkplace.service`. `torro-workplace` besitzt nur Starter und Icon. Die sieben
+`/usr/lib/systemd/user/torroworkplace.service`. `torro-workplace` besitzt nur Starter und Icon. Die acht
 `<bin>-bin`-Pakete besitzen jeweils Programm, Paketmarker, Starter und Icon. Jedes App-Paket braucht den
 Dienst mindestens derselben nativen Version; Mail/App Feed auch `torroinbox-bin`. Kein doppelter
 Dateibesitz, keine Root-Dienststarts, kein automatisches Aktivieren der Nutzereinheit oder Autostart.
 
-Die Pipeline verlangt **78 Installer**: 54 Linux-Pakete, 16 DMGs und acht Setups. Dazu gehören je Datei
+Die Pipeline verlangt **87 Installer**: 60 Linux-Pakete, 18 DMGs und neun Setups. Dazu gehören je Datei
 `.sha256`, ein maschinenlesbares `installers-manifest.json` und `downloads.md` mit eindeutig zugeordneten
 Links einschließlich Begleitpaketen derselben Architektur und desselben Formats. Die Downloadtabelle
 steht auch in den Release-Notizen. Native Linux-Namen kommen direkt von nFPM, nicht von geratenen Namen.
@@ -46,18 +46,18 @@ Nur ein Versions-Tag startet `release.yml`, keine PR- oder manuellen Trigger der
 Versionen laufen gemeinsam: `vMAJOR.MINOR.PATCH` oder `vMAJOR.MINOR.PATCH-rc.N`. Die Installer akzeptieren
 keine anderen Tagformen; Komponenten sind wegen Windows auf 65534 begrenzt.
 
-1. `dist` **0.32.0** plant alle acht Programme für fünf Ziele. `custom-ci` prüft Linux, macOS und Windows.
+1. `dist` **0.32.0** plant alle neun Programme für fünf Ziele. `custom-ci` prüft Linux, macOS und Windows.
 2. `build-local-artifacts` baut auf Ubuntu 22.04 (x86_64/arm64), macOS 14 (arm64), macOS 15 Intel und
    Windows 2022 die Archive. Linux-Basis: glibc **>= 2.35**, dynamische Grafikloader für X11/Wayland.
 3. `build-global-artifacts` erzeugt die bisherigen Skriptinstaller, Formeln und Gesamtprüfsummen.
 4. Globale Artefakt-Jobs (auch bei RCs):
    - `publish-macos-app.yml::macos-app` lädt **Workflow-Artefakte**, prüft Tag und SHA-256, baut die
      Bündel mit `make-app.sh`, signiert innen nach außen, notarisiert und heftet. Ein Folgejob baut mit
-      `make-dmg.sh` acht Images je Architektur: Applications-Link, englische Ziehanleitung, benötigte
+      `make-dmg.sh` neun Images je Architektur: Applications-Link, englische Ziehanleitung, benötigte
      Partner-Bündel. Auch DMGs werden signiert, notarisiert, geheftet und validiert. Temporäre Mounts
      werden aufgeräumt. App-Archivnamen, Dienst und Bundle-IDs bleiben unverändert.
    - `build-installers.yml` nutzt nFPM **2.48.0** und Inno Setup **7.1.1**, deren Download-SHA-256 im
-      Workflow feststeht. `installers.py` prüft die acht Quellen im dist-Plan, Tag und Quellprüfsummen,
+      Workflow feststeht. `installers.py` prüft die neun Quellen im dist-Plan, Tag und Quellprüfsummen,
      lehnt Pfadausbrüche, Links und Sonderdateien ab und arbeitet temporär. Tool-/Eingabefehler liefern
      Exit ungleich 0, keine teilweise fertige Ausgangsmatrix.
 5. `host` verlangt **Erfolg aller Pflichtjobs** einschließlich `custom-ci`; „skipped“ reicht nicht.
@@ -196,7 +196,7 @@ Release-Nachweis bleiben ebenfalls offen. Keinen lokalen Testbau als veröffentl
 `packaging/tests/linux-smoke.sh` prüft in einem **wegwerfbaren Container** Metadaten, Installieren,
 Wiederholung, Upgrade RC→Stable und Entfernen mit verbleibendem Dienst und erhaltenen Daten.
 `windows-smoke.ps1` läuft nur in einer **frischen Windows-x64-VM** mit Administratorrechten und
-`TORRO_INSTALLER_SMOKE=1`: alle acht Apps, Wiederholung, Upgrade, Downgrade-Abweisung, beide
+`TORRO_INSTALLER_SMOKE=1`: alle neun Apps, Wiederholung, Upgrade, Downgrade-Abweisung, beide
 Entfernungsreihenfolgen, gemeinsame Dateien bis zum letzten Besitzer; installierte echte Programme müssen
 mit `--version` laden und exakt zur Versions-Begleitdatei passen (30-Sekunden-Grenze). Nie am
 Arbeitsrechner ausführen. Der lokale Windows-Testbau muss wie dist 0.32.0 mit
