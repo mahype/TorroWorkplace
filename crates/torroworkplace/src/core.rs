@@ -4286,12 +4286,9 @@ impl Core {
         let mut added = self.pim.on_add();
         let core = Arc::clone(self);
         tokio::spawn(async move {
-            loop {
-                match added.recv().await {
-                    // Missed ones are covered by the same round: it syncs every account.
-                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => core.sync_contacts().await,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
+            // Missed ones are covered by the same round: it syncs every account.
+            while let Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) = added.recv().await {
+                core.sync_contacts().await;
             }
         });
         let mut forgotten = self.pim.on_forget();
