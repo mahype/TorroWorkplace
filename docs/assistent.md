@@ -1011,6 +1011,7 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
 | Wer vorlesen kann | Voice › Read aloud | `settings.speech_status` · Read | `settings_speech_status` |
 | An/aus, Anbieter, Stimmen, wie die Stimme spricht | Voice › Read aloud, Lautsprecher im Chatfenster | `settings.set_setting` `read_aloud`, `speech_provider`, `pocket_voice`, `openai_voice`, `pocket_speed`, `pocket_pause`, `openai_style` · Admin | `settings_set_setting` (OpenAI als Anbieter nur Menschen) |
 | Pause bis zum neuen Gespräch „Voice“ (Issue #831) | Voice › Conversation › New conversation after a pause | `settings.set_setting` `voice_new_after` · Admin | `settings_set_setting` |
+| Ansagen beim Nachdenken an/aus (Issue #837) | Voice › Conversation › Say what it does while it works | `settings.set_setting` `voice_announcements` · Admin | `settings_set_setting` |
 | Füllstand des Kontexts (Issue #831) | Kopf des Chatfensters | `assistant.get_conversation`, `assistant.list_conversations` (`context`) · Read | `assistant_get_conversation`, `assistant_list_conversations` |
 
 ### Gespräch (Issue #747)
@@ -1040,6 +1041,17 @@ ist; das Mikrofon ist dann nur für dieses Gespräch offen. Statt des Eingabefel
   Die Sprechzeile im Fenster und Menü und Tooltip des Tray zeigen dasselbe in Worten: „Erkennt …“, „Überlegt …“,
   „Schaut in den Kalender …“ (nach dem Bereich des Werkzeugs), „Spricht …“. Die Markierung am Tray-Symbol bleibt
   dabei der Ring; der volle Punkt heißt nur „Mikrofon offen“.
+- **Ansagen beim Nachdenken (#837):** Damit keine stumme Pause entsteht, sagt der Assistent im Sprachchat
+  („Hey Torro“ und Gespräch) kurz, was er tut: sofort beim ersten Werkzeug, nach dem Bereich des Werkzeugs
+  („Moment, ich schaue in deinen Kalender.“; Mail, Aufgaben, Kontakte, sonst „Moment, ich schaue nach.“), oder
+  nach 1,5 Sekunden ohne ersten Satz der Antwort („Lass mich kurz überlegen.“). Je Bereich gibt es drei Fassungen,
+  die sich reihum abwechseln; sie nennen nie Inhalte, auch keine Namen von Erweiterungen. Höchstens eine Ansage je
+  Antwort, keine, wenn die Antwort schneller ist, und keine beim Vorlesen eines getippten Chats, weil das Fenster die
+  Zustände dort zeigt. Die Ansage wird nur vorgelesen, nie in der Unterhaltung gespeichert, damit das Modell sie
+  nicht für seine eigene Aussage hält; die Antwort folgt im selben Vorlesen. Die Antwortzeiten (#828) messen den
+  ersten Ton der Antwort, nicht den der Ansage. Abschalten: „Say what it does while it works“ unter Voice ›
+  Conversation (`voice_announcements`); der Schalter wirkt nur und ist nur bedienbar, solange „Speak answers“ an
+  ist.
 
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
