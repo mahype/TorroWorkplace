@@ -966,8 +966,8 @@ pub fn reveal(app: AppId, path: Option<&str>) -> Result<(), String> {
 }
 
 /// The demo's catalog (`--demo --section apps`): checked just now, Calendar and Mail with an update,
-/// Tasks and the App Feed up to date, the Notification Hub from a package manager, Assistant and Chat
-/// missing, Contacts not in the release, and the main application up to date.
+/// Tasks and the App Feed up to date, the Notification Hub from a package manager, Assistant, Chat and
+/// Contacts missing, and the main application up to date.
 pub fn demo_catalog(now: DateTime<Utc>) -> AppCatalog {
     let entry = |app: AppId, installed: Option<&str>, available: &str, state: CatalogState| CatalogApp {
         window_class: app.window_class.into(),
@@ -1012,8 +1012,7 @@ pub fn demo_catalog(now: DateTime<Utc>) -> AppCatalog {
             feed,
             entry(AppId::ASSISTANT, None, "0.2.0", CatalogState::Available),
             entry(AppId::CHAT, None, "0.2.0", CatalogState::Available),
-            // Not in the release yet (issue #352): no installers until an issue of its own.
-            CatalogApp { available: None, size: None, ..entry(AppId::CONTACTS, None, "", CatalogState::Unavailable) },
+            entry(AppId::CONTACTS, None, "0.2.0", CatalogState::Available),
         ],
         job: None,
     }

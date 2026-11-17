@@ -1601,8 +1601,7 @@ pub(crate) mod tests {
         assert!(requires(AppId::INBOX).is_empty());
     }
 
-    /// The fixture release (as GitHub answers it) offers every app on every system, but the contacts,
-    /// which are not in the release yet (issue #352: the native installers cover eight apps).
+    /// The fixture release (as GitHub answers it) offers every app on every system.
     #[test]
     fn the_fixture_release_has_every_app_for_every_system() {
         let text = include_str!("../../tests/fixtures/catalog/release.json");
@@ -1617,7 +1616,7 @@ pub(crate) mod tests {
         let stored = Stored { latest: Some("0.2.0".into()), assets, ..Stored::default() };
         for platform in [Platform::MacOs, Platform::Linux, Platform::Windows] {
             let env = Env { arch: "x86_64".into(), ..Env::empty(platform) };
-            for app in AppId::ALL.iter().filter(|app| **app != AppId::CONTACTS) {
+            for app in AppId::ALL {
                 assert!(release_parts(&env, *app, &stored).is_some(), "{} on {platform:?}", app.window_class);
             }
         }
