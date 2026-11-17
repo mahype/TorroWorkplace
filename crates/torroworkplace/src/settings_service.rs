@@ -656,6 +656,8 @@ enum Change {
     PocketPause(Option<u16>),
     /// After how many minutes "Hey Torro" starts a new conversation "Voice" (issue #831); `None` for 30.
     VoiceNewAfter(Option<u16>),
+    /// Whether the voice chat says briefly what it does while an answer takes a moment (issue #837).
+    VoiceAnnouncements(bool),
     /// How OpenAI speaks (issue #782); never logged or repeated in a refusal.
     OpenAiStyle(Option<String>),
     /// What a new chat of the assistant starts with (issue #131): the slot Chat (issue #325), written
@@ -790,6 +792,9 @@ impl Change {
             SettingKey::PocketSpeed => Change::PocketSpeed(Voice::pocket_speed_from(value)?),
             SettingKey::PocketPause => Change::PocketPause(Voice::pocket_pause_from(value)?),
             SettingKey::VoiceNewAfter => Change::VoiceNewAfter(Voice::new_after_from(value)?),
+            SettingKey::VoiceAnnouncements => {
+                Change::VoiceAnnouncements(serde_json::from_value(value.clone()).map_err(invalid)?)
+            }
             SettingKey::OpenAiStyle => Change::OpenAiStyle(Voice::openai_style_from(value)?),
             SettingKey::AssistantDefault => Change::AssistantDefault(AssistantDefault::from_value(value)?),
             SettingKey::Setup => Change::Setup(serde_json::from_value(value.clone()).map_err(invalid)?),
@@ -916,6 +921,7 @@ impl Change {
             Change::PocketSpeed(speed) => settings.voice.pocket_speed = speed,
             Change::PocketPause(pause) => settings.voice.pocket_pause = pause,
             Change::VoiceNewAfter(minutes) => settings.voice.new_after = minutes,
+            Change::VoiceAnnouncements(on) => settings.voice.announce = on,
             Change::OpenAiStyle(style) => settings.voice.openai_style = style,
             Change::AssistantDefault(default) => settings.ai_slots.chat = default,
             Change::Setup(state) => settings.setup = settings.setup.moved_to(state),
@@ -2269,6 +2275,21 @@ mod tests {
         assert_eq!(store.current().voice.new_after, Some(45), "a refusal changes nothing");
         store.set(SettingKey::VoiceNewAfter, &json!(null)).expect("back to the default");
         assert_eq!(store.current().voice.new_after_or_default(), 30);
+    }
+
+    /// Issue #837: the announcements while an answer takes a moment are switched with `true` and
+    /// `false`; anything else is refused and changes nothing.
+    #[test]
+    fn the_announcements_of_the_voice_chat_are_switched() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SettingsStore::at(dir.path().join("settings.json"));
+        assert!(store.current().voice.announce, "on unless turned off");
+        store.set(SettingKey::VoiceAnnouncements, &json!(false)).expect("a valid value");
+        assert!(!store.current().voice.announce);
+        assert!(store.set(SettingKey::VoiceAnnouncements, &json!("x")).is_err());
+        assert!(!store.current().voice.announce, "a refusal changes nothing");
+        store.set(SettingKey::VoiceAnnouncements, &json!(true)).expect("a valid value");
+        assert!(store.current().voice.announce);
     }
 
     /// Issue #762: the keys and providers of whisper.cpp and Piper are gone (`unsupported` in the core), and
