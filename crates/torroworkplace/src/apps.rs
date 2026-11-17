@@ -753,12 +753,16 @@ impl Listener {
         let input = child.stdin.take();
         let Some(output) = child.stdout.take() else { return };
         running.child = Some(child);
-        drop(running);
-        if let Some(mut input) = input {
-            let (sender, mut lines) = mpsc::channel::<String>(ECHO_WAITING);
+        // Attached under the lock, so a stop and a newer start cannot slip in before it.
+        let echo_lines = input.map(|input| {
+            let (sender, lines) = mpsc::channel::<String>(ECHO_WAITING);
             // Weak, so the task ends once the pipe lets go of the listener: then no sender is left.
             let weak = sender.downgrade();
             self.echo.attach(sender);
+            (input, lines, weak)
+        });
+        drop(running);
+        if let Some((mut input, mut lines, weak)) = echo_lines {
             let echo = self.echo.clone();
             tokio::spawn(async move {
                 while let Some(line) = lines.recv().await {
