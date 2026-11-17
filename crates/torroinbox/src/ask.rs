@@ -967,6 +967,7 @@ fn demo_summary(about: &MailRef, title: &str, last: u64, now: DateTime<Utc>) -> 
         bot: None,
         bot_deleted: false,
         about: Some(about.clone()),
+        context: None,
     }
 }
 
@@ -1176,6 +1177,7 @@ mod tests {
             bot: None,
             bot_deleted: false,
             about,
+            context: None,
         }
     }
 

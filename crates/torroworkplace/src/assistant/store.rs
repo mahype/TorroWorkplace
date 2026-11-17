@@ -37,7 +37,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use torro_core::ai::Effort;
 use torro_ipc::assistant::{
-    ConversationSummary, Entry, EntryContent, HitKind, ItemRef, MailRef, SNIPPET_CHARS, split_spoken,
+    ContextFill, ConversationSummary, Entry, EntryContent, HitKind, ItemRef, MailRef, SNIPPET_CHARS, split_spoken,
 };
 
 /// The extension of a conversation's file.
@@ -92,6 +92,9 @@ pub enum Line {
     /// What the command of the tool line `seq` found (issue #786, [`Seen`]): the ids of its items, in its order, and
     /// how many it found in all. Ids only, so it stays when the result goes ([`drop_results`]).
     Seen { seq: u64, refs: Vec<ItemRef>, total: u64 },
+    /// How full the context was at the end of an answer of a model the core drives (issue #831,
+    /// [`Conversation::context`]); a later line replaces it.
+    Context { fill: ContextFill },
 }
 
 /// What one command of a conversation found (issue #786, [`Line::Seen`]): written by the core after
@@ -131,6 +134,9 @@ pub struct Conversation {
     pub untrusted: bool,
     /// What each command found, by the number of its tool line (issue #786, [`Line::Seen`]).
     pub seen: BTreeMap<u64, Seen>,
+    /// How full the context was at the latest answer of a model the core drives (issue #831, [`Line::Context`]),
+    /// with the engine and model of the newest message then; `None` before it.
+    pub context: Option<(ContextFill, (String, Option<String>))>,
     /// The engine, model and effort chosen since the newest message (issue #852, [`Line::Chosen`]); `None` when
     /// none was chosen since, and then the newest message tells who answers next.
     pub chosen: Option<(String, Option<String>, Option<Effort>)>,
@@ -151,6 +157,7 @@ impl Conversation {
             results: BTreeMap::new(),
             untrusted: false,
             seen: BTreeMap::new(),
+            context: None,
             chosen: None,
         }
     }
@@ -181,6 +188,7 @@ impl Conversation {
             results: BTreeMap::new(),
             untrusted: false,
             seen: BTreeMap::new(),
+            context: None,
             chosen: None,
         };
         for line in lines {
@@ -218,6 +226,12 @@ impl Conversation {
                 self.seen.insert(seq, Seen { refs, total });
             }
             Line::Seen { .. } => {}
+            // Its engine is the newest message's: the one that answered (`Answering` writes the line at its end).
+            // Not a choice made since (issue #852): that one has not answered yet.
+            Line::Context { fill } => {
+                let (engine, model, _) = self.answered();
+                self.context = Some((fill, (engine, model)));
+            }
         }
     }
 
@@ -266,9 +280,14 @@ impl Conversation {
     /// Who answers next: the engine, model and effort chosen since the newest message (issue #852), else those of
     /// the newest message; empty without either.
     fn engine(&self) -> (String, Option<String>, Option<Effort>) {
-        if let Some(chosen) = &self.chosen {
-            return chosen.clone();
+        match &self.chosen {
+            Some(chosen) => chosen.clone(),
+            None => self.answered(),
         }
+    }
+
+    /// The engine, model and effort of the newest message; empty without one.
+    fn answered(&self) -> (String, Option<String>, Option<Effort>) {
         self.entries
             .iter()
             .rev()
@@ -283,6 +302,10 @@ impl Conversation {
     /// set ([`ConversationSummary::bot_deleted`]), it knows which bots there are.
     pub fn summary(&self, running: bool) -> ConversationSummary {
         let (engine, model, effort) = self.engine();
+        // Only while the conversation goes on with the engine and model measured: an agent engine since keeps its
+        // own context, which the core does not know, and another model has another window.
+        let context =
+            self.context.as_ref().filter(|(_, (of, with))| *of == engine && *with == model).map(|(fill, _)| *fill);
         ConversationSummary {
             id: self.id.clone(),
             title: self.title.clone(),
@@ -298,6 +321,7 @@ impl Conversation {
             bot: self.bot.clone(),
             bot_deleted: false,
             about: self.about.clone(),
+            context,
         }
     }
 
@@ -640,6 +664,19 @@ mod tests {
         assert!(snippet("ΟΔΟΣ", &words_of("ΟΔΟΣ")).is_some(), "the same small letters for words and text");
     }
 
+    /// A message of the person to `engine` and its `model`.
+    fn message_with(engine: &str, model: Option<&str>) -> EntryContent {
+        EntryContent::Message {
+            text: "Go on".into(),
+            engine: engine.into(),
+            model: model.map(str::to_string),
+            effort: None,
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            from: None,
+        }
+    }
+
     fn answer(text: &str) -> EntryContent {
         EntryContent::Answer { text: text.into(), engine: "test".into(), model: None, spoken: None }
     }
@@ -766,6 +803,40 @@ mod tests {
         remove(&folder, &conversation.id).expect("removing again is fine");
         assert_eq!(load_all(&folder).expect("read"), Vec::new());
         assert_eq!(load_all(&dir.path().join("missing")).expect("no folder"), Vec::new());
+    }
+
+    /// Issue #831: a conversation without a line of its context shows none; the newest line counts, and it
+    /// is read back from the file.
+    #[test]
+    fn the_newest_context_line_counts() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let folder = dir.path().join("assistant");
+        let mut conversation = Conversation::new("0123456789abcdef".into(), "Hello", at(0));
+        append(&folder, &conversation.id, &[conversation.started()]).expect("written");
+        assert_eq!(load_all(&folder).expect("read")[0].summary(false).context, None);
+
+        let early = ContextFill { used: 1_000, limit: 100_000, window: 200_000, shortened: false };
+        let later = ContextFill { used: 120_000, shortened: true, ..early };
+        let lines = [Line::Context { fill: early }, Line::Context { fill: later }];
+        append(&folder, &conversation.id, &lines).expect("written");
+        for line in lines {
+            conversation.apply(line);
+        }
+        assert_eq!(conversation.summary(false).context, Some(later));
+        assert_eq!(conversation.updated(), at(0), "measuring is no entry");
+        assert_eq!(load_all(&folder).expect("read"), vec![conversation.clone()]);
+
+        // Another model of the same engine: its window differs, so none shows until it answered.
+        let other = message_with("", Some("bigger"));
+        let mut switched = conversation.clone();
+        let entry = switched.next(other, at(2));
+        switched.apply(Line::Entry { entry });
+        assert_eq!(switched.summary(false).context, None);
+
+        // Going on with an agent engine: the core does not know that context, so none shows.
+        let to_agent = conversation.next(message_with("agent:claude-code", None), at(2));
+        conversation.apply(Line::Entry { entry: to_agent });
+        assert_eq!(conversation.summary(false).context, None);
     }
 
     /// Task B.1: a conversation with a bot keeps the bot in its first line; one from before bots

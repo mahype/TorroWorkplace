@@ -1359,6 +1359,10 @@ pub struct Voice {
     /// for OpenAI's own way. It only travels once a person chose OpenAI as [`Voice::speech_provider`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openai_style: Option<String>,
+    /// After how many minutes without an entry "Hey Torro" starts a new conversation "Voice" (issue
+    /// #831); `None` for 30, `0` for never ([`Voice::new_after_or_default`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_after: Option<u16>,
 }
 
 /// Who reads the assistant's answers aloud (issue #745, `docs/assistent.md` "Vorlesen"). More may
@@ -1486,6 +1490,7 @@ impl Default for Voice {
             pocket_speed: None,
             pocket_pause: None,
             openai_style: None,
+            new_after: None,
         }
     }
 }
@@ -1495,6 +1500,13 @@ pub const POCKET_SPEEDS: (u16, u16, u16) = (70, 150, 10);
 
 /// The extra pauses after a sentence of Pocket TTS, in milliseconds (issue #782): from, to and the step.
 pub const POCKET_PAUSES: (u16, u16, u16) = (0, 1000, 250);
+
+/// The pauses after which "Hey Torro" starts a new conversation "Voice", in minutes (issue #831): from,
+/// to and the step; 0 means never.
+pub const VOICE_NEW_AFTER: (u16, u16, u16) = (0, 240, 15);
+
+/// The pause [`Voice::new_after_or_default`] takes when none is chosen, in minutes (issue #831).
+pub const VOICE_NEW_AFTER_DEFAULT: u16 = 30;
 
 /// The longest speaking style `settings.set_setting` takes, in characters (issue #782).
 pub const MAX_STYLE_CHARS: usize = 500;
@@ -1641,6 +1653,13 @@ impl Voice {
         on_step(self.pocket_pause, POCKET_PAUSES).unwrap_or(0)
     }
 
+    /// After how many minutes without an entry "Hey Torro" starts a new conversation "Voice": the chosen
+    /// pause if it is one of [`VOICE_NEW_AFTER`], else [`VOICE_NEW_AFTER_DEFAULT`]; 0 means never (issue
+    /// #831).
+    pub fn new_after_or_default(&self) -> u16 {
+        on_step(self.new_after, VOICE_NEW_AFTER).unwrap_or(VOICE_NEW_AFTER_DEFAULT)
+    }
+
     /// The speaking style for OpenAI, or `None` for OpenAI's own way (issue #782).
     pub fn openai_style_or_none(&self) -> Option<&str> {
         self.openai_style.as_deref().map(str::trim).filter(|style| !style.is_empty())
@@ -1656,6 +1675,12 @@ impl Voice {
     /// none. For `settings.set_setting` with `pocket_pause`.
     pub fn pocket_pause_from(value: &serde_json::Value) -> Result<Option<u16>, String> {
         stepped_from(value, POCKET_PAUSES, "pause in milliseconds")
+    }
+
+    /// The pause in `value`: a number of minutes from 0 to 240, rounded to 15, or `null` for 30. For
+    /// `settings.set_setting` with `voice_new_after` (issue #831).
+    pub fn new_after_from(value: &serde_json::Value) -> Result<Option<u16>, String> {
+        stepped_from(value, VOICE_NEW_AFTER, "pause in minutes")
     }
 
     /// The speaking style in `value`: one line of at most 500 characters without control characters,
@@ -3132,6 +3157,25 @@ mod tests {
         assert_eq!(Voice::speech_language_from(&json!("")), Ok(None));
         for refused in [json!("english"), json!("xx"), json!(1), json!(["de"])] {
             assert!(Voice::speech_language_from(&refused).is_err(), "{refused}");
+        }
+    }
+
+    /// Issue #831: an old file starts a new conversation "Voice" after 30 minutes; the pause takes
+    /// minutes in its range, rounded to 15, and 0 means never.
+    #[test]
+    fn the_pause_before_a_new_voice_conversation_reads_and_is_checked() {
+        use serde_json::json;
+        let old: Voice = serde_json::from_str(r#"{"pocketVoice": "marius"}"#).expect("a file from before #831");
+        assert_eq!(old.new_after_or_default(), 30);
+        assert!(!serde_json::to_string(&Voice::default()).expect("json").contains("newAfter"));
+        assert_eq!(Voice { new_after: Some(0), ..Voice::default() }.new_after_or_default(), 0, "never");
+        assert_eq!(Voice { new_after: Some(17), ..Voice::default() }.new_after_or_default(), 30, "off the steps");
+        assert_eq!(Voice::new_after_from(&json!(0)), Ok(Some(0)));
+        assert_eq!(Voice::new_after_from(&json!(240)), Ok(Some(240)));
+        assert_eq!(Voice::new_after_from(&json!(20)), Ok(Some(15)));
+        assert_eq!(Voice::new_after_from(&json!(null)), Ok(None));
+        for refused in [json!(241), json!(-15), json!("30")] {
+            assert!(Voice::new_after_from(&refused).is_err(), "{refused}");
         }
     }
 

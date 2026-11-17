@@ -395,6 +395,7 @@ mod tests {
             bot: None,
             bot_deleted: false,
             about: None,
+            context: None,
         }
     }
 

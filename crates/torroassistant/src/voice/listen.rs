@@ -27,7 +27,9 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use chrono::{Local, TimeDelta, Utc};
 use torro_core::ai::Effort;
+use torro_core::i18n::trf;
 use torro_core::settings::Voice;
 use torro_ipc::assistant::{ConversationSummary, Engine, Entry, EntryContent};
 use torro_ipc::{Request, Response, Talk, VoiceState};
@@ -708,19 +710,34 @@ where
     /// conversation given, the engine, model and effort it names (chosen in the window or used last, issue
     /// #852); else the chat model of the settings while its engine is offered, else the one used last in any
     /// conversation, else the first engine. The settings come before "used last": they are the person's
-    /// own choice.
-    fn target(&mut self, conversation: Option<&str>) -> Result<Target, VoiceError> {
+    /// own choice. Of several "Voice" the newest counts; after a pause it is left for a new one
+    /// ([`CoreAssistant::rested`], issue #831), and the second value is the renaming of the old one, to send
+    /// once the new one stands.
+    fn target(&mut self, conversation: Option<&str>) -> Result<(Target, Option<Request>), VoiceError> {
         let conversations = match self.request(Request::ListConversations)? {
             Response::Conversations { conversations } => conversations,
             other => return Err(unexpected(&other)),
         };
+        let mut retire = None;
         let found = match conversation {
             Some(id) => conversations.iter().find(|summary| summary.id == id),
-            None => conversations.iter().find(|summary| summary.title == voice_title()),
+            None => {
+                let voice = conversations
+                    .iter()
+                    .filter(|summary| summary.title == voice_title())
+                    .max_by_key(|summary| summary.updated);
+                match voice.filter(|voice| self.rested(voice)) {
+                    Some(old) => {
+                        retire = Some(retired(old));
+                        None
+                    }
+                    None => voice,
+                }
+            }
         };
         let id = found.map(|summary| summary.id.clone());
         if let Some(summary) = found.filter(|_| conversation.is_some()) {
-            return Ok((id, summary.engine.clone(), summary.model.clone(), summary.effort));
+            return Ok(((id, summary.engine.clone(), summary.model.clone(), summary.effort), retire));
         }
         let slot = match self.request(Request::Settings)? {
             Response::Settings { settings } => settings.ai_slots.chat,
@@ -731,16 +748,44 @@ where
             other => return Err(unexpected(&other)),
         };
         if let Some(slot) = slot.filter(|slot| engines.iter().any(|engine| engine.id == slot.engine)) {
-            return Ok((id, slot.engine, slot.model, slot.effort));
+            return Ok(((id, slot.engine, slot.model, slot.effort), retire));
         }
         if let Some((engine, model, effort)) = last_engine(&conversations) {
-            return Ok((id, engine, model, effort));
+            return Ok(((id, engine, model, effort), retire));
         }
         let engine = first_engine(&engines).ok_or_else(|| {
             VoiceError::Core(Refusal::new("not-found", "no engine: add an AI account in Torro Workplace"))
         })?;
-        Ok((id, engine, None, None))
+        Ok(((id, engine, None, None), retire))
     }
+}
+
+impl<F, O> CoreAssistant<F, O>
+where
+    F: FnMut(Request) -> Result<Response, Refusal>,
+    O: FnMut(&str),
+{
+    /// Whether "Hey Torro" leaves the conversation "Voice" `voice` for a new one (issue #831): after the
+    /// pause of [`Voice::new_after_or_default`] without an entry, and no answer running.
+    fn rested(&mut self, voice: &ConversationSummary) -> bool {
+        let minutes = match self.settings() {
+            Ok(settings) => settings.new_after_or_default(),
+            Err(err) => {
+                eprintln!("torroassistant: {err}");
+                torro_core::settings::VOICE_NEW_AFTER_DEFAULT
+            }
+        };
+        minutes > 0 && !voice.running && Utc::now() - voice.updated >= TimeDelta::minutes(i64::from(minutes))
+    }
+}
+
+/// The renaming of the old "Voice" `old` (issue #831): it keeps its date and time in its title ("Voice ·
+/// 2026-11-15 09:12"), so only the new one is "Voice". Sent only once the new one stands, so a failed send
+/// leaves the old one as it was.
+fn retired(old: &ConversationSummary) -> Request {
+    let date = old.created.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string();
+    let title = trf("{title} · {date}", &[("title", &voice_title()), ("date", &date)]);
+    Request::RenameConversation { id: old.id.clone(), title }
 }
 
 /// The core answered with something else than asked, named by its kind only: a conversation's
@@ -807,11 +852,11 @@ where
     }
 
     fn send(&mut self, text: &str, to: Option<Option<String>>) -> Result<Sent, VoiceError> {
-        let (conversation, engine, model, effort) = match &to {
+        let ((conversation, engine, model, effort), retire) = match &to {
             // A new conversation for a conversation by voice in a new chat: as for "Voice".
             Some(None) => {
-                let (_, engine, model, effort) = self.target(Some(""))?;
-                (None, engine, model, effort)
+                let ((_, engine, model, effort), _) = self.target(Some(""))?;
+                ((None, engine, model, effort), None)
             }
             Some(Some(id)) => self.target(Some(id))?,
             None => self.target(None)?,
@@ -839,6 +884,13 @@ where
             Response::Conversation { conversation, .. } => (conversation.id, conversation.last),
             other => return Err(unexpected(&other)),
         };
+        // The old "Voice" keeps its date only now the new one stands (issue #831); should that fail, the newest
+        // "Voice" still counts next time.
+        if let Some(rename) = retire
+            && let Err(err) = self.request(rename)
+        {
+            eprintln!("torroassistant: cannot keep the old conversation by its date: {err}");
+        }
         // Only "Voice" gets its name; a new chat of "Talk" is named by its first sentence.
         if new && to.is_none() {
             let rename = Request::RenameConversation { id: id.clone(), title: voice_title().to_string() };
@@ -1069,6 +1121,7 @@ mod tests {
             bot: None,
             bot_deleted: false,
             about: None,
+            context: None,
         }
     }
 
@@ -1655,6 +1708,99 @@ mod tests {
         listener.recorder = Box::new(Files { files: [PAUSE].into(), opened: Rc::clone(&opened) });
         assert_eq!(listener.run(&Voice { microphone: Some("USB".into()), ..on() }), Ok(Ended::VoiceOff));
         assert_eq!(*opened.borrow(), 1, "it listened once, and silence ended the conversation");
+    }
+
+    /// A core with the conversations "Voice" `voices` (id, minutes since their last entry, whether an answer
+    /// runs) and the pause `new_after`, and the listener's way to it.
+    #[allow(clippy::type_complexity)]
+    fn with_voices(
+        voices: &[(&str, i64, bool)],
+        new_after: Option<u16>,
+    ) -> (Rc<RefCell<Core>>, CoreAssistant<impl FnMut(Request) -> Result<Response, Refusal>, impl FnMut(&str)>) {
+        let mut core = Core::new(Voice { new_after, ..on() });
+        for (id, ago, running) in voices {
+            let at = Utc::now() - chrono::TimeDelta::minutes(*ago);
+            let voice = summary(id, voice_title(), "ai:openrouter", 14, 3, *running);
+            core.conversations.push(ConversationSummary { created: at, updated: at, ..voice });
+        }
+        let core = Rc::new(RefCell::new(core));
+        let ask = Rc::clone(&core);
+        let assistant = CoreAssistant::new(
+            move |request| ask.borrow_mut().answer(request),
+            |_: &str| {},
+            Duration::ZERO,
+            Duration::ZERO,
+        );
+        (core, assistant)
+    }
+
+    fn renamed(sent: &[Request]) -> Vec<(String, String)> {
+        sent.iter()
+            .filter_map(|request| match request {
+                Request::RenameConversation { id, title } => Some((id.clone(), title.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Issue #831: after the pause "Hey Torro" leaves "Voice" with its date in the title and starts a new
+    /// "Voice"; the old one stays (a failed send: [`a_failed_send_keeps_the_old_voice_as_it_was`]).
+    #[test]
+    fn after_a_pause_the_wake_word_starts_a_new_voice_conversation() {
+        let (core, mut assistant) = with_voices(&[("v1", 45, false)], None);
+        let sent = assistant.send("What is on today?", None).expect("sent");
+        assert_eq!(sent.conversation, "c9", "a new conversation");
+        let core = core.borrow();
+        let Some(Request::SendMessage { conversation, .. }) =
+            core.sent.iter().find(|request| matches!(request, Request::SendMessage { .. }))
+        else {
+            panic!("nothing sent: {:?}", core.sent);
+        };
+        assert_eq!(*conversation, None);
+        let renamed = renamed(&core.sent);
+        assert_eq!(renamed.len(), 2, "{renamed:?}");
+        assert_eq!(renamed[0].0, "v1");
+        let dated = format!("{} · ", voice_title());
+        assert!(renamed[0].1.starts_with(&dated) && renamed[0].1.len() == dated.len() + 16, "{renamed:?}");
+        assert_eq!(renamed[1], ("c9".to_string(), voice_title().to_string()), "only the new one is \"Voice\"");
+        assert!(core.conversations.iter().any(|summary| summary.id == "v1"), "the old one stays");
+    }
+
+    /// Issue #831: a send that fails after the pause leaves the old "Voice" as it was.
+    #[test]
+    fn a_failed_send_keeps_the_old_voice_as_it_was() {
+        let (core, _) = with_voices(&[("v1", 45, false)], None);
+        let ask = Rc::clone(&core);
+        let mut assistant = CoreAssistant::new(
+            move |request| match request {
+                Request::SendMessage { .. } => Err(Refusal::new("offline", "the core is away")),
+                other => ask.borrow_mut().answer(other),
+            },
+            |_: &str| {},
+            Duration::ZERO,
+            Duration::ZERO,
+        );
+        assert!(assistant.send("What is on today?", None).is_err());
+        assert!(renamed(&core.borrow().sent).is_empty(), "{:?}", core.borrow().sent);
+    }
+
+    /// Issue #831: within the pause, with the pause off (0), or while an answer runs, "Voice" goes on; of two
+    /// "Voice" the newest counts.
+    #[test]
+    fn within_the_pause_the_wake_word_goes_on_in_voice() {
+        for (voices, new_after, expected) in [
+            (vec![("v1", 10, false)], None, "v1"),
+            (vec![("v1", 600, false)], Some(0), "v1"),
+            (vec![("v1", 600, true)], None, "v1"),
+            (vec![("v1", 300, false), ("v2", 5, false)], None, "v2"),
+            (vec![("v1", 20, false)], Some(15), ""),
+        ] {
+            let (core, mut assistant) = with_voices(&voices, new_after);
+            let ((id, _, _, _), retire) = assistant.target(None).expect("a target");
+            assert_eq!(retire.is_some(), expected.is_empty(), "{voices:?}");
+            assert_eq!(id.unwrap_or_default(), expected, "{voices:?} {new_after:?}");
+            assert!(renamed(&core.borrow().sent).is_empty(), "nothing is renamed before the new one stands");
+        }
     }
 
     /// What [`CoreAssistant::send`] sends for `to` with the core `core`: engine, model and effort.

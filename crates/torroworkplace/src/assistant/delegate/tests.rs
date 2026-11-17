@@ -51,6 +51,7 @@ fn run(contents: Vec<EntryContent>) -> Response {
         bot: Some("1a2b3c4d".into()),
         bot_deleted: false,
         about: None,
+        context: None,
     };
     Response::Conversation { conversation, entries }
 }

@@ -938,6 +938,32 @@ impl Assistant {
     /// nothing more). `result` is what the model read of a tool line (issue #701): written with the entry, so a
     /// later turn sends it again ([`store::Line::Result`]).
     async fn add_to_run(&self, id: &str, run: u64, content: EntryContent, last: bool, result: Option<String>) -> bool {
+        self.add_lines_to_run(id, run, content, last, result, None).await
+    }
+
+    /// [`Assistant::add_to_run`] for an answer of a model the core drives, with how full the context is at its end
+    /// (issue #831, [`store::Line::Context`]) when it is the final one: both lines in one write, so a stop between
+    /// them cannot keep a fill without its answer.
+    pub(crate) async fn add_answer(
+        &self,
+        id: &str,
+        run: u64,
+        content: EntryContent,
+        last: bool,
+        fill: Option<torro_ipc::assistant::ContextFill>,
+    ) -> bool {
+        self.add_lines_to_run(id, run, content, last, None, fill).await
+    }
+
+    async fn add_lines_to_run(
+        &self,
+        id: &str,
+        run: u64,
+        content: EntryContent,
+        last: bool,
+        result: Option<String>,
+        fill: Option<torro_ipc::assistant::ContextFill>,
+    ) -> bool {
         let mut state = self.state().await;
         if state.running.get(id).is_none_or(|running| running.id != run) {
             return false;
@@ -949,6 +975,9 @@ impl Assistant {
         let mut lines = vec![Line::Entry { entry: entry.clone() }];
         if let Some(text) = result {
             lines.push(Line::Result { seq: entry.seq, text });
+        }
+        if let Some(fill) = fill {
+            lines.push(Line::Context { fill });
         }
         if self.write(id, lines.clone()).await.is_err() {
             state.running.remove(id);

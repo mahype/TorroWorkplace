@@ -262,6 +262,28 @@ pub struct ConversationSummary {
     /// that names it, since its entries tell what the mail says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub about: Option<MailRef>,
+    /// How full the conversation's context was at its latest answer (issue #831): `None` for a new
+    /// conversation, one before its first answer, one whose answers an agent wrote (engine B keeps its
+    /// own context) and conversations from before #831. Left out when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ContextFill>,
+}
+
+/// How full a conversation's context is (issue #831, "Kurzer Kontext" in `docs/assistent.md`): measured
+/// by the core at the end of each answer of a model it drives. The core sends the history with every
+/// step and shortens older parts once they pass `limit`, half the model's context window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ContextFill {
+    /// The estimated tokens of the next step: the history as sent, with the latest answer. An estimate
+    /// (characters by three), so "about".
+    pub used: u64,
+    /// The tokens from which the core shortens older parts: half of `window`. `used` / `limit` is the
+    /// share to show; 100 % or more means older parts are shortened.
+    pub limit: u64,
+    /// The model's context window in tokens, as its account names it, else the core's assumption.
+    pub window: u64,
+    /// Older parts were already shortened in the latest answer.
+    pub shortened: bool,
 }
 
 /// One hit of `assistant.search_conversations` (issue #704): where in which conversation the words stand.
@@ -1623,6 +1645,7 @@ mod tests {
             bot: None,
             bot_deleted: false,
             about: None,
+            context: None,
         };
         let value = serde_json::to_value(&summary).expect("serializes");
         assert!(value.get("archived").is_none());

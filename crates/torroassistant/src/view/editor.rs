@@ -261,7 +261,7 @@ impl App {
         let note = Some(if draft.id.is_some() { tr("Edit bot") } else { tr("New bot") }.to_owned())
             .filter(|note| *note != name);
         let narrow = class == SizeClass::Narrow;
-        let title = if narrow { self.narrow_title(name, 2) } else { shell::header_title(None, name, note) };
+        let title = if narrow { self.narrow_title(name, 2, 0.0) } else { shell::header_title(None, name, note) };
         let save = if draft.saving {
             widgets::busy_button(tr("Saving…"), style::button::primary)
         } else if narrow {

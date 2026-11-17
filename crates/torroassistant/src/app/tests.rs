@@ -1199,6 +1199,31 @@ fn the_window_shows_the_assistants_name_and_picture() {
     }
 }
 
+/// Issue #831: a conversation the core measured shows how full its context is in every size; one without a
+/// measurement shows nothing; once shortened it says so at 100 %.
+#[test]
+fn the_header_shows_how_full_the_context_is() {
+    let mut app = started(&["--chat", TOOLS]);
+    let fill = app.context_fill().expect("the demo measured it");
+    assert_eq!(crate::view::context_percent(fill), 65);
+    assert_eq!(crate::view::context_label(fill), trf("{percent}%", &[("percent", &65)]));
+    assert!(crate::view::context_tip(fill).contains(&torro_gui::units::format_count(32_000)));
+    for size in SIZES {
+        let _ = app.update(Message::Resized(size));
+        let _ = app.view();
+    }
+    let shortened = torro_ipc::assistant::ContextFill { used: 40_000, shortened: true, ..fill };
+    assert_eq!(crate::view::context_percent(shortened), 100);
+    assert_eq!(crate::view::context_label(shortened), tr("Shortened"));
+    let over = torro_ipc::assistant::ContextFill { used: 40_000, ..fill };
+    assert_eq!(crate::view::context_percent(over), 100, "never past the bar");
+
+    let app = started(&["--chat", RELEASE]);
+    assert_eq!(app.context_fill(), None, "not measured");
+    let app = started(&[]);
+    assert_eq!(app.context_fill(), None, "a new chat");
+}
+
 // -- Bots (task B.3) ------------------------------------------------------------------------------
 
 /// The text the editor's personality, instructions or a skill holds, typed in.

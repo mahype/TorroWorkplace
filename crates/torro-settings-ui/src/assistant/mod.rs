@@ -328,7 +328,7 @@ pub fn page<'a>(state: &'a State, data: &'a Data, section: &str, class: SizeClas
             }
         },
         "voice" => {
-            let body = voice::view(&state.voice, data, state.voice_tab).map(Message::Voice);
+            let body = voice::view(&state.voice, data, state.voice_tab, class).map(Message::Voice);
             under_tabs(
                 Page::new(body),
                 &VoiceTab::ALL.map(VoiceTab::label),

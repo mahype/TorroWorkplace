@@ -65,7 +65,7 @@ use torro_core::ai::{
 };
 use torro_core::i18n::{self, tr, trf};
 use torro_ipc::api::{Area, Lack, Operation, Rights};
-use torro_ipc::assistant::{Entry, EntryContent, MailRef, Mode, Note};
+use torro_ipc::assistant::{ContextFill, Entry, EntryContent, MailRef, Mode, Note};
 use torro_ipc::bots::Bot;
 use torro_ipc::extensions::ExtensionTool;
 use torro_ipc::{ApprovalState, ClientInfo, Request, Response};
@@ -823,6 +823,14 @@ struct Answering {
     repeated: BTreeMap<(String, String), usize>,
 }
 
+/// Adds what `message` takes to `unshortened`, the size of the conversation's messages unshortened (issue #831), once
+/// the first step measured them.
+fn grow(unshortened: &mut Option<u64>, message: &ChatMessage) {
+    if let Some(size) = unshortened {
+        *size = size.saturating_add(compact::estimate(std::slice::from_ref(message), &[]));
+    }
+}
+
 /// The last fallback, when neither the account nor the provider's table knows the window ([`ModelAccess::context`],
 /// issue #701): small enough for the default window of a local server.
 const CONTEXT: u64 = 32_000;
@@ -878,7 +886,17 @@ impl Answering {
         // A small model loses its way sooner (issue #701).
         let steps = if small { self.limits.small_steps } else { self.limits.max_steps };
         // Half of the window: the rest is for the answer, and the estimate is rough ([`compact::estimate`]).
-        let budget = access.context.unwrap_or(CONTEXT) / 2;
+        let window = access.context.unwrap_or(CONTEXT);
+        let budget = window / 2;
+        // Whether older parts were shortened in this answer, for how full its context is (issue #831).
+        let mut shortened = false;
+        // How big the conversation's messages are unshortened (issue #831), without the system prompt: the first
+        // step's as they came, before anything was shortened, and what each step added since. Shortening changes
+        // `messages` in place, so later steps alone would tell only what is left after it (review of #831).
+        let mut unshortened: Option<u64> = None;
+        // The biggest step unshortened: the messages with that step's system prompt and tools, which change between
+        // steps as rights change and `find_tools` loads more (review of #831).
+        let mut peak: u64 = 0;
         lock(&self.job.partial).model = Some(model.clone());
         let mut messages = vec![ChatMessage::system(String::new())];
         // Only what the client may still read goes back to the model (issue #713).
@@ -971,8 +989,13 @@ impl Answering {
             messages[0] = ChatMessage::system(system);
             // Within the window (issue #701): what changes the messages also drops the thinking so far, as each
             // block is bound to the messages before it.
+            // How big this step would be unshortened (issue #831): measured against the budget it shows how close
+            // the conversation is to being shortened, and past it by how much.
+            let history = *unshortened.get_or_insert_with(|| compact::estimate(&messages[1..], &[]));
+            peak = peak.max(history.saturating_add(compact::estimate(&messages[..1], &tools)));
             let room = budget.saturating_sub(compact::estimate(&[], &tools));
             if compact::compact(&mut messages, &self.summaries, room) {
+                shortened = true;
                 without_thinking(&mut messages);
             }
             let request = ChatRequest {
@@ -987,6 +1010,14 @@ impl Answering {
             if done && reply.text.trim().is_empty() {
                 return Err(Ended::Empty);
             }
+            // Stored, not worked out on request (decision 1 of issue #831): the next step carries the answer too.
+            // Written with the answer's line, in one go: the window that sees the answer reads the new value with
+            // it, and a stop before the answer keeps none.
+            let fill = done.then(|| {
+                let answer = compact::estimate(&[ChatMessage::assistant(reply.text.clone(), Vec::new())], &[]);
+                let used = peak.saturating_add(answer);
+                ContextFill { used, limit: budget, window, shortened }
+            });
             if !reply.text.trim().is_empty() {
                 // Up to three link cards follow the final answer (issue #785), the last of them ends the run.
                 let cards = if done { self.link_cards(&reply.text, &messages) } else { Vec::new() };
@@ -996,7 +1027,8 @@ impl Answering {
                     model: Some(model.clone()),
                     spoken: None,
                 };
-                if !self.add(text, done && cards.is_empty()).await {
+                let (conversation, run) = (&self.job.conversation, self.job.run);
+                if !self.assistant.add_answer(conversation, run, text, done && cards.is_empty(), fill).await {
                     return Ok(());
                 }
                 let count = cards.len();
@@ -1012,13 +1044,17 @@ impl Answering {
             // With its thinking blocks unchanged (task KI.1e): Anthropic refuses an assistant
             // message of a tool round whose blocks were dropped or rebuilt, and the other protocol
             // sends none.
-            messages.push(ChatMessage::assistant(reply.text, reply.tool_calls.clone()).with_thinking(reply.thinking));
+            let turn = ChatMessage::assistant(reply.text, reply.tool_calls.clone()).with_thinking(reply.thinking);
+            grow(&mut unshortened, &turn);
+            messages.push(turn);
             for call in &reply.tool_calls {
                 if self.repeats(call) {
                     return Err(Ended::Repeating(command_name(&call.name)));
                 }
                 let Some(result) = self.call(call).await else { return Ok(()) };
-                messages.push(ChatMessage::tool(call.id.clone(), result));
+                let result = ChatMessage::tool(call.id.clone(), result);
+                grow(&mut unshortened, &result);
+                messages.push(result);
             }
         }
         Err(Ended::TooManySteps(steps))
@@ -4526,6 +4562,33 @@ pub(crate) mod tests {
         assert!(older.iter().all(|result| result.content.contains(compact::LEFT_OUT)), "{older:#?}");
         // Every request of the long answer stayed whole in its shape.
         asked.iter().for_each(|request| calls_answered(&request.messages));
+
+        // Issue #831: the head tells that older parts were shortened, against half of the window.
+        let (summary, _) = read(&assistant, &id, None).await;
+        let fill = summary.context.expect("measured at the answer");
+        assert_eq!((fill.limit, fill.window, fill.shortened), (500, 1_000, true), "{fill:?}");
+        assert!(fill.used > fill.limit, "unshortened, it would not fit: {fill:?}");
+    }
+
+    /// Issue #831: a short conversation is measured at its answer, well below the limit and not shortened.
+    #[tokio::test]
+    async fn a_short_conversation_shows_how_full_its_context_is() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = small_and_large(vec![says("Hello.")], Some(200_000));
+        let (assistant, _host) = set_up_limited(
+            dir.path(),
+            Some(reading_mail()),
+            Place::Local,
+            Arc::clone(&script),
+            answers,
+            Limits { max_steps: 20, small_steps: 20, approval_poll: Duration::from_millis(5) },
+        );
+        let id = ask_model(&assistant, None, "Hi", Vec::new(), Some("qwen3:32b")).await;
+        finished(&assistant, &id).await;
+        let (summary, _) = read(&assistant, &id, None).await;
+        let fill = summary.context.expect("measured at the answer");
+        assert_eq!((fill.limit, fill.window, fill.shortened), (100_000, 200_000, false), "{fill:?}");
+        assert!(fill.used > 0 && fill.used < fill.limit, "{fill:?}");
     }
 
     /// Erledigt 5: a mail's result left out to save room stays marked `untrusted`, and after compacting a note still

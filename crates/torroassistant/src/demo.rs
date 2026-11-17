@@ -442,6 +442,7 @@ impl State {
                     bot: bot.clone(),
                     bot_deleted: false,
                     about: None,
+                    context: None,
                 };
                 self.conversations.push(Conversation { summary, entries: Vec::new(), growing: None });
                 id
@@ -654,6 +655,7 @@ fn sample(id: &str, title: &str, now: DateTime<Utc>, ago: Duration, entries: Vec
         bot: None,
         bot_deleted: false,
         about: None,
+        context: None,
     };
     Conversation { summary, entries, growing: None }
 }
@@ -683,6 +685,9 @@ fn samples(now: DateTime<Utc>) -> Vec<Conversation> {
         ],
     );
     plan.summary.pinned = true;
+    // How full its context is (issue #831): about two thirds of the limit of a 32k window.
+    plan.summary.context =
+        Some(torro_ipc::assistant::ContextFill { used: 10_400, limit: 16_000, window: 32_000, shortened: false });
 
     let mut block = sample(
         APPROVAL,
@@ -732,7 +737,7 @@ fn samples(now: DateTime<Utc>) -> Vec<Conversation> {
         ],
     );
 
-    let trip = sample(
+    let mut trip = sample(
         "d000000000000005",
         tr("Trip to Lisbon"),
         now,
@@ -749,6 +754,9 @@ fn samples(now: DateTime<Utc>) -> Vec<Conversation> {
             EntryContent::Stopped,
         ],
     );
+    // Past the limit (issue #831): the core cut older parts, so the header says "Shortened".
+    trip.summary.context =
+        Some(torro_ipc::assistant::ContextFill { used: 21_300, limit: 16_000, window: 32_000, shortened: true });
 
     let mut release = sample(
         CARDS,

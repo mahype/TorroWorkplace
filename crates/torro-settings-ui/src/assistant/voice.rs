@@ -52,9 +52,10 @@ use iced::widget::{container, row, svg, toggler};
 use iced::{Alignment, Element, Subscription};
 
 use torro_core::i18n::{tr, trc, trf};
-use torro_core::settings::{POCKET_PAUSES, POCKET_SPEEDS, Recognizer, SpeechProvider};
+use torro_core::settings::{POCKET_PAUSES, POCKET_SPEEDS, Recognizer, SpeechProvider, VOICE_NEW_AFTER, Voice};
 use torro_core::voice_models::{VoiceModelKind, WHISPER_LANGUAGES};
 use torro_gui::icon::{self, Icon};
+use torro_gui::layout::SizeClass;
 use torro_gui::theme;
 use torro_gui::theme::space;
 use torro_gui::units::format_bytes;
@@ -177,6 +178,8 @@ pub enum Message {
     PocketSpeed(u16),
     /// "−" or "+" of "Sentence pause": the extra pause of Pocket TTS in milliseconds.
     PocketPause(u16),
+    /// "−" or "+" of "New conversation after a pause" (issue #831): the pause in minutes, 0 for never.
+    VoiceNewAfter(u16),
     /// The field "Speaking style" of OpenAI was typed in.
     TypeStyle(String),
     /// Enter in "Speaking style" or its check: save what is typed, nothing for OpenAI's own way.
@@ -272,6 +275,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         }
         Message::PocketSpeed(speed) => set(SettingKey::PocketSpeed, serde_json::json!(speed)),
         Message::PocketPause(pause) => set(SettingKey::PocketPause, serde_json::json!(pause)),
+        Message::VoiceNewAfter(minutes) => set(SettingKey::VoiceNewAfter, serde_json::json!(minutes)),
         Message::TypeStyle(text) => {
             state.style = Some(text);
             Action::None
@@ -444,15 +448,15 @@ pub fn models_of<'a>(state: &'a State, data: &'a Data) -> &'a [VoiceModel] {
 /// The group of the tab on screen (issue #763): reading aloud, the conversation by voice with the
 /// microphone where one can be named, or the models (issue #762). While the assistant is off, the tab
 /// says so under its own name.
-pub fn view<'a>(state: &'a State, data: &'a Data, tab: VoiceTab) -> Element<'a, Message> {
+pub fn view<'a>(state: &'a State, data: &'a Data, tab: VoiceTab, class: SizeClass) -> Element<'a, Message> {
     if !super::is_on(data) {
         return super::off_group(tab.label());
     }
     match tab {
-        VoiceTab::ReadAloud => read_aloud_group(state, data),
-        VoiceTab::Conversation => {
-            iced::widget::column![voice_group(state, data), timings_group(data)].spacing(layout::section_gap()).into()
-        }
+        VoiceTab::ReadAloud => read_aloud_group(state, data, class),
+        VoiceTab::Conversation => iced::widget::column![voice_group(state, data, class), timings_group(data)]
+            .spacing(layout::section_gap())
+            .into(),
         VoiceTab::Models => models_group(state, data),
     }
 }
@@ -570,7 +574,7 @@ fn speech_items(key: Choice, data: &Data) -> Vec<MenuItem<'_, Message>> {
 
 /// "Read aloud" (issue #745): the switch of the chat windows, the provider with what it lacks, the
 /// voice with "Preview", and who the voices are by.
-fn read_aloud_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+fn read_aloud_group<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
     let settings = &data.settings.voice;
     let switch =
         toggler(settings.read_aloud).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::ReadAloud);
@@ -604,7 +608,7 @@ fn read_aloud_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message
     let dot = state.preview_failed.as_ref().map(|_| widgets::status_dot(Status::Error));
     let voice = setting_row(dot, trc("speaker", "Voice"), state.preview_failed.clone(), control);
     let mut rows = vec![on, provider, voice];
-    rows.extend(delivery_rows(state, data, current));
+    rows.extend(delivery_rows(state, data, current, class));
     let footer = match current {
         // The licences of the voices ask for their names (decision 2 of #762).
         SpeechProvider::Pocket => format!(
@@ -629,11 +633,14 @@ fn read_aloud_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message
 /// How `provider` speaks (issue #782): for Pocket TTS "Speed" and "Sentence pause", for
 /// OpenAI "Speaking style", for Qwen3-TTS nothing. Each row ends with its own "Reset", like the zoom of the suite, which can
 /// be pressed while its value is chosen.
-fn delivery_rows<'a>(state: &'a State, data: &'a Data, provider: SpeechProvider) -> Vec<Element<'a, Message>> {
+fn delivery_rows<'a>(
+    state: &'a State,
+    data: &'a Data,
+    provider: SpeechProvider,
+    class: SizeClass,
+) -> Vec<Element<'a, Message>> {
     let voice = &data.settings.voice;
-    let reset = |key: SettingKey, chosen: bool| {
-        widgets::text_button(None, tr("Reset"), style::button::secondary, chosen.then_some(Message::Reset(key)))
-    };
+    let reset = |key: SettingKey, chosen: bool| reset_button(key, chosen, class);
     match provider {
         SpeechProvider::Pocket => {
             // One width for both values, so their buttons stand on one axis.
@@ -685,6 +692,18 @@ fn delivery_rows<'a>(state: &'a State, data: &'a Data, provider: SpeechProvider)
     }
 }
 
+/// "Reset" of a row: the word, in a narrow window an icon with the word as tooltip (issue #831), so the row's
+/// title keeps its room. It can be pressed while its value is chosen.
+fn reset_button<'a>(key: SettingKey, chosen: bool, class: SizeClass) -> Element<'a, Message> {
+    let press = chosen.then_some(Message::Reset(key));
+    match class {
+        SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => {
+            widgets::icon_button(Icon::RotateCcw, tr("Reset"), press)
+        }
+        _ => widgets::text_button(None, tr("Reset"), style::button::secondary, press),
+    }
+}
+
 /// `− value +` and `reset` for a value of `steps` (from, to, step), like the zoom of the suite: each
 /// button sends the next step with `message` and does nothing at its end; `width` keeps the value
 /// from moving.
@@ -729,9 +748,35 @@ fn pause_label(pause: u16) -> String {
     }
 }
 
+/// The pause before "Hey Torro" starts a new conversation as shown (issue #831): "Never" for 0, else "30 min".
+fn new_after_label(minutes: u16) -> String {
+    match minutes {
+        0 => tr("Never").to_string(),
+        minutes => trf("{n} min", &[("n", &minutes)]),
+    }
+}
+
+/// "New conversation after a pause" (issue #831): after how long without a word "Hey Torro" starts a new
+/// conversation "Voice", in steps of [`VOICE_NEW_AFTER`], with "Reset" back to 30 minutes.
+fn new_after_row<'a>(voice: &Voice, class: SizeClass) -> Element<'a, Message> {
+    let minutes = voice.new_after_or_default();
+    let width = widest(&[new_after_label(0), new_after_label(VOICE_NEW_AFTER.1)]);
+    let control = stepper(
+        minutes,
+        VOICE_NEW_AFTER,
+        new_after_label(minutes),
+        (tr("Shorter pause"), tr("Longer pause")),
+        Message::VoiceNewAfter,
+        width,
+        reset_button(SettingKey::VoiceNewAfter, voice.new_after.is_some(), class),
+    );
+    let detail = tr("“Hey Torro” starts a new Voice conversation after this long without a word").to_string();
+    setting_row(None, tr("New conversation after a pause"), Some(detail), control)
+}
+
 /// "Voice": on or off with what the listener does, the wake word, "Speak answers", the speech
 /// recognition with its language, the microphone and the test.
-fn voice_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+fn voice_group<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
     let settings = &data.settings.voice;
     let can_listen = data.voice.as_ref().is_none_or(VoiceStatus::can_listen);
     let (_, detail) = voice_state(settings.enabled, data.voice.as_ref());
@@ -768,7 +813,7 @@ fn voice_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let recognizer = marked(recognizer_name(settings.recognizer), settings.recognizer == Recognizer::Whisper);
     let recognizer = state.menus.button(Choice::Recognizer, recognizer, Message::Menus);
     let recognizer = setting_row(None, tr("Speech recognition"), None, recognizer);
-    let mut rows = vec![on, wake, speak, recognizer, language_row(state, data)];
+    let mut rows = vec![on, wake, speak, new_after_row(settings, class), recognizer, language_row(state, data)];
     rows.extend(microphone_row(state, data));
     rows.push(test);
     widgets::group(tr("Conversation"), rows, Some(footer.to_string()))
@@ -1156,7 +1201,9 @@ mod tests {
     /// Builds every tab of the page with `state` and `data`.
     fn views(state: &State, data: &Data) {
         for tab in VoiceTab::ALL {
-            let _ = view(state, data, tab);
+            for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
+                let _ = view(state, data, tab, class);
+            }
         }
     }
 
@@ -1598,7 +1645,7 @@ mod tests {
             (SettingKey::OpenAiStyle, serde_json::Value::Null)
         );
 
-        for key in [SettingKey::PocketSpeed, SettingKey::PocketPause] {
+        for key in [SettingKey::PocketSpeed, SettingKey::PocketPause, SettingKey::VoiceNewAfter] {
             assert_eq!(sent(update(&mut state, Message::Reset(key), &data)), (key, serde_json::Value::Null));
         }
         let reset_style = Message::Reset(SettingKey::OpenAiStyle);
@@ -1617,8 +1664,8 @@ mod tests {
             Data { speech: Some(SpeechStatus { current: SpeechProvider::OpenAi, ..speech.clone() }), ..styled.clone() };
 
         // Each provider shows its own rows, each with its "Reset"; the steps end at their edges.
-        assert_eq!(delivery_rows(&state, &pocket, SpeechProvider::Pocket).len(), 2);
-        assert_eq!(delivery_rows(&state, &openai, SpeechProvider::OpenAi).len(), 1);
+        assert_eq!(delivery_rows(&state, &pocket, SpeechProvider::Pocket, SizeClass::Wide).len(), 2);
+        assert_eq!(delivery_rows(&state, &openai, SpeechProvider::OpenAi, SizeClass::Narrow).len(), 1);
         assert_eq!((speed_label(130), pause_label(0)), (trf("{percent}%", &[("percent", &130)]), tr("Normal").into()));
         assert_eq!(pause_label(500), trf("+{n} ms", &[("n", &500)]));
         let mut edges = pocket.clone();
@@ -1626,6 +1673,25 @@ mod tests {
         edges.settings.voice.pocket_pause = Some(1000);
         views(&state, &edges);
         views(&state, &openai);
+    }
+
+    /// Issue #831: "New conversation after a pause" sends its steps in minutes, shows 0 as "Never", and
+    /// draws at both ends of its range.
+    #[tokio::test]
+    async fn the_pause_before_a_new_voice_conversation_sends_its_setting() {
+        let data = data().await;
+        let mut state = State::default();
+        assert_eq!(
+            sent(update(&mut state, Message::VoiceNewAfter(45), &data)),
+            (SettingKey::VoiceNewAfter, serde_json::json!(45))
+        );
+        assert_eq!(new_after_label(0), tr("Never"));
+        assert_eq!(new_after_label(30), trf("{n} min", &[("n", &30)]));
+        for minutes in [Some(0), Some(240), None] {
+            let mut edge = data.clone();
+            edge.settings.voice.new_after = minutes;
+            views(&state, &edge);
+        }
     }
 
     /// Issue #745: the switch, provider and voice each send their setting; the recommended entry is
