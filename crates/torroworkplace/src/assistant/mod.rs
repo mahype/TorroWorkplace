@@ -202,6 +202,9 @@ pub(crate) struct Partial {
     pub model: Option<String>,
     /// When its first piece came.
     pub started: Option<DateTime<Utc>>,
+    /// The catalogue name of the tool that runs now (issue #830), for the voice chat's state; never
+    /// its input or result.
+    pub tool: Option<String>,
 }
 
 /// An answer entry with its spoken part split off (issue #774, [`split_spoken`]): the core keeps the
@@ -475,6 +478,14 @@ impl Assistant {
             entries.push(split_answer(growing, true));
         }
         Response::Conversation { conversation: with_bots(conversation.summary(run.is_some()), &bots), entries }
+    }
+
+    /// What the answer that runs in conversation `id` does now (issue #830): `None` without one,
+    /// else the catalogue name of the tool it uses, `Some(None)` while the model thinks or writes.
+    pub async fn activity(&self, id: &str) -> Option<Option<String>> {
+        let state = self.state().await;
+        let run = state.running.get(id)?;
+        Some(run.partial.lock().unwrap_or_else(PoisonError::into_inner).tool.clone())
     }
 
     /// The title of conversation `id` as the core keeps it, for an approval's summary; `None` for
@@ -834,8 +845,13 @@ impl Assistant {
         state.next_run += 1;
         let run = state.next_run;
         let (assistant, conversation, by) = (Arc::clone(self), id.to_string(), engine.clone());
+        // Its first step stands for a tool that runs (issue #830), so the voice chat's state can be tested.
+        let partial: Arc<StdMutex<Partial>> =
+            Arc::new(StdMutex::new(Partial { tool: Some("system.ping".into()), ..Partial::default() }));
+        let using = Arc::clone(&partial);
         let task = tokio::spawn(async move {
             tokio::time::sleep(step).await;
+            using.lock().unwrap_or_else(PoisonError::into_inner).tool = None;
             let tool = EntryContent::Tool {
                 name: "system.ping".into(),
                 input: serde_json::json!({}),
@@ -853,7 +869,6 @@ impl Assistant {
             let answer = EntryContent::Answer { text: text.to_string(), engine: by, model: None, spoken: None };
             assistant.add_to_run(&conversation, run, answer, true, None).await;
         });
-        let partial = Arc::default();
         state.running.insert(id.to_string(), Run { id: run, task: task.abort_handle(), engine, partial });
     }
 

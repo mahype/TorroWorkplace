@@ -846,11 +846,20 @@ impl App {
             to_read: HashSet::new(),
             ready_to_read: None,
             read_for: None,
-            talk: (open == Some(Open::Talk)).then(|| torro_ipc::Talk {
-                conversation: Some(demo::TOOLS.to_string()),
-                state: torro_ipc::VoiceState::Conversing,
-            }),
-            talk_speaking: open == Some(Open::Talk),
+            talk: match open {
+                Some(Open::Talk) => Some(torro_ipc::Talk {
+                    conversation: Some(demo::TOOLS.to_string()),
+                    state: torro_ipc::VoiceState::Conversing,
+                    tool: None,
+                }),
+                Some(Open::TalkTool) => Some(torro_ipc::Talk {
+                    conversation: Some(demo::TOOLS.to_string()),
+                    state: torro_ipc::VoiceState::UsingTool,
+                    tool: Some("calendar.list_events".into()),
+                }),
+                _ => None,
+            },
+            talk_speaking: matches!(open, Some(Open::Talk | Open::TalkTool)),
             repeating: None,
             repeats: 0,
             talk_started: false,
@@ -1011,8 +1020,8 @@ impl App {
         }
         // How the conversation by voice stands (issue #747): often while it is this window's own,
         // so the line over the composer follows the listener. Not in mini and strip, nor in the demo
-        // state `talk`, which keeps its own.
-        if !self.waiting && !self.is_glance() && self.launch.open != Some(Open::Talk) {
+        // states `talk` and `talk-tool`, which keep their own.
+        if !self.waiting && !self.is_glance() && !matches!(self.launch.open, Some(Open::Talk | Open::TalkTool)) {
             let every = if self.own_talk().is_some() { TALK_OWN_EVERY } else { TALK_EVERY };
             subscriptions.push(iced::time::every(every).map(|_| Message::TalkTick));
         }
@@ -2558,7 +2567,7 @@ impl App {
 
     /// Asks how the conversation by voice stands (issue #747); not in mini and strip.
     fn fetch_talk(&mut self) -> Task<Message> {
-        if self.is_glance() || self.launch.open == Some(Open::Talk) {
+        if self.is_glance() || matches!(self.launch.open, Some(Open::Talk | Open::TalkTool)) {
             return Task::none();
         }
         self.ask(Request::TalkStatus, |result| {
@@ -3153,7 +3162,7 @@ fn settings_state(open: Option<Open>) -> Option<(&'static str, Vec<settings::Mes
 /// The conversation the main window starts on in a demo state; a new chat otherwise.
 fn start_conversation(open: Option<Open>) -> Option<String> {
     match open {
-        Some(Open::Tools | Open::Menu | Open::Rename | Open::Delete | Open::Reading | Open::Talk) => {
+        Some(Open::Tools | Open::Menu | Open::Rename | Open::Delete | Open::Reading | Open::Talk | Open::TalkTool) => {
             Some(demo::TOOLS.into())
         }
         Some(Open::Approval) => Some(demo::APPROVAL.into()),

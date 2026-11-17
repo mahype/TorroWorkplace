@@ -1333,18 +1333,26 @@ impl App {
 
     /// The line in place of the composer during this window's conversation by voice (issue #747),
     /// built like the empty composer so nothing moves: in its frame and as high, a dot and what the
-    /// listener does in words – listening, recording, answering – on the line of the placeholder, and
-    /// "End talk" (also Escape) where "Send" stands.
+    /// voice chat does in words – listening, recording, recognizing, thinking, looking at the calendar,
+    /// speaking (issue #830) – on the line of the placeholder, and "End talk" (also Escape) where "Send"
+    /// stands. It is the only place the window shows the state, so it is not said twice.
     fn talk_line(&self, talk: &torro_ipc::Talk) -> Element<'_, Message> {
         use torro_ipc::VoiceState;
-        let (status, doing) = match talk.state {
-            VoiceState::Recording => (widgets::Status::Attention, tr("Recording …")),
-            VoiceState::Answering => (widgets::Status::Inactive, tr("Answering …")),
-            _ => (widgets::Status::Ok, tr("Listening…")),
+        // The dot is about the microphone: red while it records, green while it waits for the person.
+        let status = match talk.state {
+            VoiceState::Recording => widgets::Status::Attention,
+            VoiceState::Off | VoiceState::Listening | VoiceState::Conversing => widgets::Status::Ok,
+            _ => widgets::Status::Inactive,
         };
-        let state = row![widgets::status_dot(status), typo::text(typo::body(), doing).wrapping(Wrapping::None)]
-            .spacing(space::s())
-            .align_y(Alignment::Center);
+        // A talk needs no wake word: while the listener starts (`Off`) or still waits for it, the line
+        // says it listens, as before issue #830.
+        let doing = match talk.state {
+            VoiceState::Off | VoiceState::Listening => tr("Listening…").to_string(),
+            state => torro_gui::chat::voice_doing(state, talk.tool.as_deref()),
+        };
+        // "Looking at the Notification Hub …" may not fit a narrow window: cut with "…", whole as tooltip.
+        let doing = container(widgets::ellipsized(typo::body(), doing, theme::text)).width(Fill);
+        let state = row![widgets::status_dot(status), doing].spacing(space::s()).align_y(Alignment::Center);
         let end = widgets::text_button(Some(Icon::X), tr("End talk"), style::button::secondary, Some(Message::EndTalk));
         let end = widgets::with_tooltip(end, tr("End talk (Esc)"));
         let line = column![
