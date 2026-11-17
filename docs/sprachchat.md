@@ -70,10 +70,16 @@ Erkennen → KI → Vorlesen, wie heute, aber dicht verzahnt. Läuft auf dem Rec
 
 Zwei Entscheidungen lässt das Konzept bewusst den Plänen:
 
-- **Echo-Unterdrückung (#834).** Optionen: das PipeWire-Modul `echo-cancel` (nur Linux, ohne neue Abhängigkeit) oder
-  `webrtc-audio-processing` mit dem vorgelesenen Ton als Referenz (alle Systeme, neue Abhängigkeit). Maßstab: Lautes
-  Vorlesen über Lautsprecher löst weder Weckwort noch Satz aus (Test mit Tondateien); sie muss auf Linux, macOS und
-  Windows bauen; ohne laufende Unterdrückung bleibt das Mikrofon beim Vorlesen zu wie heute.
+- **Echo-Unterdrückung (#834), entschieden.** Die Unterdrückung von WebRTC (AEC3) als Nachbau in reinem Rust
+  (`sonora`), mit dem vorgelesenen Ton als Referenz; sie baut auf allen drei Systemen. Verworfen: die C++-Bindung
+  `webrtc-audio-processing` (baut unter Windows praktisch nicht) und das PipeWire-Modul `echo-cancel` (nur Linux,
+  nicht mit Tondateien prüfbar). Der Vorlese-Helfer schreibt, was er spielt, als Zeilen `{"echo": …}` (16 kHz, mono,
+  16 Bit, Base64) zwischen seine Antworten; der Dienst liest sie laufend und reicht sie über die Standardeingabe an
+  den Hörer weiter, ohne neuen Zugang von außen und ohne Platte. Der Hörer rechnet den Ton aus jedem Mikrofonblock
+  heraus (`voice/echo.rs`). Kommt eine Referenz (in den letzten 300 ms), bleibt das Mikrofon beim Vorlesen offen,
+  auch während der eigenen Antwort (was die Person dabei sagt, wird noch verworfen, darauf reagiert erst #835);
+  sonst bleibt es zu wie bisher. Ohne Einstellung. Geprüft mit `hey_torro.wav` als Vorlesen in einem gerechneten
+  Raum (Echo nach 30, 60 und 90 ms): Der Hörer hört darin keine Sprache, die Person darüber aber schon.
 - **Satzende nach Sinn (#836).** Optionen: Regeln auf dem laufenden Text für den Anfang, oder ein kleines Modell
   (Turn Detector von LiveKit, Smart Turn von Pipecat). Maßstab: Deutsch und Englisch, kürzere Zeit bis zur Antwort und
   weniger abgeschnittene Sätze (gemessen mit #828). Die Grenze von 15 s je Satz (`Limits::most`) ist mit „warte mal“
@@ -112,8 +118,9 @@ Sie gelten für jedes Issue dieses Konzepts.
    prüft danach mit `torro-api-review`.
 6. **Texte englisch über `tr()`.** Die deutschen Übersetzungen trägt nur die Koordination in
    `crates/torro-core/src/i18n/de.rs` ein; jedes Issue nennt seine Texte im Bericht.
-7. **Kein Selbstgespräch** (heute: Mikrofon zu beim Vorlesen). Die Regel gilt, bis die Echo-Unterdrückung
-   (#834) sie ablöst; danach gilt: Seine eigene Stimme löst nie einen Satz aus.
+7. **Kein Selbstgespräch:** Seine eigene Stimme löst nie einen Satz aus. Mit laufender Echo-Unterdrückung (#834) wird
+   sie aus dem Mikrofon herausgerechnet, das offen bleibt; läuft sie nicht, ist das Mikrofon beim Vorlesen zu wie
+   früher.
 
 ## Wellen
 
