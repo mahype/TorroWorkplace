@@ -479,7 +479,9 @@ docker run -d --name torro354-radicale -p 127.0.0.1:5232:5232 -v "$PWD/radicale/
   genau dieses App-Passwort; unter „Geräte & Sitzungen“ steht es unter dem Namen, unter dem es angelegt wurde.
 - **Radicale** über `accounts.connect_caldav` mit `server: "http://localhost:5232"` (unverschlüsselt nur für
   `localhost`), `calendars` und `tasks` aus.
-- Neue Konten bringen ihre Kontakte erst mit `accounts.sync` oder der nächsten Runde (alle 15 Minuten) mit.
+- Neue Konten brachten ihre Kontakte erst mit `accounts.sync` oder der nächsten Runde (alle 15 Minuten) mit. Seit
+  #354 gleicht der Kern die Kontakte gleich nach der ersten Synchronisierung eines neu angemeldeten Kontos ab, und
+  „Used by …“ auf der Kontoseite nennt bei Nextcloud und CalDAV auch Torro Contacts.
 
 **Ergebnisse** (✓ wie erwartet, ✗ Befund, behoben in diesem Issue):
 
