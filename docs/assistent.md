@@ -1053,7 +1053,10 @@ ist; das Mikrofon ist dann nur für dieses Gespräch offen. Statt des Eingabefel
   nicht für seine eigene Aussage hält; die Antwort folgt im selben Vorlesen. Die Antwortzeiten (#828) zählen die Ansage
   nicht: Der erste Satz zählt ab dem Text der Antwort, ihr erster Ton ab dem Moment, in dem das Gerät ihn spielt.
   Dafür schickt der Dienst vor dem ersten Text der Antwort (bei OpenAI vor dem Ton ihres ersten Stücks) die Zeile
-  `"mark"`, und der Helfer meldet `"marked"`, sobald der erste Ton dahinter erklingt. Abschalten: „Say what it does while it works“ unter Voice ›
+  `"mark"`, und der Helfer meldet `"marked"`, sobald der erste Ton dahinter erklingt. Ohne Ansage zählt wie bisher
+  `"playing"` beim Öffnen der Ausgabe, also vor ihren 150 ms Vorlauf; Runden mit Ansage messen darum etwa so viel
+  länger. Kern und `torroassistant` gehören zusammen: Ein älterer Helfer kennt `"mark"` nicht, dann bleibt eine
+  Runde mit Ansage ungemessen. Abschalten: „Say what it does while it works“ unter Voice ›
   Conversation (`voice_announcements`); der Schalter wirkt nur und ist nur bedienbar, solange „Speak answers“ an
   ist.
 
