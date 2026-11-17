@@ -1027,10 +1027,12 @@ ist; das Mikrofon ist dann nur für dieses Gespräch offen. Statt des Eingabefel
   Wetter?“ geht weiter), „End talk“, „Hey Torro“ aus, die gelöschte Unterhaltung oder eine Antwort, die auf eine
   Freigabe wartet: Der Assistent sagt das, und erteilt wird sie nur im Fenster.
 - **Erkennen schon beim Sprechen (#833):** Mit Silero VAD erkennt ein Modell, ob gesprochen wird, statt der
-  Lautstärke; Musik oder ein Lüfter halten den Satz nicht mehr offen. In jeder Sprechpause ab 320 ms erkennt der
-  Hörer den ganzen bisherigen Satz im Hintergrund vorab. Ist die Pause das Satzende, liegt der Text dann meist
-  schon vor; spricht die Person weiter, wird das Ergebnis verworfen und der Satz am Ende neu erkannt. Ohne das
-  Modell bleibt alles wie zuvor: Satzende nach einer Sekunde Stille, erkannt wird danach.
+  Lautstärke; Musik oder ein Lüfter halten den Satz nicht mehr offen. In jeder Sprechpause ab etwa 320 ms (das
+  Modell hört Sprache noch gut 100 ms nach) erkennt der Hörer den ganzen bisherigen Satz im Hintergrund vorab. Ist
+  die Pause das Satzende, liegt der Text dann meist schon vor; spricht die Person weiter, gilt das Ergebnis
+  nicht, und die nächste Pause erkennt den längeren Satz. Nur ein Satz, der ohne Pause an seiner Höchstlänge
+  endet, wird danach erkannt. Ohne das Modell bleibt alles wie zuvor: Satzende nach einer Sekunde Stille,
+  erkannt wird danach. Ein frisch geladenes Modell gilt ab dem nächsten Start des Hörers.
 - **Kurz und zum Hören:** Gesprochene Nachrichten (`assistant.send_message` mit `spoken`) bekommen einen Teil
   im Prompt, der knappe Antworten ohne Tabellen, Listen und Code verlangt.
 - **Kein Selbstgespräch:** Solange irgendetwas vorgelesen wird, egal wer es ausgelöst hat (auch ein Agent mit

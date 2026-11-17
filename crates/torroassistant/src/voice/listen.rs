@@ -396,14 +396,22 @@ impl<A: Assistant> Listener<'_, A> {
                 return Ok(Ended::Nothing);
             }
             sentence.extend_from_slice(&frame);
-            // Every frame is judged, the tone's too, so Silero VAD hears the sound without a gap.
-            let speech = self.speech(&frame, level);
             if frames <= tone {
                 with_tone = sentence.len();
-            } else if end.push_heard(speech) {
+                continue;
+            }
+            // Silero VAD starts afresh after the tone: its speech of the wake word, which it holds a little
+            // past its end, must not count as the first word of the sentence.
+            if frames == tone + 1
+                && let Some(vad) = &mut self.vad
+            {
+                vad.reset();
+            }
+            let speech = self.speech(&frame, level);
+            let ended = end.push_heard(speech);
+            self.look_ahead(speech, &end, &sentence, &mut ahead);
+            if ended {
                 break;
-            } else {
-                self.look_ahead(speech, &end, &sentence, &mut ahead);
             }
         }
         // The microphone closes before the answer: it is not recorded, and it cannot wake it.
@@ -491,10 +499,11 @@ impl<A: Assistant> Listener<'_, A> {
                 recording = true;
                 (self.report)(VoiceState::Recording);
             }
+            // Before the end is looked at: speech in the last frame withdraws what was recognised ahead.
+            self.look_ahead(speech, &end, &sentence, &mut ahead);
             if ended {
                 break;
             }
-            self.look_ahead(speech, &end, &sentence, &mut ahead);
         }
         drop(stream);
         // The recording program stopped before the sentence or the wait was over: no silence, a
@@ -523,6 +532,8 @@ impl<A: Assistant> Listener<'_, A> {
                 Err(err) => {
                     eprintln!("torroassistant: speech detection failed, speech is told by loudness: {err}");
                     self.vad = None;
+                    // Recognising ahead goes with Silero VAD (`Parts::early`): by loudness all stays as it was.
+                    self.early = None;
                 }
             }
         }
@@ -2090,6 +2101,19 @@ mod tests {
         assert_eq!(sent, ["recognised now"]);
         assert_eq!(now.len(), 1);
         assert!(ahead.len() <= 1, "the offer of the pause at most: {ahead:?}");
+    }
+
+    /// Review of #833: the sentence that ends at its longest with a frame of speech after the offer does not
+    /// take what was recognised ahead.
+    #[test]
+    fn speech_in_the_last_frame_withdraws_the_offer() {
+        // In a conversation the longest sentence is the wait plus `most`: 3750 + 10 frames after the tone.
+        let longest = TALK_WAIT_SECONDS * FRAMES_PER_SECOND + 10;
+        let script = [vec![false], vec![true; 5], vec![false; longest - 6], vec![true]].concat();
+        let limits = Limits { most: 10, pause: 2 * longest, ..Limits::default() };
+        let (sent, now, ahead) = converse_ahead(script, limits);
+        assert_eq!(sent, ["recognised now"], "ahead: {ahead:?}");
+        assert_eq!(now.len(), 1);
     }
 
     /// Issue #833: a speech detector that fails is left for loudness: the sentence is heard and sent.

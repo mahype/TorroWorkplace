@@ -20,6 +20,8 @@ struct State {
     done: Option<(u64, Result<String, VoiceError>)>,
     /// The listener is gone: the thread ends.
     closed: bool,
+    /// The thread ended (also by a panic): nothing more will be recognised.
+    gone: bool,
 }
 
 /// The state and the signal that it changed.
@@ -27,6 +29,17 @@ type Shared = Arc<(Mutex<State>, Condvar)>;
 
 fn lock(shared: &Shared) -> MutexGuard<'_, State> {
     shared.0.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Tells the listener when the thread ends, however it ends: a panic in the model must not leave
+/// [`Early::result`] waiting for ever.
+struct Gone(Shared);
+
+impl Drop for Gone {
+    fn drop(&mut self) {
+        lock(&self.0).gone = true;
+        self.0.1.notify_all();
+    }
 }
 
 /// Recognises sentences ahead on a thread of its own (see the module).
@@ -44,6 +57,7 @@ impl Early {
         let shared: Shared = Arc::default();
         let worker = Arc::clone(&shared);
         std::thread::spawn(move || {
+            let _gone = Gone(Arc::clone(&worker));
             loop {
                 let (number, samples) = {
                     let mut state = lock(&worker);
@@ -74,7 +88,7 @@ impl Early {
     }
 
     /// The result of the last offer, waiting for it; `None` when nothing was offered since [`Early::clear`]
-    /// (or the result was taken).
+    /// (or the result was taken), or when the thread ended without it.
     pub fn result(&mut self) -> Option<Result<String, VoiceError>> {
         let wanted = self.wanted.take()?;
         let mut state = lock(&self.shared);
@@ -83,6 +97,9 @@ impl Early {
                 && *number == wanted
             {
                 return state.done.take().map(|(_, text)| text);
+            }
+            if state.gone {
+                return None;
             }
             state = self.shared.1.wait(state).unwrap_or_else(PoisonError::into_inner);
         }
@@ -145,6 +162,20 @@ mod tests {
         assert_eq!(early.result(), Some(Ok("3".into())));
         assert!(calls.load(Ordering::SeqCst) <= 2, "an offer not begun was replaced");
         assert_eq!(early.result(), None, "taken");
+    }
+
+    /// A recogniser that panics ends the thread; the result is `None`, so the sentence is recognised anew.
+    #[test]
+    fn a_panic_on_the_thread_gives_no_result() {
+        struct Panics;
+        impl Transcriber for Panics {
+            fn transcribe(&mut self, _: &[i16]) -> Result<String, VoiceError> {
+                panic!("the model broke")
+            }
+        }
+        let mut early = Early::new(Box::new(Panics));
+        early.offer(vec![0; 1]);
+        assert_eq!(early.result(), None);
     }
 
     /// After `clear` nothing counts until the next offer.
