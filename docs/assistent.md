@@ -1048,8 +1048,9 @@ ist; das Mikrofon ist dann nur für dieses Gespräch offen. Statt des Eingabefel
   die sich reihum abwechseln; sie nennen nie Inhalte, auch keine Namen von Erweiterungen. Höchstens eine Ansage je
   Antwort, keine, wenn die Antwort schneller ist, und keine beim Vorlesen eines getippten Chats, weil das Fenster die
   Zustände dort zeigt. Die Ansage wird nur vorgelesen, nie in der Unterhaltung gespeichert, damit das Modell sie
-  nicht für seine eigene Aussage hält; die Antwort folgt im selben Vorlesen. Die Antwortzeiten (#828) messen den
-  ersten Ton der Antwort, nicht den der Ansage. Abschalten: „Say what it does while it works“ unter Voice ›
+  nicht für seine eigene Aussage hält; die Antwort folgt im selben Vorlesen. Die Antwortzeiten (#828) zählen die Ansage
+  nicht: Der erste Satz zählt ab dem Text der Antwort, ihr erster Ton ab dann, wenn sie hinter der klingenden
+  Ansage bereitsteht (der Helfer meldet das Ende der Ansage nicht, die Zeit ist darum etwas zu kurz). Abschalten: „Say what it does while it works“ unter Voice ›
   Conversation (`voice_announcements`); der Schalter wirkt nur und ist nur bedienbar, solange „Speak answers“ an
   ist.
 
