@@ -2515,13 +2515,15 @@ impl MailStore {
     /// a reply of one's own in Sent, and mail thrown away or marked as spam, carry their category
     /// on, and counting them would offer a category whose view is empty. Without an inbox folder
     /// nothing is counted. Mail without a category is not counted at all: the sidebar offers only
-    /// what is there.
-    pub fn unread_by_category(&self) -> Result<Vec<(Category, u32, u32)>, MailStoreError> {
+    /// what is there. Mail of `except` (those on a pile) is left out, as the category's list
+    /// leaves it out: a category with only piled mail would otherwise show an empty view.
+    pub fn unread_by_category(&self, except: &[String]) -> Result<Vec<(Category, u32, u32)>, MailStoreError> {
         let Some(inbox) = self.folder_by_role(Role::Inbox)? else { return Ok(Vec::new()) };
         let sql = "SELECT category, sum(flags & 1 = 0), count(*) FROM messages
-            WHERE folder_id = ?1 AND category IS NOT NULL GROUP BY category";
+            WHERE folder_id = ?1 AND category IS NOT NULL
+                AND id NOT IN (SELECT value FROM json_each(?2)) GROUP BY category";
         let mut statement = self.db.prepare(sql)?;
-        let rows = statement.query_map([&inbox.id], |row| {
+        let rows = statement.query_map(params![inbox.id, json_list(except)?], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))
         })?;
         let mut counts = Vec::new();
@@ -5008,6 +5010,17 @@ mod tests {
         assert_eq!(of(vec![Category::Spam]), Vec::<String>::new());
         assert_eq!(of(Vec::new()).len(), 3, "no condition: every mail, with or without one");
         assert!(of(Vec::new()).contains(&quiet), "mail without a category is only left out by a filter");
+
+        // Mail named in `except` (on a pile) is not counted.
+        let counted = |except: &[String]| {
+            let counts = store.unread_by_category(except).expect("counted");
+            counts
+                .into_iter()
+                .find(|(category, ..)| *category == Category::Invoice)
+                .map(|(_, unread, all)| (unread, all))
+        };
+        assert_eq!(counted(&[]), Some((1, 1)));
+        assert_eq!(counted(std::slice::from_ref(&bill)), None, "only piled mail: the category is gone");
 
         // Taking it away again leaves the mail without one.
         store.set_category(&bill, None).expect("taken away");
