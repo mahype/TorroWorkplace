@@ -145,7 +145,7 @@ pub enum Open {
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 42] = [
+    pub const ALL: [(&'static str, Open); 43] = [
         ("new", Open::New),
         ("tools", Open::Tools),
         ("approval", Open::Approval),
