@@ -12,7 +12,8 @@
 //!   missed.
 //!
 //! [`strip_wake_phrase`] takes the wake word off the front of a sentence, for when it was recorded
-//! with it.
+//! with it. [`after_wake_phrase`] finds it a little way into a sentence that begins a second before
+//! the wake word was heard (issue #829).
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -140,6 +141,38 @@ pub fn strip_wake_phrase(text: &str) -> String {
         return trimmed.to_string();
     }
     rest.trim_start_matches(|c: char| c.is_whitespace() || c.is_ascii_punctuation()).trim().to_string()
+}
+
+/// How many words into a sentence the wake word may begin: the second before it was heard holds a
+/// few words said before it.
+const WAKE_WITHIN: usize = 5;
+
+/// What follows the wake word in `text`, a sentence that begins a second before the wake word was
+/// heard (issue #829): the words after "Hey Torro" among the first few, or after "Torro" at the front
+/// when "Hey" was cut off. `None` when the wake word is not there.
+pub fn after_wake_phrase(text: &str) -> Option<String> {
+    // Each word with where it ends in `text`.
+    let mut tokens: Vec<(usize, &str)> = Vec::new();
+    for token in text.split_whitespace() {
+        let from = tokens.last().map_or(0, |(end, _)| *end);
+        let end = text[from..].find(token).map_or(text.len(), |at| from + at + token.len());
+        tokens.push((end, token));
+    }
+    let word = |i: usize| tokens.get(i).map(|(_, token)| words(token).concat()).unwrap_or_default();
+    let is = |list: &[&str], i: usize| list.contains(&word(i).as_str());
+    let end = (0..tokens.len().min(WAKE_WITHIN)).find_map(|i| {
+        if word(i) == "heytorro" || word(i) == "heytoro" {
+            Some(i)
+        } else if is(HEY, i) && is(TORRO, i + 1) {
+            Some(i + 1)
+        } else if i == 0 && is(TORRO, 0) {
+            Some(0)
+        } else {
+            None
+        }
+    })?;
+    let rest = &text[tokens[end].0..];
+    Some(rest.trim_start_matches(|c: char| c.is_whitespace() || c.is_ascii_punctuation()).trim().to_string())
 }
 
 /// The words of `text` in lower case, punctuation dropped.
@@ -436,5 +469,20 @@ mod tests {
         assert_eq!(strip_wake_phrase("What is on today?"), "What is on today?");
         assert_eq!(strip_wake_phrase("A tomato salad recipe"), "A tomato salad recipe", "not the wake word");
         assert_eq!(strip_wake_phrase("Hey Torro"), "");
+        // A conversation by voice keeps a sentence that begins like the wake word's second half.
+        assert_eq!(strip_wake_phrase("Taro, wie koche ich das?"), "Taro, wie koche ich das?");
+    }
+
+    /// Issue #829: the sentence begins a second before the wake word was heard.
+    #[test]
+    fn what_follows_the_wake_word_is_found() {
+        let after = |text: &str| after_wake_phrase(text);
+        assert_eq!(after("Hey Torro, light on.").as_deref(), Some("light on."));
+        assert_eq!(after("Ja, gut. Hey Toro, was steht an?").as_deref(), Some("was steht an?"));
+        assert_eq!(after("Torro, was steht heute an?").as_deref(), Some("was steht heute an?"), "Hey cut off");
+        assert_eq!(after("Heytorro.").as_deref(), Some(""));
+        assert_eq!(after("Ro."), None, "a piece of it is no wake word");
+        assert_eq!(after("Dann sagte er, wir nehmen den Taro"), None);
+        assert_eq!(after("Ein Glas Wasser, bitte, dann hey Torro"), None, "too far into the sentence");
     }
 }
