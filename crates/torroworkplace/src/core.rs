@@ -2791,11 +2791,18 @@ struct Reader<'a> {
     stamps: Option<&'a std::sync::Mutex<Stamps>>,
     readings: Option<&'a Arc<Readings>>,
     speaking: Option<Speaking>,
-    /// Only the note of the voice chat was given so far (issue #837): its sound is not the answer's, so
-    /// `stamps` wait for the answer's first text ([`Reader::add`]). The helper does not say when the note
-    /// ends, so the answer's first sound counts from when its text waits behind a note that sounds: from
-    /// its first text while the note sounds, else from the note's `playing`. Never before its first text.
-    announcing: bool,
+    /// The job began with a note of the voice chat (issue #837): its text and sound are not the answer's.
+    /// The answer's first text stamps `first_piece` ([`Reader::add`]) and is marked; its first sound is
+    /// the helper's `marked`, never the note's `playing`.
+    noted: bool,
+    /// The answer's first text went to the helper after the note.
+    answered: bool,
+    /// OpenAI after a note: how many lines of pieces the helper named, how many pieces, how many were
+    /// fetched, and which one is the answer's first, marked before its sound goes.
+    named_lines: usize,
+    named: usize,
+    started: usize,
+    mark_piece: Option<usize>,
 }
 
 impl Reader<'_> {
@@ -2819,7 +2826,7 @@ impl Reader<'_> {
     async fn handle(&mut self, event: ReadEvent) -> Option<Response> {
         match event {
             ReadEvent::Line(Ok(SpeechLine::Playing)) => {
-                if !self.announcing {
+                if !self.noted {
                     sounded(self.stamps);
                 }
                 if let Some(readings) = self.readings {
@@ -2832,6 +2839,10 @@ impl Reader<'_> {
                 None
             }
             ReadEvent::Line(Ok(SpeechLine::Done)) => Some(self.failed.take().unwrap_or(Response::Ok)),
+            ReadEvent::Line(Ok(SpeechLine::Marked)) => {
+                sounded(self.stamps);
+                None
+            }
             ReadEvent::Line(Ok(SpeechLine::Failed { code, message })) => Some(Response::Error { code, message }),
             ReadEvent::Line(Ok(SpeechLine::Pieces(pieces))) => {
                 if self.openai.is_none() {
@@ -2841,8 +2852,16 @@ impl Reader<'_> {
                     });
                 }
                 self.asked = self.asked.saturating_sub(1);
+                // The pieces of the answer's first text after a note (issue #837): the first of them is marked.
+                if self.noted && self.named_lines == 1 && !pieces.is_empty() {
+                    self.mark_piece = Some(self.named);
+                }
+                self.named_lines += 1;
+                self.named += pieces.len();
                 self.queue.extend(pieces);
-                self.fetch_next();
+                if let Some(end) = self.fetch_next().await {
+                    return Some(end);
+                }
                 self.end_if_due().await
             }
             ReadEvent::Line(Err(err)) => Some(speech_failure(&err)),
@@ -2857,7 +2876,9 @@ impl Reader<'_> {
                 }
                 match fetched {
                     Ok(()) => {
-                        self.fetch_next();
+                        if let Some(end) = self.fetch_next().await {
+                            return Some(end);
+                        }
                         self.end_if_due().await
                     }
                     // Stopped or overtaken meanwhile: the helper says `done`, and the answer is `Ok`.
@@ -2898,13 +2919,19 @@ impl Reader<'_> {
         None
     }
 
-    /// Fetches the next piece from OpenAI, once the one before is all there.
-    fn fetch_next(&mut self) {
-        if self.fetching.is_some() || self.shut || !self.job.current() {
-            return;
+    /// Fetches the next piece from OpenAI, once the one before is all there. The answer's first piece
+    /// after a note is marked first (issue #837): its sound follows the `"mark"`.
+    async fn fetch_next(&mut self) -> Option<Response> {
+        if self.fetching.is_some() || self.shut || !self.job.current() || self.openai.is_none() {
+            return None;
         }
-        let Some(openai) = &self.openai else { return };
-        let Some(piece) = self.queue.pop_front() else { return };
+        let piece = self.queue.pop_front()?;
+        let marked = self.mark_piece == Some(self.started);
+        self.started += 1;
+        if marked && let Some(end) = self.send("\"mark\"").await {
+            return Some(end);
+        }
+        let openai = self.openai.as_ref()?;
         let (speaker, voice, style) = (openai.speaker.clone(), openai.voice.clone(), openai.style.clone());
         let sound = self.sound.clone();
         self.fetching = Some(Box::pin(async move {
@@ -2924,6 +2951,7 @@ impl Reader<'_> {
             }
             fetched
         }));
+        None
     }
 
     /// Sends `end` once no more text comes and all of it went out: with OpenAI every text's pieces named,
@@ -2948,13 +2976,14 @@ impl Reader<'_> {
         if self.openai.is_some() {
             self.asked += 1;
         }
-        // The answer's first text after the note (issue #837): its time starts now, and while the note
-        // still sounds the helper plays on without a new `playing`, so its sound counts from here too;
-        // a note not sounding yet stamps it with its `playing`, which comes after this.
-        if std::mem::take(&mut self.announcing) {
+        // The answer's first text after the note (issue #837): its time starts now, and a provider of the
+        // helper marks it, so `marked` says when it is heard (OpenAI marks its first piece, [`Reader::fetch_next`]).
+        if self.noted && !std::mem::replace(&mut self.answered, true) {
             given(self.stamps);
-            if self.speaking.is_some() {
-                sounded(self.stamps);
+            if self.openai.is_none()
+                && let Some(end) = self.send("\"mark\"").await
+            {
+                return Some(end);
             }
         }
         self.send(&serde_json::json!({"add": {"text": text}}).to_string()).await
@@ -14794,7 +14823,12 @@ impl Core {
             stamps,
             readings,
             speaking: None,
-            announcing: false,
+            noted: false,
+            answered: false,
+            named_lines: 0,
+            named: 0,
+            started: 0,
+            mark_piece: None,
         }))
     }
 
@@ -14978,7 +15012,7 @@ impl Core {
         match self.begin_reading(number, note, true, None, Some(&self.speaking)).await {
             Ok(Some(mut begun)) => {
                 begun.stamps = Some(stamps);
-                begun.announcing = true;
+                begun.noted = true;
                 Announced::Begun(Box::new(begun))
             }
             Ok(None) => Announced::Stopped,
@@ -21398,13 +21432,16 @@ done"#,
     }
 
     /// A speech helper like `--speak` with jobs open for more text (issue #850): it notes what it is given
-    /// in `said` (each `say` and `add`, and the `end`), plays at once and is done after `end`.
+    /// in `said` (each `say` and `add`, and the `end`), plays at once and is done after `end`. A `mark` it
+    /// does not note; the `add` after it is heard 300 ms later (`marked`, issue #837).
     fn open_job_helper(said: &Path) -> String {
         format!(
-            r#"while read line; do
+            r#"marked=
+while read line; do
   case "$line" in
     *'"say"'*) printf '%s\n' "$line" >> '{0}'; echo '"playing"' ;;
-    *'"add"'*) printf '%s\n' "$line" >> '{0}' ;;
+    '"mark"') marked=1 ;;
+    *'"add"'*) printf '%s\n' "$line" >> '{0}'; if [ -n "$marked" ]; then marked=; sleep 0.3; echo '"marked"'; fi ;;
     '"end"') printf '%s\n' "$line" >> '{0}'; echo '"done"' ;;
   esac
 done"#,
@@ -21528,7 +21565,7 @@ done"#,
     }
 
     /// Issue #837, review: the times of the answer (issue #828) begin with its own first text, not with the
-    /// note's: its first text after the note, its first sound not before that.
+    /// note's: its first text after the note, its first sound when the helper hears it (`marked`).
     #[cfg(unix)]
     #[tokio::test]
     async fn the_note_is_not_timed_as_the_answer() {
@@ -21560,7 +21597,8 @@ done"#,
         let piece = stamps.first_piece.expect("the answer's first text");
         let sound = stamps.first_sound.expect("the answer's first sound");
         assert!(piece > noted, "the answer's text, not the note's: {piece} after {noted}");
-        assert!(sound >= piece, "its sound not before its text: {sound} {piece}");
+        // The fake helper hears the marked answer 300 ms after its text: the note's `playing` never counts.
+        assert!(sound >= piece + chrono::Duration::milliseconds(250), "when it is heard: {sound} {piece}");
     }
 
     /// Issue #837, decision 2: without a tool the chat says it thinks once the first sentence takes
@@ -21747,6 +21785,76 @@ done"#,
         assert_eq!((one.calls_async().await, two.calls_async().await), (1, 1), "each piece fetched once");
         let log = std::fs::read_to_string(&said).expect("said");
         assert!(log.ends_with("stop\n") && !log.contains("end"), "what plays stops: {log}");
+    }
+
+    /// Issue #837: with OpenAI the note's pieces are fetched first, then the answer's; the `"mark"` goes right
+    /// before the sound of the answer's first piece, so the helper's `marked` times the answer.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn openai_marks_the_answer_after_the_note() {
+        use crate::assistant::tests::{finish_growing, growing, message, written};
+        use torro_core::account::Secret;
+        use torro_core::ai::AiProvider;
+        const ID: &str = "0000000000000841";
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = httpmock::MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(200).json_body(serde_json::json!({"data": [{"id": "gpt-5"}]}));
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/audio/speech");
+                then.status(200).body([0u8, 1, 2, 3]);
+            })
+            .await;
+        let said = dir.path().join("said.log");
+        let body = format!(
+            r#"while read line; do
+  case "$line" in
+    *'"say"'*) echo '{{"pieces": ["Note."]}}' ;;
+    *'"add"'*) echo '{{"pieces": ["Three events today."]}}' ;;
+    '"mark"') printf 'mark\n' >> '{0}' ;;
+    *'"pcm"'*) printf 'pcm\n' >> '{0}'; echo '"playing"' ;;
+    '"end"') printf 'end\n' >> '{0}'; echo '"done"' ;;
+  esac
+done"#,
+            said.display()
+        );
+        let speaker = dir.path().join("speaker");
+        crate::apps::tests::fake_at(&speaker, &body);
+        written(&dir.path().join("assistant"), ID, "Voice", vec![message("What is on today?")], &[], |_| {});
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = Arc::new(
+            core_with_ai(dir.path(), &MemoryTokens::default(), Vec::new())
+                .with_assistant(assistant)
+                .with_speech(crate::apps::SpeechHelper::at(speaker))
+                .with_probe(Measured(large_pc())),
+        );
+        core.ai
+            .connect(AiProvider::OpenAi, Some(&server.url("/v1")), Secret::new(crate::account::ai::tests::KEY))
+            .await
+            .expect("connected");
+        let provider =
+            Request::SetSetting { key: torro_ipc::SettingKey::SpeechProvider, value: serde_json::json!("openai") };
+        assert_eq!(core.handle(provider).await, Response::Ok);
+        *core.lock_talk() = Some(TalkSlot { conversation: Some(ID.into()), since: std::time::Instant::now() });
+        let (run, partial) = growing(&core.assistant, ID).await;
+        partial.lock().unwrap_or_else(PoisonError::into_inner).tool = Some("calendar.list_events".into());
+        let reader = Arc::clone(&core);
+        let read = tokio::spawn(async move { reader.handle(Request::SpeakAnswer { conversation: ID.into() }).await });
+        until_true("the note sounds", || std::fs::read_to_string(&said).is_ok_and(|log| log.contains("pcm"))).await;
+        partial.lock().unwrap_or_else(PoisonError::into_inner).tool = None;
+        finish_growing(&core.assistant, ID, run, "Three events today.").await;
+        assert_eq!(read.await.expect("read"), Response::Ok);
+        let log = std::fs::read_to_string(&said).expect("said");
+        let lines: Vec<&str> = log.lines().collect();
+        let mark = lines.iter().position(|line| *line == "mark").expect("a mark");
+        assert_eq!(lines.iter().filter(|line| **line == "mark").count(), 1, "{log}");
+        assert!(lines[..mark].contains(&"pcm"), "after the note's sound: {log}");
+        assert_eq!(lines.get(mark + 1), Some(&"pcm"), "right before the answer's: {log}");
     }
 
     /// Issue #774 (and its review): of an answer in two parts only the spoken part is read, also while the

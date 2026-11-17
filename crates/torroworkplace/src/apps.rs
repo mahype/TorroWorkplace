@@ -870,6 +870,8 @@ pub enum SpeechLine {
     Waiting,
     /// Read to its end, or stopped.
     Done,
+    /// The sound after a `"mark"` is heard (issue #837): the answer after a note of the voice chat.
+    Marked,
     /// It cannot read, with the core's code and a message for people.
     Failed { code: String, message: String },
 }
@@ -882,6 +884,7 @@ impl SpeechLine {
             Some("playing") => return Some(SpeechLine::Playing),
             Some("waiting") => return Some(SpeechLine::Waiting),
             Some("done") => return Some(SpeechLine::Done),
+            Some("marked") => return Some(SpeechLine::Marked),
             Some(_) => return None,
             None => {}
         }
@@ -1597,6 +1600,7 @@ done"#;
     fn speech_lines_are_read() {
         assert_eq!(SpeechLine::parse("\"playing\""), Some(SpeechLine::Playing));
         assert_eq!(SpeechLine::parse("\"waiting\""), Some(SpeechLine::Waiting));
+        assert_eq!(SpeechLine::parse("\"marked\""), Some(SpeechLine::Marked), "issue #837");
         assert_eq!(
             SpeechLine::parse(r#"{"pieces": ["One.", "Two."]}"#),
             Some(SpeechLine::Pieces(vec!["One.".into(), "Two.".into()]))
