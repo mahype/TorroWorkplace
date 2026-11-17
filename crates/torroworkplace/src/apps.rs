@@ -1637,11 +1637,9 @@ pub mod tests {
         assert!(slow.ask(&[], Duration::from_millis(200)).await.is_err(), "it does not wait for ever");
     }
 
-    /// Issue #745: a job reads until the helper says `done`; a stop gets through while it reads, a
-    /// new job overtakes the one waiting, and the helper is started anew for other settings.
-    #[cfg(unix)]
     /// Issue #834: the helper's echo lines go to the listener's input, never to the job; many of them, more
     /// than a pipe holds, do not keep the helper from saying `done`.
+    #[cfg(unix)]
     #[tokio::test]
     async fn echo_lines_of_the_helper_go_to_the_listener() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1682,6 +1680,9 @@ done"#
         assert!(listener.echo().lock().is_none());
     }
 
+    /// Issue #745: a job reads until the helper says `done`; a stop gets through while it reads, a
+    /// new job overtakes the one waiting, and the helper is started anew for other settings.
+    #[cfg(unix)]
     #[tokio::test]
     async fn the_speech_helper_reads_one_job_at_a_time() {
         let dir = tempfile::tempdir().expect("temp dir");
