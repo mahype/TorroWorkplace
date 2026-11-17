@@ -17,7 +17,9 @@
 //!   only when it does not load, with the recogniser on short windows ([`wake::TranscriptWake`]),
 //! - the microphone and the sound output with cpal ([`sound`]),
 //! - reading aloud with Pocket TTS ([`pocket`]) or, in builds with `qwen-cuda`, Qwen3-TTS on the graphics card
-//!   ([`qwen`], issue #764), in the helper [`speech`].
+//!   ([`qwen`], issue #764), in the helper [`speech`],
+//! - the echo cancellation ([`echo`], issue #834): what the helper plays is taken out of the microphone, so it
+//!   stays open while something is read aloud.
 //!
 //! The models are downloaded in the settings (`settings.download_voice_model`) into the voice folder
 //! (`torro_core::voice_models`); what is missing is a model or a sound device ([`parts`]).
@@ -31,6 +33,7 @@
 
 pub mod audio;
 pub mod cli;
+pub mod echo;
 pub mod listen;
 pub mod parts;
 pub mod pocket;
