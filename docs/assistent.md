@@ -826,6 +826,7 @@ höchstens ein Modell, und das lädt ein Knopf in Einstellungen › Assistent �
 | Whisper turbo (`whisper-turbo`, empfohlen) | Sprache → Text, mit wählbarer Sprache | 1,0 GB | `csukuangfj/sherpa-onnx-whisper-turbo` auf Hugging Face |
 | Parakeet (`parakeet`) | Sprache → Text, schneller, erkennt die Sprache selbst | 670 MB | `csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8` |
 | Pocket TTS, Deutsch (`pocket-de`, empfohlen) | Vorlesen, mit den Stimmen von Kyutai | 150 MB | `haex-space/pocket-tts-sherpa-onnx` und `kyutai/tts-voices` |
+| Silero VAD (`silero-vad`) | Satzanfang und -ende, ohne Modell die Lautstärke (#833) | 1,8 MB | `csukuangfj/vad` |
 
 - **Feste Liste:** Jede Datei steht mit fester Fassung (Revision), Größe und SHA-256 im Programm
   (`torro_core::voice_models`); geladen wird nur diese Liste, nichts sonst, ohne Token. Die Dateien liegen im
@@ -1025,6 +1026,11 @@ ist; das Mikrofon ist dann nur für dieses Gespräch offen. Statt des Eingabefel
   „Tschüss“, „Ende“, „Das war's“, „Thanks“, „Stop“, „Bye“, „That's all“; höchstens drei Wörter, „Danke, und das
   Wetter?“ geht weiter), „End talk“, „Hey Torro“ aus, die gelöschte Unterhaltung oder eine Antwort, die auf eine
   Freigabe wartet: Der Assistent sagt das, und erteilt wird sie nur im Fenster.
+- **Erkennen schon beim Sprechen (#833):** Mit Silero VAD erkennt ein Modell, ob gesprochen wird, statt der
+  Lautstärke; Musik oder ein Lüfter halten den Satz nicht mehr offen. In jeder Sprechpause ab 320 ms erkennt der
+  Hörer den ganzen bisherigen Satz im Hintergrund vorab. Ist die Pause das Satzende, liegt der Text dann meist
+  schon vor; spricht die Person weiter, wird das Ergebnis verworfen und der Satz am Ende neu erkannt. Ohne das
+  Modell bleibt alles wie zuvor: Satzende nach einer Sekunde Stille, erkannt wird danach.
 - **Kurz und zum Hören:** Gesprochene Nachrichten (`assistant.send_message` mit `spoken`) bekommen einen Teil
   im Prompt, der knappe Antworten ohne Tabellen, Listen und Code verlangt.
 - **Kein Selbstgespräch:** Solange irgendetwas vorgelesen wird, egal wer es ausgelöst hat (auch ein Agent mit
