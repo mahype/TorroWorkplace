@@ -2791,6 +2791,9 @@ struct Reader<'a> {
     stamps: Option<&'a std::sync::Mutex<Stamps>>,
     readings: Option<&'a Arc<Readings>>,
     speaking: Option<Speaking>,
+    /// Only the note of the voice chat was given so far (issue #837): its sound is not the answer's, so
+    /// `stamps` wait for the answer's first text ([`Reader::add`]).
+    announcing: bool,
 }
 
 impl Reader<'_> {
@@ -2814,7 +2817,9 @@ impl Reader<'_> {
     async fn handle(&mut self, event: ReadEvent) -> Option<Response> {
         match event {
             ReadEvent::Line(Ok(SpeechLine::Playing)) => {
-                sounded(self.stamps);
+                if !self.announcing {
+                    sounded(self.stamps);
+                }
                 if let Some(readings) = self.readings {
                     self.speaking.get_or_insert_with(|| Speaking::new(readings));
                 }
@@ -2940,6 +2945,14 @@ impl Reader<'_> {
         }
         if self.openai.is_some() {
             self.asked += 1;
+        }
+        // The answer's first text after the note (issue #837): its time starts now, and while the note
+        // still sounds the helper plays on without a new `playing`, so its sound counts from here too.
+        if std::mem::take(&mut self.announcing) {
+            given(self.stamps);
+            if self.speaking.is_some() {
+                sounded(self.stamps);
+            }
         }
         self.send(&serde_json::json!({"add": {"text": text}}).to_string()).await
     }
@@ -3249,6 +3262,9 @@ pub struct Core {
     /// How many readings aloud run (`assistant.speak`, `assistant.speak_answer`), whoever asked for
     /// them: the listener keeps the microphone closed meanwhile (issue #747).
     speaking: Arc<Readings>,
+    /// How many notes the voice chat said while an answer took a moment (issue #837): the next one
+    /// says it another way ([`crate::assistant::announce::announcement`]).
+    announced: std::sync::atomic::AtomicUsize,
     /// The answer `assistant.speak_answer` reads now (issue #747): another call for it waits for the
     /// same end.
     reading: Mutex<Option<Reading>>,
@@ -3433,6 +3449,7 @@ impl Core {
             talk: std::sync::Mutex::new(None),
             voice_was_on: std::sync::atomic::AtomicBool::new(false),
             speaking: Arc::default(),
+            announced: std::sync::atomic::AtomicUsize::new(0),
             reading: Mutex::new(None),
             voice_rounds: std::sync::Mutex::default(),
             lent_scopes: std::sync::Mutex::new(Vec::new()),
@@ -14774,6 +14791,7 @@ impl Core {
             stamps,
             readings,
             speaking: None,
+            announcing: false,
         }))
     }
 
@@ -14862,6 +14880,9 @@ impl Core {
         let mut over = false;
         // When the answer is looked at next: every READ_EVERY, however many lines and how much sound come between.
         let mut look = tokio::time::Instant::now();
+        // Issue #837: when the wait began, and whether the voice chat may still say what it does (once).
+        let began = tokio::time::Instant::now();
+        let mut may_announce = true;
         loop {
             if !over && tokio::time::Instant::now() >= look {
                 look = tokio::time::Instant::now() + READ_EVERY;
@@ -14888,6 +14909,17 @@ impl Core {
                     if let Some(end) = given {
                         return end;
                     }
+                } else if reader.is_none() && !over && may_announce {
+                    match self.announce(number, conversation, began.elapsed(), stamps).await {
+                        Announced::Not => {}
+                        Announced::Never => may_announce = false,
+                        Announced::Begun(begun) => {
+                            may_announce = false;
+                            reader = Some(*begun);
+                        }
+                        Announced::Stopped => return Response::Ok,
+                        Announced::Refused(refused) => return *refused,
+                    }
                 }
                 if over {
                     let Some(open) = reader.as_mut() else { return Response::Ok };
@@ -14909,6 +14941,43 @@ impl Core {
             {
                 return end;
             }
+        }
+    }
+
+    /// Says briefly what the answer in `conversation` does (issue #837), as the job `number` open for the
+    /// answer to follow ([`Reader::add`]): once it uses a tool, or `waited` [`ANNOUNCE_AFTER`] without a
+    /// first sentence. Only in the voice chat (the conversation by voice holds `conversation`, also after
+    /// "Hey Torro"), while answers are spoken and the note is on; the chat window shows what happens
+    /// instead. The note is only spoken, never stored: the model does not read it as its own words.
+    async fn announce<'a>(
+        &'a self,
+        number: u64,
+        conversation: &str,
+        waited: std::time::Duration,
+        stamps: &'a std::sync::Mutex<Stamps>,
+    ) -> Announced<'a> {
+        let voice = self.settings.current().voice;
+        let talking = self.lock_talk().as_ref().is_some_and(|talk| talk.conversation.as_deref() == Some(conversation));
+        if !voice.announce || !voice.speak_answers || !talking {
+            return Announced::Never;
+        }
+        if !self.speech.is_current(number) {
+            return Announced::Not;
+        }
+        let tool = match self.assistant.activity(conversation).await {
+            Some(Some(tool)) => Some(tool),
+            _ if waited >= ANNOUNCE_AFTER => None,
+            _ => return Announced::Not,
+        };
+        let turn = self.announced.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let note = crate::assistant::announce::announcement(tool.as_deref(), turn);
+        match self.begin_reading(number, note, true, Some(stamps), Some(&self.speaking)).await {
+            Ok(Some(mut begun)) => {
+                begun.announcing = true;
+                Announced::Begun(Box::new(begun))
+            }
+            Ok(None) => Announced::Stopped,
+            Err(refused) => Announced::Refused(Box::new(refused)),
         }
     }
 
@@ -21384,6 +21453,135 @@ done"#,
         assert!(lines[1].contains(r#""add""#) && lines[1].contains("The first is at nine."), "{log}");
         assert_eq!(lines[2], r#""end""#, "{log}");
         assert_eq!(log.matches("Three events today.").count(), 1, "each sentence once: {log}");
+    }
+
+    /// Issue #837: a core whose speech helper notes in `dir/said.log` what it is given, with a conversation
+    /// `id` whose answer runs ([`crate::assistant::tests::growing`]), held by the conversation by voice
+    /// with `talking`; its run and what the answer does now.
+    async fn announcing_core(
+        dir: &Path,
+        id: &str,
+        talking: bool,
+    ) -> (Arc<Core>, u64, Arc<std::sync::Mutex<crate::assistant::Partial>>) {
+        use crate::assistant::tests::{growing, message, written};
+        let speaker = dir.join("speaker");
+        crate::apps::tests::fake_at(&speaker, &open_job_helper(&dir.join("said.log")));
+        written(&dir.join("assistant"), id, "Voice", vec![message("What is on today?")], &[], |_| {});
+        let assistant = crate::assistant::tests::assistant_in(dir, std::time::Duration::ZERO);
+        let core = Arc::new(
+            core(dir)
+                .with_assistant(assistant)
+                .with_speech(crate::apps::SpeechHelper::at(speaker))
+                .with_probe(Measured(large_pc())),
+        );
+        if talking {
+            *core.lock_talk() = Some(TalkSlot { conversation: Some(id.into()), since: std::time::Instant::now() });
+        }
+        let (run, partial) = growing(&core.assistant, id).await;
+        (core, run, partial)
+    }
+
+    /// Issue #837: what the helper of [`announcing_core`] was given, one line each.
+    fn said_lines(dir: &Path) -> Vec<String> {
+        std::fs::read_to_string(dir.join("said.log")).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+
+    /// Issue #837, decisions 1 and 2: while the answer in the voice chat uses a tool, the chat says so at
+    /// once, in the job the answer follows in; once per answer, and never in the conversation.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_voice_chat_says_what_it_does_while_a_tool_runs() {
+        use crate::assistant::tests::finish_growing;
+        const ID: &str = "0000000000000837";
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, run, partial) = announcing_core(dir.path(), ID, true).await;
+        partial.lock().unwrap_or_else(PoisonError::into_inner).tool = Some("system.ping".into());
+        let reader = Arc::clone(&core);
+        let read = tokio::spawn(async move { reader.handle(Request::SpeakAnswer { conversation: ID.into() }).await });
+        until_true("the note before the answer", || !said_lines(dir.path()).is_empty()).await;
+        let note = crate::assistant::announce::announcement(Some("system.ping"), 0);
+        // Another tool, and the wait goes on: still the one note.
+        partial.lock().unwrap_or_else(PoisonError::into_inner).tool = Some("calendar.list_events".into());
+        tokio::time::sleep(ANNOUNCE_AFTER + READ_EVERY * 2).await;
+        partial.lock().unwrap_or_else(PoisonError::into_inner).tool = None;
+        finish_growing(&core.assistant, ID, run, "Three events today.").await;
+        assert_eq!(read.await.expect("read"), Response::Ok);
+        let lines = said_lines(dir.path());
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines[0].contains(r#""say""#) && lines[0].contains(note), "{lines:?}");
+        assert!(lines[1].contains(r#""add""#) && lines[1].contains("Three events today."), "{lines:?}");
+        assert_eq!(lines[2], r#""end""#);
+        assert_eq!(lines.iter().filter(|line| line.contains(r#""say""#)).count(), 1, "one note: {lines:?}");
+
+        let Response::Conversation { entries, .. } =
+            core.handle(Request::GetConversation { id: ID.into(), after: None }).await
+        else {
+            panic!("the conversation")
+        };
+        let stored = serde_json::to_string(&entries).expect("entries");
+        assert!(stored.contains("Three events today.") && !stored.contains(note), "only spoken: {stored}");
+    }
+
+    /// Issue #837, decision 2: without a tool the chat says it thinks once the first sentence takes
+    /// [`ANNOUNCE_AFTER`]; an answer quicker than that comes without a note.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_voice_chat_says_it_thinks_only_when_the_answer_takes_a_moment() {
+        use crate::assistant::tests::finish_growing;
+        const ID: &str = "0000000000000838";
+        let quick = tempfile::tempdir().expect("temp dir");
+        let (core, run, _partial) = announcing_core(quick.path(), ID, true).await;
+        let reader = Arc::clone(&core);
+        let read = tokio::spawn(async move { reader.handle(Request::SpeakAnswer { conversation: ID.into() }).await });
+        tokio::time::sleep(READ_EVERY * 3).await;
+        finish_growing(&core.assistant, ID, run, "Nothing today.").await;
+        assert_eq!(read.await.expect("read"), Response::Ok);
+        let lines = said_lines(quick.path());
+        assert!(lines[0].contains(r#""say""#) && lines[0].contains("Nothing today."), "no note: {lines:?}");
+        assert_eq!(lines.len(), 2, "{lines:?}");
+
+        let slow = tempfile::tempdir().expect("temp dir");
+        let (core, run, _partial) = announcing_core(slow.path(), ID, true).await;
+        let reader = Arc::clone(&core);
+        let read = tokio::spawn(async move { reader.handle(Request::SpeakAnswer { conversation: ID.into() }).await });
+        until_true("the note once the answer takes a moment", || !said_lines(slow.path()).is_empty()).await;
+        finish_growing(&core.assistant, ID, run, "Nothing today.").await;
+        assert_eq!(read.await.expect("read"), Response::Ok);
+        let lines = said_lines(slow.path());
+        assert!(lines[0].contains(crate::assistant::announce::announcement(None, 0)), "{lines:?}");
+        assert!(lines[1].contains(r#""add""#) && lines[1].contains("Nothing today."), "{lines:?}");
+    }
+
+    /// Issue #837, decision 1 and the setting: switched off, and in the chat window (no conversation by
+    /// voice holds the conversation), the answer comes without a note, even while a tool runs.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn no_note_when_switched_off_or_in_the_chat_window() {
+        use crate::assistant::tests::finish_growing;
+        const ID: &str = "0000000000000839";
+        for talking in [true, false] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (core, run, partial) = announcing_core(dir.path(), ID, talking).await;
+            if talking {
+                let off = Request::SetSetting {
+                    key: torro_ipc::SettingKey::VoiceAnnouncements,
+                    value: serde_json::json!(false),
+                };
+                assert_eq!(core.handle(off).await, Response::Ok);
+            }
+            partial.lock().unwrap_or_else(PoisonError::into_inner).tool = Some("calendar.list_events".into());
+            let reader = Arc::clone(&core);
+            let read =
+                tokio::spawn(async move { reader.handle(Request::SpeakAnswer { conversation: ID.into() }).await });
+            tokio::time::sleep(READ_EVERY * 4).await;
+            assert!(said_lines(dir.path()).is_empty(), "talking {talking}: nothing said yet");
+            partial.lock().unwrap_or_else(PoisonError::into_inner).tool = None;
+            finish_growing(&core.assistant, ID, run, "Three events today.").await;
+            assert_eq!(read.await.expect("read"), Response::Ok);
+            let lines = said_lines(dir.path());
+            assert_eq!(lines.len(), 2, "talking {talking}: {lines:?}");
+            assert!(lines[0].contains("Three events today."), "talking {talking}: {lines:?}");
+        }
     }
 
     /// Waits up to five seconds for `ready`.
@@ -39819,3 +40017,21 @@ impl Drop for Speaking {
 
 /// How often `assistant.speak_answer` looks at the answer as it grows (issue #747).
 const READ_EVERY: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// How long the voice chat waits for the first sentence of an answer before it says what it does
+/// (issue #837); a tool is announced at once.
+const ANNOUNCE_AFTER: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// What [`Core::announce`] did.
+enum Announced<'a> {
+    /// Not yet: no tool, and not waited long enough.
+    Not,
+    /// Not in this reading: outside the voice chat, or answers or notes switched off.
+    Never,
+    /// Said, as the job the answer follows in.
+    Begun(Box<Reader<'a>>),
+    /// Stopped before anything went to the helper.
+    Stopped,
+    /// The helper could not start: the answer would fail the same way.
+    Refused(Box<Response>),
+}
