@@ -453,7 +453,7 @@ fn needed_by(app: &CatalogApp, catalog: &AppCatalog) -> Vec<String> {
 }
 
 /// Overview's header (issue #803): only "Update all (2)", the window's one primary button while there
-/// are updates; narrow as an icon. What else the catalog offers stands at its title ([`title`]).
+/// are updates; narrow as an icon; disabled while an app's job runs. What else the catalog offers stands at its title ([`title`]).
 pub fn header<'a>(_state: &'a State, data: &'a Data, class: SizeClass) -> Header<'a, Message> {
     let catalog = data.app_catalog.catalog.listed();
     let narrow = !matches!(class, SizeClass::Wide | SizeClass::Medium);
@@ -461,10 +461,14 @@ pub fn header<'a>(_state: &'a State, data: &'a Data, class: SizeClass) -> Header
     let count = catalog.map(updatable).map_or(0, |apps| apps.len());
     if count > 0 {
         let label = trf("Update all ({n})", &[("n", &count)]);
-        actions.push(match narrow {
-            true => widgets::compact_button(Icon::Download, label, style::button::primary, Some(Message::UpdateAll)),
-            false => widgets::text_button(None, label, style::button::primary, Some(Message::UpdateAll)),
-        });
+        // While a job runs the core refuses another (`busy`): disabled, saying why, like the cards' buttons.
+        let busy = job_runs(data);
+        let press = (!busy).then_some(Message::UpdateAll);
+        let button = match narrow {
+            true => widgets::compact_button(Icon::Download, label, style::button::primary, press),
+            false => widgets::text_button(None, label, style::button::primary, press),
+        };
+        actions.push(if busy { widgets::with_tooltip(button, refusal("busy")) } else { button });
     }
     Header { sub_page: None, actions }
 }
@@ -1285,6 +1289,22 @@ mod tests {
         assert!(!clicks(&running).iter().any(|m| matches!(m, Message::Install(_))), "waits for the Assistant");
         let done = demo_job(true);
         assert!(clicks(&done).iter().any(|m| matches!(m, Message::Install(class) if class == "torro-contacts")));
+
+        // "Update all" in the header waits the same way.
+        let update_all = |job: AppJobInfo| -> Vec<Message> {
+            let mut data = data_with(catalog.clone());
+            data.app_catalog.job = Some(job);
+            let mut actions = header(&state, &data, SizeClass::Wide).actions;
+            let mut sim = iced_test::Simulator::with_size(
+                iced::Settings::default(),
+                iced::Size::new(480.0, 120.0),
+                actions.remove(0),
+            );
+            assert!(sim.click(trf("Update all ({n})", &[("n", &2)]).as_str()).is_ok(), "the button is there");
+            sim.into_messages().collect()
+        };
+        assert!(!update_all(demo_job(false)).iter().any(|m| matches!(m, Message::UpdateAll)), "waits");
+        assert!(update_all(demo_job(true)).iter().any(|m| matches!(m, Message::UpdateAll)));
     }
 
     /// The menu after the target picture: Open, Release notes, Turn off, Show in Finder, then
