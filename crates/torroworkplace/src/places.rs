@@ -255,7 +255,13 @@ impl Places {
         if cfg!(test) {
             return Places::new(None);
         }
-        Places::new(AppPaths::for_app(AppId::WORKPLACE).map(|paths| paths.state.join("tiles")))
+        Places::new(Places::system_tiles())
+    }
+
+    /// Where the service keeps its map tiles: `tiles` in its state directory. The remote wipe empties the
+    /// same folder ([`crate::pim::PimService::new`], issue #354), so both ask here.
+    pub fn system_tiles() -> Option<PathBuf> {
+        AppPaths::for_app(AppId::WORKPLACE).map(|paths| paths.state.join("tiles"))
     }
 
     /// Places with the tile cache in `tiles`, or without one (every map asks the service).

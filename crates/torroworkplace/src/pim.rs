@@ -831,7 +831,7 @@ pub struct PimService {
     /// Tells who listens ([`PimService::on_add`]) the id of every account signed in on this device,
     /// once its first sync is done, so its contacts come at once and not at the next round (issue #354).
     added: tokio::sync::broadcast::Sender<String>,
-    /// The folder of the map tiles (`tiles` in the state directory, as `Places::system` keeps them);
+    /// The folder of the map tiles ([`crate::places::Places::system_tiles`]);
     /// a remote wipe empties it. `None` in tests unless they bring one.
     map_tiles: Option<PathBuf>,
 }
@@ -842,7 +842,7 @@ impl PimService {
     /// accounts.
     pub fn new() -> PimService {
         let filters_file = AppPaths::for_app(AppId::WORKPLACE).map(|paths| paths.config.join(lists::FILE));
-        let map_tiles = AppPaths::for_app(AppId::WORKPLACE).map(|paths| paths.state.join("tiles"));
+        let map_tiles = crate::places::Places::system_tiles();
         PimService {
             filters_file,
             sign_in: SignIn::system(),
