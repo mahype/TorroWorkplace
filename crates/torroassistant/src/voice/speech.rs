@@ -625,7 +625,7 @@ enum Marking {
     /// The marked sound begins after the first this many texts of the local job: placed in the sound once
     /// they are computed.
     AfterTexts(usize),
-    /// The marked sound is the job's first: heard when its sound opens.
+    /// The marked sound is the job's first: placed when its sound opens, before its first samples.
     AtFirstSound,
     /// Placed in the sound ([`Sound::mark`]): heard once the device plays past it.
     InSound,
@@ -805,15 +805,15 @@ impl<W: FnMut(Output)> Helper<W> {
                 Err(err) => return self.fail(failed_to_play(&err)),
             }
             (self.write)(Output::Playing);
-            // Nothing sounded before the marked sound: it is the first.
-            if self.marking == Marking::AtFirstSound {
-                self.marking = Marking::None;
-                (self.write)(Output::Marked);
-            }
         } else if std::mem::take(&mut self.waited) {
             (self.write)(Output::Playing);
         }
         if let Some(sound) = sound {
+            // Nothing sounded before the marked sound: it is the first, heard after the output's lead-in.
+            if self.marking == Marking::AtFirstSound {
+                sound.mark();
+                self.marking = Marking::InSound;
+            }
             sound.push(rate, samples);
         }
     }
@@ -1577,11 +1577,14 @@ mod tests {
         helper.look_at_the_end();
         assert_eq!(said.borrow().last(), Some(&Output::Marked));
 
-        let (mut first, said, _) = super::tests::helper(None, true, Duration::ZERO);
+        let (mut first, said, first_played) = super::tests::helper(None, true, Duration::ZERO);
         first.handle(open_say(SpeechProvider::OpenAi, "Eins."), &sender);
         first.handle(Event::Input(Input::Mark), &sender);
         first.handle(pcm(), &sender);
-        assert_eq!(said.borrow()[1..], [Output::Playing, Output::Marked], "{:?}", said.borrow());
+        assert_eq!(said.borrow()[1..], [Output::Playing], "not before it plays: {:?}", said.borrow());
+        first_played.borrow_mut().heard = 1;
+        first.look_at_the_end();
+        assert_eq!(said.borrow().last(), Some(&Output::Marked));
     }
 
     /// Issue #850: an open job whose sound ran out says `waiting` once, and `playing` again with its next
