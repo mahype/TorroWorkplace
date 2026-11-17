@@ -326,7 +326,7 @@ impl<A: Assistant> Listener<'_, A> {
         }
         // The microphone closes before the answer: it is not recorded, and it cannot wake it.
         drop(stream);
-        (self.report)(VoiceState::Answering);
+        (self.report)(VoiceState::Recognizing);
         let ended = self.answer(voice, &sentence, end.heard_speech(), end.trailing_quiet(), None, readings);
         self.wake.reset();
         Ok(ended)
@@ -399,7 +399,7 @@ impl<A: Assistant> Listener<'_, A> {
             self.close_talk();
             return Ok(Ended::Nothing);
         }
-        (self.report)(VoiceState::Answering);
+        (self.report)(VoiceState::Recognizing);
         Ok(self.answer(voice, &sentence, true, end.trailing_quiet(), Some(talk), readings))
     }
 
@@ -507,9 +507,13 @@ impl<A: Assistant> Listener<'_, A> {
         }
         // Read aloud while it was said, or still: it may be the reading's voice, so it is dropped.
         if self.quiet_now() != Some(readings) {
+            // Not "recognizing" while it waits (issue #830): the core makes "answering" "speaking" while it reads.
+            (self.report)(VoiceState::Answering);
             self.quiet();
             return Ended::Nothing;
         }
+        // Recognized and worth sending (issue #830): the core says more precisely what happens from here.
+        (self.report)(VoiceState::Answering);
         let to = talk.as_ref().map(|talk| talk.conversation.clone());
         let sent = match self.assistant.send(&text, to) {
             Ok(sent) => sent,
@@ -945,10 +949,17 @@ mod tests {
     /// Understands the sentences in order, the last one again and again.
     struct Says(VecDeque<&'static str>);
 
+    /// What [`Says`] hears to fail as speech recognition fails.
+    const FAILS: &str = "<fails>";
+
     impl Transcriber for Says {
         fn transcribe(&mut self, samples: &[i16]) -> Result<String, VoiceError> {
             assert!(!samples.is_empty());
             let text = if self.0.len() > 1 { self.0.pop_front() } else { self.0.front().copied() };
+            // The model fails on this sentence (issue #830).
+            if text == Some(FAILS) {
+                return Err(VoiceError::program("whisper", "made nothing"));
+            }
             Ok(text.unwrap_or_default().to_string())
         }
     }
@@ -1042,7 +1053,7 @@ mod tests {
                     Ok(Response::Talk { talk: self.talk.clone(), speaking, readings })
                 }
                 Request::StartTalk { conversation } => {
-                    self.talk = Some(Talk { conversation, state: VoiceState::Conversing });
+                    self.talk = Some(Talk { conversation, state: VoiceState::Conversing, tool: None });
                     Ok(Response::Talk { talk: self.talk.clone(), speaking: false, readings: self.read })
                 }
                 Request::EndTalk => {
@@ -1182,7 +1193,7 @@ mod tests {
     }
 
     fn talk_in(conversation: Option<&str>) -> Option<Talk> {
-        Some(Talk { conversation: conversation.map(str::to_string), state: VoiceState::Conversing })
+        Some(Talk { conversation: conversation.map(str::to_string), state: VoiceState::Conversing, tool: None })
     }
 
     /// Issue #828: a sentence whose answer is read aloud tells its half of the round once, for the
@@ -1198,6 +1209,19 @@ mod tests {
         let quiet = Voice { speak_answers: false, ..on() };
         let silent = run(Core::new(quiet), &["utterance.wav", PAUSE], Some(2), &[" Hey Torro, what is on today?"]);
         assert!(messages(&silent.sent).len() == 1 && silent.heard.is_empty(), "sent, but not timed");
+    }
+
+    /// Issue #830: a sentence that comes to no text, or whose recognition fails, is recognized, but nothing is
+    /// sent, so the listener never says it answers.
+    #[test]
+    fn a_sentence_without_text_is_recognized_but_not_answered() {
+        for heard in ["", FAILS] {
+            let run = run(Core::new(on()), &["utterance.wav", PAUSE], Some(2), &[heard]);
+            assert!(messages(&run.sent).is_empty(), "{heard:?}");
+            let recognizing = run.states.iter().position(|state| *state == VoiceState::Recognizing);
+            assert_eq!(recognizing, Some(2), "{heard:?}: {:?}", run.states);
+            assert!(!run.states.contains(&VoiceState::Answering), "{heard:?}: {:?}", run.states);
+        }
     }
 
     #[test]
@@ -1237,10 +1261,11 @@ mod tests {
         assert_eq!(count(&run.sent, &Request::EndTalk), 1, "silence ends it");
         assert_eq!(run.chimes, 3, "the wake word, the open microphone, the end");
         assert_eq!(
-            run.states[..5],
+            run.states[..6],
             [
                 VoiceState::Listening,
                 VoiceState::Recording,
+                VoiceState::Recognizing,
                 VoiceState::Answering,
                 VoiceState::Conversing,
                 VoiceState::Listening

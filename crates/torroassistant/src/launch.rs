@@ -74,6 +74,8 @@ pub enum Open {
     /// "Plan for tomorrow" in a conversation by voice (issue #747): the line "Listening …" with "End
     /// talk" in place of the composer.
     Talk,
+    /// Like `talk` while the assistant looks into the calendar (issue #830): "Looking at the calendar …".
+    TalkTool,
     /// The composer with two areas switched off: a chip for each, "2 areas off" when narrow
     /// (issue #699).
     AreasOff,
@@ -156,6 +158,7 @@ impl Open {
         ("dictating", Open::Dictating),
         ("reading", Open::Reading),
         ("talk", Open::Talk),
+        ("talk-tool", Open::TalkTool),
         ("areas-off", Open::AreasOff),
         ("menu", Open::Menu),
         ("rename", Open::Rename),

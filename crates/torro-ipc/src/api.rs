@@ -4446,8 +4446,12 @@ static TALK_STATUS: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Says whether a conversation by voice runs (`talk` is left out when none does), in which \
-                  conversation and what the listener does (conversing, recording, answering), and with `speaking` \
-                  whether anything is read aloud now, whoever asked for it.",
+                  conversation and what it does now: `off` (the listener starts), `listening`, `conversing`, `recording`, `recognizing` (speech \
+                  to text), `answering` (sent, nothing more precise known), `thinking`, `using_tool` with \
+                  `tool`, the catalogue name of the command the model uses (`ext_<server>_<tool>` for a tool \
+                  of an extension server; never its input or result), or `speaking` (something is read \
+                  aloud, usually the answer). The field `speaking` says whether anything is read aloud \
+                  now, whoever asked for it.",
 };
 
 // Like assistant.speak (issue #745): it opens no microphone, and the listener does not listen

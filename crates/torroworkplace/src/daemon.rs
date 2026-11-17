@@ -6,8 +6,9 @@
 //!   agents; every request there passes the key check ([`Core::handle_from`]),
 //! - the tray icon (see `tray`),
 //! - a refresher that rebuilds the tray menu after every command, on window manager events and
-//!   when the open approvals change ([`watch_approvals`]) or anything is written to the inbox
-//!   ([`watch_inbox`]), all debounced into one refresh; on macOS and Windows the template keys
+//!   when the open approvals change ([`watch_approvals`]), anything is written to the inbox
+//!   ([`watch_inbox`]) or the voice chat does something else while it answers ([`watch_voice_answer`]), all
+//!   debounced into one refresh; on macOS and Windows the template keys
 //!   ([`template_keys`]) go with each new menu, so a change of a key or the modifiers refreshes too,
 //! - the inbox routine: wakes snoozed entries every minute and removes old done ones once a day
 //!   ([`tend_inbox`]),
@@ -568,6 +569,7 @@ async fn serve(shows: Shows, takeover: bool) -> Result<(), String> {
     tokio::spawn(watch_approvals(Arc::clone(&core), approval_changes, refresh_tx.clone()));
     tokio::spawn(watch_inbox(inbox_changes, refresh_tx.clone()));
     tokio::spawn(watch_inbox(voice_changes, refresh_tx.clone()));
+    tokio::spawn(watch_voice_answer(Arc::clone(&core), refresh_tx.clone()));
     // "Next" and the pause of the reminders (task ER2.5).
     tokio::spawn(watch_reminders(core.reminders().changes(), refresh_tx.clone()));
 
@@ -916,6 +918,29 @@ async fn watch_inbox(mut changes: tokio::sync::watch::Receiver<()>, refresh: mps
     while changes.changed().await.is_ok() {
         if refresh.send(()).is_err() {
             return;
+        }
+    }
+}
+
+/// How often [`watch_voice_answer`] looks what the voice chat does while it answers.
+const VOICE_ANSWER_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Asks for a new menu when what the voice chat does changes (issue #830, [`Core::voice_now`]): thinking,
+/// a tool, speaking. Only the listener tells its own changes ([`watch_inbox`] on its changes); these the core
+/// derives from the running answer, so they are looked at twice a second and sent only when they changed.
+async fn watch_voice_answer(core: Arc<Core>, refresh: mpsc::UnboundedSender<()>) {
+    let mut shown = core.voice_now().await;
+    loop {
+        tokio::time::sleep(VOICE_ANSWER_EVERY).await;
+        if refresh.is_closed() {
+            return;
+        }
+        let now = core.voice_now().await;
+        if now != shown {
+            shown = now;
+            if refresh.send(()).is_err() {
+                return;
+            }
         }
     }
 }

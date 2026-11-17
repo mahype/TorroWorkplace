@@ -1186,7 +1186,11 @@ impl Answering {
             Err(message) => return self.refused(&call.id, name, input, "error", &message, None).await,
         };
         let area = request.operation().area();
-        let outcome = self.run(request.clone()).await?;
+        // The voice chat says which kind of tool runs (issue #830): its name only, and only while it runs.
+        lock(&self.job.partial).tool = Some(name.clone());
+        let outcome = self.run(request.clone()).await;
+        lock(&self.job.partial).tool = None;
+        let outcome = outcome?;
         // A card after a command that made an item (issue #225): the core's own answer, read before
         // the tool line takes it.
         let card = match &outcome {
@@ -1464,6 +1468,8 @@ impl Answering {
         .await;
         let response = ran.unwrap_or_else(|err| failed(&format!("the command did not finish: {err}")));
         let Response::Pending { approval } = response else { return Some(Outcome::Answered(Box::new(response))) };
+        // It waits for a person now, not for the tool (issue #830): the voice chat no longer names it.
+        lock(&self.job.partial).tool = None;
         if !self.add(EntryContent::Approval { id: approval.id.clone() }, false).await {
             return None;
         }

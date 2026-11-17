@@ -16,7 +16,8 @@ use std::collections::HashSet;
 use torro_core::ai::{AiModel, Effort, is_this_computer};
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::AssistantDefault;
-use torro_ipc::api::Area;
+use torro_ipc::VoiceState;
+use torro_ipc::api::{Area, CATALOGUE};
 use torro_ipc::assistant::{ConversationSummary, Engine, EngineKind, Entry, EntryContent, Mode};
 
 /// The entries of one conversation as the window has them.
@@ -271,6 +272,46 @@ pub fn tool_title(name: &str) -> String {
         other => return other.to_owned(),
     };
     known.to_owned()
+}
+
+/// What the voice chat does now, for the speaking line of the window and the tray (issue #830): "Recognizing…",
+/// "Looking at the calendar…"; empty while voice is off. A tool is named by the kind of thing it reaches, from
+/// its area in the catalogue, never by what it reads.
+pub fn voice_doing(state: VoiceState, tool: Option<&str>) -> String {
+    let line = match state {
+        VoiceState::Off => "",
+        VoiceState::Listening => tr("Listening for “Hey Torro”"),
+        // Issue #747: the microphone waits for the next sentence of a conversation.
+        VoiceState::Conversing => tr("Listening…"),
+        VoiceState::Recording => tr("Recording…"),
+        VoiceState::Recognizing => tr("Recognizing…"),
+        VoiceState::Answering => tr("Answering…"),
+        VoiceState::Thinking => tr("Thinking…"),
+        VoiceState::Speaking => tr("Speaking…"),
+        VoiceState::UsingTool => tool_doing(tool),
+    };
+    line.to_owned()
+}
+
+/// "Looking at the calendar…" for a tool the model uses now, by its catalogue name.
+fn tool_doing(tool: Option<&str>) -> &'static str {
+    let Some(name) = tool else {
+        return tr("Using a tool…");
+    };
+    // The web tools are tools of this computer like making a PDF, but what they do is worth naming.
+    if matches!(name, "tools.web_search" | "tools.fetch_page") {
+        return tr("Searching the web…");
+    }
+    match CATALOGUE.iter().find(|command| command.name == name).map(|command| command.area) {
+        Some(Area::Calendar) => tr("Looking at the calendar…"),
+        Some(Area::Tasks) => tr("Looking at tasks…"),
+        Some(Area::Mail) => tr("Looking at mail…"),
+        Some(Area::Inbox) => tr("Looking at the Notification Hub…"),
+        Some(Area::Contacts) => tr("Looking at contacts…"),
+        Some(Area::Workspaces) => tr("Looking at workspaces…"),
+        Some(Area::Bots) => tr("Asking a bot…"),
+        _ => tr("Using a tool…"),
+    }
 }
 
 /// What came of a tool, after its title: the core's few words ("12 results"), or for an error
@@ -577,5 +618,25 @@ mod tests {
             "## Done\n\n- **Release checklist-2.pdf** is on your [desktop](file:///home/anna/Desktop).\n> `84 KB`";
         assert_eq!(answer_line(markdown), "Done Release checklist-2.pdf is on your desktop. 84 KB");
         assert_eq!(answer_line("A [half link and (more)"), "A [half link and (more)");
+    }
+
+    #[test]
+    fn the_voice_chat_says_what_it_does() {
+        assert_eq!(voice_doing(VoiceState::Off, None), "");
+        assert_eq!(voice_doing(VoiceState::Recognizing, None), tr("Recognizing…"));
+        assert_eq!(voice_doing(VoiceState::Thinking, None), tr("Thinking…"));
+        assert_eq!(voice_doing(VoiceState::Speaking, None), tr("Speaking…"));
+        assert_eq!(voice_doing(VoiceState::Conversing, None), tr("Listening…"));
+        // A tool by the kind of thing it reaches, never by what it reads.
+        let tool = |name| voice_doing(VoiceState::UsingTool, Some(name));
+        assert_eq!(tool("calendar.list_events"), tr("Looking at the calendar…"));
+        assert_eq!(tool("tasks.save_todo"), tr("Looking at tasks…"));
+        assert_eq!(tool("mail.search_messages"), tr("Looking at mail…"));
+        assert_eq!(tool("inbox.list_items"), tr("Looking at the Notification Hub…"));
+        assert_eq!(tool("tools.web_search"), tr("Searching the web…"));
+        assert_eq!(tool("tools.fetch_page"), tr("Searching the web…"));
+        assert_eq!(tool("tools.create_pdf"), tr("Using a tool…"));
+        assert_eq!(tool("no.such_tool"), tr("Using a tool…"));
+        assert_eq!(voice_doing(VoiceState::UsingTool, None), tr("Using a tool…"));
     }
 }
