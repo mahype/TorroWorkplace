@@ -353,7 +353,8 @@ impl ApplicationHandler<Event> for App {
 /// The tooltip of the icon: the name, what the voice listener does ([`menu::voice_line`]) and,
 /// when something waits, how much ([`menu::waiting_line`]); never a title.
 fn tooltip(snapshot: &Snapshot) -> String {
-    let lines = [menu::voice_line(snapshot.voice).to_string(), menu::waiting_line(Waiting::of(snapshot))];
+    let lines =
+        [menu::voice_line(snapshot.voice, snapshot.voice_tool.as_deref()), menu::waiting_line(Waiting::of(snapshot))];
     std::iter::once(APP_NAME.to_string())
         .chain(lines.into_iter().filter(|line| !line.is_empty()))
         .collect::<Vec<_>>()
@@ -474,7 +475,7 @@ mod tests {
         let line = menu::waiting_line(Waiting::of(&waiting));
         assert_eq!(tooltip(&waiting), format!("Torro Workplace · {line}"));
         let listening = Snapshot { voice: torro_ipc::VoiceState::Listening, ..waiting };
-        let voice = menu::voice_line(torro_ipc::VoiceState::Listening);
+        let voice = menu::voice_line(torro_ipc::VoiceState::Listening, None);
         assert_eq!(tooltip(&listening), format!("Torro Workplace · {voice} · {line}"));
     }
 

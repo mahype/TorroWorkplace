@@ -61,7 +61,14 @@ impl Mark {
     pub fn of(state: VoiceState) -> Mark {
         match state {
             VoiceState::Off => Mark::None,
-            VoiceState::Listening | VoiceState::Answering => Mark::Listening,
+            // While it answers the microphone is closed (issue #830): the ring, never the dot; the menu and
+            // the tooltip say what it does.
+            VoiceState::Listening
+            | VoiceState::Recognizing
+            | VoiceState::Answering
+            | VoiceState::Thinking
+            | VoiceState::UsingTool
+            | VoiceState::Speaking => Mark::Listening,
             // The microphone is open for the next sentence (issue #747), as while it records.
             VoiceState::Recording | VoiceState::Conversing => Mark::Recording,
         }
@@ -318,7 +325,15 @@ mod tests {
         assert_eq!(alpha(&listening, centre, centre), 0, "the ring's hole");
         assert_eq!(alpha(&listening, ring, centre), 255, "the ring");
         assert_eq!(alpha(&listening, clearing, centre), 0, "cut free from the grid");
-        assert_eq!(Mark::of(VoiceState::Answering), Mark::Listening);
+        for answering in [
+            VoiceState::Recognizing,
+            VoiceState::Answering,
+            VoiceState::Thinking,
+            VoiceState::UsingTool,
+            VoiceState::Speaking,
+        ] {
+            assert_eq!(Mark::of(answering), Mark::Listening, "{answering:?}");
+        }
         let recording = Look::standard().marked(Mark::of(VoiceState::Recording));
         assert_eq!(pixel(&recording.argb32(size), size, centre, centre), [255, TORRO_RED.0, TORRO_RED.1, TORRO_RED.2]);
         assert_eq!(alpha(&recording, size / 4, size / 4), 255, "the rest of the grid stays");
