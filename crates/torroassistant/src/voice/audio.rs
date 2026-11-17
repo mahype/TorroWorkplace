@@ -87,10 +87,17 @@ impl Endpoint {
         Endpoint { speech: floor.speech(), limits, frames: 0, spoken: 0, quiet: 0 }
     }
 
-    /// Takes the next frame; `true` when the sentence is over (this frame included).
+    /// Takes the next frame, speech when it is louder than the room; `true` when the sentence is over
+    /// (this frame included).
     pub fn push(&mut self, frame: &[i16]) -> bool {
+        self.push_heard(rms(frame) >= self.speech)
+    }
+
+    /// Takes the next frame as judged elsewhere (issue #833, Silero VAD): `speech` when someone spoke in
+    /// it; `true` when the sentence is over (this frame included).
+    pub fn push_heard(&mut self, speech: bool) -> bool {
         self.frames += 1;
-        if rms(frame) >= self.speech {
+        if speech {
             self.spoken += 1;
             self.quiet = 0;
         } else {
@@ -502,6 +509,19 @@ pub mod tests {
 
         let mut long = Endpoint::new(floor, Limits { most: 3, ..Limits::default() });
         assert_eq!(frames("utterance.wav").iter().position(|frame| long.push(frame)), Some(2), "the longest");
+    }
+
+    /// Issue #833: judged speech (Silero VAD) ends the sentence after `pause` frames judged silent, however
+    /// loud they are.
+    #[test]
+    fn judged_speech_ends_after_the_pause() {
+        let limits = Limits { pause: 3, ..Limits::default() };
+        let mut end = Endpoint::new(NoiseFloor::default(), limits);
+        let judged = [false, true, true, false, true, false, false, false, false];
+        let ended = judged.iter().position(|&speech| end.push_heard(speech));
+        assert_eq!(ended, Some(7), "three silent frames after the last speech");
+        assert!(end.heard_speech());
+        assert_eq!(end.trailing_quiet(), 3);
     }
 
     /// Issue #782: a tone stretched to 150 % and 70 % lasts a third less or about 43 % more, keeps

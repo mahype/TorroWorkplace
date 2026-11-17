@@ -16,6 +16,11 @@
 //! and the microphone is open while the tone plays; the tone and its echo are recorded, but are no
 //! speech ([`Listener::chime`]).
 //!
+//! With Silero VAD downloaded (issue #833) a model tells speech from noise ([`Listener::vad`]), and in every
+//! pause of [`EARLY_AFTER`] the sentence so far is recognised ahead ([`Listener::early`]): is the pause its
+//! end, the text is mostly there; does the person go on, it is not used. Without the model, or when it fails,
+//! loudness tells speech, and the sentence is recognised once it ended.
+//!
 //! [`CoreAssistant`] is the way to the core: it sends the sentence as `assistant.send_message`
 //! (`spoken`, so the answer is short) to the conversation of the conversation by voice with the model
 //! chosen there (issue #852), else to "Voice" with the chat model of the settings, the one used last
@@ -35,8 +40,9 @@ use torro_ipc::assistant::{ConversationSummary, Engine, Entry, EntryContent};
 use torro_ipc::{Request, Response, Talk, VoiceState};
 
 use super::audio::{Endpoint, FRAMES_PER_SECOND, Limits, NoiseFloor, rms};
+use super::early::Early;
 use super::wake::{after_wake_phrase, strip_wake_phrase};
-use super::{Recorder, Speaker, Transcriber, VoiceError, WakeWord};
+use super::{Recorder, Speaker, SpeechDetector, Transcriber, VoiceError, WakeWord};
 use crate::backend::Refusal;
 
 /// What the listener asks of the core.
@@ -171,6 +177,10 @@ enum Said {
     WithWake,
 }
 
+/// How many frames of silence after speech have the sentence so far recognised ahead (issue #833): 320 ms,
+/// a pause within a sentence as well as the beginning of its end.
+pub const EARLY_AFTER: usize = 4;
+
 /// How many frames of echo follow the tone, which count as no speech either.
 const ECHO: usize = 1;
 
@@ -259,6 +269,11 @@ pub struct Listener<'a, A: Assistant> {
     /// How loud the room is, from the last wait for the wake word: a conversation by voice records
     /// without one.
     pub floor: NoiseFloor,
+    /// Tells speech from noise (Silero VAD, issue #833); `None` tells it by loudness, as does a detector that
+    /// failed, for the rest of the run.
+    pub vad: Option<Box<dyn SpeechDetector>>,
+    /// Recognises the sentence ahead in its pauses (issue #833); `None` recognises it once it ended.
+    pub early: Option<Early>,
 }
 
 impl<A: Assistant> Listener<'_, A> {
@@ -296,6 +311,10 @@ impl<A: Assistant> Listener<'_, A> {
         if now.speaking {
             self.quiet();
             return Ok(Ended::Nothing);
+        }
+        // A result of the round before never counts for this one.
+        if let Some(early) = &mut self.early {
+            early.clear();
         }
         if let Some(talk) = now.talk {
             return self.converse(voice, talk, chime);
@@ -339,6 +358,17 @@ impl<A: Assistant> Listener<'_, A> {
             }
         }
         self.floor = floor;
+        let level = floor.speech();
+        // Silero VAD hears the frames kept from before the wake word, so it knows whether the person still
+        // speaks when it was heard.
+        if let Some(vad) = &mut self.vad {
+            vad.reset();
+        }
+        if self.vad.is_some() {
+            for frame in &before {
+                still_speaking = self.speech(frame, level);
+            }
+        }
         // Heard while something was read aloud: it may be the reading's voice, not the person's.
         let Some(readings) = self.quiet_now() else {
             drop(stream);
@@ -355,7 +385,7 @@ impl<A: Assistant> Listener<'_, A> {
         // Where the tone and its echo end in the sentence.
         let mut with_tone = sentence.len();
         let mut end = Endpoint::new(floor, self.limits);
-        let mut frames = 0usize;
+        let (mut frames, mut ahead) = (0usize, false);
         while let Some(frame) = stream.frame()? {
             frames += 1;
             // A reading that begins meanwhile: what the microphone hears is not the person's alone.
@@ -366,10 +396,14 @@ impl<A: Assistant> Listener<'_, A> {
                 return Ok(Ended::Nothing);
             }
             sentence.extend_from_slice(&frame);
+            // Every frame is judged, the tone's too, so Silero VAD hears the sound without a gap.
+            let speech = self.speech(&frame, level);
             if frames <= tone {
                 with_tone = sentence.len();
-            } else if end.push(&frame) {
+            } else if end.push_heard(speech) {
                 break;
+            } else {
+                self.look_ahead(speech, &end, &sentence, &mut ahead);
             }
         }
         // The microphone closes before the answer: it is not recorded, and it cannot wake it.
@@ -383,7 +417,7 @@ impl<A: Assistant> Listener<'_, A> {
             (false, true) => (Said::WithWake, &sentence[..with_tone]),
             (false, false) => (Said::Nothing, &sentence[..]),
         };
-        let ended = self.answer(voice, recorded, said, end.trailing_quiet(), None, readings);
+        let ended = self.answer(voice, recorded, said, end.trailing_quiet(), None, readings, ahead);
         self.wake.reset();
         Ok(ended)
     }
@@ -425,7 +459,12 @@ impl<A: Assistant> Listener<'_, A> {
         let wait = TALK_WAIT_SECONDS * FRAMES_PER_SECOND;
         let limits = Limits { wait, most: wait + self.limits.most, ..self.limits };
         let mut end = Endpoint::new(self.floor, limits);
+        let level = self.floor.speech();
+        if let Some(vad) = &mut self.vad {
+            vad.reset();
+        }
         let (mut sentence, mut frames, mut recording, mut ended) = (Vec::new(), 0usize, false, false);
+        let mut ahead = false;
         while let Some(frame) = stream.frame()? {
             frames += 1;
             if frames.is_multiple_of(self.check_every.max(1)) {
@@ -443,10 +482,11 @@ impl<A: Assistant> Listener<'_, A> {
                 }
             }
             sentence.extend_from_slice(&frame);
+            let speech = self.speech(&frame, level);
             if frames <= tone {
                 continue;
             }
-            ended = end.push(&frame);
+            ended = end.push_heard(speech);
             if !recording && end.heard_speech() {
                 recording = true;
                 (self.report)(VoiceState::Recording);
@@ -454,6 +494,7 @@ impl<A: Assistant> Listener<'_, A> {
             if ended {
                 break;
             }
+            self.look_ahead(speech, &end, &sentence, &mut ahead);
         }
         drop(stream);
         // The recording program stopped before the sentence or the wait was over: no silence, a
@@ -469,7 +510,57 @@ impl<A: Assistant> Listener<'_, A> {
             return Ok(Ended::Nothing);
         }
         (self.report)(VoiceState::Recognizing);
-        Ok(self.answer(voice, &sentence, Said::Speech { before: 0 }, end.trailing_quiet(), Some(talk), readings))
+        let said = Said::Speech { before: 0 };
+        Ok(self.answer(voice, &sentence, said, end.trailing_quiet(), Some(talk), readings, ahead))
+    }
+
+    /// Whether someone speaks in `frame`: as Silero VAD judges it, else when it is at least as loud as
+    /// `level`. A detector that fails is written to the log and left for loudness, for the rest of the run.
+    fn speech(&mut self, frame: &[i16], level: f32) -> bool {
+        if let Some(vad) = &mut self.vad {
+            match vad.speech(frame) {
+                Ok(speech) => return speech,
+                Err(err) => {
+                    eprintln!("torroassistant: speech detection failed, speech is told by loudness: {err}");
+                    self.vad = None;
+                }
+            }
+        }
+        rms(frame) >= level
+    }
+
+    /// Recognises the sentence so far ahead (issue #833) once speech was followed by [`EARLY_AFTER`] silent
+    /// frames; `ahead` says whether that offer still stands, and speech after it withdraws it.
+    fn look_ahead(&mut self, speech: bool, end: &Endpoint, sentence: &[i16], ahead: &mut bool) {
+        let Some(early) = &mut self.early else { return };
+        if speech {
+            *ahead = false;
+        } else if end.heard_speech() && end.trailing_quiet() == EARLY_AFTER {
+            early.offer(sentence.to_vec());
+            *ahead = true;
+        }
+    }
+
+    /// The text of `sentence`: the one recognised ahead when the offer still stands (`ahead`), else
+    /// recognised now. A failure ahead is written to the log and the sentence recognised again.
+    fn recognize(&mut self, sentence: &[i16], ahead: bool) -> Result<String, VoiceError> {
+        let early = match &mut self.early {
+            Some(early) if ahead => early.result(),
+            Some(early) => {
+                // Nothing ahead counts: an offer not yet begun would only hold the model up.
+                early.clear();
+                None
+            }
+            None => None,
+        };
+        match early {
+            Some(Ok(text)) => Ok(text),
+            Some(Err(err)) => {
+                eprintln!("torroassistant: recognised ahead: {err}");
+                self.transcriber.transcribe(sentence)
+            }
+            None => self.transcriber.transcribe(sentence),
+        }
     }
 
     /// Looks at the settings and the conversation by voice: stop ([`Ended::VoiceOff`]) when voice is
@@ -541,7 +632,9 @@ impl<A: Assistant> Listener<'_, A> {
     /// conversation by voice (decision 5). A closing sentence ends it without sending. `readings` were
     /// begun when the microphone opened: a reading that began since, even one already over, drops the
     /// sentence. `quiet` frames of pause ended the sentence; with the time speech recognition took they
-    /// go to [`Listener::heard`] once the sentence was sent, if the answer is read aloud.
+    /// go to [`Listener::heard`] once the sentence was sent, if the answer is read aloud. `ahead`: the
+    /// sentence was recognised ahead in its last pause ([`Listener::early`]), so that text is taken.
+    #[expect(clippy::too_many_arguments, reason = "the round's parts, each used once")]
     fn answer(
         &mut self,
         voice: &Voice,
@@ -550,12 +643,13 @@ impl<A: Assistant> Listener<'_, A> {
         quiet: usize,
         talk: Option<Talk>,
         readings: u64,
+        ahead: bool,
     ) -> Ended {
         if said == Said::Nothing {
             return Ended::Nothing;
         }
         let recognizing = Instant::now();
-        let transcribed = match self.transcriber.transcribe(sentence) {
+        let transcribed = match self.recognize(sentence, ahead && matches!(said, Said::Speech { .. })) {
             // After the wake word the sentence begins a second before it (issue #829): what follows
             // it; a short command needs it, else what was heard is the wake word alone.
             Ok(text) if talk.is_none() => match (after_wake_phrase(&text), said) {
@@ -1261,6 +1355,27 @@ mod tests {
         transcriber: Box<dyn Transcriber>,
         tone: Duration,
     ) -> Run {
+        let ahead = Ahead { vad: None, early: None, limits: Limits::default() };
+        run_parts(core, files, wake, transcriber, tone, ahead)
+    }
+
+    /// What [`run_parts`] adds to [`run_with`] (issue #833): a speech detector, the recognition ahead and the
+    /// limits of a sentence.
+    struct Ahead {
+        vad: Option<Box<dyn SpeechDetector>>,
+        early: Option<Early>,
+        limits: Limits,
+    }
+
+    /// [`run_with`] with the parts of `ahead`.
+    fn run_parts(
+        core: Core,
+        files: &[&'static str],
+        wake: Option<usize>,
+        transcriber: Box<dyn Transcriber>,
+        tone: Duration,
+        ahead: Ahead,
+    ) -> Run {
         let core = Rc::new(RefCell::new(core));
         let windows = Rc::new(RefCell::new(Vec::new()));
         let (ask_core, shown) = (Rc::clone(&core), Rc::clone(&windows));
@@ -1284,10 +1399,12 @@ mod tests {
             assistant: &mut assistant,
             report: Box::new(move |state| reported.borrow_mut().push(state)),
             heard: Box::new(move |round| rounds.borrow_mut().push(round)),
-            limits: Limits::default(),
+            limits: ahead.limits,
             check_every: 10,
             pause: Duration::ZERO,
             floor: NoiseFloor::default(),
+            vad: ahead.vad,
+            early: ahead.early,
         };
         let ended = listener.run(&voice);
         drop(listener);
@@ -1699,6 +1816,8 @@ mod tests {
             check_every: 10,
             pause: Duration::ZERO,
             floor: NoiseFloor::default(),
+            vad: None,
+            early: None,
         };
         assert_eq!(listener.run(&on()), Ok(Ended::Changed));
         assert_eq!(*opened.borrow(), 0);
@@ -1871,6 +1990,120 @@ mod tests {
         assert_eq!(first_engine(&engines).as_deref(), Some("ai:b"));
         assert_eq!(first_engine(&engines[..1]).as_deref(), Some("ai:a"));
         assert_eq!(first_engine(&[]), None);
+    }
+
+    /// A speech detector that judges the frames of the first sentence (since its first reset) by `script`,
+    /// later ones as silence, counts its calls and fails at the call `fails_at`.
+    struct Judges {
+        script: Vec<bool>,
+        resets: usize,
+        at: usize,
+        calls: Rc<RefCell<usize>>,
+        fails_at: Option<usize>,
+    }
+
+    impl Judges {
+        fn new(script: Vec<bool>, fails_at: Option<usize>) -> (Judges, Rc<RefCell<usize>>) {
+            let calls = Rc::new(RefCell::new(0));
+            (Judges { script, resets: 0, at: 0, calls: Rc::clone(&calls), fails_at }, calls)
+        }
+    }
+
+    impl SpeechDetector for Judges {
+        fn speech(&mut self, _frame: &[i16]) -> Result<bool, VoiceError> {
+            *self.calls.borrow_mut() += 1;
+            if Some(*self.calls.borrow()) == self.fails_at {
+                return Err(VoiceError::program("speech detection", "broke"));
+            }
+            self.at += 1;
+            Ok(self.resets == 1 && self.script.get(self.at - 1).copied().unwrap_or(false))
+        }
+
+        fn reset(&mut self) {
+            self.resets += 1;
+            self.at = 0;
+        }
+    }
+
+    /// Understands `text` every time, from any thread, and keeps how much it was given.
+    struct Counted {
+        text: &'static str,
+        given: std::sync::Arc<std::sync::Mutex<Vec<usize>>>,
+    }
+
+    impl Counted {
+        fn new(text: &'static str) -> (Counted, std::sync::Arc<std::sync::Mutex<Vec<usize>>>) {
+            let given = std::sync::Arc::default();
+            (Counted { text, given: std::sync::Arc::clone(&given) }, given)
+        }
+    }
+
+    impl Transcriber for Counted {
+        fn transcribe(&mut self, samples: &[i16]) -> Result<String, VoiceError> {
+            self.given.lock().expect("given").push(samples.len());
+            Ok(self.text.to_string())
+        }
+    }
+
+    fn given(counted: &std::sync::Mutex<Vec<usize>>) -> Vec<usize> {
+        counted.lock().expect("given").clone()
+    }
+
+    /// The first sentence of a conversation from the window, judged by `script`, with the recognition
+    /// ahead: what was sent, what was recognised now and what ahead.
+    fn converse_ahead(script: Vec<bool>, limits: Limits) -> (Vec<String>, Vec<usize>, Vec<usize>) {
+        let (now, said_now) = Counted::new("recognised now");
+        let (ahead, said_ahead) = Counted::new("recognised ahead");
+        let (vad, _) = Judges::new(script, None);
+        let parts = Ahead { vad: Some(Box::new(vad)), early: Some(Early::new(Box::new(ahead))), limits };
+        let core = Core { talk: talk_in(Some("a1")), ..Core::new(Voice::default()) };
+        let run = run_parts(core, &[PAUSE, PAUSE], None, Box::new(now), Duration::ZERO, parts);
+        let texts = messages(&run.sent)
+            .into_iter()
+            .map(|request| match request {
+                Request::SendMessage { text, .. } => text.clone(),
+                _ => unreachable!(),
+            })
+            .collect();
+        (texts, given(&said_now), given(&said_ahead))
+    }
+
+    /// Issue #833: a sentence whose end pause began with [`EARLY_AFTER`] silent frames was recognised
+    /// ahead; at its end that text is sent, and nothing is recognised again.
+    #[test]
+    fn a_sentence_with_its_end_pause_is_recognised_only_ahead() {
+        // The tone's frame, five frames of speech, then silence.
+        let script = [vec![false], vec![true; 5]].concat();
+        let (sent, now, ahead) = converse_ahead(script, Limits::default());
+        assert_eq!(sent, ["recognised ahead"]);
+        assert!(now.is_empty(), "recognised once, ahead: {now:?}");
+        assert_eq!(ahead, [(1 + 5 + EARLY_AFTER) * FRAME], "up to the fourth silent frame");
+    }
+
+    /// Issue #833: speech after the pause withdraws what was recognised ahead; the sentence that then ends
+    /// without a pause (at its longest) is recognised once it ended.
+    #[test]
+    fn speech_after_the_pause_is_recognised_at_the_end() {
+        let script = [vec![false], vec![true; 5], vec![false; EARLY_AFTER], vec![true; 5000]].concat();
+        let limits = Limits { most: 10, ..Limits::default() };
+        let (sent, now, ahead) = converse_ahead(script, limits);
+        assert_eq!(sent, ["recognised now"]);
+        assert_eq!(now.len(), 1);
+        assert!(ahead.len() <= 1, "the offer of the pause at most: {ahead:?}");
+    }
+
+    /// Issue #833: a speech detector that fails is left for loudness: the sentence is heard and sent.
+    #[test]
+    fn a_failed_speech_detector_falls_back_to_loudness() {
+        let (vad, calls) = Judges::new(vec![true; 5000], Some(3));
+        let parts = Ahead { vad: Some(Box::new(vad)), early: None, limits: Limits::default() };
+        let core = Core { talk: talk_in(Some("a1")), ..Core::new(Voice::default()) };
+        let says = Box::new(Says(["What is on today?"].into()));
+        let run = run_parts(core, &[THINKING, PAUSE], None, says, Duration::ZERO, parts);
+        assert_eq!(*calls.borrow(), 3, "not asked after it failed");
+        let sent = messages(&run.sent);
+        let Request::SendMessage { text, .. } = sent[0] else { unreachable!() };
+        assert_eq!((sent.len(), text.as_str()), (1, "What is on today?"));
     }
 
     #[test]
