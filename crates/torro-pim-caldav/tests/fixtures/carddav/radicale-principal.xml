@@ -1,0 +1,2 @@
+<?xml version='1.0' encoding='utf-8'?>
+<multistatus xmlns="DAV:" xmlns:CR="urn:ietf:params:xml:ns:carddav"><response><href>/anna/</href><propstat><prop><current-user-principal><href>/anna/</href></current-user-principal><CR:addressbook-home-set><href>/anna/</href></CR:addressbook-home-set></prop><status>HTTP/1.1 200 OK</status></propstat></response></multistatus>

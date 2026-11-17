@@ -600,6 +600,14 @@ mod tests {
     const MULTIGET: &str = include_str!("../tests/fixtures/carddav/nextcloud-multiget.xml");
     const SERVER_CARD: &str = include_str!("../tests/fixtures/carddav/nextcloud-card-server.vcf");
     const NEED_PRIVILEGES: &str = include_str!("../tests/fixtures/carddav/nextcloud-need-privileges.xml");
+    const NEXTCLOUD_SHARED_READONLY_HOME: &str =
+        include_str!("../tests/fixtures/carddav/nextcloud-shared-readonly-home.xml");
+    const RADICALE_ROOT: &str = include_str!("../tests/fixtures/carddav/radicale-root.xml");
+    const RADICALE_PRINCIPAL: &str = include_str!("../tests/fixtures/carddav/radicale-principal.xml");
+    const RADICALE_HOME: &str = include_str!("../tests/fixtures/carddav/radicale-home.xml");
+    const RADICALE_SYNC_DELTA: &str = include_str!("../tests/fixtures/carddav/radicale-sync-delta.xml");
+    const RADICALE_SHARED_READONLY_HOME: &str =
+        include_str!("../tests/fixtures/carddav/radicale-shared-readonly-home.xml");
 
     const BOOK_PATH: &str = "/remote.php/dav/addressbooks/users/anna/contacts/";
     const VCARD: &str = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:ben\r\nFN:Ben Beispiel\r\nEND:VCARD\r\n";
@@ -988,6 +996,118 @@ mod tests {
         assert!(matches!(without_etag, Err(ContactsError::Other(_))), "never overwrite blindly");
         assert!(matches!(client.put(&book, None, " ", VCARD, None).await, Err(ContactsError::Other(_))));
         assert_eq!(any.calls_async().await, 0);
+    }
+
+    /// A client of a Radicale at the root of `server`, signed in as anna.
+    fn radicale(server: &MockServer) -> CalDavClient {
+        let account = CalDavAccount { url: server.url("/"), username: "anna".into() };
+        CalDavClient::new(reqwest::Client::new(), &account, Secret::new("secret")).expect("client")
+    }
+
+    /// Issue #354, Radicale 3.9: the root names the principal, the principal is the address book
+    /// home itself, and the home lists itself as a principal collection next to the books.
+    #[tokio::test]
+    async fn radicale_books_come_from_the_principal_that_is_its_own_home() {
+        let server = MockServer::start_async().await;
+        propfind_at(&server, "/", "0", RADICALE_ROOT).await;
+        propfind_at(&server, "/anna/", "0", RADICALE_PRINCIPAL).await;
+        let listed = propfind_at(&server, "/anna/", "1", RADICALE_HOME).await;
+
+        let books = radicale(&server).address_books().await.expect("books");
+        assert_eq!(listed.calls_async().await, 1);
+        let found: Vec<(String, &str, &str, bool, bool)> = books
+            .iter()
+            .map(|b| (b.href.clone(), b.name.as_str(), b.display_name.as_str(), b.writable, b.hidden_by_default))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (server.url("/anna/shared/"), "shared", "Shared with Ben", true, false),
+                (server.url("/anna/contacts/"), "contacts", "Contacts", true, false),
+            ],
+            "the principal collection is no book"
+        );
+    }
+
+    /// Issue #354, Radicale 3.9: `sync-collection` names the token before the responses, a removed
+    /// card with a bare `404` status and changed ones with their ETag.
+    #[tokio::test]
+    async fn radicale_sync_brings_only_the_changes() {
+        let server = MockServer::start_async().await;
+        let since = "http://radicale.org/ns/sync/24c025671a0e1e4b3dc32ba098e6bbfafde26b0c880e7cb649042a1b90456a14";
+        let sync = server
+            .mock_async(|when, then| {
+                when.path("/anna/shared/")
+                    .header("depth", "0")
+                    .body_includes("<d:sync-collection")
+                    .body_includes(format!("<d:sync-token>{since}</d:sync-token>"));
+                then.status(207).body(RADICALE_SYNC_DELTA);
+            })
+            .await;
+        let changes = radicale(&server)
+            .changes(&server.url("/anna/shared/"), Some(&SyncToken(since.into())))
+            .await
+            .expect("delta");
+        assert_eq!(sync.calls_async().await, 1);
+        let at = |name: &str| server.url(format!("/anna/shared/{name}"));
+        assert_eq!(
+            changes.listing,
+            Listing::Delta {
+                changed: vec![
+                    Entry {
+                        href: at("dora.vcf"),
+                        etag: "\"04b3a14939bd02910ddcc3030a736925be966c11da045ca43816c111013e1a36\"".into()
+                    },
+                    Entry {
+                        href: at("emil.vcf"),
+                        etag: "\"7f91cfebc98484143fbe26b3378ff3bcd3b462328b08dcd5b9b9e9012401d923\"".into()
+                    },
+                ],
+                removed: vec![at("carla.vcf")],
+            }
+        );
+        assert_eq!(
+            changes.token,
+            Some(SyncToken(
+                "http://radicale.org/ns/sync/96aa383e6760cde9a21e2d4ed8d32d220b1336ccc1e1b0440e7388ce655256f9".into()
+            ))
+        );
+    }
+
+    /// Issue #354: a book shared read-only is listed, but not writable. Nextcloud 35 grants
+    /// `write-properties` on it (the display name is the user's own), Radicale 3.9 only `read`.
+    #[test]
+    fn a_book_shared_read_only_is_not_writable() {
+        let client = CalDavClient::new(
+            reqwest::Client::new(),
+            &CalDavAccount { url: "https://cloud.example.org/remote.php/dav/".into(), username: "ben".into() },
+            Secret::new("secret"),
+        )
+        .expect("client");
+        let home = Url::parse("https://cloud.example.org/remote.php/dav/addressbooks/users/ben/").expect("url");
+        let books = client.books_in_answer(NEXTCLOUD_SHARED_READONLY_HOME, &home).expect("books");
+        let found: Vec<(&str, &str, bool, bool)> =
+            books.iter().map(|b| (b.name.as_str(), b.display_name.as_str(), b.writable, b.hidden_by_default)).collect();
+        assert_eq!(
+            found,
+            [
+                ("contacts", "Contacts", true, false),
+                ("team_shared_by_anna", "Team (anna)", false, false),
+                ("z-server-generated--system", "Accounts", false, true),
+                ("z-app-generated--contactsinteraction--recent", "Recently contacted", false, true),
+            ]
+        );
+
+        let client = CalDavClient::new(
+            reqwest::Client::new(),
+            &CalDavAccount { url: "https://dav.example.org/".into(), username: "ben".into() },
+            Secret::new("secret"),
+        )
+        .expect("client");
+        let home = Url::parse("https://dav.example.org/ben/").expect("url");
+        let books = client.books_in_answer(RADICALE_SHARED_READONLY_HOME, &home).expect("books");
+        let found: Vec<(&str, bool)> = books.iter().map(|b| (b.name.as_str(), b.writable)).collect();
+        assert_eq!(found, [("contacts", true), ("shared-anna", false)]);
     }
 
     #[tokio::test]
