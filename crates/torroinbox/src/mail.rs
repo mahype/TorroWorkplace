@@ -2216,7 +2216,7 @@ pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
 
 /// The empty state of a category's view: its own symbol (the group's for a whole group), and
 /// that nothing is left, since mail on a pile is not listed (#873).
-fn category_empty(shown: &CategoryView, categories: &[CategoryInfo]) -> (Icon, String, String) {
+fn category_empty(shown: &CategoryView, categories: &[CategoryInfo]) -> (Icon, &'static str, &'static str) {
     let icon = match shown.only {
         Some(only) => categories.iter().find(|info| info.category == only).map(|info| category_symbol(info.icon)),
         None => categories.iter().find(|info| info.group == shown.group).map(|info| category_symbol(info.group_icon)),
