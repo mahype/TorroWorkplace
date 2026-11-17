@@ -4666,16 +4666,18 @@ pub enum Request {
     #[serde(rename = "assistant.list_skills")]
     ListSkills,
     /// One skill whole, with its text ([`Response::Skill`]): of the bot for a bot's client, of the
-    /// assistant for every other. `not-found` for an unknown name.
+    /// assistant for every other, the built-in skills of the suite (issue #832, "Torro Mail" …) among
+    /// them and first; a bot's client never gets those. Only the app key reads a skill of the person
+    /// kept under a built-in name, so the settings can rename it. `not-found` for an unknown name.
     #[serde(rename = "assistant.get_skill")]
     GetSkill {
-        /// The skill's name from `assistant.list_skills`; without regard to case.
+        /// The skill's name from `assistant.list_skills` or of a built-in skill; without regard to case.
         name: String,
     },
     /// Adds a skill to the assistant, or with `replaces` changes the skill of that name (which needs
     /// the right to delete) – only when the person asked for it. Answered with the skill as stored
     /// ([`Response::Skill`]). `not-found` for an unknown `replaces`, `conflict` when the name belongs to
-    /// another skill, `error` for a skill beyond its limits ([`assistant::skill_refusal`]), more than
+    /// another skill or to a built-in one (issue #832), `error` for a skill beyond its limits ([`assistant::skill_refusal`]), more than
     /// 30 skills or one that cannot be stored.
     #[serde(rename = "assistant.save_skill")]
     SaveSkill {

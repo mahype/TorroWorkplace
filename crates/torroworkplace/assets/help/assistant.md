@@ -20,6 +20,10 @@ The built-in tools (files, PDF, the web) are set up in Torro Workplace › "MCP 
 
 "Profile" › "Memory": notes the assistant keeps because you asked it to ("Remember that …"). You can read, change and forget them. After it read data from outside, such as a mail, each new note waits for your approval.
 
+## Skills
+
+Skills are guides for tasks that come again ("How I write offers"). The assistant comes with built-in skills for mail, calendar, tasks, contacts, workspaces and the inbox, and one for talking with it by voice; it reads them when a task fits. Your own skills are in its settings › "Skills". They add to the built-in ones and never replace them: a name of a built-in skill ("Torro Mail") cannot be taken.
+
 ## Bots
 
 Bots are assistants for one job, with their own profile, model and rights. The assistant asks a bot only when you name it. Bots cannot ask other bots.

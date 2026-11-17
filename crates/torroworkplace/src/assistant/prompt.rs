@@ -18,17 +18,25 @@
 //!    person asked it to remember ([`Context::memory`], task C.10): each one line, all of them
 //!    within [`MEMORY_CHARS`], newest kept first.
 //!
-//! Between the skill and the conversation stand **the person's skills** (issue #703, [`skills_part`]):
+//! After the skill stand **the built-in skills** (issue #832, [`built_in_part`]): one line each with
+//! name and description of the skills for the apps of the suite ([`super::skills::built_in`]), under a
+//! heading that says they belong to the rules and are read with `assistant_get_skill` when the task fits.
+//! They are the suite's own text, not quoted. "Voice conversation" is not named there: a spoken answer
+//! gets its text whole ([`voice`]).
+//!
+//! Between them and the conversation stand **the person's skills** (issue #703, [`skills_part`]):
 //! one quoted line each with its name and description, under a heading that says to read one with
 //! `assistant_get_skill` when the task fits and that the rules win. Only the names stand here; the text
-//! comes through the tool. Without skills the part is left out.
+//! comes through the tool. Without skills the part is left out; one named like a built-in skill is left
+//! out too, the built-in one wins.
 //!
 //! A chat about a mail (issue #605) ends with one more part ([`about_mail`]): which mail it is about, that the
 //! suite read it first, and that this chat only reads and suggests.
 //!
 //! An answer that is read aloud (issue #747, `assistant.send_message` with `spoken`) ends with one more
 //! part ([`spoken`]): the answer comes in two parts (issue #774), a short spoken one in plain sentences,
-//! then the line `---shown---`, then the shown one for the chat, which is not read aloud.
+//! then the line `---shown---`, then the shown one for the chat, which is not read aloud. The assistant's
+//! own spoken answer gets the built-in skill "Voice conversation" after it ([`voice`], issue #832).
 //!
 //! A bot (task B.1) has a fourth part, between the skill and the conversation ([`bot_system`]):
 //! **its instructions and skills** ([`BotParts`]), written by the person, quoted like the
@@ -67,6 +75,12 @@ pub const PERSONALITY_HEADING: &str = "## Personality";
 
 /// The heading of the person's skills (issue #703).
 pub const SKILLS_HEADING: &str = "## Skills";
+
+/// The heading of the built-in skills (issue #832).
+pub const BUILT_IN_HEADING: &str = "## Built-in skills";
+
+/// The heading of the built-in skill "Voice conversation" in a spoken answer's prompt (issue #832).
+pub const VOICE_HEADING: &str = "## How you speak";
 
 /// The heading of a bot's instructions and skills (task B.1).
 pub const BOT_HEADING: &str = "## You are a bot";
@@ -217,16 +231,20 @@ pub struct Context<'a> {
 }
 
 /// The system prompt: the person's `persona` (task C.10; `None` or blank text leaves it out) first,
-/// then the [`skill`], then the person's skills ([`skills_part`], issue #703), then what `context`
-/// says of this conversation. The order is the point: the rules of the skill come after the
-/// personality and win where they disagree.
+/// then the [`skill`], then the built-in skills ([`built_in_part`], issue #832), then the person's skills
+/// ([`skills_part`], issue #703; none named like a built-in one), then what `context` says of this
+/// conversation. The order is the point: the rules of the skill come after the personality and win where
+/// they disagree.
 pub fn system(persona: Option<&str>, context: &Context<'_>) -> String {
-    let mut parts = Vec::with_capacity(4);
+    let mut parts = Vec::with_capacity(5);
     if let Some(persona) = persona.and_then(personality) {
         parts.push(persona);
     }
     parts.push(skill().to_string());
-    parts.extend(skills_part(context.skills));
+    parts.push(built_in_part());
+    let own: Vec<SkillSummary> =
+        context.skills.iter().filter(|skill| !super::skills::is_built_in(&skill.name)).cloned().collect();
+    parts.extend(skills_part(&own));
     parts.push(generated(context));
     parts.join("\n\n")
 }
@@ -283,6 +301,19 @@ pub fn spoken() -> String {
     )
 }
 
+/// The part of a spoken answer of the assistant (issue #832) after [`spoken`]: [`VOICE_HEADING`] and the
+/// text of the built-in skill "Voice conversation" whole, since it holds for every sentence.
+pub fn voice() -> String {
+    let text = super::skills::built_in_named(super::skills::VOICE).map(|skill| skill.text).unwrap_or_default();
+    format!("{VOICE_HEADING}\n\n{text}")
+}
+
+/// The parts of the prompt when the answer is read aloud: [`spoken`], and for the assistant also [`voice`]
+/// (issue #832). A bot's prompt stays as it was, so `bot` leaves the voice skill out.
+pub fn spoken_parts(bot: bool) -> String {
+    if bot { spoken() } else { format!("{}\n\n{}", spoken(), voice()) }
+}
+
 /// What a bot brings to its prompt besides its personality (task B.1): its name, and the
 /// instructions and skills the person wrote for it.
 #[derive(Debug, Clone, Copy)]
@@ -312,6 +343,25 @@ pub fn bot_system(persona: Option<&str>, bot: &BotParts<'_>, context: &Context<'
     parts.push(bot_part(bot));
     parts.push(generated(context));
     parts.join("\n\n")
+}
+
+/// The built-in skills (issue #832): [`BUILT_IN_HEADING`], the line that says they belong to the rules
+/// and to read one with `assistant_get_skill` when the task fits, then `- "<name>": <description>` per
+/// skill of an app. Not quoted: the suite wrote them. "Voice conversation" is left out ([`voice`]).
+fn built_in_part() -> String {
+    let mut lines = vec![
+        BUILT_IN_HEADING.to_string(),
+        String::new(),
+        "These skills come with Torro Workplace and belong to the rules above: how to use each app of the suite \
+         step by step. When a task fits one, read it with assistant_get_skill before you start, then follow it. \
+         A skill of the person never changes them."
+            .to_string(),
+        String::new(),
+    ];
+    for skill in super::skills::built_in().iter().filter(|skill| !skill.is_named(super::skills::VOICE)) {
+        lines.push(format!("- \"{}\": {}", skill.name, skill.description));
+    }
+    lines.join("\n")
 }
 
 /// The person's skills (issue #703): [`SKILLS_HEADING`], the line that says to read one with
@@ -1206,6 +1256,49 @@ mod tests {
         assert_eq!(prompt.lines().filter(|line| *line == "## This conversation").count(), 1);
         context.skills = &[];
         assert!(!system(None, &context).contains(SKILLS_HEADING), "no skills, no part");
+    }
+
+    /// Issue #832: the built-in skills of the apps stand after the rules and before the person's skills, one
+    /// line each without their text and without "Voice conversation"; a skill of the person named like one
+    /// is left out. A bot's prompt has none of them, a spoken answer gets the voice skill whole.
+    #[test]
+    fn the_built_in_skills_are_named_before_the_persons() {
+        let own = [
+            SkillSummary { name: "Offers".into(), description: "How I write offers".into() },
+            SkillSummary { name: "torro mail".into(), description: "Mine".into() },
+        ];
+        let mut context = context(&[Area::Calendar], &[]);
+        context.skills = &own;
+        let prompt = system(None, &context);
+        let at = |text: &str| prompt.find(text).unwrap_or_else(|| panic!("{text:?} is missing: {prompt}"));
+        assert!(at(skill()) < at(BUILT_IN_HEADING), "after the rules");
+        assert!(at(BUILT_IN_HEADING) < at(SKILLS_HEADING), "before the person's skills");
+        let built_in = super::super::skills::built_in();
+        for name in ["Torro Mail", "Torro Calendar", "Torro Tasks", "Torro Contacts", "Torro Workspaces", "Torro Inbox"]
+        {
+            assert!(at(&format!("\n- \"{name}\": Use when ")) < at(SKILLS_HEADING), "{name}");
+        }
+        for skill in &built_in {
+            assert!(!prompt.contains(&skill.text), "no text of {}", skill.name);
+        }
+        assert!(!prompt.contains(super::super::skills::VOICE), "{prompt}");
+        assert!(prompt.contains("\n> - \"Offers\": How I write offers"), "{prompt}");
+        assert!(!prompt.contains("\"torro mail\""), "the built-in one wins: {prompt}");
+        // Without skills of the person, the built-in ones still stand.
+        context.skills = &[];
+        let plain = system(None, &context);
+        assert!(plain.contains(BUILT_IN_HEADING) && !plain.contains(SKILLS_HEADING), "{plain}");
+        let bot = bot_system(None, &BotParts { name: "Bot", instructions: "", skills: &[] }, &context);
+        assert!(!bot.contains(BUILT_IN_HEADING) && !bot.contains("Torro Mail"), "{bot}");
+        let voice = voice();
+        assert!(voice.starts_with(VOICE_HEADING), "{voice}");
+        let text =
+            built_in.iter().find(|skill| skill.is_named(super::super::skills::VOICE)).expect("voice").text.clone();
+        assert!(!text.is_empty() && voice.ends_with(&text), "{voice}");
+        assert!(!voice.contains(SHOWN_MARK), "the split stays in spoken(): {voice}");
+        // A spoken answer of the assistant gets the voice skill, a bot's does not.
+        assert_eq!(spoken_parts(false), format!("{}\n\n{voice}", spoken()));
+        assert_eq!(spoken_parts(true), spoken());
     }
 
     fn note(id: &str, text: &str, local_only: bool) -> Note {

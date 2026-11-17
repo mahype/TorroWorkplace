@@ -298,6 +298,21 @@ Skills im selben Format und mit denselben Befehlen (entschieden), je bis zu 30, 
   dem Skill, den die Person in der Freigabe sah.
 - **Bots** lesen nur ihre eigenen Skills (`assistant.list_skills`, `assistant.get_skill`, durch ihre Art erlaubt);
   ändern kann sie nur die Person über `bots.save_bot`.
+- **Mitgelieferte Skills (#832):** Der Assistent bringt Skills mit, englisch und im Repo wie Code gepflegt
+  (`crates/torroworkplace/assets/assistant/skills/`): „Torro Mail“, „Torro Calendar“, „Torro Tasks“, „Torro
+  Contacts“, „Torro Workspaces“ und „Torro Inbox“, je mit Abläufen, Datenformaten, typischen Fehlern und Freigaben.
+  Die Namen tragen „Torro“, weil die Person schon einen eigenen Skill „Mail“ haben kann (entschieden). Sie zählen
+  zu den Regeln: Im Prompt steht nach „Torro Workplace“ ein Abschnitt „Built-in skills“ mit einer Zeile je Skill
+  (nicht zitiert, es ist Text der Suite), vor den Skills der Person; den Text liest das Modell mit
+  `assistant_get_skill`, im Prompt stehen nur die Zeilen mit Name und Beschreibung, keine Texte. Ein eigener Skill kann keinen mitgelieferten still
+  ersetzen: `assistant.save_skill` lehnt deren Namen mit `conflict` ab, `assistant_get_skill` liefert zuerst den
+  mitgelieferten (nur der App-Schlüssel, also die Einstellungen, liest einen älteren eigenen Skill unter so einem
+  Namen, damit die Person ihn ohne Verlust umbenennen kann; entschieden bei der Umsetzung), und ein älterer eigener Skill gleichen Namens fehlt im Prompt (entschieden). Der Skill „Voice
+  conversation“ (kurze Sätze, das Wichtigste zuerst, Rückfragen statt Vorträge, Zahlen und Zeiten wie gesprochen)
+  steht nicht in der Liste, sondern ganz im Prompt einer gesprochenen Antwort (`spoken`), nach dem Teil zur
+  Zweiteilung, weil er für jeden Satz gilt. Die Einstellungen › Skills und `assistant.list_skills` zeigen weiter
+  nur die eigenen Skills (entschieden; eine Anzeige zum Lesen wäre ein eigenes Issue). Bots bleiben unverändert:
+  Sie sehen die mitgelieferten Skills nicht, ihr Prompt und ihre Skills bleiben wie bisher.
 - **Später:** Skills aus erledigten Aufgaben vorschlagen (eigenes Issue). Kein Laden aus dem Netz, kein Katalog.
 
 ## Bots (Stufe 2)

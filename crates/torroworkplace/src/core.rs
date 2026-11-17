@@ -7983,6 +7983,14 @@ impl Core {
             | Request::GetSkill { .. }
             | Request::SaveSkill { .. }
             | Request::DeleteSkill { .. }) => {
+                // A skill of the person named like a built-in one, kept from before issue #832: the settings
+                // (the app key) read the person's own, so it can be renamed without losing its text; the
+                // model and every client get the built-in one.
+                if let (Reach::Suite, Request::GetSkill { name }) = (reach, &request)
+                    && let Some(skill) = self.assistant.skill(name).await
+                {
+                    return Response::Skill { skill };
+                }
                 crate::assistant::answer_own(&self.assistant, request, sees_local_notes(reach)).await
             }
             // A client's own access (issue #134) is answered in `handle_client`, which knows what the
@@ -35028,6 +35036,76 @@ done"#,
                 Err(Refused::Forbidden { command: name })
             );
         }
+    }
+
+    /// Issue #832: the built-in skills are read like the assistant's own, with the app key and by its client,
+    /// never by a bot; no skill of the person takes one of their names.
+    #[tokio::test]
+    async fn the_built_in_skills_are_read_and_never_replaced() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant()).await.expect("client");
+        let Response::Skill { skill } = core.handle(Request::GetSkill { name: "torro inbox".into() }).await else {
+            panic!("the built-in skill")
+        };
+        assert_eq!(skill.name, "Torro Inbox");
+        assert!(skill.text.contains("inbox_list_items"), "{}", skill.text);
+        let ran = Host::run(&core, Request::GetSkill { name: "Torro Inbox".into() }, "test", false).await;
+        assert!(matches!(ran, Response::Skill { .. }), "by the assistant's client: {ran:?}");
+
+        let save = |name: &str| Request::SaveSkill {
+            name: name.into(),
+            description: String::new(),
+            text: "Mine.".into(),
+            replaces: None,
+        };
+        assert_eq!(code(&core.handle(save("Torro Mail")).await), "conflict");
+        assert_eq!(code(&core.handle(save(" voice  CONVERSATION ")).await), "conflict");
+        assert!(matches!(core.handle(save("Offers")).await, Response::Skill { .. }));
+        let rename = Request::SaveSkill {
+            name: "Torro Tasks".into(),
+            description: String::new(),
+            text: "Mine.".into(),
+            replaces: Some("Offers".into()),
+        };
+        assert_eq!(code(&core.handle(rename).await), "conflict", "not by renaming either");
+        // The list stays the person's own (decision 3 of the plan).
+        let Response::Skills { skills } = core.handle(Request::ListSkills).await else { panic!("the skills") };
+        assert_eq!(skills.iter().map(|skill| skill.name.as_str()).collect::<Vec<_>>(), ["Offers"]);
+        assert_eq!(code(&core.handle(Request::DeleteSkill { name: "Torro Mail".into() }).await), "not-found");
+
+        // A skill of the person kept from before under a built-in name: the settings (app key) read it and
+        // can rename it without losing its text; the assistant's client still gets the built-in one.
+        let old = crate::assistant::skills::Stored {
+            id: "0a1b2c3d".into(),
+            skill: torro_ipc::assistant::Skill {
+                name: "Torro Calendar".into(),
+                description: String::new(),
+                text: "My old way.".into(),
+            },
+        };
+        let folder = crate::assistant::skills::folder(&dir.path().join("config/assistant"));
+        crate::assistant::skills::save(&folder, &old).expect("an old skill");
+        let Response::Skill { skill } = core.handle(Request::GetSkill { name: "torro calendar".into() }).await else {
+            panic!("the person's own")
+        };
+        assert_eq!(skill.text, "My old way.");
+        let ran = Host::run(&core, Request::GetSkill { name: "Torro Calendar".into() }, "test", false).await;
+        let Response::Skill { skill } = ran else { panic!("the built-in one: {ran:?}") };
+        assert_ne!(skill.text, "My old way.");
+        let rename = Request::SaveSkill {
+            name: "My calendar".into(),
+            description: String::new(),
+            text: "My old way.".into(),
+            replaces: Some("Torro Calendar".into()),
+        };
+        assert!(matches!(core.handle(rename).await, Response::Skill { .. }), "renamed, text kept");
+
+        // A bot reads its own skills only (issue #703), the built-in ones are not among them.
+        let bot = bot_of(core.handle(new_bot("Travel planner")).await);
+        let (_, key) = core.clients.new_key(&bot.client).await.expect("a key to try it with");
+        assert_eq!(code(&ask(&core, Some(&key), Request::GetSkill { name: "Torro Mail".into() }).await), "not-found");
     }
 
     /// Task C.2: a command that waits for a person shows as an approval in the conversation; the
