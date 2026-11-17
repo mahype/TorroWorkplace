@@ -3047,6 +3047,9 @@ pub struct Snapshot {
     /// What the voice listener does (task C.9): the tray shows that it listens, and clearly when
     /// it records, and offers to mute the microphone.
     pub voice: torro_ipc::VoiceState,
+    /// With [`torro_ipc::VoiceState::UsingTool`]: the catalogue name of the tool the answer uses
+    /// (issue #830), for the tray's line "Looking at the calendar …".
+    pub voice_tool: Option<String>,
     /// The setting `voice_enabled` (task C.11): while it is on, the tray offers to mute the
     /// microphone even when the listener does not run (it crashed, or could not start).
     pub voice_enabled: bool,
@@ -13886,7 +13889,7 @@ impl Core {
         }
         snapshot.account = Some(self.pim.account_state().await);
         let settings = self.settings.current();
-        snapshot.voice = self.voice.state();
+        (snapshot.voice, snapshot.voice_tool) = self.voice_now().await;
         snapshot.voice_enabled = settings.voice.enabled;
         snapshot.components_off = settings.components_off.clone();
         snapshot.approvals_waiting = self.open_approvals(Utc::now()).await.len();
@@ -14048,11 +14051,45 @@ impl Core {
             Some(TalkSlot { conversation: Some(id), .. }) if self.hidden_conversation(&id, reach).await.is_some() => {
                 None
             }
-            Some(slot) => Some(torro_ipc::Talk { conversation: slot.conversation, state: self.voice.state() }),
+            Some(slot) => {
+                // The conversation just checked, not one the slot may hold meanwhile.
+                let (state, tool) = self.voice_in(slot.conversation.as_deref()).await;
+                Some(torro_ipc::Talk { conversation: slot.conversation, state, tool })
+            }
             None => None,
         };
         let (speaking, readings) = self.speaking.now();
         Response::Talk { talk, speaking, readings }
+    }
+
+    /// What the voice chat does now (issue #830): the listener's state, made more precise while it
+    /// answers – something is read aloud, usually the answer (`Speaking`), the answer in the conversation by voice uses a
+    /// tool (`UsingTool` with its catalogue name) or the model thinks and writes (`Thinking`). Reading aloud
+    /// comes first, because the person hears it now even while the model still works. Without a
+    /// running answer and nothing read it stays `Answering`.
+    pub async fn voice_now(&self) -> (torro_ipc::VoiceState, Option<String>) {
+        let conversation = self.lock_talk().as_ref().and_then(|talk| talk.conversation.clone());
+        self.voice_in(conversation.as_deref()).await
+    }
+
+    /// [`Core::voice_now`] with the answer in `conversation`, the conversation by voice as the caller read it.
+    async fn voice_in(&self, conversation: Option<&str>) -> (torro_ipc::VoiceState, Option<String>) {
+        use torro_ipc::VoiceState;
+        let state = self.voice.state();
+        if state != VoiceState::Answering {
+            return (state, None);
+        }
+        if self.speaking.now().0 {
+            return (VoiceState::Speaking, None);
+        }
+        let Some(id) = conversation else {
+            return (VoiceState::Answering, None);
+        };
+        match self.assistant.activity(id).await {
+            Some(Some(tool)) => (VoiceState::UsingTool, Some(tool)),
+            Some(None) => (VoiceState::Thinking, None),
+            None => (VoiceState::Answering, None),
+        }
     }
 
     /// Wakes whenever what the voice listener does may have changed, for the tray.
@@ -21181,6 +21218,64 @@ done"#,
             talk.since = std::time::Instant::now().checked_sub(TALK_START).unwrap_or(talk.since);
         }
         assert_eq!(talk_of(&core).await.0, None, "the listener ended");
+    }
+
+    /// Issue #830: while the listener answers, the core says what happens: the test engine's tool, then
+    /// thinking, reading aloud before both; the tray's snapshot says the same. Other states of the
+    /// listener pass unchanged.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_voice_chat_says_what_the_answer_does() {
+        use torro_ipc::VoiceState;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let step = std::time::Duration::from_millis(2500);
+        let program = crate::apps::tests::fake_program(dir.path(), r#"echo '"answering"'; sleep 30"#);
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), step);
+        let answering = core(dir.path()).with_assistant(assistant).with_listener(crate::apps::Listener::at(program));
+        // The listener first, the answer then: its first step must not be over before the listener answers.
+        assert!(matches!(answering.handle(Request::StartTalk { conversation: None }).await, Response::Talk { .. }));
+        let mut changes = answering.voice_changes();
+        crate::apps::tests::until(&answering.voice, &mut changes, VoiceState::Answering).await;
+        let id = test_message(&answering).await;
+        if let Some(talk) = answering.lock_talk().as_mut() {
+            talk.conversation = Some(id);
+        }
+        let state = |talk: Option<torro_ipc::Talk>| talk.map(|talk| (talk.state, talk.tool));
+        assert_eq!(
+            state(talk_of(&answering).await.0),
+            Some((VoiceState::UsingTool, Some("system.ping".into()))),
+            "the first step stands for a tool"
+        );
+        let snapshot = answering.snapshot().await;
+        assert_eq!((snapshot.voice, snapshot.voice_tool.as_deref()), (VoiceState::UsingTool, Some("system.ping")));
+        {
+            let _reading = Speaking::new(&answering.speaking);
+            assert_eq!(state(talk_of(&answering).await.0), Some((VoiceState::Speaking, None)), "reading aloud first");
+        }
+        let thinking = async {
+            while state(talk_of(&answering).await.0) != Some((VoiceState::Thinking, None)) {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(step * 2, thinking).await.expect("thinking after the tool");
+        let answered = async {
+            while state(talk_of(&answering).await.0) != Some((VoiceState::Answering, None)) {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(step * 3, answered).await.expect("no answer runs: answering, nothing more precise");
+
+        // Recording passes unchanged, also while an answer runs.
+        let other = tempfile::tempdir().expect("temp dir");
+        let program = crate::apps::tests::fake_program(other.path(), r#"echo '"recording"'; sleep 30"#);
+        let assistant = crate::assistant::tests::assistant_in(other.path(), step);
+        let recording = core(other.path()).with_assistant(assistant).with_listener(crate::apps::Listener::at(program));
+        let id = test_message(&recording).await;
+        let start = Request::StartTalk { conversation: Some(id) };
+        assert!(matches!(recording.handle(start).await, Response::Talk { .. }));
+        let mut changes = recording.voice_changes();
+        crate::apps::tests::until(&recording.voice, &mut changes, VoiceState::Recording).await;
+        assert_eq!(recording.voice_now().await, (VoiceState::Recording, None));
     }
 
     /// Issue #782: Pocket's speed and pause go with each `say`, as before without a choice; the

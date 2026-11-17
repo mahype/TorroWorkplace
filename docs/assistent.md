@@ -992,8 +992,14 @@ ist; das Mikrofon ist dann nur für dieses Gespräch offen. Statt des Eingabefel
   verworfen; danach 300 ms Pause. So kommt keine Stimme aus dem Lautsprecher als Satz des Menschen an.
 - **Technisch:** Der Dienst hält das Gespräch (`assistant.start_talk`, Unterhaltung oder neue, die der erste
   Satz anlegt) und startet dafür den Hörer, auch wenn „Hey Torro“ aus ist. Der Hörer fragt zweimal in der
-  Sekunde `assistant.talk_status` und meldet seinen Stand (`conversing`, `recording`, `answering`). Gesprochenes
-  kommt nicht ins Protokoll, weder beim Hörer noch im Dienst.
+  Sekunde `assistant.talk_status` und meldet seinen Stand (`conversing`, `recording`, `recognizing`,
+  `answering`). Gesprochenes kommt nicht ins Protokoll, weder beim Hörer noch im Dienst.
+- **Was gerade geschieht (#830):** Solange der Hörer antwortet, sagt der Dienst genauer, was passiert: `thinking`
+  (das Modell überlegt oder schreibt), `using_tool` mit `tool`, dem Katalognamen des Werkzeugs (nie Eingabe oder
+  Ergebnis; wartet es auf eine Freigabe, wieder `thinking`), und `speaking` (es wird vorgelesen; das hat Vorrang).
+  Die Sprechzeile im Fenster und Menü und Tooltip des Tray zeigen dasselbe in Worten: „Erkennt …“, „Überlegt …“,
+  „Schaut in den Kalender …“ (nach dem Bereich des Werkzeugs), „Spricht …“. Die Markierung am Tray-Symbol bleibt
+  dabei der Ring; der volle Punkt heißt nur „Mikrofon offen“.
 
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|

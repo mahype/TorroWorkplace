@@ -78,8 +78,10 @@ impl ksni::Tray for Tray {
     /// The name and, when something waits, how much. Never a summary: the description may be
     /// read as markup by the bar, and summaries hold text a client sent.
     fn tool_tip(&self) -> ksni::ToolTip {
-        let lines =
-            [menu::voice_line(self.snapshot.voice).to_string(), menu::waiting_line(Waiting::of(&self.snapshot))];
+        let lines = [
+            menu::voice_line(self.snapshot.voice, self.snapshot.voice_tool.as_deref()),
+            menu::waiting_line(Waiting::of(&self.snapshot)),
+        ];
         let description = lines.into_iter().filter(|line| !line.is_empty()).collect::<Vec<_>>().join(" · ");
         ksni::ToolTip { title: "Torro Workplace".into(), description, ..Default::default() }
     }
