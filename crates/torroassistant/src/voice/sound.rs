@@ -582,6 +582,23 @@ pub mod tests {
         assert_eq!(framer.samples, [to_i16(-0.5)], "the rest waits for the next frame");
     }
 
+    /// Issue #850: the sound has run out once two buffers of silence went out since the last push, before
+    /// its end too; a push makes it wait again.
+    #[test]
+    fn the_output_says_when_it_ran_out() {
+        let mut queue = Queue::default();
+        queue.push([0.5, 0.5]);
+        let mut out = [0i16; 2];
+        fill(&mut out, 1, &mut queue);
+        assert!(!queue.drained(), "it just played");
+        fill(&mut out, 1, &mut queue);
+        assert!(!queue.drained(), "one buffer of silence");
+        fill(&mut out, 1, &mut queue);
+        assert!(queue.drained() && !queue.ended(), "ran out, but more may come");
+        queue.push([0.25]);
+        assert!(!queue.drained(), "more came");
+    }
+
     /// The device gets the same sample on each channel, silence when nothing is queued, and the sound
     /// has ended once two buffers of silence went out after the end.
     #[test]
@@ -600,22 +617,5 @@ pub mod tests {
         assert!(!queue.ended(), "one buffer of silence");
         fill(&mut out, 2, &mut queue);
         assert!(queue.ended());
-    }
-
-    /// Issue #850: the sound has run out once two buffers of silence went out since the last push, before
-    /// its end too; a push makes it wait again.
-    #[test]
-    fn the_output_says_when_it_ran_out() {
-        let mut queue = Queue::default();
-        queue.push([0.5, 0.5]);
-        let mut out = [0i16; 2];
-        fill(&mut out, 1, &mut queue);
-        assert!(!queue.drained(), "it just played");
-        fill(&mut out, 1, &mut queue);
-        assert!(!queue.drained(), "one buffer of silence");
-        fill(&mut out, 1, &mut queue);
-        assert!(queue.drained() && !queue.ended(), "ran out, but more may come");
-        queue.push([0.25]);
-        assert!(!queue.drained(), "more came");
     }
 }
