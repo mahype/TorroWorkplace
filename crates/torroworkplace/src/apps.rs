@@ -31,6 +31,11 @@
 //! [`SpeechHelper`] keeps `torroassistant --speak` running while it reads aloud (issue #745,
 //! `assistant.speak`): one job at a time, talked to in JSON lines ([`SpeechLine`]); a new job or
 //! `assistant.stop_speaking` stops the one that reads.
+//!
+//! What the helper plays comes as `{"echo": …}` lines among its answers (issue #834). A task reads its
+//! output all the time and hands these lines over an [`EchoPipe`] to the listener's standard input: the
+//! listener takes that sound out of its microphone. They stay on the pipes of the core's own children, in
+//! memory; no new way in for other programs. When the listener is slow or not running, they are dropped.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -39,9 +44,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::watch;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, Command};
+use tokio::sync::{mpsc, watch};
 use torro_core::AppId;
 use torro_ipc::{AppInfo, Response, VoiceState};
 
@@ -550,6 +555,49 @@ struct RoundLine {
     round: Heard,
 }
 
+/// How many echo lines wait for the listener at most; more are dropped ([`EchoPipe::send`]).
+const ECHO_WAITING: usize = 32;
+
+/// The way the speech helper's echo lines go to the running listener's standard input (issue #834, see
+/// the module). Clones share it; empty while no listener runs.
+#[derive(Debug, Clone, Default)]
+pub struct EchoPipe(Arc<Mutex<Option<mpsc::Sender<String>>>>);
+
+impl EchoPipe {
+    /// Hands `line` to the listener; dropped when none runs or it is behind: the sound never waits.
+    pub fn send(&self, line: String) {
+        if let Some(sender) = self.lock().as_ref() {
+            let _ = sender.try_send(line);
+        }
+    }
+
+    /// Lines go to `sender` from now on.
+    fn attach(&self, sender: mpsc::Sender<String>) {
+        *self.lock() = Some(sender);
+    }
+
+    /// No more lines go to `sender`; a newer listener's stays.
+    fn detach(&self, sender: &mpsc::Sender<String>) {
+        let mut attached = self.lock();
+        if attached.as_ref().is_some_and(|now| now.same_channel(sender)) {
+            *attached = None;
+        }
+    }
+
+    fn clear(&self) {
+        *self.lock() = None;
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<mpsc::Sender<String>>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Whether `line` of the speech helper is an echo line (`{"echo": …}`) and no answer of a job.
+fn is_echo(line: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(line.trim()).is_ok_and(|value| value.get("echo").is_some())
+}
+
 /// The voice listener `torroassistant --listen` (task C.9): started and stopped by the core
 /// ([`Listener::follow`]), its state read from its output (one JSON [`VoiceState`] per line), and
 /// asked as a helper for `settings.voice_status` and `settings.test_voice` ([`Listener::ask`]).
@@ -565,6 +613,8 @@ pub struct Listener {
     /// When a stop came while no dictation ran yet: the window's stop can overtake its start (two
     /// requests on two connections). A dictation that starts within [`STOP_AHEAD`] ends at once.
     stop_ahead: Mutex<Option<std::time::Instant>>,
+    /// The running listener's standard input for the speech helper's echo lines (issue #834).
+    echo: EchoPipe,
 }
 
 /// The one place for a dictation: free, or taken by one that runs with its standard input (`None`
@@ -612,7 +662,13 @@ impl Listener {
             changes: watch::Sender::new(()),
             dictation: Mutex::default(),
             stop_ahead: Mutex::default(),
+            echo: EchoPipe::default(),
         }
+    }
+
+    /// The way to the running listener's standard input for the echo lines ([`SpeechHelper::with_echo`]).
+    pub fn echo(&self) -> EchoPipe {
+        self.echo.clone()
     }
 
     /// The program, when it is installed.
@@ -663,6 +719,7 @@ impl Listener {
             }
             running.generation += 1;
             running.problem = None;
+            self.echo.clear();
             self.set(&mut running, VoiceState::Off);
             return;
         }
@@ -676,7 +733,8 @@ impl Listener {
         };
         let started = Command::new(&program)
             .arg("--listen")
-            .stdin(Stdio::null())
+            // The echo lines of the speech helper go in here (issue #834).
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .kill_on_drop(true)
@@ -692,9 +750,34 @@ impl Listener {
         running.generation += 1;
         running.problem = None;
         let generation = running.generation;
+        let input = child.stdin.take();
         let Some(output) = child.stdout.take() else { return };
         running.child = Some(child);
         drop(running);
+        if let Some(mut input) = input {
+            let (sender, mut lines) = mpsc::channel::<String>(ECHO_WAITING);
+            // Weak, so the task ends once the pipe lets go of the listener: then no sender is left.
+            let weak = sender.downgrade();
+            self.echo.attach(sender);
+            let echo = self.echo.clone();
+            tokio::spawn(async move {
+                while let Some(line) = lines.recv().await {
+                    let written = async {
+                        input.write_all(line.as_bytes()).await?;
+                        input.write_all(b"\n").await?;
+                        input.flush().await
+                    };
+                    // The listener ended: nothing goes there any more.
+                    if written.await.is_err() {
+                        break;
+                    }
+                }
+                if let Some(sender) = weak.upgrade() {
+                    echo.detach(&sender);
+                }
+            });
+        }
+        let echo = self.echo.clone();
         let (shared, changes) = (Arc::clone(&self.running), self.changes.clone());
         tokio::spawn(async move {
             let mut lines = BufReader::new(output).lines();
@@ -721,6 +804,7 @@ impl Listener {
             if running.generation != generation {
                 return;
             }
+            echo.clear();
             if let Some(mut child) = running.child.take() {
                 running.problem = match child.try_wait() {
                     Ok(Some(status)) if status.success() => None,
@@ -745,6 +829,7 @@ impl Listener {
             let child = running.child.take();
             running.generation += 1;
             running.problem = None;
+            self.echo.clear();
             self.set(&mut running, VoiceState::Off);
             child
         };
@@ -906,11 +991,13 @@ pub enum SpeechError {
     Failed(String),
 }
 
-/// The helper as it runs, started with `args`.
+/// The helper as it runs, started with `args`. Its lines come from a task that reads its output all the
+/// time (issue #834): the echo lines go to the listener at once, so the output never fills up between
+/// jobs; the others wait here for the job.
 #[derive(Debug)]
 struct Speaking {
     child: Child,
-    lines: Lines<BufReader<ChildStdout>>,
+    lines: mpsc::UnboundedReceiver<String>,
     args: Vec<String>,
 }
 
@@ -927,6 +1014,8 @@ pub struct SpeechHelper {
     input: tokio::sync::Mutex<Option<ChildStdin>>,
     /// Counts jobs and stops: a job whose number is no longer the last was overtaken.
     jobs: AtomicU64,
+    /// Where the helper's echo lines go: the listener's input ([`SpeechHelper::with_echo`]); dropped without.
+    echo: Option<EchoPipe>,
 }
 
 /// One job of the [`SpeechHelper`], holding it until it is dropped. Dropped before the helper said
@@ -962,7 +1051,14 @@ impl SpeechHelper {
             running: tokio::sync::Mutex::new(None),
             input: tokio::sync::Mutex::new(None),
             jobs: AtomicU64::new(0),
+            echo: None,
         }
+    }
+
+    /// The helper with its echo lines going to `echo`, the listener's input (issue #834).
+    pub fn with_echo(mut self, echo: EchoPipe) -> SpeechHelper {
+        self.echo = Some(echo);
+        self
     }
 
     /// The program, when it is installed.
@@ -1041,7 +1137,22 @@ impl SpeechHelper {
                 return Err(SpeechError::Failed("the speech helper has no pipes".into()));
             };
             *self.input.lock().await = Some(input);
-            *running = Some(Speaking { child, lines: BufReader::new(output).lines(), args: args.to_vec() });
+            let (sender, lines) = mpsc::unbounded_channel();
+            let echo = self.echo.clone();
+            tokio::spawn(async move {
+                let mut output = BufReader::new(output).lines();
+                // Read to the end, also once no job takes the lines any more: the helper must never wait.
+                while let Ok(Some(line)) = output.next_line().await {
+                    if is_echo(&line) {
+                        if let Some(echo) = &echo {
+                            echo.send(line);
+                        }
+                    } else {
+                        let _ = sender.send(line);
+                    }
+                }
+            });
+            *running = Some(Speaking { child, lines, args: args.to_vec() });
         }
         Ok(SpeechJob { helper: self, running, number, finished: false })
     }
@@ -1092,15 +1203,15 @@ impl SpeechJob<'_> {
     pub async fn next(&mut self) -> Result<SpeechLine, SpeechError> {
         let speaking = self.running.as_mut().ok_or_else(|| SpeechError::Failed("the speech helper ended".into()))?;
         loop {
-            match speaking.lines.next_line().await {
-                Ok(Some(line)) => {
+            match speaking.lines.recv().await {
+                Some(line) => {
                     let Some(line) = SpeechLine::parse(&line) else { continue };
                     if matches!(line, SpeechLine::Done | SpeechLine::Failed { .. }) {
                         self.finished = true;
                     }
                     return Ok(line);
                 }
-                Ok(None) | Err(_) => {
+                None => {
                     self.finished = true;
                     self.running.take();
                     return Err(SpeechError::Failed("the speech helper ended".into()));
@@ -1529,6 +1640,48 @@ pub mod tests {
     /// Issue #745: a job reads until the helper says `done`; a stop gets through while it reads, a
     /// new job overtakes the one waiting, and the helper is started anew for other settings.
     #[cfg(unix)]
+    /// Issue #834: the helper's echo lines go to the listener's input, never to the job; many of them, more
+    /// than a pipe holds, do not keep the helper from saying `done`.
+    #[tokio::test]
+    async fn echo_lines_of_the_helper_go_to_the_listener() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let heard = dir.path().join("heard");
+        let listening = dir.path().join("listening");
+        std::fs::create_dir(&listening).expect("folder");
+        let listener =
+            Listener::at(fake_program(&listening, &format!("echo '\"listening\"'; cat > {}", heard.display())));
+        let mut changes = listener.changes();
+        listener.follow(true);
+        until(&listener, &mut changes, VoiceState::Listening).await;
+        let echo = r#"{"echo":"AAABAA=="}"#;
+        let script = format!(
+            r#"while read line; do
+  case "$line" in
+    *say*) i=0; while [ $i -lt 3000 ]; do echo '{echo}'; i=$((i+1)); done; echo '"done"';;
+  esac
+done"#
+        );
+        let helper = SpeechHelper::at(fake_program(dir.path(), &script)).with_echo(listener.echo());
+        let args = vec!["--speak".to_string()];
+        let mut job = helper.begin(&args).await.expect("started");
+        job.send(r#"{"say": {"provider": "openai", "text": "Hello."}}"#).await.expect("sent");
+        let next = tokio::time::timeout(Duration::from_secs(10), job.next()).await.expect("not stuck");
+        assert_eq!(next, Ok(SpeechLine::Done), "the job sees no echo line");
+        drop(job);
+        let mut got = String::new();
+        for _ in 0..100 {
+            got = std::fs::read_to_string(&heard).unwrap_or_default();
+            if !got.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(got.lines().next(), Some(echo), "the listener got the line");
+        listener.follow(false);
+        // Without a listener the lines are dropped.
+        assert!(listener.echo().lock().is_none());
+    }
+
     #[tokio::test]
     async fn the_speech_helper_reads_one_job_at_a_time() {
         let dir = tempfile::tempdir().expect("temp dir");
