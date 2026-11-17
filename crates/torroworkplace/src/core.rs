@@ -27075,7 +27075,7 @@ done"#,
 
         // Mail on a pile is not counted, as the category's list leaves it out (#873).
         let put = |pile| Request::SetMailPile { ids: vec![id.clone()], pile, since: None };
-        assert_eq!(ask(&core, Some(&app_key), put(Some(MailPile::SetAside))).await, Response::Ok);
+        assert_eq!(ask(&core, Some(&app_key), put(Some(torro_mail::MailPile::SetAside))).await, Response::Ok);
         assert_eq!(
             counted(ask(&core, Some(&app_key), Request::ListCategories { account: None }).await),
             (0, 0),
