@@ -303,6 +303,13 @@ pub trait Sound {
     /// Whether everything pushed so far has played and the device has played silence since (issue #850):
     /// the sound waits for more, unlike [`Sound::ended`] also before [`Sound::finish`].
     fn drained(&self) -> bool;
+
+    /// Marks the end of what was pushed so far (issue #837): the sound pushed after it is what
+    /// [`Sound::past_mark`] waits for.
+    fn mark(&mut self);
+
+    /// Whether the device has played a sample pushed after the last [`Sound::mark`]: that sound is heard.
+    fn past_mark(&self) -> bool;
 }
 
 /// How long a sound output that just opened plays silence before the first sound (issue #829): a device
@@ -321,6 +328,10 @@ struct Queue {
     /// Whole buffers of silence given to the device since the last push (issue #850), finished or not:
     /// two mean the sound has run out and waits for more.
     idle: u8,
+    /// How many queued samples still play before the marked sound (issue #837, [`Sound::mark`]).
+    mark: Option<usize>,
+    /// A sample after the mark has gone to the device.
+    past_mark: bool,
 }
 
 impl Queue {
@@ -343,6 +354,26 @@ impl Queue {
     fn drained(&self) -> bool {
         self.samples.is_empty() && self.idle >= 2
     }
+
+    /// The sound pushed from now on is marked: it is heard once all that is queued now has played.
+    fn mark(&mut self) {
+        self.mark = Some(self.samples.len());
+        self.past_mark = false;
+    }
+
+    /// The next queued sample goes to the device; it counts towards the mark.
+    fn pop(&mut self) -> Option<f32> {
+        let sample = self.samples.pop_front()?;
+        match self.mark {
+            Some(0) => {
+                self.mark = None;
+                self.past_mark = true;
+            }
+            Some(before) => self.mark = Some(before - 1),
+            None => {}
+        }
+        Some(sample)
+    }
 }
 
 /// Fills a device buffer of `channels` interleaved from `queue`, the same sample on every channel, and
@@ -353,7 +384,7 @@ where
 {
     let had_sound = !queue.samples.is_empty();
     for frame in out.chunks_mut(channels.max(1)) {
-        let sample = queue.samples.pop_front().unwrap_or(0.0);
+        let sample = queue.pop().unwrap_or(0.0);
         frame.fill(T::from_sample(sample));
     }
     if !had_sound {
@@ -381,6 +412,7 @@ fn fill_data(data: &mut cpal::Data, channels: usize, queue: &mut Queue) {
             queue.samples.clear();
             queue.drained = u8::MAX;
             queue.idle = u8::MAX;
+            queue.past_mark = queue.mark.take().is_some() || queue.past_mark;
         }
     }
 }
@@ -465,6 +497,14 @@ impl Sound for Player {
 
     fn drained(&self) -> bool {
         self.queue().drained()
+    }
+
+    fn mark(&mut self) {
+        self.queue().mark();
+    }
+
+    fn past_mark(&self) -> bool {
+        self.queue().past_mark
     }
 }
 
@@ -627,6 +667,26 @@ pub mod tests {
         assert!(!queue.ended(), "one buffer of silence");
         fill(&mut out, 2, &mut queue);
         assert!(queue.ended());
+    }
+
+    /// Issue #837: the marked sound counts as heard once a sample pushed after the mark went to the device,
+    /// not when what came before it has run out.
+    #[test]
+    fn the_marked_sound_is_heard_after_what_came_before() {
+        let mut queue = Queue::default();
+        queue.push([0.5, 0.5]);
+        queue.mark();
+        let mut out = [0i16; 2];
+        fill(&mut out, 1, &mut queue);
+        assert!(!queue.past_mark, "only what came before played");
+        fill(&mut out, 1, &mut queue);
+        assert!(!queue.past_mark, "silence is not the marked sound");
+        queue.push([0.25, 0.25]);
+        let mut one = [0i16; 1];
+        fill(&mut one, 1, &mut queue);
+        assert!(queue.past_mark, "its first sample played");
+        queue.mark();
+        assert!(!queue.past_mark, "a new mark waits again");
     }
 
     /// Issue #829: an output that just opened plays a short silence first, so the device's start does
