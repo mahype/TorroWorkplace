@@ -5863,6 +5863,10 @@ pub enum SettingKey {
     /// #831): a number from 0 to 240, rounded to 15; `0` never starts a new one, `null` for 30. The old
     /// conversation stays, its title gets its date and time. Anything else is refused with `error`.
     VoiceNewAfter,
+    /// Whether the voice chat says briefly what it does while an answer takes a moment (issue #837):
+    /// `true` (the default) or `false`. Only spoken, never stored in the conversation; it only matters while
+    /// [`SettingKey::SpeakAnswers`] is on. Anything else is refused with `error`.
+    VoiceAnnouncements,
     /// How OpenAI speaks (issue #782, `instructions` of its speech API): one line of at most 500
     /// characters, like `"calm, slow, friendly"`; `null` or `""` for OpenAI's own way. Open to agents
     /// like the voice: the style only travels once a person chose OpenAI ([`SettingKey::SpeechProvider`]).
