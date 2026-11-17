@@ -6,9 +6,9 @@
 //! assistant does not hear itself, but hears the person.
 //!
 //! The reference stays in memory, at most a second of it ([`KEPT`]); nothing touches the disk. Without a
-//! reference for a while ([`IN_USE`]) a frame passes unchanged, and should the canceller fail, it passes
-//! unchanged too: the listener then closes the microphone while something is read, as before
-//! ([`Echo::running`]).
+//! reference for a while ([`IN_USE`]) a frame passes unchanged, and the listener closes the microphone while
+//! something is read, as before ([`Echo::running`]). Should the canceller itself fail (it cannot with its
+//! fixed format of 16 kHz mono in steps of 10 ms), the frame passes unchanged too, and the failure is logged.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -151,6 +151,9 @@ impl EchoRecorder {
 impl Recorder for EchoRecorder {
     fn open(&mut self) -> Result<Box<dyn Stream>, VoiceError> {
         let stream = self.recorder.open()?;
+        // What played while the microphone was closed has no echo in what comes now: a heap of it at once
+        // would make the canceller start over.
+        self.echo.lock().samples.clear();
         Ok(Box::new(EchoStream { stream, echo: self.echo.clone(), canceller: Rc::clone(&self.canceller) }))
     }
 }
