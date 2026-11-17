@@ -2852,8 +2852,9 @@ impl Reader<'_> {
                     });
                 }
                 self.asked = self.asked.saturating_sub(1);
-                // The pieces of the answer's first text after a note (issue #837): the first of them is marked.
-                if self.noted && self.named_lines == 1 && !pieces.is_empty() {
+                // The first pieces of the answer after a note (issue #837): the first of them is marked. The
+                // first line is the note's; an answer's text with nothing to read names none.
+                if self.noted && self.named_lines >= 1 && self.mark_piece.is_none() && !pieces.is_empty() {
                     self.mark_piece = Some(self.named);
                 }
                 self.named_lines += 1;
