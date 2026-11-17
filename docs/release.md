@@ -189,8 +189,22 @@ als [Umsetzungsergänzung in #589](https://github.com/mahype/TorroWorkplace/issu
 | Katalog-Demo / Sichtprüfung | Regression deckt exakt `AppId::ALL` einschließlich Chat ab; unabhängiger Reviewer hat alle zwölf frischen PNGs (hell/dunkel, sechs Größen) und das Chat-Icon gelesen: keine neuen Muss-Funde. Mini/Leiste zeigen die bestehende Workplace-Übersicht; kein Desktop-/UAC-/Gatekeeper-Nachweis |
 | API-/Katalogschutz | unabhängige statische Prüfung ohne Blocker: bestehende Request-/MCP-Wege und Rechte, native Marker, Preflight aller Ziele/Abhängigkeiten und Setup-Cleanup-Sperre. Zusätzlicher gezielter Cleanup-Regressionstest wurde als nichtblockierende Testanregung genannt |
 
+### Erweiterung um Kontakte am 17.11.2026
+
+Torro Contacts ist die neunte App (#354), in denselben Paketwegen wie Chat: Linux-Pakete, Windows-Setup,
+macOS-Image und die Entwickler-Bündel. Die Vorlagen für AUR, Homebrew-Suite und Scoop bleiben unverändert, wie für
+Chat.
+
+| Prüfung | Ergebnis / Grenze |
+|---|---|
+| Echter `dist plan --tag v0.1.0` | exakt neun Programme einschließlich `torrocontacts`; native Sollmatrix 87 |
+| Offline-Verträge | `python3 -m unittest discover -s packaging/tests`: 18 Tests grün, darunter Matrix/Downloads mit `torrocontacts-bin` und dem Contacts-Setup, vollständige macOS-Jobmatrix und native Icon-Ressourcen |
+| Icons | ICO und macOS-PNG aus `packaging/linux/icons/torro-contacts.svg` (AppKit `NSImage`, Schatten wie die übrigen); dieselbe Erzeugung ergibt für Chat byte- bzw. pixelgleiche Dateien |
+| Contacts für Windows | `cargo xwin check --locked -p torrocontacts --target x86_64-pc-windows-msvc` mit statischer CRT grün, einschließlich neuem Icon-/Versions-Buildskript; kein nativer GUI- oder Installationsnachweis |
+| Katalog | Fixture-Release mit allen `torrocontacts`-Archiven; der Katalogtest prüft jetzt jede App ohne Ausnahme |
+
 Die alten Sieben-App-Laufzeitnachweise bleiben oben unverändert. Neue Hardware-/Desktop-Prüfungen
-einschließlich Chat sind in #668/#669 offen; macOS-Notarisierung, Gatekeeper und der veröffentlichte
+einschließlich Chat und Contacts sind in #668/#669 offen; macOS-Notarisierung, Gatekeeper und der veröffentlichte
 Release-Nachweis bleiben ebenfalls offen. Keinen lokalen Testbau als veröffentlichtes Release ausweisen.
 
 `packaging/tests/linux-smoke.sh` prüft in einem **wegwerfbaren Container** Metadaten, Installieren,
