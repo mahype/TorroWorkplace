@@ -6,7 +6,9 @@
 //!   change of state goes to standard output as one JSON string per line (`"listening"`,
 //!   `"recording"`, `"recognizing"`, `"answering"`, `"conversing"`, `"off"`: [`VoiceState`]), which the
 //!   core reads to show it in the tray; what happens while it answers the core knows itself (issue #830). The half of a timed round (issue #828) goes there too, as `{"round": {…}}`
-//!   with durations only. It exits 0 when voice went off, 1 when it could not listen.
+//!   with durations only. It exits 0 when voice went off, 1 when it could not listen. On standard input the
+//!   core passes on what the speech helper plays (`{"echo": …}`, issue #834): the reference of the echo
+//!   cancellation ([`super::echo`]), so the microphone stays open while something is read aloud.
 //! - `--voice-status --voice <settings>`: what the listener would use, as one line of JSON (a
 //!   [`Response::Voice`]), for `settings.voice_status`. The settings are `Settings::voice` as
 //!   JSON, handed over by the core.
@@ -20,7 +22,7 @@
 //! - `--speech-status --voice <settings>`: what is found for reading aloud, as one line of JSON (a
 //!   [`Response::Speech`]), for `settings.speech_status`.
 
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::process::{Child, Command, ExitCode};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,7 +33,8 @@ use torro_core::voice_models::voice_folder;
 use torro_ipc::{Response, VoiceState};
 
 use super::audio::{Endpoint, FRAMES_PER_SECOND, Limits, NoiseFloor};
-use super::listen::{Assistant, CoreAssistant, Ended, Heard, Listener};
+use super::echo::{Echo, EchoRecorder};
+use super::listen::{Assistant, CoreAssistant, Ended, Heard, Listener, Reader};
 use super::parts::{Parts, voice_status};
 use super::recognize::{SherpaTranscriber, require};
 use super::sound::{CpalRecorder, SystemDevices};
@@ -185,13 +188,23 @@ fn listen() -> ExitCode {
         }
     };
     let backend = Backend::core();
+    // The answer is read aloud on a thread of its own while the microphone stays open (issue #834).
+    let reader = match reader(backend.clone()) {
+        Ok(reader) => reader,
+        Err(err) => {
+            eprintln!("torroassistant: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
     let mut window = QuickWindow::default();
     let mut core = CoreAssistant::new(
         |request| runtime.block_on(backend.ask(request)),
         |conversation: &str| window.show(conversation),
         POLL,
         ANSWER_WAIT,
-    );
+    )
+    .with_reader(reader);
+    let echo = echo_from_input();
     loop {
         let talking = core.talk().is_ok_and(|now| now.talk.is_some());
         let voice = match core.settings() {
@@ -210,7 +223,7 @@ fn listen() -> ExitCode {
             }
         };
         let mut listener = Listener {
-            recorder: parts.recorder,
+            recorder: Box::new(EchoRecorder::new(parts.recorder, echo.clone())),
             wake: parts.wake,
             transcriber: parts.transcriber,
             speaker: parts.speaker,
@@ -222,6 +235,7 @@ fn listen() -> ExitCode {
             check_every: FRAMES_PER_SECOND / 2,
             pause: QUIET,
             floor: NoiseFloor::default(),
+            echo: Some(echo.clone()),
         };
         match listener.run(&voice) {
             Ok(Ended::Changed) => continue,
@@ -236,6 +250,28 @@ fn listen() -> ExitCode {
             }
         }
     }
+}
+
+/// The way `assistant.speak_answer` goes on a thread of its own: `backend` with a runtime of its own.
+fn reader(backend: Backend) -> std::io::Result<Reader> {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    Ok(Arc::new(move |request| runtime.block_on(backend.ask(request))))
+}
+
+/// The reference of the echo cancellation, filled from standard input (issue #834): each `{"echo": …}`
+/// line the core passes on. Other lines are skipped; the end of the input only ends the thread, the
+/// listener goes on without a reference.
+fn echo_from_input() -> Echo {
+    let echo = Echo::default();
+    let reference = echo.clone();
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+            if let Some(samples) = super::speech::echo_samples(&line) {
+                reference.push(&samples);
+            }
+        }
+    });
+    echo
 }
 
 /// Reports "off" and ends with `code`.
