@@ -4,8 +4,8 @@
 //!   `voice.enabled` stays on or a conversation by voice runs (issue #747). The core starts it when
 //!   voice is switched on or a conversation by voice starts, and stops it when both are over. Each
 //!   change of state goes to standard output as one JSON string per line (`"listening"`,
-//!   `"recording"`, `"answering"`, `"conversing"`, `"off"`: [`VoiceState`]), which the core reads to
-//!   show it in the tray. The half of a timed round (issue #828) goes there too, as `{"round": {…}}`
+//!   `"recording"`, `"recognizing"`, `"answering"`, `"conversing"`, `"off"`: [`VoiceState`]), which the
+//!   core reads to show it in the tray; what happens while it answers the core knows itself (issue #830). The half of a timed round (issue #828) goes there too, as `{"round": {…}}`
 //!   with durations only. It exits 0 when voice went off, 1 when it could not listen.
 //! - `--voice-status --voice <settings>`: what the listener would use, as one line of JSON (a
 //!   [`Response::Voice`]), for `settings.voice_status`. The settings are `Settings::voice` as
