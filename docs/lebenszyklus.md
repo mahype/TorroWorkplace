@@ -190,7 +190,7 @@ Was bei der Umsetzung (AP.1–AP.7) zusätzlich entschieden wurde.
 - **Windows.** Jede App startet den Dienst losgelöst und ohne Konsole (`DETACHED_PROCESS |
   CREATE_NEW_PROCESS_GROUP`). Die Programme sind GUI-Programme ohne Konsolenfenster; ein Fehler beim Start
   landet in einer Datei im State-Verzeichnis des Eingangs statt in einer Konsole.
-- **Bündel und Pakete.** Neun macOS-Bündel (sieben Apps, das Service-Bündel `io.github.mahype.torro-workplace-service`
+- **Bündel und Pakete.** Elf macOS-Bündel (neun Apps, das Service-Bündel `io.github.mahype.torro-workplace-service`
   in „Torro Workplace.app“ unter `Contents/Library/LoginItems/`, wo Apple Hilfs-Apps erwartet, die Erinnerung „Torro Reminder.app“), eine `.desktop`-Datei je Eintrag, AUR-Pakete
   für alle sieben Programme (die Suite hängt an allen, Mail und App Feed an `torroinbox-bin`), Homebrew-Formeln
   und ein Scoop-Manifest für die ganze Suite mit sieben Startmenü-Einträgen. Details:
@@ -231,8 +231,8 @@ signiert mit „Torro Development“ (`scripts/macos-dev-cert.sh`), sonst ad hoc
 `TORRO_STATE_HOME` noch andere `TORRO_*`-Variablen. Von Hand also mit den Standardpfaden prüfen, nicht mit
 eigenem `TORRO_STATE_HOME`; sonst sprechen Dienst und App über verschiedene Sockets.
 
-- [ ] `plutil -lint` auf alle `Info.plist`; neun Bündel sind da.
-- [ ] Jede der sieben Apps aus Finder und Spotlight starten, ohne laufenden Dienst: Das Fenster öffnet, der Dienst
+- [ ] `plutil -lint` auf alle `Info.plist`; elf Bündel sind da.
+- [ ] Jede der neun Apps aus Finder und Spotlight starten, ohne laufenden Dienst: Das Fenster öffnet, der Dienst
       startet mit (Tray-Icon erscheint).
 - [ ] Das Dock zeigt Name und Icon jeder App, nicht das Terminal-Symbol.
 - [ ] Zweiter Start (Finder, Spotlight, Dock-Icon) holt das offene Fenster nach vorn, es entsteht keine zweite
