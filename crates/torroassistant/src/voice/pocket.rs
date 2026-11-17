@@ -11,6 +11,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::Instant;
 
 use sherpa_onnx::{GenerationConfig, OfflineTts, OfflineTtsConfig, OfflineTtsModelConfig, OfflineTtsPocketModelConfig};
 use torro_core::settings::POCKET_RECOMMENDED;
@@ -20,7 +21,7 @@ use torro_ipc::{VoiceMissing, VoicePart};
 use super::VoiceError;
 use super::audio::{Stretch, Wave, decode_wav};
 use super::recognize::threads;
-use super::speech::{pieces, sentence_pieces};
+use super::speech::sentence_pieces;
 
 /// The voice templates that ship with the assistant (step 4 of the plan of issue #745): made once from a
 /// description, 24 kHz mono, about nine seconds.
@@ -50,6 +51,41 @@ pub struct Delivery {
 impl Default for Delivery {
     fn default() -> Delivery {
         Delivery { speed: 100, pause_ms: 0 }
+    }
+}
+
+/// The times of one piece Pocket TTS computes (issue #850), for the log: never its text.
+struct Timing {
+    started: Instant,
+    first: Cell<Option<Instant>>,
+    samples: Cell<usize>,
+}
+
+impl Timing {
+    fn new() -> Timing {
+        Timing { started: Instant::now(), first: Cell::new(None), samples: Cell::new(0) }
+    }
+
+    /// `samples` of sound went out.
+    fn out(&self, samples: usize) {
+        if samples == 0 {
+            return;
+        }
+        if self.first.get().is_none() {
+            self.first.set(Some(Instant::now()));
+        }
+        self.samples.set(self.samples.get() + samples);
+    }
+
+    /// Writes how long the piece of `chars` characters took to its first sound and to its end, and how long
+    /// it sounds at `rate`.
+    fn log(&self, chars: usize, rate: u32) {
+        let computed = self.started.elapsed().as_millis();
+        let first = self.first.get().map_or(computed, |first| first.duration_since(self.started).as_millis());
+        let sound = self.samples.get() as u128 * 1000 / u128::from(rate.max(1));
+        eprintln!(
+            "torroassistant: speech piece: {chars} chars, first sound {first} ms, computed {computed} ms, sound {sound} ms"
+        );
     }
 }
 
@@ -165,19 +201,18 @@ impl Synth for Pocket {
         let stopped = Rc::new(Cell::new(false));
         // A NUL would end the text early for sherpa-onnx's C side (and its binding refuses it).
         let text = text.replace('\0', " ");
-        // As before without a choice; with a pause each sentence is a piece of its own, so the pause
-        // falls between sentences. sherpa-onnx's own `silence_scale` does not reach streamed sound.
-        // Each piece with whether a sentence ends there, so a long one cut in pieces has no pause inside.
-        let pieces: Vec<(String, bool)> = match delivery.pause_ms == 0 {
-            true => pieces(&text, PIECE).into_iter().map(|piece| (piece, false)).collect(),
-            false => sentence_pieces(&text, PIECE),
-        };
-        for (piece, ends) in pieces {
+        // Each sentence is a piece of its own (issue #850): the first sounds once it is computed, not after
+        // the next ones, and a pause falls between sentences. sherpa-onnx's own `silence_scale` does not
+        // reach streamed sound. Each piece with whether a sentence ends there, so a long one cut in pieces
+        // has no pause inside.
+        for (piece, ends) in sentence_pieces(&text, PIECE) {
             // Each piece is stretched on its own, so its end comes out whole before the pause.
             let stretch = Rc::new(RefCell::new(Some(Stretch::new(rate, delivery.speed))));
             let heard = Rc::new(Cell::new(false));
-            let (give, stop, got, stretching) =
-                (Rc::clone(&chunk), Rc::clone(&stopped), Rc::clone(&heard), Rc::clone(&stretch));
+            // Issue #850: when the piece began, when its first sound went out and how much went out.
+            let timing = Rc::new(Timing::new());
+            let (give, stop, got, stretching, timed) =
+                (Rc::clone(&chunk), Rc::clone(&stopped), Rc::clone(&heard), Rc::clone(&stretch), Rc::clone(&timing));
             let callback = move |samples: &[f32], _progress: f32| {
                 if samples.is_empty() {
                     return true;
@@ -191,6 +226,7 @@ impl Synth for Pocket {
                 if sound.is_empty() {
                     return !stop.get();
                 }
+                timed.out(sound.len());
                 let go_on = (give.borrow_mut())(&sound);
                 stop.set(!go_on);
                 go_on
@@ -209,6 +245,8 @@ impl Synth for Pocket {
                 }
                 rest.extend(stretch.finish());
             }
+            timing.out(rest.len());
+            timing.log(piece.chars().count(), rate);
             // After each sentence, also the last of this text: an answer read as it grows comes in
             // several texts, and the pause falls between them too.
             if delivery.pause_ms > 0 && ends {

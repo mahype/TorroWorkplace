@@ -2742,84 +2742,235 @@ fn speech_without_app() -> torro_ipc::SpeechStatus {
     }
 }
 
-/// Fetches `pieces` from OpenAI with `voice` and the speaking style `instructions` (issue #782) and sends their sound to the helper of `job`, each piece
-/// while the one before plays, until the helper says it is done (issue #745). A stop ends the
-/// fetching; an error of OpenAI stops what plays and is the answer.
-async fn read_with_openai(
-    mut job: crate::apps::SpeechJob<'_>,
-    speaker: &crate::account::ai::OpenAiCompatible,
-    voice: &str,
-    instructions: Option<&str>,
-    pieces: Vec<String>,
-    stamps: Option<&std::sync::Mutex<Stamps>>,
-) -> Response {
-    use base64::Engine as _;
-    let fetch = |piece: String| {
-        let (speaker, voice, instructions) = (speaker.clone(), voice.to_string(), instructions.map(str::to_string));
-        Box::pin(async move { speaker.speech(&voice, &piece, instructions.as_deref()).await })
-    };
-    let mut pieces = pieces.into_iter();
-    let mut fetching = pieces.next().map(fetch);
-    if fetching.is_none()
-        && let Err(err) = job.send("\"end\"").await
-    {
-        return speech_failure(&err);
-    }
-    let mut failed = None;
-    loop {
-        let sound = async {
+/// A piece fetched from OpenAI, its sound handed out as it arrives (issue #850).
+type Fetching = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), torro_core::ai::AiError>> + Send>>;
+
+/// What a [`Reader`] waits for (issue #850).
+enum ReadEvent {
+    /// A line of the helper.
+    Line(Result<SpeechLine, SpeechError>),
+    /// Sound of OpenAI as it arrives.
+    Data(Vec<u8>),
+    /// The piece fetched from OpenAI is all there, or failed.
+    Fetched(Result<(), torro_core::ai::AiError>),
+}
+
+/// OpenAI as it reads aloud: the account, the voice and the speaking style (issue #782).
+struct OpenAiVoice {
+    speaker: crate::account::ai::OpenAiCompatible,
+    voice: String,
+    style: Option<String>,
+}
+
+/// One job of the speech helper as the core reads it (issues #745, #850). It gives the helper text; with
+/// OpenAI it fetches the pieces the helper names, one after the other, and sends their sound on as it
+/// arrives, so it plays before a piece is all there. It reads the helper's lines until it is done. A job
+/// open for `more` takes texts ([`Reader::add`]) until it is closed; then `end` follows once all of it
+/// went out. With `readings` it counts as reading aloud while it sounds: from `playing` to `waiting`
+/// and to its end, so the microphone of a conversation by voice is closed only while something sounds.
+struct Reader<'a> {
+    job: crate::apps::SpeechJob<'a>,
+    /// `None` for a provider of the helper (Pocket TTS, Qwen3-TTS).
+    openai: Option<OpenAiVoice>,
+    /// Pieces the helper named, still to fetch.
+    queue: std::collections::VecDeque<String>,
+    fetching: Option<Fetching>,
+    sound: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    arriving: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    /// The first byte of a sample whose second is still to come.
+    odd: Option<u8>,
+    /// Texts given to the helper whose pieces it has not named yet (OpenAI).
+    asked: usize,
+    more: bool,
+    /// No more text comes.
+    closed: bool,
+    /// Nothing more goes to the helper: `end` or `stop` went.
+    shut: bool,
+    /// OpenAI's error, the answer once the helper is done.
+    failed: Option<Response>,
+    stamps: Option<&'a std::sync::Mutex<Stamps>>,
+    readings: Option<&'a Arc<Readings>>,
+    speaking: Option<Speaking>,
+}
+
+impl Reader<'_> {
+    /// Waits for what comes next. Dropped meanwhile, nothing is lost: the fetch stays here.
+    async fn wait(&mut self) -> ReadEvent {
+        let Reader { job, fetching, arriving, .. } = self;
+        let fetched = async {
             match fetching.as_mut() {
                 Some(fetch) => fetch.await,
                 None => std::future::pending().await,
             }
         };
         tokio::select! {
-            sound = sound => {
-                fetching = None;
-                match sound {
-                    // Stopped meanwhile: the helper says `done`, nothing more goes to it.
-                    Ok(_) if !job.current() => {}
-                    Ok(pcm) => {
-                        for part in pcm.chunks(PCM_LINE) {
-                            let line = serde_json::json!({"pcm": {
-                                "rate": crate::account::ai::SPEECH_RATE,
-                                "data": base64::engine::general_purpose::STANDARD.encode(part),
-                            }});
-                            if let Err(err) = job.send(&line.to_string()).await {
-                                return speech_failure(&err);
-                            }
-                        }
-                        fetching = pieces.next().map(fetch);
-                        if fetching.is_none() && let Err(err) = job.send("\"end\"").await {
-                            return speech_failure(&err);
-                        }
+            line = job.next() => ReadEvent::Line(line),
+            Some(data) = arriving.recv() => ReadEvent::Data(data),
+            done = fetched => ReadEvent::Fetched(done),
+        }
+    }
+
+    /// Handles `event`; the answer once the job is over.
+    async fn handle(&mut self, event: ReadEvent) -> Option<Response> {
+        match event {
+            ReadEvent::Line(Ok(SpeechLine::Playing)) => {
+                sounded(self.stamps);
+                if let Some(readings) = self.readings {
+                    self.speaking.get_or_insert_with(|| Speaking::new(readings));
+                }
+                None
+            }
+            ReadEvent::Line(Ok(SpeechLine::Waiting)) => {
+                self.speaking = None;
+                None
+            }
+            ReadEvent::Line(Ok(SpeechLine::Done)) => Some(self.failed.take().unwrap_or(Response::Ok)),
+            ReadEvent::Line(Ok(SpeechLine::Failed { code, message })) => Some(Response::Error { code, message }),
+            ReadEvent::Line(Ok(SpeechLine::Pieces(pieces))) => {
+                if self.openai.is_none() {
+                    return Some(Response::Error {
+                        code: "error".into(),
+                        message: tr("Reading aloud failed. Try again.").into(),
+                    });
+                }
+                self.asked = self.asked.saturating_sub(1);
+                self.queue.extend(pieces);
+                self.fetch_next();
+                self.end_if_due().await
+            }
+            ReadEvent::Line(Err(err)) => Some(speech_failure(&err)),
+            ReadEvent::Data(data) => self.play(&data).await,
+            ReadEvent::Fetched(fetched) => {
+                self.fetching = None;
+                // Its last sound may still wait in the channel: it goes before the next piece's.
+                while let Ok(data) = self.arriving.try_recv() {
+                    if let Some(end) = self.play(&data).await {
+                        return Some(end);
+                    }
+                }
+                match fetched {
+                    Ok(()) => {
+                        self.fetch_next();
+                        self.end_if_due().await
                     }
                     // Stopped or overtaken meanwhile: the helper says `done`, and the answer is `Ok`.
-                    Err(_) if !job.current() => {}
+                    Err(_) if !self.job.current() => None,
                     Err(err) => {
                         // What plays stops; the answer is OpenAI's error once the helper is done.
-                        failed = Some(ai_error(&err));
-                        if let Err(err) = job.send("\"stop\"").await {
-                            return speech_failure(&err);
-                        }
+                        self.failed = Some(ai_error(&err));
+                        self.queue.clear();
+                        self.shut = true;
+                        self.send("\"stop\"").await
                     }
                 }
             }
-            line = job.next() => match line {
-                Ok(SpeechLine::Done) => return failed.unwrap_or(Response::Ok),
-                Ok(SpeechLine::Failed { code, message }) => return Response::Error { code, message },
-                Ok(SpeechLine::Playing) => sounded(stamps),
-                Ok(SpeechLine::Pieces(_)) => {}
-                Err(err) => return speech_failure(&err),
-            },
         }
+    }
+
+    /// Sends OpenAI's sound `data` on, in lines of at most [`PCM_LINE`] bytes and whole samples: an odd
+    /// last byte waits for the next data.
+    async fn play(&mut self, data: &[u8]) -> Option<Response> {
+        use base64::Engine as _;
+        // Stopped meanwhile: the helper says `done`, nothing more goes to it.
+        if self.shut || !self.job.current() {
+            return None;
+        }
+        let mut bytes: Vec<u8> = self.odd.take().into_iter().chain(data.iter().copied()).collect();
+        if bytes.len() % 2 == 1 {
+            self.odd = bytes.pop();
+        }
+        for part in bytes.chunks(PCM_LINE) {
+            let line = serde_json::json!({"pcm": {
+                "rate": crate::account::ai::SPEECH_RATE,
+                "data": base64::engine::general_purpose::STANDARD.encode(part),
+            }});
+            if let Some(end) = self.send(&line.to_string()).await {
+                return Some(end);
+            }
+        }
+        None
+    }
+
+    /// Fetches the next piece from OpenAI, once the one before is all there.
+    fn fetch_next(&mut self) {
+        if self.fetching.is_some() || self.shut || !self.job.current() {
+            return;
+        }
+        let Some(openai) = &self.openai else { return };
+        let Some(piece) = self.queue.pop_front() else { return };
+        let (speaker, voice, style) = (openai.speaker.clone(), openai.voice.clone(), openai.style.clone());
+        let sound = self.sound.clone();
+        self.fetching = Some(Box::pin(async move {
+            let started = std::time::Instant::now();
+            let (mut first, mut bytes) = (None, 0);
+            let fetched = speaker
+                .speech(&voice, &piece, style.as_deref(), &mut |data| {
+                    first.get_or_insert_with(|| started.elapsed());
+                    bytes += data.len();
+                    // Once the reader is gone nobody hears it: the fetch ends with it.
+                    let _ = sound.send(data.to_vec());
+                    Ok(())
+                })
+                .await;
+            if fetched.is_ok() {
+                log_openai_piece(piece.chars().count(), first.unwrap_or(started.elapsed()), started.elapsed(), bytes);
+            }
+            fetched
+        }));
+    }
+
+    /// Sends `end` once no more text comes and all of it went out: with OpenAI every text's pieces named,
+    /// fetched and sent; a provider of the helper needs it only in a job open for `more`.
+    async fn end_if_due(&mut self) -> Option<Response> {
+        let all_out = match &self.openai {
+            Some(_) => self.asked == 0 && self.queue.is_empty() && self.fetching.is_none(),
+            None => self.more,
+        };
+        if !self.closed || self.shut || !all_out {
+            return None;
+        }
+        self.shut = true;
+        self.send("\"end\"").await
+    }
+
+    /// Gives the open job more `text` to read (issue #850); nothing after a stop.
+    async fn add(&mut self, text: &str) -> Option<Response> {
+        if self.shut || !self.job.current() {
+            return None;
+        }
+        if self.openai.is_some() {
+            self.asked += 1;
+        }
+        self.send(&serde_json::json!({"add": {"text": text}}).to_string()).await
+    }
+
+    /// No more text comes: `end` follows once all of it went out.
+    async fn close(&mut self) -> Option<Response> {
+        self.closed = true;
+        self.end_if_due().await
+    }
+
+    /// Reads until the helper is done.
+    async fn finish(mut self) -> Response {
+        loop {
+            let event = self.wait().await;
+            if let Some(end) = self.handle(event).await {
+                return end;
+            }
+        }
+    }
+
+    async fn send(&mut self, line: &str) -> Option<Response> {
+        self.job.send(line).await.err().map(|err| speech_failure(&err))
     }
 }
 
-/// When an answer read aloud began (issue #828): its first word and its first sound. Only times.
+/// When an answer read aloud began (issue #828): its first word, its first text given to the helper
+/// (issue #850) and its first sound. Only times.
 #[derive(Debug, Default)]
 struct Stamps {
     first_word: Option<DateTime<Utc>>,
+    first_piece: Option<DateTime<Utc>>,
     first_sound: Option<DateTime<Utc>>,
 }
 
@@ -2828,6 +2979,24 @@ fn sounded(stamps: Option<&std::sync::Mutex<Stamps>>) {
     if let Some(stamps) = stamps {
         stamps.lock().unwrap_or_else(PoisonError::into_inner).first_sound.get_or_insert_with(Utc::now);
     }
+}
+
+/// The first text of an answer goes to the helper (issue #850): the first time is kept.
+fn given(stamps: Option<&std::sync::Mutex<Stamps>>) {
+    if let Some(stamps) = stamps {
+        stamps.lock().unwrap_or_else(PoisonError::into_inner).first_piece.get_or_insert_with(Utc::now);
+    }
+}
+
+/// Writes how a piece of `chars` characters came from OpenAI (issue #850): its first data and all of it
+/// after `first` and `fetched`, and how long its `bytes` sound. Never its text.
+fn log_openai_piece(chars: usize, first: std::time::Duration, fetched: std::time::Duration, bytes: usize) {
+    let sound = bytes as u128 / 2 * 1000 / u128::from(crate::account::ai::SPEECH_RATE);
+    eprintln!(
+        "torroworkplace: speech piece: {chars} chars, first data {} ms, fetched {} ms, sound {sound} ms",
+        first.as_millis(),
+        fetched.as_millis()
+    );
 }
 
 /// How many timed rounds the core keeps (issue #828, `settings.voice_timings`): in memory only.
@@ -14517,26 +14686,48 @@ impl Core {
         let number = self.speech.claim().await;
         // Another call for the answer that is read takes the place: this one is no reading of it.
         *self.reading.lock().await = None;
-        self.speak_claimed(number, text, None).await
+        self.speak_claimed(number, text).await
     }
 
-    /// Reads `text` as the job `number` of the helper ([`SpeechHelper::claim`]): one piece of
-    /// `assistant.speak` or `assistant.speak_answer` (issue #747). Answers once it was read or stopped.
-    /// `stamps` keeps when the first sound played, for a timed round (issue #828).
-    async fn speak_claimed(&self, number: u64, text: &str, stamps: Option<&std::sync::Mutex<Stamps>>) -> Response {
+    /// Reads `text` as the job `number` of the helper ([`SpeechHelper::claim`]) for `assistant.speak`.
+    /// Answers once it was read or stopped.
+    async fn speak_claimed(&self, number: u64, text: &str) -> Response {
+        match self.begin_reading(number, text, false, None, None).await {
+            Ok(Some(reader)) => reader.finish().await,
+            Ok(None) => Response::Ok,
+            Err(refused) => refused,
+        }
+    }
+
+    /// Starts reading `text` as the job `number` of the helper ([`SpeechHelper::claim`]), open for more
+    /// text with `more` (issue #850), with the provider and voice of the settings. `stamps` keeps when the
+    /// first text went and the first sound played (issues #828, #850); with `readings` the job counts as
+    /// reading aloud while it sounds. `None` when it was stopped before anything went to the helper.
+    async fn begin_reading<'a>(
+        &'a self,
+        number: u64,
+        text: &str,
+        more: bool,
+        stamps: Option<&'a std::sync::Mutex<Stamps>>,
+        readings: Option<&'a Arc<Readings>>,
+    ) -> Result<Option<Reader<'a>>, Response> {
         use torro_core::settings::SpeechProvider;
         let refused = |code: &str, message: &str| Response::Error { code: code.into(), message: message.into() };
         let voice = self.settings.current().voice;
         // Qwen3-TTS chosen in a build with it, read here by one without, reads with Pocket TTS (#764).
         let provider = voice.speech_provider_here();
-        let speaker = match provider {
+        let openai = match provider {
             Some(SpeechProvider::OpenAi) => match self.ai.speaker().await {
-                Some(speaker) => Some(speaker),
+                Some(speaker) => Some(OpenAiVoice {
+                    speaker,
+                    voice: voice.openai_voice_or_default().to_string(),
+                    style: voice.openai_style_or_none().map(str::to_string),
+                }),
                 None => {
-                    return refused(
+                    return Err(refused(
                         "unsupported",
                         tr("Connect an OpenAI account in Settings › AI to read aloud with OpenAI."),
-                    );
+                    ));
                 }
             },
             _ => None,
@@ -14549,36 +14740,41 @@ impl Core {
             // How Pocket TTS speaks (issue #782; Qwen3-TTS keeps its own pace); OpenAI's style stays here, with its key.
             "speed": voice.pocket_speed_or_default(),
             "pause": voice.pocket_pause_or_default(),
+            "more": more,
         }});
-        let mut job = match self.speech.begin_claimed(number, &voice_args("--speak", &speech_settings(&voice))).await {
-            Ok(job) => job,
-            Err(err) => return speech_failure(&err),
-        };
+        let mut job = self
+            .speech
+            .begin_claimed(number, &voice_args("--speak", &speech_settings(&voice)))
+            .await
+            .map_err(|err| speech_failure(&err))?;
         // Stopped while the helper started: nothing is sent, nothing is read. Checked as the line
         // goes out, so a stop is either before it (and counts) or after it (and the helper gets it).
         match job.send_if_current(&say.to_string()).await {
-            Ok(true) => {}
+            Ok(true) => given(stamps),
             Ok(false) => {
                 job.leave();
-                return Response::Ok;
+                return Ok(None);
             }
-            Err(err) => return speech_failure(&err),
+            Err(err) => return Err(speech_failure(&err)),
         }
-        loop {
-            match job.next().await {
-                Ok(SpeechLine::Playing) => sounded(stamps),
-                Ok(SpeechLine::Done) => return Response::Ok,
-                Ok(SpeechLine::Failed { code, message }) => return Response::Error { code, message },
-                Ok(SpeechLine::Pieces(pieces)) => match &speaker {
-                    Some(speaker) => {
-                        let (openai_voice, style) = (voice.openai_voice_or_default(), voice.openai_style_or_none());
-                        return read_with_openai(job, speaker, openai_voice, style, pieces, stamps).await;
-                    }
-                    None => return refused("error", tr("Reading aloud failed. Try again.")),
-                },
-                Err(err) => return speech_failure(&err),
-            }
-        }
+        let (sound, arriving) = tokio::sync::mpsc::unbounded_channel();
+        Ok(Some(Reader {
+            job,
+            asked: usize::from(openai.is_some()),
+            openai,
+            queue: std::collections::VecDeque::new(),
+            fetching: None,
+            sound,
+            arriving,
+            odd: None,
+            more,
+            closed: !more,
+            shut: false,
+            failed: None,
+            stamps,
+            readings,
+            speaking: None,
+        }))
     }
 
     /// `assistant.speak_answer` (issue #747): reads the answer after the last message of `conversation`
@@ -14643,15 +14839,16 @@ impl Core {
 
     /// Reads the answer after the entry `after` of `conversation` as the job `number` (issue #747): every
     /// [`READ_EVERY`] the answer as far as it is written, its complete sentences
-    /// ([`crate::assistant::sentences`]) as one piece while the one before plays; an approval or a failure
-    /// as a sentence saying so. Ends once the answer is over and read, or when stopped; however long the
-    /// answer pauses (a long tool), the rest is read. It counts as reading aloud only while a piece sounds.
+    /// ([`crate::assistant::sentences`]) given to one job of the helper as they come (issue #850), so the
+    /// next is computed or fetched while one plays; an approval or a failure as a sentence saying so. Ends
+    /// once the answer is over and read, or when stopped; however long the answer pauses (a long tool),
+    /// the rest is read. It counts as reading aloud only while it sounds ([`Reader`]).
     /// Of an answer in two parts only the spoken part is read, whole and as soon as it is complete, and
     /// nothing of the answer after it but an approval or a failure; one without it is read up to a sentence end within
     /// [`torro_ipc::assistant::SPOKEN_MOST`] characters (issue #774). `stamps` keeps when the first
-    /// word came (the time of the first answer entry with text: when its first piece came) and when
-    /// the first sound played (issue #828). An answer stored in one go carries the time it was stored,
-    /// so its first word counts as late as that.
+    /// word came (the time of the first answer entry with text: when its first piece came), when the
+    /// first text went to the helper and when the first sound played (issues #828, #850). An answer
+    /// stored in one go carries the time it was stored, so its first word counts as late as that.
     async fn read_answer(
         &self,
         number: u64,
@@ -14659,81 +14856,125 @@ impl Core {
         after: u64,
         stamps: &std::sync::Mutex<Stamps>,
     ) -> Response {
-        use torro_ipc::assistant::{EntryContent, SPOKEN_MOST};
+        use torro_ipc::assistant::SPOKEN_MOST;
         let mut sentences = crate::assistant::sentences::Sentences::with_most(SPOKEN_MOST);
+        let mut reader: Option<Reader<'_>> = None;
+        let mut over = false;
+        // When the answer is looked at next: every READ_EVERY, however many lines and how much sound come between.
+        let mut look = tokio::time::Instant::now();
         loop {
-            if !self.speech.is_current(number) {
-                return Response::Ok;
-            }
-            let (running, entries) = match self.assistant.get(conversation, Some(after)).await {
-                Response::Conversation { conversation, entries } => (conversation.running, entries),
-                // Deleted meanwhile: there is nothing more to read.
-                _ => return Response::Ok,
-            };
-            let first_word = entries.iter().find_map(|entry| match &entry.content {
-                EntryContent::Answer { text, spoken, .. }
-                    if !text.trim().is_empty() || spoken.as_deref().is_some_and(|said| !said.trim().is_empty()) =>
-                {
-                    Some(entry.time)
-                }
-                _ => None,
-            });
-            if let Some(time) = first_word {
-                stamps.lock().unwrap_or_else(PoisonError::into_inner).first_word.get_or_insert(time);
-            }
-            let mut text = String::new();
-            let mut last_word = None;
-            let mut said = false;
-            for entry in &entries {
-                match &entry.content {
-                    EntryContent::Answer { .. } if said => {}
-                    EntryContent::Answer { text: answer, spoken, .. } => {
-                        if !text.is_empty() {
-                            text.push_str("\n\n");
-                        }
-                        // The spoken part says it all; the shown part and what follows are not read.
-                        said = spoken.is_some();
-                        text.push_str(spoken.as_deref().unwrap_or(answer));
-                    }
-                    EntryContent::Approval { .. } => {
-                        last_word = Some(tr("The assistant needs your approval. Please look at the window."));
-                    }
-                    EntryContent::Error { .. } => last_word = Some(tr("The assistant could not answer.")),
-                    _ => {}
-                }
-            }
-            // A spoken part is read whole, as "Repeat" reads it (`assistant.speak`): only an answer
-            // without one is cut. Once it is there it is complete, so its last sentence is read at once,
-            // not after the shown part is written; the reading still waits for an approval or a failure
-            // to say it.
-            if said {
-                sentences.lift_limit();
-            }
-            let mut pieces = sentences.push(&text);
-            let over = last_word.is_some() || !running;
-            if over || said {
-                pieces.extend(sentences.finish());
-            }
-            if over {
-                pieces.extend(last_word.map(str::to_string));
-            }
-            if !pieces.is_empty() {
-                // Counted as reading only while it sounds: between two pieces – a tool that takes long –
-                // the microphone of a conversation by voice is not kept closed.
-                let read = {
-                    let _speaking = Speaking::new(&self.speaking);
-                    self.speak_claimed(number, &pieces.join(" "), Some(stamps)).await
+            if !over && tokio::time::Instant::now() >= look {
+                look = tokio::time::Instant::now() + READ_EVERY;
+                let (pieces, ends) = match self.speech.is_current(number) {
+                    // Stopped: nothing more is given; a job that runs reads on to its `done`.
+                    false => (Vec::new(), true),
+                    true => self.answer_so_far(conversation, after, &mut sentences, stamps).await,
                 };
-                if read != Response::Ok || over {
-                    return read;
+                over = ends;
+                if !pieces.is_empty() {
+                    let text = pieces.join(" ");
+                    let given = match reader.as_mut() {
+                        Some(open) => open.add(&text).await,
+                        None => match self.begin_reading(number, &text, true, Some(stamps), Some(&self.speaking)).await
+                        {
+                            Ok(Some(begun)) => {
+                                reader = Some(begun);
+                                None
+                            }
+                            Ok(None) => return Response::Ok,
+                            Err(refused) => Some(refused),
+                        },
+                    };
+                    if let Some(end) = given {
+                        return end;
+                    }
                 }
+                if over {
+                    let Some(open) = reader.as_mut() else { return Response::Ok };
+                    if let Some(end) = open.close().await {
+                        return end;
+                    }
+                }
+            }
+            let Some(open) = reader.as_mut() else {
+                tokio::time::sleep_until(look).await;
                 continue;
+            };
+            let event = tokio::select! {
+                () = tokio::time::sleep_until(look), if !over => None,
+                event = open.wait() => Some(event),
+            };
+            if let Some(event) = event
+                && let Some(end) = open.handle(event).await
+            {
+                return end;
             }
-            if over {
-                return Response::Ok;
-            }
-            tokio::time::sleep(READ_EVERY).await;
         }
+    }
+
+    /// The answer after the entry `after` of `conversation` as far as it is written ([`Core::read_answer`]):
+    /// its sentences not read yet, and whether it is over. One that was deleted is over.
+    async fn answer_so_far(
+        &self,
+        conversation: &str,
+        after: u64,
+        sentences: &mut crate::assistant::sentences::Sentences,
+        stamps: &std::sync::Mutex<Stamps>,
+    ) -> (Vec<String>, bool) {
+        use torro_ipc::assistant::EntryContent;
+        let (running, entries) = match self.assistant.get(conversation, Some(after)).await {
+            Response::Conversation { conversation, entries } => (conversation.running, entries),
+            // Deleted meanwhile: there is nothing more to read.
+            _ => return (Vec::new(), true),
+        };
+        let first_word = entries.iter().find_map(|entry| match &entry.content {
+            EntryContent::Answer { text, spoken, .. }
+                if !text.trim().is_empty() || spoken.as_deref().is_some_and(|said| !said.trim().is_empty()) =>
+            {
+                Some(entry.time)
+            }
+            _ => None,
+        });
+        if let Some(time) = first_word {
+            stamps.lock().unwrap_or_else(PoisonError::into_inner).first_word.get_or_insert(time);
+        }
+        let mut text = String::new();
+        let mut last_word = None;
+        let mut said = false;
+        for entry in &entries {
+            match &entry.content {
+                EntryContent::Answer { .. } if said => {}
+                EntryContent::Answer { text: answer, spoken, .. } => {
+                    if !text.is_empty() {
+                        text.push_str("\n\n");
+                    }
+                    // The spoken part says it all; the shown part and what follows are not read.
+                    said = spoken.is_some();
+                    text.push_str(spoken.as_deref().unwrap_or(answer));
+                }
+                EntryContent::Approval { .. } => {
+                    last_word = Some(tr("The assistant needs your approval. Please look at the window."));
+                }
+                EntryContent::Error { .. } => last_word = Some(tr("The assistant could not answer.")),
+                _ => {}
+            }
+        }
+        // A spoken part is read whole, as "Repeat" reads it (`assistant.speak`): only an answer
+        // without one is cut. Once it is there it is complete, so its last sentence is read at once,
+        // not after the shown part is written; the reading still waits for an approval or a failure
+        // to say it.
+        if said {
+            sentences.lift_limit();
+        }
+        let mut pieces = sentences.push(&text);
+        let over = last_word.is_some() || !running;
+        if over || said {
+            pieces.extend(sentences.finish());
+        }
+        if over {
+            pieces.extend(last_word.map(str::to_string));
+        }
+        (pieces, over)
     }
 
     /// Times the round of the message `after` in `conversation` (issue #828): with the listener's half
@@ -14752,8 +14993,13 @@ impl Core {
             first_word_ms: span_ms(asked, first_word),
             first_sound_ms: span_ms(first_word, first_sound),
         };
+        // Issue #850: the first sound split into the wait for the first sentence and its sound; only in the log.
+        let (sentence, ready) = match stamps.first_piece {
+            Some(piece) => (span_ms(first_word, piece).to_string(), span_ms(piece, first_sound).to_string()),
+            None => ("-".to_string(), "-".to_string()),
+        };
         eprintln!(
-            "torroworkplace: voice round: pause {} ms, recognition {} ms, first word {} ms, first sound {} ms, total {} ms",
+            "torroworkplace: voice round: pause {} ms, recognition {} ms, first word {} ms, first sound {} ms, total {} ms, first sentence {sentence} ms, sound ready {ready} ms",
             round.pause_ms,
             round.recognize_ms,
             round.first_word_ms,
@@ -20815,7 +21061,8 @@ done"#;
     }
 
     /// Issue #745: with OpenAI the core fetches each piece the helper names, with the account's key,
-    /// and sends its sound on until the helper is done.
+    /// and sends its sound on until the helper is done; issue #850: in whole samples as it arrives, an
+    /// odd last byte of a piece with the next one.
     #[cfg(unix)]
     #[tokio::test]
     async fn openai_sound_is_fetched_by_the_core() {
@@ -20829,24 +21076,30 @@ done"#;
                 then.status(200).json_body(serde_json::json!({"data": [{"id": "gpt-5"}]}));
             })
             .await;
-        let speech = server
-            .mock_async(|when, then| {
+        let piece = |input: &'static str, sound: [u8; 3]| {
+            server.mock_async(move |when, then| {
                 when.method("POST")
                     .path("/v1/audio/speech")
                     .header("authorization", format!("Bearer {}", crate::account::ai::tests::KEY))
-                    .json_body_includes(r#"{"voice": "cedar"}"#);
-                then.status(200).body([0u8, 1, 2, 3]);
+                    .json_body_includes(r#"{"voice": "cedar"}"#)
+                    .json_body_includes(serde_json::json!({"input": input}).to_string());
+                then.status(200).body(sound);
             })
-            .await;
-        let body = r#"n=0
+        };
+        let (one, two) = (piece("One.", [0, 1, 2]).await, piece("Two.", [3, 4, 5]).await);
+        let sent = dir.path().join("pcm.log");
+        let body = format!(
+            r#"n=0
 while read line; do
   case "$line" in
-    *'"say"'*) echo '{"pieces": ["One.", "Two."]}' ;;
-    *'"pcm"'*) n=$((n+1)); [ $n = 1 ] && echo '"playing"' ;;
-    '"end"') [ $n = 2 ] && echo '"done"' || echo "{\"failed\": {\"code\": \"error\", \"message\": \"$n\"}}" ;;
+    *'"say"'*) echo '{{"pieces": ["One.", "Two."]}}' ;;
+    *'"pcm"'*) n=$((n+1)); printf '%s\n' "$line" >> '{}'; [ $n = 1 ] && echo '"playing"' ;;
+    '"end"') [ $n = 2 ] && echo '"done"' || echo "{{\"failed\": {{\"code\": \"error\", \"message\": \"$n\"}}}}" ;;
   esac
-done"#;
-        let program = crate::apps::tests::fake_program(dir.path(), body);
+done"#,
+            sent.display()
+        );
+        let program = crate::apps::tests::fake_program(dir.path(), &body);
         let core = core_with_ai(dir.path(), &MemoryTokens::default(), Vec::new())
             .with_speech(crate::apps::SpeechHelper::at(program));
         core.ai
@@ -20863,7 +21116,17 @@ done"#;
             Response::Ok
         );
         assert_eq!(core.handle(Request::Speak { text: "One. Two.".into() }).await, Response::Ok);
-        assert_eq!(speech.calls_async().await, 2, "one call per piece");
+        assert_eq!((one.calls_async().await, two.calls_async().await), (1, 1), "one call per piece");
+        use base64::Engine as _;
+        let mut heard = Vec::new();
+        for line in std::fs::read_to_string(&sent).expect("sound sent").lines() {
+            let value: serde_json::Value = serde_json::from_str(line).expect("json");
+            let data = value["pcm"]["data"].as_str().expect("data");
+            let data = base64::engine::general_purpose::STANDARD.decode(data).expect("base64");
+            assert_eq!(data.len() % 2, 0, "whole samples only: {line}");
+            heard.extend(data);
+        }
+        assert_eq!(heard, [0, 1, 2, 3, 4, 5], "in order, the odd byte with the next piece");
     }
 
     /// A message to the test engine in a new conversation, answered after `step` twice.
@@ -21060,6 +21323,21 @@ done"#,
         assert!(!log.contains("whisper"), "the style stays with the core: {log}");
     }
 
+    /// A speech helper like `--speak` with jobs open for more text (issue #850): it notes what it is given
+    /// in `said` (each `say` and `add`, and the `end`), plays at once and is done after `end`.
+    fn open_job_helper(said: &Path) -> String {
+        format!(
+            r#"while read line; do
+  case "$line" in
+    *'"say"'*) printf '%s\n' "$line" >> '{0}'; echo '"playing"' ;;
+    *'"add"'*) printf '%s\n' "$line" >> '{0}' ;;
+    '"end"') printf '%s\n' "$line" >> '{0}'; echo '"done"' ;;
+  esac
+done"#,
+            said.display()
+        )
+    }
+
     /// Review of PR #768: the first sentence of an answer is read while the model still writes the rest,
     /// the rest once it comes, each sentence once.
     #[cfg(unix)]
@@ -21069,16 +21347,8 @@ done"#,
         const ID: &str = "0000000000000747";
         let dir = tempfile::tempdir().expect("temp dir");
         let said = dir.path().join("said.log");
-        let body = format!(
-            r#"while read line; do
-  case "$line" in
-    *'"say"'*) printf '%s\n' "$line" >> '{}'; echo '"playing"'; echo '"done"' ;;
-  esac
-done"#,
-            said.display()
-        );
         let speaker = dir.path().join("speaker");
-        crate::apps::tests::fake_at(&speaker, &body);
+        crate::apps::tests::fake_at(&speaker, &open_job_helper(&said));
         written(&dir.path().join("assistant"), ID, "Today", vec![message("What is on today?")], &[], |_| {});
         let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
         let core = Arc::new(
@@ -21107,9 +21377,137 @@ done"#,
         finish_growing(&core.assistant, ID, run, "Three events today. The first is at nine.").await;
         assert_eq!(read.await.expect("read"), Response::Ok);
         let log = std::fs::read_to_string(&said).expect("read aloud");
-        assert_eq!(log.lines().count(), 2, "{log}");
-        assert!(log.lines().nth(1).is_some_and(|line| line.contains("The first is at nine.")), "{log}");
+        let lines: Vec<&str> = log.lines().collect();
+        // Issue #850: one job, open for more, the rest added to it, then its end.
+        assert_eq!(lines.len(), 3, "{log}");
+        assert!(lines[0].contains(r#""say""#) && lines[0].contains(r#""more":true"#), "{log}");
+        assert!(lines[1].contains(r#""add""#) && lines[1].contains("The first is at nine."), "{log}");
+        assert_eq!(lines[2], r#""end""#, "{log}");
         assert_eq!(log.matches("Three events today.").count(), 1, "each sentence once: {log}");
+    }
+
+    /// Waits up to five seconds for `ready`.
+    async fn until_true(what: &str, mut ready: impl FnMut() -> bool) {
+        let waited = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !ready() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(waited.is_ok(), "{what}");
+    }
+
+    /// Issue #850: the microphone is closed only while something sounds: `waiting` lets it go while an
+    /// open job has nothing to play, the next `playing` takes it again.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_microphone_is_closed_only_while_something_sounds() {
+        use crate::assistant::tests::{finish_growing, growing, message, written};
+        const ID: &str = "0000000000000850";
+        let dir = tempfile::tempdir().expect("temp dir");
+        let go = dir.path().join("go");
+        let body = format!(
+            r#"while read line; do
+  case "$line" in
+    *'"say"'*) echo '"playing"' ;;
+    *'"add"'*) echo '"waiting"'; while [ ! -e '{}' ]; do sleep 0.05; done; echo '"playing"' ;;
+    '"end"') echo '"done"' ;;
+  esac
+done"#,
+            go.display()
+        );
+        let speaker = dir.path().join("speaker");
+        crate::apps::tests::fake_at(&speaker, &body);
+        written(&dir.path().join("assistant"), ID, "Today", vec![message("What is on today?")], &[], |_| {});
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = Arc::new(
+            core(dir.path())
+                .with_assistant(assistant)
+                .with_speech(crate::apps::SpeechHelper::at(speaker))
+                .with_probe(Measured(large_pc())),
+        );
+        let (run, partial) = growing(&core.assistant, ID).await;
+        partial.lock().unwrap_or_else(PoisonError::into_inner).text = "Three events today. The first".into();
+        let reader = Arc::clone(&core);
+        let read = tokio::spawn(async move { reader.handle(Request::SpeakAnswer { conversation: ID.into() }).await });
+        until_true("closed while the first sentence sounds", || core.speaking.now() == (true, 1)).await;
+        finish_growing(&core.assistant, ID, run, "Three events today. The first is at nine.").await;
+        until_true("open while the job waits for sound", || core.speaking.now() == (false, 1)).await;
+        assert!(!read.is_finished(), "still reading");
+        std::fs::write(&go, "").expect("go");
+        until_true("closed again with the next sound", || core.speaking.now().1 == 2).await;
+        assert_eq!(read.await.expect("read"), Response::Ok);
+        assert_eq!(core.speaking.now(), (false, 2), "open once read");
+    }
+
+    /// Issue #850: with OpenAI each text added to the open job gets its own pieces, fetched in turn; an
+    /// error of OpenAI while reading stops what plays, and the answer is OpenAI's error.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn openai_reads_added_text_and_stops_on_its_error() {
+        use crate::assistant::tests::{finish_growing, growing, message, written};
+        use torro_core::account::Secret;
+        use torro_core::ai::AiProvider;
+        const ID: &str = "0000000000000851";
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = httpmock::MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(200).json_body(serde_json::json!({"data": [{"id": "gpt-5"}]}));
+            })
+            .await;
+        let piece = |input: &'static str, status: u16| {
+            server.mock_async(move |when, then| {
+                when.method("POST")
+                    .path("/v1/audio/speech")
+                    .json_body_includes(serde_json::json!({"input": input}).to_string());
+                then.status(status).body([0u8, 1, 2, 3]);
+            })
+        };
+        let (one, two) = (piece("Three events today.", 200).await, piece("The first is at nine.", 500).await);
+        let said = dir.path().join("said.log");
+        let body = format!(
+            r#"while read line; do
+  case "$line" in
+    *'"say"'*) echo '{{"pieces": ["Three events today."]}}' ;;
+    *'"add"'*) echo '{{"pieces": ["The first is at nine."]}}' ;;
+    *'"pcm"'*) printf 'pcm\n' >> '{0}'; echo '"playing"' ;;
+    '"stop"') printf 'stop\n' >> '{0}'; echo '"done"' ;;
+    '"end"') printf 'end\n' >> '{0}'; echo '"done"' ;;
+  esac
+done"#,
+            said.display()
+        );
+        let speaker = dir.path().join("speaker");
+        crate::apps::tests::fake_at(&speaker, &body);
+        written(&dir.path().join("assistant"), ID, "Today", vec![message("What is on today?")], &[], |_| {});
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = Arc::new(
+            core_with_ai(dir.path(), &MemoryTokens::default(), Vec::new())
+                .with_assistant(assistant)
+                .with_speech(crate::apps::SpeechHelper::at(speaker))
+                .with_probe(Measured(large_pc())),
+        );
+        core.ai
+            .connect(AiProvider::OpenAi, Some(&server.url("/v1")), Secret::new(crate::account::ai::tests::KEY))
+            .await
+            .expect("connected");
+        let provider =
+            Request::SetSetting { key: torro_ipc::SettingKey::SpeechProvider, value: serde_json::json!("openai") };
+        assert_eq!(core.handle(provider).await, Response::Ok);
+        let (run, partial) = growing(&core.assistant, ID).await;
+        partial.lock().unwrap_or_else(PoisonError::into_inner).text = "Three events today. The first".into();
+        let reader = Arc::clone(&core);
+        let read = tokio::spawn(async move { reader.handle(Request::SpeakAnswer { conversation: ID.into() }).await });
+        until_true("the first sentence sounds", || std::fs::read_to_string(&said).is_ok_and(|log| log.contains("pcm")))
+            .await;
+        finish_growing(&core.assistant, ID, run, "Three events today. The first is at nine.").await;
+        let answer = read.await.expect("read");
+        assert!(matches!(answer, Response::Error { .. }), "OpenAI's error: {answer:?}");
+        assert_eq!((one.calls_async().await, two.calls_async().await), (1, 1), "each piece fetched once");
+        let log = std::fs::read_to_string(&said).expect("said");
+        assert!(log.ends_with("stop\n") && !log.contains("end"), "what plays stops: {log}");
     }
 
     /// Issue #774 (and its review): of an answer in two parts only the spoken part is read, also while the
@@ -21123,16 +21521,8 @@ done"#,
         const ID: &str = "0000000000000774";
         let dir = tempfile::tempdir().expect("temp dir");
         let said = dir.path().join("said.log");
-        let body = format!(
-            r#"while read line; do
-  case "$line" in
-    *'"say"'*) printf '%s\n' "$line" >> '{}'; echo '"playing"'; echo '"done"' ;;
-  esac
-done"#,
-            said.display()
-        );
         let speaker = dir.path().join("speaker");
-        crate::apps::tests::fake_at(&speaker, &body);
+        crate::apps::tests::fake_at(&speaker, &open_job_helper(&said));
         const ONE_PART: &str = "0000000000000775";
         for id in [ID, ONE_PART] {
             written(&dir.path().join("assistant"), id, "Week", vec![message("What is on?")], &[], |_| {});
@@ -21198,7 +21588,7 @@ done"#,
         const ID: &str = "0000000000000828";
         let dir = tempfile::tempdir().expect("temp dir");
         let speaker = dir.path().join("speaker");
-        crate::apps::tests::fake_at(&speaker, r#"while read line; do echo '"playing"'; echo '"done"'; done"#);
+        crate::apps::tests::fake_at(&speaker, &open_job_helper(&dir.path().join("said.log")));
         written(&dir.path().join("assistant"), ID, "Voice", vec![message("What is on today?")], &[], |_| {});
         let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
         let core = core(dir.path())
@@ -21227,7 +21617,7 @@ done"#,
         assert_eq!(core.voice.take_heard(ID, after), None, "the half was taken");
         assert_eq!(core.handle(Request::VoiceTimings).await, core.voice_timings(), "the request answers it");
 
-        let stamps = Stamps { first_word: Some(Utc::now()), first_sound: Some(Utc::now()) };
+        let stamps = Stamps { first_word: Some(Utc::now()), first_sound: Some(Utc::now()), first_piece: None };
         for _ in 0..25 {
             core.voice.told(heard(after));
             core.time_round(ID, after, Some(Utc::now()), &stamps);
@@ -21275,7 +21665,8 @@ done"#,
         let body = format!(
             r#"while read line; do
   case "$line" in
-    *'"say"'*) printf '%s\n' "$line" >> '{}'; echo '"playing"'; sleep 0.4; echo '"done"' ;;
+    *'"say"'*) printf '%s\n' "$line" >> '{}'; echo '"playing"' ;;
+    '"end"') sleep 0.4; echo '"done"' ;;
   esac
 done"#,
             said.display()

@@ -285,15 +285,22 @@ impl OpenAiCompatible {
 
     /// `POST <base>/audio/speech` (issue #745): `input` read by `voice` with [`SPEECH_MODEL`], as raw
     /// signed 16-bit mono at [`SPEECH_RATE`], spoken as `instructions` say (the speaking style of
-    /// issue #782; left out for OpenAI's own way). The text goes to the server; no error repeats it,
-    /// the style or the key ([`Wire::send`]).
-    pub async fn speech(&self, voice: &str, input: &str, instructions: Option<&str>) -> Result<Vec<u8>, AiError> {
+    /// issue #782; left out for OpenAI's own way). The sound goes to `read` piece by piece as it
+    /// arrives (issue #850), so it can play before all of it is there; a piece may end inside a sample.
+    /// The text goes to the server; no error repeats it, the style or the key ([`Wire::send`]).
+    pub async fn speech(
+        &self,
+        voice: &str,
+        input: &str,
+        instructions: Option<&str>,
+        read: &mut (dyn FnMut(&[u8]) -> Result<(), AiError> + Send),
+    ) -> Result<(), AiError> {
         let mut body = json!({"model": SPEECH_MODEL, "voice": voice, "input": input, "response_format": "pcm"});
         if let Some(instructions) = instructions {
             body["instructions"] = json!(instructions);
         }
         let response = self.wire.send(self.wire.request(reqwest::Method::POST, "audio/speech").json(&body)).await?;
-        self.wire.body(response).await
+        self.wire.chunks(response, read).await
     }
 
     /// `GET <base>/models`, without asking local Ollama about tools: what finding a server needs.
@@ -2940,6 +2947,38 @@ pub(crate) mod tests {
         assert_eq!(responses.calls_async().await, 1);
     }
 
+    /// All the sound [`OpenAiCompatible::speech`] hands out, in order (issue #850).
+    async fn heard(
+        openai: &OpenAiCompatible,
+        voice: &str,
+        input: &str,
+        instructions: Option<&str>,
+    ) -> Result<Vec<u8>, AiError> {
+        let mut sound = Vec::new();
+        openai
+            .speech(voice, input, instructions, &mut |piece| {
+                sound.extend_from_slice(piece);
+                Ok(())
+            })
+            .await?;
+        Ok(sound)
+    }
+
+    /// Issue #850: an error of the reader of the sound ends the reading with it.
+    #[tokio::test]
+    async fn openai_speech_ends_with_the_readers_error() {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/audio/speech");
+                then.status(200).body([1u8, 2, 3]);
+            })
+            .await;
+        let openai = OpenAiCompatible::new(http(), AiProvider::OpenAi, &server.url("/v1"), Some(Secret::new(KEY)));
+        let stopped = openai.speech("marin", "Hello.", None, &mut |_| Err(AiError::Invalid("stop".into()))).await;
+        assert_eq!(stopped, Err(AiError::Invalid("stop".into())));
+    }
+
     /// Issue #745: reading aloud asks OpenAI for raw sound with the voice; an error repeats neither
     /// the key nor the text.
     #[tokio::test]
@@ -2963,9 +3002,9 @@ pub(crate) mod tests {
             })
             .await;
         let openai = OpenAiCompatible::new(http(), AiProvider::OpenAi, &server.url("/v1"), Some(Secret::new(KEY)));
-        assert_eq!(openai.speech("marin", "Hello.", None).await.expect("sound"), [1, 2, 3, 4]);
+        assert_eq!(heard(&openai, "marin", "Hello.", None).await.expect("sound"), [1, 2, 3, 4]);
         assert_eq!(speech.calls_async().await, 1);
-        let refused = openai.speech("marin", "Secret plans.", None).await.expect_err("refused");
+        let refused = heard(&openai, "marin", "Secret plans.", None).await.expect_err("refused");
         let message = refused.to_string();
         assert!(!message.contains(KEY) && !message.contains("Secret plans"), "{message}");
     }
@@ -2992,8 +3031,8 @@ pub(crate) mod tests {
             })
             .await;
         let openai = OpenAiCompatible::new(http(), AiProvider::OpenAi, &server.url("/v1"), Some(Secret::new(KEY)));
-        assert_eq!(openai.speech("cedar", "Hello.", Some("whisper slowly")).await.expect("sound"), [5, 6]);
-        assert_eq!(openai.speech("cedar", "Hello.", None).await.expect("sound"), [7, 8]);
+        assert_eq!(heard(&openai, "cedar", "Hello.", Some("whisper slowly")).await.expect("sound"), [5, 6]);
+        assert_eq!(heard(&openai, "cedar", "Hello.", None).await.expect("sound"), [7, 8]);
         assert_eq!((styled.calls_async().await, plain.calls_async().await), (1, 1));
     }
 

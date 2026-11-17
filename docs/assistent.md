@@ -951,16 +951,38 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
   das Modell nie zweimal auf der Karte liegt. Qwen schneidet die Stille vor dem ersten Wort jedes Stücks
   bis auf 50 ms ab und begrenzt die Länge eines Stücks, weil das Modell manchmal nicht von selbst endet; der Ton geht über cpal an die Tonausgabe des Systems. Den Ton von
   OpenAI holt der Dienst selbst, weil er den Schlüssel hält, in Stücken aus ganzen Sätzen (bis 500
-  Zeichen), das nächste, während das vorige spielt. Vorgelesen werden höchstens 3000 Zeichen, ohne
-  Markdown. Der Text kommt nicht ins Protokoll.
+  Zeichen), eines nach dem anderen. Seit Issue #850 spielt der Ton, sobald die ersten Daten ankommen, nicht
+  erst, wenn ein Stück ganz da ist; Pocket TTS rechnet jeden Satz einzeln, sodass der erste klingt, sobald er
+  fertig ist. Vorgelesen werden höchstens 3000 Zeichen je Auftrag, ohne Markdown. Der Text kommt nicht ins
+  Protokoll.
 - **Satz für Satz** (Issue #747): `assistant.speak_answer` schaut alle 150 ms auf die Antwort, die
-  entsteht, und gibt dem Helfer die fertigen Sätze als ein Stück, während das vorige spielt. Ein Satz endet
+  entsteht, und gibt dem Helfer die fertigen Sätze. Seit Issue #850 liest es eine Antwort **in einem Zug**:
+  Die ersten Sätze gehen als `say` mit `"more": true` an den Helfer, jeder weitere als
+  `{"add": {"text": …}}` in denselben Auftrag, am Ende folgt `"end"`. So rechnet Pocket TTS den nächsten Satz
+  (bzw. holt der Dienst ihn von OpenAI), während der vorige spielt, und zwischen zwei Sätzen entsteht keine
+  Lücke; früher begann jedes Stück einen eigenen Auftrag erst nach dem Ende des vorigen. Ein Satz endet
   an `.`, `!`, `?`, `…` oder `:` vor einem Leerzeichen und am Zeilenende, nicht nach einer Zahl („3.“),
   einem einzelnen Buchstaben („z. B.“) oder einer bekannten Abkürzung („bzw.“, „Dr.“); Codeblöcke werden
   nicht vorgelesen. Wartet die Antwort auf eine Freigabe oder scheitert sie, sagt der Assistent das in einem
   Satz. Ein zweiter Aufruf für dieselbe Antwort wartet auf dasselbe Ende, jeder andere beendet das Vorlesen.
   Pausiert die Antwort (ein langes Werkzeug), wartet das Vorlesen ohne Zeitgrenze auf den Rest; als
-  „liest vor“ zählt es nur, solange ein Stück klingt, das Mikrofon eines Gesprächs bleibt also nicht zu.
+  „liest vor“ zählt es nur, solange etwas klingt, das Mikrofon eines Gesprächs bleibt also nicht zu: Ist der
+  Ton eines offenen Auftrags 500 ms leer, meldet der Helfer `"waiting"` (der Dienst zählt das Vorlesen nicht
+  mehr), beim nächsten Ton wieder `"playing"`.
+- **Messung** (Issue #850): Je Runde schreibt der Dienst ins Journal
+  `voice round: … first sentence <ms> ms, sound ready <ms> ms` (vom ersten Wort bis der erste Satz an den
+  Helfer geht, und von da bis zum ersten Ton), je OpenAI-Stück `torroworkplace: speech piece: <n> chars, first
+  data <ms> ms, fetched <ms> ms, sound <ms> ms`, je Pocket-Stück der Helfer `torroassistant: speech piece: <n>
+  chars, first sound <ms> ms, computed <ms> ms, sound <ms> ms` und nach jeder Lücke ohne Ton
+  `torroassistant: speech gap: <ms> ms`. Nur Zeiten und Längen, nie Text. Die Seite „Antwortzeiten“ bleibt
+  bei ihren Spalten (Issue #828).
+- **Standardwerte** (Issue #850, gemessen am 16.11.2026 mit `pocket-de`): OpenAI bekommt kein Tempo, weil
+  `gpt-4o-mini-tts` keines annimmt; wie schnell es spricht, sagt der eigene Sprechstil. Pocket TTS spricht bei
+  100 % etwa 210 Wörter in der Minute (Alba 214, „Warm woman“ 210), zügig, aber im Rahmen eines Gesprächs, und
+  bleibt dabei. Am Ende eines einzeln gerechneten Satzes lässt Pocket selbst Stille: im Mittel 195 ms bei Alba
+  (145 bis 246 ms) und 146 ms bei „Warm woman“ (80 bis 207 ms), über alle zehn Sätze 170 ms. Das ist eine
+  natürliche Atempause; eine Satzpause von 0 bleibt deshalb der Standard (Regel des Plans: 250 ms erst, wenn
+  Pocket unter 150 ms ließe). Wem „Warm woman“ zu dicht klingt, stellt unter „Sentence pause“ 250 ms ein.
 - **Zweiteilige Antwort** (Issue #774): Wird eine Antwort vorgelesen (Chatfenster mit Lautsprecher an,
   Gespräch nach „Hey Torro“; `assistant.send_message` mit `spoken`), schreibt das Modell zuerst einen
   **gesprochenen Teil**, ein bis drei kurze Sätze ohne Markdown, die auf den Inhalt verweisen dürfen („Schau
