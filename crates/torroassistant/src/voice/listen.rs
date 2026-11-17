@@ -29,7 +29,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
 
 use chrono::{Local, TimeDelta, Utc};
@@ -42,7 +42,7 @@ use torro_ipc::{Request, Response, Talk, VoiceState};
 use super::audio::{Endpoint, FRAMES_PER_SECOND, Limits, NoiseFloor, rms};
 use super::echo::Echo;
 use super::wake::{after_wake_phrase, strip_wake_phrase};
-use super::{Recorder, Speaker, Transcriber, VoiceError, WakeWord};
+use super::{Recorder, Speaker, Stream, Transcriber, VoiceError, WakeWord};
 use crate::backend::Refusal;
 
 /// What the listener asks of the core.
@@ -189,6 +189,10 @@ enum Said {
 /// How many frames of echo follow the tone, which count as no speech either.
 const ECHO: usize = 1;
 
+/// How often the listener looks whether the echo cancellation runs while its answer is read with the
+/// microphone closed (issue #834).
+const ANSWER_LOOK: Duration = Duration::from_millis(20);
+
 /// How long a conversation by voice waits in silence for the next sentence before it ends (issue
 /// #849), in seconds. Long, so thinking aloud or a pause does not end it; the limit only guards a
 /// microphone left open and forgotten.
@@ -301,7 +305,7 @@ impl<A: Assistant> Listener<'_, A> {
 
     /// One round: in a conversation by voice the next sentence ([`Listener::converse`]); else waits
     /// for the wake word, then records, sends and answers one sentence. While anything is read aloud
-    /// the microphone stays closed. Failures of speech to text or of the core are written to the log
+    /// the microphone stays closed, unless the echo cancellation runs (issue #834). Failures of speech to text or of the core are written to the log
     /// and end the round with [`Ended::Nothing`]; only the microphone's fail it.
     ///
     /// `chime` says whether a conversation by voice opens its microphone with the tone (not after
@@ -420,8 +424,8 @@ impl<A: Assistant> Listener<'_, A> {
 
     /// The next sentence of the conversation by voice `talk` (issue #747): the tone, then up to
     /// [`TALK_WAIT_SECONDS`] for the person to speak, until a pause. Only a long silence ends the
-    /// conversation, with a tone. Something read aloud meanwhile, or the conversation ended or moved elsewhere,
-    /// closes the microphone, and what was heard is dropped.
+    /// conversation, with a tone. Something read aloud meanwhile without the echo cancellation (issue #834), or
+    /// the conversation ended or moved elsewhere, closes the microphone, and what was heard is dropped.
     fn converse(&mut self, voice: &Voice, talk: Talk, chime: bool) -> Result<Ended, VoiceError> {
         // An answer still runs there (one longer than the listener waited, or a talk started while it
         // ran): the conversation would refuse the sentence, so the microphone waits for it.
@@ -682,7 +686,7 @@ impl<A: Assistant> Listener<'_, A> {
 
     /// Reads the answer of `conversation` aloud. Without the echo cancellation the microphone stays
     /// closed, and the room's echo fades before it opens again. With it (issue #834, decision 2) the
-    /// microphone is open while it reads, so the canceller follows the room, and what it hears is dropped;
+    /// microphone is open while it reads and the cancellation runs, so the canceller follows the room, and what it hears is dropped;
     /// the pause after it is left out when the cancellation took part, so a sentence said at once after
     /// the answer keeps its beginning.
     fn read_answer(&mut self, conversation: &str) {
@@ -695,25 +699,43 @@ impl<A: Assistant> Listener<'_, A> {
             return;
         }
         let started = Instant::now();
-        let mut stream = match self.recorder.open() {
-            Ok(stream) => Some(stream),
-            Err(err) => {
-                eprintln!("torroassistant: {err}");
-                None
-            }
-        };
         let done = self.assistant.start_answer(conversation);
+        let mut stream: Option<Box<dyn Stream>> = None;
+        // The microphone failed or stopped once: it stays closed for the rest of the answer.
+        let mut broken = false;
         let read = loop {
+            // Open only while the cancellation runs; without it closed, as before.
+            if !self.echo_runs() {
+                stream = None;
+            } else if stream.is_none() && !broken {
+                match self.recorder.open() {
+                    Ok(opened) => stream = Some(opened),
+                    Err(err) => {
+                        eprintln!("torroassistant: {err}");
+                        broken = true;
+                    }
+                }
+            }
             match done.try_recv() {
                 Ok(read) => break read,
                 Err(TryRecvError::Disconnected) => break Ok(()),
                 Err(TryRecvError::Empty) => {}
             }
-            // Heard while it reads: dropped. A microphone that stopped waits for the end of the reading.
-            let heard = stream.as_mut().map(|stream| stream.frame());
-            if !matches!(heard, Some(Ok(Some(_)))) {
-                stream = None;
-                break done.recv().unwrap_or(Ok(()));
+            match stream.as_mut().map(|stream| stream.frame()) {
+                // Heard while it reads: dropped.
+                Some(Ok(Some(_))) => {}
+                Some(heard) => {
+                    if let Err(err) = heard {
+                        eprintln!("torroassistant: {err}");
+                    }
+                    stream = None;
+                    broken = true;
+                }
+                None => match done.recv_timeout(ANSWER_LOOK) {
+                    Ok(read) => break read,
+                    Err(RecvTimeoutError::Disconnected) => break Ok(()),
+                    Err(RecvTimeoutError::Timeout) => {}
+                },
             }
         };
         drop(stream);
@@ -1831,6 +1853,12 @@ mod tests {
         assert!(messages(&run.sent).is_empty());
         assert_eq!(run.chimes, 0);
         assert_eq!(run.opened, 2, "closed, then open again once it was quiet");
+
+        // Nor is it open during the listener's own answer.
+        let said = ["Hey Torro, what is on today?"];
+        let run = run_with_echo(Core::new(on()), &["utterance.wav", PAUSE], Some(2), &said, Echo::default());
+        assert_eq!(run.opened, 3, "the wake word, the talk, the wake word again: not the answer");
+        assert_eq!(messages(&run.sent).len(), 1);
     }
 
     /// Issue #834: the reader sends `assistant.speak_answer` on a thread of its own and tells when it was read.
