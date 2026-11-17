@@ -828,6 +828,9 @@ pub struct PimService {
     /// Tells who listens ([`PimService::on_forget`]) the id of every account removed or wiped from
     /// this device, so the contacts of it go too (issue #351).
     forgotten: tokio::sync::broadcast::Sender<String>,
+    /// Tells who listens ([`PimService::on_add`]) the id of every account signed in on this device,
+    /// once its first sync is done, so its contacts come at once and not at the next round (issue #354).
+    added: tokio::sync::broadcast::Sender<String>,
     /// The folder of the map tiles (`tiles` in the state directory, as `Places::system` keeps them);
     /// a remote wipe empties it. `None` in tests unless they bring one.
     map_tiles: Option<PathBuf>,
@@ -868,6 +871,7 @@ impl PimService {
             filters_writing: Mutex::new(()),
             sign_in: SignIn::offline(),
             forgotten: tokio::sync::broadcast::channel(16).0,
+            added: tokio::sync::broadcast::channel(16).0,
             map_tiles: None,
         }
     }
@@ -877,6 +881,21 @@ impl PimService {
     /// an account's contacts never outlive it (issue #351).
     pub fn on_forget(&self) -> tokio::sync::broadcast::Receiver<String> {
         self.forgotten.subscribe()
+    }
+
+    /// The id of every account signed in on this device from now on (Nextcloud's login flow,
+    /// `accounts.connect_caldav`, also again with a new password), after its first sync. The
+    /// contacts service listens, so a new account's address books come at once (issue #354).
+    pub fn on_add(&self) -> tokio::sync::broadcast::Receiver<String> {
+        self.added.subscribe()
+    }
+
+    /// The first sync of the account `id` just signed in, then [`PimService::on_add`] hears of it,
+    /// whether the sync worked or not: the contacts try their own connection.
+    async fn first_sync(&self, id: String) {
+        // `sync_account` logs a failure itself.
+        let _ = self.sync_account(&id).await;
+        let _ = self.added.send(id);
     }
 
     /// The CalDAV connections of the Nextcloud and CalDAV accounts that have one, by account id: the
@@ -2135,8 +2154,7 @@ impl PimService {
                     }
                 }
             };
-            // `sync_account` logs a failure itself.
-            let _ = service.sync_account(&id).await;
+            service.first_sync(id).await;
         });
         Response::LoginStarted { login_url }
     }
@@ -2269,8 +2287,7 @@ impl PimService {
         };
         let service = Arc::clone(self);
         tokio::spawn(async move {
-            // `sync_account` logs a failure itself.
-            let _ = service.sync_account(&id).await;
+            service.first_sync(id).await;
         });
         Response::Connected { account: info, calendars: services.calendars, tasks: services.tasks }
     }
@@ -5703,6 +5720,18 @@ pub(crate) mod tests {
         let service = with_tiles(refused_service().await);
         assert_eq!(wipe(&service, Ok(true)).await.0, Ok(Some(true)));
         assert_eq!(std::fs::read_dir(tiles.path()).expect("dir").count(), 0, "every tile and its etag go");
+    }
+
+    /// Issue #354: an account signed in is announced after its first sync, so its contacts come at
+    /// once; also when that sync failed (here: no server at all).
+    #[tokio::test]
+    async fn an_account_signed_in_is_announced_after_its_first_sync() {
+        let service = Arc::new(PimService::with_settings(SettingsStore::without_file()));
+        let mut added = service.on_add();
+        service.pretend_signed_in().await;
+        service.first_sync(ANNA.to_string()).await;
+        assert_eq!(added.try_recv().ok().as_deref(), Some(ANNA));
+        assert!(added.try_recv().is_err(), "once");
     }
 
     #[tokio::test]
