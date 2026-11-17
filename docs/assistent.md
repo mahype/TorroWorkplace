@@ -968,7 +968,9 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
   Pausiert die Antwort (ein langes Werkzeug), wartet das Vorlesen ohne Zeitgrenze auf den Rest; als
   „liest vor“ zählt es nur, solange etwas klingt, das Mikrofon eines Gesprächs bleibt also nicht zu: Ist der
   Ton eines offenen Auftrags 500 ms leer, meldet der Helfer `"waiting"` (der Dienst zählt das Vorlesen nicht
-  mehr), beim nächsten Ton wieder `"playing"`.
+  mehr), beim nächsten Ton wieder `"playing"`. `"mark"` markiert den Beginn dessen, was folgt (das nächste
+  `add`, bei OpenAI der nächste Ton); der Helfer antwortet `"marked"`, sobald das Gerät den ersten Ton danach
+  spielt (#837).
 - **Messung** (Issue #850): Je Runde schreibt der Dienst ins Journal
   `voice round: … first sentence <ms> ms, sound ready <ms> ms` (vom ersten Wort bis der erste Satz an den
   Helfer geht, und von da bis zum ersten Ton), je OpenAI-Stück `torroworkplace: speech piece: <n> chars, first
@@ -1049,8 +1051,9 @@ ist; das Mikrofon ist dann nur für dieses Gespräch offen. Statt des Eingabefel
   Antwort, keine, wenn die Antwort schneller ist, und keine beim Vorlesen eines getippten Chats, weil das Fenster die
   Zustände dort zeigt. Die Ansage wird nur vorgelesen, nie in der Unterhaltung gespeichert, damit das Modell sie
   nicht für seine eigene Aussage hält; die Antwort folgt im selben Vorlesen. Die Antwortzeiten (#828) zählen die Ansage
-  nicht: Der erste Satz zählt ab dem Text der Antwort, ihr erster Ton ab dann, wenn sie hinter der klingenden
-  Ansage bereitsteht (der Helfer meldet das Ende der Ansage nicht; kommt der Text kurz nach ihrem Ende, kann die Zeit um die Erzeugung des ersten Satzes zu kurz sein). Abschalten: „Say what it does while it works“ unter Voice ›
+  nicht: Der erste Satz zählt ab dem Text der Antwort, ihr erster Ton ab dem Moment, in dem das Gerät ihn spielt.
+  Dafür schickt der Dienst vor dem ersten Text der Antwort (bei OpenAI vor dem Ton ihres ersten Stücks) die Zeile
+  `"mark"`, und der Helfer meldet `"marked"`, sobald der erste Ton dahinter erklingt. Abschalten: „Say what it does while it works“ unter Voice ›
   Conversation (`voice_announcements`); der Schalter wirkt nur und ist nur bedienbar, solange „Speak answers“ an
   ist.
 
