@@ -21118,10 +21118,10 @@ done"#;
         let core = core(dir.path()).with_voice_models(models);
         let Response::VoiceModels { models } = core.handle(Request::ListVoiceModels).await else { panic!("listed") };
         // Qwen3-TTS only in builds with it (issue #764).
-        let expected = ["whisper-turbo", "parakeet", "pocket-de", "silero-vad", "qwen3-tts"];
+        let expected = ["whisper-turbo", "parakeet", "pocket-de", "silero-vad", "smart-turn", "qwen3-tts"];
         assert_eq!(
             models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(),
-            expected[..4 + usize::from(torro_core::settings::QWEN_BUILT)]
+            expected[..5 + usize::from(torro_core::settings::QWEN_BUILT)]
         );
         assert!(models.iter().all(|model| model.state == VoiceModelState::Missing));
         assert_eq!(code(&core.handle(Request::DownloadVoiceModel { model: "evil".into() }).await), "not-found");
