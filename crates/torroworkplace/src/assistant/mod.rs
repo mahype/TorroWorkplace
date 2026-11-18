@@ -1002,7 +1002,7 @@ impl Assistant {
     /// an answer and adds a `stopped` entry, and stops the answers of the bots it asked (task B.2).
     /// Nothing changes when none runs.
     pub async fn cancel(&self, id: &str, now: DateTime<Utc>) -> Response {
-        self.stop(id, None, now).await
+        self.stop(id, None, now).await.unwrap_or(Response::Ok)
     }
 
     /// `assistant.interrupt` (issue #835): the person spoke while the answer of `id` was read aloud, and
@@ -1011,43 +1011,40 @@ impl Assistant {
     /// that entry now, when something was read and no `stopped` entry follows the last message yet. Its
     /// approvals stay as they are: interrupting never decides one.
     pub async fn interrupt(&self, id: &str, heard: Option<String>, now: DateTime<Utc>) -> Response {
-        {
-            let mut state = self.state().await;
-            let Some(conversation) = state.conversations.get(id) else { return unknown(id) };
-            if !state.running.contains_key(id) {
-                let Some(heard) = heard else { return Response::Ok };
-                let stopped = conversation
-                    .entries
-                    .iter()
-                    .rev()
-                    .take_while(|entry| !matches!(entry.content, EntryContent::Message { .. }))
-                    .any(|entry| matches!(entry.content, EntryContent::Stopped { .. }));
-                if stopped {
-                    return Response::Ok;
-                }
-                let entry = Entry {
-                    seq: conversation.last() + 1,
-                    time: now,
-                    content: EntryContent::Stopped { heard: Some(heard) },
-                };
-                let line = Line::Entry { entry };
-                if let Err(message) = self.write(id, vec![line.clone()]).await {
-                    return failure(message);
-                }
-                if let Some(conversation) = state.conversations.get_mut(id) {
-                    conversation.apply(line);
-                }
-                return Response::Ok;
-            }
+        // Stopped first: an answer that ends meanwhile still gets the entry below.
+        if let Some(answer) = self.stop(id, heard.clone(), now).await {
+            return answer;
         }
-        self.stop(id, heard, now).await
+        let mut state = self.state().await;
+        let Some(conversation) = state.conversations.get(id) else { return unknown(id) };
+        let Some(heard) = heard else { return Response::Ok };
+        let stopped = conversation
+            .entries
+            .iter()
+            .rev()
+            .take_while(|entry| !matches!(entry.content, EntryContent::Message { .. }))
+            .any(|entry| matches!(entry.content, EntryContent::Stopped { .. }));
+        if stopped || state.running.contains_key(id) {
+            return Response::Ok;
+        }
+        let entry =
+            Entry { seq: conversation.last() + 1, time: now, content: EntryContent::Stopped { heard: Some(heard) } };
+        let line = Line::Entry { entry };
+        if let Err(message) = self.write(id, vec![line.clone()]).await {
+            return failure(message);
+        }
+        if let Some(conversation) = state.conversations.get_mut(id) {
+            conversation.apply(line);
+        }
+        Response::Ok
     }
 
-    /// Stops the running answer of `id` ([`Assistant::cancel`]), its `stopped` entry keeping `heard`.
-    async fn stop(&self, id: &str, heard: Option<String>, now: DateTime<Utc>) -> Response {
+    /// Stops the running answer of `id` ([`Assistant::cancel`]), its `stopped` entry keeping `heard`; `None` when
+    /// none runs there.
+    async fn stop(&self, id: &str, heard: Option<String>, now: DateTime<Utc>) -> Option<Response> {
         let mut state = self.state().await;
-        let Some(conversation) = state.conversations.get(id).cloned() else { return unknown(id) };
-        let Some(run) = state.running.remove(id) else { return Response::Ok };
+        let Some(conversation) = state.conversations.get(id).cloned() else { return Some(unknown(id)) };
+        let run = state.running.remove(id)?;
         // Aborted at its next pause; it checks its number under the lock before every write.
         run.task.abort();
         let mut entries: Vec<Entry> = run.growing(conversation.last()).into_iter().collect();
@@ -1055,7 +1052,7 @@ impl Assistant {
         entries.push(Entry { seq: after + 1, time: now, content: EntryContent::Stopped { heard } });
         let lines: Vec<Line> = entries.into_iter().map(|entry| Line::Entry { entry }).collect();
         if let Err(message) = self.write(id, lines.clone()).await {
-            return failure(message);
+            return Some(failure(message));
         }
         if let Some(conversation) = state.conversations.get_mut(id) {
             lines.into_iter().for_each(|line| conversation.apply(line));
@@ -1069,11 +1066,11 @@ impl Assistant {
             .collect();
         drop(state);
         for theirs in asked {
-            if let Response::Error { message, .. } = Box::pin(self.stop(&theirs, None, now)).await {
+            if let Some(Response::Error { message, .. }) = Box::pin(self.stop(&theirs, None, now)).await {
                 eprintln!("torroworkplace: cannot stop the bot's answer in conversation {theirs}: {message}");
             }
         }
-        Response::Ok
+        Some(Response::Ok)
     }
 
     /// `assistant.rename_conversation`; the title trimmed (the limits are checked before).
