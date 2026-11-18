@@ -827,6 +827,7 @@ höchstens ein Modell, und das lädt ein Knopf in Einstellungen › Assistent �
 | Parakeet (`parakeet`) | Sprache → Text, schneller, erkennt die Sprache selbst | 670 MB | `csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8` |
 | Pocket TTS, Deutsch (`pocket-de`, empfohlen) | Vorlesen, mit den Stimmen von Kyutai | 150 MB | `haex-space/pocket-tts-sherpa-onnx` und `kyutai/tts-voices` |
 | Silero VAD (`silero-vad`) | Satzanfang und -ende, ohne Modell die Lautstärke (#833) | 1,8 MB | `csukuangfj/vad` |
+| Smart Turn (`smart-turn`) | hört am Tonfall, ob ein Satz fertig ist; nur mit Silero VAD (#836) | 32 MB | `pipecat-ai/smart-turn-v3` |
 
 - **Feste Liste:** Jede Datei steht mit fester Fassung (Revision), Größe und SHA-256 im Programm
   (`torro_core::voice_models`); geladen wird nur diese Liste, nichts sonst, ohne Token. Die Dateien liegen im
@@ -1015,6 +1016,9 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
 | An/aus, Anbieter, Stimmen, wie die Stimme spricht | Voice › Read aloud, Lautsprecher im Chatfenster | `settings.set_setting` `read_aloud`, `speech_provider`, `pocket_voice`, `openai_voice`, `pocket_speed`, `pocket_pause`, `openai_style` · Admin | `settings_set_setting` (OpenAI als Anbieter nur Menschen) |
 | Pause bis zum neuen Gespräch „Voice“ (Issue #831) | Voice › Conversation › New conversation after a pause | `settings.set_setting` `voice_new_after` · Admin | `settings_set_setting` |
 | Ansagen beim Nachdenken an/aus (Issue #837) | Voice › Conversation › Say what it does while it works | `settings.set_setting` `voice_announcements` · Admin | `settings_set_setting` |
+| Pausen am Satzende (Issue #836) | Voice › Conversation › End of a sentence | `settings.set_setting` `voice_pause_done`, `voice_pause_open`, `voice_hold` · Admin | `settings_set_setting` (frei für Agenten, sie geben nichts frei) |
+| Abgewartete Pausen (Issue #836) | Voice › Conversation › Response times › Pauses waited out | `settings.voice_timings` (`held`) · Read | `settings_voice_timings` |
+| Smart Turn laden und entfernen (Issue #836) | Voice › Models | `settings.download_voice_model`, `settings.remove_voice_model` (`smart-turn`) · Admin | wie die anderen Modelle |
 | Füllstand des Kontexts (Issue #831) | Kopf des Chatfensters | `assistant.get_conversation`, `assistant.list_conversations` (`context`) · Read | `assistant_get_conversation`, `assistant_list_conversations` |
 
 ### Gespräch (Issue #747)
@@ -1036,6 +1040,20 @@ ist; das Mikrofon ist dann nur für dieses Gespräch offen. Statt des Eingabefel
   nicht, und die nächste Pause erkennt den längeren Satz. Nur ein Satz, der ohne Pause an seiner Höchstlänge
   endet, wird danach erkannt. Ohne das Modell bleibt alles wie zuvor: Satzende nach einer Sekunde Stille,
   erkannt wird danach. Ein frisch geladenes Modell gilt ab dem nächsten Start des Hörers.
+- **Satzende nach Sinn (#836):** In derselben Pause von etwa 320 ms bewertet der Hörer, ob der Satz fertig ist. Smart
+  Turn (Download unter Models) hört am Tonfall der letzten 8 Sekunden, ob die Stimme abschließt; Regeln lesen den vorab
+  erkannten Text, Deutsch und Englisch. Endet er auf ein Füllwort („ähm“, „um“), ein Bindewort („und“, „weil“,
+  „and“, „the“), ein „…“ oder ein Komma, ist er unfertig; endet er auf „Moment“, „warte mal“, „lass mich überlegen“,
+  „wait a moment“, „hold on“ oder „let me think“, hält er den Turn. Der Text gewinnt, wo er mehr sagt als der Ton; ein
+  Fragezeichen schließt ab („Was ist das?“), ein Punkt nach einer Verbpartikel auch („Mach das Licht an.“). Ein fertiger Satz endet nach 500 ms, ein unfertiger nach 2 s, ein
+  gehaltener nach 15 s, wenn die Person nicht weiterspricht; spricht sie weiter, gilt wieder die Pause von einer
+  Sekunde, bis zur nächsten Bewertung. Die Werte stellt Assistant › Voice › Conversation › End of a sentence ein
+  (`voice_pause_done`, `voice_pause_open`, `voice_hold`). Ein gehaltener Turn zählt nicht zur Höchstdauer von 15 s je
+  Satz. Ein Satz aus nichts als „ähm“ und „Moment“ wird nicht geschickt. Ohne Smart Turn entscheidet der Text allein,
+  ohne Text der Ton allein, ohne beides die Sekunde; ohne Silero VAD bleibt alles wie zuvor. Braucht Whisper für den
+  Text länger als die kurze Pause, endet ein Satz ohne Smart Turn nach der Sekunde, nicht später als vorher. Die
+  Antwortzeiten zählen, wie oft eine Pause von mindestens einer Sekunde ausgehalten wurde, die früher den Satz beendet
+  hätte („Pauses waited out“, `held` in `settings.voice_timings`).
 - **Kurz und zum Hören:** Gesprochene Nachrichten (`assistant.send_message` mit `spoken`) bekommen einen Teil
   im Prompt, der knappe Antworten ohne Tabellen, Listen und Code verlangt.
 - **Kein Selbstgespräch:** Was vorgelesen wird, egal wer es ausgelöst hat (auch ein Agent mit `assistant.speak`),
