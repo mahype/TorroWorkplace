@@ -28674,7 +28674,7 @@ mod tests {
         draw_everywhere(&mut app);
     }
 
-    /// Issue #605: "Ask AI…" opens the chat about the mail – beside it in the wide window, over it in
+    /// Issue #605 (the AI button since #892): it opens the chat about the mail – beside it in the wide window, over it in
     /// medium and narrow –, and it closes with ✕, Escape (before the mail) or the mail's panel.
     #[test]
     fn the_chat_about_a_mail_opens_with_its_mail_and_closes_first() {
