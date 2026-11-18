@@ -15107,13 +15107,14 @@ impl Core {
         let (Some(asked), Some(first_word), Some(first_sound)) = (asked, stamps.first_word, stamps.first_sound) else {
             return;
         };
-        let Some((pause_ms, recognize_ms)) = self.voice.take_heard(conversation, after) else { return };
+        let Some((pause_ms, recognize_ms, held)) = self.voice.take_heard(conversation, after) else { return };
         let round = torro_ipc::VoiceRound {
             at: first_sound,
             pause_ms,
             recognize_ms,
             first_word_ms: span_ms(asked, first_word),
             first_sound_ms: span_ms(first_word, first_sound),
+            held,
         };
         // Issue #850: the first sound split into the wait for the first sentence and its sound; only in the log.
         let (sentence, ready) = match stamps.first_piece {
@@ -15121,12 +15122,13 @@ impl Core {
             None => ("-".to_string(), "-".to_string()),
         };
         eprintln!(
-            "torroworkplace: voice round: pause {} ms, recognition {} ms, first word {} ms, first sound {} ms, total {} ms, first sentence {sentence} ms, sound ready {ready} ms",
+            "torroworkplace: voice round: pause {} ms, recognition {} ms, first word {} ms, first sound {} ms, total {} ms, first sentence {sentence} ms, sound ready {ready} ms, pause waited out {}",
             round.pause_ms,
             round.recognize_ms,
             round.first_word_ms,
             round.first_sound_ms,
-            round.total_ms()
+            round.total_ms(),
+            round.held
         );
         let mut rounds = self.voice_rounds.lock().unwrap_or_else(PoisonError::into_inner);
         rounds.push_back(round);
@@ -21126,10 +21128,10 @@ done"#;
         let core = core(dir.path()).with_voice_models(models);
         let Response::VoiceModels { models } = core.handle(Request::ListVoiceModels).await else { panic!("listed") };
         // Qwen3-TTS only in builds with it (issue #764).
-        let expected = ["whisper-turbo", "parakeet", "pocket-de", "silero-vad", "qwen3-tts"];
+        let expected = ["whisper-turbo", "parakeet", "pocket-de", "silero-vad", "smart-turn", "qwen3-tts"];
         assert_eq!(
             models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(),
-            expected[..4 + usize::from(torro_core::settings::QWEN_BUILT)]
+            expected[..5 + usize::from(torro_core::settings::QWEN_BUILT)]
         );
         assert!(models.iter().all(|model| model.state == VoiceModelState::Missing));
         assert_eq!(code(&core.handle(Request::DownloadVoiceModel { model: "evil".into() }).await), "not-found");
@@ -21969,12 +21971,13 @@ done"#,
         assert_eq!(core.handle(Request::SpeakAnswer { conversation: ID.into() }).await, Response::Ok);
         assert!(timings(&core).rounds.is_empty());
 
-        let heard = |after| Heard { conversation: ID.into(), after, pause_ms: 1000, recognize_ms: 800 };
+        let heard = |after| Heard { conversation: ID.into(), after, pause_ms: 1000, recognize_ms: 800, held: true };
         core.voice.told(heard(after));
         assert_eq!(core.handle(Request::SpeakAnswer { conversation: ID.into() }).await, Response::Ok);
         let rounds = timings(&core).rounds;
         assert_eq!(rounds.len(), 1, "{rounds:?}");
         assert_eq!((rounds[0].pause_ms, rounds[0].recognize_ms), (1000, 800));
+        assert!(rounds[0].held, "issue #836: the pause waited out is kept");
         assert_eq!(core.voice.take_heard(ID, after), None, "the half was taken");
         assert_eq!(core.handle(Request::VoiceTimings).await, core.voice_timings(), "the request answers it");
 

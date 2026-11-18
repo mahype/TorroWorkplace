@@ -540,13 +540,16 @@ const HEARD_KEPT: usize = 8;
 
 /// The listener's half of a timed round (issue #828), as `torroassistant --listen` writes it in
 /// `{"round": {…}}`: the pause that ended the sentence and speech recognition, for the message
-/// `after` in `conversation`. Durations only.
+/// `after` in `conversation`, and whether it waited out a pause that once ended the sentence (`held`, issue
+/// #836; a listener from before writes none). Durations only.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct Heard {
     pub conversation: String,
     pub after: u64,
     pub pause_ms: u32,
     pub recognize_ms: u32,
+    #[serde(default)]
+    pub held: bool,
 }
 
 /// A line of the listener that is no state: `{"round": {…}}`.
@@ -917,11 +920,11 @@ impl Listener {
     }
 
     /// The listener's half of the round of the message `after` in `conversation` (issue #828),
-    /// taken out: `(pause_ms, recognize_ms)`; `None` when it did not tell one.
-    pub fn take_heard(&self, conversation: &str, after: u64) -> Option<(u32, u32)> {
+    /// taken out: `(pause_ms, recognize_ms, held)` (`held` since issue #836); `None` when it did not tell one.
+    pub fn take_heard(&self, conversation: &str, after: u64) -> Option<(u32, u32, bool)> {
         let mut running = self.lock();
         let at = running.heard.iter().position(|heard| heard.conversation == conversation && heard.after == after)?;
-        running.heard.remove(at).map(|heard| (heard.pause_ms, heard.recognize_ms))
+        running.heard.remove(at).map(|heard| (heard.pause_ms, heard.recognize_ms, heard.held))
     }
 
     /// Keeps `heard` as if the listener had told it, for the core's tests.
@@ -1604,10 +1607,10 @@ pub mod tests {
         until(&listener, &mut changes, VoiceState::Recording).await;
         assert_eq!(listener.take_heard("c1", 1), None, "fell out: only eight wait");
         assert_eq!(listener.take_heard("c1", 2), None);
-        assert_eq!(listener.take_heard("c1", 3), Some((1000, 800)));
+        assert_eq!(listener.take_heard("c1", 3), Some((1000, 800, false)));
         assert_eq!(listener.take_heard("c1", 3), None, "taken once");
         assert_eq!(listener.take_heard("c2", 10), None, "another conversation");
-        assert_eq!(listener.take_heard("c1", 10), Some((1000, 800)));
+        assert_eq!(listener.take_heard("c1", 10), Some((1000, 800, false)));
         listener.follow(false);
     }
 
@@ -1615,11 +1618,17 @@ pub mod tests {
     /// `a_round_is_told_as_the_core_reads_it` pins it; change both together.
     #[test]
     fn a_round_line_of_the_listener_is_read() {
-        let line: RoundLine =
-            serde_json::from_str(r#"{"round":{"conversation":"c1","after":3,"pause_ms":1000,"recognize_ms":800}}"#)
-                .expect("a round");
-        let expected = Heard { conversation: "c1".into(), after: 3, pause_ms: 1000, recognize_ms: 800 };
+        let line: RoundLine = serde_json::from_str(
+            r#"{"round":{"conversation":"c1","after":3,"pause_ms":1000,"recognize_ms":800,"held":true}}"#,
+        )
+        .expect("a round");
+        let expected = Heard { conversation: "c1".into(), after: 3, pause_ms: 1000, recognize_ms: 800, held: true };
         assert_eq!(line.round, expected);
+        // Issue #836: a listener from before writes no `held`.
+        let old: RoundLine =
+            serde_json::from_str(r#"{"round":{"conversation":"c1","after":3,"pause_ms":1000,"recognize_ms":800}}"#)
+                .expect("an old round");
+        assert!(!old.round.held);
     }
 
     #[tokio::test]

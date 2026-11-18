@@ -658,6 +658,12 @@ enum Change {
     VoiceNewAfter(Option<u16>),
     /// Whether the voice chat says briefly what it does while an answer takes a moment (issue #837).
     VoiceAnnouncements(bool),
+    /// The pause after a finished sentence, in milliseconds (issue #836); `None` for 500.
+    VoicePauseDone(Option<u16>),
+    /// The pause after an unfinished sentence, in milliseconds (issue #836); `None` for 2000.
+    VoicePauseOpen(Option<u16>),
+    /// How long "wait a moment" holds the turn, in seconds (issue #836); `None` for 15.
+    VoiceHold(Option<u16>),
     /// How OpenAI speaks (issue #782); never logged or repeated in a refusal.
     OpenAiStyle(Option<String>),
     /// What a new chat of the assistant starts with (issue #131): the slot Chat (issue #325), written
@@ -792,6 +798,9 @@ impl Change {
             SettingKey::PocketSpeed => Change::PocketSpeed(Voice::pocket_speed_from(value)?),
             SettingKey::PocketPause => Change::PocketPause(Voice::pocket_pause_from(value)?),
             SettingKey::VoiceNewAfter => Change::VoiceNewAfter(Voice::new_after_from(value)?),
+            SettingKey::VoicePauseDone => Change::VoicePauseDone(Voice::pause_done_from(value)?),
+            SettingKey::VoicePauseOpen => Change::VoicePauseOpen(Voice::pause_open_from(value)?),
+            SettingKey::VoiceHold => Change::VoiceHold(Voice::hold_from(value)?),
             SettingKey::VoiceAnnouncements => {
                 Change::VoiceAnnouncements(serde_json::from_value(value.clone()).map_err(invalid)?)
             }
@@ -922,6 +931,9 @@ impl Change {
             Change::PocketPause(pause) => settings.voice.pocket_pause = pause,
             Change::VoiceNewAfter(minutes) => settings.voice.new_after = minutes,
             Change::VoiceAnnouncements(on) => settings.voice.announce = on,
+            Change::VoicePauseDone(pause) => settings.voice.pause_done = pause,
+            Change::VoicePauseOpen(pause) => settings.voice.pause_open = pause,
+            Change::VoiceHold(hold) => settings.voice.hold = hold,
             Change::OpenAiStyle(style) => settings.voice.openai_style = style,
             Change::AssistantDefault(default) => settings.ai_slots.chat = default,
             Change::Setup(state) => settings.setup = settings.setup.moved_to(state),
@@ -2275,6 +2287,24 @@ mod tests {
         assert_eq!(store.current().voice.new_after, Some(45), "a refusal changes nothing");
         store.set(SettingKey::VoiceNewAfter, &json!(null)).expect("back to the default");
         assert_eq!(store.current().voice.new_after_or_default(), 30);
+    }
+
+    /// Issue #836: the pauses of the end of a sentence are stored rounded, refused outside their range and
+    /// cleared with `null`.
+    #[test]
+    fn the_pauses_of_the_end_of_a_sentence_are_set() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SettingsStore::at(dir.path().join("settings.json"));
+        store.set(SettingKey::VoicePauseDone, &json!(740)).expect("a valid value");
+        store.set(SettingKey::VoicePauseOpen, &json!(3000)).expect("a valid value");
+        store.set(SettingKey::VoiceHold, &json!(22)).expect("a valid value");
+        let voice = store.current().voice;
+        assert_eq!((voice.pause_done, voice.pause_open, voice.hold), (Some(700), Some(3000), Some(20)));
+        assert!(store.set(SettingKey::VoicePauseDone, &json!(100)).is_err());
+        assert!(store.set(SettingKey::VoiceHold, &json!("long")).is_err());
+        assert_eq!(store.current().voice.hold, Some(20), "a refusal changes nothing");
+        store.set(SettingKey::VoicePauseDone, &json!(null)).expect("back to the default");
+        assert_eq!(store.current().voice.pause_done_or_default(), 500);
     }
 
     /// Issue #837: the announcements while an answer takes a moment are switched with `true` and

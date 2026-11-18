@@ -824,10 +824,10 @@ mod tests {
         let nowhere = VoiceDownloads::new(None, &MODELS);
         let listed = nowhere.list();
         // Qwen3-TTS only in builds with it (issue #764).
-        let expected = ["whisper-turbo", "parakeet", "pocket-de", "silero-vad", "qwen3-tts"];
+        let expected = ["whisper-turbo", "parakeet", "pocket-de", "silero-vad", "smart-turn", "qwen3-tts"];
         assert_eq!(
             listed.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(),
-            expected[..4 + usize::from(torro_core::settings::QWEN_BUILT)]
+            expected[..5 + usize::from(torro_core::settings::QWEN_BUILT)]
         );
         assert!(listed.iter().all(|model| model.state == VoiceModelState::Missing && model.completed == 0));
         assert_eq!(listed[0].bytes, MODELS[0].bytes());
