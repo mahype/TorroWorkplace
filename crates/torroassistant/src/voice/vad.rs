@@ -7,12 +7,12 @@
 
 use std::path::Path;
 
+use sha2::{Digest, Sha256};
 use sherpa_onnx::{SileroVadModelConfig, VadModelConfig, VoiceActivityDetector};
 use torro_core::voice_models::SILERO_VAD;
 use torro_ipc::{VoiceMissing, VoicePart};
 
 use super::audio::{RATE, to_float};
-use super::parts::model_ready;
 use super::{SpeechDetector, VoiceError};
 
 /// The name speech detection goes by in messages.
@@ -51,13 +51,24 @@ pub struct SileroVad {
 
 impl SileroVad {
     /// Loads the model from the voice folder `folder`. One not downloaded is [`VoiceError::Missing`] of
-    /// speech to text, without a try to load it; one sherpa-onnx cannot load (a file damaged on disk) a
-    /// [`VoiceError::Program`].
+    /// speech to text, without a try to load it; one whose file is not the catalogue's (damaged on disk) or
+    /// that sherpa-onnx cannot load a [`VoiceError::Program`]. The file is checked against its SHA-256 first:
+    /// at 1.8 MB that takes milliseconds, and sherpa-onnx, given a damaged file, would write its path to the
+    /// log itself.
     pub fn load(folder: Option<&Path>) -> Result<SileroVad, VoiceError> {
-        let folder = match folder {
-            Some(folder) if model_ready(SILERO_VAD, Some(folder)) => folder,
+        let (folder, model) = match (folder, torro_core::voice_models::model(SILERO_VAD)) {
+            (Some(folder), Some(model)) if model.ready(folder) => (folder, model),
             _ => return Err(VoiceError::Missing(VoicePart::SpeechToText, VoiceMissing::Model)),
         };
+        for file in model.files {
+            let bytes = std::fs::read(model.path(folder, file.name)).map_err(|err| {
+                VoiceError::program(NAME, format!("the model {SILERO_VAD} cannot be read: {}", err.kind()))
+            })?;
+            let hash: String = Sha256::digest(&bytes).iter().map(|byte| format!("{byte:02x}")).collect();
+            if hash != file.sha256 {
+                return Err(VoiceError::program(NAME, format!("the model {SILERO_VAD} is damaged: download it again")));
+            }
+        }
         let detector = VoiceActivityDetector::create(&vad_config(folder), BUFFER_SECONDS)
             .ok_or_else(|| VoiceError::program(NAME, format!("the model {SILERO_VAD} did not load")))?;
         Ok(SileroVad { detector })

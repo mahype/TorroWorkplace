@@ -11273,6 +11273,7 @@ dependencies = [
  "livekit-wakeword",
  "rfd",
  "serde_json",
+ "sha2 0.11.0",
  "sherpa-onnx",
  "tempfile",
  "tokio",
