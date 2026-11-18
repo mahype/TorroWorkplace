@@ -23,12 +23,15 @@
 //!
 //! Whether someone speaks is told by Silero VAD once it is downloaded ([`vad`], issue #833), else by
 //! loudness ([`audio::Endpoint`]); with the model, the sentence so far is recognised in short pauses
-//! already ([`early`]), so at its end the text is mostly there.
+//! already ([`early`]), so at its end the text is mostly there. In those pauses the listener also judges
+//! whether the sentence is over ([`turn`], issue #836): by its tone with Smart Turn once downloaded, and by
+//! its text, so a finished sentence is answered sooner and "um" or "wait a moment" waits.
 //!
 //! The models are downloaded in the settings (`settings.download_voice_model`) into the voice folder
 //! (`torro_core::voice_models`); what is missing is a model or a sound device ([`parts`]).
 //!
-//! The parts are small traits ([`Recorder`], [`WakeWord`], [`Transcriber`], [`SpeechDetector`], [`Speaker`]), so the
+//! The parts are small traits ([`Recorder`], [`WakeWord`], [`Transcriber`], [`SpeechDetector`], [`TurnDetector`],
+//! [`Speaker`]), so the
 //! tests run the listener on sound files and fakes without a microphone or a model
 //! ([`listen`]).
 //!
@@ -51,6 +54,7 @@ pub mod qwen;
 pub mod recognize;
 pub mod sound;
 pub mod speech;
+pub mod turn;
 pub mod vad;
 pub mod wake;
 
@@ -129,6 +133,13 @@ pub trait SpeechDetector {
 
     /// Forgets what it heard: the next sentence starts afresh.
     fn reset(&mut self);
+}
+
+/// Hears in the tone of a sentence so far whether the person finished it (issue #836, Smart Turn).
+pub trait TurnDetector {
+    /// The probability that the sentence `samples` ([`audio::RATE`], mono) is finished, from 0 to 1; only its
+    /// last seconds count.
+    fn complete(&mut self, samples: &[i16]) -> Result<f32, VoiceError>;
 }
 
 /// Signals: since issue #745 the core reads the answers aloud (`assistant.speak_answer`), the

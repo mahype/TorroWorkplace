@@ -3634,7 +3634,7 @@ mod tests {
 
     /// One `iced_test::Simulator` at a time: several in parallel threads crash the test process
     /// (as in `torro_gui::shell`'s tests).
-    fn one_simulator() -> std::sync::MutexGuard<'static, ()> {
+    pub(super) fn one_simulator() -> std::sync::MutexGuard<'static, ()> {
         static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
         ONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }

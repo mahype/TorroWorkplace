@@ -2205,11 +2205,23 @@ pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
                 tr("Press W on a mail to answer it later."),
             ),
             View::SetAside => (Icon::Bookmark, tr("Nothing set aside."), tr("Press B on a mail to set it aside.")),
+            // A category whose mail all lies on a pile (#873): the list leaves those out.
+            View::Category(shown) => category_empty(shown, data.categories),
             _ => return widgets::loading(),
         };
         return list::empty_state(which, title, hint);
     }
     responsive(move |bounds| rows(&data, bounds.width)).into()
+}
+
+/// The empty state of a category's view: its own symbol (the group's for a whole group), and
+/// that nothing is left, since mail on a pile is not listed (#873).
+fn category_empty(shown: &CategoryView, categories: &[CategoryInfo]) -> (Icon, &'static str, &'static str) {
+    let icon = match shown.only {
+        Some(only) => categories.iter().find(|info| info.category == only).map(|info| category_symbol(info.icon)),
+        None => categories.iter().find(|info| info.group == shown.group).map(|info| category_symbol(info.group_icon)),
+    };
+    (icon.unwrap_or(Icon::Tag), tr("Nothing left here."), tr("New mail of this category shows up here."))
 }
 
 /// The rows at `width`, or a column of cards.
@@ -6777,6 +6789,23 @@ mod tests {
 
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 13, 10, 30, 0).single().expect("valid time")
+    }
+
+    /// A category whose mail all lies on a pile shows what is left, not "Loading …" (#873).
+    #[test]
+    fn a_category_without_listed_mail_says_so() {
+        let def = torro_mail::CategoryDef::built_in(torro_mail::Category::Document).expect("built in");
+        let categories = vec![CategoryInfo::of(&def, 0, 0)];
+        let shown = CategoryView {
+            group: categories[0].group,
+            only: Some(torro_mail::Category::Document),
+            categories: vec![torro_mail::Category::Document],
+            label: "Document".into(),
+        };
+        let (icon, title, hint) = category_empty(&shown, &categories);
+        assert_eq!(icon, category_symbol(categories[0].icon));
+        assert_eq!(title, tr("Nothing left here."));
+        assert_eq!(hint, tr("New mail of this category shows up here."));
     }
 
     /// A save of issue #781's history, made at `now()`.

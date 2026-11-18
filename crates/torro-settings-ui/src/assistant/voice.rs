@@ -16,6 +16,11 @@
 //! like the zoom of the suite (`pocket_speed`, `pocket_pause`), for OpenAI "Speaking style" in a
 //! person's words (`openai_style`), each row with a "Reset" back to how it spoke before.
 //!
+//! Under "Conversation" the group "End of a sentence" (issue #836): how long the voice chat waits after a
+//! finished sentence, after an unfinished one ("and then …", "um") and after "wait a moment", each as steps
+//! `− value +` with "Reset" (`voice_pause_done`, `voice_pause_open`, `voice_hold`). "Response times" counts the
+//! answers whose pause was waited out.
+//!
 //! Since issue #763 each of the three groups is a tab of its own ([`VoiceTab`], the row drawn by
 //! [`super::page`]): Read aloud, Conversation, Models, so the page fits the window.
 //!
@@ -58,7 +63,10 @@ use iced::widget::{container, row, svg, toggler};
 use iced::{Alignment, Element, Subscription};
 
 use torro_core::i18n::{tr, trc, trf};
-use torro_core::settings::{POCKET_PAUSES, POCKET_SPEEDS, Recognizer, SpeechProvider, VOICE_NEW_AFTER, Voice};
+use torro_core::settings::{
+    POCKET_PAUSES, POCKET_SPEEDS, Recognizer, SpeechProvider, VOICE_HOLD, VOICE_NEW_AFTER, VOICE_PAUSE_DONE,
+    VOICE_PAUSE_OPEN, Voice,
+};
 use torro_core::voice_models::{VoiceModelKind, WHISPER_LANGUAGES};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::SizeClass;
@@ -191,6 +199,12 @@ pub enum Message {
     PocketPause(u16),
     /// "−" or "+" of "New conversation after a pause" (issue #831): the pause in minutes, 0 for never.
     VoiceNewAfter(u16),
+    /// "−" or "+" of "After a finished sentence" (issue #836): the pause in milliseconds.
+    VoicePauseDone(u16),
+    /// "−" or "+" of "After an unfinished sentence" (issue #836): the pause in milliseconds.
+    VoicePauseOpen(u16),
+    /// "−" or "+" of "Hold after “wait a moment”" (issue #836): the hold in seconds.
+    VoiceHold(u16),
     /// The field "Speaking style" of OpenAI was typed in.
     TypeStyle(String),
     /// Enter in "Speaking style" or its check: save what is typed, nothing for OpenAI's own way.
@@ -298,6 +312,9 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         Message::PocketSpeed(speed) => set(SettingKey::PocketSpeed, serde_json::json!(speed)),
         Message::PocketPause(pause) => set(SettingKey::PocketPause, serde_json::json!(pause)),
         Message::VoiceNewAfter(minutes) => set(SettingKey::VoiceNewAfter, serde_json::json!(minutes)),
+        Message::VoicePauseDone(ms) => set(SettingKey::VoicePauseDone, serde_json::json!(ms)),
+        Message::VoicePauseOpen(ms) => set(SettingKey::VoicePauseOpen, serde_json::json!(ms)),
+        Message::VoiceHold(seconds) => set(SettingKey::VoiceHold, serde_json::json!(seconds)),
         Message::TypeStyle(text) => {
             state.style = Some(text);
             Action::None
@@ -490,9 +507,13 @@ pub fn view<'a>(state: &'a State, data: &'a Data, tab: VoiceTab, class: SizeClas
     }
     match tab {
         VoiceTab::ReadAloud => read_aloud_group(state, data, class),
-        VoiceTab::Conversation => iced::widget::column![voice_group(state, data, class), timings_group(data)]
-            .spacing(layout::section_gap())
-            .into(),
+        VoiceTab::Conversation => iced::widget::column![
+            voice_group(state, data, class),
+            turn_group(&data.settings.voice, class),
+            timings_group(data)
+        ]
+        .spacing(layout::section_gap())
+        .into(),
         VoiceTab::Models => models_group(state, data),
     }
 }
@@ -818,18 +839,90 @@ fn new_after_label(minutes: u16) -> String {
 /// conversation "Voice", in steps of [`VOICE_NEW_AFTER`], with "Reset" back to 30 minutes.
 fn new_after_row<'a>(voice: &Voice, class: SizeClass) -> Element<'a, Message> {
     let minutes = voice.new_after_or_default();
-    let width = widest(&[new_after_label(0), new_after_label(VOICE_NEW_AFTER.1)]);
     let control = stepper(
         minutes,
         VOICE_NEW_AFTER,
         new_after_label(minutes),
         (tr("Shorter pause"), tr("Longer pause")),
         Message::VoiceNewAfter,
-        width,
+        stepper_width(),
         reset_button(SettingKey::VoiceNewAfter, voice.new_after.is_some(), class),
     );
     let detail = tr("“Hey Torro” starts a new Voice conversation after this long without a word").to_string();
     setting_row(None, tr("New conversation after a pause"), Some(detail), control)
+}
+
+/// A pause in milliseconds as shown: "500 ms".
+fn ms_label(ms: u16) -> String {
+    trf("{n} ms", &[("n", &ms)])
+}
+
+/// A pause in milliseconds as shown in seconds with one decimal: "2.0 s".
+fn seconds_label(ms: u16) -> String {
+    trf("{whole}.{tenth} s", &[("whole", &(ms / 1000)), ("tenth", &(ms % 1000 / 100))])
+}
+
+/// A hold in seconds as shown: "15 s".
+fn hold_label(seconds: u16) -> String {
+    trf("{n} s", &[("n", &seconds)])
+}
+
+/// The width of every value of the steppers in the tab "Conversation" (design review of #836): one for all, so
+/// their `−` and values stand on one axis across the groups.
+fn stepper_width() -> f32 {
+    widest(&[
+        new_after_label(0),
+        new_after_label(VOICE_NEW_AFTER.1),
+        ms_label(VOICE_PAUSE_DONE.0),
+        ms_label(VOICE_PAUSE_DONE.1),
+        seconds_label(VOICE_PAUSE_OPEN.0),
+        seconds_label(VOICE_PAUSE_OPEN.1),
+        hold_label(VOICE_HOLD.0),
+        hold_label(VOICE_HOLD.1),
+    ])
+}
+
+/// "End of a sentence" (issue #836): the pause after a finished sentence, after an unfinished one and the hold
+/// after "wait a moment", each in its steps with "Reset" back to 500 ms, 2 s and 15 s.
+fn turn_group<'a>(voice: &Voice, class: SizeClass) -> Element<'a, Message> {
+    let (pause, width) = ((tr("Shorter pause"), tr("Longer pause")), stepper_width());
+    let done = voice.pause_done_or_default();
+    let done = stepper(
+        done,
+        VOICE_PAUSE_DONE,
+        ms_label(done),
+        pause,
+        Message::VoicePauseDone,
+        width,
+        reset_button(SettingKey::VoicePauseDone, voice.pause_done.is_some(), class),
+    );
+    let open = voice.pause_open_or_default();
+    let open = stepper(
+        open,
+        VOICE_PAUSE_OPEN,
+        seconds_label(open),
+        pause,
+        Message::VoicePauseOpen,
+        width,
+        reset_button(SettingKey::VoicePauseOpen, voice.pause_open.is_some(), class),
+    );
+    let hold = voice.hold_or_default();
+    let hold = stepper(
+        hold,
+        VOICE_HOLD,
+        hold_label(hold),
+        (tr("Shorter hold"), tr("Longer hold")),
+        Message::VoiceHold,
+        width,
+        reset_button(SettingKey::VoiceHold, voice.hold.is_some(), class),
+    );
+    let rows = vec![
+        setting_row(None, tr("After a finished sentence"), None, done),
+        setting_row(None, tr("After an unfinished sentence"), Some(tr("e.g. “and then …”, “um”").to_string()), open),
+        setting_row(None, tr("Hold after “wait a moment”"), None, hold),
+    ];
+    let footer = tr("Needs Silero VAD; Smart Turn from the Models tab also hears the tone of voice.");
+    widgets::group(tr("End of a sentence"), rows, Some(footer.to_string()))
 }
 
 /// "Voice": on or off with what the listener does, the speech recognition's model offered under it
@@ -925,6 +1018,14 @@ fn timings_group<'a>(data: &'a Data) -> Element<'a, Message> {
         line(tr("First word of the answer"), average.first_word_ms),
         line(tr("First sound"), average.first_sound_ms),
         line(tr("Until you hear the answer"), average.total_ms),
+        // Issue #836: how often a pause that once ended the sentence was waited out.
+        setting_row(
+            None,
+            tr("Pauses waited out"),
+            None,
+            typo::text(typo::body().tabular(), trf("{n} of {m}", &[("n", &average.held), ("m", &average.rounds)]))
+                .style(theme::text_2),
+        ),
     ];
     let footer =
         trf("Average of the last {n} spoken answers. Only times, never what was said.", &[("n", &average.rounds)]);
@@ -1832,7 +1933,14 @@ mod tests {
             (SettingKey::OpenAiStyle, serde_json::Value::Null)
         );
 
-        for key in [SettingKey::PocketSpeed, SettingKey::PocketPause, SettingKey::VoiceNewAfter] {
+        for key in [
+            SettingKey::PocketSpeed,
+            SettingKey::PocketPause,
+            SettingKey::VoiceNewAfter,
+            SettingKey::VoicePauseDone,
+            SettingKey::VoicePauseOpen,
+            SettingKey::VoiceHold,
+        ] {
             assert_eq!(sent(update(&mut state, Message::Reset(key), &data)), (key, serde_json::Value::Null));
         }
         let reset_style = Message::Reset(SettingKey::OpenAiStyle);
@@ -1877,6 +1985,38 @@ mod tests {
         for minutes in [Some(0), Some(240), None] {
             let mut edge = data.clone();
             edge.settings.voice.new_after = minutes;
+            views(&state, &edge);
+        }
+    }
+
+    /// Issue #836: the three pauses of the end of a sentence send their steps, show as milliseconds, seconds
+    /// with a decimal and seconds, and draw at both ends of their ranges.
+    #[tokio::test]
+    async fn the_pauses_of_the_end_of_a_sentence_send_their_settings() {
+        let data = data().await;
+        let mut state = State::default();
+        assert_eq!(
+            sent(update(&mut state, Message::VoicePauseDone(600), &data)),
+            (SettingKey::VoicePauseDone, serde_json::json!(600))
+        );
+        assert_eq!(
+            sent(update(&mut state, Message::VoicePauseOpen(2500), &data)),
+            (SettingKey::VoicePauseOpen, serde_json::json!(2500))
+        );
+        assert_eq!(
+            sent(update(&mut state, Message::VoiceHold(20), &data)),
+            (SettingKey::VoiceHold, serde_json::json!(20))
+        );
+        assert_eq!(ms_label(500), trf("{n} ms", &[("n", &500)]));
+        assert_eq!(seconds_label(2500), trf("{whole}.{tenth} s", &[("whole", &2), ("tenth", &5)]));
+        assert_eq!(hold_label(15), trf("{n} s", &[("n", &15)]));
+        for (done, open, hold) in
+            [(Some(300), Some(1000), Some(5)), (Some(1500), Some(4000), Some(30)), (None, None, None)]
+        {
+            let mut edge = data.clone();
+            edge.settings.voice.pause_done = done;
+            edge.settings.voice.pause_open = open;
+            edge.settings.voice.hold = hold;
             views(&state, &edge);
         }
     }

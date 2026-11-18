@@ -66,6 +66,13 @@ pub const POCKET_DE: &str = "pocket-de";
 /// it the listener keeps telling speech by loudness.
 pub const SILERO_VAD: &str = "silero-vad";
 
+/// Smart Turn v3 of Pipecat (issue #836): hears in the tone of the last seconds whether a person finished
+/// speaking, German and English among its languages. A recognition download after Silero VAD, never
+/// recommended, and only used with it: without it the listener judges the end of a sentence by its text. The
+/// file without quantisation ("gpu", 32 MB, it runs on the processor too): tract loads the quantised one of
+/// 8.7 MB, but computes it wrongly (checked against onnxruntime: 0.46 where it gives 0.99).
+pub const SMART_TURN: &str = "smart-turn";
+
 /// The wake word model "Hey Torro" (issue #765): built into the assistant, so it is not in the catalogue
 /// [`MODELS`] and never downloaded; `settings.voice_status` names it for the wake word.
 pub const HEY_TORRO: &str = "hey-torro";
@@ -77,14 +84,15 @@ pub const HEY_TORRO: &str = "hey-torro";
 pub const QWEN: &str = "qwen3-tts";
 
 /// Every model, in the order the settings show them: speech recognition first, the recommended one on
-/// top, Silero VAD after the voices, Qwen3-TTS last and only in builds with it (`crate::settings::QWEN_BUILT`).
+/// top, Silero VAD and Smart Turn after the voices, Qwen3-TTS last and only in builds with it
+/// (`crate::settings::QWEN_BUILT`).
 #[cfg(feature = "qwen-tts")]
-pub const MODELS: [Model; 5] = [BUILT_IN[0], BUILT_IN[1], BUILT_IN[2], BUILT_IN[3], QWEN_MODEL];
+pub const MODELS: [Model; 6] = [BUILT_IN[0], BUILT_IN[1], BUILT_IN[2], BUILT_IN[3], BUILT_IN[4], QWEN_MODEL];
 
 /// Every model, in the order the settings show them: speech recognition first, the recommended one on top,
-/// Silero VAD after the voices.
+/// Silero VAD and Smart Turn after the voices.
 #[cfg(not(feature = "qwen-tts"))]
-pub const MODELS: [Model; 4] = BUILT_IN;
+pub const MODELS: [Model; 5] = BUILT_IN;
 
 /// The model of Qwen3-TTS ([`QWEN`]), at the revision measured in `docs/messung-qwen3-tts.md`.
 #[cfg_attr(
@@ -143,7 +151,7 @@ const QWEN_MODEL: Model = Model {
 };
 
 /// The models every build has.
-const BUILT_IN: [Model; 4] = [
+const BUILT_IN: [Model; 5] = [
     Model {
         id: WHISPER_TURBO,
         name: "Whisper turbo",
@@ -280,6 +288,18 @@ const BUILT_IN: [Model; 4] = [
             url: "https://huggingface.co/csukuangfj/vad/resolve/fba88cd2e921609e7675c3aaf51e0b9b295da4bc/silero_vad.onnx",
             sha256: "a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28",
             bytes: 1_807_522,
+        }],
+    },
+    Model {
+        id: SMART_TURN,
+        name: "Smart Turn",
+        kind: VoiceModelKind::Recognition,
+        recommended: false,
+        files: &[ModelFile {
+            name: "smart-turn-v3.2-gpu.onnx",
+            url: "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/smart-turn-v3.2-gpu.onnx",
+            sha256: "ab8dc64b88713f90b571c15b714bd1330e6c883cad8763dacf65c9376dc539be",
+            bytes: 32_411_198,
         }],
     },
 ];
@@ -467,7 +487,7 @@ mod tests {
     #[test]
     fn qwen_is_listed_only_where_it_is_built() {
         assert_eq!(model(QWEN).is_some(), crate::settings::QWEN_BUILT);
-        assert_eq!(MODELS.len(), 4 + usize::from(crate::settings::QWEN_BUILT));
+        assert_eq!(MODELS.len(), 5 + usize::from(crate::settings::QWEN_BUILT));
         assert_eq!(QWEN_MODEL.kind, VoiceModelKind::Speech);
         const { assert!(!QWEN_MODEL.recommended, "Pocket TTS stays the recommended voice") };
         let revision = "/resolve/5d83992436eae1d760afd27aff78a71d676296fc/";
@@ -487,6 +507,16 @@ mod tests {
         assert_eq!(vad.files.iter().map(|file| file.name).collect::<Vec<_>>(), ["silero_vad.onnx"]);
         assert_eq!(vad.bytes(), 1_807_522, "1.8 MB");
         assert_eq!(MODELS.iter().position(|model| model.id == SILERO_VAD), Some(3), "after Pocket TTS");
+    }
+
+    /// Issue #836: Smart Turn is a recognition download right after Silero VAD, never recommended.
+    #[test]
+    fn smart_turn_is_a_download_after_silero_vad() {
+        let turn = model(SMART_TURN).expect("smart turn");
+        assert_eq!((turn.name, turn.kind, turn.recommended), ("Smart Turn", VoiceModelKind::Recognition, false));
+        assert_eq!(turn.files.iter().map(|file| file.name).collect::<Vec<_>>(), ["smart-turn-v3.2-gpu.onnx"]);
+        assert_eq!(turn.bytes(), 32_411_198, "32 MB");
+        assert_eq!(MODELS.iter().position(|model| model.id == SMART_TURN), Some(4), "after Silero VAD");
     }
 
     #[test]

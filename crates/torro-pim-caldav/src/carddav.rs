@@ -12,7 +12,9 @@
 //! a server without the report, a PROPFIND lists every card with its ETag.
 //!
 //! Writes are ETag-guarded: a new card with `If-None-Match: *`, a changed or deleted one with
-//! `If-Match`. A `412` brings the server's version along for a three-way merge. Error texts are
+//! `If-Match`. A `412` brings the server's version along for a three-way merge. A `404` is checked
+//! against the book's privileges first: Nextcloud refuses writes into a book shared read-only that
+//! way (issue #354). Error texts are
 //! our own: neither a server's message nor a vCard ever ends up in one (they reach logs).
 
 use reqwest::header::{CONTENT_TYPE, ETAG};
@@ -56,6 +58,11 @@ const BOOKS_PROPFIND: &str = r#"<d:propfind xmlns:d="DAV:" xmlns:cs="http://cale
 /// What a full listing asks of a book and its members: the book's token, every card's version.
 const ENTRIES_PROPFIND: &str = r#"<d:propfind xmlns:d="DAV:">
   <d:prop><d:resourcetype/><d:getetag/><d:sync-token/></d:prop>
+</d:propfind>"#;
+
+/// What a book is asked after a write got `404`: may the user write to it at all?
+const PRIVILEGES_PROPFIND: &str = r#"<d:propfind xmlns:d="DAV:">
+  <d:prop><d:current-user-privilege-set/></d:prop>
 </d:propfind>"#;
 
 /// The body type of every PROPFIND and REPORT.
@@ -155,6 +162,9 @@ impl ContactsProvider for CalDavClient {
         if answer.status.is_success() {
             return Ok(Stored { href: target.to_string(), etag: answer.etag });
         }
+        if answer.status == StatusCode::NOT_FOUND && self.refuses_writing(&book).await {
+            return Err(ContactsError::ReadOnly);
+        }
         Err(self.write_error(&target, &answer).await)
     }
 
@@ -164,6 +174,9 @@ impl ContactsProvider for CalDavClient {
         let headers: Vec<(&str, &str)> =
             etag.map(str::trim).filter(|etag| !etag.is_empty()).map(|etag| ("If-Match", etag)).into_iter().collect();
         let answer = self.send(Method::DELETE, &target, &headers, None).await?;
+        if answer.status == StatusCode::NOT_FOUND && self.refuses_writing(&book).await {
+            return Err(ContactsError::ReadOnly);
+        }
         // 404: gone already, which is what the caller wanted.
         if answer.status.is_success() || answer.status == StatusCode::NOT_FOUND {
             return Ok(());
@@ -403,6 +416,28 @@ impl CalDavClient {
         Ok(cards)
     }
 
+    /// Whether `book` is there and its privileges deny writing, asked after a write got `404`.
+    /// Nextcloud (35) answers a write into a book shared read-only with `404` instead of `403`, so
+    /// the status alone cannot tell "not allowed" from "deleted there". Anything but a clear answer
+    /// (no multistatus, no privileges named, a failed request) counts as allowed: then the `404`
+    /// means what it says.
+    async fn refuses_writing(&self, book: &Url) -> bool {
+        let Ok(method) = propfind() else { return false };
+        let Ok(answer) = self.send(method, book, &[("Depth", "0")], Some((XML, PRIVILEGES_PROPFIND.to_string()))).await
+        else {
+            return false;
+        };
+        if answer.status != StatusCode::MULTI_STATUS {
+            return false;
+        }
+        let Ok(doc) = roxmltree::Document::parse(&answer.body) else { return false };
+        responses(&doc).any(|response| {
+            child(response, NS_DAV, "href").and_then(|n| n.text()).is_some_and(|href| is_book(book, href))
+                && ok_prop(response)
+                    .is_some_and(|prop| child(prop, NS_DAV, "current-user-privilege-set").is_some() && !writable(prop))
+        })
+    }
+
     /// The error for a refused PUT or DELETE of `target`. A `412` fetches the server's version for
     /// the merge; when that fails too, the conflict comes without it.
     async fn write_error(&self, target: &Url, answer: &Answer) -> ContactsError {
@@ -600,6 +635,16 @@ mod tests {
     const MULTIGET: &str = include_str!("../tests/fixtures/carddav/nextcloud-multiget.xml");
     const SERVER_CARD: &str = include_str!("../tests/fixtures/carddav/nextcloud-card-server.vcf");
     const NEED_PRIVILEGES: &str = include_str!("../tests/fixtures/carddav/nextcloud-need-privileges.xml");
+    const NEXTCLOUD_SHARED_READONLY_HOME: &str =
+        include_str!("../tests/fixtures/carddav/nextcloud-shared-readonly-home.xml");
+    const NEXTCLOUD_READONLY_BOOK: &str = include_str!("../tests/fixtures/carddav/nextcloud-readonly-book.xml");
+    const NEXTCLOUD_READONLY_WRITE: &str = include_str!("../tests/fixtures/carddav/nextcloud-readonly-write.xml");
+    const RADICALE_ROOT: &str = include_str!("../tests/fixtures/carddav/radicale-root.xml");
+    const RADICALE_PRINCIPAL: &str = include_str!("../tests/fixtures/carddav/radicale-principal.xml");
+    const RADICALE_HOME: &str = include_str!("../tests/fixtures/carddav/radicale-home.xml");
+    const RADICALE_SYNC_DELTA: &str = include_str!("../tests/fixtures/carddav/radicale-sync-delta.xml");
+    const RADICALE_SHARED_READONLY_HOME: &str =
+        include_str!("../tests/fixtures/carddav/radicale-shared-readonly-home.xml");
 
     const BOOK_PATH: &str = "/remote.php/dav/addressbooks/users/anna/contacts/";
     const VCARD: &str = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:ben\r\nFN:Ben Beispiel\r\nEND:VCARD\r\n";
@@ -988,6 +1033,164 @@ mod tests {
         assert!(matches!(without_etag, Err(ContactsError::Other(_))), "never overwrite blindly");
         assert!(matches!(client.put(&book, None, " ", VCARD, None).await, Err(ContactsError::Other(_))));
         assert_eq!(any.calls_async().await, 0);
+    }
+
+    /// A client of a Radicale at the root of `server`, signed in as anna.
+    fn radicale(server: &MockServer) -> CalDavClient {
+        let account = CalDavAccount { url: server.url("/"), username: "anna".into() };
+        CalDavClient::new(reqwest::Client::new(), &account, Secret::new("secret")).expect("client")
+    }
+
+    /// Issue #354, Radicale 3.9: the root names the principal, the principal is the address book
+    /// home itself, and the home lists itself as a principal collection next to the books.
+    #[tokio::test]
+    async fn radicale_books_come_from_the_principal_that_is_its_own_home() {
+        let server = MockServer::start_async().await;
+        propfind_at(&server, "/", "0", RADICALE_ROOT).await;
+        propfind_at(&server, "/anna/", "0", RADICALE_PRINCIPAL).await;
+        let listed = propfind_at(&server, "/anna/", "1", RADICALE_HOME).await;
+
+        let books = radicale(&server).address_books().await.expect("books");
+        assert_eq!(listed.calls_async().await, 1);
+        let found: Vec<(String, &str, &str, bool, bool)> = books
+            .iter()
+            .map(|b| (b.href.clone(), b.name.as_str(), b.display_name.as_str(), b.writable, b.hidden_by_default))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (server.url("/anna/shared/"), "shared", "Shared with Ben", true, false),
+                (server.url("/anna/contacts/"), "contacts", "Contacts", true, false),
+            ],
+            "the principal collection is no book"
+        );
+    }
+
+    /// Issue #354, Radicale 3.9: `sync-collection` names the token before the responses, a removed
+    /// card with a bare `404` status and changed ones with their ETag.
+    #[tokio::test]
+    async fn radicale_sync_brings_only_the_changes() {
+        let server = MockServer::start_async().await;
+        let since = "http://radicale.org/ns/sync/24c025671a0e1e4b3dc32ba098e6bbfafde26b0c880e7cb649042a1b90456a14";
+        let sync = server
+            .mock_async(|when, then| {
+                when.path("/anna/shared/")
+                    .header("depth", "0")
+                    .body_includes("<d:sync-collection")
+                    .body_includes(format!("<d:sync-token>{since}</d:sync-token>"));
+                then.status(207).body(RADICALE_SYNC_DELTA);
+            })
+            .await;
+        let changes = radicale(&server)
+            .changes(&server.url("/anna/shared/"), Some(&SyncToken(since.into())))
+            .await
+            .expect("delta");
+        assert_eq!(sync.calls_async().await, 1);
+        let at = |name: &str| server.url(format!("/anna/shared/{name}"));
+        assert_eq!(
+            changes.listing,
+            Listing::Delta {
+                changed: vec![
+                    Entry {
+                        href: at("dora.vcf"),
+                        etag: "\"04b3a14939bd02910ddcc3030a736925be966c11da045ca43816c111013e1a36\"".into()
+                    },
+                    Entry {
+                        href: at("emil.vcf"),
+                        etag: "\"7f91cfebc98484143fbe26b3378ff3bcd3b462328b08dcd5b9b9e9012401d923\"".into()
+                    },
+                ],
+                removed: vec![at("carla.vcf")],
+            }
+        );
+        assert_eq!(
+            changes.token,
+            Some(SyncToken(
+                "http://radicale.org/ns/sync/96aa383e6760cde9a21e2d4ed8d32d220b1336ccc1e1b0440e7388ce655256f9".into()
+            ))
+        );
+    }
+
+    /// Issue #354: a book shared read-only is listed, but not writable. Nextcloud 35 grants
+    /// `write-properties` on it (the display name is the user's own), Radicale 3.9 only `read`.
+    #[test]
+    fn a_book_shared_read_only_is_not_writable() {
+        let client = CalDavClient::new(
+            reqwest::Client::new(),
+            &CalDavAccount { url: "https://cloud.example.org/remote.php/dav/".into(), username: "ben".into() },
+            Secret::new("secret"),
+        )
+        .expect("client");
+        let home = Url::parse("https://cloud.example.org/remote.php/dav/addressbooks/users/ben/").expect("url");
+        let books = client.books_in_answer(NEXTCLOUD_SHARED_READONLY_HOME, &home).expect("books");
+        let found: Vec<(&str, &str, bool, bool)> =
+            books.iter().map(|b| (b.name.as_str(), b.display_name.as_str(), b.writable, b.hidden_by_default)).collect();
+        assert_eq!(
+            found,
+            [
+                ("contacts", "Contacts", true, false),
+                ("team_shared_by_anna", "Team (anna)", false, false),
+                ("z-server-generated--system", "Accounts", false, true),
+                ("z-app-generated--contactsinteraction--recent", "Recently contacted", false, true),
+            ]
+        );
+
+        let client = CalDavClient::new(
+            reqwest::Client::new(),
+            &CalDavAccount { url: "https://dav.example.org/".into(), username: "ben".into() },
+            Secret::new("secret"),
+        )
+        .expect("client");
+        let home = Url::parse("https://dav.example.org/ben/").expect("url");
+        let books = client.books_in_answer(RADICALE_SHARED_READONLY_HOME, &home).expect("books");
+        let found: Vec<(&str, bool)> = books.iter().map(|b| (b.name.as_str(), b.writable)).collect();
+        assert_eq!(found, [("contacts", true), ("shared-anna", false)]);
+    }
+
+    /// Issue #354: Nextcloud 35 answers a write into a book shared read-only with `404` ("could not
+    /// be found"), not `403`, although the card reads. Taken for "deleted there", a change became a
+    /// conflict that never resolved and a deletion vanished here while the card stayed on the
+    /// server. The book's privileges tell the two apart: read-only, or really gone.
+    #[tokio::test]
+    async fn a_404_in_a_book_shared_read_only_is_a_refusal() {
+        let server = MockServer::start_async().await;
+        let shared = "/remote.php/dav/addressbooks/users/ben/team_shared_by_anna/";
+        server
+            .mock_async(|when, then| {
+                when.method(PUT).path_includes(shared);
+                then.status(404)
+                    .header("Content-Type", "application/xml; charset=utf-8")
+                    .body(NEXTCLOUD_READONLY_WRITE);
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.method(DELETE).path_includes(shared);
+                then.status(404)
+                    .header("Content-Type", "application/xml; charset=utf-8")
+                    .body(NEXTCLOUD_READONLY_WRITE);
+            })
+            .await;
+        let privileges = propfind_at(&server, shared, "0", NEXTCLOUD_READONLY_BOOK).await;
+        let client = client(&server);
+        let book = server.url(shared);
+        let etag = Some("\"153b9fa9023070b8c584877b3f52bdd5\"");
+        assert_eq!(client.put(&book, Some("team-1.vcf"), "team-1", VCARD, etag).await, Err(ContactsError::ReadOnly));
+        assert_eq!(client.put(&book, None, "new", VCARD, None).await, Err(ContactsError::ReadOnly));
+        assert_eq!(client.delete(&book, "team-1.vcf", etag).await, Err(ContactsError::ReadOnly));
+        assert_eq!(privileges.calls_async().await, 3);
+
+        // In a book the user may write to, a 404 still means the card is gone there.
+        server
+            .mock_async(|when, then| {
+                when.method(PUT).path(format!("{BOOK_PATH}gone.vcf"));
+                then.status(404);
+            })
+            .await;
+        let own = "<d:current-user-privilege-set><d:privilege><d:write/></d:privilege></d:current-user-privilege-set>";
+        propfind_at(&server, BOOK_PATH, "0", &multistatus(BOOK_PATH, own)).await;
+        let put = client.put(&server.url(BOOK_PATH), Some("gone.vcf"), "gone", VCARD, Some("\"g1\"")).await;
+        assert_eq!(put, Err(ContactsError::NotFound));
     }
 
     #[tokio::test]

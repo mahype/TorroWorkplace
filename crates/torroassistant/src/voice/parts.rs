@@ -10,15 +10,16 @@
 use std::path::Path;
 
 use torro_core::settings::{SpeechProvider, Voice};
-use torro_core::voice_models::{self, HEY_TORRO, POCKET_DE, QWEN, SILERO_VAD};
+use torro_core::voice_models::{self, HEY_TORRO, POCKET_DE, QWEN, SILERO_VAD, SMART_TURN};
 use torro_ipc::{VoiceMissing, VoicePart, VoiceProgram, VoiceState, VoiceStatus};
 
 use super::early::Early;
 use super::recognize::{SharedTranscriber, SherpaTranscriber};
 use super::sound::{ChimeSpeaker, CpalRecorder, Devices, microphone_in_use};
+use super::turn::SmartTurn;
 use super::vad::SileroVad;
 use super::wake::{ModelWake, TranscriptWake};
-use super::{Recorder, Speaker, SpeechDetector, Transcriber, VoiceError, WakeWord};
+use super::{Recorder, Speaker, SpeechDetector, Transcriber, TurnDetector, VoiceError, WakeWord};
 
 /// Whether the model `id` of the catalogue is downloaded into the voice folder `folder`.
 pub fn model_ready(id: &str, folder: Option<&Path>) -> bool {
@@ -36,6 +37,9 @@ pub struct Parts {
     /// Recognises the sentence ahead in its pauses (issue #833), with the same model; only with [`Parts::vad`],
     /// so without Silero VAD everything stays as it was.
     pub early: Option<Early>,
+    /// Smart Turn, once downloaded (issue #836): hears in the tone whether a sentence is over. Only with
+    /// [`Parts::vad`]; without it the text of the sentence decides alone.
+    pub turn: Option<Box<dyn TurnDetector>>,
 }
 
 impl Parts {
@@ -55,6 +59,7 @@ impl Parts {
             }
             None => None,
         };
+        let turn = if vad.is_some() { turn_detector(folder) } else { None };
         Ok(Parts {
             recorder: Box::new(CpalRecorder { microphone: voice.microphone.clone() }),
             wake,
@@ -62,7 +67,27 @@ impl Parts {
             speaker: Box::new(ChimeSpeaker),
             vad,
             early,
+            turn,
         })
+    }
+}
+
+/// Smart Turn from the voice folder `folder`, when it is downloaded (issue #836); `None` without it, and when
+/// it does not load: why goes to the log, without the path, and the text decides alone.
+pub fn turn_detector(folder: Option<&Path>) -> Option<Box<dyn TurnDetector>> {
+    if !model_ready(SMART_TURN, folder) {
+        return None;
+    }
+    match SmartTurn::load(folder) {
+        Ok(turn) => Some(Box::new(turn)),
+        Err(err) => {
+            let mut message = err.to_string();
+            if let Some(folder) = folder {
+                message = message.replace(&*folder.to_string_lossy(), "<voice folder>");
+            }
+            eprintln!("torroassistant: Smart Turn did not load, the text tells the end of a sentence: {message}");
+            None
+        }
     }
 }
 
@@ -255,6 +280,16 @@ pub mod tests {
             matches!(&damaged, Err(VoiceError::Program { message, .. }) if message.contains("damaged")),
             "{damaged:?}"
         );
+    }
+
+    /// Issue #836: without Smart Turn there is no turn detector, and a damaged one is none either.
+    #[test]
+    fn smart_turn_is_used_only_once_downloaded() {
+        let folder = tempfile::tempdir().expect("voice folder");
+        assert!(turn_detector(Some(folder.path())).is_none());
+        assert!(turn_detector(None).is_none());
+        download(folder.path(), SMART_TURN);
+        assert!(turn_detector(Some(folder.path())).is_none(), "a damaged model leaves the text to decide");
     }
 
     /// Issue #762: the downloaded models make the parts work; only the chosen recogniser counts.

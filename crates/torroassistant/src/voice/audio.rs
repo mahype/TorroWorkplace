@@ -71,7 +71,8 @@ impl Default for Limits {
 }
 
 /// Decides when a spoken sentence ends: after a pause once something was said, when nothing was
-/// said for [`Limits::wait`], or at [`Limits::most`].
+/// said for [`Limits::wait`], or at [`Limits::most`]. The pause is [`Limits::pause`] unless the end of the
+/// sentence was judged in it (issue #836, [`Endpoint::wait_for`], [`Endpoint::hold`]).
 #[derive(Debug, Clone)]
 pub struct Endpoint {
     speech: f32,
@@ -79,12 +80,52 @@ pub struct Endpoint {
     frames: usize,
     spoken: usize,
     quiet: usize,
+    /// The pause that ends the sentence now: [`Limits::pause`] until the next judgement.
+    pause: usize,
+    /// The turn is held ([`Endpoint::hold`]): the quiet frames count not to [`Limits::most`].
+    holding: bool,
+    /// The quiet frames that were held.
+    held: usize,
+    /// Speech came again after a pause of at least [`Limits::pause`].
+    saved: bool,
 }
 
 impl Endpoint {
     /// A sentence in a room as loud as `floor`.
     pub fn new(floor: NoiseFloor, limits: Limits) -> Endpoint {
-        Endpoint { speech: floor.speech(), limits, frames: 0, spoken: 0, quiet: 0 }
+        Endpoint {
+            speech: floor.speech(),
+            limits,
+            frames: 0,
+            spoken: 0,
+            quiet: 0,
+            pause: limits.pause,
+            holding: false,
+            held: 0,
+            saved: false,
+        }
+    }
+
+    /// The pause of this sentence ends after `frames` quiet frames, until someone speaks again (issue #836):
+    /// shorter after a finished sentence, longer after an unfinished one. Shorter than the quiet so far, the
+    /// next frame ends it.
+    pub fn wait_for(&mut self, frames: usize) {
+        self.pause = frames;
+        self.holding = false;
+    }
+
+    /// Holds the turn for `frames` quiet frames, until someone speaks again (issue #836, "wait a moment"):
+    /// like [`Endpoint::wait_for`], and the frames held count not to [`Limits::most`], so a hold does not cut
+    /// the sentence short.
+    pub fn hold(&mut self, frames: usize) {
+        self.pause = frames;
+        self.holding = true;
+    }
+
+    /// Whether speech came again after a pause that ended every sentence before issue #836
+    /// ([`Limits::pause`]): the sentence was waited for and arrived whole.
+    pub fn saved(&self) -> bool {
+        self.saved
     }
 
     /// Takes the next frame, speech when it is louder than the room; `true` when the sentence is over
@@ -98,14 +139,20 @@ impl Endpoint {
     pub fn push_heard(&mut self, speech: bool) -> bool {
         self.frames += 1;
         if speech {
+            self.saved |= self.spoken > 0 && self.quiet >= self.limits.pause;
             self.spoken += 1;
             self.quiet = 0;
+            self.pause = self.limits.pause;
+            self.holding = false;
         } else {
             self.quiet += 1;
+            if self.holding {
+                self.held += 1;
+            }
         }
-        let paused = self.spoken > 0 && self.quiet >= self.limits.pause;
+        let paused = self.spoken > 0 && self.quiet >= self.pause;
         let never_spoke = self.spoken == 0 && self.frames >= self.limits.wait;
-        paused || never_spoke || self.frames >= self.limits.most
+        paused || never_spoke || self.frames - self.held >= self.limits.most
     }
 
     /// Whether anything louder than the room was heard.
@@ -522,6 +569,65 @@ pub mod tests {
         assert_eq!(ended, Some(7), "three silent frames after the last speech");
         assert!(end.heard_speech());
         assert_eq!(end.trailing_quiet(), 3);
+    }
+
+    /// Issue #836: a judged pause ends the sentence sooner or later; speech brings back the pause of the
+    /// limits. A hold waits past the longest sentence and, once the person goes on, the sentence is saved.
+    #[test]
+    fn a_judged_pause_ends_sooner_later_or_holds() {
+        let limits = Limits { pause: 5, most: 20, ..Limits::default() };
+        let mut done = Endpoint::new(NoiseFloor::default(), limits);
+        assert!(!done.push_heard(true));
+        assert!(!done.push_heard(false) && !done.push_heard(false));
+        done.wait_for(3);
+        assert!(done.push_heard(false), "the third quiet frame ends it");
+
+        let mut late = Endpoint::new(NoiseFloor::default(), limits);
+        late.push_heard(true);
+        for _ in 0..4 {
+            late.push_heard(false);
+        }
+        late.wait_for(2);
+        assert!(late.push_heard(false), "judged later than its pause: the next frame ends it");
+
+        let mut open = Endpoint::new(NoiseFloor::default(), limits);
+        open.push_heard(true);
+        open.wait_for(8);
+        assert_eq!((0..8).position(|_| open.push_heard(false)), Some(7), "the longer pause");
+        let mut again = Endpoint::new(NoiseFloor::default(), limits);
+        again.push_heard(true);
+        again.wait_for(8);
+        again.push_heard(false);
+        again.push_heard(true);
+        assert_eq!((0..8).position(|_| again.push_heard(false)), Some(4), "speech brought back the pause of five");
+        assert!(!again.saved(), "never quiet as long as the old pause");
+    }
+
+    /// Issue #836, decision 3: "wait a moment" holds past the longest sentence (frames from the sound files:
+    /// `utterance.wav`, then silence), and when the person goes on, the sentence was saved.
+    #[test]
+    fn a_hold_waits_past_the_longest_sentence_and_saves_it() {
+        let frames = |name: &str| fixture(name).chunks(FRAME).map(<[i16]>::to_vec).collect::<Vec<_>>();
+        let (said, silence) = (frames("utterance.wav"), frames("silence.wav"));
+        let mut floor = NoiseFloor::default();
+        for frame in &silence {
+            floor.follow(rms(frame));
+        }
+        let limits = Limits { most: 3 * FRAMES_PER_SECOND, ..Limits::default() };
+        let mut end = Endpoint::new(floor, limits);
+        // The sound file up to its pause: speech ends at about 0.75 s.
+        let spoken = said.iter().take(10).filter(|frame| end.push(frame)).count();
+        assert_eq!(spoken, 0);
+        assert!(end.heard_speech());
+        end.hold(5 * FRAMES_PER_SECOND);
+        // Four seconds of silence: past the longest sentence of three, held.
+        let quiet = silence.iter().cycle().take(4 * FRAMES_PER_SECOND).filter(|frame| end.push(frame)).count();
+        assert_eq!(quiet, 0, "held, not ended at the longest");
+        assert!(!end.push(&said[5]), "the person goes on");
+        assert!(end.saved(), "after more than the pause of a second");
+        // Back to the pause of a second once the person spoke.
+        let ended = silence.iter().cycle().position(|frame| end.push(frame));
+        assert_eq!(ended, Some(FRAMES_PER_SECOND - 1));
     }
 
     /// Issue #782: a tone stretched to 150 % and 70 % lasts a third less or about 43 % more, keeps

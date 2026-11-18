@@ -108,6 +108,18 @@ impl Early {
         }
     }
 
+    /// The result of the last offer if it is there, without waiting and without taking it (issue #836): the
+    /// listener judges the end of the sentence by it while the pause goes on, and [`Early::result`] still
+    /// gives it at the end. `None` while it is recognised, and when nothing was offered.
+    pub fn peek(&self) -> Option<Result<String, VoiceError>> {
+        let wanted = self.wanted?;
+        let state = lock(&self.shared);
+        match &state.done {
+            Some((number, text)) if *number == wanted => Some(text.clone()),
+            _ => None,
+        }
+    }
+
     /// Forgets the offers: one not yet begun is dropped, the result of one that runs will not count.
     pub fn clear(&mut self) {
         self.wanted = None;
@@ -179,6 +191,27 @@ mod tests {
         let mut early = Early::new(Box::new(Panics)).expect("thread");
         early.offer(vec![0; 1]);
         assert_eq!(early.result(), None);
+    }
+
+    /// Issue #836: a peek shows the result of the last offer once it is there, and leaves it for `result`.
+    #[test]
+    fn a_peek_shows_the_result_and_leaves_it() {
+        let (go, gate) = mpsc::channel();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut early = Early::new(Box::new(Counts { calls: Arc::clone(&calls), gate: Some(gate) })).expect("thread");
+        assert_eq!(early.peek(), None, "nothing offered");
+        early.offer(vec![0; 6]);
+        assert_eq!(early.peek(), None, "still at the gate");
+        go.send(()).expect("go");
+        let peeked = loop {
+            if let Some(peeked) = early.peek() {
+                break peeked;
+            }
+            std::thread::yield_now();
+        };
+        assert_eq!(peeked, Ok("6".into()));
+        assert_eq!(early.result(), Some(Ok("6".into())), "still there for the end");
+        assert_eq!(early.peek(), None, "taken");
     }
 
     /// After `clear` nothing counts until the next offer.

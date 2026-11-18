@@ -4332,8 +4332,18 @@ impl Core {
     /// The contacts (issue #351): a round once the calendar service has read its accounts and every
     /// [`crate::contacts::SYNC_EVERY`] after; the books that are gone leave every client's rights.
     /// An account removed or wiped takes its contacts along ([`PimService::on_forget`]); every
-    /// round also clears accounts gone while nobody listened. Part of [`Core::start`].
+    /// round also clears accounts gone while nobody listened. An account signed in brings its
+    /// contacts at once, not at the next round ([`PimService::on_add`], issue #354). Part of
+    /// [`Core::start`].
     fn start_contacts(self: &Arc<Self>) {
+        let mut added = self.pim.on_add();
+        let core = Arc::clone(self);
+        tokio::spawn(async move {
+            // Missed ones are covered by the same round: it syncs every account.
+            while let Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) = added.recv().await {
+                core.sync_contacts().await;
+            }
+        });
         let mut forgotten = self.pim.on_forget();
         let core = Arc::clone(self);
         tokio::spawn(async move {
@@ -9358,6 +9368,23 @@ impl Core {
         }
     }
 
+    /// How much mail each category holds in the accounts `reach` allows (`only` one of them),
+    /// without the mail on "Reply later" or "Set aside": the category's list leaves it out
+    /// (decision 3 of E19), so counting it would offer a category whose view is empty (#873). When
+    /// the piles cannot be read, the count is taken as before and the failure goes to the log.
+    async fn category_counts(
+        &self,
+        reach: Reach<'_>,
+        only: Option<&str>,
+    ) -> Result<std::collections::BTreeMap<torro_mail::Category, (u32, u32)>, crate::mail::service::MailError> {
+        let accounts = self.mail.accounts_in(reach).await;
+        let piles = self.inbox.mail_piles(&accounts).unwrap_or_else(|err| {
+            eprintln!("torroworkplace: inbox: cannot read the piles to count the categories: {err}");
+            crate::inbox::MailPiles::default()
+        });
+        self.mail.unread_by_category(reach, only, &piles).await
+    }
+
     /// `inbox.list_categories` (task E12.4): the whole catalogue with its words, and how much
     /// mail each category holds in the accounts `reach` allows – all of it, and how much of that
     /// is unread. A key without mail rights reaches no account and sees 0 everywhere – never a
@@ -9374,7 +9401,7 @@ impl Core {
                 message: trf("There is no mail account {id}.", &[("id", wanted)]),
             };
         }
-        let counts = match self.mail.unread_by_category(reach, account.as_deref()).await {
+        let counts = match self.category_counts(reach, account.as_deref()).await {
             Ok(counts) => counts,
             Err(err) => return err.response(),
         };
@@ -9400,7 +9427,7 @@ impl Core {
     /// One category as `inbox.create_category` and `inbox.update_category` answer it (task E15.2):
     /// with its counts in the accounts `reach` allows, like `inbox.list_categories`.
     async fn category_answer(&self, def: &torro_mail::CategoryDef, reach: Reach<'_>) -> Response {
-        let counts = self.mail.unread_by_category(reach, None).await.unwrap_or_default();
+        let counts = self.category_counts(reach, None).await.unwrap_or_default();
         let (unread, messages) = counts.get(&def.category).copied().unwrap_or((0, 0));
         let group = self.inbox.category_groups().ok().and_then(|groups| {
             groups.iter().find(|group| group.group == def.group).map(torro_ipc::inbox::CategoryGroupInfo::of)
@@ -15097,13 +15124,14 @@ impl Core {
         let (Some(asked), Some(first_word), Some(first_sound)) = (asked, stamps.first_word, stamps.first_sound) else {
             return;
         };
-        let Some((pause_ms, recognize_ms)) = self.voice.take_heard(conversation, after) else { return };
+        let Some((pause_ms, recognize_ms, held)) = self.voice.take_heard(conversation, after) else { return };
         let round = torro_ipc::VoiceRound {
             at: first_sound,
             pause_ms,
             recognize_ms,
             first_word_ms: span_ms(asked, first_word),
             first_sound_ms: span_ms(first_word, first_sound),
+            held,
         };
         // Issue #850: the first sound split into the wait for the first sentence and its sound; only in the log.
         let (sentence, ready) = match stamps.first_piece {
@@ -15111,12 +15139,13 @@ impl Core {
             None => ("-".to_string(), "-".to_string()),
         };
         eprintln!(
-            "torroworkplace: voice round: pause {} ms, recognition {} ms, first word {} ms, first sound {} ms, total {} ms, first sentence {sentence} ms, sound ready {ready} ms",
+            "torroworkplace: voice round: pause {} ms, recognition {} ms, first word {} ms, first sound {} ms, total {} ms, first sentence {sentence} ms, sound ready {ready} ms, pause waited out {}",
             round.pause_ms,
             round.recognize_ms,
             round.first_word_ms,
             round.first_sound_ms,
-            round.total_ms()
+            round.total_ms(),
+            round.held
         );
         let mut rounds = self.voice_rounds.lock().unwrap_or_else(PoisonError::into_inner);
         rounds.push_back(round);
@@ -21116,10 +21145,10 @@ done"#;
         let core = core(dir.path()).with_voice_models(models);
         let Response::VoiceModels { models } = core.handle(Request::ListVoiceModels).await else { panic!("listed") };
         // Qwen3-TTS only in builds with it (issue #764).
-        let expected = ["whisper-turbo", "parakeet", "pocket-de", "silero-vad", "qwen3-tts"];
+        let expected = ["whisper-turbo", "parakeet", "pocket-de", "silero-vad", "smart-turn", "qwen3-tts"];
         assert_eq!(
             models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(),
-            expected[..4 + usize::from(torro_core::settings::QWEN_BUILT)]
+            expected[..5 + usize::from(torro_core::settings::QWEN_BUILT)]
         );
         assert!(models.iter().all(|model| model.state == VoiceModelState::Missing));
         assert_eq!(code(&core.handle(Request::DownloadVoiceModel { model: "evil".into() }).await), "not-found");
@@ -21959,12 +21988,13 @@ done"#,
         assert_eq!(core.handle(Request::SpeakAnswer { conversation: ID.into() }).await, Response::Ok);
         assert!(timings(&core).rounds.is_empty());
 
-        let heard = |after| Heard { conversation: ID.into(), after, pause_ms: 1000, recognize_ms: 800 };
+        let heard = |after| Heard { conversation: ID.into(), after, pause_ms: 1000, recognize_ms: 800, held: true };
         core.voice.told(heard(after));
         assert_eq!(core.handle(Request::SpeakAnswer { conversation: ID.into() }).await, Response::Ok);
         let rounds = timings(&core).rounds;
         assert_eq!(rounds.len(), 1, "{rounds:?}");
         assert_eq!((rounds[0].pause_ms, rounds[0].recognize_ms), (1000, 800));
+        assert!(rounds[0].held, "issue #836: the pause waited out is kept");
         assert_eq!(core.voice.take_heard(ID, after), None, "the half was taken");
         assert_eq!(core.handle(Request::VoiceTimings).await, core.voice_timings(), "the request answers it");
 
@@ -27389,7 +27419,8 @@ done"#,
             panic!("a page")
         };
         let id = messages.first().map(|message| message.id.clone()).expect("the invoice");
-        let filed = Request::SetItemCategory { id, category: torro_mail::Category::Invoice, remember: false };
+        let filed =
+            Request::SetItemCategory { id: id.clone(), category: torro_mail::Category::Invoice, remember: false };
         assert!(matches!(ask(&core, Some(&app_key), filed).await, Response::ItemCategory { .. }));
 
         let counted = |answer: Response| -> (u32, u32) {
@@ -27404,6 +27435,21 @@ done"#,
             counted(ask(&core, Some(&app_key), Request::ListCategories { account: None }).await),
             (1, 1),
             "the app key counts the invoice"
+        );
+
+        // Mail on a pile is not counted, as the category's list leaves it out (#873).
+        let put = |pile| Request::SetMailPile { ids: vec![id.clone()], pile, since: None };
+        assert_eq!(ask(&core, Some(&app_key), put(Some(torro_mail::MailPile::SetAside))).await, Response::Ok);
+        assert_eq!(
+            counted(ask(&core, Some(&app_key), Request::ListCategories { account: None }).await),
+            (0, 0),
+            "the invoice lies on a pile"
+        );
+        assert_eq!(ask(&core, Some(&app_key), put(None)).await, Response::Ok);
+        assert_eq!(
+            counted(ask(&core, Some(&app_key), Request::ListCategories { account: None }).await),
+            (1, 1),
+            "taken off the pile it counts again"
         );
 
         // The inbox without mail: every account in the selection, and still no number.

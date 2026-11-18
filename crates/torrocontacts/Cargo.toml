@@ -11,11 +11,10 @@ description = "Contacts for the tiled desktop: address books grouped in a list, 
 [lints]
 workspace = true
 
-# Not in the release yet (issue #352): the native installers of issue #589 cover exactly eight apps, and a
-# ninth program in the dist plan would stop the release. The app catalog shows the app as unavailable until
-# an issue of its own brings its installers.
-[package.metadata.dist]
-dist = false
+# The Homebrew formula dist generates for this app brings the background service along (issue #411). `run` only:
+# a dependency without a stage would be installed on the build runners instead of going into the formula.
+[package.metadata.dist.dependencies.homebrew]
+"mahype/torro/torroworkplace" = { stage = ["run"] }
 
 [dependencies]
 torro-core.workspace = true
@@ -34,3 +33,7 @@ tokio.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+# The build script runs on the host, including macOS/Linux cross builds for Windows.
+[build-dependencies]
+winresource.workspace = true

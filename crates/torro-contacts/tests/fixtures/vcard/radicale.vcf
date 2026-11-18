@@ -1,0 +1,21 @@
+BEGIN:VCARD
+VERSION:3.0
+PRODID:-//Example//Client 1.0//EN
+UID:5c0e4b1a-radicale-mira
+ADR;TYPE=WORK:;;Hafenstr. 9;Hamburg;;20457;Deutschland
+BDAY:1984-03-07
+CATEGORIES:Kunden,Hamburg
+EMAIL;TYPE=INTERNET,WORK:mira@example.org
+EMAIL;TYPE=INTERNET,HOME:mira.privat@example.net
+FN:Dr. Mira Sommer
+N:Sommer;Mira;;Dr.;
+NOTE:Rückruf bitte nachmittags\, nicht vor 14 Uhr\; Assistenz: Herr Klein.
+  Diese Notiz ist absichtlich lang genug\, damit sie gefaltet wird.
+ORG:Sommer & Partner;Planung
+PHOTO;ENCODING=b;TYPE=PNG:iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGPQqDgBRAwQCgAk7gWh8YchJQAAAABJRU5ErkJggg==
+TEL;TYPE=CELL:+49 160 2222222
+TEL;TYPE=WORK,VOICE:+49 40 333333
+TITLE:Geschäftsführerin
+URL:https://example.org/mira
+X-SOCIALPROFILE;TYPE=mastodon:https://social.example.org/@mira
+END:VCARD

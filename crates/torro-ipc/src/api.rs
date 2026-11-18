@@ -3740,10 +3740,10 @@ static LIST_ACCOUNTS: Command = Command {
                   mail and calendars; a key sees only the mail accounts its rights reach. Of a mail account it does \
                   not reach, a key sees only the calendars and task lists it may read, without `mail`. Passwords \
                   and tokens are never part of the answer. Which apps use an account follows from its kind, among \
-                  the apps apps.list_apps lists as installed: nextcloud Calendar, Tasks, Notification Hub and App \
-                  Feed; mail Mail, with calendars (`mail.calendars`) also Calendar and Tasks; caldav Calendar and \
-                  Tasks; github Tasks, Notification Hub and App Feed; ntfy Notification Hub and App Feed; ai Mail \
-                  and Assistant.",
+                  the apps apps.list_apps lists as installed: nextcloud Calendar, Tasks, Contacts, Notification Hub \
+                  and App Feed; mail Mail, with calendars (`mail.calendars`) also Calendar and Tasks; caldav \
+                  Calendar, Tasks and Contacts; github Tasks, Notification Hub and App Feed; ntfy Notification \
+                  Hub and App Feed; ai Mail and Assistant.",
 };
 
 static SYNC: Command = Command {
@@ -4239,7 +4239,12 @@ static SET_SETTING: Command = Command {
                   one keeps its date in the title; 0 never starts a new one), `voice_announcements` (true, the default, or \
                   false: while an answer of the voice chat takes a moment, it says briefly what it does, like \
                   \"One moment, I'm checking your calendar\"; only spoken, never stored, and only while \
-                  `speak_answers` is on) or `openai_style` (how OpenAI speaks, one line of at most 500 \
+                  `speak_answers` is on), `voice_pause_done` (milliseconds from 300 to 1500 in 100s, or null \
+                  for 500: the pause after a finished sentence before the voice chat answers), `voice_pause_open` \
+                  (milliseconds from 1000 to 4000 in 500s, or null for 2000: the pause after an unfinished one like \
+                  \"and then …\" or \"um\"), `voice_hold` (seconds from 5 to 30 in 5s, or null for 15: how long \
+                  \"wait a moment\" holds the turn; these three pauses need Silero VAD) or `openai_style` (how OpenAI \
+                  speaks, one line of at most 500 \
                   characters like \"calm, slow\", or null; it only reaches OpenAI once a person chose OpenAI); \
                   `stt_model` and `voice` are gone and refused or \
                   `assistant_default` (what a new chat of the assistant starts with: {\"engine\": \"<id from \
@@ -4359,8 +4364,9 @@ static VOICE_TIMINGS: Command = Command {
     mcp: Mcp::Tool,
     description: "Lists how long the last spoken answers took, step by step, oldest first: the pause until the end \
                   of speech was detected, speech recognition, the first word of the answer and its first sound, \
-                  in milliseconds, each round with the time its first sound played. Only durations, never what \
-                  was said; the core keeps the last 20 answers read \
+                  in milliseconds, each round with the time its first sound played and `held`: whether the \
+                  listener waited out a pause that once ended the sentence (the average counts them). Only \
+                  durations, never what was said; the core keeps the last 20 answers read \
                   aloud in memory only, so the list is empty after a restart.",
 };
 
@@ -5070,7 +5076,8 @@ static LIST_CATEGORIES: Command = Command {
                   monochrome `icon` in the group's colour, \
                   how much mail it holds (`messages`) and how much of that is unread. Counted in the inbox folder \
                   only, so mail thrown away, marked as spam \
-                  or sent by the person is counted nowhere. The counts cover only mail accounts this key may read \
+                  or sent by the person is counted nowhere, and mail on the piles Reply later and Set aside \
+                  is not counted either, as the category's list leaves it out. The counts cover only mail accounts this key may read \
                   (read access to mail and the account), so a key without them sees 0 everywhere, never a number \
                   about a mailbox it cannot see; `account` (`mail:<address>`) counts in one account and is \
                   `not-found` when it is not there or out of reach. Each one also says what it means (`description`, \
@@ -8605,6 +8612,10 @@ mod tests {
             SettingKey::OpenAiStyle,
             SettingKey::VoiceNewAfter,
             SettingKey::VoiceAnnouncements,
+            // Issue #836, decision 2: the pauses of the end of a sentence free nothing.
+            SettingKey::VoicePauseDone,
+            SettingKey::VoicePauseOpen,
+            SettingKey::VoiceHold,
         ] {
             assert!(!Request::SetSetting { key, value: serde_json::json!("whisper") }.kept_for_people(), "{key:?}");
         }
@@ -9563,6 +9574,9 @@ mod tests {
                 "pocket_pause",
                 "voice_new_after",
                 "voice_announcements",
+                "voice_pause_done",
+                "voice_pause_open",
+                "voice_hold",
                 "openai_style",
                 "assistant_default",
                 "setup",
