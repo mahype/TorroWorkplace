@@ -4421,6 +4421,77 @@ pub fn context_groups<'a>(groups: Vec<RailGroup<'a, Message>>, id: &str) -> Vec<
         .collect()
 }
 
+/// What the context menu of several marked mails (issue #904, [`selection_groups`]) knows of one of
+/// them: where it lies, its flags and its pile, and whether it is a draft.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedMail {
+    /// The account it belongs to (`mail:<address>`).
+    pub account: String,
+    /// The folder it lies in (`None`: its account's inbox, where an entry's mail lies).
+    pub folder: Option<String>,
+    /// Its flags as listed or loaded; none for mail the window holds neither way (unread, unflagged).
+    pub flags: Vec<Flag>,
+    /// The pile it lies on.
+    pub pile: Option<MailPile>,
+    /// It lies in a drafts folder: no archive and no pile for it (issue #502).
+    pub draft: bool,
+}
+
+/// The context menu of several marked mails (issue #904): what goes for every one of `mails`, each
+/// acting on all of them. "File" holds Archive, Reply later, Set aside, "Move to folder…" and Delete;
+/// "Mark" Mark read or unread and Flag or Unflag. An item is there only when it works for each mail –
+/// Archive needs an archive folder for each, "Move to folder…" mail of one account (the server moves
+/// within one), a pile mail outside the trash and spam and no draft, "Remove from …" mail that all lie
+/// on that pile. "Mark read" while one is unread, else "Mark unread"; "Flag" while one is unflagged,
+/// else "Unflag". Empty groups are left out. What only goes for one mail (Reply, Save, Ask AI…) is not
+/// offered.
+pub fn selection_groups<'a>(mails: &[SelectedMail], folders: &[Folder]) -> Vec<RailGroup<'a, Message>> {
+    if mails.is_empty() {
+        return Vec::new();
+    }
+    let filings: Vec<Filing> =
+        mails.iter().map(|mail| Filing::of(folders, &mail.account, mail.folder.as_deref())).collect();
+    let drafts = mails.iter().any(|mail| mail.draft);
+    let mut file = Vec::new();
+    if !drafts && filings.iter().all(|filing| filing.archive) {
+        file.push(RailItem::new(Icon::Archive, trc("action", "Archive"), "E", Some(Message::ArchiveSelectedMail)));
+    }
+    let takes = !drafts && filings.iter().all(|filing| filing.piles);
+    for (pile, icon, put, remove) in [
+        (MailPile::ReplyLater, Icon::MessageSquareReply, tr("Reply later"), tr("Remove from Reply later")),
+        (MailPile::SetAside, Icon::Bookmark, tr("Set aside"), tr("Remove from Set aside")),
+    ] {
+        if mails.iter().all(|mail| mail.pile == Some(pile)) {
+            file.push(RailItem::new(icon, remove, "", Some(Message::PileSelectedMail(None))));
+        } else if takes {
+            file.push(RailItem::new(icon, put, "", Some(Message::PileSelectedMail(Some(pile)))));
+        }
+    }
+    if mails.iter().all(|mail| mail.account == mails[0].account) {
+        let ask = Some(Message::AskMoveSelected);
+        file.push(RailItem::new(Icon::Folder, tr("Move to folder…"), "", ask).opens_menu());
+    }
+    if filings.iter().all(|filing| filing.delete) {
+        file.push(RailItem::new(Icon::Trash2, tr("Delete"), "#", Some(Message::DeleteSelectedMail)).danger());
+    }
+    let has = |flag: Flag| mails.iter().all(|mail| mail.flags.contains(&flag));
+    let read = match has(Flag::Seen) {
+        true => {
+            RailItem::new(Icon::Mail, tr("Mark unread"), "", Some(Message::MarkSelectedMail(MailAction::Read(false))))
+        }
+        false => {
+            RailItem::new(Icon::MailOpen, tr("Mark read"), "", Some(Message::MarkSelectedMail(MailAction::Read(true))))
+        }
+    };
+    let flagged = has(Flag::Flagged);
+    let flag = if flagged { tr("Unflag") } else { tr("Flag") };
+    let flag = RailItem::new(Icon::Flag, flag, "", Some(Message::MarkSelectedMail(MailAction::Flag(!flagged))));
+    [RailGroup::new(Icon::Check, tr("File"), file), RailGroup::new(Icon::Flag, tr("Mark"), vec![read, flag])]
+        .into_iter()
+        .filter(|group| !group.items.is_empty())
+        .collect()
+}
+
 /// "Reply later" (`w`) and "Set aside" (`b`) for the mail in `reading` (task E19.4): each puts it on
 /// its pile ([`Message::Pile`]); for the pile it lies on "Remove from Reply later" or "Remove from Set
 /// aside" instead, which takes it off. Off, without their keys, while the mail's headers are not in –

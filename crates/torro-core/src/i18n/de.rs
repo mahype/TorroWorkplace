@@ -4925,6 +4925,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Delete permanently?", "Endgültig löschen?"),
     ("Deleted permanently", "Endgültig gelöscht"),
     ("Move to folder", "In Ordner verschieben"),
+    ("Move to folder…", "In Ordner verschieben…"),
     ("Moved to {folder}", "Verschoben nach {folder}"),
     (
         "The message is removed for good. This can't be undone.",
