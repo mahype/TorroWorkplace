@@ -17688,8 +17688,10 @@ mod tests {
         {
             let _ = app.update(Message::Resized(size));
             assert_eq!(app.is_glance(), glance, "{size:?}");
-            // The keys, the modifiers of the mail selection, ⌘F of the search (the demo has mail) and Escape.
-            let expected = if glance { wide - 4 } else { wide };
+            // The keys, the modifiers of the mail selection, ⌘F of the search (the demo has mail) and Escape;
+            // "Copy" of the menu bar (nothing off macOS) and the button's release for it (issue #894).
+            let copy = torro_gui::menu_bar::copy_pressed().units() + 1;
+            let expected = if glance { wide - 4 - copy } else { wide };
             assert_eq!(app.subscription().units(), expected, "no keys and no Escape in a glance: {size:?}");
             let _ = app.view();
         }
