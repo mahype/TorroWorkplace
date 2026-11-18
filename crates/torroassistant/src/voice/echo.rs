@@ -45,6 +45,10 @@ struct Reference {
     last: Option<Instant>,
     /// The canceller failed: the cancellation counts as not running from then on.
     failed: bool,
+    /// The number of the last line ([`Echo::push_line`]).
+    number: Option<u64>,
+    /// When a line was last missing: the reference has a gap there, the echo of that piece stayed.
+    lost: Option<Instant>,
 }
 
 /// The sound read aloud, as the reference for the canceller (see the module). Clones share it: the
@@ -57,9 +61,23 @@ impl Echo {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// `samples` were played ([`RATE`], mono): they come back into the microphone soon.
+    /// `samples` were played ([`RATE`], mono): they come back into the microphone soon. For the tests, the
+    /// listener numbers its lines ([`Echo::push_line`]).
+    #[cfg(test)]
     pub fn push(&self, samples: &[i16]) {
+        self.push_line(samples, None);
+    }
+
+    /// [`Echo::push`] for the line numbered `number` (`super::speech::echo_line`): a number left out marks
+    /// lost reference. A line numbered 0 is a new helper's first and follows any.
+    pub fn push_line(&self, samples: &[i16], number: Option<u64>) {
         let mut reference = self.lock();
+        if let Some(number) = number {
+            if number != 0 && reference.number.is_some_and(|last| number != last + 1) {
+                reference.lost = Some(Instant::now());
+            }
+            reference.number = Some(number);
+        }
         reference.samples.extend(samples);
         let over = reference.samples.len().saturating_sub(KEPT);
         reference.samples.drain(..over);
@@ -73,11 +91,13 @@ impl Echo {
         !reference.failed && reference.last.is_some_and(|last| last.elapsed() <= RUNNING)
     }
 
-    /// Whether a reference came since `at`: what the microphone heard since then went through the
-    /// canceller.
+    /// Whether a reference came since `at` and none of it went missing since: what the microphone heard
+    /// since then went through the canceller.
     pub fn heard_since(&self, at: Instant) -> bool {
         let reference = self.lock();
-        !reference.failed && reference.last.is_some_and(|last| last >= at)
+        !reference.failed
+            && reference.last.is_some_and(|last| last >= at)
+            && reference.lost.is_none_or(|lost| lost < at)
     }
 
     /// The canceller failed (review of #885): its frames pass unchanged, so the listener closes the
@@ -195,8 +215,10 @@ impl Stream for EchoStream {
 
 #[cfg(test)]
 mod tests {
+    use super::super::WakeWord;
     use super::super::audio::tests::fixture;
     use super::super::audio::{Endpoint, FRAME, Limits, NoiseFloor, rms};
+    use super::super::wake::ModelWake;
     use super::*;
 
     /// The room: the sound from the speakers comes back after 30, 60 and 90 ms, ever quieter.
@@ -265,8 +287,15 @@ mod tests {
         end.heard_speech()
     }
 
+    /// Whether the built-in wake word model wakes on `frames`.
+    fn wakes(frames: &[Vec<i16>]) -> bool {
+        let voice = tempfile::tempdir().expect("temp dir");
+        let mut wake = ModelWake::load(voice.path()).expect("the built-in model loads");
+        frames.iter().any(|frame| wake.hears(frame).expect("hears"))
+    }
+
     /// Issue #834, done 3: "Hey Torro" read aloud and loud in the room is taken out: the listener hears no
-    /// speech in the whole file.
+    /// speech in the whole file, and the built-in wake word model does not wake.
     #[test]
     fn what_is_read_aloud_is_not_heard() {
         let mut played = fixture("hey_torro.wav");
@@ -277,9 +306,11 @@ mod tests {
         assert!(loudest >= 2000.0, "a loud echo: {loudest}");
         let frames: Vec<Vec<i16>> = heard.chunks(FRAME).map(<[i16]>::to_vec).collect();
         assert!(speech_in(&frames), "without cancellation the echo counts as speech");
+        assert!(wakes(&frames), "without cancellation the echo wakes it");
         let out = cancelled(&played, heard);
         let left = out.iter().map(|frame| rms(frame)).fold(0.0, f32::max);
         assert!(!speech_in(&out), "the echo is taken out: loudest frame left {left}");
+        assert!(!wakes(&out), "the wake word read aloud does not wake it");
     }
 
     /// Issue #834: the person speaking over what is read aloud is still heard.
@@ -326,6 +357,16 @@ mod tests {
         assert_eq!(echo.lock().samples.len(), 7, "the rest waits");
         echo.fail();
         assert!(!echo.running() && !echo.heard_since(before), "a failed canceller counts as not running");
+        echo.lock().failed = false;
+        let numbered = Instant::now();
+        echo.push_line(&[0; 10], Some(0));
+        echo.push_line(&[0; 10], Some(1));
+        assert!(echo.heard_since(numbered), "in turn");
+        echo.push_line(&[0; 10], Some(3));
+        assert!(!echo.heard_since(numbered), "a line went missing");
+        let gap = echo.lock().lost;
+        echo.push_line(&[0; 10], Some(0));
+        assert_eq!(echo.lock().lost, gap, "a new helper's first line leaves no gap");
         echo.lock().failed = false;
         echo.lock().last = Instant::now().checked_sub(Duration::from_secs(2));
         assert!(!echo.running());
