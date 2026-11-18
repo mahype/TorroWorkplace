@@ -3713,7 +3713,7 @@ fn text_level(read: bool) -> typo::Level {
 }
 
 /// The entry a mail in the reader belongs to (task E8.3): the rail's Done or Reopen, Later…, "Move
-/// to …", Task, Event, Category… and Mute… act on it (task E14.3, [`action_groups`]), as `e`, `s`,
+/// to …", Task, Event, Category ▸ and Mute ▸ act on it (task E14.3, [`action_groups`]), as `e`, `s`,
 /// `l`, `t`, `c` and `m` do.
 #[derive(Debug, Clone, Copy)]
 pub struct ReaderEntry<'a> {
@@ -4226,13 +4226,14 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 ///    not lie in it already, as in rows ([`filing_actions`]; an entry's mail lies in its account's
 ///    inbox while it loads); Reply later (`w`) and Set aside (`b`, [`Message::Pile`]) but for mail in
 ///    the trash or spam ([`takes_piles`]) – for a mail on one of them "Remove from Reply later" or
-///    "Remove from Set aside" in its place, with the same key, wherever it lies; Follow up… (`s`, `AskSnooze`) for every mail but one in the archive, the trash or spam
+///    "Remove from Set aside" in its place, with the same key, wherever it lies; Follow up ▸ (`s`, `AskSnooze`) for every mail but one in the archive, the trash or spam
 ///    ([`follows_up`]) – its entry's when it has an open one, else the mail's own id (decision 8 of
-///    E19); for an `entry` "Move to Info" or "Move to For me" (`l`,
-///    `AskLane`); Delete (`#`) on the same rule as Archive.
+///    E19); for an `entry` "Move to Info ▸" or "Move to For me ▸" (`l`,
+///    `AskLane`; without "▸" where no rule is possible and it moves at once); Delete (`#`) on the same rule as Archive.
 /// 3. **Torro**: Task (`t`; `AskTask` for an entry, `AskMailTask` for a folder's message), for an
-///    entry Event (`c`, `AskEvent`), "Ask AI…" (`i`, `AskAi`, issue #605) and – for a mail entry –
-///    Category… (`AskCategory`) and, with a decision model set up ([`Reading::deciding`]),
+///    entry Event (`c`, `AskEvent`) – each kind with "…", as its dialog asks first (issue #906) –,
+///    "Ask AI…" (`i`, `AskAi`, issue #605) and – for a mail entry – Category ▸ (`AskCategory`) and,
+///    with a decision model set up ([`Reading::deciding`]),
 ///    Re-categorize (`Reclassify`, sparkles in the accent).
 /// 4. **Mark**, once the mail's flags are known: Flag or Unflag, Mark read or Mark unread.
 /// 5. **Save** ([`save_items`], issue #501, the floppy disk): "Save as PDF" and "Save as image"
@@ -4240,7 +4241,7 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 ///    and "Save attachments (n)" for a loaded mail with attachments (task M12.6,
 ///    `AskSaveAttachments`: the menu of "Save all"). The list's context menu shows the two formats as
 ///    one "Save mail as" ([`context_groups`]).
-/// 6. **Mute** (at the foot): Mute… (`m`; `AskHide` for an entry that can be muted, `AskMuteMail`
+/// 6. **Mute** (at the foot): Mute ▸ (`m`; `AskHide` for an entry that can be muted, `AskMuteMail`
 ///    for a folder's message). Its menu offers no popup and "Only Info"; mail is never hidden (issue
 ///    #339).
 /// 7. **More** (at the foot), what [`Reading::view_tools`] offers: Copy text (`CopyText`) first,
@@ -4254,8 +4255,8 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 /// check of File, Torro's task, Mark's flag – in the attention colour while the mail is flagged –,
 /// the bell and "…". A click on it sends its first item; Delete is marked `danger` and never that
 /// click – a File whose first item would be Delete opens its card instead. Each group registers its icon in `anchors.rail`, each item that opens a
-/// menu or dialog its row in the matching anchor of `anchors` (Follow up… `snooze`, "Move to …" `lane`,
-/// Task `task`, Event `event`, Category… `category`, Mute… `hide`); pass the window's anchors made
+/// menu or dialog its row in the matching anchor of `anchors` (Follow up ▸ `snooze`, "Move to …" `lane`,
+/// Task `task`, Event `event`, Category ▸ `category`, Mute ▸ `hide`); pass the window's anchors made
 /// with [`detail::Anchors::with_rail`], so those menus hang at the group's icon while the row is not
 /// on screen. `folders` are every account's folders, for Archive and Delete. The same groups are the
 /// context menu of the mail's row (`widgets::rail_context_menu`).
@@ -4308,9 +4309,9 @@ pub fn action_groups<'a>(
 }
 
 /// The items of the rail's group "File" ([`action_groups`]), in this order (task E19.4): Archive ·
-/// Reply later · Set aside · Follow up… · "Move to …" · Delete. The piles
+/// Reply later · Set aside · Follow up ▸ · "Move to … ▸" · Delete. The piles
 /// follow [`MessageSummary::pile`]: on one, its item is "Remove from …" with the same key, in every
-/// view; they wait for the mail's headers, which say its pile. Follow up… stands once the mail's
+/// view; they wait for the mail's headers, which say its pile. Follow up ▸ stands once the mail's
 /// account is known (its headers or its entry), as Archive and Delete.
 fn file_items<'a>(
     reading: &Reading<'_>,
@@ -4357,7 +4358,10 @@ fn file_items<'a>(
             Some(ReaderEntry { item, .. }) if !matches!(item.state, State::Done { .. }) => item.id.clone(),
             _ => reading.id.to_owned(),
         };
-        let follow = RailItem::new(Icon::CalendarClock, tr("Follow up…"), "S", Some(Message::AskSnooze(follow)));
+        // Issue #906: its times open beside it as a submenu "Follow up ▸".
+        let follow =
+            RailItem::new(Icon::CalendarClock, trc("snooze", "Follow up"), "S", Some(Message::AskSnooze(follow)))
+                .opens_menu();
         // Without Archive not what a click on the group's icon does either, also while the piles are
         // off as the headers load: the click always opens the card (second review of #315).
         let follow = if archive { follow } else { follow.danger() };
@@ -4366,7 +4370,10 @@ fn file_items<'a>(
     if let Some(ReaderEntry { item, .. }) = entry {
         let lane = crate::app::other_lane(item.lane);
         let move_to = Some(Message::AskLane(item.id.clone()));
-        items.push(RailItem::new(crate::app::lane_icon(lane), lane_word(lane), "L", move_to).at(&anchors.lane));
+        let item_of = RailItem::new(crate::app::lane_icon(lane), lane_word(lane), "L", move_to).at(&anchors.lane);
+        // Its question "Only this entry" / "Always for …" is a submenu (issue #906); where no rule is
+        // possible the entry moves at once and the item has no "▸".
+        items.push(if crate::app::rules_allowed(&item.source) { item_of.opens_menu() } else { item_of });
     }
     if filing.is_some_and(|filing| filing.delete) {
         // Never what a click on the group's icon does (finding 8).
@@ -4401,9 +4408,9 @@ fn save_items<'a>(reading: &Reading<'_>, anchors: &detail::Anchors) -> Vec<RailI
 }
 
 /// `groups` of [`action_groups`] as the context menu of the mail's row shows them (issue #501): in
-/// "Save" the two formats become one "Save mail as" ([`Message::AskSaveMailFormat`]), whose menu of the
-/// formats opens at the row – then the ways and targets of the one chosen, at the same place. Off as
-/// the formats are while the mail loads.
+/// "Save" the two formats become one "Save mail as ▸" ([`Message::AskSaveMailFormat`]), whose formats
+/// open beside it as a submenu – each with its ways and targets as a submenu of its own (issue #906).
+/// Off as the formats are while the mail loads.
 pub fn context_groups<'a>(groups: Vec<RailGroup<'a, Message>>, id: &str) -> Vec<RailGroup<'a, Message>> {
     groups
         .into_iter()
@@ -4446,7 +4453,7 @@ fn pile_items<'a>(reading: &Reading<'_>) -> [RailItem<'a, Message>; 2] {
 
 /// The items of the rail's group "Torro" ([`action_groups`]): what Torro adds to the mail, as the
 /// reader's pills had it (task E11.3). First the kinds of action (issue #603, [`action_items`]), then
-/// "Ask AI…" (issue #605, the chat about the mail, `ask.rs`), "Category…" and – for an entry with a
+/// "Ask AI…" (issue #605, the chat about the mail, `ask.rs`), "Category ▸" and – for an entry with a
 /// decision model – "Re-categorize".
 fn torro_items<'a>(
     reading: &Reading<'_>,
@@ -4462,7 +4469,7 @@ fn torro_items<'a>(
         // Mail without an entry (a folder's, the archive's, older mail) is filed by hand too (issue
         // #500); "Re-categorize" needs an entry, as the model decides for one.
         let category = Some(Message::AskMailCategory(reading.id.to_owned()));
-        items.push(RailItem::new(Icon::Tag, tr("Category…"), "", category).at(&anchors.category));
+        items.push(RailItem::new(Icon::Tag, tr("Category"), "", category).opens_menu().at(&anchors.category));
         items.extend(workflow_items(reading));
         return items;
     };
@@ -4470,7 +4477,7 @@ fn torro_items<'a>(
     // What the mail is (task E12.8): only mail has a category. "Re-categorize" only with a decision
     // model set up – without an AI the function is simply not there (`docs/ki.md`, principle 1).
     if item.source.kind == torro_inbox::SourceKind::Mail {
-        let category = RailItem::new(Icon::Tag, tr("Category…"), "", Some(Message::AskCategory(id())));
+        let category = RailItem::new(Icon::Tag, tr("Category"), "", Some(Message::AskCategory(id()))).opens_menu();
         items.push(category.at(&anchors.category));
         if reading.deciding {
             items
@@ -4505,8 +4512,8 @@ fn workflow_items<'a>(reading: &Reading<'_>) -> Vec<RailItem<'a, Message>> {
             Some(Message::WorkflowSetup(reading.id.to_owned())),
         )
         .accent(),
-        RailItem::new(Icon::ListChecks, tr("Run workflow"), "", Some(Message::ChooseWorkflow(reading.id.to_owned())))
-            .opens_menu(),
+        // It opens the page Automation with its choice (issue #906, decision 3): a window, so "…".
+        RailItem::new(Icon::ListChecks, tr("Run workflow…"), "", Some(Message::ChooseWorkflow(reading.id.to_owned()))),
     ]
 }
 
@@ -4535,7 +4542,9 @@ fn action_items<'a>(
                 ActionForm::Event => ("C", &anchors.event),
             };
             let ask = Message::AskAction(entry.map(str::to_owned), reading.id.to_owned(), kind.id.clone());
-            let item = RailItem::new(kind_icon(&kind.icon), kind_label(kind), if first { key } else { "" }, Some(ask));
+            // Its dialog asks before anything is made (issue #906): "Task…".
+            let item =
+                RailItem::new(kind_icon(&kind.icon), asks(&kind_label(kind)), if first { key } else { "" }, Some(ask));
             if first { item.at(anchor) } else { item }
         })
         .collect()
@@ -4570,7 +4579,8 @@ fn mute_items<'a>(
         None => Some(Message::AskMuteMail(reading.id.to_owned())),
     };
     let mut items: Vec<RailItem<'a, Message>> = bell
-        .map(|bell| RailItem::new(Icon::BellOff, tr("Mute…"), "M", Some(bell)).at(&anchors.hide))
+        // Its ways to mute are a submenu "Mute ▸" (issue #906).
+        .map(|bell| RailItem::new(Icon::BellOff, tr("Mute"), "M", Some(bell)).opens_menu().at(&anchors.hide))
         .into_iter()
         .collect();
     // Issue #416: after the bell. It cannot be taken back, so a click on the group's icon never
@@ -5363,6 +5373,12 @@ pub fn kind_icon(name: &str) -> Icon {
     }
 }
 
+/// `word` as the label of a menu entry that asks before it acts – a dialog or a window follows
+/// (issue #906, "…" only for those): "Task…".
+pub fn asks(word: &str) -> String {
+    format!("{word}…")
+}
+
 /// What a person reads for `kind`: the core sends its label in English, the two known ones are
 /// translated here; another kind (an extension's) shows as it came, on one line.
 pub fn kind_label(kind: &ActionKind) -> String {
@@ -5786,26 +5802,26 @@ pub fn file_menu<'a>(menu: FileMenu<'_>) -> Vec<MenuSection<'a, Message>> {
             .collect();
         sections.push(MenuSection::titled(tr("Save to"), items));
     }
-    let manage = MenuItem::new(torro_gui::shell::SETTINGS_ICON, tr("Manage save targets…"), Message::ManageSaveTargets);
+    let manage = MenuItem::new(torro_gui::shell::SETTINGS_ICON, tr("Manage save targets"), Message::ManageSaveTargets);
     sections.push(MenuSection::new(vec![manage]));
     sections
 }
 
 /// The menu card of [`file_menu`]'s `sections`, `width` wide and at most `tallest` high – it scrolls
 /// beyond: the card of `widgets::menu`, wider, so the path and the two words of an entry stay
-/// readable (`widgets::menu_width` cut "Invoices › 2026 › 03" beside "Suggested" and "Click").
-pub fn file_menu_card<'a>(sections: Vec<MenuSection<'a, Message>>, width: f32, tallest: f32) -> Element<'a, Message> {
-    file_menu_card_feedback(sections, width, tallest, |_| None)
-}
-
-/// The same save menu with opt-in, action-scoped feedback; paths, suggestions and anchors stay put.
-pub fn file_menu_card_feedback<'a>(
+/// readable (`widgets::menu_width` cut "Invoices › 2026 › 03" beside "Suggested" and "Click"). With
+/// opt-in, action-scoped `feedback` (paths, suggestions and anchors stay put) and the entry at `lit`
+/// (counted across the sections) drawn as under the hover: where the keys of the context menu's
+/// submenu stand (issue #906).
+pub fn file_menu_card_lit<'a>(
     sections: Vec<MenuSection<'a, Message>>,
     width: f32,
     tallest: f32,
     feedback: impl Fn(&Message) -> Option<widgets::MenuFeedback>,
+    lit: Option<usize>,
 ) -> Element<'a, Message> {
     let mut list = column![];
+    let mut entry = 0;
     for (at, section) in sections.into_iter().enumerate() {
         if at > 0 {
             list = list.push(crate::app::menu_line());
@@ -5814,10 +5830,11 @@ pub fn file_menu_card_feedback<'a>(
             let title = typo::text(typo::caption(), title).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
             list = list.push(container(title).width(Fill).padding(style::ITEM_PADDING));
         }
-        list = list.extend(section.items.into_iter().map(|item| {
+        for item in section.items {
             let state = feedback(&item.on_press);
-            widgets::menu_item_feedback(item, state)
-        }));
+            list = list.push(widgets::menu_item_lit(item, state, lit == Some(entry)));
+            entry += 1;
+        }
     }
     let body = scrollable(list).height(iced::Length::Shrink).width(Fill);
     container(container(body).max_height(tallest))
@@ -5959,7 +5976,7 @@ pub fn export_menu<'a>(menu: ExportMenu<'_>) -> Vec<MenuSection<'a, Message>> {
             .collect();
         sections.push(MenuSection::titled(tr("Save to"), items));
     }
-    let manage = MenuItem::new(torro_gui::shell::SETTINGS_ICON, tr("Manage save targets…"), Message::ManageSaveTargets);
+    let manage = MenuItem::new(torro_gui::shell::SETTINGS_ICON, tr("Manage save targets"), Message::ManageSaveTargets);
     sections.push(MenuSection::new(vec![manage]));
     sections
 }
@@ -7282,7 +7299,7 @@ mod tests {
                 .unwrap_or_default()
         };
         reading_of("m:p2", MailFormat::Text, true, |reading| {
-            assert_eq!(mute_words(reading), strings(&[tr("Mute…"), tr("Unsubscribe…")]));
+            assert_eq!(mute_words(reading), strings(&[tr("Mute"), tr("Unsubscribe…")]));
             let groups = action_groups(reading, None, &folders, true, &anchors);
             let mute = group(&groups, tr("Mute"));
             assert!(mute.items[1].danger, "never the click on the bell");
@@ -7295,18 +7312,18 @@ mod tests {
                 ("m:p2", "Shop", "news@shop.example")
             );
             let left = HashSet::from(["news@shop.example".to_string()]);
-            assert_eq!(mute_words(&Reading { unsubscribed: &left, ..*reading }), strings(&[tr("Mute…")]));
+            assert_eq!(mute_words(&Reading { unsubscribed: &left, ..*reading }), strings(&[tr("Mute")]));
             let Some(Ok(mail)) = reading.loaded else { panic!("loaded") };
             let mut fake = mail.clone();
             fake.summary.category = Some(MailCategory::by_rule(torro_mail::Category::Phishing));
             let fake = Ok(fake);
-            assert_eq!(mute_words(&Reading { loaded: Some(&fake), ..*reading }), strings(&[tr("Mute…")]));
+            assert_eq!(mute_words(&Reading { loaded: Some(&fake), ..*reading }), strings(&[tr("Mute")]));
         });
         reading_of("m:p2", MailFormat::Text, false, |reading| {
-            assert_eq!(mute_words(reading), strings(&[tr("Mute…")]), "not before it is loaded");
+            assert_eq!(mute_words(reading), strings(&[tr("Mute")]), "not before it is loaded");
         });
         reading_of("m:w1", MailFormat::Html, true, |reading| {
-            assert_eq!(mute_words(reading), strings(&[tr("Mute…")]), "no List-Unsubscribe");
+            assert_eq!(mute_words(reading), strings(&[tr("Mute")]), "no List-Unsubscribe");
         });
     }
 
@@ -7344,7 +7361,7 @@ mod tests {
     /// order, Mute and More at the foot, Reply in the accent; every item sends what its button or key
     /// sent before and shows its key; a click on a group's icon sends its first item. Task E18.5: File
     /// has no Done – Archive (`e`) stands in its place. Task E19.4: Reply later (`w`), Set aside (`b`)
-    /// and Follow up… (`s`) after Archive, in the place of Later….
+    /// and Follow up ▸ (`s`) after Archive, in the place of Later….
     #[test]
     fn an_entrys_rail_holds_every_group_with_the_messages_of_before() {
         let item = mail_entry();
@@ -7364,7 +7381,7 @@ mod tests {
                             trc("action", "Archive").to_owned(),
                             tr("Reply later").to_owned(),
                             tr("Set aside").to_owned(),
-                            tr("Follow up…").to_owned(),
+                            trc("snooze", "Follow up").to_owned(),
                             move_to.clone(),
                             tr("Delete").to_owned(),
                         ]
@@ -7372,12 +7389,12 @@ mod tests {
                     (
                         tr("Torro").to_owned(),
                         strings(&[
-                            tr("Task"),
-                            tr("Event"),
+                            &asks(tr("Task")),
+                            &asks(tr("Event")),
                             tr("Ask AI…"),
-                            tr("Category…"),
+                            tr("Category"),
                             tr("Create workflow with AI…"),
-                            tr("Run workflow")
+                            tr("Run workflow…")
                         ])
                     ),
                     (tr("Mark").to_owned(), mark_words(reading)),
@@ -7391,7 +7408,7 @@ mod tests {
                             trf("Save attachments ({n})", &[("n", &1)]),
                         ]
                     ),
-                    (tr("Mute").to_owned(), strings(&[tr("Mute…")])),
+                    (tr("Mute").to_owned(), strings(&[tr("Mute")])),
                     (trc("mail", "Display").to_owned(), strings(&[trc("mail", "Display")])),
                     (tr("More").to_owned(), strings(&[tr("Copy text"), tr("Create filter…"), tr("Close")])),
                 ]
@@ -7415,8 +7432,8 @@ mod tests {
                 Some(Message::AskHide(id)) => id == item.id,
                 _ => false,
             };
-            assert!(matches!(sends(&groups, file, tr("Follow up…")), Some(Message::AskSnooze(_))));
-            assert!(entry(sends(&groups, file, tr("Follow up…"))), "the entry's follow-up");
+            assert!(matches!(sends(&groups, file, trc("snooze", "Follow up")), Some(Message::AskSnooze(_))));
+            assert!(entry(sends(&groups, file, trc("snooze", "Follow up"))), "the entry's follow-up");
             let pile = |sent: Option<Message>, wanted| matches!(sent, Some(Message::Pile(id, pile)) if id == "m:w1" && pile == wanted);
             assert!(pile(sends(&groups, file, tr("Reply later")), Some(MailPile::ReplyLater)));
             assert!(pile(sends(&groups, file, tr("Set aside")), Some(MailPile::SetAside)));
@@ -7428,17 +7445,17 @@ mod tests {
             assert!(mail(sends(&groups, file, tr("Delete")), MailAction::Delete));
             // Issue #603: the kinds of action, for the entry and its mail.
             let action = |sent: Option<Message>, wanted: &str| matches!(sent, Some(Message::AskAction(Some(entry), mail, kind)) if entry == item.id && mail == "m:w1" && kind == wanted);
-            assert!(action(sends(&groups, torro, tr("Task")), "task"));
-            assert!(action(sends(&groups, torro, tr("Event")), "event"));
+            assert!(action(sends(&groups, torro, &asks(tr("Task"))), "task"));
+            assert!(action(sends(&groups, torro, &asks(tr("Event"))), "event"));
             // Issue #339: a filter for the sender, in Settings › Categorization (issue #454).
             let sender = &reading.summary().and_then(|summary| summary.from.as_ref()).expect("a sender").address;
             assert!(matches!(
                 sends(&groups, tr("More"), tr("Create filter…")),
                 Some(Message::CreateFilter { query, account: None }) if query == format!("from:{sender}")
             ));
-            assert!(matches!(sends(&groups, torro, tr("Category…")), Some(Message::AskCategory(_))));
-            assert!(entry(sends(&groups, torro, tr("Category…"))));
-            assert!(matches!(sends(&groups, tr("Mute"), tr("Mute…")), Some(Message::AskHide(id)) if id == item.id));
+            assert!(matches!(sends(&groups, torro, tr("Category")), Some(Message::AskCategory(_))));
+            assert!(entry(sends(&groups, torro, tr("Category"))));
+            assert!(matches!(sends(&groups, tr("Mute"), tr("Mute")), Some(Message::AskHide(id)) if id == item.id));
             assert!(matches!(sends(&groups, tr("More"), tr("Copy text")), Some(Message::CopyText)));
             assert!(matches!(sends(&groups, tr("More"), tr("Close")), Some(Message::CloseDetail)));
             let marks = &group(&groups, tr("Mark")).items;
@@ -7491,16 +7508,16 @@ mod tests {
             assert_eq!(
                 anchored,
                 [
-                    tr("Follow up…").to_owned(),
+                    trc("snooze", "Follow up").to_owned(),
                     move_to,
-                    tr("Task").to_owned(),
-                    tr("Event").to_owned(),
-                    tr("Category…").to_owned(),
+                    asks(tr("Task")),
+                    asks(tr("Event")),
+                    tr("Category").to_owned(),
                     tr("Save as PDF").to_owned(),
                     tr("Save as image").to_owned(),
                     tr("Save as EML").to_owned(),
                     trf("Save attachments ({n})", &[("n", &1)]),
-                    tr("Mute…").to_owned()
+                    tr("Mute").to_owned()
                 ]
             );
             // Floating over the mail (issue #456), a group open or none.
@@ -7530,13 +7547,13 @@ mod tests {
                     trc("action", "Archive"),
                     tr("Reply later"),
                     tr("Set aside"),
-                    tr("Follow up…"),
+                    trc("snooze", "Follow up"),
                     lane.as_str(),
                     tr("Delete"),
                 ]
             );
             assert!(file.iter().all(|i| i.label != tr("Reopen") && i.label != tr("Done")), "no Done, no Reopen");
-            let follow = sends(&groups, tr("File"), tr("Follow up…"));
+            let follow = sends(&groups, tr("File"), trc("snooze", "Follow up"));
             assert!(matches!(follow, Some(Message::AskSnooze(id)) if id == "m:w1"), "the mail, not the done entry");
             assert!(groups.iter().all(|g| g.label != tr("Mute")), "nothing to mute: no group");
             let more = &group(&groups, tr("More")).items;
@@ -7569,7 +7586,7 @@ mod tests {
                     matches!(sends(groups, tr("Torro"), tr("Create workflow with AI…")), Some(Message::WorkflowSetup(id)) if id == reading.id)
                 );
                 assert!(
-                    matches!(sends(groups, tr("Torro"), tr("Run workflow")), Some(Message::ChooseWorkflow(id)) if id == reading.id)
+                    matches!(sends(groups, tr("Torro"), tr("Run workflow…")), Some(Message::ChooseWorkflow(id)) if id == reading.id)
                 );
             }
         });
@@ -7624,7 +7641,7 @@ mod tests {
                     trc("action", "Archive"),
                     tr("Reply later"),
                     tr("Set aside"),
-                    tr("Follow up…"),
+                    trc("snooze", "Follow up"),
                     tr("Delete"),
                 ])
             );
@@ -7646,13 +7663,13 @@ mod tests {
             assert_eq!((torro[0].key, torro[1].key), ("T", "C"));
             assert!(matches!(torro[2].press(), Some(Message::AskAi(id)) if id == "m:w1"), "issue #605");
             assert!(matches!(torro[3].press(), Some(Message::AskMailCategory(id)) if id == "m:w1"));
-            let mute = sends(&groups, tr("Mute"), tr("Mute…"));
+            let mute = sends(&groups, tr("Mute"), tr("Mute"));
             assert!(matches!(mute, Some(Message::AskMuteMail(id)) if id == "m:w1"), "the message's own traits");
             // An account without an archive folder: no Archive.
             let no_archive: Vec<Folder> = folders.iter().filter(|f| f.role != Some(Role::Archive)).cloned().collect();
             let groups = action_groups(reading, None, &no_archive, true, &detail::Anchors::default());
             let file: Vec<String> = group(&groups, tr("File")).items.iter().map(|i| i.label.to_string()).collect();
-            assert_eq!(file, strings(&[tr("Reply later"), tr("Set aside"), tr("Follow up…"), tr("Delete")]));
+            assert_eq!(file, strings(&[tr("Reply later"), tr("Set aside"), trc("snooze", "Follow up"), tr("Delete")]));
             // Review of #315: the click opens the card rather than putting the mail on a pile.
             assert!(group(&groups, tr("File")).first_press().is_none(), "no pile and never Delete by a click");
         });
@@ -7670,7 +7687,7 @@ mod tests {
             assert_eq!(piles.len(), 2, "the piles keep their place");
             assert!(piles.iter().all(|i| i.press().is_none() && i.key.is_empty()), "off while the headers load");
             // Second review of #315: nor does the click open "Follow up" – it opens the card.
-            assert!(file.items.iter().any(|i| i.label == tr("Follow up…") && i.press().is_some()));
+            assert!(file.items.iter().any(|i| i.label == trc("snooze", "Follow up") && i.press().is_some()));
             assert!(file.first_press().is_none(), "the click opens the card");
         });
         // The trash's message (`m:w12`) is not deleted again.
@@ -7682,7 +7699,7 @@ mod tests {
         });
     }
 
-    /// Decision of #315: no "Follow up…" for mail in the archive, the trash or spam – archived counts as
+    /// Decision of #315: no "Follow up ▸" for mail in the archive, the trash or spam – archived counts as
     /// done (decision 6 of E19), a follow-up there would never come back; in the inbox and in Sent it
     /// stands. The folder of the mail shown decides.
     #[test]
@@ -7692,7 +7709,7 @@ mod tests {
             reading_of(id, MailFormat::Html, true, |reading| {
                 let groups = action_groups(reading, None, &folders, true, &detail::Anchors::default());
                 let file = group(&groups, tr("File"));
-                let follow = file.items.iter().any(|item| item.label == tr("Follow up…"));
+                let follow = file.items.iter().any(|item| item.label == trc("snooze", "Follow up"));
                 assert_eq!(follow, offered, "{id}");
                 assert_eq!(follows_up(&folders, &reading.summary().expect("headers").folder), offered, "{id}");
             });
@@ -8026,7 +8043,7 @@ mod tests {
         assert!(
             matches!(&invoices.on_press, Message::FileAct(id, Some(part), FileAct::Target(t)) if id == "m:p3" && part == "2" && t == "demo-invoices")
         );
-        assert_eq!(sections[2].items[0].label, tr("Manage save targets…"));
+        assert_eq!(sections[2].items[0].label, tr("Manage save targets"));
 
         // Filed by a person: still suggested, without the sparkles; the click on Open marks Open.
         let by_hand = Some(MailCategory::by_person(torro_mail::Category::Invoice));
@@ -8043,7 +8060,7 @@ mod tests {
         assert_eq!(sections[1].items[0].detail.as_deref(), Some(tr("by each file's date")));
         // Without targets – still loading – only the ways and "Manage save targets…".
         assert_eq!(file_menu(FileMenu { saving: None, ..menu }).len(), 2);
-        let _ = file_menu_card(file_menu(menu), size::panel(), 600.0);
+        let _ = file_menu_card_lit(file_menu(menu), size::panel(), 600.0, |_| None, Some(0));
     }
 
     /// Task M12.6: what the hint says after saving and which folder "Show in folder" opens; the demo
@@ -8132,7 +8149,7 @@ mod tests {
             Some(export_place_words(&saving, "demo-invoices", ExportFormat::Pdf).as_str())
         );
         assert_eq!(export_menu(ExportMenu { saving: None, ..menu }).len(), 2, "without targets");
-        let _ = file_menu_card(export_menu(menu), size::panel(), 600.0);
+        let _ = file_menu_card_lit(export_menu(menu), size::panel(), 600.0, |_| None, None);
     }
 
     /// Some of the demo's mail, newest first, for the tests of the slim list.
@@ -9338,13 +9355,13 @@ mod tests {
             assert_eq!(
                 words,
                 strings(&[
-                    tr("Task"),
-                    "Probe",
-                    tr("Event"),
+                    &asks(tr("Task")),
+                    "Probe…",
+                    &asks(tr("Event")),
                     tr("Ask AI…"),
-                    tr("Category…"),
+                    tr("Category"),
                     tr("Create workflow with AI…"),
-                    tr("Run workflow")
+                    tr("Run workflow…")
                 ]),
                 "the tasks' first, Ask AI after the kinds, workflows appended"
             );

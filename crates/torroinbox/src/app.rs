@@ -221,8 +221,8 @@ use torro_gui::split::{self, Limits, Split, SplitEvent};
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{
-    self, Align, Anchor, DROPDOWN_SEARCH, Dropdown, DropdownEvent, Mark, MenuItem, MenuSection, Placement, RailEvent,
-    RailGroup, ToastAction, Trail,
+    self, Align, Anchor, CascadeChange, CascadeEvent, CascadeKey, DROPDOWN_SEARCH, Dropdown, DropdownEvent, Mark,
+    MenuItem, MenuSection, Placement, RailEvent, RailGroup, ToastAction, Trail,
 };
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{datetime, style, typo};
@@ -1549,10 +1549,8 @@ pub enum Menu {
     /// The lane question of `App::subject`: only this entry, or always for its source.
     Lane,
     /// "Category ▸" for `App::subject` (task E12.8): the categories to file its mail under,
-    /// grouped as the catalogue is.
+    /// grouped as the catalogue is, under the switch "Always for <sender>" (issue #906).
     Category,
-    /// After one was picked: only this mail, or always for its sender (task E12.8).
-    CategoryAlways,
     /// A link of a mail the model called a fraud (task E12.9): where it goes, in plain text, and
     /// whether to open it after all.
     PhishingLink,
@@ -1807,6 +1805,10 @@ pub enum Open {
     /// The same for a mail further down (the sixth, else the last): in a low window the menu opens
     /// above the pointer or moves in, whole on screen.
     MailContextLow,
+    /// The context menu of the first mail of "All" with "Category ▸" open beside it (issue #906).
+    ContextCategory,
+    /// The same with "Save mail as ▸" and its first format's ways and targets open (issue #906).
+    ContextSave,
     /// The mail window's "Waiting for me" open and shown, the group with the most categories of
     /// the demo (issue #300); set once the catalogue is in.
     CategoryGroup,
@@ -1940,7 +1942,7 @@ impl Open {
                 | Self::SaveShortened
         )
     }
-    const ALL: [(&'static str, Open); 139] = [
+    const ALL: [(&'static str, Open); 141] = [
         ("workflow-setup", Open::WorkflowSetup),
         ("workflow-template", Open::WorkflowTemplate),
         ("workflow-test", Open::WorkflowTest),
@@ -2036,6 +2038,8 @@ impl Open {
         ("save-shortened", Open::SaveShortened),
         ("mail-context", Open::MailContext),
         ("mail-context-low", Open::MailContextLow),
+        ("context-category", Open::ContextCategory),
+        ("context-save", Open::ContextSave),
         ("category-group", Open::CategoryGroup),
         ("category", Open::Category),
         ("category-menu", Open::CategoryMenu),
@@ -3170,9 +3174,9 @@ pub struct App<S> {
     column_scroll: [Option<(f32, f32)>; 2],
     /// The entry the open snooze menu, picker or lane question is for, as it was when opened.
     subject: Option<Item>,
-    /// The category picked in "Category ▸" while the question "Always for this sender?" stands
-    /// (task E12.8); `None` at every other time.
-    picked_category: Option<torro_mail::Category>,
+    /// The switch "Always for <sender>" at the top of "Category ▸" (issue #906, decision 1): a
+    /// category picked there holds for the sender's later mail too. Off each time the menu opens.
+    category_always: bool,
     /// A link of a fraudulent mail, held back until the person confirms (task E12.9); `None`
     /// when no such question stands.
     held_link: Option<String>,
@@ -3454,6 +3458,12 @@ pub struct App<S> {
     /// Where the row of the open context menu was right-clicked, relative to the row (issue #497):
     /// the menu opens there; without a point it hangs under the row ([`context_spot`]).
     context_point: Option<Point>,
+    /// The submenus open beside the context menu of a mail (issue #906), from the first down; the
+    /// deepest of them is `menu`. Empty while the context menu stands alone ([`App::context_open`]).
+    context_sub: Vec<Menu>,
+    /// Which entries of the context menu have their submenu open or wait for it, the keyboard cursor
+    /// of each level and where the entries are (issue #906).
+    context_cascade: widgets::Cascade,
     /// Whether the sidebar drawer is open (medium and narrow layouts).
     drawer: bool,
     /// The sidebar the user chose for the wide layout, kept in `ui.json`.
@@ -3598,8 +3608,11 @@ pub enum Message {
     ShowCategoryGroup(CategoryGroup),
     /// Opens the link held back from a fraudulent mail after all (task E12.9).
     OpenLinkAnyway,
-    /// One category picked: the question "Always for this sender?" follows.
+    /// One category picked in "Category ▸": the mail is filed under it at once, for its sender's
+    /// later mail too while "Always for <sender>" is on (issue #906).
     PickCategory(torro_mail::Category),
+    /// Switches "Always for <sender>" at the top of "Category ▸"; the menu stays open (issue #906).
+    ToggleCategoryAlways,
     /// Files the mail `id` under the category; with `remember` later mail of its sender too.
     SetCategory(String, torro_mail::Category, bool),
     /// "Re-categorize" in the reader: asks the decision model again.
@@ -3840,6 +3853,8 @@ pub enum Message {
     ContextEntry(String, Point),
     /// An action chosen from the message's context menu.
     ContextAction(Box<Message>),
+    /// The pointer or a key in the context menu and its submenus (issue #906).
+    ContextCascade(CascadeEvent),
     ModifiersChanged(iced::keyboard::Modifiers),
     SelectAllVisible,
     SelectAllVisibleChecked(bool),
@@ -4784,7 +4799,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             open_groups: std::collections::BTreeSet::new(),
             categories_staged: false,
             model_ready: false,
-            picked_category: None,
+            category_always: false,
             held_link: None,
             offset,
             now: Utc::now() + offset,
@@ -4859,6 +4874,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     | Open::SaveShortened
                     | Open::MailContext
                     | Open::MailContextLow
+                    | Open::ContextCategory
+                    | Open::ContextSave
                     | Open::Invitations
                     | Open::Invitation
                     | Open::Images
@@ -5035,6 +5052,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             },
             menu_at: MenuAt::default(),
             context_point: None,
+            context_sub: Vec::new(),
+            context_cascade: widgets::Cascade::new(),
             drawer: matches!(open, Some(Open::Drawer | Open::MailAccountsMany | Open::MailAccountsSelected)),
             sidebar: SidebarMode::default(),
             right_column: true,
@@ -5237,6 +5256,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if self.rail_pending.is_some() {
             subscriptions.push(iced::time::every(RAIL_TICK).map(Message::RailTick));
         }
+        // A submenu of the context menu waits for the pointer to rest (issue #906).
+        if self.context_cascade.waiting() {
+            subscriptions.push(
+                iced::time::every(widgets::CASCADE_TICK).map(|now| Message::ContextCascade(CascadeEvent::Tick(now))),
+            );
+        }
         // The arrows of "Syncing…" turn only while an account's sync really runs (issue #422);
         // otherwise nothing moves and nothing redraws.
         if self.sync_spinning() || self.save_spinning() {
@@ -5294,7 +5319,29 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let shown = self.wanted_letter();
         let shape = self.rail_shape();
         let opened = self.panel_open();
+        // The entries of the context menu while a submenu hangs at one of them (issue #906).
+        let context_root = (!self.context_sub.is_empty()).then(|| self.context_root()).flatten();
+        let letter = matches!(message, Message::LetterLoaded(..));
         let task = self.handle(message);
+        // Whatever closed the context menu or opened another menu in its place closed its submenus
+        // too (issue #906).
+        if !self.context_open() && (!self.context_sub.is_empty() || self.context_cascade != widgets::Cascade::new()) {
+            self.context_sub.clear();
+            self.context_cascade.reset();
+        }
+        // The context menu changed under its submenus – the mail came in with its flags, a pile
+        // changed –: their entries may stand elsewhere now, so they close.
+        if context_root.is_some()
+            && self.context_open()
+            && !self.context_sub.is_empty()
+            && self.context_root() != context_root
+        {
+            self.close_context_sub(1);
+        }
+        let task = match letter {
+            true => Task::batch([task, self.open_demo_sub()]),
+            false => task,
+        };
         // Opening a mail in the wide window brings the reader back (issue #601): the person wants to
         // read it. Hiding the column closed the mail ([`App::toggle_right_column`]), so moving the
         // cursor or a refresh opens nothing and the column stays hidden. A mail open behind the hidden
@@ -5756,6 +5803,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             // While a dropdown is open its menu has the keys (issue #554): Enter must not create the
             // task of the dialog under it.
             Message::Key(_) if self.dropdown_open() || self.workflow_documents.menu_open() => {}
+            // The context menu and its submenus walk with the arrows and Enter (issue #906); the
+            // digits of a submenu's choices still pick them.
+            Message::Key(key) if self.context_open() && cascade_key(key).is_some() => {
+                if let Some(key) = cascade_key(key) {
+                    return self.context_cascade_event(CascadeEvent::Key(key));
+                }
+            }
             Message::Key(key) => {
                 if let Some(command) = keys::command(self.focus(), key) {
                     // Keys inside an open menu (its digits, the bell's arrows) leave it where it is.
@@ -5794,12 +5848,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             // One category picked: ask whether it holds for this sender from now on (E12.8).
             Message::PickCategory(category) => {
-                self.picked_category = Some(category);
-                self.menu = Some(Menu::CategoryAlways);
+                let Some(id) = self.subject.as_ref().map(|item| item.id.clone()) else { return Task::none() };
+                return self.update(Message::SetCategory(id, category, self.category_always));
             }
+            Message::ToggleCategoryAlways => self.category_always = !self.category_always,
             Message::SetCategory(id, category, remember) => {
                 self.menu = None;
-                self.picked_category = None;
+                self.category_always = false;
                 let inbox = Arc::clone(&self.inbox);
                 return Task::perform(
                     async move { inbox.set_mail_category(id, category, remember).await.map_err(|err| err.to_string()) },
@@ -6227,6 +6282,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     // The open group of the rail lies in front of everything but the menus, which close it.
                     self.rail_open = None;
                     self.rail_pending = None;
+                } else if self.context_open() && !self.context_cascade.open().is_empty() {
+                    // A submenu of the context menu closes first, one level at a time (issue #906).
+                    return self.context_cascade_event(CascadeEvent::Key(CascadeKey::Escape));
                 } else if self.menu.is_some() || self.drawer {
                     self.close_menus();
                 } else if self.hint.is_some() && !self.holds_round() {
@@ -6470,6 +6528,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::ContextMail(id, point) => {
                 if self.select_mail(id) {
                     self.menu = Some(Menu::MailContext);
+                    self.context_sub.clear();
+                    self.context_cascade.reset();
                     self.context_point = Some(point);
                     self.menu_at = MenuAt::Row;
                     return self.keep_opened_search();
@@ -6479,6 +6539,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.select(id);
                 if self.detail.is_some() {
                     self.menu = Some(Menu::MailContext);
+                    self.context_sub.clear();
+                    self.context_cascade.reset();
                     self.context_point = Some(point);
                     self.menu_at = MenuAt::Row;
                     return self.keep_opened_search();
@@ -6495,6 +6557,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.menu_at = MenuAt::Row;
                 return result;
             }
+            Message::ContextCascade(event) => return self.context_cascade_event(event),
             Message::ModifiersChanged(modifiers) => self.modifiers = modifiers,
             Message::SelectAllVisible => {
                 if !self.has_mail_list() || !matches!(self.focus(), Focus::List | Focus::MailDetail | Focus::Overview) {
@@ -10851,9 +10914,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// Where the keys go: a menu of choices, the picker, another menu or the drawer, else the list.
     fn focus(&self) -> Focus {
         match self.menu {
-            Some(Menu::Snooze | Menu::Lane | Menu::Hide | Menu::Move | Menu::Category | Menu::CategoryAlways) => {
-                Focus::Choices
-            }
+            Some(Menu::Snooze | Menu::Lane | Menu::Hide | Menu::Move | Menu::Category) => Focus::Choices,
             Some(Menu::DeleteForGood | Menu::Unsubscribe | Menu::PhishingLink) => Focus::Question,
             Some(Menu::Mute) => Focus::Mute,
             Some(Menu::Pick) => Focus::Picker,
@@ -11244,17 +11305,17 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             return Task::none();
         }
         self.drawer = false;
-        self.picked_category = None;
+        self.category_always = false;
         self.subject = Some(item);
         self.menu = Some(Menu::Category);
         Task::none()
     }
 
-    /// "Category…" on the message `id` without an entry (issue #500): the categories to file it
+    /// "Category ▸" on the message `id` without an entry (issue #500): the categories to file it
     /// under, as for an entry ([`App::ask_category`]) – the message's stand-in
-    /// ([`torro_inbox::rules::message_stand_in`]) is the subject, so "Only this mail" and "Always for
-    /// <sender>" send its id `m:…`, which `inbox.set_item_category` takes as well. A message with an
-    /// entry goes through the entry.
+    /// ([`torro_inbox::rules::message_stand_in`]) is the subject, so a category picked, with "Always
+    /// for <sender>" or without, sends its id `m:…`, which `inbox.set_item_category` takes as well. A
+    /// message with an entry goes through the entry.
     fn ask_mail_category(&mut self, id: &str) -> Task<Message> {
         if let Some(entry) = self.entry_of(id) {
             return self.ask_category(&entry);
@@ -11262,7 +11323,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let Some(summary) = self.message_summary(id) else { return Task::none() };
         let Some(item) = torro_inbox::rules::message_stand_in(&summary, None, false) else { return Task::none() };
         self.drawer = false;
-        self.picked_category = None;
+        self.category_always = false;
         self.subject = Some(item);
         self.menu = Some(Menu::Category);
         Task::none()
@@ -13098,17 +13159,6 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             // The categories are grouped by `App::category_menu`, which builds its own entries.
             Some(Menu::Category) => Vec::new(),
-            Some(Menu::CategoryAlways) => {
-                let Some(category) = self.picked_category else { return Vec::new() };
-                let edit = |remember| Message::SetCategory(id(), category, remember);
-                let sender = Self::mail_sender_of(item).unwrap_or_else(|| item.source.label().to_string());
-                let always = trf("Always for {sender}", &[("sender", &sender)]);
-                let mark = mail::group_look(&self.categories, mail::category_look(&self.categories, category).1).0;
-                vec![
-                    choice(mark, tr("Only this mail").to_owned(), edit(false)),
-                    choice(Icon::Repeat, always, edit(true)),
-                ]
-            }
             Some(Menu::Hide) => self.hide_choices(item),
             Some(Menu::Mute) => self.mute_choices(item),
             _ => Vec::new(),
@@ -13396,6 +13446,280 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         Some(mail::action_groups(&reading, entry, &self.folders, close, anchors))
     }
 
+    /// Whether the context menu of a mail is open (issue #906): alone (`menu` is
+    /// [`Menu::MailContext`]) or with its submenus beside it, the deepest of them in `menu`.
+    fn context_open(&self) -> bool {
+        self.menu == Some(Menu::MailContext)
+            || (!self.context_sub.is_empty() && self.menu == self.context_sub.last().copied())
+    }
+
+    /// The groups of the context menu of the mail held, as the rail has them with "Save mail as" in
+    /// place of the formats ([`mail::context_groups`]).
+    fn context_groups<'a>(
+        &'a self,
+        class: SizeClass,
+        anchors: &detail::Anchors,
+    ) -> Option<Vec<RailGroup<'a, Message>>> {
+        let groups = self.rail_groups(class, anchors)?;
+        Some(match self.reading() {
+            Some(reading) => mail::context_groups(groups, reading.id),
+            None => groups,
+        })
+    }
+
+    /// The layer of the open context menu (issues #497, #906): the menu at the pointer – under the row
+    /// without one ([`context_spot`]) – and its open submenus beside their entries.
+    fn context_layer<'a>(
+        &'a self,
+        class: SizeClass,
+        anchors: &detail::Anchors,
+        rows: &detail::Anchors,
+    ) -> Option<Element<'a, Message>> {
+        let groups = self.context_groups(class, anchors)?;
+        let (spot, placement) = context_spot(self.context_point, &rows.row);
+        let tallest = (self.size.height - style::MENU_INSET * 8.0).max(200.0);
+        let root = widgets::rail_cascade_menu(
+            groups,
+            |action| Message::ContextAction(Box::new(action)),
+            tallest,
+            &self.context_cascade,
+            Message::ContextCascade,
+        );
+        let children = self
+            .context_sub
+            .iter()
+            .map(|menu| self.context_sub_card(*menu).unwrap_or_else(|| iced::widget::space().into()))
+            .collect();
+        Some(self.context_cascade.layer(&spot, placement, root, children, Message::CloseMenu, Message::ContextCascade))
+    }
+
+    /// The card of `menu` as a submenu of the context menu (issue #906): the menus its entries opened
+    /// at the action bar before, now beside the entry.
+    fn context_sub_card(&self, menu: Menu) -> Option<Element<'_, Message>> {
+        match menu {
+            Menu::Snooze => {
+                let title = if self.follows_up() { trc("snooze", "Follow up") } else { tr("Later until") };
+                Some(self.choice_menu(title))
+            }
+            Menu::Lane => {
+                let title = self.subject.as_ref().map_or_else(String::new, |item| {
+                    trf("Move to {lane}", &[("lane", &lane_name(other_lane(item.lane)))])
+                });
+                Some(self.choice_menu(title))
+            }
+            Menu::Category => Some(self.category_menu()),
+            Menu::Hide => Some(self.choice_menu(tr("Hide from Notification Hub"))),
+            Menu::Mute => Some(self.mute_menu()),
+            Menu::SaveMailFormat => self.save_format_submenu(),
+            Menu::SaveMail(format) => self.export_menu(format),
+            Menu::SaveAll { .. } => self.file_menu(None),
+            _ => None,
+        }
+    }
+
+    /// Whether `menu` opens as a submenu of the context menu (issue #906).
+    fn is_context_sub(menu: Menu) -> bool {
+        matches!(
+            menu,
+            Menu::Snooze
+                | Menu::Lane
+                | Menu::Category
+                | Menu::Hide
+                | Menu::Mute
+                | Menu::SaveMailFormat
+                | Menu::SaveMail(_)
+                | Menu::SaveAll { .. }
+        )
+    }
+
+    /// The entries of the submenu `menu` of the context menu, top to bottom, as the keys walk them:
+    /// what each sends, and whether it opens a submenu of its own (issue #906).
+    fn context_entries(&self, menu: Menu) -> Vec<(Option<Message>, bool)> {
+        let sends = |items: Vec<MenuSection<'_, Message>>| -> Vec<(Option<Message>, bool)> {
+            items.into_iter().flat_map(|section| section.items).map(|item| (Some(item.on_press), false)).collect()
+        };
+        match menu {
+            Menu::Snooze | Menu::Lane | Menu::Hide | Menu::Mute => {
+                self.choices().into_iter().map(|choice| (Some(choice.message), false)).collect()
+            }
+            Menu::Category => {
+                let mut entries = vec![(Some(Message::ToggleCategoryAlways), false)];
+                let catalogue = self.category_catalogue();
+                for group in category_group_order(&catalogue) {
+                    let of_group = catalogue
+                        .iter()
+                        .filter(|held| held.group == group && !(held.built_in && held.category.by_rule_only()));
+                    entries.extend(of_group.map(|held| (Some(Message::PickCategory(held.category)), false)));
+                }
+                entries
+            }
+            Menu::SaveMailFormat => match (self.reading(), self.save_formats()) {
+                (Some(reading), Some(formats)) => formats
+                    .into_iter()
+                    .map(|(_, _, format)| (Some(Message::AskSaveMailAs(reading.id.to_owned(), format)), true))
+                    .collect(),
+                _ => Vec::new(),
+            },
+            Menu::SaveMail(format) => self.export_sections(format).map(sends).unwrap_or_default(),
+            Menu::SaveAll { .. } => self.file_menu_sections(None).map(sends).unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The shape of the open context menu and its submenus, for [`widgets::Cascade::update`].
+    fn context_shape(&self) -> Vec<Vec<bool>> {
+        let root = self.context_groups(self.class(), &detail::Anchors::default());
+        let mut shape = vec![root.map(|groups| widgets::rail_cascade_shape(&groups)).unwrap_or_default()];
+        shape.extend(
+            self.context_sub.iter().map(|menu| self.context_entries(*menu).into_iter().map(|(_, sub)| sub).collect()),
+        );
+        shape
+    }
+
+    /// The words of the context menu's entries, top to bottom, for noticing that it changed.
+    fn context_root(&self) -> Option<Vec<String>> {
+        let groups = self.context_groups(self.class(), &detail::Anchors::default())?;
+        Some(groups.iter().flat_map(|group| &group.items).map(|item| item.label.to_string()).collect())
+    }
+
+    /// The submenu a start state opens beside the context menu (`--open context-category`,
+    /// `context-save`, issue #906): "Category ▸", or "Save mail as ▸" with its first format. Again
+    /// once the mail is in, which changes the menu under it.
+    fn open_demo_sub(&mut self) -> Task<Message> {
+        let word = match self.launch.open {
+            Some(Open::ContextCategory) => tr("Category"),
+            Some(Open::ContextSave) => tr("Save mail as"),
+            _ => return Task::none(),
+        };
+        if !self.context_open() || !self.context_sub.is_empty() {
+            return Task::none();
+        }
+        let at = self
+            .context_groups(self.class(), &detail::Anchors::default())
+            .and_then(|groups| groups.iter().flat_map(|group| &group.items).position(|item| item.label == word));
+        let Some(at) = at else { return Task::none() };
+        let first = self.context_cascade_event(CascadeEvent::Press(vec![at]));
+        if self.launch.open != Some(Open::ContextSave) {
+            return first;
+        }
+        Task::batch([first, self.context_cascade_event(CascadeEvent::Press(vec![at, 0]))])
+    }
+
+    /// The keyboard cursor in the submenu `menu` of the context menu, while it is one (issue #906).
+    fn sub_lit(&self, menu: Menu) -> Option<usize> {
+        if !self.context_open() {
+            return None;
+        }
+        let level = self.context_sub.iter().position(|sub| *sub == menu)? + 1;
+        self.context_cascade.cursor(level)
+    }
+
+    /// Hands `event` to the context menu's cascade and does what came of it (issue #906).
+    fn context_cascade_event(&mut self, event: CascadeEvent) -> Task<Message> {
+        if !self.context_open() {
+            return Task::none();
+        }
+        let shape = self.context_shape();
+        match self.context_cascade.update(event, Instant::now(), &shape) {
+            CascadeChange::None => Task::none(),
+            CascadeChange::Opened(path) => self.open_context_sub(&path),
+            CascadeChange::Closed(level) => {
+                self.close_context_sub(level);
+                Task::none()
+            }
+            CascadeChange::CloseAll => {
+                self.close_menus();
+                Task::none()
+            }
+            CascadeChange::Activate { level, index } => {
+                let chosen = match level {
+                    0 => self.context_groups(self.class(), &detail::Anchors::default()).and_then(|groups| {
+                        widgets::rail_cascade_item(&groups, index).and_then(|item| item.on_press.clone())
+                    }),
+                    _ => self
+                        .context_sub
+                        .get(level - 1)
+                        .and_then(|menu| self.context_entries(*menu).into_iter().nth(index))
+                        .and_then(|(message, _)| message),
+                };
+                match chosen {
+                    Some(message) if level == 0 => self.update(Message::ContextAction(Box::new(message))),
+                    Some(message) => self.update(message),
+                    None => Task::none(),
+                }
+            }
+        }
+    }
+
+    /// Opens the submenu of the context menu's entry at `path` (issue #906): carries out what the
+    /// entry did before – `AskSnooze`, `AskCategory`, `AskSaveMailAs` … – and keeps the menu that
+    /// opened as the submenu, with the context menu where it stood. When nothing opened (the entry
+    /// acted at once, or could not), the submenu stays closed.
+    fn open_context_sub(&mut self, path: &[usize]) -> Task<Message> {
+        let level = path.len();
+        let message = match (level, path.last()) {
+            (1, Some(&index)) => self
+                .context_groups(self.class(), &detail::Anchors::default())
+                .and_then(|groups| widgets::rail_cascade_item(&groups, index).and_then(|item| item.on_press.clone())),
+            (_, Some(&index)) => self
+                .context_sub
+                .get(level - 2)
+                .and_then(|menu| self.context_entries(*menu).into_iter().nth(index))
+                .and_then(|(message, _)| message),
+            _ => None,
+        };
+        let Some(message) = message else {
+            self.close_context_sub(level);
+            return Task::none();
+        };
+        let (point, cascade) = (self.context_point, std::mem::take(&mut self.context_cascade));
+        let mut subs = std::mem::take(&mut self.context_sub);
+        subs.truncate(level - 1);
+        // The menu the entry stands in, as when it was clicked there: none for the context menu's own
+        // entries (as `ContextAction`), "Save mail as" for its formats.
+        self.menu = subs.last().copied();
+        let task = self.handle(message);
+        self.context_point = point;
+        self.context_cascade = cascade;
+        self.context_sub = subs;
+        self.menu_at = MenuAt::Row;
+        match self.menu {
+            Some(menu) if Self::is_context_sub(menu) => self.context_sub.push(menu),
+            // Nothing opened: the context menu stays, without the submenu.
+            None => self.close_context_sub(level),
+            // Something else took its place (a dialog): the context menu closed.
+            Some(_) => {}
+        }
+        task
+    }
+
+    /// Closes the context menu's submenus at `level` and deeper; the menus above stay (issue #906).
+    fn close_context_sub(&mut self, level: usize) {
+        self.context_sub.truncate(level.saturating_sub(1));
+        self.context_cascade.close_from(level);
+        self.menu = Some(self.context_sub.last().copied().unwrap_or(Menu::MailContext));
+    }
+
+    /// The categories as the window loaded them (task E15.2): the person's names and groups, their
+    /// own categories too; the suite's defaults while none came.
+    fn category_catalogue(&self) -> Vec<CategoryInfo> {
+        if self.categories.is_empty() {
+            torro_mail::CategoryDef::defaults().iter().map(|def| CategoryInfo::of(def, 0, 0)).collect()
+        } else {
+            self.categories.clone()
+        }
+    }
+
+    /// The words of the switch at the top of "Category ▸" (issue #906): "Always for <sender>".
+    fn category_always_label(&self) -> String {
+        let sender = self
+            .subject
+            .as_ref()
+            .map(|item| Self::mail_sender_of(item).unwrap_or_else(|| item.source.label().to_string()))
+            .unwrap_or_default();
+        trf("Always for {sender}", &[("sender", &sender)])
+    }
+
     /// The mail's action rail of `groups` (issue #456, `widgets::floating_rail`): a card floating over
     /// the mail at its right edge, in every size class. The group open beside its icon, or whose menu,
     /// dialog or card is open, stands selected ([`App::rail_active`]).
@@ -13419,7 +13743,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let label = match self.menu? {
             Menu::Snooze | Menu::Pick | Menu::Lane => tr("File"),
             Menu::SaveAll { rail: true } | Menu::SaveMail(_) => tr("Save"),
-            Menu::Task | Menu::Event | Menu::Category | Menu::CategoryAlways => tr("Torro"),
+            Menu::Task | Menu::Event | Menu::Category => tr("Torro"),
             Menu::Hide | Menu::Mute | Menu::Move | Menu::Unsubscribe => tr("Mute"),
             Menu::MailDisplay => trc("mail", "Display"),
             _ => return None,
@@ -13838,24 +14162,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let below = if from_panel && rail_shown { Placement::Beside } else { Placement::Below(Align::End) };
         let dialog = if from_panel && rail_shown { Placement::Beside } else { dialog_placement(from_panel) };
         let layer = match self.menu {
-            None => None,
-            Some(Menu::MailContext) => self.rail_groups(class, &anchors).map(|groups| {
-                let (spot, placement) = context_spot(self.context_point, &rows.row);
-                let groups = match self.reading() {
-                    Some(reading) => mail::context_groups(groups, reading.id),
-                    None => groups,
-                };
-                widgets::floating(
-                    &spot,
-                    placement,
-                    widgets::rail_context_menu(
-                        groups,
-                        |action| Message::ContextAction(Box::new(action)),
-                        (self.size.height - style::MENU_INSET * 8.0).max(200.0),
-                    ),
-                    Message::CloseMenu,
-                )
-            }),
+            // The context menu with its submenus beside it (issues #497, #906), at the pointer.
+            _ if self.context_open() => self.context_layer(class, &anchors, &rows),
+            None | Some(Menu::MailContext) => None,
             Some(Menu::Nav) => {
                 Some(widgets::floating(&nav, Placement::Below(Align::Start), self.nav_menu(), Message::CloseMenu))
             }
@@ -13899,18 +14208,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 });
                 Some(widgets::floating(&lane_at, below, self.choice_menu(title), Message::CloseMenu))
             }
-            // "Category ▸" and the question that follows it (task E12.8).
+            // "Category ▸" (task E12.8) with its switch "Always for <sender>" (issue #906).
             Some(Menu::Category) => {
                 Some(widgets::floating(&category_at, below, self.category_menu(), Message::CloseMenu))
             }
-            Some(Menu::CategoryAlways) => {
-                let title = self
-                    .picked_category
-                    .map(|category| {
-                        trf("File as {category}", &[("category", &mail::category_look(&self.categories, category).0)])
-                    })
-                    .unwrap_or_default();
-                Some(widgets::floating(&category_at, below, self.choice_menu(title), Message::CloseMenu))
+            // "Pick…" of the context menu's "Follow up ▸" where the context menu stood (issue #906).
+            Some(Menu::Pick) if self.context_point.is_some() && self.menu_at == MenuAt::Row => {
+                let (spot, placement) = context_spot(self.context_point, &rows.row);
+                Some(widgets::floating(&spot, placement, self.picker(), Message::CloseMenu))
             }
             Some(Menu::Pick) => Some(widgets::floating(&snooze_at, below, self.picker(), Message::CloseMenu)),
             // The open dropdown of a field over its dialog, in the same layer (issue #554).
@@ -14609,21 +14914,43 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// while it is loaded.
     fn save_format_menu(&self) -> Option<Element<'_, Message>> {
         let reading = self.reading()?;
-        reading.summary()?;
         let ask =
-            |icon, words, format| MenuItem::new(icon, words, Message::AskSaveMailAs(reading.id.to_owned(), format));
-        let mut items = Vec::new();
-        if matches!(reading.loaded, Some(Ok(_))) {
-            items.push(ask(Icon::FileType, tr("Save as PDF"), ExportFormat::Pdf));
-            items.push(ask(Icon::Image, tr("Save as image"), ExportFormat::Png));
-        }
-        items.push(ask(Icon::Mail, tr("Save as EML"), ExportFormat::Eml));
+            |(icon, words, format)| MenuItem::new(icon, words, Message::AskSaveMailAs(reading.id.to_owned(), format));
+        let items = self.save_formats()?.into_iter().map(ask).collect();
         Some(widgets::menu(vec![MenuSection::new(items)]))
     }
 
-    /// The menu of `format` for the mail held (issue #501, `mail::export_menu`), as wide as the
-    /// attachments' menu.
-    fn export_menu(&self, format: ExportFormat) -> Option<Element<'_, Message>> {
+    /// The formats of "Save mail as" for the mail held, in order: PDF and image while it is loaded,
+    /// EML once its headers are in.
+    fn save_formats(&self) -> Option<Vec<(Icon, &'static str, ExportFormat)>> {
+        let reading = self.reading()?;
+        reading.summary()?;
+        let mut formats = Vec::new();
+        if matches!(reading.loaded, Some(Ok(_))) {
+            formats.push((Icon::FileType, tr("Save as PDF"), ExportFormat::Pdf));
+            formats.push((Icon::Image, tr("Save as image"), ExportFormat::Png));
+        }
+        formats.push((Icon::Mail, tr("Save as EML"), ExportFormat::Eml));
+        Some(formats)
+    }
+
+    /// "Save mail as ▸" as a submenu of the context menu (issue #906): the formats, each with its
+    /// ways and save targets as a submenu of its own.
+    fn save_format_submenu(&self) -> Option<Element<'_, Message>> {
+        let at = *self.context_cascade.open().first()?;
+        let items = self
+            .save_formats()?
+            .into_iter()
+            .enumerate()
+            .map(|(k, (icon, words, _))| {
+                MenuItem::new(icon, words, Message::ContextCascade(CascadeEvent::Press(vec![at, k]))).submenu()
+            })
+            .collect();
+        Some(self.context_cascade.menu(&[at], vec![MenuSection::new(items)], Message::ContextCascade))
+    }
+
+    /// The sections of the menu of `format` for the mail held ([`App::export_menu`]).
+    fn export_sections(&self, format: ExportFormat) -> Option<Vec<MenuSection<'_, Message>>> {
         let reading = self.reading()?;
         if format == ExportFormat::Eml {
             reading.summary()?;
@@ -14632,14 +14959,20 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
         let category = reading.summary().and_then(|summary| summary.category);
         let menu = mail::ExportMenu { id: reading.id, format, saving: self.exports_of(reading.id), category };
+        Some(mail::export_menu(menu))
+    }
+
+    /// The menu of `format` for the mail held (issue #501, `mail::export_menu`), as wide as the
+    /// attachments' menu.
+    fn export_menu(&self, format: ExportFormat) -> Option<Element<'_, Message>> {
+        let sections = self.export_sections(format)?;
         let width = (self.size.width - style::MENU_INSET * 2.0).clamp(size::sidebar(), size::panel());
         let tallest = (self.size.height - style::MENU_INSET * 8.0).max(200.0);
+        let lit = self.sub_lit(Menu::SaveMail(format));
         if self.saves.is_empty() {
-            return Some(mail::file_menu_card(mail::export_menu(menu), width, tallest));
+            return Some(mail::file_menu_card_lit(sections, width, tallest, |_| None, lit));
         }
-        Some(mail::file_menu_card_feedback(mail::export_menu(menu), width, tallest, |message| {
-            self.save_feedback(message)
-        }))
+        Some(mail::file_menu_card_lit(sections, width, tallest, |message| self.save_feedback(message), lit))
     }
 
     /// The card of an open attachment menu (task M12.6, `mail::file_menu`): of the attachment at `at`
@@ -14650,7 +14983,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let sections = self.file_menu_sections(at)?;
         let width = (self.size.width - style::MENU_INSET * 2.0).clamp(size::sidebar(), size::panel());
         let tallest = (self.size.height - style::MENU_INSET * 8.0).max(200.0);
-        Some(mail::file_menu_card_feedback(sections, width, tallest, |message| self.save_feedback(message)))
+        let lit = self.menu.filter(|_| at.is_none()).and_then(|menu| self.sub_lit(menu));
+        Some(mail::file_menu_card_lit(sections, width, tallest, |message| self.save_feedback(message), lit))
     }
 
     /// An attachment's full name heads its actions, independently of truncation in the reader (#572).
@@ -15717,13 +16051,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// "Category ▸" (task E12.8): the catalogue by its five groups, each under its own caption,
     /// and scrollable – 23 choices in one flat list are taller than a medium window.
     fn category_menu<'a>(&self) -> Element<'a, Message> {
-        // The catalogue as the window loaded it (task E15.2): the person's names and groups,
-        // their own categories too. The three the headers decide are no choice to make by hand.
-        let catalogue = if self.categories.is_empty() {
-            torro_mail::CategoryDef::defaults().iter().map(|def| CategoryInfo::of(def, 0, 0)).collect()
-        } else {
-            self.categories.clone()
-        };
+        let catalogue = self.category_catalogue();
         let shown: Vec<&CategoryInfo> = category_group_order(&catalogue)
             .into_iter()
             .flat_map(|group| {
@@ -15732,11 +16060,21 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     .filter(move |held| held.group == group && !(held.built_in && held.category.by_rule_only()))
             })
             .collect();
+        // Issue #906, decision 1: the switch "Always for <sender>" first, then a click files the mail.
+        let always = self.category_always_label();
         let needed = shown.iter().enumerate().map(|(i, held)| {
             choice_frame(None, keys::digit(i + 1), true) + typo::text_width(&held.label, typo::body())
         });
-        let width = needed.fold(widgets::menu_width(), f32::max).ceil().min(size::panel());
-        let mut list = column![menu_caption(tr("Category"))];
+        let switch_needed = choice_frame(None, "", false) + typo::text_width(&always, typo::body());
+        let width = needed.fold(widgets::menu_width().max(switch_needed), f32::max).ceil().min(size::panel());
+        let lit = self.sub_lit(Menu::Category);
+        let switch = MenuItem::new(
+            Mark::Check(palette(&self.theme()).text_2, self.category_always),
+            always,
+            Message::ToggleCategoryAlways,
+        );
+        let mut list =
+            column![menu_caption(tr("Category")), widgets::menu_item_lit(switch, None, lit == Some(0)), menu_line()];
         let mut at = 0;
         for group in category_group_order(&catalogue) {
             let of_group: Vec<&CategoryInfo> = catalogue
@@ -15766,7 +16104,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     message: Message::PickCategory(held.category),
                     line: false,
                 };
-                list = list.push(choice_entry(choice, keys::digit(at + 1), KeyLook::Kbd, width));
+                list = list.push(choice_entry(choice, keys::digit(at + 1), KeyLook::Kbd, width, lit == Some(at + 1)));
                 at += 1;
             }
         }
@@ -15783,10 +16121,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     fn choice_menu<'a>(&self, title: impl Into<String>) -> Element<'a, Message> {
         let choices = self.choices();
         let width = choice_menu_width(&choices);
+        let lit = self.menu.and_then(|menu| self.sub_lit(menu));
         let entries = choices
             .into_iter()
             .enumerate()
-            .map(|(i, choice)| choice_entry(choice, keys::digit(i + 1), KeyLook::Kbd, width));
+            .map(|(i, choice)| choice_entry(choice, keys::digit(i + 1), KeyLook::Kbd, width, lit == Some(i)));
         let list = column![menu_caption(&title.into())].extend(entries);
         container(list).width(width).padding(style::MENU_INSET).style(style::container::menu).into()
     }
@@ -15822,10 +16161,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 list.push(container(line).height(style::MENU_ITEM_HEIGHT).center_y(Fill).padding(style::ITEM_PADDING));
         }
         // The digits quietly in `META` (task E8.12): boxed they read like counts here.
+        let lit = self.sub_lit(Menu::Mute);
         let entries = choices
             .into_iter()
             .enumerate()
-            .map(|(i, choice)| choice_entry(choice, keys::digit(i + 1), KeyLook::Meta, width));
+            .map(|(i, choice)| choice_entry(choice, keys::digit(i + 1), KeyLook::Meta, width, lit == Some(i)));
         list = list.extend(entries);
         let span = MuteFor::ALL.iter().position(|span| *span == self.mute_for).unwrap_or_default();
         let now = self.mute_effect_now();
@@ -16175,6 +16515,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         self.workflow_documents.close_menu();
         self.clear_save_feedback();
         self.menu = None;
+        self.context_sub.clear();
+        self.context_cascade.reset();
+        self.category_always = false;
         self.close_dropdowns();
         // A context menu opened later without a right-click hangs under the row, not at an old point.
         self.context_point = None;
@@ -16456,13 +16799,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 }
             }
             // A right-click at the left of a row, 12 into it (issue #497): the menu at the pointer.
-            Some(open @ (Open::MailContext | Open::MailContextLow)) => {
+            Some(open @ (Open::MailContext | Open::MailContextLow | Open::ContextCategory | Open::ContextSave)) => {
                 let message = match open {
-                    Open::MailContext => self.messages.first(),
-                    _ => self.messages.get(5).or(self.messages.last()),
+                    Open::MailContextLow => self.messages.get(5).or(self.messages.last()),
+                    _ => self.messages.first(),
                 };
                 if let Some(id) = message.map(|message| message.id.clone()) {
-                    return self.update(Message::ContextMail(id, Point::new(24.0, 12.0)));
+                    let context = self.update(Message::ContextMail(id, Point::new(24.0, 12.0)));
+                    return Task::batch([context, self.open_demo_sub()]);
                 }
             }
             Some(Open::Unsubscribe) => {
@@ -16937,6 +17281,19 @@ fn context_spot(point: Option<Point>, row: &Anchor) -> (Anchor, Placement) {
     }
 }
 
+/// What `key` does in the context menu and its submenus (issue #906): the arrows and Enter walk
+/// them; every other key does what it does in the menu that is open.
+fn cascade_key(key: Key) -> Option<CascadeKey> {
+    match key {
+        Key::Up => Some(CascadeKey::Up),
+        Key::Down => Some(CascadeKey::Down),
+        Key::Left => Some(CascadeKey::Left),
+        Key::Right => Some(CascadeKey::Right),
+        Key::Enter => Some(CascadeKey::Enter),
+        _ => None,
+    }
+}
+
 fn dialog_placement(panel: bool) -> Placement {
     Placement::Below(if panel { Align::Start } else { Align::End })
 }
@@ -16944,20 +17301,21 @@ fn dialog_placement(panel: bool) -> Placement {
 /// One entry of [`App::choice_menu`], as `widgets::menu` draws one: icon, label, then – quietly,
 /// tabular – when it snoozes until, and the digit that picks it (in `look`); with [`Choice::line`]
 /// the line `widgets::menu` draws between its sections above it.
-fn choice_entry<'a>(choice: Choice, key: &'static str, look: KeyLook, width: f32) -> Element<'a, Message> {
+fn choice_entry<'a>(choice: Choice, key: &'static str, look: KeyLook, width: f32, lit: bool) -> Element<'a, Message> {
     let line = choice.line;
-    let entry = choice_button(choice, key, look, width);
+    let entry = choice_button(choice, key, look, width, lit);
     if !line {
         return entry;
     }
     column![menu_line(), entry].into()
 }
 
-/// The button of [`choice_entry`] in a menu `width` wide.
+/// The button of [`choice_entry`] in a menu `width` wide, `lit` as under the hover while the keys of
+/// the context menu's submenu stand on it (issue #906).
 ///
 /// A label longer than its room – only beyond [`choice_menu_width`]'s widest menu – ends in "…"
 /// ([`choice_label`]) and shows whole as tooltip.
-fn choice_button<'a>(choice: Choice, key: &'static str, look: KeyLook, width: f32) -> Element<'a, Message> {
+fn choice_button<'a>(choice: Choice, key: &'static str, look: KeyLook, width: f32, lit: bool) -> Element<'a, Message> {
     let tint = choice.tint;
     let indented = tint.is_some();
     let mark = icon::icon(choice.icon, icon::SIZE).style(move |t: &Theme, _| iced::widget::svg::Style {
@@ -16988,7 +17346,7 @@ fn choice_button<'a>(choice: Choice, key: &'static str, look: KeyLook, width: f3
         .width(Fill)
         .height(style::MENU_ITEM_HEIGHT)
         .padding(style::ITEM_PADDING)
-        .style(style::button::menu_item(false))
+        .style(style::button::menu_item(lit))
         .on_press(choice.message);
     match cut {
         Some(whole) => widgets::with_tooltip(button, whole),
@@ -20943,6 +21301,20 @@ mod tests {
             assert_eq!(app.cursor, wanted, "--open {open}: that mail");
             draw_everywhere(&mut app);
         }
+        // Issue #906: the context menu with "Category ▸", and with "Save mail as ▸" and its first
+        // format open beside it – again once the mail is in.
+        let mut app = mail_window(Density::Compact, &["--open", "context-category"]);
+        let id = app.cursor.clone().expect("the first mail");
+        deliver_letter(&mut app, &id);
+        assert_eq!((app.menu, app.context_sub.clone()), (Some(Menu::Category), vec![Menu::Category]));
+        assert!(app.context_open(), "beside the context menu");
+        let _ = app.view();
+        let mut app = mail_window(Density::Compact, &["--open", "context-save"]);
+        let id = app.cursor.clone().expect("the first mail");
+        deliver_letter(&mut app, &id);
+        assert_eq!(app.context_sub.first(), Some(&Menu::SaveMailFormat), "{:?}", app.context_sub);
+        assert!(matches!(app.context_sub.get(1), Some(Menu::SaveMail(_))), "{:?}", app.context_sub);
+        let _ = app.view();
         // Issue #501: the fifth group the demo opens is Save, and the formats hang at the row.
         let mut app = mail_window(Density::Compact, &["--open", "save-group"]);
         load(&mut app);
@@ -21622,6 +21994,78 @@ mod tests {
         let _ = app.update(Message::AskSaveMailAs("m:p3".into(), ExportFormat::Png));
         assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::SaveMail(ExportFormat::Png)), false), "same place");
         draw_everywhere(&mut app);
+    }
+
+    /// Issue #906: in the context menu every entry with a choice opens it beside itself – after the
+    /// pointer rested on it or at once on a click –, the keys walk the levels, a choice acts and
+    /// closes every level, and the formats of "Save mail as ▸" open their ways and targets as a
+    /// submenu of their own, which stays open after a save.
+    #[test]
+    fn the_context_menu_opens_its_choices_as_submenus_beside_it() {
+        let mut app = invoice_in(&["--view", "mail"]);
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.update(Message::ContextMail("m:p3".into(), Point::new(40.0, 20.0)));
+        let groups = app.context_groups(SizeClass::Wide, &detail::Anchors::default()).expect("the context menu");
+        let shape = widgets::rail_cascade_shape(&groups);
+        let words: Vec<String> = groups.iter().flat_map(|group| &group.items).map(|i| i.label.to_string()).collect();
+        drop(groups);
+        let at = |word: &str| words.iter().position(|held| held == word).unwrap_or_else(|| panic!("{word}: {words:?}"));
+        // "▸" for a choice, "…" only before a dialog or window.
+        for word in [trc("snooze", "Follow up"), tr("Category"), tr("Mute"), tr("Save mail as")] {
+            assert!(shape[at(word)], "{word} opens a submenu");
+        }
+        for word in [tr("Ask AI…"), tr("Create workflow with AI…"), tr("Run workflow…"), tr("Create filter…")] {
+            assert!(!shape[at(word)], "{word} asks first");
+        }
+        assert!(words.iter().all(|word| !matches!(word.as_str(), "Follow up…" | "Category…" | "Mute…")), "{words:?}");
+
+        // Resting on "Category" opens it beside the menu once the delay is over.
+        let category = at(tr("Category"));
+        let start = Instant::now();
+        let _ = app.update(Message::ContextCascade(CascadeEvent::Enter(vec![category])));
+        assert!(app.context_cascade.waiting() && app.context_sub.is_empty(), "not before the delay");
+        let later = start + widgets::CASCADE_DELAY + Duration::from_millis(100);
+        let _ = app.update(Message::ContextCascade(CascadeEvent::Tick(later)));
+        assert_eq!((app.menu, app.context_sub.clone()), (Some(Menu::Category), vec![Menu::Category]));
+        assert!(app.context_open(), "the context menu stays beside it");
+        let _ = app.view();
+        // The keys: ↓ to the switch "Always for …", Enter switches it and the menu stays; ← closes it.
+        let _ = app.update(Message::Key(Key::Down));
+        let _ = app.update(Message::Key(Key::Enter));
+        assert!(app.category_always && app.menu == Some(Menu::Category) && app.context_open());
+        let _ = app.update(Message::Key(Key::Left));
+        assert_eq!((app.menu, app.context_sub.len()), (Some(Menu::MailContext), 0), "← closes the submenu");
+        // → opens it again at the entry under the cursor, Escape closes one level.
+        let _ = app.update(Message::Key(Key::Right));
+        assert_eq!(app.menu, Some(Menu::Category));
+        assert!(!app.category_always, "off each time the menu opens");
+        let _ = app.update(Message::Escape);
+        assert_eq!(app.menu, Some(Menu::MailContext), "Escape closes the submenu first");
+        // A click opens it at once; a category picked by the keys files the mail and closes every level.
+        let _ = app.update(Message::ContextCascade(CascadeEvent::Press(vec![category])));
+        assert_eq!(app.menu, Some(Menu::Category));
+        let _ = app.update(Message::Key(Key::Down));
+        let _ = app.update(Message::Key(Key::Down));
+        let _ = app.update(Message::Key(Key::Enter));
+        assert_eq!((app.menu, app.context_sub.len()), (None, 0), "the choice acts and closes everything");
+
+        // "Save mail as ▸ PDF ▸": the formats, then the ways and targets of the first.
+        let _ = app.update(Message::ContextMail("m:p3".into(), Point::new(40.0, 20.0)));
+        let save = at(tr("Save mail as"));
+        let _ = app.update(Message::ContextCascade(CascadeEvent::Press(vec![save])));
+        assert_eq!(app.context_sub, vec![Menu::SaveMailFormat]);
+        let _ = app.update(Message::ContextCascade(CascadeEvent::Press(vec![save, 0])));
+        assert_eq!(app.context_sub, vec![Menu::SaveMailFormat, Menu::SaveMail(ExportFormat::Pdf)]);
+        assert_eq!(app.menu, Some(Menu::SaveMail(ExportFormat::Pdf)));
+        let _ = app.view();
+        // Issue #906, decision 2: a save target keeps the menu open to show how the save goes.
+        let downloads = app.export_sections(ExportFormat::Pdf).expect("the ways")[0].items[0].on_press.clone();
+        let _ = app.update(downloads);
+        assert!(app.context_open() && app.context_sub.len() == 2, "{:?} {:?}", app.menu, app.context_sub);
+        let _ = app.view();
+        // A click next to the menus closes every level.
+        let _ = app.update(Message::CloseMenu);
+        assert_eq!((app.menu, app.context_sub.len()), (None, 0));
     }
 
     /// Issue #501: the menu of "Save as PDF" offers Downloads, Save as… and the save targets with where
@@ -23618,7 +24062,7 @@ mod tests {
             true,
             &detail::Anchors::default(),
         );
-        let follow = groups.iter().flat_map(|group| &group.items).find(|item| item.label == tr("Follow up…"));
+        let follow = groups.iter().flat_map(|group| &group.items).find(|item| item.label == trc("snooze", "Follow up"));
         assert!(matches!(follow.and_then(|item| item.press()), Some(Message::AskSnooze(sent)) if sent == id));
     }
 
@@ -25933,10 +26377,11 @@ mod tests {
         let _ = overview.view();
     }
 
-    /// Issue #500: a right click on a mail without an entry offers "Category…" in "Torro" beside
-    /// "Task"; it opens the list of categories for the mail's stand-in, whose question names the
-    /// sender ("Always for …"), and "Only this mail" files it by hand – the core takes the mail's
-    /// id `m:…` –, so the list and the sidebar's count follow once the window loads again.
+    /// Issue #500: a right click on a mail without an entry offers "Category ▸" in "Torro" beside
+    /// "Task…"; it opens the list of categories for the mail's stand-in, whose switch names the
+    /// sender ("Always for …", issue #906), and a category picked files it by hand at once – the core
+    /// takes the mail's id `m:…` –, so the list and the sidebar's count follow once the window loads
+    /// again.
     #[test]
     fn a_mail_without_an_entry_is_filed_by_hand_from_its_context_menu() {
         // The context menu of the first mail of "All" (issue #497): "Category…" for any mail there.
@@ -25949,12 +26394,12 @@ mod tests {
         assert_eq!(
             labels,
             [
-                tr("Task"),
-                tr("Event"),
+                mail::asks(tr("Task")).as_str(),
+                mail::asks(tr("Event")).as_str(),
                 tr("Ask AI…"),
-                tr("Category…"),
+                tr("Category"),
                 tr("Create workflow with AI…"),
-                tr("Run workflow")
+                tr("Run workflow…")
             ],
             "existing actions stay first, then the chat about the mail (#605); no Re-categorize without an entry"
         );
@@ -25994,23 +26439,19 @@ mod tests {
             .expect("another category");
         let before = counted(&app, picked);
         let _ = app.view();
-        let _ = app.update(Message::PickCategory(picked));
-        assert_eq!(app.menu, Some(Menu::CategoryAlways));
+        // Issue #906, decision 1: the switch "Always for <sender>" stands on top and keeps the menu
+        // open; a click on a category files the mail at once.
         let sender = summary.from.as_ref().map(|from| from.address.to_lowercase()).expect("a sender");
-        let choices = app.choices();
-        let labels: Vec<&str> = choices.iter().map(|choice| choice.label.as_str()).collect();
-        assert_eq!(labels, [tr("Only this mail"), trf("Always for {sender}", &[("sender", &sender)]).as_str()]);
-        assert!(
-            matches!(&choices[1].message, Message::SetCategory(at, category, true) if *at == id && *category == picked),
-            "Always for the sender"
-        );
-        let Message::SetCategory(at, category, false) = choices[0].message.clone() else { panic!("Only this mail") };
-        assert_eq!((at.as_str(), category), (id.as_str(), picked));
+        assert_eq!(app.category_always_label(), trf("Always for {sender}", &[("sender", &sender)]));
+        let _ = app.update(Message::ToggleCategoryAlways);
+        assert!(app.category_always && app.menu == Some(Menu::Category), "the menu stays open");
         let _ = app.view();
+        let _ = app.update(Message::ToggleCategoryAlways);
+        let _ = app.update(Message::PickCategory(picked));
+        assert_eq!(app.menu, None, "filed at once, no question after it");
+        let (at, category) = (id.clone(), picked);
 
-        // As the task of "Only this mail" does: the demo files the mail, the window loads again.
-        let _ = app.update(Message::SetCategory(at.clone(), category, false));
-        assert_eq!(app.menu, None);
+        // As the task of the click does: the demo files the mail, the window loads again.
         let filed = block_on(MailSource::set_mail_category(app.inbox.as_ref(), at, category, false))
             .map_err(|err| err.to_string());
         assert_eq!(filed.as_ref().map(|item| item.id.as_str()), Ok(id.as_str()), "the stand-in comes back");
@@ -26363,7 +26804,7 @@ mod tests {
             assert!(app.wide_reader(class, &detail::Anchors::default()).is_none(), "{class:?}: the panel");
             let words = words(&app, class);
             assert!(!words.contains(&tr("Close").to_owned()), "{class:?}: the ✕ is in the panel's head");
-            assert!(words.contains(&tr("Follow up…").to_owned()), "{class:?}: the entry's own (task E19.4)");
+            assert!(words.contains(&trc("snooze", "Follow up").to_owned()), "{class:?}: the entry's own (task E19.4)");
             assert!(!words.contains(&tr("Done").to_owned()), "{class:?}: mail is archived (task E18.5)");
             let _ = app.view();
         }
