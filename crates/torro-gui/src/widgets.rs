@@ -2404,9 +2404,9 @@ fn place(target: Rectangle, card: Size, viewport: Rectangle, placement: Placemen
             } else if left >= viewport.x + beside_gap() {
                 (left, target.y - style::MENU_INSET)
             } else {
-                // No room on either side (a narrow window): under the entry, moved in a little, so the
-                // entry and the menu above it stay in view.
-                (target.x + space::m(), target.y + target.height)
+                // No room on either side (a narrow window): under the entry, moved in a little – above
+                // it where there is more room there –, so the entry that opened it stays in view.
+                (target.x + space::m(), below_or_above(target, card, viewport))
             }
         }
     };

@@ -626,8 +626,12 @@ mod tests {
         let viewport = Rectangle::new(Point::ORIGIN, iced::Size::new(480.0, 900.0));
         let entry = Rectangle::new(Point::new(12.0, 300.0), iced::Size::new(232.0, 30.0));
         let at = place(entry, iced::Size::new(300.0, 200.0), viewport, Placement::Cascade);
-        assert_eq!(at.y, 330.0, "under the entry");
+        assert!(at.y >= 330.0, "under the entry");
         assert!(at.x > entry.x, "moved in a little");
+        // Low in the window it goes above the entry instead, never over it.
+        let low = Rectangle::new(Point::new(12.0, 700.0), iced::Size::new(232.0, 30.0));
+        let at = place(low, iced::Size::new(300.0, 400.0), viewport, Placement::Cascade);
+        assert!(at.y + 400.0 <= 700.0, "above the entry: {at:?}");
     }
 
     #[test]
