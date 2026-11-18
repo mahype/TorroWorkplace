@@ -835,6 +835,8 @@ impl App {
         let mut list = column![].width(Fill);
         let mut previous_tool: Option<bool> = None;
         let appearing = self.appearing();
+        // What was heard of the answers that were interrupted (issue #835), looked up once for all entries.
+        let heard = torro_ipc::assistant::heard_by_entry(&self.transcript.entries);
         for entry in &self.transcript.entries {
             if appearing.is_some_and(|seq| entry.seq > seq) {
                 break;
@@ -854,7 +856,8 @@ impl App {
             let hit =
                 self.marked.as_ref().is_some_and(|(id, seq)| *seq == entry.seq && self.current.as_ref() == Some(id));
             if hit {
-                list = list.push(container(self.entry(entry, colours)).width(Fill).padding(space::s()).style(
+                let heard = heard.get(&entry.seq).copied();
+                list = list.push(container(self.entry(entry, heard, colours)).width(Fill).padding(space::s()).style(
                     |t: &Theme| container::Style {
                         background: Some(Background::Color(palette(t).selected)),
                         border: iced::border::rounded(theme::radius::sm()),
@@ -862,7 +865,7 @@ impl App {
                     },
                 ));
             } else {
-                list = list.push(self.entry(entry, colours));
+                list = list.push(self.entry(entry, heard.get(&entry.seq).copied(), colours));
             }
         }
         // The assistant proposed a bot and waits for the person's word (task B.2).
@@ -879,7 +882,9 @@ impl App {
         list.into()
     }
 
-    fn entry<'a>(&'a self, entry: &'a Entry, colours: Palette) -> Element<'a, Message> {
+    /// One entry; `heard` is what was read aloud of an answer the person interrupted (issue #835,
+    /// [`torro_ipc::assistant::heard_of`]).
+    fn entry<'a>(&'a self, entry: &'a Entry, heard: Option<&'a str>, colours: Palette) -> Element<'a, Message> {
         match &entry.content {
             EntryContent::Message { text, .. } => {
                 let bubble = container(typo::text(typo::body(), text.as_str()).wrapping(Wrapping::WordOrGlyph))
@@ -898,7 +903,6 @@ impl App {
                 // sees at a glance what was said and what is only shown; "Repeat" and "Stop" belong to it.
                 // Interrupted while it was read (issue #835), the bubble holds only what was heard; the
                 // shown part stays whole below it.
-                let heard = torro_ipc::assistant::heard_of(&self.transcript.entries, entry.seq);
                 let spoken = heard.or(spoken.as_deref()).filter(|spoken| !spoken.trim().is_empty());
                 let mut controls = self.speech_controls(entry.seq, spoken.is_some());
                 if let Some(spoken) = spoken {
@@ -1868,7 +1872,8 @@ impl App {
         }
         let content: Element<'_, Message> =
             if let Some(entry) = self.transcript.last_answer().filter(|entry| self.answer_shows(entry.seq)) {
-                self.entry(entry, answer_colours(palette(&self.theme())))
+                let heard = torro_ipc::assistant::heard_of(&self.transcript.entries, entry.seq);
+                self.entry(entry, heard, answer_colours(palette(&self.theme())))
             } else if self.transcript.running() {
                 typo::text(typo::meta(), tr("Working …")).style(theme::text_3).into()
             } else {

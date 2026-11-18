@@ -1274,6 +1274,15 @@ pub fn interrupted_at(entries: &[Entry], stop: usize) -> Option<(&str, Vec<&Entr
     (!read.is_empty()).then_some((heard.as_str(), read))
 }
 
+/// What was read aloud of every answer entry that holds it ([`heard_of`]), by the entry's number (issue #835): for a
+/// whole conversation at once, in one pass, as the window shows it.
+pub fn heard_by_entry(entries: &[Entry]) -> std::collections::HashMap<u64, &str> {
+    (0..entries.len())
+        .filter_map(|stop| interrupted_at(entries, stop))
+        .filter_map(|(heard, read)| read.last().map(|last| (last.seq, heard)))
+        .collect()
+}
+
 /// What was read aloud of the answer entry `seq` before the person interrupted it (issue #835): the `heard` of the
 /// `stopped` entry that ends its answer, when `seq` is the last entry that reading went through
 /// ([`interrupted_at`]): the window shows it there, after the tools before it. `None` for any other entry and for
@@ -1739,6 +1748,13 @@ mod tests {
         assert_eq!(heard_of(&past_a_tool, 4), Some("Let me look. Two …"));
         let (_, read) = interrupted_at(&past_a_tool, 4).expect("interrupted");
         assert_eq!(read.iter().map(|entry| entry.seq).collect::<Vec<_>>(), [2, 4]);
+        // All at once, the same as one by one.
+        for all in [&entries[..], &waiting[..], &past_a_tool[..]] {
+            let by_entry = heard_by_entry(all);
+            for entry in all {
+                assert_eq!(by_entry.get(&entry.seq).copied(), heard_of(all, entry.seq), "entry {}", entry.seq);
+            }
+        }
     }
 
     #[test]
