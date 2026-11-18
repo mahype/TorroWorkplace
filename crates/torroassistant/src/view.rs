@@ -896,7 +896,10 @@ impl App {
                 let mut answer = column![].spacing(space::s());
                 // The spoken part in a bubble of its own above the shown one (issues #774, #827), so one
                 // sees at a glance what was said and what is only shown; "Repeat" and "Stop" belong to it.
-                let spoken = spoken.as_deref().filter(|spoken| !spoken.trim().is_empty());
+                // Interrupted while it was read (issue #835), the bubble holds only what was heard; the
+                // shown part stays whole below it.
+                let heard = torro_ipc::assistant::heard_of(&self.transcript.entries, entry.seq);
+                let spoken = heard.or(spoken.as_deref()).filter(|spoken| !spoken.trim().is_empty());
                 let mut controls = self.speech_controls(entry.seq, spoken.is_some());
                 if let Some(spoken) = spoken {
                     let head = row![
@@ -942,9 +945,11 @@ impl App {
             .spacing(space::s())
             .align_y(Alignment::Center)
             .into(),
-            EntryContent::Stopped => row![
+            // Interrupted by the person's voice (issue #835), or stopped in the window.
+            EntryContent::Stopped { heard } => row![
                 tinted(Icon::Square, icon::SIZE_SM, |p| p.text_3),
-                typo::text(typo::meta(), tr("Stopped")).style(theme::text_3)
+                typo::text(typo::meta(), if heard.is_some() { tr("Interrupted") } else { tr("Stopped") })
+                    .style(theme::text_3)
             ]
             .spacing(space::s())
             .align_y(Alignment::Center)
