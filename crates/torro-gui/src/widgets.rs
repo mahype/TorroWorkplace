@@ -2398,12 +2398,16 @@ fn place(target: Rectangle, card: Size, viewport: Rectangle, placement: Placemen
         }
         Placement::Cascade => {
             let right = target.x + target.width + style::MENU_INSET;
-            let x = if right + card.width <= viewport.x + viewport.width - beside_gap() {
-                right
+            let left = target.x - style::MENU_INSET - card.width;
+            if right + card.width <= viewport.x + viewport.width - beside_gap() {
+                (right, target.y - style::MENU_INSET)
+            } else if left >= viewport.x + beside_gap() {
+                (left, target.y - style::MENU_INSET)
             } else {
-                target.x - style::MENU_INSET - card.width
-            };
-            (x, target.y - style::MENU_INSET)
+                // No room on either side (a narrow window): under the entry, moved in a little, so the
+                // entry and the menu above it stay in view.
+                (target.x + space::m(), target.y + target.height)
+            }
         }
     };
     let clamp = |value: f32, start: f32, length: f32, extent: f32| {

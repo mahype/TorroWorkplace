@@ -10,12 +10,14 @@
 //! which entries are open, where they are on screen and what the pointer and the keys did – the
 //! entries' content stays with the app, which shows it with [`Cascade::layer`].
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use iced::widget::scrollable;
 use iced::widget::{column, container, float, mouse_area, opaque, rule, stack};
-use iced::{Element, Fill, Padding, Point, Rectangle};
+use iced::{Element, Fill, Length, Padding, Point, Rectangle, Vector};
 
 use super::{Anchor, MenuSection, Placement, blank, centre, menu_entry_lit, menu_width, place};
 use crate::style;
@@ -114,6 +116,9 @@ pub struct Cascade {
     anchors: RefCell<HashMap<Vec<usize>, Anchor>>,
     /// Where each level's card stood in the last frame (0 for the root), for [`aims_at`].
     cards: RefCell<HashMap<usize, Anchor>>,
+    /// How far each level's card was moved from where it was laid out (0 for the root): its entries
+    /// record where they stood before the move, so their submenu and the pointer add it.
+    shifts: RefCell<HashMap<usize, Rc<Cell<Vector>>>>,
 }
 
 impl PartialEq for Cascade {
@@ -173,6 +178,16 @@ impl Cascade {
     /// The anchor of the entry at `path`: its submenu's card hangs beside it.
     pub fn anchor(&self, path: &[usize]) -> Anchor {
         self.anchors.borrow_mut().entry(path.to_vec()).or_default().clone()
+    }
+
+    /// Where the entry at `path` stands on screen: where it was laid out, moved with its card.
+    pub fn entry_rect(&self, path: &[usize]) -> Option<Rectangle> {
+        let level = path.len().checked_sub(1)?;
+        self.anchor(path).get().map(|bounds| bounds + self.shift(level).get())
+    }
+
+    fn shift(&self, level: usize) -> Rc<Cell<Vector>> {
+        Rc::clone(self.shifts.borrow_mut().entry(level).or_insert_with(|| Rc::new(Cell::new(Vector::ZERO))))
     }
 
     fn card(&self, level: usize) -> Anchor {
@@ -322,14 +337,14 @@ impl Cascade {
         on_event: impl Fn(CascadeEvent) -> M + Clone + 'a,
     ) -> Element<'a, M> {
         let anchor = self.anchor(&path);
-        let at = anchor.clone();
+        let (at, shift) = (anchor.clone(), self.shift(path.len().saturating_sub(1)));
         let (enter, leave, moved) = (on_event.clone(), on_event.clone(), on_event);
         let (into, out) = (path.clone(), path);
         mouse_area(super::anchored(&anchor, content))
             .on_enter(enter(CascadeEvent::Enter(into)))
             .on_exit(leave(CascadeEvent::Leave(out)))
             .on_move(move |point| {
-                let origin = at.get().map_or(Point::ORIGIN, |bounds| bounds.position());
+                let origin = at.get().map_or(Point::ORIGIN, |bounds| bounds.position()) + shift.get();
                 moved(CascadeEvent::Move(Point::new(origin.x + point.x, origin.y + point.y)))
             })
             .into()
@@ -368,7 +383,17 @@ impl Cascade {
                 at += 1;
             }
         }
-        container(column(rows)).width(menu_width()).padding(style::MENU_INSET).style(style::container::menu).into()
+        // A long submenu scrolls, its scrollbar beside the entries.
+        let body = scrollable(column(rows))
+            .direction(scrollable::Direction::Vertical(style::scrollbar().spacing(space::xs())))
+            .style(style::scrollable)
+            .height(Length::Shrink)
+            .width(Fill);
+        container(container(body).max_height(crate::theme::size::panel()))
+            .width(menu_width())
+            .padding(style::MENU_INSET)
+            .style(style::container::menu)
+            .into()
     }
 
     /// The layer of an open cascading menu: `root` at `spot` as [`super::floating`] places it, and
@@ -385,34 +410,41 @@ impl Cascade {
         on_event: impl Fn(CascadeEvent) -> M + 'a,
     ) -> Element<'a, M> {
         let catcher = opaque(mouse_area(blank().width(Fill).height(Fill)).on_press(on_dismiss));
-        let mut layers: Vec<Element<'a, M>> = vec![catcher, self.placed(spot.clone(), placement, root.into(), 0)];
+        let mut layers: Vec<Element<'a, M>> = vec![catcher, {
+            let spot = spot.clone();
+            self.placed(move || spot.get(), placement, root.into(), 0)
+        }];
         for (at, child) in children.into_iter().enumerate().take(self.open.len()) {
             let level = at + 1;
             let card = mouse_area(child).on_enter(on_event(CascadeEvent::Card(level)));
-            let entry = self.anchor(&self.open[..level]);
-            layers.push(self.placed(entry, Placement::Cascade, opaque(card), level));
+            let (entry, shift) = (self.anchor(&self.open[..level]), self.shift(level - 1));
+            let target = move || entry.get().map(|bounds| bounds + shift.get());
+            layers.push(self.placed(target, Placement::Cascade, opaque(card), level));
         }
         stack(layers).into()
     }
 
-    /// `card` floated to its place at `target` as `placement` says, recording where it stood as the
+    /// `card` floated to its place at `target` (for a submenu: its entry, moved with the card it
+    /// stands in) as `placement` says, recording where it stood and how far it moved as the
     /// card of `level`.
     fn placed<'a, M: 'a>(
         &self,
-        target: Anchor,
+        target: impl Fn() -> Option<Rectangle> + 'a,
         placement: Placement,
         card: Element<'a, M>,
         level: usize,
     ) -> Element<'a, M> {
-        let record = self.card(level);
+        let (record, moved) = (self.card(level), self.shift(level));
         float(card)
             .translate(move |bounds, viewport| {
-                let corner = match target.get() {
+                let corner = match target() {
                     Some(target) => place(target, bounds.size(), viewport, placement),
                     None => centre(bounds.size(), viewport),
                 };
                 record.set(Rectangle::new(corner, bounds.size()));
-                corner - bounds.position()
+                let offset = corner - bounds.position();
+                moved.set(offset);
+                offset
             })
             .into()
     }
@@ -575,6 +607,27 @@ mod tests {
         let low = Rectangle::new(Point::new(104.0, 760.0), iced::Size::new(232.0, 30.0));
         let low = place(low, card, viewport, Placement::Cascade);
         assert!(low.y + card.height <= 800.0, "moved up to stay in the window");
+    }
+
+    /// The design review of #906: an entry records where it was laid out, before its card moved to
+    /// the pointer; its submenu must hang where the entry is shown.
+    #[test]
+    fn an_entry_moves_with_its_card() {
+        let cascade = Cascade::new();
+        cascade.anchor(&[2]).set(Rectangle::new(Point::new(4.0, 64.0), iced::Size::new(232.0, 30.0)));
+        cascade.shift(0).set(Vector::new(300.0, 120.0));
+        let shown = cascade.entry_rect(&[2]).expect("laid out");
+        assert_eq!(shown, Rectangle::new(Point::new(304.0, 184.0), iced::Size::new(232.0, 30.0)));
+        assert_eq!(cascade.entry_rect(&[]), None);
+    }
+
+    #[test]
+    fn a_submenu_goes_under_its_entry_without_room_on_either_side() {
+        let viewport = Rectangle::new(Point::ORIGIN, iced::Size::new(480.0, 900.0));
+        let entry = Rectangle::new(Point::new(12.0, 300.0), iced::Size::new(232.0, 30.0));
+        let at = place(entry, iced::Size::new(300.0, 200.0), viewport, Placement::Cascade);
+        assert_eq!(at.y, 330.0, "under the entry");
+        assert!(at.x > entry.x, "moved in a little");
     }
 
     #[test]
