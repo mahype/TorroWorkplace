@@ -15321,7 +15321,7 @@ impl Core {
         SavedWorkspace { response, dialog }
     }
 
-    /// Shows the person the control centre on `section` (task WS.7, "Manage workspaces…" in the tray):
+    /// Shows the person the control centre on `section` (task WS.7, "Manage workspaces" in the tray):
     /// a page opens in a window of its own, also next to an open control centre ([`show_control_centre`]).
     pub async fn show_section(&self, section: Section) -> Result<(), String> {
         show_control_centre(&self.backend, section, self.start_control_centre).await
@@ -23720,7 +23720,7 @@ done"#,
         assert!(launcher.started.lock().expect("lock").is_empty());
     }
 
-    /// Task WS.7: "Manage workspaces…" starts the control centre on its page Workspaces.
+    /// Task WS.7: "Manage workspaces" starts the control centre on its page Workspaces.
     #[tokio::test]
     async fn manage_workspaces_opens_the_workspaces_page() {
         let dir = tempfile::tempdir().expect("temp dir");

@@ -64,7 +64,7 @@
 //! opens a bot's chat – its newest conversation or a new one – in which messages go to the bot
 //! (`assistant.send_message { bot }`) and the picker starts at the bot's engine and model. The bot
 //! editor (profile, personality, instructions, skills, engine) takes the chat's place and saves with
-//! `bots.save_bot`; deleting asks first (`bots.delete_bot`). "Access…" and the editor's "What the
+//! `bots.save_bot`; deleting asks first (`bots.delete_bot`). "Access" and the editor's "What the
 //! bot may use" open the settings at Access at this bot (task S.34): the bot's rights are chosen
 //! there, with the rights editor of `torro-settings-ui`; the editor itself never sends `clients.*`.
 //! `--bot <id>` is a chat window with one bot
@@ -365,7 +365,7 @@ pub enum Message {
     AskDeleteBot(String),
     ConfirmDeleteBot,
     BotDeleted(String, Result<(), Refusal>),
-    /// "Access…", "What the bot may use": the settings at Access at this bot (task S.34).
+    /// "Access", "What the bot may use": the settings at Access at this bot (task S.34).
     BotAccess(String),
     /// "Open in new window" of a bot: `assistant.open_window { bot }`.
     OpenBotWindow(String),
@@ -2891,7 +2891,7 @@ impl App {
     }
 
     /// The rights of the bot with this id or of the assistant (`None`), task S.34: what "Set up
-    /// access", "Change access", "Access…" and "What the bot may use" open – a bot's on a page below
+    /// access", "Change access", "Access" and "What the bot may use" open – a bot's on a page below
     /// Bots, the assistant's under Access (issue #763). Open settings switch to it; closed ones open
     /// there, with their first load.
     fn open_access(&mut self, bot: Option<String>) -> Task<Message> {

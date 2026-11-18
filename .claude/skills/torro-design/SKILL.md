@@ -506,7 +506,8 @@ ist kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   - **„…“ = vor der Aktion kommt noch eine Frage oder ein Dialog** („Create filter…“, „Rename…“, „Task…“,
     „Delete task…“, „Unsubscribe…“).
   - **Ohne Zeichen** = die Aktion geschieht sofort, auch wenn sie nur eine Seite oder ein Fenster öffnet („Manage
-    models“, „Access“, „Manage save targets“, „Manage workspaces“); ein Sprung in eine andere App endet in `↗`.
+    models“, „Access“, „Manage save targets“, „Manage workspaces“ – auch wenn dafür die Steuerzentrale aufgeht);
+    `↗` steht nur bei einem Sprung mit Bezug nach außen („Open on GitHub ↗“, „Open in …“).
   Die Regel gilt für Menüeinträge; Knöpfe außerhalb von Menüs („Mute…“ an Karte und Zeile) behalten ihre Wörter.
   **Untermenüs** (`widgets::Cascade`, `Cascade::layer`, `Placement::Cascade`): Das Untermenü klappt neben dem Eintrag
   auf, sein erster Eintrag auf Höhe des Eintrags, die Karte an der rechten Kante des Menüs, am rechten Fensterrand

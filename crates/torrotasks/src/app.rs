@@ -50,7 +50,7 @@
 //! GitHub links (task G.6): a GitHub address or `owner/repo#12` in quick add ([`Link::pasted`])
 //! goes to the core's `add_link` instead of becoming a task titled with it: in a task list a link
 //! task with GitHub's title (and the due date quick add gives there), in a filter list – whose quick
-//! add row says "Paste a GitHub link to pin…" – a pinned item. "Add to list…" in the detail of a
+//! add row says "Paste a GitHub link to pin…" – a pinned item. "Add to list ▸" in the detail of a
 //! filter list's item does the same for the list picked; a card then says "Added to {list}" when
 //! that is not the list shown (task G.6b). A link has the issue's check in the list
 //! and the detail; ticking one goes the way of an issue of a filter list, so "Issue closed · Undo"
@@ -843,7 +843,7 @@ pub enum Message {
     IssueChanged(Result<Todo, String>),
     /// "Undo" in the "Issue closed" card: reopen it.
     Undo,
-    /// The core's answer to a GitHub link pasted into quick add or "Add to list…" (task G.6): the
+    /// The core's answer to a GitHub link pasted into quick add or "Add to list ▸" (task G.6): the
     /// task the list holds, and the due date and priority quick add gives a new task there
     /// ([`quick_add_fields`]), which a link in a task list then gets.
     LinkAdded(Result<Todo, String>, Option<EventTime>, Option<u8>),
@@ -3269,7 +3269,7 @@ impl App {
     /// The core's answer to [`App::add_link`]: a new link task in a task list gets the due date and
     /// priority quick add gives there (it has none of its own yet), then the list is loaded again.
     /// A refusal (no GitHub account, an item GitHub does not have …) is the error line. When the
-    /// link went to another list than the one shown ("Add to list…", or quick add in a smart
+    /// link went to another list than the one shown ("Add to list ▸", or quick add in a smart
     /// list), a card says where: "Added to {list}" (task G.6b).
     fn link_added(
         &mut self,

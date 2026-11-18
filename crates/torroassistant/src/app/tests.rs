@@ -1451,7 +1451,7 @@ fn deleting_a_bot_asks_first_and_the_main_window_goes_back_to_the_assistant() {
     assert!(lisbon.bot_deleted);
 }
 
-/// Task S.34: "Access…" and the bot editor's "What the bot may use" open Access at the bot, in this
+/// Task S.34: "Access" and the bot editor's "What the bot may use" open Access at the bot, in this
 /// window, the settings open or not.
 #[test]
 fn access_opens_the_bots_rights_and_a_window_is_asked_of_the_core() {

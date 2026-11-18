@@ -119,7 +119,7 @@ impl Daemon {
         });
     }
 
-    /// "Manage workspaces…" in the tray (task WS.7): the control centre on its page Workspaces
+    /// "Manage workspaces" in the tray (task WS.7): the control centre on its page Workspaces
     /// ([`Core::show_section`]). A failure is only logged, as for [`Daemon::open_app`].
     pub fn manage_workspaces(&self) {
         let core = Arc::clone(&self.core);
