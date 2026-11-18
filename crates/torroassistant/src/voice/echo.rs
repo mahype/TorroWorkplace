@@ -8,7 +8,8 @@
 //! The reference stays in memory, at most a second of it ([`KEPT`]); nothing touches the disk. Without a
 //! reference for a while ([`IN_USE`]) a frame passes unchanged, and the listener closes the microphone while
 //! something is read, as before ([`Echo::running`]). Should the canceller itself fail (it cannot with its
-//! fixed format of 16 kHz mono in steps of 10 ms), the frame passes unchanged too, and the failure is logged.
+//! fixed format of 16 kHz mono in steps of 10 ms), the frame passes unchanged too, the failure is logged, and
+//! the cancellation counts as not running from then on: the microphone closes while something is read.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -42,6 +43,8 @@ const STEP: usize = RATE as usize / 100;
 struct Reference {
     samples: VecDeque<i16>,
     last: Option<Instant>,
+    /// The canceller failed: the cancellation counts as not running from then on.
+    failed: bool,
 }
 
 /// The sound read aloud, as the reference for the canceller (see the module). Clones share it: the
@@ -66,13 +69,21 @@ impl Echo {
     /// Whether the cancellation runs: a reference came within [`RUNNING`]. Only then the microphone stays
     /// open while something is read aloud.
     pub fn running(&self) -> bool {
-        self.lock().last.is_some_and(|last| last.elapsed() <= RUNNING)
+        let reference = self.lock();
+        !reference.failed && reference.last.is_some_and(|last| last.elapsed() <= RUNNING)
     }
 
     /// Whether a reference came since `at`: what the microphone heard since then went through the
     /// canceller.
     pub fn heard_since(&self, at: Instant) -> bool {
-        self.lock().last.is_some_and(|last| last >= at)
+        let reference = self.lock();
+        !reference.failed && reference.last.is_some_and(|last| last >= at)
+    }
+
+    /// The canceller failed (review of #885): its frames pass unchanged, so the listener closes the
+    /// microphone while something is read, as without a reference.
+    fn fail(&self) {
+        self.lock().failed = true;
     }
 
     /// The whole steps of the reference that wait, taken out (the rest stays for the next frame); `None`
@@ -169,7 +180,14 @@ impl Stream for EchoStream {
     fn frame(&mut self) -> Result<Option<Vec<i16>>, VoiceError> {
         let Some(frame) = self.stream.frame()? else { return Ok(None) };
         match self.echo.take() {
-            Some(reference) => Ok(Some(self.canceller.borrow_mut().cancel(&reference, frame))),
+            Some(reference) => {
+                let mut canceller = self.canceller.borrow_mut();
+                let cleaned = canceller.cancel(&reference, frame);
+                if canceller.failed {
+                    self.echo.fail();
+                }
+                Ok(Some(cleaned))
+            }
             None => Ok(Some(frame)),
         }
     }
@@ -306,6 +324,9 @@ mod tests {
         echo.lock().samples.truncate(STEP * 2 + 7);
         assert_eq!(echo.take().map(|taken| taken.len()), Some(STEP * 2));
         assert_eq!(echo.lock().samples.len(), 7, "the rest waits");
+        echo.fail();
+        assert!(!echo.running() && !echo.heard_since(before), "a failed canceller counts as not running");
+        echo.lock().failed = false;
         echo.lock().last = Instant::now().checked_sub(Duration::from_secs(2));
         assert!(!echo.running());
         assert_eq!(echo.take(), None);
