@@ -21996,6 +21996,139 @@ done"#,
         assert!(log.ends_with("stop\n") && !log.contains("end"), "what plays stops: {log}");
     }
 
+    /// Review of #835: with OpenAI each sound names the text its piece came from, so the helper says which text began.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn openai_sound_names_its_text() {
+        use crate::assistant::tests::{finish_growing, growing, message, written};
+        use torro_core::account::Secret;
+        use torro_core::ai::AiProvider;
+        const ID: &str = "0000000000000835";
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = httpmock::MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(200).json_body(serde_json::json!({"data": [{"id": "gpt-5"}]}));
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/audio/speech");
+                then.status(200).body([0u8, 1, 2, 3]);
+            })
+            .await;
+        let said = dir.path().join("said.log");
+        let body = format!(
+            r#"while read line; do
+  case "$line" in
+    *'"say"'*) echo '{{"pieces": ["Three events today."]}}' ;;
+    *'"add"'*) echo '{{"pieces": ["The first is at nine."]}}' ;;
+    *'"pcm"'*) printf '%s\n' "$line" >> '{0}'; echo '"playing"' ;;
+    '"stop"'|'"end"') echo '"done"' ;;
+  esac
+done"#,
+            said.display()
+        );
+        let speaker = dir.path().join("speaker");
+        crate::apps::tests::fake_at(&speaker, &body);
+        written(&dir.path().join("assistant"), ID, "Today", vec![message("What is on today?")], &[], |_| {});
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = Arc::new(
+            core_with_ai(dir.path(), &MemoryTokens::default(), Vec::new())
+                .with_assistant(assistant)
+                .with_speech(crate::apps::SpeechHelper::at(speaker))
+                .with_probe(Measured(large_pc())),
+        );
+        core.ai
+            .connect(AiProvider::OpenAi, Some(&server.url("/v1")), Secret::new(crate::account::ai::tests::KEY))
+            .await
+            .expect("connected");
+        let provider =
+            Request::SetSetting { key: torro_ipc::SettingKey::SpeechProvider, value: serde_json::json!("openai") };
+        assert_eq!(core.handle(provider).await, Response::Ok);
+        let (run, partial) = growing(&core.assistant, ID).await;
+        partial.lock().unwrap_or_else(PoisonError::into_inner).text = "Three events today. The first".into();
+        let reader = Arc::clone(&core);
+        let read = tokio::spawn(async move { reader.handle(Request::SpeakAnswer { conversation: ID.into() }).await });
+        until_true("the first sentence sounds", || std::fs::read_to_string(&said).is_ok_and(|log| log.contains("pcm")))
+            .await;
+        finish_growing(&core.assistant, ID, run, "Three events today. The first is at nine.").await;
+        assert_eq!(read.await.expect("read"), Response::Ok);
+        let log = std::fs::read_to_string(&said).expect("said");
+        let texts: Vec<u64> = log
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter_map(|line| line["pcm"]["text"].as_u64())
+            .collect();
+        assert!(!texts.is_empty() && texts.len() == log.lines().count(), "each sound names its text: {log}");
+        assert_eq!(texts.first(), Some(&0), "{log}");
+        assert_eq!(texts.last(), Some(&1), "{log}");
+        assert!(texts.windows(2).all(|pair| pair[0] <= pair[1]), "in order: {texts:?}");
+    }
+
+    /// Review of #835: a sentence of the core's own, the note of the voice chat (issue #837), is never taken as heard
+    /// of the answer; the answer's sentences after it are.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_cores_own_sentences_are_not_heard_of_the_answer() {
+        use crate::assistant::tests::{growing, message, written};
+        use torro_ipc::assistant::EntryContent;
+        const ID: &str = "0000000000000836";
+        let dir = tempfile::tempdir().expect("temp dir");
+        let said = dir.path().join("said.log");
+        let body = format!(
+            r#"n=0
+while read line; do
+  printf '%s\n' "$line" >> '{}'
+  case "$line" in
+    *'"say"'*) n=1; echo '"playing"'; echo "{{\"said\": $n}}" ;;
+    *'"add"'*) n=$((n+1)); echo "{{\"said\": $n}}" ;;
+    '"stop"') echo '"done"' ;;
+  esac
+done"#,
+            said.display()
+        );
+        let speaker = dir.path().join("speaker");
+        crate::apps::tests::fake_at(&speaker, &body);
+        written(&dir.path().join("assistant"), ID, "Voice", vec![message("What is on today?")], &[], |_| {});
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = Arc::new(
+            core(dir.path())
+                .with_assistant(assistant)
+                .with_speech(crate::apps::SpeechHelper::at(speaker))
+                .with_probe(Measured(large_pc())),
+        );
+        *core.lock_talk() = Some(TalkSlot { conversation: Some(ID.into()), since: std::time::Instant::now() });
+        let (_run, partial) = growing(&core.assistant, ID).await;
+        // A tool runs: the voice chat says so first, in the job the answer follows in.
+        partial.lock().unwrap_or_else(PoisonError::into_inner).tool = Some("calendar.list_events".into());
+        let reader = Arc::clone(&core);
+        let read = tokio::spawn(async move { reader.handle(Request::SpeakAnswer { conversation: ID.into() }).await });
+        until_true("the note", || std::fs::read_to_string(&said).is_ok_and(|log| log.contains(r#""say""#))).await;
+        {
+            let mut now = partial.lock().unwrap_or_else(PoisonError::into_inner);
+            now.tool = None;
+            now.text = "Three events today. Then".into();
+        }
+        let heard = || {
+            core.reading.try_lock().ok().and_then(|reading| {
+                reading.as_ref().map(|reading| reading.heard.lock().unwrap_or_else(PoisonError::into_inner).clone())
+            })
+        };
+        until_true("the answer's sentence sounds", || heard().is_some_and(|heard| !heard.is_empty())).await;
+        assert_eq!(heard(), Some(vec!["Three events today.".to_string()]), "the note is not the answer's");
+        assert_eq!(core.handle(Request::InterruptAnswer { conversation: ID.into() }).await, Response::Ok);
+        assert_eq!(read.await.expect("read"), Response::Ok);
+        let Response::Conversation { entries, .. } =
+            core.handle(Request::GetConversation { id: ID.into(), after: None }).await
+        else {
+            panic!("the conversation")
+        };
+        let last = entries.last().map(|entry| entry.content.clone());
+        assert_eq!(last, Some(EntryContent::Stopped { heard: Some("Three events today …".into()) }));
+    }
+
     /// Issue #837: with OpenAI the note's pieces are fetched first, then the answer's; the `"mark"` goes right
     /// before the sound of the answer's first piece, so the helper's `marked` times the answer.
     #[cfg(unix)]
