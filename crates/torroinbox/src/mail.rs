@@ -4366,7 +4366,7 @@ fn sender_block<'a>(
     // on it opens the line over as many lines as all of them need, "Show less" closes it again.
     let people = head_people(summary, reading.loaded);
     let second: Element<'a, Message> = if reading.people_open {
-        let less = container(head_toggle(tr("Show less").to_owned())).padding(Padding::ZERO.left(space::m()));
+        let less = container(head_toggle(tr("Show less").to_owned())).padding(Padding::ZERO.left(space::xs()));
         container(people_wrapped(reading, anchors, people, Some(less.into()))).width(Fill).into()
     } else {
         let (reading, anchors) = (*reading, anchors.clone());
@@ -4376,24 +4376,28 @@ fn sender_block<'a>(
                 .map(|(lead, _, label)| typo::text_width(lead, typo::meta()) + typo::text_width(label, typo::meta()))
                 .collect();
             // Room for "+N" with its gap, at the most it could say.
-            let more = typo::text_width(&trf("+{n}", &[("n", &people.len())]), typo::meta()) + space::m();
+            let more = typo::text_width(&trf("+{n}", &[("n", &people.len())]), typo::meta()) + space::xs();
             let shown = people_shown(&widths, size.width, more);
             let hidden = people.len() - shown;
             let room = if hidden > 0 { (size.width - more).max(0.0) } else { size.width };
             let mut line = row![].align_y(Alignment::Center);
             for (at, (lead, person, label)) in people.iter().take(shown).cloned().enumerate() {
-                // Only a sender too wide for the line alone is cut, with "…".
+                // Only the first person too wide for the line alone is cut, with "…" – beside the words in
+                // front of them, when the mail names no sender.
                 let label = match at == 0 && widths[0] > room {
-                    true => typo::ellipsize(&label, typo::meta(), room),
+                    true => {
+                        typo::ellipsize(&label, typo::meta(), (room - typo::text_width(&lead, typo::meta())).max(0.0))
+                    }
                     false => label,
                 };
                 line = line.push(person_piece(&reading, &anchors, (lead, person, label)));
             }
-            let mut line = row![container(line).width(Fill).clip(true)].align_y(Alignment::Center);
+            // "+N" follows the last name shown, not the line's far end: it belongs to the names.
+            let mut line = row![container(line).max_width(room).clip(true)].align_y(Alignment::Center);
             if hidden > 0 {
                 let toggle = head_toggle(trf("+{n}", &[("n", &hidden)]));
                 let toggle = widgets::with_tooltip(toggle, tr("Show all recipients"));
-                line = line.push(container(toggle).padding(Padding::ZERO.left(space::m())));
+                line = line.push(container(toggle).padding(Padding::ZERO.left(space::xs())));
             }
             line.into()
         });
@@ -8584,7 +8588,10 @@ mod tests {
                 let category = ui
                     .find(|candidate: Candidate<'_>| match candidate {
                         Candidate::Container { bounds, .. }
-                            if (bounds.width - expected).abs() < 3.0 && bounds.y > date_box.y =>
+                            // Under the date, not the "+N" of the names (issue #905), which can be as wide.
+                            if (bounds.width - expected).abs() < 3.0
+                                && bounds.y > date_box.y
+                                && bounds.x + bounds.width > date_box.x =>
                         {
                             Some(bounds)
                         }
