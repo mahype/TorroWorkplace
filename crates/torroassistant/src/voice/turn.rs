@@ -70,19 +70,20 @@ const HOLDS: [&str; 18] = [
     "give me a second",
 ];
 
-/// Words that only fill a pause, German and English.
-const FILLERS: [&str; 11] = ["äh", "ähm", "öh", "hm", "hmm", "ehm", "uh", "um", "uhm", "er", "erm"];
+/// Words that only fill a pause, German and English. Without "er": in German it is "he" ("Wo ist er?").
+const FILLERS: [&str; 10] = ["äh", "ähm", "öh", "hm", "hmm", "ehm", "uh", "um", "uhm", "erm"];
 
 /// Words after which a sentence goes on: conjunctions, prepositions, articles, German and English.
-const CONNECTORS: [&str; 38] = [
-    "und", "oder", "aber", "weil", "dass", "denn", "wenn", "also", "sondern", "dann", "bis", "für", "von", "der",
-    "die", "das", "den", "dem", "ein", "eine", "einen", "mein", "meine", "and", "or", "but", "because", "so", "that",
-    "if", "then", "with", "for", "to", "of", "the", "a", "my",
+const CONNECTORS: [&str; 35] = [
+    "und", "oder", "aber", "weil", "dass", "denn", "wenn", "also", "sondern", "bis", "für", "von", "der", "die", "den",
+    "dem", "ein", "eine", "einen", "mein", "meine", "and", "or", "but", "because", "that", "if", "then", "with", "for",
+    "to", "of", "the", "a", "my",
 ];
 
-/// Connecting words that also end a German sentence as the particle of a verb ("Mach das Licht an.", "Komm
-/// mit!"), and the English article "an": open only without a full stop or exclamation mark after them.
-const PARTICLES: [&str; 4] = ["an", "auf", "zu", "mit"];
+/// Connecting words that also end a sentence: the particle of a German verb ("Mach das Licht an.", "Komm mit!"),
+/// "das", "dann" and "so" ("Mach das.", "Bis dann.", "I think so."), and the English article "an". Open only
+/// without a full stop or exclamation mark after them.
+const PARTICLES: [&str; 7] = ["an", "auf", "zu", "mit", "das", "dann", "so"];
 
 /// The words of `text`, lower case: letters, digits and apostrophes.
 fn words(text: &str) -> Vec<String> {
@@ -106,9 +107,9 @@ fn without_wake(text: &str) -> String {
     after_wake_phrase(text).unwrap_or_else(|| strip_wake_phrase(text))
 }
 
-/// What the text of a sentence so far says of its end (decision 1): `None` for no text. An ellipsis or a
-/// comma at the end leaves it open, a question mark finishes it; a hold phrase at the end holds the turn, a
-/// filler or connecting word leaves it open; anything else is finished.
+/// What the text of a sentence so far says of its end (decision 1): `None` for no text. A question mark at
+/// the end finishes it; a hold phrase at the end holds the turn; an ellipsis, a comma, a filler or a connecting
+/// word leaves it open; anything else is finished.
 pub fn rules(text: &str) -> Option<Turn> {
     let text = without_wake(text);
     let trimmed = text.trim();
@@ -116,15 +117,16 @@ pub fn rules(text: &str) -> Option<Turn> {
     if said.is_empty() {
         return None;
     }
+    // "Was ist das?" ends on an article and "Hast du einen Moment?" on a hold, but both are asked: Whisper sets
+    // the question mark only for a question.
+    if trimmed.ends_with('?') {
+        return Some(Turn::Done);
+    }
     if HOLDS.iter().any(|hold| ends_with(&said, hold)) {
         return Some(Turn::Hold);
     }
     if trimmed.ends_with('…') || trimmed.ends_with("...") || trimmed.ends_with(',') {
         return Some(Turn::Open);
-    }
-    // "Was ist das?" ends on an article but is asked: Whisper sets the question mark only for a question.
-    if trimmed.ends_with('?') {
-        return Some(Turn::Done);
     }
     let ended = trimmed.ends_with('.') || trimmed.ends_with('!');
     let open = FILLERS.iter().chain(&CONNECTORS).any(|word| ends_with(&said, word))
@@ -152,8 +154,9 @@ pub fn decide(model: Option<f32>, text: Option<Turn>) -> Option<Turn> {
     }
 }
 
-/// The pauses of the end of a sentence in frames of the microphone, from the settings (rounded up, so a
-/// pause is never shorter than chosen).
+/// The pauses of the end of a sentence in frames of the microphone, from the settings: rounded up to whole
+/// frames of [`FRAMES_PER_SECOND`], counted as the pause of [`super::audio::Limits`] is (twelve frames a
+/// second, each 80 ms long, so the pause heard is up to 4 % longer than chosen).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pauses {
     /// After a finished sentence.
@@ -399,6 +402,13 @@ mod tests {
             ("Was ist das?", Some(Turn::Done)),
             ("Hey Torro, wie spät ist es", Some(Turn::Done)),
             ("Moment, wie spät ist es?", Some(Turn::Done)),
+            ("Hast du einen Moment?", Some(Turn::Done)),
+            ("Can you hold on?", Some(Turn::Done)),
+            ("Mach das.", Some(Turn::Done)),
+            ("Bis dann!", Some(Turn::Done)),
+            ("I think so.", Some(Turn::Done)),
+            ("Wo ist er", Some(Turn::Done)),
+            ("Erst die Mails, dann", Some(Turn::Open)),
             // Open: a filler, a connecting word, an ellipsis or a comma at the end.
             ("Ich will morgen … ähm", Some(Turn::Open)),
             ("I want to go, um", Some(Turn::Open)),
