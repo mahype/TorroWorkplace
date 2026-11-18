@@ -304,6 +304,13 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         }
         Message::Bots(message) => bots::update(message, data),
         Message::Tools(message) => tools::update(message),
+        // "Models" at a model that downloads under an action (issue #823): its tab, with the progress
+        // and "Cancel".
+        Message::Voice(voice::Message::ShowModels) => {
+            state.voice_tab = VoiceTab::Models;
+            state.voice.menus.close();
+            Action::None
+        }
         Message::Voice(message) => voice::update(&mut state.voice, message, data),
         Message::History(message) => history::update(message, data),
     }
@@ -856,6 +863,11 @@ mod tests {
         assert!(escape(&state).is_some(), "the dropdown is open");
         let _ = update(&mut state, Message::VoiceTab(1), &data);
         assert!(escape(&state).is_none(), "the tab closed it");
+        // Issue #823: "Models" at a model that downloads under an action shows its tab, sends nothing.
+        let _ = update(&mut state, Message::Voice(toggle(voice::Choice::Recognizer)), &data);
+        assert_eq!(update(&mut state, Message::Voice(voice::Message::ShowModels), &data), Action::None);
+        assert_eq!(state.voice_tab, VoiceTab::Models);
+        assert!(escape(&state).is_none(), "and closes a dropdown");
         let toggle = |choice| general::Message::Menus(torro_gui::widgets::DropdownEvent::Toggle(choice));
         let _ = update(&mut state, Message::General(toggle(general::Choice::Engine)), &data);
         assert!(escape(&state).is_some(), "the dropdown is open");
