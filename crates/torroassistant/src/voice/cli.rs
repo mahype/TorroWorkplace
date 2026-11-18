@@ -236,6 +236,8 @@ fn listen() -> ExitCode {
             pause: QUIET,
             floor: NoiseFloor::default(),
             echo: Some(echo.clone()),
+            vad: parts.vad,
+            early: parts.early,
         };
         match listener.run(&voice) {
             Ok(Ended::Changed) => continue,

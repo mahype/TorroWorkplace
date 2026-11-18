@@ -10,13 +10,15 @@
 use std::path::Path;
 
 use torro_core::settings::{SpeechProvider, Voice};
-use torro_core::voice_models::{self, HEY_TORRO, POCKET_DE, QWEN};
+use torro_core::voice_models::{self, HEY_TORRO, POCKET_DE, QWEN, SILERO_VAD};
 use torro_ipc::{VoiceMissing, VoicePart, VoiceProgram, VoiceState, VoiceStatus};
 
+use super::early::Early;
 use super::recognize::{SharedTranscriber, SherpaTranscriber};
 use super::sound::{ChimeSpeaker, CpalRecorder, Devices, microphone_in_use};
+use super::vad::SileroVad;
 use super::wake::{ModelWake, TranscriptWake};
-use super::{Recorder, Speaker, Transcriber, VoiceError, WakeWord};
+use super::{Recorder, Speaker, SpeechDetector, Transcriber, VoiceError, WakeWord};
 
 /// Whether the model `id` of the catalogue is downloaded into the voice folder `folder`.
 pub fn model_ready(id: &str, folder: Option<&Path>) -> bool {
@@ -29,22 +31,57 @@ pub struct Parts {
     pub wake: Box<dyn WakeWord>,
     pub transcriber: Box<dyn Transcriber>,
     pub speaker: Box<dyn Speaker>,
+    /// Silero VAD, once downloaded (issue #833); without it speech is told by loudness.
+    pub vad: Option<Box<dyn SpeechDetector>>,
+    /// Recognises the sentence ahead in its pauses (issue #833), with the same model; only with [`Parts::vad`],
+    /// so without Silero VAD everything stays as it was.
+    pub early: Option<Early>,
 }
 
 impl Parts {
     /// The parts for `voice` with the models in the voice folder `folder`: the microphone of the settings,
     /// the chosen speech to text, loaded now, and the wake word of [`wake_word`]. The speaker only plays
-    /// the tone; answers are read through the core. Fails when the recogniser's model is missing or does
-    /// not load.
+    /// the tone; answers are read through the core. Silero VAD and the recognition ahead come with its
+    /// model ([`speech_detector`]). Fails when the recogniser's model is missing or does not load.
     pub fn build(voice: &Voice, folder: Option<&Path>) -> Result<Parts, VoiceError> {
         let transcriber = SharedTranscriber::new(Box::new(SherpaTranscriber::load(voice, folder)?));
         let (wake, _) = wake_word(folder, transcriber.clone());
+        let vad = speech_detector(folder);
+        let early = match vad.is_some().then(|| Early::new(Box::new(transcriber.clone()))) {
+            Some(Ok(early)) => Some(early),
+            Some(Err(err)) => {
+                eprintln!("torroassistant: sentences are recognised once they ended: {err}");
+                None
+            }
+            None => None,
+        };
         Ok(Parts {
             recorder: Box::new(CpalRecorder { microphone: voice.microphone.clone() }),
             wake,
             transcriber: Box::new(transcriber),
             speaker: Box::new(ChimeSpeaker),
+            vad,
+            early,
         })
+    }
+}
+
+/// Silero VAD from the voice folder `folder`, when it is downloaded (issue #833); `None` without it, and
+/// when it does not load: why goes to the log, without the path, and speech is told by loudness.
+pub fn speech_detector(folder: Option<&Path>) -> Option<Box<dyn SpeechDetector>> {
+    if !model_ready(SILERO_VAD, folder) {
+        return None;
+    }
+    match SileroVad::load(folder) {
+        Ok(vad) => Some(Box::new(vad)),
+        Err(err) => {
+            let mut message = err.to_string();
+            if let Some(folder) = folder {
+                message = message.replace(&*folder.to_string_lossy(), "<voice folder>");
+            }
+            eprintln!("torroassistant: Silero VAD did not load, speech is told by loudness: {message}");
+            None
+        }
     }
 }
 
@@ -202,6 +239,22 @@ pub mod tests {
         let file = tempfile::NamedTempFile::new().expect("not a folder");
         assert_eq!(wake_word(Some(file.path()), shared()).1, "transcript");
         assert_eq!(wake_word(None, shared()).1, "transcript");
+    }
+
+    /// Issue #833: without Silero VAD there is no speech detector, and one that does not load is none either.
+    #[test]
+    fn silero_vad_is_used_only_once_downloaded() {
+        let folder = tempfile::tempdir().expect("voice folder");
+        assert!(speech_detector(Some(folder.path())).is_none());
+        assert!(speech_detector(None).is_none());
+        // Sparse files of the right size are not the catalogue's: refused before sherpa-onnx sees them.
+        download(folder.path(), SILERO_VAD);
+        assert!(speech_detector(Some(folder.path())).is_none(), "a damaged model falls back to loudness");
+        let damaged = SileroVad::load(Some(folder.path())).map(|_| ());
+        assert!(
+            matches!(&damaged, Err(VoiceError::Program { message, .. }) if message.contains("damaged")),
+            "{damaged:?}"
+        );
     }
 
     /// Issue #762: the downloaded models make the parts work; only the chosen recogniser counts.

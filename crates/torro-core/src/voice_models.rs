@@ -41,7 +41,7 @@ pub struct ModelFile {
 /// A model of the catalogue ([`MODELS`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Model {
-    /// Its id in requests and folders: `whisper-turbo`, `parakeet`, `pocket-de`.
+    /// Its id in requests and folders: `whisper-turbo`, `parakeet`, `pocket-de`, `silero-vad`.
     pub id: &'static str,
     /// Its name for people; a product name, not translated.
     pub name: &'static str,
@@ -61,6 +61,11 @@ pub const PARAKEET: &str = "parakeet";
 /// The German model of Pocket TTS with the voices of Kyutai (decision 1 of #762).
 pub const POCKET_DE: &str = "pocket-de";
 
+/// Silero VAD (issue #833): tells speech from noise frame by frame, so a sentence starts and ends with
+/// speech instead of loudness. A download like the others, a recognition model, never recommended: without
+/// it the listener keeps telling speech by loudness.
+pub const SILERO_VAD: &str = "silero-vad";
+
 /// The wake word model "Hey Torro" (issue #765): built into the assistant, so it is not in the catalogue
 /// [`MODELS`] and never downloaded; `settings.voice_status` names it for the wake word.
 pub const HEY_TORRO: &str = "hey-torro";
@@ -72,13 +77,14 @@ pub const HEY_TORRO: &str = "hey-torro";
 pub const QWEN: &str = "qwen3-tts";
 
 /// Every model, in the order the settings show them: speech recognition first, the recommended one on
-/// top, Qwen3-TTS last and only in builds with it (`crate::settings::QWEN_BUILT`).
+/// top, Silero VAD after the voices, Qwen3-TTS last and only in builds with it (`crate::settings::QWEN_BUILT`).
 #[cfg(feature = "qwen-tts")]
-pub const MODELS: [Model; 4] = [BUILT_IN[0], BUILT_IN[1], BUILT_IN[2], QWEN_MODEL];
+pub const MODELS: [Model; 5] = [BUILT_IN[0], BUILT_IN[1], BUILT_IN[2], BUILT_IN[3], QWEN_MODEL];
 
-/// Every model, in the order the settings show them: speech recognition first, the recommended one on top.
+/// Every model, in the order the settings show them: speech recognition first, the recommended one on top,
+/// Silero VAD after the voices.
 #[cfg(not(feature = "qwen-tts"))]
-pub const MODELS: [Model; 3] = BUILT_IN;
+pub const MODELS: [Model; 4] = BUILT_IN;
 
 /// The model of Qwen3-TTS ([`QWEN`]), at the revision measured in `docs/messung-qwen3-tts.md`.
 #[cfg_attr(
@@ -137,7 +143,7 @@ const QWEN_MODEL: Model = Model {
 };
 
 /// The models every build has.
-const BUILT_IN: [Model; 3] = [
+const BUILT_IN: [Model; 4] = [
     Model {
         id: WHISPER_TURBO,
         name: "Whisper turbo",
@@ -263,6 +269,18 @@ const BUILT_IN: [Model; 3] = [
                 bytes: 480_044,
             },
         ],
+    },
+    Model {
+        id: SILERO_VAD,
+        name: "Silero VAD",
+        kind: VoiceModelKind::Recognition,
+        recommended: false,
+        files: &[ModelFile {
+            name: "silero_vad.onnx",
+            url: "https://huggingface.co/csukuangfj/vad/resolve/fba88cd2e921609e7675c3aaf51e0b9b295da4bc/silero_vad.onnx",
+            sha256: "a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28",
+            bytes: 1_807_522,
+        }],
     },
 ];
 
@@ -449,7 +467,7 @@ mod tests {
     #[test]
     fn qwen_is_listed_only_where_it_is_built() {
         assert_eq!(model(QWEN).is_some(), crate::settings::QWEN_BUILT);
-        assert_eq!(MODELS.len(), 3 + usize::from(crate::settings::QWEN_BUILT));
+        assert_eq!(MODELS.len(), 4 + usize::from(crate::settings::QWEN_BUILT));
         assert_eq!(QWEN_MODEL.kind, VoiceModelKind::Speech);
         const { assert!(!QWEN_MODEL.recommended, "Pocket TTS stays the recommended voice") };
         let revision = "/resolve/5d83992436eae1d760afd27aff78a71d676296fc/";
@@ -459,6 +477,16 @@ mod tests {
             assert_eq!(path.replace('/', "."), file.name, "the name is its path with the folder in it");
         }
         assert!(QWEN_MODEL.bytes() > 2_000_000_000, "about 2.5 GB");
+    }
+
+    /// Issue #833: Silero VAD is a small recognition download after the voices, never recommended.
+    #[test]
+    fn silero_vad_is_a_small_download_after_the_voices() {
+        let vad = model(SILERO_VAD).expect("silero vad");
+        assert_eq!((vad.name, vad.kind, vad.recommended), ("Silero VAD", VoiceModelKind::Recognition, false));
+        assert_eq!(vad.files.iter().map(|file| file.name).collect::<Vec<_>>(), ["silero_vad.onnx"]);
+        assert_eq!(vad.bytes(), 1_807_522, "1.8 MB");
+        assert_eq!(MODELS.iter().position(|model| model.id == SILERO_VAD), Some(3), "after Pocket TTS");
     }
 
     #[test]
