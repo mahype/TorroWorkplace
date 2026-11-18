@@ -72,8 +72,12 @@ use iced::{
 };
 use iced::{border, keyboard, mouse};
 
+mod cascade;
 mod context_area;
 mod guard;
+pub use cascade::{
+    CASCADE_DELAY, CASCADE_DEPTH, CASCADE_TICK, Cascade, CascadeChange, CascadeEvent, CascadeKey, aims_at, shape_of,
+};
 mod volume_chart;
 pub use volume_chart::volume_chart;
 
@@ -2358,6 +2362,10 @@ pub enum Placement {
     /// Left of the point when there is no room on the right, above it when there is none below –
     /// like the context menus of macOS, Windows and GNOME.
     At,
+    /// A submenu beside the entry that opened it (issue #906, [`Cascade`]): the card's left edge at
+    /// the menu's right edge – [`style::MENU_INSET`] right of the entry – and its first entry level
+    /// with that entry; at the window's right edge on the menu's left instead.
+    Cascade,
 }
 
 /// The top-left corner of a card of `card` size placed at `target` inside `viewport`; the card
@@ -2387,6 +2395,15 @@ fn place(target: Rectangle, card: Size, viewport: Rectangle, placement: Placemen
                 target.y - card.height
             };
             (x, y)
+        }
+        Placement::Cascade => {
+            let right = target.x + target.width + style::MENU_INSET;
+            let x = if right + card.width <= viewport.x + viewport.width - beside_gap() {
+                right
+            } else {
+                target.x - style::MENU_INSET - card.width
+            };
+            (x, target.y - style::MENU_INSET)
         }
     };
     let clamp = |value: f32, start: f32, length: f32, extent: f32| {
@@ -2535,6 +2552,18 @@ impl<'a, M> MenuItem<'a, M> {
     pub fn nested(self) -> Self {
         Self { nested: true, ..self }
     }
+
+    /// The same entry as one that opens a submenu beside it (issue #906, [`Cascade`]): it ends in
+    /// "▸", a chevron in `text_3` in place of any other trail. Send [`CascadeEvent::Press`] with its
+    /// path as its `on_press`.
+    pub fn submenu(self) -> Self {
+        self.trail(Trail::Icon(Icon::ChevronRight))
+    }
+
+    /// Whether the entry opens a submenu ([`MenuItem::submenu`]).
+    pub fn opens_submenu(&self) -> bool {
+        matches!(self.trail, Trail::Icon(Icon::ChevronRight))
+    }
 }
 
 /// A part of a [`menu`]: an optional `CAPTION` title and its entries. Sections are separated by
@@ -2626,6 +2655,24 @@ fn menu_entry<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
 }
 
 fn menu_entry_feedback<'a, M: Clone + 'a>(item: MenuItem<'a, M>, feedback: Option<MenuFeedback>) -> Element<'a, M> {
+    menu_entry_lit(item, feedback, false)
+}
+
+/// Like [`menu_item_feedback`], drawn `lit` as under the hover while the keyboard cursor of a
+/// cascading menu stands on it or its submenu is open (issue #906, [`Cascade::menu`]).
+pub fn menu_item_lit<'a, M: Clone + 'a>(
+    item: MenuItem<'a, M>,
+    feedback: Option<MenuFeedback>,
+    lit: bool,
+) -> Element<'a, M> {
+    menu_entry_lit(item, feedback, lit)
+}
+
+fn menu_entry_lit<'a, M: Clone + 'a>(
+    item: MenuItem<'a, M>,
+    feedback: Option<MenuFeedback>,
+    lit: bool,
+) -> Element<'a, M> {
     let height = menu_entry_height(item.detail.is_some());
     let label: Element<'a, M> = match item.detail {
         Some(detail) => column![menu_label(item.label), detail_line(detail)].width(Fill).into(),
@@ -2680,7 +2727,7 @@ fn menu_entry_feedback<'a, M: Clone + 'a>(item: MenuItem<'a, M>, feedback: Optio
         .padding(style::ITEM_PADDING)
         .style(move |t, status| {
             let status = if blocked { button::Status::Active } else { status };
-            style::button::menu_item(false)(t, status)
+            style::button::menu_item(lit)(t, status)
         })
         .on_press_maybe((!blocked).then_some(item.on_press));
     let entry: Element<'a, M> = if item.nested {
@@ -3173,6 +3220,72 @@ pub fn rail_context_menu<'a, M: Clone + 'a, N: Clone + 'a>(
             list = list.push(rail_row(item, RailPlace::Card, false));
         }
     }
+    rail_menu_card(list, max_height)
+}
+
+/// A [`rail_context_menu`] whose entries are those of a cascading menu (issue #906, [`Cascade`]):
+/// an item that opens a menu of its own ([`RailItem::opens_menu`]) opens it beside itself as a
+/// submenu – a click sends `on_event(CascadeEvent::Press)` instead of its message, the pointer
+/// resting on it opens it too –, and the entry under the keyboard cursor or with its submenu open
+/// stands lit. The entries are numbered top to bottom across the groups, as
+/// [`rail_cascade_shape`] counts them; the app carries out the item at that place when the cascade
+/// opens its submenu or the keys choose it.
+pub fn rail_cascade_menu<'a, M: Clone + 'a, N: Clone + 'a>(
+    groups: Vec<RailGroup<'a, M>>,
+    on_action: impl Fn(M) -> N,
+    max_height: f32,
+    cascade: &Cascade,
+    on_event: impl Fn(CascadeEvent) -> N + Clone + 'a,
+) -> Element<'a, N> {
+    let mut list = column![];
+    let mut at = 0;
+    let (cursor, open) = (cascade.cursor(0), cascade.open().first().copied());
+    for (index, group) in groups.into_iter().enumerate() {
+        if index > 0 {
+            list = list.push(container(rule::horizontal(LINE).style(style::rule)).padding([space::xs(), 0.0]));
+        }
+        if rail_menu_titled(group.items.len()) {
+            let title = typo::text(typo::caption(), group.label).style(theme::text_3).wrapping(Wrapping::None);
+            list = list.push(container(title).padding(flyout_title_padding()));
+        }
+        for item in group.items {
+            let on_press = match item.on_press {
+                Some(_) if item.opens_menu => Some(on_event(CascadeEvent::Press(vec![at]))),
+                press => press.map(&on_action),
+            };
+            let item = RailItem {
+                icon: item.icon,
+                label: item.label,
+                key: item.key,
+                on_press,
+                accent: item.accent,
+                lead: item.lead,
+                danger: item.danger,
+                anchor: None,
+                opens_menu: item.opens_menu,
+            };
+            let lit = cursor == Some(at) || open == Some(at);
+            list = list.push(cascade.entry(vec![at], rail_row(item, RailPlace::Card, lit), on_event.clone()));
+            at += 1;
+        }
+    }
+    rail_menu_card(list, max_height)
+}
+
+/// The shape of a [`rail_cascade_menu`] of `groups` for [`Cascade::update`]: one entry per item
+/// across the groups, `true` for one that opens a submenu and is on.
+pub fn rail_cascade_shape<M>(groups: &[RailGroup<'_, M>]) -> Vec<bool> {
+    groups.iter().flat_map(|group| group.items.iter().map(|item| item.opens_menu && item.on_press.is_some())).collect()
+}
+
+/// The item at `index` of a [`rail_cascade_menu`] of `groups`, counted as [`rail_cascade_shape`]
+/// counts them.
+pub fn rail_cascade_item<'g, 'a, M>(groups: &'g [RailGroup<'a, M>], index: usize) -> Option<&'g RailItem<'a, M>> {
+    groups.iter().flat_map(|group| group.items.iter()).nth(index)
+}
+
+/// The card of a [`rail_context_menu`] around its rows, at most `max_height` high.
+fn rail_menu_card<'a, M: 'a>(list: iced::widget::Column<'a, M>, max_height: f32) -> Element<'a, M> {
     // The scrollbar beside the rows, not over them: over them it covered their key hints where the
     // menu scrolls (the medium window, design review of #499). The rows keep the rail's width; the
     // card grows by the scrollbar's gutter only while the menu scrolls (iced reserves it only then).
