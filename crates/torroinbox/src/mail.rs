@@ -2088,6 +2088,189 @@ fn names(people: &[MailAddress]) -> String {
     people.iter().map(|who| sender_name(Some(who))).collect::<Vec<_>>().join(", ")
 }
 
+/// A person in the head of a mail (issue #905): the sender, or a recipient in To or Cc by their
+/// place there. A right-click or a click on them opens their menu ([`person_menu`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadPerson {
+    /// Who sent the mail.
+    From,
+    /// A recipient in To.
+    To(usize),
+    /// A recipient in Cc, known once the whole mail is loaded.
+    Cc(usize),
+}
+
+impl HeadPerson {
+    /// The address this person stands for in the mail of `summary` and `loaded`; `None` when the
+    /// mail has no such person (any more): Cc only once the whole mail is loaded.
+    pub fn who<'a>(
+        self,
+        summary: &'a MessageSummary,
+        loaded: Option<&'a Result<Mail, String>>,
+    ) -> Option<&'a MailAddress> {
+        match self {
+            Self::From => summary.from.as_ref(),
+            Self::To(at) => summary.to.get(at),
+            Self::Cc(at) => match loaded {
+                Some(Ok(mail)) => mail.cc.get(at),
+                _ => None,
+            },
+        }
+    }
+}
+
+/// The display name of `who` on one line, `None` when there is none or it only repeats the address.
+fn shown_name(who: &MailAddress) -> Option<String> {
+    let name = who.name.as_deref().map(list::one_line).unwrap_or_default();
+    (!name.is_empty() && !name.eq_ignore_ascii_case(&list::one_line(&who.address))).then_some(name)
+}
+
+/// `who` as an address field takes it (issue #905, decision 4): `Anna Berg <anna@firma.de>`. A name
+/// with a comma or another sign that has a meaning in addresses stands in quotes, its own quotes and
+/// backslashes escaped (`"Berg, Anna" <anna@firma.de>`), so the result pastes into any address field.
+/// Without a name – or one that only repeats the address – the address alone.
+pub fn name_and_address(who: &MailAddress) -> String {
+    let address = list::one_line(&who.address);
+    let Some(name) = shown_name(who) else {
+        return address;
+    };
+    if name.chars().any(|c| ",;:<>@()[]\"\\".contains(c)) {
+        let quoted = name.replace('\\', "\\\\").replace('"', "\\\"");
+        return format!("\"{quoted}\" <{address}>");
+    }
+    format!("{name} <{address}>")
+}
+
+/// How many of the people in the head's line show in `room` (issue #905): `widths` are theirs in
+/// order, the sender first, each with the separator in front of it. Where not all fit, `more` – the
+/// width of "+N" with its gap – is kept free for the rest. The sender always counts, however narrow.
+pub fn people_shown(widths: &[f32], room: f32, more: f32) -> usize {
+    if widths.iter().sum::<f32>() <= room {
+        return widths.len();
+    }
+    let room = room - more;
+    let mut used = 0.0;
+    let mut shown = 0;
+    for width in widths {
+        if used + width > room {
+            break;
+        }
+        used += width;
+        shown += 1;
+    }
+    shown.max(1).min(widths.len())
+}
+
+/// The menu of a person in the head (issue #905): their name as its title (the address without one),
+/// "Copy address" and – for a person with a name – "Copy name and address", each with what it
+/// copies as its second line.
+pub fn person_menu<'a>(who: &MailAddress) -> Vec<MenuSection<'a, Message>> {
+    let address = list::one_line(&who.address);
+    let mut items = vec![
+        MenuItem::new(Icon::Copy, tr("Copy address"), Message::CopyAddress(address.clone())).detail(address.clone()),
+    ];
+    if shown_name(who).is_some() {
+        let full = name_and_address(who);
+        items.push(
+            MenuItem::new(Icon::Copy, tr("Copy name and address"), Message::CopyAddress(full.clone())).detail(full),
+        );
+    }
+    vec![MenuSection::titled(sender_name(Some(who)), items)]
+}
+
+/// The people of the mail's head in their order (issue #905): the sender by address, then the
+/// recipients and – once loaded – the copies by name, each with the quiet words in front of it
+/// (" → ", ", ", " · cc ").
+fn head_people(summary: &MessageSummary, loaded: Option<&Result<Mail, String>>) -> Vec<(String, HeadPerson, String)> {
+    let mut people = Vec::new();
+    if let Some(from) = &summary.from {
+        people.push((String::new(), HeadPerson::From, list::one_line(&from.address)));
+    }
+    for (at, who) in summary.to.iter().enumerate() {
+        let lead = if at == 0 { " → " } else { ", " };
+        people.push((lead.to_owned(), HeadPerson::To(at), sender_name(Some(who))));
+    }
+    if let Some(Ok(mail)) = loaded {
+        for (at, who) in mail.cc.iter().enumerate() {
+            let lead = if at == 0 { format!(" · {} ", tr("cc")) } else { ", ".to_owned() };
+            people.push((lead, HeadPerson::Cc(at), sender_name(Some(who))));
+        }
+    }
+    people
+}
+
+/// One person of the head (issue #905): `label` in `META` as a quiet button that shows a light
+/// ground on hover; a click or a right-click opens their menu, which hangs at it (`anchors.person`)
+/// while it is open.
+fn person_button<'a>(
+    reading: &Reading<'a>,
+    anchors: &detail::Anchors,
+    person: HeadPerson,
+    label: String,
+) -> Element<'a, Message> {
+    let text = typo::text(typo::meta(), label).wrapping(Wrapping::None);
+    let button = iced::widget::button(text)
+        .padding(Padding::ZERO)
+        .style(style::button::path_step)
+        .on_press(Message::ContextPerson(person, None));
+    let area = widgets::context_area(button, move |at| Message::ContextPerson(person, Some(at)));
+    widgets::anchored_if((reading.person_menu == Some(person)).then_some(&anchors.person), area)
+}
+
+/// `people` ([`head_people`]) as one piece each: the quiet words in front, then the person's button.
+fn person_piece<'a>(
+    reading: &Reading<'a>,
+    anchors: &detail::Anchors,
+    (lead, person, label): (String, HeadPerson, String),
+) -> Element<'a, Message> {
+    let button = person_button(reading, anchors, person, label);
+    if lead.is_empty() {
+        return button;
+    }
+    row![typo::text(typo::meta(), lead).style(theme::text_3).wrapping(Wrapping::None), button]
+        .align_y(Alignment::Center)
+        .into()
+}
+
+/// Every person of the head, broken over as many lines as they need (issue #905): an invitation's
+/// head, and the line opened by "+N" – then with `last` at its end ("Show less").
+fn people_wrapped<'a>(
+    reading: &Reading<'a>,
+    anchors: &detail::Anchors,
+    people: Vec<(String, HeadPerson, String)>,
+    last: Option<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    // The quiet words go behind the person before them here, so no line starts with ", ".
+    let trails: Vec<String> = people.iter().skip(1).map(|(lead, _, _)| lead.trim_end().to_owned()).collect();
+    let pieces: Vec<Element<'a, Message>> = people
+        .into_iter()
+        .enumerate()
+        .map(|(at, (_, person, label))| {
+            let button = person_button(reading, anchors, person, label);
+            match trails.get(at) {
+                Some(trail) => {
+                    let trail = format!("{trail} ");
+                    row![button, typo::text(typo::meta(), trail).style(theme::text_3).wrapping(Wrapping::None)]
+                        .align_y(Alignment::Center)
+                        .into()
+                }
+                None => button,
+            }
+        })
+        .chain(last)
+        .collect();
+    row(pieces).align_y(Alignment::Center).wrap().into()
+}
+
+/// A quiet word as a button in the head's line ("+2", "Show less", issue #905).
+fn head_toggle<'a>(label: String) -> Element<'a, Message> {
+    iced::widget::button(typo::text(typo::meta(), label).wrapping(Wrapping::None))
+        .padding(Padding::ZERO)
+        .style(style::button::path_step)
+        .on_press(Message::ToggleHeadPeople)
+        .into()
+}
+
 /// A size in bytes as people read it: "860 B", "3 KB", "12 MB".
 pub fn size_text(bytes: u64) -> String {
     const KB: u64 = 1024;
@@ -3323,6 +3506,11 @@ pub struct Reading<'a> {
     /// The attachment whose menu is open (its place among the mail's attachments that are not
     /// `inline`, [`files_of`]): its triangle carries the menu's anchor.
     pub file_menu: Option<usize>,
+    /// The person in the head whose menu is open (issue #905): their button carries the menu's anchor.
+    pub person_menu: Option<HeadPerson>,
+    /// The head's line of people is opened by "+N" (issue #905): every recipient shows, broken over
+    /// lines. Closed again for the next mail.
+    pub people_open: bool,
     /// The senders (addresses in lower case) the window unsubscribed from while it runs (issue #416):
     /// their mail offers "Unsubscribe…" no more.
     pub unsubscribed: &'a HashSet<String>,
@@ -3572,7 +3760,7 @@ fn schemes() -> [(String, Message); 2] {
 pub fn body<'a>(reading: &Reading<'a>, bars: Bars<'a>, anchors: &detail::Anchors) -> Element<'a, Message> {
     match bars {
         Bars::Split => split_body(reading, anchors),
-        Bars::Command { entry, width } => command_body(reading, entry, width),
+        Bars::Command { entry, width } => command_body(reading, entry, width, anchors),
     }
 }
 
@@ -3581,13 +3769,18 @@ pub fn body<'a>(reading: &Reading<'a>, bars: Bars<'a>, anchors: &detail::Anchors
 /// ([`head_with`]: sender, why a rule put the entry in its lane, invitation and task) lined up with
 /// the title, an entry's properties, a line from edge to edge and the mail ([`panel_letter`]). The
 /// collapsed rail beside it (task E14.3) takes its width from the body.
-fn command_body<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, width: f32) -> Element<'a, Message> {
+fn command_body<'a>(
+    reading: &Reading<'a>,
+    entry: Option<ReaderEntry<'a>>,
+    width: f32,
+    anchors: &detail::Anchors,
+) -> Element<'a, Message> {
     let line = || rule::horizontal(size::HAIRLINE).style(style::rule);
     // The head lines up with the title, 16 from the panel's edges (`panel::inset`), and keeps clear of
     // the floating rail as the mail does (issue #545: the rail covered the time at its end).
     let room = (width - 2.0 * space::l()).max(0.0);
     let clearance = (widgets::floating_rail_room() - space::l()).max(0.0);
-    let head = head_in(reading, entry, room, clearance);
+    let head = head_in(reading, entry, room, clearance, anchors);
     let mut body = column![panel::inset(head)];
     // An entry keeps its properties (status, lane, source, time), as `detail::panel` shows them.
     if let Some(entry) = entry {
@@ -3751,7 +3944,8 @@ pub fn reader<'a>(
         let widths = reader_widths(bounds.width);
         let side = layout::panel_padding().left;
         let clearance = (widgets::floating_rail_room() - head_padding().right).max(0.0);
-        let head = container(head_in(&reading, entry, widths.head, clearance)).width(Fill).padding(head_padding());
+        let head =
+            container(head_in(&reading, entry, widths.head, clearance, &anchors)).width(Fill).padding(head_padding());
         // Issue #456: the rail floats at the right edge; the head and the mail's text keep clear of it
         // (issue #545).
         let room = widgets::floating_rail_room();
@@ -3846,7 +4040,7 @@ fn reader_mail<'a>(reading: &Reading<'a>, widths: ReaderWidths) -> Element<'a, M
 /// subject stands in the top row over the reader, or as the panel's title. No buttons – the
 /// actions stand in the rail (task E14.3), the attachments at the mail's bottom (issue #491).
 pub fn head<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, room: f32) -> Element<'a, Message> {
-    head_in(reading, entry, room, 0.0)
+    head_in(reading, entry, room, 0.0, &detail::Anchors::default())
 }
 
 /// [`head`] with `clearance` kept free at its right for the floating action rail, beyond the caller's
@@ -3857,13 +4051,14 @@ fn head_in<'a>(
     entry: Option<ReaderEntry<'a>>,
     room: f32,
     clearance: f32,
+    anchors: &detail::Anchors,
 ) -> Element<'a, Message> {
     let mut head = column![].spacing(space::l()).width(Fill);
     let summary = reading.summary();
     // Clear of the floating action rail, in a narrow panel and a resized wide reader alike.
     let room = (room - clearance).max(0.0);
     if let Some(summary) = summary {
-        let sender = sender_block(reading, summary, room);
+        let sender = sender_block(reading, summary, room, anchors);
         // Why a rule put the mail's entry in its lane (issue #128), quietly right under who sent it.
         head = head.push(match entry.map(|entry| entry.item).filter(|item| item.reason.is_some()) {
             Some(item) => {
@@ -4054,8 +4249,16 @@ pub fn released(mail: &mut Mail) {
 ///    ([`list::category_fits`]), else the category's field. The attachments stand at the mail's
 ///    bottom ([`attachment_line`], issue #491).
 ///
-/// What does not fit ends in "…".
-fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f32) -> Element<'a, Message> {
+/// Every person in the second line is a target of their own (issue #905, [`person_button`]): a click
+/// or right-click opens their menu ([`person_menu`]). Who does not fit stands behind "+N", which opens
+/// the line over as many lines as all of them need ([`Reading::people_open`]); an invitation's head
+/// shows all of them broken over lines. A sender too wide for the line alone ends in "…".
+fn sender_block<'a>(
+    reading: &Reading<'a>,
+    summary: &'a MessageSummary,
+    room: f32,
+    anchors: &detail::Anchors,
+) -> Element<'a, Message> {
     let name = sender_name(summary.from.as_ref());
     let edge = head_avatar_in(layout::list());
     // The circle of the list's row (issue #458): the same colour and mark for the same mail.
@@ -4102,18 +4305,9 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
                     .wrapping(Wrapping::WordOrGlyph);
                 words = words.push(row![mark, label].spacing(space::s()).width(Fill).align_y(Alignment::Start));
             }
-            let mut to = list::one_line(address);
-            if !summary.to.is_empty() {
-                to = format!("{to} → {}", self::names(&summary.to));
-            }
-            if let Some(Ok(mail)) = reading.loaded
-                && !mail.cc.is_empty()
-            {
-                to = format!("{to} · {}", trf("cc {names}", &[("names", &self::names(&mail.cc))]));
-            }
-            return words
-                .push(typo::text(typo::meta(), to).style(theme::text_3).width(Fill).wrapping(Wrapping::WordOrGlyph))
-                .into();
+            // Every person, each with their menu (issue #905), broken over lines as the words were.
+            let people = people_wrapped(reading, anchors, head_people(summary, reading.loaded), None);
+            return words.push(container(people).width(Fill)).into();
         }
         let mut names = column![
             typo::text(typo::body_strong(), name)
@@ -4134,25 +4328,8 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
             dated = dated.push(category_pill(held, reading.categories));
         }
         let first = row![names, dated].width(Fill).spacing(space::m()).align_y(Alignment::Start);
-        let mut to = list::one_line(address);
-        if !summary.to.is_empty() {
-            to = format!("{to} → {}", self::names(&summary.to));
-        }
-        if let Some(Ok(mail)) = reading.loaded
-            && !mail.cc.is_empty()
-        {
-            to = format!("{to} · {}", trf("cc {names}", &[("names", &self::names(&mail.cc))]));
-        }
-        let words = column![
-            first,
-            typo::text(typo::meta(), to)
-                .style(theme::text_3)
-                .width(Fill)
-                .align_x(Alignment::Start)
-                .wrapping(Wrapping::WordOrGlyph)
-        ]
-        .width(Fill)
-        .spacing(space::xs());
+        let people = people_wrapped(reading, anchors, head_people(summary, reading.loaded), None);
+        let words = column![first, container(people).width(Fill)].width(Fill).spacing(space::xs());
         return row(face).push(words).width(Fill).spacing(space::m()).align_y(Alignment::Start).into();
     }
     let date_room = typo::text_width(&date, typo::meta()) + space::m();
@@ -4183,15 +4360,45 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
     {
         to = format!("{to} · {}", trf("cc {names}", &[("names", &names(&mail.cc))]));
     }
-    // Cut with "…" to the room the line really has, whole in the tooltip.
+    // The whole line decides where the category's pill fits, as before (issue #635).
     let line_width = typo::text_width(&to, typo::meta());
-    let line = to.clone();
-    let fitted = responsive(move |size| {
-        let shown = typo::ellipsize(&line, typo::meta(), size.width);
-        typo::text(typo::meta(), shown).style(theme::text_3).wrapping(Wrapping::None).into()
-    });
-    let fitted = container(fitted).width(Fill).height(typo::line_height(typo::meta()));
-    let second = widgets::with_tooltip(fitted, to);
+    // Each person a target of their own (issue #905). Who does not fit stands behind "+N"; a click
+    // on it opens the line over as many lines as all of them need, "Show less" closes it again.
+    let people = head_people(summary, reading.loaded);
+    let second: Element<'a, Message> = if reading.people_open {
+        let less = container(head_toggle(tr("Show less").to_owned())).padding(Padding::ZERO.left(space::m()));
+        container(people_wrapped(reading, anchors, people, Some(less.into()))).width(Fill).into()
+    } else {
+        let (reading, anchors) = (*reading, anchors.clone());
+        let fitted = responsive(move |size| {
+            let widths: Vec<f32> = people
+                .iter()
+                .map(|(lead, _, label)| typo::text_width(lead, typo::meta()) + typo::text_width(label, typo::meta()))
+                .collect();
+            // Room for "+N" with its gap, at the most it could say.
+            let more = typo::text_width(&trf("+{n}", &[("n", &people.len())]), typo::meta()) + space::m();
+            let shown = people_shown(&widths, size.width, more);
+            let hidden = people.len() - shown;
+            let room = if hidden > 0 { (size.width - more).max(0.0) } else { size.width };
+            let mut line = row![].align_y(Alignment::Center);
+            for (at, (lead, person, label)) in people.iter().take(shown).cloned().enumerate() {
+                // Only a sender too wide for the line alone is cut, with "…".
+                let label = match at == 0 && widths[0] > room {
+                    true => typo::ellipsize(&label, typo::meta(), room),
+                    false => label,
+                };
+                line = line.push(person_piece(&reading, &anchors, (lead, person, label)));
+            }
+            let mut line = row![container(line).width(Fill).clip(true)].align_y(Alignment::Center);
+            if hidden > 0 {
+                let toggle = head_toggle(trf("+{n}", &[("n", &hidden)]));
+                let toggle = widgets::with_tooltip(toggle, tr("Show all recipients"));
+                line = line.push(container(toggle).padding(Padding::ZERO.left(space::m())));
+            }
+            line.into()
+        });
+        container(fitted).width(Fill).height(typo::line_height(typo::meta())).into()
+    };
     // What the mail is (issue #635): at the right end of the second line, under the date, the whole
     // pill where the line keeps its text, else the field, and nothing where not even that fits.
     let category = summary.category.and_then(|held| {
@@ -7215,6 +7422,8 @@ mod tests {
             saving: None,
             click: &OPEN,
             file_menu: None,
+            person_menu: None,
+            people_open: false,
             unsubscribed: &unsubscribed,
             suggestions: &[],
             kinds: None,
@@ -8216,6 +8425,136 @@ mod tests {
         assert!(!head.contains("first.push(pill)"), "not at the sender's name in the head");
     }
 
+    fn addressee(name: Option<&str>, address: &str) -> MailAddress {
+        MailAddress { name: name.map(String::from), address: address.into() }
+    }
+
+    /// Issue #905, decision 4: "Copy name and address" writes what an address field takes.
+    #[test]
+    fn name_and_address_is_what_an_address_field_takes() {
+        assert_eq!(name_and_address(&addressee(Some("Anna Berg"), "anna@firma.de")), "Anna Berg <anna@firma.de>");
+        assert_eq!(name_and_address(&addressee(None, "anna@firma.de")), "anna@firma.de", "no name: the address");
+        assert_eq!(name_and_address(&addressee(Some("  "), "anna@firma.de")), "anna@firma.de", "an empty name");
+        assert_eq!(
+            name_and_address(&addressee(Some("ANNA@firma.de"), "anna@firma.de")),
+            "anna@firma.de",
+            "the address again"
+        );
+        assert_eq!(name_and_address(&addressee(Some("Berg, Anna"), "anna@firma.de")), "\"Berg, Anna\" <anna@firma.de>");
+        assert_eq!(
+            name_and_address(&addressee(Some("Anna \"AB\" Berg"), "anna@firma.de")),
+            "\"Anna \\\"AB\\\" Berg\" <anna@firma.de>",
+            "quotes escaped"
+        );
+        assert_eq!(name_and_address(&addressee(Some("Anna\nBerg"), "anna@firma.de")), "Anna Berg <anna@firma.de>");
+    }
+
+    /// Issue #905: who fits in the head's line; the rest stands behind "+N", the sender always shows.
+    #[test]
+    fn people_shown_keeps_room_for_the_rest() {
+        assert_eq!(people_shown(&[100.0, 50.0, 50.0], 200.0, 30.0), 3, "all fit, no +N");
+        assert_eq!(people_shown(&[100.0, 50.0, 50.0], 170.0, 40.0), 1, "room for +N: one");
+        assert_eq!(people_shown(&[100.0, 50.0, 50.0], 190.0, 20.0), 2);
+        assert_eq!(people_shown(&[300.0, 50.0], 100.0, 30.0), 1, "the sender always");
+        assert_eq!(people_shown(&[], 100.0, 30.0), 0);
+    }
+
+    /// Issue #905: the menu of a person copies exactly their address, or name and address; without a
+    /// name only the address.
+    #[test]
+    fn a_persons_menu_copies_the_address_or_name_and_address() {
+        let copies = |sections: Vec<MenuSection<'_, Message>>| -> Vec<(String, String)> {
+            sections
+                .into_iter()
+                .flat_map(|section| section.items)
+                .map(|item| match item.on_press {
+                    Message::CopyAddress(text) => (item.label.to_string(), text),
+                    other => panic!("only copies: {other:?}"),
+                })
+                .collect()
+        };
+        let menu = person_menu(&addressee(Some("Paul Kern"), "paul@kern.de"));
+        assert_eq!(menu[0].title.as_deref(), Some("Paul Kern"));
+        assert_eq!(
+            copies(menu),
+            [
+                (tr("Copy address").to_owned(), "paul@kern.de".to_owned()),
+                (tr("Copy name and address").to_owned(), "Paul Kern <paul@kern.de>".to_owned()),
+            ]
+        );
+        let bare = person_menu(&addressee(None, "it@x.example"));
+        assert_eq!(bare[0].title.as_deref(), Some("it@x.example"));
+        assert_eq!(copies(bare), [(tr("Copy address").to_owned(), "it@x.example".to_owned())]);
+        let _ = widgets::menu(person_menu(&addressee(Some("Paul Kern"), "paul@kern.de")));
+    }
+
+    /// Issue #905: the people in the head – the sender, To and, once loaded, Cc – by their place.
+    #[test]
+    fn a_head_person_is_found_in_its_mail() {
+        reading_of("m:p3", MailFormat::Text, true, |reading| {
+            let summary = reading.summary().expect("a summary");
+            let from = HeadPerson::From.who(summary, reading.loaded);
+            assert_eq!(from, summary.from.as_ref());
+            assert_eq!(HeadPerson::To(0).who(summary, reading.loaded), summary.to.first());
+            assert_eq!(HeadPerson::To(99).who(summary, reading.loaded), None);
+            assert_eq!(HeadPerson::Cc(0).who(summary, None), None, "no copies before the mail is loaded");
+        });
+    }
+
+    /// Issue #905: in a narrow head the recipients who do not fit stand behind "+N", with "+N" they all
+    /// show; a click or a right-click on a person asks for their menu.
+    #[test]
+    fn the_head_shows_every_person_as_a_target() {
+        use iced_test::selector::Candidate;
+        reading_of("m:p3", MailFormat::Text, false, |reading| {
+            let mut summary = reading.summary().expect("a summary").clone();
+            summary.category = None;
+            summary.to = vec![
+                addressee(Some("Paul Kern"), "paul@kern.de"),
+                addressee(Some("Lea Roth"), "lea@roth.de"),
+                addressee(Some("Jan Wolf"), "jan@wolf.de"),
+                addressee(Some("Eva Lind"), "eva@lind.de"),
+            ];
+            let reading = Reading { summary: Some(&summary), loaded: None, ..*reading };
+            let has = |ui: &mut iced_test::Simulator<'_, Message>, text: &str| {
+                ui.find(|candidate: Candidate<'_>| match candidate {
+                    Candidate::Text { content, .. } if content == text => Some(()),
+                    _ => None,
+                })
+                .is_ok()
+            };
+            let anchors = detail::Anchors::default();
+            let (_one, mut wide) =
+                crate::simulator(iced::Size::new(900.0, 200.0), sender_block(&reading, &summary, 900.0, &anchors));
+            assert!(["Paul Kern", "Lea Roth", "Jan Wolf", "Eva Lind"].iter().all(|name| has(&mut wide, name)));
+            assert!(!has(&mut wide, "+1") && !has(&mut wide, "+2") && !has(&mut wide, "+3"), "all fit");
+            drop(wide);
+            drop(_one);
+            let (_one, mut narrow) =
+                crate::simulator(iced::Size::new(260.0, 200.0), sender_block(&reading, &summary, 260.0, &anchors));
+            assert!(!has(&mut narrow, "Eva Lind"), "the last one is behind +N");
+            assert!((1..=4).any(|n| has(&mut narrow, &format!("+{n}"))), "+N says how many more");
+            drop(narrow);
+            drop(_one);
+            let open = Reading { people_open: true, ..reading };
+            let (_one, mut opened) =
+                crate::simulator(iced::Size::new(260.0, 400.0), sender_block(&open, &summary, 260.0, &anchors));
+            assert!(["Paul Kern", "Lea Roth", "Jan Wolf", "Eva Lind"].iter().all(|name| has(&mut opened, name)));
+            assert!(has(&mut opened, tr("Show less")));
+            let _ = opened.click("Lea Roth").expect("Lea Roth is a button");
+            let right = iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Right));
+            let _ = opened.simulate([right]);
+            let asked: Vec<_> = opened
+                .into_messages()
+                .filter_map(|message| match message {
+                    Message::ContextPerson(person, point) => Some((person, point.is_some())),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(asked, [(HeadPerson::To(1), false), (HeadPerson::To(1), true)], "click, then right-click");
+        });
+    }
+
     /// Issue #635: in the reader's head the category ends on the date's right edge, under it – the
     /// whole pill where the address line keeps its text, else only the field.
     #[test]
@@ -8232,8 +8571,10 @@ mod tests {
             let date = torro_gui::datetime::format_moment(summary.date, reading.now);
             // (room, expected width of the category's box)
             for (room, expected) in [(900.0, pill), (190.0, field)] {
-                let (_one, mut ui) =
-                    crate::simulator(iced::Size::new(room, 400.0), sender_block(&reading, &summary, room));
+                let (_one, mut ui) = crate::simulator(
+                    iced::Size::new(room, 400.0),
+                    sender_block(&reading, &summary, room, &detail::Anchors::default()),
+                );
                 let date_box = ui
                     .find(|candidate: Candidate<'_>| match candidate {
                         Candidate::Text { content, bounds, .. } if content == date => Some(bounds),
@@ -8433,9 +8774,12 @@ mod tests {
         for part in ["head_in(", "detail::properties(", "panel_letter(", "floating_rail_room()"] {
             assert!(command.contains(part), "{part}");
         }
-        assert!(command.contains("head_in(reading, entry, room, clearance)"), "the head, which has no subject (#457)");
+        assert!(
+            command.contains("head_in(reading, entry, room, clearance, anchors)"),
+            "the head, which has no subject (#457)"
+        );
         // Issue #545: every head keeps clear of the floating rail, in the panel and in the reader.
-        assert!(reader.contains("head_in(&reading, entry, widths.head, clearance)"), "the reader's head too");
+        assert!(reader.contains("head_in(&reading, entry, widths.head, clearance, &anchors)"), "the reader's head too");
         let head_in = function_source(source, "head_in");
         assert!(!head_in.contains("{ clearance } else { 0.0 }"), "not only invitations keep clear");
         assert!(!command.contains("panel_standards") && !command.contains("header("), "none of the split");
@@ -8605,6 +8949,8 @@ mod tests {
                         saving: Some(&saving),
                         click: &OPEN,
                         file_menu: Some(0),
+                        person_menu: None,
+                        people_open: false,
                         unsubscribed: &none_left,
                         suggestions: &[],
                         kinds: None,
@@ -9141,7 +9487,13 @@ mod tests {
             let width = 280.0;
             let (_one, mut ui) = crate::simulator(
                 iced::Size::new(width, 1800.0),
-                head_in(&reading, Some(ReaderEntry { item: &item, hide: true }), width, widgets::floating_rail_room()),
+                head_in(
+                    &reading,
+                    Some(ReaderEntry { item: &item, hide: true }),
+                    width,
+                    widgets::floating_rail_room(),
+                    &detail::Anchors::default(),
+                ),
             );
             let sender = ui
                 .find(|candidate: Candidate<'_>| match candidate {
