@@ -4833,6 +4833,8 @@ mod tests {
                 ("assistant_end_talk", json!({})),
                 ("assistant_talk_status", json!({})),
                 ("assistant_speak_answer", json!({"conversation": CONVERSATION})),
+                // Issue #835: interrupting is the person's, by voice.
+                ("assistant_interrupt", json!({"conversation": CONVERSATION})),
             ];
             let own = [
                 "assistant_list_memories",

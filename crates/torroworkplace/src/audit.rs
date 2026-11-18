@@ -602,6 +602,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::GetConversation { id: conversation, .. }
         | Request::GetCards { conversation }
         | Request::CancelAnswer { conversation }
+        | Request::InterruptAnswer { conversation }
         | Request::RenameConversation { id: conversation, .. }
         | Request::DeleteConversation { id: conversation }
         | Request::PinConversation { id: conversation, .. }

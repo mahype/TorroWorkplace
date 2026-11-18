@@ -1495,6 +1495,7 @@ impl Answering {
 pub(super) fn history(entries: &[Entry]) -> Vec<ChatMessage> {
     let mut messages = Vec::new();
     let mut turn: Option<Vec<String>> = None;
+    let heard = as_heard(entries);
     for entry in entries {
         match &entry.content {
             EntryContent::Message { text, .. } => {
@@ -1505,14 +1506,55 @@ pub(super) fn history(entries: &[Entry]) -> Vec<ChatMessage> {
                 turn = Some(Vec::new());
             }
             EntryContent::Answer { text, .. } => {
-                if let Some(turn) = &mut turn {
-                    turn.push(text.clone());
+                if let Some(turn) = &mut turn
+                    && let Some(text) = said(&heard, entry.seq, text)
+                {
+                    turn.push(text.to_string());
                 }
             }
             _ => {}
         }
     }
     messages
+}
+
+/// The answer entries of `entries` the model reads otherwise because the person interrupted them while they were
+/// read aloud (issue #835, decision 1): the one that was read becomes what was heard of it with a note, followed by
+/// its shown part when it had one (`Some`); the entries after it in the same answer were not said and are left out
+/// (`None`), unless the read one had a spoken part: then they are what the window shows.
+fn as_heard(entries: &[Entry]) -> BTreeMap<u64, Option<String>> {
+    use torro_ipc::assistant::{SHOWN_MARK, heard_of, split_spoken};
+    let mut read = BTreeMap::new();
+    // The answer read and interrupted, while its turn lasts: whether it had a spoken part.
+    let mut interrupted: Option<bool> = None;
+    for entry in entries {
+        match &entry.content {
+            EntryContent::Message { .. } => interrupted = None,
+            EntryContent::Answer { text, .. } => {
+                if let Some(heard) = heard_of(entries, entry.seq) {
+                    let (spoken, shown) = split_spoken(text, false);
+                    let mut instead = format!("{heard} (interrupted by the person here; the rest was not said)");
+                    if spoken.is_some() && !shown.is_empty() {
+                        instead = format!("{instead}\n{SHOWN_MARK}\n{shown}");
+                    }
+                    interrupted = Some(spoken.is_some());
+                    read.insert(entry.seq, Some(instead));
+                } else if interrupted == Some(false) {
+                    read.insert(entry.seq, None);
+                }
+            }
+            _ => {}
+        }
+    }
+    read
+}
+
+/// The text the model reads of the answer entry `seq` with `text` ([`as_heard`]); `None` for one left out.
+fn said<'a>(heard: &'a BTreeMap<u64, Option<String>>, seq: u64, text: &'a str) -> Option<&'a str> {
+    match heard.get(&seq) {
+        Some(instead) => instead.as_deref(),
+        None => Some(text),
+    }
 }
 
 /// [`history`] for engine A with the tool calls of earlier turns and what the model read of them (issue #701), so a
@@ -1531,6 +1573,7 @@ pub(super) fn history_with_results(
 ) -> Vec<ChatMessage> {
     let mut messages = Vec::new();
     let mut turn: Option<Turn> = None;
+    let heard = as_heard(entries);
     for entry in entries {
         match &entry.content {
             EntryContent::Message { text, .. } => {
@@ -1541,7 +1584,9 @@ pub(super) fn history_with_results(
                 turn = Some(Turn::default());
             }
             EntryContent::Answer { text, .. } => {
-                if let Some(turn) = &mut turn {
+                if let Some(turn) = &mut turn
+                    && let Some(text) = said(&heard, entry.seq, text)
+                {
                     turn.say(text, &mut messages);
                 }
             }
@@ -3308,7 +3353,7 @@ pub(crate) mod tests {
         assert!(!summary.running);
         assert_eq!(entries.len(), 3);
         assert!(matches!(&entries[1].content, EntryContent::Answer { text, .. } if text == "Let me think"));
-        assert_eq!(entries[2].content, EntryContent::Stopped);
+        assert_eq!(entries[2].content, EntryContent::Stopped { heard: None });
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(read(&assistant, &id, None).await.1.len(), 3, "nothing comes after the stop");
     }
@@ -4774,9 +4819,61 @@ pub(crate) mod tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
         let (summary, entries) = read(&assistant, &id, None).await;
         assert!(!summary.running);
-        assert_eq!(entries.last().map(|entry| &entry.content), Some(&EntryContent::Stopped));
+        assert_eq!(entries.last().map(|entry| &entry.content), Some(&EntryContent::Stopped { heard: None }));
         let tools = entries.iter().filter(|entry| matches!(entry.content, EntryContent::Tool { .. })).count();
         assert_eq!(tools, 20);
         assert_eq!(script.asked().len(), 21, "no step after the stop");
+    }
+
+    /// Issue #835: an answer interrupted while it was read reaches the model as what was heard of it with a note,
+    /// its shown part after it; a stop in the window and the answers before stay as they were.
+    #[test]
+    fn the_model_reads_only_what_was_heard_of_an_interrupted_answer() {
+        let time = Utc::now();
+        let at = |seq, content| Entry { seq, time, content };
+        let message = |text: &str| EntryContent::Message {
+            text: text.into(),
+            engine: "test".into(),
+            model: None,
+            effort: None,
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            from: None,
+        };
+        let answer =
+            |text: &str| EntryContent::Answer { text: text.into(), engine: "test".into(), model: None, spoken: None };
+        let heard = "Tomorrow you have three meetings. At nine there is the team meeting …";
+        let entries = [
+            at(1, message("Tomorrow?")),
+            at(2, answer("Three meetings. Nine, eleven and two.")),
+            at(3, EntryContent::Stopped { heard: None }),
+            at(4, message("And in detail?")),
+            at(
+                5,
+                answer(
+                    "Tomorrow you have three meetings. At nine there is the team meeting. Then lunch.\n---shown---\n- 9:00 Team",
+                ),
+            ),
+            at(6, EntryContent::Stopped { heard: Some(heard.into()) }),
+            at(7, message("Move the meeting.")),
+            at(8, answer("One part only. Read and cut.")),
+            at(9, answer("Never read.")),
+            at(10, EntryContent::Stopped { heard: Some("One part only …".into()) }),
+            at(11, message("Thanks.")),
+        ];
+        let texts = |messages: Vec<ChatMessage>| -> Vec<String> {
+            messages
+                .into_iter()
+                .filter(|message| message.role == torro_core::ai::Role::Assistant)
+                .map(|m| m.content)
+                .collect()
+        };
+        let expected = [
+            "Three meetings. Nine, eleven and two.".to_string(),
+            format!("{heard} (interrupted by the person here; the rest was not said)\n---shown---\n- 9:00 Team"),
+            "One part only … (interrupted by the person here; the rest was not said)".to_string(),
+        ];
+        assert_eq!(texts(history(&entries)), expected);
+        assert_eq!(texts(history_with_results(&entries, &BTreeMap::new(), &[])), expected);
     }
 }
