@@ -1178,8 +1178,10 @@ fn failed_to_load(err: &VoiceError) -> Output {
     }
 }
 
+/// What the speaker of the chat says without the voice's model: where it is downloaded (issue #823), not
+/// only the page.
 fn not_downloaded() -> Output {
-    Output::failed("unsupported", tr("Download the voice in Settings › Assistant › Voice first."))
+    Output::failed("unsupported", tr("Download the voice under Settings › Assistant › Voice › Models first."))
 }
 
 /// The helper (see the module) for `voice`, on standard input and output.
