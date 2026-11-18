@@ -159,6 +159,17 @@ impl Cascade {
         self.pointer = None;
     }
 
+    /// Closes the submenus at `level` and deeper (1: every submenu), as [`CascadeChange::Closed`]
+    /// says: the app found nothing to show for a submenu that opened.
+    pub fn close_from(&mut self, level: usize) {
+        let level = level.max(1);
+        self.open.truncate(level - 1);
+        self.pending = None;
+        for deeper in level..=CASCADE_DEPTH {
+            self.cursor[deeper] = None;
+        }
+    }
+
     /// The anchor of the entry at `path`: its submenu's card hangs beside it.
     pub fn anchor(&self, path: &[usize]) -> Anchor {
         self.anchors.borrow_mut().entry(path.to_vec()).or_default().clone()
