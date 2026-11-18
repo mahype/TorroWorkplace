@@ -35,7 +35,7 @@
 //! Everything in the conversation but the person's own words – answers, tool results, the cards'
 //! text – comes from the mail and the model: data to show, never instructions.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -77,6 +77,10 @@ pub const FOLLOW: Duration = Duration::from_millis(300);
 pub fn button_clearance() -> f32 {
     size::control_sm() + 2.0 * space::m()
 }
+
+/// How often the overview's chat asks while it is hidden and its answer runs (issue #892): it keeps
+/// following – an approval may wait –, but nobody watches it, so seldom.
+pub const FOLLOW_HIDDEN: Duration = Duration::from_secs(3);
 
 /// The id of the field, so opening the panel puts the cursor there.
 pub const FIELD: &str = "ask-ai";
@@ -287,6 +291,9 @@ pub struct Ask {
     pub cards: HashMap<u64, Card>,
     /// The approvals of the conversation by id, as the core told them last (issue #892).
     pub approvals: HashMap<String, ApprovalInfo>,
+    /// The approvals the core no longer knows (`not-found`: gone after a day, or a core started anew,
+    /// which keeps them in memory): their cards say so, and nobody asks for them again.
+    pub lost: HashSet<String>,
     /// The approval whose "Allow" (`true`) or "Deny" is on its way: no card takes a second click, and
     /// the pressed button says it works.
     pub deciding: Option<(String, bool)>,
@@ -334,6 +341,7 @@ impl Ask {
             transcript: Transcript::default(),
             cards: HashMap::new(),
             approvals: HashMap::new(),
+            lost: HashSet::new(),
             deciding: None,
             input: String::new(),
             choice: None,
@@ -420,6 +428,11 @@ impl Ask {
             Event::Approval(_, id, Ok(approval)) => {
                 self.approvals.insert(id, approval);
             }
+            Event::Approval(_, id, Err(refusal))
+                if refusal.code == "not-found" && !self.approvals.contains_key(&id) =>
+            {
+                self.lost.insert(id);
+            }
             // The card keeps what it showed; the next poll asks again.
             Event::Approval(_, _, Err(_)) => {}
             Event::Decide(id, allow) => return self.decide(id, allow),
@@ -452,6 +465,7 @@ impl Ask {
                 self.transcript = Transcript::default();
                 self.cards.clear();
                 self.approvals.clear();
+                self.lost.clear();
                 self.deciding = None;
                 self.parsed.clear();
                 self.failed = None;
@@ -524,6 +538,7 @@ impl Ask {
             .approvals()
             .into_iter()
             .filter(|_| self.about.is_none())
+            .filter(|id| !self.lost.contains(*id))
             .filter(|id| self.approvals.get(*id).is_none_or(|approval| approval.state.is_pending()))
             .map(str::to_owned)
             .collect();
@@ -984,7 +999,9 @@ fn entries<'a>(ask: &'a Ask, look: &Look<'a>, colours: Palette) -> Element<'a, M
     // card says so, "Working …" under it would not be true (issue #892).
     let waiting = ask.about.is_none()
         && ask.transcript.entries.last().is_some_and(|entry| match &entry.content {
-            EntryContent::Approval { id } => ask.approvals.get(id).is_none_or(|approval| approval.state.is_pending()),
+            EntryContent::Approval { id } => {
+                !ask.lost.contains(id) && ask.approvals.get(id).is_none_or(|approval| approval.state.is_pending())
+            }
             _ => false,
         });
     if (ask.transcript.running() || ask.sending) && !writing && !waiting {
@@ -1026,7 +1043,7 @@ fn entry_view<'a>(ask: &'a Ask, entry: &'a Entry, look: &Look<'a>, colours: Pale
         .into(),
         EntryContent::Card { .. } => return card_view(ask.cards.get(&entry.seq)?, ask.about.as_ref(), look),
         EntryContent::Approval { id } if ask.about.is_none() => {
-            approval_card(id, ask.approvals.get(id), ask.deciding.as_ref())
+            approval_card(id, ask.approvals.get(id), ask.lost.contains(id), ask.deciding.as_ref())
         }
         EntryContent::Approval { .. } => return None,
     })
@@ -1093,6 +1110,7 @@ fn card_view<'a>(card: &'a Card, about: Option<&MailRef>, look: &Look<'a>) -> Op
 fn approval_card<'a>(
     id: &'a str,
     approval: Option<&'a ApprovalInfo>,
+    lost: bool,
     deciding: Option<&(String, bool)>,
 ) -> Element<'a, Message> {
     let open = deciding.is_none();
@@ -1104,7 +1122,9 @@ fn approval_card<'a>(
     .align_y(Alignment::Center);
     let mut card = column![head].spacing(space::s());
     let Some(approval) = approval else {
-        card = card.push(typo::text(typo::meta(), tr("Loading …")).style(theme::text_3));
+        // The core no longer knows it: nothing to decide, and nothing waits.
+        let words = if lost { tr("No longer available") } else { tr("Loading …") };
+        card = card.push(typo::text(typo::meta(), words).style(theme::text_3));
         return container(card).width(Fill).padding(layout::panel_padding()).style(style::container::group).into();
     };
     card = card.push(typo::text(typo::body(), approval.summary.as_str()).wrapping(Wrapping::WordOrGlyph));
@@ -1137,6 +1157,16 @@ fn approval_card<'a>(
         ApprovalState::Pending => {
             row![choice(true, Icon::Check, tr("Allow")), choice(false, Icon::X, tr("Deny"))].spacing(space::s()).into()
         }
+        // Allowed, but the command failed when it ran (its rights changed meanwhile, the item is gone):
+        // not a success (#560), in the core's words.
+        ApprovalState::Done { response } if matches!(response.as_ref(), Response::Error { .. }) => {
+            let reason = match response.as_ref() {
+                Response::Error { message, .. } => message.as_str(),
+                _ => "",
+            };
+            let words = trf("Allowed, but it failed: {reason}", &[("reason", &reason)]);
+            outcome(tinted(Icon::CircleX, icon::SIZE_SM, |p| p.error_text), words)
+        }
         ApprovalState::Running | ApprovalState::Done { .. } => {
             outcome(tinted(Icon::CircleCheck, icon::SIZE_SM, |p| p.ok), tr("Allowed"))
         }
@@ -1148,8 +1178,8 @@ fn approval_card<'a>(
 }
 
 /// How an approval was decided: its mark and word in `text_2`.
-fn outcome<'a>(mark: Element<'a, Message>, word: &'a str) -> Element<'a, Message> {
-    row![mark, typo::text(typo::meta(), word).style(theme::text_2)]
+fn outcome<'a>(mark: Element<'a, Message>, word: impl Into<String>) -> Element<'a, Message> {
+    row![mark, typo::text(typo::meta(), word.into()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)]
         .spacing(space::s())
         .align_y(Alignment::Center)
         .into()
@@ -1790,6 +1820,23 @@ mod tests {
         let _ = ask.update(Event::Decided(round, DEMO_APPROVAL.to_owned(), Err(conflict)));
         assert_eq!(ask.failed.as_deref(), Some(tr("This approval was already decided.")));
         assert!(ask.approvals[DEMO_APPROVAL].state.is_pending(), "the card stays open");
+    }
+
+    /// Review of #892: an approval the core no longer knows is lost – its card says so, nobody asks
+    /// again, and it does not count as waiting.
+    #[test]
+    fn an_approval_the_core_no_longer_knows_is_lost() {
+        let (mut ask, _) = Ask::open_general(demo_call());
+        let round = ask.round;
+        let gone = Refusal { code: "not-found".to_owned(), message: "gone".to_owned() };
+        let _ = ask.update(Event::Approval(round, DEMO_APPROVAL.to_owned(), Err(gone)));
+        assert!(ask.lost.contains(DEMO_APPROVAL));
+        let offline = Refusal { code: "offline".to_owned(), message: "away".to_owned() };
+        let _ = ask.update(Event::Approval(round, "other".to_owned(), Err(offline)));
+        assert!(!ask.lost.contains("other"), "asked again on the next poll");
+        ask.phase = Phase::Ready;
+        let _ = ask.update(Event::New);
+        assert!(ask.lost.is_empty());
     }
 
     /// Issue #892: the state of an approval of another round – the chat before "+" – is dropped.

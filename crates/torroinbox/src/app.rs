@@ -5214,10 +5214,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         // The chat about a mail follows a running answer (issue #605), the overview's too, also while
         // hidden (its approval waits, issue #892); at rest nothing ticks. The demo's stand-in answers
         // at once, and a staged running answer stands still.
-        let follows =
-            self.ask_shown().is_some_and(ask::Ask::follows) || self.general_ask.as_ref().is_some_and(ask::Ask::follows);
-        if !self.launch.demo && follows {
-            subscriptions.push(iced::time::every(ask::FOLLOW).map(|_| Message::Ask(ask::Event::Poll)));
+        // The chat that shows follows at once; the overview's while hidden only slowly: its answer and
+        // approval are kept, nobody watches it run.
+        let shown = self.ask_shown().is_some_and(ask::Ask::follows);
+        let hidden = self.general_ask.as_ref().is_some_and(ask::Ask::follows);
+        if !self.launch.demo && (shown || hidden) {
+            let every = if shown { ask::FOLLOW } else { ask::FOLLOW_HIDDEN };
+            subscriptions.push(iced::time::every(every).map(|_| Message::Ask(ask::Event::Poll)));
         }
         // The open conversation of a Talk entry asks for new messages (issue #643); nothing polls
         // once the panel is closed.
@@ -12292,9 +12295,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// the settings, in "Focus & reply", in mini or in the strip. `layer` (a menu) stays above it.
     fn with_ai_button<'a>(&self, layer: Option<Element<'a, Message>>) -> Option<Element<'a, Message>> {
         let Some(pressed) = self.ai_button_press() else { return layer };
-        let button = widgets::round_button(Icon::Sparkles, tr("Ask AI"), style::button::round_primary, Some(pressed));
-        let placed =
-            container(button).width(Fill).height(Fill).padding(space::m()).align_right(Fill).align_bottom(Fill);
+        let button = widgets::floating_round_button(Icon::Sparkles, tr("Ask AI"), "I", pressed);
+        // From the edge of the content, which an inset design draws within the window's edge.
+        let margin = space::m() + layout::inset();
+        let placed = container(button).width(Fill).height(Fill).padding(margin).align_right(Fill).align_bottom(Fill);
         Some(stack([placed.into()].into_iter().chain(layer)).into())
     }
 
