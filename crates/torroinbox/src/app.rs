@@ -12436,9 +12436,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         layer: Option<Element<'a, Message>>,
     ) -> Element<'a, Message> {
         let view = self.ask_view(ask, true);
+        // The overview's chat covers the overview's panel, which has no rail beside it (issue #892): as
+        // wide as that, so its edge meets the part of the top row the panel keeps free.
+        let width = match ask.about {
+            None => size::panel(),
+            Some(_) => self.panel_width(class),
+        };
         let sheet: Element<'a, Message> = match class {
             SizeClass::Medium => container(row![rule::vertical(size::HAIRLINE).style(style::rule), view])
-                .width(self.panel_width(class))
+                .width(width)
                 .height(Fill)
                 .into(),
             _ => view,

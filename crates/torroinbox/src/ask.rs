@@ -287,8 +287,9 @@ pub struct Ask {
     pub cards: HashMap<u64, Card>,
     /// The approvals of the conversation by id, as the core told them last (issue #892).
     pub approvals: HashMap<String, ApprovalInfo>,
-    /// The approval whose "Allow" or "Deny" is on its way: no card takes a second click.
-    pub deciding: Option<String>,
+    /// The approval whose "Allow" (`true`) or "Deny" is on its way: no card takes a second click, and
+    /// the pressed button says it works.
+    pub deciding: Option<(String, bool)>,
     /// What is typed in the field.
     pub input: String,
     /// What answers a new message, with its effort; `None` until [`open`] answered or without any.
@@ -502,10 +503,12 @@ impl Ask {
         let follow =
             Task::perform(ask_conversation(self.call.clone(), request), move |result| Event::Polled(round, result));
         // An approval still waiting may have been decided elsewhere (the tray, the assistant's window).
+        // Only the chat without a mail shows its approvals.
         let waiting: Vec<String> = self
             .transcript
             .approvals()
             .into_iter()
+            .filter(|_| self.about.is_none())
             .filter(|id| self.approvals.get(*id).is_none_or(|approval| approval.state.is_pending()))
             .map(str::to_owned)
             .collect();
@@ -533,7 +536,7 @@ impl Ask {
         if self.deciding.is_some() || (allow && !allows_here(approval)) {
             return Task::none();
         }
-        self.deciding = Some(id.clone());
+        self.deciding = Some((id.clone(), allow));
         let (call, round) = (self.call.clone(), self.round);
         let request = decide_request(&id, allow);
         Task::perform(async move { approval_of(call(request).await) }, move |result| {
@@ -560,6 +563,7 @@ impl Ask {
             .transcript
             .approvals()
             .into_iter()
+            .filter(|_| self.about.is_none())
             .filter(|id| !self.approvals.contains_key(*id))
             .map(str::to_owned)
             .collect();
@@ -963,10 +967,11 @@ fn entries<'a>(ask: &'a Ask, look: &Look<'a>, colours: Palette) -> Element<'a, M
     let writing = ask.transcript.growing().is_some();
     // While an approval waits the core keeps the answer running, but it waits for the person: its
     // card says so, "Working …" under it would not be true (issue #892).
-    let waiting = ask.transcript.entries.last().is_some_and(|entry| match &entry.content {
-        EntryContent::Approval { id } => ask.approvals.get(id).is_none_or(|approval| approval.state.is_pending()),
-        _ => false,
-    });
+    let waiting = ask.about.is_none()
+        && ask.transcript.entries.last().is_some_and(|entry| match &entry.content {
+            EntryContent::Approval { id } => ask.approvals.get(id).is_none_or(|approval| approval.state.is_pending()),
+            _ => false,
+        });
     if (ask.transcript.running() || ask.sending) && !writing && !waiting {
         list = list.push(Space::new().height(space::m()));
         list = list.push(typo::text(typo::meta(), tr("Working …")).style(theme::text_3));
@@ -1006,7 +1011,7 @@ fn entry_view<'a>(ask: &'a Ask, entry: &'a Entry, look: &Look<'a>, colours: Pale
         .into(),
         EntryContent::Card { .. } => return card_view(ask.cards.get(&entry.seq)?, ask.about.as_ref(), look),
         EntryContent::Approval { id } if ask.about.is_none() => {
-            approval_card(id, ask.approvals.get(id), ask.deciding.is_none())
+            approval_card(id, ask.approvals.get(id), ask.deciding.as_ref())
         }
         EntryContent::Approval { .. } => return None,
     })
@@ -1067,9 +1072,15 @@ fn card_view<'a>(card: &'a Card, about: Option<&MailRef>, look: &Look<'a>) -> Op
 /// the shield in attention and "Approval needed", what the command would do in the core's words – its
 /// summary and details as plain text, never the model's –, and while it waits "Allow" and "Deny"
 /// (`open`: no decision on its way, else both off). A command of the assistant's terminal is allowed
-/// only in the assistant's chat, with how far it reaches: here "Deny" and "Open assistant". Decided,
-/// it says how.
-fn approval_card<'a>(id: &'a str, approval: Option<&'a ApprovalInfo>, open: bool) -> Element<'a, Message> {
+/// only in the assistant's chat, with how far it reaches: here "Deny" and "Open assistant". While a
+/// decision is on its way (`deciding`) the pressed button turns ("Allowing…", "Denying…") and the
+/// others are off. Decided, it says how.
+fn approval_card<'a>(
+    id: &'a str,
+    approval: Option<&'a ApprovalInfo>,
+    deciding: Option<&(String, bool)>,
+) -> Element<'a, Message> {
+    let open = deciding.is_none();
     let head = row![
         tinted(Icon::ShieldAlert, icon::SIZE, |p| p.attention_text),
         typo::text(typo::body_strong(), tr("Approval needed"))
@@ -1086,9 +1097,19 @@ fn approval_card<'a>(id: &'a str, approval: Option<&'a ApprovalInfo>, open: bool
         card = card.push(typo::text(typo::meta(), line.as_str()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
     }
     let decide = |allow: bool| open.then(|| Message::Ask(Event::Decide(id.to_owned(), allow)));
+    // The pressed button of this card while its decision is on its way (#560: what runs shows at once).
+    let pressed = deciding.filter(|(held, _)| held == id).map(|(_, allow)| *allow);
+    let choice = |allow: bool, mark: Icon, label: &'static str| -> Element<'a, Message> {
+        match pressed == Some(allow) {
+            true => {
+                widgets::busy_button(if allow { tr("Allowing…") } else { tr("Denying…") }, style::button::secondary)
+            }
+            false => widgets::text_button(Some(mark), label, style::button::secondary, decide(allow)),
+        }
+    };
     let footer: Element<'a, Message> = match &approval.state {
         ApprovalState::Pending if !allows_here(approval) => row![
-            widgets::text_button(Some(Icon::X), tr("Deny"), style::button::secondary, decide(false)),
+            choice(false, Icon::X, tr("Deny")),
             widgets::text_button(
                 None,
                 tr("Open assistant"),
@@ -1098,12 +1119,9 @@ fn approval_card<'a>(id: &'a str, approval: Option<&'a ApprovalInfo>, open: bool
         ]
         .spacing(space::s())
         .into(),
-        ApprovalState::Pending => row![
-            widgets::text_button(Some(Icon::Check), tr("Allow"), style::button::secondary, decide(true)),
-            widgets::text_button(Some(Icon::X), tr("Deny"), style::button::secondary, decide(false)),
-        ]
-        .spacing(space::s())
-        .into(),
+        ApprovalState::Pending => {
+            row![choice(true, Icon::Check, tr("Allow")), choice(false, Icon::X, tr("Deny"))].spacing(space::s()).into()
+        }
         ApprovalState::Running | ApprovalState::Done { .. } => {
             outcome(tinted(Icon::CircleCheck, icon::SIZE_SM, |p| p.ok), tr("Allowed"))
         }
@@ -1734,7 +1752,7 @@ mod tests {
         assert_eq!(ask.deciding, None, "unknown yet: nothing to decide");
         ask.approvals.insert(DEMO_APPROVAL.to_owned(), approval("mail.move_message", ApprovalState::Pending));
         let _ = ask.update(Event::Decide(DEMO_APPROVAL.to_owned(), true));
-        assert_eq!(ask.deciding.as_deref(), Some(DEMO_APPROVAL));
+        assert_eq!(ask.deciding, Some((DEMO_APPROVAL.to_owned(), true)));
         let round = ask.round;
         let done = approval("mail.move_message", ApprovalState::Done { response: Box::new(Response::Ok) });
         let _ = ask.update(Event::Decided(round, DEMO_APPROVAL.to_owned(), Ok(done)));
@@ -1750,7 +1768,7 @@ mod tests {
         let _ = ask.update(Event::Decide(DEMO_APPROVAL.to_owned(), true));
         assert!(ask.deciding.is_none(), "no Allow for the terminal here");
         let _ = ask.update(Event::Decide(DEMO_APPROVAL.to_owned(), false));
-        assert_eq!(ask.deciding.as_deref(), Some(DEMO_APPROVAL), "Deny goes");
+        assert_eq!(ask.deciding, Some((DEMO_APPROVAL.to_owned(), false)), "Deny goes");
         // A refused decision is said over the field; the card waits for the core's state.
         let round = ask.round;
         let conflict = Refusal { code: "conflict".to_owned(), message: "decided".to_owned() };

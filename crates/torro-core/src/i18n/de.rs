@@ -7472,6 +7472,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Allow the tools of {name}?", "Werkzeuge von {name} erlauben?"),
     ("Allow tools", "Werkzeuge erlauben"),
     ("Allowing…", "Wird erlaubt…"),
+    ("Denying…", "Wird abgelehnt…"),
     ("Changed since you allowed it", "Geändert, seit du es erlaubt hast"),
     (
         "Changed tools wait for you under Tools; the others are offered as before.",

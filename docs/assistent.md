@@ -1164,7 +1164,7 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | Unterhaltung lesen (ab Stelle) | Verlauf | `assistant.get_conversation` · Read | `assistant_get_conversation` |
 | Nachricht schicken (neue oder bestehende Unterhaltung) | Eingabefeld | `assistant.send_message` · Write (startet einen Modelllauf) | `assistant_send_message` |
 | Fragen zu einer Mail | Mail › runder KI-Knopf über der Mail (Paneel, #892) | `assistant.send_message` mit `about` · Write | `assistant_send_message` mit `about` |
-| Fragen ohne Mail (#892) | Mail › runder KI-Knopf über der Übersicht (Paneel, Freigaben als Karte) | `assistant.send_message` ohne `about`, `mode: ask` · Write; `approvals.approval_status` · Read, `approvals.decide_approval` (nur App-Schlüssel) | `assistant_send_message`; Freigeben bleibt `Never` (nur Menschen) |
+| Fragen ohne Mail (#892) | Mail › runder KI-Knopf über der Übersicht (Paneel, Freigaben als Karte) | `assistant.send_message` ohne `about`, `mode: ask` · Write; `approvals.approval_status` · Read, `approvals.decide_approval` · Admin (nur App-Schlüssel) | `assistant_send_message`, `approvals_approval_status`; Freigeben bleibt `Never` (nur Menschen) |
 | Vorab prüfen, ob ein Chat zu einer Mail ginge | Mail › KI-Knopf (Hinweis beim Öffnen) | `assistant.check_about` · Read | `assistant_check_about` |
 | Antwort abbrechen | „Stop“ | `assistant.cancel` · Write | `assistant_cancel` |
 | Unterhaltung umbenennen | Kontextmenü | `assistant.rename_conversation` · Write | `assistant_rename_conversation` |
