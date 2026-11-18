@@ -440,7 +440,8 @@ ist kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   was das erste Item ist. **Save** (#501, Diskette): „Save as PDF“ und „Save as image“ öffnen je ein Menü (Downloads,
   Save as…, Ablageziele mit Pfad), „Save attachments (n)“ das Menü von „Save all“; eine Zeile, die ein Menü öffnet,
   endet statt `kbd` mit einem Chevron 12 in `TEXT_3` (`RailItem::opens_menu`). Im Kontextmenü der Liste stehen die
-  beiden Formate als ein „Save mail as ›“ (`mail::context_groups`). **Reply** ist die Hauptgruppe (`RailGroup::accent`): eingeklappt eine gefüllte rote Fläche wie
+  beiden Formate als ein „Save mail as ▸“ (`mail::context_groups`), ein Untermenü mit den Formaten, jedes mit seinen
+  Wegen und Ablagezielen als Untermenü (#906). **Reply** ist die Hauptgruppe (`RailGroup::accent`): eingeklappt eine gefüllte rote Fläche wie
   der Primärknopf, Icon in `on_accent`; ausgeklappt und im Klappfeld rotes Icon und Wort „Reply“ kräftig
   (`RailItem::lead`, `typo::body_strong()` in `TEXT`). KI-Sparkles nur als Icon in der Akzentfarbe
   (`RailItem::accent`). Ein Klick aufs Gruppen-Icon tut das erste Item, das geht – **nie ein destruktives**
@@ -496,9 +497,26 @@ ist kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   `anker.area(Rectangle::new(punkt, Size::ZERO))` (links oben am Zeiger, am rechten bzw. unteren Rand links bzw.
   über ihm; passt es auf keiner Seite, rückt es herein). Am Zeiger darf es über den Lesebereich reichen (etwa bei
   einem Klick nahe dem rechten Rand der Liste). Ohne Stelle hängt es mit `Placement::Below(Align::Start)` unter der Zeile, nie neben einer
-  breiten Zeile über dem Lesebereich. Untermenüs daraus öffnen weiter an der Zeile. Im Kontextmenü aus der
-  Leiste (`widgets::rail_context_menu`) tragen nur Gruppen mit mehreren Einträgen einen Titel; eine Gruppe mit
-  einem Eintrag trennt der Strich, damit das Menü kurz bleibt und am Zeiger Platz findet.
+  breiten Zeile über dem Lesebereich. Im Kontextmenü aus der
+  Leiste (`widgets::rail_context_menu`, mit Untermenüs `widgets::rail_cascade_menu`) tragen nur Gruppen mit mehreren
+  Einträgen einen Titel; eine Gruppe mit einem Eintrag trennt der Strich, damit das Menü kurz bleibt und am Zeiger
+  Platz findet.
+  **Zeichen am Ende eines Menüeintrags** (#906, wie macOS, Windows, GNOME, KDE), in allen Apps gleich:
+  - **„▸“ = Untermenü** (`MenuItem::submenu`, in der Leiste `RailItem::opens_menu`: Chevron in `TEXT_3` statt `kbd`).
+  - **„…“ = vor der Aktion kommt noch eine Frage oder ein Dialog** („Create filter…“, „Rename…“, „Task…“,
+    „Delete task…“, „Unsubscribe…“).
+  - **Ohne Zeichen** = die Aktion geschieht sofort, auch wenn sie nur eine Seite oder ein Fenster öffnet („Manage
+    models“, „Access“, „Manage save targets“, „Manage workspaces“); ein Sprung in eine andere App endet in `↗`.
+  Die Regel gilt für Menüeinträge; Knöpfe außerhalb von Menüs („Mute…“ an Karte und Zeile) behalten ihre Wörter.
+  **Untermenüs** (`widgets::Cascade`, `Cascade::layer`, `Placement::Cascade`): Das Untermenü klappt neben dem Eintrag
+  auf, sein erster Eintrag auf Höhe des Eintrags, die Karte an der rechten Kante des Menüs, am rechten Fensterrand
+  links davon; zu lang, rollt es. Es öffnet, wenn der Zeiger `widgets::CASCADE_DELAY` (200 ms) auf dem Eintrag ruht,
+  ein Klick öffnet es sofort; fährt der Zeiger schräg über andere Einträge darauf zu, bleibt es offen (Dreieck,
+  `widgets::aims_at`), ruht er auf einem anderen Eintrag, schließt es. Tasten: ↑/↓ wählen (zyklisch), → oder Enter
+  öffnet das Untermenü, ← schließt es, Escape schließt eine Ebene, im Hauptmenü das Menü; der Eintrag unter dem
+  Tastencursor und der mit offenem Untermenü stehen `SELECTED`. Eine Wahl im Untermenü wirkt sofort und schließt
+  alle Ebenen. **Ausnahme:** Die Ablageziele unter „Save mail as ▸“ bleiben nach dem Klick offen und zeigen Lauf,
+  Erfolg oder Fehler (#560). Höchstens zwei Untermenü-Ebenen (`widgets::CASCADE_DEPTH`).
 - **Menü mit Suche** (#299, `widgets::search_menu(id, suche, on_input, on_submit, einträge, breite)`): für lange
   Auswahlen (die Schriften in Appearance, über 150 auf einem Mac). Karte wie ein Menü (`MENU`, `LINE_STRONG`,
   `style::MENU_INSET`, höchstens `size::panel()` hoch, darunter rollt es), oben ein flaches Suchfeld

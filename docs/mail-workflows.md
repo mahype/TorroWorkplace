@@ -23,7 +23,8 @@ Der Erweiterungsrahmen aus #79 wird hier nicht ausgebaut. Einzige neue direkte A
 ## Einrichten und bewusst ausführen
 
 Im Leser unter „Torro“ und im Rechtsklickmenü der Nachrichtenliste stehen dieselben Einstiege:
-„Create workflow with AI…“ und „Run workflow ›“, mit passenden Abläufen zuerst und „All workflows…“.
+„Create workflow with AI…“ und „Run workflow…“ (#906: es öffnet die Seite Automation mit der Auswahl,
+darum „…“ statt „▸“), mit passenden Abläufen zuerst und „All workflows…“.
 Bestehende Torro-Aktionen bleiben davor. Die Einrichtung verwendet eine ausgewählte Beispielmail,
 „Download document“, ein vorhandenes Ablageziel und optional eine Ergänzung. Nur der Dokumentdownload
 ist aktiv; andere Aufträge sind kein versteckter allgemeiner Executor.
