@@ -3677,6 +3677,13 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Unflag", "Markierung entfernen"),
     ("Unknown sender", "Unbekannter Absender"),
     ("cc {names}", "Cc {names}"),
+    // The people in a mail's head, each with a menu to copy them (#905).
+    ("Address copied", "Adresse kopiert"),
+    ("Copy address", "Adresse kopieren"),
+    ("Copy name and address", "Name und Adresse kopieren"),
+    ("Show all recipients", "Alle Empfänger zeigen"),
+    ("cc", "Cc"),
+    ("+{n}", "+{n}"),
     ("to {names}", "an {names}"),
     (
         "{file} can run programs, so only its folder was opened.",
