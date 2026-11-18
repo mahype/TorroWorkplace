@@ -57,6 +57,7 @@ pub mod layout;
 pub mod links;
 pub mod map;
 pub mod markdown;
+pub mod menu_bar;
 pub mod panel;
 pub mod scheme;
 pub mod selectable;
