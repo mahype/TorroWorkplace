@@ -22105,6 +22105,7 @@ mod tests {
         let mut cache = user_interface::Cache::default();
         let mut clipboard = Written::default();
         for (at, event) in steps {
+            let released = matches!(event, Event::Mouse(mouse::Event::ButtonReleased(_)));
             let mut messages = Vec::new();
             let mut ui = UserInterface::build(app.view(), WIDE, cache, renderer);
             let _ = ui.update(&[event], mouse::Cursor::Available(at), renderer, &mut clipboard, &mut messages);
@@ -22113,6 +22114,10 @@ mod tests {
                 if !matches!(message, Message::SelectMail(_)) {
                     let _ = app.update(message);
                 }
+            }
+            // What the subscription of the button's release sends ([`App::subscription`]).
+            if released {
+                let _ = app.update(Message::SelectionMaybeChanged);
             }
         }
         clipboard.0
@@ -22143,6 +22148,10 @@ mod tests {
                     let mut app = reading(id);
                     let written = drag_and_copy(&mut app, &mut renderer, Point::new(x as f32, y as f32));
                     if let Some(text) = written.into_iter().find(|text| !text.trim().is_empty()) {
+                        // The way of macOS reads the same selection: "Copy" is enabled and copies it.
+                        assert_eq!(app.mail_selection().as_deref(), Some(text.as_str()), "{id}");
+                        assert!(app.copy_enabled, "{id}: \"Copy\" follows the drag");
+                        assert_eq!(app.update(Message::CopySelection).units(), 1, "{id}");
                         copied.push(text);
                         break 'points;
                     }
