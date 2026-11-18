@@ -44,6 +44,8 @@ tokio.workspace = true
 # Speech built in (issue #762): speech to text, the wake word and reading aloud with sherpa-onnx, the microphone and
 # the sound output with cpal; no program is looked for on `PATH` any more.
 sherpa-onnx.workspace = true
+# Silero VAD is checked against its SHA-256 before it loads (issue #833): a damaged file never reaches sherpa-onnx.
+sha2.workspace = true
 cpal.workspace = true
 # The wake word heard by a model of its own (issue #765), built in; speech recognition only takes the sentence.
 livekit-wakeword.workspace = true

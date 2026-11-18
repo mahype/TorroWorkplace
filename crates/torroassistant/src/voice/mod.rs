@@ -19,10 +19,14 @@
 //! - reading aloud with Pocket TTS ([`pocket`]) or, in builds with `qwen-cuda`, Qwen3-TTS on the graphics card
 //!   ([`qwen`], issue #764), in the helper [`speech`].
 //!
+//! Whether someone speaks is told by Silero VAD once it is downloaded ([`vad`], issue #833), else by
+//! loudness ([`audio::Endpoint`]); with the model, the sentence so far is recognised in short pauses
+//! already ([`early`]), so at its end the text is mostly there.
+//!
 //! The models are downloaded in the settings (`settings.download_voice_model`) into the voice folder
 //! (`torro_core::voice_models`); what is missing is a model or a sound device ([`parts`]).
 //!
-//! The parts are small traits ([`Recorder`], [`WakeWord`], [`Transcriber`], [`Speaker`]), so the
+//! The parts are small traits ([`Recorder`], [`WakeWord`], [`Transcriber`], [`SpeechDetector`], [`Speaker`]), so the
 //! tests run the listener on sound files and fakes without a microphone or a model
 //! ([`listen`]).
 //!
@@ -31,6 +35,7 @@
 
 pub mod audio;
 pub mod cli;
+pub mod early;
 pub mod listen;
 pub mod parts;
 pub mod pocket;
@@ -43,6 +48,7 @@ pub mod qwen;
 pub mod recognize;
 pub mod sound;
 pub mod speech;
+pub mod vad;
 pub mod wake;
 
 use std::fmt;
@@ -111,6 +117,15 @@ pub trait WakeWord {
 pub trait Transcriber {
     /// What is said in `samples` ([`audio::RATE`], mono), trimmed; empty when nothing is.
     fn transcribe(&mut self, samples: &[i16]) -> Result<String, VoiceError>;
+}
+
+/// Tells speech from noise, frame by frame (issue #833).
+pub trait SpeechDetector {
+    /// Takes the next frame; `true` while someone speaks, as far as heard so far.
+    fn speech(&mut self, frame: &[i16]) -> Result<bool, VoiceError>;
+
+    /// Forgets what it heard: the next sentence starts afresh.
+    fn reset(&mut self);
 }
 
 /// Signals: since issue #745 the core reads the answers aloud (`assistant.speak_answer`), the

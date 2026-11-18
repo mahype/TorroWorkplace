@@ -222,6 +222,8 @@ fn listen() -> ExitCode {
             check_every: FRAMES_PER_SECOND / 2,
             pause: QUIET,
             floor: NoiseFloor::default(),
+            vad: parts.vad,
+            early: parts.early,
         };
         match listener.run(&voice) {
             Ok(Ended::Changed) => continue,
