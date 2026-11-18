@@ -271,6 +271,9 @@ printpdf = { version = "=0.12.8", features = ["html", "png", "jpeg"] }
 # The text of PDF attachments for the assistant (issue #893); already in the tree through printpdf, pinned to its
 # version. Without default features: no date crates, no threads, only reading.
 lopdf = { version = "=0.44.0", default-features = false }
+# The process that reads a PDF attachment limits its own memory and processor time (`setrlimit`, issue #893); the
+# version already in the tree.
+nix = { version = "0.31.3", default-features = false, features = ["resource"] }
 pulldown-cmark = { version = "0.12.2", default-features = false, features = ["html"] }
 tokio = { version = "1.53.2", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 # Win32_System_Pipes: the owner check of the pipe client in torro-ipc (X.1b).

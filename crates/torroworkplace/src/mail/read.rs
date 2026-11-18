@@ -1328,7 +1328,7 @@ async fn fetch_attachment(mail: &MailService, located: &Located, part: &str) -> 
 }
 
 /// `mail.read_attachment` (issue #893): fetches the attachment `part` as `mail.get_attachment` does, takes its text
-/// out ([`attachment_text::extract`], on a blocking thread, as `lopdf` reads a file from outside) and answers the page
+/// out ([`attachment_text::read`]: a PDF in a process of its own, as `lopdf` reads a file from outside) and answers the page
 /// from `from_line` as `tools.read_file` cuts it. Writes no file; every page fetches and reads anew. `unsupported`
 /// for a kind of file without text, `error` for a damaged one or one the PDF reader gave up on.
 async fn read_attachment(
@@ -1343,11 +1343,8 @@ async fn read_attachment(
     known_attachment(&located, part).await?;
     let attachment = fetch_attachment(mail, &located, part).await?;
     let mime::Attachment { filename, content_type, bytes } = attachment;
-    let (kind, name) = (content_type.clone(), filename.clone());
-    let extracted = tokio::task::spawn_blocking(move || attachment_text::extract(&kind, name.as_deref(), &bytes))
-        .await
-        .map_err(|_| failed(tr("This attachment could not be read.")))?
-        .map_err(|err| match err {
+    let extracted =
+        attachment_text::read(&content_type, filename.as_deref(), bytes).await.map_err(|err| match err {
             attachment_text::Unreadable::Unsupported(message) => {
                 Box::new(Response::Error { code: "unsupported".into(), message })
             }

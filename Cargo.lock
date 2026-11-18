@@ -11498,6 +11498,7 @@ dependencies = [
  "lopdf",
  "mail-auth",
  "mail-parser",
+ "nix 0.31.3",
  "notify-rust",
  "png 0.18.1",
  "printpdf",

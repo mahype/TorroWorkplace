@@ -126,6 +126,8 @@ fn main() -> ExitCode {
         Some("ctl" | "status" | "notify") => cli::from_args(&std::env::args().skip(1).collect::<Vec<_>>()),
         Some("hook") => hook::from_args(&std::env::args().skip(2).collect::<Vec<_>>()),
         Some("mcp") => mcp::run(),
+        // The process that reads a PDF attachment's text for the core (issue #893); only the core starts it.
+        Some(mail::attachment_text::HELPER) => mail::attachment_text::run_helper(),
         Some("--version") | Some("-V") => {
             println!("{} {}", APP.binary, env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS

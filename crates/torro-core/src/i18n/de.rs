@@ -3360,6 +3360,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("This attachment could not be read.", "Dieser Anhang konnte nicht gelesen werden."),
     (
+        "This PDF needs too much memory or time to read; Torro Workplace cannot read it.",
+        "Diese PDF braucht zum Lesen zu viel Speicher oder Zeit; Torro Workplace kann sie nicht lesen.",
+    ),
+    (
+        "This text file uses a character encoding Torro Workplace cannot tell; it cannot read it.",
+        "Diese Textdatei nutzt eine Zeichenkodierung, die Torro Workplace nicht erkennt; es kann sie nicht lesen.",
+    ),
+    (
         "This PDF takes too long to read; Torro Workplace cannot read it.",
         "Diese PDF braucht zu lange zum Lesen; Torro Workplace kann sie nicht lesen.",
     ),
