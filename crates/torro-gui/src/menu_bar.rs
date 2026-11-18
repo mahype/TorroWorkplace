@@ -29,7 +29,23 @@ thread_local! {
     static INSTALLED: std::cell::RefCell<Option<(muda::Menu, muda::MenuItem)>> = const { std::cell::RefCell::new(None) };
 }
 
-/// The task that puts up the menu bar on macOS, "Copy" disabled; nothing elsewhere. If muda fails,
+/// Whether "Copy" should be enabled, as the app last asked ([`set_copy_enabled`]). The tasks on the
+/// main thread read it there instead of carrying a value, so two of them that run out of order, or
+/// one before the menu is up, still leave the item as the app last asked.
+#[cfg(target_os = "macos")]
+static WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Sets "Copy" as [`WANTED`] says; nothing before the menu is up. On the main thread.
+#[cfg(target_os = "macos")]
+fn apply_wanted() {
+    INSTALLED.with(|cell| {
+        if let Some((_, copy)) = cell.borrow().as_ref() {
+            copy.set_enabled(WANTED.load(std::sync::atomic::Ordering::SeqCst));
+        }
+    });
+}
+
+/// The task that puts up the menu bar on macOS, "Copy" as last asked ([`WANTED`]); nothing elsewhere. If muda fails,
 /// the error goes to stderr and the window keeps winit's menu.
 pub fn install<T: Send + 'static>() -> iced::Task<T> {
     #[cfg(target_os = "macos")]
@@ -38,7 +54,10 @@ pub fn install<T: Send + 'static>() -> iced::Task<T> {
         iced::window::latest()
             .and_then(|id| {
                 iced::window::run(id, |_| match build() {
-                    Ok(installed) => INSTALLED.with(|cell| *cell.borrow_mut() = Some(installed)),
+                    Ok(installed) => {
+                        INSTALLED.with(|cell| *cell.borrow_mut() = Some(installed));
+                        apply_wanted();
+                    }
                     Err(err) => eprintln!("cannot put up the menu bar: {err}"),
                 })
             })
@@ -86,17 +105,8 @@ fn build() -> Result<(muda::Menu, muda::MenuItem), muda::Error> {
 pub fn set_copy_enabled<T: Send + 'static>(enabled: bool) -> iced::Task<T> {
     #[cfg(target_os = "macos")]
     {
-        iced::window::latest()
-            .and_then(move |id| {
-                iced::window::run(id, move |_| {
-                    INSTALLED.with(|cell| {
-                        if let Some((_, copy)) = cell.borrow().as_ref() {
-                            copy.set_enabled(enabled);
-                        }
-                    });
-                })
-            })
-            .discard()
+        WANTED.store(enabled, std::sync::atomic::Ordering::SeqCst);
+        iced::window::latest().and_then(|id| iced::window::run(id, |_| apply_wanted())).discard()
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -123,12 +133,18 @@ pub fn copy_pressed() -> iced::Subscription<()> {
 #[cfg(target_os = "macos")]
 static COPIED: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
-/// The stream of [`copy_pressed`]: one item per wake-up of [`COPIED`].
+/// The stream of [`copy_pressed`]: one item per wake-up of [`COPIED`] while "Copy" is wanted. A
+/// permit left from a moment without a subscription (mini or strip) or with the item about to be
+/// disabled is dropped, so it never copies later unasked.
 #[cfg(target_os = "macos")]
 fn presses() -> impl iced::futures::Stream<Item = ()> {
     iced::futures::stream::unfold((), |()| async {
-        COPIED.notified().await;
-        Some(((), ()))
+        loop {
+            COPIED.notified().await;
+            if WANTED.load(std::sync::atomic::Ordering::SeqCst) {
+                return Some(((), ()));
+            }
+        }
     })
 }
 
