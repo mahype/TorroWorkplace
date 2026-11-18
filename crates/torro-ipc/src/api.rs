@@ -4239,7 +4239,12 @@ static SET_SETTING: Command = Command {
                   one keeps its date in the title; 0 never starts a new one), `voice_announcements` (true, the default, or \
                   false: while an answer of the voice chat takes a moment, it says briefly what it does, like \
                   \"One moment, I'm checking your calendar\"; only spoken, never stored, and only while \
-                  `speak_answers` is on) or `openai_style` (how OpenAI speaks, one line of at most 500 \
+                  `speak_answers` is on), `voice_pause_done` (milliseconds from 300 to 1500 in 100s, or null \
+                  for 500: the pause after a finished sentence before the voice chat answers), `voice_pause_open` \
+                  (milliseconds from 1000 to 4000 in 500s, or null for 2000: the pause after an unfinished one like \
+                  \"and then …\" or \"um\"), `voice_hold` (seconds from 5 to 30 in 5s, or null for 15: how long \
+                  \"wait a moment\" holds the turn; these three pauses need Silero VAD) or `openai_style` (how OpenAI \
+                  speaks, one line of at most 500 \
                   characters like \"calm, slow\", or null; it only reaches OpenAI once a person chose OpenAI); \
                   `stt_model` and `voice` are gone and refused or \
                   `assistant_default` (what a new chat of the assistant starts with: {\"engine\": \"<id from \
@@ -4359,8 +4364,9 @@ static VOICE_TIMINGS: Command = Command {
     mcp: Mcp::Tool,
     description: "Lists how long the last spoken answers took, step by step, oldest first: the pause until the end \
                   of speech was detected, speech recognition, the first word of the answer and its first sound, \
-                  in milliseconds, each round with the time its first sound played. Only durations, never what \
-                  was said; the core keeps the last 20 answers read \
+                  in milliseconds, each round with the time its first sound played and `held`: whether the \
+                  listener waited out a pause that once ended the sentence (the average counts them). Only \
+                  durations, never what was said; the core keeps the last 20 answers read \
                   aloud in memory only, so the list is empty after a restart.",
 };
 
@@ -8605,6 +8611,10 @@ mod tests {
             SettingKey::OpenAiStyle,
             SettingKey::VoiceNewAfter,
             SettingKey::VoiceAnnouncements,
+            // Issue #836, decision 2: the pauses of the end of a sentence free nothing.
+            SettingKey::VoicePauseDone,
+            SettingKey::VoicePauseOpen,
+            SettingKey::VoiceHold,
         ] {
             assert!(!Request::SetSetting { key, value: serde_json::json!("whisper") }.kept_for_people(), "{key:?}");
         }
@@ -9563,6 +9573,9 @@ mod tests {
                 "pocket_pause",
                 "voice_new_after",
                 "voice_announcements",
+                "voice_pause_done",
+                "voice_pause_open",
+                "voice_hold",
                 "openai_style",
                 "assistant_default",
                 "setup",

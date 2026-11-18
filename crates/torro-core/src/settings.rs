@@ -1368,6 +1368,18 @@ pub struct Voice {
     /// turned off, also for files written before the choice existed.
     #[serde(default = "on")]
     pub announce: bool,
+    /// The pause after a finished sentence before the voice chat takes it as said, in milliseconds (issue
+    /// #836); `None` for 500 ([`Voice::pause_done_or_default`]). Only with Silero VAD.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_done: Option<u16>,
+    /// The pause after an unfinished sentence ("and then …", "um"), in milliseconds (issue #836); `None` for
+    /// 2000 ([`Voice::pause_open_or_default`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_open: Option<u16>,
+    /// How long "wait a moment" holds the turn, in seconds (issue #836); `None` for 15
+    /// ([`Voice::hold_or_default`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold: Option<u16>,
 }
 
 /// Who reads the assistant's answers aloud (issue #745, `docs/assistent.md` "Vorlesen"). More may
@@ -1497,6 +1509,9 @@ impl Default for Voice {
             openai_style: None,
             new_after: None,
             announce: on(),
+            pause_done: None,
+            pause_open: None,
+            hold: None,
         }
     }
 }
@@ -1513,6 +1528,24 @@ pub const VOICE_NEW_AFTER: (u16, u16, u16) = (0, 240, 15);
 
 /// The pause [`Voice::new_after_or_default`] takes when none is chosen, in minutes (issue #831).
 pub const VOICE_NEW_AFTER_DEFAULT: u16 = 30;
+
+/// The pauses after a finished sentence, in milliseconds (issue #836): from, to and the step.
+pub const VOICE_PAUSE_DONE: (u16, u16, u16) = (300, 1500, 100);
+
+/// The pause [`Voice::pause_done_or_default`] takes when none is chosen, in milliseconds (issue #836).
+pub const VOICE_PAUSE_DONE_DEFAULT: u16 = 500;
+
+/// The pauses after an unfinished sentence, in milliseconds (issue #836): from, to and the step.
+pub const VOICE_PAUSE_OPEN: (u16, u16, u16) = (1000, 4000, 500);
+
+/// The pause [`Voice::pause_open_or_default`] takes when none is chosen, in milliseconds (issue #836).
+pub const VOICE_PAUSE_OPEN_DEFAULT: u16 = 2000;
+
+/// How long "wait a moment" may hold the turn, in seconds (issue #836): from, to and the step.
+pub const VOICE_HOLD: (u16, u16, u16) = (5, 30, 5);
+
+/// The hold [`Voice::hold_or_default`] takes when none is chosen, in seconds (issue #836).
+pub const VOICE_HOLD_DEFAULT: u16 = 15;
 
 /// The longest speaking style `settings.set_setting` takes, in characters (issue #782).
 pub const MAX_STYLE_CHARS: usize = 500;
@@ -1666,6 +1699,24 @@ impl Voice {
         on_step(self.new_after, VOICE_NEW_AFTER).unwrap_or(VOICE_NEW_AFTER_DEFAULT)
     }
 
+    /// The pause after a finished sentence, in milliseconds: the chosen one if it is one of
+    /// [`VOICE_PAUSE_DONE`], else [`VOICE_PAUSE_DONE_DEFAULT`] (issue #836).
+    pub fn pause_done_or_default(&self) -> u16 {
+        on_step(self.pause_done, VOICE_PAUSE_DONE).unwrap_or(VOICE_PAUSE_DONE_DEFAULT)
+    }
+
+    /// The pause after an unfinished sentence, in milliseconds: the chosen one if it is one of
+    /// [`VOICE_PAUSE_OPEN`], else [`VOICE_PAUSE_OPEN_DEFAULT`] (issue #836).
+    pub fn pause_open_or_default(&self) -> u16 {
+        on_step(self.pause_open, VOICE_PAUSE_OPEN).unwrap_or(VOICE_PAUSE_OPEN_DEFAULT)
+    }
+
+    /// How long "wait a moment" holds the turn, in seconds: the chosen hold if it is one of [`VOICE_HOLD`],
+    /// else [`VOICE_HOLD_DEFAULT`] (issue #836).
+    pub fn hold_or_default(&self) -> u16 {
+        on_step(self.hold, VOICE_HOLD).unwrap_or(VOICE_HOLD_DEFAULT)
+    }
+
     /// The speaking style for OpenAI, or `None` for OpenAI's own way (issue #782).
     pub fn openai_style_or_none(&self) -> Option<&str> {
         self.openai_style.as_deref().map(str::trim).filter(|style| !style.is_empty())
@@ -1687,6 +1738,24 @@ impl Voice {
     /// `settings.set_setting` with `voice_new_after` (issue #831).
     pub fn new_after_from(value: &serde_json::Value) -> Result<Option<u16>, String> {
         stepped_from(value, VOICE_NEW_AFTER, "pause in minutes")
+    }
+
+    /// The pause in `value`: milliseconds from 300 to 1500, rounded to 100, or `null` for 500. For
+    /// `settings.set_setting` with `voice_pause_done` (issue #836).
+    pub fn pause_done_from(value: &serde_json::Value) -> Result<Option<u16>, String> {
+        stepped_from(value, VOICE_PAUSE_DONE, "pause in milliseconds")
+    }
+
+    /// The pause in `value`: milliseconds from 1000 to 4000, rounded to 500, or `null` for 2000. For
+    /// `settings.set_setting` with `voice_pause_open` (issue #836).
+    pub fn pause_open_from(value: &serde_json::Value) -> Result<Option<u16>, String> {
+        stepped_from(value, VOICE_PAUSE_OPEN, "pause in milliseconds")
+    }
+
+    /// The hold in `value`: seconds from 5 to 30, rounded to 5, or `null` for 15. For `settings.set_setting`
+    /// with `voice_hold` (issue #836).
+    pub fn hold_from(value: &serde_json::Value) -> Result<Option<u16>, String> {
+        stepped_from(value, VOICE_HOLD, "hold in seconds")
     }
 
     /// The speaking style in `value`: one line of at most 500 characters without control characters,
@@ -3183,6 +3252,34 @@ mod tests {
         for refused in [json!(241), json!(-15), json!("30")] {
             assert!(Voice::new_after_from(&refused).is_err(), "{refused}");
         }
+    }
+
+    /// Issue #836: an old file ends sentences after 500 ms, 2 s and holds 15 s; the three take numbers in
+    /// their range, rounded to the step.
+    #[test]
+    fn the_pauses_of_the_end_of_a_sentence_read_and_are_checked() {
+        use serde_json::json;
+        let old: Voice = serde_json::from_str(r#"{"pocketVoice": "marius"}"#).expect("a file from before #836");
+        assert_eq!((old.pause_done_or_default(), old.pause_open_or_default(), old.hold_or_default()), (500, 2000, 15));
+        let written = serde_json::to_string(&Voice::default()).expect("json");
+        assert!(!written.contains("pauseDone") && !written.contains("hold"), "{written}");
+        let chosen = Voice { pause_done: Some(800), pause_open: Some(3500), hold: Some(30), ..Voice::default() };
+        assert_eq!(
+            (chosen.pause_done_or_default(), chosen.pause_open_or_default(), chosen.hold_or_default()),
+            (800, 3500, 30)
+        );
+        let off = Voice { pause_done: Some(350), pause_open: Some(900), hold: Some(7), ..Voice::default() };
+        assert_eq!((off.pause_done_or_default(), off.pause_open_or_default(), off.hold_or_default()), (500, 2000, 15));
+        assert_eq!(Voice::pause_done_from(&json!(340)), Ok(Some(300)));
+        assert_eq!(Voice::pause_done_from(&json!(1500)), Ok(Some(1500)));
+        assert_eq!(Voice::pause_open_from(&json!(2300)), Ok(Some(2500)));
+        assert_eq!(Voice::hold_from(&json!(12)), Ok(Some(10)));
+        assert_eq!(Voice::hold_from(&json!(null)), Ok(None));
+        for refused in [json!(200), json!(1600), json!("500")] {
+            assert!(Voice::pause_done_from(&refused).is_err(), "{refused}");
+        }
+        assert!(Voice::pause_open_from(&json!(500)).is_err());
+        assert!(Voice::hold_from(&json!(60)).is_err());
     }
 
     /// Issue #782: an old file speaks as before; speed and pause take numbers in their range,

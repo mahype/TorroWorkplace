@@ -1706,16 +1706,18 @@ pub fn demo_voice_models(models: &mut [torro_ipc::VoiceModel], request: &Request
     }
 }
 
-/// Twelve spoken rounds (issue #828), a little apart from each other, as the timings show them.
+/// Twelve spoken rounds (issue #828), a little apart from each other, as the timings show them; every fourth
+/// waited out a pause (issue #836) and ended after the short pause of a finished sentence otherwise.
 fn voice_timings() -> torro_ipc::VoiceTimings {
     let start = Utc.with_ymd_and_hms(2026, 11, 15, 9, 0, 0).single().unwrap_or_default();
     let rounds = (0..12u32)
         .map(|n| torro_ipc::VoiceRound {
             at: start + Duration::minutes(i64::from(n)),
-            pause_ms: 1000,
+            pause_ms: if n % 4 == 3 { 2000 } else { 500 },
             recognize_ms: 760 + n * 10,
             first_word_ms: 1290 + n * 10,
             first_sound_ms: 610 + n * 5,
+            held: n % 4 == 3,
         })
         .collect();
     torro_ipc::VoiceTimings { rounds }
