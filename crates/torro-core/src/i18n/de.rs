@@ -7300,6 +7300,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("One of each kind that is set must fit.", "Von jeder gesetzten Art muss eine passen."),
     ("Original name", "Ursprünglicher Name"),
     ("PDF", "PDF"),
+    ("EML", "EML"),
     ("Patterns", "Vorlagen"),
     ("Preview · {file} from {sender}, {date}", "Vorschau · {file} von {sender}, {date}"),
     ("Remove {condition}", "{condition} entfernen"),

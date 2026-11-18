@@ -14942,7 +14942,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             .save_formats()?
             .into_iter()
             .enumerate()
-            .map(|(k, (icon, words, _))| {
+            .map(|(k, (icon, _, format))| {
+                // Under "Save mail as ▸" the format alone (design review of #906).
+                let words = match format {
+                    ExportFormat::Pdf => tr("PDF"),
+                    ExportFormat::Png => tr("Image"),
+                    ExportFormat::Eml => tr("EML"),
+                };
                 MenuItem::new(icon, words, Message::ContextCascade(CascadeEvent::Press(vec![at, k]))).submenu()
             })
             .collect();
@@ -14965,7 +14971,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// The menu of `format` for the mail held (issue #501, `mail::export_menu`), as wide as the
     /// attachments' menu.
     fn export_menu(&self, format: ExportFormat) -> Option<Element<'_, Message>> {
-        let sections = self.export_sections(format)?;
+        let mut sections = self.export_sections(format)?;
+        // As a submenu of "Save mail as ▸" its entry names the format already (issue #906).
+        if self.context_open()
+            && self.context_sub.contains(&Menu::SaveMail(format))
+            && let Some(first) = sections.first_mut()
+        {
+            first.title = None;
+        }
         let width = (self.size.width - style::MENU_INSET * 2.0).clamp(size::sidebar(), size::panel());
         let tallest = (self.size.height - style::MENU_INSET * 8.0).max(200.0);
         let lit = self.sub_lit(Menu::SaveMail(format));
@@ -16073,8 +16086,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             always,
             Message::ToggleCategoryAlways,
         );
-        let mut list =
-            column![menu_caption(tr("Category")), widgets::menu_item_lit(switch, None, lit == Some(0)), menu_line()];
+        // As a submenu its entry names it already: no title (issue #906), so the first entry stands
+        // level with it.
+        let mut list = column![];
+        if !self.context_open() {
+            list = list.push(menu_caption(tr("Category")));
+        }
+        let mut list = list.push(widgets::menu_item_lit(switch, None, lit == Some(0))).push(menu_line());
         let mut at = 0;
         for group in category_group_order(&catalogue) {
             let of_group: Vec<&CategoryInfo> = catalogue
@@ -16110,7 +16128,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
         // The window's own height, less the room a floating menu keeps around itself.
         let tallest = (self.size.height - style::MENU_INSET * 8.0).max(200.0);
-        let body = iced::widget::scrollable(list).height(iced::Length::Shrink).width(Fill);
+        let body = iced::widget::scrollable(list)
+            .direction(iced::widget::scrollable::Direction::Vertical(style::scrollbar().spacing(space::xs())))
+            .style(style::scrollable)
+            .height(iced::Length::Shrink)
+            .width(Fill);
         container(iced::widget::container(body).max_height(tallest))
             .width(width)
             .padding(style::MENU_INSET)
@@ -16126,7 +16148,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             .into_iter()
             .enumerate()
             .map(|(i, choice)| choice_entry(choice, keys::digit(i + 1), KeyLook::Kbd, width, lit == Some(i)));
-        let list = column![menu_caption(&title.into())].extend(entries);
+        // As a submenu of the context menu its entry names it already (issue #906).
+        let list = match self.context_open() {
+            true => column![],
+            false => column![menu_caption(&title.into())],
+        };
+        let list = list.extend(entries);
         container(list).width(width).padding(style::MENU_INSET).style(style::container::menu).into()
     }
 
@@ -16148,7 +16175,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let leaves = self.launch.kind == Kind::Mail;
         let offered = self.mute_effects();
         let width = mute_menu_width(&choices, offered, leaves);
-        let mut list = column![menu_caption(tr("Mute"))];
+        let mut list = match self.context_open() {
+            true => column![],
+            false => column![menu_caption(tr("Mute"))],
+        };
         let quiet = match &self.mute_options {
             None => Some(tr("Loading…")),
             Some(Err(_)) => Some(tr("Couldn't read the ways to mute this entry.")),
@@ -17339,6 +17369,8 @@ fn choice_button<'a>(choice: Choice, key: &'static str, look: KeyLook, width: f3
         content = content.push(typo::text(typo::meta().tabular(), when).style(theme::text_3).wrapping(Wrapping::None));
     }
     content = content.push(match look {
+        // No digit past nine: no empty key box either (design review of #906).
+        KeyLook::Kbd if key.is_empty() => Space::new().into(),
         KeyLook::Kbd => widgets::kbd(key),
         KeyLook::Meta => typo::text(typo::meta().tabular(), key).style(theme::text_3).wrapping(Wrapping::None).into(),
     });
