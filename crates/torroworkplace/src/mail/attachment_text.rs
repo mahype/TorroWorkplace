@@ -361,16 +361,28 @@ fn this_program() -> std::io::Result<std::path::PathBuf> {
 }
 
 /// At most one helper at a time: each may take [`HELPER_MEMORY`], and on macOS and Windows its memory is not
-/// limited, so many at once (an agent reading pages in parallel) must not add up. The others wait their turn.
+/// limited, so many at once (an agent reading pages in parallel) must not add up. The others wait their turn, within
+/// their own [`HELPER_TIME`].
 static HELPERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
-/// The text of the PDF `bytes` from the helper ([`run_helper`]), one at a time ([`HELPERS`]): ended after
-/// [`HELPER_TIME`]. A helper that panicked (exit code 101, a damaged file `lopdf` gave up on) counts as a damaged PDF,
+/// The text of the PDF `bytes` from the helper ([`run_helper`]), one at a time ([`HELPERS`]): ended [`HELPER_TIME`]
+/// after the request, the wait for its turn included. A helper that panicked (exit code 101, a damaged file `lopdf` gave up on) counts as a damaged PDF,
 /// one the system ended (memory, processor time) and answering nothing as a PDF too costly to read.
 async fn isolated(bytes: Vec<u8>) -> Result<Extracted, Unreadable> {
+    isolated_within(bytes, HELPER_TIME).await
+}
+
+/// [`isolated`] with the time limit `time`.
+async fn isolated_within(bytes: Vec<u8>, time: Duration) -> Result<Extracted, Unreadable> {
     let too_long =
         || Unreadable::Unsupported(tr("This PDF takes too long to read; Torro Workplace cannot read it.").into());
-    let _turn = HELPERS.acquire().await.map_err(|_| Unreadable::Broken)?;
+    // One time limit from the request on, the wait for its turn included: a queue of PDFs never adds up.
+    let deadline = tokio::time::Instant::now() + time;
+    let _turn = match tokio::time::timeout_at(deadline, HELPERS.acquire()).await {
+        Ok(Ok(turn)) => turn,
+        Ok(Err(_)) => return Err(Unreadable::Broken),
+        Err(_) => return Err(too_long()),
+    };
     let mut wrap = CommandWrap::from(helper_command().map_err(|_| Unreadable::Broken)?);
     #[cfg(unix)]
     wrap.wrap(ProcessGroup::leader());
@@ -388,7 +400,7 @@ async fn isolated(bytes: Vec<u8>) -> Result<Extracted, Unreadable> {
         let _ = stdin.shutdown().await;
     });
     // Dropping the child when the time is up ends the helper (`KillOnDrop`).
-    let output = tokio::time::timeout(HELPER_TIME, Box::into_pin(child.wait_with_output())).await;
+    let output = tokio::time::timeout_at(deadline, Box::into_pin(child.wait_with_output())).await;
     feed.abort();
     let output = match output {
         Ok(Ok(output)) => output,
@@ -544,6 +556,18 @@ pub(crate) mod tests {
         let answer = read("application/pdf", None, fixture("inflate-bomb.pdf")).await;
         let wanted = tr("This PDF needs too much memory or time to read; Torro Workplace cannot read it.");
         assert_eq!(answer, Err(Unreadable::Unsupported(wanted.into())));
+    }
+
+    /// The wait for the helper's turn counts to the time limit: a request behind a busy helper ends in time.
+    #[tokio::test]
+    async fn waiting_for_the_helpers_turn_counts_to_its_time() {
+        let busy = HELPERS.acquire().await.expect("a turn");
+        let started = std::time::Instant::now();
+        let answer = isolated_within(fixture("invoice.pdf"), Duration::from_millis(50)).await;
+        drop(busy);
+        let wanted = tr("This PDF takes too long to read; Torro Workplace cannot read it.");
+        assert_eq!(answer, Err(Unreadable::Unsupported(wanted.into())));
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]
