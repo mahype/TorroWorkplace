@@ -52,11 +52,13 @@ pub struct Early {
 }
 
 impl Early {
-    /// Starts the thread, recognising with `transcriber`.
-    pub fn new(mut transcriber: Box<dyn Transcriber + Send>) -> Early {
+    /// Starts the thread, recognising with `transcriber`. Fails when the system gives no thread: then the
+    /// listener recognises each sentence once it ended.
+    pub fn new(mut transcriber: Box<dyn Transcriber + Send>) -> Result<Early, VoiceError> {
         let shared: Shared = Arc::default();
         let worker = Arc::clone(&shared);
-        std::thread::spawn(move || {
+        let thread = std::thread::Builder::new().name("recognise ahead".into());
+        let started = thread.spawn(move || {
             let _gone = Gone(Arc::clone(&worker));
             loop {
                 let (number, samples) = {
@@ -76,7 +78,8 @@ impl Early {
                 worker.1.notify_all();
             }
         });
-        Early { shared, offered: 0, wanted: None }
+        started.map_err(|err| VoiceError::program("recognising ahead", err))?;
+        Ok(Early { shared, offered: 0, wanted: None })
     }
 
     /// Offers the sentence so far: it replaces an offer not yet begun, and its result is the one that counts.
@@ -150,7 +153,7 @@ mod tests {
     fn a_second_offer_replaces_the_first() {
         let (go, gate) = mpsc::channel();
         let calls = Arc::new(AtomicUsize::new(0));
-        let mut early = Early::new(Box::new(Counts { calls: Arc::clone(&calls), gate: Some(gate) }));
+        let mut early = Early::new(Box::new(Counts { calls: Arc::clone(&calls), gate: Some(gate) })).expect("thread");
         // The thread waits at the gate with the first (or second) offer; the later ones wait behind it and
         // replace each other.
         early.offer(vec![0; 1]);
@@ -173,7 +176,7 @@ mod tests {
                 panic!("the model broke")
             }
         }
-        let mut early = Early::new(Box::new(Panics));
+        let mut early = Early::new(Box::new(Panics)).expect("thread");
         early.offer(vec![0; 1]);
         assert_eq!(early.result(), None);
     }
@@ -182,7 +185,7 @@ mod tests {
     #[test]
     fn after_clear_there_is_no_result() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let mut early = Early::new(Box::new(Counts { calls: Arc::clone(&calls), gate: None }));
+        let mut early = Early::new(Box::new(Counts { calls: Arc::clone(&calls), gate: None })).expect("thread");
         assert_eq!(early.result(), None, "nothing offered");
         early.offer(vec![0; 4]);
         early.clear();

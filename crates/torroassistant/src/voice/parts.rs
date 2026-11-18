@@ -47,7 +47,14 @@ impl Parts {
         let transcriber = SharedTranscriber::new(Box::new(SherpaTranscriber::load(voice, folder)?));
         let (wake, _) = wake_word(folder, transcriber.clone());
         let vad = speech_detector(folder);
-        let early = vad.is_some().then(|| Early::new(Box::new(transcriber.clone())));
+        let early = match vad.is_some().then(|| Early::new(Box::new(transcriber.clone()))) {
+            Some(Ok(early)) => Some(early),
+            Some(Err(err)) => {
+                eprintln!("torroassistant: sentences are recognised once they ended: {err}");
+                None
+            }
+            None => None,
+        };
         Ok(Parts {
             recorder: Box::new(CpalRecorder { microphone: voice.microphone.clone() }),
             wake,
@@ -240,9 +247,14 @@ pub mod tests {
         let folder = tempfile::tempdir().expect("voice folder");
         assert!(speech_detector(Some(folder.path())).is_none());
         assert!(speech_detector(None).is_none());
-        // Sparse files of the right size are no model sherpa-onnx loads.
+        // Sparse files of the right size are not the catalogue's: refused before sherpa-onnx sees them.
         download(folder.path(), SILERO_VAD);
         assert!(speech_detector(Some(folder.path())).is_none(), "a damaged model falls back to loudness");
+        let damaged = SileroVad::load(Some(folder.path())).map(|_| ());
+        assert!(
+            matches!(&damaged, Err(VoiceError::Program { message, .. }) if message.contains("damaged")),
+            "{damaged:?}"
+        );
     }
 
     /// Issue #762: the downloaded models make the parts work; only the chosen recogniser counts.

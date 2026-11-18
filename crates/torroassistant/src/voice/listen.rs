@@ -2083,7 +2083,8 @@ mod tests {
         let (now, said_now) = Counted::new("recognised now");
         let (ahead, said_ahead) = Counted::new("recognised ahead");
         let vad = Judges::first(script);
-        let parts = Ahead { vad: Some(Box::new(vad)), early: Some(Early::new(Box::new(ahead))), limits };
+        let parts =
+            Ahead { vad: Some(Box::new(vad)), early: Some(Early::new(Box::new(ahead)).expect("thread")), limits };
         let core = Core { talk: talk_in(Some("a1")), ..Core::new(Voice::default()) };
         let run = run_parts(core, &[PAUSE, PAUSE], None, Box::new(now), Duration::ZERO, parts);
         let texts = messages(&run.sent)
@@ -2139,7 +2140,7 @@ mod tests {
         let (now, said_now) = Counted::new("Hey Torro, recognised now");
         let (ahead, said_ahead) = Counted::new("Hey Torro, recognised ahead");
         let (vad, _) = Judges::new(judge, None);
-        let early = Some(Early::new(Box::new(ahead)));
+        let early = Some(Early::new(Box::new(ahead)).expect("thread"));
         let parts = Ahead { vad: Some(Box::new(vad)), early, limits: Limits::default() };
         let run = run_parts(Core::new(on()), &[PAUSE, PAUSE], Some(2), Box::new(now), Duration::ZERO, parts);
         let texts = messages(&run.sent)
