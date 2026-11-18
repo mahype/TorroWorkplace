@@ -9471,6 +9471,23 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Durchschnitt der letzten {n} gesprochenen Antworten. Nur Zeiten, nie das Gesagte.",
     ),
     ("No spoken answer measured yet.", "Noch keine gesprochene Antwort gemessen."),
+    ("Pauses waited out", "Abgewartete Pausen"),
+    ("{n} of {m}", "{n} von {m}"),
+    // The end of a sentence in the voice chat (#836).
+    // Not "Satzende": "End of speech detected" is "Satzende erkannt" right below.
+    ("End of a sentence", "Wann ein Satz endet"),
+    ("After a finished sentence", "Nach einem fertigen Satz"),
+    ("After an unfinished sentence", "Nach einem unfertigen Satz"),
+    ("e.g. “and then …”, “um”", "z. B. „und dann …“, „ähm“"),
+    ("Hold after “wait a moment”", "Halten nach „warte mal“"),
+    ("Shorter hold", "Kürzer halten"),
+    ("Longer hold", "Länger halten"),
+    ("{whole}.{tenth} s", "{whole},{tenth} s"),
+    ("{n} s", "{n} s"),
+    (
+        "Needs Silero VAD; Smart Turn from the Models tab also hears the tone of voice.",
+        "Braucht Silero VAD; Smart Turn aus dem Reiter Modelle hört zusätzlich den Tonfall.",
+    ),
     ("Speaking style", "Sprechstil"),
     ("How OpenAI speaks: tone, pace, mood", "Wie OpenAI spricht: Ton, Tempo, Stimmung"),
     ("e.g. calm, slow, friendly", "z. B. ruhig, langsam, freundlich"),
