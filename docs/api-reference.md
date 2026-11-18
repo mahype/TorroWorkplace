@@ -3575,7 +3575,7 @@ Stops the answer running in a conversation of the assistant. What it did until t
 
 Zugriff `write` · MCP-Tool `assistant_interrupt`
 
-Interrupts the answer of a conversation of the assistant while it is read aloud: reading stops at once, the answer stops as with cancel, and the `stopped` entry keeps in `heard` what was read aloud of it; the model later takes only that as said. Nothing happens when no answer runs or nothing is read.
+Interrupts the answer of a conversation of the assistant while it is read aloud: reading stops at once, the answer stops as with cancel, and the `stopped` entry keeps in `heard` what was read aloud of it; the model later takes only that as said. A running answer that is not read stops as with cancel; nothing happens when no answer runs.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|

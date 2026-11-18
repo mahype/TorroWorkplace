@@ -4525,8 +4525,8 @@ pub enum Request {
     /// Interrupts the answer of `conversation` while it is read aloud (issue #835): the person began to
     /// speak. In one step it stops reading the answer aloud, stops the answer as [`Request::CancelAnswer`]
     /// does, and stores in the `stopped` entry what was read aloud of it (`heard`), so the model later reads
-    /// only that as said. [`Response::Ok`] also when no answer runs or nothing is read; `not-found` for an
-    /// unknown conversation.
+    /// only that as said. A running answer that is not read stops as with `assistant.cancel`.
+    /// [`Response::Ok`] also when no answer runs; `not-found` for an unknown conversation.
     #[serde(rename = "assistant.interrupt")]
     InterruptAnswer {
         /// The conversation's id.
