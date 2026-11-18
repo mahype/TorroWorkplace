@@ -253,10 +253,12 @@ keinen Browser, kein Skript und keinen Ausbau der allgemeinen Übergabe #260 ode
 
 ## Chat zu einer Mail (#605)
 
-Im Mail-Programm öffnet „Ask AI…“ in der Gruppe Torro der Aktionsleiste ein Chat-Paneel zur offenen
-Mail, im Leser wie im eigenen Mail-Fenster; die Taste `i` öffnet es und schließt es wieder (solange
+Im Mail-Fenster öffnet der **runde KI-Knopf** (seit #892, rot mit Sparkles, unten rechts in der rechten
+Spalte) ein Chat-Paneel zur offenen Mail; die Taste `i` tut dasselbe und schließt es wieder (solange
 das Eingabefeld die Tastatur nicht hat, sonst schließt Escape). Breit steht es rechts neben der Mail,
-mittel und schmal deckt es die Mail ab („‹ Mail“ führt zurück). Entwurf: `docs/prototypes/mail-mini-chat/`.
+mittel und schmal deckt es die Mail ab („‹ Mail“ führt zurück). „Ask AI…“ in der Gruppe Torro der
+Aktionsleiste gibt es seit #892 nicht mehr. Entwürfe: `docs/prototypes/mail-mini-chat/` (Paneel),
+`docs/prototypes/mail-ki-knopf/` (Knopf, gewählt Variante A).
 
 - **Eine Unterhaltung des Assistenten mit Bezug.** `assistant.send_message` nimmt `about`
   (`mail:<adresse>`, `m:…`). Die Unterhaltung behält den Bezug; eine Fortsetzung ohne `about` erbt
@@ -288,6 +290,24 @@ mittel und schmal deckt es die Mail ab („‹ Mail“ führt zurück). Entwurf:
   oder fremdem Antrieb: `unsupported`. Für einen
   Client, der das Konto selbst nicht sieht, gibt es die Unterhaltung nicht: Sie fehlt in der Liste, und
   jeder Befehl, der sie nennt, antwortet `not-found`, denn ihre Einträge erzählen, was in der Mail steht.
+
+### Chat ohne Mail (#892)
+
+Derselbe Knopf steht an derselben Stelle über der Übersicht des Mail-Fensters (breit in der rechten
+Spalte, mittel über ihrem Paneel, schmal über ihrer Seite). Dort öffnet er das Paneel **ohne Bezug**:
+Kopf „Ask AI“ ohne Zeile „About: …“, „‹ Overview“ zurück, eigene Startfragen.
+
+- **Modus `ask`.** `assistant.send_message` ohne `about`, mit `mode: ask`: Der Assistent darf, was er
+  sonst darf, aber jede Änderung wartet auf die Person (`Confirm::OnEveryChange`). Ordner oder Auswahl
+  gehen nicht mit; der Assistent sucht selbst nach Mails.
+- **Freigaben im Paneel.** Eine wartende Freigabe steht als Karte im Chat (Kopf „Approval needed“,
+  Zusammenfassung und Details des Kerns, nie Text des Modells) mit „Allow“ und „Deny“
+  (`approvals.decide_approval` ohne Reichweite, Stand über `approvals.approval_status`). Einen Befehl des
+  Terminals des Assistenten erlaubt nur dessen Chat mit Reichweite (#754): Die Karte zeigt dafür „Deny“
+  und „Open assistant“.
+- **Verlauf bis zum Schließen.** Der Chat beginnt immer neu (keine fremde Unterhaltung der Assistent-App),
+  bleibt, solange das Mail-Fenster läuft, und steht nach einer geöffneten und geschlossenen Mail wieder
+  da; ✕ blendet ihn nur aus, „+“ beginnt neu, nach einem Neustart beginnt ein neuer Chat.
 
 ## Skills (#703)
 
@@ -1143,8 +1163,9 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | Unterhaltungen durchsuchen (#704) | Suchfeld der Seitenleiste (ab zwei Zeichen) | `assistant.search_conversations` · Read (der Assistent durch seine Art, nur seine eigenen; Bots nie) | `assistant_search_conversations` |
 | Unterhaltung lesen (ab Stelle) | Verlauf | `assistant.get_conversation` · Read | `assistant_get_conversation` |
 | Nachricht schicken (neue oder bestehende Unterhaltung) | Eingabefeld | `assistant.send_message` · Write (startet einen Modelllauf) | `assistant_send_message` |
-| Fragen zu einer Mail | Mail › „Ask AI…“ (Paneel) | `assistant.send_message` mit `about` · Write | `assistant_send_message` mit `about` |
-| Vorab prüfen, ob ein Chat zu einer Mail ginge | Mail › „Ask AI…“ (Hinweis beim Öffnen) | `assistant.check_about` · Read | `assistant_check_about` |
+| Fragen zu einer Mail | Mail › runder KI-Knopf über der Mail (Paneel, #892) | `assistant.send_message` mit `about` · Write | `assistant_send_message` mit `about` |
+| Fragen ohne Mail (#892) | Mail › runder KI-Knopf über der Übersicht (Paneel, Freigaben als Karte) | `assistant.send_message` ohne `about`, `mode: ask` · Write; `approvals.approval_status` · Read, `approvals.decide_approval` (nur App-Schlüssel) | `assistant_send_message`; Freigeben bleibt `Never` (nur Menschen) |
+| Vorab prüfen, ob ein Chat zu einer Mail ginge | Mail › KI-Knopf (Hinweis beim Öffnen) | `assistant.check_about` · Read | `assistant_check_about` |
 | Antwort abbrechen | „Stop“ | `assistant.cancel` · Write | `assistant_cancel` |
 | Unterhaltung umbenennen | Kontextmenü | `assistant.rename_conversation` · Write | `assistant_rename_conversation` |
 | Modell einer Unterhaltung wechseln (gilt sofort, auch für den Sprachchat; nicht in Bot-Unterhaltungen; Issue #852) | Auswahl im Eingabefeld bei offener Unterhaltung | `assistant.choose_model` · Write | `assistant_choose_model` |
