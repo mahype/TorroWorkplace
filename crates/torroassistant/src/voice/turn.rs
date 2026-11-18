@@ -74,16 +74,20 @@ const HOLDS: [&str; 18] = [
 const FILLERS: [&str; 10] = ["äh", "ähm", "öh", "hm", "hmm", "ehm", "uh", "um", "uhm", "erm"];
 
 /// Words after which a sentence goes on: conjunctions, prepositions, articles, German and English.
-const CONNECTORS: [&str; 35] = [
+const CONNECTORS: [&str; 33] = [
     "und", "oder", "aber", "weil", "dass", "denn", "wenn", "also", "sondern", "bis", "für", "von", "der", "die", "den",
-    "dem", "ein", "eine", "einen", "mein", "meine", "and", "or", "but", "because", "that", "if", "then", "with", "for",
-    "to", "of", "the", "a", "my",
+    "dem", "ein", "eine", "einen", "mein", "meine", "and", "or", "but", "because", "if", "with", "for", "to", "of",
+    "the", "a", "my",
 ];
 
 /// Connecting words that also end a sentence: the particle of a German verb ("Mach das Licht an.", "Komm mit!"),
-/// "das", "dann" and "so" ("Mach das.", "Bis dann.", "I think so."), and the English article "an". Open only
-/// without a full stop or exclamation mark after them.
-const PARTICLES: [&str; 7] = ["an", "auf", "zu", "mit", "das", "dann", "so"];
+/// "das", "dann", "so", "that" and "then" ("Mach das.", "Bis dann.", "I think so.", "See you then."), and the
+/// English article "an". Open without a full stop or exclamation mark after them, and after "and" or "or" ([`AND_OR`])
+/// even with one: Whisper ends a piece cut off with a full stop too ("und dann.").
+const PARTICLES: [&str; 9] = ["an", "auf", "zu", "mit", "das", "dann", "so", "that", "then"];
+
+/// "And", "or" and "but", German and English: a particle after them goes on, whatever mark follows.
+const AND_OR: [&str; 6] = ["und", "oder", "aber", "and", "or", "but"];
 
 /// The words of `text`, lower case: letters, digits and apostrophes.
 fn words(text: &str) -> Vec<String> {
@@ -129,8 +133,10 @@ pub fn rules(text: &str) -> Option<Turn> {
         return Some(Turn::Open);
     }
     let ended = trimmed.ends_with('.') || trimmed.ends_with('!');
+    // "und dann." is cut off, "Bis dann." is not: only "and" and "or" before it keep it open.
+    let after_and = said.len() >= 2 && AND_OR.contains(&said[said.len() - 2].as_str());
     let open = FILLERS.iter().chain(&CONNECTORS).any(|word| ends_with(&said, word))
-        || (!ended && PARTICLES.iter().any(|word| ends_with(&said, word)));
+        || ((!ended || after_and) && PARTICLES.iter().any(|word| ends_with(&said, word)));
     Some(if open { Turn::Open } else { Turn::Done })
 }
 
@@ -409,6 +415,12 @@ mod tests {
             ("I think so.", Some(Turn::Done)),
             ("Wo ist er", Some(Turn::Done)),
             ("Erst die Mails, dann", Some(Turn::Open)),
+            ("I like that.", Some(Turn::Done)),
+            ("See you then!", Some(Turn::Done)),
+            // A piece cut off gets its full stop from Whisper too.
+            ("Erst die Mails und dann.", Some(Turn::Open)),
+            ("First the mail and then.", Some(Turn::Open)),
+            ("And so.", Some(Turn::Open)),
             // Open: a filler, a connecting word, an ellipsis or a comma at the end.
             ("Ich will morgen … ähm", Some(Turn::Open)),
             ("I want to go, um", Some(Turn::Open)),
