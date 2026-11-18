@@ -274,9 +274,17 @@ mittel und schmal deckt es die Mail ab („‹ Mail“ führt zurück). Entwurf:
 - **Anhänge lesen (#893).** Die Anhänge stehen in `attachments` von `mail.get_message`. Ihren Inhalt liest das
   Modell mit `mail.read_attachment` (Read, dieselben Rechte wie die Mail): Textdateien (Text, CSV, Markdown,
   JSON, XML, Kalender- und Kontaktdateien) und PDFs mit Textebene, seitenweise wie `tools.read_file`. Der Kern
-  holt den Anhang, liest den Text selbst (PDF über `lopdf`) und schreibt keine Datei. Bilder, Office-Dateien,
-  geschützte PDFs und Scans ohne Textebene sind `unsupported` mit einem Satz für die Person; das Modell sagt
-  dann, dass es die Datei nicht lesen kann, und rät nicht. Die PDF-Werkzeuge der MCP-Server stehen hier
+  holt den Anhang, liest den Text selbst und schreibt keine Datei. Eine PDF liest ein eigener Prozess
+  (`torroworkplace pdf-text`, über `lopdf`), denn eine präparierte Datei kann beim Entpacken mehr Speicher
+  verlangen, als jede Grenze je Stream oder Seite hält: Der Kern beendet ihn nach 30 s; unter Linux begrenzt er
+  zudem seinen Speicher (1 GiB über dem Start), unter Linux und macOS seine Rechenzeit. Unter macOS und Windows
+  ist der Speicher nicht begrenzt (macOS hält einen Prozess nicht an seinen Adressraum, Windows bräuchte
+  nativen Code), die Zeit schon. Eine solche PDF beendet so unter Linux nur diesen Prozess, nie den Kern.
+  Text, der kein UTF-8 ist, liest der Kern als UTF-16 mit Byte-Order-Mark oder als Windows-1252, solange wenige
+  Bytes außerhalb von ASCII liegen; andere Kodierungen (Shift-JIS, Kyrillisch) lehnt er ab, statt Zeichensalat
+  zu liefern. Bilder, Office-Dateien, geschützte PDFs, Scans ohne Textebene und zu teure PDFs sind
+  `unsupported` mit einem Satz für die Person; das Modell sagt dann, dass es die Datei nicht lesen kann, und
+  rät nicht. Die PDF-Werkzeuge der MCP-Server stehen hier
   absichtlich nicht bereit (siehe oben). Bilder: #896. Der Inhalt ist `untrusted` wie die Mail.
 - **Vorschläge als Karte.** Was das Modell über `mail.extract_action` ausliest (die Worte der Person als
   `focus`), wird ein Vorschlag der Mail wie in [vorschlaege.md](vorschlaege.md) und erscheint als Karte
