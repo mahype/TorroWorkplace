@@ -1045,7 +1045,7 @@ ist; das Mikrofon ist dann nur für dieses Gespräch offen. Statt des Eingabefel
   erkannten Text, Deutsch und Englisch. Endet er auf ein Füllwort („ähm“, „um“), ein Bindewort („und“, „weil“,
   „and“, „the“), ein „…“ oder ein Komma, ist er unfertig; endet er auf „Moment“, „warte mal“, „lass mich überlegen“,
   „wait a moment“, „hold on“ oder „let me think“, hält er den Turn. Der Text gewinnt, wo er mehr sagt als der Ton; ein
-  Fragezeichen schließt ab („Was ist das?“), ein Punkt nach einer Verbpartikel auch („Mach das Licht an.“). Ein fertiger Satz endet nach 500 ms, ein unfertiger nach 2 s, ein
+  Fragezeichen schließt ab, vor allem anderen („Was ist das?“, „Hast du einen Moment?“), ein Punkt nach einer Verbpartikel oder nach „das“, „dann“ und „so“ auch („Mach das Licht an.“, „Bis dann.“). Hört Smart Turn „fertig“, bevor der Text da ist, endet der Satz frühestens nach der Sekunde, damit ein spätes „Moment“ noch zählt. Ein fertiger Satz endet nach 500 ms, ein unfertiger nach 2 s, ein
   gehaltener nach 15 s, wenn die Person nicht weiterspricht; spricht sie weiter, gilt wieder die Pause von einer
   Sekunde, bis zur nächsten Bewertung. Die Werte stellt Assistant › Voice › Conversation › End of a sentence ein
   (`voice_pause_done`, `voice_pause_open`, `voice_hold`). Ein gehaltener Turn zählt nicht zur Höchstdauer von 15 s je

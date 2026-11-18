@@ -69,8 +69,8 @@ pub const SILERO_VAD: &str = "silero-vad";
 /// Smart Turn v3 of Pipecat (issue #836): hears in the tone of the last seconds whether a person finished
 /// speaking, German and English among its languages. A recognition download after Silero VAD, never
 /// recommended, and only used with it: without it the listener judges the end of a sentence by its text. The
-/// file without quantisation ("gpu", 32 MB, it runs on the processor too): tract does not load the quantised
-/// one of 8.7 MB (its convolution in int8).
+/// file without quantisation ("gpu", 32 MB, it runs on the processor too): tract loads the quantised one of
+/// 8.7 MB, but computes it wrongly (checked against onnxruntime: 0.46 where it gives 0.99).
 pub const SMART_TURN: &str = "smart-turn";
 
 /// The wake word model "Hey Torro" (issue #765): built into the assistant, so it is not in the catalogue

@@ -80,7 +80,7 @@ Zwei Entscheidungen lässt das Konzept bewusst den Plänen:
   auch während der eigenen Antwort (was die Person dabei sagt, wird noch verworfen, darauf reagiert erst #835);
   sonst bleibt es zu wie bisher. Ohne Einstellung. Geprüft mit `hey_torro.wav` als Vorlesen in einem gerechneten
   Raum (Echo nach 30, 60 und 90 ms): Der Hörer hört darin keine Sprache, die Person darüber aber schon.
-- **Satzende nach Sinn (#836), entschieden.** Smart Turn v3 von Pipecat (32 MB ungepackt: die gepackte Fassung mit 8,7 MB lädt tract nicht; ONNX auf tract, Deutsch und Englisch)
+- **Satzende nach Sinn (#836), entschieden.** Smart Turn v3 von Pipecat (32 MB ungepackt: die gepackte Fassung mit 8,7 MB rechnet tract falsch, gegen onnxruntime geprüft; ONNX auf tract, Deutsch und Englisch)
   hört am Tonfall, ob ein Satz fertig ist, Regeln lesen den vorab erkannten Text; der Text gewinnt, wo er mehr sagt
   („und“, „ähm“, „Moment“). Verworfen: der Turn Detector von LiveKit (ein Sprachmodell auf Text, groß und langsamer)
   und Regeln allein (Whisper liefert den Text oft erst nach der kurzen Pause). Pausen 500 ms nach einem fertigen Satz,
