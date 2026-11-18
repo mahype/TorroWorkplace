@@ -263,7 +263,7 @@ Aktionsleiste gibt es seit #892 nicht mehr. Entwürfe: `docs/prototypes/mail-min
 - **Eine Unterhaltung des Assistenten mit Bezug.** `assistant.send_message` nimmt `about`
   (`mail:<adresse>`, `m:…`). Die Unterhaltung behält den Bezug; eine Fortsetzung ohne `about` erbt
   ihn, ein anderer ist ein Fehler (`error`). Sie erscheint auch in der Assistent-App, mit Mail-Symbol.
-- **Verlauf je Mail.** „Ask AI…“ setzt die neueste Unterhaltung zur selben Mail fort, „+“ beginnt neu.
+- **Verlauf je Mail.** Der KI-Knopf setzt die neueste Unterhaltung zur selben Mail fort, „+“ beginnt neu.
 - **Nur lesen und vorschlagen.** Auch wenn der Assistent sonst mehr darf, stehen in einer solchen
   Unterhaltung nur Werkzeuge mit Zugriff Read und `mail.extract_action` bereit, ohne Werkzeuge der
   MCP-Server, ohne Bots und ohne Websuche und Seitenabruf (der Text der Mail darf keine Anfrage nach

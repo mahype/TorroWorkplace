@@ -1,6 +1,6 @@
 //! The mini chat about a mail (issue #605, "Chat zu einer Mail" in `docs/assistent.md`, mock-up
-//! `docs/prototypes/mail-mini-chat/`): "Ask AI…" in the rail's group "Torro" opens a panel in which
-//! the person asks the assistant about the open mail. It is a conversation of the assistant with the
+//! `docs/prototypes/mail-mini-chat/`): the round AI button over the open mail (issue #892; "Ask AI…" in
+//! the rail's group "Torro" before) opens a panel in which the person asks the assistant about it. It is a conversation of the assistant with the
 //! mail as its `about`; the core reads the mail first, lets the answer only read and suggest, and a
 //! suggestion it reads out (`mail.extract_action`) comes back as a card whose "Accept" opens the
 //! filled dialog of issue #603 in this window.
@@ -346,6 +346,21 @@ impl Ask {
         }
     }
 
+    /// The hint for a refusal of the core in this chat ([`hint_for`]): without a mail (issue #892) there
+    /// is no mail the assistant may not read, so `forbidden` says the core's words.
+    fn hint(&self, refusal: &Refusal) -> Hint {
+        match hint_for(refusal) {
+            Hint::NoRight if self.about.is_none() => Hint::Failed(refusal.message.clone()),
+            hint => hint,
+        }
+    }
+
+    /// Whether the chat shows a hint in place of itself: the overview's chat is made anew when its
+    /// button is pressed again (issue #892), so a hint goes once the AI is set up.
+    pub fn hinting(&self) -> bool {
+        matches!(self.phase, Phase::Hint(_))
+    }
+
     /// The round the answers of the chat open now belong to: the app hands an answer to the chat of
     /// its round (issue #892: the chat of the overview and the one about a mail live side by side).
     pub fn round(&self) -> Round {
@@ -366,7 +381,7 @@ impl Ask {
         }
         match event {
             Event::Opened(_, Ok(opened)) => return self.opened(opened),
-            Event::Opened(_, Err(refusal)) => self.phase = Phase::Hint(hint_for(&refusal)),
+            Event::Opened(_, Err(refusal)) => self.phase = Phase::Hint(self.hint(&refusal)),
             Event::Input(text) => self.input = text,
             Event::Send => return self.send(),
             Event::Starter(text) => {
@@ -381,7 +396,7 @@ impl Ask {
                         self.failed = None;
                         return self.take(summary, entries);
                     }
-                    Err(refusal) => match hint_for(&refusal) {
+                    Err(refusal) => match self.hint(&refusal) {
                         Hint::Failed(message) => self.failed = Some(message),
                         hint => self.phase = Phase::Hint(hint),
                     },
@@ -650,7 +665,7 @@ fn approval_of(result: Result<Response, Refusal>) -> Result<ApprovalInfo, Refusa
     }
 }
 
-/// The newest conversation about the mail `about` (issue #605: "Ask AI…" continues it), by its last
+/// The newest conversation about the mail `about` (issue #605: the chat about it continues it), by its last
 /// change; `None` when there is none.
 pub fn newest_about<'a>(conversations: &'a [ConversationSummary], about: &MailRef) -> Option<&'a ConversationSummary> {
     conversations
@@ -1436,9 +1451,9 @@ impl Ask {
         let last = entries.len() as u64;
         let entries: Vec<Entry> =
             entries.into_iter().enumerate().map(|(at, content)| demo_entry(at as u64 + 1, content, now)).collect();
-        let mut head = demo_summary(None, "Demo", last, now);
-        // The core waits for the person while an approval is open; staged, nothing is asked.
-        head.running = scene == Scene::Approval;
+        // The core keeps the answer running while an approval waits; staged it does not, since nothing
+        // follows it in the demo – a decided card would leave "Working …" and a blocked field behind.
+        let head = demo_summary(None, "Demo", last, now);
         if scene == Scene::Approval {
             ask.approvals.insert(DEMO_APPROVAL.to_owned(), demo_approval(ApprovalState::Pending, now));
         }

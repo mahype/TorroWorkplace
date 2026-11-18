@@ -12217,7 +12217,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         self.close_menus();
         self.rail_open = None;
         self.general_ask_open = true;
-        if self.general_ask.is_some() {
+        // Its conversation stays; a hint (no AI yet, the core away) is asked anew.
+        if self.general_ask.as_ref().is_some_and(|ask| !ask.hinting()) {
             return operation::focus(ask::FIELD);
         }
         let (ask, opening) = ask::Ask::open_general(ask::call_for(&self.suite));
@@ -12236,9 +12237,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     }
 
     /// Whether the overview shows in the mail window (issue #892): [`App::mail_overview_shown`], in the
-    /// wide window only with its right column ([`App::right_column`]), where the overview stands.
+    /// wide window only with its right column ([`App::right_column`]), where the overview stands; not in
+    /// "Drafts", whose right column says how to go on instead.
     fn overview_visible(&self) -> bool {
-        self.mail_overview_shown() && (self.class() != SizeClass::Wide || self.right_column)
+        self.mail_overview_shown()
+            && self.view != View::Drafts
+            && (self.class() != SizeClass::Wide || self.right_column)
     }
 
     /// The mail open in the mail window, which the AI button and `i` ask about (issue #892).
@@ -12261,6 +12265,25 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
     }
 
+    /// What the round AI button sends, `None` where it does not stand (issue #892): the chat about the
+    /// open mail, else over the overview the chat without one. Not outside the mail window, in mini and
+    /// the strip, over the settings, the drawer or "Focus & reply", nor while a chat shows.
+    fn ai_button_press(&self) -> Option<Message> {
+        let room = matches!(self.class(), SizeClass::Wide | SizeClass::Medium | SizeClass::Narrow);
+        let quiet = self.launch.kind != Kind::Mail
+            || !room
+            || self.drawer
+            || self.settings.is_some()
+            || self.focus_reply.is_some()
+            || self.ask_shown().is_some();
+        match self.asked_mail() {
+            _ if quiet => None,
+            Some(id) => Some(Message::AskAi(id)),
+            None if self.overview_visible() => Some(Message::AskGeneral),
+            None => None,
+        }
+    }
+
     /// The round AI button (issue #892, variant A of `docs/prototypes/mail-ki-knopf/`): red and round
     /// like the composer's "Send" (`style::button::round_primary`), at the bottom right of the right
     /// column – over the open mail and over the overview at the same place, `space::m()` from the
@@ -12268,20 +12291,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// about it, over the overview without one. Only in the mail window, while no chat shows, never over
     /// the settings, in "Focus & reply", in mini or in the strip. `layer` (a menu) stays above it.
     fn with_ai_button<'a>(&self, layer: Option<Element<'a, Message>>) -> Option<Element<'a, Message>> {
-        let class = self.class();
-        let room = matches!(class, SizeClass::Wide | SizeClass::Medium | SizeClass::Narrow);
-        let quiet = self.launch.kind != Kind::Mail
-            || !room
-            || self.settings.is_some()
-            || self.focus_reply.is_some()
-            || self.ask_shown().is_some();
-        let pressed = match self.asked_mail() {
-            _ if quiet => None,
-            Some(id) => Some(Message::AskAi(id)),
-            None if self.overview_visible() => Some(Message::AskGeneral),
-            None => None,
-        };
-        let Some(pressed) = pressed else { return layer };
+        let Some(pressed) = self.ai_button_press() else { return layer };
         let button = widgets::round_button(Icon::Sparkles, tr("Ask AI"), style::button::round_primary, Some(pressed));
         let placed =
             container(button).width(Fill).height(Fill).padding(space::m()).align_right(Fill).align_bottom(Fill);
@@ -28522,13 +28532,10 @@ mod tests {
     /// a chat shows, over the settings and with the wide window's right column hidden.
     #[test]
     fn the_ai_button_stands_over_the_mail_and_the_overview() {
+        // What the drawn button sends; it stands exactly where it sends something.
         let pressed = |app: &App<DemoSource>| -> Option<Message> {
-            let placed = app.with_ai_button(None)?;
-            drop(placed);
-            match app.asked_mail() {
-                Some(id) => Some(Message::AskAi(id)),
-                None => app.overview_visible().then_some(Message::AskGeneral),
-            }
+            assert_eq!(app.with_ai_button(None).is_some(), app.ai_button_press().is_some());
+            app.ai_button_press()
         };
         let mut app = mail_window(Density::Compact, &["--open", "mail-overview"]);
         for size in [Size::new(1600.0, 1000.0), Size::new(800.0, 600.0), Size::new(480.0, 900.0)] {
@@ -28554,6 +28561,27 @@ mod tests {
         assert!(!app.overview_visible() && app.with_ai_button(None).is_none(), "no right column, no button");
         let _ = app.update(Message::AskGeneral);
         assert!(app.general_ask.is_none(), "nothing to open without the overview");
+        app.right_column = true;
+        app.drawer = true;
+        assert!(pressed(&app).is_none(), "not over the drawer");
+    }
+
+    /// Review of #892: a hint in the overview's chat (no AI yet) is asked anew on the next press, and
+    /// `forbidden` without a mail says the core's words, not that the mail may not be read.
+    #[test]
+    fn the_overviews_chat_asks_anew_after_a_hint() {
+        let mut app = mail_window(Density::Compact, &["--open", "mail-overview"]);
+        let _ = app.update(Message::Resized(Size::new(1600.0, 1000.0)));
+        let _ = app.update(Message::AskGeneral);
+        let round = app.general_ask.as_ref().map(ask::Ask::round).expect("the chat");
+        let forbidden = ask::Refusal { code: "forbidden".into(), message: "Not allowed.".into() };
+        let _ = app.update(Message::Ask(ask::Event::Opened(round, Err(forbidden))));
+        let phase = app.general_ask.as_ref().map(|ask| ask.phase.clone());
+        assert_eq!(phase, Some(ask::Phase::Hint(ask::Hint::Failed("Not allowed.".into()))));
+        let _ = app.update(Message::Ask(ask::Event::Close));
+        let _ = app.update(Message::AskGeneral);
+        let again = app.general_ask.as_ref().expect("the chat");
+        assert!(again.round() != round && again.phase == ask::Phase::Loading, "opened anew");
     }
 
     /// Issue #892: the overview's chat stays while a mail opens and closes – it shows again with its
