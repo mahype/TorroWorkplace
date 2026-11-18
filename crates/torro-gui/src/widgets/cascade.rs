@@ -385,8 +385,7 @@ impl Cascade {
         on_event: impl Fn(CascadeEvent) -> M + 'a,
     ) -> Element<'a, M> {
         let catcher = opaque(mouse_area(blank().width(Fill).height(Fill)).on_press(on_dismiss));
-        let mut layers: Vec<Element<'a, M>> =
-            vec![catcher.into(), self.placed(spot.clone(), placement, root.into(), 0)];
+        let mut layers: Vec<Element<'a, M>> = vec![catcher, self.placed(spot.clone(), placement, root.into(), 0)];
         for (at, child) in children.into_iter().enumerate().take(self.open.len()) {
             let level = at + 1;
             let card = mouse_area(child).on_enter(on_event(CascadeEvent::Card(level)));
