@@ -3307,6 +3307,9 @@ pub struct App<S> {
     /// The text of the mail or the entry the panel or reader shows, to select and copy (issue #119):
     /// follows them after every message ([`App::follow_text`]).
     text: Selectable,
+    /// Whether "Copy" of the menu bar on macOS is enabled (issue #894): it follows
+    /// [`App::mail_selection`] after every message ([`App::update`]).
+    copy_enabled: bool,
     /// The way to `chat.*` (issue #643): the core, or the demo's conversations.
     chat: talk::Chat,
     /// The conversation of the Talk entry in the panel, while one is there ([`App::follow_talk`]).
@@ -3998,6 +4001,12 @@ pub enum Message {
     Text(text_editor::Action),
     /// "Copy text": the whole text in the panel or the reader to the clipboard, with "Copied".
     CopyText,
+    /// "Edit › Copy" (⌘C) of the menu bar on macOS (issue #894): what is marked in the mail to the
+    /// clipboard ([`App::mail_selection`]), without a notice, as ⌘C works everywhere.
+    CopySelection,
+    /// The left mouse button went up: a drag may have marked text in the HTML of a mail, which tells
+    /// the app nothing, so "Copy" of the menu bar is checked again (issue #894). Does nothing else.
+    SelectionMaybeChanged,
     /// The title of an account's browser group: fold its folders away or show them this session.
     ToggleAccount(String),
     /// The account field at the top of the mail window's sidebar (issue #455): opens or closes its menu.
@@ -4941,6 +4950,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             reading: false,
             letter: None,
             text: Selectable::default(),
+            copy_enabled: false,
             chat: talk_way(&launch),
             talk: None,
             listed: None,
@@ -5043,10 +5053,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             sized: false,
             launch,
         };
-        // The size, and the traffic lights onto the title band's line (U.11).
+        // The size, the traffic lights onto the title band's line (U.11) and the menu bar with
+        // "Edit › Copy" on macOS (issue #894). The compose window is its own `compose::Window`.
         let size = Task::batch([
             iced::window::latest().and_then(iced::window::size).map(Message::Resized),
             torro_gui::place_traffic_lights(),
+            torro_gui::menu_bar::install(),
         ]);
         let order = ui_state::load_order_task(INBOX, app.launch.window_key()).map(Message::StoredOrder);
         // Only the mail window has a divider (issue #130) and the action rail (task E14.3).
@@ -5139,6 +5151,17 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             // A second start of this kind of window brings it to the front (issue #279), in every size.
             torro_gui::instance::subscription().map(|()| Message::Raise),
         ];
+        // ⌘C on macOS comes through the menu bar (issue #894); a drag in the HTML marks text without
+        // a message, so the release of the button checks the menu's "Copy" again.
+        if !self.is_glance() {
+            subscriptions.push(torro_gui::menu_bar::copy_pressed().map(|()| Message::CopySelection));
+            subscriptions.push(iced::event::listen_with(|event, _, _| match event {
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+                    Some(Message::SelectionMaybeChanged)
+                }
+                _ => None,
+            }));
+        }
         // Mini and strip are displays: no keys, and nothing open that Escape could close. (A key
         // like `e` must not mark an entry done that nobody sees.)
         if !self.is_glance() {
@@ -5316,7 +5339,32 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let logos = self.follow_logos();
         // The conversation of a Talk entry in the panel (issue #643).
         let talk = self.follow_talk();
-        Task::batch([task, more, letter, overview, logos, talk])
+        let copy = self.follow_copy();
+        Task::batch([task, more, letter, overview, logos, talk, copy])
+    }
+
+    /// What is marked in the mail or entry the panel or reader shows (issue #894): in the HTML while
+    /// it shows ([`mail::HtmlReading::shown`]), else in the text. `None` in mini and strip, with the
+    /// settings over the content, and while nothing is marked.
+    fn mail_selection(&self) -> Option<String> {
+        if self.is_glance() || self.settings.is_some() {
+            return None;
+        }
+        match self.html_for_letter() {
+            Some(html) if self.mail_format == MailFormat::Html => html.selected_text(),
+            _ => self.text.selection(),
+        }
+    }
+
+    /// Enables "Copy" of the menu bar while something is marked ([`App::mail_selection`]), disables
+    /// it otherwise, so ⌘C reaches the window (a search field) when the mail has nothing to copy.
+    fn follow_copy(&mut self) -> Task<Message> {
+        let marked = self.mail_selection().is_some();
+        if marked == self.copy_enabled {
+            return Task::none();
+        }
+        self.copy_enabled = marked;
+        torro_gui::menu_bar::set_copy_enabled(marked)
     }
 
     /// Asks once for the logo of each domain the listed mail and the open mail name
@@ -6850,6 +6898,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.note(tr("Copied").to_owned());
                 return iced::clipboard::write(self.text.text().to_owned());
             }
+            Message::CopySelection => {
+                return self.mail_selection().map_or_else(Task::none, iced::clipboard::write);
+            }
+            Message::SelectionMaybeChanged => {}
             Message::ToggleAccount(account) => {
                 let open = !self.account_open(&account);
                 self.folds.retain(|(folded, _)| *folded != account);
@@ -21967,6 +22019,139 @@ mod tests {
         let item = entry.detail.clone().expect("an entry in the panel");
         assert_eq!(entry.text.text(), detail::message_text(&item));
         draw_everywhere(&mut entry);
+    }
+
+    /// `id` of the work inbox open in the reader of a wide window, loaded.
+    fn reading(id: &str) -> App<DemoSource> {
+        let mut app = in_folder("f:work-inbox");
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.update(Message::SelectMail(id.into()));
+        deliver_letter(&mut app, id);
+        app
+    }
+
+    /// Issue #894: "Edit › Copy" of the menu bar on macOS copies what is marked in the mail, in its
+    /// text and in its HTML, and nothing while nothing is.
+    #[test]
+    fn copy_selection_puts_the_marked_text_on_the_clipboard() {
+        let mut app = reading("m:w1");
+        assert!(app.html_for_letter().is_none(), "a mail of plain text");
+        assert_eq!(app.update(Message::CopySelection).units(), 0, "nothing marked: nothing copied");
+        assert!(!app.copy_enabled, "and \"Copy\" is disabled");
+        let _ = app.update(Message::Text(text_editor::Action::SelectAll));
+        assert!(app.copy_enabled, "something marked: \"Copy\" is enabled");
+        assert_eq!(app.mail_selection().as_deref(), Some(app.text.text()));
+        assert_eq!(app.update(Message::CopySelection).units(), 1, "one clipboard::write");
+        assert!(app.hint.is_none(), "⌘C shows no notice");
+        // Mini and strip show no mail to copy from.
+        let _ = app.update(Message::Resized(Size::new(200.0, 200.0)));
+        assert!(app.is_glance() && !app.copy_enabled && app.mail_selection().is_none());
+
+        let mut html = reading("m:w2");
+        assert!(html.html_for_letter().is_some() && html.mail_format == MailFormat::Html, "the HTML shows");
+        assert_eq!(html.update(Message::CopySelection).units(), 0, "nothing marked in the HTML");
+        assert!(!html.copy_enabled);
+    }
+
+    /// A clipboard of the test: what the window wrote to it.
+    #[derive(Default)]
+    struct Written(Vec<String>);
+
+    impl iced::advanced::Clipboard for Written {
+        fn read(&self, _kind: iced::advanced::clipboard::Kind) -> Option<String> {
+            None
+        }
+
+        fn write(&mut self, kind: iced::advanced::clipboard::Kind, contents: String) {
+            if kind == iced::advanced::clipboard::Kind::Standard {
+                self.0.push(contents);
+            }
+        }
+    }
+
+    /// Drags the mouse 120 px to the right from `from` in the window, then presses ⌘C (macOS) or
+    /// Ctrl + C, as a person would: what the window put on the clipboard. Each step builds the view
+    /// anew and hands its messages to `update`, all but `SelectMail` (a press in the list must not
+    /// open another mail).
+    fn drag_and_copy(app: &mut App<DemoSource>, renderer: &mut iced::Renderer, from: Point) -> Vec<String> {
+        use iced::keyboard::{self, Key, key};
+        use iced::{Event, mouse};
+        use iced_test::runtime::{UserInterface, user_interface};
+
+        let command = if cfg!(target_os = "macos") { keyboard::Modifiers::LOGO } else { keyboard::Modifiers::CTRL };
+        let to = Point::new(from.x + 120.0, from.y);
+        let c = Key::Character("c".into());
+        let steps = [
+            (from, Event::Mouse(mouse::Event::CursorMoved { position: from })),
+            (from, Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))),
+            (to, Event::Mouse(mouse::Event::CursorMoved { position: to })),
+            (to, Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))),
+            (to, Event::Keyboard(keyboard::Event::ModifiersChanged(command))),
+            (
+                to,
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: c.clone(),
+                    modified_key: c,
+                    physical_key: key::Physical::Code(key::Code::KeyC),
+                    location: keyboard::Location::Standard,
+                    modifiers: command,
+                    text: None,
+                    repeat: false,
+                }),
+            ),
+        ];
+        let mut cache = user_interface::Cache::default();
+        let mut clipboard = Written::default();
+        for (at, event) in steps {
+            let mut messages = Vec::new();
+            let mut ui = UserInterface::build(app.view(), WIDE, cache, renderer);
+            let _ = ui.update(&[event], mouse::Cursor::Available(at), renderer, &mut clipboard, &mut messages);
+            cache = ui.into_cache();
+            for message in messages {
+                if !matches!(message, Message::SelectMail(_)) {
+                    let _ = app.update(message);
+                }
+            }
+        }
+        clipboard.0
+    }
+
+    /// Issue #894, the way on Linux and Windows: marking text in the reader with the mouse and pressing
+    /// Ctrl + C (⌘C on macOS, where the key may come through the menu bar instead) puts the marked text
+    /// on the clipboard, in a mail of plain text and in the HTML of a mail.
+    #[test]
+    fn selecting_and_pressing_copy_copies_in_the_window() {
+        // Several renderers at once crash the test process (`torro-gui`'s `one_simulator`).
+        static ONE: Mutex<()> = Mutex::new(());
+        let _one = ONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut renderer = block_on(<iced::Renderer as iced::advanced::renderer::Headless>::new(
+            iced::Font::with_name("Fira Sans"),
+            iced::Pixels(16.0),
+            None,
+        ))
+        .expect("a renderer without a window");
+        for id in ["m:w1", "m:w2"] {
+            let plain = {
+                let app = reading(id);
+                let Some(Letter { loaded: Some(Ok(mail)), .. }) = &app.letter else { panic!("{id} is loaded") };
+                mail::text_of(mail)
+            };
+            let mut copied = Vec::new();
+            'points: for y in (300..=700).step_by(40) {
+                for x in (1200..=1500).step_by(40) {
+                    let mut app = reading(id);
+                    let written = drag_and_copy(&mut app, &mut renderer, Point::new(x as f32, y as f32));
+                    if let Some(text) = written.into_iter().find(|text| !text.trim().is_empty()) {
+                        copied.push(text);
+                        break 'points;
+                    }
+                }
+            }
+            let text = copied.first().unwrap_or_else(|| panic!("{id}: no drag in the reader copied anything"));
+            if id == "m:w1" {
+                assert!(plain.contains(text.as_str()), "{id}: a part of the mail's text, got {text:?}");
+            }
+        }
     }
 
     #[test]
