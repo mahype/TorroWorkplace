@@ -14,9 +14,11 @@
 //!   outside can make `lopdf` inflate far more than any single bound holds (each stream and each page has its
 //!   own). The core waits at most [`HELPER_TIME`] and then ends it; on Linux the process also limits its own
 //!   memory ([`HELPER_MEMORY`] beyond what it maps at the start), on Linux and macOS its processor time, so a
-//!   crafted PDF ends that process (without a core dump), never the core. One such process runs at a time. On macOS and Windows the memory is not limited (macOS does
-//!   not hold a process to its address space, Windows would need native code), the time is. Within it: how far a stream may inflate ([`PDF_INFLATE_LIMIT`]), how many pages it may have
-//!   ([`PDF_MAX_PAGES`], counted lazily before `lopdf` collects them for every page read), how much text is kept
+//!   crafted PDF ends that process (without a core dump), never the core. One such process runs at a time. On
+//!   macOS and Windows the memory is not limited (macOS does not hold a process to its address space, Windows
+//!   would need native code), the time is. Within it: how far a stream may inflate ([`PDF_INFLATE_LIMIT`]), how
+//!   many pages it may have ([`PDF_MAX_PAGES`], counted lazily before `lopdf` collects them for every page read),
+//!   how much text is kept
 //!   and how long reading may take ([`PDF_READ_TIME`]). A page whose text cannot be read is passed over. A
 //!   protected PDF and one without text (a scan) are not readable: there is no text recognition here.
 //! - **Everything else** (pictures, Word, Excel …) is [`Unreadable::Unsupported`] with a sentence the model

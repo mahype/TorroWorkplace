@@ -1328,8 +1328,8 @@ async fn fetch_attachment(mail: &MailService, located: &Located, part: &str) -> 
 }
 
 /// `mail.read_attachment` (issue #893): fetches the attachment `part` as `mail.get_attachment` does, takes its text
-/// out ([`attachment_text::read`]: a PDF in a process of its own, as `lopdf` reads a file from outside) and answers the page
-/// from `from_line` as `tools.read_file` cuts it. Writes no file; every page fetches and reads anew. `unsupported`
+/// out ([`attachment_text::read`]: a PDF in a process of its own, as `lopdf` reads a file from outside) and answers
+/// the page from `from_line` as `tools.read_file` cuts it. Writes no file; every page fetches and reads anew. `unsupported`
 /// for a kind of file without text, `error` for a damaged one or one the PDF reader gave up on.
 async fn read_attachment(
     mail: &MailService,
