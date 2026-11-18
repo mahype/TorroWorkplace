@@ -11070,6 +11070,7 @@ dependencies = [
  "chrono",
  "iced",
  "iced_test",
+ "muda",
  "png 0.18.1",
  "roxmltree 0.21.1",
  "serde",

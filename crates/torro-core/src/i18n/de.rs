@@ -9897,4 +9897,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "invisible or bidirectional Unicode control character (possible obfuscation)",
         "unsichtbares oder bidirektionales Unicode-Steuerzeichen (mögliche Verschleierung)",
     ),
+    // The menu bar on macOS (issue #894).
+    ("Hide others", "Andere ausblenden"),
 ];

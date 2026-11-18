@@ -34,3 +34,5 @@ tokio.workspace = true
 # Moves the traffic lights beside the title band's buttons (U.11).
 [target.'cfg(target_os = "macos")'.dependencies]
 torro-appkit.workspace = true
+# The menu bar with "Edit › Copy" (`menu_bar`, issue #894): ⌘C reaches an app only through its menu.
+muda.workspace = true
