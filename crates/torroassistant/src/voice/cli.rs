@@ -238,6 +238,7 @@ fn listen() -> ExitCode {
             echo: Some(echo.clone()),
             vad: parts.vad,
             early: parts.early,
+            turn: parts.turn,
         };
         match listener.run(&voice) {
             Ok(Ended::Changed) => continue,
@@ -310,6 +311,7 @@ fn round_line(round: &Heard) -> String {
         "after": round.after,
         "pause_ms": round.pause_ms,
         "recognize_ms": round.recognize_ms,
+        "held": round.held,
     }})
     .to_string()
 }
@@ -348,11 +350,12 @@ mod tests {
     /// `a_round_line_of_the_listener_is_read` reads; change both together.
     #[test]
     fn a_round_is_told_as_the_core_reads_it() {
-        let round = Heard { conversation: "c1".into(), after: 3, pause_ms: 1000, recognize_ms: 800 };
+        let round = Heard { conversation: "c1".into(), after: 3, pause_ms: 1000, recognize_ms: 800, held: true };
         let told: serde_json::Value = serde_json::from_str(&round_line(&round)).expect("one JSON line");
-        let pinned: serde_json::Value =
-            serde_json::from_str(r#"{"round":{"conversation":"c1","after":3,"pause_ms":1000,"recognize_ms":800}}"#)
-                .expect("the pinned line");
+        let pinned: serde_json::Value = serde_json::from_str(
+            r#"{"round":{"conversation":"c1","after":3,"pause_ms":1000,"recognize_ms":800,"held":true}}"#,
+        )
+        .expect("the pinned line");
         assert_eq!(told, pinned);
     }
 

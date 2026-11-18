@@ -24,6 +24,11 @@
 //! end, the text is mostly there; does the person go on, it is not used. Without the model, or when it fails,
 //! loudness tells speech, and the sentence is recognised once it ended.
 //!
+//! In that pause the listener also judges whether the sentence is over (issue #836, [`super::turn`]): Smart
+//! Turn hears its tone ([`Listener::turn`]), rules read the text recognised ahead. A finished sentence ends
+//! after the short pause of the settings, an unfinished one ("and then …", "um") after the long one, and
+//! "wait a moment" holds the turn until the person goes on; a hold over without more is not sent.
+//!
 //! [`CoreAssistant`] is the way to the core: it sends the sentence as `assistant.send_message`
 //! (`spoken`, so the answer is short) to the conversation of the conversation by voice with the model
 //! chosen there (issue #852), else to "Voice" with the chat model of the settings, the one used last
@@ -47,8 +52,9 @@ use torro_ipc::{Request, Response, Talk, VoiceState};
 use super::audio::{Endpoint, FRAMES_PER_SECOND, Limits, NoiseFloor, rms};
 use super::early::Early;
 use super::echo::Echo;
+use super::turn::{Pauses, Turn, decide, only_hold, rules};
 use super::wake::{after_wake_phrase, strip_wake_phrase};
-use super::{Recorder, Speaker, SpeechDetector, Stream, Transcriber, VoiceError, WakeWord};
+use super::{Recorder, Speaker, SpeechDetector, Stream, Transcriber, TurnDetector, VoiceError, WakeWord};
 use crate::backend::Refusal;
 
 /// What the listener asks of the core.
@@ -122,6 +128,20 @@ pub struct Heard {
     pub after: u64,
     pub pause_ms: u32,
     pub recognize_ms: u32,
+    /// The listener waited out a pause that ended every sentence before issue #836 ([`Endpoint::saved`]).
+    pub held: bool,
+}
+
+/// What is known of the end of a sentence in its pause (issue #836): the tone's judgement and the text's,
+/// each taken once per pause ([`Listener::judge_end`]).
+#[derive(Debug, Default)]
+struct Judging {
+    /// The probability Smart Turn gave that the sentence is finished.
+    model: Option<f32>,
+    /// What the text recognised ahead says ([`rules`]); `None` while it is recognised, or for no text.
+    text: Option<Turn>,
+    /// The text recognised ahead was looked at.
+    read: bool,
 }
 
 /// `frames` of the microphone as milliseconds.
@@ -296,6 +316,9 @@ pub struct Listener<'a, A: Assistant> {
     pub vad: Option<Box<dyn SpeechDetector>>,
     /// Recognises the sentence ahead in its pauses (issue #833); `None` recognises it once it ended.
     pub early: Option<Early>,
+    /// Hears in the tone whether a sentence is over (Smart Turn, issue #836); `None` leaves it to the text, as
+    /// does a detector that failed, for the rest of the run. Asked only with [`Listener::vad`].
+    pub turn: Option<Box<dyn TurnDetector>>,
 }
 
 impl<A: Assistant> Listener<'_, A> {
@@ -413,6 +436,7 @@ impl<A: Assistant> Listener<'_, A> {
         let mut with_tone = sentence.len();
         let mut end = Endpoint::new(floor, self.limits);
         let (mut frames, mut ahead) = (0usize, false);
+        let (pauses, mut judging) = (Pauses::of(voice), Judging::default());
         while let Some(frame) = stream.frame()? {
             frames += 1;
             // A reading that begins meanwhile: what the microphone hears is not the person's alone, unless
@@ -445,6 +469,7 @@ impl<A: Assistant> Listener<'_, A> {
             let speech = self.speech(&frame, level);
             let ended = end.push_heard(speech);
             self.look_ahead(speech, &end, &sentence, &mut ahead);
+            self.judge_end(speech, &mut end, &sentence, &mut judging, pauses);
             if ended {
                 break;
             }
@@ -460,7 +485,8 @@ impl<A: Assistant> Listener<'_, A> {
             (false, true) => (Said::WithWake, &sentence[..with_tone]),
             (false, false) => (Said::Nothing, &sentence[..]),
         };
-        let ended = self.answer(voice, recorded, said, end.trailing_quiet(), None, (readings, begins), ahead);
+        let pause = (end.trailing_quiet(), end.saved());
+        let ended = self.answer(voice, recorded, said, pause, None, (readings, begins), ahead);
         self.wake.reset();
         Ok(ended)
     }
@@ -509,6 +535,7 @@ impl<A: Assistant> Listener<'_, A> {
         }
         let (mut sentence, mut frames, mut recording, mut ended) = (Vec::new(), 0usize, false, false);
         let mut ahead = false;
+        let (pauses, mut judging) = (Pauses::of(voice), Judging::default());
         while let Some(frame) = stream.frame()? {
             frames += 1;
             if frames.is_multiple_of(self.check_every.max(1)) {
@@ -538,6 +565,7 @@ impl<A: Assistant> Listener<'_, A> {
             }
             // Before the end is looked at: speech in the last frame withdraws what was recognised ahead.
             self.look_ahead(speech, &end, &sentence, &mut ahead);
+            self.judge_end(speech, &mut end, &sentence, &mut judging, pauses);
             if ended {
                 break;
             }
@@ -557,7 +585,8 @@ impl<A: Assistant> Listener<'_, A> {
         }
         (self.report)(VoiceState::Recognizing);
         let said = Said::Speech { before: 0 };
-        Ok(self.answer(voice, &sentence, said, end.trailing_quiet(), Some(talk), (readings, opened), ahead))
+        let pause = (end.trailing_quiet(), end.saved());
+        Ok(self.answer(voice, &sentence, said, pause, Some(talk), (readings, opened), ahead))
     }
 
     /// Whether someone speaks in `frame`: as Silero VAD judges it, else when it is at least as loud as
@@ -569,8 +598,10 @@ impl<A: Assistant> Listener<'_, A> {
                 Err(err) => {
                     eprintln!("torroassistant: speech detection failed, speech is told by loudness: {err}");
                     self.vad = None;
-                    // Recognising ahead goes with Silero VAD (`Parts::early`): by loudness all stays as it was.
+                    // Recognising ahead and judging the end go with Silero VAD (`Parts::early`, `Parts::turn`): by
+                    // loudness all stays as it was.
                     self.early = None;
+                    self.turn = None;
                 }
             }
         }
@@ -586,6 +617,48 @@ impl<A: Assistant> Listener<'_, A> {
         } else if end.heard_speech() && end.trailing_quiet() == EARLY_AFTER {
             early.offer(sentence.to_vec());
             *ahead = true;
+        }
+    }
+
+    /// Judges in the pause of `sentence` whether it is over (issue #836) and has `end` wait as long as that
+    /// says ([`Pauses`]): at [`EARLY_AFTER`] quiet frames by its tone ([`Listener::turn`]), and once the text
+    /// recognised ahead is there by that text ([`rules`], [`decide`]). Speech forgets what was judged; without
+    /// Silero VAD nothing is judged and the pause of [`Limits`] ends the sentence. A turn detector that fails
+    /// is written to the log and left out for the rest of the run.
+    fn judge_end(&mut self, speech: bool, end: &mut Endpoint, sentence: &[i16], judging: &mut Judging, pauses: Pauses) {
+        if speech {
+            *judging = Judging::default();
+            return;
+        }
+        if self.vad.is_none() || !end.heard_speech() || end.trailing_quiet() < EARLY_AFTER {
+            return;
+        }
+        let mut new = false;
+        if end.trailing_quiet() == EARLY_AFTER
+            && let Some(turn) = &mut self.turn
+        {
+            match turn.complete(sentence) {
+                Ok(finished) => {
+                    judging.model = Some(finished);
+                    new = true;
+                }
+                Err(err) => {
+                    eprintln!("torroassistant: Smart Turn failed, the text tells the end of a sentence: {err}");
+                    self.turn = None;
+                }
+            }
+        }
+        if !judging.read
+            && let Some(text) = self.early.as_ref().and_then(Early::peek)
+        {
+            judging.read = true;
+            judging.text = text.ok().and_then(|text| rules(&text));
+            new = true;
+        }
+        match decide(judging.model, judging.text) {
+            Some(Turn::Hold) if new => end.hold(pauses.hold),
+            Some(turn) if new => end.wait_for(pauses.of_turn(turn)),
+            _ => {}
         }
     }
 
@@ -694,16 +767,19 @@ impl<A: Assistant> Listener<'_, A> {
     /// conversation by voice (decision 5). A closing sentence ends it without sending. `began` are the
     /// readings begun when the microphone opened, and when that was: a reading that began since, even one
     /// already over, drops the sentence, unless the echo cancellation took it out of the microphone (issue
-    /// #834). `quiet` frames of pause ended the sentence; with the time speech recognition took they
+    /// #834). `pause`: how many quiet frames ended the sentence and whether a pause that once ended it was
+    /// waited out ([`Endpoint::saved`], issue #836); with the time speech recognition took they
     /// go to [`Listener::heard`] once the sentence was sent, if the answer is read aloud. `ahead`: the
-    /// sentence was recognised ahead in its last pause ([`Listener::early`]), so that text is taken.
+    /// sentence was recognised ahead in its last pause ([`Listener::early`]), so that text is taken. With
+    /// Silero VAD a sentence of nothing but "um" and "wait a moment" is not sent: the hold ended without
+    /// more ([`only_hold`]).
     #[expect(clippy::too_many_arguments, reason = "the round's parts, each used once")]
     fn answer(
         &mut self,
         voice: &Voice,
         sentence: &[i16],
         said: Said,
-        quiet: usize,
+        pause: (usize, bool),
         talk: Option<Talk>,
         began: (u64, Instant),
         ahead: bool,
@@ -737,8 +813,9 @@ impl<A: Assistant> Listener<'_, A> {
                 return Ended::Nothing;
             }
         };
-        // Noise in a pause comes to no text: it is dropped and the conversation by voice goes on.
-        if text.is_empty() {
+        // Noise in a pause comes to no text: it is dropped and the conversation by voice goes on. So does a hold
+        // the person did not go on after (issue #836).
+        if text.is_empty() || (self.vad.is_some() && only_hold(&text)) {
             return if talk.is_some() { Ended::Unheard } else { Ended::Nothing };
         }
         if is_closing(&text) {
@@ -783,8 +860,9 @@ impl<A: Assistant> Listener<'_, A> {
             (self.heard)(Heard {
                 conversation: sent.conversation.clone(),
                 after: sent.after,
-                pause_ms: frames_ms(quiet),
+                pause_ms: frames_ms(pause.0),
                 recognize_ms,
+                held: pause.1,
             });
             self.read_answer(&sent.conversation);
         }
@@ -1512,18 +1590,21 @@ mod tests {
         transcriber: Box<dyn Transcriber>,
         tone: Duration,
     ) -> Run {
-        let ahead = Ahead { vad: None, early: None, limits: Limits::default(), echo: None };
+        let ahead = Ahead { vad: None, early: None, limits: Limits::default(), echo: None, turn: None };
         run_parts(core, files, wake, transcriber, tone, ahead)
     }
 
     /// What [`run_parts`] adds to [`run_with`] (issue #833): a speech detector, the recognition ahead and the
     /// limits of a sentence.
+    #[derive(Default)]
     struct Ahead {
         vad: Option<Box<dyn SpeechDetector>>,
         early: Option<Early>,
         limits: Limits,
         /// The echo cancellation (issue #834).
         echo: Option<Echo>,
+        /// Hears the end of a sentence in its tone (issue #836).
+        turn: Option<Box<dyn TurnDetector>>,
     }
 
     /// [`run_with`] with the parts of `ahead`.
@@ -1565,6 +1646,7 @@ mod tests {
             vad: ahead.vad,
             early: ahead.early,
             echo: ahead.echo,
+            turn: ahead.turn,
         };
         let ended = listener.run(&voice);
         drop(listener);
@@ -1945,7 +2027,7 @@ mod tests {
         echo: Echo,
     ) -> Run {
         let says = Box::new(Says(heard.iter().copied().collect()));
-        let ahead = Ahead { vad: None, early: None, limits: Limits::default(), echo: Some(echo) };
+        let ahead = Ahead { vad: None, early: None, limits: Limits::default(), echo: Some(echo), turn: None };
         run_parts(core, files, wake, says, Duration::from_millis(60), ahead)
     }
 
@@ -2106,6 +2188,7 @@ mod tests {
             vad: None,
             early: None,
             echo: None,
+            turn: None,
         };
         assert_eq!(listener.run(&on()), Ok(Ended::Changed));
         assert_eq!(*opened.borrow(), 0);
@@ -2348,14 +2431,25 @@ mod tests {
     /// The first sentence of a conversation from the window, judged by `script`, with the recognition
     /// ahead: what was sent, what was recognised now and what ahead.
     fn converse_ahead(script: Vec<bool>, limits: Limits) -> (Vec<String>, Vec<usize>, Vec<usize>) {
+        converse_ahead_saying(script, limits, "recognised ahead")
+    }
+
+    /// [`converse_ahead`] with `text` recognised ahead. A text without words ("…") does not judge the end of
+    /// the sentence (issue #836): the pause of the limits ends it.
+    fn converse_ahead_saying(
+        script: Vec<bool>,
+        limits: Limits,
+        text: &'static str,
+    ) -> (Vec<String>, Vec<usize>, Vec<usize>) {
         let (now, said_now) = Counted::new("recognised now");
-        let (ahead, said_ahead) = Counted::new("recognised ahead");
+        let (ahead, said_ahead) = Counted::new(text);
         let vad = Judges::first(script);
         let parts = Ahead {
             vad: Some(Box::new(vad)),
             early: Some(Early::new(Box::new(ahead)).expect("thread")),
             limits,
             echo: None,
+            turn: None,
         };
         let core = Core { talk: talk_in(Some("a1")), ..Core::new(Voice::default()) };
         let run = run_parts(core, &[PAUSE, PAUSE], None, Box::new(now), Duration::ZERO, parts);
@@ -2401,7 +2495,8 @@ mod tests {
         let longest = TALK_WAIT_SECONDS * FRAMES_PER_SECOND + 10;
         let script = [vec![true; 5], vec![false; longest - 6], vec![true]].concat();
         let limits = Limits { most: 10, pause: 2 * longest, ..Limits::default() };
-        let (sent, now, ahead) = converse_ahead(script, limits);
+        // Issue #836: a text that judged the end would end it after the short pause, not at its longest.
+        let (sent, now, ahead) = converse_ahead_saying(script, limits, "…");
         assert_eq!(sent, ["recognised now"], "ahead: {ahead:?}");
         assert_eq!(now.len(), 1);
     }
@@ -2413,7 +2508,7 @@ mod tests {
         let (ahead, said_ahead) = Counted::new("Hey Torro, recognised ahead");
         let (vad, _) = Judges::new(judge, None);
         let early = Some(Early::new(Box::new(ahead)).expect("thread"));
-        let parts = Ahead { vad: Some(Box::new(vad)), early, limits: Limits::default(), echo: None };
+        let parts = Ahead { vad: Some(Box::new(vad)), early, limits: Limits::default(), echo: None, turn: None };
         let run = run_parts(Core::new(on()), &[PAUSE, PAUSE], Some(2), Box::new(now), Duration::ZERO, parts);
         let texts = messages(&run.sent)
             .into_iter()
@@ -2455,7 +2550,7 @@ mod tests {
     #[test]
     fn a_failed_speech_detector_falls_back_to_loudness() {
         let (vad, calls) = Judges::new(Box::new(|_, _| true), Some(3));
-        let parts = Ahead { vad: Some(Box::new(vad)), early: None, limits: Limits::default(), echo: None };
+        let parts = Ahead { vad: Some(Box::new(vad)), early: None, limits: Limits::default(), echo: None, turn: None };
         let core = Core { talk: talk_in(Some("a1")), ..Core::new(Voice::default()) };
         let says = Box::new(Says(["What is on today?"].into()));
         let run = run_parts(core, &[THINKING, PAUSE], None, says, Duration::ZERO, parts);
@@ -2463,6 +2558,150 @@ mod tests {
         let sent = messages(&run.sent);
         let Request::SendMessage { text, .. } = sent[0] else { unreachable!() };
         assert_eq!((sent.len(), text.as_str()), (1, "What is on today?"));
+    }
+
+    /// Recognises ahead the texts in order, the last one again and again, from its thread, and says each time
+    /// it recognised (issue #836).
+    struct Recognises {
+        texts: VecDeque<&'static str>,
+        done: mpsc::Sender<()>,
+    }
+
+    impl Transcriber for Recognises {
+        fn transcribe(&mut self, _: &[i16]) -> Result<String, VoiceError> {
+            let text = if self.texts.len() > 1 { self.texts.pop_front() } else { self.texts.front().copied() };
+            let _ = self.done.send(());
+            Ok(text.unwrap_or_default().to_string())
+        }
+    }
+
+    /// A turn detector that hears `finished` (an error for `None`) and counts how often it was asked. It waits
+    /// until the text ahead was recognised, so the listener judges by both, as when Whisper is quick: the test's
+    /// frames come far faster than a microphone's.
+    struct Hears {
+        finished: Option<f32>,
+        recognised: mpsc::Receiver<()>,
+        asked: Rc<RefCell<usize>>,
+    }
+
+    impl TurnDetector for Hears {
+        fn complete(&mut self, samples: &[i16]) -> Result<f32, VoiceError> {
+            assert!(!samples.is_empty());
+            *self.asked.borrow_mut() += 1;
+            let _ = self.recognised.recv_timeout(Duration::from_secs(10));
+            // The result is stored just after the recogniser returned.
+            std::thread::sleep(Duration::from_millis(50));
+            self.finished.ok_or_else(|| VoiceError::program("smart turn", "broke"))
+        }
+    }
+
+    /// The first sentence of a conversation from the window, judged by `script` (Silero VAD), recognised ahead
+    /// as `texts` and heard by a turn detector that hears `finished`: the run and how often the detector was
+    /// asked.
+    fn converse_judged(script: Vec<bool>, texts: &[&'static str], finished: Option<f32>) -> (Run, usize) {
+        let (done, recognised) = mpsc::channel();
+        let early = Early::new(Box::new(Recognises { texts: texts.iter().copied().collect(), done })).expect("thread");
+        let asked = Rc::new(RefCell::new(0));
+        let turn = Hears { finished, recognised, asked: Rc::clone(&asked) };
+        let parts = Ahead {
+            vad: Some(Box::new(Judges::first(script))),
+            early: Some(early),
+            turn: Some(Box::new(turn)),
+            ..Ahead::default()
+        };
+        let core = Core { talk: talk_in(Some("a1")), ..Core::new(Voice::default()) };
+        let says = Box::new(Says(["recognised now"].into()));
+        let run = run_parts(core, &[PAUSE, PAUSE], None, says, Duration::ZERO, parts);
+        let asked = *asked.borrow();
+        (run, asked)
+    }
+
+    /// The texts sent.
+    fn texts(run: &Run) -> Vec<String> {
+        messages(&run.sent)
+            .into_iter()
+            .map(|request| match request {
+                Request::SendMessage { text, .. } => text.clone(),
+                _ => unreachable!(),
+            })
+            .collect()
+    }
+
+    /// Issue #836: a finished sentence ends after the short pause of the settings, not after a second.
+    #[test]
+    fn a_finished_sentence_ends_after_the_short_pause() {
+        let pauses = Pauses::of(&Voice::default());
+        for text in ["Wie wird das Wetter morgen?", "What is the weather tomorrow?"] {
+            let (run, asked) = converse_judged(vec![true; 5], &[text], Some(0.9));
+            assert_eq!(texts(&run), [text]);
+            assert_eq!(asked, 1);
+            assert_eq!(run.heard.len(), 1, "{:?}", run.heard);
+            assert_eq!(run.heard[0].pause_ms, frames_ms(pauses.done), "{text}");
+            assert!(frames_ms(pauses.done) < 1000 && !run.heard[0].held);
+        }
+    }
+
+    /// Issue #836: "ähm" at the end waits the long pause, whatever the tone says; the person goes on after more
+    /// than the old second, and the whole sentence is sent once, counted as waited out.
+    #[test]
+    fn an_unfinished_sentence_waits_the_long_pause() {
+        let pauses = Pauses::of(&Voice::default());
+        let (run, _) = converse_judged(vec![true; 5], &["Ich will morgen … ähm"], Some(0.9));
+        assert_eq!(run.heard[0].pause_ms, frames_ms(pauses.open), "the long pause ended it");
+
+        // 1.5 s of thinking: more than the second that ended every sentence before, less than the long pause.
+        let thinking = FRAMES_PER_SECOND * 3 / 2;
+        assert!(thinking > Limits::default().pause && thinking < pauses.open);
+        let script = [vec![true; 5], vec![false; thinking], vec![true; 5]].concat();
+        let texts_ahead = ["Ich will morgen … ähm", "Ich will morgen ähm ins Kino."];
+        let (run, asked) = converse_judged(script, &texts_ahead, Some(0.9));
+        assert_eq!(texts(&run), ["Ich will morgen ähm ins Kino."], "one sentence, sent whole");
+        assert_eq!(asked, 2, "once in each pause");
+        assert!(run.heard[0].held, "a pause that once ended it was waited out");
+        assert_eq!(run.heard[0].pause_ms, frames_ms(pauses.done), "the finished sentence ended soon");
+    }
+
+    /// Issue #836: "Moment" holds the turn past the long pause; the question after it arrives in one sentence.
+    #[test]
+    fn wait_a_moment_holds_the_turn() {
+        let pauses = Pauses::of(&Voice::default());
+        // Eight seconds of silence after "Warte mal".
+        let silent = 8 * FRAMES_PER_SECOND;
+        assert!(silent > pauses.open && silent < pauses.hold);
+        let script = [vec![true; 5], vec![false; silent], vec![true; 5]].concat();
+        let texts_ahead = ["Warte mal.", "Warte mal. Wie wird das Wetter morgen?"];
+        let (run, _) = converse_judged(script, &texts_ahead, Some(0.9));
+        assert_eq!(texts(&run), ["Warte mal. Wie wird das Wetter morgen?"]);
+        assert!(run.heard[0].held);
+    }
+
+    /// Issue #836: a hold the person does not go on after ends at its limit and sends nothing.
+    #[test]
+    fn a_hold_alone_is_not_sent() {
+        let (run, _) = converse_judged(vec![true; 5], &["Moment"], Some(0.9));
+        assert!(texts(&run).is_empty(), "{:?}", run.sent);
+        assert!(run.heard.is_empty());
+    }
+
+    /// Issue #836: a turn detector that fails is left out, and the text decides alone.
+    #[test]
+    fn a_failed_turn_detector_leaves_the_text_to_decide() {
+        let pauses = Pauses::of(&Voice::default());
+        let (run, asked) = converse_judged(vec![true; 5], &["Wie wird das Wetter morgen?"], None);
+        assert_eq!(asked, 1);
+        assert_eq!(texts(&run), ["Wie wird das Wetter morgen?"]);
+        assert_eq!(run.heard[0].pause_ms, frames_ms(pauses.done), "the rules found it finished");
+
+        // Nor without Silero VAD is anything judged: the pause of a second ends the sentence, as before.
+        let asked = Rc::new(RefCell::new(0));
+        let (_, recognised) = mpsc::channel();
+        let turn = Hears { finished: Some(0.9), recognised, asked: Rc::clone(&asked) };
+        let parts = Ahead { turn: Some(Box::new(turn)), ..Ahead::default() };
+        let core = Core { talk: talk_in(Some("a1")), ..Core::new(Voice::default()) };
+        let says = Box::new(Says(["What is on today?"].into()));
+        let run = run_parts(core, &["utterance.wav", PAUSE], None, says, Duration::ZERO, parts);
+        assert_eq!(*asked.borrow(), 0);
+        assert_eq!(run.heard[0].pause_ms, frames_ms(Limits::default().pause));
     }
 
     #[test]

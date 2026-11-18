@@ -257,6 +257,11 @@ livekit-wakeword = "0.2.0"
 # microphone, so it stays open while the assistant speaks. A port of WebRTC's AEC3 in pure Rust, builds on every
 # system without C++. Default features only (the examples are off). BSD-3-Clause.
 sonora = "0.3.0"
+# Smart Turn of Pipecat (torroassistant, issue #836): hears in the tone of the last seconds whether a person finished
+# a sentence. tract runs its ONNX in pure Rust, the same version livekit-wakeword brings, so no second ONNX Runtime;
+# pinned to that version. rustfft computes its Whisper features (log-mel), also already in the tree. Both MIT/Apache-2.0.
+tract-onnx = "=0.22.5"
+rustfft = "6.4.1"
 # The PDF tool of the assistant (torroworkplace, WZ.3, spike in spikes/printpdf): pulldown-cmark reads the model's
 # Markdown, the core writes clean HTML from its events, printpdf's HTML layout (azul-layout) sets the pages, PNG and
 # JPEG only for the template's logo. Pinned exactly: the core works around gaps of this layout version (lists,
