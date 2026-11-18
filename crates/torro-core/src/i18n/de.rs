@@ -3340,6 +3340,24 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Diese Nachricht ist zu groß für die Anzeige; ihr Original bleibt für das Backup gespeichert.",
     ),
     ("The message has no such attachment.", "Die Nachricht hat keinen solchen Anhang."),
+    // Reading an attachment's text for the assistant (#893): its tool line and why a file is not read
+    ("Read attachment", "Anhang gelesen"),
+    (
+        "Torro Workplace cannot read this kind of file yet ({type}); it reads text and PDF attachments.",
+        "Torro Workplace kann diese Art Datei noch nicht lesen ({type}); es liest Text- und PDF-Anhänge.",
+    ),
+    (
+        "This PDF is protected with a password; Torro Workplace cannot read it.",
+        "Diese PDF ist mit einem Passwort geschützt; Torro Workplace kann sie nicht lesen.",
+    ),
+    (
+        "This PDF has no text layer, likely a scan; Torro Workplace cannot read it.",
+        "Diese PDF hat keine Textebene, wohl ein Scan; Torro Workplace kann sie nicht lesen.",
+    ),
+    (
+        "This attachment is not a text file Torro Workplace can read.",
+        "Dieser Anhang ist keine Textdatei, die Torro Workplace lesen kann.",
+    ),
     ("This cursor is not valid. Search again without it.", "Dieser Cursor ist ungültig. Suche ohne ihn erneut."),
     // Mail search: the query language (issue #136)
     ("“has:{value}” is not known. Use has:attachment.", "„has:{value}“ ist unbekannt. Verwende has:attachment."),
