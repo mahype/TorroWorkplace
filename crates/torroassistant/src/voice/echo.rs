@@ -313,6 +313,29 @@ mod tests {
         assert!(!wakes(&out), "the wake word read aloud does not wake it");
     }
 
+    /// Issue #835 (risk of the plan): what is left of "Hey Torro" read aloud in the room after the cancellation never
+    /// holds speech long enough to interrupt the answer.
+    #[test]
+    fn what_is_left_of_the_reading_does_not_interrupt() {
+        let mut played = fixture("hey_torro.wav");
+        played.extend(vec![0; RATE as usize / 2]);
+        let gain = gain_for(&played, 2000.0);
+        let heard = in_the_room(&played, gain);
+        let level = NoiseFloor::default().speech();
+        let longest = |frames: &[Vec<i16>]| {
+            let (mut run, mut most) = (0usize, 0usize);
+            for frame in frames {
+                run = if rms(frame) >= level { run + 1 } else { 0 };
+                most = most.max(run);
+            }
+            most
+        };
+        let raw: Vec<Vec<i16>> = heard.chunks(FRAME).map(<[i16]>::to_vec).collect();
+        assert!(longest(&raw) >= super::super::listen::INTERRUPT_AFTER, "without cancellation it would interrupt");
+        let out = cancelled(&played, heard);
+        assert!(longest(&out) < super::super::listen::INTERRUPT_AFTER, "the echo left: {} frames", longest(&out));
+    }
+
     /// Issue #834: the person speaking over what is read aloud is still heard.
     #[test]
     fn the_person_is_heard_over_what_is_read_aloud() {

@@ -229,7 +229,7 @@ pub const EARLY_AFTER: usize = 4;
 /// How many frames of speech in a row interrupt the answer read aloud (issue #835): 320 ms, longer than a
 /// cough or "mhm", short enough that the assistant stops almost as the person begins. No setting: waiting for
 /// the text would cost up to a second.
-const INTERRUPT_AFTER: usize = 4;
+pub(crate) const INTERRUPT_AFTER: usize = 4;
 
 /// How many frames before the speech that interrupted go with it (issue #835): Silero VAD hears a word's
 /// beginning a little late.
@@ -927,7 +927,9 @@ impl<A: Assistant> Listener<'_, A> {
             self.read_answer(&sent.conversation);
         }
         match self.assistant.follow(&sent) {
-            Ok(reply) if reply.approval => {
+            // Interrupted (issue #835): the answer stopped, and what the person says goes on in this conversation
+            // by voice; the approval stays in the window.
+            Ok(reply) if reply.approval && self.carried.is_none() => {
                 if let Err(err) = self.assistant.end_talk() {
                     eprintln!("torroassistant: {err}");
                 }
@@ -2916,10 +2918,20 @@ mod tests {
         vad: Option<Box<dyn SpeechDetector>>,
         echo: Option<Echo>,
     ) -> (Run, Vec<Vec<i16>>) {
+        let core = Core { talk: talk_in(Some("a1")), ..Core::new(Voice::default()) };
+        interrupted_in(core, during, vad, echo)
+    }
+
+    /// [`interrupted`] with the core `core`.
+    fn interrupted_in(
+        core: Core,
+        during: &'static str,
+        vad: Option<Box<dyn SpeechDetector>>,
+        echo: Option<Echo>,
+    ) -> (Run, Vec<Vec<i16>>) {
         let given = Rc::new(RefCell::new(Vec::new()));
         let keeps = Box::new(Keeps { text: "Move the meeting.", given: Rc::clone(&given) });
         let ahead = Ahead { vad, echo, reader: Some(reading_for(Duration::from_millis(300))), ..Ahead::default() };
-        let core = Core { talk: talk_in(Some("a1")), ..Core::new(Voice::default()) };
         // The first sentence, the microphone while its answer is read, the one while the next is read, the end.
         let run = run_parts(core, &[SPEAKS, during, PAUSE, PAUSE], None, keeps, Duration::ZERO, ahead);
         let given = given.borrow().clone();
@@ -2982,5 +2994,18 @@ mod tests {
         assert_eq!(interrupts(&without_echo), 0, "{:?}", without_echo.sent);
         let (not_running, _) = interrupted(SPEAKS, Some(Box::new(Loud)), Some(Echo::default()));
         assert_eq!(interrupts(&not_running), 0, "{:?}", not_running.sent);
+    }
+
+    /// Review of #835: interrupted while the answer that waits for an approval is read, the person's words still
+    /// go in as the next message; the approval stays in the window, the talk goes on.
+    #[test]
+    fn an_answer_waiting_for_an_approval_is_interrupted_without_losing_the_words() {
+        let (echo, _running) = echo_running();
+        let mut core = Core { talk: talk_in(Some("a1")), ..Core::new(Voice::default()) };
+        core.answer.push(EntryContent::Approval { id: "ap1".into() });
+        let (run, _) = interrupted_in(core, SPEAKS, Some(Box::new(Loud)), Some(echo));
+        assert_eq!(count(&run.sent, &Request::InterruptAnswer { conversation: "a1".into() }), 1, "{:?}", run.sent);
+        assert_eq!(messages(&run.sent).len(), 2, "the words that interrupted were sent: {:?}", run.sent);
+        assert!(!run.sent.iter().any(|request| request.operation().name().starts_with("approvals.")));
     }
 }
