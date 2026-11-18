@@ -5,15 +5,16 @@
 //!   `application/octet-stream` (what many mailers send for any file) only the names ending in `txt csv md
 //!   json xml log ics vcf`. A `text/*` part arrives as UTF-8 already: the MIME parser applies its `charset`.
 //!   Other bytes are read as UTF-8, as UTF-16 with a byte order mark, or as Windows-1252, the usual older
-//!   encoding of mail from Western Europe (a Latin-1 CSV of a bank sent as a file, say) – but only while few of
-//!   them are outside ASCII: text in another encoding (Shift-JIS, Cyrillic) would come out garbled and is
-//!   refused instead. A NUL byte means binary.
+//!   encoding of mail from Western Europe (a Latin-1 CSV of a bank sent as a file, say) – but only while bytes
+//!   outside ASCII stand alone or in pairs, as in those languages: a word in another encoding (Shift-JIS,
+//!   Cyrillic) is a longer run, would come out garbled and is refused instead. A text of single letters of such
+//!   an encoding is not told apart. A NUL byte means binary.
 //! - **PDF** (`application/pdf`, or a name ending in `.pdf` sent as `application/octet-stream`): the text layer
 //!   through `lopdf`, read in a process of its own (`torroworkplace pdf-text`, [`run_helper`]), as a file from
 //!   outside can make `lopdf` inflate far more than any single bound holds (each stream and each page has its
 //!   own). The core waits at most [`HELPER_TIME`] and then ends it; on Linux the process also limits its own
 //!   memory ([`HELPER_MEMORY`] beyond what it maps at the start), on Linux and macOS its processor time, so a
-//!   crafted PDF ends that process, never the core. On macOS and Windows the memory is not limited (macOS does
+//!   crafted PDF ends that process (without a core dump), never the core. One such process runs at a time. On macOS and Windows the memory is not limited (macOS does
 //!   not hold a process to its address space, Windows would need native code), the time is. Within it: how far a stream may inflate ([`PDF_INFLATE_LIMIT`]), how many pages it may have
 //!   ([`PDF_MAX_PAGES`], counted lazily before `lopdf` collects them for every page read), how much text is kept
 //!   and how long reading may take ([`PDF_READ_TIME`]). A page whose text cannot be read is passed over. A
@@ -67,9 +68,10 @@ const PDF_MAX_PAGES: usize = 1000;
 /// How long reading the text of a PDF may take; what is read by then is kept and the rest cut.
 const PDF_READ_TIME: Duration = Duration::from_secs(20);
 
-/// The share of bytes outside ASCII above which a text that is no UTF-8 is not taken for Windows-1252: a quarter.
-/// German, French or Spanish text has far fewer; Shift-JIS or Cyrillic text far more.
-const LEGACY_MAX_NON_ASCII: f64 = 0.25;
+/// The longest run of bytes outside ASCII a text that is no UTF-8 may hold to be taken for Windows-1252: two. In
+/// German, French or Spanish they stand alone or in pairs ("Grüße"); a word in Shift-JIS or Cyrillic ("Иванов")
+/// is a longer run.
+const LEGACY_MAX_RUN: usize = 2;
 
 /// The name endings read as text when a mail sends a file as `application/octet-stream`.
 const TEXT_ENDINGS: [&str; 8] = ["txt", "csv", "md", "json", "xml", "log", "ics", "vcf"];
@@ -166,8 +168,8 @@ fn text(bytes: &[u8]) -> Result<Extracted, Unreadable> {
     Ok(Extracted { kind: AttachmentKind::Text, pages: None, text, cut })
 }
 
-/// `bytes` as text: UTF-8 (a byte order mark left out), UTF-16 with a byte order mark, else Windows-1252 while at
-/// most [`LEGACY_MAX_NON_ASCII`] of them are outside ASCII. A NUL byte outside UTF-16, which no text file holds,
+/// `bytes` as text: UTF-8 (a byte order mark left out), UTF-16 with a byte order mark, else Windows-1252 while no
+/// run of bytes outside ASCII is longer than [`LEGACY_MAX_RUN`]. A NUL byte outside UTF-16, which no text file holds,
 /// and a text in an encoding that cannot be told make it unsupported.
 fn decode(bytes: &[u8]) -> Result<String, Unreadable> {
     for (mark, encoding) in [(&b"\xFF\xFE"[..], UTF_16LE), (&b"\xFE\xFF"[..], UTF_16BE)] {
@@ -186,16 +188,22 @@ fn decode(bytes: &[u8]) -> Result<String, Unreadable> {
     if let Ok(text) = std::str::from_utf8(bytes) {
         return Ok(text.to_string());
     }
-    let outside = bytes.iter().filter(|byte| !byte.is_ascii()).count();
-    // Exact enough for a share: the count and length of a file of at most 50 MiB fit a float's 53 bits.
-    #[allow(clippy::cast_precision_loss)]
-    let share = outside as f64 / bytes.len() as f64;
-    if share > LEGACY_MAX_NON_ASCII {
+    if longest_run_outside_ascii(bytes) > LEGACY_MAX_RUN {
         return Err(Unreadable::Unsupported(
             tr("This text file uses a character encoding Torro Workplace cannot tell; it cannot read it.").into(),
         ));
     }
     Ok(WINDOWS_1252.decode_without_bom_handling(bytes).0.into_owned())
+}
+
+/// The longest run of bytes outside ASCII in `bytes`.
+fn longest_run_outside_ascii(bytes: &[u8]) -> usize {
+    let (mut longest, mut run) = (0, 0);
+    for byte in bytes {
+        run = if byte.is_ascii() { 0 } else { run + 1 };
+        longest = longest.max(run);
+    }
+    longest
 }
 
 /// The answer for bytes that are no text.
@@ -312,6 +320,9 @@ fn limit_self() {
         }
         let seconds = HELPER_TIME.as_secs();
         let _ = setrlimit(Resource::RLIMIT_CPU, seconds, seconds.saturating_add(5));
+        // A PDF that hits a limit ends this process with a signal: no core dump, which would cost disk and time
+        // and read as a crash of Torro Workplace.
+        let _ = setrlimit(Resource::RLIMIT_CORE, 0, 0);
     }
 }
 
@@ -327,7 +338,7 @@ fn mapped_now() -> Option<u64> {
 /// The command that starts the helper: this program with [`HELPER`]. In the tests, the test program itself, running
 /// the one test that acts as the helper.
 fn helper_command() -> std::io::Result<tokio::process::Command> {
-    let mut command = tokio::process::Command::new(std::env::current_exe()?);
+    let mut command = tokio::process::Command::new(this_program()?);
     #[cfg(not(test))]
     command.arg(HELPER);
     #[cfg(test)]
@@ -336,11 +347,28 @@ fn helper_command() -> std::io::Result<tokio::process::Command> {
     Ok(command)
 }
 
-/// The text of the PDF `bytes` from the helper ([`run_helper`]): ended after [`HELPER_TIME`], and a helper that the
-/// system ended (memory or time) or that answers nothing counts as a PDF too costly to read.
+/// This program, to start as the helper. On Linux a program replaced while the core runs (a new version installed)
+/// is named `… (deleted)`: then the program now at its path, the new version.
+fn this_program() -> std::io::Result<std::path::PathBuf> {
+    let program = std::env::current_exe()?;
+    if program.exists() {
+        return Ok(program);
+    }
+    let replaced = program.to_str().and_then(|path| path.strip_suffix(" (deleted)")).map(std::path::PathBuf::from);
+    Ok(replaced.filter(|path| path.exists()).unwrap_or(program))
+}
+
+/// At most one helper at a time: each may take [`HELPER_MEMORY`], and on macOS and Windows its memory is not
+/// limited, so many at once (an agent reading pages in parallel) must not add up. The others wait their turn.
+static HELPERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
+/// The text of the PDF `bytes` from the helper ([`run_helper`]), one at a time ([`HELPERS`]): ended after
+/// [`HELPER_TIME`]. A helper that panicked (exit code 101, a damaged file `lopdf` gave up on) counts as a damaged PDF,
+/// one the system ended (memory, processor time) and answering nothing as a PDF too costly to read.
 async fn isolated(bytes: Vec<u8>) -> Result<Extracted, Unreadable> {
     let too_long =
         || Unreadable::Unsupported(tr("This PDF takes too long to read; Torro Workplace cannot read it.").into());
+    let _turn = HELPERS.acquire().await.map_err(|_| Unreadable::Broken)?;
     let mut wrap = CommandWrap::from(helper_command().map_err(|_| Unreadable::Broken)?);
     #[cfg(unix)]
     wrap.wrap(ProcessGroup::leader());
@@ -360,12 +388,18 @@ async fn isolated(bytes: Vec<u8>) -> Result<Extracted, Unreadable> {
     // Dropping the child when the time is up ends the helper (`KillOnDrop`).
     let output = tokio::time::timeout(HELPER_TIME, Box::into_pin(child.wait_with_output())).await;
     feed.abort();
-    let Ok(Ok(output)) = output else { return Err(too_long()) };
+    let output = match output {
+        Ok(Ok(output)) => output,
+        Ok(Err(_)) => return Err(Unreadable::Broken),
+        Err(_) => return Err(too_long()),
+    };
     let out = String::from_utf8_lossy(&output.stdout);
     let answer = out.lines().find_map(|line| line.strip_prefix(ANSWER_MARK));
     match answer.map(serde_json::from_str::<Result<Extracted, Unreadable>>) {
         Some(Ok(answer)) => answer,
         Some(Err(_)) => Err(Unreadable::Broken),
+        // Rust's exit code for a panic.
+        None if output.status.code() == Some(101) => Err(Unreadable::Broken),
         None => Err(Unreadable::Unsupported(
             tr("This PDF needs too much memory or time to read; Torro Workplace cannot read it.").into(),
         )),
@@ -457,7 +491,15 @@ pub(crate) mod tests {
         let mut be = vec![0xFE, 0xFF];
         be.extend("Grüße".encode_utf16().flat_map(u16::to_be_bytes));
         assert_eq!(extract("application/octet-stream", Some("a.txt"), &be).expect("read").text, "Grüße");
-        // Shift-JIS (or Cyrillic in Windows-1251) would come out garbled as Windows-1252: refused instead.
+        // A short Latin-1 text is read, however many of its bytes are outside ASCII.
+        assert_eq!(extract("application/octet-stream", Some("a.txt"), b"Gr\xfc\xdfe").expect("read").text, "Grüße");
+        // Cyrillic in Windows-1251 would come out garbled as Windows-1252, even with much ASCII around it.
+        let cyrillic = b"\xc8\xe2\xe0\xed\xee\xe2;12345,00;2026-01-01";
+        assert!(matches!(
+            extract("application/octet-stream", Some("ru.csv"), cyrillic),
+            Err(Unreadable::Unsupported(_))
+        ));
+        // Shift-JIS as well: refused instead.
         let shift_jis = b"\x93\xfa\x96\x7b\x8c\xea\x82\xcc\x83\x65\x83\x4c\x83\x58\x83\x67";
         assert_eq!(
             unsupported(extract("application/octet-stream", Some("jp.txt"), shift_jis)),
