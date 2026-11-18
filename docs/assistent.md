@@ -271,6 +271,13 @@ mittel und schmal deckt es die Mail ab („‹ Mail“ führt zurück). Entwurf:
 - **Die Mail liest der Kern vorab.** Vor der ersten Antwort ruft er `mail.get_message` wie ein Werkzeug
   auf (Rechte, Werkzeugzeile). Frühere Mails holt das Modell nur auf Abruf über
   `mail.get_thread` und `mail.search_messages`; das hält den Kontext lokaler Modelle klein.
+- **Anhänge lesen (#893).** Die Anhänge stehen in `attachments` von `mail.get_message`. Ihren Inhalt liest das
+  Modell mit `mail.read_attachment` (Read, dieselben Rechte wie die Mail): Textdateien (Text, CSV, Markdown,
+  JSON, XML, Kalender- und Kontaktdateien) und PDFs mit Textebene, seitenweise wie `tools.read_file`. Der Kern
+  holt den Anhang, liest den Text selbst (PDF über `lopdf`) und schreibt keine Datei. Bilder, Office-Dateien,
+  geschützte PDFs und Scans ohne Textebene sind `unsupported` mit einem Satz für die Person; das Modell sagt
+  dann, dass es die Datei nicht lesen kann, und rät nicht. Die PDF-Werkzeuge der MCP-Server stehen hier
+  absichtlich nicht bereit (siehe oben). Bilder: #896. Der Inhalt ist `untrusted` wie die Mail.
 - **Vorschläge als Karte.** Was das Modell über `mail.extract_action` ausliest (die Worte der Person als
   `focus`), wird ein Vorschlag der Mail wie in [vorschlaege.md](vorschlaege.md) und erscheint als Karte
   im Chat. „Accept“ öffnet den vorausgefüllten Dialog; erst „Create“ legt an. Die Karte gibt es nur im
@@ -1144,6 +1151,7 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | Unterhaltung lesen (ab Stelle) | Verlauf | `assistant.get_conversation` · Read | `assistant_get_conversation` |
 | Nachricht schicken (neue oder bestehende Unterhaltung) | Eingabefeld | `assistant.send_message` · Write (startet einen Modelllauf) | `assistant_send_message` |
 | Fragen zu einer Mail | Mail › „Ask AI…“ (Paneel) | `assistant.send_message` mit `about` · Write | `assistant_send_message` mit `about` |
+| Anhang einer Mail lesen (Text und PDF mit Textebene, seitenweise; #893) | Mail › „Ask AI…“ (Werkzeugzeile „Read attachment“) | `mail.read_attachment` · Read | `mail_read_attachment` |
 | Vorab prüfen, ob ein Chat zu einer Mail ginge | Mail › „Ask AI…“ (Hinweis beim Öffnen) | `assistant.check_about` · Read | `assistant_check_about` |
 | Antwort abbrechen | „Stop“ | `assistant.cancel` · Write | `assistant_cancel` |
 | Unterhaltung umbenennen | Kontextmenü | `assistant.rename_conversation` · Write | `assistant_rename_conversation` |
