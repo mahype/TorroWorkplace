@@ -517,7 +517,7 @@ impl State {
                 conversation.push(now, answer(&text));
             }
         }
-        conversation.push(now, EntryContent::Stopped);
+        conversation.push(now, EntryContent::Stopped { heard: None });
         conversation.summary.running = false;
         Response::Ok
     }
@@ -751,7 +751,7 @@ fn samples(now: DateTime<Utc>) -> Vec<Conversation> {
                 None,
             ),
             answer(tr("Monday and Wednesday evening are free.")),
-            EntryContent::Stopped,
+            EntryContent::Stopped { heard: None },
         ],
     );
     // Past the limit (issue #831): the core cut older parts, so the header says "Shortened".
@@ -1491,6 +1491,6 @@ mod tests {
         assert_eq!(demo.answer(Request::CancelAnswer { conversation: STREAMING.into() }), Response::Ok);
         let (summary, entries) = conversation(demo.answer(ask()));
         assert!(!summary.running);
-        assert!(matches!(entries.last().map(|entry| &entry.content), Some(EntryContent::Stopped)));
+        assert!(matches!(entries.last().map(|entry| &entry.content), Some(EntryContent::Stopped { .. })));
     }
 }

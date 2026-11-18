@@ -1069,7 +1069,7 @@ mod tests {
             let entry = conversation.next(answer("…"), at(minute));
             conversation.apply(Line::Entry { entry });
         }
-        let stale = Entry { seq: 2, time: at(4), content: EntryContent::Stopped };
+        let stale = Entry { seq: 2, time: at(4), content: EntryContent::Stopped { heard: None } };
         conversation.apply(Line::Entry { entry: stale });
         assert_eq!(conversation.last(), 3);
         let seqs = |after| conversation.entries_after(after).iter().map(|entry| entry.seq).collect::<Vec<_>>();

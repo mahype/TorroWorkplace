@@ -2012,7 +2012,7 @@ fn an_answer_stored_under_another_number_goes_on_where_it_was() {
     assert!(!before.is_empty());
     let text = app.transcript.last_answer_text().unwrap_or_default().to_owned();
     // The core stored something else under 2; the text grows on under 3.
-    let other = Entry { seq: 2, time: chrono::Utc::now(), content: EntryContent::Stopped };
+    let other = Entry { seq: 2, time: chrono::Utc::now(), content: EntryContent::Stopped { heard: None } };
     let entries = vec![other, answer_entry(3, &format!("{text} more"))];
     let _ = app.update(Message::Followed(id_of(&app), Ok((head(&app, 2, true), entries))));
     assert_eq!(app.appearing(), Some(3));

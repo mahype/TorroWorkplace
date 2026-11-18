@@ -419,8 +419,15 @@ pub enum EntryContent {
     Approval { id: String },
     /// The answer failed; `code` as in every error answer, `message` for people.
     Error { code: String, message: String },
-    /// The answer was stopped (`assistant.cancel`); what it did until then stays above.
-    Stopped,
+    /// The answer was stopped (`assistant.cancel`); what it did until then stays above. Interrupted while it
+    /// was read aloud (`assistant.interrupt`, issue #835), `heard` keeps what was read of it: every sentence
+    /// that began to sound, the last ending in "…". The answer above stays as the model wrote it; the window
+    /// shows `heard` as what was said, and the model reads only that and the shown part.
+    Stopped {
+        /// What was read aloud of the answer before it was interrupted; `None` for a stop in the window.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        heard: Option<String>,
+    },
     /// A card in the conversation (issue #225, "Karten im Chat" in `docs/assistent.md`): it points at
     /// an item, it never copies it. The core adds one after a command that made the item (the first:
     /// `tools.create_pdf`); what it shows, `assistant.get_cards` fetches fresh from the core, with the
@@ -1238,6 +1245,29 @@ pub fn answer_start(entries: &[Entry]) -> Option<u64> {
     Some(start)
 }
 
+/// What was read aloud of the answer entry `seq` before the person interrupted it (issue #835): the `heard`
+/// of the `stopped` entry that ends its answer, when `seq` is the answer entry that was read (the first one
+/// after the message or the approval the reading began after, as [`answer_start`] finds it). `None` for any
+/// other entry and for an answer stopped in the window.
+pub fn heard_of(entries: &[Entry], seq: u64) -> Option<&str> {
+    let at = entries.iter().position(|entry| entry.seq == seq)?;
+    if !matches!(entries[at].content, EntryContent::Answer { .. }) {
+        return None;
+    }
+    let (stop, heard) = entries.iter().enumerate().skip(at + 1).find_map(|(stop, entry)| match &entry.content {
+        EntryContent::Message { .. } => Some((stop, None)),
+        EntryContent::Stopped { heard } => Some((stop, heard.as_deref())),
+        _ => None,
+    })?;
+    let heard = heard?;
+    let begun = entries[..stop]
+        .iter()
+        .rposition(|entry| matches!(entry.content, EntryContent::Message { .. } | EntryContent::Approval { .. }))
+        .map_or(0, |begun| begun + 1);
+    let read = entries[begun..stop].iter().find(|entry| matches!(entry.content, EntryContent::Answer { .. }))?;
+    (read.seq == seq).then_some(heard)
+}
+
 impl Request {
     /// The conversation an `assistant.*` request or `bots.ask_bot` names, for the core's checks and
     /// its audit log: `id`, `conversation` (also of `confirm_bot` and `get_cards`), or the conversation
@@ -1252,6 +1282,7 @@ impl Request {
             | Request::DeleteConversation { id }
             | Request::PinConversation { id, .. }
             | Request::CancelAnswer { conversation: id }
+            | Request::InterruptAnswer { conversation: id }
             | Request::SpeakAnswer { conversation: id }
             | Request::OpenChatWindow { window: ChatWindow::Conversation(id) }
             | Request::ConfirmBot { conversation: id, .. }
@@ -1601,6 +1632,7 @@ mod tests {
     fn requests_name_their_conversation() {
         assert_eq!(Request::DeleteConversation { id: "c1".into() }.conversation(), Some("c1"));
         assert_eq!(Request::CancelAnswer { conversation: "c1".into() }.conversation(), Some("c1"));
+        assert_eq!(Request::InterruptAnswer { conversation: "c1".into() }.conversation(), Some("c1"));
         assert_eq!(
             Request::OpenChatWindow { window: ChatWindow::Conversation("c1".into()) }.conversation(),
             Some("c1")
@@ -1608,6 +1640,52 @@ mod tests {
         assert_eq!(Request::OpenChatWindow { window: ChatWindow::New }.conversation(), None);
         assert_eq!(send("Hi").conversation(), None, "a new conversation has no id yet");
         assert_eq!(Request::Ping.conversation(), None);
+    }
+
+    /// Issue #835: the heard part belongs to the answer entry that was read, and only after an interruption.
+    #[test]
+    fn the_heard_part_belongs_to_the_answer_that_was_read() {
+        let time = chrono::Utc::now();
+        let at = |seq, content| Entry { seq, time, content };
+        let message = |text: &str| EntryContent::Message {
+            text: text.into(),
+            engine: TEST_ENGINE.into(),
+            model: None,
+            effort: None,
+            without: Vec::new(),
+            mode: Mode::Default,
+            from: None,
+        };
+        let answer = |text: &str| EntryContent::Answer {
+            text: text.into(),
+            engine: TEST_ENGINE.into(),
+            model: None,
+            spoken: Some(text.into()),
+        };
+        let tool = EntryContent::Tool {
+            name: "calendar.list_events".into(),
+            input: serde_json::json!({}),
+            summary: "3 events".into(),
+            error: None,
+            lack: None,
+        };
+        let heard = |text: &str| EntryContent::Stopped { heard: Some(text.into()) };
+        let entries = [
+            at(1, message("Tomorrow?")),
+            at(2, answer("You have three.")),
+            at(3, EntryContent::Stopped { heard: None }),
+            at(4, message("And Friday?")),
+            at(5, answer("Let me look.")),
+            at(6, tool),
+            at(7, answer("Two meetings.")),
+            at(8, heard("Let me look …")),
+            at(9, message("Thanks.")),
+        ];
+        assert_eq!(heard_of(&entries, 2), None, "stopped in the window");
+        assert_eq!(heard_of(&entries, 5), Some("Let me look …"));
+        assert_eq!(heard_of(&entries, 7), None, "a later part of the same answer");
+        assert_eq!(heard_of(&entries, 8), None, "no answer");
+        assert_eq!(heard_of(&entries, 99), None);
     }
 
     #[test]
@@ -1668,11 +1746,20 @@ mod tests {
         assert!(
             matches!(entry.content, EntryContent::Tool { ref name, error: None, .. } if name == "calendar.list_events")
         );
-        let stopped = Entry { seq: 4, time: entry.time, content: EntryContent::Stopped };
+        let stopped = Entry { seq: 4, time: entry.time, content: EntryContent::Stopped { heard: None } };
         assert_eq!(
             serde_json::to_value(&stopped).expect("serializes"),
             serde_json::json!({"seq": 4, "time": "2026-10-13T09:00:00Z", "kind": "stopped"})
         );
+        // Issue #835: an old entry reads as one without `heard`; an interrupted one keeps it.
+        let old: Entry =
+            serde_json::from_value(serde_json::json!({"seq": 4, "time": "2026-10-13T09:00:00Z", "kind": "stopped"}))
+                .expect("an old stopped entry");
+        assert_eq!(old, stopped);
+        let interrupted = EntryContent::Stopped { heard: Some("Tomorrow you have three …".into()) };
+        let line = serde_json::json!({"kind": "stopped", "heard": "Tomorrow you have three …"});
+        assert_eq!(serde_json::to_value(&interrupted).expect("serializes"), line);
+        assert_eq!(serde_json::from_value::<EntryContent>(line).expect("reads"), interrupted);
         let message = EntryContent::Message {
             text: "Hi".into(),
             engine: TEST_ENGINE.into(),
