@@ -484,7 +484,8 @@ pub fn for_model(area: Area, value: Value) -> String {
     whole_page(&value).unwrap_or_else(|| shorten(value).to_string())
 }
 
-/// A page of a text file (`tools.read_file`, issue #705) whole, as long as it fits [`RESULT_CHARS`]: the core made it
+/// A page of a text file (`tools.read_file`, issue #705) or of an attachment's text (`mail.read_attachment`, issue
+/// #893) whole, as long as it fits [`RESULT_CHARS`]: the core made it
 /// at most `torro_ipc::tools::MAX_PAGE_CHARS` long so the model reads it in steps, and cut to [`TEXT_CHARS`] the
 /// model would take the start for the page and skip the rest. `None` for every other answer, and for a page that
 /// does not fit (one of many quotes or backslashes), which [`shorten`] then cuts.
@@ -495,7 +496,7 @@ fn whole_page(value: &Value) -> Option<String> {
     if matches!(answer.get("result").and_then(Value::as_str), Some("command-output" | "command-status")) {
         return Some(value.to_string());
     }
-    (answer.get("result").and_then(Value::as_str) == Some("file-text")).then_some(())?;
+    matches!(answer.get("result").and_then(Value::as_str), Some("file-text" | "mail-attachment-text")).then_some(())?;
     let text = value.to_string();
     (text.chars().count() <= RESULT_CHARS).then_some(text)
 }
@@ -872,7 +873,9 @@ mod tests {
         assert!(all.iter().any(|tool| tool.is_server()), "the servers' tools are allowed otherwise");
         let kept = about_mail(all.clone(), Some(&rights), &[], "mail:anna@example.org");
         let names: Vec<&str> = kept.iter().map(|tool| tool.command.name).collect();
-        for wanted in ["mail.get_message", "mail.get_thread", "mail.search_messages", EXTRACT_ACTION] {
+        for wanted in
+            ["mail.get_message", "mail.get_thread", "mail.search_messages", "mail.read_attachment", EXTRACT_ACTION]
+        {
             assert!(names.contains(&wanted), "{wanted}: {names:?}");
         }
         for unwanted in [
@@ -1501,5 +1504,32 @@ mod tests {
         assert!(untrusted(Area::Tools, &serde_json::to_value(found).expect("json")));
         let edited = Response::FileEdited { path: "/a.md".into(), version: "v".into() };
         assert!(!untrusted(Area::Tools, &serde_json::to_value(edited).expect("json")), "only a path and a version");
+    }
+
+    /// Issue #893: an attachment's text reaches the model as data from outside, and a whole page of it, not its
+    /// first 1,500 characters.
+    #[test]
+    fn an_attachments_text_is_untrusted_and_reaches_the_model_whole() {
+        let text = "word ".repeat(torro_ipc::tools::MAX_PAGE_CHARS / 5);
+        let attachment = torro_ipc::mail::AttachmentText {
+            part: "2".into(),
+            name: Some("invoice.pdf".into()),
+            content_type: "application/pdf".into(),
+            kind: torro_ipc::mail::AttachmentKind::Pdf,
+            pages: Some(3),
+            text: text.clone(),
+            from_line: 1,
+            total_lines: 900,
+            more: true,
+            next_line: Some(41),
+            cut_line: false,
+            cut: false,
+            untrusted: true,
+        };
+        let page = serde_json::to_value(Response::MailAttachmentText { text: attachment }).expect("json");
+        assert!(untrusted(Area::Mail, &page));
+        let shown = for_model(Area::Mail, page);
+        assert!(shown.contains(UNTRUSTED_NOTE) && shown.contains(&text) && shown.contains("\"next_line\":41"));
+        assert!(!shown.contains("[cut"), "whole");
     }
 }
