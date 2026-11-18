@@ -428,8 +428,11 @@ impl Ask {
             Event::Approval(_, id, Ok(approval)) => {
                 self.approvals.insert(id, approval);
             }
+            // Gone, also one the card knew still waiting (a core started anew, or expired and removed):
+            // its card says so; a decided one keeps how it was decided.
             Event::Approval(_, id, Err(refusal))
-                if refusal.code == "not-found" && !self.approvals.contains_key(&id) =>
+                if refusal.code == "not-found"
+                    && self.approvals.get(&id).is_none_or(|approval| approval.state.is_pending()) =>
             {
                 self.lost.insert(id);
             }
@@ -442,6 +445,10 @@ impl Ask {
                     Ok(approval) => {
                         self.failed = None;
                         self.approvals.insert(id, approval);
+                    }
+                    Err(refusal) if refusal.code == "not-found" => {
+                        // The core no longer knows it: nothing left to decide.
+                        self.lost.insert(id);
                     }
                     Err(refusal) => {
                         // Said over the field like a message that did not go; the card stays open and
@@ -563,7 +570,7 @@ impl Ask {
         let Some(approval) = self.approvals.get(&id).filter(|approval| approval.state.is_pending()) else {
             return Task::none();
         };
-        if self.deciding.is_some() || (allow && !allows_here(approval)) {
+        if self.deciding.is_some() || self.lost.contains(&id) || (allow && !allows_here(approval)) {
             return Task::none();
         }
         self.deciding = Some((id.clone(), allow));
@@ -1121,6 +1128,8 @@ fn approval_card<'a>(
     .spacing(space::s())
     .align_y(Alignment::Center);
     let mut card = column![head].spacing(space::s());
+    // A lost approval offers nothing to decide, whatever the card knew of it before.
+    let approval = approval.filter(|approval| !(lost && approval.state.is_pending()));
     let Some(approval) = approval else {
         // The core no longer knows it: nothing to decide, and nothing waits.
         let words = if lost { tr("No longer available") } else { tr("Loading …") };
@@ -1837,6 +1846,20 @@ mod tests {
         ask.phase = Phase::Ready;
         let _ = ask.update(Event::New);
         assert!(ask.lost.is_empty());
+        // Review of PR #902: one the card knew still waiting is lost too, and takes no decision.
+        let round = ask.round;
+        ask.approvals.insert(DEMO_APPROVAL.to_owned(), approval("mail.move_message", ApprovalState::Pending));
+        let gone = Refusal { code: "not-found".to_owned(), message: "gone".to_owned() };
+        let _ = ask.update(Event::Approval(round, DEMO_APPROVAL.to_owned(), Err(gone.clone())));
+        assert!(ask.lost.contains(DEMO_APPROVAL));
+        let _ = ask.update(Event::Decide(DEMO_APPROVAL.to_owned(), true));
+        assert!(ask.deciding.is_none(), "nothing left to decide");
+        // A decided one keeps how it was decided.
+        let (mut ask, _) = Ask::open_general(demo_call());
+        let round = ask.round;
+        ask.approvals.insert(DEMO_APPROVAL.to_owned(), approval("mail.move_message", ApprovalState::Denied));
+        let _ = ask.update(Event::Approval(round, DEMO_APPROVAL.to_owned(), Err(gone)));
+        assert!(!ask.lost.contains(DEMO_APPROVAL));
     }
 
     /// Issue #892: the state of an approval of another round – the chat before "+" – is dropped.
