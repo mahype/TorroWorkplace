@@ -80,9 +80,10 @@ class Installers(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
 
-    def test_eight_identities_and_program_launch_arguments_match_rust_and_desktop(self):
-        self.assertEqual(len(pkg.apps()), 8)
+    def test_nine_identities_and_program_launch_arguments_match_rust_and_desktop(self):
+        self.assertEqual(len(pkg.apps()), 9)
         self.assertIn("torrochat", {a["program"] for a in pkg.apps()})
+        self.assertIn("torrocontacts", {a["program"] for a in pkg.apps()})
         rust = (pkg.ROOT.parent / "crates/torro-core/src/app.rs").read_text()
         for app in pkg.apps():
             self.assertIn('"' + app["id"] + '"', rust)
@@ -135,7 +136,7 @@ class Installers(unittest.TestCase):
                 self.assertIn("torroworkplace-bin (>= 0.1.0~rc.1-1)", config["depends"])
             if app and app["requires"]:
                 self.assertIn("torroinbox-bin", required)
-        self.assertEqual(len([p for p in owners if p.startswith("/usr/bin/") and not p.endswith(".json")]), 8)
+        self.assertEqual(len([p for p in owners if p.startswith("/usr/bin/") and not p.endswith(".json")]), 9)
 
     def test_stable_and_rc_native_versions(self):
         for fmt in pkg.FORMATS:
@@ -205,7 +206,7 @@ class Installers(unittest.TestCase):
 
     def test_matrix_downloads_and_companions(self):
         complete(self.root)
-        self.assertEqual(len(pkg.verified_entries(self.root, "v0.1.0")), 78)
+        self.assertEqual(len(pkg.verified_entries(self.root, "v0.1.0")), 87)
         pkg.downloads(self.root, self.root, "v0.1.0")
         text = (self.root / "downloads.md").read_text()
         self.assertIn("torroinbox-bin", text)
@@ -215,6 +216,8 @@ class Installers(unittest.TestCase):
         self.assertIn(".pkg.tar.zst)", text)
         self.assertIn("torrochat-bin", text)
         self.assertIn("torrochat-0.1.0-x86_64-pc-windows-msvc-setup.exe", text)
+        self.assertIn("torrocontacts-bin", text)
+        self.assertIn("torrocontacts-0.1.0-x86_64-pc-windows-msvc-setup.exe", text)
 
     def test_macos_bundle_jobs_cover_every_native_app_and_architecture(self):
         workflow = (pkg.ROOT.parent / ".github/workflows/publish-macos-app.yml").read_text()
@@ -309,8 +312,8 @@ class Installers(unittest.TestCase):
 
         with patch.object(pkg.subprocess, "run", side_effect=compiler_version), patch.object(pkg, "run", side_effect=compiler):
             pkg.build_windows(self.root, out, "v0.1.0")
-        self.assertEqual(len(set(compiled)), 8)
-        self.assertEqual(len(list(out.glob("*-setup.exe"))), 8)
+        self.assertEqual(len(set(compiled)), 9)
+        self.assertEqual(len(list(out.glob("*-setup.exe"))), 9)
 
     def test_windows_builder_rejects_wrong_or_failed_compiler_version(self):
         source_plan(self.root)

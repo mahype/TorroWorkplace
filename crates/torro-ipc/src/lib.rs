@@ -7253,9 +7253,9 @@ impl AccountInfo {
     /// main application, which shows every account. Nothing of it is stored – it follows from the
     /// kind:
     ///
-    /// - `nextcloud`: Calendar, Tasks, the Notification Hub and the App Feed;
+    /// - `nextcloud`: Calendar, Tasks, Contacts, the Notification Hub and the App Feed;
     /// - `mail`: Mail, and Calendar and Tasks while it syncs calendars and tasks (`mail.calendars`);
-    /// - `caldav`: Calendar and Tasks;
+    /// - `caldav`: Calendar, Tasks and Contacts (its address books, issue #354);
     /// - `github`: Tasks, the Notification Hub and the App Feed;
     /// - `ntfy`: the Notification Hub and the App Feed;
     /// - `ai`: the Assistant and Mail (which sorts with it).
@@ -7265,10 +7265,10 @@ impl AccountInfo {
         let calendars = self.mail.as_ref().is_some_and(|mail| mail.calendars.is_some());
         let users: &[AppId] = match self.kind.as_str() {
             _ if self.id.is_empty() => &[],
-            "nextcloud" => &[AppId::CALENDAR, AppId::TASKS, AppId::INBOX, AppId::INBOX_NOTIFICATIONS],
+            "nextcloud" => &[AppId::CALENDAR, AppId::TASKS, AppId::CONTACTS, AppId::INBOX, AppId::INBOX_NOTIFICATIONS],
             "mail" if calendars => &[AppId::CALENDAR, AppId::TASKS, AppId::INBOX_MAIL],
             "mail" => &[AppId::INBOX_MAIL],
-            "caldav" => &[AppId::CALENDAR, AppId::TASKS],
+            "caldav" => &[AppId::CALENDAR, AppId::TASKS, AppId::CONTACTS],
             "github" => &[AppId::TASKS, AppId::INBOX, AppId::INBOX_NOTIFICATIONS],
             "ntfy" => &[AppId::INBOX, AppId::INBOX_NOTIFICATIONS],
             "ai" => &[AppId::INBOX_MAIL, AppId::ASSISTANT],
@@ -8638,9 +8638,9 @@ mod tests {
         let used = |info: &AccountInfo| -> Vec<&str> { info.used_by(all).iter().map(|app| app.window_class).collect() };
         assert_eq!(
             used(&account("nextcloud:anna@cloud", "nextcloud")),
-            ["torro-inbox", "torro-inbox-notifications", "torro-tasks", "torro-calendar"]
+            ["torro-inbox", "torro-inbox-notifications", "torro-tasks", "torro-calendar", "torro-contacts"]
         );
-        assert_eq!(used(&account("caldav:anna", "caldav")), ["torro-tasks", "torro-calendar"]);
+        assert_eq!(used(&account("caldav:anna", "caldav")), ["torro-tasks", "torro-calendar", "torro-contacts"]);
         assert_eq!(
             used(&account("github:anna", "github")),
             ["torro-inbox", "torro-inbox-notifications", "torro-tasks"]

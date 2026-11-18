@@ -15,7 +15,7 @@ here is a draft until the maintainer has created the repositories and secrets li
 
 ## Install locally
 
-`scripts/install-local.sh` builds the seven programs from the source tree (`cargo build --release`) and installs
+`scripts/install-local.sh` builds the nine programs from the source tree (`cargo build --release`) and installs
 them for the current user (issue #629); run it again to update. `--help` lists the targets.
 
 - **Linux:** programs to `~/.local/bin`, the `.desktop` files and SVG icons of `linux/` to `~/.local/share`, and
@@ -42,17 +42,18 @@ The names come from `AppId` in `crates/torro-core/src/app.rs`; the suite finds t
 | Tasks | `torrotasks` | `torro-tasks` | `Torro Tasks.app` |
 | Assistant | `torroassistant` | `torro-assistant` | `Torro Assistant.app` |
 | Chat | `torrochat` | `torro-chat` | `Torro Chat.app` |
+| Contacts | `torrocontacts` | `torro-contacts` | `Torro Contacts.app` |
 | Reminder | `torrocalendar`, as `torro-reminder` | `torro-reminder` | `Torro Reminder.app` (agent) |
 
 The bundle id is `io.github.mahype.<window class>`, the service's `io.github.mahype.torro-workplace-service` in every
 copy, signed by the same team, so the keychain trusts each copy. The suite starts the copy whose `Info.plist` has the
 highest `TorroVersion` (whole version, pre-release included). Sign the embedded service before the outer bundle. To check all bundles by hand
 without a release, build the workspace and run `scripts/macos-dev-bundles.sh [folder]` (default
-`target/debug/bundles`); it makes the eight bundles, seven of them with the service inside, and signs them with the
+`target/debug/bundles`); it makes the ten bundles, nine of them with the service inside, and signs them with the
 development identity when there is one (`scripts/macos-dev-cert.sh`), else ad hoc. What to check by hand with them:
 "Von Hand prüfen" in [docs/lebenszyklus.md](../docs/lebenszyklus.md).
 That development helper and the existing AUR/Homebrew/Scoop suite templates retain their previous
-scope; they are not the native eight-app release matrix or proof that Chat is included in each old helper.
+scope; they are not the native nine-app release matrix or proof that Chat and Contacts are included in each old helper.
 
 The per-app Homebrew formulae are not written by hand: `dist` generates them on every release
 (see `dist-workspace.toml`); their dependency on `torroworkplace` comes from `[package.metadata.dist.dependencies.homebrew]`
@@ -60,7 +61,7 @@ in each app crate's `Cargo.toml`.
 
 ## Native downloads (#589)
 
-`apps.json` is the eight-app installer matrix (stable identity, actual program, launch arguments and
+`apps.json` is the nine-app installer matrix (stable identity, actual program, launch arguments and
 companions). `installers.py` supports Python 3.10+ (including Ubuntu 22.04), uses only the standard
 library and never downloads or publishes:
 
@@ -72,12 +73,12 @@ python3 installers.py downloads --tag v0.1.0 --input ../target/installers --outp
 ```
 
 Run from this directory. Builders require dist archives, their `.sha256`, and `plan-dist-manifest.json`
-for exactly the requested tag and eight apps. Supply nFPM **2.48.0** (`NFPM`) or Inno Setup **7.1.1**
+for exactly the requested tag and nine apps. Supply nFPM **2.48.0** (`NFPM`) or Inno Setup **7.1.1**
 (`ISCC`) after checking the pinned hashes in `build-installers.yml`. `verify`/`downloads` need the
-merged Linux/Windows manifests, all native packages/Setups, and 16 signed/stapled DMGs with checksums.
+merged Linux/Windows manifests, all native packages/Setups, and 18 signed/stapled DMGs with checksums.
 Outputs are staged until the requested matrix succeeds; unsafe archive paths/links are rejected.
 
-Linux: nine packages per format and architecture, not eight copies of the service. Each program's
+Linux: ten packages per format and architecture, not nine copies of the service. Each program's
 adjacent `<program>.torro-package.json` declares schema 1, manager (`deb`, `rpm`, `pacman`), package and
 canonical `/usr/bin/<program>` path. The core owns its marker; the Workplace launcher-only package
 does not claim that file. Windows Setup owns the corresponding `.exe.torro-package.json` and SemVer

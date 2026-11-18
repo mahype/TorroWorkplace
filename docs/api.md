@@ -379,8 +379,9 @@ password…“ ihn); entfernen geht mit `update_mail_account`.
 
 **Welche Apps ein Konto nutzen** (#410): Die Kontoseite zeigt „Used by …“ mit den installierten Apps, die ein Konto
 nutzen. Gespeichert wird das nicht, es folgt aus der Art (`torro_ipc::AccountInfo::used_by`), unter den Apps, die
-`apps.list_apps` als installiert meldet: `nextcloud` Kalender, Aufgaben, Notification Hub und App Feed; `mail` Mail,
-mit Kalenderteil (`mail.calendars`) auch Kalender und Aufgaben; `caldav` Kalender und Aufgaben; `github` Aufgaben,
+`apps.list_apps` als installiert meldet: `nextcloud` Kalender, Aufgaben, Kontakte, Notification Hub und App Feed;
+`mail` Mail, mit Kalenderteil (`mail.calendars`) auch Kalender und Aufgaben; `caldav` Kalender, Aufgaben und Kontakte
+(#354); `github` Aufgaben,
 Notification Hub und App Feed; `ntfy` Notification Hub und App Feed; `ai` Mail und Assistent. Die Hauptanwendung
 zeigt jedes Konto und steht nie dabei. Agenten leiten es genauso aus `accounts_list_accounts` und `apps_list_apps`
 ab; die Regel steht in der Beschreibung von `accounts.list_accounts`.

@@ -6120,7 +6120,7 @@ mod tests {
         let data = demo::demo_data();
         let every = Only(data.clone(), AppId::ALL.to_vec());
         let of_kind = |kind: &str| data.accounts.iter().find(|account| account.kind == kind).expect(kind);
-        let mut names = [tr("Calendar"), tr("Tasks"), tr("Notification Hub"), tr("App Feed")];
+        let mut names = [tr("Calendar"), tr("Tasks"), tr("Contacts"), tr("Notification Hub"), tr("App Feed")];
         names.sort_unstable();
         assert_eq!(used_by_names(of_kind("nextcloud"), &every), Some(names.join(", ")));
         let mut ai = [tr("Assistant"), tr("Mail")];

@@ -453,7 +453,8 @@ fn needed_by(app: &CatalogApp, catalog: &AppCatalog) -> Vec<String> {
 }
 
 /// Overview's header (issue #803): only "Update all (2)", the window's one primary button while there
-/// are updates; narrow as an icon. What else the catalog offers stands at its title ([`title`]).
+/// are updates; narrow as an icon; disabled while an app's job runs. What else the catalog offers stands at
+/// its title ([`title`]).
 pub fn header<'a>(_state: &'a State, data: &'a Data, class: SizeClass) -> Header<'a, Message> {
     let catalog = data.app_catalog.catalog.listed();
     let narrow = !matches!(class, SizeClass::Wide | SizeClass::Medium);
@@ -461,10 +462,14 @@ pub fn header<'a>(_state: &'a State, data: &'a Data, class: SizeClass) -> Header
     let count = catalog.map(updatable).map_or(0, |apps| apps.len());
     if count > 0 {
         let label = trf("Update all ({n})", &[("n", &count)]);
-        actions.push(match narrow {
-            true => widgets::compact_button(Icon::Download, label, style::button::primary, Some(Message::UpdateAll)),
-            false => widgets::text_button(None, label, style::button::primary, Some(Message::UpdateAll)),
-        });
+        // While a job runs the core refuses another (`busy`): disabled, saying why, like the cards' buttons.
+        let busy = job_runs(data);
+        let press = (!busy).then_some(Message::UpdateAll);
+        let button = match narrow {
+            true => widgets::compact_button(Icon::Download, label, style::button::primary, press),
+            false => widgets::text_button(None, label, style::button::primary, press),
+        };
+        actions.push(if busy { widgets::with_tooltip(button, refusal("busy")) } else { button });
     }
     Header { sub_page: None, actions }
 }
@@ -691,14 +696,16 @@ fn card<'a>(
     if !sentence.is_empty() {
         parts.push(typo::text(typo::meta(), sentence).style(theme::text_2).wrapping(Wrapping::WordOrGlyph).into());
     }
-    let meta = typo::text(typo::meta(), format!("· {}", meta_line(app))).style(theme::text_3);
+    let meta = typo::text(typo::meta(), format!("· {}", meta_line(app, &offer))).style(theme::text_3);
     let mut quiet = column![row![version_line(app), meta].spacing(space::xs()).align_y(Alignment::Center).wrap()]
         .spacing(space::xs());
     if let Some(needed) = needed_line(app, catalog) {
         quiet = quiet.push(typo::text(typo::meta(), needed).style(theme::text_3).wrapping(Wrapping::WordOrGlyph));
     }
     parts.push(quiet.into());
-    parts.push(actions(app, &offer, state));
+    // Another app's job: the core takes one at a time, so this card's install or update waits for it.
+    let busy = job.is_some_and(|job| job.state == AppJobState::Running);
+    parts.push(actions(app, &offer, busy, state));
     widgets::card(parts, false, None)
 }
 
@@ -748,10 +755,11 @@ fn pill<'a>(app: &CatalogApp, offer: &Offer<'_>, settings: &Settings) -> Element
 }
 
 /// The quiet line under the sentence, after the version: the window class (for window rules) and the
-/// download's size of a missing app.
-fn meta_line(app: &CatalogApp) -> String {
+/// download's size of a missing app, unless its button "Install · 24.6 MB" says it already.
+fn meta_line(app: &CatalogApp, offer: &Offer<'_>) -> String {
     let mut parts = vec![app.window_class.clone()];
     if !is_installed(app)
+        && !matches!(offer, Offer::Install)
         && let Some(bytes) = app.size
     {
         parts.push(units::format_bytes(bytes));
@@ -767,10 +775,16 @@ fn needed_line(app: &CatalogApp, catalog: &AppCatalog) -> Option<String> {
 }
 
 /// The card's one button (or the command of its package manager, or how far its job is) and "…".
-fn actions<'a>(app: &'a CatalogApp, offer: &Offer<'a>, state: &'a State) -> Element<'a, Message> {
+/// While another app's job runs (`busy`), "Install" and "Update to …" are shown disabled and say why,
+/// instead of answering a click with the core's refusal.
+fn actions<'a>(app: &'a CatalogApp, offer: &Offer<'a>, busy: bool, state: &'a State) -> Element<'a, Message> {
     let class = &app.window_class;
     let button =
         |label: String, message: Option<Message>| widgets::text_button(None, label, style::button::secondary, message);
+    let waiting = |label: String, message: Message| match busy {
+        true => widgets::with_tooltip(button(label, None), refusal("busy")),
+        false => button(label, Some(message)),
+    };
     let main: Element<'a, Message> = match offer {
         Offer::Running(job) => {
             let percent = trf("{n}%", &[("n", &job.percent)]);
@@ -796,7 +810,7 @@ fn actions<'a>(app: &'a CatalogApp, offer: &Offer<'a>, state: &'a State) -> Elem
         Offer::Managed(_, None) => button(tr("Open").to_string(), Some(Message::Open(class.clone()))),
         Offer::Update => {
             let version = app.available.clone().unwrap_or_default();
-            button(trf("Update to {version}", &[("version", &version)]), Some(Message::Update(class.clone())))
+            waiting(trf("Update to {version}", &[("version", &version)]), Message::Update(class.clone()))
         }
         Offer::TurnOn => {
             let component =
@@ -809,7 +823,7 @@ fn actions<'a>(app: &'a CatalogApp, offer: &Offer<'a>, state: &'a State) -> Elem
                 Some(bytes) => trf("Install · {size}", &[("size", &units::format_bytes(bytes))]),
                 None => tr("Install").to_string(),
             };
-            button(label, Some(Message::Install(class.clone())))
+            waiting(label, Message::Install(class.clone()))
         }
         Offer::Unavailable => button(tr("Install").to_string(), None),
     };
@@ -966,8 +980,8 @@ pub fn reveal(app: AppId, path: Option<&str>) -> Result<(), String> {
 }
 
 /// The demo's catalog (`--demo --section apps`): checked just now, Calendar and Mail with an update,
-/// Tasks and the App Feed up to date, the Notification Hub from a package manager, Assistant and Chat
-/// missing, Contacts not in the release, and the main application up to date.
+/// Tasks and the App Feed up to date, the Notification Hub from a package manager, Assistant, Chat and
+/// Contacts missing, and the main application up to date.
 pub fn demo_catalog(now: DateTime<Utc>) -> AppCatalog {
     let entry = |app: AppId, installed: Option<&str>, available: &str, state: CatalogState| CatalogApp {
         window_class: app.window_class.into(),
@@ -1012,8 +1026,7 @@ pub fn demo_catalog(now: DateTime<Utc>) -> AppCatalog {
             feed,
             entry(AppId::ASSISTANT, None, "0.2.0", CatalogState::Available),
             entry(AppId::CHAT, None, "0.2.0", CatalogState::Available),
-            // Not in the release yet (issue #352): no installers until an issue of its own.
-            CatalogApp { available: None, size: None, ..entry(AppId::CONTACTS, None, "", CatalogState::Unavailable) },
+            entry(AppId::CONTACTS, None, "0.2.0", CatalogState::Available),
         ],
         job: None,
     }
@@ -1230,6 +1243,69 @@ mod tests {
         assert_eq!(offer(of("torro-assistant"), &settings, Some(&done)), Offer::Install, "a finished job lets go");
         let missing = CatalogApp { installed: None, state: CatalogState::Unavailable, ..of("torro-tasks").clone() };
         assert_eq!(offer(&missing, &settings, None), Offer::Unavailable);
+    }
+
+    /// The size of a missing app stands once: in "Install · 24.6 MB", not again in the quiet line; an app
+    /// a package manager brings keeps it there, its card has no such button.
+    #[test]
+    fn the_size_of_a_missing_app_stands_only_in_its_button() {
+        let catalog = catalog();
+        let settings = Settings::default();
+        let contacts = catalog.apps.iter().find(|app| app.window_class == "torro-contacts").expect("listed");
+        assert_eq!(meta_line(contacts, &offer(contacts, &settings, None)), "torro-contacts");
+        let managed = CatalogApp {
+            installed: None,
+            managed: catalog
+                .apps
+                .iter()
+                .find(|app| app.window_class == "torro-inbox")
+                .and_then(|app| app.managed.clone()),
+            state: CatalogState::Managed,
+            ..contacts.clone()
+        };
+        let size = units::format_bytes(25_795_000);
+        assert_eq!(meta_line(&managed, &offer(&managed, &settings, None)), format!("torro-contacts · {size}"));
+    }
+
+    /// While another app's job runs, "Install" of a missing app does nothing (the core would refuse it as
+    /// `busy`); once it is done, the button installs again.
+    #[test]
+    fn install_waits_while_another_app_is_installed() {
+        let _one = super::super::tests::one_simulator();
+        let catalog = catalog();
+        let settings = Settings::default();
+        let state = State::default();
+        let contacts = catalog.apps.iter().find(|app| app.window_class == "torro-contacts").expect("listed");
+        let label = trf("Install · {size}", &[("size", &units::format_bytes(25_795_000))]);
+        let clicks = |job: &AppJobInfo| -> Vec<Message> {
+            let mut sim = iced_test::Simulator::with_size(
+                iced::Settings::default(),
+                iced::Size::new(480.0, 400.0),
+                card(contacts, &catalog, &settings, Some(job), &state),
+            );
+            assert!(sim.click(label.as_str()).is_ok(), "the button is there");
+            sim.into_messages().collect()
+        };
+        let running = demo_job(false);
+        assert!(!clicks(&running).iter().any(|m| matches!(m, Message::Install(_))), "waits for the Assistant");
+        let done = demo_job(true);
+        assert!(clicks(&done).iter().any(|m| matches!(m, Message::Install(class) if class == "torro-contacts")));
+
+        // "Update all" in the header waits the same way.
+        let update_all = |job: AppJobInfo| -> Vec<Message> {
+            let mut data = data_with(catalog.clone());
+            data.app_catalog.job = Some(job);
+            let mut actions = header(&state, &data, SizeClass::Wide).actions;
+            let mut sim = iced_test::Simulator::with_size(
+                iced::Settings::default(),
+                iced::Size::new(480.0, 120.0),
+                actions.remove(0),
+            );
+            assert!(sim.click(trf("Update all ({n})", &[("n", &2)]).as_str()).is_ok(), "the button is there");
+            sim.into_messages().collect()
+        };
+        assert!(!update_all(demo_job(false)).iter().any(|m| matches!(m, Message::UpdateAll)), "waits");
+        assert!(update_all(demo_job(true)).iter().any(|m| matches!(m, Message::UpdateAll)));
     }
 
     /// The menu after the target picture: Open, Release notes, Turn off, Show in Finder, then

@@ -11422,6 +11422,7 @@ dependencies = [
  "torro-core",
  "torro-gui",
  "torro-ipc",
+ "winresource",
 ]
 
 [[package]]

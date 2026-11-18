@@ -1358,4 +1358,108 @@ mod tests {
         let doc = lines(&folded);
         assert_eq!(doc[0].prop.as_ref().map(|p| p.text()), Some("ü".repeat(60)));
     }
+
+    /// The lines of `a` and `b` that differ, by property name, both ways.
+    fn changed_props(a: &str, b: &str) -> Vec<String> {
+        only_in(a, b)
+            .iter()
+            .chain(only_in(b, a).iter())
+            .filter_map(|line| parse_prop(without_eol(line)).map(|prop| prop.name))
+            .collect()
+    }
+
+    /// Issue #354: a card as the Contacts app 8.10 of Nextcloud 35 writes it, checked against a real
+    /// server: vCard 3.0 without `N`, the group as `CATEGORIES`, the picture cut in the app as PNG.
+    #[test]
+    fn nextcloud_web_card_round_trips() {
+        let raw = fixture("nextcloud-web.vcf");
+        let contact = read(&raw).expect("card");
+        assert_eq!(contact.display_name, "Clara Weber");
+        assert_eq!(
+            (contact.title.as_deref(), contact.org.as_deref()),
+            (Some("Architektin"), Some("Beispiel Bau GmbH"))
+        );
+        assert_eq!(contact.phones, [Labeled::new("+49 30 1234567".to_string(), FieldKind::Home)]);
+        assert_eq!(contact.emails, [Labeled::new("clara@example.org".to_string(), FieldKind::Home)]);
+        assert_eq!(contact.addresses[0].value.one_line(), "Gartenstr. 5, 10115 Berlin, Deutschland");
+        assert_eq!(contact.note.as_deref(), Some("Kennengelernt auf der Messe; mag Tee."));
+        assert_eq!(contact.groups, ["Freunde"]);
+        assert!(contact.photo.is_some());
+        let picture = photo(&raw).expect("photo");
+        assert_eq!(picture.mime, "image/png");
+        assert!(picture.data.starts_with(b"\x89PNG"), "the folded base64 reads whole");
+
+        round_trip("nextcloud-web.vcf", "TEL", |c| c.phones[0].value = "+49 30 7654321".into());
+        round_trip("nextcloud-web.vcf", "TITLE", |c| c.title = Some("Bauleiterin".into()));
+        round_trip("nextcloud-web.vcf", "CATEGORIES", |c| c.groups.push("Kunden".into()));
+        round_trip("nextcloud-web.vcf", "CATEGORIES", |c| c.groups.clear());
+        round_trip("nextcloud-web.vcf", "EMAIL", |c| {
+            c.emails.push(Labeled::new("clara@example.net".into(), FieldKind::Work))
+        });
+
+        // A new picture replaces the app's; every other line stays as the server wrote it.
+        let new = Photo { data: vec![0xff, 0xd8, 0xff, 0xe0], mime: "image/jpeg".into() };
+        let with = set_photo(&raw, Some(&new));
+        assert_eq!(photo(&with), Some(new));
+        assert!(changed_props(&raw, &with).iter().all(|name| name == "PHOTO"), "{with}");
+        let without = set_photo(&raw, None);
+        assert!(!without.contains("PHOTO"), "{without}");
+        assert!(changed_props(&raw, &without).iter().all(|name| name == "PHOTO"), "{without}");
+    }
+
+    /// Issue #354: the example card Nextcloud 35 puts into every new address book, written by the
+    /// server itself: no `N`, an inline PNG followed by two empty `PHOTO;VALUE=URI:` lines, a basic
+    /// `BDAY` and a `URL` without scheme. Its picture reads, and one changed field changes one line.
+    #[test]
+    fn nextcloud_example_card_with_empty_photo_lines() {
+        let raw = fixture("nextcloud-example.vcf");
+        let contact = read(&raw).expect("card");
+        assert_eq!(contact.display_name, "Leon Green");
+        assert_eq!(contact.title.as_deref(), Some("Manager"));
+        assert_eq!(contact.birthday, PartialDate::parse("2000-01-01"));
+        assert!(contact.photo.is_some(), "the empty links after the picture hide nothing");
+        assert_eq!(photo(&raw).map(|p| p.mime), Some("image/png".into()));
+        round_trip("nextcloud-example.vcf", "TITLE", |c| c.title = Some("Director".into()));
+        round_trip("nextcloud-example.vcf", "NOTE", |c| c.note = None);
+        let without = set_photo(&raw, None);
+        assert!(!without.contains("PHOTO"), "every picture line goes: {without}");
+    }
+
+    /// Issue #354: a card as Radicale 3.9 keeps it after a client wrote it: the properties sorted by
+    /// name after `UID`, a long `NOTE` folded with the fold space before a space of the text, the
+    /// inline picture on one long line.
+    #[test]
+    fn radicale_card_round_trips() {
+        let raw = fixture("radicale.vcf");
+        let contact = read(&raw).expect("card");
+        assert_eq!(contact.display_name, "Dr. Mira Sommer");
+        assert_eq!(
+            (contact.name.family.as_str(), contact.name.given.as_str(), contact.name.prefix.as_str()),
+            ("Sommer", "Mira", "Dr.")
+        );
+        assert_eq!(contact.org.as_deref(), Some("Sommer & Partner"));
+        assert_eq!(contact.phones[0], Labeled::new("+49 160 2222222".to_string(), FieldKind::Mobile));
+        assert_eq!(contact.phones[1].kind, FieldKind::Work);
+        assert_eq!(contact.emails[1], Labeled::new("mira.privat@example.net".to_string(), FieldKind::Home));
+        assert_eq!(contact.birthday, PartialDate::parse("1984-03-07"));
+        assert_eq!(contact.groups, ["Kunden", "Hamburg"]);
+        assert_eq!(
+            contact.note.as_deref(),
+            Some(
+                "Rückruf bitte nachmittags, nicht vor 14 Uhr; Assistenz: Herr Klein. Diese Notiz ist absichtlich \
+                 lang genug, damit sie gefaltet wird."
+            )
+        );
+        assert_eq!(photo(&raw).map(|p| p.mime), Some("image/png".into()));
+
+        round_trip("radicale.vcf", "TEL", |c| c.phones[1].value = "+49 40 444444".into());
+        round_trip("radicale.vcf", "EMAIL", |c| {
+            c.emails.remove(1);
+        });
+        round_trip("radicale.vcf", "CATEGORIES", |c| c.groups.retain(|g| g != "Hamburg"));
+        round_trip("radicale.vcf", "NOTE", |c| c.note = Some("Kurz.".into()));
+        let patched = patch(&raw, &contact, &Contact { org: Some("Sommer GmbH".into()), ..contact.clone() });
+        assert!(patched.contains("\r\nORG:Sommer GmbH;Planung\r\n"), "the department stays: {patched}");
+        assert!(patched.contains("X-SOCIALPROFILE;TYPE=mastodon:https://social.example.org/@mira\r\n"));
+    }
 }

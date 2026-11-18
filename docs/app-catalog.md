@@ -20,7 +20,7 @@ Alle Apps bauen auf dem Kern `torroworkplace` auf (Dienst mit Tray-Icon, Steuerz
 | Tagesplan | Was ist heute dran, Termine und Aufgaben zusammen? | Kalender und Aufgaben | Idee |
 | Fokus / Pomodoro / Zeiterfassung | Woran arbeite ich gerade und wie lange schon? | lokal; Export nach CalDAV | Idee |
 | **Notizen** (`torronotes`) | Wo lege ich schnell etwas ab, auch für Agenten? | Markdown-Dateien im Notizordner von Nextcloud per WebDAV (Nextcloud Notes als Zusatz), später auch ein lokaler Ordner. Konzept: [notizen.md](notizen.md), Entwürfe: [prototypes/notes/](prototypes/notes/index.html) | **Entwurf** ([tasks/notizen.md](tasks/notizen.md)) |
-| **Kontakte** (`torrocontacts`) | Wer ist das, wie erreiche ich ihn, und wo ist das? | CardDAV (Nextcloud zuerst, dann iCloud, Fastmail, Radicale …), Karte mit OpenStreetMap ohne Schlüssel. Konzept: [kontakte.md](kontakte.md) | **Entwurf** ([tasks/kontakte.md](tasks/kontakte.md)) |
+| **Kontakte** (`torrocontacts`) | Wer ist das, wie erreiche ich ihn, und wo ist das? | CardDAV (Nextcloud zuerst, dann iCloud, Fastmail, Radicale …), Karte mit OpenStreetMap ohne Schlüssel. Konzept: [kontakte.md](kontakte.md), Prüfung mit Nextcloud und Radicale dort | **v0.1** (in Katalog und Installern, #354) |
 | Präsenz / Kontaktliste mit Status | Wer ist gerade da, und wie erreiche ich ihn sofort? | Nextcloud User status (Status, Nachricht, Heartbeat), Systemadressbuch, Talk für den Chat. Die Kontaktliste des Chats, Konzept: [chat.md](chat.md) (Recherche: [praesenz.md](praesenz.md)) | **Konzept** |
 
 ## Arbeiten mit KI

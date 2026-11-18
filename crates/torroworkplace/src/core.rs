@@ -4332,8 +4332,18 @@ impl Core {
     /// The contacts (issue #351): a round once the calendar service has read its accounts and every
     /// [`crate::contacts::SYNC_EVERY`] after; the books that are gone leave every client's rights.
     /// An account removed or wiped takes its contacts along ([`PimService::on_forget`]); every
-    /// round also clears accounts gone while nobody listened. Part of [`Core::start`].
+    /// round also clears accounts gone while nobody listened. An account signed in brings its
+    /// contacts at once, not at the next round ([`PimService::on_add`], issue #354). Part of
+    /// [`Core::start`].
     fn start_contacts(self: &Arc<Self>) {
+        let mut added = self.pim.on_add();
+        let core = Arc::clone(self);
+        tokio::spawn(async move {
+            // Missed ones are covered by the same round: it syncs every account.
+            while let Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) = added.recv().await {
+                core.sync_contacts().await;
+            }
+        });
         let mut forgotten = self.pim.on_forget();
         let core = Arc::clone(self);
         tokio::spawn(async move {

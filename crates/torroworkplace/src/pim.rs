@@ -38,7 +38,7 @@
 //!   stored object in the cache only, never from what the client says.
 //! - When a server refuses an app password (401/403), the core asks once whether this device
 //!   was marked for a remote wipe and, if so, removes that account, its secret and its cache
-//!   (task S.12, `account::remote_wipe`).
+//!   (task S.12, `account::remote_wipe`), and the map tiles of this device (issue #354).
 //! - An account whose app password is missing from the keychain is still loaded, without a
 //!   connection and with a problem ("Sign in again"), so it is listed and can be removed.
 //! - An SQLite cache that survives restarts comes later.
@@ -828,6 +828,12 @@ pub struct PimService {
     /// Tells who listens ([`PimService::on_forget`]) the id of every account removed or wiped from
     /// this device, so the contacts of it go too (issue #351).
     forgotten: tokio::sync::broadcast::Sender<String>,
+    /// Tells who listens ([`PimService::on_add`]) the id of every account signed in on this device,
+    /// once its first sync is done, so its contacts come at once and not at the next round (issue #354).
+    added: tokio::sync::broadcast::Sender<String>,
+    /// The folder of the map tiles ([`crate::places::Places::system_tiles`]);
+    /// a remote wipe empties it. `None` in tests unless they bring one.
+    map_tiles: Option<PathBuf>,
 }
 
 impl PimService {
@@ -836,7 +842,13 @@ impl PimService {
     /// accounts.
     pub fn new() -> PimService {
         let filters_file = AppPaths::for_app(AppId::WORKPLACE).map(|paths| paths.config.join(lists::FILE));
-        PimService { filters_file, sign_in: SignIn::system(), ..PimService::with_settings(SettingsStore::system()) }
+        let map_tiles = crate::places::Places::system_tiles();
+        PimService {
+            filters_file,
+            sign_in: SignIn::system(),
+            map_tiles,
+            ..PimService::with_settings(SettingsStore::system())
+        }
     }
 
     /// The service on `settings`; tests pass a store in a temp directory. Does not touch the
@@ -859,6 +871,8 @@ impl PimService {
             filters_writing: Mutex::new(()),
             sign_in: SignIn::offline(),
             forgotten: tokio::sync::broadcast::channel(16).0,
+            added: tokio::sync::broadcast::channel(16).0,
+            map_tiles: None,
         }
     }
 
@@ -867,6 +881,21 @@ impl PimService {
     /// an account's contacts never outlive it (issue #351).
     pub fn on_forget(&self) -> tokio::sync::broadcast::Receiver<String> {
         self.forgotten.subscribe()
+    }
+
+    /// The id of every account signed in on this device from now on (Nextcloud's login flow,
+    /// `accounts.connect_caldav`, also again with a new password), after its first sync. The
+    /// contacts service listens, so a new account's address books come at once (issue #354).
+    pub fn on_add(&self) -> tokio::sync::broadcast::Receiver<String> {
+        self.added.subscribe()
+    }
+
+    /// The first sync of the account `id` just signed in, then [`PimService::on_add`] hears of it,
+    /// whether the sync worked or not: the contacts try their own connection.
+    async fn first_sync(&self, id: String) {
+        // `sync_account` logs a failure itself.
+        let _ = self.sync_account(&id).await;
+        let _ = self.added.send(id);
     }
 
     /// The CalDAV connections of the Nextcloud and CalDAV accounts that have one, by account id: the
@@ -1950,7 +1979,13 @@ impl PimService {
             if self.state.read().await.slot(id).is_none() {
                 return Err("the account changed meanwhile".to_string());
             }
-            self.forget_locally(id, forget_store).await
+            self.forget_locally(id, forget_store).await?;
+            // The tiles belong to no account, but show where the contacts live (issue #354,
+            // `docs/kontakte.md` "Sicherheit"): a wipe takes them, removing an account does not.
+            if let Some(tiles) = &self.map_tiles {
+                crate::places::Places::new(Some(tiles.clone())).clear_tiles();
+            }
+            Ok(())
         };
         let result = account::remote_wipe(check, wipe, report).await;
         if result.is_err()
@@ -2119,8 +2154,7 @@ impl PimService {
                     }
                 }
             };
-            // `sync_account` logs a failure itself.
-            let _ = service.sync_account(&id).await;
+            service.first_sync(id).await;
         });
         Response::LoginStarted { login_url }
     }
@@ -2253,8 +2287,7 @@ impl PimService {
         };
         let service = Arc::clone(self);
         tokio::spawn(async move {
-            // `sync_account` logs a failure itself.
-            let _ = service.sync_account(&id).await;
+            service.first_sync(id).await;
         });
         Response::Connected { account: info, calendars: services.calendars, tasks: services.tasks }
     }
@@ -5658,6 +5691,47 @@ pub(crate) mod tests {
         let left: Vec<String> = service.accounts_within(Reach::Suite).await.into_iter().map(|a| a.id).collect();
         assert_eq!(left, ["nextcloud:bob@other.example.org"]);
         assert_eq!(cached(&service).await, vec![collection("bob")]);
+    }
+
+    /// Issue #354, checked against Nextcloud 35: the map tiles belong to no account, but they show
+    /// where the person's contacts live (`docs/kontakte.md`, "Sicherheit"). A remote wipe takes
+    /// them along; a refusal without wipe and an account removed by a person leave them.
+    #[tokio::test]
+    async fn a_remote_wipe_takes_the_map_tiles_along() {
+        let tiles = tempfile::tempdir().expect("temp dir");
+        let tile = tiles.path().join("0123abcd.tile");
+        let plant = || {
+            std::fs::write(&tile, b"png").expect("tile");
+            std::fs::write(tiles.path().join("0123abcd.etag"), b"\"e\"").expect("etag");
+        };
+        let with_tiles = |service: Arc<PimService>| {
+            let mut service = Arc::try_unwrap(service).expect("only one");
+            service.map_tiles = Some(tiles.path().to_path_buf());
+            Arc::new(service)
+        };
+
+        plant();
+        let service = with_tiles(refused_service().await);
+        assert_eq!(wipe(&service, Ok(false)).await.0, Ok(Some(false)));
+        assert!(tile.exists(), "no wipe asked, nothing goes");
+        service.forget_locally(ANNA, || async { Ok(()) }).await.expect("removed");
+        assert!(tile.exists(), "removing an account keeps the tiles");
+
+        let service = with_tiles(refused_service().await);
+        assert_eq!(wipe(&service, Ok(true)).await.0, Ok(Some(true)));
+        assert_eq!(std::fs::read_dir(tiles.path()).expect("dir").count(), 0, "every tile and its etag go");
+    }
+
+    /// Issue #354: an account signed in is announced after its first sync, so its contacts come at
+    /// once; also when that sync failed (here: no server at all).
+    #[tokio::test]
+    async fn an_account_signed_in_is_announced_after_its_first_sync() {
+        let service = Arc::new(PimService::with_settings(SettingsStore::without_file()));
+        let mut added = service.on_add();
+        service.pretend_signed_in().await;
+        service.first_sync(ANNA.to_string()).await;
+        assert_eq!(added.try_recv().ok().as_deref(), Some(ANNA));
+        assert!(added.try_recv().is_err(), "once");
     }
 
     #[tokio::test]

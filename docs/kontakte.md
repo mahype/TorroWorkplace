@@ -410,13 +410,114 @@ Während der Suche steht der leere Rahmen der Karte mit „Finding address…“
 - Bis Zoom 6 kommt die Karte offline aus PMTiles, darüber vom Kachelserver. Oben der Fortschritt der Suche
   im Hintergrund und wie viele Kontakte keine Adresse haben.
 
+## Prüfung mit echten Servern (#354)
+
+Stand 2026-11-17 (KO1.11). Das Adressbuch lief gegen eine lokale Nextcloud und ein lokales Radicale, jeweils mit
+zwei Nutzern `anna` und `ben`. iCloud ist nicht geprüft: Es gab keinen Zugang (Entscheidung im Issue).
+
+| Server | Version | Image |
+|---|---|---|
+| Nextcloud | 35.0.3, App Contacts 8.10.0, SQLite | `nextcloud:35@sha256:8041f24690c5631da46d2391e1fd7efcde95c6cf08695047f3dd7ce7783934b4` |
+| Radicale | 3.9.1 | `tomsquest/docker-radicale@sha256:0d8968984c06888808f64229a55bc4ed75c08c6bd32c47986f3cae6d784de1d2` |
+
+**Nextcloud starten** (Passwörter frei wählen, `ben` per `occ`):
+
+```bash
+docker run -d --name torro354-nextcloud -p 127.0.0.1:8081:80 -v torro354-nextcloud-data:/var/www/html \
+  -e SQLITE_DATABASE=nextcloud -e NEXTCLOUD_ADMIN_USER=anna -e NEXTCLOUD_ADMIN_PASSWORD=… \
+  -e NEXTCLOUD_TRUSTED_DOMAINS="localhost localhost:8081" nextcloud:35
+docker exec -u www-data -e OC_PASS=… torro354-nextcloud php occ user:add --password-from-env ben
+docker exec -u www-data torro354-nextcloud php occ app:install contacts
+```
+
+Ein Buch `team` von `anna` geht nur lesbar an `ben`: `MKCOL …/addressbooks/users/anna/team/`, dann `POST` auf das
+Buch mit `<o:share><o:set><d:href>principal:principals/users/ben</d:href></o:set></o:share>`
+(Namensraum `http://owncloud.org/ns`; mit `<o:read-write/>` im `set` darf `ben` schreiben).
+
+**Radicale starten** mit eigenem Konfigurationsordner (`config`, `users`, `rights`):
+
+```ini
+# config
+[auth]
+type = htpasswd
+htpasswd_filename = /config/users
+htpasswd_encryption = plain
+[rights]
+type = from_file
+file = /config/rights
+[storage]
+filesystem_folder = /data/collections
+[sharing]
+type = csv
+database_path = /data/sharing.csv
+collection_by_map = true
+permit_create_map = true
+```
+
+`rights`: `R` auf die Wurzel für alle, `RW` auf `{user}`, `rw` auf `{user}/[^/]+`, dazu `ben` mit `r` auf
+`anna/shared`. Allein mit `rights` sieht `ben` das Buch aber nicht: Seine Entdeckung endet in `/ben/`. Radicale 3.9 legt
+es ihm mit einer Freigabe nach Karte in sein Home: `anna` sendet
+`POST /.sharing/v1/map/create` mit `{"PathMapped": "/anna/shared/", "PathOrToken": "/ben/shared-anna/", "User": "ben",
+"Permissions": "r"}`, danach `map/enable` und `map/unhide`, einmal als `anna` und einmal als `ben`.
+
+```bash
+docker run -d --name torro354-radicale -p 127.0.0.1:5232:5232 -v "$PWD/radicale/config:/config:ro" \
+  -v torro354-radicale-data:/data tomsquest/docker-radicale
+```
+
+**Der Test-Kern:** ein Debug-Build mit `daemon --headless` und `TORRO_CONFIG_HOME`, `TORRO_DATA_HOME` und
+`TORRO_STATE_HOME` in einem Arbeitsordner; Requests als Umschlag-Zeile mit seinem `app.key` an seinen `core.sock`.
+
+- **Nicht den echten Schlüsselbund benutzen.** Auf macOS liegen alle Geheimnisse der Suite in einem Eintrag (Dienst
+  `torroworkplace`, Konto `torro-vault`). Ein zweiter Kern läse den echten Tresor und schriebe beim Verbinden seine
+  Fassung zurück, auch über Änderungen des laufenden Kerns hinweg. Der Test-Kern lief darum aus einer Kopie des
+  Quelltexts mit anderem Dienstnamen und ohne Browser-Aufruf beim Anmelden.
+- Der Pfad des Sockets muss kürzer als 104 Zeichen sein (`SUN_LEN`), sonst startet der Kern nicht.
+- **Anmelden bei Nextcloud** ohne Browser: `accounts.connect_nextcloud`, dann die Login-Seite mit der
+  Abkürzung der Flow-Seite für App-Passwörter bestätigen (`POST /login/v2/apptoken` mit `stateToken`, Nutzer und
+  einem App-Passwort, das vorher `GET /ocs/v2.php/core/getapppassword` geliefert hat). Nextcloud gibt dem Kern dann
+  genau dieses App-Passwort; unter „Geräte & Sitzungen“ steht es unter dem Namen, unter dem es angelegt wurde.
+- **Radicale** über `accounts.connect_caldav` mit `server: "http://localhost:5232"` (unverschlüsselt nur für
+  `localhost`), `calendars` und `tasks` aus.
+- Neue Konten brachten ihre Kontakte erst mit `accounts.sync` oder der nächsten Runde (alle 15 Minuten) mit. Seit
+  #354 gleicht der Kern die Kontakte gleich nach der ersten Synchronisierung eines neu angemeldeten Kontos ab, und
+  „Used by …“ auf der Kontoseite nennt bei Nextcloud und CalDAV auch Torro Contacts.
+
+**Ergebnisse** (✓ wie erwartet, ✗ Befund, behoben in diesem Issue):
+
+| Szenario | Nextcloud 35 | Radicale 3.9 |
+|---|---|---|
+| Bücher entdecken | ✓ `contacts`, `team`, System und „Zuletzt kontaktiert“ (beide ausgeblendet, nur lesbar) | ✓ Wurzel nennt den Principal, der Principal ist selbst das Home und kein Buch (`radicale_books_come_from_the_principal_that_is_its_own_home`) |
+| Anlegen (`create_contact`) | ✓ vCard 3.0 wie geschrieben | ✓; Radicale sortiert die Eigenschaften beim Speichern nach Namen um (Eigenheit des Servers, die Rundreise bleibt heil: `radicale_card_round_trips`) |
+| Ändern eines Felds | ✓ | ✓ |
+| Änderungen am Server (neu, geändert, gelöscht) | ✓ per `sync-collection` | ✓ per `sync-collection` (`radicale_sync_brings_only_the_changes`) |
+| Konflikt, verschiedene Felder (Server per `curl` geändert, hier geändert vor dem Abgleich) | ✓ still zusammengeführt, beide Änderungen auf dem Server | ✓ ebenso |
+| Konflikt, gleiches Feld, dann `resolve_conflict` | ✓ `conflict` mit Serverfassung; `mine` schreibt meine, `theirs` nimmt die des Servers | ✓; `both` ergibt zwei Kontakte |
+| Offline geändert, anderes Gerät ändert, dann Abgleich | ✓ `pending`, danach Konflikt bzw. zusammengeführt | ✓ ebenso |
+| Geteiltes Buch nur lesbar | ✓ `writable: false` trotz `write-properties`; Ändern, Ergänzen, Gruppe, Löschen und Anlegen enden mit „This address book is read-only.“, ohne Anfrage (`a_book_shared_read_only_is_not_writable`) | ✓ ebenso (`writable: false`, nur `read`) |
+| Freigabe wird zwischen zwei Abgleichen auf „nur lesen“ gestellt | ✗ Nextcloud weist Schreiben dort mit `404` ab. Eine Änderung wurde ein Konflikt „dort gelöscht“, der sich nicht mehr auflösen ließ; ein Löschen meldete Erfolg, und der Kontakt fehlte hier, blieb aber auf dem Server. Behoben in `carddav.rs`: Nach einem `404` fragt der Kern die Rechte des Buchs (`a_404_in_a_book_shared_read_only_is_a_refusal`); live nachgeprüft | ✓ Radicale antwortet `403` (mit `curl` geprüft), das war schon richtig |
+| Gruppe hinzu und weg | ✓ `CATEGORIES`; die Zeile fällt weg, wenn keine Gruppe bleibt | ✓ ebenso |
+| Foto per `set_photo` setzen und entfernen | ✓ JPEG 64 px als `PHOTO;ENCODING=b;TYPE=JPEG`; Entfernen nimmt nur die Zeile | ✓ ebenso |
+| Foto aus der Nextcloud lesen | ✓ aus der Web-App (PNG vom Zuschneiden) und aus dem Beispielkontakt, den Nextcloud selbst anlegt (PNG, danach zwei leere `PHOTO;VALUE=URI:`; `nextcloud_example_card_with_empty_photo_lines`) | – |
+| Kontakt aus der Nextcloud-Oberfläche (Name, Titel, Firma, Telefon, Mail, Adresse, Notiz, Gruppe, Foto), ein Feld geändert | ✓ auf dem Server ändert sich genau die Zeile `TITLE`, der Rest bleibt Byte für Byte (`nextcloud_web_card_round_trips`) | – |
+| Remote Wipe des App-Passworts | ✓ `wipe/check`, dann Konto, Bücher, Kontakte, Favoriten, „Zuletzt“, Vorschaubilder weg, dann `wipe/success`. ✗ Der Kachel-Cache blieb, obwohl „Sicherheit“ oben ihn beim Remote Wipe nennt. Behoben in `pim.rs` (`a_remote_wipe_takes_the_map_tiles_along`); live nachgeprüft | – (Radicale kennt keinen Remote Wipe) |
+
+Nebenbei beobachtet: Hängt ein Server (Verbindung steht, aber keine Antwort), wartet ein schreibender Befehl das
+Zeitlimit von 60 s ab, bevor die Änderung als `pending` in der Warteschlange landet.
+
+**Favoriten:** Kein Server bietet einen Platz. vCard (RFC 6350) kennt keinen Favoriten, Nextcloud Contacts 8.10 zeigt
+keinen, Radicale speichert nur die vCards. Favoriten bleiben darum, wie gebaut, lokal je Gerät (`set_favorite` geht
+auch in nur lesbaren Büchern) und gehen mit dem Konto und beim Remote Wipe.
+
+**iCloud-Gruppen:** Ohne iCloud-Zugang nicht geprüft. Die App liest iCloud-Gruppen weiter nur (siehe „Offen“).
+
 ## Offen (in der jeweiligen Aufgabe klären)
 
 - **vCard-Bibliothek:** `calcard` (Stalwart, vCard 3/4 und iCalendar) oder ein eigener kleiner
   Leser. Bedingung: unbekannte Eigenschaften und Parameter überleben eine Rundreise unverändert.
   Entscheidet KO1.1a nach einem Test mit echten vCards von Nextcloud, iCloud und Google.
-- **iCloud-Gruppen schreiben** braucht eine zweite Datei je Gruppe. Gegen einen echten Server prüfen,
-  sonst zunächst nur lesen.
+- **iCloud-Gruppen schreiben** braucht eine zweite Datei je Gruppe. In #354 nicht gegen einen echten Server geprüft
+  (kein iCloud-Zugang); bis dahin liest die App iCloud-Gruppen nur.
 - **PMTiles ins Paket?** 60 MB machen den Installer deutlich größer. Alternativ lädt die App die
   Datei einmal nach Zustimmung. Das klärt KO4.1 mit dem Release-Plan ([release.md](release.md)).
 - **Vektorkacheln** (OpenFreeMap, OSMF Shortbread) sähen schärfer aus. Dafür bräuchte es aber einen
