@@ -1245,23 +1245,15 @@ pub fn answer_start(entries: &[Entry]) -> Option<u64> {
     Some(start)
 }
 
-/// What was read aloud of the answer entry `seq` before the person interrupted it (issue #835): the `heard`
-/// of the `stopped` entry that ends its answer, when `seq` is the answer entry that was read (the first one
-/// after the message or the approval the reading began after, as [`answer_start`] finds it). `None` for any
-/// other entry and for an answer stopped in the window.
-pub fn heard_of(entries: &[Entry], seq: u64) -> Option<&str> {
-    let at = entries.iter().position(|entry| entry.seq == seq)?;
-    if !matches!(entries[at].content, EntryContent::Answer { .. }) {
-        return None;
-    }
-    let (stop, heard) = entries.iter().enumerate().skip(at + 1).find_map(|(stop, entry)| match &entry.content {
-        EntryContent::Message { .. } => Some((stop, None)),
-        EntryContent::Stopped { heard } => Some((stop, heard.as_deref())),
-        _ => None,
-    })?;
-    let heard = heard?;
-    // As [`answer_start`] found it when the reading began: an approval only when something followed it then; one
-    // right before the stop was read as its note, after the answer before it.
+/// What an interrupted reading went through (issue #835): for the `stopped` entry at the position `stop` with
+/// `heard`, that text and the answer entries that were read, in order: from the first after the message or the
+/// approval the reading began after (as [`answer_start`] found it then) up to the first with a spoken part, which
+/// is read whole and alone, or else up to the stop. The last of them holds what was heard ([`heard_of`]). `None`
+/// for any other entry and for an answer stopped in the window.
+pub fn interrupted_at(entries: &[Entry], stop: usize) -> Option<(&str, Vec<&Entry>)> {
+    let EntryContent::Stopped { heard: Some(heard) } = &entries.get(stop)?.content else { return None };
+    // An approval only when something followed it then; one right before the stop was read as its note, after
+    // the answer before it.
     let begun = (0..stop)
         .rev()
         .find(|&at| match entries[at].content {
@@ -1270,8 +1262,34 @@ pub fn heard_of(entries: &[Entry], seq: u64) -> Option<&str> {
             _ => false,
         })
         .map_or(0, |begun| begun + 1);
-    let read = entries[begun..stop].iter().find(|entry| matches!(entry.content, EntryContent::Answer { .. }))?;
-    (read.seq == seq).then_some(heard)
+    let mut read = Vec::new();
+    for entry in &entries[begun..stop] {
+        if let EntryContent::Answer { spoken, .. } = &entry.content {
+            read.push(entry);
+            if spoken.is_some() {
+                break;
+            }
+        }
+    }
+    (!read.is_empty()).then_some((heard.as_str(), read))
+}
+
+/// What was read aloud of the answer entry `seq` before the person interrupted it (issue #835): the `heard` of the
+/// `stopped` entry that ends its answer, when `seq` is the last entry that reading went through
+/// ([`interrupted_at`]): the window shows it there, after the tools before it. `None` for any other entry and for
+/// an answer stopped in the window.
+pub fn heard_of(entries: &[Entry], seq: u64) -> Option<&str> {
+    let at = entries.iter().position(|entry| entry.seq == seq)?;
+    if !matches!(entries[at].content, EntryContent::Answer { .. }) {
+        return None;
+    }
+    let stop = entries.iter().enumerate().skip(at + 1).find_map(|(stop, entry)| match &entry.content {
+        EntryContent::Message { .. } => Some(None),
+        EntryContent::Stopped { .. } => Some(Some(stop)),
+        _ => None,
+    })??;
+    let (heard, read) = interrupted_at(entries, stop)?;
+    (read.last()?.seq == seq).then_some(heard)
 }
 
 impl Request {
@@ -1701,6 +1719,26 @@ mod tests {
             at(4, heard("I will delete it. The assistant needs …")),
         ];
         assert_eq!(heard_of(&waiting, 2), Some("I will delete it. The assistant needs …"));
+
+        // In one part the reading went on past a tool: what was heard stands at the last part it reached.
+        let one_part = |text: &str| EntryContent::Answer {
+            text: text.into(),
+            engine: TEST_ENGINE.into(),
+            model: None,
+            spoken: None,
+        };
+        // `entries[5]` is the tool line above.
+        let past_a_tool = [
+            at(1, message("Tomorrow?")),
+            at(2, one_part("Let me look.")),
+            at(3, entries[5].content.clone()),
+            at(4, one_part("Two meetings.")),
+            at(5, heard("Let me look. Two …")),
+        ];
+        assert_eq!(heard_of(&past_a_tool, 2), None);
+        assert_eq!(heard_of(&past_a_tool, 4), Some("Let me look. Two …"));
+        let (_, read) = interrupted_at(&past_a_tool, 4).expect("interrupted");
+        assert_eq!(read.iter().map(|entry| entry.seq).collect::<Vec<_>>(), [2, 4]);
     }
 
     #[test]

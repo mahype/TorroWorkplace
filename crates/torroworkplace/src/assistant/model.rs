@@ -1519,49 +1519,30 @@ pub(super) fn history(entries: &[Entry]) -> Vec<ChatMessage> {
 }
 
 /// The answer entries of `entries` the model reads otherwise because the person interrupted them while they were
-/// read aloud (issue #835, decision 1): the one that was read becomes what was heard of it with a note, followed by
-/// its shown part when it had one (`Some`); the entries after it in the same answer were not said and are left out
-/// (`None`) but for their shown part, unless the read one had a spoken part: then they are what the window shows.
+/// read aloud (issue #835, decision 1, [`torro_ipc::assistant::interrupted_at`]): the last part the reading reached
+/// becomes what was heard with a note, followed by its shown part when it had one (`Some`); the parts read before
+/// it are said by that and left out (`None`). Entries after a spoken part stay: they are what the window shows.
 fn as_heard(entries: &[Entry]) -> BTreeMap<u64, Option<String>> {
-    use torro_ipc::assistant::{SHOWN_MARK, heard_of, split_spoken};
+    use torro_ipc::assistant::{SHOWN_MARK, interrupted_at, split_spoken};
     let mut read = BTreeMap::new();
-    for (at, entry) in entries.iter().enumerate() {
-        let EntryContent::Answer { text, .. } = &entry.content else { continue };
-        let Some(heard) = heard_of(entries, entry.seq) else { continue };
+    for stop in 0..entries.len() {
+        let Some((heard, parts)) = interrupted_at(entries, stop) else { continue };
+        let Some((last, before)) = parts.split_last() else { continue };
+        // The parts before the last were read in one part, without a shown part: what was heard says them.
+        for part in before {
+            read.insert(part.seq, None);
+        }
+        // What was heard stands at the last part the reading reached, after the tools before it (review of #835), so
+        // the model never says a result before its tool; a spoken part's shown part follows it.
         let note = format!("{heard} (interrupted by the person here; the rest was not said)");
-        let with_shown = |text: &str| match split_spoken(text, false) {
-            (Some(_), shown) if !shown.is_empty() => format!("{note}\n{SHOWN_MARK}\n{shown}"),
-            _ => note.clone(),
+        let instead = match &last.content {
+            EntryContent::Answer { text, .. } => match split_spoken(text, false) {
+                (Some(_), shown) if !shown.is_empty() => format!("{note}\n{SHOWN_MARK}\n{shown}"),
+                _ => note,
+            },
+            _ => note,
         };
-        // A spoken part is read whole and alone: what follows it in the answer is what the window shows.
-        if split_spoken(text, false).0.is_some() {
-            read.insert(entry.seq, Some(with_shown(text)));
-            continue;
-        }
-        // In one part, the reading went on into the later parts: what was heard stands at the last of them, after
-        // the tools before it (review of #835), so the model never says a result before its tool. Those between
-        // keep only what the window shows of them.
-        let later: Vec<(u64, &str)> = entries[at + 1..]
-            .iter()
-            .take_while(|entry| !matches!(entry.content, EntryContent::Message { .. } | EntryContent::Stopped { .. }))
-            .filter_map(|entry| match &entry.content {
-                EntryContent::Answer { text, .. } => Some((entry.seq, text.as_str())),
-                _ => None,
-            })
-            .collect();
-        let Some(((last, last_text), between)) = later.split_last() else {
-            read.insert(entry.seq, Some(note));
-            continue;
-        };
-        read.insert(entry.seq, None);
-        for (seq, text) in between {
-            let kept = match split_spoken(text, false) {
-                (Some(_), shown) if !shown.is_empty() => Some(shown),
-                _ => None,
-            };
-            read.insert(*seq, kept);
-        }
-        read.insert(*last, Some(with_shown(last_text)));
+        read.insert(last.seq, Some(instead));
     }
     read
 }
