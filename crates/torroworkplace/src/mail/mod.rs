@@ -7,6 +7,7 @@
 //! - [`read`]: the reading commands (`mail.list_folders`, `mail.search_messages`,
 //!   `mail.index_status`, `mail.get_message`, `mail.get_thread`, `mail.get_attachment`, task M3.1,
 //!   issue #136; `mail.sync_status`, issue #422).
+//! - [`attachment_text`]: the text of a text or PDF attachment for `mail.read_attachment` (issue #893).
 //! - [`overview`]: the numbers of `mail.overview` – what came in, from whom, how much was opened,
 //!   and what lies in the inbox (issue #409).
 //! - [`query`], [`fold`]: the query language of the search, and text as the search compares it
@@ -57,6 +58,7 @@ use sha2::{Digest, Sha256};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
 
+pub mod attachment_text;
 pub mod backup;
 pub mod check;
 pub mod eml;

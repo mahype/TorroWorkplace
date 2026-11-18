@@ -327,10 +327,20 @@ fn version_of(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// One page of the text file `file` from line `from_line` (counting from 1): whole lines, each with its line break, up
-/// to [`MAX_PAGE_CHARS`] characters as JSON writes them ([`escaped`]); a first line longer than that is cut. Past the last line the text is empty.
+/// One page of the text file `file` from line `from_line` (counting from 1), as [`page_of`] cuts it.
 fn read(file: &Path, from_line: u32) -> Result<FileText, FolderError> {
     let TextFile { text, version, .. } = text_file(file)?;
+    let (page, total, next_line, cut) = page_of(&text, from_line);
+    let mut page = FileText::new(file.to_string_lossy().into_owned(), page, from_line, total, next_line, version);
+    page.cut_line = cut;
+    Ok(page)
+}
+
+/// One page of `text` from line `from_line` (counting from 1): whole lines, each with its line break, up to
+/// [`MAX_PAGE_CHARS`] characters as JSON writes them ([`escaped`]); a first line longer than that is cut. Past the last
+/// line the page is empty. Answers the page, how many lines `text` has, the line to read on from when more follows, and
+/// whether a single line was cut. Shared with `mail.read_attachment`, which pages an attachment's text the same way.
+pub(crate) fn page_of(text: &str, from_line: u32) -> (String, u32, Option<u32>, bool) {
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let total = u32::try_from(lines.len()).unwrap_or(u32::MAX);
     let start = usize::try_from(from_line.saturating_sub(1)).unwrap_or(usize::MAX);
@@ -354,9 +364,7 @@ fn read(file: &Path, from_line: u32) -> Result<FileText, FolderError> {
         end += 1;
     }
     let next_line = (end < lines.len()).then(|| u32::try_from(end + 1).unwrap_or(u32::MAX));
-    let mut page = FileText::new(file.to_string_lossy().into_owned(), page, from_line, total, next_line, version);
-    page.cut_line = cut;
-    Ok(page)
+    (page, total, next_line, cut)
 }
 
 /// How many characters `c` takes in JSON: two for a quote, a backslash and the usual control characters (`\n`), six

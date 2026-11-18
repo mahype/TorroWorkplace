@@ -8047,6 +8047,7 @@ impl Core {
             | Request::GetMail { .. }
             | Request::GetMailThread { .. }
             | Request::GetMailAttachment { .. }
+            | Request::ReadMailAttachment { .. }
             | Request::GetSenderLogo { .. }) => {
                 // Boxed, as the ntfy commands: reading mail would grow this match's poll frame, deep
                 // in the stack already when the inbox's quiet asks the core again.
@@ -29613,7 +29614,8 @@ done"#,
         for request in [
             Request::GetMail { id: message.clone(), include_body: true, include_html: true },
             Request::GetMailThread { id: message.clone() },
-            Request::GetMailAttachment { id: message, attachment: "1".into() },
+            Request::GetMailAttachment { id: message.clone(), attachment: "1".into() },
+            Request::ReadMailAttachment { id: message, attachment: "1".into(), from_line: None },
         ] {
             assert_eq!(code(&ask(&core, Some(&stranger), request).await), "not-found");
         }

@@ -51,6 +51,12 @@ impl Selectable {
         &self.text
     }
 
+    /// The text the person selected in it, `None` while nothing (or only blank space) is: what ⌘C
+    /// copies through the menu bar on macOS (issue #894), where the key may not reach the editor.
+    pub fn selection(&self) -> Option<String> {
+        self.content.selection().filter(|text| !text.trim().is_empty())
+    }
+
     /// Applies a click, a drag, a selection or a move of the editor; edits are dropped, so the text
     /// never changes, whatever the action.
     pub fn perform(&mut self, action: Action) {
@@ -176,6 +182,19 @@ mod tests {
         assert_eq!(text.content.text(), "cargo test --workspace");
         assert_eq!(text.text(), "cargo test --workspace", "copied exactly as given, hyphens included");
         assert_eq!(text.content.selection().as_deref(), Some("cargo test --workspace"), "the selection stays");
+    }
+
+    #[test]
+    fn the_selection_is_what_is_marked() {
+        let mut text = Selectable::new("cargo test --workspace");
+        assert_eq!(text.selection(), None, "nothing marked yet");
+        text.perform(Action::SelectAll);
+        assert_eq!(text.selection().as_deref(), Some("cargo test --workspace"));
+        text.perform(Action::Edit(Edit::Insert('x')));
+        assert_eq!(text.selection().as_deref(), Some("cargo test --workspace"), "an edit changes nothing");
+        let mut blank = Selectable::new("  \n ");
+        blank.perform(Action::SelectAll);
+        assert_eq!(blank.selection(), None, "only blank space marked: nothing to copy");
     }
 
     #[test]

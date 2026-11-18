@@ -1425,6 +1425,7 @@ impl PimService {
             | Request::GetMail { .. }
             | Request::GetMailThread { .. }
             | Request::GetMailAttachment { .. }
+            | Request::ReadMailAttachment { .. }
             | Request::GetSenderLogo { .. }
             | Request::ListSaveTargets { .. }
             | Request::CreateSaveTarget { .. }

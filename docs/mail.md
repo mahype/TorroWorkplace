@@ -457,6 +457,7 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Nachricht lesen | Lesebereich | `mail.get_message` · Read | `mail_get_message` |
 | Unterhaltung | Lesebereich | `mail.get_thread` · Read | `mail_get_thread` |
 | Anhang holen | Lesebereich | `mail.get_attachment` · Read | `mail_get_attachment` |
+| Text eines Anhangs lesen (Text und PDF mit Textebene, seitenweise; #893) | Mail › „Ask AI…“ (der Assistent liest ihn) | `mail.read_attachment` · Read | `mail_read_attachment` |
 | Ablageziele und Pfad-Vorschau (#290) | Dreieck-Menü am Anhang, Einstellungen › Mail › Attachments | `mail.list_save_targets` · Read | `mail_list_save_targets` |
 | Ablageziel anlegen (#290) | Einstellungen › Mail › Attachments | `mail.create_save_target` · Admin | **Never** (Liste Punkt 9: setzt immer einen Ordner) |
 | Ablageziel ändern (#290) | Einstellungen › Mail › Attachments | `mail.update_save_target` · Admin; anderer Ordner nur mit dem App-Schlüssel | `mail_update_save_target` (Ordner wie gespeichert) |

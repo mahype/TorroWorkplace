@@ -273,6 +273,22 @@ Aktionsleiste gibt es seit #892 nicht mehr. Entwürfe: `docs/prototypes/mail-min
 - **Die Mail liest der Kern vorab.** Vor der ersten Antwort ruft er `mail.get_message` wie ein Werkzeug
   auf (Rechte, Werkzeugzeile). Frühere Mails holt das Modell nur auf Abruf über
   `mail.get_thread` und `mail.search_messages`; das hält den Kontext lokaler Modelle klein.
+- **Anhänge lesen (#893).** Die Anhänge stehen in `attachments` von `mail.get_message`. Ihren Inhalt liest das
+  Modell mit `mail.read_attachment` (Read, dieselben Rechte wie die Mail): Textdateien (Text, CSV, Markdown,
+  JSON, XML, Kalender- und Kontaktdateien) und PDFs mit Textebene, seitenweise wie `tools.read_file`. Der Kern
+  holt den Anhang, liest den Text selbst und schreibt keine Datei. Eine PDF liest ein eigener Prozess
+  (`torroworkplace pdf-text`, über `lopdf`), denn eine präparierte Datei kann beim Entpacken mehr Speicher
+  verlangen, als jede Grenze je Stream oder Seite hält: Der Kern beendet ihn nach 30 s; unter Linux begrenzt er
+  zudem seinen Speicher (1 GiB über dem Start), unter Linux und macOS seine Rechenzeit. Unter macOS und Windows
+  ist der Speicher nicht begrenzt (macOS hält einen Prozess nicht an seinen Adressraum, Windows bräuchte
+  nativen Code), die Zeit schon. Eine solche PDF beendet so unter Linux nur diesen Prozess, nie den Kern.
+  Es läuft immer nur einer davon, ohne Core-Dump. Text, der kein UTF-8 ist, liest der Kern als UTF-16 mit
+  Byte-Order-Mark oder als Windows-1252, solange Bytes außerhalb von ASCII einzeln oder paarweise stehen wie in
+  westeuropäischen Sprachen; ein längerer Lauf (ein Wort in Shift-JIS oder Kyrillisch) gilt als andere
+  Kodierung, und er lehnt ab, statt Zeichensalat zu liefern. Bilder, Office-Dateien, geschützte PDFs, Scans ohne Textebene und zu teure PDFs sind
+  `unsupported` mit einem Satz für die Person; das Modell sagt dann, dass es die Datei nicht lesen kann, und
+  rät nicht. Die PDF-Werkzeuge der MCP-Server stehen hier
+  absichtlich nicht bereit (siehe oben). Bilder: #896. Der Inhalt ist `untrusted` wie die Mail.
 - **Vorschläge als Karte.** Was das Modell über `mail.extract_action` ausliest (die Worte der Person als
   `focus`), wird ein Vorschlag der Mail wie in [vorschlaege.md](vorschlaege.md) und erscheint als Karte
   im Chat. „Accept“ öffnet den vorausgefüllten Dialog; erst „Create“ legt an. Die Karte gibt es nur im
@@ -1165,6 +1181,7 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | Nachricht schicken (neue oder bestehende Unterhaltung) | Eingabefeld | `assistant.send_message` · Write (startet einen Modelllauf) | `assistant_send_message` |
 | Fragen zu einer Mail | Mail › runder KI-Knopf über der Mail (Paneel, #892) | `assistant.send_message` mit `about` · Write | `assistant_send_message` mit `about` |
 | Fragen ohne Mail (#892) | Mail › runder KI-Knopf über der Übersicht (Paneel, Freigaben als Karte) | `assistant.send_message` ohne `about`, `mode: ask` · Write; `approvals.approval_status` · Read, `approvals.decide_approval` · Admin (nur App-Schlüssel) | `assistant_send_message`, `approvals_approval_status`; Freigeben bleibt `Never` (nur Menschen) |
+| Anhang einer Mail lesen (Text und PDF mit Textebene, seitenweise; #893) | Mail › KI-Knopf (Werkzeugzeile „Read attachment“) | `mail.read_attachment` · Read | `mail_read_attachment` |
 | Vorab prüfen, ob ein Chat zu einer Mail ginge | Mail › KI-Knopf (Hinweis beim Öffnen) | `assistant.check_about` · Read | `assistant_check_about` |
 | Antwort abbrechen | „Stop“ | `assistant.cancel` · Write | `assistant_cancel` |
 | Unterhaltung umbenennen | Kontextmenü | `assistant.rename_conversation` · Write | `assistant_rename_conversation` |
