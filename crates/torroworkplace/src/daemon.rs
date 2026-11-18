@@ -1270,6 +1270,7 @@ fn describe(request: &Request) -> String {
         Request::GetMail { .. } => "get mail".into(),
         Request::GetMailThread { .. } => "get mail thread".into(),
         Request::GetMailAttachment { .. } => "get mail attachment".into(),
+        Request::ReadMailAttachment { .. } => "read mail attachment".into(),
         Request::GetSenderLogo { .. } => "get sender logo".into(),
         // Never a target's name, a file name or a path (issue #290).
         Request::ListSaveTargets { .. } => "list save targets".into(),

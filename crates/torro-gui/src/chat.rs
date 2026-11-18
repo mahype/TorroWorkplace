@@ -238,6 +238,8 @@ pub fn tool_title(name: &str) -> String {
         "mail.search_messages" => tr("Searched mail"),
         "mail.get_message" => tr("Read mail"),
         "mail.get_thread" => tr("Read conversation"),
+        // Issue #893: the text of an attachment, never its name.
+        "mail.read_attachment" => tr("Read attachment"),
         // Issue #605: the chat about a mail reads a suggestion out of it.
         "mail.extract_action" => tr("Read a suggestion out of the mail"),
         "mail.save_draft" => tr("Saved draft"),
