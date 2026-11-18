@@ -312,6 +312,13 @@ pub trait Sound {
 
     /// Whether the device has played a sample pushed after the last [`Sound::mark`]: that sound is heard.
     fn past_mark(&self) -> bool;
+
+    /// Marks the start of a sentence at the end of what was pushed so far (issue #835): the sound pushed
+    /// after it is the sentence's.
+    fn boundary(&mut self);
+
+    /// How many [`Sound::boundary`] marks the device has played past: so many sentences began to sound.
+    fn boundaries_heard(&self) -> usize;
 }
 
 /// How long a sound output that just opened plays silence before the first sound (issue #829): a device
@@ -334,13 +341,18 @@ struct Queue {
     mark: Option<usize>,
     /// A sample after the mark has gone to the device.
     past_mark: bool,
+    /// How many samples were queued and how many went to the device, ever (issue #835).
+    pushed: u64,
+    played: u64,
+    /// Where the sentences begin ([`Sound::boundary`]), as counts of samples queued before them.
+    boundaries: Vec<u64>,
 }
 
 impl Queue {
     /// The queue of an output at `rate` that just opened: [`LEAD_IN_MS`] of silence before what comes.
     fn opened(rate: u32) -> Queue {
         let lead_in = usize::try_from(rate).unwrap_or(0).saturating_mul(LEAD_IN_MS) / 1000;
-        Queue { samples: std::iter::repeat_n(0.0, lead_in).collect(), ..Queue::default() }
+        Queue { samples: std::iter::repeat_n(0.0, lead_in).collect(), pushed: lead_in as u64, ..Queue::default() }
     }
 
     fn ended(&self) -> bool {
@@ -349,7 +361,9 @@ impl Queue {
 
     /// `samples` play after what is queued; the silence before them no longer counts.
     fn push(&mut self, samples: impl IntoIterator<Item = f32>) {
+        let before = self.samples.len();
         self.samples.extend(samples);
+        self.pushed += (self.samples.len() - before) as u64;
         self.idle = 0;
     }
 
@@ -363,9 +377,20 @@ impl Queue {
         self.past_mark = false;
     }
 
+    /// A sentence begins after what is queued now (issue #835).
+    fn boundary(&mut self) {
+        self.boundaries.push(self.pushed);
+    }
+
+    /// How many sentence starts the device has played past: a sample after each went out.
+    fn boundaries_heard(&self) -> usize {
+        self.boundaries.iter().filter(|before| self.played > **before).count()
+    }
+
     /// The next queued sample goes to the device; it counts towards the mark.
     fn pop(&mut self) -> Option<f32> {
         let sample = self.samples.pop_front()?;
+        self.played += 1;
         match self.mark {
             Some(0) => {
                 self.mark = None;
@@ -419,6 +444,7 @@ fn fill_data(data: &mut cpal::Data, channels: usize, queue: &mut Queue) {
         // its samples are dropped, so the queue ends and nothing waits for it (review of #762).
         _ => {
             queue.samples.clear();
+            queue.played = queue.pushed;
             queue.drained = u8::MAX;
             queue.idle = u8::MAX;
             queue.past_mark = queue.mark.take().is_some() || queue.past_mark;
@@ -538,6 +564,7 @@ impl Sound for Player {
     fn finish(&mut self) {
         let rest = self.resampler.as_ref().map(|(_, resampler)| resampler.resample(&[], true)).unwrap_or_default();
         let mut queue = self.queue();
+        queue.pushed += rest.len() as u64;
         queue.samples.extend(rest);
         queue.finished = true;
     }
@@ -556,6 +583,14 @@ impl Sound for Player {
 
     fn past_mark(&self) -> bool {
         self.queue().past_mark
+    }
+
+    fn boundary(&mut self) {
+        self.queue().boundary();
+    }
+
+    fn boundaries_heard(&self) -> usize {
+        self.queue().boundaries_heard()
     }
 }
 
@@ -773,5 +808,29 @@ pub mod tests {
         let mut sound = [0.0f32; 1];
         fill(&mut sound, 1, &mut queue);
         assert_eq!(sound, [0.5], "the sound follows the silence");
+    }
+
+    /// Issue #835: a sentence counts as begun once the device played a sample after its start, the output's
+    /// lead-in silence and the sentences before it first.
+    #[test]
+    fn sentences_begin_when_their_first_sample_plays() {
+        let mut queue = Queue::opened(1_000);
+        queue.boundary();
+        queue.push([0.5, 0.5]);
+        queue.boundary();
+        queue.push([0.25]);
+        assert_eq!(queue.boundaries_heard(), 0, "nothing played yet");
+        let mut lead_in = vec![0.0f32; 150];
+        fill(&mut lead_in, 1, &mut queue);
+        assert_eq!(queue.boundaries_heard(), 0, "only the lead-in");
+        let mut one = [0.0f32; 1];
+        fill(&mut one, 1, &mut queue);
+        assert_eq!(queue.boundaries_heard(), 1, "the first sentence sounds");
+        fill(&mut one, 1, &mut queue);
+        assert_eq!(queue.boundaries_heard(), 1);
+        fill(&mut one, 1, &mut queue);
+        assert_eq!(queue.boundaries_heard(), 2, "the second began");
+        fill(&mut one, 1, &mut queue);
+        assert_eq!(queue.boundaries_heard(), 2, "silence begins nothing");
     }
 }
