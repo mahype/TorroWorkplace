@@ -403,7 +403,14 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) {
                 new.state == VoiceModelState::Missing
                     && before.iter().any(|old| old.id == new.id && old.state == VoiceModelState::Ready)
             });
-            state.reload |= ended || removed;
+            // A model there at once – it was on disk already, downloaded meanwhile from elsewhere – never
+            // ran here: the page loads again too, else an action offered in place would wait for that load
+            // for ever (review of #823).
+            let came = models.iter().any(|new| {
+                new.state == VoiceModelState::Ready
+                    && before.iter().any(|old| old.id == new.id && old.state != VoiceModelState::Ready)
+            });
+            state.reload |= ended || removed || came;
             state.downloading = models.iter().any(|model| model.state == VoiceModelState::Running);
             state.models = Some(models.clone());
         }
@@ -531,12 +538,13 @@ pub fn loaded(state: &mut State, data: &Data) {
         state.models = Some(data.voice_models.clone());
     }
     state.downloading = models_of(state, data).iter().any(|model| model.state == VoiceModelState::Running);
-    // A download offered at an action that was cancelled, failed or removed has nothing to report.
+    // A download offered at an action that was cancelled, failed or removed has nothing to report. While
+    // its answer is out the list here is older than the download, so it waits for that answer.
     let fetched = state.fetched.as_deref();
     let going = models_of(state, data).iter().any(|model| {
         Some(model.id.as_str()) == fetched && matches!(model.state, VoiceModelState::Ready | VoiceModelState::Running)
     });
-    if !going {
+    if !going && !state.asking_models {
         state.fetched = None;
     }
 }
@@ -833,7 +841,9 @@ fn voice_group<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Elemen
     // The row under the switch offers the model, so this line need not send anyone to "Models".
     let detail = match offered {
         _ if waits && !settings.enabled => tr("Off").to_string(),
-        Offer::Done if !settings.enabled => tr("Downloaded. Switch on to talk to the assistant.").to_string(),
+        Offer::Done if !settings.enabled && can_listen => {
+            tr("Downloaded. Switch on to talk to the assistant.").to_string()
+        }
         _ => voice_state(settings.enabled, data.voice.as_ref()).1,
     };
     let switch = toggler(settings.enabled)
@@ -2013,6 +2023,11 @@ mod tests {
         assert!(matches!(speech_offer(&state, &missing), Offer::Loading(_)));
         assert_eq!(update(&mut state, Message::ShowModels, &missing), Act::None, "the host shows the tab");
         views(&state, &missing);
+        // A load while the answer is out keeps "Downloaded." for later.
+        let _ = update(&mut state, Message::Check, &missing);
+        state.asking_models = true;
+        loaded(&mut state, &missing);
+        assert_eq!(state.fetched.as_deref(), Some(POCKET_DE), "the answer is newer");
         // There, but the page has not loaded since: still loading, so the preview does not fail.
         answered(&mut state, &Ok(Response::VoiceModels { models: vec![pocket_model(VoiceModelState::Ready, 1_000)] }));
         assert!(matches!(speech_offer(&state, &missing), Offer::Loading(_)));
@@ -2037,6 +2052,10 @@ mod tests {
         answered(&mut state, &Ok(Response::VoiceModels { models: vec![pocket_model(VoiceModelState::Cancelled, 9)] }));
         loaded(&mut state, &missing);
         assert_eq!(state.fetched, None);
+        // Review of #823: a model there at once (on disk already) loads the page as well.
+        let _ = update(&mut state, Message::DownloadHere(POCKET_DE.into()), &missing);
+        answered(&mut state, &Ok(Response::VoiceModels { models: vec![pocket_model(VoiceModelState::Ready, 1_000)] }));
+        assert_eq!(update(&mut state, Message::ModelTick, &missing), Act::Send(Vec::new()), "loads again");
         // OpenAI needs no model of the catalogue.
         let openai = Data {
             speech: Some(SpeechStatus { current: SpeechProvider::OpenAi, ..pocket(Some(SpeechMissing::Model)) }),
