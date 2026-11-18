@@ -3194,6 +3194,10 @@ pub struct App<S> {
     /// The marked mail "Move to folder" was opened for from their context menu (issue #904): its
     /// choices move them all ([`App::move_choices`]); `None` while it acts on `mail_subject`.
     move_selection: Option<Vec<String>>,
+    /// The row right-clicked in the marking (issue #904): a message's id in a folder, an entry's in a
+    /// view of entries. Its menu and "Move to folder" hang there, not at the cursor's row
+    /// ([`App::anchored_row`]).
+    context_row: Option<String>,
     /// "Only if no reply" of the mail window's "Follow up" (task E19.4): its line in the menu and its
     /// chip in the picker switch it, and the menu stays open. Off each time the menu opens.
     unless_reply: bool,
@@ -4933,6 +4937,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             subject: None,
             mail_subject: None,
             move_selection: None,
+            context_row: None,
             unless_reply: false,
             focus_reply: None,
             rounds: 0,
@@ -6495,7 +6500,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::ContextMail(id, point) => {
                 // Issue #904: on one of the marked mails the marking stays, and the menu acts on all.
                 if self.context_selection(&id) {
-                    self.open_selection_context(point);
+                    self.open_selection_context(id, point);
                     return self.keep_opened_search();
                 }
                 if self.select_mail(id) {
@@ -6512,7 +6517,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     _ => None,
                 });
                 if message.is_some_and(|message| self.context_selection(&message)) {
-                    self.open_selection_context(point);
+                    self.open_selection_context(id, point);
                     return self.keep_opened_search();
                 }
                 self.select(id);
@@ -8608,17 +8613,34 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
 
     /// Whether a right-click on the mail `message` keeps the marking (issue #904): two or more mails
     /// are marked and it is one of them. Else it marks only that mail, as a click does.
+    /// Not for a marking none of whose mail the window knows a home for: it would have no menu to show.
     fn context_selection(&self, message: &str) -> bool {
-        self.selected_mail.len() >= 2 && self.selected_mail.iter().any(|held| held == message)
+        self.selected_mail.len() >= 2
+            && self.selected_mail.iter().any(|held| held == message)
+            && !self.selected_state().is_empty()
     }
 
-    /// Opens the context menu of the marked mail at `point` of the row (issue #904): the marking, the
-    /// cursor and the reader stay as they are.
-    fn open_selection_context(&mut self, point: Point) {
+    /// Opens the context menu of the marked mail at `point` of the row `row` (issue #904): the marking,
+    /// the cursor and the reader stay as they are.
+    fn open_selection_context(&mut self, row: String, point: Point) {
         self.close_menus();
         self.menu = Some(Menu::SelectionContext);
         self.context_point = Some(point);
+        self.context_row = Some(row);
         self.menu_at = MenuAt::Row;
+    }
+
+    /// The row the menus hang at (`detail::Anchors::row`): the cursor's – but while the menu of the
+    /// marked mail or its "Move to folder" is open, the row right-clicked (issue #904), as the cursor
+    /// stays where it was. While mail is marked the cursor highlights no row, so this moves the anchor –
+    /// and, in rows with buttons, the strip of the row's buttons while the menu is open.
+    fn anchored_row(&self) -> Option<&str> {
+        let marking = matches!(self.menu, Some(Menu::SelectionContext))
+            || (self.menu == Some(Menu::Move) && self.move_selection.is_some());
+        match self.context_row.as_deref() {
+            Some(row) if marking && !self.selected_mail.is_empty() => Some(row),
+            _ => self.cursor.as_deref(),
+        }
     }
 
     /// The marked mail the list shows, in its order ([`App::selectable_mail`]).
@@ -8646,7 +8668,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 let seen = || {
                     let held = self.items.iter().chain(&self.for_me).chain(&self.snoozed).chain(self.detail.as_ref());
                     let read = self.seen_mail.contains(&id)
-                        || held.filter(|item| shows_mail(item, &id)).any(|item| !matches!(item.state, State::New));
+                        || held.filter(|item| shows_mail(item, &id)).any(|item| matches!(item.state, State::Seen));
                     Some(if read { vec![Flag::Seen] } else { Vec::new() })
                 };
                 let flags = listed.or_else(loaded).or_else(seen).unwrap_or_default();
@@ -14995,7 +15017,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     categories: &self.categories,
                     view: &self.view,
                     no_accounts: self.folders.is_empty(),
-                    selected: self.cursor.as_deref(),
+                    selected: self.anchored_row(),
                     selected_ids: &self.selected_mail,
                     now: self.now,
                     anchors: rows.clone(),
@@ -15080,7 +15102,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         list::Rows {
             view: &self.view,
             categories: &self.categories,
-            selected: self.cursor.as_deref(),
+            selected: self.anchored_row(),
             selected_mail: &self.selected_mail,
             now: self.now,
             anchors: anchors.clone(),
@@ -26266,6 +26288,7 @@ mod tests {
         assert_eq!(app.selected_mail, ids[..2], "the marking stays");
         assert_eq!((app.cursor.clone(), app.reading), (cursor, reading), "the reader shows what it showed");
         assert_eq!((app.context_point, app.menu_at), (Some(point), MenuAt::Row));
+        assert_eq!(app.anchored_row(), Some(ids[1].as_str()), "the menu at the row clicked, not the cursor's");
         assert_eq!(app.focus(), Focus::Elsewhere, "list shortcuts do not act behind the menu");
         for size in SIZES {
             let _ = app.update(Message::Resized(size));
@@ -26289,8 +26312,9 @@ mod tests {
         };
         overview.selected_mail = mail[..2].to_vec();
         let entry = entry_of(&overview, &mail[1]);
-        let _ = overview.update(Message::ContextEntry(entry, point));
+        let _ = overview.update(Message::ContextEntry(entry.clone(), point));
         assert_eq!(overview.menu, Some(Menu::SelectionContext));
+        assert_eq!(overview.anchored_row(), Some(entry.as_str()), "at the entry clicked");
         assert_eq!(overview.selected_mail, mail[..2], "the marking stays");
         let _ = overview.view();
         // Read from the menu, the menu then offers "Mark unread" (review of #904).
@@ -26359,6 +26383,7 @@ mod tests {
         act(&mut app, Message::AskMoveSelected);
         assert_eq!(app.menu, Some(Menu::Move));
         assert_eq!(app.context_point, Some(point), "the folders where the menu stood, not at the cursor");
+        assert_eq!(app.anchored_row(), Some(ids[1].as_str()));
         let choices = app.choices();
         assert!(!choices.is_empty(), "other folders");
         assert!(
