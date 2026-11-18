@@ -1260,9 +1260,15 @@ pub fn heard_of(entries: &[Entry], seq: u64) -> Option<&str> {
         _ => None,
     })?;
     let heard = heard?;
-    let begun = entries[..stop]
-        .iter()
-        .rposition(|entry| matches!(entry.content, EntryContent::Message { .. } | EntryContent::Approval { .. }))
+    // As [`answer_start`] found it when the reading began: an approval only when something followed it then; one
+    // right before the stop was read as its note, after the answer before it.
+    let begun = (0..stop)
+        .rev()
+        .find(|&at| match entries[at].content {
+            EntryContent::Message { .. } => true,
+            EntryContent::Approval { .. } => at + 1 < stop,
+            _ => false,
+        })
         .map_or(0, |begun| begun + 1);
     let read = entries[begun..stop].iter().find(|entry| matches!(entry.content, EntryContent::Answer { .. }))?;
     (read.seq == seq).then_some(heard)
@@ -1686,6 +1692,15 @@ mod tests {
         assert_eq!(heard_of(&entries, 7), None, "a later part of the same answer");
         assert_eq!(heard_of(&entries, 8), None, "no answer");
         assert_eq!(heard_of(&entries, 99), None);
+
+        // Review of #835: interrupted while the approval it waits for was announced, the answer before it was read.
+        let waiting = [
+            at(1, message("Delete it?")),
+            at(2, answer("I will delete it.")),
+            at(3, EntryContent::Approval { id: "ap1".into() }),
+            at(4, heard("I will delete it. The assistant needs …")),
+        ];
+        assert_eq!(heard_of(&waiting, 2), Some("I will delete it. The assistant needs …"));
     }
 
     #[test]

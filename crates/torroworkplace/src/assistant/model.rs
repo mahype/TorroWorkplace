@@ -1521,7 +1521,7 @@ pub(super) fn history(entries: &[Entry]) -> Vec<ChatMessage> {
 /// The answer entries of `entries` the model reads otherwise because the person interrupted them while they were
 /// read aloud (issue #835, decision 1): the one that was read becomes what was heard of it with a note, followed by
 /// its shown part when it had one (`Some`); the entries after it in the same answer were not said and are left out
-/// (`None`), unless the read one had a spoken part: then they are what the window shows.
+/// (`None`) but for their shown part, unless the read one had a spoken part: then they are what the window shows.
 fn as_heard(entries: &[Entry]) -> BTreeMap<u64, Option<String>> {
     use torro_ipc::assistant::{SHOWN_MARK, heard_of, split_spoken};
     let mut read = BTreeMap::new();
@@ -1540,7 +1540,10 @@ fn as_heard(entries: &[Entry]) -> BTreeMap<u64, Option<String>> {
                     interrupted = Some(spoken.is_some());
                     read.insert(entry.seq, Some(instead));
                 } else if interrupted == Some(false) {
-                    read.insert(entry.seq, None);
+                    // Not said; of a later part with a spoken part only what the window shows is kept.
+                    let (spoken, shown) = split_spoken(text, false);
+                    let kept = (spoken.is_some() && !shown.is_empty()).then_some(shown);
+                    read.insert(entry.seq, kept);
                 }
             }
             _ => {}
@@ -4860,6 +4863,10 @@ pub(crate) mod tests {
             at(9, answer("Never read.")),
             at(10, EntryContent::Stopped { heard: Some("One part only …".into()) }),
             at(11, message("Thanks.")),
+            at(12, answer("Let me look.")),
+            at(13, answer("Not said.\n---shown---\n- Shown")),
+            at(14, EntryContent::Stopped { heard: Some("Let me …".into()) }),
+            at(15, message("Go on.")),
         ];
         let texts = |messages: Vec<ChatMessage>| -> Vec<String> {
             messages
@@ -4872,6 +4879,8 @@ pub(crate) mod tests {
             "Three meetings. Nine, eleven and two.".to_string(),
             format!("{heard} (interrupted by the person here; the rest was not said)\n---shown---\n- 9:00 Team"),
             "One part only … (interrupted by the person here; the rest was not said)".to_string(),
+            // Review of #835: of a later part only what the window shows.
+            "Let me … (interrupted by the person here; the rest was not said)\n\n- Shown".to_string(),
         ];
         assert_eq!(texts(history(&entries)), expected);
         assert_eq!(texts(history_with_results(&entries, &BTreeMap::new(), &[])), expected);
