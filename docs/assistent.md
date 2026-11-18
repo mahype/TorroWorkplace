@@ -1038,9 +1038,15 @@ ist; das Mikrofon ist dann nur für dieses Gespräch offen. Statt des Eingabefel
   erkannt wird danach. Ein frisch geladenes Modell gilt ab dem nächsten Start des Hörers.
 - **Kurz und zum Hören:** Gesprochene Nachrichten (`assistant.send_message` mit `spoken`) bekommen einen Teil
   im Prompt, der knappe Antworten ohne Tabellen, Listen und Code verlangt.
-- **Kein Selbstgespräch:** Solange irgendetwas vorgelesen wird, egal wer es ausgelöst hat (auch ein Agent mit
-  `assistant.speak`), ist das Mikrofon zu, und was es währenddessen hörte, das Weckwort eingeschlossen, wird
-  verworfen; danach 300 ms Pause. So kommt keine Stimme aus dem Lautsprecher als Satz des Menschen an.
+- **Kein Selbstgespräch:** Was vorgelesen wird, egal wer es ausgelöst hat (auch ein Agent mit `assistant.speak`),
+  rechnet die Echo-Unterdrückung (#834) aus dem Mikrofon heraus: Der Vorlese-Helfer schreibt, was er spielt, als
+  Zeilen `{"echo": …}`, der Dienst reicht sie an den Hörer weiter, und der zieht genau diesen Ton von jedem
+  Mikrofonblock ab. Solange sie läuft, bleibt das Mikrofon beim Vorlesen offen: „Hey Torro“ geht auch, während eine
+  Mail vorgelesen wird, und nach einer Antwort entfällt die Pause. Während der eigenen Antwort ist es ebenfalls offen,
+  was die Person dabei sagt, wird aber noch verworfen. Läuft die Unterdrückung nicht (keine Referenz in den letzten
+  300 ms), ist das Mikrofon beim Vorlesen zu wie bisher, was es währenddessen hörte, das Weckwort eingeschlossen,
+  wird verworfen, und danach folgen 300 ms Pause. So kommt keine Stimme aus dem Lautsprecher als Satz des Menschen an.
+  Der Ton bleibt im Speicher und landet nie auf der Platte.
 - **Technisch:** Der Dienst hält das Gespräch (`assistant.start_talk`, Unterhaltung oder neue, die der erste
   Satz anlegt) und startet dafür den Hörer, auch wenn „Hey Torro“ aus ist. Der Hörer fragt zweimal in der
   Sekunde `assistant.talk_status` und meldet seinen Stand (`conversing`, `recording`, `recognizing`,

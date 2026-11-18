@@ -1,8 +1,11 @@
 //! The listener's loop ([`Listener`]): wait for the wake word, play the tone, record until a
 //! pause, turn it into text, send it ([`Assistant::send`]), have the answer read aloud, and again –
-//! while the setting `voice.enabled` stays on or a conversation by voice runs. The microphone is
-//! closed while anything is read aloud, whoever asked for it, so no voice from the speakers is taken
-//! for the person's words or wakes it.
+//! while the setting `voice.enabled` stays on or a conversation by voice runs. While anything is read
+//! aloud, whoever asked for it, the microphone stays open only when the echo cancellation runs
+//! ([`Listener::echo`], issue #834): it takes the sound read aloud out of the microphone, so the assistant
+//! hears the person but not itself. Without it the microphone is closed while anything is read, so no
+//! voice from the speakers is taken for the person's words or wakes it. With it the microphone stays open
+//! during the listener's own answer too; what the person says meanwhile is still dropped.
 //!
 //! A conversation by voice (issue #747, `assistant.start_talk`): after "Hey Torro" and its answer, or
 //! with "Talk" in the chat window, the microphone stays open after each answer, and
@@ -30,6 +33,8 @@
 //! ([`CoreAssistant::REQUESTS`]).
 
 use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
 
 use chrono::{Local, TimeDelta, Utc};
@@ -41,8 +46,9 @@ use torro_ipc::{Request, Response, Talk, VoiceState};
 
 use super::audio::{Endpoint, FRAMES_PER_SECOND, Limits, NoiseFloor, rms};
 use super::early::Early;
+use super::echo::Echo;
 use super::wake::{after_wake_phrase, strip_wake_phrase};
-use super::{Recorder, Speaker, SpeechDetector, Transcriber, VoiceError, WakeWord};
+use super::{Recorder, Speaker, SpeechDetector, Stream, Transcriber, VoiceError, WakeWord};
 use crate::backend::Refusal;
 
 /// What the listener asks of the core.
@@ -69,6 +75,15 @@ pub trait Assistant {
     /// Reads the answer of `conversation` aloud sentence by sentence (`assistant.speak_answer`),
     /// returning once it was read.
     fn speak_answer(&mut self, conversation: &str) -> Result<(), VoiceError>;
+
+    /// Starts reading the answer of `conversation` aloud like [`Assistant::speak_answer`] and returns at
+    /// once (issue #834); the result comes over the channel once it was read. The microphone stays open
+    /// meanwhile. By default it is read before this returns.
+    fn start_answer(&mut self, conversation: &str) -> Receiver<Result<(), VoiceError>> {
+        let (done, result) = mpsc::channel();
+        let _ = done.send(self.speak_answer(conversation));
+        result
+    }
 
     /// Waits for the answer to what was `sent`, until it is over or waits for an approval.
     fn follow(&mut self, sent: &Sent) -> Result<Reply, VoiceError>;
@@ -184,6 +199,10 @@ pub const EARLY_AFTER: usize = 4;
 /// How many frames of echo follow the tone, which count as no speech either.
 const ECHO: usize = 1;
 
+/// How often the listener looks whether the echo cancellation runs while its answer is read with the
+/// microphone closed (issue #834).
+const ANSWER_LOOK: Duration = Duration::from_millis(20);
+
 /// How long a conversation by voice waits in silence for the next sentence before it ends (issue
 /// #849), in seconds. Long, so thinking aloud or a pause does not end it; the limit only guards a
 /// microphone left open and forgotten.
@@ -269,6 +288,9 @@ pub struct Listener<'a, A: Assistant> {
     /// How loud the room is, from the last wait for the wake word: a conversation by voice records
     /// without one.
     pub floor: NoiseFloor,
+    /// The echo cancellation of [`Listener::recorder`] (issue #834): while it runs, the microphone stays
+    /// open as something is read aloud. `None` without one: the microphone closes then, as before.
+    pub echo: Option<Echo>,
     /// Tells speech from noise (Silero VAD, issue #833); `None` tells it by loudness, as does a detector that
     /// failed, for the rest of the run.
     pub vad: Option<Box<dyn SpeechDetector>>,
@@ -298,7 +320,7 @@ impl<A: Assistant> Listener<'_, A> {
 
     /// One round: in a conversation by voice the next sentence ([`Listener::converse`]); else waits
     /// for the wake word, then records, sends and answers one sentence. While anything is read aloud
-    /// the microphone stays closed. Failures of speech to text or of the core are written to the log
+    /// the microphone stays closed, unless the echo cancellation runs (issue #834). Failures of speech to text or of the core are written to the log
     /// and end the round with [`Ended::Nothing`]; only the microphone's fail it.
     ///
     /// `chime` says whether a conversation by voice opens its microphone with the tone (not after
@@ -308,7 +330,7 @@ impl<A: Assistant> Listener<'_, A> {
             Look::Stop(ended) => return Ok(ended),
             Look::Go(now) => now,
         };
-        if now.speaking {
+        if now.speaking && !self.echo_runs() {
             self.quiet();
             return Ok(Ended::Nothing);
         }
@@ -320,6 +342,7 @@ impl<A: Assistant> Listener<'_, A> {
             return self.converse(voice, talk, chime);
         }
         let mut stream = self.recorder.open()?;
+        let opened = Instant::now();
         (self.report)(VoiceState::Listening);
         let mut floor = NoiseFloor::default();
         // The last frames, the one with the wake word among them: the sentence begins with them.
@@ -332,9 +355,9 @@ impl<A: Assistant> Listener<'_, A> {
             if frames.is_multiple_of(self.check_every.max(1)) {
                 match self.check(voice) {
                     Look::Stop(ended) => return Ok(ended),
-                    // Something is read aloud, or a conversation by voice began: the microphone
-                    // closes, and the next round decides.
-                    Look::Go(now) if now.speaking || now.talk.is_some() => {
+                    // Something is read aloud without the echo cancellation, or a conversation by voice
+                    // began: the microphone closes, and the next round decides.
+                    Look::Go(now) if (now.speaking && !self.echo_runs()) || now.talk.is_some() => {
                         drop(stream);
                         self.wake.reset();
                         return Ok(Ended::Nothing);
@@ -358,6 +381,9 @@ impl<A: Assistant> Listener<'_, A> {
             }
         }
         self.floor = floor;
+        // The sentence begins a second before the wake word: from then on its sound must have gone through
+        // the echo cancellation, not from when the microphone opened, maybe minutes ago.
+        let begins = Instant::now().checked_sub(Duration::from_secs(1)).map_or(opened, |begins| begins.max(opened));
         let level = floor.speech();
         // Silero VAD hears the frames kept from before the wake word and then the tone: whether the person
         // still speaks is decided at the tone's end, past the 100 ms it holds speech after it ended, so "Hey
@@ -389,8 +415,9 @@ impl<A: Assistant> Listener<'_, A> {
         let (mut frames, mut ahead) = (0usize, false);
         while let Some(frame) = stream.frame()? {
             frames += 1;
-            // A reading that begins meanwhile: what the microphone hears is not the person's alone.
-            if frames.is_multiple_of(self.check_every.max(1)) && self.speaking() {
+            // A reading that begins meanwhile: what the microphone hears is not the person's alone, unless
+            // the echo cancellation takes it out.
+            if frames.is_multiple_of(self.check_every.max(1)) && self.speaking() && !self.echo_runs() {
                 drop(stream);
                 self.wake.reset();
                 self.quiet();
@@ -433,7 +460,7 @@ impl<A: Assistant> Listener<'_, A> {
             (false, true) => (Said::WithWake, &sentence[..with_tone]),
             (false, false) => (Said::Nothing, &sentence[..]),
         };
-        let ended = self.answer(voice, recorded, said, end.trailing_quiet(), None, readings, ahead);
+        let ended = self.answer(voice, recorded, said, end.trailing_quiet(), None, (readings, begins), ahead);
         self.wake.reset();
         Ok(ended)
     }
@@ -450,8 +477,8 @@ impl<A: Assistant> Listener<'_, A> {
 
     /// The next sentence of the conversation by voice `talk` (issue #747): the tone, then up to
     /// [`TALK_WAIT_SECONDS`] for the person to speak, until a pause. Only a long silence ends the
-    /// conversation, with a tone. Something read aloud meanwhile, or the conversation ended or moved elsewhere,
-    /// closes the microphone, and what was heard is dropped.
+    /// conversation, with a tone. Something read aloud meanwhile without the echo cancellation (issue #834), or
+    /// the conversation ended or moved elsewhere, closes the microphone, and what was heard is dropped.
     fn converse(&mut self, voice: &Voice, talk: Talk, chime: bool) -> Result<Ended, VoiceError> {
         // An answer still runs there (one longer than the listener waited, or a talk started while it
         // ran): the conversation would refuse the sentence, so the microphone waits for it.
@@ -464,6 +491,7 @@ impl<A: Assistant> Listener<'_, A> {
         // The microphone opens before the tone (issue #829): whoever speaks with it loses no word once
         // the sentence goes on after it, and the tone itself is no sentence of the person's.
         let mut stream = self.recorder.open()?;
+        let opened = Instant::now();
         let tone = if chime { self.chime() } else { 0 };
         let Some(readings) = self.quiet_now() else {
             drop(stream);
@@ -486,7 +514,7 @@ impl<A: Assistant> Listener<'_, A> {
             if frames.is_multiple_of(self.check_every.max(1)) {
                 match self.check(voice) {
                     Look::Stop(ended) => return Ok(ended),
-                    Look::Go(now) if now.speaking => {
+                    Look::Go(now) if now.speaking && !self.echo_runs() => {
                         drop(stream);
                         self.quiet();
                         return Ok(Ended::Nothing);
@@ -529,7 +557,7 @@ impl<A: Assistant> Listener<'_, A> {
         }
         (self.report)(VoiceState::Recognizing);
         let said = Said::Speech { before: 0 };
-        Ok(self.answer(voice, &sentence, said, end.trailing_quiet(), Some(talk), readings, ahead))
+        Ok(self.answer(voice, &sentence, said, end.trailing_quiet(), Some(talk), (readings, opened), ahead))
     }
 
     /// Whether someone speaks in `frame`: as Silero VAD judges it, else when it is at least as loud as
@@ -618,23 +646,37 @@ impl<A: Assistant> Listener<'_, A> {
         self.assistant.talk().is_ok_and(|now| now.speaking)
     }
 
-    /// How many readings began, when nothing is read aloud now; `None` while something is. A core
-    /// that cannot be asked counts as quiet, with no reading.
+    /// Whether the echo cancellation runs now ([`Echo::running`]): the microphone may stay open while
+    /// something is read aloud.
+    fn echo_runs(&self) -> bool {
+        self.echo.as_ref().is_some_and(Echo::running)
+    }
+
+    /// Whether what the microphone heard since `at` went through the echo cancellation.
+    fn echo_since(&self, at: Instant) -> bool {
+        self.echo.as_ref().is_some_and(|echo| echo.heard_since(at))
+    }
+
+    /// How many readings began, when nothing is read aloud now or the echo cancellation runs; `None`
+    /// while something is read without it. A core that cannot be asked counts as quiet, with no reading.
     fn quiet_now(&mut self) -> Option<u64> {
         match self.assistant.talk() {
-            Ok(now) if now.speaking => None,
+            Ok(now) if now.speaking && !self.echo_runs() => None,
             Ok(now) => Some(now.readings),
             Err(_) => Some(0),
         }
     }
 
     /// Waits until nothing is read aloud any more, then a little longer, so the room is quiet before
-    /// the microphone opens again.
+    /// the microphone opens again. Once the echo cancellation runs, it waits no longer: the microphone
+    /// may open while it reads.
     fn quiet(&mut self) {
-        while self.speaking() {
+        while self.speaking() && !self.echo_runs() {
             std::thread::sleep(self.pause);
         }
-        std::thread::sleep(self.pause);
+        if !self.echo_runs() {
+            std::thread::sleep(self.pause);
+        }
     }
 
     /// Ends the conversation by voice, with the tone first: with "Hey Torro" off the core ends the
@@ -649,9 +691,10 @@ impl<A: Assistant> Listener<'_, A> {
     /// Turns `sentence` into text and sends it: in the conversation by voice `talk`, else (after the
     /// wake word) to "Voice", where a conversation by voice then starts and the quick window shows it.
     /// The answer is read aloud if `voice` says so; one that waits for an approval ends the
-    /// conversation by voice (decision 5). A closing sentence ends it without sending. `readings` were
-    /// begun when the microphone opened: a reading that began since, even one already over, drops the
-    /// sentence. `quiet` frames of pause ended the sentence; with the time speech recognition took they
+    /// conversation by voice (decision 5). A closing sentence ends it without sending. `began` are the
+    /// readings begun when the microphone opened, and when that was: a reading that began since, even one
+    /// already over, drops the sentence, unless the echo cancellation took it out of the microphone (issue
+    /// #834). `quiet` frames of pause ended the sentence; with the time speech recognition took they
     /// go to [`Listener::heard`] once the sentence was sent, if the answer is read aloud. `ahead`: the
     /// sentence was recognised ahead in its last pause ([`Listener::early`]), so that text is taken.
     #[expect(clippy::too_many_arguments, reason = "the round's parts, each used once")]
@@ -662,9 +705,10 @@ impl<A: Assistant> Listener<'_, A> {
         said: Said,
         quiet: usize,
         talk: Option<Talk>,
-        readings: u64,
+        began: (u64, Instant),
         ahead: bool,
     ) -> Ended {
+        let (readings, opened) = began;
         if said == Said::Nothing {
             return Ended::Nothing;
         }
@@ -703,8 +747,9 @@ impl<A: Assistant> Listener<'_, A> {
             }
             return Ended::Nothing;
         }
-        // Read aloud while it was said, or still: it may be the reading's voice, so it is dropped.
-        if self.quiet_now() != Some(readings) {
+        // Read aloud while it was said, or still: it may be the reading's voice, so it is dropped – unless
+        // the echo cancellation took that voice out.
+        if self.quiet_now() != Some(readings) && !self.echo_since(opened) {
             // Not "recognizing" while it waits (issue #830): the core makes "answering" "speaking" while it reads.
             (self.report)(VoiceState::Answering);
             self.quiet();
@@ -741,11 +786,7 @@ impl<A: Assistant> Listener<'_, A> {
                 pause_ms: frames_ms(quiet),
                 recognize_ms,
             });
-            if let Err(err) = self.assistant.speak_answer(&sent.conversation) {
-                eprintln!("torroassistant: cannot speak the answer: {err}");
-            }
-            // The room's echo of the answer fades before the microphone opens again.
-            std::thread::sleep(self.pause);
+            self.read_answer(&sent.conversation);
         }
         match self.assistant.follow(&sent) {
             Ok(reply) if reply.approval => {
@@ -758,6 +799,69 @@ impl<A: Assistant> Listener<'_, A> {
         }
         Ended::Answered
     }
+
+    /// Reads the answer of `conversation` aloud. Without the echo cancellation the microphone stays
+    /// closed, and the room's echo fades before it opens again. With it (issue #834, decision 2) the
+    /// microphone is open while it reads and the cancellation runs, so the canceller follows the room, and what it hears is dropped;
+    /// the pause after it is left out when the cancellation took part, so a sentence said at once after
+    /// the answer keeps its beginning.
+    fn read_answer(&mut self, conversation: &str) {
+        if self.echo.is_none() {
+            if let Err(err) = self.assistant.speak_answer(conversation) {
+                eprintln!("torroassistant: cannot speak the answer: {err}");
+            }
+            // The room's echo of the answer fades before the microphone opens again.
+            std::thread::sleep(self.pause);
+            return;
+        }
+        let started = Instant::now();
+        let done = self.assistant.start_answer(conversation);
+        let mut stream: Option<Box<dyn Stream>> = None;
+        // The microphone failed or stopped once: it stays closed for the rest of the answer.
+        let mut broken = false;
+        let read = loop {
+            // Open only while the cancellation runs; without it closed, as before.
+            if !self.echo_runs() {
+                stream = None;
+            } else if stream.is_none() && !broken {
+                match self.recorder.open() {
+                    Ok(opened) => stream = Some(opened),
+                    Err(err) => {
+                        eprintln!("torroassistant: {err}");
+                        broken = true;
+                    }
+                }
+            }
+            match done.try_recv() {
+                Ok(read) => break read,
+                Err(TryRecvError::Disconnected) => break Ok(()),
+                Err(TryRecvError::Empty) => {}
+            }
+            match stream.as_mut().map(|stream| stream.frame()) {
+                // Heard while it reads: dropped.
+                Some(Ok(Some(_))) => {}
+                Some(heard) => {
+                    if let Err(err) = heard {
+                        eprintln!("torroassistant: {err}");
+                    }
+                    stream = None;
+                    broken = true;
+                }
+                None => match done.recv_timeout(ANSWER_LOOK) {
+                    Ok(read) => break read,
+                    Err(RecvTimeoutError::Disconnected) => break Ok(()),
+                    Err(RecvTimeoutError::Timeout) => {}
+                },
+            }
+        };
+        drop(stream);
+        if let Err(err) = read {
+            eprintln!("torroassistant: cannot speak the answer: {err}");
+        }
+        if !self.echo_since(started) {
+            std::thread::sleep(self.pause);
+        }
+    }
 }
 
 /// The conversation spoken messages go to.
@@ -765,11 +869,18 @@ pub fn voice_title() -> &'static str {
     torro_core::i18n::tr("Voice")
 }
 
+/// Sends `assistant.speak_answer` from a thread of its own ([`CoreAssistant::with_reader`], issue #834),
+/// while the listener keeps its microphone open.
+pub type Reader = Arc<dyn Fn(Request) -> Result<Response, Refusal> + Send + Sync>;
+
 /// The way to the core (see the module): `ask` sends a request, `open` shows a conversation in the
 /// quick window.
 pub struct CoreAssistant<F, O> {
     ask: F,
     open: O,
+    /// Reads answers aloud on a thread of its own ([`Assistant::start_answer`]); without it they are
+    /// read before the listener goes on.
+    reader: Option<Reader>,
     /// How long to wait between two looks at a running answer.
     pause: Duration,
     /// How long to follow an answer at most.
@@ -799,7 +910,14 @@ where
     ];
 
     pub fn new(ask: F, open: O, pause: Duration, wait: Duration) -> Self {
-        CoreAssistant { ask, open, pause, wait }
+        CoreAssistant { ask, open, reader: None, pause, wait }
+    }
+
+    /// Reads answers aloud with `reader` on a thread of its own (issue #834): `ask` stays with the
+    /// listener, whose microphone stays open meanwhile.
+    pub fn with_reader(mut self, reader: Reader) -> Self {
+        self.reader = Some(reader);
+        self
     }
 
     /// Sends `request`, one of [`CoreAssistant::REQUESTS`]; any other is refused here, before it
@@ -1032,6 +1150,25 @@ where
 
     fn speak_answer(&mut self, conversation: &str) -> Result<(), VoiceError> {
         self.done(Request::SpeakAnswer { conversation: conversation.to_string() })
+    }
+
+    fn start_answer(&mut self, conversation: &str) -> Receiver<Result<(), VoiceError>> {
+        let (done, result) = mpsc::channel();
+        let Some(reader) = self.reader.clone() else {
+            let _ = done.send(self.speak_answer(conversation));
+            return result;
+        };
+        // Only this one request goes this way; it is on the list of what the listener sends.
+        let request = Request::SpeakAnswer { conversation: conversation.to_string() };
+        std::thread::spawn(move || {
+            let read = match reader(request) {
+                Ok(Response::Ok) => Ok(()),
+                Ok(other) => Err(unexpected(&other)),
+                Err(refusal) => Err(VoiceError::Core(refusal)),
+            };
+            let _ = done.send(read);
+        });
+        result
     }
 
     fn running(&mut self, conversation: &str) -> Result<bool, VoiceError> {
@@ -1375,7 +1512,7 @@ mod tests {
         transcriber: Box<dyn Transcriber>,
         tone: Duration,
     ) -> Run {
-        let ahead = Ahead { vad: None, early: None, limits: Limits::default() };
+        let ahead = Ahead { vad: None, early: None, limits: Limits::default(), echo: None };
         run_parts(core, files, wake, transcriber, tone, ahead)
     }
 
@@ -1385,6 +1522,8 @@ mod tests {
         vad: Option<Box<dyn SpeechDetector>>,
         early: Option<Early>,
         limits: Limits,
+        /// The echo cancellation (issue #834).
+        echo: Option<Echo>,
     }
 
     /// [`run_with`] with the parts of `ahead`.
@@ -1425,6 +1564,7 @@ mod tests {
             floor: NoiseFloor::default(),
             vad: ahead.vad,
             early: ahead.early,
+            echo: ahead.echo,
         };
         let ended = listener.run(&voice);
         drop(listener);
@@ -1766,6 +1906,133 @@ mod tests {
         assert!(messages(&run.sent).is_empty(), "{:?}", run.sent);
     }
 
+    /// An echo cancellation that runs for as long as the returned guard lives: the reference comes all the
+    /// time, as from a helper whose output is open.
+    fn echo_running() -> (Echo, impl Drop) {
+        echo_running_with(1)
+    }
+
+    /// [`echo_running`] with numbered lines, `step` apart: with 2, every other line goes missing.
+    fn echo_running_with(step: u64) -> (Echo, impl Drop) {
+        struct Stop(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let echo = Echo::default();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (pushed, stopped) = (echo.clone(), Arc::clone(&stop));
+        echo.push_line(&[0; 160], Some(1));
+        std::thread::spawn(move || {
+            let mut number = 1;
+            while !stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                number += step;
+                pushed.push_line(&[0; 160], Some(number));
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        (echo, Stop(stop))
+    }
+
+    /// [`run`] with the echo cancellation `echo`. The tone takes 60 ms, so a reference comes after the
+    /// microphone opened: the test would be over before the next one otherwise.
+    fn run_with_echo(
+        core: Core,
+        files: &[&'static str],
+        wake: Option<usize>,
+        heard: &[&'static str],
+        echo: Echo,
+    ) -> Run {
+        let says = Box::new(Says(heard.iter().copied().collect()));
+        let ahead = Ahead { vad: None, early: None, limits: Limits::default(), echo: Some(echo) };
+        run_parts(core, files, wake, says, Duration::from_millis(60), ahead)
+    }
+
+    /// Issue #834, done 2: while the echo cancellation runs, the microphone stays open as something is read
+    /// aloud: the wake word is heard and the sentence sent, also when a reading began while it was said.
+    #[test]
+    fn with_the_echo_cancellation_the_wake_word_is_heard_while_something_is_read_aloud() {
+        let (echo, _running) = echo_running();
+        let reading = || Core { speaking: std::iter::repeat_n(true, 10_000).collect(), ..Core::new(on()) };
+        // The files: the wake word, the microphone during the answer, the silence that ends the talk.
+        let files = ["utterance.wav", "silence.wav", PAUSE];
+        let run = run_with_echo(reading(), &files, Some(2), &["Hey Torro, what is on today?"], echo.clone());
+        assert_eq!(messages(&run.sent).len(), 1, "heard while it reads: {:?}", run.states);
+        assert_eq!(run.states[..2], [VoiceState::Listening, VoiceState::Recording]);
+        assert_eq!(count(&run.sent, &Request::SpeakAnswer { conversation: "c9".into() }), 1);
+
+        let began = Core { readings: [0, 0, 1].into(), ..reading() };
+        let run = run_with_echo(began, &files, Some(2), &["Hey Torro, what is on today?"], echo);
+        assert_eq!(messages(&run.sent).len(), 1, "the reading that began was taken out");
+    }
+
+    /// Issue #834 (open point of PR #885): a reading that began while the sentence was said keeps it only
+    /// when its reference came whole; with lines missing the sentence is dropped, as without cancellation.
+    #[test]
+    fn a_sentence_over_a_reading_with_reference_missing_is_dropped() {
+        let (echo, _running) = echo_running_with(2);
+        let reading = || Core { speaking: std::iter::repeat_n(true, 10_000).collect(), ..Core::new(on()) };
+        let files = ["utterance.wav", "silence.wav", PAUSE];
+        let began = Core { readings: [0, 0, 1].into(), ..reading() };
+        let run = run_with_echo(began, &files, Some(2), &["Hey Torro, what is on today?"], echo.clone());
+        assert!(messages(&run.sent).is_empty(), "the reference had gaps: {:?}", run.sent);
+        let run = run_with_echo(reading(), &files, Some(2), &["Hey Torro, what is on today?"], echo);
+        assert_eq!(messages(&run.sent).len(), 1, "no reading began meanwhile: it counts");
+    }
+
+    /// Issue #834, decision 2: with the echo cancellation the microphone is open while the answer is read,
+    /// once more than without it; without it nothing changes.
+    #[test]
+    fn with_the_echo_cancellation_the_microphone_is_open_during_the_answer() {
+        let (echo, _running) = echo_running();
+        let said = ["Hey Torro, what is on today?"];
+        let without = run(Core::new(on()), &["utterance.wav", PAUSE], Some(2), &said);
+        assert_eq!(without.opened, 3, "the wake word, the talk, the wake word again");
+        let with = run_with_echo(Core::new(on()), &["utterance.wav", "silence.wav", PAUSE], Some(2), &said, echo);
+        assert_eq!(with.opened, 4, "and the answer");
+        assert_eq!(messages(&with.sent).len(), 1);
+        assert_eq!(count(&with.sent, &Request::EndTalk), 1, "the silence after it still ends the talk");
+    }
+
+    /// Issue #834: an echo cancellation that does not run (no reference comes) closes the microphone as
+    /// before while something is read.
+    #[test]
+    fn an_echo_cancellation_that_does_not_run_closes_the_microphone_as_before() {
+        let core = Core { speaking: [false, true].into(), ..Core::new(on()) };
+        let run = run_with_echo(core, &["utterance.wav"], Some(2), &["Hey Torro, what is on today?"], Echo::default());
+        assert!(messages(&run.sent).is_empty());
+        assert_eq!(run.chimes, 0);
+        assert_eq!(run.opened, 2, "closed, then open again once it was quiet");
+
+        // Nor is it open during the listener's own answer.
+        let said = ["Hey Torro, what is on today?"];
+        let run = run_with_echo(Core::new(on()), &["utterance.wav", PAUSE], Some(2), &said, Echo::default());
+        assert_eq!(run.opened, 3, "the wake word, the talk, the wake word again: not the answer");
+        assert_eq!(messages(&run.sent).len(), 1);
+    }
+
+    /// Issue #834: the reader sends `assistant.speak_answer` on a thread of its own and tells when it was read.
+    #[test]
+    fn the_reader_reads_the_answer_on_a_thread_of_its_own() {
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let noted = Arc::clone(&asked);
+        let reader: Reader = Arc::new(move |request| {
+            noted.lock().expect("lock").push(request);
+            Ok(Response::Ok)
+        });
+        let mut assistant = CoreAssistant::new(
+            |_| Err(Refusal::new("forbidden", "not this way")),
+            |_: &str| {},
+            Duration::ZERO,
+            Duration::ZERO,
+        )
+        .with_reader(reader);
+        let done = assistant.start_answer("c9");
+        assert_eq!(done.recv_timeout(Duration::from_secs(5)), Ok(Ok(())));
+        assert_eq!(*asked.lock().expect("lock"), [Request::SpeakAnswer { conversation: "c9".into() }]);
+    }
+
     /// Issue #747, done 6 and decision 5: words never decide an approval; an answer that waits for one
     /// ends the conversation by voice, and the window shows the card.
     #[test]
@@ -1838,6 +2105,7 @@ mod tests {
             floor: NoiseFloor::default(),
             vad: None,
             early: None,
+            echo: None,
         };
         assert_eq!(listener.run(&on()), Ok(Ended::Changed));
         assert_eq!(*opened.borrow(), 0);
@@ -2083,8 +2351,12 @@ mod tests {
         let (now, said_now) = Counted::new("recognised now");
         let (ahead, said_ahead) = Counted::new("recognised ahead");
         let vad = Judges::first(script);
-        let parts =
-            Ahead { vad: Some(Box::new(vad)), early: Some(Early::new(Box::new(ahead)).expect("thread")), limits };
+        let parts = Ahead {
+            vad: Some(Box::new(vad)),
+            early: Some(Early::new(Box::new(ahead)).expect("thread")),
+            limits,
+            echo: None,
+        };
         let core = Core { talk: talk_in(Some("a1")), ..Core::new(Voice::default()) };
         let run = run_parts(core, &[PAUSE, PAUSE], None, Box::new(now), Duration::ZERO, parts);
         let texts = messages(&run.sent)
@@ -2141,7 +2413,7 @@ mod tests {
         let (ahead, said_ahead) = Counted::new("Hey Torro, recognised ahead");
         let (vad, _) = Judges::new(judge, None);
         let early = Some(Early::new(Box::new(ahead)).expect("thread"));
-        let parts = Ahead { vad: Some(Box::new(vad)), early, limits: Limits::default() };
+        let parts = Ahead { vad: Some(Box::new(vad)), early, limits: Limits::default(), echo: None };
         let run = run_parts(Core::new(on()), &[PAUSE, PAUSE], Some(2), Box::new(now), Duration::ZERO, parts);
         let texts = messages(&run.sent)
             .into_iter()
@@ -2183,7 +2455,7 @@ mod tests {
     #[test]
     fn a_failed_speech_detector_falls_back_to_loudness() {
         let (vad, calls) = Judges::new(Box::new(|_, _| true), Some(3));
-        let parts = Ahead { vad: Some(Box::new(vad)), early: None, limits: Limits::default() };
+        let parts = Ahead { vad: Some(Box::new(vad)), early: None, limits: Limits::default(), echo: None };
         let core = Core { talk: talk_in(Some("a1")), ..Core::new(Voice::default()) };
         let says = Box::new(Says(["What is on today?"].into()));
         let run = run_parts(core, &[THINKING, PAUSE], None, says, Duration::ZERO, parts);

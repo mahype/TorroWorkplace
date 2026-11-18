@@ -17,7 +17,9 @@
 //!   only when it does not load, with the recogniser on short windows ([`wake::TranscriptWake`]),
 //! - the microphone and the sound output with cpal ([`sound`]),
 //! - reading aloud with Pocket TTS ([`pocket`]) or, in builds with `qwen-cuda`, Qwen3-TTS on the graphics card
-//!   ([`qwen`], issue #764), in the helper [`speech`].
+//!   ([`qwen`], issue #764), in the helper [`speech`],
+//! - the echo cancellation ([`echo`], issue #834): what the helper plays is taken out of the microphone, so it
+//!   stays open while something is read aloud.
 //!
 //! Whether someone speaks is told by Silero VAD once it is downloaded ([`vad`], issue #833), else by
 //! loudness ([`audio::Endpoint`]); with the model, the sentence so far is recognised in short pauses
@@ -36,6 +38,7 @@
 pub mod audio;
 pub mod cli;
 pub mod early;
+pub mod echo;
 pub mod listen;
 pub mod parts;
 pub mod pocket;

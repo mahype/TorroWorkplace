@@ -49,6 +49,8 @@ sha2.workspace = true
 cpal.workspace = true
 # The wake word heard by a model of its own (issue #765), built in; speech recognition only takes the sentence.
 livekit-wakeword.workspace = true
+# Echo cancellation (issue #834): the sound read aloud as the reference, taken out of the microphone.
+sonora.workspace = true
 # Qwen3-TTS on an NVIDIA card (issue #764), only with the feature `qwen-cuda`.
 crane-core = { workspace = true, optional = true }
 # The system's choosers for the PDF tool's folder and logos in the settings (task WZ.6).

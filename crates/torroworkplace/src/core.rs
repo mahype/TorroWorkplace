@@ -3438,6 +3438,9 @@ impl Core {
         let github = Arc::new(GithubAccounts::system());
         chat.set_github(Arc::clone(&github));
         let presence = Arc::new(presence_of(&chat, &contacts));
+        // What the speech helper plays goes to the listener, which takes it out of its microphone (issue #834).
+        let voice = if cfg!(test) { Listener::none() } else { Listener::system() };
+        let speech = if cfg!(test) { SpeechHelper::none() } else { SpeechHelper::system() }.with_echo(voice.echo());
         let core = Core {
             backend,
             store,
@@ -3477,8 +3480,8 @@ impl Core {
             calendar_sign_ins: Mutex::new(()),
             torromail: if cfg!(test) { TorroMail::none() } else { TorroMail::system() },
             assistant: Arc::new(Assistant::system()),
-            voice: if cfg!(test) { Listener::none() } else { Listener::system() },
-            speech: if cfg!(test) { SpeechHelper::none() } else { SpeechHelper::system() },
+            voice,
+            speech,
             talk: std::sync::Mutex::new(None),
             voice_was_on: std::sync::atomic::AtomicBool::new(false),
             speaking: Arc::default(),

@@ -6,7 +6,8 @@
 //! A cpal stream is not `Send` on every system, so it stays on the thread that made it: the
 //! recorder's stream lives in the [`Stream`] it returns, the player's in the [`Player`]. Their
 //! callbacks only move samples; turning them into 16 kHz or into the device's rate happens outside,
-//! with sherpa-onnx's [`LinearResampler`].
+//! with sherpa-onnx's [`LinearResampler`]. A player opened with a tap ([`Player::open_tapped`], issue #834) also
+//! hands out what it plays, for the listener's echo cancellation.
 //!
 //! On Linux the microphone speaks the PulseAudio protocol, which PipeWire serves (`pipewire-pulse`): the
 //! names are those of the volume control, and a device another program uses can be chosen too. Without
@@ -17,6 +18,7 @@
 //! so does one that cannot be opened (with ALSA, a card PipeWire holds).
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -395,6 +397,13 @@ where
     }
 }
 
+/// The `frames` samples the next device buffer plays from `queue`, silence where it runs empty.
+fn playing(queue: &Queue, frames: usize) -> Vec<f32> {
+    let mut samples: Vec<f32> = queue.samples.iter().take(frames).copied().collect();
+    samples.resize(frames, 0.0);
+    samples
+}
+
 /// Fills a device buffer in its own sample format.
 fn fill_data(data: &mut cpal::Data, channels: usize, queue: &mut Queue) {
     match data.sample_format() {
@@ -436,15 +445,54 @@ pub struct Player {
     resampler: Option<(u32, LinearResampler)>,
 }
 
+/// What a [`Tap`] hands out: the device's rate and the samples of one buffer.
+pub type Tapped = Receiver<(u32, Vec<f32>)>;
+
+/// Where a [`Player`] hands what it plays (issue #834): the samples of each device buffer, mono at the
+/// device's rate, silence included. Full, a buffer is dropped (the sound never waits for it) and counted, so
+/// the listener learns that a piece of the reference is missing.
+#[derive(Debug, Clone)]
+pub struct Tap {
+    sender: mpsc::SyncSender<(u32, Vec<f32>)>,
+    lost: Arc<AtomicU64>,
+}
+
+impl Tap {
+    /// A tap holding `bound` buffers, the receiver of what it hands out, and the count of the buffers it
+    /// dropped (taken and reset by the reader).
+    pub fn new(bound: usize) -> (Tap, Tapped, Arc<AtomicU64>) {
+        let (sender, receiver) = mpsc::sync_channel(bound);
+        let lost = Arc::new(AtomicU64::new(0));
+        (Tap { sender, lost: Arc::clone(&lost) }, receiver, lost)
+    }
+
+    fn send(&self, rate: u32, samples: Vec<f32>) {
+        if self.sender.try_send((rate, samples)).is_err() {
+            self.lost.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
 impl Player {
     /// Opens the default output; without one [`VoiceError::Missing`] with [`VoiceMissing::Player`].
     pub fn open() -> Result<Player, VoiceError> {
+        Player::open_with(None)
+    }
+
+    /// [`Player::open`], handing what it plays to `tap` (issue #834): the listener takes it out of the
+    /// microphone.
+    pub fn open_tapped(tap: Tap) -> Result<Player, VoiceError> {
+        Player::open_with(Some(tap))
+    }
+
+    fn open_with(tap: Option<Tap>) -> Result<Player, VoiceError> {
         let device = output_host()
             .default_output_device()
             .ok_or(VoiceError::Missing(VoicePart::Speech, VoiceMissing::Player))?;
         let config = device.default_output_config().map_err(sound)?;
         let channels = usize::from(config.channels());
-        let queue = Arc::new(Mutex::new(Queue::opened(config.sample_rate())));
+        let rate = config.sample_rate();
+        let queue = Arc::new(Mutex::new(Queue::opened(rate)));
         let shared = Arc::clone(&queue);
         let stream = device
             .build_output_stream_raw(
@@ -452,6 +500,9 @@ impl Player {
                 config.sample_format(),
                 move |data: &mut cpal::Data, _: &cpal::OutputCallbackInfo| {
                     let mut queue = shared.lock().unwrap_or_else(PoisonError::into_inner);
+                    if let Some(tap) = &tap {
+                        tap.send(rate, playing(&queue, data.len() / channels.max(1)));
+                    }
                     fill_data(data, channels, &mut queue);
                 },
                 |err| eprintln!("torroassistant: sound output: {err}"),
@@ -459,7 +510,7 @@ impl Player {
             )
             .map_err(sound)?;
         stream.play().map_err(sound)?;
-        Ok(Player { _stream: stream, queue, rate: config.sample_rate(), resampler: None })
+        Ok(Player { _stream: stream, queue, rate, resampler: None })
     }
 
     fn queue(&self) -> std::sync::MutexGuard<'_, Queue> {
@@ -667,6 +718,26 @@ pub mod tests {
         assert!(!queue.ended(), "one buffer of silence");
         fill(&mut out, 2, &mut queue);
         assert!(queue.ended());
+    }
+
+    /// Issue #834: the tap gets what the next buffer plays, silence included, and the queue is untouched.
+    #[test]
+    fn the_tap_gets_what_plays_with_its_silence() {
+        let mut queue = Queue::default();
+        queue.samples.extend([0.5, -0.5]);
+        assert_eq!(playing(&queue, 4), [0.5, -0.5, 0.0, 0.0]);
+        assert_eq!(playing(&queue, 1), [0.5]);
+        assert_eq!(queue.samples.len(), 2);
+    }
+
+    /// Issue #834: a full tap drops the buffer and counts it.
+    #[test]
+    fn a_full_tap_counts_what_it_drops() {
+        let (tap, played, lost) = Tap::new(1);
+        tap.send(16_000, vec![0.5]);
+        tap.send(16_000, vec![0.25]);
+        assert_eq!(lost.load(Ordering::SeqCst), 1);
+        assert_eq!(played.try_recv().map(|(_, samples)| samples), Ok(vec![0.5]));
     }
 
     /// Issue #837: the marked sound counts as heard once a sample pushed after the mark went to the device,
