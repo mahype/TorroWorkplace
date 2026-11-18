@@ -5,8 +5,9 @@
 //! puts up has no "Copy", and a ⌘C that does not reach the window never reaches the text either, so
 //! a marked text could not be copied. The item is enabled only while the app has a selection
 //! ([`set_copy_enabled`]); a disabled item does not take its key, so ⌘C then goes to the window as
-//! before (a search field copies its own selection). The app menu ("Hide", "Hide others", "Show
-//! all", "Quit") is the one winit would have put up, since a new menu bar replaces that one.
+//! before (a search field copies its own selection). A new menu bar replaces winit's, so the
+//! app menu brings back its "Hide", "Hide others", "Show all" and "Quit" ("About" and "Services" are
+//! left out).
 //!
 //! There is no "Select all": ⌘A selects the mail list. On Linux and Windows the keys reach the
 //! window, and every function here does nothing.
@@ -49,7 +50,8 @@ pub fn install<T: Send + 'static>() -> iced::Task<T> {
     }
 }
 
-/// The menu bar: the app menu as winit's, and "Edit" with "Copy" (⌘C: `META` is Command on macOS), disabled.
+/// The menu bar: the app menu (Hide, Hide others, Show all, Quit) and "Edit" with "Copy", disabled
+/// (⌘C: `META` is Command on macOS).
 #[cfg(target_os = "macos")]
 fn build() -> Result<(muda::Menu, muda::MenuItem), muda::Error> {
     use muda::accelerator::{Accelerator, Code, Modifiers};
@@ -70,6 +72,12 @@ fn build() -> Result<(muda::Menu, muda::MenuItem), muda::Error> {
     let copy = MenuItem::with_id(COPY, tr("Copy"), false, Some(Accelerator::new(Modifiers::META, Code::KeyC)));
     let edit = Submenu::with_items(tr("Edit"), true, &[&copy])?;
     let menu = Menu::with_items(&[&app, &edit])?;
+    // Instead of muda's channel, which only a blocked thread could wait on.
+    muda::MenuEvent::set_event_handler(Some(|event: muda::MenuEvent| {
+        if event.id == COPY {
+            COPIED.notify_one();
+        }
+    }));
     menu.init_for_nsapp();
     Ok((menu, copy))
 }
@@ -109,22 +117,18 @@ pub fn copy_pressed() -> iced::Subscription<()> {
     }
 }
 
-/// The stream of [`copy_pressed`]: muda's channel blocks, so each wait runs on a blocking thread.
+/// Where muda's handler ([`build`]) hands each "Copy" to [`presses`]. A permit waits there until the
+/// stream takes it; nothing blocks a thread, so a dropped subscription leaves nothing behind and the
+/// runtime ends when the window closes.
+#[cfg(target_os = "macos")]
+static COPIED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// The stream of [`copy_pressed`]: one item per wake-up of [`COPIED`].
 #[cfg(target_os = "macos")]
 fn presses() -> impl iced::futures::Stream<Item = ()> {
     iced::futures::stream::unfold((), |()| async {
-        let pressed = tokio::task::spawn_blocking(|| {
-            let events = muda::MenuEvent::receiver();
-            loop {
-                match events.recv() {
-                    Ok(event) if event.id == COPY => return true,
-                    Ok(_) => {}
-                    Err(_) => return false,
-                }
-            }
-        })
-        .await;
-        matches!(pressed, Ok(true)).then_some(((), ()))
+        COPIED.notified().await;
+        Some(((), ()))
     })
 }
 
