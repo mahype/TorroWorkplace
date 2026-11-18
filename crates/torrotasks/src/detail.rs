@@ -1113,7 +1113,7 @@ impl Detail {
                 let children = self
                     .add_to_list_at()
                     .filter(|at| self.more.is_open(&[*at]))
-                    .map(|_| widgets::menu(vec![MenuSection::titled(tr("Add to list"), self.add_to_list_items())]));
+                    .map(|at| self.more.menu(&[at], vec![MenuSection::new(self.add_to_list_items())], Message::More));
                 let placement = Placement::Below(Align::End);
                 let menu = self.more.menu(&[], self.more_sections(), Message::More);
                 let children = children.into_iter().collect();
