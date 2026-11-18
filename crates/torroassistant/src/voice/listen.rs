@@ -970,9 +970,12 @@ impl<A: Assistant> Listener<'_, A> {
             vad.reset();
         }
         let read = loop {
-            // Open only while the cancellation runs; without it closed, as before.
+            // Open only while the cancellation runs; without it closed, as before. Speech counts in a row only
+            // while it runs (review of #835): sounds before and after a gap never add up.
             if !self.echo_runs() {
                 stream = None;
+                spoken = 0;
+                recent.clear();
             } else if stream.is_none() && !broken {
                 match self.recorder.open() {
                     Ok(opened) => stream = Some(opened),
@@ -991,6 +994,8 @@ impl<A: Assistant> Listener<'_, A> {
                 // Heard while it reads: dropped, unless the person interrupts.
                 Some(Ok(Some(frame))) => {
                     if refused || self.vad.is_none() || !self.echo_runs() {
+                        spoken = 0;
+                        recent.clear();
                         continue;
                     }
                     // A detector that fails now judges by loudness: that interrupts nothing.
