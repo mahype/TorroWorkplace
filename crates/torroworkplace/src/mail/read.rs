@@ -1346,12 +1346,12 @@ async fn read_attachment(
     let (kind, name) = (content_type.clone(), filename.clone());
     let extracted = tokio::task::spawn_blocking(move || attachment_text::extract(&kind, name.as_deref(), &bytes))
         .await
-        .map_err(|_| unreadable())?
+        .map_err(|_| failed(tr("This attachment could not be read.")))?
         .map_err(|err| match err {
             attachment_text::Unreadable::Unsupported(message) => {
                 Box::new(Response::Error { code: "unsupported".into(), message })
             }
-            attachment_text::Unreadable::Broken => unreadable(),
+            attachment_text::Unreadable::Broken => failed(tr("This attachment could not be read.")),
         })?;
     let from_line = from_line.unwrap_or(1).max(1);
     let (text, total_lines, next_line, cut_line) = page_of(&extracted.text, from_line);
@@ -2385,7 +2385,9 @@ pub(crate) mod tests {
              Content-Type: application/pdf; name=\"invoice.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\
              Content-Disposition: attachment; filename=\"invoice.pdf\"\r\n\r\n{pdf}\r\n--b1\r\n\
              Content-Type: image/png; name=\"pixel.png\"\r\nContent-Transfer-Encoding: base64\r\n\
-             Content-Disposition: attachment; filename=\"pixel.png\"\r\n\r\n{png}\r\n--b1--\r\n",
+             Content-Disposition: attachment; filename=\"pixel.png\"\r\n\r\n{png}\r\n--b1\r\n\
+             Content-Type: text/plain; charset=iso-8859-2; name=\"pl.txt\"\r\nContent-Transfer-Encoding: base64\r\n\
+             Content-Disposition: attachment; filename=\"pl.txt\"\r\n\r\nxPPzs7Mh\r\n--b1--\r\n",
             pdf = fixture("invoice.pdf"),
             png = fixture("pixel.png"),
         )
@@ -2426,6 +2428,9 @@ pub(crate) mod tests {
         let pdf = read(part("invoice.pdf"), None).await;
         assert_eq!((pdf.kind, pdf.pages, pdf.name.as_deref()), (AttachmentKind::Pdf, Some(2), Some("invoice.pdf")));
         assert!(pdf.text.contains("Total 119.00 EUR") && pdf.untrusted, "{}", pdf.text);
+
+        // A text part in another charset arrives as UTF-8: the MIME parser applies it.
+        assert_eq!(read(part("pl.txt"), None).await.text, "Äóółł!");
 
         let picture = Request::ReadMailAttachment { id: id.clone(), attachment: part("pixel.png"), from_line: None };
         assert_eq!(code(&answer(&service, Reach::Suite, picture).await), "unsupported");

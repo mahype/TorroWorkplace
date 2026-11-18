@@ -3355,6 +3355,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Diese PDF hat keine Textebene, wohl ein Scan; Torro Workplace kann sie nicht lesen.",
     ),
     (
+        "This PDF has more than {n} pages; Torro Workplace cannot read it.",
+        "Diese PDF hat mehr als {n} Seiten; Torro Workplace kann sie nicht lesen.",
+    ),
+    ("This attachment could not be read.", "Dieser Anhang konnte nicht gelesen werden."),
+    (
         "This attachment is not a text file Torro Workplace can read.",
         "Dieser Anhang ist keine Textdatei, die Torro Workplace lesen kann.",
     ),
