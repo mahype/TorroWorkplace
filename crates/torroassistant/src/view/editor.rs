@@ -173,7 +173,7 @@ impl App {
             typo::text(typo::body(), tr("The bot uses only what you allowed it under Access."))
                 .style(theme::text_2)
                 .align_x(Alignment::Center),
-            widgets::text_button(None, tr("Access…"), style::button::ghost, Some(Message::BotAccess(bot.id.clone()))),
+            widgets::text_button(None, tr("Access"), style::button::ghost, Some(Message::BotAccess(bot.id.clone()))),
         ]
         .spacing(space::s())
         .align_x(Alignment::Center);
@@ -228,12 +228,13 @@ impl App {
         if menu_here { widgets::anchored(&anchors.bot_row, row) } else { row }
     }
 
-    /// A bot's menu: New chat, Edit bot, Access…, Open in new window (main window), Delete bot….
+    /// A bot's menu: New chat, Edit bot…, Access (a page, no "…", issue #906), Open in new window
+    /// (main window), Delete bot….
     pub(super) fn bot_menu(&self, id: &str) -> Element<'_, Message> {
         let mut items = vec![
             MenuItem::new(Icon::SquarePen, tr("New chat"), Message::NewBotChat(id.to_owned())),
-            MenuItem::new(Icon::SquarePen, tr("Edit bot"), Message::EditBot(id.to_owned())),
-            MenuItem::new(Icon::UserCheck, tr("Access…"), Message::BotAccess(id.to_owned())),
+            MenuItem::new(Icon::SquarePen, tr("Edit bot…"), Message::EditBot(id.to_owned())),
+            MenuItem::new(Icon::UserCheck, tr("Access"), Message::BotAccess(id.to_owned())),
         ];
         if !self.chat_only {
             items.push(MenuItem::new(Icon::AppWindow, tr("Open in new window"), Message::OpenBotWindow(id.to_owned())));
@@ -381,7 +382,7 @@ impl App {
             }
             None if self.no_model_on() => row![
                 typo::text(typo::meta(), tr("No model is turned on")).style(theme::text_3),
-                widgets::text_button(None, tr("Manage models…"), style::button::ghost, Some(Message::ManageModels)),
+                widgets::text_button(None, tr("Manage models"), style::button::ghost, Some(Message::ManageModels)),
             ]
             .spacing(space::s())
             .align_y(Alignment::Center)

@@ -56,7 +56,7 @@ pub enum Action {
     /// "Save workspace…" (task WS.7): `workspaces.save_template` without a name at the click, then
     /// the dialog for the new template in its mode "Save" ([`Daemon::save_workspace`]).
     SaveWorkspace,
-    /// "Manage workspaces…" (task WS.7): the control centre on its page Workspaces
+    /// "Manage workspaces" (task WS.7): the control centre on its page Workspaces
     /// ([`Daemon::manage_workspaces`]).
     ManageWorkspaces,
     /// "Online" while "Show others when I am online" is off: switches it on, then sets the status
@@ -234,11 +234,11 @@ fn status_name(status: torro_chat::Status) -> &'static str {
 /// The workspace templates (task WS.7): "Workspaces · Hyprland", one submenu per template in the
 /// order of their keys ([`crate::workspace_keys::in_key_order`], as on the workspaces page) named
 /// with its key ([`template_label`]), or "No templates yet"; then a separator, "Save workspace…" and
-/// "Manage workspaces…". Without a window manager only why ("AeroSpace (macOS) not found", the
-/// words of the workspaces page) and "Manage workspaces…", whose page says what to do: nothing could
+/// "Manage workspaces". Without a window manager only why ("AeroSpace (macOS) not found", the
+/// words of the workspaces page) and "Manage workspaces", whose page says what to do: nothing could
 /// be loaded or saved.
 fn templates_section(snapshot: &Snapshot) -> Vec<Item> {
-    let manage = Item::Entry { label: tr("Manage workspaces…").into(), action: Some(Action::ManageWorkspaces) };
+    let manage = Item::Entry { label: tr("Manage workspaces").into(), action: Some(Action::ManageWorkspaces) };
     if let Some(name) = &snapshot.unsupported {
         return vec![info(trf("{name} not found", &[("name", name)])), manage];
     }
@@ -510,7 +510,7 @@ mod tests {
                 sub("Entwicklung"),
                 "-".to_string(),
                 tr("Save workspace…").to_string(),
-                tr("Manage workspaces…").to_string(),
+                tr("Manage workspaces").to_string(),
                 "-".to_string(),
                 tr("Quit").to_string(),
             ]
@@ -611,7 +611,7 @@ mod tests {
         assert!(action_of(&menu, tr("Calendar")).is_some());
         let shown = labels(&menu);
         for gone in
-            [workspaces_line(), "Entwicklung ▸".into(), tr("Save workspace…").into(), tr("Manage workspaces…").into()]
+            [workspaces_line(), "Entwicklung ▸".into(), tr("Save workspace…").into(), tr("Manage workspaces").into()]
         {
             assert!(!shown.contains(&gone), "{gone:?} in {shown:?}");
         }
@@ -621,7 +621,7 @@ mod tests {
     fn entries_run_the_catalogue_commands() {
         let menu = build(&snapshot());
         assert_eq!(action_of(&menu, tr("Save workspace…")), Some(Action::SaveWorkspace));
-        assert_eq!(action_of(&menu, tr("Manage workspaces…")), Some(Action::ManageWorkspaces));
+        assert_eq!(action_of(&menu, tr("Manage workspaces")), Some(Action::ManageWorkspaces));
         assert_eq!(action_of(&menu, tr("Notification Hub")), Some(Action::OpenApp(AppId::INBOX)));
         assert_eq!(action_of(&menu, tr("Mail")), Some(Action::OpenApp(AppId::INBOX_MAIL)));
         assert_eq!(action_of(&menu, tr("App Feed")), Some(Action::OpenApp(AppId::INBOX_NOTIFICATIONS)));
@@ -676,7 +676,7 @@ mod tests {
                 format!("({})", tr("No templates yet")),
                 "-".to_string(),
                 tr("Save workspace…").to_string(),
-                tr("Manage workspaces…").to_string(),
+                tr("Manage workspaces").to_string(),
             ]
         );
     }
@@ -691,18 +691,18 @@ mod tests {
             shown[TEMPLATES..TEMPLATES + 3],
             [
                 format!("({})", trf("{name} not found", &[("name", &"AeroSpace (macOS)")])),
-                tr("Manage workspaces…").to_string(),
+                tr("Manage workspaces").to_string(),
                 "-".to_string(),
             ]
         );
-        assert_eq!(action_of(&menu, tr("Manage workspaces…")), Some(Action::ManageWorkspaces));
+        assert_eq!(action_of(&menu, tr("Manage workspaces")), Some(Action::ManageWorkspaces));
         assert!(!shown.contains(&tr("Save workspace…").to_string()));
         assert_eq!(shown.last().map(String::as_str), Some(tr("Quit")));
     }
 
     #[test]
     fn only_work_in_progress_or_a_problem_gets_a_line() {
-        // After "Manage workspaces…".
+        // After "Manage workspaces".
         const STATUS: usize = TEMPLATES + 5;
         let quiet = labels(&build(&Snapshot { account: Some(AccountState::NotConnected), ..snapshot() }));
         assert_eq!(quiet[STATUS], "-", "no workspace, no Nextcloud line");
