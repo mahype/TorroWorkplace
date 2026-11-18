@@ -146,6 +146,11 @@ fn pdf(bytes: &[u8]) -> Result<Extracted, Unreadable> {
         }
     }
     if text.trim().is_empty() {
+        if cut {
+            return Err(Unreadable::Unsupported(
+                tr("This PDF takes too long to read; Torro Workplace cannot read it.").into(),
+            ));
+        }
         if failed {
             return Err(Unreadable::Broken);
         }
