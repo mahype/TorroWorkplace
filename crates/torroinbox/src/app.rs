@@ -8357,6 +8357,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             return Task::none();
         }
         self.clear_save_feedback();
+        // A person's menu names a place in the old mail's head, not someone of the next (issue #905).
+        if matches!(self.menu, Some(Menu::Person(_))) {
+            self.menu = None;
+            self.context_point = None;
+        }
         // Another mail: its cards are read out afresh (issue #603).
         self.asked.clear();
         self.failed.clear();
@@ -22245,6 +22250,10 @@ mod tests {
         let _ = app.update(Message::SelectMail("m:w2".into()));
         deliver_letter(&mut app, "m:w2");
         assert!(!app.reading().is_some_and(|reading| reading.people_open), "closed for the next mail");
+        let _ = app.update(Message::ContextPerson(mail::HeadPerson::To(0), None));
+        let _ = app.update(Message::SelectMail("m:w1".into()));
+        deliver_letter(&mut app, "m:w1");
+        assert_eq!(app.menu, None, "no person's menu over another mail");
     }
 
     /// `id` of the work inbox open in the reader of a wide window, loaded.
