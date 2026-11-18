@@ -225,6 +225,15 @@ impl Cascade {
                 if self.pending.as_ref().is_some_and(|pending| pending.path == path) {
                     self.pending = None;
                 }
+                // The entry the pointer left is no longer lit, unless its submenu is open (review of
+                // #906: two lit rows after crossing one on the way to the submenu).
+                if let (Some(&index), Some(level)) = (path.last(), path.len().checked_sub(1))
+                    && level <= CASCADE_DEPTH
+                    && self.cursor[level] == Some(index)
+                    && self.open.get(level) != Some(&index)
+                {
+                    self.cursor[level] = None;
+                }
                 CascadeChange::None
             }
             CascadeEvent::Card(level) => {
@@ -583,6 +592,18 @@ mod tests {
         assert_eq!(key(&mut cascade, CascadeKey::Enter), CascadeChange::Activate { level: 1, index: 1 });
         assert_eq!(key(&mut cascade, CascadeKey::Escape), CascadeChange::Closed(1));
         assert_eq!(key(&mut cascade, CascadeKey::Escape), CascadeChange::CloseAll);
+    }
+
+    #[test]
+    fn the_entry_the_pointer_left_is_no_longer_lit() {
+        let (mut cascade, start) = (Cascade::new(), Instant::now());
+        update(&mut cascade, CascadeEvent::Press(vec![1]), start);
+        update(&mut cascade, CascadeEvent::Enter(vec![2]), start);
+        update(&mut cascade, CascadeEvent::Leave(vec![2]), start);
+        assert_eq!(cascade.cursor(0), None);
+        update(&mut cascade, CascadeEvent::Enter(vec![1]), start);
+        update(&mut cascade, CascadeEvent::Leave(vec![1]), start);
+        assert_eq!(cascade.cursor(0), Some(1), "the entry whose submenu is open stays");
     }
 
     #[test]
