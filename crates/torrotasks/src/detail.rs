@@ -19,7 +19,7 @@
 //!
 //! - [`Detail::head`]: the row in the window's header bar (44, line below, split from the
 //!   list's head by the app) with the path "List › Parent" (only the real hierarchy), ↑ ↓ to the
-//!   previous/next task, "…" (Copy link, Open on GitHub / Open link, "Add to list…" for an item of
+//!   previous/next task, "…" (Copy link, Open on GitHub / Open link, "Add to list ▸" for an item of
 //!   a filter list – it becomes a link task in the list picked, [`Action::AddLink`], task G.6 –,
 //!   Unpin for an item pinned in its filter list ([`Detail::pinned`], task G.3), Delete task – never
 //!   for a GitHub item) and ✕;
@@ -63,7 +63,9 @@ use torro_core::i18n::{tr, trc, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::panel;
 use torro_gui::theme::{self, Palette, palette, size, space};
-use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail};
+use torro_gui::widgets::{
+    self, Align, Anchor, Cascade, CascadeChange, CascadeEvent, Mark, MenuItem, MenuSection, Placement, Trail,
+};
 use torro_gui::{datetime, markdown, style, typo};
 use torro_pim::model::{ChecksState, GitHubDetails, GitHubKind, GitHubState, Link, ReviewState};
 use torro_pim::{Collection, EventTime, Focus, Todo};
@@ -142,10 +144,11 @@ pub struct Detail {
     due_text: String,
     /// The property editor or menu that is open.
     open: Option<Editor>,
-    /// Set by "Delete task" in the "…" menu; the menu then asks once more.
+    /// Set by "Delete task…" in the "…" menu; the menu then asks once more.
     confirm_delete: bool,
-    /// Set by "Add to list…" in the "…" menu (task G.6); the menu then shows the lists to pick.
-    choosing_list: bool,
+    /// The "…" menu as a cascading menu (issue #906): "Add to list ▸" opens the lists to pick beside
+    /// it (task G.6).
+    more: Cascade,
     /// A save is under way; the next one waits for its answer (new etag).
     saving: bool,
     /// The last task handed out to be saved, so an unchanged draft is not sent again.
@@ -236,11 +239,14 @@ pub enum Message {
     CopyLink,
     /// "Unpin" in the "…" menu of a pinned item ([`Detail::pinned`]).
     Unpin,
-    /// "Add to list…" in the "…" menu of a filter list's item: show the lists to pick (task G.6).
+    /// "Add to list ▸" in the "…" menu of a filter list's item: open the lists to pick beside it
+    /// (task G.6, issue #906).
     AddToList,
-    /// A list ([`Collection::id`]) picked after "Add to list…".
+    /// A list ([`Collection::id`]) picked in "Add to list ▸".
     AddToListSelected(String),
-    /// "Delete task" in the "…" menu: ask once more.
+    /// The pointer over the "…" menu and its submenu, or the cascade's tick (issue #906).
+    More(CascadeEvent),
+    /// "Delete task…" in the "…" menu: ask once more.
     Delete,
     CancelDelete,
     ConfirmDelete,
@@ -348,7 +354,7 @@ enum More {
     CopyLink,
     /// "Open on GitHub" for a GitHub link, else "Open link".
     OpenLink,
-    /// A GitHub item of a filter list: "Add to list…", then the writable lists (task G.6).
+    /// A GitHub item of a filter list: "Add to list ▸" with the writable lists (task G.6).
     AddToList,
     /// A pinned item of a filter list.
     Unpin,
@@ -429,7 +435,7 @@ impl Detail {
             draft,
             open: None,
             confirm_delete: false,
-            choosing_list: false,
+            more: Cascade::new(),
             saving: false,
             sent: None,
             attempted: false,
@@ -464,7 +470,7 @@ impl Detail {
             }
             Message::Open(editor) => {
                 self.confirm_delete = false;
-                self.choosing_list = false;
+                self.more.reset();
                 if self.open == Some(editor) {
                     self.open = None;
                 } else {
@@ -557,7 +563,12 @@ impl Detail {
                     return Action::Unpin { collection: self.original.collection.clone(), item };
                 }
             }
-            Message::AddToList => self.choosing_list = self.can_add_to_list(),
+            Message::AddToList => {
+                if let Some(at) = self.add_to_list_at() {
+                    return self.more_event(CascadeEvent::Press(vec![at]));
+                }
+            }
+            Message::More(event) => return self.more_event(event),
             Message::AddToListSelected(collection) => {
                 self.close_editor();
                 let url = self.original.link.as_ref().map(|link| link.id.clone());
@@ -583,7 +594,10 @@ impl Detail {
             }
             Message::Close => return Action::Close,
             Message::Escape => {
-                if self.open.is_some() {
+                // The lists of "Add to list ▸" close first, then the menu (issue #906).
+                if !self.more.open().is_empty() {
+                    self.more.close_from(1);
+                } else if self.open.is_some() {
                     self.close_editor();
                 } else {
                     return Action::Close;
@@ -692,7 +706,53 @@ impl Detail {
     fn close_editor(&mut self) {
         self.open = None;
         self.confirm_delete = false;
-        self.choosing_list = false;
+        self.more.reset();
+    }
+
+    /// Whether a submenu of the "…" menu waits for the pointer to rest (issue #906): tick
+    /// [`Message::More`] with [`CascadeEvent::Tick`] only then.
+    pub fn more_waiting(&self) -> bool {
+        self.open == Some(Editor::More) && self.more.waiting()
+    }
+
+    /// Whether the lists of "Add to list ▸" are open beside the "…" menu (issue #906).
+    #[cfg(test)]
+    pub fn more_lists_open(&self) -> bool {
+        self.open == Some(Editor::More) && self.add_to_list_at().is_some_and(|at| self.more.is_open(&[at]))
+    }
+
+    /// Where "Add to list ▸" stands among the entries of the "…" menu, when it is there.
+    fn add_to_list_at(&self) -> Option<usize> {
+        let entries = self.more_sections().into_iter().flat_map(|section| section.items);
+        entries.into_iter().position(|item| matches!(item.on_press, Message::AddToList))
+    }
+
+    /// Hands `event` to the "…" menu's cascade (issue #906).
+    fn more_event(&mut self, event: CascadeEvent) -> Action {
+        if self.open != Some(Editor::More) {
+            return Action::None;
+        }
+        let shape = {
+            let sections = self.more_sections();
+            vec![widgets::shape_of(&sections), vec![false; self.add_to_list_items().len()]]
+        };
+        match self.more.update(event, std::time::Instant::now(), &shape) {
+            CascadeChange::Activate { level, index } => {
+                let chosen = match level {
+                    0 => self.more_sections().into_iter().flat_map(|section| section.items).nth(index),
+                    _ => self.add_to_list_items().into_iter().nth(index),
+                };
+                match chosen.map(|item| item.on_press) {
+                    Some(message) => self.update(message),
+                    None => Action::None,
+                }
+            }
+            CascadeChange::CloseAll => {
+                self.close_editor();
+                Action::None
+            }
+            CascadeChange::None | CascadeChange::Opened(_) | CascadeChange::Closed(_) => Action::None,
+        }
     }
 
     /// A new open sub-task with the typed title in this task's list; the field empties for the
@@ -775,7 +835,7 @@ impl Detail {
         self.editable() && self.github().is_none()
     }
 
-    /// "Add to list…" is for a GitHub item of a filter list (read-only here) while there is a
+    /// "Add to list ▸" is for a GitHub item of a filter list (read-only here) while there is a
     /// writable list to add it to.
     fn can_add_to_list(&self) -> bool {
         !self.editable() && self.github_ref().is_some() && !self.lists.is_empty()
@@ -1048,7 +1108,17 @@ impl Detail {
             Editor::List => (self.list_menu(), Align::Start),
             Editor::Parent => (self.parent_menu(), Align::Start),
             Editor::Due => (self.due_card(), Align::Start),
-            Editor::More => (self.more_menu(), Align::End),
+            Editor::More => {
+                // A cascading menu (issue #906): "Add to list ▸" opens the lists beside it.
+                let children = self
+                    .add_to_list_at()
+                    .filter(|at| self.more.is_open(&[*at]))
+                    .map(|_| widgets::menu(vec![MenuSection::titled(tr("Add to list"), self.add_to_list_items())]));
+                let placement = Placement::Below(Align::End);
+                let menu = self.more.menu(&[], self.more_sections(), Message::More);
+                let children = children.into_iter().collect();
+                return Some(self.more.layer(anchor, placement, menu, children, Message::CloseEditor, Message::More));
+            }
         };
         Some(widgets::floating(anchor, Placement::Below(align), card, Message::CloseEditor))
     }
@@ -1612,9 +1682,10 @@ impl Detail {
         subtasks
     }
 
-    /// The "…" menu: Copy link and Open on GitHub / Open link, then Delete task; after "Delete
-    /// task" the last part asks once more.
-    fn more_menu(&self) -> Element<'_, Message> {
+    /// The sections of the "…" menu: Copy link and Open on GitHub / Open link, "Add to list ▸",
+    /// Unpin, then "Delete task…", after which the last part asks once more (issue #906: "…", as a
+    /// question follows).
+    fn more_sections(&self) -> Vec<MenuSection<'_, Message>> {
         let mut first = Vec::new();
         let mut sections = Vec::new();
         for item in self.more_items() {
@@ -1627,15 +1698,10 @@ impl Detail {
                     };
                     first.push(MenuItem::new(mark, label, Message::OpenLink).trail(Trail::Icon(Icon::ArrowUpRight)));
                 }
-                // After "Add to list…" the menu lists where it can go, as "Move to list" does.
-                More::AddToList if self.choosing_list => {
-                    sections.push(MenuSection::titled(tr("Add to list"), self.add_to_list_items()))
-                }
-                More::AddToList => sections.push(MenuSection::new(vec![MenuItem::new(
-                    Icon::Plus,
-                    tr("Add to list…"),
-                    Message::AddToList,
-                )])),
+                // Where it can go opens beside it, as a submenu (issue #906).
+                More::AddToList => sections.push(MenuSection::new(vec![
+                    MenuItem::new(Icon::Plus, tr("Add to list"), Message::AddToList).submenu(),
+                ])),
                 // The icon set has no pin; X says "take it out" as Cancel does.
                 More::Unpin => {
                     sections.push(MenuSection::new(vec![MenuItem::new(Icon::PinOff, tr("Unpin"), Message::Unpin)]))
@@ -1649,7 +1715,7 @@ impl Detail {
                 )),
                 More::Delete => sections.push(MenuSection::new(vec![MenuItem::new(
                     Icon::Trash2,
-                    tr("Delete task"),
+                    tr("Delete task…"),
                     Message::Delete,
                 )])),
             }
@@ -1657,7 +1723,7 @@ impl Detail {
         if !first.is_empty() {
             sections.insert(0, MenuSection::new(first));
         }
-        widgets::menu(sections)
+        sections
     }
 
     fn priority_menu(&self) -> Element<'_, Message> {
@@ -2675,11 +2741,12 @@ mod tests {
         let mut detail = detail_of(&github_item(pull_request()));
         detail.update(Message::Open(Editor::More));
         assert_eq!(detail.update(Message::AddToList), Action::None);
-        assert!(detail.choosing_list && detail.open == Some(Editor::More), "the menu shows the lists");
+        let at = detail.add_to_list_at().expect("Add to list");
+        assert!(detail.more.is_open(&[at]) && detail.open == Some(Editor::More), "the lists open beside it");
         assert!(detail.layer(&Anchor::new()).is_some());
         let add = Action::AddLink { collection: "home".into(), url: "github:mahype/TorroWorkplace#131".into() };
         assert_eq!(detail.update(Message::AddToListSelected("home".into())), add, "the list and the link id");
-        assert!(!detail.choosing_list && detail.open.is_none(), "the menu closes");
+        assert!(detail.more.open().is_empty() && detail.open.is_none(), "every level closes");
 
         // A task of a writable list, linked or not, is moved instead; without lists there is nowhere.
         let in_list = Todo { collection: "work".into(), ..github_item(pull_request()) };

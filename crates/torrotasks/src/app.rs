@@ -238,6 +238,8 @@ pub enum Open {
     FilterList,
     /// The first item pinned in a filter list, in the detail with its "…" menu open (Unpin).
     Pinned,
+    /// The same item with "Add to list ▸" of its "…" menu open beside it (issue #906).
+    MoreList,
     /// The first writable task list in manual order (task P.3b): one run of rows, no groups.
     Manual,
     /// The same with the Display menu open on its "Order" section.
@@ -277,7 +279,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 25] = [
+    const ALL: [(&'static str, Open); 26] = [
         ("detail", Open::Detail),
         ("menu", Open::Menu),
         ("display", Open::Display),
@@ -287,6 +289,7 @@ impl Open {
         ("more", Open::More),
         ("filter", Open::FilterList),
         ("pinned", Open::Pinned),
+        ("more-list", Open::MoreList),
         ("manual", Open::Manual),
         ("order", Open::Order),
         ("drag", Open::Drag),
@@ -1197,6 +1200,13 @@ impl App {
         }
         if let Some(dialog) = &self.filter_dialog {
             subscriptions.push(dialog.subscription().map(Message::Filter));
+        }
+        // A submenu of the "…" menu waits for the pointer to rest (issue #906).
+        if self.detail.as_ref().is_some_and(Detail::more_waiting) {
+            subscriptions.push(
+                iced::time::every(widgets::CASCADE_TICK)
+                    .map(|now| Message::Detail(detail::Message::More(widgets::CascadeEvent::Tick(now)))),
+            );
         }
         if self.detail.as_ref().is_some_and(Detail::wants_autosave) {
             subscriptions.push(iced::time::every(AUTOSAVE).map(|_| Message::Detail(detail::Message::Flush)));
@@ -2905,7 +2915,9 @@ impl App {
             Some(Open::FilterList) => filter_lists()
                 .find(|c| c.source.as_ref().is_some_and(|s| s.problem.is_some()))
                 .or_else(|| filter_lists().next()),
-            Some(Open::Pinned) => filter_lists().find(|c| c.source.as_ref().is_some_and(|s| !s.pinned.is_empty())),
+            Some(Open::Pinned | Open::MoreList) => {
+                filter_lists().find(|c| c.source.as_ref().is_some_and(|s| !s.pinned.is_empty()))
+            }
             Some(Open::FilterEdit | Open::FilterSearch | Open::FilterDelete) => filter_lists().next(),
             Some(Open::FilterRepo) => filter_lists().find(|c| {
                 c.source.as_ref().is_some_and(|s| matches!(s.queries.as_slice(), [q] if filter::repos_of(q).len() == 1))
@@ -2949,24 +2961,29 @@ impl App {
             self.open_drop();
             return Task::none();
         }
-        let Some(open @ (Open::Detail | Open::Due | Open::PullRequest | Open::More | Open::Pinned)) = self.launch.open
+        let Some(open @ (Open::Detail | Open::Due | Open::PullRequest | Open::More | Open::Pinned | Open::MoreList)) =
+            self.launch.open
         else {
             return Task::none();
         };
         let order = list::order(&self.list_data());
         let first = match open {
             Open::PullRequest => order.into_iter().find(|&index| is_open_pull_request(&self.todos[index])),
-            Open::Pinned => order.into_iter().find(|&index| self.is_pinned(&self.todos[index])),
+            Open::Pinned | Open::MoreList => order.into_iter().find(|&index| self.is_pinned(&self.todos[index])),
             _ => order.first().copied(),
         };
         let Some(first) = first else { return Task::none() };
         let select = self.select(first);
         let editor = match open {
             Open::Due => detail::Editor::Due,
-            Open::More | Open::Pinned => detail::Editor::More,
+            Open::More | Open::Pinned | Open::MoreList => detail::Editor::More,
             _ => return select,
         };
         let card = self.update(Message::Detail(detail::Message::Open(editor)));
+        if open == Open::MoreList {
+            let lists = self.update(Message::Detail(detail::Message::AddToList));
+            return Task::batch([select, card, lists]);
+        }
         Task::batch([select, card])
     }
 
@@ -5460,6 +5477,10 @@ mod tests {
         assert!(due.detail.as_ref().expect("the detail is open").layer(&Anchor::new()).is_some(), "the due card");
         let more = launched(&["--demo", "--open", "more"]);
         assert!(more.detail.as_ref().expect("the detail is open").layer(&Anchor::new()).is_some(), "the … menu");
+        // Issue #906: "Add to list ▸" open beside the "…" menu of a pinned item.
+        let lists = launched(&["--demo", "--open", "more-list"]);
+        let detail = lists.detail.as_ref().expect("the detail is open");
+        assert!(detail.more_lists_open(), "the lists beside the menu");
 
         // Closing it does not bring it back with the next reload.
         let mut closed = launched(&["--demo", "--open", "detail"]);
