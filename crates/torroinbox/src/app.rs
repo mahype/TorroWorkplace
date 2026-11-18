@@ -22250,9 +22250,12 @@ mod tests {
         let _ = app.update(Message::SelectMail("m:w2".into()));
         deliver_letter(&mut app, "m:w2");
         assert!(!app.reading().is_some_and(|reading| reading.people_open), "closed for the next mail");
+        // Another mail held without a click in the list (a sync, the cursor): `follow_letter` alone.
         let _ = app.update(Message::ContextPerson(mail::HeadPerson::To(0), None));
-        let _ = app.update(Message::SelectMail("m:w1".into()));
-        deliver_letter(&mut app, "m:w1");
+        if let Some(letter) = app.letter.as_mut() {
+            letter.id = "m:gone".into();
+        }
+        let _ = app.follow_letter();
         assert_eq!(app.menu, None, "no person's menu over another mail");
     }
 
