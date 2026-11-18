@@ -77,7 +77,7 @@ Zwei Entscheidungen lässt das Konzept bewusst den Plänen:
   16 Bit, Base64) zwischen seine Antworten; der Dienst liest sie laufend und reicht sie über die Standardeingabe an
   den Hörer weiter, ohne neuen Zugang von außen und ohne Platte. Der Hörer rechnet den Ton aus jedem Mikrofonblock
   heraus (`voice/echo.rs`). Kommt eine Referenz (in den letzten 300 ms), bleibt das Mikrofon beim Vorlesen offen,
-  auch während der eigenen Antwort (was die Person dabei sagt, wird noch verworfen, darauf reagiert erst #835);
+  auch während der eigenen Antwort (spricht die Person dabei, unterbricht sie ihn, siehe #835);
   sonst bleibt es zu wie bisher. Ohne Einstellung. Geprüft mit `hey_torro.wav` als Vorlesen in einem gerechneten
   Raum (Echo nach 30, 60 und 90 ms): Der Hörer hört darin keine Sprache, die Person darüber aber schon.
 - **Satzende nach Sinn (#836), entschieden.** Smart Turn v3 von Pipecat (32 MB ungepackt: die gepackte Fassung mit 8,7 MB rechnet tract falsch, gegen onnxruntime geprüft; ONNX auf tract, Deutsch und Englisch)
