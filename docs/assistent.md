@@ -1044,7 +1044,7 @@ ist; das Mikrofon ist dann nur für dieses Gespräch offen. Statt des Eingabefel
   Turn (Download unter Models) hört am Tonfall der letzten 8 Sekunden, ob die Stimme abschließt; Regeln lesen den vorab
   erkannten Text, Deutsch und Englisch. Endet er auf ein Füllwort („ähm“, „um“), ein Bindewort („und“, „weil“,
   „and“, „the“), ein „…“ oder ein Komma, ist er unfertig; endet er auf „Moment“, „warte mal“, „lass mich überlegen“,
-  „wait a moment“, „hold on“ oder „let me think“, hält er den Turn. Der Text gewinnt, wo er mehr sagt als der Ton; ein
+  „wait a moment“, „hold on“ oder „let me think“, hält er den Turn, sofern die Phrase allein, nach einem Satzzeichen oder nach einem Füllwort steht („Ich warte.“ ist eine fertige Aussage). Der Text gewinnt, wo er mehr sagt als der Ton; ein
   Fragezeichen schließt ab, vor allem anderen („Was ist das?“, „Hast du einen Moment?“), ein Punkt nach einer Verbpartikel oder nach „das“, „dann“, „so“, „that“ und „then“ auch („Mach das Licht an.“, „Bis dann.“), außer nach „und“, „oder“, „aber“ („Erst die Mails und dann.“ bleibt unfertig). Hört Smart Turn „fertig“, bevor der Text da ist, endet der Satz frühestens nach der Sekunde, damit ein spätes „Moment“ noch zählt. Ein fertiger Satz endet nach 500 ms, ein unfertiger nach 2 s, ein
   gehaltener nach 15 s, wenn die Person nicht weiterspricht; spricht sie weiter, gilt wieder die Pause von einer
   Sekunde, bis zur nächsten Bewertung. Die Werte stellt Assistant › Voice › Conversation › End of a sentence ein

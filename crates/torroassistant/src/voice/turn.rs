@@ -74,17 +74,17 @@ const HOLDS: [&str; 18] = [
 const FILLERS: [&str; 10] = ["äh", "ähm", "öh", "hm", "hmm", "ehm", "uh", "um", "uhm", "erm"];
 
 /// Words after which a sentence goes on: conjunctions, prepositions, articles, German and English.
-const CONNECTORS: [&str; 33] = [
-    "und", "oder", "aber", "weil", "dass", "denn", "wenn", "also", "sondern", "bis", "für", "von", "der", "die", "den",
-    "dem", "ein", "eine", "einen", "mein", "meine", "and", "or", "but", "because", "if", "with", "for", "to", "of",
-    "the", "a", "my",
+const CONNECTORS: [&str; 32] = [
+    "und", "oder", "aber", "weil", "dass", "denn", "wenn", "sondern", "bis", "für", "von", "der", "die", "den", "dem",
+    "ein", "eine", "einen", "mein", "meine", "and", "or", "but", "because", "if", "with", "for", "to", "of", "the",
+    "a", "my",
 ];
 
 /// Connecting words that also end a sentence: the particle of a German verb ("Mach das Licht an.", "Komm mit!"),
-/// "das", "dann", "so", "that" and "then" ("Mach das.", "Bis dann.", "I think so.", "See you then."), and the
-/// English article "an". Open without a full stop or exclamation mark after them, and after "and" or "or" ([`AND_OR`])
+/// "das", "dann", "so", "also", "that" and "then" ("Mach das.", "Bis dann.", "I think so.", "Send it to Anna
+/// also.", "See you then."), and the English article "an". Open without a full stop or exclamation mark after them, and after "and" or "or" ([`AND_OR`])
 /// even with one: Whisper ends a piece cut off with a full stop too ("und dann.").
-const PARTICLES: [&str; 9] = ["an", "auf", "zu", "mit", "das", "dann", "so", "that", "then"];
+const PARTICLES: [&str; 10] = ["an", "auf", "zu", "mit", "das", "dann", "so", "also", "that", "then"];
 
 /// "And", "or" and "but", German and English: a particle after them goes on, whatever mark follows.
 const AND_OR: [&str; 6] = ["und", "oder", "aber", "and", "or", "but"];
@@ -111,6 +111,26 @@ fn without_wake(text: &str) -> String {
     after_wake_phrase(text).unwrap_or_else(|| strip_wake_phrase(text))
 }
 
+/// Whether the hold phrase `hold` at the end of `text` stands on its own (review of PR #889): alone, after a mark
+/// ("Wie spät ist es? Moment", "Ähm, warte mal") or after a filler. "Ich warte." and "I can't wait." end a
+/// statement and hold nothing.
+fn stands_alone(text: &str, hold: &str) -> bool {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let mut left = hold.split(' ').count();
+    let mut at = tokens.len();
+    // Back over the phrase's words; tokens without a letter ("…") are no words of it.
+    while left > 0 && at > 0 {
+        at -= 1;
+        if tokens[at].chars().any(char::is_alphanumeric) {
+            left -= 1;
+        }
+    }
+    let Some(before) = at.checked_sub(1).map(|at| tokens[at]) else { return true };
+    let marked =
+        before.ends_with([',', '.', '!', '?', '…', ';', ':', '-', '–']) || !before.chars().any(char::is_alphanumeric);
+    marked || words(before).last().is_some_and(|word| FILLERS.contains(&word.as_str()))
+}
+
 /// What the text of a sentence so far says of its end (decision 1): `None` for no text. A question mark at
 /// the end finishes it; a hold phrase at the end holds the turn; an ellipsis, a comma, a filler or a connecting
 /// word leaves it open; anything else is finished.
@@ -126,7 +146,7 @@ pub fn rules(text: &str) -> Option<Turn> {
     if trimmed.ends_with('?') {
         return Some(Turn::Done);
     }
-    if HOLDS.iter().any(|hold| ends_with(&said, hold)) {
+    if HOLDS.iter().any(|hold| ends_with(&said, hold) && stands_alone(trimmed, hold)) {
         return Some(Turn::Hold);
     }
     if trimmed.ends_with('…') || trimmed.ends_with("...") || trimmed.ends_with(',') {
@@ -404,6 +424,14 @@ mod tests {
             ("Komm mit!", Some(Turn::Done)),
             ("Ich gehe morgen mit", Some(Turn::Open)),
             ("I'd like an", Some(Turn::Open)),
+            // Review of PR #889: a hold phrase ending a statement holds nothing; "also" ends an English one.
+            ("Ich warte.", Some(Turn::Done)),
+            ("I can't wait.", Some(Turn::Done)),
+            ("Send it to Anna also.", Some(Turn::Done)),
+            ("Ich will morgen also", Some(Turn::Open)),
+            ("Wie spät ist es? Moment", Some(Turn::Hold)),
+            ("Ähm warte mal", Some(Turn::Hold)),
+            ("Gut … Moment.", Some(Turn::Hold)),
             ("Turn on the light", Some(Turn::Done)),
             ("Was ist das?", Some(Turn::Done)),
             ("Hey Torro, wie spät ist es", Some(Turn::Done)),
