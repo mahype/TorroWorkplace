@@ -6496,7 +6496,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 // Issue #904: on one of the marked mails the marking stays, and the menu acts on all.
                 if self.context_selection(&id) {
                     self.open_selection_context(point);
-                    return Task::none();
+                    return self.keep_opened_search();
                 }
                 if self.select_mail(id) {
                     self.menu = Some(Menu::MailContext);
@@ -6513,7 +6513,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 });
                 if message.is_some_and(|message| self.context_selection(&message)) {
                     self.open_selection_context(point);
-                    return Task::none();
+                    return self.keep_opened_search();
                 }
                 self.select(id);
                 if self.detail.is_some() {
@@ -6529,6 +6529,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 let result = self.handle(*action);
                 // "Save mail as" (issue #501): its formats open where the context menu stood.
                 if self.menu == Some(Menu::SaveMailFormat) {
+                    // Issue #904: so do the folders of the marked mail – the cursor may stand elsewhere.
+                    self.context_point = point;
+                } else if self.menu == Some(Menu::Move) && self.move_selection.is_some() {
                     self.context_point = point;
                 }
                 self.menu_at = MenuAt::Row;
@@ -8639,7 +8642,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     }
                     _ => None,
                 };
-                let flags = listed.or_else(loaded).unwrap_or_default();
+                // An entry's mail (issue #904, review): read as the window marked it or its entry says.
+                let seen = || {
+                    let held = self.items.iter().chain(&self.for_me).chain(&self.snoozed).chain(self.detail.as_ref());
+                    let read = self.seen_mail.contains(&id)
+                        || held.filter(|item| shows_mail(item, &id)).any(|item| !matches!(item.state, State::New));
+                    Some(if read { vec![Flag::Seen] } else { Vec::new() })
+                };
+                let flags = listed.or_else(loaded).or_else(seen).unwrap_or_default();
                 let pile = self.mail_pile(&id);
                 let draft = self.in_role(&id, Role::Drafts);
                 Some(mail::SelectedMail { account, folder, flags, pile, draft })
@@ -14102,7 +14112,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }),
             // Issue #904: the actions for every marked mail, under how many they are.
             Some(Menu::SelectionContext) => {
-                let groups = mail::selection_groups(&self.selected_state(), &self.folders);
+                let state = self.selected_state();
+                let mut groups = mail::selection_groups(&state, &self.folders);
+                // A marked mail of no known home (review of #904): its folders are not known either.
+                if state.len() != self.selected_ids().len() {
+                    for group in &mut groups {
+                        group.items.retain(|item| !matches!(item.on_press, Some(Message::AskMoveSelected)));
+                    }
+                }
                 (!groups.is_empty()).then(|| {
                     let (spot, placement) = context_spot(self.context_point, &rows.row);
                     let count = self.selected_ids().len().to_string();
@@ -14193,6 +14210,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             // At the bell (the rail's "Mute…", task E14.3), else at the cursor's row. In the hub's
             // panel it opens to the right of the bell, like "Make task": aligned at its end the menu
             // ran out of the panel over the list.
+            // The marked mail's folders (issue #904) where their context menu stood: the cursor's row
+            // may be another one.
+            Some(Menu::Move) if self.move_selection.is_some() && self.context_point.is_some() => {
+                let (spot, placement) = context_spot(self.context_point, &rows.row);
+                Some(widgets::floating(&spot, placement, self.choice_menu(tr("Move to folder")), Message::CloseMenu))
+            }
             Some(Menu::Move) => {
                 Some(widgets::floating(&hide_at, dialog, self.choice_menu(tr("Move to folder")), Message::CloseMenu))
             }
@@ -26270,6 +26293,11 @@ mod tests {
         assert_eq!(overview.menu, Some(Menu::SelectionContext));
         assert_eq!(overview.selected_mail, mail[..2], "the marking stays");
         let _ = overview.view();
+        // Read from the menu, the menu then offers "Mark unread" (review of #904).
+        let _ = overview.update(Message::ContextAction(Box::new(Message::MarkSelectedMail(MailAction::Read(true)))));
+        assert!(overview.selected_state().iter().all(|held| held.flags.contains(&Flag::Seen)), "read");
+        let groups = mail::selection_groups(&overview.selected_state(), &overview.folders);
+        assert!(groups.iter().flat_map(|group| &group.items).any(|item| item.label == tr("Mark unread")));
         let entry = entry_of(&overview, &mail[2]);
         let _ = overview.update(Message::ContextEntry(entry.clone(), point));
         assert_eq!((overview.menu, overview.cursor.as_deref()), (Some(Menu::MailContext), Some(entry.as_str())));
@@ -26330,6 +26358,7 @@ mod tests {
         mark_mail(&mut app, &[ids[0].as_str(), ids[1].as_str()]);
         act(&mut app, Message::AskMoveSelected);
         assert_eq!(app.menu, Some(Menu::Move));
+        assert_eq!(app.context_point, Some(point), "the folders where the menu stood, not at the cursor");
         let choices = app.choices();
         assert!(!choices.is_empty(), "other folders");
         assert!(
