@@ -9368,6 +9368,23 @@ impl Core {
         }
     }
 
+    /// How much mail each category holds in the accounts `reach` allows (`only` one of them),
+    /// without the mail on "Reply later" or "Set aside": the category's list leaves it out
+    /// (decision 3 of E19), so counting it would offer a category whose view is empty (#873). When
+    /// the piles cannot be read, the count is taken as before and the failure goes to the log.
+    async fn category_counts(
+        &self,
+        reach: Reach<'_>,
+        only: Option<&str>,
+    ) -> Result<std::collections::BTreeMap<torro_mail::Category, (u32, u32)>, crate::mail::service::MailError> {
+        let accounts = self.mail.accounts_in(reach).await;
+        let piles = self.inbox.mail_piles(&accounts).unwrap_or_else(|err| {
+            eprintln!("torroworkplace: inbox: cannot read the piles to count the categories: {err}");
+            crate::inbox::MailPiles::default()
+        });
+        self.mail.unread_by_category(reach, only, &piles).await
+    }
+
     /// `inbox.list_categories` (task E12.4): the whole catalogue with its words, and how much
     /// mail each category holds in the accounts `reach` allows – all of it, and how much of that
     /// is unread. A key without mail rights reaches no account and sees 0 everywhere – never a
@@ -9384,7 +9401,7 @@ impl Core {
                 message: trf("There is no mail account {id}.", &[("id", wanted)]),
             };
         }
-        let counts = match self.mail.unread_by_category(reach, account.as_deref()).await {
+        let counts = match self.category_counts(reach, account.as_deref()).await {
             Ok(counts) => counts,
             Err(err) => return err.response(),
         };
@@ -9410,7 +9427,7 @@ impl Core {
     /// One category as `inbox.create_category` and `inbox.update_category` answer it (task E15.2):
     /// with its counts in the accounts `reach` allows, like `inbox.list_categories`.
     async fn category_answer(&self, def: &torro_mail::CategoryDef, reach: Reach<'_>) -> Response {
-        let counts = self.mail.unread_by_category(reach, None).await.unwrap_or_default();
+        let counts = self.category_counts(reach, None).await.unwrap_or_default();
         let (unread, messages) = counts.get(&def.category).copied().unwrap_or((0, 0));
         let group = self.inbox.category_groups().ok().and_then(|groups| {
             groups.iter().find(|group| group.group == def.group).map(torro_ipc::inbox::CategoryGroupInfo::of)
@@ -27402,7 +27419,8 @@ done"#,
             panic!("a page")
         };
         let id = messages.first().map(|message| message.id.clone()).expect("the invoice");
-        let filed = Request::SetItemCategory { id, category: torro_mail::Category::Invoice, remember: false };
+        let filed =
+            Request::SetItemCategory { id: id.clone(), category: torro_mail::Category::Invoice, remember: false };
         assert!(matches!(ask(&core, Some(&app_key), filed).await, Response::ItemCategory { .. }));
 
         let counted = |answer: Response| -> (u32, u32) {
@@ -27417,6 +27435,21 @@ done"#,
             counted(ask(&core, Some(&app_key), Request::ListCategories { account: None }).await),
             (1, 1),
             "the app key counts the invoice"
+        );
+
+        // Mail on a pile is not counted, as the category's list leaves it out (#873).
+        let put = |pile| Request::SetMailPile { ids: vec![id.clone()], pile, since: None };
+        assert_eq!(ask(&core, Some(&app_key), put(Some(torro_mail::MailPile::SetAside))).await, Response::Ok);
+        assert_eq!(
+            counted(ask(&core, Some(&app_key), Request::ListCategories { account: None }).await),
+            (0, 0),
+            "the invoice lies on a pile"
+        );
+        assert_eq!(ask(&core, Some(&app_key), put(None)).await, Response::Ok);
+        assert_eq!(
+            counted(ask(&core, Some(&app_key), Request::ListCategories { account: None }).await),
+            (1, 1),
+            "taken off the pile it counts again"
         );
 
         // The inbox without mail: every account in the selection, and still no number.

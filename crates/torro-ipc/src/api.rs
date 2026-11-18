@@ -5076,7 +5076,8 @@ static LIST_CATEGORIES: Command = Command {
                   monochrome `icon` in the group's colour, \
                   how much mail it holds (`messages`) and how much of that is unread. Counted in the inbox folder \
                   only, so mail thrown away, marked as spam \
-                  or sent by the person is counted nowhere. The counts cover only mail accounts this key may read \
+                  or sent by the person is counted nowhere, and mail on the piles Reply later and Set aside \
+                  is not counted either, as the category's list leaves it out. The counts cover only mail accounts this key may read \
                   (read access to mail and the account), so a key without them sees 0 everywhere, never a number \
                   about a mailbox it cannot see; `account` (`mail:<address>`) counts in one account and is \
                   `not-found` when it is not there or out of reach. Each one also says what it means (`description`, \

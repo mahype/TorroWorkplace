@@ -7924,6 +7924,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Nothing to reply to later.", "Nichts später zu beantworten."),
     ("Press W on a mail to answer it later.", "Drücke W an einer Mail, um sie später zu beantworten."),
     ("Nothing set aside.", "Nichts beiseitegelegt."),
+    ("Nothing left here.", "Nichts mehr hier."),
+    ("New mail of this category shows up here.", "Neue Mails dieser Kategorie erscheinen hier."),
     ("Press B on a mail to set it aside.", "Drücke B an einer Mail, um sie beiseitezulegen."),
     ("No follow-ups.", "Keine Wiedervorlagen."),
     (

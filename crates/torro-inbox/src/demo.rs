@@ -1563,6 +1563,7 @@ impl DemoSource {
             .map(|category| {
                 let of_category = data.mail.iter().filter(|m| {
                     account.is_none_or(|account| m.summary.account == account)
+                        && m.summary.pile.is_none()
                         && m.summary.category.is_some_and(|held| held.category == category)
                 });
                 let (all, unread) = of_category.fold((0, 0), |(all, unread), m| {
