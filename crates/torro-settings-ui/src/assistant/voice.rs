@@ -155,6 +155,8 @@ pub enum Message {
     Enabled(bool),
     /// "Speak answers" on or off.
     SpeakAnswers(bool),
+    /// "Say what it does while it works" on or off (issue #837).
+    Announce(bool),
     /// An entry of the dropdown "Speech recognition" (issue #749).
     Recognizer(Recognizer),
     /// An entry of the dropdown "Language": `"auto"` or a code of Whisper's (issue #762).
@@ -225,6 +227,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             set(SettingKey::VoiceEnabled, serde_json::Value::Bool(on))
         }
         Message::SpeakAnswers(speak) => set(SettingKey::SpeakAnswers, serde_json::Value::Bool(speak)),
+        Message::Announce(on) => set(SettingKey::VoiceAnnouncements, serde_json::Value::Bool(on)),
         Message::Recognizer(recognizer) => {
             state.menus.close();
             set(SettingKey::SpeechRecognizer, serde_json::json!(recognizer))
@@ -797,6 +800,19 @@ fn voice_group<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Elemen
         Some(tr("After “Hey Torro”, with the voice under Read aloud").to_string()),
         speak,
     );
+    // Issue #837: the note is spoken, so it only switches while answers are.
+    let announce = toggler(settings.announce)
+        .size(style::CHECK_SIZE)
+        .style(style::toggler)
+        .on_toggle_maybe(settings.speak_answers.then_some(Message::Announce));
+    let announce = setting_row(
+        None,
+        tr("Say what it does while it works"),
+        Some(
+            tr("A short note like “One moment, I'm checking your calendar” when the answer takes a while").to_string(),
+        ),
+        announce,
+    );
     let test_button = match state.testing {
         true => widgets::busy_button(tr("Listening…"), style::button::secondary),
         false => widgets::text_button(
@@ -813,7 +829,8 @@ fn voice_group<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Elemen
     let recognizer = marked(recognizer_name(settings.recognizer), settings.recognizer == Recognizer::Whisper);
     let recognizer = state.menus.button(Choice::Recognizer, recognizer, Message::Menus);
     let recognizer = setting_row(None, tr("Speech recognition"), None, recognizer);
-    let mut rows = vec![on, wake, speak, new_after_row(settings, class), recognizer, language_row(state, data)];
+    let mut rows =
+        vec![on, wake, speak, announce, new_after_row(settings, class), recognizer, language_row(state, data)];
     rows.extend(microphone_row(state, data));
     rows.push(test);
     widgets::group(tr("Conversation"), rows, Some(footer.to_string()))
@@ -1233,6 +1250,10 @@ mod tests {
         assert_eq!(
             sent(update(&mut state, Message::SpeakAnswers(false), &data)),
             (SettingKey::SpeakAnswers, serde_json::json!(false))
+        );
+        assert_eq!(
+            sent(update(&mut state, Message::Announce(false), &data)),
+            (SettingKey::VoiceAnnouncements, serde_json::json!(false))
         );
         assert_eq!(
             sent(update(&mut state, Message::Microphone(Some("USB microphone".into())), &data)),
