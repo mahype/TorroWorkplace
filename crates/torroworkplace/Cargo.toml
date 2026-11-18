@@ -70,6 +70,8 @@ webbrowser.workspace = true
 rfd.workspace = true
 # The PDF tool (task WZ.3): Markdown read and set as pages.
 printpdf.workspace = true
+# The text of PDF attachments of a mail, for the assistant (issue #893).
+lopdf.workspace = true
 # A mail saved as PDF or picture (issue #501): drawn with the reader's HTML view, the picture written
 # band by band as PNG.
 torro-htmlview.workspace = true

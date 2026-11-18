@@ -11495,6 +11495,7 @@ dependencies = [
  "jsonc-parser",
  "keyring",
  "ksni",
+ "lopdf",
  "mail-auth",
  "mail-parser",
  "notify-rust",

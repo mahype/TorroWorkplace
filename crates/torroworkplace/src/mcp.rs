@@ -2661,6 +2661,12 @@ mod tests {
         assert_eq!(call("mail_get_thread", json!({"id": "m:1"})), Ok(Request::GetMailThread { id: "m:1".into() }));
         let attachment = call("mail_get_attachment", json!({"id": "m:1", "attachment": "2"}));
         assert_eq!(attachment, Ok(Request::GetMailAttachment { id: "m:1".into(), attachment: "2".into() }));
+        // Issue #893: an attachment's text, page by page.
+        let read = call("mail_read_attachment", json!({"id": "m:1", "attachment": "2", "from_line": 41}));
+        assert_eq!(
+            read,
+            Ok(Request::ReadMailAttachment { id: "m:1".into(), attachment: "2".into(), from_line: Some(41) })
+        );
         // Issue #453: the logo is one message's, read from the core's copy only.
         assert_eq!(call("mail_get_sender_logo", json!({"id": "m:1"})), Ok(Request::GetSenderLogo { id: "m:1".into() }));
         // Issue #781: what was saved of one message, read only.
@@ -2675,6 +2681,7 @@ mod tests {
             "mail_get_message",
             "mail_get_thread",
             "mail_get_attachment",
+            "mail_read_attachment",
             "mail_overview",
             "mail_get_draft",
             "mail_list_save_history",

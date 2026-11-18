@@ -79,13 +79,14 @@ use torro_inbox::SourceRef;
 use torro_ipc::Response;
 use torro_ipc::api::{Access, Area};
 use torro_ipc::mail::{
-    IncompleteReason, MailAccountStats, MailCacheMode, MailHighlight, MailSort, MailSource, PileFilter,
+    AttachmentText, IncompleteReason, MailAccountStats, MailCacheMode, MailHighlight, MailSort, MailSource, PileFilter,
 };
 use torro_ipc::{Request, StatsRange, mail::limit_refusal};
 use torro_mail::{Invite, MailAddress, MailPile, Message, MessageSummary, Order};
 use torro_mail_imap::imap::Session;
 use torro_mail_imap::mime::{self, MimeError, ReadMessage};
 
+use super::attachment_text;
 use super::fold::{self, Needle};
 use super::logos::SenderLogos;
 use super::overview::{self, AccountRows};
@@ -97,6 +98,7 @@ use super::store::{Body, FolderRef, MessageRef, SearchQuery};
 use super::{AttachmentCache, MailStoreError};
 use crate::inbox::{Inbox, MailLater, MailPiles};
 use crate::pim::Reach;
+use crate::tools::contents::page_of;
 
 /// The largest attachment `mail.get_attachment` hands out: 50 MiB.
 pub const ATTACHMENT_MAX_BYTES: usize = 50 * 1024 * 1024;
@@ -130,7 +132,7 @@ pub async fn answer_counting(mail: &MailService, inbox: &Inbox, reach: Reach<'_>
 
 /// Answers a reading mail request for `reach` (`mail.list_folders`, `mail.account_stats`, `mail.sync_status`,
 /// `mail.overview`, `mail.search_messages`, `mail.index_status`, `mail.get_message`,
-/// `mail.get_thread`, `mail.get_attachment`). The limits are checked first
+/// `mail.get_thread`, `mail.get_attachment`, `mail.read_attachment`). The limits are checked first
 /// ([`limit_refusal`]), also for the app key. Any other request is `unsupported`. `inbox` says
 /// which mail waits in "Later" for a search (task E9.1); nothing here changes it.
 pub async fn answer(mail: &MailService, inbox: &Inbox, reach: Reach<'_>, request: Request) -> Response {
@@ -186,6 +188,9 @@ pub async fn answer(mail: &MailService, inbox: &Inbox, reach: Reach<'_>, request
         }
         Request::GetMailThread { id } => get_thread(mail, reach, &id).await,
         Request::GetMailAttachment { id, attachment } => get_attachment(mail, reach, &id, &attachment).await,
+        Request::ReadMailAttachment { id, attachment, from_line } => {
+            read_attachment(mail, reach, &id, &attachment, from_line).await
+        }
         Request::GetSenderLogo { id } => get_sender_logo(mail, reach, &id).await,
         other => {
             let message = format!("{} is not a reading mail command", other.operation().name());
@@ -1257,7 +1262,7 @@ fn mailto(params: &[(String, String)], value: &str) -> Option<MailAddress> {
     Some(MailAddress { name: name.filter(|name| !name.is_empty()), address: address.to_string() })
 }
 
-// ----- mail.get_attachment -----
+// ----- mail.get_attachment, mail.read_attachment -----
 
 /// `mail.get_attachment`: fetches the message, takes the attachment `part` out of it and stores
 /// it in the managed folder under its cleaned name. `not-found` for a part that is no attachment,
@@ -1266,23 +1271,9 @@ fn mailto(params: &[(String, String)], value: &str) -> Option<MailAddress> {
 async fn get_attachment(mail: &MailService, reach: Reach<'_>, id: &str, part: &str) -> Answer<Response> {
     let stores = mail.stores(reach).await;
     let located = locate(&stores, id).await?;
-    let message = stored_message(&located).await?;
-    if message.text.is_some() {
-        match message.attachments.iter().find(|attachment| attachment.part == part) {
-            None => return Err(no_attachment()),
-            Some(known) if known.size > ATTACHMENT_MAX_BYTES as u64 => return Err(too_big()),
-            Some(_) => {}
-        }
-    }
+    known_attachment(&located, part).await?;
     let cache = mail.attachment_cache().ok_or_else(no_attachment_folder)?;
-    let raw = fetch_raw(mail, &located).await?;
-    let attachment = mime::attachment(&raw, part).map_err(|err| match err {
-        MimeError::NoSuchPart => no_attachment(),
-        _ => unreadable(),
-    })?;
-    if attachment.bytes.len() > ATTACHMENT_MAX_BYTES {
-        return Err(too_big());
-    }
+    let attachment = fetch_attachment(mail, &located, part).await?;
     let name = attachment.filename.clone().unwrap_or_default();
     let bytes = attachment.bytes;
     let size = bytes.len() as u64;
@@ -1305,6 +1296,81 @@ async fn get_attachment(mail: &MailService, reach: Reach<'_>, id: &str, part: &s
         path: path.to_string_lossy().into_owned(),
         size,
         content_type: attachment.content_type,
+    })
+}
+
+/// Refuses the attachment `part` of the message at `located` before anything is fetched, when the store knows the
+/// message's parts: `not-found` for a part that is no attachment, `error` for one over [`ATTACHMENT_MAX_BYTES`].
+async fn known_attachment(located: &Located, part: &str) -> Answer<()> {
+    let message = stored_message(located).await?;
+    if message.text.is_some() {
+        match message.attachments.iter().find(|attachment| attachment.part == part) {
+            None => return Err(no_attachment()),
+            Some(known) if known.size > ATTACHMENT_MAX_BYTES as u64 => return Err(too_big()),
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// The attachment `part` of the message at `located`, fetched from the server: `not-found` for a part that is no
+/// attachment, `error` for one over [`ATTACHMENT_MAX_BYTES`] or a message that cannot be read.
+async fn fetch_attachment(mail: &MailService, located: &Located, part: &str) -> Answer<mime::Attachment> {
+    let raw = fetch_raw(mail, located).await?;
+    let attachment = mime::attachment(&raw, part).map_err(|err| match err {
+        MimeError::NoSuchPart => no_attachment(),
+        _ => unreadable(),
+    })?;
+    if attachment.bytes.len() > ATTACHMENT_MAX_BYTES {
+        return Err(too_big());
+    }
+    Ok(attachment)
+}
+
+/// `mail.read_attachment` (issue #893): fetches the attachment `part` as `mail.get_attachment` does, takes its text
+/// out ([`attachment_text::extract`], on a blocking thread, as `lopdf` reads a file from outside) and answers the page
+/// from `from_line` as `tools.read_file` cuts it. Writes no file; every page fetches and reads anew. `unsupported`
+/// for a kind of file without text, `error` for a damaged one or one the PDF reader gave up on.
+async fn read_attachment(
+    mail: &MailService,
+    reach: Reach<'_>,
+    id: &str,
+    part: &str,
+    from_line: Option<u32>,
+) -> Answer<Response> {
+    let stores = mail.stores(reach).await;
+    let located = locate(&stores, id).await?;
+    known_attachment(&located, part).await?;
+    let attachment = fetch_attachment(mail, &located, part).await?;
+    let mime::Attachment { filename, content_type, bytes } = attachment;
+    let (kind, name) = (content_type.clone(), filename.clone());
+    let extracted = tokio::task::spawn_blocking(move || attachment_text::extract(&kind, name.as_deref(), &bytes))
+        .await
+        .map_err(|_| unreadable())?
+        .map_err(|err| match err {
+            attachment_text::Unreadable::Unsupported(message) => {
+                Box::new(Response::Error { code: "unsupported".into(), message })
+            }
+            attachment_text::Unreadable::Broken => unreadable(),
+        })?;
+    let from_line = from_line.unwrap_or(1).max(1);
+    let (text, total_lines, next_line, cut_line) = page_of(&extracted.text, from_line);
+    Ok(Response::MailAttachmentText {
+        text: AttachmentText {
+            part: part.to_string(),
+            name: filename,
+            content_type,
+            kind: extracted.kind,
+            pages: extracted.pages,
+            text,
+            from_line,
+            total_lines,
+            more: next_line.is_some(),
+            next_line,
+            cut_line,
+            cut: extracted.cut,
+            untrusted: true,
+        },
     })
 }
 
@@ -1357,6 +1423,7 @@ pub(crate) mod tests {
     use chrono::{Duration, Utc};
     use torro_ipc::StatsRange;
     use torro_ipc::api::{RightsTemplate, Selection};
+    use torro_ipc::mail::AttachmentKind;
     use torro_mail::{Flag, Folder, Role};
 
     use super::*;
@@ -1780,6 +1847,7 @@ pub(crate) mod tests {
             get_html(&id),
             Request::GetMailThread { id: id.clone() },
             Request::GetMailAttachment { id: id.clone(), attachment: "2".into() },
+            Request::ReadMailAttachment { id: id.clone(), attachment: "2".into(), from_line: None },
             in_folder,
         ] {
             assert_eq!(code(&answer(&service, reach, request).await), "not-found");
@@ -2297,6 +2365,74 @@ pub(crate) mod tests {
 
         let missing = Request::GetMailAttachment { id, attachment: "9".into() };
         assert_eq!(code(&answer(&service, Reach::Suite, missing).await), "not-found");
+    }
+
+    /// A mail with a long text file, a PDF invoice and a picture as attachments (issue #893).
+    fn mail_with_files() -> String {
+        let date = Utc::now().to_rfc2822();
+        let fixture = |name: &str| {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/attachments").join(name);
+            base64::engine::general_purpose::STANDARD.encode(std::fs::read(path).expect("fixture"))
+        };
+        let lines: String = (1..=400).map(|n| format!("line {n} {}\r\n", "x".repeat(40))).collect();
+        format!(
+            "From: Bernd <bernd@example.com>\r\nTo: anna@example.org\r\nSubject: Files\r\nDate: {date}\r\n\
+             Message-ID: <files@example.org>\r\nMIME-Version: 1.0\r\n\
+             Content-Type: multipart/mixed; boundary=\"b1\"\r\n\r\n--b1\r\n\
+             Content-Type: text/plain; charset=utf-8\r\n\r\nSee attached.\r\n--b1\r\n\
+             Content-Type: text/plain; name=\"notes.txt\"\r\n\
+             Content-Disposition: attachment; filename=\"notes.txt\"\r\n\r\n{lines}--b1\r\n\
+             Content-Type: application/pdf; name=\"invoice.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\
+             Content-Disposition: attachment; filename=\"invoice.pdf\"\r\n\r\n{pdf}\r\n--b1\r\n\
+             Content-Type: image/png; name=\"pixel.png\"\r\nContent-Transfer-Encoding: base64\r\n\
+             Content-Disposition: attachment; filename=\"pixel.png\"\r\n\r\n{png}\r\n--b1--\r\n",
+            pdf = fixture("invoice.pdf"),
+            png = fixture("pixel.png"),
+        )
+    }
+
+    /// Issue #893: `mail.read_attachment` reads a text file page by page and a PDF's text, marks both as data from
+    /// outside, refuses a picture as `unsupported` and writes no file.
+    #[tokio::test]
+    async fn an_attachment_is_read_as_text_in_pages_and_a_picture_is_refused() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &mail_with_files(), &[]);
+        let service = synced(dir.path(), &server).await;
+        let id = id_of(&service, "Files").await;
+        let listed = message(answer(&service, Reach::Suite, get(&id, false)).await);
+        let part = |name: &str| {
+            let found = listed.attachments.iter().find(|a| a.filename.as_deref() == Some(name));
+            found.expect("the attachment").part.clone()
+        };
+        let read = |attachment: String, from_line: Option<u32>| {
+            let request = Request::ReadMailAttachment { id: id.clone(), attachment, from_line };
+            let service = &service;
+            async move {
+                match answer(service, Reach::Suite, request).await {
+                    Response::MailAttachmentText { text } => text,
+                    other => panic!("a text, got {other:?}"),
+                }
+            }
+        };
+
+        let first = read(part("notes.txt"), None).await;
+        assert_eq!((first.kind, first.from_line, first.total_lines), (AttachmentKind::Text, 1, 400));
+        assert!(first.untrusted && first.more && first.text.starts_with("line 1 "));
+        let next = first.next_line.expect("more follows");
+        let second = read(part("notes.txt"), Some(next)).await;
+        assert!(second.text.starts_with(&format!("line {next} ")), "{}", second.text);
+
+        let pdf = read(part("invoice.pdf"), None).await;
+        assert_eq!((pdf.kind, pdf.pages, pdf.name.as_deref()), (AttachmentKind::Pdf, Some(2), Some("invoice.pdf")));
+        assert!(pdf.text.contains("Total 119.00 EUR") && pdf.untrusted, "{}", pdf.text);
+
+        let picture = Request::ReadMailAttachment { id: id.clone(), attachment: part("pixel.png"), from_line: None };
+        assert_eq!(code(&answer(&service, Reach::Suite, picture).await), "unsupported");
+        let missing = Request::ReadMailAttachment { id, attachment: "9".into(), from_line: None };
+        assert_eq!(code(&answer(&service, Reach::Suite, missing).await), "not-found");
+        let managed = service.attachment_cache().expect("a folder").dir().to_path_buf();
+        assert!(std::fs::read_dir(&managed).map(|mut entries| entries.next().is_none()).unwrap_or(true), "no file");
     }
 
     /// Issue #136: old texts are put into the index in the background and found locally, offline
