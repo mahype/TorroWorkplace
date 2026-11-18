@@ -99,7 +99,7 @@ pub struct Anchors {
     /// "…" / "Hide": the menu "Hide from Notification Hub" opens here (task E3.10); in the notifications window
     /// and for mail the bell, where the bell's menu opens (task E8.6b, issue #123).
     pub hide: Anchor,
-    /// "Category…" of a mail entry (task E12.8): the list of categories and its question open here.
+    /// "Category ▸" of a mail entry (task E12.8): the list of categories and its question open here.
     pub category: Anchor,
     /// The triangle of the attachment whose menu is open (task M12.6): only that chip or row
     /// registers it (`mail::Reading::file_menu`), its menu opens here.
@@ -171,7 +171,7 @@ impl Anchors {
 
     /// The same anchors with the items' anchors falling back to the icon of their group in the
     /// mail's action rail (task E14.3, [`RailAnchors`]): Later and "Move to …" to File, Task, Event
-    /// and "Category…" to Torro, the bell to Mute. Expanded, an item's row registers its own anchor
+    /// and "Category ▸" to Torro, the bell to Mute. Expanded, an item's row registers its own anchor
     /// and its menu hangs there; collapsed – or once the open group closed on the click – the row
     /// is not on screen and the menu hangs at the group's icon. The rail is fixed beside the mail,
     /// so that icon is always in view. Where no rail is drawn (the hub, the App Feed) the fallbacks
@@ -673,7 +673,7 @@ mod tests {
         assert!(at(Message::Act(id(), Command::Hide), &anchors.hide));
         assert!(at(Message::AskHide(id()), &anchors.hide));
         assert!(at(Message::AskMuteMail(id()), &anchors.hide));
-        // Task E14.3: "Category…" in the mail's action rail.
+        // Task E14.3: "Category ▸" in the mail's action rail.
         assert!(at(Message::AskCategory(id()), &anchors.category));
         assert!(anchors.of(&Message::Act(id(), Command::Done)).is_none(), "Done opens no menu");
         let actions = vec![

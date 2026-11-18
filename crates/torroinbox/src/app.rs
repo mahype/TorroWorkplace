@@ -32,7 +32,7 @@
 //! later" or "Set aside", or take it off ([`App::pile_mail`], `inbox.set_mail_pile`); it leaves the
 //! lists that leave mail on a pile out ([`View::leaves_out_piles`]) with a hint and its undo. The
 //! piles are views of their own ([`View::ReplyLater`], [`View::SetAside`], `mail_in_pile`).
-//! "Follow up…" (`s`) is the snooze menu in the mail window's words, on any mail – one without an entry
+//! "Follow up ▸" (`s`) is the snooze menu in the mail window's words, on any mail – one without an entry
 //! by its own id ([`App::mail_subject`]) – with "Only if no reply" ([`App::unless_reply`]) and
 //! "Cancel follow-up"; the hub and the App Feed keep "Later".
 //!
@@ -2937,7 +2937,7 @@ const CATEGORIZATION_SECTION: &str = settings_mail::CATEGORIZATION_SECTION;
 /// The mail window's Settings › Statistics (issue #485), which the window draws itself.
 const STATISTICS_SECTION: &str = settings_mail::STATISTICS_SECTION;
 
-/// The mail window's section with the save targets (task M12.7), where "Manage save targets…" leads
+/// The mail window's section with the save targets (task M12.7), where "Manage save targets" leads
 /// (task M12.6).
 const ATTACHMENTS_SECTION: &str = settings_mail::ATTACHMENTS_SECTION;
 
@@ -3597,7 +3597,7 @@ pub enum Message {
     AskLane(String),
     /// "Category ▸" on a mail (task E12.8): opens the list of categories.
     AskCategory(String),
-    /// "Category…" on a message `m:…` without an entry (issue #500): the list of categories for it.
+    /// "Category ▸" on a message `m:…` without an entry (issue #500): the list of categories for it.
     AskMailCategory(String),
     /// A click on a group of "Categories" (task E12.8, issue #300): a folded group opens and is
     /// shown, an open group not shown is shown, the open group shown folds
@@ -4007,7 +4007,7 @@ pub enum Message {
     ShowSavedFolder(std::path::PathBuf),
     /// The file manager was asked to show that folder.
     FolderShown(Result<(), String>),
-    /// "Manage save targets…" in an attachment's menu: Settings › Attachments of the mail window.
+    /// "Manage save targets" in an attachment's menu: Settings › Attachments of the mail window.
     ManageSaveTargets,
     /// A web address under a mail's or an entry's text ("Links") was clicked.
     OpenMailLink(String),
@@ -5320,7 +5320,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let shape = self.rail_shape();
         let opened = self.panel_open();
         // The entries of the context menu while a submenu hangs at one of them (issue #906).
-        let context_root = (!self.context_sub.is_empty()).then(|| self.context_root()).flatten();
+        let context_root = self.context_open().then(|| self.context_root()).flatten();
         let letter = matches!(message, Message::LetterLoaded(..));
         let task = self.handle(message);
         // Whatever closed the context menu or opened another menu in its place closed its submenus
@@ -5331,12 +5331,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
         // The context menu changed under its submenus – the mail came in with its flags, a pile
         // changed –: their entries may stand elsewhere now, so they close.
-        if context_root.is_some()
+        if let Some(before) = context_root
             && self.context_open()
-            && !self.context_sub.is_empty()
-            && self.context_root() != context_root
+            && self.context_root().is_none_or(|after| context_moved(&before, &after))
         {
-            self.close_context_sub(1);
+            self.context_sub.clear();
+            self.context_cascade.reset();
+            self.menu = Some(Menu::MailContext);
         }
         let task = match letter {
             true => Task::batch([task, self.open_demo_sub()]),
@@ -5805,7 +5806,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::Key(_) if self.dropdown_open() || self.workflow_documents.menu_open() => {}
             // The context menu and its submenus walk with the arrows and Enter (issue #906); the
             // digits of a submenu's choices still pick them.
-            Message::Key(key) if self.context_open() && cascade_key(key).is_some() => {
+            // In "Mute ▸" the arrows keep changing "For" and "What happens", as in the bell's menu.
+            Message::Key(key) if self.context_open() && self.menu != Some(Menu::Mute) && cascade_key(key).is_some() => {
                 if let Some(key) = cascade_key(key) {
                     return self.context_cascade_event(CascadeEvent::Key(key));
                 }
@@ -13513,6 +13515,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Menu::SaveMailFormat => self.save_format_submenu(),
             Menu::SaveMail(format) => self.export_menu(format),
             Menu::SaveAll { .. } => self.file_menu(None),
+            Menu::MailDisplay => Some(self.display_card()),
             _ => None,
         }
     }
@@ -13529,6 +13532,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 | Menu::SaveMailFormat
                 | Menu::SaveMail(_)
                 | Menu::SaveAll { .. }
+                | Menu::MailDisplay
         )
     }
 
@@ -13576,10 +13580,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         shape
     }
 
-    /// The words of the context menu's entries, top to bottom, for noticing that it changed.
-    fn context_root(&self) -> Option<Vec<String>> {
+    /// The words of the context menu's entries, top to bottom, and how many entries each open
+    /// submenu has, for noticing that it changed under the pointer or the keys: a mail coming in adds
+    /// entries above and formats to "Save mail as ▸" (review of #906).
+    fn context_root(&self) -> Option<ContextShape> {
         let groups = self.context_groups(self.class(), &detail::Anchors::default())?;
-        Some(groups.iter().flat_map(|group| &group.items).map(|item| item.label.to_string()).collect())
+        let words = groups.iter().flat_map(|group| &group.items).map(|item| item.label.to_string()).collect();
+        let subs = self.context_sub.iter().map(|menu| (*menu, self.context_entries(*menu).len())).collect();
+        Some((words, subs))
     }
 
     /// The submenu a start state opens beside the context menu (`--open context-category`,
@@ -17309,6 +17317,27 @@ fn context_spot(point: Option<Point>, row: &Anchor) -> (Anchor, Placement) {
         Some(point) => (row.area(Rectangle::new(point, Size::ZERO)), Placement::At),
         None => (row.clone(), Placement::Below(Align::Start)),
     }
+}
+
+/// The words of the context menu's entries and each open submenu with its number of entries
+/// ([`App::context_root`]).
+type ContextShape = (Vec<String>, Vec<(Menu, usize)>);
+
+/// Whether the context menu changed under its cascade between `before` and `after`: other entries,
+/// or a submenu that holds an open one ("Save mail as ▸" with a format open) with another number of
+/// entries – the open path would point at another entry then. A submenu that opened or closed is no
+/// change, nor are the choices of the deepest coming in (the ways to mute, the save targets): they
+/// are what it waits for (review of #906).
+fn context_moved(before: &ContextShape, after: &ContextShape) -> bool {
+    let holds = |shape: &ContextShape| shape.1.len().saturating_sub(1);
+    let parents = holds(before).min(holds(after));
+    before.0 != after.0
+        || before
+            .1
+            .iter()
+            .zip(&after.1)
+            .take(parents)
+            .any(|((menu, count), (still, now))| menu == still && count != now)
 }
 
 /// What `key` does in the context menu and its submenus (issue #906): the arrows and Enter walk
@@ -22098,6 +22127,38 @@ mod tests {
         // A click next to the menus closes every level.
         let _ = app.update(Message::CloseMenu);
         assert_eq!((app.menu, app.context_sub.len()), (None, 0));
+
+        // "Mute ▸": the arrows keep changing "For" as in the bell's menu (review of #906).
+        let _ = app.update(Message::ContextMail("m:p3".into(), Point::new(40.0, 20.0)));
+        let _ = app.update(Message::ContextCascade(CascadeEvent::Press(vec![at(tr("Mute"))])));
+        assert_eq!(app.menu, Some(Menu::Mute));
+        let span = app.mute_for;
+        let _ = app.update(Message::Key(Key::Left));
+        let stepped = app.mute_for != span;
+        let _ = app.update(Message::Key(Key::Right));
+        assert!(stepped || app.mute_for != span, "← and → step the span");
+        assert_eq!(app.menu, Some(Menu::Mute), "and the submenu stays");
+        // "Display ▸" opens its card beside the menu instead of at the rail.
+        let _ = app.update(Message::ContextCascade(CascadeEvent::Press(vec![at(trc("mail", "Display"))])));
+        assert_eq!((app.menu, app.context_sub.clone()), (Some(Menu::MailDisplay), vec![Menu::MailDisplay]));
+        let _ = app.view();
+    }
+
+    /// Review of #906: the context menu changing under its cascade – the mail coming in with more
+    /// formats under "Save mail as ▸" while one is open – closes it; the choices of the deepest
+    /// submenu coming in do not.
+    #[test]
+    fn the_cascade_closes_when_the_menu_moves_under_it() {
+        let words = vec!["Reply".to_owned(), "Save mail as".to_owned()];
+        let shape = |subs: Vec<(Menu, usize)>| (words.clone(), subs);
+        let eml = shape(vec![(Menu::SaveMailFormat, 1), (Menu::SaveMail(ExportFormat::Eml), 3)]);
+        let loaded = shape(vec![(Menu::SaveMailFormat, 3), (Menu::SaveMail(ExportFormat::Eml), 3)]);
+        assert!(context_moved(&eml, &loaded), "the formats moved under the open one");
+        let targets = shape(vec![(Menu::SaveMailFormat, 1), (Menu::SaveMail(ExportFormat::Eml), 6)]);
+        assert!(!context_moved(&eml, &targets), "the targets came in");
+        assert!(!context_moved(&shape(vec![]), &shape(vec![(Menu::Mute, 0)])), "a submenu opened");
+        let other = (vec!["Reply".to_owned(), "Flag".to_owned(), "Save mail as".to_owned()], vec![]);
+        assert!(context_moved(&shape(vec![]), &other), "entries came in above");
     }
 
     /// Issue #501: the menu of "Save as PDF" offers Downloads, Save as… and the save targets with where
@@ -25016,7 +25077,7 @@ mod tests {
     }
 
     /// Decision of #315: `s` follows up no mail in the archive, the trash or spam – the rail offers no
-    /// "Follow up…" there –, but mail in the inbox and in Sent.
+    /// "Follow up ▸" there –, but mail in the inbox and in Sent.
     #[test]
     fn s_follows_up_no_archived_deleted_or_spam_mail() {
         let mut app = mail_window(Density::Compact, &[]);
@@ -26416,7 +26477,7 @@ mod tests {
     /// again.
     #[test]
     fn a_mail_without_an_entry_is_filed_by_hand_from_its_context_menu() {
-        // The context menu of the first mail of "All" (issue #497): "Category…" for any mail there.
+        // The context menu of the first mail of "All" (issue #497): "Category ▸" for any mail there.
         let mut app = mail_window(Density::Compact, &["--open", "mail-context"]);
         assert_eq!((app.menu, app.menu_at), (Some(Menu::MailContext), MenuAt::Row));
         let id = app.cursor.clone().expect("a mail at the cursor");
@@ -27681,7 +27742,7 @@ mod tests {
         assert!(matches!(app.filter_from_search(), Some(Message::CreateFilter { account: None, .. })));
     }
 
-    /// Task M12.7: "Manage save targets…" opens Settings › Attachments; the editor of a target lies
+    /// Task M12.7: "Manage save targets" opens Settings › Attachments; the editor of a target lies
     /// over the window as a dialog, and Escape closes it before it closes the settings.
     #[test]
     fn the_save_targets_editor_is_a_dialog_over_the_window() {

@@ -41,7 +41,7 @@
 //! - Saving attachments (task M12.6, issues #290, #572): each attachment is a full-width row
 //!   whose name does what the setting `mail_attachments.click` says ([`click_act`], [`FileAct`]) and
 //!   whose triangle opens its menu ([`file_menu`]: Open, Save to Downloads, Save as…, the save targets
-//!   with where the file would go, "Suggested", "Click", "Manage save targets…"); "Save all ▾" from two
+//!   with where the file would go, "Suggested", "Click", "Manage save targets"); "Save all ▾" from two
 //!   on, and "Save attachments (n)" in the rail's File ([`all_act`]). Where a file would go comes from
 //!   the core (`mail.list_save_targets`, [`MailSource::save_targets`]), saving is
 //!   `mail.save_attachments` ([`MailSource::save_attachments`]); the window adds only the system's
@@ -4415,6 +4415,10 @@ pub fn context_groups<'a>(groups: Vec<RailGroup<'a, Message>>, id: &str) -> Vec<
     groups
         .into_iter()
         .map(|mut group| {
+            // "Display" holds its choices in a card: beside the context menu as a submenu (issue #906).
+            if group.icon == Icon::Contrast {
+                group.items = group.items.into_iter().map(RailItem::opens_menu).collect();
+            }
             let format = |item: &RailItem<'a, Message>| matches!(item.icon, Icon::FileType | Icon::Image | Icon::Mail);
             let Some(at) = group.items.iter().position(format).filter(|_| group.icon == Icon::Save) else {
                 return group;
@@ -5756,7 +5760,7 @@ pub struct FileMenu<'a> {
 ///    order, the others in the person's; for one attachment with where it would go as detail
 ///    ([`place_words`]) and "Suggested" – with the sparkles where it rests on a guessed category –,
 ///    for all of them "by each file's date";
-/// 3. "Manage save targets…" ([`Message::ManageSaveTargets`]).
+/// 3. "Manage save targets" ([`Message::ManageSaveTargets`]).
 ///
 /// The entry a click on the attachment's name does ([`click_act`]) carries "Click"; "Save all" has
 /// none. Every entry sends [`Message::FileAct`] for the attachment, or for all with `part` `None`.
@@ -5941,7 +5945,7 @@ pub struct ExportMenu<'a> {
 ///    Save as… (`Save`);
 /// 2. "Save to": the save targets (`Folder`), those suggested for the format first, each with where
 ///    the file would go ([`export_place_words`]) and "Suggested";
-/// 3. "Manage save targets…".
+/// 3. "Manage save targets".
 ///
 /// Every entry sends [`Message::SaveMail`]. Without targets – none set up, or still loading – section
 /// 2 is left out.
@@ -8058,7 +8062,7 @@ mod tests {
         assert_eq!(ways, [tr("Save all to Downloads"), tr("Save all to folder…")]);
         assert!(sections.iter().flat_map(|section| &section.items).all(|item| item.tags.is_empty()));
         assert_eq!(sections[1].items[0].detail.as_deref(), Some(tr("by each file's date")));
-        // Without targets – still loading – only the ways and "Manage save targets…".
+        // Without targets – still loading – only the ways and "Manage save targets".
         assert_eq!(file_menu(FileMenu { saving: None, ..menu }).len(), 2);
         let _ = file_menu_card_lit(file_menu(menu), size::panel(), 600.0, |_| None, Some(0));
     }
