@@ -655,8 +655,13 @@ impl<A: Assistant> Listener<'_, A> {
             judging.text = text.ok().and_then(|text| rules(&text));
             new = true;
         }
+        // The tone alone never cuts the pause below the one of the limits while the text is still recognised:
+        // "Moment" or "um" heard late would come too late (review of #836). Slow recognition ends the sentence
+        // as before, never later; once the text is there it decides.
+        let text_pending = !judging.read && self.early.is_some();
         match decide(judging.model, judging.text) {
             Some(Turn::Hold) if new => end.hold(pauses.hold),
+            Some(Turn::Done) if new && text_pending => end.wait_for(pauses.done.max(self.limits.pause)),
             Some(turn) if new => end.wait_for(pauses.of_turn(turn)),
             _ => {}
         }
@@ -2673,6 +2678,39 @@ mod tests {
         let (run, _) = converse_judged(script, &texts_ahead, Some(0.9));
         assert_eq!(texts(&run), ["Warte mal. Wie wird das Wetter morgen?"]);
         assert!(run.heard[0].held);
+    }
+
+    /// Review of #836: while the text is still recognised (Whisper on the processor), a tone that sounds finished
+    /// does not end the sentence after the short pause, so a late "Moment" is not cut off: the pause of the limits
+    /// ends it, as before.
+    #[test]
+    fn the_tone_alone_does_not_cut_the_pause_short() {
+        /// Hears every sentence finished at once.
+        struct Finished;
+        impl TurnDetector for Finished {
+            fn complete(&mut self, _: &[i16]) -> Result<f32, VoiceError> {
+                Ok(0.9)
+            }
+        }
+        /// Whisper that takes its time.
+        struct Slow;
+        impl Transcriber for Slow {
+            fn transcribe(&mut self, _: &[i16]) -> Result<String, VoiceError> {
+                std::thread::sleep(Duration::from_millis(500));
+                Ok("Wie wird das Wetter morgen?".into())
+            }
+        }
+        let parts = Ahead {
+            vad: Some(Box::new(Judges::first(vec![true; 5]))),
+            early: Some(Early::new(Box::new(Slow)).expect("thread")),
+            turn: Some(Box::new(Finished)),
+            ..Ahead::default()
+        };
+        let core = Core { talk: talk_in(Some("a1")), ..Core::new(Voice::default()) };
+        let says = Box::new(Says(["recognised now"].into()));
+        let run = run_parts(core, &[PAUSE, PAUSE], None, says, Duration::ZERO, parts);
+        assert_eq!(texts(&run), ["Wie wird das Wetter morgen?"], "the text recognised ahead, waited for");
+        assert_eq!(run.heard[0].pause_ms, frames_ms(Limits::default().pause), "not the short pause");
     }
 
     /// Issue #836: a hold the person does not go on after ends at its limit and sends nothing.
