@@ -18,6 +18,7 @@
 //! so does one that cannot be opened (with ALSA, a card PipeWire holds).
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -412,9 +413,33 @@ pub struct Player {
     resampler: Option<(u32, LinearResampler)>,
 }
 
+/// What a [`Tap`] hands out: the device's rate and the samples of one buffer.
+pub type Tapped = Receiver<(u32, Vec<f32>)>;
+
 /// Where a [`Player`] hands what it plays (issue #834): the samples of each device buffer, mono at the
-/// device's rate, silence included. Full, a buffer is dropped: the sound never waits for it.
-pub type Tap = mpsc::SyncSender<(u32, Vec<f32>)>;
+/// device's rate, silence included. Full, a buffer is dropped (the sound never waits for it) and counted, so
+/// the listener learns that a piece of the reference is missing.
+#[derive(Debug, Clone)]
+pub struct Tap {
+    sender: mpsc::SyncSender<(u32, Vec<f32>)>,
+    lost: Arc<AtomicU64>,
+}
+
+impl Tap {
+    /// A tap holding `bound` buffers, the receiver of what it hands out, and the count of the buffers it
+    /// dropped (taken and reset by the reader).
+    pub fn new(bound: usize) -> (Tap, Tapped, Arc<AtomicU64>) {
+        let (sender, receiver) = mpsc::sync_channel(bound);
+        let lost = Arc::new(AtomicU64::new(0));
+        (Tap { sender, lost: Arc::clone(&lost) }, receiver, lost)
+    }
+
+    fn send(&self, rate: u32, samples: Vec<f32>) {
+        if self.sender.try_send((rate, samples)).is_err() {
+            self.lost.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
 
 impl Player {
     /// Opens the default output; without one [`VoiceError::Missing`] with [`VoiceMissing::Player`].
@@ -444,7 +469,7 @@ impl Player {
                 move |data: &mut cpal::Data, _: &cpal::OutputCallbackInfo| {
                     let mut queue = shared.lock().unwrap_or_else(PoisonError::into_inner);
                     if let Some(tap) = &tap {
-                        let _ = tap.try_send((rate, playing(&queue, data.len() / channels.max(1))));
+                        tap.send(rate, playing(&queue, data.len() / channels.max(1)));
                     }
                     fill_data(data, channels, &mut queue);
                 },
@@ -663,6 +688,16 @@ pub mod tests {
         assert_eq!(playing(&queue, 4), [0.5, -0.5, 0.0, 0.0]);
         assert_eq!(playing(&queue, 1), [0.5]);
         assert_eq!(queue.samples.len(), 2);
+    }
+
+    /// Issue #834: a full tap drops the buffer and counts it.
+    #[test]
+    fn a_full_tap_counts_what_it_drops() {
+        let (tap, played, lost) = Tap::new(1);
+        tap.send(16_000, vec![0.5]);
+        tap.send(16_000, vec![0.25]);
+        assert_eq!(lost.load(Ordering::SeqCst), 1);
+        assert_eq!(played.try_recv().map(|(_, samples)| samples), Ok(vec![0.5]));
     }
 
     /// Issue #829: an output that just opened plays a short silence first, so the device's start does

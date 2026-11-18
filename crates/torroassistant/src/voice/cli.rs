@@ -266,8 +266,8 @@ fn echo_from_input() -> Echo {
     let reference = echo.clone();
     std::thread::spawn(move || {
         for line in std::io::stdin().lock().lines().map_while(Result::ok) {
-            if let Some(samples) = super::speech::echo_samples(&line) {
-                reference.push(&samples);
+            if let Some(line) = super::speech::parse_echo(&line) {
+                reference.push_line(&line.samples, line.number);
             }
         }
     });

@@ -26,7 +26,8 @@
 //!   and `"playing"` again when its sound goes on: the core keeps the microphone closed only while
 //!   something sounds.
 //! - While its sound output is open, the helper also writes what it plays (issue #834), silence included, as
-//!   `{"echo": "<base64>"}`: 16-bit little-endian samples at 16 kHz, mono, a few ten milliseconds per line. The
+//!   `{"echo": "<base64>", "n": <number>}`: 16-bit little-endian samples at 16 kHz, mono, a few ten milliseconds
+//!   per line, numbered from 0 for each helper; a number left out marks reference that was lost. The
 //!   core passes these lines to the listener, which takes this sound out of the microphone
 //!   ([`super::echo`]); they belong to no job. They stay in memory, nothing goes to the disk.
 //!
@@ -63,7 +64,7 @@ use super::audio::{RATE, to_float, to_i16};
 use super::listen::speakable_up_to;
 use super::parts::model_ready;
 use super::pocket::{Delivery, Pocket, Synth};
-use super::sound::{Devices, Player, Sound, SystemDevices};
+use super::sound::{Devices, Player, Sound, SystemDevices, Tap, Tapped};
 
 /// The most of a text that is read, in characters: the window shows all of it.
 pub const MOST_READ: usize = 3000;
@@ -232,29 +233,77 @@ impl Output {
 }
 
 /// The line that hands `samples` (16 kHz, mono) to the listener as the reference of its echo cancellation
-/// (issue #834): `{"echo": "<base64 of 16-bit little-endian samples>"}`.
-pub fn echo_line(samples: &[i16]) -> String {
+/// (issue #834): `{"echo": "<base64 of 16-bit little-endian samples>", "n": number}`.
+pub fn echo_line(samples: &[i16], number: u64) -> String {
     let bytes: Vec<u8> = samples.iter().flat_map(|sample| sample.to_le_bytes()).collect();
-    json!({"echo": base64::engine::general_purpose::STANDARD.encode(bytes)}).to_string()
+    json!({"echo": base64::engine::general_purpose::STANDARD.encode(bytes), "n": number}).to_string()
 }
 
-/// The samples of an [`echo_line`]; `None` for any other line, or one that does not decode.
-pub fn echo_samples(line: &str) -> Option<Vec<i16>> {
+/// An [`echo_line`] as the listener reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EchoLine {
+    pub samples: Vec<i16>,
+    /// Its number; `None` from a helper that does not number its lines.
+    pub number: Option<u64>,
+}
+
+/// The [`EchoLine`] in `line`; `None` for any other line, or one that does not decode.
+pub fn parse_echo(line: &str) -> Option<EchoLine> {
     let value: Value = serde_json::from_str(line.trim()).ok()?;
     let bytes = base64::engine::general_purpose::STANDARD.decode(value.get("echo")?.as_str()?).ok()?;
-    Some(bytes.as_chunks::<2>().0.iter().map(|pair| i16::from_le_bytes(*pair)).collect())
+    let samples = bytes.as_chunks::<2>().0.iter().map(|pair| i16::from_le_bytes(*pair)).collect();
+    Some(EchoLine { samples, number: value.get("n").and_then(Value::as_u64) })
 }
 
 /// The fewest samples an echo line carries: 20 ms, so the lines stay few.
 const ECHO_LEAST: usize = 320;
 
+/// How long a rest below [`ECHO_LEAST`] waits for more: once the output is closed nothing comes, and the
+/// rest would go ahead of the next reading's reference.
+const ECHO_REST: Duration = Duration::from_millis(40);
+
+/// Numbers the echo lines; a buffer the tap dropped leaves a number out ([`echo_line`]).
+#[derive(Debug, Default)]
+struct Numbering {
+    next: u64,
+}
+
+impl Numbering {
+    /// The number of the next line, after `dropped` buffers were lost since the last.
+    fn take(&mut self, dropped: u64) -> u64 {
+        let number = self.next + dropped;
+        self.next = number + 1;
+        number
+    }
+}
+
 /// Writes what the tapped output played (`played`, mono at the device's rate) as [`echo_line`]s at
 /// [`RATE`], until the output is gone for good. Ends the helper like its answers when the core no
 /// longer reads.
-fn write_echo(played: Receiver<(u32, Vec<f32>)>) {
+fn write_echo(played: Tapped, lost: Arc<AtomicU64>) {
     let mut resampler: Option<(u32, LinearResampler)> = None;
     let mut waiting: Vec<i16> = Vec::new();
-    for (rate, samples) in played {
+    let mut numbering = Numbering::default();
+    let mut write = |waiting: &mut Vec<i16>| {
+        let line = echo_line(waiting, numbering.take(lost.swap(0, Ordering::SeqCst)));
+        waiting.clear();
+        let mut out = std::io::stdout().lock();
+        if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
+            std::process::exit(0);
+        }
+    };
+    loop {
+        let (rate, samples) = match played.recv_timeout(ECHO_REST) {
+            Ok(played) => played,
+            // The output closed: what waits goes now, not ahead of the next reading.
+            Err(RecvTimeoutError::Timeout) => {
+                if !waiting.is_empty() {
+                    write(&mut waiting);
+                }
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => return,
+        };
         let samples = if rate == RATE {
             samples
         } else {
@@ -265,14 +314,8 @@ fn write_echo(played: Receiver<(u32, Vec<f32>)>) {
             resampler.resample(&samples, false)
         };
         waiting.extend(samples.into_iter().map(to_i16));
-        if waiting.len() < ECHO_LEAST {
-            continue;
-        }
-        let line = echo_line(&waiting);
-        waiting.clear();
-        let mut out = std::io::stdout().lock();
-        if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
-            std::process::exit(0);
+        if waiting.len() >= ECHO_LEAST {
+            write(&mut waiting);
         }
     }
 }
@@ -1080,8 +1123,8 @@ pub fn serve(voice: Voice) {
         Ok(Box::new(Pocket::load(folder)?) as Box<dyn Synth>)
     });
     // What plays goes to the listener too (issue #834); a full channel drops a buffer, never the sound.
-    let (tap, played) = mpsc::sync_channel(64);
-    std::thread::spawn(move || write_echo(played));
+    let (tap, played, lost) = Tap::new(64);
+    std::thread::spawn(move || write_echo(played, lost));
     let open: Box<OpenSound> = Box::new(move || Ok(Box::new(Player::open_tapped(tap.clone())?) as Box<dyn Sound>));
     let helper = Helper::new(folder.clone(), voice.pocket_voice_or_default(), open, make, |output: Output| {
         // The same lock as the echo lines: a line is never written into another.
@@ -1176,13 +1219,22 @@ mod tests {
     #[test]
     fn echo_lines_carry_their_samples() {
         let samples = [0, 1, -1, i16::MAX, i16::MIN, 1234];
-        let line = echo_line(&samples);
+        let line = echo_line(&samples, 7);
         assert!(line.starts_with(r#"{"echo":""#), "{line}");
-        assert_eq!(echo_samples(&line).as_deref(), Some(&samples[..]));
+        assert_eq!(parse_echo(&line), Some(EchoLine { samples: samples.to_vec(), number: Some(7) }));
+        let unnumbered = r#"{"echo":"AAA="}"#;
+        assert_eq!(parse_echo(unnumbered).map(|line| line.number), Some(None));
         assert_eq!(Output::parse(&line), None, "no answer of a job");
         for other in ["\"done\"", r#"{"echo": 3}"#, r#"{"echo": "%%"}"#, "nope"] {
-            assert_eq!(echo_samples(other), None, "{other}");
+            assert_eq!(parse_echo(other), None, "{other}");
         }
+    }
+
+    /// Issue #834: the lines are numbered in turn; a buffer the tap dropped leaves a number out.
+    #[test]
+    fn echo_lines_leave_a_number_out_for_what_was_lost() {
+        let mut numbering = Numbering::default();
+        assert_eq!([numbering.take(0), numbering.take(0), numbering.take(2), numbering.take(0)], [0, 1, 4, 5]);
     }
 
     /// Issue #762: a line of an earlier core with a model and a language still reads; `null` is Pocket's.

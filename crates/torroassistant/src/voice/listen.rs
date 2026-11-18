@@ -362,6 +362,9 @@ impl<A: Assistant> Listener<'_, A> {
             }
         }
         self.floor = floor;
+        // The sentence begins a second before the wake word: from then on its sound must have gone through
+        // the echo cancellation, not from when the microphone opened, maybe minutes ago.
+        let begins = Instant::now().checked_sub(Duration::from_secs(1)).map_or(opened, |begins| begins.max(opened));
         // Heard while something was read aloud: it may be the reading's voice, not the person's.
         let Some(readings) = self.quiet_now() else {
             drop(stream);
@@ -407,7 +410,7 @@ impl<A: Assistant> Listener<'_, A> {
             (false, true) => (Said::WithWake, &sentence[..with_tone]),
             (false, false) => (Said::Nothing, &sentence[..]),
         };
-        let ended = self.answer(voice, recorded, said, end.trailing_quiet(), None, (readings, opened));
+        let ended = self.answer(voice, recorded, said, end.trailing_quiet(), None, (readings, begins));
         self.wake.reset();
         Ok(ended)
     }
@@ -1780,6 +1783,11 @@ mod tests {
     /// An echo cancellation that runs for as long as the returned guard lives: the reference comes all the
     /// time, as from a helper whose output is open.
     fn echo_running() -> (Echo, impl Drop) {
+        echo_running_with(1)
+    }
+
+    /// [`echo_running`] with numbered lines, `step` apart: with 2, every other line goes missing.
+    fn echo_running_with(step: u64) -> (Echo, impl Drop) {
         struct Stop(Arc<std::sync::atomic::AtomicBool>);
         impl Drop for Stop {
             fn drop(&mut self) {
@@ -1789,10 +1797,12 @@ mod tests {
         let echo = Echo::default();
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (pushed, stopped) = (echo.clone(), Arc::clone(&stop));
-        echo.push(&[0; 160]);
+        echo.push_line(&[0; 160], Some(1));
         std::thread::spawn(move || {
+            let mut number = 1;
             while !stopped.load(std::sync::atomic::Ordering::SeqCst) {
-                pushed.push(&[0; 160]);
+                number += step;
+                pushed.push_line(&[0; 160], Some(number));
                 std::thread::sleep(Duration::from_millis(20));
             }
         });
@@ -1828,6 +1838,20 @@ mod tests {
         let began = Core { readings: [0, 0, 1].into(), ..reading() };
         let run = run_with_echo(began, &files, Some(2), &["Hey Torro, what is on today?"], echo);
         assert_eq!(messages(&run.sent).len(), 1, "the reading that began was taken out");
+    }
+
+    /// Issue #834 (open point of PR #885): a reading that began while the sentence was said keeps it only
+    /// when its reference came whole; with lines missing the sentence is dropped, as without cancellation.
+    #[test]
+    fn a_sentence_over_a_reading_with_reference_missing_is_dropped() {
+        let (echo, _running) = echo_running_with(2);
+        let reading = || Core { speaking: std::iter::repeat_n(true, 10_000).collect(), ..Core::new(on()) };
+        let files = ["utterance.wav", "silence.wav", PAUSE];
+        let began = Core { readings: [0, 0, 1].into(), ..reading() };
+        let run = run_with_echo(began, &files, Some(2), &["Hey Torro, what is on today?"], echo.clone());
+        assert!(messages(&run.sent).is_empty(), "the reference had gaps: {:?}", run.sent);
+        let run = run_with_echo(reading(), &files, Some(2), &["Hey Torro, what is on today?"], echo);
+        assert_eq!(messages(&run.sent).len(), 1, "no reading began meanwhile: it counts");
     }
 
     /// Issue #834, decision 2: with the echo cancellation the microphone is open while the answer is read,
