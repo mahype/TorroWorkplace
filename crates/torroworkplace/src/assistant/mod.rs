@@ -1855,6 +1855,11 @@ pub(crate) mod tests {
         assert!(assistant.add_to_run(id, run, answer, true, None).await, "the run still runs");
     }
 
+    /// Adds `content` to the run `run` of [`growing`] without ending it (issue #835: an approval, a later part).
+    pub(crate) async fn add_growing(assistant: &Assistant, id: &str, run: u64, content: EntryContent) {
+        assert!(assistant.add_to_run(id, run, content, false, None).await, "the run still runs");
+    }
+
     /// An assistant in `dir/assistant` with the test engine taking `step` per step, starting no app.
     pub(crate) fn assistant_in(dir: &std::path::Path, step: Duration) -> Assistant {
         Assistant::new(Some(dir.join("assistant")), Some(step), no_app).with_config(dir.join("config/assistant"))
