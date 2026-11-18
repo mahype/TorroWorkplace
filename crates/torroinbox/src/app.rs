@@ -6534,9 +6534,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 let result = self.handle(*action);
                 // "Save mail as" (issue #501): its formats open where the context menu stood.
                 if self.menu == Some(Menu::SaveMailFormat) {
-                    // Issue #904: so do the folders of the marked mail – the cursor may stand elsewhere.
                     self.context_point = point;
                 } else if self.menu == Some(Menu::Move) && self.move_selection.is_some() {
+                    // Issue #904: so do the folders of the marked mail – the cursor may stand elsewhere.
                     self.context_point = point;
                 }
                 self.menu_at = MenuAt::Row;
@@ -14229,15 +14229,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 let at = if self.menu_at == MenuAt::Overview { &overview_at } else { &hide_at };
                 Some(widgets::floating(at, below, self.mute_menu(), Message::CloseMenu))
             }
-            // At the bell (the rail's "Mute…", task E14.3), else at the cursor's row. In the hub's
-            // panel it opens to the right of the bell, like "Make task": aligned at its end the menu
-            // ran out of the panel over the list.
             // The marked mail's folders (issue #904) where their context menu stood: the cursor's row
             // may be another one.
             Some(Menu::Move) if self.move_selection.is_some() && self.context_point.is_some() => {
                 let (spot, placement) = context_spot(self.context_point, &rows.row);
                 Some(widgets::floating(&spot, placement, self.choice_menu(tr("Move to folder")), Message::CloseMenu))
             }
+            // At the bell (the rail's "Mute…", task E14.3), else at the cursor's row. In the hub's
+            // panel it opens to the right of the bell, like "Make task": aligned at its end the menu
+            // ran out of the panel over the list.
             Some(Menu::Move) => {
                 Some(widgets::floating(&hide_at, dialog, self.choice_menu(tr("Move to folder")), Message::CloseMenu))
             }
