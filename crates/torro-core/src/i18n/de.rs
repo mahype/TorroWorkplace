@@ -182,6 +182,15 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Ask AI", "KI fragen"),
     ("Ask AI…", "KI fragen…"),
     ("Ask about this mail…", "Frag etwas zu dieser Mail…"),
+    ("Ask about your mail…", "Frag etwas zu deinen Mails…"),
+    (
+        "Ask about your mail. Changes wait for your approval.",
+        "Frag etwas zu deinen Mails. Änderungen warten auf deine Freigabe.",
+    ),
+    ("What came in today?", "Was kam heute rein?"),
+    ("What is waiting for my reply?", "Was wartet auf meine Antwort?"),
+    ("Which mails have a deadline this week?", "Welche Mails haben diese Woche eine Frist?"),
+    ("Couldn't decide the approval: {reason}", "Die Freigabe konnte nicht entschieden werden: {reason}"),
     ("Design review on Thursday", "Designreview am Donnerstag"),
     (
         "Here it is. Check it and accept it to open the event editor.",
