@@ -228,7 +228,7 @@ impl Asked {
                     asked.error = Some(code.clone());
                     asked.message = Some(message.clone());
                 }
-                EntryContent::Stopped => asked.error = Some("stopped".into()),
+                EntryContent::Stopped { .. } => asked.error = Some("stopped".into()),
                 EntryContent::Message { .. } | EntryContent::Approval { .. } | EntryContent::Card { .. } => {}
             }
         }

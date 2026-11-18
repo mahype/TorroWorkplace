@@ -2206,6 +2206,7 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         },
         request @ (Request::SendMessage { .. }
         | Request::CancelAnswer { .. }
+        | Request::InterruptAnswer { .. }
         | Request::SpeakAnswer { .. }
         | Request::RenameConversation { .. }
         | Request::ChooseModel { .. }
@@ -3255,6 +3256,13 @@ fn assistant_summary(request: &Request, facts: &Facts) -> String {
         }
         (Request::CancelAnswer { .. }, None) => {
             tr("Stop the assistant's answer in an unknown conversation").to_string()
+        }
+        // Issue #835: what was read aloud comes from the core, never from the caller.
+        (Request::InterruptAnswer { .. }, Some(title)) => {
+            trf("Interrupt the assistant's answer in \"{title}\"", &[("title", &title)])
+        }
+        (Request::InterruptAnswer { .. }, None) => {
+            tr("Interrupt the assistant's answer in an unknown conversation").to_string()
         }
         // Issue #747: what is read comes from the core, never from the caller.
         (Request::SpeakAnswer { .. }, Some(title)) => {
@@ -6290,6 +6298,9 @@ pub(crate) mod tests {
         let cancel = Request::CancelAnswer { conversation: id.clone() };
         assert_eq!(summary(&cancel, &held), trf("Stop the assistant's answer in \"{title}\"", &[title]));
         assert_eq!(summary(&cancel, &unknown), tr("Stop the assistant's answer in an unknown conversation"));
+        let interrupt = Request::InterruptAnswer { conversation: id.clone() };
+        assert_eq!(summary(&interrupt, &held), trf("Interrupt the assistant's answer in \"{title}\"", &[title]));
+        assert_eq!(summary(&interrupt, &unknown), tr("Interrupt the assistant's answer in an unknown conversation"));
 
         let open = |window| Request::OpenChatWindow { window };
         assert_eq!(

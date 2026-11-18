@@ -1002,17 +1002,57 @@ impl Assistant {
     /// an answer and adds a `stopped` entry, and stops the answers of the bots it asked (task B.2).
     /// Nothing changes when none runs.
     pub async fn cancel(&self, id: &str, now: DateTime<Utc>) -> Response {
+        self.stop(id, None, now).await.unwrap_or(Response::Ok)
+    }
+
+    /// `assistant.interrupt` (issue #835): the person spoke while the answer of `id` was read aloud, and
+    /// `heard` is what was read of it. A running answer stops as with [`Assistant::cancel`], its `stopped`
+    /// entry keeping `heard`. One that ended meanwhile (it was all written, only the reading went on) gets
+    /// that entry now, when something was read and no `stopped` entry follows the last message yet. Its
+    /// approvals stay as they are: interrupting never decides one.
+    pub async fn interrupt(&self, id: &str, heard: Option<String>, now: DateTime<Utc>) -> Response {
+        // Stopped first: an answer that ends meanwhile still gets the entry below.
+        if let Some(answer) = self.stop(id, heard.clone(), now).await {
+            return answer;
+        }
         let mut state = self.state().await;
-        let Some(conversation) = state.conversations.get(id).cloned() else { return unknown(id) };
-        let Some(run) = state.running.remove(id) else { return Response::Ok };
+        let Some(conversation) = state.conversations.get(id) else { return unknown(id) };
+        let Some(heard) = heard else { return Response::Ok };
+        let stopped = conversation
+            .entries
+            .iter()
+            .rev()
+            .take_while(|entry| !matches!(entry.content, EntryContent::Message { .. }))
+            .any(|entry| matches!(entry.content, EntryContent::Stopped { .. }));
+        if stopped || state.running.contains_key(id) {
+            return Response::Ok;
+        }
+        let entry =
+            Entry { seq: conversation.last() + 1, time: now, content: EntryContent::Stopped { heard: Some(heard) } };
+        let line = Line::Entry { entry };
+        if let Err(message) = self.write(id, vec![line.clone()]).await {
+            return failure(message);
+        }
+        if let Some(conversation) = state.conversations.get_mut(id) {
+            conversation.apply(line);
+        }
+        Response::Ok
+    }
+
+    /// Stops the running answer of `id` ([`Assistant::cancel`]), its `stopped` entry keeping `heard`; `None` when
+    /// none runs there.
+    async fn stop(&self, id: &str, heard: Option<String>, now: DateTime<Utc>) -> Option<Response> {
+        let mut state = self.state().await;
+        let Some(conversation) = state.conversations.get(id).cloned() else { return Some(unknown(id)) };
+        let run = state.running.remove(id)?;
         // Aborted at its next pause; it checks its number under the lock before every write.
         run.task.abort();
         let mut entries: Vec<Entry> = run.growing(conversation.last()).into_iter().collect();
         let after = entries.last().map_or(conversation.last(), |entry| entry.seq);
-        entries.push(Entry { seq: after + 1, time: now, content: EntryContent::Stopped });
+        entries.push(Entry { seq: after + 1, time: now, content: EntryContent::Stopped { heard } });
         let lines: Vec<Line> = entries.into_iter().map(|entry| Line::Entry { entry }).collect();
         if let Err(message) = self.write(id, lines.clone()).await {
-            return failure(message);
+            return Some(failure(message));
         }
         if let Some(conversation) = state.conversations.get_mut(id) {
             lines.into_iter().for_each(|line| conversation.apply(line));
@@ -1026,11 +1066,11 @@ impl Assistant {
             .collect();
         drop(state);
         for theirs in asked {
-            if let Response::Error { message, .. } = Box::pin(self.cancel(&theirs, now)).await {
+            if let Some(Response::Error { message, .. }) = Box::pin(self.stop(&theirs, None, now)).await {
                 eprintln!("torroworkplace: cannot stop the bot's answer in conversation {theirs}: {message}");
             }
         }
-        Response::Ok
+        Some(Response::Ok)
     }
 
     /// `assistant.rename_conversation`; the title trimmed (the limits are checked before).
@@ -1815,6 +1855,11 @@ pub(crate) mod tests {
         assert!(assistant.add_to_run(id, run, answer, true, None).await, "the run still runs");
     }
 
+    /// Adds `content` to the run `run` of [`growing`] without ending it (issue #835: an approval, a later part).
+    pub(crate) async fn add_growing(assistant: &Assistant, id: &str, run: u64, content: EntryContent) {
+        assert!(assistant.add_to_run(id, run, content, false, None).await, "the run still runs");
+    }
+
     /// An assistant in `dir/assistant` with the test engine taking `step` per step, starting no app.
     pub(crate) fn assistant_in(dir: &std::path::Path, step: Duration) -> Assistant {
         Assistant::new(Some(dir.join("assistant")), Some(step), no_app).with_config(dir.join("config/assistant"))
@@ -1864,7 +1909,7 @@ pub(crate) mod tests {
                 EntryContent::Tool { .. } => "tool",
                 EntryContent::Approval { .. } => "approval",
                 EntryContent::Error { .. } => "error",
-                EntryContent::Stopped => "stopped",
+                EntryContent::Stopped { .. } => "stopped",
                 EntryContent::Card { .. } => "card",
             })
             .collect()
@@ -2049,6 +2094,28 @@ pub(crate) mod tests {
         );
         let (_, added) = opened(answer(&assistant, &ai, send(Some(&started.id), "Again")).await);
         assert_eq!(added.iter().map(|entry| entry.seq).collect::<Vec<_>>(), [3]);
+    }
+
+    /// Issue #835: an answer that ended while it was still read gets its `stopped` entry with what was heard,
+    /// once; without anything heard nothing changes, and an unknown conversation is `not-found`.
+    #[tokio::test]
+    async fn an_answer_over_but_still_read_is_marked_interrupted_once() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (assistant, ai) = (Arc::new(assistant_in(dir.path(), Duration::ZERO)), no_ai(dir.path()));
+        let (started, _) = opened(answer(&assistant, &ai, send(None, "Plan my week")).await);
+        finished(&assistant, &ai, &started.id).await;
+        let now = Utc::now();
+        assert_eq!(code(&assistant.interrupt("nope", Some("A …".into()), now).await), "not-found");
+        assert_eq!(assistant.interrupt(&started.id, None, now).await, Response::Ok);
+        let entries = || async {
+            opened(answer(&assistant, &ai, Request::GetConversation { id: started.id.clone(), after: None }).await).1
+        };
+        assert_eq!(kinds(&entries().await), ["message", "tool", "answer"], "nothing heard, nothing changes");
+        assert_eq!(assistant.interrupt(&started.id, Some("This is …".into()), now).await, Response::Ok);
+        assert_eq!(assistant.interrupt(&started.id, Some("This is …".into()), now).await, Response::Ok);
+        let after = entries().await;
+        assert_eq!(kinds(&after), ["message", "tool", "answer", "stopped"], "once");
+        assert_eq!(after[3].content, EntryContent::Stopped { heard: Some("This is …".into()) });
     }
 
     /// Issue #852: a choice of the model is the conversation's until its next message, also for a core that

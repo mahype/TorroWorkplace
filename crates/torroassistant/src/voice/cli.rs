@@ -239,6 +239,7 @@ fn listen() -> ExitCode {
             vad: parts.vad,
             early: parts.early,
             turn: parts.turn,
+            carried: None,
         };
         match listener.run(&voice) {
             Ok(Ended::Changed) => continue,

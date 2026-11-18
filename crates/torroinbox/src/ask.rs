@@ -810,7 +810,7 @@ fn entry_view<'a>(ask: &'a Ask, entry: &'a Entry, look: &Look<'a>, colours: Pale
         .spacing(space::s())
         .align_y(Alignment::Center)
         .into(),
-        EntryContent::Stopped => row![
+        EntryContent::Stopped { .. } => row![
             tinted(Icon::Square, icon::SIZE_SM, |p| p.text_3),
             typo::text(typo::meta(), tr("Stopped")).style(theme::text_3)
         ]

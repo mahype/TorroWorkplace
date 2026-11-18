@@ -465,7 +465,7 @@ mod tests {
         let mine = registered(&register, dir.path(), "Mine.pdf", b"%PDF mine", Maker::Client("a55e5517"));
         let theirs = registered(&register, dir.path(), "Theirs.pdf", b"%PDF theirs", Maker::Client("b0b0b0b0"));
         let entries = vec![
-            at(1, EntryContent::Stopped),
+            at(1, EntryContent::Stopped { heard: None }),
             at(2, card(&mine.id)),
             at(3, EntryContent::Error { code: "error".into(), message: "x".into() }),
             at(4, card(&theirs.id)),

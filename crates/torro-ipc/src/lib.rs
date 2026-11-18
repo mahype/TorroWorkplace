@@ -4522,6 +4522,16 @@ pub enum Request {
         /// The conversation's id.
         conversation: String,
     },
+    /// Interrupts the answer of `conversation` while it is read aloud (issue #835): the person began to
+    /// speak. In one step it stops reading the answer aloud, stops the answer as [`Request::CancelAnswer`]
+    /// does, and stores in the `stopped` entry what was read aloud of it (`heard`), so the model later reads
+    /// only that as said. A running answer that is not read stops as with `assistant.cancel`.
+    /// [`Response::Ok`] also when no answer runs; `not-found` for an unknown conversation.
+    #[serde(rename = "assistant.interrupt")]
+    InterruptAnswer {
+        /// The conversation's id.
+        conversation: String,
+    },
     /// Gives the conversation `id` the title `title` ([`Response::Ok`]); `not-found` for an unknown
     /// id, `error` for a title that is blank, longer than 200 characters or more than one line.
     #[serde(rename = "assistant.rename_conversation")]

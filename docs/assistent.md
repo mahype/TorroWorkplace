@@ -1061,10 +1061,23 @@ ist; das Mikrofon ist dann nur für dieses Gespräch offen. Statt des Eingabefel
   Zeilen `{"echo": …}`, der Dienst reicht sie an den Hörer weiter, und der zieht genau diesen Ton von jedem
   Mikrofonblock ab. Solange sie läuft, bleibt das Mikrofon beim Vorlesen offen: „Hey Torro“ geht auch, während eine
   Mail vorgelesen wird, und nach einer Antwort entfällt die Pause. Während der eigenen Antwort ist es ebenfalls offen,
-  was die Person dabei sagt, wird aber noch verworfen. Läuft die Unterdrückung nicht (keine Referenz in den letzten
+  und die Person kann ihn unterbrechen (siehe unten). Läuft die Unterdrückung nicht (keine Referenz in den letzten
   300 ms), ist das Mikrofon beim Vorlesen zu wie bisher, was es währenddessen hörte, das Weckwort eingeschlossen,
   wird verworfen, und danach folgen 300 ms Pause. So kommt keine Stimme aus dem Lautsprecher als Satz des Menschen an.
   Der Ton bleibt im Speicher und landet nie auf der Platte.
+- **Unterbrechen (#835):** Fängt die Person an zu sprechen, während die Antwort vorgelesen wird, hört der Assistent
+  nach etwa 320 ms Sprache auf (vier Blöcke am Stück, keine Einstellung; auf den Text zu warten kostete bis zu einer
+  Sekunde). Ein Husten oder „mhm“ ist kürzer und unterbricht nicht. Der Hörer schickt `assistant.interrupt`: Der Dienst
+  stoppt das Vorlesen und die Antwort in einem Schritt und hält fest, was davon erklang. Jeder Satz, der zu klingen
+  begann, zählt als gesagt, der letzte endet mit „…“; dafür meldet der Vorlese-Helfer `{"said": n}`, sobald der erste
+  Ton des n-ten Textes spielt (bei OpenAI nennt jedes `pcm` mit `"text"` seinen Text). Die Antwort bleibt gespeichert,
+  wie das Modell sie schrieb; der Eintrag `stopped` trägt das Vorgelesene als `heard`. Das Fenster zeigt in der
+  Sprechblase nur das Vorgelesene und darunter „Unterbrochen“, der gezeigte Teil bleibt ganz sichtbar. Das Modell
+  liest in der nächsten Runde nur das Vorgelesene mit dem Vermerk, dass die Person hier unterbrach, und danach den
+  gezeigten Teil. Was die Person sagt, geht ab kurz vor Beginn ihrer Sprache ganz als nächste Nachricht ein, ohne Ton
+  davor, auf demselben Mikrofon. Unterbrechen ist nie eine Freigabe: Der Hörer schickt nur `assistant.interrupt`,
+  wartende Freigaben bleiben offen. Ohne Echo-Unterdrückung oder ohne Silero VAD wird wie bisher verworfen, was die
+  Person beim Vorlesen sagt. „Stopp“ im Fenster kürzt nichts, weil man dort alles lesen kann.
 - **Technisch:** Der Dienst hält das Gespräch (`assistant.start_talk`, Unterhaltung oder neue, die der erste
   Satz anlegt) und startet dafür den Hörer, auch wenn „Hey Torro“ aus ist. Der Hörer fragt zweimal in der
   Sekunde `assistant.talk_status` und meldet seinen Stand (`conversing`, `recording`, `recognizing`,
@@ -1097,6 +1110,7 @@ ist; das Mikrofon ist dann nur für dieses Gespräch offen. Statt des Eingabefel
 | Gespräch beginnen | „Talk“ im Chatfenster, Weckwort | `assistant.start_talk` · Admin | **Never** (Punkt 6: das Mikrofon schaltet nur ein Mensch ein) |
 | Gespräch beenden | „End talk“, Schweigen, Schlusswort | `assistant.end_talk` · Write | `assistant_end_talk` |
 | Stand des Gesprächs | Zeile im Chatfenster, Tray | `assistant.talk_status` · Read | `assistant_talk_status` |
+| Antwort unterbrechen | Sprechen beim Vorlesen | `assistant.interrupt` · Write | `assistant_interrupt` |
 
 ## Wo die Logik liegt
 

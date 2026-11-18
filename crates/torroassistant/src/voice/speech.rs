@@ -33,6 +33,10 @@
 //! - `"mark"` marks the start of what follows in the job (issue #837): the next `add` of a local job, the
 //!   next `pcm` of OpenAI. The helper answers `"marked"` once the device plays its first sound, so the core
 //!   times an answer that follows a short note by its own sound, not the note's.
+//! - The helper answers `{"said": n}` once the device has played the first sound of the job's `n`-th text
+//!   (issue #835): its `say` is the first, each `add` the next; written whenever `n` grows, and before the
+//!   `done` of a stop. A `pcm` of OpenAI names the text it sounds with `"text": <number from 0>`. The core
+//!   keeps what was heard of an answer the person interrupts.
 //!
 //! Pocket TTS and Qwen3-TTS compute on a thread of their own ([`Synth`], [`super::pocket::Pocket`],
 //! [`super::qwen`]), one at a time: when the other reads, the thread of the first ends, so Qwen's
@@ -93,8 +97,9 @@ pub enum Input {
     Say(Say),
     /// Read on with this text in the open job (issue #850).
     Add(String),
-    /// Sound fetched by the core (OpenAI): signed 16-bit mono at `rate`.
-    Pcm { rate: u32, data: Vec<u8> },
+    /// Sound fetched by the core (OpenAI): signed 16-bit mono at `rate`, of the job's text `text` (issue #835;
+    /// numbered from 0, `None` from a core that does not say).
+    Pcm { rate: u32, data: Vec<u8>, text: Option<usize> },
     /// No more sound comes for this text.
     End,
     /// Stop reading now.
@@ -157,7 +162,8 @@ impl Input {
         let pcm = value.get("pcm")?;
         let rate = u32::try_from(pcm.get("rate")?.as_u64()?).ok().filter(|rate| *rate > 0)?;
         let data = base64::engine::general_purpose::STANDARD.decode(pcm.get("data")?.as_str()?).ok()?;
-        Some(Input::Pcm { rate, data })
+        let text = pcm.get("text").and_then(Value::as_u64).and_then(|text| usize::try_from(text).ok());
+        Some(Input::Pcm { rate, data, text })
     }
 
     /// The line for the helper, as the core writes it (`apps::SpeechHelper` in the core; here for the
@@ -175,10 +181,12 @@ impl Input {
             }})
             .to_string(),
             Input::Add(text) => json!({"add": {"text": text}}).to_string(),
-            Input::Pcm { rate, data } => {
-                json!({"pcm": {"rate": rate, "data": base64::engine::general_purpose::STANDARD.encode(data)}})
-                    .to_string()
-            }
+            Input::Pcm { rate, data, text } => json!({"pcm": {
+                "rate": rate,
+                "data": base64::engine::general_purpose::STANDARD.encode(data),
+                "text": text,
+            }})
+            .to_string(),
             Input::End => json!("end").to_string(),
             Input::Stop => json!("stop").to_string(),
             Input::Mark => json!("mark").to_string(),
@@ -199,6 +207,8 @@ pub enum Output {
     Done,
     /// The sound after [`Input::Mark`] is heard (issue #837).
     Marked,
+    /// So many texts of the job began to sound (issue #835).
+    Said(usize),
     /// It cannot read: `code` as the core answers (`unsupported`, `error`), `message` for people.
     Failed { code: String, message: String },
 }
@@ -216,6 +226,7 @@ impl Output {
             Output::Waiting => json!("waiting"),
             Output::Done => json!("done"),
             Output::Marked => json!("marked"),
+            Output::Said(said) => json!({"said": said}),
             Output::Failed { code, message } => json!({"failed": {"code": code, "message": message}}),
         }
         .to_string()
@@ -236,6 +247,9 @@ impl Output {
         }
         if let Some(pieces) = value.get("pieces").and_then(Value::as_array) {
             return Some(Output::Pieces(pieces.iter().filter_map(Value::as_str).map(str::to_string).collect()));
+        }
+        if let Some(said) = value.get("said").and_then(Value::as_u64) {
+            return Some(Output::Said(usize::try_from(said).ok()?));
         }
         let failed = value.get("failed")?;
         let field = |key: &str| failed.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
@@ -709,6 +723,15 @@ pub struct Helper<W: FnMut(Output)> {
     computed: usize,
     /// Where the job's mark stands ([`Input::Mark`]).
     marking: Marking,
+    /// How many texts the job was given, `say` and every `add` (issue #835): what `{"said": n}` counts.
+    given: usize,
+    /// The numbers of the texts of a local job given to its thread and not computed yet, in order: the
+    /// sound that comes is the first's.
+    computing: std::collections::VecDeque<usize>,
+    /// The number of the text each sentence start in the sound belongs to ([`Sound::boundary`]).
+    boundaries: Vec<usize>,
+    /// The `n` of the last `{"said": n}`.
+    said: usize,
     write: W,
 }
 
@@ -755,6 +778,10 @@ impl<W: FnMut(Output)> Helper<W> {
             texts: 0,
             computed: 0,
             marking: Marking::None,
+            given: 0,
+            computing: std::collections::VecDeque::new(),
+            boundaries: Vec::new(),
+            said: 0,
             write,
         }
     }
@@ -789,12 +816,14 @@ impl<W: FnMut(Output)> Helper<W> {
         match event {
             Event::Input(Input::Stop) => {
                 if !matches!(self.job, Job::Idle) {
+                    self.tell_said();
                     self.stop();
                     (self.write)(Output::Done);
                 }
             }
             Event::Input(Input::Say(say)) => {
                 if !matches!(self.job, Job::Idle) {
+                    self.tell_said();
                     self.stop();
                     (self.write)(Output::Done);
                 }
@@ -809,11 +838,11 @@ impl<W: FnMut(Output)> Helper<W> {
                 Job::Stream { ended: false, .. } => self.place_mark(),
                 Job::Stream { .. } | Job::Idle => {}
             },
-            Event::Input(Input::Pcm { rate, data }) => {
+            Event::Input(Input::Pcm { rate, data, text }) => {
                 let samples: Vec<f32> =
                     data.as_chunks::<2>().0.iter().map(|pair| to_float(i16::from_le_bytes(*pair))).collect();
                 if matches!(self.job, Job::Stream { ended: false, .. }) {
-                    self.play(rate, &samples);
+                    self.play(rate, &samples, text);
                 }
             }
             Event::Input(Input::End) => match &mut self.job {
@@ -832,7 +861,9 @@ impl<W: FnMut(Output)> Helper<W> {
             },
             Event::Chunk { id, rate, samples } => {
                 if matches!(self.job, Job::Local { id: now, .. } if now == id) {
-                    self.play(rate, &samples);
+                    // The thread computes the texts in order: this is the sound of the first not computed.
+                    let text = self.computing.front().copied();
+                    self.play(rate, &samples, text);
                 }
             }
             Event::Computed { id } => {
@@ -841,6 +872,7 @@ impl<W: FnMut(Output)> Helper<W> {
                 {
                     *pending = pending.saturating_sub(1);
                     self.computed += 1;
+                    self.computing.pop_front();
                     self.place_mark_if_due();
                     self.finish_local();
                 }
@@ -887,8 +919,9 @@ impl<W: FnMut(Output)> Helper<W> {
         }
     }
 
-    /// Plays `samples` at `rate` in the job's sound, opened with the first of them.
-    fn play(&mut self, rate: u32, samples: &[f32]) {
+    /// Plays `samples` at `rate` in the job's sound, opened with the first of them; the sound of the job's text
+    /// `text`, whose start is marked in the sound with its first samples (issue #835).
+    fn play(&mut self, rate: u32, samples: &[f32], text: Option<usize>) {
         let (Job::Local { sound, .. } | Job::Stream { sound, .. }) = &mut self.job else { return };
         if let Some(quiet) = self.quiet.take() {
             eprintln!("torroassistant: speech gap: {} ms", quiet.elapsed().as_millis());
@@ -907,6 +940,12 @@ impl<W: FnMut(Output)> Helper<W> {
             if self.marking == Marking::AtFirstSound {
                 sound.mark();
                 self.marking = Marking::InSound;
+            }
+            if let Some(text) = text
+                && self.boundaries.last() != Some(&text)
+            {
+                sound.boundary();
+                self.boundaries.push(text);
             }
             sound.push(rate, samples);
         }
@@ -938,6 +977,7 @@ impl<W: FnMut(Output)> Helper<W> {
     fn say(&mut self, say: Say, sender: &Sender<Event>) {
         self.left = MOST_READ;
         (self.texts, self.computed, self.marking) = (1, 0, Marking::None);
+        self.given = 1;
         let text = self.take_text(&say.text);
         match say.provider.unwrap_or(SpeechProvider::Pocket) {
             SpeechProvider::OpenAi => {
@@ -952,6 +992,7 @@ impl<W: FnMut(Output)> Helper<W> {
                 });
                 match self.ask_local(local, text, voice, say.delivery, sender) {
                     Ok((id, reads)) => {
+                        self.computing.push_back(0);
                         self.job = Job::Local { id, sound: None, pending: 1, closed: !say.more, more: say.more, reads };
                     }
                     Err(failed) => (self.write)(failed),
@@ -988,6 +1029,9 @@ impl<W: FnMut(Output)> Helper<W> {
         if !open {
             return;
         }
+        // Every text the core gives counts, also one with nothing to hear: the core numbers them the same way.
+        let number = self.given;
+        self.given += 1;
         let text = self.take_text(text);
         let Job::Local { id, pending, reads, .. } = &mut self.job else {
             // OpenAI: the core fetches the pieces, and waits for an answer to each text.
@@ -998,6 +1042,7 @@ impl<W: FnMut(Output)> Helper<W> {
         }
         *pending += 1;
         self.texts += 1;
+        self.computing.push_back(number);
         let job = Spoken { id: *id, text, voice: reads.voice.clone(), delivery: reads.delivery };
         let provider = reads.provider;
         if let Some((waiting, _)) = &mut self.waiting {
@@ -1105,6 +1150,9 @@ impl<W: FnMut(Output)> Helper<W> {
         self.quiet = None;
         self.waited = false;
         (self.texts, self.computed, self.marking) = (0, 0, Marking::None);
+        (self.given, self.said) = (0, 0);
+        self.computing.clear();
+        self.boundaries.clear();
         // Dropping the sound stops it.
         self.job = Job::Idle;
     }
@@ -1119,8 +1167,22 @@ impl<W: FnMut(Output)> Helper<W> {
         (self.write)(Output::Done);
     }
 
+    /// Writes `{"said": n}` when more of the job's texts began to sound than it said last (issue #835).
+    fn tell_said(&mut self) {
+        let heard = match &self.job {
+            Job::Local { sound: Some(sound), .. } | Job::Stream { sound: Some(sound), .. } => sound.boundaries_heard(),
+            _ => 0,
+        };
+        let said = heard.checked_sub(1).and_then(|last| self.boundaries.get(last)).map_or(0, |text| text + 1);
+        if said > self.said {
+            self.said = said;
+            (self.write)(Output::Said(said));
+        }
+    }
+
     /// A job whose sound is all there and has played is done; one whose sound ran out waits for more.
     fn look_at_the_end(&mut self) {
+        self.tell_said();
         let ran_out = match &self.job {
             Job::Local { sound: Some(sound), .. } | Job::Stream { sound: Some(sound), .. } => sound.drained(),
             _ => false,
@@ -1275,7 +1337,8 @@ mod tests {
             say,
             open,
             Input::Add("Two.".into()),
-            Input::Pcm { rate: 24_000, data: vec![1, 2, 3, 4] },
+            Input::Pcm { rate: 24_000, data: vec![1, 2, 3, 4], text: None },
+            Input::Pcm { rate: 24_000, data: vec![1, 2], text: Some(3) },
             Input::End,
             Input::Stop,
             Input::Mark,
@@ -1291,6 +1354,7 @@ mod tests {
             Output::Waiting,
             Output::Done,
             Output::Marked,
+            Output::Said(2),
             Output::failed("unsupported", "No player"),
         ] {
             assert_eq!(Output::parse(&output.line()), Some(output.clone()), "{}", output.line());
@@ -1430,6 +1494,8 @@ mod tests {
         mark: Option<usize>,
         /// How many samples the device has played, as the test sets it.
         heard: usize,
+        /// How many samples were pushed at each sentence start (issue #835).
+        boundaries: Vec<usize>,
     }
 
     struct FakeSound(Rc<RefCell<Played>>);
@@ -1460,6 +1526,17 @@ mod tests {
         fn past_mark(&self) -> bool {
             let played = self.0.borrow();
             played.mark.is_some_and(|mark| played.heard > mark)
+        }
+
+        fn boundary(&mut self) {
+            let mut played = self.0.borrow_mut();
+            let at = played.samples.len();
+            played.boundaries.push(at);
+        }
+
+        fn boundaries_heard(&self) -> usize {
+            let played = self.0.borrow();
+            played.boundaries.iter().filter(|at| played.heard > **at).count()
         }
     }
 
@@ -1602,7 +1679,7 @@ mod tests {
         // The sound plays as it comes and is done once it has played.
         helper.handle(say(SpeechProvider::OpenAi, "Three."), &sender);
         let data = [16_384i16, -16_384].iter().flat_map(|sample| sample.to_le_bytes()).collect();
-        helper.handle(Event::Input(Input::Pcm { rate: 24_000, data }), &sender);
+        helper.handle(Event::Input(Input::Pcm { rate: 24_000, data, text: None }), &sender);
         assert_eq!(said.borrow().last(), Some(&Output::Playing));
         assert_eq!(played.borrow().samples, [(24_000, 0.5), (24_000, -0.5)]);
         helper.handle(Event::Input(Input::End), &sender);
@@ -1685,11 +1762,79 @@ mod tests {
         assert_eq!(said.borrow().iter().filter(|output| **output == Output::Marked).count(), 1, "{:?}", said.borrow());
     }
 
+    /// Issue #835: a local job says how many of its texts began to sound, as the device plays them, once each
+    /// time it grows; a text with nothing to hear still counts, and a stop says it before its `done`.
+    #[test]
+    fn a_local_job_says_which_texts_began_to_sound() {
+        let (sender, events) = mpsc::channel();
+        let folder = tempfile::tempdir().expect("voice folder");
+        download(folder.path(), POCKET_DE);
+        let (mut helper, said, played) = helper(Some(folder.path()), true, Duration::ZERO);
+        helper.handle(open_say(SpeechProvider::Pocket, "Eins."), &sender);
+        helper.handle(Event::Input(Input::Add("**".into())), &sender);
+        helper.handle(Event::Input(Input::Add("Zwei.".into())), &sender);
+        helper.handle(Event::Input(Input::Add("Drei.".into())), &sender);
+        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { pending: 0, .. }));
+        let saids = |said: &Said| -> Vec<usize> {
+            said.borrow()
+                .iter()
+                .filter_map(|output| match output {
+                    Output::Said(n) => Some(*n),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert!(saids(&said).is_empty(), "nothing played yet: {:?}", said.borrow());
+        played.borrow_mut().heard = 1;
+        helper.look_at_the_end();
+        helper.look_at_the_end();
+        assert_eq!(saids(&said), [1], "the first text sounds, said once");
+        played.borrow_mut().heard = "Eins.".len() + 1;
+        helper.look_at_the_end();
+        assert_eq!(saids(&said), [1, 3], "the second text with sound is the job's third");
+        played.borrow_mut().heard = "Eins.Zwei.".len() + 1;
+        helper.handle(Event::Input(Input::Stop), &sender);
+        assert_eq!(saids(&said), [1, 3, 4], "before the stop's end");
+        assert_eq!(said.borrow().last(), Some(&Output::Done));
+        helper.handle(open_say(SpeechProvider::Pocket, "Neu."), &sender);
+        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { pending: 0, .. }));
+        played.borrow_mut().heard = 0;
+        helper.look_at_the_end();
+        assert_eq!(saids(&said), [1, 3, 4], "a new job counts anew");
+    }
+
+    /// Issue #835: with OpenAI the core names the text of each sound; a sound without a number counts nothing.
+    #[test]
+    fn openai_sound_says_the_text_it_began() {
+        let (sender, _events) = mpsc::channel();
+        let pcm = |text| Event::Input(Input::Pcm { rate: 24_000, data: vec![0; 4], text });
+        let (mut helper, said, played) = helper(None, true, Duration::ZERO);
+        helper.handle(open_say(SpeechProvider::OpenAi, "Eins."), &sender);
+        helper.handle(Event::Input(Input::Add("Zwei.".into())), &sender);
+        helper.handle(pcm(Some(0)), &sender);
+        helper.handle(pcm(Some(0)), &sender);
+        helper.handle(pcm(Some(1)), &sender);
+        assert_eq!(played.borrow().boundaries, [0, 4], "one start for each text");
+        played.borrow_mut().heard = 2;
+        helper.look_at_the_end();
+        assert_eq!(said.borrow().last(), Some(&Output::Said(1)));
+        played.borrow_mut().heard = 5;
+        helper.look_at_the_end();
+        assert_eq!(said.borrow().last(), Some(&Output::Said(2)));
+
+        let (mut unnamed, said, played) = super::tests::helper(None, true, Duration::ZERO);
+        unnamed.handle(open_say(SpeechProvider::OpenAi, "Eins."), &sender);
+        unnamed.handle(pcm(None), &sender);
+        played.borrow_mut().heard = 2;
+        unnamed.look_at_the_end();
+        assert!(!said.borrow().iter().any(|output| matches!(output, Output::Said(_))), "{:?}", said.borrow());
+    }
+
     /// Issue #837: with OpenAI the mark stands where the next sound comes; before any sound it is the first.
     #[test]
     fn a_mark_in_openai_sound_is_said_when_it_is_heard() {
         let (sender, _events) = mpsc::channel();
-        let pcm = || Event::Input(Input::Pcm { rate: 24_000, data: vec![0; 4] });
+        let pcm = || Event::Input(Input::Pcm { rate: 24_000, data: vec![0; 4], text: None });
         let (mut helper, said, played) = helper(None, true, Duration::ZERO);
         helper.handle(open_say(SpeechProvider::OpenAi, "Eins."), &sender);
         helper.handle(pcm(), &sender);
@@ -1716,7 +1861,7 @@ mod tests {
     fn an_open_job_says_when_it_waits() {
         let (sender, _events) = mpsc::channel();
         let (mut helper, said, played) = helper(None, true, Duration::ZERO);
-        let pcm = || Event::Input(Input::Pcm { rate: 24_000, data: vec![0; 4] });
+        let pcm = || Event::Input(Input::Pcm { rate: 24_000, data: vec![0; 4], text: None });
         helper.handle(open_say(SpeechProvider::OpenAi, "Eins."), &sender);
         helper.handle(pcm(), &sender);
         played.borrow_mut().drained = true;
@@ -1774,7 +1919,7 @@ mod tests {
         let (sender, _events) = mpsc::channel();
         let (mut helper, said, _) = helper(None, false, Duration::ZERO);
         helper.handle(say(SpeechProvider::OpenAi, "Three."), &sender);
-        helper.handle(Event::Input(Input::Pcm { rate: 24_000, data: vec![0; 8] }), &sender);
+        helper.handle(Event::Input(Input::Pcm { rate: 24_000, data: vec![0; 8], text: None }), &sender);
         assert_eq!(said.borrow().last(), Some(&Output::failed("unsupported", tr("No sound output was found."))));
         let count = said.borrow().len();
         helper.handle(Event::Input(Input::Stop), &sender);

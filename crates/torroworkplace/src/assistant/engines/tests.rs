@@ -529,7 +529,7 @@ async fn while_it_runs_the_key_is_the_assistants_and_cancel_kills_the_agent() {
     assert!(runs.is_empty(), "the run's folder is removed: {runs:?}");
     let (summary, entries) = read(&setup.assistant, &id, None).await;
     assert!(!summary.running);
-    assert_eq!(entries.last().map(|entry| entry.content.clone()), Some(EntryContent::Stopped));
+    assert_eq!(entries.last().map(|entry| entry.content.clone()), Some(EntryContent::Stopped { heard: None }));
 }
 
 #[tokio::test]

@@ -964,6 +964,9 @@ pub enum SpeechLine {
     Done,
     /// The sound after a `"mark"` is heard (issue #837): the answer after a note of the voice chat.
     Marked,
+    /// So many texts of the job began to sound (issue #835): its `say` and each `add`, in order. The answer
+    /// keeps what was heard of it when the person interrupts it.
+    Said(usize),
     /// It cannot read, with the core's code and a message for people.
     Failed { code: String, message: String },
 }
@@ -983,6 +986,9 @@ impl SpeechLine {
         if let Some(pieces) = value.get("pieces").and_then(serde_json::Value::as_array) {
             let pieces = pieces.iter().filter_map(serde_json::Value::as_str).map(str::to_string).collect();
             return Some(SpeechLine::Pieces(pieces));
+        }
+        if let Some(said) = value.get("said").and_then(serde_json::Value::as_u64) {
+            return Some(SpeechLine::Said(usize::try_from(said).unwrap_or(usize::MAX)));
         }
         let failed = value.get("failed")?;
         let field = |key: &str| failed.get(key).and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
@@ -1768,6 +1774,7 @@ done"#;
         assert_eq!(SpeechLine::parse("\"playing\""), Some(SpeechLine::Playing));
         assert_eq!(SpeechLine::parse("\"waiting\""), Some(SpeechLine::Waiting));
         assert_eq!(SpeechLine::parse("\"marked\""), Some(SpeechLine::Marked), "issue #837");
+        assert_eq!(SpeechLine::parse(r#"{"said": 2}"#), Some(SpeechLine::Said(2)), "issue #835");
         assert_eq!(
             SpeechLine::parse(r#"{"pieces": ["One.", "Two."]}"#),
             Some(SpeechLine::Pieces(vec!["One.".into(), "Two.".into()]))

@@ -2043,6 +2043,7 @@ impl Request {
             Request::SendMessage { .. } => &SEND_MESSAGE,
             Request::CheckAbout { .. } => &CHECK_ABOUT,
             Request::CancelAnswer { .. } => &CANCEL,
+            Request::InterruptAnswer { .. } => &INTERRUPT,
             Request::RenameConversation { .. } => &RENAME_CONVERSATION,
             Request::ChooseModel { .. } => &CHOOSE_MODEL,
             Request::DeleteConversation { .. } => &DELETE_CONVERSATION,
@@ -2512,6 +2513,7 @@ pub static CATALOGUE: &[&Command] = &[
     &SEND_MESSAGE,
     &CHECK_ABOUT,
     &CANCEL,
+    &INTERRUPT,
     &RENAME_CONVERSATION,
     &CHOOSE_MODEL,
     &DELETE_CONVERSATION,
@@ -6271,6 +6273,17 @@ static CANCEL: Command = Command {
                   `stopped` entry is added; nothing happens when no answer runs.",
 };
 
+static INTERRUPT: Command = Command {
+    name: "assistant.interrupt",
+    area: Area::Assistant,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Interrupts the answer of a conversation of the assistant while it is read aloud: reading stops at \
+                  once, the answer stops as with cancel, and the `stopped` entry keeps in `heard` what was read \
+                  aloud of it; the model later takes only that as said. A running answer that is not read stops \
+                  as with cancel; nothing happens when no answer runs.",
+};
+
 static RENAME_CONVERSATION: Command = Command {
     name: "assistant.rename_conversation",
     area: Area::Assistant,
@@ -7638,6 +7651,7 @@ mod tests {
                 about: crate::assistant::MailRef { account: "mail:anna@example.org".into(), id: "m:4".into() },
             },
             Request::CancelAnswer { conversation: "0123456789abcdef".into() },
+            Request::InterruptAnswer { conversation: "0123456789abcdef".into() },
             Request::RenameConversation { id: "0123456789abcdef".into(), title: "Tomorrow".into() },
             Request::ChooseModel {
                 id: "0123456789abcdef".into(),

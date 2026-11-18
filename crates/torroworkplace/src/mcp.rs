@@ -4111,9 +4111,9 @@ mod tests {
             .collect();
         assert_eq!(
             catalogue.len(),
-            32,
+            33,
             "nine of task C.1, five of C.10, one of issue #134, one of #225, one of #605, four of #703, one of #704, \
-             two of #697, two of #745, three of #747, one of #786, one of #784, one of #852: {catalogue:?}"
+             two of #697, two of #745, three of #747, one of #786, one of #784, one of #852, one of #835: {catalogue:?}"
         );
         assert!(catalogue.iter().all(|name| name.starts_with("assistant_") && names.contains(name.as_str())));
         // But the person's yes to asking a bot (task B.2), which no agent may give, dictating (issue
@@ -4833,6 +4833,8 @@ mod tests {
                 ("assistant_end_talk", json!({})),
                 ("assistant_talk_status", json!({})),
                 ("assistant_speak_answer", json!({"conversation": CONVERSATION})),
+                // Issue #835: interrupting is the person's, by voice.
+                ("assistant_interrupt", json!({"conversation": CONVERSATION})),
             ];
             let own = [
                 "assistant_list_memories",
