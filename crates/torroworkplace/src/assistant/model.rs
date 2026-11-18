@@ -1525,29 +1525,43 @@ pub(super) fn history(entries: &[Entry]) -> Vec<ChatMessage> {
 fn as_heard(entries: &[Entry]) -> BTreeMap<u64, Option<String>> {
     use torro_ipc::assistant::{SHOWN_MARK, heard_of, split_spoken};
     let mut read = BTreeMap::new();
-    // The answer read and interrupted, while its turn lasts: whether it had a spoken part.
-    let mut interrupted: Option<bool> = None;
-    for entry in entries {
-        match &entry.content {
-            EntryContent::Message { .. } => interrupted = None,
-            EntryContent::Answer { text, .. } => {
-                if let Some(heard) = heard_of(entries, entry.seq) {
-                    let (spoken, shown) = split_spoken(text, false);
-                    let mut instead = format!("{heard} (interrupted by the person here; the rest was not said)");
-                    if spoken.is_some() && !shown.is_empty() {
-                        instead = format!("{instead}\n{SHOWN_MARK}\n{shown}");
-                    }
-                    interrupted = Some(spoken.is_some());
-                    read.insert(entry.seq, Some(instead));
-                } else if interrupted == Some(false) {
-                    // Not said; of a later part with a spoken part only what the window shows is kept.
-                    let (spoken, shown) = split_spoken(text, false);
-                    let kept = (spoken.is_some() && !shown.is_empty()).then_some(shown);
-                    read.insert(entry.seq, kept);
-                }
-            }
-            _ => {}
+    for (at, entry) in entries.iter().enumerate() {
+        let EntryContent::Answer { text, .. } = &entry.content else { continue };
+        let Some(heard) = heard_of(entries, entry.seq) else { continue };
+        let note = format!("{heard} (interrupted by the person here; the rest was not said)");
+        let with_shown = |text: &str| match split_spoken(text, false) {
+            (Some(_), shown) if !shown.is_empty() => format!("{note}\n{SHOWN_MARK}\n{shown}"),
+            _ => note.clone(),
+        };
+        // A spoken part is read whole and alone: what follows it in the answer is what the window shows.
+        if split_spoken(text, false).0.is_some() {
+            read.insert(entry.seq, Some(with_shown(text)));
+            continue;
         }
+        // In one part, the reading went on into the later parts: what was heard stands at the last of them, after
+        // the tools before it (review of #835), so the model never says a result before its tool. Those between
+        // keep only what the window shows of them.
+        let later: Vec<(u64, &str)> = entries[at + 1..]
+            .iter()
+            .take_while(|entry| !matches!(entry.content, EntryContent::Message { .. } | EntryContent::Stopped { .. }))
+            .filter_map(|entry| match &entry.content {
+                EntryContent::Answer { text, .. } => Some((entry.seq, text.as_str())),
+                _ => None,
+            })
+            .collect();
+        let Some(((last, last_text), between)) = later.split_last() else {
+            read.insert(entry.seq, Some(note));
+            continue;
+        };
+        read.insert(entry.seq, None);
+        for (seq, text) in between {
+            let kept = match split_spoken(text, false) {
+                (Some(_), shown) if !shown.is_empty() => Some(shown),
+                _ => None,
+            };
+            read.insert(*seq, kept);
+        }
+        read.insert(*last, Some(with_shown(last_text)));
     }
     read
 }
@@ -4880,9 +4894,36 @@ pub(crate) mod tests {
             format!("{heard} (interrupted by the person here; the rest was not said)\n---shown---\n- 9:00 Team"),
             "One part only … (interrupted by the person here; the rest was not said)".to_string(),
             // Review of #835: of a later part only what the window shows.
-            "Let me … (interrupted by the person here; the rest was not said)\n\n- Shown".to_string(),
+            "Let me … (interrupted by the person here; the rest was not said)\n---shown---\n- Shown".to_string(),
         ];
         assert_eq!(texts(history(&entries)), expected);
         assert_eq!(texts(history_with_results(&entries, &BTreeMap::new(), &[])), expected);
+    }
+
+    /// Review of #835: read on past a tool, what was heard reaches the model after the tool's result, as one answer;
+    /// no note of a failed answer follows.
+    #[test]
+    fn what_was_heard_past_a_tool_follows_its_result() {
+        let time = Utc::now();
+        let at = |seq, content| Entry { seq, time, content };
+        let said =
+            |text: &str| EntryContent::Answer { text: text.into(), engine: "test".into(), model: None, spoken: None };
+        let entries = [
+            at(1, super::super::tests::message("Tomorrow?")),
+            at(2, said("Let me look.")),
+            at(3, super::super::tests::tool("calendar.list_events")),
+            at(4, said("You have two meetings. The first is at nine.")),
+            at(5, EntryContent::Stopped { heard: Some("Let me look. You have two meetings …".into()) }),
+            at(6, super::super::tests::message("Move the first.")),
+        ];
+        let results = BTreeMap::from([(3, "2 events".to_string())]);
+        let messages = history_with_results(&entries, &results, &[]);
+        let roles: Vec<String> = messages.iter().map(|message| format!("{:?}", message.role)).collect();
+        assert_eq!(roles, ["User", "Assistant", "Tool", "Assistant", "User"], "{messages:?}");
+        assert!(messages[1].content.is_empty() && messages[1].tool_calls.len() == 1, "{messages:?}");
+        assert_eq!(
+            messages[3].content,
+            "Let me look. You have two meetings … (interrupted by the person here; the rest was not said)"
+        );
     }
 }
