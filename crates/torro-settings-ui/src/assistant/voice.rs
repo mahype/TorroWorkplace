@@ -634,7 +634,9 @@ fn read_aloud_group<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> E
     // "Checking …" for ever. A missing model is offered under the voice instead (issue #823).
     let detail = match (&data.speech, &data.voice) {
         (None, Some(_)) => Some(tr("This computer could not be checked. Use Check again under Models.").to_string()),
-        _ if waits => None,
+        // Only the missing model is said under the voice; no sound output, no graphics card or no account
+        // still stand here (review of PR #887: the status names those before the model).
+        _ if waits && provider_missing(data, current) == Some(SpeechMissing::Model) => None,
         (speech, _) => provider_detail(speech.as_ref(), current),
     };
     let provider =
@@ -1140,7 +1142,17 @@ fn speech_offer<'a>(state: &'a State, data: &'a Data) -> Offer<'a> {
     let Some(option) = data.speech.as_ref().and_then(|speech| speech.option(current)) else { return Offer::None };
     let Some(id) = option.model.as_deref() else { return Offer::None };
     let model = models_of(state, data).iter().find(|model| model.id == id);
-    offer(model, state.fetched.as_deref() == Some(id), option.missing != Some(SpeechMissing::Model))
+    match offer(model, state.fetched.as_deref() == Some(id), option.missing != Some(SpeechMissing::Model)) {
+        // "Downloaded." only once nothing else keeps it from reading (review of PR #887): the status names
+        // a missing sound output before the model, so the preview would fail; "Provider" says why.
+        Offer::Done if option.missing.is_some() => Offer::None,
+        offered => offered,
+    }
+}
+
+/// What keeps `provider` from reading, as the last load found it.
+fn provider_missing(data: &Data, provider: SpeechProvider) -> Option<SpeechMissing> {
+    data.speech.as_ref().and_then(|speech| speech.option(provider)).and_then(|option| option.missing)
 }
 
 /// What "Talk to the assistant" and "Say something" offer: the model of the speech recognition chosen;
@@ -2056,6 +2068,17 @@ mod tests {
         let _ = update(&mut state, Message::DownloadHere(POCKET_DE.into()), &missing);
         answered(&mut state, &Ok(Response::VoiceModels { models: vec![pocket_model(VoiceModelState::Ready, 1_000)] }));
         assert_eq!(update(&mut state, Message::ModelTick, &missing), Act::Send(Vec::new()), "loads again");
+        // Review of PR #887: without a sound output the status names that first; once the model is there it
+        // is not "Downloaded." with a preview that fails, and "Provider" keeps saying what is missing.
+        let silent = Data { speech: Some(pocket(Some(SpeechMissing::Player))), ..there.clone() };
+        state.fetched = Some(POCKET_DE.into());
+        assert_eq!(speech_offer(&state, &silent), Offer::None);
+        assert_eq!(provider_missing(&silent, SpeechProvider::Pocket), Some(SpeechMissing::Player));
+        let silent_missing = Data { voice_models: missing.voice_models.clone(), ..silent.clone() };
+        loaded(&mut state, &silent_missing);
+        assert!(matches!(speech_offer(&state, &silent_missing), Offer::Missing(_)), "still offered");
+        views(&state, &silent);
+        views(&state, &silent_missing);
         // OpenAI needs no model of the catalogue.
         let openai = Data {
             speech: Some(SpeechStatus { current: SpeechProvider::OpenAi, ..pocket(Some(SpeechMissing::Model)) }),
