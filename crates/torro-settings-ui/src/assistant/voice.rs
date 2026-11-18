@@ -49,6 +49,12 @@
 //! "Say something" ([`Message::TestVoice`]) is the one thing here whose answer is the point:
 //! `settings.test_voice` answers with what was understood. It goes out as [`crate::Action::Ask`],
 //! and the app hands the answer back to [`answered`], which puts it under the row ([`Heard`]).
+//!
+//! Where an action needs a model that is not there (issue #823) – "Preview" the voice's,
+//! "Talk to the assistant" and "Say something" the speech recognition's – the page offers it in
+//! place ([`offer`], [`Offer`]): its name and size with "Download", while it loads how far it got
+//! with a way to "Models" (progress, "Cancel"), and once it is there "Downloaded." and the action
+//! back. It is the same `settings.download_voice_model` as under "Models"; nothing new goes out.
 
 use std::time::Duration;
 
@@ -142,6 +148,9 @@ pub struct State {
     reload: bool,
     /// A model downloads, as the last load or answer said: the list is asked for every second.
     downloading: bool,
+    /// The id of the model last downloaded with "Download" at an action (issue #823), so that action
+    /// says "Downloaded." once it is there; gone once the action ran or the download stopped.
+    fetched: Option<String>,
 }
 
 /// The outcome of "Say something".
@@ -208,6 +217,12 @@ pub enum Message {
     StopPreview,
     /// "Download" of a model, by its id (issue #762); also goes on after "Cancel".
     Download(String),
+    /// "Download" at an action whose model is missing (issue #823): the same download, and the action
+    /// says "Downloaded." once it is there.
+    DownloadHere(String),
+    /// "Models" at a model that downloads (issue #823): the host shows the tab "Models"
+    /// ([`super::update`]); nothing to do here.
+    ShowModels,
     /// "Cancel" of a model that downloads.
     CancelDownload(String),
     /// "Remove" of a model that is there.
@@ -232,6 +247,10 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             // Only switching on needs the models; off is always possible.
             if on && data.voice.as_ref().is_some_and(|status| !status.can_listen()) {
                 return Action::None;
+            }
+            // The action the download was for runs: "Downloaded." has said its part (issue #823).
+            if on {
+                state.fetched = None;
             }
             // The daemon starts (or stops) the listener, which takes a moment: the one load after
             // this change still finds it off. Ask again until it reports what it does, else the
@@ -328,6 +347,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             }
             state.previewing = true;
             state.preview_failed = None;
+            state.fetched = None;
             Action::Ask(Request::Speak { text: preview_text().to_string() })
         }
         // The preview's own answer comes once it stopped ([`answered`]).
@@ -338,15 +358,21 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             }
             state.testing = true;
             state.heard = None;
+            state.fetched = None;
             // The answer is the point, so it comes back to this section ([`answered`]).
             Action::Ask(Request::TestVoice)
         }
-        Message::Download(_) | Message::CancelDownload(_) | Message::Remove(_)
+        Message::Download(_) | Message::DownloadHere(_) | Message::CancelDownload(_) | Message::Remove(_)
             if state.previewing || state.testing || state.changing_models =>
         {
             Action::None
         }
         Message::Download(model) => ask_models(state, Request::DownloadVoiceModel { model }),
+        Message::DownloadHere(model) => {
+            state.fetched = Some(model.clone());
+            ask_models(state, Request::DownloadVoiceModel { model })
+        }
+        Message::ShowModels => Action::None,
         Message::CancelDownload(model) => ask_models(state, Request::CancelVoiceDownload { model }),
         Message::Remove(model) => ask_models(state, Request::RemoveVoiceModel { model }),
         Message::ModelTick => {
@@ -394,7 +420,14 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) {
                 new.state == VoiceModelState::Missing
                     && before.iter().any(|old| old.id == new.id && old.state == VoiceModelState::Ready)
             });
-            state.reload |= ended || removed;
+            // A model there at once – it was on disk already, downloaded meanwhile from elsewhere – never
+            // ran here: the page loads again too, else an action offered in place would wait for that load
+            // for ever (review of #823).
+            let came = models.iter().any(|new| {
+                new.state == VoiceModelState::Ready
+                    && before.iter().any(|old| old.id == new.id && old.state != VoiceModelState::Ready)
+            });
+            state.reload |= ended || removed || came;
             state.downloading = models.iter().any(|model| model.state == VoiceModelState::Running);
             state.models = Some(models.clone());
         }
@@ -526,6 +559,15 @@ pub fn loaded(state: &mut State, data: &Data) {
         state.models = Some(data.voice_models.clone());
     }
     state.downloading = models_of(state, data).iter().any(|model| model.state == VoiceModelState::Running);
+    // A download offered at an action that was cancelled, failed or removed has nothing to report. While
+    // its answer is out the list here is older than the download, so it waits for that answer.
+    let fetched = state.fetched.as_deref();
+    let going = models_of(state, data).iter().any(|model| {
+        Some(model.id.as_str()) == fetched && matches!(model.state, VoiceModelState::Ready | VoiceModelState::Running)
+    });
+    if !going && !state.asking_models {
+        state.fetched = None;
+    }
 }
 
 /// Escape closes the open dropdown first.
@@ -597,7 +639,8 @@ fn speech_items(key: Choice, data: &Data) -> Vec<MenuItem<'_, Message>> {
 }
 
 /// "Read aloud" (issue #745): the switch of the chat windows, the provider with what it lacks, the
-/// voice with "Preview", and who the voices are by.
+/// voice with "Preview", the voice's model offered under it while it is missing (issue #823), and who
+/// the voices are by.
 fn read_aloud_group<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
     let settings = &data.settings.voice;
     let switch =
@@ -606,10 +649,15 @@ fn read_aloud_group<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> E
     let current = current_provider(data);
     let label =
         marked(provider_name(current), data.speech.as_ref().is_some_and(|speech| speech.recommended == current));
+    let offered = speech_offer(state, data);
+    let waits = matches!(offered, Offer::Missing(_) | Offer::Loading(_));
     // The status came with the other voice data, or its check failed: then say so instead of
-    // "Checking …" for ever.
+    // "Checking …" for ever. A missing model is offered under the voice instead (issue #823).
     let detail = match (&data.speech, &data.voice) {
         (None, Some(_)) => Some(tr("This computer could not be checked. Use Check again under Models.").to_string()),
+        // Only the missing model is said under the voice; no sound output, no graphics card or no account
+        // still stand here (review of PR #887: the status names those before the model).
+        _ if waits && provider_missing(data, current) == Some(SpeechMissing::Model) => None,
         (speech, _) => provider_detail(speech.as_ref(), current),
     };
     let provider =
@@ -620,7 +668,8 @@ fn read_aloud_group<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> E
             None,
             tr("Preview"),
             style::button::secondary,
-            (!state.changing_models).then_some(Message::Preview),
+            // Without its model the preview would only say it is missing (decision 1 of #823).
+            (!state.changing_models && !waits).then_some(Message::Preview),
         ),
     };
     let chosen = chosen_voice(data, current);
@@ -628,10 +677,16 @@ fn read_aloud_group<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> E
     let picker = state.menus.button(Choice::SpeechVoice, marked(&voice_name(&chosen), recommended), Message::Menus);
     let control = row![picker, preview].spacing(layout::item_gap()).align_y(Alignment::Center);
     // "Voice" as the sound of a speaker: in German the page itself is "Sprache".
-    // A preview that failed says so with a dot, not only in words (#560).
-    let dot = state.preview_failed.as_ref().map(|_| widgets::status_dot(Status::Error));
-    let voice = setting_row(dot, trc("speaker", "Voice"), state.preview_failed.clone(), control);
+    // A preview that failed says so with a dot, not only in words (#560); a model just downloaded here
+    // says it is there (issue #823).
+    let (dot, detail) = match (&state.preview_failed, offered) {
+        (Some(failed), _) => (Some(widgets::status_dot(Status::Error)), Some(failed.clone())),
+        (None, Offer::Done) => (Some(widgets::status_dot(Status::Ok)), Some(tr("Downloaded.").to_string())),
+        (None, _) => (None, None),
+    };
+    let voice = setting_row(dot, trc("speaker", "Voice"), detail, control);
     let mut rows = vec![on, provider, voice];
+    rows.extend(offer_row(state, offered));
     rows.extend(delivery_rows(state, data, current, class));
     let footer = match current {
         // The licences of the voices ask for their names (decision 2 of #762).
@@ -870,12 +925,22 @@ fn turn_group<'a>(voice: &Voice, class: SizeClass) -> Element<'a, Message> {
     widgets::group(tr("End of a sentence"), rows, Some(footer.to_string()))
 }
 
-/// "Voice": on or off with what the listener does, the wake word, "Speak answers", the speech
-/// recognition with its language, the microphone and the test.
+/// "Voice": on or off with what the listener does, the speech recognition's model offered under it
+/// while it is missing (issue #823), the wake word, "Speak answers", the speech recognition with its
+/// language, the microphone and the test.
 fn voice_group<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
     let settings = &data.settings.voice;
     let can_listen = data.voice.as_ref().is_none_or(VoiceStatus::can_listen);
-    let (_, detail) = voice_state(settings.enabled, data.voice.as_ref());
+    let offered = listen_offer(state, data);
+    let waits = matches!(offered, Offer::Missing(_) | Offer::Loading(_));
+    // The row under the switch offers the model, so this line need not send anyone to "Models".
+    let detail = match offered {
+        _ if waits && !settings.enabled => tr("Off").to_string(),
+        Offer::Done if !settings.enabled && can_listen => {
+            tr("Downloaded. Switch on to talk to the assistant.").to_string()
+        }
+        _ => voice_state(settings.enabled, data.voice.as_ref()).1,
+    };
     let switch = toggler(settings.enabled)
         .size(style::CHECK_SIZE)
         .style(style::toggler)
@@ -915,15 +980,21 @@ fn voice_group<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Elemen
             (can_listen && !state.changing_models).then_some(Message::TestVoice),
         ),
     };
-    let test = setting_row(None, tr("Test the microphone"), Some(heard_text(state)), test_button);
+    // Decision 2 of #823: the model is offered once, above; the test points there.
+    let heard = match waits && !state.testing {
+        true => tr("Needs the speech recognition above.").to_string(),
+        false => heard_text(state),
+    };
+    let test = setting_row(None, tr("Test the microphone"), Some(heard), test_button);
     let footer = tr(
         "Say “Hey Torro” and your question. Everything stays on this computer. Approvals are only given with a click, never by voice.",
     );
     let recognizer = marked(recognizer_name(settings.recognizer), settings.recognizer == Recognizer::Whisper);
     let recognizer = state.menus.button(Choice::Recognizer, recognizer, Message::Menus);
     let recognizer = setting_row(None, tr("Speech recognition"), None, recognizer);
-    let mut rows =
-        vec![on, wake, speak, announce, new_after_row(settings, class), recognizer, language_row(state, data)];
+    let mut rows = vec![on];
+    rows.extend(offer_row(state, offered));
+    rows.extend([wake, speak, announce, new_after_row(settings, class), recognizer, language_row(state, data)]);
     rows.extend(microphone_row(state, data));
     rows.push(test);
     widgets::group(tr("Conversation"), rows, Some(footer.to_string()))
@@ -992,6 +1063,41 @@ pub fn microphone_detail(data: &Data) -> Option<String> {
     let recorder = data.voice.as_ref()?.program(VoicePart::Recorder)?;
     let in_use = recorder.program.as_deref()?;
     (in_use != chosen).then(|| tr("This microphone cannot be used now, the system default records.").to_string())
+}
+
+/// The row under an action whose model is missing or loads (issue #823): its name and size with
+/// "Download", or how far it got with "Models" for the progress and "Cancel". None otherwise: once it
+/// is there the action's own row says so.
+fn offer_row<'a>(state: &State, offered: Offer<'a>) -> Option<Element<'a, Message>> {
+    match offered {
+        Offer::Missing(model) => {
+            let free = !(state.previewing || state.testing || state.changing_models);
+            let title = trf(
+                "{name} ({size}) is not downloaded yet.",
+                &[("name", &model_name(model)), ("size", &format_bytes(model.bytes))],
+            );
+            let detail = match model.state {
+                VoiceModelState::Failed => {
+                    model.error.clone().unwrap_or_else(|| tr("The download failed. Try again.").to_string())
+                }
+                _ => tr("Download it now?").to_string(),
+            };
+            let download = widgets::text_button(
+                None,
+                tr("Download"),
+                style::button::secondary,
+                free.then(|| Message::DownloadHere(model.id.clone())),
+            );
+            Some(setting_row(Some(widgets::status_dot(Status::Attention)), title, Some(detail), download))
+        }
+        Offer::Loading(model) => {
+            let title = trf("Downloading in the background … {percent} %", &[("percent", &percent(model))]);
+            let models = widgets::text_button(None, tr("Models"), style::button::secondary, Some(Message::ShowModels));
+            let detail = Some(tr("Progress and Cancel under Models").to_string());
+            Some(setting_row(Some(widgets::status_dot(Status::Inactive)), title, detail, models))
+        }
+        Offer::None | Offer::Done => None,
+    }
 }
 
 /// "Models" (issue #762): every model with its size and button, the reason when a request was
@@ -1098,6 +1204,66 @@ pub fn percent(model: &VoiceModel) -> u64 {
         0 => 0,
         bytes => (model.completed.min(bytes) * 100) / bytes,
     }
+}
+
+/// What an action offers for the model it needs (issue #823).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Offer<'a> {
+    /// Nothing: no model of the catalogue is needed, or it is there and was not downloaded here.
+    None,
+    /// The model is missing, was cancelled or failed: "Download" it here.
+    Missing(&'a VoiceModel),
+    /// It downloads, or is there while the page has not loaded since: how far it got.
+    Loading(&'a VoiceModel),
+    /// Downloaded here and the page knows: the action says "Downloaded.".
+    Done,
+}
+
+/// What to offer for `model` (none for an action without one of the catalogue): `fetched` when it was
+/// downloaded at this action, `fresh` when the last load no longer finds it missing. A model that is
+/// there before the page loaded again still loads, so the action does not start and fail.
+pub fn offer(model: Option<&VoiceModel>, fetched: bool, fresh: bool) -> Offer<'_> {
+    let Some(model) = model else { return Offer::None };
+    match model.state {
+        VoiceModelState::Missing | VoiceModelState::Cancelled | VoiceModelState::Failed => Offer::Missing(model),
+        VoiceModelState::Running => Offer::Loading(model),
+        VoiceModelState::Ready if !fresh => Offer::Loading(model),
+        VoiceModelState::Ready if fetched => Offer::Done,
+        VoiceModelState::Ready => Offer::None,
+    }
+}
+
+/// What "Preview" offers: the model of the provider that reads on this computer; nothing for OpenAI
+/// or while the status is not known.
+fn speech_offer<'a>(state: &'a State, data: &'a Data) -> Offer<'a> {
+    let current = current_provider(data);
+    if current == SpeechProvider::OpenAi {
+        return Offer::None;
+    }
+    let Some(option) = data.speech.as_ref().and_then(|speech| speech.option(current)) else { return Offer::None };
+    let Some(id) = option.model.as_deref() else { return Offer::None };
+    let model = models_of(state, data).iter().find(|model| model.id == id);
+    match offer(model, state.fetched.as_deref() == Some(id), option.missing != Some(SpeechMissing::Model)) {
+        // "Downloaded." only once nothing else keeps it from reading (review of PR #887): the status names
+        // a missing sound output before the model, so the preview would fail; "Provider" says why.
+        Offer::Done if option.missing.is_some() => Offer::None,
+        offered => offered,
+    }
+}
+
+/// What keeps `provider` from reading, as the last load found it.
+fn provider_missing(data: &Data, provider: SpeechProvider) -> Option<SpeechMissing> {
+    data.speech.as_ref().and_then(|speech| speech.option(provider)).and_then(|option| option.missing)
+}
+
+/// What "Talk to the assistant" and "Say something" offer: the model of the speech recognition chosen;
+/// nothing while the status is not known.
+fn listen_offer<'a>(state: &'a State, data: &'a Data) -> Offer<'a> {
+    let Some(voice) = data.voice.as_ref() else { return Offer::None };
+    let id = data.settings.voice.recognizer.model();
+    let model = models_of(state, data).iter().find(|model| model.id == id);
+    let fresh = voice.program(VoicePart::SpeechToText).and_then(|program| program.missing) != Some(VoiceMissing::Model);
+    offer(model, state.fetched.as_deref() == Some(id), fresh)
 }
 
 /// The sound devices the system does not offer, as a label and how to get one: a row each instead
@@ -1936,6 +2102,165 @@ mod tests {
         assert_eq!(provider_detail(None, SpeechProvider::Pocket).as_deref(), Some(tr("Checking this computer…")));
         assert_eq!(missing_text(SpeechMissing::Account), tr("Connect an OpenAI account in Settings › AI."));
         assert_eq!(missing_text(SpeechMissing::Gpu), tr("No NVIDIA graphics card was found."));
+    }
+
+    /// Issue #823: what an action offers follows its model – missing, cancelled or failed "Download",
+    /// loading (also while the page has not loaded since it came) its progress, and "Downloaded." only
+    /// for one downloaded here.
+    #[test]
+    fn the_offer_follows_the_model() {
+        assert_eq!(offer(None, true, true), Offer::None);
+        for state in [VoiceModelState::Missing, VoiceModelState::Cancelled, VoiceModelState::Failed] {
+            let missing = model("x", state, 0);
+            assert_eq!(offer(Some(&missing), false, false), Offer::Missing(&missing), "{state:?}");
+        }
+        let running = model("x", VoiceModelState::Running, 400);
+        assert_eq!(offer(Some(&running), true, false), Offer::Loading(&running));
+        let ready = model("x", VoiceModelState::Ready, 1_000);
+        for fetched in [true, false] {
+            assert_eq!(offer(Some(&ready), fetched, false), Offer::Loading(&ready), "not loaded yet");
+        }
+        assert_eq!(offer(Some(&ready), true, true), Offer::Done);
+        assert_eq!(offer(Some(&ready), false, true), Offer::None, "there before: nothing to say");
+    }
+
+    /// The status of Pocket TTS with `missing`, its model `pocket-de`.
+    fn pocket(missing: Option<SpeechMissing>) -> SpeechStatus {
+        SpeechStatus {
+            gpu: None,
+            fast_enough: true,
+            recommended: SpeechProvider::Pocket,
+            current: SpeechProvider::Pocket,
+            providers: vec![torro_ipc::SpeechOption {
+                provider: SpeechProvider::Pocket,
+                missing,
+                voices: Vec::new(),
+                model: Some(torro_core::voice_models::POCKET_DE.into()),
+                setup: None,
+            }],
+        }
+    }
+
+    /// Issue #823, decision 1: without the voice's model "Preview" offers it in place; "Download" there
+    /// downloads it (waiting for a preview that runs) and says "Downloaded." once the page knows, until
+    /// the preview runs.
+    #[tokio::test]
+    async fn a_missing_voice_is_offered_under_preview() {
+        use torro_core::voice_models::POCKET_DE;
+        let pocket_model = |state, completed| VoiceModel {
+            kind: VoiceModelKind::Speech,
+            name: "Pocket TTS".into(),
+            ..model(POCKET_DE, state, completed)
+        };
+        let missing = Data {
+            speech: Some(pocket(Some(SpeechMissing::Model))),
+            voice_models: vec![pocket_model(VoiceModelState::Missing, 0)],
+            ..data().await
+        };
+        let mut state = State::default();
+        loaded(&mut state, &missing);
+        assert!(matches!(speech_offer(&state, &missing), Offer::Missing(model) if model.id == POCKET_DE));
+        assert_eq!(model_name(&missing.voice_models[0]), tr("Pocket TTS, German"));
+        views(&state, &missing);
+
+        state.previewing = true;
+        assert_eq!(update(&mut state, Message::DownloadHere(POCKET_DE.into()), &missing), Act::None, "it waits");
+        state.previewing = false;
+        assert_eq!(
+            update(&mut state, Message::DownloadHere(POCKET_DE.into()), &missing),
+            Act::Ask(Request::DownloadVoiceModel { model: POCKET_DE.into() })
+        );
+        assert_eq!(state.fetched.as_deref(), Some(POCKET_DE));
+        answered(&mut state, &Ok(Response::VoiceModels { models: vec![pocket_model(VoiceModelState::Running, 400)] }));
+        assert!(matches!(speech_offer(&state, &missing), Offer::Loading(_)));
+        assert_eq!(update(&mut state, Message::ShowModels, &missing), Act::None, "the host shows the tab");
+        views(&state, &missing);
+        // A load while the answer is out keeps "Downloaded." for later.
+        let _ = update(&mut state, Message::Check, &missing);
+        state.asking_models = true;
+        loaded(&mut state, &missing);
+        assert_eq!(state.fetched.as_deref(), Some(POCKET_DE), "the answer is newer");
+        // There, but the page has not loaded since: still loading, so the preview does not fail.
+        answered(&mut state, &Ok(Response::VoiceModels { models: vec![pocket_model(VoiceModelState::Ready, 1_000)] }));
+        assert!(matches!(speech_offer(&state, &missing), Offer::Loading(_)));
+
+        let there = Data {
+            speech: Some(pocket(None)),
+            voice_models: vec![pocket_model(VoiceModelState::Ready, 1_000)],
+            ..missing.clone()
+        };
+        loaded(&mut state, &there);
+        assert_eq!(speech_offer(&state, &there), Offer::Done);
+        views(&state, &there);
+        assert_eq!(
+            update(&mut state, Message::Preview, &there),
+            Act::Ask(Request::Speak { text: preview_text().into() })
+        );
+        assert_eq!((state.fetched.as_deref(), speech_offer(&state, &there)), (None, Offer::None), "it ran");
+
+        // A download offered here that was cancelled has nothing to report.
+        answered(&mut state, &Ok(Response::Ok));
+        let _ = update(&mut state, Message::DownloadHere(POCKET_DE.into()), &missing);
+        answered(&mut state, &Ok(Response::VoiceModels { models: vec![pocket_model(VoiceModelState::Cancelled, 9)] }));
+        loaded(&mut state, &missing);
+        assert_eq!(state.fetched, None);
+        // Review of #823: a model there at once (on disk already) loads the page as well.
+        let _ = update(&mut state, Message::DownloadHere(POCKET_DE.into()), &missing);
+        answered(&mut state, &Ok(Response::VoiceModels { models: vec![pocket_model(VoiceModelState::Ready, 1_000)] }));
+        assert_eq!(update(&mut state, Message::ModelTick, &missing), Act::Send(Vec::new()), "loads again");
+        // Review of PR #887: without a sound output the status names that first; once the model is there it
+        // is not "Downloaded." with a preview that fails, and "Provider" keeps saying what is missing.
+        let silent = Data { speech: Some(pocket(Some(SpeechMissing::Player))), ..there.clone() };
+        state.fetched = Some(POCKET_DE.into());
+        assert_eq!(speech_offer(&state, &silent), Offer::None);
+        assert_eq!(provider_missing(&silent, SpeechProvider::Pocket), Some(SpeechMissing::Player));
+        let silent_missing = Data { voice_models: missing.voice_models.clone(), ..silent.clone() };
+        loaded(&mut state, &silent_missing);
+        assert!(matches!(speech_offer(&state, &silent_missing), Offer::Missing(_)), "still offered");
+        views(&state, &silent);
+        views(&state, &silent_missing);
+        // OpenAI needs no model of the catalogue.
+        let openai = Data {
+            speech: Some(SpeechStatus { current: SpeechProvider::OpenAi, ..pocket(Some(SpeechMissing::Model)) }),
+            ..missing.clone()
+        };
+        assert_eq!(speech_offer(&state, &openai), Offer::None);
+    }
+
+    /// Issue #823, decision 2: without the speech recognition's model "Talk to the assistant" offers it
+    /// once, and "Say something" points there; downloaded here, the switch says so until it is on.
+    #[tokio::test]
+    async fn a_missing_speech_recognition_is_offered_under_the_switch() {
+        let id = Recognizer::Whisper.model();
+        let mut missing = Data {
+            voice: Some(status(VoiceState::Off, Some(VoiceMissing::Model))),
+            voice_models: vec![model(id, VoiceModelState::Failed, 0)],
+            ..data().await
+        };
+        missing.settings.voice.recognizer = Recognizer::Whisper;
+        missing.settings.voice.enabled = false;
+        let mut state = State::default();
+        loaded(&mut state, &missing);
+        assert!(matches!(listen_offer(&state, &missing), Offer::Missing(model) if model.id == id));
+        views(&state, &missing);
+        let _ = update(&mut state, Message::DownloadHere(id.into()), &missing);
+        assert_eq!(state.fetched.as_deref(), Some(id));
+        answered(&mut state, &Ok(Response::VoiceModels { models: vec![model(id, VoiceModelState::Running, 100)] }));
+        assert!(matches!(listen_offer(&state, &missing), Offer::Loading(_)));
+        views(&state, &missing);
+
+        let there = Data {
+            voice: Some(status(VoiceState::Off, None)),
+            voice_models: vec![model(id, VoiceModelState::Ready, 1_000)],
+            ..missing.clone()
+        };
+        loaded(&mut state, &there);
+        assert_eq!(listen_offer(&state, &there), Offer::Done);
+        views(&state, &there);
+        assert!(matches!(update(&mut state, Message::Enabled(true), &there), Act::Send(_)));
+        assert_eq!(listen_offer(&state, &there), Offer::None, "switched on: nothing to say");
+        // Without a status nothing is offered.
+        assert_eq!(listen_offer(&state, &Data { voice: None, ..there }), Offer::None);
     }
 
     /// Issue #764: Qwen3-TTS is offered only where this computer's status lists it, with its own voices and

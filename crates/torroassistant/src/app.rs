@@ -446,7 +446,7 @@ pub enum Message {
     /// can dictate.
     Voice(Result<VoiceStatus, Refusal>),
     /// The microphone of the composer (issue #699): records, stops a recording, or – without speech
-    /// recognition – opens Settings › Voice.
+    /// recognition – opens Settings › Assistant › Voice › Models (issue #823).
     Dictate,
     /// What was dictated, as text; empty when nothing was understood.
     Dictated(Result<String, Refusal>),
@@ -2430,7 +2430,8 @@ impl App {
     }
 
     /// The microphone (issue #699): records until a pause, stops a recording, or – without speech
-    /// recognition – opens Settings › Voice, where it is set up.
+    /// recognition – opens Settings › Assistant › Voice › Models, where it is downloaded (issue #823).
+    /// The tab is chosen once the page has its data, as the demo states press theirs.
     fn dictate(&mut self) -> Task<Message> {
         match self.dictation {
             Dictation::Stopping => Task::none(),
@@ -2440,7 +2441,9 @@ impl App {
             }
             Dictation::Idle if !self.can_dictate() => {
                 self.close_menus();
-                self.open_settings(Some(VOICE_PAGE))
+                let open = self.open_settings(Some(VOICE_PAGE));
+                self.settings_steps = vec![settings::Message::VoiceTab(settings::VoiceTab::Models as usize)];
+                open
             }
             Dictation::Idle => {
                 self.dictation = Dictation::Recording;

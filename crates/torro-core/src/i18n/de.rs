@@ -4179,7 +4179,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Dictate", "Diktieren"),
     ("Stop dictating", "Diktieren beenden"),
     ("Transcribing…", "Wird umgewandelt …"),
-    ("Set up speech recognition in Settings › Voice", "Spracherkennung in Einstellungen › Sprache einrichten"),
+    (
+        "Download speech recognition under Settings › Assistant › Voice › Models",
+        "Spracherkennung unter Einstellungen › Assistent › Sprache › Modelle herunterladen",
+    ),
     ("Nothing was understood.", "Nichts verstanden."),
     ("Speech recognition isn't set up.", "Die Spracherkennung ist nicht eingerichtet."),
     ("Couldn't dictate.", "Diktieren hat nicht geklappt."),
@@ -9523,9 +9526,17 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Remove an unknown speech model", "Ein unbekanntes Sprachmodell entfernen"),
     (
-        "Download the voice in Settings › Assistant › Voice first.",
-        "Lade zuerst die Stimme unter Einstellungen › Assistent › Sprache herunter.",
+        "Download the voice under Settings › Assistant › Voice › Models first.",
+        "Lade zuerst die Stimme unter Einstellungen › Assistent › Sprache › Modelle herunter.",
     ),
+    // Issue #823: a missing model offered where the action needs it.
+    ("{name} ({size}) is not downloaded yet.", "{name} ({size}) ist noch nicht geladen."),
+    ("Download it now?", "Jetzt herunterladen?"),
+    ("Downloading in the background … {percent} %", "Lädt im Hintergrund … {percent} %"),
+    ("Progress and Cancel under Models", "Fortschritt und Abbrechen unter Modelle"),
+    ("Downloaded.", "Geladen."),
+    ("Downloaded. Switch on to talk to the assistant.", "Geladen. Zum Sprechen einschalten."),
+    ("Needs the speech recognition above.", "Braucht die Spracherkennung oben."),
     // Issue #763: the tabs of the assistant's settings, as #762 left them.
     ("Chats", "Chats"),
     ("After “Hey Torro”, with the voice under Read aloud", "Nach „Hey Torro“, mit der Stimme unter Vorlesen"),

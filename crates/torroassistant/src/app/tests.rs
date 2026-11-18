@@ -2131,7 +2131,8 @@ fn a_dictation_that_brings_nothing_says_why() {
     assert_eq!(app.dictation, Dictation::Idle);
 }
 
-/// Issue #699: without speech recognition the microphone opens Settings › Voice and records nothing.
+/// Issue #699: without speech recognition the microphone opens the settings and records nothing; since
+/// issue #823 at Assistant › Voice › Models, once the page has its data.
 #[test]
 fn without_speech_recognition_the_microphone_opens_the_settings() {
     let mut app = started(&[]);
@@ -2142,6 +2143,9 @@ fn without_speech_recognition_the_microphone_opens_the_settings() {
     assert_eq!(app.dictation, Dictation::Idle);
     assert_eq!(pane(&app).host.current().id, VOICE_PAGE);
     assert!(!sent(&mut app).iter().any(|request| matches!(request, Request::Dictate)));
+    settings_loaded(&mut app);
+    assert!(app.settings_steps.is_empty(), "pressed once the data is in");
+    assert_eq!(pane(&app).sections.voice_tab, settings::VoiceTab::Models);
     for size in SIZES {
         let _ = app.update(Message::Resized(size));
         let _ = app.view();

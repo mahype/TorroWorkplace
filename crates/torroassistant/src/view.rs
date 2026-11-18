@@ -1430,15 +1430,19 @@ impl App {
     }
 
     /// The microphone of the composer (issue #699): pale while speech recognition is not set up (a
-    /// click opens Settings › Voice); while it records a round surface with the icon in the attention
-    /// colour (red stays for "Send") and "Listening…" in the field, so it never shows by colour
-    /// alone; turning arrows while the speech becomes text.
+    /// click opens Settings › Assistant › Voice › Models, issue #823); while it records a round
+    /// surface with the icon in the attention colour (red stays for "Send") and "Listening…" in the
+    /// field, so it never shows by colour alone; turning arrows while the speech becomes text.
     fn mic_button(&self) -> Element<'_, Message> {
         let (colour, tip, look): (fn(&Palette) -> iced::Color, &str, widgets::ButtonStyle) = match self.dictation {
             Dictation::Stopping => return widgets::round_busy(tr("Transcribing…")),
             Dictation::Recording => (|p| p.attention_text, tr("Stop dictating"), style::button::round_quiet),
             Dictation::Idle if self.can_dictate() => (|p| p.text_2, tr("Dictate"), style::button::icon),
-            Dictation::Idle => (|p| p.text_3, tr("Set up speech recognition in Settings › Voice"), style::button::icon),
+            Dictation::Idle => (
+                |p| p.text_3,
+                tr("Download speech recognition under Settings › Assistant › Voice › Models"),
+                style::button::icon,
+            ),
         };
         let mic = button(container(tinted(Icon::Mic, icon::SIZE, colour)).center(Fill))
             .width(size::control_sm())
