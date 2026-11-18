@@ -22123,9 +22123,8 @@ mod tests {
     /// on the clipboard, in a mail of plain text and in the HTML of a mail.
     #[test]
     fn selecting_and_pressing_copy_copies_in_the_window() {
-        // Several renderers at once crash the test process (`torro-gui`'s `one_simulator`).
-        static ONE: Mutex<()> = Mutex::new(());
-        let _one = ONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Several renderers at once crash the test process: the crate's one lock for them.
+        let _one = crate::one_renderer();
         let mut renderer = block_on(<iced::Renderer as iced::advanced::renderer::Headless>::new(
             iced::Font::with_name("Fira Sans"),
             iced::Pixels(16.0),
