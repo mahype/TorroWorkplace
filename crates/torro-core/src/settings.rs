@@ -1363,6 +1363,11 @@ pub struct Voice {
     /// #831); `None` for 30, `0` for never ([`Voice::new_after_or_default`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_after: Option<u16>,
+    /// Say briefly what the voice chat does while an answer takes a moment (issue #837), like "One
+    /// moment, I'm checking your calendar". Only spoken, never stored in the conversation. On unless
+    /// turned off, also for files written before the choice existed.
+    #[serde(default = "on")]
+    pub announce: bool,
 }
 
 /// Who reads the assistant's answers aloud (issue #745, `docs/assistent.md` "Vorlesen"). More may
@@ -1491,6 +1496,7 @@ impl Default for Voice {
             pocket_pause: None,
             openai_style: None,
             new_after: None,
+            announce: on(),
         }
     }
 }
@@ -3227,6 +3233,7 @@ mod tests {
         assert_eq!(old.voice.wake_word, WAKE_WORD);
         let partial: Settings = serde_json::from_str(r#"{"voice": {"enabled": true}}"#).expect("reads");
         assert!(partial.voice.enabled && partial.voice.speak_answers);
+        assert!(old.voice.announce && partial.voice.announce, "issue #837: on for files from before");
 
         assert_eq!(Voice::wake_word_from(&json!("Hey  Torro")), Ok(WAKE_WORD.to_string()));
         assert!(Voice::wake_word_from(&json!("hey jarvis")).is_err(), "fixed for now");

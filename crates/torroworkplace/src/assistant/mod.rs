@@ -68,6 +68,7 @@
 //!
 //! What goes to a client never names a path; the core's log does.
 
+pub(crate) mod announce;
 pub(crate) mod cards;
 mod compact;
 mod delegate;

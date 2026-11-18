@@ -4236,7 +4236,10 @@ static SET_SETTING: Command = Command {
                   150 in tens, or null for 100), `pocket_pause` (extra milliseconds after each sentence from 0 to \
                   1000 in 250s, or null for none), `voice_new_after` (minutes from 0 to 240 in 15s, or null for 30: \
                   after this long without an entry \"Hey Torro\" starts a new conversation \"Voice\" and the old \
-                  one keeps its date in the title; 0 never starts a new one) or `openai_style` (how OpenAI speaks, one line of at most 500 \
+                  one keeps its date in the title; 0 never starts a new one), `voice_announcements` (true, the default, or \
+                  false: while an answer of the voice chat takes a moment, it says briefly what it does, like \
+                  \"One moment, I'm checking your calendar\"; only spoken, never stored, and only while \
+                  `speak_answers` is on) or `openai_style` (how OpenAI speaks, one line of at most 500 \
                   characters like \"calm, slow\", or null; it only reaches OpenAI once a person chose OpenAI); \
                   `stt_model` and `voice` are gone and refused or \
                   `assistant_default` (what a new chat of the assistant starts with: {\"engine\": \"<id from \
@@ -8596,9 +8599,13 @@ mod tests {
         }
         // Issue #782: how the voice speaks is open to agents; the style only travels once a person
         // chose OpenAI above.
-        for key in
-            [SettingKey::PocketSpeed, SettingKey::PocketPause, SettingKey::OpenAiStyle, SettingKey::VoiceNewAfter]
-        {
+        for key in [
+            SettingKey::PocketSpeed,
+            SettingKey::PocketPause,
+            SettingKey::OpenAiStyle,
+            SettingKey::VoiceNewAfter,
+            SettingKey::VoiceAnnouncements,
+        ] {
             assert!(!Request::SetSetting { key, value: serde_json::json!("whisper") }.kept_for_people(), "{key:?}");
         }
         let mut rights = RightsTemplate::FullAccess.rights();
@@ -9555,6 +9562,7 @@ mod tests {
                 "pocket_speed",
                 "pocket_pause",
                 "voice_new_after",
+                "voice_announcements",
                 "openai_style",
                 "assistant_default",
                 "setup",

@@ -968,7 +968,9 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
   Pausiert die Antwort (ein langes Werkzeug), wartet das Vorlesen ohne Zeitgrenze auf den Rest; als
   „liest vor“ zählt es nur, solange etwas klingt, das Mikrofon eines Gesprächs bleibt also nicht zu: Ist der
   Ton eines offenen Auftrags 500 ms leer, meldet der Helfer `"waiting"` (der Dienst zählt das Vorlesen nicht
-  mehr), beim nächsten Ton wieder `"playing"`.
+  mehr), beim nächsten Ton wieder `"playing"`. `"mark"` markiert den Beginn dessen, was folgt (das nächste
+  `add`, bei OpenAI der nächste Ton); der Helfer antwortet `"marked"`, sobald das Gerät den ersten Ton danach
+  spielt (#837).
 - **Messung** (Issue #850): Je Runde schreibt der Dienst ins Journal
   `voice round: … first sentence <ms> ms, sound ready <ms> ms` (vom ersten Wort bis der erste Satz an den
   Helfer geht, und von da bis zum ersten Ton), je OpenAI-Stück `torroworkplace: speech piece: <n> chars, first
@@ -1011,6 +1013,7 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
 | Wer vorlesen kann | Voice › Read aloud | `settings.speech_status` · Read | `settings_speech_status` |
 | An/aus, Anbieter, Stimmen, wie die Stimme spricht | Voice › Read aloud, Lautsprecher im Chatfenster | `settings.set_setting` `read_aloud`, `speech_provider`, `pocket_voice`, `openai_voice`, `pocket_speed`, `pocket_pause`, `openai_style` · Admin | `settings_set_setting` (OpenAI als Anbieter nur Menschen) |
 | Pause bis zum neuen Gespräch „Voice“ (Issue #831) | Voice › Conversation › New conversation after a pause | `settings.set_setting` `voice_new_after` · Admin | `settings_set_setting` |
+| Ansagen beim Nachdenken an/aus (Issue #837) | Voice › Conversation › Say what it does while it works | `settings.set_setting` `voice_announcements` · Admin | `settings_set_setting` |
 | Füllstand des Kontexts (Issue #831) | Kopf des Chatfensters | `assistant.get_conversation`, `assistant.list_conversations` (`context`) · Read | `assistant_get_conversation`, `assistant_list_conversations` |
 
 ### Gespräch (Issue #747)
@@ -1040,6 +1043,22 @@ ist; das Mikrofon ist dann nur für dieses Gespräch offen. Statt des Eingabefel
   Die Sprechzeile im Fenster und Menü und Tooltip des Tray zeigen dasselbe in Worten: „Erkennt …“, „Überlegt …“,
   „Schaut in den Kalender …“ (nach dem Bereich des Werkzeugs), „Spricht …“. Die Markierung am Tray-Symbol bleibt
   dabei der Ring; der volle Punkt heißt nur „Mikrofon offen“.
+- **Ansagen beim Nachdenken (#837):** Damit keine stumme Pause entsteht, sagt der Assistent im Sprachchat
+  („Hey Torro“ und Gespräch) kurz, was er tut: sofort beim ersten Werkzeug, nach dem Bereich des Werkzeugs
+  („Moment, ich schaue in deinen Kalender.“; Mail, Aufgaben, Kontakte, sonst „Moment, ich schaue nach.“), oder
+  nach 1,5 Sekunden ohne ersten Satz der Antwort („Lass mich kurz überlegen.“). Je Bereich gibt es drei Fassungen,
+  die sich reihum abwechseln; sie nennen nie Inhalte, auch keine Namen von Erweiterungen. Höchstens eine Ansage je
+  Antwort, keine, wenn die Antwort schneller ist, und keine beim Vorlesen eines getippten Chats, weil das Fenster die
+  Zustände dort zeigt. Die Ansage wird nur vorgelesen, nie in der Unterhaltung gespeichert, damit das Modell sie
+  nicht für seine eigene Aussage hält; die Antwort folgt im selben Vorlesen. Die Antwortzeiten (#828) zählen die Ansage
+  nicht: Der erste Satz zählt ab dem Text der Antwort, ihr erster Ton ab dem Moment, in dem das Gerät ihn spielt.
+  Dafür schickt der Dienst vor dem ersten Text der Antwort (bei OpenAI vor dem Ton ihres ersten Stücks) die Zeile
+  `"mark"`, und der Helfer meldet `"marked"`, sobald der erste Ton dahinter erklingt. Ohne Ansage zählt wie bisher
+  `"playing"` beim Öffnen der Ausgabe, also vor ihren 150 ms Vorlauf; Runden mit Ansage messen darum etwa so viel
+  länger. Kern und `torroassistant` gehören zusammen: Ein älterer Helfer kennt `"mark"` nicht, dann bleibt eine
+  Runde mit Ansage ungemessen. Abschalten: „Say what it does while it works“ unter Voice ›
+  Conversation (`voice_announcements`); der Schalter wirkt nur und ist nur bedienbar, solange „Speak answers“ an
+  ist.
 
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|

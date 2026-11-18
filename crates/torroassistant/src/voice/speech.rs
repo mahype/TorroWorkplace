@@ -25,6 +25,9 @@
 //!   for people. A job with `more` whose sound ran out for [`WAITING_AFTER`] says `"waiting"` (once),
 //!   and `"playing"` again when its sound goes on: the core keeps the microphone closed only while
 //!   something sounds.
+//! - `"mark"` marks the start of what follows in the job (issue #837): the next `add` of a local job, the
+//!   next `pcm` of OpenAI. The helper answers `"marked"` once the device plays its first sound, so the core
+//!   times an answer that follows a short note by its own sound, not the note's.
 //!
 //! Pocket TTS and Qwen3-TTS compute on a thread of their own ([`Synth`], [`super::pocket::Pocket`],
 //! [`super::qwen`]), one at a time: when the other reads, the thread of the first ends, so Qwen's
@@ -90,6 +93,8 @@ pub enum Input {
     End,
     /// Stop reading now.
     Stop,
+    /// The sound of what follows is marked (issue #837): [`Output::Marked`] once it is heard.
+    Mark,
 }
 
 /// What to read and how ([`Input::Say`]).
@@ -114,6 +119,7 @@ impl Input {
             return match word {
                 "end" => Some(Input::End),
                 "stop" => Some(Input::Stop),
+                "mark" => Some(Input::Mark),
                 _ => None,
             };
         }
@@ -169,6 +175,7 @@ impl Input {
             }
             Input::End => json!("end").to_string(),
             Input::Stop => json!("stop").to_string(),
+            Input::Mark => json!("mark").to_string(),
         }
     }
 }
@@ -184,6 +191,8 @@ pub enum Output {
     Waiting,
     /// Read to its end, or stopped.
     Done,
+    /// The sound after [`Input::Mark`] is heard (issue #837).
+    Marked,
     /// It cannot read: `code` as the core answers (`unsupported`, `error`), `message` for people.
     Failed { code: String, message: String },
 }
@@ -200,6 +209,7 @@ impl Output {
             Output::Playing => json!("playing"),
             Output::Waiting => json!("waiting"),
             Output::Done => json!("done"),
+            Output::Marked => json!("marked"),
             Output::Failed { code, message } => json!({"failed": {"code": code, "message": message}}),
         }
         .to_string()
@@ -214,6 +224,7 @@ impl Output {
             Some("playing") => return Some(Output::Playing),
             Some("waiting") => return Some(Output::Waiting),
             Some("done") => return Some(Output::Done),
+            Some("marked") => return Some(Output::Marked),
             Some(_) => return None,
             None => {}
         }
@@ -599,7 +610,25 @@ pub struct Helper<W: FnMut(Output)> {
     waited: bool,
     /// How many characters the job may still read ([`MOST_READ`] for all its texts).
     left: usize,
+    /// How many texts the local job was given, and how many of them are computed (issue #837).
+    texts: usize,
+    computed: usize,
+    /// Where the job's mark stands ([`Input::Mark`]).
+    marking: Marking,
     write: W,
+}
+
+/// Where the mark of a job stands (issue #837, [`Input::Mark`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Marking {
+    None,
+    /// The marked sound begins after the first this many texts of the local job: placed in the sound once
+    /// they are computed.
+    AfterTexts(usize),
+    /// The marked sound is the job's first: placed when its sound opens, before its first samples.
+    AtFirstSound,
+    /// Placed in the sound ([`Sound::mark`]): heard once the device plays past it.
+    InSound,
 }
 
 impl<W: FnMut(Output)> Helper<W> {
@@ -629,6 +658,9 @@ impl<W: FnMut(Output)> Helper<W> {
             quiet: None,
             waited: false,
             left: 0,
+            texts: 0,
+            computed: 0,
+            marking: Marking::None,
             write,
         }
     }
@@ -675,6 +707,14 @@ impl<W: FnMut(Output)> Helper<W> {
                 self.say(say, sender);
             }
             Event::Input(Input::Add(text)) => self.add(&text, sender),
+            Event::Input(Input::Mark) => match &self.job {
+                Job::Local { .. } => {
+                    self.marking = Marking::AfterTexts(self.texts);
+                    self.place_mark_if_due();
+                }
+                Job::Stream { ended: false, .. } => self.place_mark(),
+                Job::Stream { .. } | Job::Idle => {}
+            },
             Event::Input(Input::Pcm { rate, data }) => {
                 let samples: Vec<f32> =
                     data.as_chunks::<2>().0.iter().map(|pair| to_float(i16::from_le_bytes(*pair))).collect();
@@ -706,6 +746,8 @@ impl<W: FnMut(Output)> Helper<W> {
                     && *now == id
                 {
                     *pending = pending.saturating_sub(1);
+                    self.computed += 1;
+                    self.place_mark_if_due();
                     self.finish_local();
                 }
             }
@@ -767,13 +809,41 @@ impl<W: FnMut(Output)> Helper<W> {
             (self.write)(Output::Playing);
         }
         if let Some(sound) = sound {
+            // Nothing sounded before the marked sound: it is the first, heard after the output's lead-in.
+            if self.marking == Marking::AtFirstSound {
+                sound.mark();
+                self.marking = Marking::InSound;
+            }
             sound.push(rate, samples);
         }
+    }
+
+    /// Places the mark of a local job once the texts before the marked one are computed: all their sound
+    /// is pushed, the next comes from the marked text (issue #837).
+    fn place_mark_if_due(&mut self) {
+        if let Marking::AfterTexts(before) = self.marking
+            && self.computed >= before
+        {
+            self.place_mark();
+        }
+    }
+
+    /// Marks the end of the sound so far: what follows is the marked sound (issue #837).
+    fn place_mark(&mut self) {
+        let (Job::Local { sound, .. } | Job::Stream { sound, .. }) = &mut self.job else { return };
+        self.marking = match sound {
+            Some(sound) => {
+                sound.mark();
+                Marking::InSound
+            }
+            None => Marking::AtFirstSound,
+        };
     }
 
     /// Starts reading `say`.
     fn say(&mut self, say: Say, sender: &Sender<Event>) {
         self.left = MOST_READ;
+        (self.texts, self.computed, self.marking) = (1, 0, Marking::None);
         let text = self.take_text(&say.text);
         match say.provider.unwrap_or(SpeechProvider::Pocket) {
             SpeechProvider::OpenAi => {
@@ -833,6 +903,7 @@ impl<W: FnMut(Output)> Helper<W> {
             return;
         }
         *pending += 1;
+        self.texts += 1;
         let job = Spoken { id: *id, text, voice: reads.voice.clone(), delivery: reads.delivery };
         let provider = reads.provider;
         if let Some((waiting, _)) = &mut self.waiting {
@@ -939,6 +1010,7 @@ impl<W: FnMut(Output)> Helper<W> {
         self.waiting = None;
         self.quiet = None;
         self.waited = false;
+        (self.texts, self.computed, self.marking) = (0, 0, Marking::None);
         // Dropping the sound stops it.
         self.job = Job::Idle;
     }
@@ -968,6 +1040,14 @@ impl<W: FnMut(Output)> Helper<W> {
             Job::Stream { ended, more, .. } => *more && !ended,
             Job::Idle => false,
         };
+        let heard = match &self.job {
+            Job::Local { sound: Some(sound), .. } | Job::Stream { sound: Some(sound), .. } => sound.past_mark(),
+            _ => false,
+        };
+        if self.marking == Marking::InSound && heard {
+            self.marking = Marking::None;
+            (self.write)(Output::Marked);
+        }
         if open && !self.waited && self.quiet.is_some_and(|quiet| quiet.elapsed() >= WAITING_AFTER) {
             self.waited = true;
             (self.write)(Output::Waiting);
@@ -1098,6 +1178,7 @@ mod tests {
             Input::Pcm { rate: 24_000, data: vec![1, 2, 3, 4] },
             Input::End,
             Input::Stop,
+            Input::Mark,
         ] {
             assert_eq!(Input::parse(&input.line()), Some(input.clone()), "{}", input.line());
         }
@@ -1109,6 +1190,7 @@ mod tests {
             Output::Playing,
             Output::Waiting,
             Output::Done,
+            Output::Marked,
             Output::failed("unsupported", "No player"),
         ] {
             assert_eq!(Output::parse(&output.line()), Some(output.clone()), "{}", output.line());
@@ -1221,6 +1303,10 @@ mod tests {
         finished: bool,
         /// The output says it has ended once it is finished and this is set.
         drained: bool,
+        /// How many samples were pushed when the sound was marked (issue #837).
+        mark: Option<usize>,
+        /// How many samples the device has played, as the test sets it.
+        heard: usize,
     }
 
     struct FakeSound(Rc<RefCell<Played>>);
@@ -1241,6 +1327,16 @@ mod tests {
 
         fn drained(&self) -> bool {
             self.0.borrow().drained
+        }
+
+        fn mark(&mut self) {
+            let mut played = self.0.borrow_mut();
+            played.mark = Some(played.samples.len());
+        }
+
+        fn past_mark(&self) -> bool {
+            let played = self.0.borrow();
+            played.mark.is_some_and(|mark| played.heard > mark)
         }
     }
 
@@ -1442,6 +1538,53 @@ mod tests {
         assert_eq!(said.borrow().last(), Some(&Output::Done));
         helper.handle(Event::Input(Input::Add("Drei.".into())), &sender);
         assert!(matches!(helper.job, Job::Idle), "the job is over");
+    }
+
+    /// Issue #837: the text after `mark` is marked in a local job: `marked` comes once the device plays its
+    /// first sound, not when the text before it is computed or played; once.
+    #[test]
+    fn a_marked_text_is_said_when_it_is_heard() {
+        let (sender, events) = mpsc::channel();
+        let folder = tempfile::tempdir().expect("voice folder");
+        download(folder.path(), POCKET_DE);
+        let (mut helper, said, played) = helper(Some(folder.path()), true, Duration::ZERO);
+        helper.handle(open_say(SpeechProvider::Pocket, "Eins."), &sender);
+        helper.handle(Event::Input(Input::Mark), &sender);
+        helper.handle(Event::Input(Input::Add("Zwei.".into())), &sender);
+        pump(&mut helper, &events, &sender, |helper| matches!(helper.job, Job::Local { pending: 0, .. }));
+        assert_eq!(played.borrow().mark, Some("Eins.".len()), "after the first text's sound");
+        played.borrow_mut().heard = "Eins.".len();
+        helper.look_at_the_end();
+        assert!(!said.borrow().contains(&Output::Marked), "only the first text played: {:?}", said.borrow());
+        played.borrow_mut().heard += 1;
+        helper.look_at_the_end();
+        helper.look_at_the_end();
+        assert_eq!(said.borrow().iter().filter(|output| **output == Output::Marked).count(), 1, "{:?}", said.borrow());
+    }
+
+    /// Issue #837: with OpenAI the mark stands where the next sound comes; before any sound it is the first.
+    #[test]
+    fn a_mark_in_openai_sound_is_said_when_it_is_heard() {
+        let (sender, _events) = mpsc::channel();
+        let pcm = || Event::Input(Input::Pcm { rate: 24_000, data: vec![0; 4] });
+        let (mut helper, said, played) = helper(None, true, Duration::ZERO);
+        helper.handle(open_say(SpeechProvider::OpenAi, "Eins."), &sender);
+        helper.handle(pcm(), &sender);
+        helper.handle(Event::Input(Input::Mark), &sender);
+        helper.handle(pcm(), &sender);
+        assert_eq!(played.borrow().mark, Some(2));
+        played.borrow_mut().heard = 3;
+        helper.look_at_the_end();
+        assert_eq!(said.borrow().last(), Some(&Output::Marked));
+
+        let (mut first, said, first_played) = super::tests::helper(None, true, Duration::ZERO);
+        first.handle(open_say(SpeechProvider::OpenAi, "Eins."), &sender);
+        first.handle(Event::Input(Input::Mark), &sender);
+        first.handle(pcm(), &sender);
+        assert_eq!(said.borrow()[1..], [Output::Playing], "not before it plays: {:?}", said.borrow());
+        first_played.borrow_mut().heard = 1;
+        first.look_at_the_end();
+        assert_eq!(said.borrow().last(), Some(&Output::Marked));
     }
 
     /// Issue #850: an open job whose sound ran out says `waiting` once, and `playing` again with its next
