@@ -27,6 +27,7 @@ use std::time::{Duration, Instant};
 use iced::Size;
 use iced_test::emulator::{self, Emulator};
 use iced_test::futures::futures::channel::mpsc::{self, TryRecvError};
+use iced_test::instruction::{self, Instruction, Interaction};
 
 /// The size classes of the visual check, one example each, in logical pixels: the sizes
 /// `crate::layout` sorts into its classes (torro-design, section 6).
@@ -358,6 +359,18 @@ where
         let (sender, mut receiver) = mpsc::channel(100);
         let mut emulator = Emulator::new(sender, program, emulator::Mode::Patient, size);
         settle(program, &mut emulator, &mut receiver, &path);
+        // Passes over the window before the picture, with an event nothing answers (the pointer
+        // moving outside the window):
+        // a layer that hangs at a widget learns where it is while the window is laid out and its
+        // layers asked (`widgets::anchored`), and a submenu that is only as high as its room needs
+        // that place before it is laid out itself (issue #906). A window passes again on every move
+        // of the pointer; the picture shows what it shows then.
+        // One pass per level of a cascading menu and the menu itself: each level hangs at the one
+        // above it (`widgets::CASCADE_DEPTH`).
+        for _ in 0..=crate::widgets::CASCADE_DEPTH {
+            let outside = instruction::Target::Point(iced::Point::new(-1.0, -1.0));
+            emulator.run(program, Instruction::Interact(Interaction::Mouse(instruction::Mouse::Move(outside))));
+        }
         let theme = emulator.theme(program).unwrap_or(iced::Theme::Dark);
         let screenshot = emulator.screenshot(program, &theme, SCALE);
         save(&path, screenshot.size.width, screenshot.size.height, &screenshot.rgba)?;
