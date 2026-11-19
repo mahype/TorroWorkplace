@@ -786,7 +786,7 @@ impl App {
             return prompt_state(
                 tr("No model is turned on"),
                 tr("Turn on models in Settings › AI."),
-                Some((tr("Manage models…"), Message::ManageModels)),
+                Some((tr("Manage models"), Message::ManageModels)),
             );
         }
         if self.engines_loaded && self.engines.is_empty() {
@@ -1484,7 +1484,7 @@ impl App {
     /// an engine whose models did not come is offered as it is, and the engine picks its model.
     /// `chosen` has the check, a pick sends `pick` (the composer's choice, or the bot editor's
     /// engine). A chosen model that is turned off stands on top of its engine with why "Automatic"
-    /// answers; "Manage models…" at the end opens the control centre's AI section.
+    /// answers; "Manage models" at the end opens the control centre's AI section.
     fn picker_menu(
         &self,
         chosen: Option<&Choice>,
@@ -1549,7 +1549,7 @@ impl App {
         // Which models are offered is set under Settings › AI (task S.26, issue #410), not here.
         let mut after = Vec::new();
         if self.engines.iter().any(|engine| engine.kind == EngineKind::Ai) {
-            let manage = MenuItem::new(Icon::Layers, tr("Manage models…"), Message::ManageModels);
+            let manage = MenuItem::new(Icon::Layers, tr("Manage models"), Message::ManageModels);
             after.push(MenuSection::new(vec![manage]));
         }
         // The effort of the composer's model as a row under the models (issues #131, #699), only
@@ -1599,7 +1599,7 @@ impl App {
     fn conversation_menu(&self, id: &str) -> Element<'_, Message> {
         let known = self.conversations.iter().find(|c| c.id == id);
         let (pinned, archived) = known.map_or((false, false), |c| (c.pinned, c.archived));
-        let mut items = vec![MenuItem::new(Icon::SquarePen, tr("Rename"), Message::AskRename(id.to_owned()))];
+        let mut items = vec![MenuItem::new(Icon::SquarePen, tr("Rename…"), Message::AskRename(id.to_owned()))];
         if archived {
             items.push(MenuItem::new(
                 Icon::Inbox,
@@ -1621,7 +1621,7 @@ impl App {
         if !self.chat_only {
             items.push(MenuItem::new(Icon::AppWindow, tr("Open in new window"), Message::OpenInWindow(id.to_owned())));
         }
-        let delete = MenuItem::new(Icon::Trash2, tr("Delete"), Message::AskDelete(id.to_owned()));
+        let delete = MenuItem::new(Icon::Trash2, tr("Delete…"), Message::AskDelete(id.to_owned()));
         widgets::menu(vec![MenuSection::new(items), MenuSection::new(vec![delete])])
     }
 

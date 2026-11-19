@@ -923,7 +923,7 @@ fn actions(state: &State, data: &Data) -> Vec<(String, Message)> {
         );
     }
     add("AI settings", Message::OpenAi);
-    add("Manage save targets…", Message::OpenTargets);
+    add("Manage save targets", Message::OpenTargets);
     result.extend(list_actions(state, data));
     if state.setup || state.edit.is_some() {
         result.extend(
@@ -1306,7 +1306,7 @@ fn target_field<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     .spacing(space::xs());
     if data.save_targets.is_empty() {
         content = content.push(note(tr("No save target is available. Create one under Attachments first.")));
-        content = content.push(button("Manage save targets…", Message::OpenTargets, state.pending.is_none()));
+        content = content.push(button("Manage save targets", Message::OpenTargets, state.pending.is_none()));
     } else if target.is_none() {
         content = content.push(note(tr("The save target is missing. Choose an existing target before testing.")));
     }

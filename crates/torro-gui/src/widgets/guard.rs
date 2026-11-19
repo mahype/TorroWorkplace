@@ -8,6 +8,10 @@
 //!   field would otherwise keep Escape to itself (it only gives up its focus), and the menu would
 //!   close only on the second press. Passed on, the key reaches the window's own Escape, which
 //!   closes the open menu first as it does for every menu.
+//!
+//! And one for submenus (issue #906): [`Limited`] is laid out no higher than the room its `room`
+//! finds for it once it knows its natural size and the window's, so a submenu in a narrow window
+//! scrolls instead of covering the entries that lead to it.
 
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{Operation, Tree, tree};
@@ -22,6 +26,20 @@ pub(super) struct Inert<'a, M> {
 /// `content` that never sees Escape; the key stays free for the window.
 pub(super) struct EscapeArea<'a, M> {
     pub(super) content: Element<'a, M>,
+}
+
+/// `content` at most as high as `room(window, natural size)` says; `None` leaves it as it is.
+pub(super) struct Limited<'a, M> {
+    pub(super) content: Element<'a, M>,
+    pub(super) room: Box<dyn Fn(Size, Size) -> Option<f32> + 'a>,
+}
+
+/// `content` that records in `anchor` where it is on screen when its layers are asked, with every
+/// translation of the layers around it (a menu moved to the pointer, a scrolled list): drawing sees
+/// it without them (issue #906, the entries of a cascading menu).
+pub(super) struct Marker<'a, M> {
+    pub(super) content: Element<'a, M>,
+    pub(super) anchor: super::Anchor,
 }
 
 /// Everything but `update` (and the overlay of [`Inert`]) as the content does it.
@@ -166,6 +184,101 @@ impl<M> Widget<M, Theme, Renderer> for EscapeArea<'_, M> {
     }
 }
 
+impl<M> Widget<M, Theme, Renderer> for Limited<'_, M> {
+    fn tag(&self) -> tree::Tag {
+        self.content.as_widget().tag()
+    }
+
+    fn state(&self) -> tree::State {
+        self.content.as_widget().state()
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        self.content.as_widget().children()
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        self.content.as_widget().diff(tree);
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn size_hint(&self) -> Size<Length> {
+        self.content.as_widget().size_hint()
+    }
+
+    fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
+        let node = self.content.as_widget_mut().layout(tree, renderer, limits);
+        match (self.room)(limits.max(), node.size()) {
+            Some(room) if room < node.size().height => {
+                self.content.as_widget_mut().layout(tree, renderer, &limits.max_height(room.max(0.0)))
+            }
+            _ => node,
+        }
+    }
+
+    fn operate(&mut self, tree: &mut Tree, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn Operation) {
+        self.content.as_widget_mut().operate(tree, layout, renderer, operation);
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        self.content.as_widget().draw(tree, renderer, theme, style, layout, cursor, viewport);
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, M>,
+        viewport: &Rectangle,
+    ) {
+        self.content.as_widget_mut().update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &Renderer,
+    ) -> mouse::Interaction {
+        self.content.as_widget().mouse_interaction(tree, layout, cursor, viewport, renderer)
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
+        self.content.as_widget_mut().overlay(tree, layout, renderer, viewport, translation)
+    }
+}
+
+impl<'a, M: 'a> From<Limited<'a, M>> for Element<'a, M> {
+    fn from(limited: Limited<'a, M>) -> Self {
+        Element::new(limited)
+    }
+}
+
 impl<'a, M: 'a> From<Inert<'a, M>> for Element<'a, M> {
     fn from(inert: Inert<'a, M>) -> Self {
         Element::new(inert)
@@ -175,5 +288,52 @@ impl<'a, M: 'a> From<Inert<'a, M>> for Element<'a, M> {
 impl<'a, M: 'a> From<EscapeArea<'a, M>> for Element<'a, M> {
     fn from(area: EscapeArea<'a, M>) -> Self {
         Element::new(area)
+    }
+}
+
+impl<M> Widget<M, Theme, Renderer> for Marker<'_, M> {
+    forward!();
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, M>,
+        viewport: &Rectangle,
+    ) {
+        self.content.as_widget_mut().update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &Renderer,
+    ) -> mouse::Interaction {
+        self.content.as_widget().mouse_interaction(tree, layout, cursor, viewport, renderer)
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
+        self.anchor.set(layout.bounds() + translation);
+        self.content.as_widget_mut().overlay(tree, layout, renderer, viewport, translation)
+    }
+}
+
+impl<'a, M: 'a> From<Marker<'a, M>> for Element<'a, M> {
+    fn from(marker: Marker<'a, M>) -> Self {
+        Element::new(marker)
     }
 }

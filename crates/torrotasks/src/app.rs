@@ -50,7 +50,7 @@
 //! GitHub links (task G.6): a GitHub address or `owner/repo#12` in quick add ([`Link::pasted`])
 //! goes to the core's `add_link` instead of becoming a task titled with it: in a task list a link
 //! task with GitHub's title (and the due date quick add gives there), in a filter list – whose quick
-//! add row says "Paste a GitHub link to pin…" – a pinned item. "Add to list…" in the detail of a
+//! add row says "Paste a GitHub link to pin…" – a pinned item. "Add to list ▸" in the detail of a
 //! filter list's item does the same for the list picked; a card then says "Added to {list}" when
 //! that is not the list shown (task G.6b). A link has the issue's check in the list
 //! and the detail; ticking one goes the way of an issue of a filter list, so "Issue closed · Undo"
@@ -238,6 +238,8 @@ pub enum Open {
     FilterList,
     /// The first item pinned in a filter list, in the detail with its "…" menu open (Unpin).
     Pinned,
+    /// The same item with "Add to list ▸" of its "…" menu open beside it (issue #906).
+    MoreList,
     /// The first writable task list in manual order (task P.3b): one run of rows, no groups.
     Manual,
     /// The same with the Display menu open on its "Order" section.
@@ -277,7 +279,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 25] = [
+    const ALL: [(&'static str, Open); 26] = [
         ("detail", Open::Detail),
         ("menu", Open::Menu),
         ("display", Open::Display),
@@ -287,6 +289,7 @@ impl Open {
         ("more", Open::More),
         ("filter", Open::FilterList),
         ("pinned", Open::Pinned),
+        ("more-list", Open::MoreList),
         ("manual", Open::Manual),
         ("order", Open::Order),
         ("drag", Open::Drag),
@@ -840,7 +843,7 @@ pub enum Message {
     IssueChanged(Result<Todo, String>),
     /// "Undo" in the "Issue closed" card: reopen it.
     Undo,
-    /// The core's answer to a GitHub link pasted into quick add or "Add to list…" (task G.6): the
+    /// The core's answer to a GitHub link pasted into quick add or "Add to list ▸" (task G.6): the
     /// task the list holds, and the due date and priority quick add gives a new task there
     /// ([`quick_add_fields`]), which a link in a task list then gets.
     LinkAdded(Result<Todo, String>, Option<EventTime>, Option<u8>),
@@ -986,6 +989,10 @@ pub enum Shortcut {
     Tomorrow,
     /// Shift+T: today's focus plan moves to tomorrow.
     PostponePlan,
+    /// ←: closes the submenu of the detail's open "…" menu (issue #906); nothing in the list.
+    Left,
+    /// →: opens the submenu under the cursor of the detail's open "…" menu; nothing in the list.
+    Right,
 }
 
 /// Keyboard shortcuts of the list, like the calendar's: keys a widget already used (typing in a
@@ -1014,6 +1021,8 @@ fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::wind
         Name::Named(Named::ArrowUp) | Name::Character("k") => Shortcut::Up,
         Name::Named(Named::ArrowDown) | Name::Character("j") => Shortcut::Down,
         Name::Named(Named::Enter) => Shortcut::Open,
+        Name::Named(Named::ArrowLeft) => Shortcut::Left,
+        Name::Named(Named::ArrowRight) => Shortcut::Right,
         Name::Named(Named::Space) => Shortcut::Toggle,
         Name::Character("n") => Shortcut::New,
         Name::Character("r") => Shortcut::Sync,
@@ -1197,6 +1206,13 @@ impl App {
         }
         if let Some(dialog) = &self.filter_dialog {
             subscriptions.push(dialog.subscription().map(Message::Filter));
+        }
+        // A submenu of the "…" menu waits for the pointer to rest (issue #906).
+        if self.detail.as_ref().is_some_and(Detail::more_waiting) {
+            subscriptions.push(
+                iced::time::every(widgets::CASCADE_TICK)
+                    .map(|now| Message::Detail(detail::Message::More(widgets::CascadeEvent::Tick(now)))),
+            );
         }
         if self.detail.as_ref().is_some_and(Detail::wants_autosave) {
             subscriptions.push(iced::time::every(AUTOSAVE).map(|_| Message::Detail(detail::Message::Flush)));
@@ -1647,6 +1663,23 @@ impl App {
                 if !typing && key == Shortcut::Sidebar {
                     return self.toggle_sidebar();
                 }
+                // The detail's open "…" menu takes the arrows and Enter (issue #906).
+                if !typing && self.detail.as_ref().is_some_and(Detail::more_open) {
+                    let key = match key {
+                        Shortcut::Up => Some(widgets::CascadeKey::Up),
+                        Shortcut::Down => Some(widgets::CascadeKey::Down),
+                        Shortcut::Left => Some(widgets::CascadeKey::Left),
+                        Shortcut::Right => Some(widgets::CascadeKey::Right),
+                        Shortcut::Open => Some(widgets::CascadeKey::Enter),
+                        _ => None,
+                    };
+                    return match key {
+                        Some(key) => {
+                            self.update(Message::Detail(detail::Message::More(widgets::CascadeEvent::Key(key))))
+                        }
+                        None => Task::none(),
+                    };
+                }
                 // Menus and the drawer are in front of the list; the keys are not for the list then.
                 if !typing && self.menu.is_none() && !self.drawer {
                     return self.run_shortcut(key);
@@ -1688,6 +1721,8 @@ impl App {
                 None => Task::none(),
             },
             Shortcut::PostponePlan => self.update(Message::PostponeFocusPlan),
+            // Only for the detail's "…" menu (issue #906).
+            Shortcut::Left | Shortcut::Right => Task::none(),
         }
     }
 
@@ -2905,7 +2940,9 @@ impl App {
             Some(Open::FilterList) => filter_lists()
                 .find(|c| c.source.as_ref().is_some_and(|s| s.problem.is_some()))
                 .or_else(|| filter_lists().next()),
-            Some(Open::Pinned) => filter_lists().find(|c| c.source.as_ref().is_some_and(|s| !s.pinned.is_empty())),
+            Some(Open::Pinned | Open::MoreList) => {
+                filter_lists().find(|c| c.source.as_ref().is_some_and(|s| !s.pinned.is_empty()))
+            }
             Some(Open::FilterEdit | Open::FilterSearch | Open::FilterDelete) => filter_lists().next(),
             Some(Open::FilterRepo) => filter_lists().find(|c| {
                 c.source.as_ref().is_some_and(|s| matches!(s.queries.as_slice(), [q] if filter::repos_of(q).len() == 1))
@@ -2949,24 +2986,29 @@ impl App {
             self.open_drop();
             return Task::none();
         }
-        let Some(open @ (Open::Detail | Open::Due | Open::PullRequest | Open::More | Open::Pinned)) = self.launch.open
+        let Some(open @ (Open::Detail | Open::Due | Open::PullRequest | Open::More | Open::Pinned | Open::MoreList)) =
+            self.launch.open
         else {
             return Task::none();
         };
         let order = list::order(&self.list_data());
         let first = match open {
             Open::PullRequest => order.into_iter().find(|&index| is_open_pull_request(&self.todos[index])),
-            Open::Pinned => order.into_iter().find(|&index| self.is_pinned(&self.todos[index])),
+            Open::Pinned | Open::MoreList => order.into_iter().find(|&index| self.is_pinned(&self.todos[index])),
             _ => order.first().copied(),
         };
         let Some(first) = first else { return Task::none() };
         let select = self.select(first);
         let editor = match open {
             Open::Due => detail::Editor::Due,
-            Open::More | Open::Pinned => detail::Editor::More,
+            Open::More | Open::Pinned | Open::MoreList => detail::Editor::More,
             _ => return select,
         };
         let card = self.update(Message::Detail(detail::Message::Open(editor)));
+        if open == Open::MoreList {
+            let lists = self.update(Message::Detail(detail::Message::AddToList));
+            return Task::batch([select, card, lists]);
+        }
         Task::batch([select, card])
     }
 
@@ -3252,7 +3294,7 @@ impl App {
     /// The core's answer to [`App::add_link`]: a new link task in a task list gets the due date and
     /// priority quick add gives there (it has none of its own yet), then the list is loaded again.
     /// A refusal (no GitHub account, an item GitHub does not have …) is the error line. When the
-    /// link went to another list than the one shown ("Add to list…", or quick add in a smart
+    /// link went to another list than the one shown ("Add to list ▸", or quick add in a smart
     /// list), a card says where: "Added to {list}" (task G.6b).
     fn link_added(
         &mut self,
@@ -5460,6 +5502,21 @@ mod tests {
         assert!(due.detail.as_ref().expect("the detail is open").layer(&Anchor::new()).is_some(), "the due card");
         let more = launched(&["--demo", "--open", "more"]);
         assert!(more.detail.as_ref().expect("the detail is open").layer(&Anchor::new()).is_some(), "the … menu");
+        // Issue #906: "Add to list ▸" open beside the "…" menu of a pinned item.
+        let lists = launched(&["--demo", "--open", "more-list"]);
+        let detail = lists.detail.as_ref().expect("the detail is open");
+        assert!(detail.more_lists_open(), "the lists beside the menu");
+        // The keys walk the menu (review of #906): ← closes the lists, → opens them again, and the
+        // list's own keys do nothing behind the menu.
+        let mut keys = launched(&["--demo", "--open", "more-list"]);
+        let cursor = keys.cursor.clone();
+        let _ = keys.update(Message::ShortcutChecked(Shortcut::Left, false));
+        assert!(!keys.detail.as_ref().expect("the detail").more_lists_open(), "← closes the lists");
+        let _ = keys.update(Message::ShortcutChecked(Shortcut::Right, false));
+        assert!(keys.detail.as_ref().expect("the detail").more_lists_open(), "→ opens them");
+        let _ = keys.update(Message::ShortcutChecked(Shortcut::Down, false));
+        assert_eq!(keys.cursor, cursor, "↓ stays in the menu");
+        assert!(keys.detail.as_ref().expect("the detail").more_open());
 
         // Closing it does not bring it back with the next reload.
         let mut closed = launched(&["--demo", "--open", "detail"]);

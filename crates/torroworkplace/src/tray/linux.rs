@@ -211,7 +211,7 @@ mod tests {
                 sub("Entwicklung"),
                 "-".to_string(),
                 tr("Save workspace…").to_string(),
-                tr("Manage workspaces…").to_string(),
+                tr("Manage workspaces").to_string(),
                 "-".to_string(),
                 tr("Quit").to_string(),
             ]

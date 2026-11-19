@@ -471,15 +471,18 @@ aus E9.4.
 
 - **Gruppen** in dieser Reihenfolge, jede nur mit dem, was für die Mail geht; leere Gruppen fallen weg:
   **Reply** (Reply, Reply all, Forward; Icon in der Akzentfarbe), **File** (Archive mit `e`, Reply later mit `w`, Set
-  aside mit `b`, Follow up… mit `s`, Move to Info bzw. For me, Delete, Save attachments – kein Done und kein Reopen
+  aside mit `b`, Follow up ▸ mit `s`, Move to Info ▸ bzw. For me ▸, Delete, Save attachments – kein Done und kein Reopen
   mehr, E18.5; liegt die Mail auf einem Stapel, steht an seiner Stelle „Remove from Reply later“ bzw. „Remove from Set
-  aside“ mit derselben Taste, E19.4), **Torro** (Task, Event, Category…, Re-categorize nur mit Entscheidungsmodell; den Chat zur Mail öffnet seit #892 der runde KI-Knopf unten rechts bzw. `i`),
-  **Mark** (Flag, Mark read bzw. unread), unten abgesetzt **Mute** (Mute…), **Display** (#456: ein Klick öffnet die
+  aside“ mit derselben Taste, E19.4), **Torro** (Task, Event, Category ▸, Re-categorize nur mit Entscheidungsmodell; den Chat zur Mail öffnet seit #892 der runde KI-Knopf unten rechts bzw. `i`),
+  **Mark** (Flag, Mark read bzw. unread), unten abgesetzt **Mute** (Mute ▸), **Display** (#456: ein Klick öffnet die
   Karte „Display“ mit „View“ HTML oder Text, Taste `v`, und „Mail colors“ Light, Dark oder As app; die Wahl ist die
   Einstellung `mail_view` bzw. `mail_appearance` und bleibt nach dem Neustart) und **More** (Copy text, Create filter…
   für den Absender (#339), im Leser Close). Archive und Delete nur, wo das Konto den Ordner hat und die
-  Mail nicht schon darin liegt; eine Ordnermail ohne Eintrag hat kein Move to, Event, Category, aber Follow up… (E19,
-  Entscheidung 8). Ein Klick auf das Icon von File archiviert. „Show again“ in Mute (E18.4) ist mit #339 entfallen.
+  Mail nicht schon darin liegt; eine Ordnermail ohne Eintrag hat kein Move to, Event, Category, aber Follow up (E19,
+  Entscheidung 8). Einträge mit „▸“ öffnen ihr Untermenü; im Kontextmenü der Liste klappt es daneben auf, schon beim
+  Darüberfahren, und springt nicht zur Leiste (#906). Die Aktionsarten stehen mit „…“ („Task…“), weil ihr Dialog
+  noch fragt. „Category ▸“ beginnt mit dem Schalter „Always for <Absender>“; ein Klick auf eine Kategorie legt die
+  Mail sofort ab, ohne Rückfrage danach. Ein Klick auf das Icon von File archiviert. „Show again“ in Mute (E18.4) ist mit #339 entfallen.
 - **Schwebend** (#456, Entwurf `prototypes/mail-layout/`): eine Karte senkrecht mittig am rechten Rand über der Mail,
   in jeder Größe, im Paneel an dessen rechtem Rand. Ein Icon je Gruppe, ein Klick tut die erste Aktion der Gruppe, Hover
   öffnet links daneben das Klappfeld der Gruppe mit Icon, Wort und Taste je Zeile (nicht bei Display). Der Text der Mail
@@ -651,7 +654,7 @@ und App Feed behalten „Later“ für alle Quellen, ohne „Only if no reply“
 |---|---|---|---|---|
 | **Reply later** | `w` | `MessageSquareReply` | Später beantworten | legt die Mail auf den Stapel zum Beantworten, ohne Datum |
 | **Set aside** | `b` | `Bookmark` | Beiseitelegen (Stapel: Beiseitegelegt) | legt die Mail auf den Stapel zum Nachschlagen, ohne Datum |
-| **Follow up…** | `s` | `CalendarClock` | Wiedervorlage… | holt die Unterhaltung an einem Datum wieder nach oben, auf Wunsch nur ohne Antwort |
+| **Follow up ▸** | `s` | `CalendarClock` | Wiedervorlage ▸ | holt die Unterhaltung an einem Datum wieder nach oben, auf Wunsch nur ohne Antwort |
 
 - **Stapel je Mail, Wiedervorlage je Unterhaltung** (Entscheidung 1): Die Stapel merkt sich der Kern je Mail in der
   Tabelle `mail_piles` (Schema 16), unabhängig vom Eintrag; eine beiseitegelegte Bordkarte bleibt, auch wenn ihr

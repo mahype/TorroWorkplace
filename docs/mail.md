@@ -463,7 +463,7 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Ablageziel ändern (#290) | Einstellungen › Mail › Attachments | `mail.update_save_target` · Admin; anderer Ordner nur mit dem App-Schlüssel | `mail_update_save_target` (Ordner wie gespeichert) |
 | Ablageziel entfernen (#290) | Einstellungen › Mail › Attachments | `mail.remove_save_target` · Admin | `mail_remove_save_target` |
 | Anhänge speichern (#290) | Dreieck-Menü, „Save all ▾“, Kontextmenü der Liste, Klick auf den Namen | `mail.save_attachments` · Write; `to: file`/`folder` nur mit dem App-Schlüssel | `mail_save_attachments` (nur Downloads oder ein Ziel) |
-| Mail als PDF oder Bild speichern (#501) | Gruppe „Save“ (Diskette) der Leiste: „Save as PDF“, „Save as image“; Kontextmenü der Liste: „Save mail as ›“ | `mail.save_message_as` · Write (gezeichnet wie im Leser, immer hell; PDF aus A4-Bildseiten, höchstens 50 Seiten; PNG höchstens 30 000 Pixel hoch; externe Bilder nur nach Settings › Privacy: alle bei „Always show“, die erlaubter Anbieter bei „Ask“, keine bei „Never show“; „Show once“ des Fensters zählt nicht, #672); `to: file`/`folder` nur mit dem App-Schlüssel | `mail_save_message_as` (nur Downloads oder ein Ziel) |
+| Mail als PDF oder Bild speichern (#501) | Gruppe „Save“ (Diskette) der Leiste: „Save as PDF“, „Save as image“; Kontextmenü der Liste: „Save mail as ▸“ (Untermenü, je Format ein weiteres, #906) | `mail.save_message_as` · Write (gezeichnet wie im Leser, immer hell; PDF aus A4-Bildseiten, höchstens 50 Seiten; PNG höchstens 30 000 Pixel hoch; externe Bilder nur nach Settings › Privacy: alle bei „Always show“, die erlaubter Anbieter bei „Ask“, keine bei „Never show“; „Show once“ des Fensters zählt nicht, #672); `to: file`/`folder` nur mit dem App-Schlüssel | `mail_save_message_as` (nur Downloads oder ein Ziel) |
 | Vollständige Mail als EML speichern (#553) | Dieselben Menüs: „Save as EML“, auch bei fehlgeschlagenem Laden des Lesetexts, sobald die Zusammenfassung bekannt ist; Downloads, „Save as…“, Ablageziele | `mail.save_message_as`, `format: eml` · Write; Vorschau `mail.list_save_targets`, `export_only: true` · Read, ohne Bodyabruf | `mail_save_message_as`, `mail_list_save_targets`; nur Downloads oder Ziel-ID |
 | Filter auflisten (#339) | Einstellungen › Categorization: auf der Seite der Kategorie, die er setzt, sonst unter „Other filters“ (#481) | `mail.list_filters` · Read | `mail_list_filters` |
 | Filter anlegen, ändern, ein- und ausschalten (#339) | „+ Rule“ › „Filter from a search…“ auf der Seite einer Kategorie, „New filter…“ unter Other filters, Klick auf die Zeile, Schalter der Zeile; „Create filter…“ an einer Mail, „Create filter from search…“ am Suchfeld | `mail.create_filter`, `mail.update_filter` · Admin | `mail_create_filter`, `mail_update_filter` |
@@ -490,7 +490,7 @@ oder auf eine Freigabe wartet, entscheidet der Dienst nach den Rechten des Agent
 
 ## Vollständige Nachricht als EML speichern
 
-„Save as EML“ (#553) steht nach PDF und Bild in der Gruppe „Save“ und unter „Save mail as ›“
+„Save as EML“ (#553) steht nach PDF und Bild in der Gruppe „Save“ und unter „Save mail as ▸“
 im Listen-Kontextmenü. Es nutzt Downloads, den vorhandenen Speicherdialog oder ein Ablageziel mit
 Pfadvorschau. Die Zusammenfassung genügt, auch wenn sich der Nachrichtentext nicht anzeigen lässt.
 
@@ -776,11 +776,11 @@ verschieben; einen Verlauf mit mehreren Schritten gibt es nicht.
 | Flagge setzen/lösen, gelesen/ungelesen | kein Hinweis, kein Rückgängig; dieselbe Aktion kehrt um (Umschalter) | `Command::Flag`, `Command::ToggleRead` | unbegrenzt | – |
 | Mail beim Öffnen als gelesen markieren | automatisch, kein Hinweis | als ungelesen markieren | unbegrenzt | – |
 | „Reply later“ (`w`), „Set aside“ (`b`), „Remove from …“ | ja, `Undo::Pile` mit der Zeit, die die Mail schon auf dem Stapel lag | Hinweis, `u`, Strg+Z | 5 s | 1 |
-| Nachfassen („Follow up…“, `s`), „Cancel follow-up“ | ja, mit Zeit und Bedingung („Only if no reply“) | wie oben | 5 s | 1 |
+| Nachfassen („Follow up ▸“, `s`), „Cancel follow-up“ | ja, mit Zeit und Bedingung („Only if no reply“) | wie oben | 5 s | 1 |
 | Erledigt (`e` am Eintrag), In andere Spur („Move to …“, `l`), Dismiss | ja (`Edit::undo`) | wie oben | 5 s | 1 |
 | Spur „Always for {source}“ | **nein**: eine Regel im Kern, die nur `inbox.remove_rule` löst | Regel in den Einstellungen löschen | – | – |
 | Stumm/Verbergen („Mute“, `m`) und Quelle stumm/laut | ja, `Undo::Muted` bzw. `Undo::Mute`: entfernt die neue Regel, öffnet geschlossene Einträge, holt verschobene zurück; kein Rückgängig, wenn nichts geändert wurde | wie oben | 5 s | 1 |
-| Kategorie setzen („Category…“, auch „Always for {sender}“) | **nein**, kein Hinweis | Kategorie neu setzen; „Always“ ist eine Regel unter Settings › Categorization | – | – |
+| Kategorie setzen („Category ▸“, mit dem Schalter „Always for {sender}“) | **nein**, kein Hinweis | Kategorie neu setzen; „Always“ ist eine Regel unter Settings › Categorization | – | – |
 | Neu einordnen („Re-categorize“) | **nein** | – | – | – |
 | „Make task“, „Make event“ | **nein**: Hinweis „Task created in …“ / „Event created in …“; Zurücknehmen wäre Löschen in der Aufgaben- bzw. Kalender-App | dort löschen | – | – |
 | Vorschlag auf der Karte verwerfen („Dismiss“) | ja, „Suggestion dismissed“; die Karte geht erst nach Ablauf der Frist an den Kern (`send_dismissals`) | wie oben | 5 s | 1 |

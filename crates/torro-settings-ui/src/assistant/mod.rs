@@ -101,7 +101,7 @@ pub const SECTIONS: [Section; 5] = [
     // The suite has no robot icon; the sparkles stand for AI (design skill, section 5).
     Section { id: bots::BOTS, icon: Icon::Sparkles, label: "Bots" },
     // Last of the assistant's own, which General points to for turning the assistant on (task
-    // S.34); the icon of "Access…" in a bot's menu.
+    // S.34); the icon of "Access" in a bot's menu.
     Section { id: access::ID, icon: Icon::UserCheck, label: "Access" },
 ];
 
