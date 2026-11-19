@@ -34,6 +34,14 @@ pub(super) struct Limited<'a, M> {
     pub(super) room: Box<dyn Fn(Size, Size) -> Option<f32> + 'a>,
 }
 
+/// `content` that records in `anchor` where it is on screen when its layers are asked, with every
+/// translation of the layers around it (a menu moved to the pointer, a scrolled list): drawing sees
+/// it without them (issue #906, the entries of a cascading menu).
+pub(super) struct Marker<'a, M> {
+    pub(super) content: Element<'a, M>,
+    pub(super) anchor: super::Anchor,
+}
+
 /// Everything but `update` (and the overlay of [`Inert`]) as the content does it.
 macro_rules! forward {
     () => {
@@ -280,5 +288,52 @@ impl<'a, M: 'a> From<Inert<'a, M>> for Element<'a, M> {
 impl<'a, M: 'a> From<EscapeArea<'a, M>> for Element<'a, M> {
     fn from(area: EscapeArea<'a, M>) -> Self {
         Element::new(area)
+    }
+}
+
+impl<M> Widget<M, Theme, Renderer> for Marker<'_, M> {
+    forward!();
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, M>,
+        viewport: &Rectangle,
+    ) {
+        self.content.as_widget_mut().update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &Renderer,
+    ) -> mouse::Interaction {
+        self.content.as_widget().mouse_interaction(tree, layout, cursor, viewport, renderer)
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
+        self.anchor.set(layout.bounds() + translation);
+        self.content.as_widget_mut().overlay(tree, layout, renderer, viewport, translation)
+    }
+}
+
+impl<'a, M: 'a> From<Marker<'a, M>> for Element<'a, M> {
+    fn from(marker: Marker<'a, M>) -> Self {
+        Element::new(marker)
     }
 }

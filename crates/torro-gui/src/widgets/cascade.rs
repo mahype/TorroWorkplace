@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use iced::widget::scrollable;
 use iced::widget::{column, container, float, mouse_area, opaque, rule, stack};
-use iced::{Element, Fill, Length, Padding, Point, Rectangle, Vector};
+use iced::{Element, Fill, Length, Padding, Point, Rectangle};
 
 use super::{Anchor, MenuSection, Placement, blank, cascade_spot, centre, menu_entry_lit, menu_width, place};
 use crate::style;
@@ -90,6 +90,10 @@ pub enum CascadeChange {
     CloseAll,
 }
 
+/// A submenu's natural size from its last layout and the height it may take, found where it was
+/// placed last.
+type Room = (Option<iced::Size>, Option<f32>);
+
 /// A submenu that opens – or an open one that closes – once the pointer rested long enough.
 #[derive(Debug, Clone, PartialEq)]
 struct Pending {
@@ -116,9 +120,9 @@ pub struct Cascade {
     anchors: RefCell<HashMap<Vec<usize>, Anchor>>,
     /// Where each level's card stood in the last frame (0 for the root), for [`aims_at`].
     cards: RefCell<HashMap<usize, Anchor>>,
-    /// How far each level's card was moved from where it was laid out (0 for the root): its entries
-    /// record where they stood before the move, so their submenu and the pointer add it.
-    shifts: RefCell<HashMap<usize, Rc<Cell<Vector>>>>,
+    /// Each submenu's natural size from its last layout and the height it may take, found where it
+    /// was placed last (the layout does not know the window's coordinates).
+    rooms: RefCell<HashMap<usize, Rc<Cell<Room>>>>,
 }
 
 impl PartialEq for Cascade {
@@ -182,12 +186,12 @@ impl Cascade {
 
     /// Where the entry at `path` stands on screen: where it was laid out, moved with its card.
     pub fn entry_rect(&self, path: &[usize]) -> Option<Rectangle> {
-        let level = path.len().checked_sub(1)?;
-        self.anchor(path).get().map(|bounds| bounds + self.shift(level).get())
+        path.last()?;
+        self.anchor(path).get()
     }
 
-    fn shift(&self, level: usize) -> Rc<Cell<Vector>> {
-        Rc::clone(self.shifts.borrow_mut().entry(level).or_insert_with(|| Rc::new(Cell::new(Vector::ZERO))))
+    fn room(&self, level: usize) -> Rc<Cell<Room>> {
+        Rc::clone(self.rooms.borrow_mut().entry(level).or_default())
     }
 
     fn card(&self, level: usize) -> Anchor {
@@ -346,14 +350,15 @@ impl Cascade {
         on_event: impl Fn(CascadeEvent) -> M + Clone + 'a,
     ) -> Element<'a, M> {
         let anchor = self.anchor(&path);
-        let (at, shift) = (anchor.clone(), self.shift(path.len().saturating_sub(1)));
+        let at = anchor.clone();
         let (enter, leave, moved) = (on_event.clone(), on_event.clone(), on_event);
         let (into, out) = (path.clone(), path);
-        mouse_area(super::anchored(&anchor, content))
+        let marked = super::guard::Marker { content: content.into(), anchor };
+        mouse_area(marked)
             .on_enter(enter(CascadeEvent::Enter(into)))
             .on_exit(leave(CascadeEvent::Leave(out)))
             .on_move(move |point| {
-                let origin = at.get().map_or(Point::ORIGIN, |bounds| bounds.position()) + shift.get();
+                let origin = at.get().map_or(Point::ORIGIN, |bounds| bounds.position());
                 moved(CascadeEvent::Move(Point::new(origin.x + point.x, origin.y + point.y)))
             })
             .into()
@@ -427,13 +432,15 @@ impl Cascade {
             let level = at + 1;
             let card = mouse_area(child).on_enter(on_event(CascadeEvent::Card(level)));
             let spot = self.spot_of(level);
-            let room = self.spot_of(level);
-            // As high as the room where it goes, so it never covers the way to it (issue #906).
+            let room = self.room(level);
+            // As high as the room where it goes, so it never covers the way to it (issue #906): the
+            // room was found where it was placed, from its natural size the layout keeps here.
             let card = super::guard::Limited {
                 content: opaque(card),
-                room: Box::new(move |window, natural| {
-                    let (target, floor) = room()?;
-                    Some(cascade_spot(target, natural, Rectangle::new(Point::ORIGIN, window), floor).1)
+                room: Box::new(move |_window, natural| {
+                    let (_, limit) = room.get();
+                    room.set((Some(natural), limit));
+                    limit
                 }),
             };
             layers.push(self.placed_beside(spot, card.into(), level));
@@ -445,15 +452,14 @@ impl Cascade {
     /// of the lowest entry of the open path above it that lies higher: the submenu never covers that.
     fn spot_of(&self, level: usize) -> impl Fn() -> Option<(Rectangle, f32)> + 'static {
         let path = |depth: usize| self.open.get(..depth).map(<[usize]>::to_vec);
-        let at = |depth: usize| path(depth).map(|path| (self.anchor(&path), self.shift(depth - 1)));
+        let at = |depth: usize| path(depth).map(|path| self.anchor(&path));
         let target = at(level);
         let above: Vec<_> = (1..level).filter_map(at).collect();
         move || {
-            let (anchor, shift) = target.as_ref()?;
-            let rect = anchor.get()? + shift.get();
+            let rect = target.as_ref()?.get()?;
             let floor = above
                 .iter()
-                .filter_map(|(anchor, shift)| anchor.get().map(|bounds| bounds + shift.get()))
+                .filter_map(Anchor::get)
                 .map(|bounds| bounds.y + bounds.height)
                 .filter(|bottom| *bottom <= rect.y)
                 .fold(f32::MIN, f32::max);
@@ -469,17 +475,20 @@ impl Cascade {
         card: Element<'a, M>,
         level: usize,
     ) -> Element<'a, M> {
-        let (record, moved) = (self.card(level), self.shift(level));
+        let (record, room) = (self.card(level), self.room(level));
         float(card)
             .translate(move |bounds, viewport| {
+                let (natural, _) = room.get();
                 let corner = match spot() {
-                    Some((target, floor)) => cascade_spot(target, bounds.size(), viewport, floor).0,
+                    Some((target, floor)) => {
+                        let (corner, limit) = cascade_spot(target, natural.unwrap_or(bounds.size()), viewport, floor);
+                        room.set((natural, Some(limit)));
+                        corner
+                    }
                     None => centre(bounds.size(), viewport),
                 };
                 record.set(Rectangle::new(corner, bounds.size()));
-                let offset = corner - bounds.position();
-                moved.set(offset);
-                offset
+                corner - bounds.position()
             })
             .into()
     }
@@ -494,7 +503,7 @@ impl Cascade {
         card: Element<'a, M>,
         level: usize,
     ) -> Element<'a, M> {
-        let (record, moved) = (self.card(level), self.shift(level));
+        let record = self.card(level);
         float(card)
             .translate(move |bounds, viewport| {
                 let corner = match target() {
@@ -502,9 +511,7 @@ impl Cascade {
                     None => centre(bounds.size(), viewport),
                 };
                 record.set(Rectangle::new(corner, bounds.size()));
-                let offset = corner - bounds.position();
-                moved.set(offset);
-                offset
+                corner - bounds.position()
             })
             .into()
     }
@@ -681,14 +688,13 @@ mod tests {
         assert!(low.y + card.height <= 800.0, "moved up to stay in the window");
     }
 
-    /// The design review of #906: an entry records where it was laid out, before its card moved to
-    /// the pointer; its submenu must hang where the entry is shown.
+    /// The design review of #906: an entry records where it is shown, its card's move included
+    /// ([`super::super::guard::Marker`]); its submenu hangs there.
     #[test]
-    fn an_entry_moves_with_its_card() {
+    fn an_entry_is_where_it_was_shown() {
         let cascade = Cascade::new();
-        cascade.anchor(&[2]).set(Rectangle::new(Point::new(4.0, 64.0), iced::Size::new(232.0, 30.0)));
-        cascade.shift(0).set(Vector::new(300.0, 120.0));
-        let shown = cascade.entry_rect(&[2]).expect("laid out");
+        cascade.anchor(&[2]).set(Rectangle::new(Point::new(304.0, 184.0), iced::Size::new(232.0, 30.0)));
+        let shown = cascade.entry_rect(&[2]).expect("shown");
         assert_eq!(shown, Rectangle::new(Point::new(304.0, 184.0), iced::Size::new(232.0, 30.0)));
         assert_eq!(cascade.entry_rect(&[]), None);
     }
