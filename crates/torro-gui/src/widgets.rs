@@ -3149,7 +3149,34 @@ pub fn rail_context_menu<'a, M: Clone + 'a, N: Clone + 'a>(
     on_action: impl Fn(M) -> N,
     max_height: f32,
 ) -> Element<'a, N> {
+    rail_context_menu_in(None, groups, on_action, max_height)
+}
+
+/// A [`rail_context_menu`] under the title `title` ("3 messages selected", issue #904): what the
+/// menu acts on, in the style of its groups' titles, so the menu of several mails is not taken for
+/// that of the one under the pointer.
+pub fn rail_context_menu_titled<'a, M: Clone + 'a, N: Clone + 'a>(
+    title: impl IntoFragment<'a>,
+    groups: Vec<RailGroup<'a, M>>,
+    on_action: impl Fn(M) -> N,
+    max_height: f32,
+) -> Element<'a, N> {
+    rail_context_menu_in(Some(title.into_fragment()), groups, on_action, max_height)
+}
+
+/// The body of [`rail_context_menu`] and [`rail_context_menu_titled`]: the menu's title, if any,
+/// above its groups.
+fn rail_context_menu_in<'a, M: Clone + 'a, N: Clone + 'a>(
+    title: Option<iced::widget::text::Fragment<'a>>,
+    groups: Vec<RailGroup<'a, M>>,
+    on_action: impl Fn(M) -> N,
+    max_height: f32,
+) -> Element<'a, N> {
     let mut list = column![];
+    if let Some(title) = title {
+        let title = typo::text(typo::caption(), title).style(theme::text_3).wrapping(Wrapping::None);
+        list = list.push(container(title).padding(flyout_title_padding()));
+    }
     for (index, group) in groups.into_iter().enumerate() {
         if index > 0 {
             list = list.push(container(rule::horizontal(LINE).style(style::rule)).padding([space::xs(), 0.0]));

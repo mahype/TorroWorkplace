@@ -831,6 +831,10 @@ pub enum Undo {
     /// ([`MessageSummary::pile_since`], decision of #315), so an answer sent meanwhile still takes
     /// them off "Reply later".
     Pile(Vec<String>, Option<MailPile>, Option<DateTime<Utc>>),
+    /// Takes a change of pile of several marked mails back (issue #904, [`App::pile_selected_mail`]):
+    /// each mail back on the pile it lay on (`None`: on none) since the time it lay there; one
+    /// `inbox.set_mail_pile` per pile and time.
+    Piles(Vec<(String, Option<MailPile>, Option<DateTime<Utc>>)>),
     /// Takes "Reply discarded." back (review of #315): the round of "Focus & reply" as it was left,
     /// at its place with every reply typed ([`FocusReply::restore`]), on "Reply later" – only while no
     /// other round runs; starting one drops this undo. Also what the hint of a send that failed after
@@ -1534,6 +1538,9 @@ pub enum Menu {
     Nav,
     /// Actions of the message selected by right-click in the mail list.
     MailContext,
+    /// Actions for every marked mail (issue #904): a right-click on one of two or more marked mails
+    /// keeps the marking and opens this at the pointer ([`mail::selection_groups`]).
+    SelectionContext,
     /// The account checkboxes beside the mail list's sorting control.
     MailAccounts,
     /// The card "Display" at the mail's action rail (issue #456): HTML or text, the mail's colours.
@@ -1812,6 +1819,9 @@ pub enum Open {
     /// The same for a mail further down (the sixth, else the last): in a low window the menu opens
     /// above the pointer or moves in, whole on screen.
     MailContextLow,
+    /// "All" with its first three mails marked and the context menu of the second open (issue #904):
+    /// the menu for every marked mail.
+    MailContextSelection,
     /// The mail window's "Waiting for me" open and shown, the group with the most categories of
     /// the demo (issue #300); set once the catalogue is in.
     CategoryGroup,
@@ -1945,7 +1955,7 @@ impl Open {
                 | Self::SaveShortened
         )
     }
-    const ALL: [(&'static str, Open); 141] = [
+    const ALL: [(&'static str, Open); 142] = [
         ("workflow-setup", Open::WorkflowSetup),
         ("workflow-template", Open::WorkflowTemplate),
         ("workflow-test", Open::WorkflowTest),
@@ -2043,6 +2053,7 @@ impl Open {
         ("save-shortened", Open::SaveShortened),
         ("mail-context", Open::MailContext),
         ("mail-context-low", Open::MailContextLow),
+        ("mail-context-selection", Open::MailContextSelection),
         ("category-group", Open::CategoryGroup),
         ("category", Open::Category),
         ("category-menu", Open::CategoryMenu),
@@ -3189,6 +3200,13 @@ pub struct App<S> {
     /// the mail without an entry the menu "Follow up" is for (task E19.4, decision 8 of E19): it is
     /// sent by its own id (`m:…`), the core makes its entry.
     mail_subject: Option<String>,
+    /// The marked mail "Move to folder" was opened for from their context menu (issue #904): its
+    /// choices move them all ([`App::move_choices`]); `None` while it acts on `mail_subject`.
+    move_selection: Option<Vec<String>>,
+    /// The row right-clicked in the marking (issue #904): a message's id in a folder, an entry's in a
+    /// view of entries. Its menu and "Move to folder" hang there, not at the cursor's row
+    /// ([`App::anchored_row`]).
+    context_row: Option<String>,
     /// "Only if no reply" of the mail window's "Follow up" (task E19.4): its line in the menu and its
     /// chip in the picker switch it, and the menu stays open. Off each time the menu opens.
     unless_reply: bool,
@@ -3862,6 +3880,15 @@ pub enum Message {
     DeleteSelectedMail,
     /// "Archive" on the marked mail (issue #615): its button in the bar of the marking.
     ArchiveSelectedMail,
+    /// "Mark read", "Mark unread", "Flag" or "Unflag" on every marked mail (issue #904, from their
+    /// context menu): only [`MailAction::Read`] and [`MailAction::Flag`] act.
+    MarkSelectedMail(MailAction),
+    /// "Reply later", "Set aside" or "Remove from …" (`None`) on every marked mail (issue #904).
+    PileSelectedMail(Option<MailPile>),
+    /// "Move to folder…" for the marked mail (issue #904): the folders of their one account.
+    AskMoveSelected,
+    /// The folder picked there: every marked mail moves to it (issue #904).
+    MoveSelectedMail(String),
     /// The whole mail for the panel, or why it could not be read.
     LetterLoaded(String, Result<Box<Mail>, String>),
     /// From the panel or a key: do this with the message with this id.
@@ -4876,6 +4903,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     | Open::SaveShortened
                     | Open::MailContext
                     | Open::MailContextLow
+                    | Open::MailContextSelection
                     | Open::Invitations
                     | Open::Invitation
                     | Open::Images
@@ -4925,6 +4953,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             column_scroll: [None; 2],
             subject: None,
             mail_subject: None,
+            move_selection: None,
+            context_row: None,
             unless_reply: false,
             focus_reply: None,
             rounds: 0,
@@ -6494,6 +6524,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 }
             }
             Message::ContextMail(id, point) => {
+                // Issue #904: on one of the marked mails the marking stays, and the menu acts on all.
+                if self.context_selection(&id) {
+                    self.open_selection_context(id, point);
+                    return self.keep_opened_search();
+                }
                 if self.select_mail(id) {
                     self.menu = Some(Menu::MailContext);
                     self.context_point = Some(point);
@@ -6502,6 +6537,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 }
             }
             Message::ContextEntry(id, point) => {
+                // The entry's mail among the marked ones (issue #904): as on a folder's row.
+                let message = self.rows().into_iter().find(|item| item.id == id).and_then(|item| match &item.link {
+                    Some(Link::Mail { message }) => Some(message.clone()),
+                    _ => None,
+                });
+                if message.is_some_and(|message| self.context_selection(&message)) {
+                    self.open_selection_context(id, point);
+                    return self.keep_opened_search();
+                }
                 self.select(id);
                 if self.detail.is_some() {
                     self.menu = Some(Menu::MailContext);
@@ -6516,6 +6560,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 let result = self.handle(*action);
                 // "Save mail as" (issue #501): its formats open where the context menu stood.
                 if self.menu == Some(Menu::SaveMailFormat) {
+                    self.context_point = point;
+                } else if self.menu == Some(Menu::Move) && self.move_selection.is_some() {
+                    // Issue #904: so do the folders of the marked mail – the cursor may stand elsewhere.
                     self.context_point = point;
                 }
                 self.menu_at = MenuAt::Row;
@@ -6549,6 +6596,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             Message::DeleteSelectedMail => return self.delete_selected_mail(),
             Message::ArchiveSelectedMail => return self.archive_selected_mail(),
+            Message::MarkSelectedMail(action) => return self.mark_selected_mail(action),
+            Message::PileSelectedMail(pile) => return self.pile_selected_mail(pile),
+            Message::AskMoveSelected => return self.ask_move_selected(),
+            Message::MoveSelectedMail(folder) => return self.move_selected_mail(folder),
             Message::LetterLoaded(id, result) => {
                 let mut result = result.map(|mail| *mail);
                 if let Ok(mail) = &mut result {
@@ -8587,6 +8638,191 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         self.archive_mails(ids, close)
     }
 
+    /// Whether a right-click on the mail `message` keeps the marking (issue #904): two or more mails
+    /// are marked and it is one of them. Else it marks only that mail, as a click does.
+    /// Not for a marking none of whose mail the window knows a home for: it would have no menu to show.
+    fn context_selection(&self, message: &str) -> bool {
+        self.selected_mail.len() >= 2
+            && self.selected_mail.iter().any(|held| held == message)
+            && !self.selected_state().is_empty()
+    }
+
+    /// Opens the context menu of the marked mail at `point` of the row `row` (issue #904): the marking,
+    /// the cursor and the reader stay as they are.
+    fn open_selection_context(&mut self, row: String, point: Point) {
+        self.close_menus();
+        self.menu = Some(Menu::SelectionContext);
+        self.context_point = Some(point);
+        self.context_row = Some(row);
+        self.menu_at = MenuAt::Row;
+    }
+
+    /// The row the menus hang at (`detail::Anchors::row`): the cursor's – but while the menu of the
+    /// marked mail or its "Move to folder" is open, the row right-clicked (issue #904), as the cursor
+    /// stays where it was. While mail is marked the cursor highlights no row, so this moves the anchor –
+    /// and, in rows with buttons, the strip of the row's buttons while the menu is open.
+    fn anchored_row(&self) -> Option<&str> {
+        let marking = matches!(self.menu, Some(Menu::SelectionContext))
+            || (self.menu == Some(Menu::Move) && self.move_selection.is_some());
+        match self.context_row.as_deref() {
+            Some(row) if marking && !self.selected_mail.is_empty() => Some(row),
+            _ => self.cursor.as_deref(),
+        }
+    }
+
+    /// The marked mail the list shows, in its order ([`App::selectable_mail`]).
+    fn selected_ids(&self) -> Vec<String> {
+        self.selectable_mail().into_iter().filter(|id| self.selected_mail.contains(id)).collect()
+    }
+
+    /// What the context menu of the marked mail knows of each (issue #904, [`mail::SelectedMail`]):
+    /// account and folder as [`App::mail_home`] says – a mail of no known home is left out –, its
+    /// flags as listed or loaded (none known: unread and unflagged), its pile and whether it is a
+    /// draft.
+    fn selected_state(&self) -> Vec<mail::SelectedMail> {
+        self.selected_ids()
+            .into_iter()
+            .filter_map(|id| {
+                let (account, folder) = self.mail_home(&id)?;
+                let listed = self.messages.iter().find(|message| message.id == id).map(|message| message.flags.clone());
+                let loaded = || match &self.letter {
+                    Some(Letter { loaded: Some(Ok(mail)), .. }) if mail.summary.id == id => {
+                        Some(mail.summary.flags.clone())
+                    }
+                    _ => None,
+                };
+                // An entry's mail (issue #904, review): read as the window marked it or its entry says.
+                let seen = || {
+                    let held = self.items.iter().chain(&self.for_me).chain(&self.snoozed).chain(self.detail.as_ref());
+                    let read = self.seen_mail.contains(&id)
+                        || held.filter(|item| shows_mail(item, &id)).any(|item| matches!(item.state, State::Seen));
+                    Some(if read { vec![Flag::Seen] } else { Vec::new() })
+                };
+                let flags = listed.or_else(loaded).or_else(seen).unwrap_or_default();
+                let pile = self.mail_pile(&id);
+                let draft = self.in_role(&id, Role::Drafts);
+                Some(mail::SelectedMail { account, folder, flags, pile, draft })
+            })
+            .collect()
+    }
+
+    /// "Mark read", "Mark unread", "Flag" or "Unflag" from the context menu of the marked mail (issue
+    /// #904): one `mail.set_flags` for all of them; the marking stays. Other actions do nothing here.
+    fn mark_selected_mail(&mut self, action: MailAction) -> Task<Message> {
+        self.close_menus();
+        let ids = self.selected_ids();
+        if ids.is_empty() || !matches!(action, MailAction::Read(_) | MailAction::Flag(_)) {
+            return Task::none();
+        }
+        let edit = match mail::edit_of(action, &ids[0]) {
+            Some(MailEdit::Flags { add, remove, .. }) => MailEdit::Flags { ids, add, remove },
+            _ => return Task::none(),
+        };
+        self.mail_edit(Some(edit), None)
+    }
+
+    /// "Reply later", "Set aside" or "Remove from …" (`pile` `None`) from the context menu of the marked
+    /// mail (issue #904): one `inbox.set_mail_pile` for all of them but those on `pile` already, as
+    /// [`App::pile_with`] does for one – the numbers at once, the rows out of a view that leaves piled
+    /// mail out. The hint's undo puts each back on the pile it lay on, with its time ([`Undo::Piles`]).
+    /// The marking stays, without the mails that left the list.
+    fn pile_selected_mail(&mut self, pile: Option<MailPile>) -> Task<Message> {
+        self.close_menus();
+        let ids: Vec<String> = self
+            .selected_ids()
+            .into_iter()
+            .filter(|id| self.mail_pile(id) != pile)
+            .filter(|id| pile.is_none() || !self.in_role(id, Role::Drafts))
+            .collect();
+        if ids.is_empty() {
+            return Task::none();
+        }
+        let before: Vec<(String, Option<MailPile>, Option<DateTime<Utc>>)> =
+            ids.iter().map(|id| (id.clone(), self.mail_pile(id), self.mail_pile_since(id))).collect();
+        let text = match (pile, before.first().and_then(|(_, before, _)| *before)) {
+            (Some(MailPile::ReplyLater), _) => tr("On Reply later."),
+            (Some(MailPile::SetAside), _) => tr("Set aside."),
+            (None, Some(MailPile::SetAside)) => tr("Removed from Set aside."),
+            (None, _) => tr("Removed from Reply later."),
+        };
+        let hint = Hint {
+            text: text.to_owned(),
+            undo: Some(Undo::Piles(before.clone())),
+            shown: Instant::now(),
+            folder: None,
+            contact: None,
+        };
+        for (id, was, _) in &before {
+            self.count_pile(*was, false);
+            self.count_pile(pile, true);
+            self.set_row_pile(id, pile, None);
+            if self.view.leaves_out_piles() {
+                self.take_out(id);
+                self.selected_mail.retain(|held| held != id);
+            }
+        }
+        self.set_mail_pile(ids, pile, None, Some(hint))
+    }
+
+    /// "Move to folder…" from the context menu of the marked mail (issue #904): the folders of their
+    /// account ([`App::move_choices`]); a note when there is no other folder.
+    fn ask_move_selected(&mut self) -> Task<Message> {
+        self.close_menus();
+        let ids = self.selected_ids();
+        if ids.is_empty() {
+            return Task::none();
+        }
+        self.move_selection = Some(ids);
+        if self.move_choices().is_empty() {
+            self.move_selection = None;
+            self.note(tr("There is no other folder to move it to.").to_owned());
+            return Task::none();
+        }
+        self.menu = Some(Menu::Move);
+        Task::none()
+    }
+
+    /// Moves the marked mail "Move to folder" was opened for to `folder` (issue #904,
+    /// `mail.move_messages`, one call: they are of one account): off the lists at once, with a hint
+    /// whose undo moves each back to its folder ([`Undo::Filed`], as archiving several does). The
+    /// marking goes.
+    fn move_selected_mail(&mut self, folder: String) -> Task<Message> {
+        let Some(ids) = self.move_selection.take() else { return Task::none() };
+        self.close_menus();
+        let name = self.folders.iter().find(|f| f.id == folder).map(mail::folder_name).unwrap_or_default();
+        let ids: Vec<String> = ids.into_iter().filter(|id| self.folder_of(id).as_ref() != Some(&folder)).collect();
+        self.selected_mail.clear();
+        self.mail_anchor = None;
+        if ids.is_empty() {
+            return Task::none();
+        }
+        // One move back per account and folder, as archiving several does.
+        let mut homes: Vec<(Option<String>, MoveTarget, Vec<String>)> = Vec::new();
+        for id in &ids {
+            let account = self.mail_account_of(id);
+            let home = self.home_of(id);
+            match homes.iter_mut().find(|(held, to, _)| *held == account && *to == home) {
+                Some((_, _, held)) => held.push(id.clone()),
+                None => homes.push((account, home, vec![id.clone()])),
+            }
+        }
+        let back: Vec<MailEdit> = homes.into_iter().map(|(_, to, ids)| MailEdit::Move { ids, to }).collect();
+        // Gathered before `take_out`, which drops the entries `with_follow_backs` looks at (issue #331).
+        let (reopen, follow) = self.follow_backs_of(&ids);
+        let hint = Hint {
+            text: trf("Moved to {folder}", &[("folder", &name)]),
+            undo: Some(Undo::Filed { back, reopen, follow, piled: Vec::new() }),
+            shown: Instant::now(),
+            folder: None,
+            contact: None,
+        };
+        for id in &ids {
+            self.leaving.push(Leaving { id: id.clone(), from: self.folder_of(id), answered: None });
+            self.take_out(id);
+        }
+        self.mail_edit(Some(MailEdit::Move { ids, to: MoveTarget::Folder(folder) }), Some(hint))
+    }
+
     /// `reopen` – the entries the undo of moving the message `id` opens again – with the follow-ups of
     /// the entries the window holds that show it (review of PR #327): each with its time and condition,
     /// kept open for an open entry, put off again for a snoozed one, which is then reopened first as
@@ -9618,8 +9854,31 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     }
 
     /// The entries of "Move to folder": the folders of [`App::mail_subject`]'s account in the
-    /// sidebar's order ([`mail::folder_order`]), without the one it lies in.
+    /// sidebar's order ([`mail::folder_order`]), without the one it lies in. For the marked mail
+    /// ([`App::move_selection`], issue #904) the folders of their one account – none for mail of
+    /// several –, without the folder they all lie in.
     fn move_choices(&self) -> Vec<Choice> {
+        if let Some(ids) = &self.move_selection {
+            let homes: Vec<(String, Option<String>)> = ids.iter().filter_map(|id| self.mail_home(id)).collect();
+            let Some((account, here)) = homes.first().cloned() else { return Vec::new() };
+            if homes.len() != ids.len() || homes.iter().any(|(held, _)| *held != account) {
+                return Vec::new();
+            }
+            let here = here.filter(|here| homes.iter().all(|(_, held)| held.as_ref() == Some(here)));
+            let mut folders: Vec<&Folder> = self
+                .folders
+                .iter()
+                .filter(|folder| folder.account == account && Some(&folder.id) != here.as_ref())
+                .collect();
+            folders.sort_by_key(|folder| mail::folder_order(folder));
+            return folders
+                .into_iter()
+                .map(|folder| {
+                    let to = Message::MoveSelectedMail(folder.id.clone());
+                    Choice::new(mail::folder_icon(folder.role), mail::folder_name(folder), to)
+                })
+                .collect();
+        }
         let Some(id) = &self.mail_subject else { return Vec::new() };
         let Some((account, here)) = self.mail_home(id) else { return Vec::new() };
         let mut folders: Vec<&Folder> = self
@@ -10889,6 +11148,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Some(
                 Menu::Nav
                 | Menu::MailContext
+                | Menu::SelectionContext
                 | Menu::MailAccounts
                 | Menu::MailDisplay
                 | Menu::SearchFilters
@@ -13120,6 +13380,22 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 }
                 self.set_mail_pile(ids, pile, since, None)
             }
+            // Each marked mail back on its own pile with its time (issue #904): one call per pile and time.
+            Undo::Piles(piles) => {
+                // A pile, the time there and the mails that go back to both.
+                type Call = (Option<MailPile>, Option<DateTime<Utc>>, Vec<String>);
+                let mut calls: Vec<Call> = Vec::new();
+                for (id, pile, since) in piles {
+                    self.set_row_pile(&id, pile, since);
+                    match calls.iter_mut().find(|(held, at, _)| *held == pile && *at == since) {
+                        Some((_, _, ids)) => ids.push(id),
+                        None => calls.push((pile, since, vec![id])),
+                    }
+                }
+                let tasks: Vec<Task<Message>> =
+                    calls.into_iter().map(|(pile, since, ids)| self.set_mail_pile(ids, pile, since, None)).collect();
+                Task::batch(tasks)
+            }
             // The round of "Focus & reply" back with what was typed (review of #315) – never over a round
             // that runs now (second review).
             Undo::Focus(_) if self.focus_reply.is_some() => Task::none(),
@@ -13995,6 +14271,32 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     Message::CloseMenu,
                 )
             }),
+            // Issue #904: the actions for every marked mail, under how many they are.
+            Some(Menu::SelectionContext) => {
+                let state = self.selected_state();
+                let mut groups = mail::selection_groups(&state, &self.folders);
+                // A marked mail of no known home (review of #904): its folders are not known either.
+                if state.len() != self.selected_ids().len() {
+                    for group in &mut groups {
+                        group.items.retain(|item| !matches!(item.on_press, Some(Message::AskMoveSelected)));
+                    }
+                }
+                (!groups.is_empty()).then(|| {
+                    let (spot, placement) = context_spot(self.context_point, &rows.row);
+                    let count = self.selected_ids().len().to_string();
+                    widgets::floating(
+                        &spot,
+                        placement,
+                        widgets::rail_context_menu_titled(
+                            trf("{n} messages selected", &[("n", &count)]),
+                            groups,
+                            |action| Message::ContextAction(Box::new(action)),
+                            (self.size.height - style::MENU_INSET * 8.0).max(200.0),
+                        ),
+                        Message::CloseMenu,
+                    )
+                })
+            }
             Some(Menu::Nav) => {
                 Some(widgets::floating(&nav, Placement::Below(Align::Start), self.nav_menu(), Message::CloseMenu))
             }
@@ -14065,6 +14367,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 // From a sender of the overview at its "Mute" (issue #409), else at the bell.
                 let at = if self.menu_at == MenuAt::Overview { &overview_at } else { &hide_at };
                 Some(widgets::floating(at, below, self.mute_menu(), Message::CloseMenu))
+            }
+            // The marked mail's folders (issue #904) where their context menu stood: the cursor's row
+            // may be another one.
+            Some(Menu::Move) if self.move_selection.is_some() && self.context_point.is_some() => {
+                let (spot, placement) = context_spot(self.context_point, &rows.row);
+                Some(widgets::floating(&spot, placement, self.choice_menu(tr("Move to folder")), Message::CloseMenu))
             }
             // At the bell (the rail's "Mute…", task E14.3), else at the cursor's row. In the hub's
             // panel it opens to the right of the bell, like "Make task": aligned at its end the menu
@@ -14853,7 +15161,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     categories: &self.categories,
                     view: &self.view,
                     no_accounts: self.folders.is_empty(),
-                    selected: self.cursor.as_deref(),
+                    selected: self.anchored_row(),
                     selected_ids: &self.selected_mail,
                     now: self.now,
                     anchors: rows.clone(),
@@ -14938,7 +15246,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         list::Rows {
             view: &self.view,
             categories: &self.categories,
-            selected: self.cursor.as_deref(),
+            selected: self.anchored_row(),
             selected_mail: &self.selected_mail,
             now: self.now,
             anchors: anchors.clone(),
@@ -16325,6 +16633,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         self.drawer = false;
         self.subject = None;
         self.mail_subject = None;
+        self.move_selection = None;
         self.ai_suggesting = None;
         self.unsubscribe_ask = None;
         self.dialog_mail = None;
@@ -16612,6 +16921,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     _ => self.messages.get(5).or(self.messages.last()),
                 };
                 if let Some(id) = message.map(|message| message.id.clone()) {
+                    return self.update(Message::ContextMail(id, Point::new(24.0, 12.0)));
+                }
+            }
+            // Issue #904: three mails marked, the right-click on the second.
+            Some(Open::MailContextSelection) => {
+                self.selected_mail = self.messages.iter().take(3).map(|message| message.id.clone()).collect();
+                self.mail_anchor = self.selected_mail.first().cloned();
+                if let Some(id) = self.selected_mail.get(1).cloned() {
                     return self.update(Message::ContextMail(id, Point::new(24.0, 12.0)));
                 }
             }
@@ -26081,6 +26398,217 @@ mod tests {
         assert!(file.items.iter().any(|item| item.label == trc("action", "Archive")), "task E18.5: Archive");
         assert!(file.items.iter().all(|item| item.label != tr("Done")), "no Done for mail");
         let _ = overview.view();
+    }
+
+    /// Marks the mails `ids` of the list as a click and Ctrl-clicks do.
+    fn mark_mail(app: &mut App<DemoSource>, ids: &[&str]) {
+        use iced::keyboard::Modifiers;
+
+        let _ = app.update(Message::SelectMail(ids[0].into()));
+        let _ = app.update(Message::ModifiersChanged(Modifiers::CTRL));
+        for id in &ids[1..] {
+            let _ = app.update(Message::SelectMail((*id).into()));
+        }
+        let _ = app.update(Message::ModifiersChanged(Modifiers::empty()));
+        assert_eq!(app.selected_mail, ids, "marked");
+    }
+
+    /// Issue #904: a right-click on one of the marked mails keeps the marking, the cursor and the
+    /// reader and opens the menu for all of them, under how many they are; on a mail outside the
+    /// marking it marks only that one and opens its own menu; without a marking nothing changes.
+    #[test]
+    fn a_right_click_in_the_marking_keeps_it_and_one_outside_marks_only_that_mail() {
+        let point = Point::new(24.0, 12.0);
+        let mut app = in_folder("f:work-inbox");
+        let _ = app.update(Message::Resized(WIDE));
+        assert!(message_ids(&app).len() >= 3, "three mails in the folder");
+        let ids: Vec<String> = message_ids(&app)[..3].iter().map(|id| (*id).to_owned()).collect();
+
+        // Without a marking: the mail's own menu, as before.
+        let _ = app.update(Message::ContextMail(ids[0].clone(), point));
+        assert_eq!((app.menu, app.cursor.as_deref()), (Some(Menu::MailContext), Some(ids[0].as_str())));
+        assert!(app.selected_mail.is_empty());
+        let _ = app.update(Message::Escape);
+
+        // In the marking: it stays, and so do the cursor and the reader.
+        mark_mail(&mut app, &[ids[0].as_str(), ids[1].as_str()]);
+        let (cursor, reading) = (app.cursor.clone(), app.reading);
+        let _ = app.update(Message::ContextMail(ids[1].clone(), point));
+        assert_eq!(app.menu, Some(Menu::SelectionContext));
+        assert_eq!(app.selected_mail, ids[..2], "the marking stays");
+        assert_eq!((app.cursor.clone(), app.reading), (cursor, reading), "the reader shows what it showed");
+        assert_eq!((app.context_point, app.menu_at), (Some(point), MenuAt::Row));
+        assert_eq!(app.anchored_row(), Some(ids[1].as_str()), "the menu at the row clicked, not the cursor's");
+        assert_eq!(app.focus(), Focus::Elsewhere, "list shortcuts do not act behind the menu");
+        for size in SIZES {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.view();
+        }
+        let _ = app.update(Message::Escape);
+        assert_eq!(app.selected_mail, ids[..2], "closing the menu keeps the marking");
+
+        // Outside the marking: only that mail, its own menu.
+        let _ = app.update(Message::ContextMail(ids[2].clone(), point));
+        assert_eq!((app.menu, app.cursor.as_deref()), (Some(Menu::MailContext), Some(ids[2].as_str())));
+        assert!(app.selected_mail.is_empty(), "the marking jumps to the mail");
+
+        // In a view of entries the same, by the entry's mail (decision 3 of the plan).
+        let mut overview = mail_entries(Density::Compact, &[]);
+        let mail = overview.selectable_mail();
+        assert!(mail.len() >= 3, "three mail entries");
+        let entry_of = |app: &App<DemoSource>, message: &str| {
+            let held = |item: &&Item| matches!(&item.link, Some(Link::Mail { message: m }) if m == message);
+            app.rows().into_iter().find(held).map(|item| item.id.clone()).expect("an entry")
+        };
+        overview.selected_mail = mail[..2].to_vec();
+        let entry = entry_of(&overview, &mail[1]);
+        let _ = overview.update(Message::ContextEntry(entry.clone(), point));
+        assert_eq!(overview.menu, Some(Menu::SelectionContext));
+        assert_eq!(overview.anchored_row(), Some(entry.as_str()), "at the entry clicked");
+        assert_eq!(overview.selected_mail, mail[..2], "the marking stays");
+        let _ = overview.view();
+        // Read from the menu, the menu then offers "Mark unread" (review of #904).
+        let _ = overview.update(Message::ContextAction(Box::new(Message::MarkSelectedMail(MailAction::Read(true)))));
+        assert!(overview.selected_state().iter().all(|held| held.flags.contains(&Flag::Seen)), "read");
+        let groups = mail::selection_groups(&overview.selected_state(), &overview.folders);
+        assert!(groups.iter().flat_map(|group| &group.items).any(|item| item.label == tr("Mark unread")));
+        let entry = entry_of(&overview, &mail[2]);
+        let _ = overview.update(Message::ContextEntry(entry.clone(), point));
+        assert_eq!((overview.menu, overview.cursor.as_deref()), (Some(Menu::MailContext), Some(entry.as_str())));
+        assert!(overview.selected_mail.is_empty());
+    }
+
+    /// Issue #904: each action of the menu of the marked mail sends one call for all of them – flags,
+    /// pile, move –; the undo of the pile puts each back on the pile it lay on.
+    #[test]
+    fn the_menu_of_the_marked_mail_acts_on_all_of_it_at_once() {
+        let point = Point::new(24.0, 12.0);
+        let mut app = in_folder("f:work-inbox");
+        let ids: Vec<String> = message_ids(&app)[..2].iter().map(|id| (*id).to_owned()).collect();
+        mark_mail(&mut app, &[ids[0].as_str(), ids[1].as_str()]);
+        let act = |app: &mut App<DemoSource>, action: Message| {
+            let _ = app.update(Message::ContextMail(ids[1].clone(), point));
+            assert_eq!(app.menu, Some(Menu::SelectionContext));
+            let _ = app.update(Message::ContextAction(Box::new(action)));
+        };
+
+        act(&mut app, Message::MarkSelectedMail(MailAction::Read(true)));
+        let read = MailEdit::Flags { ids: ids.clone(), add: vec![Flag::Seen], remove: Vec::new() };
+        assert_eq!(app.sent.last(), Some(&Sent::Mail(read, None)));
+        act(&mut app, Message::MarkSelectedMail(MailAction::Flag(true)));
+        let flag = MailEdit::Flags { ids: ids.clone(), add: vec![Flag::Flagged], remove: Vec::new() };
+        assert_eq!(app.sent.last(), Some(&Sent::Mail(flag, None)));
+        assert!(app.messages.iter().filter(|m| ids.contains(&m.id)).all(|m| m.flags.contains(&Flag::Flagged)));
+        assert_eq!(app.selected_mail, ids, "marking stays");
+
+        // One on "Set aside" already, the other on none: both on "Reply later", undo puts each back.
+        let since = Some(app.now);
+        app.set_row_pile(&ids[0], Some(MailPile::SetAside), since);
+        act(&mut app, Message::PileSelectedMail(Some(MailPile::ReplyLater)));
+        let Some(Sent::Pile(piled, Some(MailPile::ReplyLater), None, Some(hint))) = app.sent.last().cloned() else {
+            panic!("one call for the pile")
+        };
+        assert_eq!(piled, ids);
+        assert_eq!(hint.text, tr("On Reply later."));
+        assert_eq!(
+            hint.undo,
+            Some(Undo::Piles(vec![(ids[0].clone(), Some(MailPile::SetAside), since), (ids[1].clone(), None, None),]))
+        );
+        assert_eq!(app.selected_mail, ids, "a folder keeps piled mail listed and marked");
+        app.hint = Some(hint);
+        let before = app.sent.len();
+        let _ = app.update(Message::Undo);
+        let back: Vec<&Sent> = app.sent[before..].iter().collect();
+        assert_eq!(
+            back,
+            [
+                &Sent::Pile(vec![ids[0].clone()], Some(MailPile::SetAside), since, None),
+                &Sent::Pile(vec![ids[1].clone()], None, None, None),
+            ]
+        );
+        assert_eq!(app.mail_pile(&ids[0]), Some(MailPile::SetAside));
+
+        // "Move to folder…": the folders of their account but theirs; one move, the marking goes.
+        mark_mail(&mut app, &[ids[0].as_str(), ids[1].as_str()]);
+        act(&mut app, Message::AskMoveSelected);
+        assert_eq!(app.menu, Some(Menu::Move));
+        assert_eq!(app.context_point, Some(point), "the folders where the menu stood, not at the cursor");
+        assert_eq!(app.anchored_row(), Some(ids[1].as_str()));
+        let choices = app.choices();
+        assert!(!choices.is_empty(), "other folders");
+        assert!(
+            choices
+                .iter()
+                .all(|choice| !matches!(&choice.message, Message::MoveSelectedMail(f) if f == "f:work-inbox"))
+        );
+        let _ = app.view();
+        let Message::MoveSelectedMail(folder) = choices[0].message.clone() else { panic!("a move of all") };
+        let before = app.sent.len();
+        let _ = app.update(choices[0].message.clone());
+        let moves: Vec<(MailEdit, Hint)> = app.sent[before..]
+            .iter()
+            .filter_map(|sent| match sent {
+                Sent::Mail(edit @ MailEdit::Move { .. }, Some(hint)) => Some((edit.clone(), hint.clone())),
+                _ => None,
+            })
+            .collect();
+        let [(edit, hint)] = moves.as_slice() else { panic!("one move: {moves:?}") };
+        assert_eq!(*edit, MailEdit::Move { ids: ids.clone(), to: MoveTarget::Folder(folder) });
+        assert!(matches!(hint.undo, Some(Undo::Filed { ref back, .. }) if back.len() == 1));
+        assert!(app.selected_mail.is_empty() && !message_ids(&app).contains(&ids[0].as_str()));
+    }
+
+    /// Issue #904: the menu of the marked mail holds only what goes for each of them.
+    #[test]
+    fn the_menu_of_the_marked_mail_offers_only_what_goes_for_all() {
+        let app = in_folder("f:work-inbox");
+        let labels = |mails: &[mail::SelectedMail], folders: &[Folder]| -> Vec<String> {
+            mail::selection_groups(mails, folders)
+                .into_iter()
+                .flat_map(|group| group.items.into_iter().map(|item| item.label.to_string()))
+                .collect()
+        };
+        let work = app.messages.first().expect("a mail").account.clone();
+        let other = app.folders.iter().map(|f| f.account.clone()).find(|a| *a != work).expect("a second account");
+        let mail = |account: &str, flags: Vec<Flag>, pile: Option<MailPile>| mail::SelectedMail {
+            account: account.to_owned(),
+            folder: None,
+            flags,
+            pile,
+            draft: false,
+        };
+        let both = [mail(&work, vec![Flag::Seen], None), mail(&work, Vec::new(), None)];
+        let words = labels(&both, &app.folders);
+        for word in [trc("action", "Archive"), tr("Reply later"), tr("Set aside"), tr("Move to folder…"), tr("Delete")]
+        {
+            assert!(words.iter().any(|held| held == word), "{word} in {words:?}");
+        }
+        assert!(words.iter().any(|held| held == tr("Mark read")), "one unread: Mark read");
+        assert!(words.iter().any(|held| held == tr("Flag")));
+        for word in [tr("Reply"), tr("Forward"), tr("Ask AI…"), tr("Save mail as")] {
+            assert!(!words.iter().any(|held| held == word), "no {word} for several");
+        }
+
+        let read =
+            [mail(&work, vec![Flag::Seen, Flag::Flagged], None), mail(&work, vec![Flag::Seen, Flag::Flagged], None)];
+        let words = labels(&read, &app.folders);
+        assert!(words.iter().any(|held| held == tr("Mark unread")) && words.iter().any(|held| held == tr("Unflag")));
+
+        let piled =
+            [mail(&work, Vec::new(), Some(MailPile::ReplyLater)), mail(&work, Vec::new(), Some(MailPile::ReplyLater))];
+        assert!(labels(&piled, &app.folders).iter().any(|held| held == tr("Remove from Reply later")));
+
+        let accounts = [mail(&work, Vec::new(), None), mail(&other, Vec::new(), None)];
+        assert!(!labels(&accounts, &app.folders).iter().any(|held| held == tr("Move to folder…")), "two accounts");
+
+        let no_archive: Vec<Folder> =
+            app.folders.iter().filter(|f| !(f.account == work && f.role == Some(Role::Archive))).cloned().collect();
+        assert!(!labels(&both, &no_archive).iter().any(|held| held == trc("action", "Archive")), "no archive");
+
+        let draft =
+            [mail(&work, Vec::new(), None), mail::SelectedMail { draft: true, ..mail(&work, Vec::new(), None) }];
+        let words = labels(&draft, &app.folders);
+        assert!(!words.iter().any(|held| held == trc("action", "Archive") || held == tr("Reply later")), "a draft");
     }
 
     /// Issue #500: a right click on a mail without an entry offers "Category…" in "Torro" beside
