@@ -251,6 +251,7 @@ aus einem Guss wirkt:
 | `size::row()` | 48 | Listenzeile (Aufgaben, `widgets::list_row`) |
 | `size::row_message()` | 100 | Mail-Zeile im Eingang: Avatar (`[list] avatar`, 40), Absender · Domain · Zeit, Betreff, Vorschau – drei Zeilen à 22, über der Haarlinie zentriert mit je 16,5 Luft – die Zeile nimmt von `row_padding` nur die Seiten (E3.9, E11.1); in der Form `line` eine Zeile. Das Mail-Fenster hat eigene, schlanke Zeilen (#458, `list::slim_message_height()`: zwei Zeilen `body` + 2 × `space::m()` + Haarlinie) |
 | `size::row_notice()` | 80 | Andere Zeile im Eingang: Kachel 28 mit Quell-Icon, Titel · Zeit, Text – zwei Zeilen à 22, über der Haarlinie zentriert mit je 17,5 Luft (E3.9) |
+| `size::target()` | 24 | Kleinstes Klickziel (Abschnitt 4), in allen Stufen gleich: ein Wort, das in einer leisen Textzeile ein eigener Knopf ist (die Personen im Mail-Kopf, #905), bekommt diese Höhe, der Text bleibt in seiner Stufe |
 | `size::card_gap()` | 12 | Abstand zwischen Karten und zwischen den Teilen einer Karte (`widgets::card`, E8.2) |
 | `size::avatar()` / `size::avatar_lg()` | 40 / 48 | Avatar einer Karte / Absender im Kopf des Lesers (E8.2); die Mail-Zeile hat ihren eigenen (`[list] avatar`) |
 | `size::tile_sm()` / `size::tile()` / `size::tile_lg()` | 20 / 28 / 36 | Quellen-Kachel (`widgets::source_tile`, E8.2): neben Wörtern / Hinweiszeile, Spaltenkopf / Anhang, Kopf einer App-Karte |
