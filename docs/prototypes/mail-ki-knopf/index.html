@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<!-- Entwurf: Ein KI-Knopf für Übersicht und offene Mail (Issue #892), Nachfolger von ../mail-mini-chat/ (#605).
+     Drei Varianten desselben Knopfs, in beiden Ansichten an derselben Stelle der rechten Spalte:
+       A – runder, schwebender Knopf unten rechts (Akzent gefüllt, Schatten)
+       B – schwebende Pille unten rechts (Menüfläche, Sparkles im Akzent, Wort „Ask AI“)
+       C – ruhiger Symbolknopf in der oberen Zeile vor „panel-right“, markiert, solange der Chat offen ist
+     „Ask AI…“ steht nicht mehr in der Aktionsleiste. Zustände über die Knöpfe oben oder
+     ?variant=a|b|c, ?view=overview|mail, ?state=closed|open, ?size=s|m|l, ?theme=light.
+     ?sheet=1 zeigt alle drei Varianten nebeneinander (geschlossen, Übersicht und Mail).
+     Tokens und Bausteine aus ../linear/torro.css. -->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mail AI button</title>
+<link rel="stylesheet" href="../linear/torro.css">
+<script src="../linear/size.js"></script>
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<style>
+:root{--attention:#E8A33D;--ok:#3FB984;--error:#F2555A}
+:root[data-theme="light"]{--attention:#B06F12;--ok:#1F9D68;--error:#C9302C}
+body{overflow:auto;height:auto}
+.bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line)}
+.bar .label{font-size:12px;color:var(--text3);margin:0 4px 0 12px}
+.bar .label:first-child{margin-left:0}
+.bar .btn[aria-pressed="true"]{border-color:var(--focus);background:var(--selected)}
+.stage{height:calc(100vh - 46px);min-height:560px;display:flex}
+.sheet{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;padding:16px}
+.sheet figure{margin:0;display:flex;flex-direction:column;gap:8px}
+.sheet figcaption{font-weight:500}
+.sheet figcaption span{color:var(--text3);font-weight:400}
+.sheet .window{height:420px;margin:0;flex:none}
+.window{flex:1;min-width:0;display:flex;flex-direction:column;margin:8px;background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden;position:relative}
+html:not([data-size="l"]) .stage .window{margin:0;border:0;border-radius:0}
+
+/* Obere Zeile des Fensters: Titelknöpfe rechts, in Variante C mit dem KI-Knopf davor. */
+.top{height:36px;flex:none;display:flex;align-items:center;gap:2px;padding:0 8px 0 12px;border-bottom:1px solid var(--line)}
+.top .grow{flex:1}
+.top .app{font-weight:500;color:var(--text2)}
+.top .iconbtn.ai{color:var(--accent)}
+.top .iconbtn.ai.on{background:var(--selected)}
+.top .tsep{width:1px;height:16px;background:var(--line);margin:0 4px}
+.cols{flex:1;min-height:0;display:flex;position:relative}
+
+.list{width:280px;flex:none;border-right:1px solid var(--line);display:flex;flex-direction:column}
+html:not([data-size="l"]) .list{display:none}
+.lrow{padding:10px 16px;border-bottom:1px solid var(--line)}
+.lrow.sel{background:var(--selected)}
+.lrow b{font-weight:500;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lrow span{font-size:12px;color:var(--text3)}
+
+/* Rechte Spalte: Übersicht oder Mail; der Knopf A/B schwebt in ihr unten rechts. */
+.right{flex:1;min-width:0;position:relative;display:flex;flex-direction:column}
+.rbody{flex:1;overflow:auto;padding:16px 72px 72px 24px}
+.rbody h2{font-size:20px;line-height:28px;font-weight:600;margin:4px 0 12px}
+.from{display:flex;gap:12px;align-items:center;margin-bottom:16px}
+.from .avatar{width:32px;height:32px;font-size:11px;margin:0;border:0;background:var(--c-work)}
+.from .who b{font-weight:500;display:block}
+.from .who span{font-size:12px;color:var(--text3)}
+.mailtext p{margin:0 0 12px;color:var(--text2);max-width:64ch}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-bottom:20px}
+.tile{background:var(--raised);border:1px solid var(--line);border-radius:10px;padding:12px}
+.tile b{display:block;font-size:20px;line-height:28px;font-weight:600}
+.tile span{font-size:12px;color:var(--text3)}
+.section{font-size:12px;font-weight:500;color:var(--text3);margin:0 0 8px}
+.orow{display:flex;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}
+.orow .avatar{width:24px;height:24px;margin:0;border:0;font-size:9px}
+.orow .t{flex:1;min-width:0}
+.orow .t b{font-weight:500;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.orow .t span{font-size:12px;color:var(--text3)}
+
+.rail{position:absolute;right:12px;top:12px;display:flex;flex-direction:column;gap:2px;padding:4px;background:var(--menu);border:1px solid var(--line-strong);border-radius:10px;box-shadow:var(--shadow);z-index:5}
+.rail .iconbtn{width:32px;height:32px}
+.rail .rsep{height:1px;background:var(--line);margin:4px 2px}
+.rail .grp{font-size:10px;line-height:12px;font-weight:500;color:var(--text3);text-align:center;padding:2px 0}
+
+.fab{position:absolute;right:12px;bottom:12px;z-index:6;display:flex;align-items:center;justify-content:center;gap:8px;cursor:pointer;font:500 13px/1 Inter,sans-serif}
+.fab.a{width:44px;height:44px;border-radius:50%;border:0;background:var(--accent);color:#fff;box-shadow:var(--shadow),0 2px 8px rgba(0,0,0,.25)}
+.fab.a svg{width:20px;height:20px}
+.fab.b{height:36px;padding:0 14px 0 12px;border-radius:18px;background:var(--menu);border:1px solid var(--line-strong);color:var(--text);box-shadow:var(--shadow)}
+.fab.b svg{color:var(--accent);width:16px;height:16px}
+
+/* Das Paneel: breit eine Spalte neben Übersicht bzw. Mail, mittel und schmal über ihr. */
+.ask{width:360px;flex:none;border-left:1px solid var(--line);display:flex;flex-direction:column;background:var(--panel);min-height:0}
+html:not([data-size="l"]) .ask{position:absolute;inset:0;width:auto;border-left:0;z-index:10}
+.sheet .ask{width:220px}
+.ask .header{gap:6px}
+.ask .header b{font-weight:500}
+.ask .header svg.spark{color:var(--accent)}
+.about{display:flex;gap:10px;align-items:flex-start;padding:10px 16px;border-bottom:1px solid var(--line)}
+.about svg{color:var(--text3);margin-top:2px}
+.about .t{min-width:0}
+.about .t b{font-weight:500;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.about .t span{font-size:12px;color:var(--text3)}
+.log{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+.me{align-self:flex-end;max-width:85%;background:var(--raised);border:1px solid var(--line-strong);border-radius:10px;padding:8px 12px}
+.toolline{display:flex;align-items:center;gap:8px;height:24px;color:var(--text3);font-size:12px;font-weight:500}
+.toolline svg{width:14px;height:14px;color:var(--ok)}
+.empty{margin:auto;text-align:center;color:var(--text3);max-width:260px;display:flex;flex-direction:column;gap:8px;align-items:center}
+.empty svg{width:24px;height:24px}
+.starters{display:flex;flex-direction:column;gap:6px;width:100%}
+.starters .pchip{justify-content:flex-start;height:30px;color:var(--text2)}
+.card{background:var(--raised);border:1px solid var(--line-strong);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px}
+.card .head{display:flex;gap:8px;align-items:center;font-weight:500}
+.card .head svg{color:var(--attention);width:16px;height:16px}
+.card .meta{color:var(--text)}
+.card .why{font-size:12px;line-height:16px;color:var(--text3)}
+.card .actions{display:flex;gap:8px;justify-content:flex-end}
+.composer{margin:0 12px 12px;border:1px solid var(--line-strong);background:var(--raised);border-radius:10px;padding:8px 8px 8px 12px;display:flex;align-items:center;gap:8px}
+.composer .ph{flex:1;color:var(--text3)}
+.composer .iconbtn.send{background:var(--accent);color:#fff}
+.back{display:none}
+html:not([data-size="l"]) .back{display:inline-flex}
+.sheet .back{display:none}
+</style>
+</head>
+<body>
+<div class="bar">
+  <span class="label">Variant</span><span id="variants"></span>
+  <span class="label">View</span><span id="views"></span>
+  <span class="label">Chat</span><span id="states"></span>
+  <span class="label">Sheet</span><button class="btn" data-sheet="1">All variants</button>
+</div>
+<div id="stage" class="stage"></div>
+
+<script>
+const q=new URLSearchParams(location.search);
+let variant=q.get('variant')||'a', view=q.get('view')||'overview', state=q.get('state')||'closed', sheet=q.get('sheet')==='1';
+const VARIANTS=[['a','A · Round'],['b','B · Pill'],['c','C · Top row']];
+const VIEWS=[['overview','Overview'],['mail','Open mail']];
+const STATES=[['closed','Closed'],['open','Open']];
+const icon=(n,c='')=>`<i data-lucide="${n}" class="${c}"></i>`;
+
+function overview(){return `
+  <div class="rbody">
+    <h2>Overview</h2>
+    <div class="tiles">
+      <div class="tile"><b>12</b><span>Unread</span></div>
+      <div class="tile"><b>4</b><span>Waiting for your reply</span></div>
+      <div class="tile"><b>2</b><span>Deadlines this week</span></div>
+    </div>
+    <div class="section">Needs a reply</div>
+    <div class="orow"><div class="avatar" style="background:var(--c-work)">AB</div><div class="t"><b>Projekttreffen</b><span>Anna Berg · Today 09:12</span></div></div>
+    <div class="orow"><div class="avatar" style="background:var(--c-family,#7a5af8)">MW</div><div class="t"><b>Rechnung März</b><span>Max Weber · Yesterday</span></div></div>
+    <div class="orow"><div class="avatar" style="background:var(--c-work)">JK</div><div class="t"><b>Angebot Website</b><span>Julia Klein · Mon</span></div></div>
+  </div>`}
+
+function mail(){return `
+  <div class="rbody">
+    <div class="crumbs faint">Inbox › Work</div>
+    <h2>Projekttreffen</h2>
+    <div class="from"><div class="avatar">AB</div><div class="who"><b>Anna Berg</b><span>anna@example.org · Today 09:12</span></div></div>
+    <div class="mailtext">
+      <p>Hallo,</p>
+      <p>lass uns am Donnerstag um 14 Uhr im Büro über den Stand sprechen. Bring bitte die Zahlen vom letzten Quartal mit.</p>
+      <p>Bis Freitag bräuchte ich außerdem deine Rückmeldung zum Entwurf.</p>
+      <p>Viele Grüße<br>Anna</p>
+    </div>
+  </div>
+  <div class="rail">
+    <button class="iconbtn" title="Reply">${icon('reply')}</button>
+    <button class="iconbtn" title="Done">${icon('check')}</button>
+    <button class="iconbtn" title="Pile">${icon('layers')}</button>
+    <div class="rsep"></div><div class="grp">Torro</div>
+    <button class="iconbtn" title="Task">${icon('circle-check')}</button>
+    <button class="iconbtn" title="Event">${icon('calendar-plus')}</button>
+    <button class="iconbtn" title="Category…">${icon('tag')}</button>
+  </div>`}
+
+function fab(v,open){
+  if(v==='c'||open)return '';
+  return v==='a'
+    ? `<button class="fab a" title="Ask AI (i)">${icon('sparkles')}</button>`
+    : `<button class="fab b" title="Ask AI (i)">${icon('sparkles')}Ask AI</button>`;
+}
+
+function panel(v){
+  const general=v==='overview';
+  const head=general?'':`<div class="about">${icon('mail')}<div class="t"><b>About: Projekttreffen</b><span>Anna Berg · Today 09:12</span></div></div>`;
+  const log=general?`<div class="log">
+      <div class="me">Archive the newest mail from Max, please.</div>
+      <div class="toolline">${icon('check')}Searched mail · 1 result</div>
+      <div class="card"><div class="head">${icon('shield-alert')}Approval needed</div>
+        <div class="meta">Move mail to Archive</div>
+        <div class="why">“Rechnung März” from Max Weber · Inbox › Archive</div>
+        <div class="actions"><button class="btn ghost">Deny</button><button class="btn primary">Allow</button></div></div>
+    </div>`:`<div class="log"><div class="empty">${icon('sparkles')}
+      <div>Ask about this mail. Torro reads it first; it only reads and suggests.</div>
+      <div class="starters"><span class="pchip">What does the sender want from me?</span>
+      <span class="pchip">Is there a deadline?</span></div></div></div>`;
+  const ph=general?'Ask about your mail…':'Ask about this mail…';
+  return `<div class="ask">
+    <div class="header">
+      <button class="btn ghost back">${icon('chevron-left')}${general?'Overview':'Mail'}</button>
+      ${icon('sparkles','spark')}<b>Ask AI</b><span class="grow"></span>
+      <button class="iconbtn" title="New chat">${icon('plus')}</button>
+      <button class="iconbtn" title="Close">${icon('x')}</button>
+    </div>${head}${log}
+    <div class="composer"><span class="ph">${ph}</span><button class="iconbtn send" title="Send">${icon('arrow-up')}</button></div>
+  </div>`;
+}
+
+function windowHtml(v,vw,st){
+  const open=st==='open';
+  const ai=v==='c'?`<button class="iconbtn ai ${open?'on':''}" title="Ask AI (i)">${icon('sparkles')}</button>`:'';
+  return `<div class="window">
+    <div class="top"><span class="app">Mail</span><span class="grow"></span>
+      ${ai}<button class="iconbtn" title="Panel">${icon('panel-right')}</button>
+      <button class="iconbtn" title="Settings">${icon('settings')}</button><span class="tsep"></span>
+      <button class="iconbtn" title="Close">${icon('x')}</button></div>
+    <div class="cols">
+      <div class="list">
+        <div class="header"><b>Inbox</b></div>
+        <div class="lrow ${vw==='mail'?'sel':''}"><b>Anna Berg</b><span>Projekttreffen</span></div>
+        <div class="lrow"><b>Max Weber</b><span>Rechnung März</span></div>
+        <div class="lrow"><b>Julia Klein</b><span>Angebot Website</span></div>
+      </div>
+      <div class="right">${vw==='mail'?mail():overview()}${fab(v,open)}</div>
+      ${open?panel(vw):''}
+    </div></div>`;
+}
+
+function buttons(list,cur,key){return list.map(([id,l])=>`<button class="btn" data-${key}="${id}" aria-pressed="${id===cur}">${l}</button>`).join(' ')}
+
+function render(){
+  const s=document.getElementById('stage');
+  if(sheet){
+    s.className='sheet';
+    s.innerHTML=VARIANTS.map(([v,l])=>`<figure><figcaption>${l} <span>· overview, open mail, chat open</span></figcaption>
+      ${windowHtml(v,'overview','closed')}${windowHtml(v,'mail','closed')}${windowHtml(v,'overview','open')}</figure>`).join('');
+  }else{
+    s.className='stage';
+    s.innerHTML=windowHtml(variant,view,state);
+  }
+  document.getElementById('variants').innerHTML=buttons(VARIANTS,variant,'variant');
+  document.getElementById('views').innerHTML=buttons(VIEWS,view,'view');
+  document.getElementById('states').innerHTML=buttons(STATES,state,'state');
+  document.querySelector('[data-sheet]').setAttribute('aria-pressed',sheet);
+  lucide.createIcons();
+}
+document.addEventListener('click',e=>{
+  const b=e.target.closest('button');if(!b)return;
+  if(b.dataset.variant){variant=b.dataset.variant;sheet=false}
+  else if(b.dataset.view){view=b.dataset.view;sheet=false}
+  else if(b.dataset.state){state=b.dataset.state;sheet=false}
+  else if(b.dataset.sheet){sheet=!sheet}
+  else if(b.classList.contains('fab')||b.classList.contains('ai')){state=state==='open'?'closed':'open'}
+  else if(b.title==='Close'&&b.closest('.ask')){state='closed'}
+  else return;
+  render();
+});
+render();
+</script>
+</body>
+</html>
