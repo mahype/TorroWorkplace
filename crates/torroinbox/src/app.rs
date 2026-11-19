@@ -6590,6 +6590,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 let files = result.as_ref().is_ok_and(|mail| mail.attachments.iter().any(|file| !file.inline));
                 if let Some(letter) = self.letter.as_mut().filter(|letter| letter.id == id) {
                     letter.loaded = Some(result);
+                    self.drop_lost_person_menu();
                     let side = self.ask_invite_side(&id, invite.as_ref());
                     let read = if unread {
                         self.mail_edit(mail::edit_of(MailAction::Read(true), &id), None)
@@ -8351,6 +8352,20 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// Asks for the mail the panel wants ([`App::wanted_letter`]) when it is another than the one
     /// held, and drops it when the panel wants none. A folder's message opened in the panel is
     /// marked read, as mail apps do; an entry's mail is read once the entry is done (the core).
+    /// Closes a person's menu (issue #905) whose person the mail held no longer has – a copy (Cc) of a
+    /// mail loaded anew, or one that could not be loaded: no menu is drawn then, and the keys would
+    /// go nowhere until a click or Escape.
+    fn drop_lost_person_menu(&mut self) {
+        let Some(Menu::Person(person)) = self.menu else { return };
+        let there = self.reading().is_some_and(|reading| {
+            reading.summary().is_some_and(|summary| person.who(summary, reading.loaded).is_some())
+        });
+        if !there {
+            self.menu = None;
+            self.context_point = None;
+        }
+    }
+
     fn follow_letter(&mut self) -> Task<Message> {
         let wanted = self.wanted_letter();
         if wanted.as_deref() == self.letter.as_ref().map(|letter| letter.id.as_str()) {
@@ -22260,6 +22275,17 @@ mod tests {
         }
         let _ = app.follow_letter();
         assert_eq!(app.menu, None, "no person's menu over another mail");
+
+        // Review of PR #913: a person the mail no longer has (here a copy of a mail that could not
+        // be loaded) closes their menu, so the keys reach the list again.
+        let mut app = reading("m:w1");
+        let _ = app.update(Message::ContextPerson(mail::HeadPerson::Cc(0), None));
+        app.letter.as_mut().expect("letter").loaded = Some(Err("gone".into()));
+        app.drop_lost_person_menu();
+        assert_eq!(app.menu, None, "no menu for a person who is gone");
+        let _ = app.update(Message::ContextPerson(mail::HeadPerson::From, None));
+        app.drop_lost_person_menu();
+        assert_eq!(app.menu, Some(Menu::Person(mail::HeadPerson::From)), "the sender is still there");
     }
 
     /// `id` of the work inbox open in the reader of a wide window, loaded.
