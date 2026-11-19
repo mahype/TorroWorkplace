@@ -514,7 +514,7 @@ ist kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   links davon; zu lang, rollt es. Es öffnet, wenn der Zeiger `widgets::CASCADE_DELAY` (200 ms) auf dem Eintrag ruht,
   ein Klick öffnet es sofort; fährt der Zeiger schräg über andere Einträge darauf zu, bleibt es offen (Dreieck,
   `widgets::aims_at`), ruht er auf einem anderen Eintrag, schließt es. Tasten: ↑/↓ wählen (zyklisch), → oder Enter
-  öffnet das Untermenü, ← schließt es, Escape schließt eine Ebene, im Hauptmenü das Menü; der Eintrag unter dem
+  öffnet das Untermenü, ← schließt es (in „Mute ▸“ ändern ←/→ wie im Menü der Glocke „For“, dort schließt nur Escape), Escape schließt eine Ebene, im Hauptmenü das Menü; der Eintrag unter dem
   Tastencursor und der mit offenem Untermenü stehen `SELECTED`. Eine Wahl im Untermenü wirkt sofort und schließt
   alle Ebenen. **Ausnahme:** Die Ablageziele unter „Save mail as ▸“ bleiben nach dem Klick offen und zeigen Lauf,
   Erfolg oder Fehler (#560). Höchstens zwei Untermenü-Ebenen (`widgets::CASCADE_DEPTH`).
