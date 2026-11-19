@@ -19,7 +19,7 @@ use iced::widget::scrollable;
 use iced::widget::{column, container, float, mouse_area, opaque, rule, stack};
 use iced::{Element, Fill, Length, Padding, Point, Rectangle, Vector};
 
-use super::{Anchor, MenuSection, Placement, blank, centre, menu_entry_lit, menu_width, place};
+use super::{Anchor, MenuSection, Placement, blank, cascade_spot, centre, menu_entry_lit, menu_width, place};
 use crate::style;
 use crate::theme::{self, space};
 use crate::typo;
@@ -426,11 +426,62 @@ impl Cascade {
         for (at, child) in children.into_iter().enumerate().take(self.open.len()) {
             let level = at + 1;
             let card = mouse_area(child).on_enter(on_event(CascadeEvent::Card(level)));
-            let (entry, shift) = (self.anchor(&self.open[..level]), self.shift(level - 1));
-            let target = move || entry.get().map(|bounds| bounds + shift.get());
-            layers.push(self.placed(target, Placement::Cascade, opaque(card), level));
+            let spot = self.spot_of(level);
+            let room = self.spot_of(level);
+            // As high as the room where it goes, so it never covers the way to it (issue #906).
+            let card = super::guard::Limited {
+                content: opaque(card),
+                room: Box::new(move |window, natural| {
+                    let (target, floor) = room()?;
+                    Some(cascade_spot(target, natural, Rectangle::new(Point::ORIGIN, window), floor).1)
+                }),
+            };
+            layers.push(self.placed_beside(spot, card.into(), level));
         }
         stack(layers).into()
+    }
+
+    /// Where the entry that opens the submenu at `level` stands, moved with its card, and the bottom
+    /// of the lowest entry of the open path above it that lies higher: the submenu never covers that.
+    fn spot_of(&self, level: usize) -> impl Fn() -> Option<(Rectangle, f32)> + 'static {
+        let path = |depth: usize| self.open.get(..depth).map(<[usize]>::to_vec);
+        let at = |depth: usize| path(depth).map(|path| (self.anchor(&path), self.shift(depth - 1)));
+        let target = at(level);
+        let above: Vec<_> = (1..level).filter_map(at).collect();
+        move || {
+            let (anchor, shift) = target.as_ref()?;
+            let rect = anchor.get()? + shift.get();
+            let floor = above
+                .iter()
+                .filter_map(|(anchor, shift)| anchor.get().map(|bounds| bounds + shift.get()))
+                .map(|bounds| bounds.y + bounds.height)
+                .filter(|bottom| *bottom <= rect.y)
+                .fold(f32::MIN, f32::max);
+            Some((rect, floor))
+        }
+    }
+
+    /// The card of the submenu at `level` floated beside its entry ([`cascade_spot`]), recording
+    /// where it stood and how far it moved.
+    fn placed_beside<'a, M: 'a>(
+        &self,
+        spot: impl Fn() -> Option<(Rectangle, f32)> + 'a,
+        card: Element<'a, M>,
+        level: usize,
+    ) -> Element<'a, M> {
+        let (record, moved) = (self.card(level), self.shift(level));
+        float(card)
+            .translate(move |bounds, viewport| {
+                let corner = match spot() {
+                    Some((target, floor)) => cascade_spot(target, bounds.size(), viewport, floor).0,
+                    None => centre(bounds.size(), viewport),
+                };
+                record.set(Rectangle::new(corner, bounds.size()));
+                let offset = corner - bounds.position();
+                moved.set(offset);
+                offset
+            })
+            .into()
     }
 
     /// `card` floated to its place at `target` (for a submenu: its entry, moved with the card it
@@ -653,6 +704,14 @@ mod tests {
         let low = Rectangle::new(Point::new(12.0, 700.0), iced::Size::new(232.0, 30.0));
         let at = place(low, iced::Size::new(300.0, 400.0), viewport, Placement::Cascade);
         assert!(at.y + 400.0 <= 700.0, "above the entry: {at:?}");
+        // Too high for either side: on the side with more room, only as high as that room, and
+        // never over the entries of the open path above it (design review of #906).
+        let (at, room) = cascade_spot(low, iced::Size::new(300.0, 1200.0), viewport, 500.0);
+        assert_eq!(room, 200.0, "between the path's entry above (500) and this one (700)");
+        assert!(at.y >= 500.0 && at.y + room <= 700.0, "{at:?}");
+        let mid = Rectangle::new(Point::new(12.0, 300.0), iced::Size::new(232.0, 30.0));
+        let (at, room) = cascade_spot(mid, iced::Size::new(300.0, 1200.0), viewport, 280.0);
+        assert_eq!((at.y, room), (330.0, 900.0 - 8.0 - 330.0), "below, where there is more room");
     }
 
     #[test]

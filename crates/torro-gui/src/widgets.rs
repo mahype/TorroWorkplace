@@ -2396,25 +2396,47 @@ fn place(target: Rectangle, card: Size, viewport: Rectangle, placement: Placemen
             };
             (x, y)
         }
-        Placement::Cascade => {
-            let right = target.x + target.width + style::MENU_INSET;
-            let left = target.x - style::MENU_INSET - card.width;
-            if right + card.width <= viewport.x + viewport.width - beside_gap() {
-                (right, target.y - style::MENU_INSET)
-            } else if left >= viewport.x + beside_gap() {
-                (left, target.y - style::MENU_INSET)
-            } else {
-                // No room on either side (a narrow window): under the entry, moved in a little – above
-                // it where there is more room there –, so the entry that opened it stays in view.
-                (target.x + space::m(), below_or_above(target, card, viewport))
-            }
-        }
+        // A submenu without open entries above it; [`cascade_spot`] places it where it says.
+        Placement::Cascade => return cascade_spot(target, card, viewport, viewport.y).0,
     };
     let clamp = |value: f32, start: f32, length: f32, extent: f32| {
         let (low, high) = (start + beside_gap(), start + length - extent - beside_gap());
         if high < low { low } else { value.clamp(low, high) }
     };
     Point::new(clamp(x, viewport.x, viewport.width, card.width), clamp(y, viewport.y, viewport.height, card.height))
+}
+
+/// Where a submenu of `card` size goes beside its entry `target` in `viewport` (issue #906), and
+/// how high it may be there: its left edge at the menu's right edge ([`style::MENU_INSET`] right of
+/// the entry) and its first entry level with the entry, on the menu's left at the window's right
+/// edge. With room on neither side (a narrow window) it goes under the entry, moved in a little, or
+/// above it where there is more room – never higher than `floor`, the bottom of the entries of the
+/// open path above it, so the way to it stays in view – and is only as high as that side's room: it
+/// scrolls beyond.
+fn cascade_spot(target: Rectangle, card: Size, viewport: Rectangle, floor: f32) -> (Point, f32) {
+    let gap = beside_gap();
+    let (top, bottom) = (viewport.y + gap, viewport.y + viewport.height - gap);
+    let fit = |start: f32, low: f32, high: f32, extent: f32| {
+        if high - extent < low { low } else { start.clamp(low, high - extent) }
+    };
+    let (left_edge, right_edge) = (viewport.x + gap, viewport.x + viewport.width - gap);
+    let right = target.x + target.width + style::MENU_INSET;
+    let left = target.x - style::MENU_INSET - card.width;
+    let level = target.y - style::MENU_INSET;
+    if right + card.width <= right_edge {
+        return (Point::new(right, fit(level, top, bottom, card.height)), bottom - top);
+    }
+    if left >= left_edge {
+        return (Point::new(left, fit(level, top, bottom, card.height)), bottom - top);
+    }
+    let x = fit(target.x + space::m(), left_edge, right_edge, card.width);
+    let under = target.y + target.height;
+    let (room_below, room_above) = (bottom - under, target.y - floor.max(top));
+    if card.height <= room_below || room_below >= room_above {
+        (Point::new(x, under), room_below.max(0.0))
+    } else {
+        (Point::new(x, target.y - card.height.min(room_above)), room_above.max(0.0))
+    }
 }
 
 /// The top-left corner of a card of `card` size in the middle of `viewport`: where a card whose
