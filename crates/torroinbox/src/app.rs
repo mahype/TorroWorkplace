@@ -16082,7 +16082,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             })
             .collect();
         // Issue #906, decision 1: the switch "Always for <sender>" first, then a click files the mail.
+        // A long address is cut with "…" rather than widening the menu past half again its width
+        // (design review of #906); the switch's room is the menu's less its mark and padding.
         let always = self.category_always_label();
+        let frame = choice_frame(None, "", false);
+        let always = typo::ellipsize(&always, typo::body(), widgets::menu_width() * 1.5 - frame);
         let needed = shown.iter().enumerate().map(|(i, held)| {
             choice_frame(None, keys::digit(i + 1), true) + typo::text_width(&held.label, typo::body())
         });

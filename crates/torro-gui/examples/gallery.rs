@@ -2960,7 +2960,7 @@ fn rail_groups(anchors: &[Anchor]) -> Vec<widgets::RailGroup<'static, Msg>> {
             vec![
                 item(Icon::ListTodo, "Task", "T"),
                 item(Icon::CalendarPlus, "Event", "C"),
-                item(Icon::Tag, "Category…", ""),
+                item(Icon::Tag, "Category", ""),
                 item(Icon::Sparkles, "Re-categorize", "").accent(),
             ],
         ),
