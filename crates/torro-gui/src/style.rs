@@ -224,6 +224,13 @@ pub mod button {
         Style { border: style.border.rounded(super::ROUND as f32), ..style }
     }
 
+    /// A round button that floats over content (issue #892, the mail window's AI button):
+    /// [`round_primary`] with the shadow of floating surfaces ([`super::container::menu`]), so it
+    /// stands off the content it lies over.
+    pub fn round_floating(theme: &Theme, status: Status) -> Style {
+        Style { shadow: palette(theme).shadow, ..round_primary(theme, status) }
+    }
+
     /// A round neutral button of the composer (issue #699): "Send" while the field is empty (then
     /// disabled, grey), "Stop" and "Sending…" in the same form. [`secondary`] as a circle.
     pub fn round_quiet(theme: &Theme, status: Status) -> Style {

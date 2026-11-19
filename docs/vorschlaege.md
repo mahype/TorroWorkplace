@@ -91,7 +91,7 @@ Regeln der Abläufe (#556).
 |---|---|---|---|
 | Vorschläge einer Mail | Karte in Leser, Mail-Fenster und Paneel | `mail.list_suggestions` (Read) | `mail_list_suggestions` |
 | Annehmen / Verwerfen | Accept · Dismiss auf der Karte | `mail.accept_suggestion`, `mail.dismiss_suggestion` (Write) | gleichnamig mit `_` |
-| Auslesen von Hand | Task/Event in der Aktionsleiste, „Fill in with AI“; Mini-Chat „Ask AI…“ (#605) | `mail.extract_action` (Write), optional `focus` | `mail_extract_action` |
+| Auslesen von Hand | Task/Event in der Aktionsleiste, „Fill in with AI“; Mini-Chat über den runden KI-Knopf (#605, #892) | `mail.extract_action` (Write), optional `focus` | `mail_extract_action` |
 | Termin aus Mail ohne Eintrag | Event in der Aktionsleiste | `calendar.create_event_from_mail` (Write) | `calendar_create_event_from_mail` |
 | Arten und Schalter | Einstellungen › Categorization › AI | `mail.list_action_kinds` (Read), `mail.set_action_kind` (Admin) | gleichnamig mit `_` |
 

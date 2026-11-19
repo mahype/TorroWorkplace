@@ -1,6 +1,6 @@
 //! The mini chat about a mail (issue #605, "Chat zu einer Mail" in `docs/assistent.md`, mock-up
-//! `docs/prototypes/mail-mini-chat/`): "Ask AI…" in the rail's group "Torro" opens a panel in which
-//! the person asks the assistant about the open mail. It is a conversation of the assistant with the
+//! `docs/prototypes/mail-mini-chat/`): the round AI button over the open mail (issue #892; "Ask AI…" in
+//! the rail's group "Torro" before) opens a panel in which the person asks the assistant about it. It is a conversation of the assistant with the
 //! mail as its `about`; the core reads the mail first, lets the answer only read and suggest, and a
 //! suggestion it reads out (`mail.extract_action`) comes back as a card whose "Accept" opens the
 //! filled dialog of issue #603 in this window.
@@ -25,11 +25,17 @@
 //!   (issue #664).
 //! - **Where it stands** (the app decides, `App::ask_layout`): wide beside the mail, medium and
 //!   narrow over it with "‹ Mail" back ([`view`]).
+//! - **Without a mail** (issue #892, mock-up `docs/prototypes/mail-ki-knopf/`): the round AI button over
+//!   the overview opens the same panel without `about` ([`Ask::open_general`]). It asks in the mode
+//!   `ask`, so every change the assistant would make waits for the person: the approval shows as a
+//!   card with "Allow" and "Deny" (`approvals.approval_status`, `approvals.decide_approval`, the core's
+//!   words, never the model's). Nothing of the window – no folder, no selection – goes along; the
+//!   assistant searches the mail itself.
 //!
 //! Everything in the conversation but the person's own words – answers, tool results, the cards'
 //! text – comes from the mail and the model: data to show, never instructions.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -48,12 +54,12 @@ use torro_gui::markdown;
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Palette, palette, size, space};
 use torro_gui::widgets;
-use torro_gui::{datetime, style, typo};
+use torro_gui::{datetime, layout, style, typo};
 use torro_ipc::actions::{ActionKind, Suggestion, SuggestionState};
 use torro_ipc::assistant::{
     Card, CardEntry, CardRef, ConversationSummary, Engine, EngineKind, Entry, EntryContent, MailRef, Mode,
 };
-use torro_ipc::{EventSuggestion, Request, Response};
+use torro_ipc::{ApprovalInfo, ApprovalState, EventSuggestion, Request, Response};
 use torro_mail::MessageSummary;
 use torro_pim::EventTime;
 
@@ -64,6 +70,17 @@ use crate::mail;
 /// than the assistant's window, which lets the answer appear letter by letter; here it comes in
 /// pieces, and the panel rests between them.
 pub const FOLLOW: Duration = Duration::from_millis(300);
+
+/// How much room content keeps at the bottom right of the mail window's right column for the round AI
+/// button (issue #892): the button ([`size::control_sm()`], `widgets::round_button`) and its margin
+/// of [`space::m()`] on both sides – the overview's end below, the footer of the panel at the right.
+pub fn button_clearance() -> f32 {
+    size::control_sm() + 2.0 * space::m()
+}
+
+/// How often the overview's chat asks while it is hidden and its answer runs (issue #892): it keeps
+/// following – an approval may wait –, but nobody watches it, so seldom.
+pub const FOLLOW_HIDDEN: Duration = Duration::from_secs(3);
 
 /// The id of the field, so opening the panel puts the cursor there.
 pub const FIELD: &str = "ask-ai";
@@ -85,6 +102,10 @@ impl Round {
 /// The questions an empty chat offers, in English; [`view`] translates them.
 pub const STARTERS: [&str; 3] =
     ["What does the sender want from me?", "Is there a deadline?", "What was said about this before?"];
+
+/// The questions an empty chat without a mail offers (issue #892), in English; [`view`] translates them.
+pub const GENERAL_STARTERS: [&str; 3] =
+    ["What came in today?", "What is waiting for my reply?", "Which mails have a deadline this week?"];
 
 /// A request the core refused: its code (`forbidden`, `not-connected` …) and its words for people.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -225,9 +246,15 @@ pub enum Event {
     Polled(Round, Result<(ConversationSummary, Vec<Entry>), Refusal>),
     /// The cards of the conversation with this id (`assistant.get_cards`), for its round.
     Cards(Round, String, Result<Vec<CardEntry>, Refusal>),
+    /// The state of the approval with this id (`approvals.approval_status`), for its round (issue #892).
+    Approval(Round, String, Result<ApprovalInfo, Refusal>),
+    /// "Allow" (`true`) or "Deny" (`false`) on the card of the approval with this id (issue #892).
+    Decide(String, bool),
+    /// The core's answer to "Allow" or "Deny" (`approvals.decide_approval`), for its round.
+    Decided(Round, String, Result<ApprovalInfo, Refusal>),
     /// "+": a new conversation about the same mail.
     New,
-    /// ✕ or "‹ Mail": the panel closes, the mail shows.
+    /// ✕, "‹ Mail" or "‹ Overview": the panel closes, the mail or the overview shows.
     Close,
     /// "Open assistant" under the hint that the assistant may not read the mail.
     OpenAssistant,
@@ -239,14 +266,37 @@ pub enum Event {
     Accept { account: String, id: String, kind: String },
 }
 
-/// The mini chat about one mail.
+impl Event {
+    /// The round an answer of the core was asked in; `None` for what the person or the app does.
+    pub fn round(&self) -> Option<Round> {
+        match self {
+            Event::Opened(round, _)
+            | Event::Sent(round, _)
+            | Event::Polled(round, _)
+            | Event::Cards(round, ..)
+            | Event::Approval(round, ..)
+            | Event::Decided(round, ..) => Some(*round),
+            _ => None,
+        }
+    }
+}
+
+/// The mini chat about one mail, or without one (issue #892).
 pub struct Ask {
-    /// The mail it is about.
-    pub about: MailRef,
+    /// The mail it is about; `None` for the chat of the overview, which asks in the mode `ask`.
+    pub about: Option<MailRef>,
     pub phase: Phase,
     pub transcript: Transcript,
     /// The cards of the conversation by the number of their entry, as the core resolved them last.
     pub cards: HashMap<u64, Card>,
+    /// The approvals of the conversation by id, as the core told them last (issue #892).
+    pub approvals: HashMap<String, ApprovalInfo>,
+    /// The approvals the core no longer knows (`not-found`: gone after a day, or a core started anew,
+    /// which keeps them in memory): their cards say so, and nobody asks for them again.
+    pub lost: HashSet<String>,
+    /// The approval whose "Allow" (`true`) or "Deny" is on its way: no card takes a second click, and
+    /// the pressed button says it works.
+    pub deciding: Option<(String, bool)>,
     /// What is typed in the field.
     pub input: String,
     /// What answers a new message, with its effort; `None` until [`open`] answered or without any.
@@ -268,11 +318,31 @@ impl Ask {
     /// The panel for the mail `about`, loading, and the task that opens it ([`open`]) and puts the
     /// cursor into the field.
     pub fn open(call: Call, about: MailRef) -> (Ask, Task<Event>) {
-        let ask = Ask {
-            about: about.clone(),
+        let ask = Ask::loading(call.clone(), Some(about.clone()));
+        let round = ask.round;
+        let opening = Task::perform(open(call, about), move |result| Event::Opened(round, result));
+        (ask, Task::batch([opening, iced::widget::operation::focus(FIELD)]))
+    }
+
+    /// The panel without a mail (issue #892, the AI button over the overview), loading, and the task
+    /// that asks what answers ([`open_general`]) and puts the cursor into the field. It starts a new
+    /// conversation: nothing of the assistant's other chats comes in.
+    pub fn open_general(call: Call) -> (Ask, Task<Event>) {
+        let ask = Ask::loading(call.clone(), None);
+        let round = ask.round;
+        let opening = Task::perform(open_general(call), move |result| Event::Opened(round, result));
+        (ask, Task::batch([opening, iced::widget::operation::focus(FIELD)]))
+    }
+
+    fn loading(call: Call, about: Option<MailRef>) -> Ask {
+        Ask {
+            about,
             phase: Phase::Loading,
             transcript: Transcript::default(),
             cards: HashMap::new(),
+            approvals: HashMap::new(),
+            lost: HashSet::new(),
+            deciding: None,
             input: String::new(),
             choice: None,
             sending: false,
@@ -280,15 +350,33 @@ impl Ask {
             following: false,
             round: Round::next(),
             parsed: HashMap::new(),
-            call: call.clone(),
-        };
-        let round = ask.round;
-        let opening = Task::perform(open(call, about), move |result| Event::Opened(round, result));
-        (ask, Task::batch([opening, iced::widget::operation::focus(FIELD)]))
+            call,
+        }
+    }
+
+    /// The hint for a refusal of the core in this chat ([`hint_for`]): without a mail (issue #892) there
+    /// is no mail the assistant may not read, so `forbidden` says the core's words.
+    fn hint(&self, refusal: &Refusal) -> Hint {
+        match hint_for(refusal) {
+            Hint::NoRight if self.about.is_none() => Hint::Failed(refusal.message.clone()),
+            hint => hint,
+        }
+    }
+
+    /// Whether the chat shows a hint in place of itself: the overview's chat is made anew when its
+    /// button is pressed again (issue #892), so a hint goes once the AI is set up.
+    pub fn hinting(&self) -> bool {
+        matches!(self.phase, Phase::Hint(_))
+    }
+
+    /// The round the answers of the chat open now belong to: the app hands an answer to the chat of
+    /// its round (issue #892: the chat of the overview and the one about a mail live side by side).
+    pub fn round(&self) -> Round {
+        self.round
     }
 
     /// Whether the panel asks the core every [`FOLLOW`]: while a message is on its way or an answer
-    /// runs.
+    /// runs – the core keeps it running while an approval waits, so the card follows too.
     pub fn follows(&self) -> bool {
         self.sending || self.transcript.running()
     }
@@ -296,18 +384,12 @@ impl Ask {
     /// The panel's part of an [`Event`]; the events the app handles change nothing here. An answer of
     /// another round ([`Round`]) is dropped.
     pub fn update(&mut self, event: Event) -> Task<Event> {
-        let asked = match &event {
-            Event::Opened(round, _) | Event::Sent(round, _) | Event::Polled(round, _) | Event::Cards(round, ..) => {
-                Some(*round)
-            }
-            _ => None,
-        };
-        if asked.is_some_and(|round| round != self.round) {
+        if event.round().is_some_and(|round| round != self.round) {
             return Task::none();
         }
         match event {
             Event::Opened(_, Ok(opened)) => return self.opened(opened),
-            Event::Opened(_, Err(refusal)) => self.phase = Phase::Hint(hint_for(&refusal)),
+            Event::Opened(_, Err(refusal)) => self.phase = Phase::Hint(self.hint(&refusal)),
             Event::Input(text) => self.input = text,
             Event::Send => return self.send(),
             Event::Starter(text) => {
@@ -322,7 +404,7 @@ impl Ask {
                         self.failed = None;
                         return self.take(summary, entries);
                     }
-                    Err(refusal) => match hint_for(&refusal) {
+                    Err(refusal) => match self.hint(&refusal) {
                         Hint::Failed(message) => self.failed = Some(message),
                         hint => self.phase = Phase::Hint(hint),
                     },
@@ -343,6 +425,42 @@ impl Ask {
             }
             // The cards stay as they were; the next answer or tick asks again.
             Event::Cards(_, _, Err(_)) => {}
+            Event::Approval(_, id, Ok(approval)) => {
+                self.approvals.insert(id, approval);
+            }
+            // Gone, also one the card knew still waiting (a core started anew, or expired and removed):
+            // its card says so; a decided one keeps how it was decided.
+            Event::Approval(_, id, Err(refusal))
+                if refusal.code == "not-found"
+                    && self.approvals.get(&id).is_none_or(|approval| approval.state.is_pending()) =>
+            {
+                self.lost.insert(id);
+            }
+            // The card keeps what it showed; the next poll asks again.
+            Event::Approval(_, _, Err(_)) => {}
+            Event::Decide(id, allow) => return self.decide(id, allow),
+            Event::Decided(_, id, result) => {
+                self.deciding = None;
+                match result {
+                    Ok(approval) => {
+                        self.failed = None;
+                        self.approvals.insert(id, approval);
+                    }
+                    Err(refusal) if refusal.code == "not-found" => {
+                        // The core no longer knows it: nothing left to decide.
+                        self.lost.insert(id);
+                    }
+                    Err(refusal) => {
+                        // Said over the field like a message that did not go; the card stays open and
+                        // shows the core's state once it is asked again (decided elsewhere: `conflict`).
+                        self.failed = Some(match refusal.code.as_str() {
+                            "conflict" => tr("This approval was already decided.").to_owned(),
+                            _ => trf("Couldn't decide the approval: {reason}", &[("reason", &refusal.message)]),
+                        });
+                        return self.fetch_approval(id);
+                    }
+                }
+            }
             // While the panel opens there is nothing to start anew; a new round would drop the answer
             // of the opening and leave it loading for good (review of #605).
             Event::New if self.phase == Phase::Loading => {}
@@ -353,6 +471,9 @@ impl Ask {
                 self.following = false;
                 self.transcript = Transcript::default();
                 self.cards.clear();
+                self.approvals.clear();
+                self.lost.clear();
+                self.deciding = None;
                 self.parsed.clear();
                 self.failed = None;
                 return iced::widget::operation::focus(FIELD);
@@ -395,7 +516,7 @@ impl Ask {
         }
         let conversation = self.transcript.summary.as_ref().map(|summary| summary.id.as_str());
         let choice = self.choice.as_ref();
-        let Some(request) = send_request(conversation, choice, &self.input, &self.about) else {
+        let Some(request) = send_request(conversation, choice, &self.input, self.about.as_ref()) else {
             return Task::none();
         };
         self.sending = true;
@@ -415,7 +536,49 @@ impl Ask {
         self.following = true;
         let request = Request::GetConversation { id, after: Some(self.transcript.last()) };
         let round = self.round;
-        Task::perform(ask_conversation(self.call.clone(), request), move |result| Event::Polled(round, result))
+        let follow =
+            Task::perform(ask_conversation(self.call.clone(), request), move |result| Event::Polled(round, result));
+        // An approval still waiting may have been decided elsewhere (the tray, the assistant's window).
+        // Only the chat without a mail shows its approvals.
+        let waiting: Vec<String> = self
+            .transcript
+            .approvals()
+            .into_iter()
+            .filter(|_| self.about.is_none())
+            .filter(|id| !self.lost.contains(*id))
+            .filter(|id| self.approvals.get(*id).is_none_or(|approval| approval.state.is_pending()))
+            .map(str::to_owned)
+            .collect();
+        let approvals: Vec<Task<Event>> = waiting.into_iter().map(|id| self.fetch_approval(id)).collect();
+        Task::batch(approvals.into_iter().chain([follow]))
+    }
+
+    /// The state of the approval `id` (`approvals.approval_status`, issue #892).
+    fn fetch_approval(&self, id: String) -> Task<Event> {
+        let (call, round) = (self.call.clone(), self.round);
+        let asked = id.clone();
+        Task::perform(async move { approval_of(call(Request::ApprovalStatus { id: asked }).await) }, move |result| {
+            Event::Approval(round, id.clone(), result)
+        })
+    }
+
+    /// "Allow" or "Deny" on an approval's card (issue #892): `approvals.decide_approval` without a
+    /// scope, only while the approval waits and no decision is on its way. A command of the
+    /// assistant's terminal is never allowed here: the core wants a scope for it, and its card offers
+    /// only "Deny" and "Open assistant".
+    fn decide(&mut self, id: String, allow: bool) -> Task<Event> {
+        let Some(approval) = self.approvals.get(&id).filter(|approval| approval.state.is_pending()) else {
+            return Task::none();
+        };
+        if self.deciding.is_some() || self.lost.contains(&id) || (allow && !allows_here(approval)) {
+            return Task::none();
+        }
+        self.deciding = Some((id.clone(), allow));
+        let (call, round) = (self.call.clone(), self.round);
+        let request = decide_request(&id, allow);
+        Task::perform(async move { approval_of(call(request).await) }, move |result| {
+            Event::Decided(round, id.clone(), result)
+        })
     }
 
     /// An answer of the core merged into the transcript; its cards asked for where one is not
@@ -428,10 +591,21 @@ impl Ask {
         self.parse();
         let unresolved = self.transcript.cards().iter().any(|seq| !self.cards.contains_key(seq));
         let ended = was_running && !self.transcript.running();
-        match &self.transcript.summary {
+        let cards = match &self.transcript.summary {
             Some(summary) if unresolved || ended => self.fetch_cards(summary.id.clone()),
             _ => Task::none(),
-        }
+        };
+        // A new approval is asked for at once, so its card shows its words without waiting a tick.
+        let new: Vec<String> = self
+            .transcript
+            .approvals()
+            .into_iter()
+            .filter(|_| self.about.is_none())
+            .filter(|id| !self.approvals.contains_key(*id))
+            .map(str::to_owned)
+            .collect();
+        let approvals: Vec<Task<Event>> = new.into_iter().map(|id| self.fetch_approval(id)).collect();
+        Task::batch(approvals.into_iter().chain([cards]))
     }
 
     fn fetch_cards(&self, conversation: String) -> Task<Event> {
@@ -465,12 +639,13 @@ impl Ask {
 
 /// The request of "Send" (issue #605): `assistant.send_message` with the text as typed (trailing
 /// blank lines dropped) and what answers; a new conversation names the mail as `about`, a continued
-/// one keeps its own. `None` for a blank text or without an engine.
+/// one keeps its own. Without a mail (issue #892) the chat asks in the mode `ask`: every change waits
+/// for the person's approval. `None` for a blank text or without an engine.
 pub fn send_request(
     conversation: Option<&str>,
     choice: Option<&(Choice, Option<Effort>)>,
     text: &str,
-    about: &MailRef,
+    about: Option<&MailRef>,
 ) -> Option<Request> {
     let text = text.trim_end();
     let (choice, effort) = choice?;
@@ -484,14 +659,35 @@ pub fn send_request(
         effort: *effort,
         text: text.to_owned(),
         without: Vec::new(),
-        mode: Mode::Default,
+        mode: if about.is_some() { Mode::Default } else { Mode::Ask },
         bot: None,
-        about: conversation.is_none().then(|| about.clone()),
+        about: about.filter(|_| conversation.is_none()).cloned(),
         spoken: false,
     })
 }
 
-/// The newest conversation about the mail `about` (issue #605: "Ask AI…" continues it), by its last
+/// The request of "Allow" or "Deny" on an approval's card (issue #892): `approvals.decide_approval`
+/// without a scope, which every approval but a command of the terminal takes.
+pub fn decide_request(id: &str, allow: bool) -> Request {
+    Request::DecideApproval { id: id.to_owned(), allow, scope: None }
+}
+
+/// Whether an approval may be allowed on the card of this panel (issue #892): every one but a command
+/// of the assistant's terminal, which the core allows only with how far it reaches (issue #754) – that
+/// is for the assistant's chat.
+pub fn allows_here(approval: &ApprovalInfo) -> bool {
+    !torro_ipc::tools::is_terminal_command(&approval.command)
+}
+
+/// An approval from an answer of `approvals.approval_status` or `approvals.decide_approval`.
+fn approval_of(result: Result<Response, Refusal>) -> Result<ApprovalInfo, Refusal> {
+    match result? {
+        Response::Approval { approval } => Ok(approval),
+        other => Err(Refusal::unexpected(&other)),
+    }
+}
+
+/// The newest conversation about the mail `about` (issue #605: the chat about it continues it), by its last
 /// change; `None` when there is none.
 pub fn newest_about<'a>(conversations: &'a [ConversationSummary], about: &MailRef) -> Option<&'a ConversationSummary> {
     conversations
@@ -539,6 +735,22 @@ pub async fn open(call: Call, about: MailRef) -> Result<Opened, Refusal> {
     let choice = own.or(preferred);
     check_about(&call, choice.as_ref(), &about).await?;
     Ok(Opened { choice, conversation: Some((summary, entries)), cards })
+}
+
+/// What answers the chat without a mail (issue #892): the engines and the control centre's default as
+/// for a chat about a mail ([`open`]), but no conversation continued and nothing checked – there is no
+/// mail to check against. The chat always starts new, so the assistant's other chats stay out.
+pub async fn open_general(call: Call) -> Result<Opened, Refusal> {
+    let engines = match call(Request::ListEngines).await? {
+        Response::Engines { engines } => chat::ordered(engines),
+        other => return Err(Refusal::unexpected(&other)),
+    };
+    let default = match call(Request::Settings).await {
+        Ok(Response::Settings { settings }) => settings.ai_slots.chat,
+        _ => None,
+    };
+    let preferred = chat::preferred_choice(default.as_ref(), &[], &engines, |_| None);
+    Ok(Opened { choice: ai_choice(preferred, &engines), conversation: None, cards: Vec::new() })
 }
 
 /// Whether the core would take a chat about `about` with `choice` (issue #605): `assistant.check_about`,
@@ -601,8 +813,8 @@ pub struct Look<'a> {
     /// The mail's head as the window holds it: its subject and sender over the chat, and the
     /// fallback title of a suggestion's card.
     pub summary: Option<&'a MessageSummary>,
-    /// The panel lies over the mail (medium, narrow, or a wide reader too narrow for both): "‹ Mail"
-    /// in its head leads back.
+    /// The panel lies over the mail or the overview (medium, narrow, or a wide reader too narrow for
+    /// both): "‹ Mail" (or "‹ Overview" without a mail, issue #892) in its head leads back.
     pub covering: bool,
     /// The kinds of action, for the cards' icons and words.
     pub kinds: Option<&'a [ActionKind]>,
@@ -618,13 +830,15 @@ pub struct Look<'a> {
 /// where it covers the mail, the sparkles, "Ask AI", "+" and ✕; under a line what it is about (the
 /// mail's subject, its sender and time); then the chat – or, before the first message, what to ask
 /// with three questions to start from, or a hint in place of it –, and the field with "Send" at the
-/// bottom. The chat scrolls and keeps its end in view.
+/// bottom. The chat scrolls and keeps its end in view. Without a mail (issue #892) there is no line of
+/// what it is about, and the words and questions are about the mail as a whole.
 pub fn view<'a>(ask: &'a Ask, look: Look<'a>) -> Element<'a, Message> {
     let colours = look.palette;
+    let general = ask.about.is_none();
     let body: Element<'a, Message> = match &ask.phase {
         Phase::Loading => widgets::loading(),
         Phase::Hint(hint) => hint_card(hint),
-        Phase::Ready if ask.transcript.entries.is_empty() && !ask.sending => welcome(),
+        Phase::Ready if ask.transcript.entries.is_empty() && !ask.sending => welcome(general),
         Phase::Ready => {
             let log = entries(ask, &look, colours);
             scrollable(container(log).width(Fill).padding(layout_padding()))
@@ -636,14 +850,15 @@ pub fn view<'a>(ask: &'a Ask, look: Look<'a>) -> Element<'a, Message> {
                 .into()
         }
     };
-    let content = column![
-        head(look.covering, ask.phase != Phase::Loading),
-        rule::horizontal(size::HAIRLINE).style(style::rule),
-        about_row(look.summary, look.now),
-        rule::horizontal(size::HAIRLINE).style(style::rule),
-        container(body).width(Fill).height(Fill),
-        composer(ask),
+    let mut content = column![
+        head(look.covering, ask.phase != Phase::Loading, general),
+        rule::horizontal(size::HAIRLINE).style(style::rule)
     ];
+    if !general {
+        content =
+            content.push(about_row(look.summary, look.now)).push(rule::horizontal(size::HAIRLINE).style(style::rule));
+    }
+    let content = content.push(container(body).width(Fill).height(Fill)).push(composer(ask));
     container(content).width(Fill).height(Fill).style(style::container::panel_flush).into()
 }
 
@@ -662,13 +877,14 @@ fn tinted<'a>(which: Icon, edge: f32, colour: fn(&Palette) -> iced::Color) -> El
     icon::icon(which, edge).style(move |t: &Theme, _| svg::Style { color: Some(colour(&palette(t))) }).into()
 }
 
-/// The head: "‹ Mail" while the panel covers the mail, the sparkles and "Ask AI", then "+" ("New
+/// The head: "‹ Mail" while the panel covers the mail ("‹ Overview" without a mail, `general`), the
+/// sparkles and "Ask AI", then "+" ("New
 /// chat", off while the panel opens) and ✕ ("Close"); padded like a panel's head, so ✕ lines up
 /// with the window's buttons. The tip of the chevron of "‹ Mail" stands on the line of the content below – the mail's mark and the
 /// chat's text: the ghost button's own padding and the room Lucide leaves inside the icon before the
 /// tip ([`chevron_inset`]) are taken off the head's (design review of #605: it stood that far to the
 /// right of the line).
-fn head<'a>(covering: bool, can_start_anew: bool) -> Element<'a, Message> {
+fn head<'a>(covering: bool, can_start_anew: bool, general: bool) -> Element<'a, Message> {
     let left = match covering {
         true => (space::l() - style::button_padding().left - chevron_inset()).max(0.0),
         false => space::l(),
@@ -677,7 +893,7 @@ fn head<'a>(covering: bool, can_start_anew: bool) -> Element<'a, Message> {
     if covering {
         line = line.push(widgets::text_button(
             Some(Icon::ChevronLeft),
-            tr("Mail"),
+            if general { tr("Overview") } else { tr("Mail") },
             style::button::ghost,
             Some(Message::Ask(Event::Close)),
         ));
@@ -721,9 +937,14 @@ fn about_row<'a>(summary: Option<&MessageSummary>, now: DateTime<Utc>) -> Elemen
 }
 
 /// Before the first message: what the chat is for, and three questions to start from, one under the
-/// other, all as wide as the column and their words at the left (mock-up).
-fn welcome<'a>() -> Element<'a, Message> {
-    let starters = STARTERS.iter().map(|&question| {
+/// other, all as wide as the column and their words at the left (mock-up). Without a mail (`general`,
+/// issue #892) they are about the mail as a whole, and the sentence says that changes wait.
+fn welcome<'a>(general: bool) -> Element<'a, Message> {
+    let (questions, sentence) = match general {
+        true => (GENERAL_STARTERS, tr("Ask about your mail. Changes wait for your approval.")),
+        false => (STARTERS, tr("Ask about this mail. Torro reads it first; it only reads and suggests.")),
+    };
+    let starters = questions.into_iter().map(|question| {
         let words = tr(question);
         let label = typo::text(typo::caption(), words).wrapping(Wrapping::None);
         button(container(label).center_y(Fill))
@@ -736,7 +957,7 @@ fn welcome<'a>() -> Element<'a, Message> {
     });
     let content = column![
         tinted(Icon::Sparkles, icon::SIZE, |p| p.text_3),
-        typo::text(typo::body(), tr("Ask about this mail. Torro reads it first; it only reads and suggests."))
+        typo::text(typo::body(), sentence)
             .style(theme::text_2)
             .align_x(Alignment::Center)
             .wrapping(Wrapping::WordOrGlyph),
@@ -781,15 +1002,25 @@ fn entries<'a>(ask: &'a Ask, look: &Look<'a>, colours: Palette) -> Element<'a, M
         list = list.push(shown);
     }
     let writing = ask.transcript.growing().is_some();
-    if (ask.transcript.running() || ask.sending) && !writing {
+    // While an approval waits the core keeps the answer running, but it waits for the person: its
+    // card says so, "Working …" under it would not be true (issue #892).
+    let waiting = ask.about.is_none()
+        && ask.transcript.entries.last().is_some_and(|entry| match &entry.content {
+            EntryContent::Approval { id } => {
+                !ask.lost.contains(id) && ask.approvals.get(id).is_none_or(|approval| approval.state.is_pending())
+            }
+            _ => false,
+        });
+    if (ask.transcript.running() || ask.sending) && !writing && !waiting {
         list = list.push(Space::new().height(space::m()));
         list = list.push(typo::text(typo::meta(), tr("Working …")).style(theme::text_3));
     }
     list.into()
 }
 
-/// One entry; `None` for what the panel does not show (an approval: the chat about a mail changes
-/// nothing; a card not resolved yet or dismissed with its undo still running).
+/// One entry; `None` for what the panel does not show (an approval in the chat about a mail, which
+/// changes nothing; a card not resolved yet or dismissed with its undo still running). The chat
+/// without a mail shows its approvals as cards (issue #892).
 fn entry_view<'a>(ask: &'a Ask, entry: &'a Entry, look: &Look<'a>, colours: Palette) -> Option<Element<'a, Message>> {
     Some(match &entry.content {
         EntryContent::Message { text, .. } => {
@@ -817,7 +1048,10 @@ fn entry_view<'a>(ask: &'a Ask, entry: &'a Entry, look: &Look<'a>, colours: Pale
         .spacing(space::s())
         .align_y(Alignment::Center)
         .into(),
-        EntryContent::Card { .. } => return card_view(ask.cards.get(&entry.seq)?, &ask.about, look),
+        EntryContent::Card { .. } => return card_view(ask.cards.get(&entry.seq)?, ask.about.as_ref(), look),
+        EntryContent::Approval { id } if ask.about.is_none() => {
+            approval_card(id, ask.approvals.get(id), ask.lost.contains(id), ask.deciding.as_ref())
+        }
         EntryContent::Approval { .. } => return None,
     })
 }
@@ -845,10 +1079,12 @@ pub fn of_this_mail(card: &Card, about: &MailRef) -> bool {
 /// A card as the core resolved it: a suggestion of the chat's own mail ([`of_this_mail`]) as the card
 /// over the mail shows it (`mail::suggestion_card`), its "Accept" the panel's own (the suggestion is
 /// fetched again first); a suggestion of another mail, or one dismissed with its undo still running,
-/// is left out; anything gone a quiet line; a content card (issue #784) not at all.
-fn card_view<'a>(card: &'a Card, about: &MailRef, look: &Look<'a>) -> Option<Element<'a, Message>> {
+/// is left out; anything gone a quiet line; a content card (issue #784) not at all. Without a mail
+/// (issue #892) no suggestion shows: its "Accept" would act on the open mail.
+fn card_view<'a>(card: &'a Card, about: Option<&MailRef>, look: &Look<'a>) -> Option<Element<'a, Message>> {
     match card {
         Card::Suggestion { suggestion, .. } => {
+            let about = about?;
             let summary = look.summary.filter(|summary| summary.account == about.account && summary.id == about.id)?;
             if !of_this_mail(card, about) {
                 return None;
@@ -871,6 +1107,93 @@ fn card_view<'a>(card: &'a Card, about: &MailRef, look: &Look<'a>) -> Option<Ele
     }
 }
 
+/// The card of an approval in the chat without a mail (issue #892, as the assistant's window draws it):
+/// the shield in attention and "Approval needed", what the command would do in the core's words – its
+/// summary and details as plain text, never the model's –, and while it waits "Allow" and "Deny"
+/// (`open`: no decision on its way, else both off). A command of the assistant's terminal is allowed
+/// only in the assistant's chat, with how far it reaches: here "Deny" and "Open assistant". While a
+/// decision is on its way (`deciding`) the pressed button turns ("Allowing…", "Denying…") and the
+/// others are off. Decided, it says how.
+fn approval_card<'a>(
+    id: &'a str,
+    approval: Option<&'a ApprovalInfo>,
+    lost: bool,
+    deciding: Option<&(String, bool)>,
+) -> Element<'a, Message> {
+    let open = deciding.is_none();
+    let head = row![
+        tinted(Icon::ShieldAlert, icon::SIZE, |p| p.attention_text),
+        typo::text(typo::body_strong(), tr("Approval needed"))
+    ]
+    .spacing(space::s())
+    .align_y(Alignment::Center);
+    let mut card = column![head].spacing(space::s());
+    // A lost approval offers nothing to decide, whatever the card knew of it before.
+    let approval = approval.filter(|approval| !(lost && approval.state.is_pending()));
+    let Some(approval) = approval else {
+        // The core no longer knows it: nothing to decide, and nothing waits.
+        let words = if lost { tr("No longer available") } else { tr("Loading …") };
+        card = card.push(typo::text(typo::meta(), words).style(theme::text_3));
+        return container(card).width(Fill).padding(layout::panel_padding()).style(style::container::group).into();
+    };
+    card = card.push(typo::text(typo::body(), approval.summary.as_str()).wrapping(Wrapping::WordOrGlyph));
+    for line in &approval.details {
+        card = card.push(typo::text(typo::meta(), line.as_str()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
+    }
+    let decide = |allow: bool| open.then(|| Message::Ask(Event::Decide(id.to_owned(), allow)));
+    // The pressed button of this card while its decision is on its way (#560: what runs shows at once).
+    let pressed = deciding.filter(|(held, _)| held == id).map(|(_, allow)| *allow);
+    let choice = |allow: bool, mark: Icon, label: &'static str| -> Element<'a, Message> {
+        match pressed == Some(allow) {
+            true => {
+                widgets::busy_button(if allow { tr("Allowing…") } else { tr("Denying…") }, style::button::secondary)
+            }
+            false => widgets::text_button(Some(mark), label, style::button::secondary, decide(allow)),
+        }
+    };
+    let footer: Element<'a, Message> = match &approval.state {
+        ApprovalState::Pending if !allows_here(approval) => row![
+            choice(false, Icon::X, tr("Deny")),
+            widgets::text_button(
+                None,
+                tr("Open assistant"),
+                style::button::secondary,
+                Some(Message::Ask(Event::OpenAssistant))
+            ),
+        ]
+        .spacing(space::s())
+        .into(),
+        ApprovalState::Pending => {
+            row![choice(true, Icon::Check, tr("Allow")), choice(false, Icon::X, tr("Deny"))].spacing(space::s()).into()
+        }
+        // Allowed, but the command failed when it ran (its rights changed meanwhile, the item is gone):
+        // not a success (#560), in the core's words.
+        ApprovalState::Done { response } if matches!(response.as_ref(), Response::Error { .. }) => {
+            let reason = match response.as_ref() {
+                Response::Error { message, .. } => message.as_str(),
+                _ => "",
+            };
+            let words = trf("Allowed, but it failed: {reason}", &[("reason", &reason)]);
+            outcome(tinted(Icon::CircleX, icon::SIZE_SM, |p| p.error_text), words)
+        }
+        ApprovalState::Running | ApprovalState::Done { .. } => {
+            outcome(tinted(Icon::CircleCheck, icon::SIZE_SM, |p| p.ok), tr("Allowed"))
+        }
+        ApprovalState::Denied => outcome(tinted(Icon::CircleX, icon::SIZE_SM, |p| p.error_text), tr("Denied")),
+        ApprovalState::Expired => outcome(tinted(Icon::Clock, icon::SIZE_SM, |p| p.text_3), tr("Expired")),
+    };
+    card = card.push(footer);
+    container(card).width(Fill).padding(layout::panel_padding()).style(style::container::group).into()
+}
+
+/// How an approval was decided: its mark and word in `text_2`.
+fn outcome<'a>(mark: Element<'a, Message>, word: impl Into<String>) -> Element<'a, Message> {
+    row![mark, typo::text(typo::meta(), word.into()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)]
+        .spacing(space::s())
+        .align_y(Alignment::Center)
+        .into()
+}
+
 /// A card that offers nothing to do here: its mark and words in `text_3`, on one line.
 fn quiet_line<'a>(mark: Icon, words: String) -> Element<'a, Message> {
     row![tinted(mark, icon::SIZE_SM, |p| p.text_3), widgets::ellipsized(typo::meta(), words, theme::text_3)]
@@ -879,14 +1202,16 @@ fn quiet_line<'a>(mark: Icon, words: String) -> Element<'a, Message> {
         .into()
 }
 
-/// The field at the bottom, "Ask about this mail…", and "Send" (the paper plane, as in the assistant's
+/// The field at the bottom, "Ask about this mail…" ("Ask about your mail…" without one, issue #892), and
+/// "Send" (the paper plane, as in the assistant's
 /// window) beside it – framed, on while there is
 /// something to send, framed and off otherwise; off with the field under a hint. The core's words of
 /// a message that did not go stand over it.
 fn composer<'a>(ask: &'a Ask) -> Element<'a, Message> {
     let open = ask.phase == Phase::Ready;
     let body = typo::body();
-    let mut field = text_input(tr("Ask about this mail…"), &ask.input)
+    let placeholder = if ask.about.is_some() { tr("Ask about this mail…") } else { tr("Ask about your mail…") };
+    let mut field = text_input(placeholder, &ask.input)
         .id(FIELD)
         .size(body.size)
         .line_height(body.line_height)
@@ -922,7 +1247,7 @@ fn composer<'a>(ask: &'a Ask) -> Element<'a, Message> {
 // -- Demo ---------------------------------------------------------------------------------------------
 
 /// The scenes of the demo (`--open ask`, `ask-card`, `ask-hint`, `ask-empty`, `ask-working`,
-/// `ask-failed`).
+/// `ask-failed`; without a mail `ask-general` and `ask-approval`, issue #892).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scene {
     /// Nothing asked yet: what to ask, and the three questions to start from.
@@ -937,6 +1262,31 @@ pub enum Scene {
     Card,
     /// The assistant may not read the mail: the hint with "Open assistant".
     Hint,
+    /// Without a mail (issue #892): a question about the mail as a whole, searched and answered.
+    General,
+    /// Without a mail (issue #892): asked to archive a mail, the approval waits on its card.
+    Approval,
+}
+
+/// The id of the demo's approval (issue #892).
+const DEMO_APPROVAL: &str = "9c1f0a7e3b2d4c58";
+
+/// The demo's approval (issue #892) in `state`: moving a mail to the archive, in made-up words of the
+/// core like the demo's mail.
+fn demo_approval(state: ApprovalState, now: DateTime<Utc>) -> ApprovalInfo {
+    let decided = (!state.is_pending()).then_some(now);
+    ApprovalInfo {
+        id: DEMO_APPROVAL.to_owned(),
+        client: "assistant".to_owned(),
+        client_name: "Assistant".to_owned(),
+        command: "mail.move_message".to_owned(),
+        summary: "Move “Rechnung März” from Max Weber to Archive".to_owned(),
+        details: vec!["Inbox › Archive".to_owned()],
+        created: now,
+        expires: now + chrono::Duration::minutes(10),
+        decided,
+        state,
+    }
 }
 
 /// The engine of the demo: a local model, so nothing reads as leaving the computer.
@@ -950,8 +1300,8 @@ fn demo_engine() -> Engine {
     }
 }
 
-/// A conversation head of the demo about `about`, `last` entries long.
-fn demo_summary(about: &MailRef, title: &str, last: u64, now: DateTime<Utc>) -> ConversationSummary {
+/// A conversation head of the demo about `about` (none without a mail), `last` entries long.
+fn demo_summary(about: Option<&MailRef>, title: &str, last: u64, now: DateTime<Utc>) -> ConversationSummary {
     ConversationSummary {
         id: "c-demo-mail".to_owned(),
         title: title.to_owned(),
@@ -966,7 +1316,7 @@ fn demo_summary(about: &MailRef, title: &str, last: u64, now: DateTime<Utc>) -> 
         last,
         bot: None,
         bot_deleted: false,
-        about: Some(about.clone()),
+        about: about.cloned(),
         context: None,
     }
 }
@@ -984,6 +1334,16 @@ fn demo_message(text: &str) -> EntryContent {
         without: Vec::new(),
         mode: Mode::Default,
         from: None,
+    }
+}
+
+/// A demo message of the chat without a mail (issue #892), asked in the mode `ask`.
+fn demo_asking(text: &str) -> EntryContent {
+    match demo_message(text) {
+        EntryContent::Message { text, engine, model, effort, without, from, .. } => {
+            EntryContent::Message { text, engine, model, effort, without, mode: Mode::Ask, from }
+        }
+        other => other,
     }
 }
 
@@ -1037,6 +1397,9 @@ impl Ask {
     /// draw it as it stands). Its words are the demo's, like its mail: untranslated.
     pub fn staged(suite: &Source, summary: &MessageSummary, scene: Scene, now: DateTime<Utc>) -> Ask {
         let about = MailRef { account: summary.account.clone(), id: summary.id.clone() };
+        if matches!(scene, Scene::General | Scene::Approval) {
+            return Ask::staged_general(suite, scene, now);
+        }
         let (mut ask, _) = Ask::open(call_for(suite), about.clone());
         ask.choice = Some((Choice { engine: demo_engine().id, model: Some("qwen3:8b".to_owned()) }, None));
         ask.phase = Phase::Ready;
@@ -1068,6 +1431,8 @@ impl Ask {
                     "Yes – the draft came up in the review two weeks ago; the figures were asked for then too.",
                 ),
             ],
+            // Drawn by `staged_general`.
+            Scene::General | Scene::Approval => Vec::new(),
             Scene::Card => vec![
                 demo_message("There is a meeting on Thursday, make an event of it please."),
                 demo_tool("mail.get_message", ""),
@@ -1093,9 +1458,44 @@ impl Ask {
             };
             ask.cards.insert(last, card);
         }
-        let mut head = demo_summary(&about, &mail::subject(summary), last, now);
+        let mut head = demo_summary(Some(&about), &mail::subject(summary), last, now);
         // Staged still: the demo's stand-in is never asked for the answer that runs.
         head.running = scene == Scene::Working;
+        ask.transcript = Transcript::new(head, entries);
+        ask.parse();
+        ask
+    }
+
+    /// The panel without a mail of a demo scene (issue #892, [`Scene::General`], [`Scene::Approval`]),
+    /// at once and without a core; any other scene shows it empty.
+    pub fn staged_general(suite: &Source, scene: Scene, now: DateTime<Utc>) -> Ask {
+        let (mut ask, _) = Ask::open_general(call_for(suite));
+        ask.choice = Some((Choice { engine: demo_engine().id, model: Some("qwen3:8b".to_owned()) }, None));
+        ask.phase = Phase::Ready;
+        let entries = match scene {
+            Scene::General => vec![
+                demo_asking("What came in today?"),
+                demo_tool("mail.search_messages", "6 results"),
+                demo_answer(
+                    "Six mails today. Two want something from you: Anna Berg asks for feedback on the draft by Friday, and Max Weber sent the invoice for March.",
+                ),
+            ],
+            Scene::Approval => vec![
+                demo_asking("Archive the newest mail from Max, please."),
+                demo_tool("mail.search_messages", "1 result"),
+                EntryContent::Approval { id: DEMO_APPROVAL.to_owned() },
+            ],
+            _ => return ask,
+        };
+        let last = entries.len() as u64;
+        let entries: Vec<Entry> =
+            entries.into_iter().enumerate().map(|(at, content)| demo_entry(at as u64 + 1, content, now)).collect();
+        // The core keeps the answer running while an approval waits; staged it does not, since nothing
+        // follows it in the demo – a decided card would leave "Working …" and a blocked field behind.
+        let head = demo_summary(None, "Demo", last, now);
+        if scene == Scene::Approval {
+            ask.approvals.insert(DEMO_APPROVAL.to_owned(), demo_approval(ApprovalState::Pending, now));
+        }
         ask.transcript = Transcript::new(head, entries);
         ask.parse();
         ask
@@ -1103,8 +1503,9 @@ impl Ask {
 }
 
 /// The stand-in core of `--demo`: one local engine, no conversation about the mail yet, and a short
-/// made-up answer to every message (the mail read first, as the core does), kept for the panel's life
-/// so a second message follows the first. Nothing leaves the window.
+/// made-up answer to every message (the mail read first, as the core does; without a mail the mail
+/// searched, issue #892), kept for the panel's life so a second message follows the first. Its one
+/// approval waits until it is decided. Nothing leaves the window.
 pub fn demo_call() -> Call {
     let held: Arc<Mutex<Vec<Entry>>> = Arc::new(Mutex::new(Vec::new()));
     Arc::new(move |request: Request| -> Answer {
@@ -1122,7 +1523,17 @@ fn demo_answer_to(held: &Mutex<Vec<Entry>>, request: Request) -> Result<Response
         Request::ListConversations => Ok(Response::Conversations { conversations: Vec::new() }),
         Request::GetCards { .. } => Ok(Response::Cards { cards: Vec::new() }),
         Request::CheckAbout { .. } => Ok(Response::Ok),
-        Request::SendMessage { conversation, text, about, .. } => {
+        Request::ApprovalStatus { id } if id == DEMO_APPROVAL => {
+            Ok(Response::Approval { approval: demo_approval(ApprovalState::Pending, now) })
+        }
+        Request::DecideApproval { id, allow, .. } if id == DEMO_APPROVAL => {
+            let state = match allow {
+                true => ApprovalState::Done { response: Box::new(Response::Ok) },
+                false => ApprovalState::Denied,
+            };
+            Ok(Response::Approval { approval: demo_approval(state, now) })
+        }
+        Request::SendMessage { conversation, text, about, mode, .. } => {
             let mut entries = held.lock().map_err(|_| refused())?;
             // A message without a conversation starts a new one ("+"): the one before is left.
             if conversation.is_none() {
@@ -1133,13 +1544,28 @@ fn demo_answer_to(held: &Mutex<Vec<Entry>>, request: Request) -> Result<Response
                 let seq = entries.len() as u64 + 1;
                 entries.push(demo_entry(seq, content, now));
             };
-            add(demo_message(&text));
-            if first {
-                add(demo_tool("mail.get_message", ""));
+            // The chat without a mail asks in the mode `ask` (issue #892).
+            let general = mode == Mode::Ask;
+            match general {
+                true => {
+                    add(demo_asking(&text));
+                    add(demo_tool("mail.search_messages", "3 results"));
+                    add(demo_answer(
+                        "This is the demo: with an AI set up, the answer about your mail would stand here.",
+                    ));
+                }
+                false => {
+                    add(demo_message(&text));
+                    if first {
+                        add(demo_tool("mail.get_message", ""));
+                    }
+                    add(demo_answer(
+                        "This is the demo: with an AI set up, the answer about this mail would stand here.",
+                    ));
+                }
             }
-            add(demo_answer("This is the demo: with an AI set up, the answer about this mail would stand here."));
-            let about = about.unwrap_or_else(|| MailRef { account: String::new(), id: String::new() });
-            let summary = demo_summary(&about, "Demo", entries.len() as u64, now);
+            let about = about.or_else(|| (!general).then(|| MailRef { account: String::new(), id: String::new() }));
+            let summary = demo_summary(about.as_ref(), "Demo", entries.len() as u64, now);
             Ok(Response::Conversation { conversation: summary, entries: entries.clone() })
         }
         _ => Err(refused()),
@@ -1313,16 +1739,158 @@ mod tests {
     fn a_new_conversation_names_the_mail_and_a_continued_one_does_not() {
         let choice = (Choice { engine: demo_engine().id, model: None }, Some(Effort::Low));
         let about = mail_ref("m:1");
-        let new = send_request(None, Some(&choice), "Is there a deadline?\n", &about);
+        let new = send_request(None, Some(&choice), "Is there a deadline?\n", Some(&about));
         assert!(matches!(
             new,
             Some(Request::SendMessage { conversation: None, about: Some(ref named), ref text, effort: Some(Effort::Low), .. })
                 if *named == about && text == "Is there a deadline?"
         ));
-        let continued = send_request(Some("c1"), Some(&choice), "And then?", &about);
-        assert!(matches!(continued, Some(Request::SendMessage { about: None, .. })));
-        assert_eq!(send_request(None, Some(&choice), "  ", &about), None, "blank");
-        assert_eq!(send_request(None, None, "Hi", &about), None, "no engine");
+        assert!(matches!(new, Some(Request::SendMessage { mode: Mode::Default, .. })), "the mode as stored");
+        let continued = send_request(Some("c1"), Some(&choice), "And then?", Some(&about));
+        assert!(matches!(continued, Some(Request::SendMessage { about: None, mode: Mode::Default, .. })));
+        assert_eq!(send_request(None, Some(&choice), "  ", Some(&about)), None, "blank");
+        assert_eq!(send_request(None, None, "Hi", Some(&about)), None, "no engine");
+    }
+
+    /// Issue #892: the chat without a mail names none and asks in the mode `ask`, new or continued, so
+    /// every change waits for the person.
+    #[test]
+    fn the_chat_without_a_mail_asks_in_the_mode_ask() {
+        let choice = (Choice { engine: demo_engine().id, model: None }, None);
+        for conversation in [None, Some("c1")] {
+            let request = send_request(conversation, Some(&choice), "What came in today?", None);
+            assert!(
+                matches!(request, Some(Request::SendMessage { about: None, mode: Mode::Ask, .. })),
+                "{conversation:?}: {request:?}"
+            );
+        }
+    }
+
+    /// Issue #892: opening the chat without a mail asks what answers, but continues no conversation and
+    /// checks no mail.
+    #[test]
+    fn the_chat_without_a_mail_opens_new() {
+        let (call, asked) = checking_core(Err(Refusal { code: "forbidden".to_owned(), message: "no".to_owned() }));
+        let (mut ask, _) = Ask::open_general(call.clone());
+        assert!(ask.about.is_none());
+        let opened = block_on(open_general(call));
+        let round = ask.round;
+        let _ = ask.update(Event::Opened(round, opened));
+        assert_eq!(ask.phase, Phase::Ready, "nothing to check, no hint");
+        assert_eq!(ask.choice.as_ref().map(|(choice, _)| choice.engine.clone()), Some(demo_engine().id));
+        assert!(ask.transcript.summary.is_none());
+        let asked = asked.lock().expect("log").clone();
+        assert!(
+            asked.iter().all(|request| !matches!(request, Request::CheckAbout { .. } | Request::ListConversations))
+        );
+    }
+
+    fn approval(command: &str, state: ApprovalState) -> ApprovalInfo {
+        ApprovalInfo { command: command.to_owned(), ..demo_approval(state, at(0)) }
+    }
+
+    /// Issue #892: "Allow" and "Deny" on a card send `approvals.decide_approval` without a scope, only
+    /// while it waits and nothing is on its way; a command of the terminal is never allowed here.
+    #[test]
+    fn a_card_decides_its_approval_without_a_scope() {
+        assert_eq!(
+            decide_request(DEMO_APPROVAL, true),
+            Request::DecideApproval { id: DEMO_APPROVAL.to_owned(), allow: true, scope: None }
+        );
+        assert_eq!(
+            decide_request(DEMO_APPROVAL, false),
+            Request::DecideApproval { id: DEMO_APPROVAL.to_owned(), allow: false, scope: None }
+        );
+        let (mut ask, _) = Ask::open_general(demo_call());
+        let _ = ask.update(Event::Decide(DEMO_APPROVAL.to_owned(), true));
+        assert_eq!(ask.deciding, None, "unknown yet: nothing to decide");
+        ask.approvals.insert(DEMO_APPROVAL.to_owned(), approval("mail.move_message", ApprovalState::Pending));
+        let _ = ask.update(Event::Decide(DEMO_APPROVAL.to_owned(), true));
+        assert_eq!(ask.deciding, Some((DEMO_APPROVAL.to_owned(), true)));
+        let round = ask.round;
+        let done = approval("mail.move_message", ApprovalState::Done { response: Box::new(Response::Ok) });
+        let _ = ask.update(Event::Decided(round, DEMO_APPROVAL.to_owned(), Ok(done)));
+        assert!(ask.deciding.is_none() && !ask.approvals[DEMO_APPROVAL].state.is_pending());
+        let _ = ask.update(Event::Decide(DEMO_APPROVAL.to_owned(), false));
+        assert!(ask.deciding.is_none(), "decided already");
+
+        let terminal = approval("tools.run_command", ApprovalState::Pending);
+        assert!(torro_ipc::tools::is_terminal_command(&terminal.command), "a command of the terminal");
+        assert!(!allows_here(&terminal) && allows_here(&approval("mail.move_message", ApprovalState::Pending)));
+        let (mut ask, _) = Ask::open_general(demo_call());
+        ask.approvals.insert(DEMO_APPROVAL.to_owned(), terminal);
+        let _ = ask.update(Event::Decide(DEMO_APPROVAL.to_owned(), true));
+        assert!(ask.deciding.is_none(), "no Allow for the terminal here");
+        let _ = ask.update(Event::Decide(DEMO_APPROVAL.to_owned(), false));
+        assert_eq!(ask.deciding, Some((DEMO_APPROVAL.to_owned(), false)), "Deny goes");
+        // A refused decision is said over the field; the card waits for the core's state.
+        let round = ask.round;
+        let conflict = Refusal { code: "conflict".to_owned(), message: "decided".to_owned() };
+        let _ = ask.update(Event::Decided(round, DEMO_APPROVAL.to_owned(), Err(conflict)));
+        assert_eq!(ask.failed.as_deref(), Some(tr("This approval was already decided.")));
+        assert!(ask.approvals[DEMO_APPROVAL].state.is_pending(), "the card stays open");
+    }
+
+    /// Review of #892: an approval the core no longer knows is lost – its card says so, nobody asks
+    /// again, and it does not count as waiting.
+    #[test]
+    fn an_approval_the_core_no_longer_knows_is_lost() {
+        let (mut ask, _) = Ask::open_general(demo_call());
+        let round = ask.round;
+        let gone = Refusal { code: "not-found".to_owned(), message: "gone".to_owned() };
+        let _ = ask.update(Event::Approval(round, DEMO_APPROVAL.to_owned(), Err(gone)));
+        assert!(ask.lost.contains(DEMO_APPROVAL));
+        let offline = Refusal { code: "offline".to_owned(), message: "away".to_owned() };
+        let _ = ask.update(Event::Approval(round, "other".to_owned(), Err(offline)));
+        assert!(!ask.lost.contains("other"), "asked again on the next poll");
+        ask.phase = Phase::Ready;
+        let _ = ask.update(Event::New);
+        assert!(ask.lost.is_empty());
+        // Review of PR #902: one the card knew still waiting is lost too, and takes no decision.
+        let round = ask.round;
+        ask.approvals.insert(DEMO_APPROVAL.to_owned(), approval("mail.move_message", ApprovalState::Pending));
+        let gone = Refusal { code: "not-found".to_owned(), message: "gone".to_owned() };
+        let _ = ask.update(Event::Approval(round, DEMO_APPROVAL.to_owned(), Err(gone.clone())));
+        assert!(ask.lost.contains(DEMO_APPROVAL));
+        let _ = ask.update(Event::Decide(DEMO_APPROVAL.to_owned(), true));
+        assert!(ask.deciding.is_none(), "nothing left to decide");
+        // A decided one keeps how it was decided.
+        let (mut ask, _) = Ask::open_general(demo_call());
+        let round = ask.round;
+        ask.approvals.insert(DEMO_APPROVAL.to_owned(), approval("mail.move_message", ApprovalState::Denied));
+        let _ = ask.update(Event::Approval(round, DEMO_APPROVAL.to_owned(), Err(gone)));
+        assert!(!ask.lost.contains(DEMO_APPROVAL));
+    }
+
+    /// Issue #892: the state of an approval of another round – the chat before "+" – is dropped.
+    #[test]
+    fn an_approval_of_another_round_is_dropped() {
+        let (mut ask, _) = Ask::open_general(demo_call());
+        let before = ask.round;
+        ask.phase = Phase::Ready;
+        let _ = ask.update(Event::New);
+        assert_ne!(ask.round, before);
+        let pending = approval("mail.move_message", ApprovalState::Pending);
+        let _ = ask.update(Event::Approval(before, DEMO_APPROVAL.to_owned(), Ok(pending.clone())));
+        assert!(ask.approvals.is_empty());
+        let _ = ask.update(Event::Decided(before, DEMO_APPROVAL.to_owned(), Ok(pending.clone())));
+        assert!(ask.approvals.is_empty());
+        let round = ask.round;
+        let _ = ask.update(Event::Approval(round, DEMO_APPROVAL.to_owned(), Ok(pending)));
+        assert_eq!(ask.approvals.len(), 1);
+    }
+
+    /// Issue #892: the demo's chat without a mail searches the mail and decides its approval.
+    #[test]
+    fn the_demo_answers_without_a_mail() {
+        let call = demo_call();
+        let choice = (Choice { engine: demo_engine().id, model: None }, None);
+        let request = send_request(None, Some(&choice), "What came in today?", None).expect("a request");
+        let (summary, entries) = block_on(ask_conversation(call.clone(), request)).expect("an answer");
+        assert!(summary.about.is_none());
+        assert!(matches!(&entries[1].content, EntryContent::Tool { name, .. } if name == "mail.search_messages"));
+        let decided = block_on(call(decide_request(DEMO_APPROVAL, false))).expect("decided");
+        assert!(matches!(decided, Response::Approval { approval } if approval.state == ApprovalState::Denied));
     }
 
     /// Without an engine the panel shows the hint, not a chat; a refused send its hint.
@@ -1433,10 +2001,10 @@ mod tests {
         let call = demo_call();
         let about = mail_ref("m:1");
         let choice = (Choice { engine: demo_engine().id, model: None }, None);
-        let first = send_request(None, Some(&choice), "Hi", &about).expect("a request");
+        let first = send_request(None, Some(&choice), "Hi", Some(&about)).expect("a request");
         let (_, entries) = block_on(ask_conversation(call.clone(), first)).expect("an answer");
         assert_eq!(entries.len(), 3);
-        let again = send_request(None, Some(&choice), "Anew", &about).expect("a request");
+        let again = send_request(None, Some(&choice), "Anew", Some(&about)).expect("a request");
         let (_, entries) = block_on(ask_conversation(call, again)).expect("an answer");
         assert!(matches!(&entries[0].content, EntryContent::Message { text, .. } if text == "Anew"), "{entries:?}");
         assert_eq!(entries.len(), 3, "the mail read again, nothing of the one before");
@@ -1471,13 +2039,13 @@ mod tests {
         let round = ask.round;
         let _ = ask.update(Event::Opened(round, opened));
         assert_eq!(ask.phase, Phase::Ready);
-        let request = send_request(None, ask.choice.as_ref(), "Hi", &ask.about).expect("a request");
+        let request = send_request(None, ask.choice.as_ref(), "Hi", ask.about.as_ref()).expect("a request");
         let sent = block_on(ask_conversation(ask.call.clone(), request));
         let _ = ask.update(Event::Sent(round, sent));
         assert_eq!(ask.transcript.entries.len(), 3, "message, mail read, answer");
         assert!(ask.input.is_empty());
         let id = ask.transcript.summary.as_ref().map(|summary| summary.id.clone());
-        let again = send_request(id.as_deref(), ask.choice.as_ref(), "And?", &ask.about).expect("a request");
+        let again = send_request(id.as_deref(), ask.choice.as_ref(), "And?", ask.about.as_ref()).expect("a request");
         let sent = block_on(ask_conversation(ask.call.clone(), again));
         let _ = ask.update(Event::Sent(round, sent));
         assert_eq!(ask.transcript.entries.len(), 5);
