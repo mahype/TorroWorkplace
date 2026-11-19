@@ -3681,6 +3681,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Address copied", "Adresse kopiert"),
     ("Copy address", "Adresse kopieren"),
     ("Copy name and address", "Name und Adresse kopieren"),
+    ("Copy sender address", "Absenderadresse kopieren"),
     ("Show all recipients", "Alle Empfänger zeigen"),
     ("cc", "Cc"),
     ("+{n}", "+{n}"),

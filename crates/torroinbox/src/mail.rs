@@ -4826,8 +4826,8 @@ fn filter_sender<'r>(reading: &Reading<'r>) -> Option<&'r str> {
 }
 
 /// The items of the rail's group "More" ([`action_groups`]) for `tools`: the other view of a mail
-/// with HTML, the other colours while its HTML shows, "Copy text", "Create filter…" for the mail's
-/// `sender` (issue #339: a new filter's dialog with `from:<address>` over Settings › Categorization,
+/// with HTML, the other colours while its HTML shows, "Copy text", "Copy sender address" (issue #905)
+/// and "Create filter…" for the mail's `sender` (issue #339: a new filter's dialog with `from:<address>` over Settings › Categorization,
 /// issues #454 and #481), and with `close` Close.
 fn more_items<'a>(tools: ViewTools, sender: Option<&str>, close: bool) -> Vec<RailItem<'a, Message>> {
     let mut items = Vec::new();
@@ -4835,6 +4835,11 @@ fn more_items<'a>(tools: ViewTools, sender: Option<&str>, close: bool) -> Vec<Ra
     // and the mail's colours stand in "Display" since issue #456.
     if tools.copy {
         items.push(RailItem::new(Icon::Copy, tr("Copy text"), "", Some(Message::CopyText)));
+    }
+    // The sender's address without the mouse (issue #905): the rail and the list's context menu.
+    if let Some(address) = sender {
+        let copy = Message::CopyAddress(list::one_line(address));
+        items.push(RailItem::new(Icon::Copy, tr("Copy sender address"), "", Some(copy)));
     }
     if let Some(address) = sender {
         let create = Message::CreateFilter { query: format!("from:{address}"), account: None };
@@ -7613,7 +7618,10 @@ mod tests {
                     ),
                     (tr("Mute").to_owned(), strings(&[tr("Mute…")])),
                     (trc("mail", "Display").to_owned(), strings(&[trc("mail", "Display")])),
-                    (tr("More").to_owned(), strings(&[tr("Copy text"), tr("Create filter…"), tr("Close")])),
+                    (
+                        tr("More").to_owned(),
+                        strings(&[tr("Copy text"), tr("Copy sender address"), tr("Create filter…"), tr("Close")])
+                    ),
                 ]
             );
             let feet: Vec<bool> = groups.iter().map(|group| group.foot).collect();
@@ -7660,6 +7668,11 @@ mod tests {
             assert!(entry(sends(&groups, torro, tr("Category…"))));
             assert!(matches!(sends(&groups, tr("Mute"), tr("Mute…")), Some(Message::AskHide(id)) if id == item.id));
             assert!(matches!(sends(&groups, tr("More"), tr("Copy text")), Some(Message::CopyText)));
+            // Issue #905: the sender's address without the mouse.
+            assert!(matches!(
+                sends(&groups, tr("More"), tr("Copy sender address")),
+                Some(Message::CopyAddress(address)) if address == *sender
+            ));
             assert!(matches!(sends(&groups, tr("More"), tr("Close")), Some(Message::CloseDetail)));
             let marks = &group(&groups, tr("Mark")).items;
             let flagged = reading.summary().expect("headers").flags.contains(&Flag::Flagged);
@@ -7677,7 +7690,7 @@ mod tests {
                     vec!["", "", "", ""],
                     vec!["M"],
                     vec![""],
-                    vec!["", "", "Esc"]
+                    vec!["", "", "", "Esc"]
                 ]
             );
             // A click on a group's icon does its first item; its icon is that item's.
@@ -8001,11 +8014,17 @@ mod tests {
             let message = Message::CreateFilter { query: format!("from:{sender}"), account: None };
             item(tr("Create filter…"), "", message)
         };
+        // Issue #905: the sender's address, also without the mouse.
+        let copy = |reading: &Reading<'_>| {
+            let sender = &reading.summary().and_then(|summary| summary.from.as_ref()).expect("a sender").address;
+            item(tr("Copy sender address"), "", Message::CopyAddress(list::one_line(sender)))
+        };
         reading_of("m:p2", MailFormat::Html, true, |reading| {
             assert_eq!(
                 more(reading, true),
                 Some(vec![
                     item(tr("Copy text"), "", Message::CopyText),
+                    copy(reading),
                     create(reading),
                     item(tr("Close"), "Esc", Message::CloseDetail),
                 ])
@@ -8017,14 +8036,14 @@ mod tests {
         reading_of("m:p2", MailFormat::Text, true, |reading| {
             assert_eq!(
                 more(reading, false),
-                Some(vec![item(tr("Copy text"), "", Message::CopyText), create(reading)]),
+                Some(vec![item(tr("Copy text"), "", Message::CopyText), copy(reading), create(reading)]),
                 "no colours for the text"
             );
         });
         reading_of("m:w1", MailFormat::Html, true, |reading| {
             assert_eq!(
                 more(reading, false),
-                Some(vec![item(tr("Copy text"), "", Message::CopyText), create(reading)]),
+                Some(vec![item(tr("Copy text"), "", Message::CopyText), copy(reading), create(reading)]),
                 "a text mail"
             );
         });
