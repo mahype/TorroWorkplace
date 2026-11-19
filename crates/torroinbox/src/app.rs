@@ -14120,6 +14120,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Some(Menu::Person(person)) => self.reading().and_then(|reading| {
                 let who = person.who(reading.summary()?, reading.loaded)?;
                 let (spot, placement) = context_spot(self.context_point, &anchors.person);
+                // Slid behind "+N" (a narrower window): under it, where the point of the click means nothing.
+                let more = anchors.person_more.area(Rectangle::new(Point::new(0.0, size::target()), Size::ZERO));
+                let spot = spot.or(&more);
                 Some(widgets::floating(&spot, placement, widgets::menu(mail::person_menu(who)), Message::CloseMenu))
             }),
             Some(Menu::SaveAll { rail: false }) => self.file_menu(None).map(|card| {

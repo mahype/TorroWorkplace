@@ -4401,7 +4401,7 @@ fn sender_block<'a>(
                 // A person whose menu is open but who slid behind "+N" (a narrower window): their menu
                 // hangs at "+N" rather than in the middle of the window.
                 let behind = people.iter().skip(shown).any(|(_, person, _)| reading.person_menu == Some(*person));
-                let toggle = widgets::anchored_if(behind.then_some(&anchors.person), toggle);
+                let toggle = widgets::anchored_if(behind.then_some(&anchors.person_more), toggle);
                 let toggle = widgets::with_tooltip(toggle, tr("Show all recipients"));
                 line = line.push(container(toggle).padding(Padding::ZERO.left(space::xs())));
             }
@@ -4466,8 +4466,9 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 ///    for a folder's message). Its menu offers no popup and "Only Info"; mail is never hidden (issue
 ///    #339).
 /// 7. **More** (at the foot), what [`Reading::view_tools`] offers: Copy text (`CopyText`) first,
-///    then Show as text or Show as HTML (`v`, `ShowMailAs`), Light or Dark colours (`MailColors`,
-///    while the HTML shows), "Create filter…" for the loaded mail's sender (issue #339,
+///    "Copy sender address" for the loaded mail's sender (issue #905, `CopyAddress`), then Show as
+///    text or Show as HTML (`v`, `ShowMailAs`), Light or Dark colours (`MailColors`, while the HTML
+///    shows), "Create filter…" for the loaded mail's sender (issue #339,
 ///    `CreateFilter` with `from:<address>`), and with `close` (the reader; the panel has its ✕)
 ///    Close (Escape, `CloseDetail`).
 ///
