@@ -2209,6 +2209,8 @@ fn person_button<'a>(
     label: String,
 ) -> Element<'a, Message> {
     let text = typo::text(typo::meta(), label).wrapping(Wrapping::None);
+    // At least a click target high (design rule 4), the text in its middle.
+    let text = container(text).center_y(size::target());
     let button = iced::widget::button(text)
         .padding(Padding::ZERO)
         .style(style::button::path_step)
@@ -2264,7 +2266,7 @@ fn people_wrapped<'a>(
 
 /// A quiet word as a button in the head's line ("+2", "Show less", issue #905).
 fn head_toggle<'a>(label: String) -> Element<'a, Message> {
-    iced::widget::button(typo::text(typo::meta(), label).wrapping(Wrapping::None))
+    iced::widget::button(container(typo::text(typo::meta(), label).wrapping(Wrapping::None)).center_y(size::target()))
         .padding(Padding::ZERO)
         .style(style::button::path_step)
         .on_press(Message::ToggleHeadPeople)
@@ -4396,12 +4398,17 @@ fn sender_block<'a>(
             let mut line = row![container(line).max_width(room).clip(true)].align_y(Alignment::Center);
             if hidden > 0 {
                 let toggle = head_toggle(trf("+{n}", &[("n", &hidden)]));
+                // A person whose menu is open but who slid behind "+N" (a narrower window): their menu
+                // hangs at "+N" rather than in the middle of the window.
+                let behind = people.iter().skip(shown).any(|(_, person, _)| reading.person_menu == Some(*person));
+                let toggle = widgets::anchored_if(behind.then_some(&anchors.person), toggle);
                 let toggle = widgets::with_tooltip(toggle, tr("Show all recipients"));
                 line = line.push(container(toggle).padding(Padding::ZERO.left(space::xs())));
             }
             line.into()
         });
-        container(fitted).width(Fill).height(typo::line_height(typo::meta())).into()
+        // As high as a person's click target (design rule 4), so none of it is cut off.
+        container(fitted).width(Fill).height(size::target()).into()
     };
     // What the mail is (issue #635): at the right end of the second line, under the date, the whole
     // pill where the line keeps its text, else the field, and nothing where not even that fits.
@@ -8588,10 +8595,11 @@ mod tests {
                 let category = ui
                     .find(|candidate: Candidate<'_>| match candidate {
                         Candidate::Container { bounds, .. }
-                            // Under the date, not the "+N" of the names (issue #905), which can be as wide.
+                            // Under the date and ending with it: the "+N" of the names (issue #905) can be
+                            // as wide, but never ends at the date's right edge.
                             if (bounds.width - expected).abs() < 3.0
                                 && bounds.y > date_box.y
-                                && bounds.x + bounds.width > date_box.x =>
+                                && (bounds.x + bounds.width - (date_box.x + date_box.width)).abs() < 0.5 =>
                         {
                             Some(bounds)
                         }
