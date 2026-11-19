@@ -1594,6 +1594,9 @@ pub enum Menu {
     /// The menu of "Save as PDF" or "Save as image" for the mail held (issue #501,
     /// `mail::export_menu`): at its item of the rail's Save, or at the row from the context menu.
     SaveMail(ExportFormat),
+    /// The menu of a person in the head of the mail held (issue #905, `mail::person_menu`): copy
+    /// their address, or their name and address. At the pointer, or under the person after a click.
+    Person(mail::HeadPerson),
 }
 
 /// Which buttons a menu for an entry hangs at (issue #122): the button clicked, else where the
@@ -2796,6 +2799,8 @@ impl Failure {
 pub struct Letter {
     pub id: String,
     pub loaded: Option<Result<Mail, String>>,
+    /// The head's line of people is opened by "+N" (issue #905); a new letter starts closed.
+    pub people_open: bool,
     /// What was saved from it (issue #781, `mail.list_save_history`): `None` while it loads and when
     /// it could not be read – no note then, and no error line: the mail reads as before.
     pub saves: Option<Vec<SaveRecord>>,
@@ -4058,6 +4063,14 @@ pub enum Message {
     Text(text_editor::Action),
     /// "Copy text": the whole text in the panel or the reader to the clipboard, with "Copied".
     CopyText,
+    /// A person in the mail's head was clicked (`None`) or right-clicked at that point (issue #905):
+    /// their menu ([`Menu::Person`]).
+    ContextPerson(mail::HeadPerson, Option<Point>),
+    /// An entry of a person's menu (issue #905): this text – an address, or name and address – to the
+    /// clipboard, with "Address copied".
+    CopyAddress(String),
+    /// "+N" or "Show less" in the mail's head (issue #905): every recipient, or one line again.
+    ToggleHeadPeople,
     /// "Edit › Copy" (⌘C) of the menu bar on macOS (issue #894): what is marked in the mail to the
     /// clipboard ([`App::mail_selection`]), without a notice, as ⌘C works everywhere.
     CopySelection,
@@ -6693,6 +6706,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 let files = result.as_ref().is_ok_and(|mail| mail.attachments.iter().any(|file| !file.inline));
                 if let Some(letter) = self.letter.as_mut().filter(|letter| letter.id == id) {
                     letter.loaded = Some(result);
+                    self.drop_lost_person_menu();
                     let side = self.ask_invite_side(&id, invite.as_ref());
                     let read = if unread {
                         self.mail_edit(mail::edit_of(MailAction::Read(true), &id), None)
@@ -7042,6 +7056,24 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             Message::CopySelection => {
                 return self.mail_selection().map_or_else(Task::none, iced::clipboard::write);
+            }
+            Message::ContextPerson(person, point) => {
+                self.menu = Some(Menu::Person(person));
+                self.context_point = point;
+            }
+            Message::CopyAddress(text) => {
+                self.menu = None;
+                self.context_point = None;
+                if text.trim().is_empty() {
+                    return Task::none();
+                }
+                self.note(tr("Address copied").to_owned());
+                return iced::clipboard::write(text);
+            }
+            Message::ToggleHeadPeople => {
+                if let Some(letter) = self.letter.as_mut() {
+                    letter.people_open = !letter.people_open;
+                }
             }
             Message::SelectionMaybeChanged => {}
             Message::ToggleAccount(account) => {
@@ -8436,12 +8468,31 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// Asks for the mail the panel wants ([`App::wanted_letter`]) when it is another than the one
     /// held, and drops it when the panel wants none. A folder's message opened in the panel is
     /// marked read, as mail apps do; an entry's mail is read once the entry is done (the core).
+    /// Closes a person's menu (issue #905) whose person the mail held no longer has – a copy (Cc) of a
+    /// mail loaded anew, or one that could not be loaded: no menu is drawn then, and the keys would
+    /// go nowhere until a click or Escape.
+    fn drop_lost_person_menu(&mut self) {
+        let Some(Menu::Person(person)) = self.menu else { return };
+        let there = self.reading().is_some_and(|reading| {
+            reading.summary().is_some_and(|summary| person.who(summary, reading.loaded).is_some())
+        });
+        if !there {
+            self.menu = None;
+            self.context_point = None;
+        }
+    }
+
     fn follow_letter(&mut self) -> Task<Message> {
         let wanted = self.wanted_letter();
         if wanted.as_deref() == self.letter.as_ref().map(|letter| letter.id.as_str()) {
             return Task::none();
         }
         self.clear_save_feedback();
+        // A person's menu names a place in the old mail's head, not someone of the next (issue #905).
+        if matches!(self.menu, Some(Menu::Person(_))) {
+            self.menu = None;
+            self.context_point = None;
+        }
         // Another mail: its cards are read out afresh (issue #603).
         self.asked.clear();
         self.failed.clear();
@@ -8449,7 +8500,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             self.letter = None;
             return Task::none();
         };
-        self.letter = Some(Letter { id: id.clone(), loaded: None, saves: None });
+        self.letter = Some(Letter { id: id.clone(), loaded: None, saves: None, people_open: false });
         #[cfg(test)]
         self.sent.push(Sent::Letter(id.clone()));
         let inbox = self.inbox.clone();
@@ -11217,6 +11268,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 | Menu::SearchFilters
                 | Menu::Folders
                 | Menu::Attachment(_)
+                | Menu::Person(_)
                 | Menu::SaveAll { .. }
                 | Menu::SaveMailFormat
                 | Menu::SaveMail(_),
@@ -13309,7 +13361,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let invite = self.ask_invite_side(&id, mail.summary.invite.as_ref());
         // Where its attachments would go (task M12.6), as for a mail read from the list.
         let files = mail.attachments.iter().any(|file| !file.inline);
-        self.letter = Some(Letter { id: id.clone(), loaded: Some(Ok(mail)), saves: None });
+        self.letter = Some(Letter { id: id.clone(), loaded: Some(Ok(mail)), saves: None, people_open: false });
         let read = if unread { self.mail_edit(mail::edit_of(MailAction::Read(true), &id), None) } else { Task::none() };
         // What was saved of it before (issue #781), with or without attachments: the mail itself too.
         let history = self.ask_save_history(&id);
@@ -14700,6 +14752,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Some(Menu::Attachment(at)) => self.file_menu(Some(at)).map(|card| {
                 widgets::floating(&anchors.attachment, Placement::Below(Align::End), card, Message::CloseMenu)
             }),
+            // At the person in the head (issue #905): at the pointer after a right-click, under them after a click.
+            Some(Menu::Person(person)) => self.reading().and_then(|reading| {
+                let who = person.who(reading.summary()?, reading.loaded)?;
+                let (spot, placement) = context_spot(self.context_point, &anchors.person);
+                // Slid behind "+N" (a narrower window): under it, where the point of the click means nothing.
+                let more = anchors.person_more.area(Rectangle::new(Point::new(0.0, size::target()), Size::ZERO));
+                let spot = spot.or(&more);
+                Some(widgets::floating(&spot, placement, widgets::menu(mail::person_menu(who)), Message::CloseMenu))
+            }),
             Some(Menu::SaveAll { rail: false }) => self.file_menu(None).map(|card| {
                 widgets::floating(&anchors.save_all, Placement::Below(Align::End), card, Message::CloseMenu)
             }),
@@ -15356,6 +15417,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 Some(Menu::Attachment(at)) => Some(at),
                 _ => None,
             },
+            person_menu: match self.menu {
+                Some(Menu::Person(person)) => Some(person),
+                _ => None,
+            },
+            people_open: letter.people_open,
             unsubscribed: &self.unsubscribed,
             logos: &self.logos,
             sent: matches!(self.view, View::Sent),
@@ -17581,6 +17647,7 @@ fn closes_rail(message: &Message) -> bool {
             | Message::MailColors(_)
             | Message::FooterMailColors(_)
             | Message::CopyText
+            | Message::CopyAddress(_)
             | Message::CloseDetail
             | Message::ToggleMailDisplay
     )
@@ -23041,6 +23108,54 @@ mod tests {
         let item = entry.detail.clone().expect("an entry in the panel");
         assert_eq!(entry.text.text(), detail::message_text(&item));
         draw_everywhere(&mut entry);
+    }
+
+    /// Issue #905: a click or right-click on a person in the head opens their menu where it was asked
+    /// for; an entry copies exactly its text with "Address copied"; "+N" opens the line, a new mail
+    /// closes it again.
+    #[test]
+    fn a_person_in_the_head_copies_their_address() {
+        let mut app = reading("m:w1");
+        let point = Point::new(4.0, 6.0);
+        let _ = app.update(Message::ContextPerson(mail::HeadPerson::To(0), Some(point)));
+        assert_eq!((app.menu, app.context_point), (Some(Menu::Person(mail::HeadPerson::To(0))), Some(point)));
+        assert_eq!(app.reading().and_then(|reading| reading.person_menu), Some(mail::HeadPerson::To(0)));
+        draw_everywhere(&mut app);
+        let _ = app.update(Message::ContextPerson(mail::HeadPerson::From, None));
+        assert_eq!((app.menu, app.context_point), (Some(Menu::Person(mail::HeadPerson::From)), None), "under it");
+        draw_everywhere(&mut app);
+        assert_eq!(app.update(Message::CopyAddress("Anna Berg <anna@firma.de>".into())).units(), 1, "clipboard");
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Address copied")));
+        assert_eq!(app.menu, None, "the menu closes");
+        app.hint = None;
+        assert_eq!(app.update(Message::CopyAddress(" ".into())).units(), 0, "nothing to copy");
+        assert!(app.hint.is_none());
+
+        assert!(!app.reading().is_some_and(|reading| reading.people_open));
+        let _ = app.update(Message::ToggleHeadPeople);
+        assert!(app.reading().is_some_and(|reading| reading.people_open), "+N opens the line");
+        draw_everywhere(&mut app);
+        let _ = app.update(Message::SelectMail("m:w2".into()));
+        deliver_letter(&mut app, "m:w2");
+        assert!(!app.reading().is_some_and(|reading| reading.people_open), "closed for the next mail");
+        // Another mail held without a click in the list (a sync, the cursor): `follow_letter` alone.
+        let _ = app.update(Message::ContextPerson(mail::HeadPerson::To(0), None));
+        if let Some(letter) = app.letter.as_mut() {
+            letter.id = "m:gone".into();
+        }
+        let _ = app.follow_letter();
+        assert_eq!(app.menu, None, "no person's menu over another mail");
+
+        // Review of PR #913: a person the mail no longer has (here a copy of a mail that could not
+        // be loaded) closes their menu, so the keys reach the list again.
+        let mut app = reading("m:w1");
+        let _ = app.update(Message::ContextPerson(mail::HeadPerson::Cc(0), None));
+        app.letter.as_mut().expect("letter").loaded = Some(Err("gone".into()));
+        app.drop_lost_person_menu();
+        assert_eq!(app.menu, None, "no menu for a person who is gone");
+        let _ = app.update(Message::ContextPerson(mail::HeadPerson::From, None));
+        app.drop_lost_person_menu();
+        assert_eq!(app.menu, Some(Menu::Person(mail::HeadPerson::From)), "the sender is still there");
     }
 
     /// `id` of the work inbox open in the reader of a wide window, loaded.

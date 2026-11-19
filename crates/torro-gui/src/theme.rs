@@ -780,6 +780,12 @@ pub mod size {
     pub fn avatar_lg() -> f32 {
         design::with(|t| t.design.size.avatar_lg)
     }
+    /// 24: the smallest click target (design rule 4, WCAG 2.5.8), the same in every design: a word
+    /// that is a button of its own in a line of quiet text, such as a person in a mail's head
+    /// (issue #905), takes this height while its text keeps its own.
+    pub fn target() -> f32 {
+        24.0
+    }
     /// 20: the small source tile (task E8.2, `widgets::source_tile`): beside a word, in a compact
     /// row or a menu.
     pub fn tile_sm() -> f32 {

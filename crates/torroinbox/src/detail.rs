@@ -117,6 +117,12 @@ pub struct Anchors {
     pub save_image: Anchor,
     /// "Save as EML": available even if the reading body could not be loaded.
     pub save_eml: Anchor,
+    /// The person in the mail's head whose menu is open (issue #905, `mail::Reading::person_menu`):
+    /// only their button registers it, their menu opens here.
+    pub person: Anchor,
+    /// "+N" in the mail's head while the person whose menu is open slid behind it (a narrower window,
+    /// issue #905): their menu hangs under it instead.
+    pub person_more: Anchor,
     /// The icons of the groups of the mail's action rail (task E14.3, `mail::action_groups`): an
     /// open group hangs at its icon, and – through [`Anchors::with_rail`] – so do the menus and
     /// dialogs of its items while their row is not on screen.
