@@ -16162,7 +16162,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             false => column![menu_caption(&title.into())],
         };
         let list = list.extend(entries);
-        container(list).width(width).padding(style::MENU_INSET).style(style::container::menu).into()
+        // Scrolls where a submenu gets less room than it needs (narrow windows, issue #906).
+        let body = iced::widget::scrollable(list)
+            .direction(iced::widget::scrollable::Direction::Vertical(style::scrollbar().spacing(space::xs())))
+            .style(style::scrollable)
+            .height(iced::Length::Shrink)
+            .width(Fill);
+        container(body).width(width).padding(style::MENU_INSET).style(style::container::menu).into()
     }
 
     /// The bell's menu (task E8.6b, the design's "Stummschalten · Menü an der Karte"): the section
@@ -16224,7 +16230,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if rules_shown(self.launch.kind, torro_gui::installed::is_installed) {
             list = list.push(menu_line()).push(widgets::menu_item(rules_entry(leaves)));
         }
-        container(list).width(width).padding(style::MENU_INSET).style(style::container::menu).into()
+        // Scrolls where a submenu gets less room than it needs (narrow windows, issue #906).
+        let body = iced::widget::scrollable(list)
+            .direction(iced::widget::scrollable::Direction::Vertical(style::scrollbar().spacing(space::xs())))
+            .style(style::scrollable)
+            .height(iced::Length::Shrink)
+            .width(Fill);
+        container(body).width(width).padding(style::MENU_INSET).style(style::container::menu).into()
     }
 
     /// The picker of "Pick…" as a floating card: the chosen moment as title ("Wed, 14 Oct · 09:00"),
