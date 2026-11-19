@@ -2503,6 +2503,8 @@ pub struct MenuItem<'a, M> {
     /// A child of the entry above it (a category under its group, issue #300): indented by an icon
     /// and its gap, with the mark one step smaller.
     pub nested: bool,
+    /// The entry opens a submenu beside it (issue #906, [`MenuItem::submenu`]): it ends in "▸".
+    pub submenu: bool,
     /// Sent when the entry is clicked; the app closes the menu itself.
     pub on_press: M,
 }
@@ -2531,6 +2533,7 @@ impl<'a, M> MenuItem<'a, M> {
             detail: None,
             tags: Vec::new(),
             nested: false,
+            submenu: false,
             on_press,
         }
     }
@@ -2583,12 +2586,12 @@ impl<'a, M> MenuItem<'a, M> {
     /// "▸", a chevron in `text_3` in place of any other trail. Send [`CascadeEvent::Press`] with its
     /// path as its `on_press`.
     pub fn submenu(self) -> Self {
-        self.trail(Trail::Icon(Icon::ChevronRight))
+        Self { submenu: true, ..self.trail(Trail::Icon(Icon::ChevronRight)) }
     }
 
     /// Whether the entry opens a submenu ([`MenuItem::submenu`]).
     pub fn opens_submenu(&self) -> bool {
-        matches!(self.trail, Trail::Icon(Icon::ChevronRight))
+        self.submenu
     }
 }
 
