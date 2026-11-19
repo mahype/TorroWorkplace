@@ -1725,6 +1725,11 @@ pub enum Open {
     AskWorking,
     /// The chat about it after a message that did not go: the core's words over the field.
     AskFailed,
+    /// The overview with the chat without a mail open (issue #892): a question, the mail searched, an
+    /// answer.
+    AskGeneral,
+    /// The overview's chat with an approval waiting on its card ("Allow", "Deny", issue #892).
+    AskApproval,
     /// The notifications window arranged "By time" (task E8.4), where it has room for columns.
     ByTime,
     /// The hub's To sort alone (task E8.5), as its sidebar entry shows it.
@@ -1940,7 +1945,7 @@ impl Open {
                 | Self::SaveShortened
         )
     }
-    const ALL: [(&'static str, Open); 139] = [
+    const ALL: [(&'static str, Open); 141] = [
         ("workflow-setup", Open::WorkflowSetup),
         ("workflow-template", Open::WorkflowTemplate),
         ("workflow-test", Open::WorkflowTest),
@@ -1998,6 +2003,8 @@ impl Open {
         ("ask-empty", Open::AskEmpty),
         ("ask-working", Open::AskWorking),
         ("ask-failed", Open::AskFailed),
+        ("ask-general", Open::AskGeneral),
+        ("ask-approval", Open::AskApproval),
         ("by-time", Open::ByTime),
         ("to-sort", Open::ToSort),
         ("tile", Open::Tile),
@@ -2981,6 +2988,8 @@ fn staged_overview(open: Option<Open>, today: chrono::NaiveDate) -> mail_overvie
                     | Open::MailOverviewError
                     | Open::MailOverviewEmpty
                     | Open::MailOverviewFull
+                    | Open::AskGeneral
+                    | Open::AskApproval
             )
         ),
         range,
@@ -3392,9 +3401,15 @@ pub struct App<S> {
     accept_on_save: Option<AcceptOnSave>,
     /// Suggestions dismissed on their cards whose undo is not over yet (issue #603).
     dismissing: Vec<Dismissing>,
-    /// The mini chat about a mail (issue #605, "Ask AI…"), while it is open; it shows while its mail
-    /// is the one open ([`App::ask_shown`]).
+    /// The mini chat about a mail (issue #605, the AI button over it since #892), while it is open; it
+    /// shows while its mail is the one open ([`App::ask_shown`]).
     ask: Option<ask::Ask>,
+    /// The chat without a mail (issue #892, the AI button over the overview): made on the first press
+    /// and kept while the window runs, so it stands again with its conversation when the overview
+    /// comes back; "+" starts it anew.
+    general_ask: Option<ask::Ask>,
+    /// Whether the chat of the overview is open: it shows while the overview does ([`App::ask_shown`]).
+    general_ask_open: bool,
     /// The list a suggestion named while the dialog's lists were not in yet (issue #603).
     wanted_list: Option<String>,
     /// The mail of `--message` still to show ([`Launch::message`]); taken once the first entries are
@@ -4079,9 +4094,11 @@ pub enum Message {
     /// A kind of action in the rail's group "Torro" or its key (issue #603): the mail's entry, if it
     /// has one, the message and the kind. Opens the dialog of the kind's form, filled from the mail.
     AskAction(Option<String>, String, String),
-    /// "Ask AI…" in the rail's group "Torro" (issue #605): the mini chat about the message with this
-    /// id ([`App::open_ask`]).
+    /// The AI button over an open mail (issue #892; "Ask AI…" in the rail's group "Torro" until then,
+    /// #605): the mini chat about the message with this id ([`App::open_ask`]).
     AskAi(String),
+    /// The AI button over the overview (issue #892): the chat without a mail ([`App::ask_general`]).
+    AskGeneral,
     /// What the mini chat about a mail reports (issue #605, [`ask::Event`]).
     Ask(ask::Event),
     /// The suggestions of the message fetched again for "Accept" on a card of the mini chat (issue
@@ -5000,6 +5017,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             accept_on_save: None,
             dismissing: Vec::new(),
             ask: None,
+            general_ask: None,
+            general_ask_open: false,
             wanted_list: None,
             start_mail: launch.message.clone(),
             pinned_mail: None,
@@ -5215,10 +5234,16 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if self.hint.is_some() || !self.dismissing.is_empty() {
             subscriptions.push(iced::time::every(HINT_TICK).map(Message::HintTick));
         }
-        // The chat about a mail follows a running answer (issue #605); at rest nothing ticks. The
-        // demo's stand-in answers at once, and a staged running answer stands still.
-        if !self.launch.demo && self.ask_shown().is_some_and(ask::Ask::follows) {
-            subscriptions.push(iced::time::every(ask::FOLLOW).map(|_| Message::Ask(ask::Event::Poll)));
+        // The chat about a mail follows a running answer (issue #605), the overview's too, also while
+        // hidden (its approval waits, issue #892); at rest nothing ticks. The demo's stand-in answers
+        // at once, and a staged running answer stands still.
+        // The chat that shows follows at once; the overview's while hidden only slowly: its answer and
+        // approval are kept, nobody watches it run.
+        let shown = self.ask_shown().is_some_and(ask::Ask::follows);
+        let hidden = self.general_ask.as_ref().is_some_and(ask::Ask::follows);
+        if !self.launch.demo && (shown || hidden) {
+            let every = if shown { ask::FOLLOW } else { ask::FOLLOW_HIDDEN };
+            subscriptions.push(iced::time::every(every).map(|_| Message::Ask(ask::Event::Poll)));
         }
         // The open conversation of a Talk entry asks for new messages (issue #643); nothing polls
         // once the panel is closed.
@@ -6250,13 +6275,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 } else if !self.selected_mail.is_empty() {
                     self.selected_mail.clear();
                     self.mail_anchor = None;
+                } else if self.ask_shown().is_some() {
+                    // The chat lies over or beside the mail (issue #605) or the overview (issue #892):
+                    // it goes first.
+                    self.close_shown_ask();
                 } else if self.mail_overview_closes() {
                     // The overview's panel (medium) or page (narrow) goes back to the list, in narrow
                     // to where the list stood, as "‹ {view}" does (issue #409).
                     return self.update(Message::CloseMailOverview);
-                } else if self.ask_shown().is_some() {
-                    // The chat about the mail lies over or beside it (issue #605): it goes first.
-                    self.ask = None;
                 } else if self.panel_open() || self.view.search().is_none() {
                     self.close_panel();
                 } else {
@@ -7065,6 +7091,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 return self.ask_action(entry, &id, &kind);
             }
             Message::AskAi(id) => return self.open_ask(id),
+            Message::AskGeneral => return self.ask_general(),
             Message::Ask(event) => return self.on_ask(event),
             Message::AskSuggestions(id, kind, result) => {
                 // Only for the mail still open and suggestions that came (review of #605): a failed
@@ -12219,12 +12246,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         Task::none()
     }
 
-    /// "Ask AI…" (issue #605): the mini chat about the message `id` – the newest conversation about it
-    /// continued, or a new one ([`ask::Ask::open`]). Its own chat open already stays as it is.
+    /// The AI button over an open mail (issue #892, "Ask AI…" in the rail before, #605): the mini chat
+    /// about the message `id` – the newest conversation about it continued, or a new one
+    /// ([`ask::Ask::open`]). Its own chat open already stays as it is.
     fn open_ask(&mut self, id: String) -> Task<Message> {
         self.close_menus();
         self.rail_open = None;
-        if self.ask.as_ref().is_some_and(|ask| ask.about.id == id) {
+        if self.ask.as_ref().is_some_and(|ask| ask.about.as_ref().is_some_and(|about| about.id == id)) {
             return operation::focus(ask::FIELD);
         }
         let entry = self.entry_of(&id);
@@ -12234,19 +12262,96 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         opening.map(Message::Ask)
     }
 
-    /// `i` (issue #605): closes the chat about the mail while it shows, else opens it for the mail open
-    /// in the mail window, as "Ask AI…" in its rail does. Nothing without an open mail, and in the
-    /// other windows, whose rail has no "Ask AI…".
-    fn toggle_ask(&mut self) -> Task<Message> {
-        if self.ask_shown().is_some() {
-            self.ask = None;
+    /// The AI button over the overview (issue #892): the chat without a mail, made on the first press
+    /// ([`ask::Ask::open_general`]) and shown again as it was after that. Nothing while the overview
+    /// does not show.
+    fn ask_general(&mut self) -> Task<Message> {
+        if !self.overview_visible() {
             return Task::none();
         }
-        let open = self.letter.as_ref().filter(|_| self.launch.kind == Kind::Mail && self.panel_open());
-        match open.map(|letter| letter.id.clone()) {
-            Some(id) => self.open_ask(id),
-            None => Task::none(),
+        self.close_menus();
+        self.rail_open = None;
+        self.general_ask_open = true;
+        // Its conversation stays; a hint (no AI yet, the core away) is asked anew.
+        if self.general_ask.as_ref().is_some_and(|ask| !ask.hinting()) {
+            return operation::focus(ask::FIELD);
         }
+        let (ask, opening) = ask::Ask::open_general(ask::call_for(&self.suite));
+        self.general_ask = Some(ask);
+        opening.map(Message::Ask)
+    }
+
+    /// Closes the chat that shows (issue #892): the one about the mail goes, the overview's is only
+    /// hidden and keeps its conversation.
+    fn close_shown_ask(&mut self) {
+        if self.panel_open() {
+            self.ask = None;
+        } else {
+            self.general_ask_open = false;
+        }
+    }
+
+    /// Whether the overview shows in the mail window (issue #892): [`App::mail_overview_shown`], in the
+    /// wide window only with its right column ([`App::right_column`]), where the overview stands; not in
+    /// "Drafts", whose right column says how to go on instead.
+    fn overview_visible(&self) -> bool {
+        self.mail_overview_shown()
+            && self.view != View::Drafts
+            && (self.class() != SizeClass::Wide || self.right_column)
+    }
+
+    /// The mail open in the mail window, which the AI button and `i` ask about (issue #892).
+    fn asked_mail(&self) -> Option<String> {
+        let open = self.letter.as_ref().filter(|_| self.launch.kind == Kind::Mail && self.panel_open());
+        open.map(|letter| letter.id.clone())
+    }
+
+    /// `i` (issues #605, #892): closes the chat while it shows, else does what the AI button does – the
+    /// chat about the mail open in the mail window, or the chat without a mail over the overview.
+    /// Nothing elsewhere, and in the other windows, which have no AI button.
+    fn toggle_ask(&mut self) -> Task<Message> {
+        if self.ask_shown().is_some() {
+            self.close_shown_ask();
+            return Task::none();
+        }
+        match self.asked_mail() {
+            Some(id) => self.open_ask(id),
+            None => self.ask_general(),
+        }
+    }
+
+    /// What the round AI button sends, `None` where it does not stand (issue #892): the chat about the
+    /// open mail, else over the overview the chat without one. Not outside the mail window, in mini and
+    /// the strip, over the settings, the drawer or "Focus & reply", nor while a chat shows.
+    fn ai_button_press(&self) -> Option<Message> {
+        let room = matches!(self.class(), SizeClass::Wide | SizeClass::Medium | SizeClass::Narrow);
+        let quiet = self.launch.kind != Kind::Mail
+            || !room
+            || self.drawer
+            || self.settings.is_some()
+            || self.focus_reply.is_some()
+            || self.ask_shown().is_some();
+        match self.asked_mail() {
+            _ if quiet => None,
+            Some(id) => Some(Message::AskAi(id)),
+            None if self.overview_visible() => Some(Message::AskGeneral),
+            None => None,
+        }
+    }
+
+    /// The round AI button (issue #892, variant A of `docs/prototypes/mail-ki-knopf/`): red and round
+    /// like the composer's "Send" (`style::button::round_primary`), at the bottom right of the right
+    /// column – over the open mail and over the overview at the same place, `space::m()` from the
+    /// edges; in medium and narrow that is the bottom right of the panel or page. Over the mail it asks
+    /// about it, over the overview without one. Only in the mail window, while no chat shows, never over
+    /// the settings, in "Focus & reply", in mini or in the strip. `layer` (a menu) stays above it.
+    fn with_ai_button<'a>(&self, layer: Option<Element<'a, Message>>) -> Option<Element<'a, Message>> {
+        let Some(pressed) = self.ai_button_press() else { return layer };
+        let button = widgets::floating_round_button(Icon::Sparkles, tr("Ask AI"), "I", pressed);
+        // From the edge of the content, which an inset design draws within the window's edge.
+        let margin = space::m() + layout::inset();
+        let placed = container(button).width(Fill).height(Fill).padding(margin).align_right(Fill).align_bottom(Fill);
+        Some(stack([placed.into()].into_iter().chain(layer)).into())
     }
 
     /// What the chat about a mail reported (issue #605): closing it, its buttons that lead out of it,
@@ -12255,7 +12360,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// over the mail it closes first, so the dialog hangs at the rail as always. The rest is the chat's.
     fn on_ask(&mut self, event: ask::Event) -> Task<Message> {
         match event {
-            ask::Event::Close => self.ask = None,
+            ask::Event::Close => self.close_shown_ask(),
+            // "+" in the overview's chat starts it anew (issue #892); in the chat about a mail it is the chat's.
+            ask::Event::New if self.ask_shown().is_some_and(|ask| ask.about.is_none()) => {
+                let (ask, opening) = ask::Ask::open_general(ask::call_for(&self.suite));
+                self.general_ask = Some(ask);
+                return opening.map(Message::Ask);
+            }
             ask::Event::OpenAssistant => {
                 return self.update(Message::OpenApp(AppId::ASSISTANT.binary.to_owned()));
             }
@@ -12277,8 +12388,26 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     move |result| Message::AskSuggestions(id.clone(), kind.clone(), result),
                 );
             }
+            // The tick: both chats follow their answers (issue #892).
+            ask::Event::Poll => {
+                let polls = [self.ask.as_mut(), self.general_ask.as_mut()]
+                    .into_iter()
+                    .flatten()
+                    .map(|ask| ask.update(ask::Event::Poll).map(Message::Ask));
+                return Task::batch(polls.collect::<Vec<_>>());
+            }
+            // An answer of the core goes to the chat of its round; what the person does to the one shown.
             other => {
-                if let Some(ask) = self.ask.as_mut() {
+                let shown_general = self.ask_shown().is_some_and(|ask| ask.about.is_none());
+                let chat = match other.round() {
+                    Some(round) => [self.ask.as_mut(), self.general_ask.as_mut()]
+                        .into_iter()
+                        .flatten()
+                        .find(|ask| ask.round() == round),
+                    None if shown_general => self.general_ask.as_mut(),
+                    None => self.ask.as_mut(),
+                };
+                if let Some(ask) = chat {
                     return ask.update(other).map(Message::Ask);
                 }
             }
@@ -12286,12 +12415,20 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         Task::none()
     }
 
-    /// The chat about a mail while its mail is the one open in the mail window (issue #605); `None`
-    /// while none is open, or another mail is.
+    /// The chat that shows in the mail window: the one about a mail while its mail is the one open
+    /// (issue #605), the overview's while it is open and the overview shows (issue #892); `None`
+    /// otherwise.
     fn ask_shown(&self) -> Option<&ask::Ask> {
-        let ask = self.ask.as_ref()?;
-        let held = self.letter.as_ref().is_some_and(|letter| letter.id == ask.about.id);
-        (self.launch.kind == Kind::Mail && self.panel_open() && held).then_some(ask)
+        if self.launch.kind != Kind::Mail {
+            return None;
+        }
+        if self.panel_open() {
+            let ask = self.ask.as_ref()?;
+            let about = ask.about.as_ref()?;
+            let held = self.letter.as_ref().is_some_and(|letter| letter.id == about.id);
+            return held.then_some(ask);
+        }
+        self.general_ask.as_ref().filter(|_| self.general_ask_open && self.overview_visible())
     }
 
     /// Whether the chat about a mail stands beside it (issue #605): in the wide window while the
@@ -12365,9 +12502,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         layer: Option<Element<'a, Message>>,
     ) -> Element<'a, Message> {
         let view = self.ask_view(ask, true);
+        // The overview's chat covers the overview's panel, which has no rail beside it (issue #892): as
+        // wide as that, so its edge meets the part of the top row the panel keeps free.
+        let width = match ask.about {
+            None => size::panel(),
+            Some(_) => self.panel_width(class),
+        };
         let sheet: Element<'a, Message> = match class {
             SizeClass::Medium => container(row![rule::vertical(size::HAIRLINE).style(style::rule), view])
-                .width(self.panel_width(class))
+                .width(width)
                 .height(Fill)
                 .into(),
             _ => view,
@@ -13412,10 +13555,6 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if self.rail_open.is_some() {
             return self.rail_open;
         }
-        // "Ask AI…" stands open while its chat does (issue #605).
-        if self.menu.is_none() && self.ask_shown().is_some() {
-            return groups.iter().position(|group| group.label == tr("Torro"));
-        }
         let label = match self.menu? {
             Menu::Snooze | Menu::Pick | Menu::Lane => tr("File"),
             Menu::SaveAll { rail: true } | Menu::SaveMail(_) => tr("Save"),
@@ -14019,6 +14158,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 .top_row(self.top_row(class))
                 .into();
         }
+        // The round AI button at the bottom right of the right column, over the mail or the overview
+        // (issue #892).
+        let layer = self.with_ai_button(layer);
         let overview = (class == SizeClass::Wide && self.mail_overview_shown()).then(|| {
             if self.view == View::Drafts {
                 list::empty_state(Icon::FilePenLine, tr("No draft chosen."), tr("Pick a draft to continue writing."))
@@ -14101,8 +14243,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let detail = detail.map(|detail| {
             detail.resizable(self.panel_room(), self.panes(), self.panel_split.dragging, Message::PanelWidth)
         });
-        // The chat about the mail over the mail's panel (issue #605).
-        let layer = match self.ask_shown().filter(|_| class != SizeClass::Wide && detail.is_some()) {
+        // The chat about the mail over the mail's panel (issue #605); the overview's over its panel
+        // (medium) or page (narrow, issue #892).
+        let layer = match self.ask_shown().filter(|_| class != SizeClass::Wide && (detail.is_some() || overview_shown))
+        {
             Some(ask) => Some(self.ask_sheet(class, ask, layer)),
             None => layer,
         };
@@ -16317,6 +16461,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     self.reading = true;
                     self.ask = Some(ask::Ask::staged(&self.suite, &message, scene, self.now));
                 }
+            }
+            // The overview with its chat without a mail open (issue #892), staged without a core.
+            Some(open @ (Open::AskGeneral | Open::AskApproval)) => {
+                let scene = if open == Open::AskApproval { ask::Scene::Approval } else { ask::Scene::General };
+                self.general_ask = Some(ask::Ask::staged_general(&self.suite, scene, self.now));
+                self.general_ask_open = true;
             }
             Some(Open::Search) => {
                 self.search = "budget".to_owned();
@@ -25948,17 +26098,10 @@ mod tests {
         let labels: Vec<String> = torro.items.iter().map(|item| item.label.to_string()).collect();
         assert_eq!(
             labels,
-            [
-                tr("Task"),
-                tr("Event"),
-                tr("Ask AI…"),
-                tr("Category…"),
-                tr("Create workflow with AI…"),
-                tr("Run workflow")
-            ],
-            "existing actions stay first, then the chat about the mail (#605); no Re-categorize without an entry"
+            [tr("Task"), tr("Event"), tr("Category…"), tr("Create workflow with AI…"), tr("Run workflow")],
+            "existing actions stay first; no Ask AI… since #892, no Re-categorize without an entry"
         );
-        let ask = torro.items[3].on_press.clone();
+        let ask = torro.items[2].on_press.clone();
         assert!(matches!(&ask, Some(Message::AskMailCategory(asked)) if *asked == id), "{ask:?}");
         drop(groups);
         draw_everywhere(&mut app);
@@ -28531,14 +28674,14 @@ mod tests {
         draw_everywhere(&mut app);
     }
 
-    /// Issue #605: "Ask AI…" opens the chat about the mail – beside it in the wide window, over it in
+    /// Issue #605 (the AI button since #892): it opens the chat about the mail – beside it in the wide window, over it in
     /// medium and narrow –, and it closes with ✕, Escape (before the mail) or the mail's panel.
     #[test]
     fn the_chat_about_a_mail_opens_with_its_mail_and_closes_first() {
         let mut app = mail_window(Density::Compact, &["--open", "suggestions"]);
         deliver_letter(&mut app, "m:w2");
         let _ = app.update(Message::AskAi("m:w2".into()));
-        let about = app.ask.as_ref().map(|ask| ask.about.clone()).expect("the chat opens");
+        let about = app.ask.as_ref().and_then(|ask| ask.about.clone()).expect("the chat opens");
         assert_eq!((about.id.as_str(), about.account.is_empty()), ("m:w2", false), "the mail and its account");
         assert!(app.ask_shown().is_some());
         let _ = app.update(Message::Resized(Size::new(1600.0, 1000.0)));
@@ -28565,16 +28708,113 @@ mod tests {
         let mut app = mail_window(Density::Compact, &["--open", "suggestions"]);
         deliver_letter(&mut app, "m:w2");
         let _ = press(&mut app, Key::I);
-        let about = app.ask_shown().map(|ask| ask.about.id.clone());
+        let about = app.ask_shown().and_then(|ask| ask.about.as_ref()).map(|about| about.id.clone());
         assert_eq!(about.as_deref(), Some("m:w2"), "the chat about the open mail");
         let _ = press(&mut app, Key::I);
         assert!(app.ask.is_none() && app.panel_open(), "closed again, the mail stays");
         let _ = app.update(Message::CloseDetail);
         let _ = press(&mut app, Key::I);
-        assert!(app.ask.is_none(), "no mail open: nothing to ask about");
+        assert!(app.ask.is_none(), "no mail open: nothing to ask about it");
+        // Issue #892: over the overview `i` opens the chat without a mail, and closes it again.
+        assert!(app.overview_visible());
+        let shown = app.ask_shown().map(|ask| ask.about.is_none());
+        assert_eq!(shown, Some(true), "the overview's chat");
+        let _ = press(&mut app, Key::I);
+        assert!(app.ask_shown().is_none() && app.general_ask.is_some(), "hidden, its conversation kept");
         let mut hub = loaded(&[]);
         let _ = press(&mut hub, Key::I);
-        assert!(hub.ask.is_none(), "only the mail window has the chat");
+        assert!(hub.ask.is_none() && hub.general_ask.is_none(), "only the mail window has the chat");
+    }
+
+    /// Issue #892: the round AI button stands over the open mail and over the overview at the same place
+    /// (the bottom right of the right column) and asks about the mail or without one; it is gone while
+    /// a chat shows, over the settings and with the wide window's right column hidden.
+    #[test]
+    fn the_ai_button_stands_over_the_mail_and_the_overview() {
+        // What the drawn button sends; it stands exactly where it sends something.
+        let pressed = |app: &App<DemoSource>| -> Option<Message> {
+            assert_eq!(app.with_ai_button(None).is_some(), app.ai_button_press().is_some());
+            app.ai_button_press()
+        };
+        let mut app = mail_window(Density::Compact, &["--open", "mail-overview"]);
+        for size in [Size::new(1600.0, 1000.0), Size::new(800.0, 600.0), Size::new(480.0, 900.0)] {
+            let _ = app.update(Message::Resized(size));
+            assert!(app.overview_visible(), "{size:?}");
+            assert!(matches!(pressed(&app), Some(Message::AskGeneral)), "over the overview at {size:?}");
+        }
+        let _ = app.update(Message::Resized(Size::new(1600.0, 1000.0)));
+        let _ = app.update(Message::AskGeneral);
+        assert!(app.ask_shown().is_some_and(|ask| ask.about.is_none()), "the chat without a mail");
+        assert!(app.with_ai_button(None).is_none(), "no button while the chat shows");
+        draw_everywhere(&mut app);
+
+        let mut app = mail_window(Density::Compact, &["--open", "suggestions"]);
+        deliver_letter(&mut app, "m:w2");
+        assert!(matches!(pressed(&app), Some(Message::AskAi(id)) if id == "m:w2"), "over the mail");
+        let _ = app.update(Message::AskAi("m:w2".into()));
+        assert!(app.with_ai_button(None).is_none(), "no button while the chat shows");
+        let _ = app.update(Message::Ask(ask::Event::Close));
+        assert!(app.with_ai_button(None).is_some());
+        let _ = app.update(Message::CloseDetail);
+        app.right_column = false;
+        assert!(!app.overview_visible() && app.with_ai_button(None).is_none(), "no right column, no button");
+        let _ = app.update(Message::AskGeneral);
+        assert!(app.general_ask.is_none(), "nothing to open without the overview");
+        app.right_column = true;
+        app.drawer = true;
+        assert!(pressed(&app).is_none(), "not over the drawer");
+    }
+
+    /// Review of #892: a hint in the overview's chat (no AI yet) is asked anew on the next press, and
+    /// `forbidden` without a mail says the core's words, not that the mail may not be read.
+    #[test]
+    fn the_overviews_chat_asks_anew_after_a_hint() {
+        let mut app = mail_window(Density::Compact, &["--open", "mail-overview"]);
+        let _ = app.update(Message::Resized(Size::new(1600.0, 1000.0)));
+        let _ = app.update(Message::AskGeneral);
+        let round = app.general_ask.as_ref().map(ask::Ask::round).expect("the chat");
+        let forbidden = ask::Refusal { code: "forbidden".into(), message: "Not allowed.".into() };
+        let _ = app.update(Message::Ask(ask::Event::Opened(round, Err(forbidden))));
+        let phase = app.general_ask.as_ref().map(|ask| ask.phase.clone());
+        assert_eq!(phase, Some(ask::Phase::Hint(ask::Hint::Failed("Not allowed.".into()))));
+        let _ = app.update(Message::Ask(ask::Event::Close));
+        let _ = app.update(Message::AskGeneral);
+        let again = app.general_ask.as_ref().expect("the chat");
+        assert!(again.round() != round && again.phase == ask::Phase::Loading, "opened anew");
+    }
+
+    /// Issue #892: the overview's chat stays while a mail opens and closes – it shows again with its
+    /// conversation –, ✕ only hides it, "+" starts it anew; an answer goes to the chat of its round,
+    /// never into the chat about the mail.
+    #[test]
+    fn the_overviews_chat_outlasts_an_open_mail() {
+        let mut app = mail_window(Density::Compact, &["--open", "ask-general"]);
+        let _ = app.update(Message::Resized(Size::new(1600.0, 1000.0)));
+        let general = app.ask_shown().expect("the overview's chat");
+        assert!(general.about.is_none() && !general.transcript.entries.is_empty());
+        let round = general.round();
+        app.cursor = Some("m:w2".into());
+        app.reading = true;
+        deliver_letter(&mut app, "m:w2");
+        assert!(app.panel_open());
+        assert!(app.ask_shown().is_none(), "the mail shows, without a chat");
+        let _ = app.update(Message::AskAi("m:w2".into()));
+        assert!(app.ask_shown().is_some_and(|ask| ask.about.is_some()), "the chat about the mail");
+        let refused = ask::Refusal { code: "offline".into(), message: "no".into() };
+        let _ = app.update(Message::Ask(ask::Event::Sent(round, Err(refused))));
+        assert!(app.ask.as_ref().is_some_and(|ask| ask.failed.is_none()), "not the mail's chat");
+        assert_eq!(app.general_ask.as_ref().and_then(|ask| ask.failed.clone()).as_deref(), Some("no"));
+        let _ = app.update(Message::CloseDetail);
+        let back = app.ask_shown().expect("the overview's chat again");
+        assert!(back.about.is_none() && back.round() == round && !back.transcript.entries.is_empty());
+        let _ = app.update(Message::Ask(ask::Event::Close));
+        assert!(app.ask_shown().is_none() && app.general_ask.is_some(), "✕ hides it");
+        let _ = app.update(Message::AskGeneral);
+        assert_eq!(app.ask_shown().map(ask::Ask::round), Some(round), "the same chat");
+        let _ = app.update(Message::Ask(ask::Event::New));
+        let new = app.ask_shown().expect("a new chat");
+        assert!(new.round() != round && new.transcript.entries.is_empty() && new.about.is_none());
+        draw_everywhere(&mut app);
     }
 
     /// Review of #605: "Accept" in the chat opens no dialog when the suggestions could not be fetched
@@ -28648,6 +28888,17 @@ mod tests {
             ("ask-working", "working"),
             ("ask-failed", "failed"),
         ];
+        // Issue #892: the overview's chat, with an answer and with an approval waiting on its card.
+        for open in ["ask-general", "ask-approval"] {
+            let mut app = mail_window(Density::Compact, &["--open", open]);
+            let ask = app.ask_shown().expect(open);
+            assert!(ask.about.is_none(), "{open}");
+            match open {
+                "ask-approval" => assert!(ask.approvals.values().any(|approval| approval.state.is_pending())),
+                _ => assert!(ask.transcript.last_answer().is_some(), "{open}"),
+            }
+            draw_everywhere(&mut app);
+        }
         for (open, scene) in states {
             let mut app = mail_window(Density::Compact, &["--open", open]);
             let id = app.wanted_letter().expect("a mail");

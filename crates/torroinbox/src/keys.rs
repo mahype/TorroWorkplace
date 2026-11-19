@@ -15,8 +15,9 @@
 //!    the folder (in a folder `e` archives: the app decides), `v` switches the mail in the panel or
 //!    reader between HTML and text (task M9.7; the app decides whether it has HTML); `w` puts the mail on
 //!    "Reply later" and `b` on "Set aside" (task E19.4; again on its pile, it takes it off – the app
-//!    decides); `i` opens the chat about the open mail ("Ask AI…", issue #605) or closes it again (the
-//!    mail window only); in a menu of choices the digits pick
+//!    decides); `i` opens the chat about the open mail (issue #605) or, over the overview, the chat
+//!    without a mail (issue #892) – what the round AI button does – or closes it again (the mail window
+//!    only); in a menu of choices the digits pick
 //!    its entries; `[` collapses the sidebar and `]` the mail's action rail (task E14.3); in the date picker the arrows change
 //!    day and time and `Enter` snoozes; in the dialog of "Make task" `Enter` creates the task.
 //!    Behind the navigation menu or the drawer no key reaches the list. Escape
@@ -120,7 +121,7 @@ pub enum Key {
     W,
     /// `b` (task E19.4).
     B,
-    /// `i` (issue #605): "Ask AI…".
+    /// `i` (issues #605, #892): the AI button.
     I,
     /// The hash sign (Shift + 3 on many keyboards: Shift does not stop it).
     Hash,
@@ -246,8 +247,9 @@ pub enum Command {
     /// Put the mail under the cursor on "Set aside", or take it off when it lies there (task E19.4,
     /// `b`; the mail window only).
     SetAside,
-    /// Open the chat about the mail open in the mail window ("Ask AI…", issue #605, `i`), or close it
-    /// while it shows; nothing without an open mail and in the other windows.
+    /// Do what the round AI button does (issues #605, #892, `i`): open the chat about the mail open in
+    /// the mail window, or over the overview the chat without a mail; close the chat while it shows.
+    /// Nothing elsewhere and in the other windows.
     AskAi,
     /// Pick the n-th entry (from 1) of the open menu of choices.
     Choose(usize),
@@ -622,7 +624,7 @@ mod tests {
         }
     }
 
-    /// Issue #605: `i` is "Ask AI…" in the list and the open mail, never inside an open menu or dialog,
+    /// Issues #605, #892: `i` is the AI button in the list, the open mail and the overview, never inside an open menu or dialog,
     /// nor in "Focus & reply"; the chat's own field takes the letter while it has the keyboard.
     #[test]
     fn i_asks_the_ai_about_the_mail() {

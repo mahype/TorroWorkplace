@@ -3464,6 +3464,30 @@ pub fn round_button<'a, M: Clone + 'a>(
     icon_only(which, tooltip, style, on_press)
 }
 
+/// A round button that floats over content at the bottom right of a column (issue #892, the mail
+/// window's AI button): [`size::control_sm()`] round in [`style::button::round_floating`] (the accent
+/// with the shadow of floating surfaces), the icon in `on_accent`; its tooltip at its left – it
+/// stands at the window's edge – says its name and its `key` ([`kbd`]).
+pub fn floating_round_button<'a, M: Clone + 'a>(
+    which: Icon,
+    label: impl IntoFragment<'a>,
+    key: &'static str,
+    on_press: M,
+) -> Element<'a, M> {
+    let style: ButtonStyle = style::button::round_floating;
+    let b = button(center(button_icon(which, icon::SIZE, style, true)))
+        .width(size::control_sm())
+        .height(size::control_sm())
+        .padding(0)
+        .style(style)
+        .on_press(on_press);
+    let text = row![typo::text(typo::caption(), label).style(theme::text_2).wrapping(Wrapping::None)]
+        .push(trail_view(Trail::Kbd(key)))
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+    tip(b, text, tooltip::Position::Left)
+}
+
 /// A [`round_button`] at work ("Sending…", issue #699): the turning arrows of [`busy_button`] in
 /// [`style::button::round_quiet`] at full colour, taking no click, `tooltip` saying what runs.
 pub fn round_busy<'a, M: Clone + 'a>(tooltip: impl IntoFragment<'a>) -> Element<'a, M> {

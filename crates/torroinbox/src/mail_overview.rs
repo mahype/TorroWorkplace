@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, column, container, responsive, row, scrollable};
-use iced::{Alignment, Element, Fill, Length, Theme};
+use iced::{Alignment, Element, Fill, Length, Padding, Theme};
 use torro_core::i18n::{tr, trc, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, ChartColor, palette, size, space};
@@ -564,11 +564,16 @@ pub fn view(data: OverviewData<'_>) -> Element<'_, Message> {
         }
     }
     let content = column(blocks).spacing(layout::section_gap()).width(Fill);
+    // Its end scrolls out from under the round AI button at the bottom right (issue #892).
+    let clearance = crate::ask::button_clearance();
     match data.place {
         // The panel scrolls its body itself; inset, the blocks line up with its title.
-        Place::Panel => torro_gui::panel::inset(content),
+        Place::Panel => {
+            torro_gui::panel::inset(container(content).width(Fill).padding(Padding::new(0.0).bottom(clearance)))
+        }
         Place::Page | Place::Narrow => {
-            let page = container(content).width(Fill).padding(layout::page_padding());
+            let padding = layout::page_padding();
+            let page = container(content).width(Fill).padding(padding.bottom(padding.bottom + clearance));
             scrollable(page)
                 .direction(scrollable::Direction::Vertical(style::scrollbar()))
                 .style(style::scrollable)
