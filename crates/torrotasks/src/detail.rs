@@ -709,6 +709,11 @@ impl Detail {
         self.more.reset();
     }
 
+    /// Whether the "…" menu is open: the arrows and Enter walk it then (issue #906).
+    pub fn more_open(&self) -> bool {
+        self.open == Some(Editor::More)
+    }
+
     /// Whether a submenu of the "…" menu waits for the pointer to rest (issue #906): tick
     /// [`Message::More`] with [`CascadeEvent::Tick`] only then.
     pub fn more_waiting(&self) -> bool {
@@ -1737,6 +1742,7 @@ impl Detail {
                 detail: None,
                 tags: Vec::new(),
                 nested: false,
+                submenu: false,
                 on_press: Message::PrioritySelected(choice),
             })
             .collect();
@@ -1756,6 +1762,7 @@ impl Detail {
                 detail: None,
                 tags: Vec::new(),
                 nested: false,
+                submenu: false,
                 on_press: Message::FocusSelected(choice),
             })
             .collect();
@@ -1800,6 +1807,7 @@ impl Detail {
                 detail: None,
                 tags: Vec::new(),
                 nested: false,
+                submenu: false,
                 on_press: Message::ParentSelected(uid),
             })
             .collect();

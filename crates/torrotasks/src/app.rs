@@ -989,6 +989,10 @@ pub enum Shortcut {
     Tomorrow,
     /// Shift+T: today's focus plan moves to tomorrow.
     PostponePlan,
+    /// ←: closes the submenu of the detail's open "…" menu (issue #906); nothing in the list.
+    Left,
+    /// →: opens the submenu under the cursor of the detail's open "…" menu; nothing in the list.
+    Right,
 }
 
 /// Keyboard shortcuts of the list, like the calendar's: keys a widget already used (typing in a
@@ -1017,6 +1021,8 @@ fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::wind
         Name::Named(Named::ArrowUp) | Name::Character("k") => Shortcut::Up,
         Name::Named(Named::ArrowDown) | Name::Character("j") => Shortcut::Down,
         Name::Named(Named::Enter) => Shortcut::Open,
+        Name::Named(Named::ArrowLeft) => Shortcut::Left,
+        Name::Named(Named::ArrowRight) => Shortcut::Right,
         Name::Named(Named::Space) => Shortcut::Toggle,
         Name::Character("n") => Shortcut::New,
         Name::Character("r") => Shortcut::Sync,
@@ -1657,6 +1663,23 @@ impl App {
                 if !typing && key == Shortcut::Sidebar {
                     return self.toggle_sidebar();
                 }
+                // The detail's open "…" menu takes the arrows and Enter (issue #906).
+                if !typing && self.detail.as_ref().is_some_and(Detail::more_open) {
+                    let key = match key {
+                        Shortcut::Up => Some(widgets::CascadeKey::Up),
+                        Shortcut::Down => Some(widgets::CascadeKey::Down),
+                        Shortcut::Left => Some(widgets::CascadeKey::Left),
+                        Shortcut::Right => Some(widgets::CascadeKey::Right),
+                        Shortcut::Open => Some(widgets::CascadeKey::Enter),
+                        _ => None,
+                    };
+                    return match key {
+                        Some(key) => {
+                            self.update(Message::Detail(detail::Message::More(widgets::CascadeEvent::Key(key))))
+                        }
+                        None => Task::none(),
+                    };
+                }
                 // Menus and the drawer are in front of the list; the keys are not for the list then.
                 if !typing && self.menu.is_none() && !self.drawer {
                     return self.run_shortcut(key);
@@ -1698,6 +1721,8 @@ impl App {
                 None => Task::none(),
             },
             Shortcut::PostponePlan => self.update(Message::PostponeFocusPlan),
+            // Only for the detail's "…" menu (issue #906).
+            Shortcut::Left | Shortcut::Right => Task::none(),
         }
     }
 
@@ -5481,6 +5506,17 @@ mod tests {
         let lists = launched(&["--demo", "--open", "more-list"]);
         let detail = lists.detail.as_ref().expect("the detail is open");
         assert!(detail.more_lists_open(), "the lists beside the menu");
+        // The keys walk the menu (review of #906): ← closes the lists, → opens them again, and the
+        // list's own keys do nothing behind the menu.
+        let mut keys = launched(&["--demo", "--open", "more-list"]);
+        let cursor = keys.cursor.clone();
+        let _ = keys.update(Message::ShortcutChecked(Shortcut::Left, false));
+        assert!(!keys.detail.as_ref().expect("the detail").more_lists_open(), "← closes the lists");
+        let _ = keys.update(Message::ShortcutChecked(Shortcut::Right, false));
+        assert!(keys.detail.as_ref().expect("the detail").more_lists_open(), "→ opens them");
+        let _ = keys.update(Message::ShortcutChecked(Shortcut::Down, false));
+        assert_eq!(keys.cursor, cursor, "↓ stays in the menu");
+        assert!(keys.detail.as_ref().expect("the detail").more_open());
 
         // Closing it does not bring it back with the next reload.
         let mut closed = launched(&["--demo", "--open", "detail"]);
