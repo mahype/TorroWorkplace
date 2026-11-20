@@ -4657,6 +4657,8 @@ impl Core {
         };
         let (command, mut ids) = (request.operation().name(), crate::audit::ids(&request));
         ids.extend(self.holder_ids(&request));
+        // A voice message (issue #859) names no conversation: the line names the one the core picked.
+        let by_voice = matches!(request, Request::SendMessage { voice: true, .. });
         // A key lent to an agent that drives the assistant (task C.7): the log names the engine,
         // as for the assistant's own tools (decision 5 in `docs/assistent.md`).
         let mut scope = None;
@@ -4686,6 +4688,10 @@ impl Core {
         };
         if matches!(answer, Ok(Response::RecipientSuggestions { .. })) {
             ids.extend(read);
+        }
+        if by_voice && let Ok(Response::Conversation { conversation, .. }) = &answer {
+            let renamed = self.assistant.take_retired(&conversation.id).await;
+            ids.extend(crate::audit::voice_ids(&conversation.id, renamed.as_deref()));
         }
         let shown = match &answer {
             Ok(response) => crate::audit::entry(client, command, ids, response, Utc::now()),
@@ -31708,6 +31714,41 @@ done"#,
             lines.iter().filter(|line| line.command.starts_with("assistant.")).all(|line| line.result == "forbidden")
         );
         assert!(lines.iter().all(|line| line.client.as_deref() == Some(id.as_str())));
+    }
+
+    /// Issue #859: a client's voice message names no conversation, so its line in the log names the one the
+    /// core picked, by id only.
+    #[tokio::test]
+    async fn a_voice_message_of_a_client_logs_the_conversation_the_core_picked() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.areas.insert(Area::Assistant, AreaRights { level: Level::Full, admin: false });
+        let (_, key) = client(&core, rights).await;
+        let by_voice = || Request::SendMessage {
+            conversation: None,
+            engine: torro_ipc::assistant::TEST_ENGINE.into(),
+            model: None,
+            effort: None,
+            text: "Dinner with Anna".into(),
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            bot: None,
+            about: None,
+            spoken: true,
+            voice: true,
+        };
+        let Response::Conversation { conversation, .. } = ask(&core, Some(&key), by_voice()).await else {
+            panic!("the voice message is taken")
+        };
+        assert_eq!(conversation.title, tr("Voice"));
+        let line = audit_lines(dir.path()).pop().expect("a line");
+        assert_eq!(line.command, "assistant.send_message");
+        assert!(line.ids.contains(&format!("conversation:{}", conversation.id)), "{:?}", line.ids);
+        assert!(!line.ids.iter().any(|id| id.starts_with("renamed:")), "nothing renamed: {:?}", line.ids);
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        assert!(!log.contains("Dinner") && !log.contains(tr("Voice")), "{log}");
     }
 
     /// Decision 7: no template opens the area `assistant` for an agent, *Full access* neither; a

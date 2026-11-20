@@ -780,6 +780,16 @@ pub fn engine_id(engine: &str) -> String {
     }
 }
 
+/// The ids of a voice message (issue #859) once it ran: the conversation the core picked for it
+/// (`conversation:<id>`) and the old "Voice" it renamed after the pause (`renamed:<id>`). Both ids the core made.
+pub fn voice_ids(conversation: &str, renamed: Option<&str>) -> Vec<String> {
+    let id = |kind: &str, value: &str| match is_random_id(value) {
+        true => format!("{kind}:{}", cut(value)),
+        false => format!("{kind}:hash:{}", hashed(value)),
+    };
+    std::iter::once(id("conversation", conversation)).chain(renamed.map(|old| id("renamed", old))).collect()
+}
+
 /// The ids that say a bot ran for another client (task B.2: the assistant; issue #698: a client from
 /// outside), next to the line of the bot's client: `bot:<the bot's id>` and `for:<the caller's client id>`,
 /// so the log names both. Ids that do not have the form the core makes are hashed.
@@ -954,6 +964,17 @@ pub(crate) mod tests {
             result: "ok".into(),
             approval: None,
         }
+    }
+
+    /// Issue #859: a voice message's ids are those the core made, a forged one hashed.
+    #[test]
+    fn voice_ids_name_the_picked_and_the_renamed_conversation() {
+        assert_eq!(voice_ids("0123456789abcdef", None), ["conversation:0123456789abcdef"]);
+        assert_eq!(
+            voice_ids("0123456789abcdef", Some("fedcba9876543210")),
+            ["conversation:0123456789abcdef", "renamed:fedcba9876543210"]
+        );
+        assert_eq!(voice_ids("Dinner", None), [format!("conversation:hash:{}", hashed("Dinner"))]);
     }
 
     #[test]
