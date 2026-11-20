@@ -1147,6 +1147,35 @@ ist; das Mikrofon ist dann nur für dieses Gespräch offen. Statt des Eingabefel
 | Gespräch beenden | „End talk“, Schweigen, Schlusswort | `assistant.end_talk` · Write | `assistant_end_talk` |
 | Stand des Gesprächs | Zeile im Chatfenster, Tray | `assistant.talk_status` · Read | `assistant_talk_status` |
 | Antwort unterbrechen | Sprechen beim Vorlesen | `assistant.interrupt` · Write | `assistant_interrupt` |
+| Gesprächsmodul in der Cloud wählen | Voice › Conversation › „Voice engine“ | `settings.set_setting live_engine` · Admin (nur `null` für Clients) | `settings_set_setting` (nur zurück auf diesen Rechner) |
+| Gesprächsmodule auflisten | Auswahl „Conversation engine“ | `settings.list_live_engines` · Read | `settings_list_live_engines` |
+
+#### Gesprächsmodul in der Cloud (Issue #838)
+
+Statt der lokalen Kette kann ein Modell in der Cloud zuhören und sprechen (Weg B in
+[sprachchat.md](sprachchat.md)): **OpenAI Realtime** (`gpt-realtime-2.1`, auch „mini“) und **Grok Voice** von xAI
+(`grok-voice-latest`), je über ein KI-Konto des Anbieters. Gewählt wird es unter Voice › Conversation › „Voice
+engine“ (`voice.liveEngine`: Konto und Modell, `null` für diesen Rechner, der Standard). Nur ein Mensch wählt ein
+Modul in der Cloud; Agenten dürfen die Liste lesen und auf diesen Rechner zurückstellen.
+
+- **Ablauf:** „Hey Torro“ bleibt auf dem Rechner. Danach beginnt gleich das Gespräch: Der Hörer schickt jeden
+  Mikrofonblock über seine Leitung an den Dienst (`{"mic": …, "clean": …}`), der Dienst hält die Verbindung
+  (`wss://…/v1/realtime`) und den Schlüssel. Das Modul erkennt das Satzende und antwortet selbst; die
+  Pausen-Einstellungen unter „When a sentence ends“ wirken dann nicht.
+- **Verlauf und Werkzeuge:** Was die Person sagt, steht als ihre Nachricht in der Unterhaltung, die Antwort als
+  Antwort mit dem Modell des Moduls, ganz als gesprochener Teil. Werkzeuge ruft das Modul als Funktionen auf; sie
+  laufen durch den Kern mit den Rechten, Freigaben und dem Protokoll des Assistenten. Getippte Nachrichten im selben
+  Gespräch beantwortet weiter das Chat-Modell. Was Werkzeuge lesen, geht an den Anbieter des Moduls.
+- **Ton:** Die Antwort spielt der Vorlese-Helfer als Auftrag nur mit Ton (`{"stream": {}}`); sie zählt als
+  Vorlesen. Ohne Echo-Unterdrückung verwirft der Dienst Mikrofonblöcke, solange etwas spielt und 300 ms danach.
+  Spricht die Person hinein, verstummt die Antwort, die Unterhaltung behält das Gehörte, und das Modul vergisst den
+  Rest. Ein Fenster mit „Read aloud“ liest diese Antworten nicht noch einmal vor. Kein Ton auf der Platte.
+- **Ende und Abbrüche:** Schlusswort, „End talk“, 300 Sekunden Stille, ein anderes Modul, „this computer“ oder das
+  entfernte Konto beenden das Gespräch sofort. Eine abgebrochene Verbindung und die Zeitgrenze des Anbieters
+  (OpenAI 60, Grok 120 Minuten; fünf Minuten vorher, in einer Pause) überbrückt ein Neuaufbau mit den letzten 40
+  Nachrichten als Text; scheitert er dreimal, steht das in der Unterhaltung.
+- **Messung:** Jede Runde erscheint unter „Response times“ mit dem Modell (`VoiceRound.engine`), ohne
+  Erkennungszeit.
 
 ## Wo die Logik liegt
 

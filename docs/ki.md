@@ -65,8 +65,12 @@ benutzt nie den Schlüssel eines Agenten.
 | **Lokal** | Ollama, LM Studio, [Strata](https://github.com/Niko1221/Strata), llama.cpp-Server, vLLM, LocalAI | OpenAI-kompatible Schnittstelle (`/v1/chat/completions`, `/v1/models`); Adresse, meist ohne Schlüssel |
 | **Selbst gehostet** | eigener Server mit einem der obigen; Nextcloud Assistant (TaskProcessing-API, z. B. mit lokalem LLM auf dem Nextcloud-Server) | OpenAI-kompatibel bzw. über das vorhandene Nextcloud-Konto, ohne neuen Schlüssel |
 | **Offene Modelle in der Cloud** | **OpenRouter** (Qwen, Llama, Mistral, DeepSeek … über einen Schlüssel; Filter „open weights“) | OpenAI-kompatibel (`https://openrouter.ai/api/v1`); API-Schlüssel |
-| **Anbieter** | Anthropic, OpenAI, Mistral, Google | eigene Schnittstelle (Anthropic) bzw. OpenAI-kompatibel; API-Schlüssel |
+| **Anbieter** | Anthropic, OpenAI, Mistral, Google, xAI | eigene Schnittstelle (Anthropic) bzw. OpenAI-kompatibel; API-Schlüssel |
 | **Zum Sortieren** | **Jev** von TypeSafe (Issue #323), nur Entscheiden | SystemOne (`https://api.typesafe.ai/v1/systemone`); API-Schlüssel, ein festes Modell `jev-latest` |
+
+**xAI** (Issue #838, `xai`, `https://api.x.ai/v1`, Schlüssel unter `https://console.x.ai`, Sitz USA) bringt die
+Grok-Modelle für den Chat über die OpenAI-kompatible Schnittstelle und **Grok Voice** als Gesprächsmodul in der Cloud
+([assistent.md](assistent.md), „Gesprächsmodul in der Cloud“). OpenAI-Konten bieten dafür OpenAI Realtime.
 
 **Strata** (MIT, Standardadresse `http://127.0.0.1:8080/v1`) ist ein lokaler Server für sehr große offene
 Modelle auf einem PC mit RTX- oder Radeon-Karte. Es ist ein Katalogeintrag, kein neues Protokoll. Auf Port 8080
